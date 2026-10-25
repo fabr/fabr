@@ -21,7 +21,7 @@ import type { BuildAction, BuildResult } from "../core/BuildAction";
 import type { ActionContext, ICreateOptions } from "../core/BuildCache";
 import type { Computable } from "../core/Computable";
 import type { FileSet, FileSource } from "../core/FileSet";
-import type { IProjection } from "../core/Reference";
+import type { IProjection, Miss } from "../core/Reference";
 import type { NamespaceRef } from "../core/NamespaceRef";
 import type { Name } from "../core/Name";
 import type { Materialized, SourceRef } from "../core/Repository";
@@ -296,7 +296,7 @@ export interface InternalBuildContext extends BuildContext {
   projectSources(
     sources: Array<SourceRef | Unbuilt>,
     projection: IProjection,
-    miss: (() => Error) | undefined
+    miss: Miss | undefined
   ): Array<SourceRef | Unbuilt> | Computable<Array<SourceRef | Unbuilt>>;
 
   /**

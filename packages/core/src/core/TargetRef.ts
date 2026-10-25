@@ -21,7 +21,7 @@ import { Computable } from "./Computable";
 import { FileSet } from "./FileSet";
 import { ResolvedNode } from "./PackageFileSet";
 import { chainSteps, IProvenanceStep, referenceStep } from "./Provenance";
-import { IProjection, NO_REFERENCE_FIELDS, Reference, ReferenceFields } from "./Reference";
+import { IProjection, Miss, NO_REFERENCE_FIELDS, Reference, ReferenceFields } from "./Reference";
 import { renamedAndProjected, ProjectedPackage, renamedAs, RepositoryRef, SourceRef } from "./Repository";
 
 /**
@@ -41,7 +41,7 @@ export interface TargetNode extends ResolvedNode {
   materialize(): Computable<SourceRef[]>;
   /** Apply `projection` to `sources`, what the target built, as a reference
    * selecting its files does; `miss` is the error where it selects nothing. */
-  projectBuilt(sources: SourceRef[], projection: IProjection, miss: (() => Error) | undefined): SourceRef[] | Computable<SourceRef[]>;
+  projectBuilt(sources: SourceRef[], projection: IProjection, miss: Miss | undefined): SourceRef[] | Computable<SourceRef[]>;
 }
 
 /** What a {@link TargetRef} resolves against: the configuration that keeps each

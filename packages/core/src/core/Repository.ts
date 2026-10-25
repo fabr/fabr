@@ -31,7 +31,7 @@ import type { Requirement, RequirementSource, ResolvedMember, Selected } from ".
 import type { PackageFormat } from "../resolver/PackageFormat";
 
 import { markerOf } from "../resolver/Requirement";
-import { IProjection, NO_REFERENCE_FIELDS, Reference, ReferenceFields } from "./Reference";
+import { IProjection, Miss, NO_REFERENCE_FIELDS, Reference, ReferenceFields } from "./Reference";
 
 /**
  * A repository owns a namespace and vends references into it — the whole thing,
@@ -298,7 +298,7 @@ export class ProjectedPackage {
   constructor(
     public readonly base: Package,
     public readonly projections: ReadonlyArray<IProjection>,
-    public readonly miss?: () => Error
+    public readonly miss?: Miss
   ) {}
 }
 
@@ -490,7 +490,7 @@ export class RepositoryRef extends Reference implements Requirement {
  */
 export function renamedAndProjected(
   base: FileSet | ResolvedNode,
-  fields: { renameTo?: string; projections: ReadonlyArray<IProjection>; miss?: () => Error },
+  fields: { renameTo?: string; projections: ReadonlyArray<IProjection>; miss?: Miss },
   shown: string
 ): FileSet | ResolvedNode | FileSetRef | ProjectedPackage {
   const named = fields.renameTo === undefined ? base : renamedAs(base, fields.renameTo, shown);

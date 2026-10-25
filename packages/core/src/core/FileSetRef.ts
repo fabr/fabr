@@ -20,7 +20,7 @@
 import type { FileSet, FileSource } from "./FileSet";
 import { Name } from "./Name";
 import { FabrError } from "./Errors";
-import type { IProjection } from "./Reference";
+import type { IProjection, Miss } from "./Reference";
 
 /**
  * A looked-up source with pending projections — **pure data**: the suspended
@@ -61,7 +61,7 @@ export class FileSourceRef {
      * A rule requiring a property to have a value is a separate judgment, made
      * by the rule: this one only says whether the reference itself resolved.
      */
-    public readonly miss?: () => Error
+    public readonly miss?: Miss
   ) {
     /* A ref exists to suspend projections; every construction site supplies at
      * least one, and the applier (`applyProjections`) folds from the first.
@@ -84,7 +84,7 @@ export class FileSourceRef {
 export class FileSetRef extends FileSourceRef {
   public declare readonly source: FileSet;
 
-  constructor(source: FileSet, projections: ReadonlyArray<IProjection>, miss?: () => Error) {
+  constructor(source: FileSet, projections: ReadonlyArray<IProjection>, miss?: Miss) {
     super(source, projections, miss);
   }
 
@@ -117,8 +117,9 @@ export class FileSetRef extends FileSourceRef {
    * Carrying a `miss` IS the judgment — made once, over the whole written name,
    * by whoever built the ref — so there is nothing to re-decide here. */
   private checkMatched(matched: boolean): void {
-    if (!matched && this.miss) {
-      throw this.miss();
+    const err = this.miss?.(matched);
+    if (err !== undefined) {
+      throw err;
     }
   }
 }

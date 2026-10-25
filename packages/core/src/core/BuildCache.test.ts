@@ -40,6 +40,7 @@ import { CacheLink, SymlinkFile } from "./SymlinkFile";
 import { Log } from "../support/Log";
 import { expect } from "chai";
 import { dependenciesOn } from "./Repository";
+import { ISourcePathStep, SOURCE_PATH_PROVENANCE } from "./Provenance";
 
 const NULL_LOG: Log = { log: () => undefined };
 /** A unit test is its own observer: track transfers with the silent report. */
@@ -736,6 +737,24 @@ describe("BuildCache discovered dependencies", () => {
     expect(fs.existsSync(path.join(root, "entries", hashString(ANCHOR) + ".manifest"))).to.equal(false);
     const used = narrowDeps(discoverable, selectionOf(discoverable, ["a.h"]));
     expect(fs.existsSync(path.join(root, "entries", hashString(preciseActionKey(hashString(ANCHOR), used)) + ".manifest"))).to.equal(true);
+  });
+
+  it("keys a read of each loose member on that member's source paths", () => {
+    /* Two loose members, each read: the precise key carries both digests, so
+     * moving either one's source (its content unchanged) changes the key. */
+    const loose = (file: string, sourcePath: string): FileSet => {
+      const step: ISourcePathStep = { kind: SOURCE_PATH_PROVENANCE, sourcePath };
+      return new FileSet(new Map([[file, MemoryFile.from(file)]]), step);
+    };
+    const keyWith = (secondSourcePath: string): string => {
+      const discoverable: ActionFileInputs = { deps: [loose("x.scss", "./shared"), loose("y.scss", secondSourcePath)] };
+      const selection: DiscoveredDeps = new Map([["deps", [["x.scss"], ["y.scss"]]]]);
+      const used = narrowDeps(discoverable, selection, ["deps"]);
+      expect([...used.deps.sourcePathsDigests.keys()].sort()).to.deep.equal(["x.scss", "y.scss"]);
+      return preciseActionKey(hashString(ANCHOR), used);
+    };
+    expect(keyWith("./lib")).to.equal(keyWith("./lib"));
+    expect(keyWith("./lib")).to.not.equal(keyWith("./moved"));
   });
 
   it("does not join an in-flight attempt that was given different discoverable", async () => {
@@ -2071,6 +2090,9 @@ describe("BuildCache work tree", () => {
     const dir = cache.holdKeptWorkDir("k2");
     expect(path.basename(dir)).to.equal(`${hostPrefix()}@k2.1`);
     expect(fs.readFileSync(`${dir}.hold`, "utf8")).to.equal(String(process.pid));
+    /* The dead holder's hold went into this process's own work tree, not beside the slot. */
+    expect(fs.readdirSync(work).filter(name => name.includes(".hold")).sort()).to.deep.equal([`${hostPrefix()}@k2.0.hold`, `${hostPrefix()}@k2.1.hold`]);
+    expect(fs.readdirSync(path.join(work, `${hostPrefix()}-${process.pid}`)).some(name => name.startsWith("hold-"))).to.equal(true);
     cache.releaseKeptWorkDir(dir);
   });
 

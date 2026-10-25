@@ -25,7 +25,7 @@ import { RepositoryPublishRef, Repository, SourceRef } from "../core/Repository"
 import { collectLists } from "./CollectionPoint";
 import { FileSetRef } from "../core/FileSetRef";
 import { NamespaceRef } from "../core/NamespaceRef";
-import { IProjection } from "../core/Reference";
+import { IProjection, Miss } from "../core/Reference";
 import { materializeTargets } from "../core/TargetRef";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { Dependency, PackageFileSet } from "../core/PackageFileSet";
@@ -410,7 +410,7 @@ export abstract class TargetContext {
 
   /** Apply `projection` to `sources`, what this target built (see
    * {@link InternalBuildContext.projectSources}). */
-  public projectSources(sources: SourceRef[], projection: IProjection, miss: (() => Error) | undefined): SourceRef[] | Computable<SourceRef[]> {
+  public projectSources(sources: SourceRef[], projection: IProjection, miss: Miss | undefined): SourceRef[] | Computable<SourceRef[]> {
     return this.context.projectSources(sources, projection, miss) as SourceRef[] | Computable<SourceRef[]>;
   }
 

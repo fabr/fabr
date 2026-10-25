@@ -130,17 +130,21 @@ const DIAG_RUN_ERROR = Diagnostic.Error<{ name: string; message: string }>("Fail
 interface Install {
   readonly dir: string;
   readonly programKey: string;
-  held: FileSet;
+  /** What the dir holds, as fabr last wrote it; undefined where a write into it
+   * failed, so its contents are unknown until it is written whole. */
+  held: FileSet | undefined;
   served: FileSet;
+  /** The writes into the dir so far, each queued behind the last, so a sync or
+   * a restage into it never interleaves with one still landing. A gate, not a
+   * history: once the newest sync has landed it is collapsed to a settled node
+   * (see {@link RunSupervisor.updateContent}). */
+  writes: Computable<void>;
+  /** The number of the most recently queued sync; only that one may collapse
+   * `writes`, since an earlier sync finishing behind a newer one must leave it
+   * in place. */
+  writeSeq: number;
   /** Absent until launched — and again once the child has exited. */
   child?: ChildProcess;
-}
-
-/** An install no child runs from, kept to be synced into by the next restart:
- *  its directory (a held kept work dir) and what fabr last wrote into it. */
-interface SpareInstall {
-  readonly dir: string;
-  readonly held: FileSet;
 }
 
 /**
@@ -176,8 +180,8 @@ interface SpareInstall {
 export class RunSupervisor {
   /** Every install staged on disk, so a shutdown releases the lot. */
   private readonly installs = new Set<Install>();
-  /** The install a finished child left, if any, for the next relaunch to sync. */
-  private spare?: SpareInstall;
+  /** The install a finished child left, if any, for the next relaunch to sync into. */
+  private spare?: Install;
   /** The install we are *committed to* — running, or staged and waiting for the
    * old child to exit; undefined ⇒ the next update stages and launches. An
    * update is judged against this rather than against what is *running*, or a
@@ -189,17 +193,6 @@ export class RunSupervisor {
   /** Bumped per state-changing reaction; a slower async stage (or sync) checks
    * it to bail out when a newer reaction has superseded it. */
   private generation = 0;
-  /** Serializes content syncs: each chains behind the previous, so overlapping
-   * re-settles can't interleave their per-file writes out of order. It is a
-   * *gate*, not a history — once the newest sync has landed there is nothing left
-   * to queue behind, so {@link updateContent} collapses it back to a settled node.
-   * Left to accumulate it would hold one chain node per sync for the life of the
-   * run, each retaining the RunnableFileSet its callback closed over. */
-  private lastSync: Computable<void> = Computable.resolve(undefined);
-  /** The most recently queued content sync. Only that one may collapse the gate:
-   * an earlier sync finishing behind a newer one must leave it in place, or the
-   * newer one's writes would stop being serialized against it. */
-  private syncSeq = 0;
 
   constructor(
     private readonly cache: BuildCache,
@@ -237,21 +230,27 @@ export class RunSupervisor {
      * running child is only stopped once the new install is ready to launch. */
     const spare = this.spare;
     this.spare = undefined;
-    const install: Install = { dir: spare?.dir ?? this.cache.holdKeptWorkDir(this.key), programKey, held: runnable, served: runnable.served };
+    const install: Install = {
+      dir: spare?.dir ?? this.cache.holdKeptWorkDir(this.key),
+      programKey,
+      held: runnable,
+      served: runnable.served,
+      writes: Computable.resolve(undefined),
+      writeSeq: 0,
+    };
     this.installs.add(install);
     /* Commit at stage time, not at launch, so an update arriving mid-swap is
      * judged against what we are heading for and a content sync lands in this
      * install whether or not the child has been swapped over to it yet. */
     this.target = install;
     const argv = launchArgv(runnable, this.callerArgs, install.dir);
-    const staged = stageInstall(this.cache, install.dir, runnable, spare?.held);
-    /* Syncs queue behind the staging write — the dir does not exist until it
-     * lands. Bump syncSeq too: it declares every already-queued sync superseded,
-     * so a stale sync's finish() cannot collapse this gate back to settled while
-     * the staging write is still in flight (letting a later sync's writes
-     * interleave with the restage). */
-    this.syncSeq++;
-    this.lastSync = staged.then(
+    /* A restage into the spare queues behind the writes still landing in it (a
+     * sync its own program was given before it was superseded), and starts from
+     * what they left: `held` is read once they are done. */
+    const staged = (spare?.writes ?? Computable.resolve(undefined)).then(() => stageInstall(this.cache, install.dir, runnable, spare?.held));
+    /* Syncs into this install queue behind its staging write — the dir does not
+     * hold the program until it lands. */
+    install.writes = staged.then(
       () => undefined,
       () => undefined
     );
@@ -356,7 +355,7 @@ export class RunSupervisor {
     }
     this.forget(install);
     if (this.spare === undefined) {
-      this.spare = { dir: install.dir, held: install.held };
+      this.spare = install;
     } else {
       this.cache.releaseKeptWorkDir(install.dir);
     }
@@ -383,43 +382,52 @@ export class RunSupervisor {
   }
 
   /** Apply a served-content delta (if any) to the committed install's dir in
-   * place, the program being unchanged. Chained behind that dir's staging write
-   * and any earlier sync so writes apply in settle order; generation-guarded so
-   * a restart that supersedes a queued sync discards it (and silences its
-   * failures — its dir may be gone). Settles when this cycle's sync has landed
+   * place, the program being unchanged. Queued behind that install's writes so
+   * they apply in settle order; a restart that supersedes a queued sync before
+   * it starts discards it. One that has started runs to its end, and the
+   * install's `held` and record follow what it wrote, since a later restage
+   * into the dir starts from them. Settles when this cycle's sync has landed
    * (or proved unnecessary). */
   private updateContent(runnable: RunnableFileSet): Computable<void> {
+    const target = this.target;
+    if (target === undefined) {
+      return Computable.resolve(undefined);
+    }
     const generation = this.generation;
-    const seq = ++this.syncSeq;
+    const seq = ++target.writeSeq;
     /* Release the gate on every terminal path (including the nothing-to-do ones),
      * so a run that syncs indefinitely holds one settled node rather than a chain. */
     let collapsed = false;
     const finish = (): undefined => {
-      if (seq === this.syncSeq) {
-        this.lastSync = Computable.resolve(undefined);
+      if (seq === target.writeSeq) {
+        target.writes = Computable.resolve(undefined);
         collapsed = true;
       }
       return undefined;
     };
-    const sync = this.lastSync.then(() => {
-      const target = this.target;
-      if (generation !== this.generation || !target || target.served.toManifest() === runnable.served.toManifest()) {
+    const sync = target.writes.then(() => {
+      if (generation !== this.generation || (target.held !== undefined && target.served.toManifest() === runnable.served.toManifest())) {
         return finish();
       }
-      return this.cache
-        .recordKeptWorkDir(target.dir, undefined)
-        .then(() => syncFileSet(target.dir, target.served, runnable.served))
-        .then(counts => this.cache.recordKeptWorkDir(target.dir, runnable).then(() => counts))
-        .then(
-        ({ written, removed }) => {
+      /* A dir whose contents are unknown (a write into it failed) is written whole. */
+      const write =
+        target.held === undefined
+          ? stageInstall(this.cache, target.dir, runnable).then(() => runnable.served.size)
+          : this.cache
+              .recordKeptWorkDir(target.dir, undefined)
+              .then(() => syncFileSet(target.dir, target.served, runnable.served))
+              .then(({ written, removed }) => this.cache.recordKeptWorkDir(target.dir, runnable).then(() => written + removed));
+      return write.then(
+        count => {
+          target.served = runnable.served;
+          target.held = runnable;
           if (generation === this.generation) {
-            target.served = runnable.served;
-            target.held = runnable;
-            this.log.log(DIAG_UPDATE, { name: this.name, count: written + removed });
+            this.log.log(DIAG_UPDATE, { name: this.name, count });
           }
           finish();
         },
         err => {
+          target.held = undefined;
           if (generation === this.generation) {
             this.log.log(DIAG_RUN_ERROR, { name: this.name, message: err instanceof Error ? err.message : String(err) });
           }
@@ -431,7 +439,7 @@ export class RunSupervisor {
      * gate is already released by here — taking `sync` as the gate would reinstate
      * the chain it just dropped. */
     if (!collapsed) {
-      this.lastSync = sync;
+      target.writes = sync;
     }
     return sync;
   }

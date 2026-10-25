@@ -92,6 +92,21 @@ export class NamespaceRef extends Reference {
     return [this.repositoryName, this.name].filter(part => part !== undefined && part !== "").join(":");
   }
 
+  /** A repository has no name a `-> name` could be about, nor has an
+   * incomplete reference into one. */
+  public override withRenameTo(renameTo: string): this {
+    const written = this.toString();
+    throw this.attributed(
+      this.name === ""
+        ? new FabrError(`'${written}' names a repository, which cannot be renamed`).withHelp(
+            `rename a package of it instead, as in '${written}:<name> -> ${renameTo}'`
+          )
+        : new FabrError(`'${written}' is not a complete reference, so it names no package to rename`).withHelp(
+            `write the rest of the name before the rename, as in '${written}:<rest> -> ${renameTo}'`
+          )
+    );
+  }
+
   /** Make the error for asking this reference for a package or files,
    * attributed to where it was written. */
   public refused(): Error {

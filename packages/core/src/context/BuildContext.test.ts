@@ -85,9 +85,12 @@ chai.use(chaiAsPromised);
  * tests don't inspect it, so a stderr-backed one (as the driver uses) serves. */
 const testLog = new LogFormatter(LogLevel.Info, console.error);
 
-/* The runtime surroundings for evaluation: none of these tests reach the
- * cache, so a single throwaway instance serves them all */
-const execution = new ExecutionContext(new BuildCache(".", testLog), testLog, EMPTY_FILESET, EMPTY_FILESET);
+/* The runtime surroundings for evaluation: one throwaway store serves every
+ * test here that does not need its own. A registry's resolution is memoized
+ * through it, so it is written to even where nothing is built. */
+const cacheRoot = fs.mkdtempSync(nodePath.join(os.tmpdir(), "fabr-context-test-"));
+afterAll(() => fs.rmSync(cacheRoot, { recursive: true, force: true }));
+const execution = new ExecutionContext(new BuildCache(cacheRoot, testLog), testLog, EMPTY_FILESET, EMPTY_FILESET);
 
 /** Make a name as the driver hands one over. Every {@link BuildContext} method
  * takes the decl its reference was written in (the CLI synthesizes one over
@@ -1401,6 +1404,37 @@ describe("BuildContext", () => {
     }
   });
 
+  it("Judges a literal projection over every source the name reached, targets among them", async () => {
+    /* `P` reaches two targets, each answering for the name once it is built:
+     * the name fails only where neither has the file, and passes where either
+     * does. */
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_good { deps = PACKAGES; }\n" +
+      "targetdef test_file { content = STRING; }\n" +
+      "targetdef test_dir { }\n" +
+      "test_file b { content = one; }\n" +
+      "test_dir d { }\n" +
+      "P = b d;\n" +
+      "test_good either { deps = P:c.txt; }\n" +
+      "test_good neither { deps = P:missing.txt; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+    const config = model.getConfig(Constraints.of({}), execution);
+    /* Only `d` has c.txt. */
+    await config.materialize(writtenOnCommandLine("either"));
+    try {
+      await config.materialize(writtenOnCommandLine("neither"));
+      expect.fail("expected target neither to fail");
+    } catch (err) {
+      expect(err).to.be.instanceOf(DependencyFailedError);
+      const cause = (err as DependencyFailedError).cause;
+      expect(cause).to.be.instanceOf(NameResolutionError);
+      expect(cause.message).to.equal("Unable to resolve 'P:missing.txt'");
+    }
+  });
+
   it("Projects a multi-source target per source, never unioning across members", async () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
@@ -2387,7 +2421,7 @@ describe("BuildContext", () => {
 
     /* Configs are per execution context: a fresh run never shares evaluation
      * state with another */
-    const other = new ExecutionContext(new BuildCache(".", testLog), testLog, EMPTY_FILESET, EMPTY_FILESET);
+    const other = new ExecutionContext(new BuildCache(cacheRoot, testLog), testLog, EMPTY_FILESET, EMPTY_FILESET);
     expect(model.getConfig(Constraints.of({ x: "1" }), other)).to.not.equal(model.getConfig(Constraints.of({ x: "1" }), execution));
   });
 
@@ -3105,6 +3139,22 @@ describe("an incomplete reference", () => {
   it("is refused where it is used as a package before it is complete", async () => {
     const sources = await Promise.resolve(materialize("A"));
     expect(() => refuseNamespaces(sources)).to.throw("'@reg:foo' is not a complete reference, so it names no package or files");
+  });
+
+  it("cannot be renamed, whether the repository or a name into it", async () => {
+    /* A rename names the package delivered; a repository delivers none, so
+     * carrying the rename onward would drop it without a word. */
+    for (const [name, message] of [
+      ["@reg -> other", "'@reg' names a repository, which cannot be renamed"],
+      ["A -> other", "'@reg:foo' is not a complete reference, so it names no package to rename"],
+    ]) {
+      try {
+        await Promise.resolve(materialize(name));
+        expect.fail(`expected '${name}' to be refused`);
+      } catch (err) {
+        expect((err as Error).message, name).to.contain(message);
+      }
+    }
   });
 });
 

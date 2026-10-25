@@ -93,6 +93,13 @@ type CatchHandler<U> = (err: Error) => U | ComputableSource<U>;
  * throughout the (attached) graph; this applies to errors too. Multiple failed
  * dependencies aggregate into a single MultiError rather than failing fast.
  */
+/** The notification cascades in flight (nested {@link ComputableSource.notifyDependants}
+ * calls), and the cycle closers asked to decide during one. A closer decides once no
+ * notification is pending: until then a node it would judge unable to move may merely
+ * not have been notified yet of an input that settled. */
+let cascadeDepth = 0;
+const deferredClosers = new Set<ComputableSource<unknown>>();
+
 export abstract class ComputableSource<T> {
   /** The settled result: T when Valid, Error when Error (undefined while unresolved) */
   protected currentValue: T | Error | undefined;
@@ -360,7 +367,17 @@ export abstract class ComputableSource<T> {
   }
 
   private notifyDependants(): void {
-    this.eachDependant(dep => dep.maybeRecompute());
+    cascadeDepth++;
+    try {
+      this.eachDependant(dep => dep.maybeRecompute());
+    } finally {
+      if (--cascadeDepth === 0) {
+        for (const closer of deferredClosers) {
+          deferredClosers.delete(closer);
+          closer.recheckCycle();
+        }
+      }
+    }
   }
 
   /** Iterate dependants over a snapshot — the cascade may detach one mid-iteration
@@ -375,6 +392,12 @@ export abstract class ComputableSource<T> {
    * this to run (or revalidate) from its inputs.
    */
   protected maybeRecompute(): void {}
+
+  /**
+   * Decide, as a node that closed a cycle, whether to settle its error again. A
+   * pure source closes no cycle; {@link Computable} overrides this.
+   */
+  protected recheckCycle(): void {}
 
   /**
    * @return true if this node's settled error would go unobserved, otherwise
@@ -866,9 +889,15 @@ export class Computable<T> extends ComputableSource<T> {
    * binding still waits on this one through is waiting itself, on nothing
    * but the cycle — and otherwise holds on those nodes, which ask again as
    * each moves. A binding that no longer waits on this node decides by its
-   * delivery.
+   * delivery. Asked while a notification cascade is in flight, it decides at
+   * the cascade's end instead: a node not yet notified of an input that
+   * settled is about to move, whatever its state says now.
    */
-  private recheckCycle(): void {
+  protected override recheckCycle(): void {
+    if (cascadeDepth > 0) {
+      deferredClosers.add(this);
+      return;
+    }
     const binding = this.binding;
     if (binding === undefined || !binding.cyclic || binding.isSettled()) {
       return;

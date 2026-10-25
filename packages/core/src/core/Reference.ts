@@ -31,12 +31,38 @@ export interface IProjection {
   prefix: string;
 }
 
+/**
+ * Judge what a projection selected, for the literal-must-resolve rule: called
+ * with whether the source it was given selected anything, it returns the error
+ * where the written name as a whole selected nothing, and undefined where it
+ * did, or where other sources the name reached are still to answer. A name
+ * reaching several sources gives each its own through {@link jointMiss}.
+ */
+export type Miss = (selected: boolean) => Error | undefined;
+
+/**
+ * Make the misses for the sources one name reached, each answering to `miss`
+ * once every one of them has: the name selected nothing only where none did.
+ * A source may answer again (a target rebuilt under watch), superseding its
+ * last answer.
+ */
+export function jointMiss(miss: Miss): () => Miss {
+  const answers: Array<boolean | undefined> = [];
+  return () => {
+    const slot = answers.push(undefined) - 1;
+    return selected => {
+      answers[slot] = selected;
+      return answers.every(answer => answer !== undefined) ? miss(answers.some(answer => answer === true)) : undefined;
+    };
+  };
+}
+
 /** What a {@link Reference} is made of, beside what it names. */
 export interface ReferenceFields {
   readonly projections: ReadonlyArray<IProjection>;
   /** For each of `projections`, the error where it selects nothing and that
    * is an error. */
-  readonly misses: ReadonlyArray<(() => Error) | undefined>;
+  readonly misses: ReadonlyArray<Miss | undefined>;
   readonly renameTo?: string;
   readonly steps: ReadonlyArray<IProvenanceStep>;
   readonly override?: "alternate" | "force";
@@ -81,7 +107,7 @@ export abstract class Reference {
 
   /** For each of {@link projections}, the error where it selects nothing and
    * that is an error. */
-  public get misses(): ReadonlyArray<(() => Error) | undefined> {
+  public get misses(): ReadonlyArray<Miss | undefined> {
     return this.fields.misses;
   }
 
@@ -105,7 +131,7 @@ export abstract class Reference {
   /** Get a reference narrowed to what `name` selects from what this one
    * resolves to, named as `prefix` says. `miss` is the error where it selects
    * nothing and that is an error. */
-  public find(name: Name, prefix = "", miss?: () => Error): this {
+  public find(name: Name, prefix = "", miss?: Miss): this {
     return this.copy({ projections: [...this.projections, { pattern: name, prefix }], misses: [...this.misses, miss] });
   }
 

@@ -20,7 +20,7 @@
 import { Computable } from "../core/Computable";
 import { FabrError } from "../core/Errors";
 import { FileSet } from "../core/FileSet";
-import { IProjection } from "../core/Reference";
+import { IProjection, Miss } from "../core/Reference";
 import { Dependency, dependencyName, isPackage, NodeFields, PackageFileSet, Provided, ResolvedNode } from "../core/PackageFileSet";
 
 import { Resolved, SourceRef } from "../core/Repository";
@@ -147,7 +147,7 @@ export abstract class ResolvedTarget extends ResolvedNode implements TargetNode 
 
   public abstract materialize(): Computable<SourceRef[]>;
 
-  public abstract projectBuilt(sources: SourceRef[], projection: IProjection, miss: (() => Error) | undefined): SourceRef[] | Computable<SourceRef[]>;
+  public abstract projectBuilt(sources: SourceRef[], projection: IProjection, miss: Miss | undefined): SourceRef[] | Computable<SourceRef[]>;
 }
 
 /**
@@ -216,7 +216,7 @@ export class DeclaredResolvedTarget extends ResolvedTarget {
     return this.build.materialize();
   }
 
-  public projectBuilt(sources: SourceRef[], projection: IProjection, miss: (() => Error) | undefined): SourceRef[] | Computable<SourceRef[]> {
+  public projectBuilt(sources: SourceRef[], projection: IProjection, miss: Miss | undefined): SourceRef[] | Computable<SourceRef[]> {
     return this.build.context.projectSources(sources, projection, miss);
   }
 

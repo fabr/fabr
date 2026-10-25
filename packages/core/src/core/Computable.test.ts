@@ -1624,6 +1624,54 @@ describe("Computable.detached and dependency cycles", () => {
     handle.release();
   });
 
+  it("decides a cycle's error only after every node of the batch has been notified", () => {
+    /* `r2` is notified of `q` after `r1`, which asks the closer `c`; `r2`
+     * then adopts its binding's changed value, which re-runs `i` and cuts the
+     * cycle. The consumer must see the healed value alone, not the stale
+     * error first. */
+    const s = new TestSource<number>();
+    const sq = new TestSource<number>();
+    const s3 = new TestSource<number>();
+    const s2 = new TestSource<number>();
+    const p = s.then(x => x);
+    const q = sq.then(x => x);
+    const j = s3.then(x => x);
+    const ring: { i?: Computable<number> } = {};
+    const c: Computable<number> = s2.then(() => ring.i!);
+    const r1 = Computable.forAll([q, c], (_, value) => value);
+    const r2 = Computable.forAll([p, q], () => j.then(x => x));
+    ring.i = r2.then(value => (value === 1 ? r1 : 5));
+    const consumer = c.catch(() => "CYCLE");
+    const settlements: unknown[] = [];
+    const handle = new ComputableHandle<unknown>(source => settlements.push(source.value));
+    handle.seat(consumer);
+    s.set(0);
+    sq.set(0);
+    s3.set(1);
+    s2.set(0);
+    expect(settlements).to.deep.equal(["CYCLE"]);
+    /* A batch that leaves the cycle standing: the error once. */
+    settlements.length = 0;
+    s.invalidate();
+    sq.invalidate();
+    s3.invalidate();
+    s3.set(1);
+    s.set(0);
+    sq.set(0);
+    expect(settlements).to.deep.equal(["CYCLE"]);
+    expect(consumer.isSettled()).to.equal(true);
+    /* A batch that cuts it through the lagging `r2`: the healed value once. */
+    settlements.length = 0;
+    s.invalidate();
+    sq.invalidate();
+    s3.invalidate();
+    s3.set(2);
+    s.set(0);
+    sq.set(0);
+    expect(settlements).to.deep.equal([5]);
+    handle.release();
+  });
+
   it("keeps a cycle reported, and settled, through a batch that leaves it in place", () => {
     const source = new TestSource<number>();
     source.set(0);

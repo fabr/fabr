@@ -49,7 +49,7 @@ describe("FileSetRef.select", () => {
   });
 
   it("throws the miss error when it matches nothing", () => {
-    const miss = (): Error => new Error("nothing there");
+    const miss = (selected: boolean): Error | undefined => (selected ? undefined : new Error("nothing there"));
     const ref = new FileSetRef(set({ "a.ts": "a" }), [project("b.ts")], miss);
     expect(() => ref.select()).to.throw("nothing there");
   });
@@ -70,7 +70,7 @@ describe("FileSetRef.locate", () => {
   });
 
   it("applies the same must-resolve rule as select", () => {
-    const miss = (): Error => new Error("nothing there");
+    const miss = (selected: boolean): Error | undefined => (selected ? undefined : new Error("nothing there"));
     expect(() => new FileSetRef(set({ "a.ts": "a" }), [project("b.ts")], miss).locate()).to.throw("nothing there");
     /* ...and equally allows an empty result where there is no miss. */
     expect(new FileSetRef(set({ "a.ts": "a" }), [project("*.css")]).locate().size).to.equal(0);

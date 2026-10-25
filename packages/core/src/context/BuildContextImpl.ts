@@ -29,7 +29,7 @@ import { FileSetRef, FileSourceRef } from "../core/FileSetRef";
 import { TargetRef, Unbuilt } from "../core/TargetRef";
 import { ResolvedTarget } from "./ResolvedTarget";
 import { NamespaceRef } from "../core/NamespaceRef";
-import { IProjection, Reference } from "../core/Reference";
+import { IProjection, jointMiss, Miss, Reference } from "../core/Reference";
 import { registerReferenceStep } from "../core/Provenance";
 import {
   Permissive,
@@ -226,12 +226,14 @@ export class BuildContextImpl implements InternalBuildContext {
       }
     }
     if (ref.miss) {
-      /* A ref carries a `miss` only where an empty result is an error: that was
-       * judged over the whole written name where the ref was built (see
-       * lookupSubstituted). */
+      /* A ref carries a `miss` only where an empty result may be an error:
+       * that was judged over the whole written name where the ref was built
+       * (see lookupSubstituted), and the miss answers for every source the
+       * name reached once each has reported. */
       result = result.then(files => {
-        if (files.isEmpty()) {
-          throw ref.miss!();
+        const err = ref.miss!(!files.isEmpty());
+        if (err !== undefined) {
+          throw err;
         }
         return files;
       });
@@ -249,31 +251,33 @@ export class BuildContextImpl implements InternalBuildContext {
   /**
    * Apply `projection` to `sources`, the sources one name reached: a reference
    * or a package is narrowed, a node gets the projection pending over it, and
-   * a container is projected now, descending into archives. `miss` is the
-   * error for a literal that selects nothing, judged over all the containers
-   * together and only where no reference might still supply the name.
+   * a container is projected now, descending into archives. `miss` judges a
+   * literal that selects nothing, over every source the name reached: each is
+   * given a miss of its own to answer with what it selected — a container now,
+   * a reference or a node when it delivers — and the name's error is made once
+   * all have answered and none selected anything.
    * `repositoryName` is how a repository among them was written.
    */
   public projectSources(
     sources: Array<SourceRef | Unbuilt>,
     projection: IProjection,
-    miss: (() => Error) | undefined,
+    miss: Miss | undefined,
     repositoryName?: string
   ): Array<SourceRef | Unbuilt> | Computable<Array<SourceRef | Unbuilt>> {
     const { pattern, prefix } = projection;
     const references: Array<SourceRef | Unbuilt> = [];
     const containers: FileSource[] = [];
+    const participant: () => Miss | undefined = miss === undefined ? () => undefined : jointMiss(miss);
     for (const source of sources) {
       if (source instanceof TargetRef) {
-        /* Projected as what it yields, once it does: the error for a literal selecting nothing goes
-         * with it where the name reached nothing else. */
-        references.push(source.find(pattern, prefix, sources.length === 1 ? miss : undefined));
+        /* Projected as what it yields, once it does, which is when it answers for the name. */
+        references.push(source.find(pattern, prefix, participant()));
       } else if (source instanceof ResolvedNode) {
         /* A node not yet materialized projects as a package in hand does (below): the projection
          * pends over it. */
-        references.push(new ProjectedPackage(source, [projection], miss));
+        references.push(new ProjectedPackage(source, [projection], participant()));
       } else if (source instanceof ProjectedPackage) {
-        references.push(new ProjectedPackage(source.base, [...source.projections, projection], miss));
+        references.push(new ProjectedPackage(source.base, [...source.projections, projection], participant()));
       } else if (source instanceof RepositoryRef || source instanceof FileSetRef) {
         references.push(source.find(pattern, prefix));
       } else if (source instanceof NamespaceRef) {
@@ -293,7 +297,7 @@ export class BuildContextImpl implements InternalBuildContext {
          * The base's class decides how the ref collapses when something is demanded of it; an
          * ordinary consumer sees the projected files at its collection point, with this site's miss
          * error for a literal that matches nothing. */
-        references.push(new FileSetRef(source, [projection], miss));
+        references.push(new FileSetRef(source, [projection], participant()));
       } else {
         /* A container projects on its own terms (FileSource.find): a fileset filters + prefixes (or
          * renames, per the facet). */
@@ -305,17 +309,18 @@ export class BuildContextImpl implements InternalBuildContext {
     }
     /* Each container projects separately and stays a separate source: only a consumer that merges
      * content unions it. Each projection is applied now through applyProjection, with no miss of
-     * its own: the literal-must-resolve judgment is made below, over all the containers together,
-     * and only where no reference might still deliver the name. Containers the projection missed
-     * are dropped, and one empty set is kept when nothing matched, so the driver can report
+     * its own: the containers answer for the name together, below. Containers the projection
+     * missed are dropped, and one empty set is kept when nothing matched, so the driver can report
      * "matched no files". */
+    const answer = participant();
     return Computable.forAll(
       containers.map(container => this.applyProjection(new FileSourceRef(container, [projection]))),
       (...projected: FileSet[]) => projected
     ).then(projected => {
       const matched = projected.filter(set => !set.isEmpty());
-      if (matched.length === 0 && references.length === 0 && miss) {
-        throw miss();
+      const err = answer?.(matched.length > 0);
+      if (err !== undefined) {
+        throw err;
       }
       return [...references, ...(matched.length > 0 ? matched : [EMPTY_FILESET])];
     });
@@ -994,7 +999,7 @@ export class BuildContextImpl implements InternalBuildContext {
          * reference strips it. */
         const project = (
           t: Array<SourceRef | Unbuilt>,
-          miss: (() => Error) | undefined
+          miss: Miss | undefined
         ): Array<SourceRef | Unbuilt> | Computable<Array<SourceRef | Unbuilt>> =>
           this.projectSources(t, { pattern: rest, prefix: retainedPrefix }, miss, matchedName);
         /* The literal-must-resolve error, when it applies here: only in a
@@ -1004,9 +1009,9 @@ export class BuildContextImpl implements InternalBuildContext {
          * glob anywhere earlier (the part that chose the container) means
          * this step is applied to whatever that matched, so its finding
          * nothing is no more an error than the glob matching nothing. */
-        const miss =
+        const miss: Miss | undefined =
           relativeTo && !substName.hasGlob()
-            ? (): Error => new NameResolutionError(substName, declPosn(useFrameOf(stack)?.value ?? relativeTo), useSiteOf(stack))
+            ? selected => (selected ? undefined : new NameResolutionError(substName, declPosn(useFrameOf(stack)?.value ?? relativeTo), useSiteOf(stack)))
             : undefined;
         return target.then(reached => project(reached, miss) as SourceRef[] | Computable<SourceRef[]>);
       }
@@ -1028,9 +1033,12 @@ export class BuildContextImpl implements InternalBuildContext {
        * declaration nor a file is a failed value lookup when written in a
        * build file; typed on the command line (no use frame) it reads and is
        * helped as resolveTarget's `Unknown name` is. */
-      const miss = substName.hasGlob()
+      const miss: Miss | undefined = substName.hasGlob()
         ? undefined
-        : (): Error => {
+        : selected => {
+            if (selected) {
+              return undefined;
+            }
             const written = substName.toString();
             const frame = useFrameOf(stack);
             const reason = frame ? undefined : `Unknown name '${written}'`;

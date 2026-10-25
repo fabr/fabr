@@ -483,7 +483,7 @@ export class BuildCache {
     fs.mkdirSync(this.workRoot, { recursive: true });
     for (let slot = 0; ; slot++) {
       const dir = path.resolve(this.workRoot, `${hostTag()}${KEPT_MARK}${key}.${slot}`);
-      if (this.heldKeptDirs.has(dir) || !takeHold(`${dir}${KEPT_HOLD_SUFFIX}`)) {
+      if (this.heldKeptDirs.has(dir) || !takeHold(`${dir}${KEPT_HOLD_SUFFIX}`, () => this.tempPath("hold"))) {
         continue;
       }
       if (this.heldKeptDirs.size === 0) {
@@ -2655,8 +2655,10 @@ function isReapable(owner: string): boolean {
   return pid !== undefined && !isProcessAlive(pid);
 }
 
-/** Take the hold file `file` for this process, where no live process has it. */
-function takeHold(file: string): boolean {
+/** Take the hold file `file` for this process, where no live process has it.
+ * `claim` names a path in this process's own work tree, where a dead
+ * holder's hold is moved to free the slot. */
+function takeHold(file: string, claim: () => string): boolean {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       fs.writeFileSync(file, String(process.pid), { flag: "wx" });
@@ -2669,8 +2671,17 @@ function takeHold(file: string): boolean {
     if (holderOf(file) !== undefined) {
       return false;
     }
-    /* Its holder is gone: the slot is free. */
-    fs.rmSync(file, { force: true });
+    /* Its holder is gone. The slot is freed by moving the stale hold away, not
+     * by deleting it: of two takers that both read it stale, one rename
+     * succeeds and the other finds nothing, so neither can remove the hold the
+     * other has since written, and each one's next attempt meets it. */
+    try {
+      fs.renameSync(file, claim());
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw err;
+      }
+    }
   }
   return false;
 }
@@ -2864,9 +2875,12 @@ export function narrowDeps(
         mapped.set(name, resolved.file);
         const digest = withSourcePaths ? resolved.holder.sourcePathsDigest : "";
         if (digest !== "") {
-          /* The route is the flat name less its file: the parts before the last separator. */
+          /* The route is the flat name less its file: the parts before the last
+           * separator. A loose file is reached through no route, and the loose
+           * members share that, so its row is keyed by the file itself: each
+           * names the digest of the member that holds it. */
           const route = name.lastIndexOf(" ");
-          sourcePathsDigests.set(route < 0 ? "" : name.slice(0, route), digest);
+          sourcePathsDigests.set(route < 0 ? name : name.slice(0, route), digest);
         }
       } else {
         absent.push(name);
