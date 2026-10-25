@@ -222,6 +222,13 @@ const STATE_CURRENT_LINK = "current";
 const STATE_OUTPUTS_FILE = "outputs";
 const STATE_STATE_FILE = "state";
 
+/** What marks a kept work dir's name, `<host>@<key>.<slot>` — see
+ * {@link BuildCache.holdKeptWorkDir}. A host tag never contains it. */
+const KEPT_MARK = "@";
+/** Beside a kept work dir: the pid holding it, and the record of its contents. */
+const KEPT_HOLD_SUFFIX = ".hold";
+const KEPT_RECORD_SUFFIX = ".record";
+
 /** Work trees this process has already taken ownership of, by path — see
  * {@link BuildCache.reclaimWorkTree}. */
 const reclaimedRoots = new Set<string>();
@@ -354,6 +361,8 @@ export class BuildCache {
   private readonly servedTargetKeys = new Set<string>();
   private readonly servedDepsRecords = new Set<string>();
   private readonly servedTrees = new Set<string>();
+  /** The kept work dirs this process holds — see {@link holdKeptWorkDir}. */
+  private readonly heldKeptDirs = new Set<string>();
   /** The GC's own store: the `last` daily stamp and any live collection's
    * `running-<host>-<pid>` marker. */
   private readonly gcRoot: string;
@@ -438,6 +447,66 @@ export class BuildCache {
   /** Drop a directory from {@link createWorkDir}. Idempotent, best-effort. */
   public releaseWorkDir(dir: string): void {
     removeTempTree(dir);
+  }
+
+  /**
+   * Take a work dir that outlives this process, for work a later run takes up
+   * where this one left it: `work/<host>@<key>.<n>/`, the first slot of `key`
+   * that no live process holds, made where none is free. It holds whatever its
+   * last holder left there, as that holder recorded it
+   * ({@link keptWorkDirRecord}). The hold is `<dir>.hold`, naming the holding
+   * pid: {@link releaseKeptWorkDir} drops it, as does this process's exit, and a
+   * holder that died without either frees the slot for the next taker. The trim
+   * removes a slot nobody has held for {@link GC_MAX_AGE_MS}.
+   */
+  public holdKeptWorkDir(key: string): string {
+    fs.mkdirSync(this.workRoot, { recursive: true });
+    for (let slot = 0; ; slot++) {
+      const dir = path.resolve(this.workRoot, `${hostTag()}${KEPT_MARK}${key}.${slot}`);
+      if (this.heldKeptDirs.has(dir) || !takeHold(`${dir}${KEPT_HOLD_SUFFIX}`)) {
+        continue;
+      }
+      if (this.heldKeptDirs.size === 0) {
+        process.on("exit", () => this.releaseKeptWorkDirs());
+      }
+      this.heldKeptDirs.add(dir);
+      fs.mkdirSync(dir, { recursive: true });
+      /* The slot's recency, for the trim: it was used now. */
+      this.touchForRecency(dir);
+      return dir;
+    }
+  }
+
+  /** Drop this process's hold on a kept work dir, leaving its contents. */
+  public releaseKeptWorkDir(dir: string): void {
+    if (this.heldKeptDirs.delete(dir)) {
+      fs.rmSync(`${dir}${KEPT_HOLD_SUFFIX}`, { force: true });
+    }
+  }
+
+  private releaseKeptWorkDirs(): void {
+    for (const dir of [...this.heldKeptDirs]) {
+      this.releaseKeptWorkDir(dir);
+    }
+  }
+
+  /** What was last recorded of a kept work dir's contents (see
+   * {@link recordKeptWorkDir}); undefined where nothing usable is, which is to
+   * say its contents are unknown. */
+  public keptWorkDirRecord(dir: string): Computable<FileSet | undefined> {
+    return this.readManifest(`${dir}${KEPT_RECORD_SUFFIX}`).then(entry => entry?.files);
+  }
+
+  /** Record a kept work dir's contents as `files`, or as unknown: a writer
+   * records unknown before it changes the dir and the new contents after, so a
+   * write that never finished reads as unknown, never as what it set out to
+   * write. */
+  public recordKeptWorkDir(dir: string, files: FileSet | undefined): Computable<void> {
+    const record = `${dir}${KEPT_RECORD_SUFFIX}`;
+    if (files === undefined) {
+      return deleteFile(record).catch(() => undefined);
+    }
+    return this.storeManifest(record, files).then(() => undefined);
   }
 
   /** A temp path in this process's work tree for an atomic write: create it
@@ -1845,7 +1914,8 @@ export class BuildCache {
     }
     for (const owner of owners) {
       const dir = path.resolve(this.workRoot, owner);
-      if (dir === this.ownWorkRoot) {
+      /* A kept work dir is no process's: its holder has a work tree of its own. */
+      if (dir === this.ownWorkRoot || keptDirOf(owner) !== undefined) {
         continue;
       }
       const pid = thisHostPid(owner);
@@ -2065,7 +2135,31 @@ export class BuildCache {
       }
       await this.removeIfPast(path.resolve(this.treeRoot, tree.name), GC_MAX_AGE_MS);
     }
+    await this.expireKeptWorkDirs(shouldAbort);
     this.reapWorkTrees();
+  }
+
+  /** Remove the kept work dirs of this host nobody holds and nobody has used
+   * for {@link GC_MAX_AGE_MS}, with their records. */
+  private async expireKeptWorkDirs(shouldAbort: () => boolean): Promise<void> {
+    for (const entry of await readdir(this.workRoot).catch(() => [] as fs.Dirent[])) {
+      if (shouldAbort()) {
+        return;
+      }
+      if (!entry.isDirectory() || keptDirOf(entry.name) !== entry.name) {
+        continue;
+      }
+      const dir = path.resolve(this.workRoot, entry.name);
+      if (holderOf(`${dir}${KEPT_HOLD_SUFFIX}`) !== undefined) {
+        continue;
+      }
+      const st = await stat(dir).catch(() => undefined);
+      if (st !== undefined && this.pastWindow(st.mtimeMs, GC_MAX_AGE_MS)) {
+        await deleteFile(`${dir}${KEPT_RECORD_SUFFIX}`).catch(() => undefined);
+        await deleteTree(dir).catch(() => undefined);
+        await deleteFile(`${dir}${KEPT_HOLD_SUFFIX}`).catch(() => undefined);
+      }
+    }
   }
 
   /**
@@ -2540,6 +2634,52 @@ function thisHostPid(owner: string): number | undefined {
 function isReapable(owner: string): boolean {
   const pid = thisHostPid(owner);
   return pid !== undefined && !isProcessAlive(pid);
+}
+
+/** Take the hold file `file` for this process, where no live process has it. */
+function takeHold(file: string): boolean {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      fs.writeFileSync(file, String(process.pid), { flag: "wx" });
+      return true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw err;
+      }
+    }
+    if (holderOf(file) !== undefined) {
+      return false;
+    }
+    /* Its holder is gone: the slot is free. */
+    fs.rmSync(file, { force: true });
+  }
+  return false;
+}
+
+/** The live process holding the hold file `file`, if any. */
+function holderOf(file: string): number | undefined {
+  let pid: number;
+  try {
+    pid = Number(fs.readFileSync(file, "utf8"));
+  } catch {
+    return undefined;
+  }
+  return Number.isInteger(pid) && pid > 0 && isProcessAlive(pid) ? pid : undefined;
+}
+
+/** The kept work dir a `work/` entry of THIS host belongs to — the dir itself,
+ * its hold or its record — as its name without the suffix; undefined for any
+ * other entry. */
+function keptDirOf(name: string): string | undefined {
+  if (!name.startsWith(`${hostTag()}${KEPT_MARK}`)) {
+    return undefined;
+  }
+  for (const suffix of [KEPT_HOLD_SUFFIX, KEPT_RECORD_SUFFIX]) {
+    if (name.endsWith(suffix)) {
+      return name.slice(0, -suffix.length);
+    }
+  }
+  return name;
 }
 
 /** Signal 0 probes for existence without delivering anything: EPERM means the

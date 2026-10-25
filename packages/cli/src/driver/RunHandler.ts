@@ -20,6 +20,7 @@
 import {
   BuildCache,
   Computable,
+  deleteTree,
   Diagnostic,
   executeInteractive,
   FileSet,
@@ -47,21 +48,38 @@ import { resumeActiveTerminal, suspendActiveTerminal, withTerminalSuspended } fr
  * step, differing in inherited (not captured) stdio, the launch cwd, and
  * passing the exit code through rather than failing on non-zero.
  */
-export function runInteractive(cache: BuildCache, runnable: RunnableFileSet, callerArgs: string[]): Computable<number> {
-  /* A cache work dir, not a temp dir of our own: an install is hardlinks into
-   * the store, so it has to be on the store's filesystem, and the cache is what
-   * reclaims it if fabr is killed before the `finally` below can run. */
-  const dir = cache.createWorkDir("run-");
+export function runInteractive(cache: BuildCache, key: string, runnable: RunnableFileSet, callerArgs: string[]): Computable<number> {
+  /* A kept work dir of the program's: an install is hardlinks into the store, so
+   * it has to be on the store's filesystem, and keeping it means the next run of
+   * the same program syncs what changed rather than staging it all. */
+  const dir = cache.holdKeptWorkDir(key);
   const argv = launchArgv(runnable, callerArgs, dir);
-  return writeFileSet(dir, runnable)
+  return stageInstall(cache, dir, runnable)
     /* The program owns the terminal while it runs (it inherits fabr's stdio),
      * so fabr's own display steps aside for the duration. */
     .then(() =>
       withTerminalSuspended(() => executeInteractive(findExecutable(argv[0]), argv.slice(1), launchDir(runnable, dir), launchEnv(runnable)))
     )
-    /* Remove the staged install whichever way the run ends — a staging or launch
-     * failure must not leak the work dir. */
-    .finally(() => cache.releaseWorkDir(dir));
+    .finally(() => cache.releaseKeptWorkDir(dir));
+}
+
+/**
+ * Bring the kept work dir `dir` to hold exactly `runnable`: by syncing what
+ * changed from what it holds — `held`, or what was recorded of it — or, where
+ * that is unknown, by clearing it and writing the lot. The record is cleared
+ * while the dir changes, so a stage that never finishes leaves it unknown.
+ */
+function stageInstall(cache: BuildCache, dir: string, runnable: RunnableFileSet, held?: FileSet): Computable<void> {
+  return (held !== undefined ? Computable.resolve<FileSet | undefined>(held) : cache.keptWorkDirRecord(dir)).then(before =>
+    cache
+      .recordKeptWorkDir(dir, undefined)
+      .then(() =>
+        before !== undefined
+          ? syncFileSet(dir, before, runnable).then(() => undefined)
+          : deleteTree(dir).then(() => writeFileSet(dir, runnable))
+      )
+      .then(() => cache.recordKeptWorkDir(dir, runnable))
+  );
 }
 
 /** The argv for launching from `dir`: an install-anchored runnable runs *in* the
@@ -99,8 +117,8 @@ const DIAG_RUN_ERROR = Diagnostic.Error<{ name: string; message: string }>("Fail
 /**
  * One staged install of the program: the directory it was written to, the
  * `programKey` (program manifest, launch argv and variables) identifying *which* program it
- * is, the `served` partition currently written into it (a content sync advances
- * this), and the child running it once launched.
+ * is, what fabr has written into it (`held`, the whole runnable, and its `served`
+ * partition — a content sync advances both), and the child running it once launched.
  *
  * A swap has two of these live at once — the old child keeps serving out of its
  * own dir while the replacement is staged — so the supervisor's state is this
@@ -110,9 +128,17 @@ const DIAG_RUN_ERROR = Diagnostic.Error<{ name: string; message: string }>("Fail
 interface Install {
   readonly dir: string;
   readonly programKey: string;
+  held: FileSet;
   served: FileSet;
   /** Absent until launched — and again once the child has exited. */
   child?: ChildProcess;
+}
+
+/** An install no child runs from, kept to be synced into by the next restart:
+ *  its directory (a held kept work dir) and what fabr last wrote into it. */
+interface SpareInstall {
+  readonly dir: string;
+  readonly held: FileSet;
 }
 
 /**
@@ -135,6 +161,12 @@ interface Install {
  * An ordinary runnable has an empty `served` partition, so the second key never
  * differs and every change relaunches.
  *
+ * Installs are kept work dirs of the program's (`key`): a relaunch stages into
+ * the install the previous child ran from, or a slot an earlier session left,
+ * by syncing what changed (blue/green: the old child keeps serving from its own
+ * install while the other is brought up to date), and a shutdown leaves them
+ * for the next session.
+ *
  * A build error leaves the current child running (the caller simply doesn't
  * call {@link update} on a failed re-settle); a child that exits on its own is
  * *not* auto-respawned — we stay watching and relaunch on the next change.
@@ -142,6 +174,8 @@ interface Install {
 export class RunSupervisor {
   /** Every install staged on disk, so a shutdown removes the lot. */
   private readonly installs = new Set<Install>();
+  /** The install a finished child left, if any, for the next relaunch to sync. */
+  private spare?: SpareInstall;
   /** The install we are *committed to* — running, or staged and waiting for the
    * old child to exit; undefined ⇒ the next update stages and launches. An
    * update is judged against this rather than against what is *running*, or a
@@ -167,6 +201,7 @@ export class RunSupervisor {
 
   constructor(
     private readonly cache: BuildCache,
+    private readonly key: string,
     private readonly name: string,
     private readonly callerArgs: string[],
     private readonly log: Log
@@ -198,14 +233,16 @@ export class RunSupervisor {
      * process keeps serving while we write, and a staging failure leaves it
      * running (killing it up front would leave nothing to fall back to). The
      * running child is only stopped once the new install is ready to launch. */
-    const install: Install = { dir: this.cache.createWorkDir("run-"), programKey, served: runnable.served };
+    const spare = this.spare;
+    this.spare = undefined;
+    const install: Install = { dir: spare?.dir ?? this.cache.holdKeptWorkDir(this.key), programKey, held: runnable, served: runnable.served };
     this.installs.add(install);
     /* Commit at stage time, not at launch, so an update arriving mid-swap is
      * judged against what we are heading for and a content sync lands in this
      * install whether or not the child has been swapped over to it yet. */
     this.target = install;
     const argv = launchArgv(runnable, this.callerArgs, install.dir);
-    const staged = writeFileSet(install.dir, runnable);
+    const staged = stageInstall(this.cache, install.dir, runnable, spare?.held);
     /* Syncs queue behind the staging write — the dir does not exist until it
      * lands. Bump syncSeq too: it declares every already-queued sync superseded,
      * so a stale sync's finish() cannot collapse this gate back to settled while
@@ -219,6 +256,7 @@ export class RunSupervisor {
     return staged.then(
       () => this.swap(install, argv, runnable, generation, wasRunning),
       err => {
+        /* What a failed write left in the directory is unknown; its record says so. */
         this.discard(install);
         this.logRunError(err);
       }
@@ -240,7 +278,7 @@ export class RunSupervisor {
     /* A newer update raced ahead while we staged — discard this one and leave the
      * current child alone (that newer update will supersede it). */
     if (generation !== this.generation) {
-      this.discard(install);
+      this.retire(install);
       return Computable.resolve(undefined);
     }
     const old = this.current?.child;
@@ -273,7 +311,7 @@ export class RunSupervisor {
     wasRunning: boolean
   ): void {
     if (generation !== this.generation) {
-      this.discard(install);
+      this.retire(install);
       return;
     }
     try {
@@ -298,16 +336,35 @@ export class RunSupervisor {
     }
   }
 
-  /** Forget an install and remove it from disk — superseded, failed to stage or
-   * launch, or its child has gone. Idempotent. If it was still the commitment
-   * (rather than a newer update having taken over) that goes with it, so the next
-   * update stages afresh instead of matching a dead install's key. */
+  /** Forget an install and give up its dir — it failed to stage or launch.
+   * Idempotent. If it was still the commitment (rather than a newer update having
+   * taken over) that goes with it, so the next update stages afresh instead of
+   * matching a dead install's key. */
   private discard(install: Install): void {
+    this.forget(install);
+    this.cache.releaseKeptWorkDir(install.dir);
+  }
+
+  /** Forget an install whose contents are as fabr wrote them — superseded, or its
+   * child has gone — keeping its directory as the spare, or giving it up where
+   * there is one already. */
+  private retire(install: Install): void {
+    if (!this.installs.has(install)) {
+      return;
+    }
+    this.forget(install);
+    if (this.spare === undefined) {
+      this.spare = { dir: install.dir, held: install.held };
+    } else {
+      this.cache.releaseKeptWorkDir(install.dir);
+    }
+  }
+
+  private forget(install: Install): void {
     this.installs.delete(install);
     if (this.target === install) {
       this.target = undefined;
     }
-    this.cache.releaseWorkDir(install.dir);
   }
 
   private logRunError(err: unknown): void {
@@ -347,10 +404,15 @@ export class RunSupervisor {
       if (generation !== this.generation || !target || target.served.toManifest() === runnable.served.toManifest()) {
         return finish();
       }
-      return syncFileSet(target.dir, target.served, runnable.served).then(
+      return this.cache
+        .recordKeptWorkDir(target.dir, undefined)
+        .then(() => syncFileSet(target.dir, target.served, runnable.served))
+        .then(counts => this.cache.recordKeptWorkDir(target.dir, runnable).then(() => counts))
+        .then(
         ({ written, removed }) => {
           if (generation === this.generation) {
             target.served = runnable.served;
+            target.held = runnable;
             this.log.log(DIAG_UPDATE, { name: this.name, count: written + removed });
           }
           finish();
@@ -391,12 +453,13 @@ export class RunSupervisor {
     if (this.current === install) {
       this.current = undefined;
     }
-    this.discard(install);
+    this.retire(install);
   }
 
-  /** Kill every live child's whole process group and remove every staged install
-   * — one loop, since `installs` is exactly what is on disk (the running one plus
-   * any staged mid-restart). Synchronous and hard (SIGKILL), so it is safe and
+  /** Kill every live child's whole process group and give up every install — one
+   * loop, since `installs` is exactly what is held (the running one plus any
+   * staged mid-restart); each is left on disk for the next session, as its
+   * record describes it. Synchronous and hard (SIGKILL), so it is safe and
    * reliable from a `process.on("exit")` hook: fabr is already leaving, so
    * guaranteeing no orphaned workers outranks giving the child a graceful window.
    * The whole group is signalled, not just the direct child, so a program that
@@ -406,7 +469,11 @@ export class RunSupervisor {
       if (install.child) {
         killProcessGroup(install.child, "SIGKILL");
       }
-      this.cache.releaseWorkDir(install.dir);
+      this.cache.releaseKeptWorkDir(install.dir);
+    }
+    if (this.spare !== undefined) {
+      this.cache.releaseKeptWorkDir(this.spare.dir);
+      this.spare = undefined;
     }
     this.installs.clear();
     this.target = undefined;

@@ -24,22 +24,20 @@ import { startFabrWatch } from "./harness";
  * ordinary way to stop a running program — must take the launched program with
  * it and leave no staged install behind. Both used to fail: fabr routes its
  * termination signals through process.exit (so the build-step group sweep runs),
- * which skips the Computable `finally` that removed the staged dir, and the
+ * which skips the Computable `finally` that gave up the staged dir, and the
  * launched program shares fabr's process group so a directed signal never
  * reached it. A private cache keeps the staging assertions off the other suites'
  * work trees. */
 describe("e2e: interrupting a one-shot run", () => {
-  /** The installs staged under `cache`, across every owner's work tree — so the
-   * test sees a leak whether or not fabr got as far as reclaiming its own. */
-  function stagedInstalls(cache: string): string[] {
+  /** The entries of `cache`'s `work/` that are a program's kept installs (the
+   * directories) and the holds on them. */
+  function keptInstalls(cache: string): { installs: string[]; holds: string[] } {
     const work = path.join(cache, "work");
-    if (!fs.existsSync(work)) {
-      return [];
-    }
-    return fs
-      .readdirSync(work)
-      .flatMap(owner => fs.readdirSync(path.join(work, owner)).map(entry => path.join(owner, entry)))
-      .filter(entry => path.basename(entry).startsWith("run-"));
+    const kept = fs.existsSync(work) ? fs.readdirSync(work).filter(name => name.includes("@")) : [];
+    return {
+      installs: kept.filter(name => fs.statSync(path.join(work, name)).isDirectory()),
+      holds: kept.filter(name => name.endsWith(".hold")),
+    };
   }
 
   /** True once `pid` is gone (kill(0) is the liveness probe). */
@@ -59,7 +57,7 @@ describe("e2e: interrupting a one-shot run", () => {
     return isDead(pid);
   }
 
-  it("stops the launched program and removes its staged install", async () => {
+  it("stops the launched program and gives up its install, leaving it for the next run", async () => {
     /* Its own cache, not the session's: the harness removes that one as part of
      * stop(), which would erase the very thing this test inspects afterwards. */
     const cache = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-e2e-runcache-"));
@@ -77,7 +75,8 @@ describe("e2e: interrupting a one-shot run", () => {
       await session.waitFor("started");
       const pid = Number(fs.readFileSync(path.join(session.dir, "run.pid"), "utf8").trim());
       expect(pid).to.be.greaterThan(0);
-      expect(stagedInstalls(cache), "the install should be staged while running").to.have.lengthOf(1);
+      expect(keptInstalls(cache).installs, "the install should be staged while running").to.have.lengthOf(1);
+      expect(keptInstalls(cache).holds, "and held").to.have.lengthOf(1);
 
       const status = await session.stop("SIGTERM");
       const stopped = await waitUntilDead(pid);
@@ -93,7 +92,8 @@ describe("e2e: interrupting a one-shot run", () => {
       }
       expect(status, "fabr exits with 128+SIGTERM").to.equal(143);
       expect(stopped, "the launched program is stopped with fabr").to.equal(true);
-      expect(stagedInstalls(cache), "the staged install is removed").to.have.lengthOf(0);
+      expect(keptInstalls(cache).installs, "the install is kept").to.have.lengthOf(1);
+      expect(keptInstalls(cache).holds, "and no longer held").to.have.lengthOf(0);
     } finally {
       fs.rmSync(cache, { recursive: true, force: true });
     }

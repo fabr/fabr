@@ -166,6 +166,37 @@ describe("e2e: run watch mode (fabr run -w)", () => {
     }
   });
 
+  it("relaunches into the install a previous child ran from, holding exactly the new program", async () => {
+    /* Three versions: the third is staged into the install the first ran from,
+     * by syncing what changed — so a data file the second removed must be gone
+     * from it, and one the third added present. The server lists its install's
+     * data files; `$0` is the staged entry. */
+    const server = (version: string): string => `echo "${version} up: $(ls "$(dirname "$0")/data" | tr "\\n" " ")" >&2\nexec sleep 300\n`;
+    const session = startFabrWatch(
+      {
+        "PROJECT.fabr": "script server { entry = src:server.sh; deps = src:data/*; }\n",
+        "src/server.sh": server("V1"),
+        "src/data/a.txt": "a",
+        "src/data/b.txt": "b",
+      },
+      ["run", "-w", "server"]
+    );
+    try {
+      await session.waitFor("V1 up: a.txt b.txt", { timeoutMs: 60000 });
+      await session.waitFor("Watching for changes", { timeoutMs: 60000 });
+      session.remove("src/data/b.txt");
+      session.write("src/server.sh", server("V2"));
+      await session.waitFor("V2 up: a.txt", { timeoutMs: 60000 });
+      session.write("src/data/c.txt", "c");
+      session.write("src/server.sh", server("V3"));
+      await session.waitFor(/V3 up: .*/, { timeoutMs: 60000 });
+      expect(session.stderr).to.match(/V3 up: a\.txt c\.txt \n/);
+    } finally {
+      const code = await session.stop();
+      expect(code).to.equal(0);
+    }
+  });
+
   it("does not relaunch when the rebuilt program is unchanged", async () => {
     const server = 'echo "SERVER up" >&2\nexec sleep 300\n';
     const session = startFabrWatch(

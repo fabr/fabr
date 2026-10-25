@@ -34,6 +34,7 @@ import {
   ExecutionContext,
   Fabr,
   FileSet,
+  hashString,
   formatTestSummary,
   IFile,
   getTestReport,
@@ -252,10 +253,10 @@ export function runFabr(options: Options): Promise<void> {
 class Supervisors {
   private readonly byTarget = new Map<string, RunSupervisor>();
 
-  public of(execution: ExecutionContext, target: string, args: string[]): RunSupervisor {
+  public of(execution: ExecutionContext, key: string, target: string, args: string[]): RunSupervisor {
     let supervisor = this.byTarget.get(target);
     if (supervisor === undefined) {
-      supervisor = new RunSupervisor(execution.buildCache, target, args, execution.log);
+      supervisor = new RunSupervisor(execution.buildCache, key, target, args, execution.log);
       this.byTarget.set(target, supervisor);
     }
     return supervisor;
@@ -489,7 +490,8 @@ function runProgram(
 ): Computable<void | Takeover> {
   const config = configFor(model, options, execution, "run");
   markForced(model, options, execution, [target]);
-  const supervisor = watch ? supervisors.of(execution, target, args) : undefined;
+  const key = programKey(site, options, target);
+  const supervisor = watch ? supervisors.of(execution, key, target, args) : undefined;
   /* The name is the program (`fabr run @npm:http-server:14.1.1`), so under
    * `run` materialize resolves its closure permissively, as a rule's `tool` is. */
   return config.materialize(options.commandLine.refFor(target, site)).then<void | Takeover>(sources => {
@@ -514,9 +516,16 @@ function runProgram(
     /* One-shot: the launch is not evaluation — it is what happens after the
      * evaluation settles (and its cycle closes), so it is handed back as the
      * run's takeover rather than performed in-chain. */
-    const takeover: Takeover = () => runInteractive(execution.buildCache, runnable, args);
+    const takeover: Takeover = () => runInteractive(execution.buildCache, key, runnable, args);
     return takeover;
   });
+}
+
+/** The program `fabr run` launches, as the cache keeps its installs: the
+ * project, the name run and the `-D` properties it runs with. */
+function programKey(site: IInvocationSite, options: Options, target: string): string {
+  const properties = [...options.properties].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+  return hashString(JSON.stringify([fs.realpathSync(site.sourceFileSource.root), target, properties]));
 }
 
 /**

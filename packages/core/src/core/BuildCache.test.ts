@@ -2050,6 +2050,47 @@ describe("BuildCache work tree", () => {
     return dir;
   }
 
+  it("holds a kept work dir by slot, frees it on release, and leaves it to the next run", () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const first = cache.holdKeptWorkDir("k1");
+    const second = cache.holdKeptWorkDir("k1");
+    expect(path.basename(first)).to.equal(`${hostPrefix()}@k1.0`);
+    expect(path.basename(second)).to.equal(`${hostPrefix()}@k1.1`);
+    fs.writeFileSync(path.join(first, "kept.txt"), "x");
+    cache.releaseKeptWorkDir(first);
+    expect(fs.existsSync(`${first}.hold`), "the hold is dropped").to.equal(false);
+    /* A later process reclaims its work tree and takes the free slot, contents and all. */
+    const later = new BuildCache(root, NULL_LOG);
+    expect(later.holdKeptWorkDir("k1")).to.equal(first);
+    expect(fs.readFileSync(path.join(first, "kept.txt"), "utf8")).to.equal("x");
+    later.releaseKeptWorkDir(first);
+    cache.releaseKeptWorkDir(second);
+  });
+
+  it("takes a kept work dir whose holder has died, and passes one a live process holds", () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const work = path.join(root, "work");
+    fs.mkdirSync(work, { recursive: true });
+    fs.writeFileSync(path.join(work, `${hostPrefix()}@k2.0.hold`), String(process.ppid));
+    fs.writeFileSync(path.join(work, `${hostPrefix()}@k2.1.hold`), String(deadPid()));
+    const dir = cache.holdKeptWorkDir("k2");
+    expect(path.basename(dir)).to.equal(`${hostPrefix()}@k2.1`);
+    expect(fs.readFileSync(`${dir}.hold`, "utf8")).to.equal(String(process.pid));
+    cache.releaseKeptWorkDir(dir);
+  });
+
+  it("records what a kept work dir holds, and reads an unrecorded one as unknown", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const dir = cache.holdKeptWorkDir("k3");
+    expect(await toPromise(cache.keptWorkDirRecord(dir))).to.equal(undefined);
+    const files = new FileSet(new Map([["a.txt", MemoryFile.from("a")]]));
+    await toPromise(cache.recordKeptWorkDir(dir, files));
+    expect((await toPromise(cache.keptWorkDirRecord(dir)))?.toManifest()).to.equal(files.toManifest());
+    await toPromise(cache.recordKeptWorkDir(dir, undefined));
+    expect(await toPromise(cache.keptWorkDirRecord(dir))).to.equal(undefined);
+    cache.releaseKeptWorkDir(dir);
+  });
+
   it("hands out work dirs inside this process's own tree", () => {
     const cache = new BuildCache(root, NULL_LOG);
     const dir = cache.createWorkDir("run-");
@@ -2354,6 +2395,21 @@ describe("BuildCache garbage collection", () => {
       await new Promise(resolve => setTimeout(resolve, 20));
     }
   }
+
+  it("expires a kept work dir nobody holds once unused, keeping a held one", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const idle = cache.holdKeptWorkDir("gc");
+    const held = cache.holdKeptWorkDir("gc");
+    await toPromise(cache.recordKeptWorkDir(idle, new FileSet(new Map([["a.txt", MemoryFile.from("a")]]))));
+    cache.releaseKeptWorkDir(idle);
+    age(idle, 40);
+    age(held, 40);
+    await runGC();
+    expect(fs.existsSync(idle), "the idle slot").to.equal(false);
+    expect(fs.existsSync(`${idle}.record`), "its record").to.equal(false);
+    expect(fs.existsSync(held), "the held slot").to.equal(true);
+    cache.releaseKeptWorkDir(held);
+  });
 
   it("expires an unused entry and sweeps its blobs, keeping recent ones", async () => {
     const cache = new BuildCache(root, NULL_LOG);
