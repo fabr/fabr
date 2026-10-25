@@ -21,8 +21,9 @@
  * How a tool's source maps name the sources they map: by the fabr reference
  * that resolves to each (`fabr:./packages/core/src/Fabr.ts`, `fabr:gen:out/x.ts`),
  * an absolute entry no composing tool re-resolves. The step running a tool
- * stages a table of the source path of each file it staged; a source the table
- * lacks keeps the entry the tool wrote for it.
+ * stages a table of the source path of each file it staged — a row per file, or
+ * per directory (`dir/` → a prefix) whose files are all named `<prefix><path
+ * within>`; a source the table lacks keeps the entry the tool wrote for it.
  */
 
 import * as fs from "node:fs";
@@ -46,7 +47,8 @@ function isAbsoluteEntry(entry: string): boolean {
   return /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(entry);
 }
 
-/** The table of the source path of each staged file, by its staged name. */
+/** The table's rows: a staged file's name to its source path, or a staged
+ *  directory's name, ending in `/`, to the prefix of its files' source paths. */
 export function readSourcePaths(file: string): ReadonlyMap<string, string> {
   const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
@@ -103,9 +105,9 @@ export interface IStagedReferenceOptions {
 /**
  * How a tool names a source it staged, from the table a step staged and named
  * on its command line ({@link SOURCE_PATHS_FLAG}, written `--flag value` or
- * `--flag=value`): by the table's source path, or failing one, with
- * `withinPackages`, by a package containing it. Undefined for a source neither
- * names, and wholly where no table was staged.
+ * `--flag=value`): by the table's row for it or for the innermost directory
+ * holding it, or failing both, with `withinPackages`, by a package containing
+ * it. Undefined for a source none names, and wholly where no table was staged.
  */
 export function stagedReferences(
   argv: string[],
@@ -118,7 +120,18 @@ export function stagedReferences(
   }
   const paths = readSourcePaths(path.resolve(root, named));
   const within = options.withinPackages === true ? packageReferences(paths) : undefined;
-  return staged => paths.get(staged) ?? within?.(staged);
+  return staged => paths.get(staged) ?? inDirectory(paths, staged) ?? within?.(staged);
+}
+
+/** Name a staged path by the row of the innermost directory holding it. */
+function inDirectory(paths: ReadonlyMap<string, string>, staged: string): string | undefined {
+  for (let at = staged.lastIndexOf("/"); at > 0; at = staged.lastIndexOf("/", at - 1)) {
+    const prefix = paths.get(staged.slice(0, at + 1));
+    if (prefix !== undefined) {
+      return prefix + staged.slice(at + 1);
+    }
+  }
+  return undefined;
 }
 
 /**

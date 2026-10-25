@@ -31,6 +31,7 @@ import {
   registerProvenanceRenderer,
   renderProvenance,
   sourcePathOf,
+  sourcePathPrefixOf,
   sourcePathsDigestOf,
 } from "./Provenance";
 import { ConflictError, FabrError } from "./Errors";
@@ -272,6 +273,12 @@ export class FileSet implements FileSource {
       this.sourcePathsDigestText = text === "" ? "" : hashString(text);
     }
     return this.sourcePathsDigestText;
+  }
+
+  /** The prefix every file's source path is formed from, `<prefix><name>`,
+   *  where one names every file ({@link sourcePathPrefixOf}). */
+  public get sourcePathPrefix(): string | undefined {
+    return sourcePathPrefixOf(this.origin);
   }
 
   /** The source path of each of this set's files that has one, by name. */

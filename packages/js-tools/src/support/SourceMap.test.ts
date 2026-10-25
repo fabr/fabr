@@ -56,6 +56,8 @@ describe("stagedReferences", () => {
   const table = {
     "src/a.ts": "./app/src/a.ts",
     ".fabr-tree/h1/lib/x.js": "@npm:pkg:1.0.0:lib/x.js",
+    ".fabr-tree/h2/": "@npm:other:2.0.0:",
+    ".fabr-tree/h2/vendor/": "@npm:inner:3.0.0:",
   };
   const named = (withinPackages: boolean): ((staged: string) => string | undefined) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-sourcemap-"));
@@ -68,6 +70,11 @@ describe("stagedReferences", () => {
   it("names a listed file by the table, and nothing else", () => {
     expect(named(false)("src/a.ts")).to.equal("./app/src/a.ts");
     expect(named(false)(".fabr-tree/h1/src/x.ts")).to.equal(undefined);
+  });
+
+  it("names a file under a listed directory by its prefix, the innermost directory first", () => {
+    expect(named(false)(".fabr-tree/h2/lib/y.js")).to.equal("@npm:other:2.0.0:lib/y.js");
+    expect(named(false)(".fabr-tree/h2/vendor/z.js")).to.equal("@npm:inner:3.0.0:z.js");
   });
 
   it("names a file a listed package does not ship by the package, where asked to", () => {

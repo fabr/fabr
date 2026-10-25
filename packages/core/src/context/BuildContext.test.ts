@@ -3645,6 +3645,9 @@ describe("a reference to a target", () => {
     expect(await sourcePaths("l")).to.deep.equal([["index.js", "l:index.js"]]);
     /* The same in any configuration: a configuration names no source. */
     expect(await sourcePaths("g<FLAVOR=x>")).to.deep.equal([["out.txt", "g:out.txt"]]);
+    /* One prefix names every file, so the set says so whole. */
+    const [built] = await config.materialize(writtenOnCommandLine("l"));
+    expect((built as FileSet).sourcePathPrefix).to.equal("l:");
   });
 
   it("gives each file a registry delivers the reference that resolves to it", async () => {
@@ -3655,6 +3658,7 @@ describe("a reference to a target", () => {
     expect([...(pkg as FileSet)].map(([file]) => [file, (pkg as FileSet).sourcePathOf(file)])).to.deep.equal([
       ["pkg/data.txt", "@reg:pkg:1.2.0:pkg/data.txt"],
     ]);
+    expect((pkg as FileSet).sourcePathPrefix).to.equal("@reg:pkg:1.2.0:");
   });
 
   it("hands a sub-target the packages it was given as they stand, provided requirements among them or not", async () => {

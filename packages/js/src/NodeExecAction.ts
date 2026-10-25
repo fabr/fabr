@@ -63,12 +63,23 @@ import { IChangeLists, splitDepsPath, toRunReport } from "@fabr-build/js-tools";
  * packages carry their `origin` in, so the diagnostic keeps its provenance.
  */
 /**
- * The table a tool names its sources by: each staged file that has a source
- * path, by its staged name. The action's key records each input's source path,
- * so the table is a function of the key.
+ * The table a tool names its sources by: each staged file of `files` that has
+ * a source path, by its staged name, and each of `packages`, by the directory
+ * it is staged at (`<dir>/` → the prefix its files' source paths share) where
+ * one prefix names all its files, else file by file. The action's key records
+ * each input's source path, so the table is a function of the key.
  */
-function sourcePathTable(files: FileSet): MemoryFile {
-  const rows = [...files.sourcePaths].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+function sourcePathTable(files: FileSet, packages: ReadonlyMap<string, FileSet>): MemoryFile {
+  const rows = [...files.sourcePaths];
+  for (const [dir, pkg] of packages) {
+    const prefix = pkg.sourcePathPrefix;
+    if (prefix !== undefined) {
+      rows.push([`${dir}/`, prefix]);
+    } else {
+      rows.push(...[...pkg.sourcePaths].map(([name, sourcePath]): [string, string] => [`${dir}/${name}`, sourcePath]));
+    }
+  }
+  rows.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
   return MemoryFile.from(JSON.stringify(Object.fromEntries(rows)));
 }
 
@@ -82,12 +93,12 @@ export const NODE_EXEC_ACTION: IBuildActionDefinition = {
   run: (action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> => {
     const deps = depsInput(action);
     const sourcePathsName = optionalConfig(action, "sourcePaths");
-    /* The table, over the staged files and, where the rule asks, the packages'
-     * files where the layout puts them. */
-    const sourcePaths = (packages: FileSet): FileSet =>
+    /* The table, over the staged files (with `laid`, a layout staged with them)
+     * and, where the rule asks, the packages where the layout puts them. */
+    const sourcePaths = (laid: FileSet, packages: ReadonlyMap<string, FileSet> = new Map()): FileSet =>
       sourcePathsName === undefined
         ? EMPTY_FILESET
-        : FileSet.layout({ [sourcePathsName]: sourcePathTable(FileSet.unionAll(fileSetInput(action, "files"), packages)) });
+        : FileSet.layout({ [sourcePathsName]: sourcePathTable(FileSet.unionAll(fileSetInput(action, "files"), laid), packages) });
     const withPackages = optionalConfig(action, "packageSourcePaths") !== undefined;
     const files = FileSet.unionAll(fileSetInput(action, "files"), configFiles(action));
     const depsReportName = optionalConfig(action, "depsReport");
@@ -137,7 +148,7 @@ export const NODE_EXEC_ACTION: IBuildActionDefinition = {
         exec(
           FileSet.unionAll(
             files,
-            sourcePaths(withPackages ? FileSet.layout(Object.fromEntries(manifest.packages.map(pkg => [treeMountOf(pkg), pkg]))) : EMPTY_FILESET),
+            sourcePaths(EMPTY_FILESET, withPackages ? new Map(manifest.packages.map(pkg => [treeMountOf(pkg), pkg])) : undefined),
             FileSet.layout({
               [PNP_DATA_FILE]: manifest.toFile(),
               /* The pool itself, mounted once: the manifest addresses trees by

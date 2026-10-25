@@ -18,7 +18,7 @@
  */
 
 import { FileSet } from "../core/FileSet";
-import { IProvenanceStep, namingDigest, registerProvenanceNaming } from "../core/Provenance";
+import { IProvenanceStep, namingDigest, registerProvenanceNaming, wholeContentPrefix } from "../core/Provenance";
 import { declName, ITargetDecl } from "./AST";
 
 export const TARGET_PROVENANCE = "target";
@@ -39,6 +39,7 @@ export interface ITargetOrigin extends IProvenanceStep {
 registerProvenanceNaming(TARGET_PROVENANCE, {
   sourcePath: (step, path, below) => below(path) ?? `${declName((step as ITargetOrigin).decl)}:${path}`,
   digest: (step, below) => namingDigest(TARGET_PROVENANCE, JSON.stringify(declName((step as ITargetOrigin).decl)), below()),
+  prefix: (step, below) => wholeContentPrefix(step, declName((step as ITargetOrigin).decl), below),
 });
 
 /** Check whether the content `origin` explains was built in the project, that

@@ -219,6 +219,13 @@ export interface IProvenanceNaming {
    * name nothing.
    */
   digest(step: IProvenanceStep, below: () => string): string;
+  /**
+   * Get the prefix every file's source path is formed from, `<prefix><name>`,
+   * where one prefix names every file of the content the step explains;
+   * undefined otherwise, and wherever the kind cannot say. `below` gives the
+   * steps beneath's.
+   */
+  prefix?(step: IProvenanceStep, below: () => string | undefined): string | undefined;
 }
 
 const PROVENANCE_NAMINGS = new Map<string, IProvenanceNaming>();
@@ -255,6 +262,29 @@ export function sourcePathsDigestOf(step: IProvenanceStep | undefined): string {
   const naming = PROVENANCE_NAMINGS.get(step.kind);
   const below = (): string => sourcePathsDigestOf(step.parent);
   return naming === undefined ? below() : naming.digest(step, below);
+}
+
+/**
+ * Get the prefix every file's source path in the content `step` explains is
+ * formed from, `<prefix><name>`, where one prefix names every file; undefined
+ * where they are named otherwise, or some are not named at all.
+ */
+export function sourcePathPrefixOf(step: IProvenanceStep | undefined): string | undefined {
+  if (step === undefined) {
+    return undefined;
+  }
+  const naming = PROVENANCE_NAMINGS.get(step.kind);
+  const below = (): string | undefined => sourcePathPrefixOf(step.parent);
+  return naming === undefined ? below() : naming.prefix?.(step, below);
+}
+
+/**
+ * Get the prefix of a step that names whole content as `<reference>:<name>`
+ * where nothing beneath names a file: the reference's, where nothing beneath
+ * names any, else what beneath gives.
+ */
+export function wholeContentPrefix(step: IProvenanceStep, reference: string, below: () => string | undefined): string | undefined {
+  return sourcePathsDigestOf(step.parent) === "" ? `${reference}:` : below();
 }
 
 /**
@@ -317,6 +347,7 @@ export interface ISourcePathStep extends IProvenanceStep {
 registerProvenanceNaming(SOURCE_PATH_PROVENANCE, {
   sourcePath: (step, path, below) => below(path) ?? `${(step as ISourcePathStep).sourcePath}:${path}`,
   digest: (step, below) => namingDigest(SOURCE_PATH_PROVENANCE, JSON.stringify((step as ISourcePathStep).sourcePath), below()),
+  prefix: (step, below) => wholeContentPrefix(step, (step as ISourcePathStep).sourcePath, below),
 });
 /* Explains nothing a diagnostic needs: the steps beneath say why the content
  * is here. */
