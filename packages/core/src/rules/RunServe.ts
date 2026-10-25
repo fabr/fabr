@@ -42,7 +42,7 @@ import { defineRule, RuleDefinition, RuleResult } from "./Types";
  * own — a repository reference the package's files alone, a target what it
  * built — and nothing is resolved together. `tool` is read apart in
  * `evaluate`, under the run operation (getRunnableProperty), as a program to
- * execute on this machine. */
+ * execute on this machine, and built alongside them rather than after. */
 export const serveRunRule: RuleDefinition = defineRule({
   type: "serve",
   properties: { [BUILD_OPERATION]: "run" },
@@ -50,10 +50,15 @@ export const serveRunRule: RuleDefinition = defineRule({
     deps: context.getFileProperty("deps", BUILD_OVERRIDE),
     files: context.getFileProperty("files", BUILD_OVERRIDE),
   }),
-  evaluateMaterialized: (context, { deps, files }) =>
+  evaluateResolved: (context, requirements) =>
     Computable.forAll(
-      [context.getRunnableProperty("tool"), context.getProperty("args"), context.getMap("env").then(toEnvironment)],
-      (tool, args, env): RuleResult => {
+      [
+        requirements.materializeAll(),
+        context.getRunnableProperty("tool"),
+        context.getProperty("args"),
+        context.getMap("env").then(toEnvironment),
+      ],
+      ({ deps, files }, tool, args, env): RuleResult => {
         const served = FileSet.unionAll(...files);
         /* A same-name collision between content and program is the ordinary
          * two-sided conflict, raised here by the union. */
