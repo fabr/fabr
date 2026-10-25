@@ -49,6 +49,13 @@ import type { TargetContext } from "./TargetContext";
  */
 export interface BuildContext {
   /**
+   * Get the configuration a program is resolved in to run it on this machine:
+   * this one with {@link InternalBuildContext.runOverrides} applied, as a
+   * rule's tool is.
+   */
+  getRunContext(): BuildContext;
+
+  /**
    * Resolve what `ref` names, fetching and building nothing. A target comes
    * back as its node ({@link ResolvedTarget}, which holds what it requires by
    * name), or as a projection over it where the reference selects its files;
@@ -96,6 +103,15 @@ export interface BuildContext {
 
   /** Get the constraints this configuration was given. */
   getConstraints(): Constraints;
+
+  /**
+   * Get the constraint overrides for resolving a target to run it:
+   * BUILD_OPERATION=run, with TARGET pinned to HOST so that a tool is its host
+   * build even in a cross-build, and COVERAGE pinned off so that a tool is
+   * never measured, and then `extra`. Where HOST is unset, TARGET is left as it
+   * is; where COVERAGE is unconstrained, it is left to its default.
+   */
+  runOverrides(extra?: Constraints): Constraints;
 
 }
 

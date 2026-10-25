@@ -41,7 +41,7 @@ import { RunnableFileSet, toRunnable } from "../core/RunnableFileSet";
 import { PackageFileSet, ResolvedNode } from "../core/PackageFileSet";
 import { BuildAction, BuildResult } from "../core/BuildAction";
 import { RuleDefinition, RuleResult, RepositoryProvider, SubTargetInputs } from "../rules/Types";
-import { BUILD_OPERATION, Constraints, RUN_OVERRIDE } from "../model/Constraints";
+import { BUILD_OPERATION, Constraints, COVERAGE, HOST, RUN_OVERRIDE, TARGET } from "../model/Constraints";
 import { TaskDescription } from "../model/BuildEvents";
 import { ExecutionContext } from "../model/ExecutionContext";
 import {
@@ -190,7 +190,7 @@ export class BuildContextImpl implements InternalBuildContext {
       name,
       getGlobalString: name => this.getProperty(name).then(prop => prop.toString()),
       launchedBy: (runnable, interpreter) =>
-        this.resolveTarget(interpreter, undefined, RUN_OVERRIDE)
+        this.resolveTarget(interpreter, undefined, this.runOverrides())
           .then(sources => collectRunnable(this, context, sources, interpreter))
           .then(launcher => runnable.launchedBy(launcher, this.execution.buildCache)),
       memoize: (tag, key, create) =>
@@ -347,9 +347,19 @@ export class BuildContextImpl implements InternalBuildContext {
     return this.constraints.equals(constraints);
   }
 
+  public getRunContext(): BuildContextImpl {
+    return this.getContextWithOverrides(this.runOverrides());
+  }
+
   public getContextWithOverrides(overrides?: Constraints): BuildContextImpl {
     /* The model makes its configurations of this class and no other. */
     return this.model.getConfig(this.constraints.with(overrides), this.execution) as BuildContextImpl;
+  }
+
+  public runOverrides(extra?: Constraints): Constraints {
+    const host = this.getConstraint(HOST);
+    const measured = this.getConstraint(COVERAGE) !== undefined;
+    return RUN_OVERRIDE.with(Constraints.of({ ...(measured ? { [COVERAGE]: "off" } : {}), ...(host ? { [TARGET]: host } : {}) })).with(extra);
   }
 
   public getConstraint(name: string): string | undefined {
@@ -1197,7 +1207,7 @@ export class BuildContextImpl implements InternalBuildContext {
     }
     return this.lookupFileValue(stage.command.name, stack, {
       relativeTo: stage.command.ref,
-      callerOverrides: RUN_OVERRIDE,
+      callerOverrides: this.runOverrides(),
     })
       .then(sources => collectRunnable(this, this.resolutionContext(`\`${written}\``), sources, stage.command.name.toString()))
       .then(runnable => ({

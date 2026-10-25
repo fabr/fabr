@@ -2313,6 +2313,23 @@ describe("BuildContext", () => {
     });
   });
 
+  it("Resolves a tool for the host, whatever the configuration targets", () => {
+    const root = fs.mkdtempSync(nodePath.join(os.tmpdir(), "fabr-run-overrides-test-"));
+    try {
+      const execution = new ExecutionContext(new BuildCache(root, testLog), testLog, EMPTY_FILESET, EMPTY_FILESET);
+      const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", "", testLog)], testLog, testContributions);
+      const config = internal(model.getConfig(Constraints.of({ HOST: "arm64-apple-darwin", TARGET: "x86_64-unknown-linux-gnu" }), execution));
+      const overrides = config.runOverrides();
+      expect(overrides.get("TARGET")).to.equal("arm64-apple-darwin");
+      expect(overrides.get(BUILD_OPERATION)).to.equal("run");
+      const run = internal(config.getRunContext());
+      expect(run.getConstraint("TARGET")).to.equal("arm64-apple-darwin");
+      expect(run.getConstraint(BUILD_OPERATION)).to.equal("run");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("Reads plain files named as a tool as a program launched directly", async () => {
     const root = fs.mkdtempSync(nodePath.join(os.tmpdir(), "fabr-plain-tool-test-"));
     try {

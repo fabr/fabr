@@ -33,7 +33,7 @@ import { Requirement } from "../resolver/Types";
 import { declaredRequirement } from "../resolver/PackageResolver";
 import { Flag } from "../core/Flag";
 import { SubTargetInputs } from "../rules/Types";
-import { Constraints, COVERAGE, HOST, operationOf, RUN_OVERRIDE, TARGET } from "../model/Constraints";
+import { Constraints, operationOf } from "../model/Constraints";
 import { IFetchReport, ITargetBuildTask, TaskDescription } from "../model/BuildEvents";
 import { ExecutionContext } from "../model/ExecutionContext";
 import { ITargetOrigin, TARGET_PROVENANCE } from "../model/Target";
@@ -464,17 +464,10 @@ export abstract class TargetContext {
     return this.context.getProperty(name, this.stack, overrides);
   }
 
-  /**
-   * Get the constraint overrides for resolving a target to run it:
-   * BUILD_OPERATION=run, with TARGET pinned to HOST so that a tool is its host
-   * build even in a cross-build, and COVERAGE pinned off so that a tool is
-   * never measured, and then `extra`. Where HOST is unset, TARGET is left as it
-   * is; where COVERAGE is unconstrained, it is left to its default.
-   */
+  /** Get the constraint overrides for resolving a target to run it (see
+   *  {@link InternalBuildContext.runOverrides}). */
   public runOverrides(extra?: Constraints): Constraints {
-    const host = this.context.getConstraint(HOST);
-    const measured = this.context.getConstraint(COVERAGE) !== undefined;
-    return RUN_OVERRIDE.with(Constraints.of({ ...(measured ? { [COVERAGE]: "off" } : {}), ...(host ? { [TARGET]: host } : {}) })).with(extra);
+    return this.context.runOverrides(extra);
   }
 
   /**

@@ -491,7 +491,9 @@ function runProgram(
   target: string = options.targets[0],
   args: string[] = options.runArgs ?? []
 ): Computable<void | Takeover> {
-  const config = configFor(model, options, execution, "run");
+  /* The program runs on this machine, so it is resolved as a rule's tool is:
+   * for HOST, whatever TARGET was given. */
+  const config = configFor(model, options, execution, "run").getRunContext();
   markForced(model, options, execution, [target]);
   const key = programKey(site, options, target);
   const supervisor = watch ? supervisors.of(execution, key, target, args) : undefined;
