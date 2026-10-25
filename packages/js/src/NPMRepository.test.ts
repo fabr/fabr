@@ -36,6 +36,7 @@ import {
   FileSetRef,
   helpOf,
   HttpStatusError,
+  IFetchRequest,
   IFile,
   IRequirementEdge,
   IResolutionOrigin,
@@ -413,14 +414,15 @@ function fakeContext(
     getDeclaredContext: () => ({ target: { name: "@npm" } }),
     getGlobalString: (name: string) =>
       name in globals ? Computable.resolve(globals[name]) : Computable.reject(new Error(`unexpected property: ${name}`)),
-    fetch: (url: string) => {
-      fetched.push(url);
-      if (!(url in served)) {
-        return Computable.reject(new Error(`unexpected fetch: ${url}`));
-      }
-      const response = served[url];
-      return response instanceof Error ? Computable.reject(response) : Computable.resolve(response);
-    },
+    fetch: (_cacheKey: string, _tag: string, request: () => Computable<IFetchRequest>) =>
+      request().then(({ url }): Computable<FileSet> => {
+        fetched.push(url);
+        if (!(url in served)) {
+          return Computable.reject(new Error(`unexpected fetch: ${url}`));
+        }
+        const response = served[url];
+        return response instanceof Error ? Computable.reject(response) : Computable.resolve(response);
+      }),
     /* In-memory passthrough: the full resolve+materialize path exercises the
      * real resolution against the served metadata, uncached. */
     memoize: (_tag: string, _key: string, fn: () => Computable<FileSet>) => fn(),
@@ -575,6 +577,35 @@ describe("NPMRepository resolveAll under files", () => {
     /* Only the root's own metadata (its packument, then its version document,
      * the packument not being served) + tarball were fetched — never the dep. */
     expect(fetched).to.deep.equal([`${REG}/@parcel%2fwatcher`, `${REG}/@parcel%2fwatcher/2.4.1`, `${REG}/tarball/2.4.1.tgz`]);
+  });
+
+  it("materializes a version fetched before without reading its metadata", async () => {
+    const fetched: string[] = [];
+    const served = {
+      [`${REG}/@parcel%2fwatcher/2.4.1`]: metadataFor("@parcel/watcher", "2.4.1", {}),
+      [`${REG}/tarball/2.4.1.tgz`]: packageTarball(),
+    };
+    /* A fetch that keeps what it got by its cache key, as the build cache
+     * does across runs. */
+    const held = new Map<string, Computable<FileSet>>();
+    const context = fakeContext("build", served, fetched);
+    const fetch = context.fetch.bind(context);
+    context.fetch = (cacheKey, tag, request, report, options) => {
+      const files = held.get(`${tag} ${cacheKey}`) ?? fetch(cacheKey, tag, request, report, options);
+      held.set(`${tag} ${cacheKey}`, files);
+      return files;
+    };
+    const version = parseVersion("2.4.1") as SemverVersion;
+    await toPromise(npmRepository(REG, context).fetch("@parcel/watcher", version));
+    expect(fetched).to.include(`${REG}/@parcel%2fwatcher/2.4.1`);
+
+    /* A fresh repository, as a later run has: nothing held in memory. */
+    fetched.length = 0;
+    const pkg = await toPromise(npmRepository(REG, context).fetch("@parcel/watcher", version));
+    /* The package is held by its registry and version: no request at all. */
+    expect(fetched).to.deep.equal([]);
+    expect(pkg.packageName).to.equal("@parcel/watcher");
+    expect(pkg.version).to.equal("2.4.1");
   });
 
   it("resolves a range standalone at its constraint minimum", async () => {
@@ -1236,10 +1267,11 @@ function authCapturingContext(
     operation,
     getGlobalString: (name: string) =>
       name in globals ? Computable.resolve(globals[name]) : Computable.reject(new Error(`unexpected property: ${name}`)),
-    fetch: (url: string, _tag: string, _process: unknown, _resource: string | undefined, headers?: Record<string, string>) => {
-      captured[url] = headers;
-      return url in served ? Computable.resolve(served[url]) : Computable.reject(new Error(`unexpected fetch: ${url}`));
-    },
+    fetch: (_cacheKey: string, _tag: string, request: () => Computable<IFetchRequest>) =>
+      request().then(({ url, headers }): Computable<FileSet> => {
+        captured[url] = headers;
+        return url in served ? Computable.resolve(served[url]) : Computable.reject(new Error(`unexpected fetch: ${url}`));
+      }),
     execution: fakeExecution(npmrc),
   } as unknown as TargetContext;
 }

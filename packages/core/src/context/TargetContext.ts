@@ -17,8 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { Readable } from "stream";
-import { FetchOptions, IFetchContext } from "../core/BuildCache";
+import { FetchOptions, IFetchRequest } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
 import { ITaskReport } from "../support/Execute";
 import { FileSet, FileSource } from "../core/FileSet";
@@ -378,29 +377,28 @@ export abstract class TargetContext {
   }
 
   /**
-   * Download `url` through the build cache (see BuildCache.getOrFetch). A
-   * download, never a cache hit, is reported as a task. `report` says what is
+   * Download what `cacheKey` identifies through the build cache (see
+   * BuildCache.getOrFetch), making `request` only on a miss. A download, never
+   * a cache hit, is reported as a task. `report` says what is
    * fetched: a noun for the resource, and whether it is a content or an index
    * read ({@link IFetchReport}). Nothing in it reaches the cache key or the
    * request. `options.immutable = false` marks a mutable pointer document (see
    * FetchOptions), which is cached under HTTP caching rules and revalidated.
    */
   public fetch(
-    url: string,
+    cacheKey: string,
     tag: string,
-    process: (content: Readable, ctx: IFetchContext) => Computable<FileSet>,
+    request: () => Computable<IFetchRequest>,
     report: IFetchReport,
-    headers?: Record<string, string>,
     options?: FetchOptions
   ): Computable<FileSet> {
     /* The cache opens the task around the transfer alone, never on a hit, and
      * reports the bytes received as its progress. */
     return this.context.execution.buildCache.getOrFetch(
-      url,
+      cacheKey,
       tag,
-      process,
-      run => this.runTask({ kind: "fetch", url, ...report }, run),
-      headers,
+      request,
+      url => run => this.runTask({ kind: "fetch", url, ...report }, run),
       { ...options, role: report.role }
     );
   }

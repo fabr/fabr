@@ -18,9 +18,11 @@
  */
 
 import crypto from "crypto";
+import { Readable } from "stream";
 import { Computable, ComputableSource } from "../core/Computable";
 import { FabrError, IntegrityError, toError } from "../core/Errors";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
+import { IFetchContext } from "../core/BuildCache";
 import { HASH_ALGORITHM } from "../core/FSWrapper";
 import { Name } from "../core/Name";
 import { IProvenanceStep, registerProvenanceDescriber, registerProvenanceRenderer } from "../core/Provenance";
@@ -134,10 +136,10 @@ class FetchSource implements FileSource {
    */
   private download(path: string, member: FetchMember): Computable<IFile> {
     return this.context
-      .fetch(
-        member.url,
-        FETCH_TAG,
-        (content, ctx) => {
+      .fetch(member.url, FETCH_TAG, () =>
+        Computable.resolve({
+          url: member.url,
+          process: (content: Readable, ctx: IFetchContext) => {
           const { hashing, verify } = verifyingStream(member.digest, member.url);
           const output = ctx.createOutput();
           /* pipe() does not forward a source error: a body dropped mid-stream
@@ -163,7 +165,8 @@ class FetchSource implements FileSource {
               }
             )
             .then((file: IFile) => new FileSet(new Map([[path, file]])));
-        },
+          },
+        }),
         { resource: path, role: "content" }
       )
       .then(files => {

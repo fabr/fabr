@@ -24,7 +24,7 @@ import * as path from "path";
 import * as http from "node:http";
 import { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
-import { ActionContext, BuildCache, IBuildState } from "./BuildCache";
+import { ActionContext, BuildCache, IBuildState, IFetchRequest } from "./BuildCache";
 import { PackageFileSet, PackageGraphBuilder } from "./PackageFileSet";
 import { ActionFileInputs, BuildAction, BuildResult, IBuildActionDefinition, preciseActionKey } from "./BuildAction";
 import { narrowDeps } from "./BuildCache";
@@ -44,6 +44,11 @@ import { dependenciesOn } from "./Repository";
 const NULL_LOG: Log = { log: () => undefined };
 /** A unit test is its own observer: track transfers with the silent report. */
 const UNTRACKED: TaskTracker<FileSet> = run => run(SILENT_REPORT);
+
+/** A request for `url`, processed by `process`, as {@link BuildCache.getOrFetch} takes one. */
+function requestOf(url: string, process: IFetchRequest["process"]): () => Computable<IFetchRequest> {
+  return () => Computable.resolve({ url, process });
+}
 
 function toPromise<T>(computable: Computable<T>): Promise<T> {
   return new Promise((resolve, reject) => computable.then(resolve, reject));
@@ -1724,8 +1729,8 @@ describe("BuildCache non-immutable fetches", () => {
       return new FileSet(new Map([["doc.txt", MemoryFile.from(data.toString())]]));
     });
 
-  const fetchDoc = (options?: Parameters<BuildCache["getOrFetch"]>[5]): Promise<string> =>
-    toPromise(cache.getOrFetch(origin.url, "test:1", store, UNTRACKED, undefined, options).then(files => files.readFile("doc.txt")));
+  const fetchDoc = (options?: Parameters<BuildCache["getOrFetch"]>[4]): Promise<string> =>
+    toPromise(cache.getOrFetch(origin.url, "test:1", requestOf(origin.url, store), () => UNTRACKED, options).then(files => files.readFile("doc.txt")));
 
   beforeEach(async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-mutfetch-test-"));
@@ -1784,7 +1789,7 @@ describe("BuildCache non-immutable fetches", () => {
     const fetchLogged = (): Promise<string> =>
       toPromise(
         logging
-          .getOrFetch(origin.url, "test:1", store, UNTRACKED, undefined, { immutable: false })
+          .getOrFetch(origin.url, "test:1", requestOf(origin.url, store), () => UNTRACKED, { immutable: false })
           .then(files => files.readFile("doc.txt"))
       );
     origin.respond(serve(200, { "cache-control": "max-age=300" }, "one"));
@@ -1808,7 +1813,7 @@ describe("BuildCache non-immutable fetches", () => {
     clock += 301_000;
     expect(
       await toPromise(
-        second.getOrFetch(origin.url, "test:1", store, UNTRACKED, undefined, { immutable: false }).then(f => f.readFile("doc.txt"))
+        second.getOrFetch(origin.url, "test:1", requestOf(origin.url, store), () => UNTRACKED, { immutable: false }).then(f => f.readFile("doc.txt"))
       )
     ).to.equal("one");
     /* Served is served: the recency touch keeps a copy the origin cannot
@@ -1822,7 +1827,7 @@ describe("BuildCache non-immutable fetches", () => {
     const fetchLogged = (): Promise<string> =>
       toPromise(
         logging
-          .getOrFetch(origin.url, "test:1", store, UNTRACKED, undefined, { immutable: false })
+          .getOrFetch(origin.url, "test:1", requestOf(origin.url, store), () => UNTRACKED, { immutable: false })
           .then(files => files.readFile("doc.txt"))
       );
     origin.respond(serve(200, { "cache-control": "max-age=300" }, "one"));
@@ -1845,7 +1850,7 @@ describe("BuildCache non-immutable fetches", () => {
     const fetchLogged = (): Promise<string> =>
       toPromise(
         logging
-          .getOrFetch(origin.url, "test:1", store, UNTRACKED, undefined, { immutable: false })
+          .getOrFetch(origin.url, "test:1", requestOf(origin.url, store), () => UNTRACKED, { immutable: false })
           .then(files => files.readFile("doc.txt"))
       );
     origin.respond(serve(200, { "cache-control": "max-age=300" }, "one"));
@@ -1871,7 +1876,7 @@ describe("BuildCache non-immutable fetches", () => {
       });
     let failure: Error | undefined;
     try {
-      await toPromise(cache.getOrFetch(origin.url, "test:1", reject, UNTRACKED));
+      await toPromise(cache.getOrFetch(origin.url, "test:1", requestOf(origin.url, reject), () => UNTRACKED));
     } catch (err) {
       failure = err as Error;
     }
@@ -1890,7 +1895,7 @@ describe("BuildCache non-immutable fetches", () => {
       });
     let failure: Error | undefined;
     try {
-      await toPromise(cache.getOrFetch(origin.url, "test:1", reject, UNTRACKED, undefined, { immutable: false }));
+      await toPromise(cache.getOrFetch(origin.url, "test:1", requestOf(origin.url, reject), () => UNTRACKED, { immutable: false }));
     } catch (err) {
       failure = err as Error;
     }
@@ -1939,6 +1944,19 @@ describe("BuildCache non-immutable fetches", () => {
     expect(origin.requests).to.have.lengthOf(1);
   });
 
+  it("keys an entry by its cache key, making no request on a hit", async () => {
+    origin.respond(serve(200, {}, "one"));
+    const named = (request: () => Computable<IFetchRequest>): Promise<string> =>
+      toPromise(cache.getOrFetch("pkg@1.0.0", "test:1", request, () => UNTRACKED).then(files => files.readFile("doc.txt")));
+    expect(await named(requestOf(origin.url, store))).to.equal("one");
+    expect(
+      await named(() => {
+        throw new Error("a hit makes no request");
+      })
+    ).to.equal("one");
+    expect(origin.requests).to.have.lengthOf(1);
+  });
+
   it("never mistakes a file named like the meta header for the header", async () => {
     /* A hostile/unlucky file name that textually mimics the `!meta` line must
      * round-trip as an ordinary file: file lines start with the content hash
@@ -1949,7 +1967,7 @@ describe("BuildCache non-immutable fetches", () => {
       cache.getOrFetch(
         origin.url,
         "test:1",
-        content =>
+        requestOf(origin.url, content =>
           readStream(content).then(
             () =>
               new FileSet(
@@ -1958,9 +1976,9 @@ describe("BuildCache non-immutable fetches", () => {
                   ["doc.txt", MemoryFile.from("one")],
                 ])
               )
-          ),
-        UNTRACKED,
-        undefined,
+          )
+        ),
+        () => UNTRACKED,
         { immutable: false }
       )
     );
@@ -1975,8 +1993,7 @@ describe("BuildCache non-immutable fetches", () => {
         () => {
           throw new Error("should not refetch");
         },
-        UNTRACKED,
-        undefined,
+        () => UNTRACKED,
         { immutable: false }
       )
     );

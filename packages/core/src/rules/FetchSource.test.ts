@@ -20,6 +20,7 @@
 import crypto from "crypto";
 import { Readable, Writable } from "stream";
 import { expect } from "chai";
+import { IFetchContext, IFetchRequest } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
 import { FileSet, FileSource, IFile } from "../core/FileSet";
 import { Name, NameBuilder } from "../core/Name";
@@ -48,11 +49,8 @@ function fakeContext(members: Record<string, string>, log: FetchLog, body: strin
     getWildcardProperties: () =>
       Computable.resolve(Object.keys(members).map(name => ({ key: Name.fromLiteral(name), decl: { name: Name.fromLiteral(name) } }))),
     getString: (name: string) => Computable.resolve(members[name]),
-    fetch: (
-      url: string,
-      _tag: string,
-      process: (content: Readable, ctx: { createOutput: () => unknown }) => Computable<FileSet>
-    ) => {
+    fetch: (_cacheKey: string, _tag: string, request: () => Computable<IFetchRequest>) =>
+      request().then(({ url, process }) => {
       log.urls.push(url);
       const output = {
         stream: new Writable({ write: (_chunk, _enc, done): void => done() }),
@@ -64,8 +62,8 @@ function fakeContext(members: Record<string, string>, log: FetchLog, body: strin
           log.discarded++;
         },
       };
-      return process(typeof body === "string" ? Readable.from([body]) : body, { createOutput: () => output });
-    },
+      return process(typeof body === "string" ? Readable.from([body]) : body, { createOutput: () => output } as unknown as IFetchContext);
+      }),
   } as unknown as TargetContext;
 }
 
@@ -90,8 +88,8 @@ function cachedContext(members: Record<string, string>, log: FetchLog, cachedByt
     getWildcardProperties: () =>
       Computable.resolve(Object.keys(members).map(name => ({ key: Name.fromLiteral(name), decl: { name: Name.fromLiteral(name) } }))),
     getString: (name: string) => Computable.resolve(members[name]),
-    fetch: (url: string): Computable<FileSet> => {
-      log.urls.push(url);
+    fetch: (cacheKey: string): Computable<FileSet> => {
+      log.urls.push(cacheKey);
       return Computable.resolve(new FileSet(new Map([["stored", storedFile("stored", cachedBytes)]])));
     },
   } as unknown as TargetContext;

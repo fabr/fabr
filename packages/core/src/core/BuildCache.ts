@@ -89,6 +89,15 @@ import { SNIFF_LENGTH, sniffMime } from "../support/Mime";
 /** What a fetch `process` callback is handed alongside the response stream.
  * Large content should stream straight into the store via {@link createOutput},
  * never through the scratch dir. */
+/** What a download asks for, made only where the cache holds no answer. */
+export interface IFetchRequest {
+  url: string;
+  /** Authenticate the request only; never part of the key. */
+  headers?: Record<string, string>;
+  /** What is done to the response before it is recorded (see {@link BuildCache.getOrFetch}). */
+  process: (content: Readable, ctx: IFetchContext) => Computable<FileSet>;
+}
+
 export interface IFetchContext {
   /** A cache-owned scratch dir the process may write files into. */
   readonly targetDir: string;
@@ -581,10 +590,12 @@ export class BuildCache {
   }
 
   /**
-   * Download a URL through the cache, passing the response stream through
-   * `process` (unpacking an archive, validating a metadata document). The key is
-   * the url plus `tag`, a stable `name:version` for what is done to the
-   * response — bump it when that changes.
+   * Download through the cache what `cacheKey` identifies, passing the response
+   * stream through the request's `process` (unpacking an archive, validating a
+   * metadata document). The entry is keyed by `cacheKey` — the URL, for content
+   * identified by where it is downloaded from — and `tag`, a stable
+   * `name:version` for what is done to the response; bump it when that changes. `request` is made only
+   * where the cache holds no answer, so a hit needs nothing it would read.
    *
    * `process` runs before anything is recorded, so throwing on invalid content
    * keeps error responses out of the cache.
@@ -593,25 +604,22 @@ export class BuildCache {
    * entry honors HTTP caching instead (see {@link FetchOptions}).
    */
   public getOrFetch(
-    url: string,
+    cacheKey: string,
     tag: string,
-    process: (content: Readable, ctx: IFetchContext) => Computable<FileSet>,
-    /** Brackets the actual transfer as the caller's task, around the miss path
-     * alone; byte progress lands on the report it provides. */
-    track: TaskTracker<FileSet>,
-    headers?: Record<string, string>,
+    request: () => Computable<IFetchRequest>,
+    /** Brackets the actual transfer of the URL as the caller's task, around the
+     * miss path alone; byte progress lands on the report it provides. */
+    track: (url: string) => TaskTracker<FileSet>,
     options?: FetchOptions
   ): Computable<FileSet> {
-    /* `headers` authenticate the request only and are NOT part of the key: an
-     * authenticated fetch of a private package caches by URL like any other. */
-    const key = hashString(`fetch:${tag} ${url}`);
+    const key = hashString(`fetch:${tag} ${cacheKey}`);
     return this.withLock(key, () =>
       this.cacheGet(key).then(entry => {
         if (entry && isFresh(entry, this.now()) && !options?.forceRevalidate) {
           this.noteEntryServed(key);
           return entry.files;
         }
-        return this.fetch(key, url, process, track, headers, entry, options);
+        return request().then(made => this.fetch(key, made, track(made.url), entry, options));
       })
     );
   }
@@ -624,10 +632,8 @@ export class BuildCache {
    */
   private fetch(
     key: string,
-    url: string,
-    process: (content: Readable, ctx: IFetchContext) => Computable<FileSet>,
+    { url, headers, process }: IFetchRequest,
     track: TaskTracker<FileSet>,
-    headers: Record<string, string> | undefined,
     entry: ICacheEntry | undefined,
     options: FetchOptions | undefined
   ): Computable<FileSet> {

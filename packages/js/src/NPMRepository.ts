@@ -17,8 +17,10 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import { Readable } from "node:stream";
 import {
   FabrError,
+  IFetchContext,
   resolveBarePackage,
   Computable,
   FileSet,
@@ -476,24 +478,26 @@ export class NPMRepository
     if (result === undefined) {
       const url = `${this.url}/${packagePath(pkg)}`;
       const what = `package document for ${pkg} from ${this.url}`;
-      result = this.authHeadersFor(url)
-        .then(headers =>
-          this.context.fetch(
-            url,
-            "npm:packument:2",
-            content =>
-              readStream(content).then(data => {
-                /* The reader throws on anything unusable, so an invalid document
-                 * is never cached; what is kept is only what fabr reads. */
-                const versions = parseJson(data, what, toPackumentVersions);
-                return new FileSet(new Map([[PACKUMENT_FILE, MemoryFile.from(JSON.stringify({ versions: Object.fromEntries(versions) }))]]));
-              }),
-            /* An index read: a resolution makes one of these per package it
-             * walks, and the resolve that asked is the item worth recording. */
-            { resource: "package document", role: "index" },
-            { ...headers, accept: ABBREVIATED_PACKUMENT },
-            forceRevalidate ? { forceRevalidate: true } : undefined
-          )
+      result = this.context
+        .fetch(
+          url,
+          "npm:packument:2",
+          () =>
+            this.authHeadersFor(url).then(headers => ({
+              url,
+              headers: { ...headers, accept: ABBREVIATED_PACKUMENT },
+              process: (content: Readable) =>
+                readStream(content).then(data => {
+                  /* The reader throws on anything unusable, so an invalid document
+                   * is never cached; what is kept is only what fabr reads. */
+                  const versions = parseJson(data, what, toPackumentVersions);
+                  return new FileSet(new Map([[PACKUMENT_FILE, MemoryFile.from(JSON.stringify({ versions: Object.fromEntries(versions) }))]]));
+                }),
+            })),
+          /* An index read: a resolution makes one of these per package it
+           * walks, and the resolve that asked is the item worth recording. */
+          { resource: "package document", role: "index" },
+          forceRevalidate ? { forceRevalidate: true } : undefined
         )
         .then(files => files.readFile(PACKUMENT_FILE))
         .then(
@@ -591,20 +595,22 @@ export class NPMRepository
     let result = this.metadataCache.get(key);
     if (!result) {
       const metadataUrl = `${this.url}/${packagePath(pkg)}/${version}`;
-      result = this.authHeadersFor(metadataUrl)
-        .then(headers =>
-          this.context.fetch(
-            metadataUrl,
-            "npm:metadata:1",
-            content =>
-              readStream(content).then(data => {
-                const meta = parseMetadataResponse(data, key);
-                return new FileSet(new Map([[METADATA_FILE, MemoryFile.from(JSON.stringify(meta))]]));
-              }),
-            /* As the version list: one per package version considered. */
-            { resource: "metadata", role: "index" },
-            headers
-          )
+      result = this.context
+        .fetch(
+          metadataUrl,
+          "npm:metadata:1",
+          () =>
+            this.authHeadersFor(metadataUrl).then(headers => ({
+              url: metadataUrl,
+              headers,
+              process: (content: Readable) =>
+                readStream(content).then(data => {
+                  const meta = parseMetadataResponse(data, key);
+                  return new FileSet(new Map([[METADATA_FILE, MemoryFile.from(JSON.stringify(meta))]]));
+                }),
+            })),
+          /* As the version list: one per package version considered. */
+          { resource: "metadata", role: "index" }
         )
         .then(files => files.readFile(METADATA_FILE))
         /* Re-validated on the way out, not asserted: the cache entry is the
@@ -635,30 +641,36 @@ export class NPMRepository
   }
 
   public fetch(pkg: string, version: SemverVersion): Computable<PackageFileSet> {
-    return this.getVersionMetadata(pkg, versionToString(version)).then(meta =>
-      this.authHeadersFor(meta.dist.tarball)
-        .then(headers =>
-          this.context.fetch(
-            meta.dist.tarball,
-            "npm:tarball:1",
-            (content, { createOutput }) => {
-              /* Verify the tarball against the registry's promised digest as it
-               * streams: a mismatch throws before the entry commits, so tampered
-               * or truncated-but-valid content never enters the immutable cache. */
-              const { hashing, verify } = verifyTarballStream(meta.dist, meta.dist.tarball);
-              content.on("error", err => hashing.destroy(err instanceof Error ? err : new FabrError(String(err))));
-              content.pipe(hashing);
-              return unpackStream(hashing, createOutput).then(files => {
-                verify();
-                return stripArchiveRoot(files);
-              });
-            },
-            { resource: "package", role: "content" },
-            headers
-          )
-        )
-        .then(files => new PackageFileSet(files, meta.name, meta.version))
-    );
+    const exact = versionToString(version);
+    /* Kept by registry and version, not by tarball url: a published version
+     * never changes, so a package fetched before is had without reading its
+     * metadata, which is only where the url is. */
+    return this.context
+      .fetch(
+        `${this.identity} ${pkg}@${exact}`,
+        "npm:package:1",
+        () =>
+          this.getVersionMetadata(pkg, exact).then(meta =>
+            this.authHeadersFor(meta.dist.tarball).then(headers => ({
+              url: meta.dist.tarball,
+              headers,
+              process: (content: Readable, { createOutput }: IFetchContext) => {
+                /* Verify the tarball against the registry's promised digest as it
+                 * streams: a mismatch throws before the entry commits, so tampered
+                 * or truncated-but-valid content never enters the immutable cache. */
+                const { hashing, verify } = verifyTarballStream(meta.dist, meta.dist.tarball);
+                content.on("error", err => hashing.destroy(err instanceof Error ? err : new FabrError(String(err))));
+                content.pipe(hashing);
+                return unpackStream(hashing, createOutput).then(files => {
+                  verify();
+                  return stripArchiveRoot(files);
+                });
+              },
+            }))
+          ),
+        { resource: "package", role: "content" }
+      )
+      .then(files => new PackageFileSet(files, pkg, exact));
   }
 }
 
