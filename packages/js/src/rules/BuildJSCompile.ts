@@ -80,12 +80,10 @@ const TOOL_DIR = ".tools/tsc";
 /**
  * The compile's own layout: sources under `src/`, emitted output under `build/`.
  *
- * Exported: a consumer that mounts the compiled tree ALONGSIDE its sources has
- * to reproduce the same
- * pairing, or the `sources` paths tsc writes into each `.js.map` (relative from
- * outDir back to rootDir) resolve to nothing. The test install does exactly
- * that, which is what lets a stack frame — and jest's code frame — name the
- * original TypeScript.
+ * Exported: a consumer that mounts the compiled tree alongside its sources
+ * (the test install) reproduces the same pairing, so a map entry the driver
+ * left as tsc wrote it (relative from outDir back to rootDir, for a file no
+ * source-paths row names) still resolves.
  */
 export const COMPILE_SRC_DIR = "src";
 export const COMPILE_OUT_DIR = "build";

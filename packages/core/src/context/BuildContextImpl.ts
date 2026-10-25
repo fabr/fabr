@@ -658,11 +658,10 @@ export class BuildContextImpl implements InternalBuildContext {
 
   /**
    * Look up one written value in a STRING context as its substituted Name. No
-   * reference is resolved and no provenance is stamped, but the value's
-   * `<k=v>` requirement and any caller override apply as for
-   * {@link lookupFileValue} (ambient < requirement < caller, see
-   * {@link lookupContextFor}). The Name keeps its rename facet, for REWRITE and
-   * projection readers.
+   * reference is resolved and no provenance is stamped. A caller override
+   * applies; a `<k=v>` written on the value is part of its text, not a
+   * requirement. The Name keeps its rename facet, for REWRITE and projection
+   * readers.
    */
   private lookupStringValue(name: Name, info: IDependencyStack, callerOverrides?: Constraints): Computable<Name> {
     return this.getContextWithOverrides(callerOverrides).substituteNameVars(name, info, callerOverrides);

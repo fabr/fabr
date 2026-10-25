@@ -479,8 +479,8 @@ export abstract class TargetContext {
 
   /**
    * Build this same target under `overrides`: how an operation-specific rule
-   * gets its own target's result under another operation (`js_package[run]`
-   * and the `files` rule asking for `[build]`). The hop carries this target's
+   * gets its own target's result under another operation (the `files` rule
+   * asking for `[build]`). The hop carries this target's
    * `stack`, so this target is named as the requester.
    */
   public buildSelfWithOverrides(overrides: Constraints): Computable<SourceRef[]> {
@@ -489,7 +489,8 @@ export abstract class TargetContext {
 
   /**
    * Resolve this same target under `overrides`, building nothing, for a rule's
-   * `requirements` to name. It is read as packages ({@link PackageSources}).
+   * `requirements` to name (`js_package[run]` stating its own `[build]`). It is
+   * read as packages ({@link PackageSources}).
    */
   public resolveSelfWithOverrides(overrides: Constraints): Computable<PackageSources> {
     return this.context.resolveTarget(this.name, this.stack, overrides).then(sources => new PackageSources(sources));

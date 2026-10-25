@@ -182,8 +182,9 @@ export interface RepositoryReader<V, C> extends RequirementSource<V> {
   /** The shared per-ecosystem format (see {@link PackageFormat}): object
    * identity across registries is what admits them to one domain. */
   readonly format: PackageFormat<V, C>;
-  /** Stable identity for the resolution memo key, and nothing else (npm: the
-   * registry url; a group: its serialized route table). */
+  /** Stable identity of the registry (npm: the registry url; a group: its
+   * serialized route table): keys its resolution memos and package fetches,
+   * and makes instances of one registry resolve together. */
   readonly identity: string;
   /** The name the repository is declared as (`@npm`), by which each file of a
    * package it delivers has its source path: `@npm:react:18.2.0:<file>`.
