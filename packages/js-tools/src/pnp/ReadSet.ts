@@ -85,7 +85,7 @@ export function splitDepsPath(name: string): string[] {
  * emitted tree's staleness.
  *
  * `--changes <file>` accompanies it and says what moved since the last green
- * build (see {@link toChangeLists}). The FILE is what is conditional, not the
+ * build (see {@link parseChangesDocument}). The FILE is what is conditional, not the
  * flag: a step composes one invocation and only learns whether it has a base to
  * diff against once it has looked, so a driver reads the path and takes its
  * absence as "no base". The two are one-directional: state handed back with no
@@ -101,7 +101,7 @@ export const CHANGES_FLAG = "--changes";
  * working directory. Defaults, not protocol: a rule names what it likes, and
  * these are what {@link STATE_DIR_FLAG}/{@link CHANGES_FLAG} carry. */
 export const STATE_DIR = ".fabr-state";
-export const CHANGES_FILE = ".fabr-changes.json";
+export const CHANGES_FILE = ".fabr-changes";
 
 /**
  * What moved since the base build, as the step's hash diff states it: the
@@ -115,24 +115,26 @@ export interface IChangeLists {
   deleted: string[];
 }
 
-/** Read a changes document as what it claims to be. A driver reads this from a
- * file its caller wrote, and the two sides disagreeing about the contract is a
- * bug — so a malformed document is an error, never a silent full compile. */
-export function toChangeLists(json: unknown): IChangeLists {
-  if (typeof json !== "object" || json === null || Array.isArray(json)) {
-    throw new Error("expected a JSON object");
+/** Read a changes document (core's `toChangesDocument`: one `<status>\t<name>`
+ * line per name, `A`/`M`/`D`), folding an addition into `changed`. A driver reads
+ * this from a file its caller wrote, and the two sides disagreeing about the
+ * contract is a bug — so a malformed line is an error, never a silent full
+ * compile. */
+export function parseChangesDocument(text: string): IChangeLists {
+  const lists: IChangeLists = { changed: [], deleted: [] };
+  for (const line of text.split("\n")) {
+    if (line === "") {
+      continue;
+    }
+    const tab = line.indexOf("\t");
+    const status = line.slice(0, tab);
+    const name = line.slice(tab + 1);
+    if (tab < 0 || name === "" || !["A", "M", "D"].includes(status)) {
+      throw new Error(`malformed changes line ${JSON.stringify(line)}`);
+    }
+    (status === "D" ? lists.deleted : lists.changed).push(name);
   }
-  const lists = json as { changed?: unknown; deleted?: unknown };
-  const names = (value: unknown, what: string): string[] => {
-    if (value === undefined) {
-      return [];
-    }
-    if (!Array.isArray(value) || value.some(name => typeof name !== "string")) {
-      throw new Error(`expected '${what}' to be a list of names`);
-    }
-    return value as string[];
-  };
-  return { changed: names(lists.changed, "changed"), deleted: names(lists.deleted, "deleted") };
+  return lists;
 }
 
 /**

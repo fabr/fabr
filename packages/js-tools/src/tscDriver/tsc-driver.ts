@@ -42,7 +42,7 @@ import * as path from "node:path";
 import type { IConditionSet } from "../pnp/PackageExports";
 import { PnpResolver, splitSpecifier, typesPackageName } from "../pnp/PnPResolver";
 import { isVirtual, realpathKeepingVirtual, resolveVirtual } from "../pnp/VirtualPath";
-import { CHANGES_FLAG, DEPS_REPORT_FLAG, IChangeLists, serializeRunReport, STATE_DIR_FLAG, toChangeLists } from "../pnp/ReadSet";
+import { CHANGES_FLAG, DEPS_REPORT_FLAG, IChangeLists, parseChangesDocument, serializeRunReport, STATE_DIR_FLAG } from "../pnp/ReadSet";
 import { stagedReferences, withReferencedSources } from "../support/SourceMap";
 import {
   DriverMemo,
@@ -3073,7 +3073,7 @@ function memoHandoverOf(argv: string[], root: string): { changes?: IChangeLists;
   }
   let changes: IChangeLists;
   try {
-    changes = toChangeLists(JSON.parse(fs.readFileSync(path.resolve(root, changesPath), "utf8")));
+    changes = parseChangesDocument(fs.readFileSync(path.resolve(root, changesPath), "utf8"));
   } catch (err: unknown) {
     throw new Error(`tsc-driver: unreadable change lists at ${changesPath} (${err instanceof Error ? err.message : String(err)})`);
   }

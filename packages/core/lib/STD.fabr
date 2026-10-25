@@ -65,6 +65,31 @@ targetdef catalog {
 # set, the result is instead the files it selects, from the captured files and
 # from anything the commands wrote.
 #
+# A command can carry files over from one successful run to the next, so that
+# a tool redoes only what changed:
+#
+#     generate styles {
+#         srcs = ./src/**;
+#         run = css_tool --state state.json --changes changes.txt -o styles.css;
+#         output = styles.css;
+#         incremental = state.json;
+#         changes = changes.txt;
+#     }
+#
+# The files `incremental` matches are put back under the same names before the
+# next run, and the file named by `changes` lists what changed in the inputs
+# since that run, one line per file: `A`, `M` or `D` (added, modified,
+# deleted), a tab, then the file's name in the directory the commands run in:
+#
+#     M	src/button.tsx
+#     A	src/menu.tsx
+#
+# Neither is there for the first run, or after the cache has been cleared, and
+# the command must then do the whole job. Either way it must produce exactly
+# what it would from nothing, because fabr caches its result as if it had. A
+# file that both `output` and `incremental` match is part of the result and is
+# carried over too.
+#
 targetdef generate {
     # Input files, placed in the directory the commands run in.
     srcs = FILES;
@@ -74,6 +99,12 @@ targetdef generate {
     # Which files to keep, as a pattern with an optional rename: `dist:**`,
     # `*.out -> *.txt`.
     output = STRING;
+    # Which files the command keeps for its next run, as a pattern like `output`'s:
+    # staged back under those names before it, once a run has succeeded.
+    incremental = STRING;
+    # Where to write what changed in the inputs since the last successful run, one
+    # `A|M|D<tab>name` line per file; not written where there is no such run.
+    changes = STRING;
     # Environment variables for the commands, which run with no others.
     env = MAP;
 }

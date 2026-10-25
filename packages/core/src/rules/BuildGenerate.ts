@@ -33,6 +33,8 @@
  * stdin. `srcs` are the input files staged at the sandbox root; `output` (a
  * `dir:glob` projection) selects what is collected, from the files the tools
  * wrote and the redirect captures alike — without it, the captures are collected.
+ * `incremental` (a pattern like `output`'s) selects what the command keeps for
+ * its next run, and `changes` names where that run is told what moved.
  */
 
 import { MaterializedCommandPipeline, TargetContext, toEnvironment } from "../context/index";
@@ -40,20 +42,25 @@ import { BUILD_OPERATION } from "../model/Constraints";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { Name } from "../core/Name";
-import { createPipelineAction, stagePipeline } from "./PipelineAction";
+import { createPipelineAction, IKeptState, stagePipeline } from "./PipelineAction";
 import { defineRule, RuleDefinition, RuleResult } from "./Types";
 import { FabrError } from "../core/Errors";
 
 function generate(context: TargetContext, srcSets: FileSet[]): Computable<RuleResult> {
   return Computable.forAll(
-    [context.getProjection("output"), context.getMap("env").then(toEnvironment)],
-    (output: Name | undefined, env) => {
+    [
+      context.getProjection("output"),
+      context.getMap("env").then(toEnvironment),
+      context.getProjection("incremental"),
+      context.getString("changes"),
+    ],
+    (output: Name | undefined, env, incremental: Name | undefined, changes: string | undefined) => {
       const srcs = FileSet.unionAll(...srcSets);
       return context.getCommandProperty("run", srcs).then(stages => {
         if (stages.length === 0) {
           return Computable.reject<RuleResult>(new FabrError("a 'generate' target requires a 'run' command"));
         }
-        return assemblePipeline(srcs, stages, output, env);
+        return assemblePipeline(srcs, stages, output, env, { incremental, changes });
       });
     }
   );
@@ -65,10 +72,11 @@ function assemblePipeline(
   srcs: FileSet,
   stages: MaterializedCommandPipeline,
   output: Name | undefined,
-  env: ReadonlyMap<string, string>
+  env: ReadonlyMap<string, string>,
+  kept: IKeptState
 ): RuleResult {
   const { files, specs } = stagePipeline(stages, srcs);
-  return createPipelineAction(files, specs, stages[0].stdin, output, "generate", env);
+  return createPipelineAction(files, specs, stages[0].stdin, output, "generate", env, kept);
 }
 
 export const generateRule: RuleDefinition = defineRule({

@@ -14,15 +14,16 @@
  * details.
  */
 
-import { getResultFileSet, writeFileSet } from "../core/Staging";
+import { getResultFileSets, writeFileSet } from "../core/Staging";
 import { Computable } from "../core/Computable";
 import { ConflictError, FabrError } from "../core/Errors";
-import { FileSet } from "../core/FileSet";
+import { EMPTY_FILESET, FileSet } from "../core/FileSet";
+import { MemoryFile } from "../core/MemoryFS";
 import { Name } from "../core/Name";
 import { executePipeline, ITaskReport, StageSpec, StageStreams } from "../support/Execute";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { BuildAction, BuildResult, configFiles, fileSetInput, stringConfig } from "../core/BuildAction";
-import { ActionContext } from "../core/BuildCache";
+import { ActionContext, IChangedFiles, toChangesDocument } from "../core/BuildCache";
 
 /**
  * The `command-pipeline` build action: stage the combined install (each stage's
@@ -32,7 +33,9 @@ import { ActionContext } from "../core/BuildCache";
  * the content store, each named content) where there is no `output`, else what
  * `output` selects from the captures and the files the tools wrote together. One
  * cacheable unit, keyed by the staged content + the stage specs (see
- * {@link createPipelineAction}).
+ * {@link createPipelineAction}). Where the action keeps state ({@link IKeptState})
+ * and its target has a successful run before, what that run kept is staged back
+ * and the changes document written, before the command runs.
  */
 function runPipeline(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
   const files = FileSet.unionAll(fileSetInput(action, "files"), configFiles(action));
@@ -49,33 +52,71 @@ function runPipeline(action: BuildAction, ctx: ActionContext, report: ITaskRepor
     })
   );
 
-  return ctx
-    .admit(report, () => writeFileSet(ctx.workDir, files))
+  const incremental = action.config.incremental instanceof Name ? action.config.incremental : undefined;
+  const changes = typeof action.config.changes === "string" ? action.config.changes : undefined;
+  const handover =
+    incremental === undefined && changes === undefined
+      ? Computable.resolve<FileSet | undefined>(undefined)
+      : Computable.forAll([ctx.changedFiles(), ctx.incrementalState()], (changed, state) => keptBase(changed, state, changes));
+
+  return handover
+    .then(base =>
+      ctx.admit(report, () =>
+        writeFileSet(ctx.workDir, files).then(() => (base === undefined ? undefined : writeFileSet(ctx.workDir, base, { copy: true })))
+      )
+    )
     .then(() => stdinBytes(stdin))
     .then(bytes => executePipeline(ctx.processLimit, specs, ctx.workDir, () => ctx.createOutput(), bytes, report, env))
-    .then(captured =>
-      /* A given `output` selects from everything the command produced — a
-       * redirect names a file in the sandbox as surely as a tool writing one
-       * does — through the one projector, so its `dir:` strip and `-> tmpl`
-       * rename apply to both alike; a redirect it does not select is not
-       * collected, and one named like a selected written file is a conflict.
-       * Selecting nothing is an error, not a silent empty success: almost always
-       * a wrong selector or a tool that wrote elsewhere. */
-      output === undefined
-        ? Computable.resolve(captured)
-        : ctx
-            .admit(report, () => getResultFileSet(ctx.workDir, output))
-            .then(written => {
-              const collected = FileSet.unionAll(written, selectedCaptures(captured, written, output));
-              if (collected.isEmpty()) {
-                throw new FabrError(`the command produced no files matching output pattern '${output.toString()}'`).withHelp(
-                  `check the output pattern, or that the command writes its output where '${output.toString()}' looks`
-                );
-              }
-              return collected;
-            })
-    )
-    .then(result => ({ result }));
+    .then(captured => {
+      if (output === undefined && incremental === undefined) {
+        return Computable.resolve<BuildResult>({ result: captured });
+      }
+      /* One walk of the work dir collects both: each selection's files under the
+       * names it gives them, a file both select in both. */
+      const selections = [output, incremental].filter((selection): selection is Name => selection !== undefined);
+      return ctx.admit(report, () => getResultFileSets(ctx.workDir, selections)).then(collected => {
+        const written = output === undefined ? undefined : collected[0];
+        const state = incremental === undefined ? undefined : collected[collected.length - 1];
+        return {
+          result: output === undefined || written === undefined ? captured : outputOf(captured, written, output),
+          ...(state === undefined || state.size === 0 ? {} : { incrementalState: state }),
+        };
+      });
+    });
+}
+
+/**
+ * What `output` collects: it selects from everything the command produced — a
+ * redirect names a file in the sandbox as surely as a tool writing one does —
+ * through the one projector, so its `dir:` strip and `-> tmpl` rename apply to
+ * both alike; a redirect it does not select is not collected, and one named
+ * like a selected written file is a conflict. Selecting nothing is an error, not
+ * a silent empty success: almost always a wrong selector or a tool that wrote
+ * elsewhere.
+ */
+function outputOf(captured: FileSet, written: FileSet, output: Name): FileSet {
+  const collected = FileSet.unionAll(written, selectedCaptures(captured, written, output));
+  if (collected.isEmpty()) {
+    throw new FabrError(`the command produced no files matching output pattern '${output.toString()}'`).withHelp(
+      `check the output pattern, or that the command writes its output where '${output.toString()}' looks`
+    );
+  }
+  return collected;
+}
+
+/**
+ * What a run with a successful one before it is handed: the files that run kept,
+ * where they were, and the changes document at `changes`. Undefined where there
+ * is no such run, so the command finds neither and runs cold.
+ */
+function keptBase(changed: IChangedFiles | undefined, state: FileSet | undefined, changes: string | undefined): FileSet | undefined {
+  if (changed === undefined) {
+    return undefined;
+  }
+  return FileSet.unionAll(
+    state ?? EMPTY_FILESET,
+    changes === undefined ? EMPTY_FILESET : FileSet.layout({ [changes]: MemoryFile.from(toChangesDocument(changed)) })
+  );
 }
 
 /** The redirect captures `output` selects, under the names it gives them. A
@@ -148,23 +189,40 @@ export function stagePipeline(stages: ReadonlyArray<RunnableStage>, srcs: FileSe
   return { files: FileSet.unionAll(srcs, ...mounts), specs };
 }
 
+/** What a command keeps between its runs: `incremental`, the pattern selecting
+ * the files it keeps (named as it names them), and `changes`, where it is told
+ * what moved in its inputs. */
+export interface IKeptState {
+  incremental?: Name;
+  changes?: string;
+}
+
 /** @return a command-pipeline action from the resolved per-stage specs, the
  * combined staged fileset, an optional single-file stdin, the `output`
- * projection (absent to collect only the redirect captures), and the
- * variables every stage runs with (its whole environment). */
+ * projection (absent to collect only the redirect captures), the
+ * variables every stage runs with (its whole environment), and what it keeps
+ * between runs. */
 export function createPipelineAction(
   files: FileSet,
   specs: StageSpec[],
   stdin: FileSet | undefined,
   output: Name | undefined,
   label?: string,
-  env: ReadonlyMap<string, string> = new Map()
+  env: ReadonlyMap<string, string> = new Map(),
+  kept: IKeptState = {}
 ): BuildAction {
   return new BuildAction(
     PIPELINE_ACTION,
     { files, ...(stdin ? { stdin } : {}) },
-    { spec: JSON.stringify(specs), ...(output ? { output } : {}), ...(env.size > 0 ? { env: [...env].map(([name, value]) => `${name}=${value}`) } : {}) },
+    {
+      spec: JSON.stringify(specs),
+      ...(output ? { output } : {}),
+      ...(env.size > 0 ? { env: [...env].map(([name, value]) => `${name}=${value}`) } : {}),
+      ...(kept.incremental ? { incremental: kept.incremental } : {}),
+      ...(kept.changes !== undefined ? { changes: kept.changes } : {}),
+    },
     undefined,
-    label
+    label,
+    kept.incremental !== undefined || kept.changes !== undefined
   );
 }

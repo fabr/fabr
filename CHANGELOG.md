@@ -14,7 +14,8 @@ version number.
 - Allow '-' in identifiers (property names)
 - Optimize package downloading
 - Fix handling of constraints in variable substitutions.
-- Keep persistent working directories for command-line run targets
+- Keep persistent working directories for command-line run targets.
+- Add incremental support to the generic generate target.
 
 @fabr-build/cli:
 - Add `fabr deps`: print the dependency tree of targets or packages, marking conflicting versions `(!)`.

@@ -369,7 +369,9 @@ fs.mkdirSync("out", { recursive: true });
 fs.writeFileSync("out/seen.json", JSON.stringify({
   seen,
   handed: Object.fromEntries(seen.map(name => [name, fs.readFileSync(path.join(dir, name), "utf8")])),
-  changes: hasChanges ? JSON.parse(fs.readFileSync(changes, "utf8")).changed : null,
+  changes: hasChanges
+    ? fs.readFileSync(changes, "utf8").split("\\n").filter(line => line !== "" && !line.startsWith("D")).map(line => line.slice(line.indexOf("\\t") + 1))
+    : null,
 }));
 /* Reporting is a capability of its own: this tool reports only where it was
  * told to, and keeps its state either way. */

@@ -292,4 +292,53 @@ describe("e2e: generate command pipelines", () => {
     expect(result.status).to.not.equal(0);
     expect(result.stderr).to.match(/only valid in a COMMAND property/);
   });
+
+  it("hands a command what it kept from its last successful run, and what changed since", () => {
+    /* The tool counts its runs in a kept file and copies whatever changes file
+     * it was given (or "cold" where there was none) into its output. Each run
+     * is a fresh project over the shared cache, so the target's name is unique
+     * to this test. */
+    const keeper =
+      "mkdir -p .state\n" +
+      "if [ -f .fabr-changes ]; then cp .fabr-changes .state/seen; else printf 'cold\\n' > .state/seen; fi\n" +
+      "count=$(cat .state/count 2>/dev/null || echo 0)\n" +
+      "echo $((count + 1)) > .state/count\n" +
+      "cat .state/count .state/seen > out.txt\n";
+    const project = (data: Record<string, string>): Record<string, string> => ({
+      "PROJECT.fabr":
+        "script keeper { entry = tool:keeper.sh; }\n" +
+        "generate kept_state_probe { srcs = data:**; run = keeper; output = out.txt; incremental = .state/**; changes = .fabr-changes; }\n",
+      "tool/keeper.sh": keeper,
+      ...Object.fromEntries(Object.entries(data).map(([name, content]) => [`data/${name}`, content])),
+    });
+    const run = (data: Record<string, string>): string => {
+      const result = runFabr(project(data), ["cat", "kept_state_probe:out.txt"]);
+      expect(result.status, result.stderr).to.equal(0);
+      return result.stdout;
+    };
+    expect(run({ "a.txt": "1" })).to.equal("1\ncold\n");
+    expect(run({ "a.txt": "2" })).to.equal("2\nM\ta.txt\n");
+    expect(run({ "a.txt": "2", "b.txt": "b" })).to.equal("3\nA\tb.txt\n");
+    expect(run({ "b.txt": "b" })).to.equal("4\nD\ta.txt\n");
+    /* What it keeps is not what it delivers. */
+    expect(runFabr(project({ "b.txt": "b" }), ["ls", "kept_state_probe"]).stdout).to.equal("out.txt\n");
+  });
+
+  it("delivers a file both output and kept, and hands it back to the next run", () => {
+    /* Output feedback: the tool appends to what it delivered last time. */
+    const project = (data: string): Record<string, string> => ({
+      "PROJECT.fabr":
+        "script appender { entry = tool:append.sh; }\n" +
+        "generate kept_output_probe { srcs = data:**; run = appender; output = log.txt; incremental = log.txt; }\n",
+      "tool/append.sh": "cat data.txt >> log.txt\n",
+      "data/data.txt": data,
+    });
+    const run = (data: string): string => {
+      const result = runFabr(project(data), ["cat", "kept_output_probe:log.txt"]);
+      expect(result.status, result.stderr).to.equal(0);
+      return result.stdout;
+    };
+    expect(run("one\n")).to.equal("one\n");
+    expect(run("two\n")).to.equal("one\ntwo\n");
+  });
 });

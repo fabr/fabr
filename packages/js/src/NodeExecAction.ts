@@ -20,6 +20,7 @@
 import {
   ActionContext,
   BuildAction,
+  toChangesDocument,
   Computable,
   FabrError,
   mapComputable,
@@ -43,7 +44,7 @@ import {
 import { assembleNodeModules } from "./NodeModules";
 import { pnpManifestOf, TREE_MOUNT, treeMountOf } from "./PnPManifest";
 import { PNP_DATA_FILE } from "@fabr-build/js-tools";
-import { IChangeLists, splitDepsPath, toRunReport } from "@fabr-build/js-tools";
+import { splitDepsPath, toRunReport } from "@fabr-build/js-tools";
 
 /**
  * The JS ecosystem's build step, and the one place that owns **how a JS tool
@@ -344,10 +345,7 @@ type Incremental = { stateDir?: string };
  * Change lists WITHOUT kept files ride fine: that is the honest record of a
  * tool that keeps none.
  *
- * The changes document is the TOOL's vocabulary ({@link IChangeLists}): an
- * added name folds into `changed` — both mean "compile against this", and
- * which of the two it was is derivable from the tool's own memo where it
- * matters (an addition is a name the memo has no line for).
+ * What moved is the changes document ({@link toChangesDocument}).
  */
 function prepareBase(
   changed: IChangedFiles | undefined,
@@ -358,13 +356,9 @@ function prepareBase(
   if (changed === undefined) {
     return undefined;
   }
-  const lists: IChangeLists = {
-    changed: [...changed.added, ...changed.changed].sort(),
-    deleted: [...changed.deleted],
-  };
   return FileSet.layout({
     ...(stateDir === undefined ? {} : { [stateDir]: incrementalState }),
-    ...(changes === undefined ? {} : { [changes]: MemoryFile.from(`${JSON.stringify(lists, undefined, 2)}\n`) }),
+    ...(changes === undefined ? {} : { [changes]: MemoryFile.from(toChangesDocument(changed)) }),
   });
 }
 

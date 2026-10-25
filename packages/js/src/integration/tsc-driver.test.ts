@@ -28,6 +28,7 @@ import { importRewrites } from "../rules/BuildJSCompile";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { toChangesDocument } from "@fabr-build/core";
 import {
   DriverMemo,
   ICompileTelemetry,
@@ -40,7 +41,7 @@ import {
   serializeDriverMemo,
   SOURCE_PATHS_FILE,
   SOURCE_PATHS_FLAG,
-  toChangeLists,
+  parseChangesDocument,
   toCompileTelemetry,
   toRunReport,
   TscDriver,
@@ -2429,13 +2430,13 @@ describe("the tsc driver's wave", () => {
    * and fabr's diff as the two name lists — and answer what the run reported. */
   function wave(memo: DriverMemo, changed: string[], deleted: string[] = [], argv: string[] = []): IWaveOutcome {
     stageState(serializeDriverMemo(memo));
-    fs.writeFileSync(path.join(work.root, ".fabr-changes.json"), JSON.stringify({ changed, deleted }));
+    fs.writeFileSync(path.join(work.root, ".fabr-changes"), toChangesDocument({ added: [], changed, deleted }));
     return outcomeOf(
       compile(work.root, [
         "--state-dir",
         STATE_DIR,
         "--changes",
-        ".fabr-changes.json",
+        ".fabr-changes",
         "--deps-report",
         ".fabr-deps.json",
         ...argv,
@@ -2864,9 +2865,9 @@ describe("the tsc driver's wave", () => {
     stageProject();
     sources({ "index.ts": "export const value = 1;\n" });
     baseline();
-    fs.writeFileSync(path.join(work.root, ".fabr-changes.json"), "{ not json");
+    fs.writeFileSync(path.join(work.root, ".fabr-changes"), "not a changes line\n");
     expect(() =>
-      compile(work.root, ["--state-dir", STATE_DIR, "--changes", ".fabr-changes.json", "--deps-report", ".fabr-deps.json"])
+      compile(work.root, ["--state-dir", STATE_DIR, "--changes", ".fabr-changes", "--deps-report", ".fabr-deps.json"])
     ).to.throw(/unreadable change lists/);
   });
 
@@ -2894,9 +2895,9 @@ describe("the tsc driver's wave", () => {
     expect(base.status, base.output).to.equal(0);
 
     stageState("!tscmemo 999999\nnot this build's format\n");
-    fs.writeFileSync(path.join(work.root, ".fabr-changes.json"), JSON.stringify({ changed: ["src/index.ts"], deleted: [] }));
+    fs.writeFileSync(path.join(work.root, ".fabr-changes"), "M\tsrc/index.ts\n");
     const run = outcomeOf(
-      compile(work.root, ["--state-dir", STATE_DIR, "--changes", ".fabr-changes.json", "--deps-report", ".fabr-deps.json"])
+      compile(work.root, ["--state-dir", STATE_DIR, "--changes", ".fabr-changes", "--deps-report", ".fabr-deps.json"])
     );
     expect(run.status, run.output).to.equal(0);
     expect([...run.compile.wave].sort(), "everything was compiled").to.deep.equal(["src/index.ts", "src/util.ts"]);
@@ -3218,11 +3219,11 @@ describe("the report documents the step reads", () => {
     expect(() => toRunReport({ reads: [], edges: [{ from: "", name: "x", to: "x#1", via: "guessed" }] })).to.throw(/own\|fallback/);
   });
 
-  it("reads change lists, and refuses what is not one", () => {
-    expect(toChangeLists({ changed: ["a"], deleted: [] })).to.deep.equal({ changed: ["a"], deleted: [] });
-    expect(toChangeLists({})).to.deep.equal({ changed: [], deleted: [] });
-    expect(() => toChangeLists([])).to.throw(/expected a JSON object/);
-    expect(() => toChangeLists({ changed: [7] })).to.throw(/'changed' to be a list of names/);
+  it("reads a changes document, folding additions into the changed, and refuses what is not one", () => {
+    expect(parseChangesDocument("A\tb\nD\tc\nM\ta b\n")).to.deep.equal({ changed: ["b", "a b"], deleted: ["c"] });
+    expect(parseChangesDocument("")).to.deep.equal({ changed: [], deleted: [] });
+    expect(() => parseChangesDocument("X\ta\n")).to.throw(/malformed changes line/);
+    expect(() => parseChangesDocument("no tab here\n")).to.throw(/malformed changes line/);
   });
 });
 

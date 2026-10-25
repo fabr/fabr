@@ -175,6 +175,26 @@ export interface IChangedFiles {
   readonly deleted: ReadonlyArray<string>;
 }
 
+/**
+ * Write `changed` as the changes document: what moved in a step's inputs since
+ * its last green run, as fabr hands it to the tool. One line per name,
+ * `<status>\t<name>`, the shape of `git diff --name-status`: `A` added, `M`
+ * modified, `D` deleted, sorted by name in code-unit order. A name is the staged
+ * one, raw — staged names admit no control characters, so no tab or newline
+ * occurs inside one.
+ *
+ * Kept in step with the drivers' reader (js-tools' `parseChangesDocument`),
+ * which cannot depend on core at runtime.
+ */
+export function toChangesDocument(changed: IChangedFiles): string {
+  const lines = [
+    ...changed.added.map((name): [string, string] => [name, "A"]),
+    ...changed.changed.map((name): [string, string] => [name, "M"]),
+    ...changed.deleted.map((name): [string, string] => [name, "D"]),
+  ].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+  return lines.map(([name, status]) => `${status}\t${name}\n`).join("");
+}
+
 /** A cache entry as read back from disk: its files, plus freshness metadata for
  * a mutable entry. */
 interface ICacheEntry {

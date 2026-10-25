@@ -386,14 +386,28 @@ function asExecutionError<T>(operation: Computable<T>): Computable<T> {
  * They are alternatives of one projection, not successive passes — everything
  * unselected is still deleted exactly once.
  */
-export function getResultFileSet(targetDir: string, output: Name | string | ReadonlyArray<Name | string>): Computable<FileSet> {
-  const project = outputProjector(output);
-  const result = new Map<string, IFile>();
-  /* Source path each output name came from, for a rename-collision message. */
-  const source = new Map<string, string>();
-  /* Every non-directory entry of the tree, with the name it is collected under
-   * (none: it is dropped). */
-  const found: Array<{ abspath: string; rel: string; name: string | undefined }> = [];
+export function getResultFileSet(targetDir: string, output: OutputSelection): Computable<FileSet> {
+  return getResultFileSets(targetDir, [output]).then(([files]) => files);
+}
+
+/** What {@link getResultFileSet} selects by: a projection, or several as
+ * alternatives (the first that selects a file names it). */
+export type OutputSelection = Name | string | ReadonlyArray<Name | string>;
+
+/**
+ * {@link getResultFileSet} for several selections at once: one set per
+ * selection, each naming the files it selects as it projects them, so a file
+ * two select is in both sets. A file is hashed once however many select it,
+ * and only what none selects is deleted.
+ */
+export function getResultFileSets(targetDir: string, selections: ReadonlyArray<OutputSelection>): Computable<FileSet[]> {
+  const projectors = selections.map(outputProjector);
+  const results = selections.map(() => new Map<string, IFile>());
+  /* Source path each output name came from, per selection, for a rename-collision message. */
+  const sources = selections.map(() => new Map<string, string>());
+  /* Every non-directory entry of the tree, with the name each selection collects
+   * it under (none: that selection drops it). */
+  const found: Array<{ abspath: string; rel: string; names: Array<string | undefined> }> = [];
 
   /* Walk without following symlinks (walkTree recurses real dirs only): the work
    * dir may contain symlinks — a scoped node_modules links its direct deps into a
@@ -404,12 +418,12 @@ export function getResultFileSet(targetDir: string, output: Name | string | Read
   return walkTree(targetDir, (entry, abspath) => {
     if (!entry.isDirectory()) {
       const rel = path.relative(targetDir, abspath);
-      found.push({ abspath, rel, name: entry.isFile() ? project(rel) : undefined });
+      found.push({ abspath, rel, names: projectors.map(project => (entry.isFile() ? project(rel) : undefined)) });
     }
   })
     .then(() =>
-      mapComputable(found, ({ abspath, rel, name }) => {
-        if (name === undefined) {
+      mapComputable(found, ({ abspath, rel, names }) => {
+        if (names.every(name => name === undefined)) {
           return asExecutionError(deleteFile(abspath));
         }
         return hashFile(abspath).then(({ hash, mime }) => {
@@ -418,21 +432,26 @@ export function getResultFileSet(targetDir: string, output: Name | string | Read
            * it into the pool by rename. The FileSet key is the *projected* name;
            * the file itself stays anchored at its real location. */
           const file = new FSFile(targetDir, rel, fs.statSync(abspath), hash, mime);
-          const existing = result.get(name);
-          if (existing && !existing.isSameFile(file)) {
-            throw new ConflictError(
-              "collected files",
-              name,
-              { provenance: undefined, detail: source.get(name) ?? existing.getDisplayName() },
-              { provenance: undefined, detail: rel }
-            );
-          }
-          result.set(name, file);
-          source.set(name, rel);
+          names.forEach((name, i) => {
+            if (name === undefined) {
+              return;
+            }
+            const existing = results[i].get(name);
+            if (existing && !existing.isSameFile(file)) {
+              throw new ConflictError(
+                "collected files",
+                name,
+                { provenance: undefined, detail: sources[i].get(name) ?? existing.getDisplayName() },
+                { provenance: undefined, detail: rel }
+              );
+            }
+            results[i].set(name, file);
+            sources[i].set(name, rel);
+          });
         });
       })
     )
-    .then(() => new FileSet(result));
+    .then(() => results.map(result => new FileSet(result)));
 }
 
 /**
@@ -443,7 +462,7 @@ export function getResultFileSet(targetDir: string, output: Name | string | Read
  * strip the `dir/` prefix and name results relative to it — equivalent to the
  * colon projection, without needing the model parser to build a Name here.
  */
-function outputProjector(output: Name | string | ReadonlyArray<Name | string>): (rel: string) => string | undefined {
+function outputProjector(output: OutputSelection): (rel: string) => string | undefined {
   if (typeof output !== "string" && !(output instanceof Name)) {
     const projectors = output.map(one => outputProjector(one));
     return rel => {
