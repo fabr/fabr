@@ -3635,6 +3635,16 @@ describe("a reference to a target", () => {
     evaluated = [];
   });
 
+  it("builds none of the names it was given when one names nothing", async () => {
+    const config = configOf("gen g { }\n");
+    const failure = await Promise.resolve(buildOperation(config, [writtenOnCommandLine("g"), writtenOnCommandLine("nosuch")])).then(
+      () => undefined,
+      (err: FabrError) => err.message
+    );
+    expect(failure).to.equal("Unknown name 'nosuch'");
+    expect(evaluated).to.deep.equal([]);
+  });
+
   it("gives each file a target delivers the reference that resolves to it", async () => {
     const config = configOf("gen g { }\nlib l { }\n");
     const sourcePaths = async (name: string): Promise<Array<[string, string | undefined]>> => {

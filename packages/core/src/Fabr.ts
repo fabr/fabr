@@ -157,25 +157,32 @@ export function requireWhole(ref: INameValue, resolved: ReadonlyArray<Resolved>)
  * Build what each of `refs` names under `config`'s operation: resolve it, then
  * materialize it. Each must be a name the project declares (a target, a
  * global, a repository), with any `<k=v>` on it. A path, a pattern or a
- * selection of a target's files is refused.
+ * selection of a target's files is refused, and refusing any one builds none.
  */
 function build(config: BuildContext, refs: INameValue[]): Computable<SourceRef[]>[] {
-  return refs.map(ref =>
-    config.isDeclared(ref).then(declared => {
-      if (declared) {
-        return config.materialize(ref);
-      }
-      /* Not a declared name. Resolving it rejects a name that names nothing,
-       * with suggestions; anything else is refused here, as a selection of a
-       * target's files or as no declared name. */
-      return config.resolve(ref).then((resolved): SourceRef[] => {
-        requireWhole(ref, resolved.denoted);
-        throw new FabrError(`'${ref.value.toString()}' is not a name the project declares`).withHelp(
-          "'build' and 'test' act on a declared target or global; read files with ls, cat or cp"
-        );
-      });
-    })
+  const declared = Computable.forAll(
+    refs.map(ref => requireDeclared(config, ref)),
+    () => undefined
   );
+  return refs.map(ref => declared.then(() => config.materialize(ref)));
+}
+
+/** Refuse `ref` where it is not a name the project declares. */
+function requireDeclared(config: BuildContext, ref: INameValue): Computable<void> {
+  return config.isDeclared(ref).then(declared => {
+    if (declared) {
+      return undefined;
+    }
+    /* Resolving it rejects a name that names nothing, with suggestions;
+     * anything else is refused here, as a selection of a target's files or as
+     * no declared name. */
+    return config.resolve(ref).then((resolved): void => {
+      requireWhole(ref, resolved.denoted);
+      throw new FabrError(`'${ref.value.toString()}' is not a name the project declares`).withHelp(
+        "'build' and 'test' act on a declared target or global; read files with ls, cat or cp"
+      );
+    });
+  });
 }
 
 /** Build what each reference names, realising any release namespaces, and
