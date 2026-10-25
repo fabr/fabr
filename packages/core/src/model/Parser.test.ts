@@ -332,6 +332,34 @@ describe("Parser Tests", () => {
     );
   });
 
+  it("reads a requirement on a braced substitution", () => {
+    const name = nameOf(parseValid("A = x${B<K=v, L=${C}>}y;").properties[0].values[0]);
+    expect(nameText(name)).to.equal("x+var(B)+y");
+    expect(name.toString()).to.equal("x${B<K=v, L=${C}>}y");
+    const part = (name as unknown as { parts: NamePart[] }).parts[1];
+    expect(part.constraints?.map(([key, value]) => `${key}=${value.toString()}`)).to.deep.equal(["K=v", "L=${C}"]);
+    expect(nameOf(parseValid('A = "${B<K=v>}";').properties[0].values[0]).toString()).to.equal("${B<K=v>}");
+  });
+
+  it("rejects a malformed braced substitution", () => {
+    const cases: Array<[string, number, string]> = [
+      ["A = ${};", 7, "Read '}' but expected a property name"],
+      ["A = ${b/c};", 7, "Read Name but expected a property name"],
+      ["A = ${B<>};", 9, "Read '>' but expected a constraint key"],
+      ["A = ${B <K=v>};", 9, "Read '<' but expected '}'"],
+      ["A = ${B<K=v>", 13, "Read EOF but expected '}'"],
+    ];
+    for (const [text, column, message] of cases) {
+      expect(parseInvalid(text)).to.deep.equal([diagnosticBlock(1, column, message, text)]);
+    }
+    /* A requirement names an exact configuration, as on a reference. */
+    expect(parseInvalid("A = ${B<K=*>};")[0]).to.match(/^error: Constraint 'K' is required as a pattern/);
+  });
+
+  it("ignores whitespace around a braced substitution's name", () => {
+    expect(summarize(parseValid("A = ${ B }x;"))).to.deep.equal(summary({ properties: { A: ["var(B)+x"] } }));
+  });
+
   it("bare substitution variable names include underscores", () => {
     /* `$BUILD_TYPE` is one variable, not var(BUILD) + literal "_TYPE". */
     expect(summarize(parseValid("A=$BUILD_TYPE; B=$B_/x;"))).to.deep.equal(

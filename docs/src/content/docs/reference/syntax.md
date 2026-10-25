@@ -137,6 +137,35 @@ url = "https://example.com/releases/v${VERSION}/";
 deps = @npm:my-package:${VERSION};
 ```
 
+The value is inserted as text, and every character of it is taken literally: a `*` in it matches
+only a `*`, and a [constraint](#constraints) or [rename](#projection-and-renaming) in it is part of
+the name rather than acting on it. That includes a constraint written on the property's own
+value. To use a property's references where references are expected, write its bare name instead,
+as described under [String properties](#string-properties):
+
+```
+G = ./*.ts;
+srcs = G;            # every .ts file
+srcs = ${G};         # only a file named "*.ts"
+
+CORE = core<BUILD_TYPE=release>;
+deps = CORE;         # core, built for release
+deps = ${CORE};      # error: Unable to resolve 'core<BUILD_TYPE=release>'
+```
+
+To substitute the value a property has under different settings, write a constraint inside the
+braces, `${NAME<KEY=value, …>}`. It changes those settings for reading `NAME` only, as a constraint
+on a reference does for building it:
+
+```
+OPT<BUILD_TYPE=debug> = -O0;
+OPT<BUILD_TYPE=release> = -O2;
+RELEASE_OPT = ${OPT<BUILD_TYPE=release>};    # -O2, whatever BUILD_TYPE this build uses
+```
+
+The `<` follows the name directly. Each value is an exact setting rather than a pattern, and may
+itself contain a substitution (`${OPT<BUILD_TYPE=${MODE}>}`).
+
 ### Command substitution
 
 Backticks run a command and are replaced by what it prints, for information that comes from a

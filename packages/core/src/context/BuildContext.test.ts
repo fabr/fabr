@@ -2110,6 +2110,51 @@ describe("BuildContext", () => {
     await expect(testGetProperty("a = b c; d = a${a};", "d", { a: "QUUX" })).to.eventually.deep.equal(["aQUUX"]);
   });
 
+  it("Reads a value's <k=v> as part of its text", async () => {
+    await expect(testGetProperty("default K = a; g = foo<K=V>; h = ${g};", "g")).to.eventually.deep.equal(["foo<K=V>"]);
+    await expect(testGetProperty("default K = a; g = foo<K=V>; h = ${g};", "h")).to.eventually.deep.equal(["foo<K=V>"]);
+    /* The requirement does not configure the value's own substitutions. */
+    await expect(testGetProperty("default K = a; g = ${K}<K=b>;", "g")).to.eventually.deep.equal(["a<K=b>"]);
+  });
+
+  it("Reads ${NAME<k=v>} under the requirement", async () => {
+    const input = "default K = a; default L = x; X = b; g = ${K}${K<K=b>}; h = ${K<K=${X}, L=y>}; i = ${L<K=b>};";
+    await expect(testGetProperty(input, "g")).to.eventually.deep.equal(["ab"]);
+    await expect(testGetProperty(input, "h")).to.eventually.deep.equal(["b"]);
+    await expect(testGetProperty(input, "i")).to.eventually.deep.equal(["x"]);
+    /* Inside double quotes too. */
+    await expect(testGetProperty('default K = a; g = "v ${K<K=b>}";', "g")).to.eventually.deep.equal(["v b"]);
+  });
+
+  it("Reads a guarded declaration under a ${NAME<k=v>} requirement", async () => {
+    const input = "default K = a; V<K=b> = guarded; V<K=a> = plain; g = ${V<K=b>} ${V};";
+    await expect(testGetProperty(input, "g")).to.eventually.deep.equal(["guarded", "plain"]);
+  });
+
+  it("Fails a reference substituted with its <k=v>, as the literal name it is", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_good { deps = PACKAGES; }\n" +
+      "targetdef test_package { }\n" +
+      "default FLAVOR = plain;\n" +
+      "test_package core { }\n" +
+      "G = core<FLAVOR=fancy>;\n" +
+      "test_good a { deps = ${G}; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    try {
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
+      expect.fail("expected target a to fail");
+    } catch (err) {
+      expect(err).to.be.instanceOf(DependencyFailedError);
+      const cause = (err as DependencyFailedError).cause;
+      expect(cause).to.be.instanceOf(NameResolutionError);
+      expect(cause.message).to.equal("Unable to resolve 'core<FLAVOR=fancy>'");
+    }
+  });
+
   it("Collects an evaluation's requirements into one joint batch across properties and globals", async () => {
     batchCalls.length = 0;
     const errors: string[] = [];
@@ -2381,17 +2426,17 @@ describe("BuildContext", () => {
     expect(await lastDeps!.get("f.txt").then(file => file?.readString())).to.equal("caller");
   });
 
-  it("A caller's override wins over a requirement on a STRING global's value too", async () => {
+  it("A caller's override wins over a requirement on a substitution in a STRING global", async () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-    /* The string path layers overrides identically to the file path: the rule
-     * forces {FLAVOR: caller} while the global's value carries <FLAVOR=ref>, so
-     * the override (threaded as callerOverrides, applied last) wins — rather than
-     * being folded into ambient, which the requirement would beat. */
+    /* The rule forces {FLAVOR: caller} while the substitution carries
+     * <FLAVOR=ref>, so the override (threaded as callerOverrides, applied last)
+     * wins, rather than being folded into ambient, which the requirement would
+     * beat. */
     const input =
       "targetdef test_globalstr { }\n" +
       "default FLAVOR = ambient;\n" +
-      "GLOBALSTR = ${FLAVOR}<FLAVOR=ref>;\n" +
+      "GLOBALSTR = ${FLAVOR<FLAVOR=ref>};\n" +
       "test_globalstr root { }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);

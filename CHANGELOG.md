@@ -12,7 +12,8 @@ version number.
 - Repositories/namespaces now error if used unprojected rather than silently doing nothing.
 - Generalize fabr_home to the full installed namespace.
 - Allow '-' in identifiers (property names)
-- Optimize npm downloading
+- Optimize package downloading
+- Fix handling of constraints in variable substitutions.
 
 @fabr-build/cli:
 - Add `fabr deps`: print the dependency tree of targets or packages, marking conflicting versions `(!)`.

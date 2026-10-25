@@ -55,6 +55,12 @@ export interface NamePart {
    * back by the model to resolve the part.
    */
   command?: CommandPipeline;
+  /**
+   * A variable substitution's `<k=v>` requirement (`${FOO<K=V>}`): the
+   * configuration the variable is read under. Its values may substitute in
+   * turn, which the resolver does before reading the variable.
+   */
+  constraints?: readonly NameConstraint[];
 }
 
 /**
@@ -757,7 +763,9 @@ export class Name {
       case NamePartKind.Glob:
         return part.value;
       case NamePartKind.VarSubst:
-        return "${" + part.value + "}";
+        return part.constraints === undefined
+          ? "${" + part.value + "}"
+          : "${" + part.value + "<" + part.constraints.map(([key, value]) => `${key}=${value.toString()}`).join(", ") + ">}";
       case NamePartKind.Backref:
         return "$" + part.value;
       case NamePartKind.CommandSubst:
@@ -921,10 +929,14 @@ export class NameBuilder {
   }
 
   /**
-   * Add a substitution variable by name.
+   * Add a substitution variable by name, with the `<k=v>` requirement it is
+   * read under, if one was written.
    */
-  public appendSubstVar(str: string): this {
+  public appendSubstVar(str: string, constraints?: readonly NameConstraint[]): this {
     this.append(NamePartKind.VarSubst, str);
+    if (constraints !== undefined) {
+      this.last!.constraints = constraints;
+    }
     return this;
   }
 

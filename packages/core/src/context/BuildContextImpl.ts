@@ -664,13 +664,7 @@ export class BuildContextImpl implements InternalBuildContext {
    * projection readers.
    */
   private lookupStringValue(name: Name, info: IDependencyStack, callerOverrides?: Constraints): Computable<Name> {
-    /* A STRING's value is its content, so the requirement and override apply to
-     * its own `${...}` substitutions: the written name, constraints stripped, is
-     * substituted under the merged context, not taken from lookupContextFor's
-     * reference, which was substituted under this one. */
-    return this.lookupContextFor(name, callerOverrides, info).then(({ context }) =>
-      context.substituteNameVars(name.withConstraints([]), info)
-    );
+    return this.getContextWithOverrides(callerOverrides).substituteNameVars(name, info, callerOverrides);
   }
 
   public lookupStringProperty(
@@ -1059,19 +1053,25 @@ export class BuildContextImpl implements InternalBuildContext {
     }
   }
 
-  private substituteNameVars(name: Name, stack?: IDependencyStack): Computable<Name> {
-    return this.substituteTraced(name, stack).then(({ name: substituted }) => substituted);
+  /** Substitute every `${NAME}` and command in `name`. `callerOverrides` is the
+   * reader's override, applied over a `${NAME<k=v>}`'s requirement. */
+  private substituteNameVars(name: Name, stack?: IDependencyStack, callerOverrides?: Constraints): Computable<Name> {
+    return this.substituteTraced(name, stack, callerOverrides).then(({ name: substituted }) => substituted);
   }
 
   /** Substitute `name` as {@link substituteNameVars} does, also answering what
    * each `${NAME}` gave and where that came from. */
-  private substituteTraced(name: Name, stack?: IDependencyStack): Computable<{ name: Name; substitutions: ISubstitution[] }> {
+  private substituteTraced(
+    name: Name,
+    stack?: IDependencyStack,
+    callerOverrides?: Constraints
+  ): Computable<{ name: Name; substitutions: ISubstitution[] }> {
     const parts = name.getSubstitutions();
     if (parts.length === 0) {
       return Computable.resolve({ name, substitutions: [] });
     }
     return Computable.forAll(
-      parts.map(part => this.substitutedText(part, stack)),
+      parts.map(part => this.substitutedText(part, stack, callerOverrides)),
       (...texts: Array<{ text: string; substitution?: ISubstitution }>) => ({
         name: name.substitute(new Map(parts.map((part, i) => [part, texts[i].text]))),
         substitutions: texts.flatMap(({ substitution }) => (substitution === undefined ? [] : [substitution])),
@@ -1083,13 +1083,33 @@ export class BuildContextImpl implements InternalBuildContext {
    * stdout. Two identically-written commands run once between them, since they
    * key the same action, which the build cache serves from one in-flight
    * attempt. */
-  private substitutedText(part: NamePart, stack?: IDependencyStack): Computable<{ text: string; substitution?: ISubstitution }> {
-    return part.kind === NamePartKind.CommandSubst
-      ? this.runCommandSubst(part, stack).then(text => ({ text }))
-      : this.getProperty(part.value, stack).then(prop => ({
-          text: prop.toString(),
-          substitution: { name: part.value, value: prop.toString(), origin: prop.origin },
-        }));
+  private substitutedText(
+    part: NamePart,
+    stack?: IDependencyStack,
+    callerOverrides?: Constraints
+  ): Computable<{ text: string; substitution?: ISubstitution }> {
+    if (part.kind === NamePartKind.CommandSubst) {
+      return this.runCommandSubst(part, stack).then(text => ({ text }));
+    }
+    const read = (context: BuildContextImpl): Computable<{ text: string; substitution?: ISubstitution }> =>
+      context.getProperty(part.value, stack, part.constraints === undefined ? undefined : callerOverrides).then(prop => ({
+        text: prop.toString(),
+        substitution: { name: part.value, value: prop.toString(), origin: prop.origin },
+      }));
+    if (part.constraints === undefined) {
+      return read(this);
+    }
+    /* `${NAME<k=v>}`: NAME is read under the requirement, whose values are
+     * substituted here first. */
+    const constraints = part.constraints;
+    return Computable.forAll(
+      constraints.map(([, value]) => this.substituteNameVars(value, stack, callerOverrides)),
+      (...values: Name[]) => {
+        const required: Record<string, string> = Object.create(null);
+        constraints.forEach(([key], i) => (required[key] = values[i].toString()));
+        return Constraints.of(required);
+      }
+    ).then(required => read(this.getContextWithOverrides(required)));
   }
 
   /**

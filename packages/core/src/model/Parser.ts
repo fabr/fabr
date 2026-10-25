@@ -650,31 +650,39 @@ export class BuildParser {
         builder?.appendSubstVar(str);
       }
     } else {
-      this.reader.consume(CHAR_LBRACE);
-      const posn = this.reader.currentOffset();
-      /* TODO: currently we don't try to parse out the contents of the substitution */
-      const inner = this.reader.scanUntil(ch => {
-        switch (ch) {
-          case CHAR_BACKSLASH:
-            this.reader.next(); /* the backslash */
-            this.reader.next(); /* the escaped character */
-            break;
-          case CHAR_DOLLAR:
-            this.readSubstVar();
-            break;
-          case CHAR_DQUOTE:
-            this.readDoubleQuotedString();
-            break;
-          case CHAR_RBRACE:
-            return true;
-        }
-        return false;
-      });
-      if (inner === undefined) {
-        this.unexpectedEndOfFile("}");
+      this.readBracedSubstVar(builder);
+    }
+  }
+
+  /* Reads the `{NAME}` or `{NAME<k=v>}` of a braced substitution, the reader at
+   * its `{`; on return the reader is just past the closing `}`. The interior is
+   * read as tokens, a property name and an abutting requirement, the same
+   * grammar as a reference's `<k=v>`; whitespace around them is ignored. The token state belongs to the token whose
+   * scan this is part of, so it is restored. */
+  private readBracedSubstVar(builder?: NameBuilder): void {
+    const outer = { token: this.token, abuts: this.tokenAbutsPrev, prevEnd: this.prevTokenEnd };
+    this.reader.next(); /* the '{' */
+    try {
+      this.nextToken();
+      const name = this.token;
+      if (name.type !== TokenType.IDENTIFIER) {
+        this.unexpectedTokenError("a property name");
       }
-      builder?.appendSubstVar(this.reader.substring(posn));
-      this.reader.next(); /* Consume the closing brace */
+      this.nextToken();
+      let constraints: NameConstraint[] | undefined;
+      if (this.token.type === TokenType.LANGLE && this.tokenAbutsPrev) {
+        this.nextToken(); /* consume '<' */
+        constraints = this.parseConstraintList();
+      }
+      /* Not consumed: lexing past the `}` would read beyond this substitution. */
+      if (this.token.type !== TokenType.RBRACE) {
+        this.unexpectedTokenError(TOKEN_NAME_MAP[TokenType.RBRACE]);
+      }
+      builder?.appendSubstVar(name.text, constraints);
+    } finally {
+      this.token = outer.token;
+      this.tokenAbutsPrev = outer.abuts;
+      this.prevTokenEnd = outer.prevEnd;
     }
   }
 

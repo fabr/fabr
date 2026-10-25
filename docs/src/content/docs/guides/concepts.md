@@ -97,8 +97,8 @@ TEST_DEPS = @npm:chai:4.3.6 @npm:@types/chai:4.3.1;
 GREETING = "hello v${VERSION}";
 ```
 
-`${NAME}` substitutes another property's value. A property that holds references, like `TEST_DEPS`
-above, is used by its bare name: `test_deps = TEST_DEPS;`.
+`${NAME}` substitutes another property's value as text. A property that holds references, like
+`TEST_DEPS` above, is used by its bare name: `test_deps = TEST_DEPS;`.
 
 Two things differ from variables in a script:
 
