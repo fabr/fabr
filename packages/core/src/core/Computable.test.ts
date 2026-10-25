@@ -986,7 +986,7 @@ describe("Computable attach/detach", () => {
     probe.trySettle(42); /* the superseded async completion lands late */
     /* Not flipped to Valid: stranding it Valid-while-detached would make
      * addDependant's Detached check never fire — never reattached, permanently
-     * stale (the TreeQuery watch brick). */
+     * stale. */
     expect(probe.state).to.equal(ComputableState.Detached);
     expect(probe.value).to.equal(undefined);
 

@@ -24,7 +24,7 @@
  * -> standard-rules.md, JS plugin -> js-targets.md). Compiled and launched by fabr
  * as a TypeScript js_script (the `gendoc` target); the pages are `.md`, not
  * `.mdx`, because the doc-comment prose contains `{ ... }` which MDX would parse
- * as JSX. The genrule collects them with an `output` glob (no `>` redirect).
+ * as JSX. The `generate` target collects them with an `output` glob (no `>` redirect).
  *
  *   Usage: fabr list-all --json | gendoc <output-dir>
  */
@@ -133,18 +133,18 @@ function cell(text: string | undefined | null): string {
   return (text ?? "").replace(/\s*\n\s*/g, " ").replace(/\|/g, "\\|").trim();
 }
 
-/** A Markdown table: a header row, the rule beneath it, and one row per entry. */
+/** Render a Markdown table: a header row, the rule beneath it, and one row per entry. */
 function table(head: string[], rows: string[][]): string[] {
   const row = (cells: string[]): string => `| ${cells.join(" | ")} |`;
   return [row(head), row(head.map(() => "---")), ...rows.map(row)];
 }
 
-/** The property's declared type as written in a targetdef (`REQUIRED FILES`). */
+/** Render the property's declared type as written in a targetdef (`REQUIRED FILES`). */
 function propType(prop: PropertyDef): string {
   return (prop.required ? "REQUIRED " : "") + prop.type;
 }
 
-/** The property's `default …` clause as written, or "" when it has none. */
+/** Render the property's `default …` clause as written, or "" when it has none. */
 function propDefault(prop: PropertyDef): string {
   return prop.default ? ` default ${prop.default}` : "";
 }
@@ -161,7 +161,7 @@ function schemaBlock(def: TargetDef): string {
   return "```\n" + lines.join("\n") + "\n```";
 }
 
-/** The per-property reference table for a target type: the schema restated with
+/** Render the per-property reference table for a target type: the schema restated with
  * each property's own description. The Default column appears only for a type
  * that declares one, so the common case isn't a column of blanks. */
 function propertyTable(def: TargetDef): string[] {
@@ -247,7 +247,7 @@ function render(group: Group, doc: Doc): string {
 }
 
 /* Write the pages by their bare filename (into the given dir, default the cwd);
- * the genrule collects them with an `output` glob and the consumer places them
+ * the `generate` target collects them with an `output` glob and the consumer places them
  * with a rename projection. */
 const outDir = process.argv[2] ?? ".";
 

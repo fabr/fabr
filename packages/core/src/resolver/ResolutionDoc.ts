@@ -49,8 +49,7 @@ interface IRaiseEntry {
   requiredBy: string;
 }
 
-/** Serialized declared requirements of one selected node — the resolution's
- * edges as their packages declared them, which is all a layout needs (see
+/** Serialized declared requirements of one selected node (see
  * {@link MVSResolution.requirements}) */
 interface IRequirementsEntry {
   node: string;
@@ -126,8 +125,8 @@ export function serializeResolutionDoc<V>(
   };
 }
 
-/** `pkg@version` — the id every per-node table in a resolution is joined by
- * (the resolver's own {@link nodeId}, restated here to keep this module free of
+/** Make the `pkg@version` id every per-node table in a resolution is joined by
+ * (the resolver's own `nodeId`, restated here to keep this module free of
  * the domain). */
 function nodeKey<V>(selection: Selected<V>, versionToString: (version: V) => string): string {
   return `${selection.name}@${versionToString(selection.version)}`;

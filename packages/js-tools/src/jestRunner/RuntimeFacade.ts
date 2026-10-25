@@ -21,7 +21,7 @@
  * What jest-circus thinks it is talking to.
  *
  * Circus's adapter is written against `jest-runtime` — but it only ever calls
- * **eleven methods** on it, and needs **four members** of the environment. This
+ * **eleven methods** on it, and needs **three members** of the environment. This
  * module is those, backed by node's real module system and fabr's own mock
  * registry: circus gets the framework it expects, while modules load through
  * node, so `require(esm)` keeps working.
@@ -60,9 +60,9 @@ export function makeEnvironmentFacade(): IEnvironmentFacade {
 }
 
 /**
- * Build the runtime facade for one test process. `load` is how a module is
- * brought in — node's `require`, through the registry's seams, so a mocked
- * specifier is served and everything else loads normally.
+ * Build the runtime facade for one test process. Modules are brought in by
+ * node's `require`, through the registry's seams, so a mocked specifier is
+ * served and everything else loads normally.
  */
 export function makeRuntimeFacade(registry: MockRegistry, mocker: IMockerControls): Record<string, unknown> {
   return {

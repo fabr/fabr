@@ -33,8 +33,8 @@ module.exports = {
     /* The astro docs site (docs/src) is not a fabr TS package — its `astro:*`
      * virtual imports don't resolve under ts-jest */
     "!**/docs/**",
-    /* The runner runtimes execute standalone in test child processes, not under
-     * jest (the jest-compat one loads jest's libraries from its own tool mount) */
+    /* testRunner/ and jestRunner/ execute standalone in test child processes, not
+     * under jest (jestRunner/ loads jest's libraries from its own tool mount) */
     "!**/packages/js-tools/src/testRunner/**",
     "!**/packages/js-tools/src/jestRunner/**",
   ],
@@ -58,8 +58,8 @@ module.exports = {
   moduleDirectories: ["node_modules"],
   moduleFileExtensions: ["ts", "js", "mjs"],
   testRegex: ".*\\.test\\.ts$",
-  /* The runner runtime's tests are node:test based and run under the fabr test
-   * harness itself (fabr test @fabr-build/js-tools), not under jest. The DRIVERS'
+  /* The runner runtime's tests (testRunner/) run only under `fabr test
+   * @fabr-build/js-tools`, not under jest. The DRIVERS'
    * tests are not among them: each requires its tool lazily inside main(), so
    * nothing at load needs esbuild or sass, and the parts under test are either
    * pure or drive a tool declared as a test dependency. */

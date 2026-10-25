@@ -449,9 +449,9 @@ describe("Parser Tests", () => {
       parseBuildString(EMPTY_FILESET, "PROJECT.fabr", src, new LogFormatter(LogLevel.Info, m => errors.push(m)));
       return errors.length;
     };
-    /* A bad property mid-body must not cascade: previously the recovery resumed
-     * top-level parsing *inside* the body, leaking the remaining properties and
-     * misreporting the closing `}`. Now each real error yields exactly one. */
+    /* A bad property mid-body must not cascade: recovery stays inside the body,
+     * so each real error yields exactly one diagnostic and the closing `}` is
+     * not misreported. */
     expect(count("js_package foo {\n  srcs = = ;\n  deps = bar;\n}\nother = ok;")).to.equal(1);
     expect(count("js_package foo {\n  a = = ;\n  b = = ;\n  c = ok;\n}\nx = ok;")).to.equal(2);
     /* A bad entry inside a map-block value stays contained in the block. */
@@ -748,8 +748,8 @@ describe("Parser Tests", () => {
     });
 
     it("binds a spaced '<k=v>' as a constraint (disambiguated by the '=')", () => {
-      /* A space before `<` no longer forces a redirect: `<key=` can only be a
-       * constraint (never a redirect target), so it binds to the reference. */
+      /* A spaced `<` followed by `key=` can only be a constraint (never a
+       * redirect target), so it binds to the preceding reference. */
       const name = firstValue("dep = mylib <BUILD_TYPE=release>;");
       expect(name.toString()).to.equal("mylib<BUILD_TYPE=release>");
       expect(constraintsOf(name)).to.deep.equal([["BUILD_TYPE", "release"]]);
@@ -812,9 +812,9 @@ describe("Parser Tests", () => {
 
   describe("trailing glob (version marker)", () => {
     it("a trailing '?' lexes as a glob, its text kept as written", () => {
-      /* The permitted-alternate marker `pkg:1.4.2?` is lexically a glob — a
-       * repository reads the written text where it vends the reference, the
-       * tail of a requirement having no pattern meaning. */
+      /* The permitted-alternate marker `pkg:1.4.2?` is lexically a glob and
+       * stays in the name's text; the parser records it as the reference's
+       * marker (Name.getMarker), which is what a repository reads. */
       const name = parseName("@npm:tslib:1.14.1?");
       expect(name.getSimpleName()).to.equal(undefined);
       expect(name.toBaseString()).to.equal("@npm:tslib:1.14.1?");
@@ -1060,8 +1060,7 @@ describe("Parser Tests", () => {
   /* Bash's extended globs. The leader, each '|' and the closing ')' are their own
    * glob runs with the interior scanned as ordinary name text, which is what
    * keeps a literal-only group (`!(Validation)`) out of the literal path prefix
-   * the FS walk bases on — the whole point, since a pure-literal extglob used to
-   * be walked as a directory of that name and match nothing. */
+   * the FS walk bases on. */
   describe("extended globs", () => {
     it("reads each leader as a glob run around a literal interior", () => {
       for (const leader of ["?", "*", "+", "@", "!"]) {

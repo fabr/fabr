@@ -19,7 +19,7 @@
 
 /*
  * Surface parity of the `jest` object — the drift detector for the jest
- * compatibility layer (jestRunner/JestObject.ts).
+ * compatibility layer (@fabr-build/js-tools's jestRunner/JestObject.ts).
  *
  * This file is DUAL-RUN, and that is the whole device: under `yarn jest` the
  * `jest` global is REAL jest, so the member list below is audited against

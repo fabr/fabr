@@ -36,8 +36,8 @@
 import * as path from "node:path";
 import { jestLibrary } from "./Tools";
 
-/** The shape `readConfig` returns; both records are opaque to fabr — they are
- * built here and handed to jest-circus unread. */
+/** The shape `readConfig` returns; fabr sets `updateSnapshot` and reads
+ * `seed`, and hands the rest to jest-circus as it is. */
 export interface IJestConfig {
   globalConfig: Record<string, unknown>;
   projectConfig: Record<string, unknown>;

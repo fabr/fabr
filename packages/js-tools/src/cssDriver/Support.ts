@@ -29,16 +29,16 @@ import { fileURLToPath } from "node:url";
 import { DEPS_REPORT_FLAG, IResolutionEdge, serializeRunReport } from "../pnp/ReadSet";
 import { resolveVirtual } from "../pnp/VirtualPath";
 
-/** Whether a name is a Sass source (the ones the driver compiles; a plain
- * `.css` passes through). */
+/** @return true if a name is a Sass source (one the driver compiles; a plain
+ * `.css` passes through), otherwise false. */
 export function isSassSource(name: string): boolean {
   return /\.(scss|sass)$/i.test(name);
 }
 
 /**
- * The name a Sass source takes when the *sass step* lowers it: the extension
- * becomes `.css`, the `.module.` marker rides through — the marker means
- * "scope me", and lowering does not scope. Identity on a plain `.css`.
+ * @return the name a Sass source takes when the *sass step* lowers it: the
+ * extension becomes `.css`, the `.module.` marker rides through — the marker
+ * means "scope me", and lowering does not scope. Identity on a plain `.css`.
  */
 export function sassLoweredName(name: string): string {
   return name.replace(/\.(scss|sass)$/i, ".css");
@@ -59,17 +59,17 @@ export function writeOut(outdir: string, rel: string, contents: string | Uint8Ar
   fs.writeFileSync(dest, contents);
 }
 
-/** The `sourceMappingURL` comment naming a map that sits beside its
+/** @return the `sourceMappingURL` comment naming a map that sits beside its
  * stylesheet. */
 export function sourceMapComment(mapName: string): string {
   return `\n/*# sourceMappingURL=${path.basename(mapName)} */\n`;
 }
 
 /**
- * A relocated map's entries, respelled relative to where the map itself sits —
- * which is how a consumer resolves them, and how this pipeline's next step
- * reads a map it chains through. `mapName` is the map's own target-relative
- * path.
+ * @return a relocated map's entries, respelled relative to where the map itself
+ * sits — which is how a consumer resolves them, and how this pipeline's next
+ * step reads a map it chains through. `mapName` is the map's own
+ * target-relative path.
  */
 export function relativeToMap(map: IRawSourceMap, mapName: string): IRawSourceMap {
   const home = path.dirname(mapName);
@@ -79,14 +79,14 @@ export function relativeToMap(map: IRawSourceMap, mapName: string): IRawSourceMa
   };
 }
 
-/** The name a map is annotated under — beside its stylesheet, so the basename
- * is the whole reference. */
+/** @return the name a map is annotated under — beside its stylesheet, so the
+ * basename is the whole reference. */
 export function annotationName(mapName: string): string {
   return path.basename(mapName);
 }
 
 /**
- * A stylesheet with every `sourceMappingURL` annotation removed.
+ * @return a stylesheet with every `sourceMappingURL` annotation removed.
  *
  * A step ships only annotations it wrote: an input's annotation names ITS map,
  * which is a different file from the one this step publishes, and a composed
@@ -96,7 +96,6 @@ export function withoutAnnotations(css: string): string {
   return css.replace(/\n?[ \t]*\/\*#[ \t]*sourceMappingURL=[^*]*\*\/[ \t]*/g, "");
 }
 
-/** The `--manifest=<path>` argument, the drivers' one piece of argv. */
 /**
  * Write what the run read of the packages it was given, and how it resolved
  * them, where the step asked for it (`--deps-report <file>`, relative to the
@@ -114,6 +113,7 @@ export function writeDepsReport(argv: string[], reads: Iterable<string>, edges: 
   fs.writeFileSync(path.resolve(file), serializeRunReport(reads, edges));
 }
 
+/** Read the `--manifest=<path>` argument naming the options document. */
 export function parseManifestPath(argv: string[], driver: string): string {
   const flag = argv.find(arg => arg.startsWith("--manifest="));
   if (!flag) {
@@ -122,20 +122,6 @@ export function parseManifestPath(argv: string[], driver: string): string {
   return flag.substring("--manifest=".length);
 }
 
-/**
- * A source map's `sources`, rewritten from where the files were staged to what
- * the target calls them: anything under the staged source root keeps its
- * root-relative name (which for a chained map is the author's own `.scss`
- * name), anything else its working-root-relative path. No absolute path
- * survives.
- *
- * `ownInput` names the step's own input where it is an intermediate (a chained
- * map — Sass ran before this step): postcss adds an entry for the content it
- * was handed, and left alone that entry would ship the never-shipped lowered
- * name; it is renamed to the stylesheet this step publishes. An unchained
- * run's input IS the source and keeps its own name through the ordinary
- * root-relative branch.
- */
 export interface ISourceMapLocation {
   /** The step's working directory, which every path is made relative to. */
   root: string;
@@ -161,8 +147,9 @@ export interface ISourceMapLocation {
  */
 const CARRIED_REFERENCE = "fabr-reference://";
 
-/** An input map to hand postcss as `map.prev`, its fabr references carried
- * under {@link CARRIED_REFERENCE} so that postcss leaves them as they are. */
+/** @return an input map to hand postcss as `map.prev`, its fabr references
+ * carried under {@link CARRIED_REFERENCE} so that postcss leaves them as they
+ * are. */
 export function carriedReferences(map: IRawSourceMap): IRawSourceMap {
   return {
     ...map,
@@ -173,12 +160,13 @@ export function carriedReferences(map: IRawSourceMap): IRawSourceMap {
 }
 
 /**
- * A css step's map, its sources named as {@link relocateCssSources} names them
- * relative to the map at `mapName`, except that each the step's table names is
- * its fabr reference: an entry that already is one stays, and one the step
- * staged (a `file://` URL or a path relative to the map, a package's reached
- * through its virtual path) is named by `referenceOf`. A reference an input map
- * held arrives as {@link carriedReferences} carried it, and is restored.
+ * @return a css step's map, its sources named as {@link relocateCssSources}
+ * names them relative to the map at `mapName`, except that each the step's
+ * table names is its fabr reference: an entry that already is one stays, and
+ * one the step staged (a `file://` URL or a path relative to the map, a
+ * package's reached through its virtual path) is named by `referenceOf`. A
+ * reference an input map held arrives as {@link carriedReferences} carried it,
+ * and is restored.
  */
 export function referencedCssSources(
   map: IRawSourceMap,
@@ -210,11 +198,26 @@ export function referencedCssSources(
   };
 }
 
-/** A path with POSIX separators. */
+/** @return the path with POSIX separators. */
 function toPosix(name: string): string {
   return name.split(path.sep).join("/");
 }
 
+/**
+ * @return a source map's `sources`, rewritten from where the files were staged
+ * to what the target calls them: anything under the staged source root keeps
+ * its root-relative name (which for a chained map is the author's own `.scss`
+ * name), anything else under the working root its working-root-relative path,
+ * and anything outside the working root its basename. No absolute path
+ * survives.
+ *
+ * `ownInput` names the step's own input where it is an intermediate (a chained
+ * map — Sass ran before this step): postcss adds an entry for the content it
+ * was handed, and left alone that entry would ship the never-shipped lowered
+ * name; it is renamed to the stylesheet this step publishes. An unchained
+ * run's input IS the source and keeps its own name through the ordinary
+ * root-relative branch.
+ */
 export function relocateCssSources(
   map: IRawSourceMap,
   where: ISourceMapLocation,

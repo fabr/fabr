@@ -86,9 +86,9 @@ export const CJS_JS_EXTENSION = ".cjs";
 export const CJS_TYPE_EXTENSION = ".d.cts";
 
 /**
- * Whether an emitted name belongs to the ES-module format — the `.mjs` family a
- * dual package takes from its ESM compile, and exactly what it must drop from
- * the CommonJS one.
+ * @return true if an emitted name belongs to the ES-module format, otherwise
+ * false — the `.mjs` family a dual package takes from its ESM compile, and
+ * exactly what it must drop from the CommonJS one.
  *
  * The two compiles see the same sources and so emit the same names twice over.
  * That partition resolves it, and resolves `.mts`/`.cts` with it: a source that
@@ -106,8 +106,8 @@ export function isEsmFormatOutput(name: string): boolean {
  *  `bin/`, extension and all. */
 const BIN_ENTRY = /^bin\/[^/]+$/;
 
-/** A delivered file's name without its artifact suffix — the `.map` of a source
- *  map, then the module or declaration extension — so one module's JavaScript,
+/** Strip a file's artifact suffix — the `.map` of a source map, then the
+ *  module or declaration extension — so one module's JavaScript,
  *  declaration and map all answer the same stem. */
 function artifactStem(name: string): string {
   const unmapped = name.endsWith(".map") ? name.slice(0, -".map".length) : name;
@@ -116,10 +116,11 @@ function artifactStem(name: string): string {
 }
 
 /**
- * The two compiles of a dual package reduced to the single tree it ships: each
- * format keeps only what it is the right producer of ({@link isEsmFormatOutput}).
- * The CommonJS format is thereby byte-identical to a single-format build, which is
- * what lets `type`, `main` and `types` describe it without qualification.
+ * Reduce the two compiles of a dual package to the single tree it ships: each
+ * format keeps only what it is the right producer of
+ * ({@link isEsmFormatOutput}). The CommonJS format is thereby byte-identical to
+ * a single-format build, which is what lets `type`, `main` and `types` describe
+ * it without qualification.
  *
  * A bin has no second format — it is the package as a PROGRAM, launched by node
  * and never imported, so there is no condition to select on. Where the CommonJS
@@ -138,9 +139,10 @@ export function dualFormatOutputs(commonjs: FileSet, esm: FileSet): FileSet[] {
   return [primary, secondary];
 }
 
-/** The one module format a target reads as wherever a single artifact is produced
- *  — a runnable install, a bundle — since only a published package can ship two.
- *  `dual` is esm with a CommonJS fork beside it, so alone it reads as esm. */
+/** Pick the one module format a target reads as wherever a single artifact is
+ * produced — a runnable install, a bundle — since only a published package can
+ * ship two. `dual` is esm with a CommonJS fork beside it, so alone it reads as
+ * esm. */
 export function soleModuleFormat(module: JSTarget["module"]): "esm" | "commonjs" {
   return module === "commonjs" ? "commonjs" : "esm";
 }
@@ -150,8 +152,8 @@ export function soleModuleFormat(module: JSTarget["module"]): "esm" | "commonjs"
 const ES_VERSION = /^es(next|\d+)$/;
 
 /**
- * The canonical spelling of an ES level. `es6` is tsc's alias for `es2015` (the
- * only edition-numbered one it still accepts) and is what fabr's own default
+ * Spell an ES level canonically. `es6` is tsc's alias for `es2015` (the only
+ * edition-numbered one it still accepts) and is what fabr's own default
  * JS_TARGET is written as, so both spellings arrive in practice. Normalizing
  * where a written level enters the build keeps ONE of them in the tsconfig —
  * hence one cache entry and one compile — whichever was written.
@@ -193,11 +195,12 @@ export function formatJSTarget(target: JSTarget): string {
 }
 
 /**
- * A minimal `package.json` whose `type` matches the JS target's module system,
- * so node runs the install's emitted `.js` in the right mode (ESM by default,
- * per the `es6-esm` default target). `extra` fields (e.g. name/private for a
- * test install) are merged ahead of the computed `type`. Shared by every node
- * install fabr stages to run compiled output — the test runner and js_script.
+ * Make a minimal `package.json` whose `type` matches the JS target's module
+ * system, so node runs the install's emitted `.js` in the right mode (ESM by
+ * default, per the `es6-esm` default target). `extra` fields (e.g. name/private
+ * for a test install) are merged ahead of the computed `type`. Shared by every
+ * node install fabr stages to run compiled output — the test runner and
+ * js_script.
  *
  * Takes a resolved format rather than a target's own module, so a caller holding a
  * `dual` target must reduce it ({@link soleModuleFormat}) — an install has one
@@ -213,10 +216,10 @@ export function moduleTypeFile(module: "esm" | "commonjs", extra: Record<string,
 const PROBE_CONDITIONS = new Set(["types", "import", "require", "module-sync", "node", "browser"]);
 
 /**
- * True iff a package PROVIDES the given subpath (`./jsx-runtime`): its `exports`
- * map publishes a name for it, AND the file that name lands on is really in the
- * package. The general "does this package expose subpath X" test that
- * subpath-shaped capability signals build on.
+ * @return true if a package PROVIDES the given subpath (`./jsx-runtime`),
+ * otherwise false: its `exports` map publishes a name for it, AND the file that
+ * name lands on is really in the package. The general "does this package expose
+ * subpath X" test that subpath-shaped capability signals build on.
  *
  * Both halves are needed and the second is the load-bearing one. A catch-all
  * pattern is common — `"./*": "./*"` (markdown-it, the fortawesome icon packs) —
@@ -237,8 +240,8 @@ export function hasPackageExport(pkg: PackageFileSet, subpath: string): Computab
   );
 }
 
-/** Whether `pkg`'s map publishes `subpath` and the package holds the file that
- * resolves to. */
+/** @return true if `pkg`'s map publishes `subpath` and the package holds the
+ * file that resolves to, otherwise false. */
 function publishedFile(pkg: PackageFileSet, manifest: IFile, subpath: string): Computable<boolean> {
   return readJsonFile(manifest, toJsonObject).then(json => {
     /* `null` reads as no map at all (node falls back to `main`), so it exposes
@@ -250,12 +253,12 @@ function publishedFile(pkg: PackageFileSet, manifest: IFile, subpath: string): C
 }
 
 /**
- * Whether a dependency provides the JSX automatic runtime: its `package.json`
- * publishes `./jsx-runtime` and the file that names is in the package. Not a
- * filename scan — a package may map the subpath to a differently-named file, so
- * the map says WHICH file and the package says whether it is there. `@types/*`
- * never qualifies: it carries the types, not the runtime `jsxImportSource`
- * points at.
+ * @return true if a dependency provides the JSX automatic runtime, otherwise
+ * false: its `package.json` publishes `./jsx-runtime` and the file that names
+ * is in the package. Not a filename scan — a package may map the subpath to a
+ * differently-named file, so the map says WHICH file and the package says
+ * whether it is there. `@types/*` never qualifies: it carries the types, not
+ * the runtime `jsxImportSource` points at.
  *
  * TODO: this recognizer is the seed of a general capability model — it should
  * move to a declared `capability jsxRuntime { … }` in JS.fabr once the model can
@@ -268,9 +271,10 @@ function providesJsxRuntime(pkg: PackageFileSet): Computable<boolean> {
   return hasPackageExport(pkg, "./jsx-runtime");
 }
 
-/** The `jsxImportSource` for a TSX compile: the first direct dep (in written
- * order) that provides the JSX runtime. Errors if none — TSX can't compile
- * without one — or if several (an ambiguous capability, like two `log4j`s). */
+/** Find the `jsxImportSource` for a TSX compile: the first direct dep (in
+ * written order) that provides the JSX runtime. Errors if none — TSX can't
+ * compile without one — or if several (an ambiguous capability, like two
+ * `log4j`s). */
 export function resolveJsxImportSource(directDeps: FileSet[]): Computable<string> {
   const packages = directDeps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
   return Computable.forAll(
@@ -332,7 +336,7 @@ const SOURCE_MODE_OPTIONS: Record<string, Record<string, unknown>> = {
   "ts/emit_decorator_metadata": { emitDecoratorMetadata: true },
 };
 
-/** Ordering over ES level names — es5 < es2015 < … < esnext. Reads the level
+/** Order ES level names — es5 < es2015 < … < esnext. Reads the level
  * as written, `es6` and `es2015` alike ({@link canonicalEsLevel}); an
  * unparseable name orders lowest, so it can never win a max. */
 export function esLevelOrder(version: string): number {
@@ -345,8 +349,8 @@ export function esLevelOrder(version: string): number {
 }
 
 /**
- * Whether the sources declare that they use the DOM (the `dom` flag, walked
- * through `provides` like every other source-mode flag).
+ * @return true if the sources declare that they use the DOM (the `dom` flag,
+ * walked through `provides` like every other source-mode flag), otherwise false.
  *
  * A source fact, not read off JS_TARGET's environment: a tree that uses the
  * DOM needs it however it is emitted. It decides two things at once — the
@@ -358,20 +362,20 @@ export function usesDom(flags: Flag[]): boolean {
 }
 
 /**
- * Whether the sources use node's runtime globals (`js/node_globals`) — the same
- * kind of source fact as {@link usesDom}, and read the same way. What it means
- * is decided by the consumer: a browser bundle binds those identifiers to the
- * shim packages the target mounts, a node bundle does nothing, since node
- * supplies them.
+ * @return true if the sources use node's runtime globals (`js/node_globals`),
+ * otherwise false — the same kind of source fact as {@link usesDom}, and read
+ * the same way. What it means is decided by the consumer: a browser bundle
+ * binds those identifiers to the shim packages the target mounts, a node bundle
+ * does nothing, since node supplies them.
  */
 export function usesNodeGlobals(flags: Flag[]): boolean {
   return flagClosure(flags).some(flag => flag.name === "js/node_globals");
 }
 
 /**
- * The ES level a target's sources are written against, from its `es<level>`
- * deps flags (`es2021`, `esnext`, …), or undefined with none. The highest of
- * several wins, and the level comes back canonically spelled
+ * Find the ES level a target's sources are written against, from its
+ * `es<level>` deps flags (`es2021`, `esnext`, …), or undefined with none. The
+ * highest of several wins, and the level comes back canonically spelled
  * ({@link canonicalEsLevel}), so `es6` and `es2015` yield the same tsconfig.
  */
 export function resolveSourceVersion(flags: Flag[]): string | undefined {
@@ -392,9 +396,9 @@ export function resolveSourceMode(flags: Flag[]): Record<string, unknown> {
 }
 
 /**
- * Every flag the given ones reach through `provides`, each once, in pre-order
- * — a flag before what it provides, and the given flags in their own order — so
- * a reader folding them in sequence sees "later wins" as written.
+ * Collect every flag the given ones reach through `provides`, each once, in
+ * pre-order — a flag before what it provides, and the given flags in their own
+ * order — so a reader folding them in sequence sees "later wins" as written.
  */
 function flagClosure(flags: Flag[]): Flag[] {
   const seen = new Set<Flag>();
@@ -409,10 +413,11 @@ function flagClosure(flags: Flag[]): Flag[] {
 }
 
 /**
- * BUILD_TYPEs that carry source maps: full debugging (`debug`) and
- * optimized-but-debuggable (`relwithdebinfo`); `release` strips them. The
- * default BUILD_TYPE is `debug` (STD.fabr), so a plain build is debuggable.
- * Shared by the JavaScript and the stylesheet compiles.
+ * @return true if the BUILD_TYPE carries source maps, otherwise false: full
+ * debugging (`debug`) and optimized-but-debuggable (`relwithdebinfo`) do;
+ * `release` strips them. The default BUILD_TYPE is `debug` (STD.fabr), so a
+ * plain build is debuggable. Shared by the JavaScript and the stylesheet
+ * compiles.
  */
 export function emitsSourceMap(buildType: string | undefined): boolean {
   return buildType === "debug" || buildType === "relwithdebinfo";
@@ -524,7 +529,7 @@ export function classifySources(sources: FileSet): IJsSources {
 }
 
 /**
- * What js_compile takes: the compilable sources plus the hand-written
+ * Collect what js_compile takes: the compilable sources plus the hand-written
  * declarations, which are ambient inputs tsc must see (e.g. a local shim).
  */
 export function compileInputs(sources: IJsSources): FileSet {
@@ -532,18 +537,19 @@ export function compileInputs(sources: IJsSources): FileSet {
 }
 
 /**
- * Whether a tree *requires* the compile: TypeScript to check, or JSX to
- * transform. Plain JavaScript requires neither — a consumer with its own
- * downlevelling linker can take it as-is (see {@link ICompileOptions}).
+ * @return true if a tree *requires* the compile — TypeScript to check, or JSX
+ * to transform — otherwise false. Plain JavaScript requires neither — a
+ * consumer with its own downlevelling linker can take it as-is (see
+ * {@link ICompileOptions}).
  */
 export function requiresCompile(sources: IJsSources): boolean {
   return !sources.ts.isEmpty() || !sources.jsx.isEmpty();
 }
 
 /**
- * What passes through a build untouched: the resources, plus the hand-written
- * declarations — a `.d.ts` is both a compile *input* (above) and a shipped
- * *resource* (e.g. the test runner's globals .d.ts, read back from the
+ * Collect what passes through a build untouched: the resources, plus the
+ * hand-written declarations — a `.d.ts` is both a compile *input* (above) and a
+ * shipped *resource* (e.g. the test runner's globals .d.ts, read back from the
  * installed package), so it is the one source in two buckets' worth of roles.
  */
 export function passthroughFiles(sources: IJsSources): FileSet {
@@ -551,13 +557,13 @@ export function passthroughFiles(sources: IJsSources): FileSet {
 }
 
 /**
- * The runtime *resources* among the given DEP sets — the files no build step
- * emits (`.json`, templates, images), which a compiled tree therefore drops. A
- * runnable install must carry them alongside the compiled entry; a package/test
- * build does not (see compileJsSources: source deps are compiled-against, not
- * shipped). Stylesheets count as resources here and are staged verbatim: these
- * are a *dependency's* files, not the target's own sources, so lowering them is
- * that dependency's business, not this target's.
+ * Collect the runtime *resources* among the given DEP sets — the files no build
+ * step emits (`.json`, templates, images), which a compiled tree therefore
+ * drops. A runnable install must carry them alongside the compiled entry; a
+ * package/test build does not (see compileJsSources: source deps are
+ * compiled-against, not shipped). Stylesheets count as resources here and are
+ * staged verbatim: these are a *dependency's* files, not the target's own
+ * sources, so lowering them is that dependency's business, not this target's.
  */
 export function resourceFiles(sets: FileSet[]): FileSet {
   return FileSet.unionAll(
@@ -581,8 +587,9 @@ export interface ICompiledContents {
   /** The sources no step consumed, for the caller to place. */
   passthrough: FileSet;
   /** Exactly what js_compile was handed as its `src/` tree (empty when nothing
-   * was compiled) — for a caller that mounts the output beside its sources so
-   * source maps resolve. See {@link compileSrcsOf}. */
+   * was compiled) — for a caller that stages the sources beside the output (the
+   * test install, where a runner opens the source a map names). See
+   * {@link compileSrcsOf}. */
   compileSrcs: FileSet;
   /** The `rewrite_imports` rules this compile ran under — each pairs a source
    * specifier with the delivered file that answers it (the css pipeline's
@@ -611,15 +618,15 @@ function withoutTranspiledJs(compiled: FileSet, js: FileSet): FileSet {
   });
 }
 
-/** A compiled name with its extension chain removed, so an output can be traced
- * to the source it came from: `x.js`, `x.d.ts` and `x.js.map` all stem to `x`,
- * as does the `x.ts` that produced them. */
+/** Strip a compiled name's extension chain, so an output can be traced to the
+ * source it came from: `x.js`, `x.d.ts` and `x.js.map` all stem to `x`, as does
+ * the `x.ts` that produced them. */
 function outputStem(name: string): string {
   return name.replace(/\.(d\.[cm]?ts|[cm]?[jt]sx?)(\.map)?$/i, "");
 }
 
 /**
- * Whatever the compiler emitted for a **source dep** — a `.ts` a target
+ * Select whatever the compiler emitted for a **source dep** — a `.ts` a target
  * compiles against but does not distribute, so its `.js`, its declaration and
  * their maps are that dep's artifacts and not this target's.
  *
@@ -718,10 +725,11 @@ function withGeneratedSources(classified: IJsSources, added: IJsSources): IJsSou
  * Build a source tree: classify it, run the steps its contents call for —
  * the css pipeline (sass_compile, then css_postcss) for the stylesheets, then
  * `js_compile` for the code — and return
- * the parts. `deps` serve both: the packages among them mount as the compile's
- * node_modules and double as the Sass loadPaths. The parts stay separate because
- * callers place them differently — a test install mounts the compiled tree and
- * the sources at different roots, a package unions the lot.
+ * the parts. `deps` serve both: the packages among them are the compile's
+ * dependency table and the packages the stylesheets may load from. The parts
+ * stay separate because callers place them differently — a test install mounts
+ * the compiled tree and the sources at different roots, a package unions the
+ * lot.
  *
  * **The css step comes first, and the compile consumes it.** A css-module's
  * class names only exist once Sass has evaluated the stylesheet and the scoper
@@ -851,21 +859,22 @@ export function compileJsSources(
   });
 }
 
-/** The deps that are plain SOURCE rather than a package or a flag: compiled
- * against as siblings of the target's own sources, never distributed by it. */
+/** Select the deps that are plain SOURCE rather than a package or a flag:
+ * compiled against as siblings of the target's own sources, never distributed
+ * by it. */
 export function sourceDepsOf(directDeps: FileSet[]): FileSet[] {
   return directDeps.filter(dep => !(dep instanceof PackageFileSet) && !(dep instanceof Flag));
 }
 
 /**
- * Exactly what js_compile is handed as its `src/` tree, or undefined when there
- * is nothing to compile (no TypeScript, no JSX, no plain JavaScript, and no
- * source dep to compile against — a tree of declarations alone emits nothing,
- * so it does not earn a sub-target).
+ * Collect exactly what js_compile is handed as its `src/` tree, or undefined
+ * when there is nothing to compile (no TypeScript, no JSX, no plain JavaScript,
+ * and no source dep to compile against — a tree of declarations alone emits
+ * nothing, so it does not earn a sub-target).
  *
- * Exposed because a consumer that mounts the compiled output BESIDE its sources
- * — the test install, so each `.js.map` resolves — needs the same set, not a
- * re-derived approximation of it.
+ * Exposed because a consumer that stages the compiled output BESIDE its sources
+ * — the test install, where a runner opens the source a map names — needs the
+ * same set, not a re-derived approximation of it.
  */
 export function compileSrcsOf(sources: IJsSources, directDeps: FileSet[]): FileSet | undefined {
   const sourceDeps = sourceDepsOf(directDeps);
@@ -875,16 +884,17 @@ export function compileSrcsOf(sources: IJsSources, directDeps: FileSet[]): FileS
   return FileSet.unionAll(compileInputs(sources), ...sourceDeps);
 }
 
-/* Deps split by kind. A built package mounts as node_modules, and a source-mode
- * `Flag` rides alongside it — both are `deps` to js_compile (a Flag is an empty
- * FileSet, so it mounts nothing; js_compile reads it back with getFlags("deps")
- * to fold its tsconfig overlay). A *non-package* content dep is plain source the
- * target needs but does not distribute — a `.d.ts` type shim, or test support
- * like a harness. It joins the compile inputs (tsc sees it, and a relative `./x`
- * import resolves to it as a sibling) but never the passthrough, so it's compiled-
- * against yet not shipped: a `.d.ts` emits nothing; a `.ts`'s output rides the
- * compiled tree (into a js_test run install; a js_package would vendor it — use a
- * package to avoid that). */
+/* Deps split by kind. A package reaches js_compile as a row of its dependency
+ * table, and a source-mode `Flag` rides alongside it — both are `deps` to
+ * js_compile (a Flag is an empty FileSet, so it mounts nothing; js_compile
+ * reads it back with getFlags("deps") to fold its tsconfig overlay). A
+ * *non-package* content dep is plain source the target needs but does not
+ * distribute — a `.d.ts` type shim, or test support like a harness. It joins
+ * the compile inputs (tsc sees it, and a relative `./x` import resolves to it
+ * as a sibling) but never the passthrough, so it's compiled-against yet not
+ * shipped: a `.d.ts` emits nothing; a `.ts`'s output rides the compiled tree
+ * (into a js_test run install; a js_package would vendor it — use a package to
+ * avoid that). */
 function mountedDeps(directDeps: FileSet[]): FileSet[] {
   return directDeps.filter(dep => dep instanceof PackageFileSet || dep instanceof Flag);
 }
@@ -948,9 +958,8 @@ const NODE_SHEBANG = "#!/usr/bin/env node\n";
  * `#!` interpreter line: any bin whose bytes don't already start with `#!` (a
  * bundled shell script carries its own) gets `#!/usr/bin/env node` prepended
  * here. Fabr itself launches via the runnable descriptor, never the shebang,
- * so self-hosting does not catch a missing one. The exec bit tsc drops — and
- * which fabr can't yet stamp without per-entry mode in the manifest — npm
- * restores on install.
+ * so self-hosting does not catch a missing one. The bin is written without an
+ * exec bit; npm sets one on install.
  */
 export function withBinShebangs(contents: FileSet): Computable<FileSet> {
   const files = new Map<string, IFile>(contents);
@@ -975,19 +984,19 @@ export function withBinShebangs(contents: FileSet): Computable<FileSet> {
 }
 
 /**
- * Make a resolved package runnable: mount the package and its resolved
- * dependency closure as node_modules, and launch a bin under node. The runnable's
- * launch **surface** is the package's own files (findable by path) unioned with a
- * `SymlinkFile` per package.json `bin` (findable by command, targeting the bin's
- * install path — bins added first, so a bin wins its command name and a same-path
- * tie over a like-named file); a projection
- * is `surface.find`. The default entry (no projection) is the sole bin, or a
+ * Make a materialized package runnable: mount the package and its materialized
+ * dependency closure as node_modules, and launch a bin under node. The
+ * runnable's launch **surface** is the package's own files (findable by path)
+ * unioned with a `SymlinkFile` per package.json `bin` (findable by command,
+ * targeting the bin's install path — bins added first, so a bin wins its
+ * command name and a same-path tie over a like-named file); a projection is
+ * `surface.find`. The default entry (no projection) is the sole bin, or a
  * bin-less package's sole file; anything else needs a projection. This is the
- * single "npm package → runnable" path — shared by an external `@npm:…` consumed
- * under `run` (via NPMRepository), a declared `js_package[run]` (over its own
- * generated package.json bin), and js_script's package-mode entry. The package's
- * dependencies must already be resolved (PackageFileSets, not inert refs) — its
- * collection point is responsible for that.
+ * single "npm package → runnable" path — shared by an external `@npm:…`
+ * consumed under `run` (via NPMRepository), a declared `js_package[run]` (over
+ * its own generated package.json bin), and js_script's package-mode entry. The
+ * package's dependencies must already be materialized (PackageFileSets, not
+ * references) — its collection point is responsible for that.
  *
  * `extras` decorate the install beyond the package's own closure (js_script's
  * `deps` — the additional environment a packaged tool needs, e.g. a framework's
@@ -1075,13 +1084,13 @@ function binEntry(packageName: string, command: string, target: unknown): [strin
 }
 
 /**
- * The package's `bin` as a command→path map, read from its package.json (npm
- * allows `bin` to be a bare string — the command is the package's unscoped
- * name — or an object); no package.json, no `bin`, or a `bin` of any other
- * shape (npm normalizes those away too) yields an empty map — not runnable.
- * Entries are normalized/validated via {@link binEntry}. Shared by
- * makeNpmRunnable (the bin surface) and js_script's package-mode entry (the
- * package's declared bin is the entry).
+ * Read the package's `bin` as a command→path map from its package.json (npm
+ * allows `bin` to be a bare string — the command is the package's unscoped name
+ * — or an object); no package.json, no `bin`, or a `bin` of any other shape
+ * (npm normalizes those away too) yields an empty map — not runnable. Entries
+ * are normalized/validated via {@link binEntry}. Shared by makeNpmRunnable (the
+ * bin surface) and js_script's package-mode entry (the package's declared bin
+ * is the entry).
  */
 export function binOf(pkg: PackageFileSet): Computable<Map<string, string>> {
   return pkg.get("package.json").then(file => {

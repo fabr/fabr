@@ -36,13 +36,15 @@ import { ChildProcess } from "node:child_process";
 import { resumeActiveTerminal, suspendActiveTerminal, withTerminalSuspended } from "./Terminal";
 
 /**
- * `fabr run`'s execution half — kept apart from the driver's model/dispatch
- * concerns. Stage the runnable's install into a fresh work dir and launch it
+ * Stage the runnable's install into the program's kept work dir (syncing what
+ * changed since that dir was last written) and launch it
  * *interactively*: inherited stdio, so args, pipes, tty and the exit code all
  * pass through, and it runs in the user's own working directory (the entry is
  * anchored at the staged dir, so its module/resource resolution still points at
  * the install regardless of cwd) — or, for an install-anchored runnable
  * (`launchCwd: "install"`), in the staged dir. Returns the program's exit code.
+ * This is `fabr run`'s execution half, kept apart from the driver's
+ * model/dispatch concerns.
  *
  * This shares the launch reduction (`toCommandLine`) with the `generate` build
  * step, differing in inherited (not captured) stdio, the launch cwd, and
@@ -82,20 +84,20 @@ function stageInstall(cache: BuildCache, dir: string, runnable: RunnableFileSet,
   );
 }
 
-/** The argv for launching from `dir`: an install-anchored runnable runs *in* the
+/** Make the argv for launching from `dir`: an install-anchored runnable runs *in* the
  * staged dir, so its entry stays install-relative (as the exec build step); a
  * caller-cwd runnable runs in the user's directory with the entry made absolute. */
 function launchArgv(runnable: RunnableFileSet, callerArgs: string[], dir: string): string[] {
   return runnable.launchCwd === "install" ? runnable.toCommandLine(callerArgs) : runnable.toCommandLine(callerArgs, { anchor: dir });
 }
 
-/** The launch cwd override: the staged dir for an install-anchored runnable,
+/** Choose the launch cwd override: the staged dir for an install-anchored runnable,
  * none (inherit the caller's) otherwise. */
 function launchDir(runnable: RunnableFileSet, dir: string): string | undefined {
   return runnable.launchCwd === "install" ? dir : undefined;
 }
 
-/** The launch environment override: this process's own with the runnable's
+/** Make the launch environment override: this process's own with the runnable's
  * variables over it, or none (inherit it as it is) where the runnable has none. */
 function launchEnv(runnable: RunnableFileSet): Record<string, string> | undefined {
   if (runnable.env.size === 0) {
@@ -172,7 +174,7 @@ interface SpareInstall {
  * *not* auto-respawned — we stay watching and relaunch on the next change.
  */
 export class RunSupervisor {
-  /** Every install staged on disk, so a shutdown removes the lot. */
+  /** Every install staged on disk, so a shutdown releases the lot. */
   private readonly installs = new Set<Install>();
   /** The install a finished child left, if any, for the next relaunch to sync. */
   private spare?: SpareInstall;
@@ -206,10 +208,10 @@ export class RunSupervisor {
     private readonly callerArgs: string[],
     private readonly log: Log
   ) {
-    /* Whatever ends fabr (SIGINT/SIGTERM → exit 0, an error, a stall) must take
-     * the child with it — a synchronous exit hook kills it and clears its
-     * install. This relies on the process ending via `process.exit` (the watch
-     * lifecycle routes both signals through it); a default signal disposition
+    /* Whatever ends fabr (SIGINT/SIGTERM/SIGHUP → exit 0, an error, a stall)
+     * must take the child with it — a synchronous exit hook kills it and
+     * releases its install. This relies on the process ending via `process.exit`
+     * (the watch lifecycle routes its signals through it); a default signal disposition
      * would bypass the hook, which is why those signals are handled explicitly. */
     process.on("exit", () => this.stop());
   }
@@ -263,8 +265,8 @@ export class RunSupervisor {
     );
   }
 
-  /** `install` is staged — stop the old child (if any) and launch it once that
-   * child has *actually exited*. The wait matters: a real server still holds its
+  /** Swap to the staged `install`: stop the old child (if any) and launch it
+   * once that child has *actually exited*. The wait matters: a real server still holds its
    * port until it exits, so binding the replacement synchronously races it
    * (EADDRINUSE) — exactly the dev-server case run supervises. Resolves when the
    * new child is running (or the update was superseded meanwhile). */
@@ -380,8 +382,8 @@ export class RunSupervisor {
     setTimeout(() => killProcessGroup(child, "SIGKILL"), RESTART_GRACE_MS).unref();
   }
 
-  /** The program is unchanged — apply a served-content delta (if any) to the
-   * committed install's dir in place. Chained behind that dir's staging write
+  /** Apply a served-content delta (if any) to the committed install's dir in
+   * place, the program being unchanged. Chained behind that dir's staging write
    * and any earlier sync so writes apply in settle order; generation-guarded so
    * a restart that supersedes a queued sync discards it (and silences its
    * failures — its dir may be gone). Settles when this cycle's sync has landed
@@ -434,8 +436,8 @@ export class RunSupervisor {
     return sync;
   }
 
-  /** `install`'s child ended (crash, one-shot completion, or a spawn error): drop
-   * it, so the next change relaunches. Keyed on the install, so a handler for a
+  /** Drop `install`'s child once it has ended (crash, one-shot completion, or a
+   * spawn error), so the next change relaunches. Keyed on the install, so a handler for a
    * superseded one can't clear the live child. */
   private onChildGone(install: Install, err?: Error): void {
     if (install.child === undefined) {

@@ -55,7 +55,7 @@ const BINARY = extensionPattern(BINARY_EXTENSIONS);
 const ASSET = extensionPattern([...STYLESHEET_EXTENSIONS, ...BINARY_EXTENSIONS]);
 
 /**
- * The stub for `request`, or undefined if it is ordinary JavaScript.
+ * Get the stub for `request`, or undefined if it is ordinary JavaScript.
  *
  * Judged on the REQUEST rather than the resolved path: a
  * stylesheet that was never staged (not among the target's `srcs`) does not
@@ -99,8 +99,8 @@ export function installAssetHooks(): void {
       module.exports = assetStubFor(filename);
     };
   }
-  /* Reached dynamically: registerHooks postdates the @types/node fabr builds
-   * against. */
+  /* Optional: absent on a node before 22.15, where only the CommonJS seam is
+   * installed. */
   const { registerHooks } = Module as unknown as { registerHooks?: (hooks: IModuleHooks) => void };
   if (registerHooks !== undefined) {
     registerHooks({
@@ -145,7 +145,7 @@ interface ILoaded {
 }
 
 /**
- * The css-modules identity proxy: every property is its own name, so
+ * Make the css-modules identity proxy: every property is its own name, so
  * `styles.cardTitle` is `"cardTitle"` and a className assertion reads exactly as
  * the source does.
  *

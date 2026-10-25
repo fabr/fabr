@@ -161,7 +161,7 @@ interface IFileRun {
   error?: Error;
 }
 
-/** The per-invocation report name: distinct per file so parallel invocations
+/** Name the per-invocation report: distinct per file so parallel invocations
  * never collide, and unselected by the `outputs` projection (only the merged
  * {@link TEST_REPORT_FILENAME} is), so collection discards them. */
 function invocationReport(index: number): string {

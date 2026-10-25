@@ -24,9 +24,10 @@
  * interactive `fabr run` verb.
  *
  * `run` is a command line: `cmd args… [redirs] | cmd args… [redirs]`. Each
- * command is a fabr runnable (resolved under `run` and mounted in its own
- * sandbox subdir — tools don't share a `node_modules`); args are literal or a
- * glob expanded over the staged `srcs` (never rewritten, never a reference —
+ * command is a fabr runnable resolved under `run` (a single command mounted at
+ * the sandbox root beside `srcs`, each stage of a multi-stage pipeline under
+ * its own subdir, so the tools don't share a `node_modules`); args are literal
+ * or a glob expanded over the staged `srcs` (never rewritten, never a reference —
  * `<`/redirect targets are the only other reference position). `|` wires
  * stdout→stdin; `> name` / `2> name` / `&> name` capture a stream as content
  * named `name`; `< source` streams a single-file reference to the first stage's

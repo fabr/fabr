@@ -88,9 +88,9 @@ export function isRepository(source: unknown): source is Repository {
 }
 
 /**
- * Whether this source delivers content directly — a FileSet, or any other
- * FileSource that answers `find`/`get` on its own terms (a `fetch` table, a
- * release namespace). The complement is the deferred kinds, which promise
+ * @return true if this source serves content directly — a FileSet, or any
+ * other FileSource that answers `find`/`get` on its own terms (a `fetch`
+ * table, a release namespace) — otherwise false. The complement is the deferred kinds, which promise
  * content but cannot yet serve it: the references (a {@link Reference} of any
  * kind) and a pending projection (FileSetRef — a collection point applies it).
  */
@@ -124,7 +124,7 @@ export interface RepositoryLookup {
   resolveFiles?(reference: RepositoryRef): Computable<FileSet>;
 
   /**
-   * The requirement `ref` declares — package name + the version constraint as
+   * Get the requirement `ref` declares — package name + the version constraint as
    * WRITTEN — for a generated manifest (which records what a package *requires*,
    * not what fabr's joint resolution pinned, which a transitive constraint may
    * have bumped). Undefined if the reference declares no version to record.
@@ -209,7 +209,7 @@ export interface RepositoryReader<V, C> extends RequirementSource<V> {
   fetchFiles(reference: RepositoryRef): Computable<FileSet>;
   /** Fetch one exact package version's content. */
   fetch(name: string, version: V): Computable<PackageFileSet>;
-  /** The published-version list for repair suggestions; undefined when the
+  /** Get the published-version list for repair suggestions; undefined when the
    * registry has no such package. Reads a mutable document — failure-path
    * only, and optional: absence means no suggestions. */
   availableVersions?(name: string): Computable<V[] | undefined>;
@@ -224,8 +224,8 @@ export interface RepositoryReader<V, C> extends RequirementSource<V> {
 }
 
 /**
- * Whether `source` is a package registry (structurally — the same move as
- * {@link isRepository}): what a `repository_group` requires of a route target,
+ * @return true if `source` is a package registry (structurally — the same move
+ * as {@link isRepository}), otherwise false: what a `repository_group` requires of a route target,
  * and how one ecosystem's publish packaging recognizes coordinates of its own
  * ecosystem in a release (by then comparing `format` for identity).
  */
@@ -353,7 +353,7 @@ export class RepositoryPublishRef {
     coordinate: { readonly name: string; readonly version: string },
     /** The declared name of the destination repository in the build's
      *  namespace (`@npm`) — the destination cannot know what it was declared
-     *  as, so the resolver attaches it at vend time. Display-only: completes
+     *  as, so lookup attaches it at vend time. Display-only: completes
      *  the written coordinate (`@npm:name:version`). */
     public readonly repositoryName?: string
   ) {
@@ -377,7 +377,7 @@ export class RepositoryPublishRef {
  * A deferred reference to files from a Repository, possibly narrowed by
  * projections: "the thing we resolve", explicitly separate from the FileSet
  * content it eventually produces. References travel through property and
- * target resolution as inert values, so that the consuming target's collection
+ * target lookup as inert values, so that the consuming target's collection
  * point can gather every reference that surfaces and resolve them together.
  *
  * Instances are immutable: provenance steps and projections accumulate into
@@ -401,7 +401,7 @@ export class RepositoryRef extends Reference implements Requirement {
     identity: Requirement,
     fields: ReferenceFields = { ...NO_REFERENCE_FIELDS, override: identity.override, renameTo: identity.renameTo },
     /** The name the repository was reached by, as written (`@deps`) — stamped
-     *  where the reference resolves (the site that matched the declaration),
+     *  where the reference is looked up (the site that matched the declaration),
      *  like a publish ref's repositoryName. Display-only: how the resolution
      *  layer renders suggestions and progress in the user's own spelling. */
     public readonly repositoryName?: string
@@ -412,7 +412,7 @@ export class RepositoryRef extends Reference implements Requirement {
   }
 
   /**
-   * The reference a whole written name makes, in a repository whose
+   * Make the reference a whole written name makes, in a repository whose
    * references state no version and project nowhere: the name's text, and the
    * rename written on it.
    */
@@ -567,14 +567,14 @@ export function renamedAs(source: SourceRef | ResolvedNode, renameTo: string, wr
 }
 
 /**
- * A FileSource, Repository, deferred RepositoryRef, projection-pending
- * FileSetRef, or unbuilt TargetRef: the currency of looking up properties and
- * targets.
+ * A FileSource, a NamespaceRef (a repository named on its own), a deferred
+ * RepositoryRef, a projection-pending FileSetRef, or an unbuilt TargetRef: the
+ * currency of looking up properties and targets.
  */
 export type SourceRef = FileSource | NamespaceRef | RepositoryRef | FileSetRef | TargetRef;
 
-/** A collection's source, materialized: content, a Repository (for config
- * lookups), or, where its reference carries projections, a {@link FileSetRef}
+/** A collection's source, materialized: content, or, where its reference
+ * carries projections, a {@link FileSetRef}
  * with them still pending. The caller applies the pending projections
  * (`applyProjections`), or hands the ref to a consumer that reinterprets it
  * (see TargetContext.getContainedFileProperty). */

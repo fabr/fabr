@@ -116,8 +116,8 @@ function requirements(context: TargetContext): Computable<{
 }
 
 /** Make the target's package: `files` under its name at `version`, requiring
- * the packages `deps`, `provided` and `optional` are edges to, the latter two
- * named as provided. */
+ * the packages `edges.dependencies`, `edges.provided` and
+ * `edges.optional_provided` lead to, the latter two named as provided. */
 function packageOf(
   context: TargetContext,
   files: Iterable<[string, IFile]>,

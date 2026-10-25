@@ -26,8 +26,9 @@ import { BuildAction, BuildResult, configFiles, fileSetInput, stringConfig } fro
 import { ActionContext, IChangedFiles, toChangesDocument } from "../core/BuildCache";
 
 /**
- * The `command-pipeline` build action: stage the combined install (each stage's
- * runnable under its own subdir, plus the shared `srcs` at the root), run the
+ * Run the `command-pipeline` build action: stage the combined install (see
+ * {@link stagePipeline}: a single stage's runnable at the root over `srcs`,
+ * each stage of a pipeline under its own `.fabr-cmd-<n>/`), run the
  * stages as a pipeline (stdout→stdin wired, first stage fed the `stdin` file if
  * present), and collect the result: the redirect captures (streamed straight to
  * the content store, each named content) where there is no `output`, else what
@@ -86,7 +87,7 @@ function runPipeline(action: BuildAction, ctx: ActionContext, report: ITaskRepor
 }
 
 /**
- * What `output` collects: it selects from everything the command produced — a
+ * Collect what `output` selects, from everything the command produced — a
  * redirect names a file in the sandbox as surely as a tool writing one does —
  * through the one projector, so its `dir:` strip and `-> tmpl` rename apply to
  * both alike; a redirect it does not select is not collected, and one named
@@ -105,7 +106,7 @@ function outputOf(captured: FileSet, written: FileSet, output: Name): FileSet {
 }
 
 /**
- * What a run with a successful one before it is handed: the files that run kept,
+ * Make what a run with a successful one before it is handed: the files that run kept,
  * where they were, and the changes document at `changes`. Undefined where there
  * is no such run, so the command finds neither and runs cold.
  */
@@ -119,7 +120,7 @@ function keptBase(changed: IChangedFiles | undefined, state: FileSet | undefined
   );
 }
 
-/** The redirect captures `output` selects, under the names it gives them. A
+/** Select the redirect captures `output` names, under the names it gives them. A
  * capture selected under the name of a selected written file is a conflict,
  * reported with each side named as the command produced it. */
 function selectedCaptures(captured: FileSet, written: FileSet, output: Name): FileSet {
@@ -197,11 +198,11 @@ export interface IKeptState {
   changes?: string;
 }
 
-/** @return a command-pipeline action from the resolved per-stage specs, the
- * combined staged fileset, an optional single-file stdin, the `output`
- * projection (absent to collect only the redirect captures), the
- * variables every stage runs with (its whole environment), and what it keeps
- * between runs. */
+/** @return a command-pipeline action from the combined staged fileset, the
+ * resolved per-stage specs, an optional single-file stdin, the `output`
+ * projection (absent to collect only the redirect captures), the task label,
+ * the variables every stage runs with (its whole environment), and what it
+ * keeps between runs. */
 export function createPipelineAction(
   files: FileSet,
   specs: StageSpec[],

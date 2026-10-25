@@ -93,7 +93,7 @@ export class CommandLineSource {
   }
 
   /**
-   * The decl a name typed on the command line is written in: this line as its
+   * Make the decl a name typed on the command line is written in: this line as its
    * file, `<command-line>` *located in the invocation directory*. A reference's
    * bare paths root at the directory of the file it is written in, so
    * `fabr ls ./packages` means what `./packages` written in a build file there

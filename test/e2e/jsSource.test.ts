@@ -21,8 +21,7 @@ import { expect } from "chai";
 import { runFabr, STUB_TSC, STUB_TSC_CONFIG } from "./harness";
 
 /* A js_package's own .js/.jsx sources are routed through the compile (tsc
- * allowJs), so they land in the built package (previously they were silently
- * dropped) and a .ts may import a local .js. The stub tsc mirrors allowJs by
+ * allowJs), so they land in the built package and a .ts may import a local .js. The stub tsc mirrors allowJs by
  * copying .js verbatim; the real downlevel-to-JS_TARGET is tsc's own job,
  * covered by the tsconfig unit test (allowJs + target). */
 describe("e2e: js_package with plain JS sources", () => {

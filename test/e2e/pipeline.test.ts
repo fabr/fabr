@@ -20,7 +20,7 @@
 import { expect } from "chai";
 import { runFabr } from "./harness";
 
-/* The `generate` genrule as a command pipeline: commands are fabr runnables,
+/* `generate` as a command pipeline: commands are fabr runnables,
  * streams are wired with `|`, and `>`/`2>`/`&>` capture output as content. Two
  * loose js_script tools — `emit` writes to stdout, `upper` uppercases stdin —
  * exercise redirects and piping through the real CLI. */
@@ -70,9 +70,7 @@ describe("e2e: generate command pipelines", () => {
   });
 
   it("passes a quoted argument's metacharacters through verbatim", () => {
-    /* A literal arg is TEXT, so it reaches the program as written. It used to be
-     * rendered through the name's pattern form, which escapes metacharacters —
-     * so a program received `a \* b` where the build script said "a * b". */
+    /* A literal arg is TEXT, so it reaches the program as written. */
     const result = runFabr(
       {
         "PROJECT.fabr":
@@ -121,8 +119,7 @@ describe("e2e: generate command pipelines", () => {
   it("resolves a command written as a projection, not only a whole declared name", () => {
     /* A command is an ordinary written reference resolved through the file core,
      * so a projection into a runnable (and equally an external requirement like
-     * `@npm:typia:9.7.1`, or a path) names the tool — previously only an exact
-     * declared target/global name resolved. */
+     * `@npm:typia:9.7.1`, or a path) names the tool. */
     const result = runFabr(
       { "PROJECT.fabr": TOOLS + "generate g { run = emit:emit.js > out.txt; }\n", ...TOOL_FILES },
       ["cat", "g:out.txt"]
@@ -140,8 +137,7 @@ describe("e2e: generate command pipelines", () => {
 
   it("reads stdin from a file path ('< path'), not only a declared name", () => {
     /* stdin resolves through the same file core as a FILES value, so a bare
-     * `< src/input.txt` names a file relative to the build file — previously
-     * only an exact declared target/property name resolved. */
+     * `< src/input.txt` names a file relative to the build file. */
     const result = runFabr(
       {
         "PROJECT.fabr": TOOLS + "generate g { run = upper < src/input.txt > out.txt; }\n",

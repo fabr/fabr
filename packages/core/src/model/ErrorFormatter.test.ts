@@ -32,7 +32,7 @@ import { DiagnosticErrorFormatter, errorSummary } from "./ErrorFormatter";
 const HOST_TRIPLE = "arm64-apple-macosx15.0";
 
 
-/* The AST decl types aren't exported, so recover them from the error constructors.
+/* The AST decl types, taken from the error constructors' parameters.
  * The formatter only reads name/offset/source, so partial stubs suffice (spans
  * aren't asserted — we inspect the raw notes), hence the `as unknown` casts. */
 type TargetDecl = ConstructorParameters<typeof DependencyFailedError>[0];
@@ -373,8 +373,7 @@ describe("DiagnosticErrorFormatter", () => {
 
   it("annotates a no-rule failure with the explicit constraints only", () => {
     /* The constraint set carries the run's ambient facts too; only the explicit
-     * overrides are worth showing (and the set is a Constraints, not a record —
-     * enumerating it as one rendered its private field). */
+     * overrides are worth showing. */
     const constraints = Constraints.of({ [BUILD_OPERATION]: "test", HOST: HOST_TRIPLE, BUILD_TYPE: "release" });
     const [diag] = capture(new NoRuleFoundError(targetDecl("lib"), constraints));
     expect(diag.message).to.equal("Cannot test 'lib': no rule matches target type 'js_package' (BUILD_TYPE=release)");

@@ -97,10 +97,10 @@ async function imported(files: Map<string, IFile>, ...names: string[]): Promise<
 }
 
 describe("assembling delivered edge-binding graphs", () => {
-  /** A delivered closure from a literal `id -> {name: id}` graph — complete
-   * edge bindings, cycles allowed — built the way the resolution layer's
-   * buildClosure builds one: an instance per selection wired through the
-   * graph builder, named as it is installed. */
+  /** Build a closure from a literal `id -> {name: id}` graph — complete edge
+   * bindings, cycles allowed — as a resolution's materialized graph is built:
+   * an instance per selection wired through PackageGraphBuilder, named as it
+   * is installed. */
   function delivered(edges: Record<string, Record<string, string>>, rootId: string): PackageFileSet {
     const builder = new PackageGraphBuilder();
     const instances = new Map<string, PackageFileSet>();

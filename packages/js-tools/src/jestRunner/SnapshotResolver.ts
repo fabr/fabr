@@ -32,20 +32,21 @@
  * name, which still matches on the next run.
  *
  * Loaded by jest-config from a path, so it must be a plain CommonJS module with
- * no dependency on fabr's *core* at runtime — a sibling runner module is fine,
- * and is how runner.ts reaches Report.
+ * no dependency on fabr's *core* at runtime — another runner module is fine
+ * (this one imports ../testRunner/Report).
  */
 
 import * as path from "node:path";
 import { SNAPSHOT_EXT, snapshotPathOf } from "../testRunner/Report";
 
-/** The record for `testPath`, named for the SOURCE it was compiled from. */
+/** Name the record for `testPath` for the SOURCE it was compiled from. */
 export function resolveSnapshotPath(testPath: string): string {
   return snapshotPathOf(testPath);
 }
 
-/** The inverse, which jest uses for its consistency check. The compiled name is
- * the one that always exists, so it is what we hand back. */
+/** Map a record back to the test it names — the record's name less `.snap`,
+ * beside `__snapshots__` — for jest's consistency check. Only a compiled-named
+ * record (the consistency check's sample) maps back to the compiled file. */
 export function resolveTestPath(snapshotPath: string): string {
   const dir = path.dirname(path.dirname(snapshotPath));
   return path.join(dir, path.basename(snapshotPath, SNAPSHOT_EXT));

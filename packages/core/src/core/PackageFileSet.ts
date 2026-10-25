@@ -182,10 +182,10 @@ export function contentOf(pkg: Package): PackageContent {
 /**
  * A FileSet that is a package; adds package name, version, and dependencies.
  *
- * `dependencies` is **what each of the package's direct edges is bound to** —
- * a package, or the reference that requires one where nothing has bound it yet
- * — a fact about the resolution, never a layout decision (layout is the
- * consuming assembler's):
+ * `dependencies` is **each of the package's direct edges**: the reference that
+ * asked, and the package it is bound to where something has bound it — a fact
+ * about the resolution, never a layout decision (layout is the consuming
+ * assembler's):
  *
  * - A **built** package's edges are its own: built deps as packages, external
  *   requirements as references or as the packages a collection point
@@ -364,7 +364,7 @@ export function equalNodes(roots: ReadonlyArray<Package>): Map<Package, Package>
 }
 
 /**
- * One graph node's id-level line: identity, content key, edge targets by id.
+ * Render one graph node's id-level line: identity, content key, edge targets by id.
  * It names a node exactly when no id in its installation is wired two ways —
  * the common case, and what {@link nodeNaming} answers with wherever that
  * holds.
@@ -375,7 +375,7 @@ export function packageNodeSignature(pkg: Package): string {
 }
 
 /**
- * The node names of one installation — the graph reachable from `sets` — as a
+ * Name the nodes of one installation — the graph reachable from `sets` — as a
  * function of an instance: two instances get one name exactly when they are
  * the same package wired the same way all the way down (cycles included), so
  * an installation may hold one `packageId` wired several ways and each wiring
@@ -421,7 +421,7 @@ export function assertSamePackageNode(held: PackageFileSet, arrived: PackageFile
 }
 
 /**
- * The error for two instances under one {@link PackageFileSet.packageId} that
+ * Make the error for two instances under one {@link PackageFileSet.packageId} that
  * are not one node, said in the terms that tell a reader what to do. Different
  * CONTENT is two packages claiming one identity. Same content wired to
  * different dependencies is one package delivered twice, and the dependency
@@ -455,13 +455,13 @@ export function packageConflict(held: PackageFileSet, arrived: PackageFileSet): 
   );
 }
 
-/** `name@version`, and what it depends on, for a conflict's side. */
+/** Describe `name@version`, and what it depends on, for a conflict's side. */
 function dependencyText(pkg: PackageFileSet): string {
   const deps = packageDependencyIds(pkg);
   return `${pkg.packageId} depending on ${deps.length === 0 ? "nothing" : deps.join(", ")}`;
 }
 
-/** What differs between two instances' dependencies, by the name each is
+/** Describe what differs between two instances' dependencies, by the name each is
  * required under. */
 function dependencyDifference(a: PackageFileSet, b: PackageFileSet): string {
   const byName = (pkg: PackageFileSet): Map<string, string> =>
@@ -484,9 +484,10 @@ function packageDependencyIds(pkg: PackageFileSet): string[] {
 }
 
 /**
- * Two instances claiming one name where a consumer addresses its direct
- * dependencies by name — a `node_modules` entry, a module table's top level:
- * two versions of it, or — where the version is the same — the conflict
+ * Make the error for two instances claiming one name where a consumer
+ * addresses its direct dependencies by name (a `node_modules` entry, a
+ * module table's top level): two versions of it, or — where the version is
+ * the same — the conflict
  * {@link packageConflict} explains.
  */
 export function packageNameConflict(held: PackageFileSet, arrived: PackageFileSet): Error {

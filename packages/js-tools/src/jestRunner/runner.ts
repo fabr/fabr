@@ -74,10 +74,11 @@ export function main(argv: string[]): void {
   /* Fail here, once, rather than identically in every child. */
   assertSupportedHost();
   requireEnvironment(options.env);
-  /* Stack frames resolve through the inline maps tsc and the hoist emit, so a
-   * failure names the `.ts` line. The forked children get this via execArgv
-   * below; THIS process needs it too, because a single-file invocation — which
-   * is how fabr calls the runner, once per test file — runs in-process. */
+  /* Stack frames resolve through tsc's `.js.map` files and the hoist's inline
+   * maps, so a failure names the `.ts` line. The forked children get this via
+   * execArgv below; THIS process needs it too, because a single-file
+   * invocation — which is how fabr calls the runner, once per test file — runs
+   * in-process. */
   process.setSourceMapsEnabled(true);
 
   const start = Date.now();
@@ -143,13 +144,13 @@ async function runAll(requests: IChildRequest[], childModule: string): Promise<I
  * One file, run in THIS process rather than forked. fabr invokes the runner
  * once per test file (a partition the contract permits), so this process
  * already IS the per-file isolation boundary a fork would provide. The pool
- * below serves a standalone invocation with a list.
+ * (runAll) serves a standalone invocation with a list.
  *
  * The wedge backstop mirrors the forked path's guard, minus the process to
  * kill: with no result after {@link CHILD_GRACE_MS} the run is declared
  * crashed and reported through the ordinary finish path (whose process.exit
- * takes the wedged work down, as the SIGKILL did). unref'd, so a completed
- * run never waits on it. A throw out of the run is shaped exactly as the
+ * takes the wedged work down, as the forked path's SIGKILL does). unref'd, so
+ * a completed run never waits on it. A throw out of the run is shaped exactly as the
  * forked child shapes it — an execError result — so reporting is one path.
  */
 function runHere(request: IChildRequest): Promise<ICompletedFile[]> {
@@ -188,10 +189,10 @@ function runOne(request: IChildRequest, childModule: string): Promise<ICompleted
     /* stdio piped, not inherited: a file that dies before reporting leaves its
      * reason ONLY on stderr, and that is what makes the difference between a
      * report that says why and one that says "test failed". */
-    /* `--enable-source-maps` makes node resolve stack frames through the inline
-     * maps tsc and the hoist emit, so a failure names the `.ts` line rather than
-     * the compiled one. Jest normally does this itself via its transformer's map
-     * registry, which fabr does not use. */
+    /* `--enable-source-maps` makes node resolve stack frames through tsc's
+     * `.js.map` files and the hoist's inline maps, so a failure names the `.ts`
+     * line rather than the compiled one. Jest normally does this itself via its
+     * transformer's map registry, which fabr does not use. */
     const child = fork(childModule, [], {
       cwd: request.root,
       stdio: ["ignore", "pipe", "pipe", "ipc"],
@@ -269,7 +270,7 @@ const STATUS: Record<string, TestStatus> = {
 };
 
 /**
- * One file's results as CTRF entries. A file that never reported becomes a
+ * Convert one file's results to CTRF entries. A file that never reported becomes a
  * single failure named for the file, carrying its stderr as the trace — the
  * same treatment the node:test flavour gives a file that dies while loading,
  * and for the same reason: without it the user is told only that something

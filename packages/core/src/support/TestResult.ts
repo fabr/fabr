@@ -27,16 +27,18 @@ import { FabrError } from "../core/Errors";
  * The structured test report: the contract between a test rule and its
  * runner. The document is CTRF (Common Test Report Format, https://ctrf.io) —
  * a standard JSON test-results schema, so the artifact a test target delivers
- * is directly consumable by third-party tooling. The runner writes the
- * document as the test working directory's TEST_REPORT_FILENAME; the rule
- * delivers it as the test target's output artifact, and the driver reads it
- * back to summarize the run for the user.
+ * is directly consumable by third-party tooling. Each runner invocation writes
+ * the document to the file its `--report` names; the test-run step merges them
+ * ({@link mergeTestReports}) into TEST_REPORT_FILENAME, the test target's
+ * output artifact, and the driver reads it back to summarize the run for the
+ * user.
  *
  * Note the summary start/stop are wall-clock times of the original run: a
  * cached-green report retains its original timings.
  *
- * (The runner side is standalone at runtime, so @fabr-build/js carries its own
- * implementation of this contract; the shapes must be kept in sync.)
+ * (The runner side is standalone at runtime, so @fabr-build/js-tools carries
+ * its own implementation of this contract in testRunner/Report.ts; the shapes
+ * must be kept in sync.)
  */
 
 export type TestStatus = "passed" | "failed" | "skipped" | "pending" | "other";
@@ -47,7 +49,8 @@ export interface ITestResult {
   status: TestStatus;
   /** Elapsed time in milliseconds */
   duration: number;
-  /** Path of the test file, relative to the test working directory */
+  /** The test file's source path (`packages/x/src/Foo.test.ts`), or its
+   * compiled name where no source map names a source */
   filePath?: string;
   /** Failure description (failed tests only) — one line, the summary of what
    * went wrong. */
@@ -191,9 +194,9 @@ export function toTestReport(json: unknown): ITestReport {
   return json;
 }
 
-/** Whether a parsed document is a report fabr can read: a `results` block whose
- * summary counters are numbers and whose `tests` are objects — what every
- * formatter and status check here assumes it was given. */
+/** @return true if a parsed document is a report fabr can read — a `results`
+ * block whose summary counters are numbers and whose `tests` are objects, what
+ * every formatter and status check here assumes it was given — otherwise false. */
 function isCtrfReport(document: unknown): document is ITestReport {
   if (!isJsonObject(document) || !isJsonObject(document.results)) {
     return false;

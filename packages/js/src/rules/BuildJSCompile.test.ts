@@ -41,14 +41,10 @@ function stubContext(packageName?: string): TargetContext {
     getGlobalString: (name: string) => Computable.resolve(name === "JS_TARGET" ? "es2021-commonjs" : "debug"),
     getGlobalRunnable: (name: string) => Computable.resolve(tools[name]),
     getProperty: () => Computable.resolve(packageName === undefined ? undefined : new Property([packageName])),
-    /* No stylesheets among these sources, so nothing to rename — the empty
-     * rewrite, which is what a target declaring none resolves to. */
     getRewrite: () => Computable.resolve(() => undefined),
     /* No rename rules: these fixtures have no stylesheets, so the compile
      * carries neither the rewrite documents nor the resource list. */
     getRewriteRules: () => Computable.resolve([]),
-    /* Nothing reaches the store here (the stub declares no package deps), so a
-     * cache that only knows where its store would be is enough. */
     execution: { buildCache: { storePath: "/store" } },
   } as unknown as TargetContext;
 }
@@ -126,8 +122,8 @@ describe("makeTsConfig", () => {
 
   it("includes .tsx so a .tsx source isn't silently ignored", () => {
     const cfg = makeTsConfig(parseJSTarget("es2018-commonjs")) as unknown as TsConfig;
-    /* `.tsx` must be in `include` — a `.ts`-only glob never matches it, so a .tsx
-     * source was silently ignored and the package built green with it missing. */
+    /* `.tsx` must be in `include` — a `.ts`-only glob never matches it, and the
+     * source would be silently left out. */
     expect(cfg.include).to.include("./src/**/*.tsx");
     expect(cfg.include).to.include("./src/**/*.ts");
   });
@@ -307,10 +303,8 @@ describe("js_compile source-mode flags (through deps)", () => {
 });
 
 describe("js_compile toolchain", () => {
-  /* The regression this pins: the compiler's own `tsc` bin cannot be told where
-   * packages are, so exec'ing it against a manifest layout resolved nothing —
-   * every `types` entry unfound. What runs is always fabr's driver, over
-   * whatever release ${TYPESCRIPT} pins. */
+  /* The compiler's own `tsc` bin cannot be told where packages are, so what
+   * runs is always fabr's driver, over whatever release ${TYPESCRIPT} pins. */
   it("execs the driver, never the pinned compiler's own bin", async () => {
     const argv = (await compileAction()).config.argv as string[];
     expect(argv).to.deep.equal(["node", ".tools/tsc/tscDriver/tsc-driver.js"]);

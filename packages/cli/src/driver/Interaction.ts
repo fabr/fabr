@@ -24,7 +24,7 @@ import { withTerminalSuspended } from "./Terminal";
 
 const DIAG_OPEN_URL = Diagnostic.Info<{ purpose: string; url: string }>("{purpose}: {url}");
 
-/** The platform's open-a-URL command; the URL is passed as its own argv entry,
+/** Make the platform's open-a-URL command; the URL is passed as its own argv entry,
  * never interpolated into a shell line. */
 function openCommandFor(url: string): { command: string; args: string[] } {
   switch (process.platform) {

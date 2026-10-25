@@ -75,9 +75,8 @@ describe("SourceFileSource", () => {
 
   it("treats a vanished file as absent without throwing synchronously", async () => {
     const src = new SourceFileSource(sourceRoot, cache);
-    /* The old statSync ran synchronously at the top of ingest, throwing straight
-     * into the watcher callback for a file gone mid-event; ingest must instead
-     * return a Computable that resolves to 'absent'. */
+    /* A file gone mid-event must not throw synchronously into the watcher
+     * callback; ingest returns a Computable that resolves to 'absent'. */
     const computable = src.ingest("gone.txt");
     expect(await toPromise(computable)).to.equal(undefined);
   });

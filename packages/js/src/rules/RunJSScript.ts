@@ -28,7 +28,7 @@
  * assemble the rest of the install (packages mount under `node_modules/<name>`,
  * loose filesets land at their own paths); `args` are fixed leading arguments.
  * It yields a `RunnableFileSet` — the assembled install plus how to launch it —
- * for `fabr run`, the generic `generate` target, or a golden test to invoke. It
+ * for `fabr run` or the generic `generate` target to invoke. It
  * does not itself execute (executing a runnable and collecting output is the
  * generic `generate` target's job).
  */
@@ -76,10 +76,10 @@ export function compiledEntryName(entryName: string): string {
  * rule is selected by. They resolve as one collection, so an entry package
  * resolves with the deps' own pins. The install is a sealed program, executed
  * and never linked against, so they are collected permissively: resolution
- * repairs are accepted and the assembly nests npm-style. `entry` is read
- * contained, so a projected package arrives as a pending FileSetRef that
- * makeNpmRunnable consumes directly: the projection selects the runnable's
- * entry, as it does for `fabr run`.
+ * repairs are accepted, each fork laid out as an instance of its own. `entry`
+ * is read contained, so a projected package arrives as a pending FileSetRef
+ * that makeNpmRunnable consumes directly: the projection selects the
+ * runnable's entry, as it does for `fabr run`.
  */
 function requirements(
   context: TargetContext
@@ -125,8 +125,8 @@ function defineJsRunnable(
         const packages = deps.filter((d): d is PackageFileSet => d instanceof PackageFileSet);
 
         /* TypeScript entry: compile the entry + any source deps through the
-         * shared js_compile path (the package deps become the compile's
-         * node_modules), then launch the entry's compiled `.js`. A root
+         * shared js_compile path (the package deps are what it compiles
+         * against), then launch the entry's compiled `.js`. A root
          * package.json carries the module `type` matching JS_TARGET so node
          * runs the emitted code (ESM by default) in the right mode. */
         if (classifySourceByExt(entryName) === "ts") {

@@ -75,7 +75,7 @@ function captured(files: FileSet, name: string): Promise<string> {
 }
 
 /* Record *every* settlement, not just the first. A spawn failure fires 'error'
- * then 'close', so a node that re-settles (the double-settle bug) shows up here
+ * then 'close', so a node that re-settles shows up here
  * as two outcomes — and, for executeInteractive, the second one flipping a
  * rejection into a resolve. The grace window is armed only once the first
  * settlement lands (re-armed on each further one), so a slow spawn under load

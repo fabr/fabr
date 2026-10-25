@@ -54,7 +54,7 @@ export function nodeLabel(id: NodeId): string {
  * The data of a finished resolution, what {@link MVSResolution} is made from:
  * the selected package versions, the repairs applied (floor raises), the
  * constraint violations found and any hard errors (unparseable constraints,
- * unconstrained-only requirements). It is the walk's result, or the persisted
+ * floorless-only requirements). It is the walk's result, or the persisted
  * resolution doc read back (see ResolutionDoc), one field for one doc section
  * (`errors` excepted: a resolution with errors is never persisted).
  *
@@ -83,12 +83,10 @@ export interface IResolutionData<V> {
   readonly raises: RaisedFloor<V>[];
   /**
    * The declared requirements of each selected node ({@link nodeId} → its
-   * requirements), i.e. the resolution's edges as the packages declared them.
-   * The walk collects these to compute reachability; handing them back is what
-   * lets a consumer lay the result out — where each edge leads is a pure
-   * function of these plus {@link MVSResolution.selections} (see edgeBinding),
-   * so a layout needs no second read of package metadata. Pruned nodes are not
-   * listed: only what the resolution selected.
+   * requirements), as the packages declared them: the constraint text an
+   * explanation and the strict check read, and what tells a node's provided
+   * edges from its ordinary ones. Pruned nodes are not listed: only what the
+   * resolution selected.
    */
   readonly requirements: Map<NodeId, Requirement[]>;
   /**
@@ -151,7 +149,7 @@ export class MVSResolution<V> implements IResolutionData<V> {
   private readonly order = new Map<Selected<V>, number>();
   /** id → the dependency names its OPTIONAL-provided requirements bind
    * (optional peers, minus any name a real requirement also demands). Derived
-   * lazily — only {@link reachable} asks. */
+   * lazily, on the first {@link optionalProvidedNames} call. */
   private optionalProvided: Map<NodeId, Set<DependencyName>> | undefined;
 
   constructor(
@@ -189,17 +187,17 @@ export class MVSResolution<V> implements IResolutionData<V> {
     }
   }
 
-  /** {@link nodeId} of a selection. */
+  /** Get the {@link nodeId} of a selection. */
   public id(selection: Selected<V>): NodeId {
     return `${selection.name}@${this.versionToString(selection.version)}`;
   }
 
-  /** The selection an id names, if the resolution holds one. */
+  /** Look up the selection an id names, if the resolution holds one. */
   public node(id: NodeId): Selected<V> | undefined {
     return this.byId.get(id);
   }
 
-  /** The selections the given ids name, in the resolution's **canonical
+  /** Get the selections the given ids name, in the resolution's **canonical
    * order** — whatever order the ids arrived in (typically a reachability
    * walk's). Ids the resolution does not hold are dropped. */
   public nodesOf(ids: Iterable<NodeId>): Selected<V>[] {
@@ -214,36 +212,37 @@ export class MVSResolution<V> implements IResolutionData<V> {
     return [...selections].sort((a, b) => this.order.get(a)! - this.order.get(b)!);
   }
 
-  /** The selections of a package, in the resolution's canonical order — the
-   * candidate list {@link edgeBinding} considers. */
+  /** Get the selections of a package, in the resolution's canonical order —
+   * the candidate list {@link edgeBinding} considers. */
   public selectionsOf(pkg: PackageName): readonly Selected<V>[] {
     return this.byPkg.get(pkg) ?? NONE;
   }
 
-  /** The selection a canonical root (by index) binds to — decided when the
-   * resolution was computed, scoped to what that root reaches, so a fork
+  /** Get the selection a canonical root (by index) binds to — decided when
+   * the resolution was computed, scoped to what that root reaches, so a fork
    * packed for another root's violated edge cannot answer here. */
   public rootBinding(index: number): Selected<V> | undefined {
     const at = this.rootBindings[index];
     return at === undefined ? undefined : this.selections[at];
   }
 
-  /** A node's resolved edges: dependency name (the *requirer's* name for it —
-   * the rename, for a renamed dependency) → the id of the selection it binds to. */
+  /** Get a node's resolved edges: dependency name (the *requirer's* name for
+   * it — the rename, for a renamed dependency) → the id of the selection it
+   * binds to. */
   public edgesOf(id: NodeId): ReadonlyMap<DependencyName, NodeId> {
     return this.edges.get(id) ?? NO_EDGES;
   }
 
-  /** The nodes reachable from `seeds` by walking the resolved edges forward —
-   * O(the subset), which is what a delivery is proportional to. Optional
-   * provided edges are bound ({@link edgesOf} — a delivered peer must mount)
-   * but never traversed: an optional peer makes nothing deliverable, so a
-   * subset that does not otherwise reach the peer must not fetch it. */
+  /** Find the nodes reachable from `seeds` by walking the resolved edges
+   * forward — O(the subset), which is what a delivery is proportional to.
+   * Optional provided edges are bound ({@link edgesOf} — a delivered peer must
+   * mount) but never traversed: an optional peer makes nothing deliverable, so
+   * a subset that does not otherwise reach the peer must not fetch it. */
   public reachable(seeds: Iterable<NodeId>): Set<NodeId> {
     return reachableFrom(this.edges, seeds, id => this.optionalProvidedNames(id));
   }
 
-  /** The names a node requires only as an optional peer (see {@link
+  /** Get the names a node requires only as an optional peer (see {@link
    * optionalProvided}). A name both a real requirement and an optional peer
    * demand is not one — the real edge is in effect. */
   public optionalProvidedNames(id: NodeId): ReadonlySet<DependencyName> | undefined {
@@ -264,8 +263,8 @@ export class MVSResolution<V> implements IResolutionData<V> {
     return this.optionalProvided.get(id);
   }
 
-  /** The names a node requires only as provided, whatever the strength — the
-   * edges its consumer binds. A name a real requirement also demands is not
+  /** Get the names a node requires only as provided, whatever the strength —
+   * the edges its consumer binds. A name a real requirement also demands is not
    * one. */
   public providedNames(id: NodeId): ReadonlySet<DependencyName> {
     const requires = this.requirements.get(id) ?? [];
@@ -278,7 +277,7 @@ export class MVSResolution<V> implements IResolutionData<V> {
     return names;
   }
 
-  /** The violations declared by one node ({@link ROOT_REQUIRER} for root
+  /** Get the violations declared by one node ({@link ROOT_REQUIRER} for root
    * requirements), so scoping violations to a delivery is a lookup per
    * delivered node rather than a pass over everything recorded. */
   public violationsOf(requirerId: NodeId): readonly Violation<V>[] {
@@ -286,8 +285,8 @@ export class MVSResolution<V> implements IResolutionData<V> {
   }
 
   /**
-   * The chain of selected versions from a root requirement down to `node`,
-   * following each node's reachability edge, each annotated with the
+   * Trace the chain of selected versions from a root requirement down to
+   * `node`, following each node's reachability edge, each annotated with the
    * constraint its predecessor declared (the root-most carries none). Returned
    * as segments, for a caller that appends its own before joining with " -> ".
    */
@@ -311,18 +310,18 @@ export class MVSResolution<V> implements IResolutionData<V> {
     return chain;
   }
 
-  /** This resolution's {@link ResolutionExplainer} — the same indexes, behind
-   * the narrow explain-only face provenance rendering consumes. */
+  /** Get this resolution's {@link ResolutionExplainer} — the same indexes,
+   * behind the narrow explain-only face provenance rendering consumes. */
   public explainer(): ResolutionExplainer<V> {
     return { id: sel => this.id(sel), find: id => this.node(id), pathTo: node => this.pathTo(node) };
   }
 }
 
 /**
- * The nodes reachable from `seeds`, by **walking the resolution's own edges**
- * — the delivered subset of a joint resolution. O(the subset). The resolver
- * marked `reachableFrom` by following exactly these bindings (see the walk's
- * own reachability pass), so the two agree.
+ * Find the nodes reachable from `seeds`, by **walking the resolution's own
+ * edges** — the delivered subset of a joint resolution. O(the subset). The
+ * resolver marked `reachableFrom` by following exactly these bindings (see the
+ * walk's own reachability pass), so the two agree.
  */
 export function reachableFrom(
   edges: ReadonlyMap<NodeId, ReadonlyMap<DependencyName, NodeId>>,
@@ -349,8 +348,9 @@ export function reachableFrom(
   return reached;
 }
 
-/** The highest of `selections` by version; undefined if there are none. Ties
- * keep the earlier, so the caller's order decides — pass a canonical one. */
+/** Pick the highest of `selections` by version; undefined if there are none.
+ * Ties keep the earlier, so the caller's order decides — pass a canonical
+ * one. */
 function highestOf<V, C>(domain: VersionDomain<V, C>, selections: readonly Selected<V>[]): Selected<V> | undefined {
   return selections.reduce<Selected<V> | undefined>(
     (best, sel) => (best === undefined || domain.compare(sel.version, best.version) > 0 ? sel : best),
@@ -359,7 +359,7 @@ function highestOf<V, C>(domain: VersionDomain<V, C>, selections: readonly Selec
 }
 
 /**
- * **The** rule for the single selection a requirement edge *binds* to, within
+ * Choose the single selection a requirement edge *binds* to, within
  * `selections` (a resolution's, principal and fork selections together), by
  * **satisfaction**: the principal selection of the package when it satisfies
  * the constraint (the flat winner serves every edge it can — nesting is never
@@ -426,7 +426,7 @@ export interface ResolutionExplainer<V> {
   pathTo(node: Selected<V>): string[];
 }
 
-/** {@link ResolutionExplainer} over `selections`. */
+/** Make a {@link ResolutionExplainer} over `selections`. */
 export function resolutionExplainer<V>(
   selections: readonly Selected<V>[],
   versionToString: (version: V) => string

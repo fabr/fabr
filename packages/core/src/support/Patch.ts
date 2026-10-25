@@ -88,8 +88,8 @@ export function parsePatchFile(text: string, what: string, strip = 1): FilePatch
   });
 }
 
-/** A name as the patch writes it, less `strip` leading components; undefined
- * for the null file. */
+/** Strip `strip` leading components from a name as the patch writes it;
+ * undefined for the null file. */
 function strippedName(written: string | undefined, what: string, strip: number): string | undefined {
   if (written === undefined || written === NO_FILE) {
     return undefined;

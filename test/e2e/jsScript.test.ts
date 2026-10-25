@@ -161,10 +161,9 @@ describe("e2e: js_script (runnable) + generate", () => {
   });
 
   it("ships a non-compilable resource dep alongside a TypeScript entry", () => {
-    /* Regression (C2): a runtime data file in `deps` (a .json tsc reads but never
-     * emits) must be carried into the TS-entry install at the package root, next
-     * to the compiled entry, so a relative require resolves — as the .js-entry
-     * install already did. Without the fix the compile drops it and this fails. */
+    /* A runtime data file in `deps` (a .json tsc reads but never emits) is
+     * carried into the TS-entry install at the package root, next to the compiled
+     * entry, so a relative require resolves. */
     const result = runFabr(
       {
         ...STUB_TSC,

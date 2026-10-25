@@ -42,8 +42,8 @@ registerProvenanceNaming(TARGET_PROVENANCE, {
   prefix: (step, below) => wholeContentPrefix(step, declName((step as ITargetOrigin).decl), below),
 });
 
-/** Check whether the content `origin` explains was built in the project, that
- * is, a target produced it. */
+/** @return true if the content `origin` explains was built in the project,
+ * that is, a target produced it, otherwise false. */
 export function builtInProject(origin: IProvenanceStep | undefined): boolean {
   for (let step = origin; step !== undefined; step = step.parent) {
     if (step.kind === TARGET_PROVENANCE) {

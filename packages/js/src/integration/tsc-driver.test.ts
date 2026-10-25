@@ -229,8 +229,8 @@ describe("the tsc driver", () => {
   });
 
   it("takes a dependency's types from the fallback pool when the dependency itself declares none", () => {
-    /* The dylan regression, synthesized: `postprocessing`'s typings import
-     * `three`, which ships no types of its own; the types live in a SIDECAR
+    /* A phantom typings edge: `postprocessing`'s typings import `three`,
+     * which ships no types of its own; the types live in a SIDECAR
      * (`@types/three`) that only the consumer declared. A hoisted install
      * forgave that ambiently — a table must forgive it deliberately, or every
      * such package stops typechecking. */
@@ -556,10 +556,9 @@ describe("the tsc driver", () => {
   });
 
   it("never resolves out of the workspace, whatever an ancestor directory holds", () => {
-    /* Holds by construction now: a bare specifier is answered by the table
-     * alone, so there is no walk up through ancestors fabr does not own for a
-     * stray `node_modules` (the classic `~/node_modules` accident) to answer.
-     * Kept as the regression that says so. */
+    /* A bare specifier is answered by the table alone, so a stray
+     * `node_modules` in an ancestor fabr does not own (the classic
+     * `~/node_modules` accident) is never consulted. */
     const ancestor = path.join(path.dirname(work.root), "node_modules/ghost");
     fs.mkdirSync(ancestor, { recursive: true });
     fs.writeFileSync(path.join(ancestor, "package.json"), JSON.stringify({ name: "ghost", types: "index.d.ts" }));
@@ -1994,9 +1993,8 @@ describe("import rewriting", () => {
   }
 
   it("names the shim in place of the stylesheet, under CommonJS", () => {
-    /* The case the ES-module gate would have missed: the test pipeline compiles
-     * CommonJS, and `require("./Card.module.scss")` names a file no step
-     * produces just as surely as an `import` would. */
+    /* The test pipeline compiles CommonJS, and `require("./Card.module.scss")`
+     * names a file no step produces just as surely as an `import` would. */
     const { status, output, js } = compileAssets("commonjs");
     expect(status, output).to.equal(0);
     expect(js).to.contain('require("./Card.css.js")');
@@ -2064,10 +2062,10 @@ describe("import rewriting", () => {
 });
 
 /**
- * What the run reports having READ, which is what its cache entry is keyed on
- * The names are dependency paths — the route the lookup took, then the file; 
- * no version, no store path — so * replay can re-resolve each against a later
- * delivery.
+ * What the run reports having READ, which is what its cache entry is keyed on.
+ * The names are dependency paths — the route the lookup took, then the file;
+ * no version, no store path — so each indexes a later build's packages
+ * plainly.
  */
 describe("the tsc driver's dependency report", () => {
   let work: IFixture;

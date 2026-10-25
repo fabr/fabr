@@ -26,7 +26,7 @@ import { PluginContribution } from "../rules/Types";
 /**
  * Collate and validate  the declarations from all included build files to the extent
  * that we can (ie we accept that some potential issues can only be detected given
- * a concrete BuildConfig). The `contributions` (core's rules plus any plugins')
+ * a concrete BuildContext). The `contributions` (core's rules plus any plugins')
  * become the model's rule tables, so rule selection is per-model, not global.
  */
 export function toBuildModel(files: IBuildFileContents[], log: Log, contributions: PluginContribution[]): BuildModel {

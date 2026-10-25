@@ -17,9 +17,11 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-/* The resolver is @fabr-build/js-tools'; the tables it reads here are built by
- * this package's `pnpManifestOf`, so these check the writer and the reader
- * agree: an integration test of the two packages, so it lives with the plugin. */
+/* The resolver is @fabr-build/js-tools'. Most tables here are hand-written in
+ * the generator's shape; the virtual-wiring cases build theirs with this
+ * package's `pnpManifestOf`, so the writer and the reader are checked against
+ * each other there: an integration test of the two packages, so it lives with
+ * the plugin. */
 
 import { expect } from "chai";
 import * as fs from "fs";
@@ -294,7 +296,7 @@ describe("PnpResolver's containing-package questions", () => {
     const resolver = nested();
     expect(resolver.treeRoots).to.deep.equal(resolver.treeRoots);
     /* A root is where a delivered package SITS — the store itself, holding
-     * `outer` and `outerly`, and `outer/vendor`, holding the two nested ones.
+     * `outer` and `outerly`, and `outer/vendor`, holding `inner`.
      * `outer/` is not one: the only row directly inside it is the source row,
      * which is a place in this build rather than a package in a tree. */
     expect([...resolver.treeRoots].sort()).to.deep.equal(

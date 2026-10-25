@@ -47,7 +47,7 @@ export function mapObject<K extends string | symbol | number, V, U>(input: Recor
 }
 
 /**
- * Plain code-unit comparison, for canonical orderings. Key material and
+ * Compare two strings by plain code unit, for canonical orderings. Key material and
  * serialized documents sort with THIS (or `Array.sort`'s default), never
  * `localeCompare`: a locale collation varies with the machine's ICU and can
  * even order two distinct strings as equal, where the whole point of a

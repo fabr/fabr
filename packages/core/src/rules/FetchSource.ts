@@ -65,7 +65,7 @@ class FetchSource implements FileSource {
   ) {}
 
   /**
-   * The member files the pattern selects, downloaded — those and only those —
+   * Download the member files the pattern selects — those and only those —
    * each named by the pattern's own projection (so the written-name rule and
    * `-> tmpl` renames apply as over any container). A pattern that reaches
    * *into* a member is descent's business and matches nothing here, but the
@@ -101,7 +101,7 @@ class FetchSource implements FileSource {
   }
 
   /**
-   * Exact member lookup — how a descent probe lands on a download before
+   * Look up a member exactly — how a descent probe lands on a download before
    * expanding into it. Downloads on demand, like {@link find}; a path that is
    * not a member is simply undefined (probes are speculative — whether an
    * unmatched name is an error is the projection's judgment, made over the
@@ -115,7 +115,7 @@ class FetchSource implements FileSource {
     return this.download(name, member);
   }
 
-  /** One delivered member as a FileSet, its origin stamped: where this content
+  /** Make one fetched member a FileSet, its origin stamped: where this content
    * came from is the download's own knowledge, recorded at ingest (a
    * FileSource stamps origin on what it yields). */
   private delivered(as: string, file: IFile, path: string, member: FetchMember): FileSet {
@@ -248,7 +248,7 @@ function verifiedAgainst(file: IFile, digest: ExpectedDigest, url: string): Comp
   });
 }
 
-/** The store's hex hash re-encoded to the declaration's encoding, so the
+/** Re-encode the store's hex hash to the declaration's encoding, so the
  *  mismatch message shows both sides in the form the user wrote. */
 function encodeDigest(hexHash: string, encoding: "base64" | "hex"): string {
   return encoding === "hex" ? hexHash : Buffer.from(hexHash, "hex").toString("base64");
@@ -285,7 +285,7 @@ function readMembers(context: TargetContext): Computable<Map<string, FetchMember
 }
 
 /**
- * A member name may not be a path prefix of another member — the same rule
+ * Refuse a member name that is a path prefix of another member — the same rule
  * that keeps a target name from conflicting with an implicit namespace: with
  * both `a` and `a/b.tgz` declared, a reference `@dl:a/b.tgz` would be
  * ambiguous between the deeper member and a projection *into* member `a`.

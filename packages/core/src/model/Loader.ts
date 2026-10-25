@@ -86,7 +86,7 @@ export function coreContribution(): PluginContribution {
   return {
     rules: [flagRule, defaultFilesRule, scriptRunRule, serveRunRule, generateRule, patchedRule, syncRule],
     repositories: [catalogRepositoryRegistration, fetchSourceRegistration, repositoryGroupRegistration, fabrHomeRegistration()],
-    includes: [packageLibFile("@fabr-build/core", "STD.fabr")],
+    includes: [getPackageLibFile("@fabr-build/core", "STD.fabr")],
   };
 }
 
@@ -103,18 +103,19 @@ export function packageLibDir(packageName: string): string {
 
 /** @return the absolute path of a `.fabr` file in an installed package's lib/,
  * for a plugin (or core) to name in its contribution's `includes`. */
-export function packageLibFile(packageName: string, file: string): string {
+export function getPackageLibFile(packageName: string, file: string): string {
   return path.join(packageLibDir(packageName), file);
 }
 
 /* A work-list key is a bare file path: which source reads it rides on the name's
  * shape, per the naming contract — project files are named relative to the project
  * source's root (the entry file is, and file-relative include resolution keeps it
- * that way), while plugin/core lib files are absolute ({@link packageLibFile}). */
+ * that way), while plugin/core lib files are absolute ({@link getPackageLibFile}). */
 
-/** Whether a path an include resolved to has climbed out of the project tree —
- * the confinement a project file's includes are held to (a lib file's are not:
- * they resolve within their installed package, which activation vouches for). */
+/** @return true if a path an include resolved to has climbed out of the project
+ * tree, otherwise false. A project file's includes are held to the tree; a lib
+ * file's are not (they resolve within its installed package, which activation
+ * vouches for). */
 function escapesTree(file: string, target: string): boolean {
   return !path.isAbsolute(file) && (target === ".." || target.startsWith(".." + path.sep));
 }
@@ -159,7 +160,7 @@ function resolveIncludeName(file: string, include: IIncludeDecl): ResolvedInclud
   return { pattern: base === "." ? tail : tail.withPrefix(base.endsWith("/") ? base : base + "/") };
 }
 
-/** The trail of `include`s that reached the file `site` lives in — one `note:`
+/** Render the trail of `include`s that reached the file `site` lives in — one `note:`
  * per hop, walking parent-to-root through the discovering-include map, so a
  * failure deep in an include chain (`A included from B included from C…`) shows
  * the whole path back to the project file, not just its immediate includer.
@@ -262,8 +263,9 @@ interface LoadedFile {
   parseErrors: number;
 }
 
-/** The empty decl set for a file that failed to load (a missing include): it
- * contributes no decls, plugins, or further includes, only its logged error. */
+/** The empty decl set for a file an include matched but which was gone by the
+ * time it was read: it contributes no decls, plugins, or further includes, and
+ * logs nothing. */
 const NO_DECLS: IBuildFileContents = {
   namespaces: [],
   targets: [],

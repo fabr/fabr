@@ -69,7 +69,7 @@ export function shellInto(cache: BuildCache, name: string, action: BuildAction |
     .finally(() => cache.releaseWorkDir(dir));
 }
 
-/** The command(s) the staged step would run, as `$ …` lines for the user to
+/** Describe the command(s) the staged step would run, as `$ …` lines for the user to
  * reproduce by hand: a pipeline's stages joined with `|`, or a single exec argv.
  * The leading executable of each is resolved to an absolute path (as the build
  * itself resolves it), so the command runs in the sandbox's clean, PATH-less env. */
@@ -100,7 +100,7 @@ function renderArgv(argv: string[]): string {
   return [resolved, ...rest].map(quote).join(" ");
 }
 
-/** Minimal shell quoting so a printed command is copy-pasteable. */
+/** Quote an argument minimally for the shell, so a printed command is copy-pasteable. */
 function quote(arg: string): string {
   return /[^\w./:@=-]/.test(arg) ? `'${arg.replaceAll("'", "'\\''")}'` : arg;
 }

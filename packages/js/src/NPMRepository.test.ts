@@ -465,7 +465,7 @@ function toPromise<T>(computable: Computable<T>): Promise<T> {
   return new Promise((resolve, reject) => computable.then(resolve, reject));
 }
 
-/** The error's help lines joined — remedies now ride `help`, not the message. */
+/** The error's help lines joined, where the remedies are. */
 function helpText(err: Error): string {
   return helpOf(err).join("\n");
 }
@@ -1394,7 +1394,7 @@ describe("override markers", () => {
    * part (the lexer's reading), which the version split folds back — the
    * fidelity this harness must exercise. */
   /* Refs stamped with the alias a build file would have written them under,
-   * so suggestions render pasteably (the alias rides the ref now). */
+   * so suggestions render pasteably. */
   const refsFor = (repo: NPMRepository, names: string[]): RepositoryRef[] =>
     names.map(name => refOf(repo.getRepositoryRef(parseName(name))).withRepositoryName("@npm"));
 
@@ -1634,8 +1634,7 @@ describe("override markers", () => {
 
 describe("merged layout across a batch", () => {
   /* Two roots resolved and delivered together. Only `md` reaches entities@6.0.0,
-   * so inside jsdom's delivery entities@4.0.0 is unopposed — the shape that used
-   * to lose parse5's requirement (dylan's app_bundle). */
+   * so inside jsdom's delivery entities@4.0.0 is unopposed. */
   const dist = (stem: string): Record<string, unknown> => ({
     dist: { tarball: `${REG}/tarball/${stem}.tgz`, integrity: "", shasum: "", signatures: [] },
   });
@@ -1652,7 +1651,7 @@ describe("merged layout across a batch", () => {
     [`${REG}/tarball/entities6.tgz`]: packageTarball("v6.marker"),
   };
   /* Refs stamped with the alias a build file would have written them under,
-   * so suggestions render pasteably (the alias rides the ref now). */
+   * so suggestions render pasteably. */
   const refsFor = (repo: NPMRepository, names: string[]): RepositoryRef[] =>
     names.map(name => refOf(repo.getRepositoryRef(parseName(name))).withRepositoryName("@npm"));
 
@@ -1690,7 +1689,7 @@ describe("package rename", () => {
     [`${REG}/tarball/2.0.0.tgz`]: packageTarball(),
   };
   /* Refs stamped with the alias a build file would have written them under,
-   * so suggestions render pasteably (the alias rides the ref now). */
+   * so suggestions render pasteably. */
   const refsFor = (repo: NPMRepository, names: string[]): RepositoryRef[] =>
     names.map(name => refOf(repo.getRepositoryRef(parseName(name))));
 

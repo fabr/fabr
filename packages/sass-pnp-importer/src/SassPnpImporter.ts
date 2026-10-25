@@ -145,14 +145,15 @@ export function sassPnpImporter(options: ISassPnpImporterOptions = {}): ISassImp
   };
 }
 
-/** The PnP API node's runtime has registered for `file`, or null outside PnP. */
+/** Find the PnP API node's runtime has registered for `file`, or null outside
+ * PnP. */
 function findPnpApi(file: string): IPnpApi | null {
   const find = (Module as unknown as { findPnpApi?: (lookup: string) => IPnpApi | null }).findPnpApi;
   return find === undefined ? null : find(file);
 }
 
 /**
- * A bare package specifier split into the package it names and the subpath
+ * Split a bare package specifier into the package it names and the subpath
  * within it — one segment deeper for a scoped name. Anything else (a relative
  * or rooted path, a URL with another scheme) names no package.
  */
@@ -168,16 +169,17 @@ function splitSpecifier(specifier: string): { name: string; subpath: string } | 
   return { name: segments.slice(0, depth).join("/"), subpath: segments.slice(depth).join("/") };
 }
 
-/** Whether `file` lies in an installed package, rather than in the project's
- * own (soft-linked) sources, which Sass loads for itself. */
+/** @return true if `file` lies in an installed package, rather than in the
+ * project's own (soft-linked) sources, which Sass loads for itself; otherwise
+ * false. */
 function inPackage(api: IPnpApi, file: string): boolean {
   const locator = api.findPackageLocator(file);
   return locator !== null && api.getPackageInformation(locator)?.linkType === "HARD";
 }
 
 /**
- * The stylesheet a package load names, or null when `issuer` cannot see the
- * package (so the load is left to Sass's load paths).
+ * Resolve a package load to the stylesheet it names, or null when `issuer`
+ * cannot see the package (so the load is left to Sass's load paths).
  */
 function resolvePackageLoad(
   api: IPnpApi,
@@ -217,8 +219,8 @@ function resolvePackageLoad(
 }
 
 /**
- * The file a package's `exports` map publishes for a stylesheet subpath, as
- * dart-sass tries it: the subpath and its extension and partial variants, then
+ * Resolve a stylesheet subpath through a package's `exports` map, as dart-sass
+ * tries it: the subpath and its extension and partial variants, then
  * the same for an `index` beneath it — at most one match per round. Null when
  * the map publishes none of them, which leaves the load to the package's
  * directory: for a stylesheet the map is a first choice, not a boundary.
@@ -237,7 +239,7 @@ function resolveThroughExports(api: IPnpApi, name: string, subpath: string, issu
   return null;
 }
 
-/** The subpaths an exports lookup tries for `subpath`: itself, with each
+/** List the subpaths an exports lookup tries for `subpath`: itself, with each
  * stylesheet extension unless it has one, and each of those as a partial. */
 function exportVariants(subpath: string): string[] {
   const plain = EXTENSIONS.includes(path.posix.extname(subpath)) ? [subpath] : [subpath, ...EXTENSIONS.map(extension => `${subpath}${extension}`)];
@@ -247,8 +249,8 @@ function exportVariants(subpath: string): string[] {
   return [...plain, ...plain.map(variant => path.posix.join(path.posix.dirname(variant), `_${path.posix.basename(variant)}`))];
 }
 
-/** The file `exports` publishes for `request`, or none where it publishes
- * nothing (or names a file that is not there). */
+/** Resolve `request` through `exports` to the file it publishes, or none where
+ * it publishes nothing (or names a file that is not there). */
 function published(api: IPnpApi, request: string, issuer: string): string[] {
   try {
     const found = api.resolveRequest(request, issuer, { conditions: CONDITIONS, extensions: [], considerBuiltins: false });
@@ -266,7 +268,7 @@ function published(api: IPnpApi, request: string, issuer: string): string[] {
 }
 
 /**
- * Sass's file search for a load path: an import-only file first under
+ * Search for a load path's file as Sass does: an import-only file first under
  * `@import`, then the path with its extension (or each stylesheet extension)
  * and as a partial, then as a directory's `index` — at most one match per
  * step, as Sass requires.
@@ -310,7 +312,7 @@ function exactlyOne(found: string[]): string | null {
   return found[0] ?? null;
 }
 
-/** `file` as a partial: its name prefixed with `_`. */
+/** Name `file` as a partial: its name prefixed with `_`. */
 function partial(file: string): string {
   return path.join(path.dirname(file), `_${path.basename(file)}`);
 }
@@ -335,12 +337,12 @@ function statOf(api: IPnpApi, file: string): fs.Stats | undefined {
   }
 }
 
-/** Where a (possibly virtual) path's bytes are. */
+/** Find where a (possibly virtual) path's bytes are. */
 function physicalPath(api: IPnpApi, file: string): string {
   return api.resolveVirtual?.(file) ?? file;
 }
 
-/** A package's manifest, or null for one that has none or cannot be read —
+/** Read a package's manifest, or null for one that has none or cannot be read —
  * whoever built the package is the one to report that. */
 function readManifest(file: string): Record<string, unknown> | null {
   try {

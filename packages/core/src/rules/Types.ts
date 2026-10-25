@@ -52,17 +52,18 @@ export enum PropertyType {
  * `Flag` (a `FileSource`) read back via `getFlags` — not only the plain,
  * manifestable data an action's bag is limited to. These inputs never form a
  * cache key directly; they reach one only through the action(s) evaluate yields
- * (e.g. js_compile reads its `mode` flags here and folds the resolved overlay
- * into the tsconfig *inside* the exec action's `files`). The manifestability
- * constraint is the action role's alone; a sub-target must instead satisfy the
- * ordinary target contract — its inputs make sense as properties on their own.
+ * (e.g. js_compile reads the source-mode flags among its `deps` here and folds
+ * the resolved overlay into the tsconfig *inside* the exec action's `files`).
+ * The manifestability constraint is the action role's alone; a sub-target
+ * must instead satisfy the ordinary target contract — its inputs make sense as
+ * properties on their own.
  */
 export type SubTargetInput = string | string[] | Name | Name[] | FileSource | FileSource[] | PropertyMap | CommandValue;
 export type SubTargetInputs = Record<string, SubTargetInput>;
 
 /**
  * What a rule's evaluate yields: final content directly (a FileSource — flags,
- * an in-memory result, or a sub-target's output reshaped by resolution), a
+ * an in-memory result, or a sub-target's output reshaped by evaluation), a
  * BuildAction the framework keys/caches/executes to produce the target's
  * content, or a *list* of FileSources — a target whose result is a set of
  * things (a `sync`'s per-member publish carriers). Name resolution is
@@ -121,9 +122,11 @@ export interface RuleDefinition {
    * and is read in `evaluate`. Nor is a tool: it is read in `evaluate`, to be
    * run.
    *
-   * Three names mean something to the framework. `dependencies` and
-   * `provided` are what the target passes on: requirements of whatever
-   * requires the target too, `provided` bound by that consumer. `extends` is
+   * Four names mean something to the framework. `dependencies`, `provided`
+   * and `optional_provided` are what the target passes on: requirements of
+   * whatever requires the target too, the last two bound by that consumer (an
+   * optional one only to what the consumer supplies or its installation
+   * holds). `extends` is
    * the package the target is made from; where it is exactly one package,
    * the target passes on that package's version and requirements. Every
    * other name is private to the target's build.

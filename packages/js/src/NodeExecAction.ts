@@ -47,6 +47,27 @@ import { PNP_DATA_FILE } from "@fabr-build/js-tools";
 import { splitDepsPath, toRunReport } from "@fabr-build/js-tools";
 
 /**
+ * Make the table a tool names its sources by: each staged file of `files` that
+ * has a source path, by its staged name, and each of `packages`, by the
+ * directory it is staged at (`<dir>/` → the prefix its files' source paths
+ * share) where one prefix names all its files, else file by file. The action's
+ * key records each input's source path, so the table is a function of the key.
+ */
+function sourcePathTable(files: FileSet, packages: ReadonlyMap<string, FileSet>): MemoryFile {
+  const rows = [...files.sourcePaths];
+  for (const [dir, pkg] of packages) {
+    const prefix = pkg.sourcePathPrefix;
+    if (prefix !== undefined) {
+      rows.push([`${dir}/`, prefix]);
+    } else {
+      rows.push(...[...pkg.sourcePaths].map(([name, sourcePath]): [string, string] => [`${dir}/${name}`, sourcePath]));
+    }
+  }
+  rows.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+  return MemoryFile.from(JSON.stringify(Object.fromEntries(rows)));
+}
+
+/**
  * The JS ecosystem's build step, and the one place that owns **how a JS tool
  * reaches its dependencies**: make them reachable, then run it — core's generic
  * `exec` with the one thing every JS tool needs in front of it. Which
@@ -63,27 +84,6 @@ import { splitDepsPath, toRunReport } from "@fabr-build/js-tools";
  * during evaluation (a hit is proof the same inputs assembled cleanly). The
  * packages carry their `origin` in, so the diagnostic keeps its provenance.
  */
-/**
- * The table a tool names its sources by: each staged file of `files` that has
- * a source path, by its staged name, and each of `packages`, by the directory
- * it is staged at (`<dir>/` → the prefix its files' source paths share) where
- * one prefix names all its files, else file by file. The action's key records
- * each input's source path, so the table is a function of the key.
- */
-function sourcePathTable(files: FileSet, packages: ReadonlyMap<string, FileSet>): MemoryFile {
-  const rows = [...files.sourcePaths];
-  for (const [dir, pkg] of packages) {
-    const prefix = pkg.sourcePathPrefix;
-    if (prefix !== undefined) {
-      rows.push([`${dir}/`, prefix]);
-    } else {
-      rows.push(...[...pkg.sourcePaths].map(([name, sourcePath]): [string, string] => [`${dir}/${name}`, sourcePath]));
-    }
-  }
-  rows.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
-  return MemoryFile.from(JSON.stringify(Object.fromEntries(rows)));
-}
-
 export const NODE_EXEC_ACTION: IBuildActionDefinition = {
   id: "js:exec",
   /* Tracks the exec body this delegates to, plus this step's own layouts; add
@@ -216,21 +216,27 @@ export const NODE_MODULES = "node_modules";
 export type NodeLayout = typeof PNP | typeof NODE_MODULES;
 
 /**
+ * Make the `js:exec` action: stage `files`, make `deps` reachable as
+ * `options.layout` says, run `argv`, and collect what `outputs` selects.
+ *
  * @param files everything the rule lays out itself — sources, the tool's own
  *   mount, generated manifests — named relative to the working directory.
  * @param deps the packages to assemble, as delivered (packages, flags and
  *   loose content), NOT assembled.
- * @param mount where an ASSEMBLED layout goes (`node_modules` for anything node
- *   resolves through; its own directory for a tool with a private convention).
- *   Unused by `pnp`, which mounts nothing.
- * @param self under `pnp` only: the package identity the staged sources
- *   themselves carry, so they can resolve their own name. Its parts are
- *   ordinary inputs, so they key like everything else.
- * @param config file-shaped configuration the rule generated for the tool
- *   (a tsconfig, a rewrite table), staged at its names beside `files` but keyed
- *   as configuration: each distinct config is its own target key, so a config
- *   change never lands in the diff base. Never content — see
+ * @param argv the tool's command line.
+ * @param outputs the pattern selecting what the run produced.
+ * @param options.mount where an ASSEMBLED layout goes (`node_modules` for
+ *   anything node resolves through; its own directory for a tool with a
+ *   private convention). Unused by `pnp`, which mounts nothing.
+ * @param options.self under `pnp` only: the package identity the staged
+ *   sources themselves carry, so they can resolve their own name. Its parts
+ *   are ordinary inputs, so they key like everything else.
+ * @param options.config file-shaped configuration the rule generated for the
+ *   tool (a tsconfig, a rewrite table), staged at its names beside `files` but
+ *   keyed as configuration: each distinct config is its own target key, so a
+ *   config change never lands in the diff base. Never content — see
  *   {@link ActionConfig}.
+ *
  * Three of these name LOCATIONS a tool was told about — `depsReport`,
  * `stateDir`, `changes`. The rule composes the argv that tells it, so it names
  * them here too and the step only stages and collects what it was given; no
@@ -241,11 +247,12 @@ export type NodeLayout = typeof PNP | typeof NODE_MODULES;
  * since its planner works in the read set's namespace — but that is the tool's
  * rule to state, not this step's to impose.
  *
- * @param depsReport where the tool writes what it read. The entry is then keyed
- *   on that selection rather than on the whole deps input.
- * @param stateDir the directory whose contents the tool owns, staged back from
- *   the last green build of this target key and kept again after this one.
- * @param changes where fabr writes what moved since that build (see
+ * @param options.depsReport where the tool writes what it read. The entry is
+ *   then keyed on that selection rather than on the whole deps input.
+ * @param options.stateDir the directory whose contents the tool owns, staged
+ *   back from the last green build of this target key and kept again after
+ *   this one.
+ * @param options.changes where fabr writes what moved since that build (see
  *   {@link prepareBase}), for a tool that plans from fabr's diff rather than
  *   from state of its own. The file appears only when there IS a base, so a
  *   tool reads the location and takes its absence as a cold build.
@@ -307,8 +314,7 @@ export function createNodeExecAction(
      * translated back to the input packages (see {@link selectionOf}). Editing a dependency a reporting compile never
      * opened then invalidates nothing; the mount and layout options stay in
      * the anchor and keep a table install apart from a tree one. Keying
-     * needs no tree, so no closure is declined — a cross-generation version
-     * cycle, which only PnP can deliver, keys like everything else. */
+     * needs no tree, so every closure keys alike, a version cycle included. */
     reported ? { deps } : undefined,
     options.label,
     /* A tool told where to keep state, or where to find what moved, is one that
@@ -329,21 +335,19 @@ export function createNodeExecAction(
 type Incremental = { stateDir?: string };
 
 /**
- * The files to lay at the workspace root for a run that has a base: the
+ * Lay out the files at the workspace root for a run that has a base: the
  * driver's own kept files back under `stateDir`, and what moved at `changes`,
  * both being the locations the caller told the tool about. All *planning* —
  * what a change reaches, what an addition re-binds, which outputs went stale —
- * is the driver's (tscDriver/Planning.ts): those are facts about the
- * compiler's graph, which fabr has no honest way to know.
+ * is the driver's (@fabr-build/js-tools's tscDriver/Planning.ts): those are
+ * facts about the compiler's graph, which fabr has no honest way to know.
  *
  * Undefined where there is no base at all, so the driver finds neither and
  * compiles cold — there is no full-compile branch to drift. The change lists
  * gate the whole handover: kept state without them is the one combination the
  * contract forbids (nothing would say what the state is still good for), and
- * with no base the honest lists are unknowable — which is also the migration
- * path for a record in a retired layout, at the price of one cold compile.
- * Change lists WITHOUT kept files ride fine: that is the honest record of a
- * tool that keeps none.
+ * with no base the honest lists are unknowable. Change lists WITHOUT kept files
+ * ride fine: that is the honest record of a tool that keeps none.
  *
  * What moved is the changes document ({@link toChangesDocument}).
  */
@@ -362,7 +366,7 @@ function prepareBase(
   });
 }
 
-/** What a run's state directory left behind, or undefined where it left
+/** Return what a run's state directory left behind, or undefined where it left
  * nothing — a tool that keeps none is an honest record, not a missing one. */
 function keptState(state: FileSet): FileSet | undefined {
   return state.size === 0 ? undefined : state;
@@ -374,16 +378,16 @@ function keptState(state: FileSet): FileSet | undefined {
  * kept no state, which has nothing to tell it which of them went stale. */
 type Handover = { staged: FileSet; outputs?: FileSet };
 
-/** One of the optional location members — where the rule told the tool to write
- * its report, keep its state, or find its change lists (see
+/** Read one of the optional location members — where the rule told the tool to
+ * write its report, keep its state, or find its change lists (see
  * {@link createNodeExecAction}) — absent unless the rule named one. */
 function optionalConfig(action: BuildAction, name: string): string | undefined {
   const value = action.config[name];
   return typeof value === "string" ? value : undefined;
 }
 
-/** The base entry's files under the emit directory this action collects — the
- * `dir` of its `dir:glob` outputs pattern, which is the prefix collection
+/** Lay the base entry's files under the emit directory this action collects —
+ * the `dir` of its `dir:glob` outputs pattern, which is the prefix collection
  * stripped from them. The emit pattern is the LAST of the collected patterns
  * (see {@link collectedWith}); the others are bookkeeping and name no emit
  * directory. An entry with no collection directory has nowhere conflict-free to
@@ -397,8 +401,8 @@ function baseOutputLayout(action: BuildAction, outputs: FileSet): FileSet | unde
 }
 
 /**
- * The step's result paired with whatever bookkeeping this run was asked for:
- * what it reported reading — the selection the entry is keyed on, in the deps
+ * Pair the step's result with whatever bookkeeping this run was asked for: what
+ * it reported reading — the selection the entry is keyed on, in the deps
  * input's own vocabulary — and the build state the next build of this target
  * key works from. The two are INDEPENDENT: a tool may report reads without
  * keeping state (keyed precisely, compiles cold), or keep state without
@@ -442,33 +446,35 @@ function withBookkeeping(result: BuildResult, report: string | undefined, increm
 }
 
 /**
- * A run report as the selection it is: the reads ARE the paths, since the
- * resolver names what it read by the route it took ({@link PnpResolver.pathNameOf}).
- * Nothing is joined or translated here — one vocabulary, resolver to cache.
+ * Read a run report as the selection it is: the reads ARE the paths, since the
+ * resolver names what it read by the route it took
+ * ({@link PnpResolver.pathNameOf}). Nothing is joined or translated here — one
+ * vocabulary, resolver to cache.
  */
 function selectionOf(reads: Iterable<string>): DiscoveredDeps {
   return new Map([["deps", [...reads].map(read => splitDepsPath(read))]]);
 }
 
-/** The `self` options as the pnp arm reads them back: absent unless the rule
- * gave the sources a package identity. */
+/** Read the `self` options back for the pnp arm: absent unless the rule gave
+ * the sources a package identity. */
 function selfPackage(action: BuildAction): { name: string; location: string } | undefined {
   const name = action.config.selfName;
   const location = action.config.selfLocation;
   return typeof name === "string" && typeof location === "string" ? { name, location } : undefined;
 }
 
-/** What the run's work dir is collected by, given the emit pattern and which
- * pieces of bookkeeping this action asked for. The emit pattern is last, which
- * {@link baseOutputLayout} relies on; a run collecting nothing but its output
- * is collected by the emit pattern alone. */
+/** List the patterns the run's work dir is collected by, given the emit pattern
+ * and which pieces of bookkeeping this action asked for. The emit pattern is
+ * last, which {@link baseOutputLayout} relies on; a run collecting nothing but
+ * its output is collected by the emit pattern alone. */
 function collectedWith(outputs: string, depsReport: string | undefined, stateDir: string | undefined): string | string[] {
   const bookkeeping = [...(depsReport ? [depsReport] : []), ...(stateDir ? [`${stateDir}/**`] : [])];
   return bookkeeping.length === 0 ? outputs : [...bookkeeping, outputs];
 }
 
-/** The `deps`: the direct deps as delivered, which the step assembles —
- * discoverable where the tool reports its reads, an ordinary input otherwise. */
+/** Read the `deps` input: the direct deps as delivered, which the step
+ * assembles — discoverable where the tool reports its reads, an ordinary input
+ * otherwise. */
 function depsInput(action: BuildAction): FileSet[] {
   const value = action.discoverable?.deps ?? action.inputs.deps;
   if (!Array.isArray(value)) {

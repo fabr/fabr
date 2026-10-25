@@ -40,14 +40,15 @@ export interface ExpectedDigest {
   readonly alternates?: readonly string[];
 }
 
-/** True for a token shaped like an SRI digest. Distinguishes an integrity value
- *  from a URL without relying on the order the two were written in. */
+/** @return true if the token is shaped like an SRI digest, otherwise false.
+ *  Distinguishes an integrity value from a URL without relying on the order the
+ *  two were written in. */
 export function isIntegrity(value: string): boolean {
   return SRI_ALGORITHMS.some(algorithm => value.startsWith(`${algorithm}-`));
 }
 
 /**
- * The strongest digest an SRI string states, or undefined if it states none in
+ * Parse the strongest digest an SRI string states, or undefined if it states none in
  * an algorithm we know. A value may list several space-separated entries; a
  * hash fabr cannot compute is not an error here (the caller decides whether
  * "nothing checkable" is acceptable — npm metadata often carries only the

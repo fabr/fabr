@@ -49,7 +49,7 @@ import { unpackStream } from "./Unpack";
 export type ExpandFn = (file: IFile) => Computable<FileSet>;
 
 /**
- * The namespace-boundary probes of a selector — the walker's descent policy
+ * List the namespace-boundary probes of a selector — the walker's descent policy
  * over {@link Name.componentPrefixes}: for each separator with selector
  * remaining, the pattern up to (excluding) it, in slash form so a probe's
  * matches keep their in-namespace paths rather than being alias-stripped. A
@@ -129,7 +129,7 @@ interface BoundaryCandidate {
 }
 
 /**
- * The files a boundary probe lands on, each with its in-namespace path. A
+ * Find the files a boundary probe lands on, each with its in-namespace path. A
  * fully-literal probe is an exact-name lookup (`get` — no enumeration); a
  * globbed one is an ordinary find, whose slash-form pattern keeps result names
  * equal to their paths.
@@ -147,7 +147,7 @@ function probeBoundary(source: FileSource, probe: Name): Computable<BoundaryCand
 }
 
 /**
- * A literal probe's path in canonical form (the namespace FileSet names / the
+ * Put a literal probe's path in canonical form (the namespace FileSet names / the
  * filesystem walk live in), or undefined for one that cannot name inside this
  * namespace (empty, absolute, or climbing out — such a pattern matches nothing
  * anyway, so there is no boundary to find).
@@ -184,7 +184,7 @@ function descend(candidate: BoundaryCandidate, pattern: Name, prefix: string, ex
 }
 
 /**
- * THE expansion: read the whole archive into memory and unpack it. Cached use
+ * Expand an archive: read it whole into memory and unpack it. Cached use
  * wraps this (`BuildContextImpl.expandArchive` memoizes it in the build
  * cache, keyed on the file's content hash); a cache-less caller (tests) uses
  * it directly as its {@link ExpandFn}. A non-archive yields an empty set

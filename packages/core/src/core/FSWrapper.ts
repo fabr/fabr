@@ -40,21 +40,22 @@ export function stat(filename: string): Computable<fs.Stats> {
   });
 }
 
-/** Whether an fs error means the path simply isn't there (vanished, or never
- * existed) rather than a genuine IO failure — so a caller can treat a file that
- * disappeared mid-event as absent instead of erroring. */
+/** @return true if an fs error means the path simply isn't there (vanished, or
+ * never existed) rather than a genuine IO failure, otherwise false — so a caller
+ * can treat a file that disappeared mid-event as absent instead of erroring. */
 export function isNotFound(err: unknown): boolean {
   return (err as NodeJS.ErrnoException | null)?.code === "ENOENT";
 }
 
-/** True if `err` is an EISDIR — the path is a directory where a file operation
- * (open/read) expected a regular file. */
+/** @return true if `err` is an EISDIR — the path is a directory where a file
+ * operation (open/read) expected a regular file — otherwise false. */
 export function isDirectoryError(err: unknown): boolean {
   return (err as NodeJS.ErrnoException | null)?.code === "EISDIR";
 }
 
-/** True if `err` is an ENOTDIR — a path component that had to be a directory is
- * a file, so nothing below it can be read, now or ever under that layout. */
+/** @return true if `err` is an ENOTDIR — a path component that had to be a
+ * directory is a file, so nothing below it can be read, now or ever under that
+ * layout — otherwise false. */
 export function isNotDirectoryError(err: unknown): boolean {
   return (err as NodeJS.ErrnoException | null)?.code === "ENOTDIR";
 }
@@ -238,7 +239,7 @@ export function symlink(target: string, filepath: string): Computable<void> {
   });
 }
 
-/** The concrete path `filepath` resolves to, every symlink followed. */
+/** Resolve `filepath` to its concrete path, every symlink followed. */
 export function realpath(filepath: string): Computable<string> {
   return Computable.from<string>((resolve, reject) => {
     fs.realpath(filepath, (err, resolved) => {
@@ -251,7 +252,7 @@ export function realpath(filepath: string): Computable<string> {
   });
 }
 
-/** The read-only permission bits for a content-addressed file: 0o444, or 0o555
+/** Get the read-only permission bits for a content-addressed file: 0o444, or 0o555
  * when `mode` is executable. Cache blobs and any file staged to mirror one (a
  * hardlink into the pool, or an in-memory file materialized alongside them) use
  * this — read-only so a launched tool can't write through into a shared blob,

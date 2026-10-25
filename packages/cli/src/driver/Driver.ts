@@ -126,7 +126,7 @@ const DIAG_EXPECTATION_CONFLICT = Diagnostic.Warn<{ file: string }>(
 const SHUTDOWN_GRACE_MS = 5000;
 
 /**
- * A consumer closing the pipe early (`fabr cat … | head`, `… | jq -e`) makes the
+ * Swallow EPIPE on fabr's own stdout/stderr. A consumer closing the pipe early (`fabr cat … | head`, `… | jq -e`) makes the
  * next write to our stdout/stderr emit an `EPIPE` `'error'`; with no listener
  * Node turns that into a raw uncaught-exception stack — exactly the crash
  * presentation the driver otherwise never shows. Core swallows EPIPE for the
@@ -185,10 +185,10 @@ export type Operation = (model: BuildModel, execution: ExecutionContext, site: I
 export type Takeover = () => Computable<number>;
 
 /**
- * The CLI entry: dispatch the command to a tiny operation (each closing over
+ * Run the CLI: dispatch the command to a tiny operation (each closing over
  * `options`) and run it in the harness. The `BUILD_OPERATION` constraint is the
  * command itself (explicit `-DBUILD_OPERATION=...` takes precedence); `ls`/`cat`/
- * `cp` are driver verbs, not operations — they resolve the whole name (target +
+ * `cp` are driver verbs, not operations — they materialize the whole name (target +
  * `:`/glob projection) through the model under the `files` operation (see
  * {@link resolveNames}), while the build verbs take a bare target name.
  */
@@ -266,7 +266,7 @@ class Supervisors {
   }
 }
 
-/** `fabr build <targets>`: the core operation; the marker rides cycle-end. */
+/** Run `fabr build <targets>`: the core operation; the marker rides cycle-end. */
 function runBuild(
   model: BuildModel,
   options: Options,
@@ -279,7 +279,7 @@ function runBuild(
   return buildOperation(configFor(model, options, execution, "build"), refs).then(() => undefined);
 }
 
-/** `fabr test <targets>`: the core operation, with the summaries and
+/** Run `fabr test <targets>`: the core operation, with the summaries and
  * expectation write-backs composed onto its results — a `then` on the results
  * re-runs exactly when a watch cycle changed them, so per-change reporting is
  * ordinary composition. */
@@ -299,7 +299,7 @@ function runTest(
   );
 }
 
-/** A coverage total as the summary shows it: the percentage, then the counts. */
+/** Format a coverage total as the summary shows it: the percentage, then the counts. */
 function coverageText({ covered, total }: ICoverageTotal): string {
   return total === 0 ? "n/a" : `${((covered / total) * 100).toFixed(2)}% (${covered}/${total})`;
 }
@@ -423,7 +423,7 @@ function applyExpectationUpdates(execution: ExecutionContext, site: IInvocationS
 }
 
 /**
- * A command-less invocation (`fabr docs_serve`): each named target takes the
+ * Run a command-less invocation (`fabr docs_serve`): each named target takes the
  * operation its type supports, which needs the loaded model — so the command
  * line is finished here ({@link completeCommandLine}) rather than at parse
  * time. Each group then does exactly what the explicit verb would, and they
@@ -525,7 +525,7 @@ function runProgram(
   });
 }
 
-/** The program `fabr run` launches, as the cache keeps its installs: the
+/** Key the program `fabr run` launches, as the cache keeps its installs: the
  * project, the name run and the `-D` properties it runs with. */
 function programKey(site: IInvocationSite, options: Options, target: string): string {
   const properties = [...options.properties].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
@@ -560,8 +560,8 @@ function shellTarget(
  * one for a single member (`release/@npm/x/1.0.0`), which packages that member
  * alone; a release is a namespace, so both are ordinary references into it.
  * Packaging is the pure/cacheable half (the same as a dry-run); the upload is
- * the driver-level side effect, with the credential read here (never a build
- * input). Not watchable — publishing is a one-shot.
+ * the driver-level side effect, made through each destination's own publish,
+ * which reads its credential (never a build input). Not watchable — publishing is a one-shot.
  */
 function syncTargets(model: BuildModel, options: Options, execution: ExecutionContext, site: IInvocationSite): Computable<void> {
   const config = configFor(model, options, execution, "build");
@@ -576,7 +576,7 @@ function syncTargets(model: BuildModel, options: Options, execution: ExecutionCo
   );
 }
 
-/** The publishable members one resolved name yields: a whole release (its
+/** List the publishable members one materialized name yields: a whole release (its
  *  namespace, packaged deps-first) or the individual carriers named. */
 function membersOf(sources: SourceRef[], name: string): Computable<PublishableFileSet[]> {
   const releases = sources.filter((source): source is SyncSource => source instanceof SyncSource);
@@ -591,7 +591,7 @@ function membersOf(sources: SourceRef[], name: string): Computable<PublishableFi
 }
 
 /**
- * The driver lifecycle harness: establish the run's surroundings (stderr log,
+ * Run the driver lifecycle harness: establish the run's surroundings (stderr log,
  * cache, source tree, progress-reporting ExecutionContext), load the project,
  * then hand the model to `operation` — exiting 0 on success and rendering the
  * failure tree (exit 1) on error. Reaching a drained event loop without an
@@ -713,7 +713,7 @@ async function runWith(options: Options, operation: Operation, watch = false): P
       });
   } catch (err) {
     /* A failure while *setting up* the run — before the build graph exists (no
-     * project at/above cwd, an unusable cache dir) — is outside the loadProject
+     * project at/above cwd, an unusable cache dir) — is outside the evaluation
      * chain's own `.catch`, so it would otherwise escape as a raw unhandled
      * rejection. Report it like any other failure and exit. */
     reportFailure(log, toError(err));
@@ -722,10 +722,11 @@ async function runWith(options: Options, operation: Operation, watch = false): P
   }
 }
 
-/** Whether this verb's runs render the per-cycle status marker ("Built X" /
- * "Already up to date"): the build/test verbs do, `run` only under watch (a
- * one-shot run's marker is status noise ahead of the program's own output);
- * the query and side-effect verbs never — their outcome is their own output. */
+/** @return true if this verb's runs render the per-cycle status marker ("Built
+ * X" / "Already up to date"), otherwise false: the build/test verbs do, `run`
+ * only under watch (a one-shot run's marker is status noise ahead of the
+ * program's own output); the query and side-effect verbs never — their outcome
+ * is their own output. */
 function showsMarkers(command: string, watch: boolean): boolean {
   if (command === "run") {
     return watch;
@@ -734,7 +735,7 @@ function showsMarkers(command: string, watch: boolean): boolean {
 }
 
 /**
- * The watch lifecycle: put the source tree into watch mode, run the operation
+ * Run the watch lifecycle: put the source tree into watch mode, run the operation
  * once to establish the live graph, then keep re-reporting as the operation's
  * Computable re-settles on each (debounced) change. Unlike the one-shot path it
  * never exits on completion — a failed build reports and keeps watching, a
@@ -829,7 +830,7 @@ function openedAll(sources: SourceRef[]): Computable<SourceRef[]> {
   return Computable.forAll(sources.map(openedOut), (...opened: SourceRef[]) => opened);
 }
 
-/** What `ls` lists of each name, materialized as {@link resolveNames} does:
+/** Materialize what `ls` lists of each name, as as {@link resolveNames} does:
  * its files, or the children of the namespace it names (a repository's, such as
  * `@npm:glob`'s versions). */
 function listedNames(
@@ -854,7 +855,8 @@ function listedNames(
 const ALL_FILES = parseName("**");
 
 /**
- * The files behind one resolved source, for the verbs that only ever want files.
+ * Open out one materialized source to the files behind it, for the verbs that
+ * only ever want files.
  * A FileSet already IS its files; a source that instead serves them on its own
  * terms — a `sync` release namespace, a `fetch` table — is asked for all of
  * them, which is the same thing `<name>/**` asks for explicitly. Without this a
@@ -873,8 +875,8 @@ function openedOut(source: SourceRef): Computable<SourceRef> {
 }
 
 /**
- * For `fabr cat`, the outcome is the raw contents of each resolved name's files
- * on stdout — the name (`pkg:build/*.js`) has already been resolved through the
+ * Write the raw contents of each materialized name's files to stdout (`fabr
+ * cat`) — the name (`pkg:build/*.js`) has already been materialized through the
  * model, so its projection/glob is applied; a name that matches nothing is an
  * error. Content is data, so it goes straight to stdout.
  */
@@ -913,10 +915,10 @@ function writeStdout(bytes: Uint8Array): Computable<void> {
 }
 
 /**
- * `fabr cp <source…> <dest>`: resolve each source name to its files (exactly as
- * `cat` does — projections/globs already applied), then copy them into the
- * destination directory following **`cp`'s own file-vs-directory rule**
- * ({@link copyPrefix}): a source that names a directory/container (a target,
+ * Run `fabr cp <source…> <dest>`: materialize each source name to its files
+ * (exactly as `cat` does — projections/globs already applied), then copy them
+ * into the destination directory following **`cp`'s own file-vs-directory rule**
+ * ({@link remapCopyTargetName}): a source that names a directory/container (a target,
  * package, or namespace) becomes a subdirectory named after that reference
  * (`fabr cp @scope/core out` → `out/core/…`, `cp -r core out/` → `out/core/`),
  * while a source that names a single file or a glob copies flat. `dest` is a
@@ -944,8 +946,8 @@ function copyTarget(options: Options, execution: ExecutionContext, results: Sour
 }
 
 /**
- * `cp`'s file-vs-directory rule applied to one source: how each of its resolved files is
- * named under `dest`, or `undefined` to keep the resolved name as-is. `cp` is a pure file
+ * Apply `cp`'s file-vs-directory rule to one source: return how each of its resolved files
+ * is named under `dest` (the identity where the resolved name is kept). `cp` is a pure file
  * operation — exactly `cp -R`, never package-aware — so this follows the source
  * **reference as written**, never the resolved package's own identity
  * (`cp -R node_modules/@scope/package out` yields `out/package`, and by the same
@@ -996,7 +998,7 @@ function remapCopyTargetName(name: string, sets: FileSet[]): ((fileName: string)
 }
 
 /**
- * The directory prefix a flat source's resolved files carry from the selector, and which
+ * Find the directory prefix a flat source's resolved files carry from the selector, and which
  * `cp` therefore strips — the name's own literal leading path
  * ({@link Name.getLiteralPathPrefix}, which ends at the last separator before the first
  * wildcard and treats `:` and `/` alike).
@@ -1016,9 +1018,9 @@ function selectorBase(selector: Name, names: string[]): string {
 }
 
 /**
- * The shared "you named something that resolves to nothing" error — a reference
- * whose projection/glob matched no files. Raised uniformly for `cat`, `ls`, and
- * a `fabr run` whose entry projection missed, so a missing file reports the same
+ * Make the shared "you named something that resolves to nothing" error — a
+ * reference whose projection/glob matched no files. Raised uniformly for `cat`,
+ * `cp`, and a `fabr run` whose entry projection missed, so a missing file reports the same
  * way however it was named.
  */
 function matchedNoFiles(name: string): Error {
@@ -1026,7 +1028,7 @@ function matchedNoFiles(name: string): Error {
 }
 
 /**
- * For `fabr ls`, the listing is the outcome: print each built target's
+ * Print the `fabr ls` listing, which is the outcome: each built target's
  * contents (sorted by name), or a namespace's children, with a `target:` header
  * when more than one target was requested. A target is by definition a built
  * thing, so its results are FileSets already — enumerated per source,
@@ -1147,7 +1149,7 @@ function formatDeclLocation(decl: ITargetDecl | ITargetDefDecl | IPropertyDecl):
 }
 
 /** @return the source-level keyword for a property's type, as written in a
- * targetdef (`FILES`, `STRING`, `MAP`, `COMMAND`, `REWRITE`). */
+ * targetdef (`FILES`, `PACKAGES`, `STRING`, `MAP`, `COMMAND`, `REWRITE`). */
 function propertyTypeName(schema: IPropertySchema): string {
   switch (schema.type) {
     case PropertyType.FileSet:
@@ -1340,7 +1342,7 @@ function flagTargetsJson(model: BuildModel): IConfigEntry[] {
 
 /** @return a property's written value as a display string (its name-valued
  * words joined; non-scalar values omitted) — the default shown in the config
- * reference (`JS_TARGET` → `es2021-commonjs`, `TARGET` → `${HOST}`). */
+ * reference (`JS_TARGET` → `es6-esm`, `TARGET` → `${HOST}`). */
 function renderPropertyValue(decl: IPropertyDecl): string {
   return decl.values
     .filter(isNameValue)
@@ -1379,8 +1381,8 @@ function renderListing(files: FileSet, longListing: boolean): Computable<string[
 }
 
 /**
- * For a test run, the interesting outcome is the tests, not the build: report
- * each target's result summary from its test report artifact (whether freshly
+ * Report each target's test result summary — for a test run the interesting
+ * outcome is the tests, not the build — from its test report artifact (whether freshly
  * run or cached-green).
  */
 function reportTestResults(log: Log, names: string[], results: SourceRef[][]): Computable<void> {

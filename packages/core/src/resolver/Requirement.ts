@@ -29,24 +29,24 @@
 import { compareText } from "../support/Functional";
 import { Requirement, VersionDomain, Violation } from "./Types";
 
-/** The marker an override is written with (`?` / `!`), or none. */
+/** Get the marker an override is written with (`?` / `!`), or none. */
 export function markerOf(override: Requirement["override"]): "" | "?" | "!" {
   return override === "force" ? "!" : override === "alternate" ? "?" : "";
 }
 
 /**
- * The name a requirement's package is **required as**: its rename where it has
- * one, else the package's own. A renamed package is a package of that name —
- * selected, installed and known by it; only the registry is asked for it
- * under the name it publishes ({@link Selected.publishedName}).
+ * Get the name a requirement's package is **required as**: its rename where it
+ * has one, else the package's own. A renamed package is a package of that
+ * name — selected, installed and known by it; only the registry is asked for
+ * it under the name it publishes (`Selected.publishedName`).
  */
 export function requiredAs(req: Requirement): string {
   return req.renameTo ?? req.name;
 }
 
 /**
- * A requirement's canonical identity, marker, rename and role included: an
- * override changes what resolution means (a force substitutes outright; an
+ * Make a requirement's canonical identity, marker, rename and role included:
+ * an override changes what resolution means (a force substitutes outright; an
  * alternate can supply a floorless-only package's version), a rename makes it
  * a requirement on a package of another name, and being provided demands
  * nothing where the tree already selects the package — so all three are part
@@ -59,10 +59,11 @@ export function requirementKey(req: Requirement): string {
 }
 
 /**
- * Requirements deduplicated and canonically ordered by {@link requirementKey}
- * — the one root-set form everything downstream shares: a resolution (and its
- * memo key, and the root indices a resolution's `reachableFrom` refers to)
- * must be independent of the order references were written in.
+ * Deduplicate requirements and order them canonically by {@link
+ * requirementKey} — the one root-set form everything downstream shares: a
+ * resolution (and its memo key, and the root indices a resolution's
+ * `reachableFrom` refers to) must be independent of the order references were
+ * written in.
  */
 export function canonicalRequirements(requirements: readonly Requirement[]): { roots: Requirement[]; keys: string[] } {
   const byKey = new Map<string, Requirement>(requirements.map(req => [requirementKey(req), req]));
@@ -71,8 +72,8 @@ export function canonicalRequirements(requirements: readonly Requirement[]): { r
 }
 
 /**
- * The constraint a requirement's stated version makes — every version, where
- * it states none.
+ * Make the constraint a requirement's stated version makes — every version,
+ * where it states none.
  */
 export function constraintOf<V, C>(domain: VersionDomain<V, C>, versionConstraint: string | undefined): C {
   return versionConstraint === undefined ? domain.unconstrained : domain.parseConstraint(versionConstraint);
@@ -104,7 +105,7 @@ export function versionConstraintText(versionConstraint: string | undefined, nam
 }
 
 /**
- * The keys a violation recorded against one of these root requirements has
+ * Make the keys a violation recorded against one of these root requirements has
  * (a {@link Violation} states the package and constraint alone). A forced
  * root is never violated and an alternate is never demanded, so neither has
  * one.
@@ -113,7 +114,7 @@ export function violationKeys(roots: readonly Requirement[]): Set<string> {
   return new Set(roots.filter(req => req.override === undefined).map(req => `${requiredAs(req)}\n${req.versionConstraint}`));
 }
 
-/** The key of the root requirement a violation was recorded against. */
+/** Make the key of the root requirement a violation was recorded against. */
 export function violationKey<V>(violation: Violation<V>): string {
   return `${violation.name}\n${violation.versionConstraint}`;
 }
@@ -128,8 +129,9 @@ export function buildKey(configuration: string, digest: string): string {
   return `${BUILD_PREFIX}${configuration === "" ? "" : ` ${configuration}`} #${digest}>`;
 }
 
-/** Check whether `value`, a version, a constraint or the text of either, is
- * a build's version: its key, which is also the constraint naming it. */
+/** @return true if `value`, a version, a constraint or the text of either, is
+ * a build's version (its key, which is also the constraint naming it),
+ * otherwise false. */
 export function isBuildVersion(value: unknown): value is string {
   return typeof value === "string" && value.startsWith(BUILD_PREFIX);
 }

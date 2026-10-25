@@ -229,9 +229,8 @@ describe("collecting over cyclic package graphs", () => {
 
   it("rebuilds a ref-carrying cycle, resolving the ref and preserving the cycle", async () => {
     /* app ↔ buddy, with app also carrying an unresolved external requirement:
-     * the shape the ref-carrier cache must judge honestly — a "no refs"
-     * memoized for buddy while app is still mid-walk would deliver buddy with
-     * the raw ref still inside it, forever. */
+     * the shape the collection point must rebuild honestly — buddy must not
+     * come back with the raw ref still inside it. */
     const repo = new StubRepository();
     const external = repo.getRepositoryRef(Name.fromLiteral("dep"));
     const builder = new PackageGraphBuilder();

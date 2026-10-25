@@ -21,9 +21,10 @@
  * Pure (esbuild-independent) helpers behind the js_bundle rule: computing the
  * externalized-dependency name set, mapping each entry to its output name via
  * the `output` REWRITE, and assembling the fabr-level options document handed to
- * the standalone bundle driver (see bundleDriver/bundle-driver.ts — resolved as
- * the JS_BUNDLER runnable declared in JS.fabr). Everything here runs in the
- * host during evaluation; the esbuild invocation itself is the driver's job.
+ * the standalone bundle driver (see @fabr-build/js-tools's
+ * bundleDriver/bundle-driver.ts — resolved as the JS_BUNDLER runnable declared
+ * in JS.fabr). Everything here runs in the host during evaluation; the esbuild
+ * invocation itself is the driver's job.
  * Kept apart from the driver so it can import @fabr-build/core and be
  * unit-tested under jest (the driver runs standalone in the bundle build step
  * and must not depend on core at runtime).
@@ -36,7 +37,7 @@ import { JSTarget, soleModuleFormat } from "./JSPackage";
 /** Where esbuild writes and the rule collects the bundle output from. */
 export const BUNDLE_OUTDIR = "out";
 
-/** The default OUTPUT name for an entry: every spelling the pipeline compiles
+/** Name an entry's default OUTPUT: every spelling the pipeline compiles
  * or links (`.ts`/`.tsx`/`.jsx`/`.mts`/`.cts`/`.mjs`/`.cjs`) maps to `.js` —
  * the bundle is a fresh file esbuild always writes as `.js`, so even a
  * module-flavoured entry (`.mts`, `.mjs`) yields a plain `.js` bundle name.
@@ -50,7 +51,7 @@ export interface IBundleEntrySource {
   name: string;
 }
 
-/** Every package name reachable from the given roots — the roots themselves plus
+/** Collect every package name reachable from the given roots — the roots themselves plus
  * their whole dependency closure, deduped. An unbound edge (an external
  * requirement a package still carries inertly) contributes the name it is
  * imported by, its local name; a bound one recurses into its package. */
@@ -77,7 +78,7 @@ export function collectClosureNames(roots: FileSet[]): Set<string> {
   return names;
 }
 
-/** The direct (top-level, i.e. property-listed) package names among the roots. */
+/** Collect the direct (top-level, i.e. property-listed) package names among the roots. */
 function directNames(roots: FileSet[]): Set<string> {
   const names = new Set<string>();
   for (const set of roots) {
@@ -89,7 +90,7 @@ function directNames(roots: FileSet[]): Set<string> {
 }
 
 /**
- * The package names to externalize (left runtime-provided, not bundled). A
+ * Compute the package names to externalize (left runtime-provided, not bundled). A
  * package is externalized only when it is provided MORE directly than it is
  * bundled — its directness in `deps` outranks its directness in `srcs`, where
  * direct (property-listed) = 2, transitive (closure-only) = 1, absent = 0:
@@ -117,7 +118,7 @@ export function computeExternalNames(srcs: FileSet[], deps: FileSet[]): string[]
   return external;
 }
 
-/** How directly a package sits in `srcs`: direct (property-listed) = 2,
+/** Rank how directly a package sits in `srcs`: direct (property-listed) = 2,
  * transitive (closure-only) = 1, absent = 0. */
 function srcLevel(name: string, direct: Set<string>, all: Set<string>): number {
   if (direct.has(name)) {

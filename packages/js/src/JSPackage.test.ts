@@ -114,8 +114,7 @@ describe("hasPackageExport", () => {
     /* markdown-it's map, and the fortawesome icon packs'. A wildcard says a
        subpath maps SOMEWHERE, not that anything is there — read as a capability
        it would claim the package provides a JSX runtime, a JSON parser, and
-       whatever else one thought to ask for. It published 16 targets' worth of
-       "multiple JSX runtimes" before the file was looked for. */
+       whatever else one thought to ask for. */
     const catchAll = pkg(JSON.stringify({ exports: { ".": "./index.js", "./*": { require: "./*", import: "./*" } } }), "index.js", "lib/token.js");
     expect(await settle(hasPackageExport(catchAll, "./jsx-runtime"))).to.equal(false);
     /* The same map still answers for what the package really holds. */
@@ -176,7 +175,7 @@ describe("parseJSTarget", () => {
   });
 
   it("rejects a malformed triple rather than silently mis-parsing it to the defaults", () => {
-    /* 'browser' in the module slot — the old parser silently produced commonjs/node. */
+    /* 'browser' in the module slot is refused, not read as the defaults. */
     expect(() => parseJSTarget("es2020-browser")).to.throw(/module must be/);
     expect(() => parseJSTarget("es2018-esmm")).to.throw(/module must be/);
     expect(() => parseJSTarget("es2018-esm-nodejs")).to.throw(/environment must be/);

@@ -62,8 +62,8 @@ export interface IFileEnvironment {
 const ENVIRONMENT_PACKAGE_PREFIX = "jest-environment-";
 
 /**
- * The environment a test file runs in: its `@jest-environment` pragma if it
- * has one, else `fallback` (the invocation's `--env`), with its
+ * Choose the environment a test file runs in: its `@jest-environment` pragma if
+ * it has one, else `fallback` (the invocation's `--env`), with its
  * `@jest-environment-options` parsed as JSON.
  *
  * The pragma names `node` or `jsdom`, bare or by jest's package name
@@ -162,7 +162,7 @@ const KEEP_NODE = new Set([
 const SELF_REFERENCES = ["window", "self", "parent", "top", "frames"];
 
 /**
- * The window methods that live on a PROTOTYPE rather than on the window
+ * List the window methods that live on a PROTOTYPE rather than on the window
  * instance, and so must be bound: jsdom's own properties are closures over
  * their window, but an inherited method reads the `this` it was called on —
  * which, called as a bare global, is the global object and not the window.

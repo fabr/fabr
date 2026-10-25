@@ -98,7 +98,8 @@ export class Conflicts {
     return this.versions.size;
   }
 
-  /** Check whether `pkg` is one of the versions that conflict. */
+  /** @return true if `pkg` is one of the versions that conflict, otherwise
+   * false. */
   public includes(pkg: Package): boolean {
     return this.among(pkg);
   }
@@ -315,8 +316,8 @@ function checkDomain<V, C>(group: CheckedResolution<V, C>[], packages: ReadonlyA
   };
 }
 
-/** The `?` lines completing each conflicted package's sanction: every version
- * shipped, less those already written. */
+/** Write the `?` lines completing each conflicted package's sanction: every
+ * version shipped, less those already written. */
 function conflictedSanctions<V, C>(
   outstanding: readonly Violation<V>[],
   duplicates: ReadonlyArray<[string, V[]]>,
@@ -336,8 +337,9 @@ function conflictedSanctions<V, C>(
   });
 }
 
-/** An explanation over several resolutions: a node is explained by the first
- * resolution holding it, and its path through that same resolution. */
+/** Combine the explanations of several resolutions: a node is explained by
+ * the first resolution holding it, and its path through that same
+ * resolution. */
 function combinedExplanation<V>(graphs: readonly MVSResolution<V>[]): Pick<MVSResolution<V>, "versionToString" | "explainer"> {
   const explainers = graphs.map(graph => graph.explainer());
   const owners = new Map<Selected<V>, ResolutionExplainer<V>>();

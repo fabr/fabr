@@ -147,8 +147,9 @@ class RepairsRequired extends Error {
   }
 }
 
-/** The constraint a floored requirement states. One that states none has no
- * floor, so it is never raised or violated, and never reaches a caller of this. */
+/** Get the constraint a floored requirement states. One that states none has
+ * no floor, so it is never raised or violated, and never reaches a caller of
+ * this. */
 function statedConstraint(req: Requirement): string {
   if (req.versionConstraint === undefined) {
     throw new FabrError(`internal: '${req.name}' states no version, so has no floor to raise`);
@@ -156,9 +157,9 @@ function statedConstraint(req: Requirement): string {
   return req.versionConstraint;
 }
 
-/** Lexicographic order on strings, for the canonical orderings a persisted
- * resolution needs (its lists must not carry the walk's arrival order). */
-
+/** Compare strings in code-unit order, for the canonical orderings a
+ * persisted resolution needs (its lists must not carry the walk's arrival
+ * order). */
 function compareText(a: string, b: string): number {
   if (a < b) {
     return -1;
@@ -173,8 +174,8 @@ interface Demand {
   requiredBy: string;
 }
 
-/** The name a requirement's package is published under, where the requirement
- * renames it — the one field of a selection the walk takes from the
+/** Get the name a requirement's package is published under, where the
+ * requirement renames it — the one field of a selection the walk takes from the
  * requirement rather than the slot. */
 function publishedBy(req: Requirement): { publishedName?: string } {
   return requiredAs(req) === req.name ? {} : { publishedName: req.name };
@@ -207,10 +208,10 @@ function resolvePhase<V, C>(
         }
       }
     }
-    /** Whether this walk may raise the floors demanding `id`: the registry must
-     * offer the hook, and the node must be one a converged tree proved blocking
-     * — and never a forced package's (the user pinned it; a raise would move a
-     * version that was explicitly forced). */
+    /** @return true if this walk may raise the floors demanding `id`, otherwise
+     * false: the registry must offer the hook, and the node must be one a
+     * converged tree proved blocking — and never a forced package's (the user
+     * pinned it; a raise would move a version that was explicitly forced). */
     const canRepair = (id: string): boolean =>
       registry.lowestAvailable !== undefined && repairable.has(id) && !forced.has(id.substring(0, id.lastIndexOf("@")));
     /* Highest minimum seen so far, per package name — the principal winner */
@@ -259,10 +260,11 @@ function resolvePhase<V, C>(
     const alternateFired = new Set<string>();
     const floorlessRequired = new Set<string>();
 
-    /** The root package whose subtree contains `requirer` (for attributing an
-     * error on one of its requirements): walk the first-reacher parents to the
-     * root, as `annotate` does for fetch failures. A ROOT_REQUIRER requirer
-     * means the erring requirement is itself a root — it is its own root. */
+    /** Find the root package whose subtree contains `requirer` (for
+     * attributing an error on one of its requirements): walk the first-reacher
+     * parents to the root, as `annotate` does for fetch failures. A
+     * ROOT_REQUIRER requirer means the erring requirement is itself a root —
+     * it is its own root. */
     const rootPkgOf = (requirer: string, ownPkg: string): string => {
       if (requirer === ROOT_REQUIRER) {
         return ownPkg;
@@ -352,7 +354,7 @@ function resolvePhase<V, C>(
       attempt(req, domain.minimumOf(constraint), requiredBy);
     };
 
-    /** Canonical order on requirement edges, for breaking a tie between two
+    /** Key a requirement edge in canonical order, for breaking a tie between two
      * requirements demanding the same winning floor: `selectedBy` must be a
      * function of the requirement set, not of which fetch landed first. */
     const edgeOrder = (edge: IRequirementEdge): string => `${edge.requiredBy}\n${edge.versionConstraint}`;
@@ -375,10 +377,10 @@ function resolvePhase<V, C>(
     };
 
     /**
-     * The demanded version was never published: raise each of `demands`'
-     * contribution to the lowest published version satisfying its constraint
-     * (re-offered through the normal max-of-minimums rule). A requirement
-     * nothing published satisfies raises nothing, so the node keeps its
+     * Raise each of `demands`' contribution, for a demanded version that was
+     * never published, to the lowest published version satisfying its
+     * constraint (re-offered through the normal max-of-minimums rule). A
+     * requirement nothing published satisfies raises nothing, so the node keeps its
      * unpublished declared version — tolerated here and judged at convergence
      * exactly as in phase 1, since the walk expands superseded versions too
      * and an unrepairable floor on one of those never mattered. One an
@@ -444,7 +446,7 @@ function resolvePhase<V, C>(
     };
 
     /**
-     * The registry's verdict that pkg@version was never published, applied to
+     * Apply the registry's verdict that pkg@version was never published to
      * the demands recorded so far: repaired by floor raises when the phase and
      * registry allow it, else tolerated as an unexpandable pending selection
      * (judged at convergence — only one an in-effect edge still needs proves
@@ -523,7 +525,7 @@ function resolvePhase<V, C>(
     };
 
     /**
-     * Quiescence gate: before judging the converged tree, fire any deferred
+     * Gate quiescence: before judging the converged tree, fire any deferred
      * expected-provided requirement whose package the tree selects nothing
      * for — as an ordinary demand, the failed expectation repaired — and keep
      * walking. Judged at quiescence so the outcome is a function of the
@@ -606,9 +608,10 @@ function resolvePhase<V, C>(
     }
 
     /**
-     * The fixpoint walk visits the requirements of superseded versions too, so
-     * each convergence round recomputes reachability through the *published*
-     * selections only, following each edge's binding: this prunes packages
+     * Judge one convergence round of the quiet walk. The fixpoint walk visits
+     * the requirements of superseded versions too, so each round recomputes
+     * reachability through the *published* selections only, following each
+     * edge's binding: this prunes packages
      * dragged in solely by superseded versions, validates upper bounds only
      * for requirements actually in effect, and reaches forks exactly through
      * the violated edges bound to them. Undefined when the round failed the
@@ -840,7 +843,7 @@ function resolvePhase<V, C>(
           return true;
         });
 
-      /** The raise answer for a fork candidate constraint, requesting it on
+      /** Get the raise answer for a fork candidate constraint, requesting it on
        * first ask: the raised version, null when nothing satisfies or the
        * registry offers no hook, or "pending" while in flight. */
       const raiseAnswer = (pkg: string, constraint: string, provokedBy: PackEdge): V | null | "pending" => {
@@ -1101,10 +1104,9 @@ function resolvePhase<V, C>(
         raiseKeys.add(dedup);
         return true;
       });
-      /* The edges of the *selected* graph, for a consumer laying the result
-       * out: the requirements of every surviving node (forks included), in the
-       * selections' canonical order (superseded/pruned nodes are dropped with
-       * their subtrees, exactly as the reachability walk dropped them). */
+      /* The declared requirements of every surviving node (forks included), in
+       * the selections' canonical order (superseded/pruned nodes are dropped
+       * with their subtrees, exactly as the reachability walk dropped them). */
       const requirements = new Map<string, Requirement[]>(
         selections.map(sel => {
           const id = nodeId(sel.name, sel.version);

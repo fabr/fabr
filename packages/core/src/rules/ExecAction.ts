@@ -41,7 +41,7 @@ import {
  */
 
 /**
- * The `outputs` config member: what the run's work dir is collected by. One
+ * Read the `outputs` config member: what the run's work dir is collected by. One
  * pattern is the ordinary case; a LIST is for a step collecting a second thing
  * beside its result — a tool's report about the run — which has to be collected
  * rather than read in place, since collection sweeps away everything it does

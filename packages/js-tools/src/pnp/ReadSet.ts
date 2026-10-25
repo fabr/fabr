@@ -28,7 +28,7 @@
  * names an edge chain calls its packages by, then the file within the last,
  * in the flat spelling ({@link joinDepsPath}) of core's DepsPath. The reads
  * ARE the paths; the step splits them and nothing else (no translation, no
- * join), and replay re-resolves each against the current delivery. The same
+ * join), and replay walks each through the current graph. The same
  * names are the incremental namespace: the recorded base and the `--changes`
  * lists arrive in them, so a driver reads its own vocabulary back.
  *
@@ -57,9 +57,9 @@ export const DEPS_REPORT_FILE = ".fabr-deps.json";
 export const DEPS_REPORT_FLAG = "--deps-report";
 
 /**
- * The FLAT spelling of a dependency path (core's `DepsPath`): its parts — the
- * names an edge chain calls its packages by, then the file within the last —
- * each `encodeURI`-encoded, joined with single spaces. Every conversion
+ * @return the FLAT spelling of a dependency path (core's `DepsPath`): its parts
+ * — the names an edge chain calls its packages by, then the file within the
+ * last — each `encodeURI`-encoded, joined with single spaces. Every conversion
  * between parts and the flat string goes through this pair: a raw join would
  * make a space inside a file's name indistinguishable from the separator.
  *
@@ -70,8 +70,9 @@ export function joinDepsPath(parts: ReadonlyArray<string>): string {
   return parts.map(part => encodeURI(part)).join(" ");
 }
 
-/** The inverse of {@link joinDepsPath}. `encodeURI` only ever introduces `%`
- * escapes, so a part without one decodes to itself. */
+/** @return the parts of a flat dependency path, the inverse of
+ * {@link joinDepsPath}. `encodeURI` only ever introduces `%` escapes, so a part
+ * without one decodes to itself. */
 export function splitDepsPath(name: string): string[] {
   return name.split(" ").map(part => (part.includes("%") ? decodeURI(part) : part));
 }
@@ -104,11 +105,11 @@ export const STATE_DIR = ".fabr-state";
 export const CHANGES_FILE = ".fabr-changes";
 
 /**
- * What moved since the base build, as the step's hash diff states it: the
- * names whose content differs (additions included) and the names that are
- * gone, both in this module's namespace — a dependency's file by its instance
- * name, the compile's own by its staged path. Bytes are the step's native
- * facts; what a change *reaches* is the driver's business.
+ * What moved since the base build, as the step's hash diff states it: the names
+ * whose content differs (additions included) and the names that are gone, both
+ * in this module's namespace — a dependency's file by its path name (the route
+ * it is reached by), the compile's own by its staged path. Bytes are the step's
+ * native facts; what a change *reaches* is the driver's business.
  */
 export interface IChangeLists {
   changed: string[];
@@ -176,8 +177,9 @@ export function toRunReport(json: unknown): IRunReport {
   return { reads: reads as string[], edges: toResolutionEdges(edges) };
 }
 
-/** The edges section, absent from a driver that resolves nothing of its own; an
- * empty list leaves every read named by its place in the delivered graph. */
+/** Read the edges section, absent from a driver that resolves nothing of its
+ * own; an empty list leaves every read named by its place in the delivered
+ * graph. */
 function toResolutionEdges(json: unknown): IResolutionEdge[] {
   if (json === undefined) {
     return [];
@@ -200,7 +202,7 @@ function toResolutionEdges(json: unknown): IResolutionEdge[] {
 }
 
 /**
- * The run's report file: what it READ and how its names RESOLVED (the
+ * @return the run's report file: what it READ and how its names RESOLVED (the
  * discovered-dependency halves, which the step joins into the walks the entry
  * is keyed on), plus any further sections a driver keeps of its own, as one
  * document. Sorted, so a report is a function of what the run read and
@@ -214,7 +216,7 @@ export function serializeRunReport(
   return `${JSON.stringify({ reads: [...new Set(reads)].sort(), edges: [...edges].sort(compareEdges), ...sections }, undefined, 2)}\n`;
 }
 
-/** Edge order for the report: by requirer then name, in code-unit order —
+/** Compare two edges in report order: by requirer then name, in code-unit order —
  * never a locale comparison, the point being one spelling on every machine
  * (core's compareText, which a driver cannot import). */
 function compareEdges(left: IResolutionEdge, right: IResolutionEdge): number {

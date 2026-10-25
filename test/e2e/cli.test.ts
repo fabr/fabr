@@ -204,11 +204,8 @@ describe("e2e: driver CLI", () => {
 
   it("cp of a quoted metacharacter filename names it as itself", () => {
     /* A quoted selector is a literal, so `hasGlob()` is false and cp takes its
-     * single-named-file path — which derives the expected basename from the
-     * selector. Rendering that selector as a PATTERN put the escape in the
-     * basename, so it no longer equalled the real file name: the copy nested
-     * under a directory literally called `lit\*.txt`, which the FileSet name
-     * check then rejected ("'\' and control characters are not allowed"). */
+     * single-named-file path, deriving the basename from the selector's literal
+     * text. */
     const metachar = {
       "PROJECT.fabr": "files = src:**/*;\n",
       "src/lit*.txt": "STAR\n",
@@ -241,10 +238,7 @@ describe("e2e: driver CLI", () => {
   });
 
   it("cp of a glob under a subdirectory drops the walked directories, keeping structure below", () => {
-    /* The bug this covers: `copyPrefix` correctly declined to add a wrapper for a final
-     * glob, but the resolved names still carried the directories the selector walked
-     * through (a projection strips only what precedes its `:`), so the matches landed under
-     * `out/nested/` instead of in `out/`. Real `cp` names a file source by its basename —
+    /* Real `cp` names a file source by its basename —
      * the shell expands `nested/*.txt` and hands cp each file — so the literal part of the
      * selector is the path copied *from* and comes off. What a wildcard matched is still
      * structure, and is kept: `**` below the base preserves its subdirectories, exactly as
@@ -289,11 +283,9 @@ describe("e2e: driver CLI", () => {
   });
 
   it("cp of a glob outside the final segment keeps what the wildcard matched", () => {
-    /* The wildcard is not in the last segment, so the leaf is a literal *file* name. Judging
-     * flatness by that leaf used to send this down the container path and nest everything
-     * under a directory named for a file (`out/t.ts/x1/t.ts`); the name's own `hasGlob` is
-     * what makes it a file selection. Nothing literal precedes the wildcard, so nothing is
-     * stripped and each match keeps the directory it was found in. */
+    /* The wildcard is not in the last segment, so the leaf is a literal *file* name; the
+     * name's own `hasGlob` is what makes it a file selection. Nothing literal precedes the
+     * wildcard, so nothing is stripped and each match keeps the directory it was found in. */
     const dirs = {
       "PROJECT.fabr": "files = src:**/*;\n",
       "src/x1/t.ts": "T1\n",

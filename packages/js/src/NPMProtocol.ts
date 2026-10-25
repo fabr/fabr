@@ -20,10 +20,10 @@
 /*
  * The npm registry **wire protocol**: the format of what fabr reads from and
  * writes to a registry — metadata documents, platform gates, publish envelopes,
- * reference/version syntax, tarball layout, and registry auth — as pure functions.
- * NPMRepository.ts is the fabr {@link Repository} *over* this protocol: it owns
- * the transport and caching, and delegates every format concern here (and
- * resolution orchestration to core's package resolver).
+ * reference/version syntax, tarball layout — and the publish PUT; registry auth
+ * is NPMAuth.ts's. NPMRepository.ts is the fabr {@link Repository} *over* this
+ * protocol: it owns the transport and caching, and delegates every format
+ * concern here (and resolution orchestration to core's package resolver).
  */
 
 import {
@@ -92,7 +92,8 @@ export interface INPMPackageMetadata {
    */
   peerDependencies?: unknown;
   /** Per-peer flags; an `optional: true` peer is "if present, must match" —
-   * never auto-installed (npm parity), so it contributes no requirement. */
+   * never installed, but still a requirement (`provided: "optional"`), so the
+   * requirer can reach a package a consumer provides. */
   peerDependenciesMeta?: unknown;
   /**
    * Installability gates declared by a package on itself, in Node's
@@ -124,9 +125,10 @@ export interface INPMPackageMetadata {
 export type PlatformGates = { os?: unknown; cpu?: unknown; libc?: unknown };
 
 /**
- * A gate in npm's list form, whichever way it was written: the list itself, or
- * a bare string for a one-entry gate (`"os": "darwin"` — legal, and published).
- * Anything else contributes no entry, so a gate is readable whatever the JSON.
+ * Read a gate in npm's list form, whichever way it was written: the list
+ * itself, or a bare string for a one-entry gate (`"os": "darwin"` — legal, and
+ * published). Anything else contributes no entry, so a gate is readable
+ * whatever the JSON.
  */
 function gateEntries(gate: unknown): string[] {
   if (typeof gate === "string") {
@@ -136,13 +138,14 @@ function gateEntries(gate: unknown): string[] {
 }
 
 /**
- * npm's os/cpu gate semantics (npm-install-checks' checkList): the list is an
- * allow-list of process.platform / process.arch values, an entry prefixed `!`
- * negating it. An empty/absent list — or the explicit sole entry `"any"` —
- * imposes no constraint. A value is rejected if explicitly blocked (`!value`);
- * otherwise it must appear in the allow-list, unless the list is negations-only.
- * A gated package on a host whose fact is unknown cannot be confirmed to match.
- * The gate is read as written, in any shape — see {@link gateEntries}.
+ * @return true if `value` passes `gate`, otherwise false, under npm's os/cpu
+ * gate semantics (npm-install-checks' checkList): the list is an allow-list of
+ * process.platform / process.arch values, an entry prefixed `!` negating it. An
+ * empty/absent list — or the explicit sole entry `"any"` — imposes no
+ * constraint. A value is rejected if explicitly blocked (`!value`); otherwise
+ * it must appear in the allow-list, unless the list is negations-only. A gated
+ * package on a host whose fact is unknown cannot be confirmed to match. The
+ * gate is read as written, in any shape — see {@link gateEntries}.
  */
 export function platformGateAdmits(gate: unknown, value: string | undefined): boolean {
   const entries = gateEntries(gate);
@@ -165,10 +168,10 @@ export function platformGateAdmits(gate: unknown, value: string | undefined): bo
 }
 
 /**
- * Whether a package declaring these os/cpu/libc gates in its own metadata may run
- * on the given target platform — the test that keeps only the target-matching
- * native-binary variants out of a package's full set of platform optional
- * dependencies.
+ * @return true if a package declaring these os/cpu/libc gates in its own
+ * metadata may run on the given target platform, otherwise false — the test
+ * that keeps only the target-matching native-binary variants out of a package's
+ * full set of platform optional dependencies.
  */
 export function matchesTargetPlatform(meta: PlatformGates, target: NpmPlatform): boolean {
   return (
@@ -179,8 +182,8 @@ export function matchesTargetPlatform(meta: PlatformGates, target: NpmPlatform):
 }
 
 /**
- * A human-readable reason a package declaring these os/cpu/libc gates cannot run
- * on the given target platform, or undefined if it can. Optional dependencies are
+ * Explain why a package declaring these os/cpu/libc gates cannot run on the
+ * given target platform, or undefined if it can. Optional dependencies are
  * filtered out silently before selection; this is for the other side of npm's
  * contract — a *non-optional* dependency (or a direct requirement) on a package
  * built for another platform, which npm rejects as EBADPLATFORM rather than
@@ -210,18 +213,19 @@ export interface NpmPublishIdentity {
 }
 
 /**
- * npm's tarball basename: `<name>-<version>.tgz` with the scope included
+ * Name npm's tarball basename: `<name>-<version>.tgz` with the scope included
  * (`@fabr/core-0.1.tgz`), matching `libnpmpublish`. (The on-disk `npm pack`
- * filename flattening and the registry's served basename are different transforms
- * that don't apply to what the client sends.)
+ * filename flattening and the registry's served basename are different
+ * transforms that don't apply to what the client sends.)
  */
 export function tarballBasename(name: string, version: string): string {
   return `${name}-${version}.tgz`;
 }
 
-/** The digest a registry's `dist` metadata promises for a tarball: the strongest
- * SRI in `dist.integrity` (base64), else the legacy sha1 `dist.shasum` (hex).
- * Undefined when `dist` carries neither — nothing to verify against. */
+/** Find the digest a registry's `dist` metadata promises for a tarball: the
+ * strongest SRI in `dist.integrity` (base64), else the legacy sha1
+ * `dist.shasum` (hex). Undefined when `dist` carries neither — nothing to
+ * verify against. */
 export function expectedTarballDigest(dist: {
   integrity?: string;
   shasum?: string;
@@ -417,11 +421,11 @@ const READ_FIELDS = [
 ] as const;
 
 /**
- * A packument's published versions, each as the metadata fabr reads of it
- * (only {@link READ_FIELDS}): what an abbreviated packument answers, by
- * version. An entry that is not usable version metadata is left out, so the
- * version is looked up on its own instead. A document with no `versions` map
- * is not a packument (an error body, or the wrong URL).
+ * Convert a packument to its published versions, each as the metadata fabr
+ * reads of it (only {@link READ_FIELDS}): what an abbreviated packument
+ * answers, by version. An entry that is not usable version metadata is left
+ * out, so the version is looked up on its own instead. A document with no
+ * `versions` map is not a packument (an error body, or the wrong URL).
  */
 export function toPackumentVersions(json: unknown): Map<string, INPMPackageMetadata> {
   if (!isJsonObject(json) || !isJsonObject(json.versions)) {
@@ -439,8 +443,8 @@ export function toPackumentVersions(json: unknown): Map<string, INPMPackageMetad
   return versions;
 }
 
-/** The converter behind {@link parseMetadataResponse}: the document as metadata,
- * or the reason it is unusable (attributed to the response by the caller). */
+/** Convert the document behind {@link parseMetadataResponse} to metadata, or
+ * the reason it is unusable (attributed to the response by the caller). */
 function toVersionMetadata(json: unknown): INPMPackageMetadata {
   if (!isJsonObject(json)) {
     throw new FabrError("expected a JSON object");
@@ -465,11 +469,12 @@ function toVersionMetadata(json: unknown): INPMPackageMetadata {
   throw new FabrError("not a package version document");
 }
 
-/** Whether a body is a single-version metadata document — `name` + `version` +
- * a `dist.tarball` (a full packument has none of the latter two). The digest
- * fields beside the tarball are optional, but a present one must be a string:
- * they are read as such when the tarball is verified, and this is the one place
- * a document's shape is judged (before it can be cached). */
+/** @return true if a body is a single-version metadata document — `name` +
+ * `version` + a `dist.tarball` (a full packument has none of the latter two) —
+ * otherwise false. The digest fields beside the tarball are optional, but a
+ * present one must be a string: they are read as such when the tarball is
+ * verified, and this is the one place a document's shape is judged (before it
+ * can be cached). */
 function isVersionMetadata(response: Record<string, unknown>): response is INPMPackageMetadata & Record<string, unknown> {
   const meta = response as unknown as INPMPackageMetadata;
   return (
@@ -483,8 +488,8 @@ function isVersionMetadata(response: Record<string, unknown>): response is INPMP
   );
 }
 
-/** Whether an optional document field is absent or a string — "if it's there,
- * it must be usable". */
+/** @return true if an optional document field is absent or a string — "if it's
+ * there, it must be usable" — otherwise false. */
 function isOptionalString(value: unknown): boolean {
   return value === undefined || typeof value === "string";
 }
@@ -589,11 +594,11 @@ const PACKAGE_JSON = "package.json";
  * of npm's contribution to a `repository_group` content route: the
  * `package.json` at the content root supplies the identity, version and
  * requirements (the shared {@link declaredDependencies} fold — regular deps
- * plus non-optional peers — over the manifest with the package extensions
- * applied). `optionalDependencies` are dropped: their os/cpu
- * gates live in each *dependency's* own metadata — with whatever registry that
- * name routes to, which a manifest read cannot ask — and npm's optional
- * contract is exactly that absence is tolerated.
+ * plus every peer, optional ones as optional-provided — over the manifest with
+ * the package extensions applied). `optionalDependencies` are dropped: their
+ * os/cpu gates live in each *dependency's* own metadata — with whatever
+ * registry that name routes to, which a manifest read cannot ask — and npm's
+ * optional contract is exactly that absence is tolerated.
  */
 function readNpmContentPackage(files: FileSet): Computable<IContentPackage<SemverVersion>> {
   const manifestFile = files.getFile(PACKAGE_JSON);
@@ -623,7 +628,7 @@ function readNpmContentPackage(files: FileSet): Computable<IContentPackage<Semve
 }
 
 /**
- * The name + exact version a written npm publish coordinate assigns. A
+ * Parse the name + exact version a written npm publish coordinate assigns. A
  * coordinate pins an exact version, unlike a read requirement's range.
  */
 export function parseNpmPublishCoordinate(ref: Name): NpmPublishIdentity {
@@ -664,9 +669,9 @@ export const NPM_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
 };
 
 /**
- * npm tarballs wrap the package contents in a single root directory
- * (conventionally "package/", but not reliably so); strip it, so the stored
- * package's files are named relative to the package root.
+ * Strip the single root directory npm tarballs wrap the package contents in
+ * (conventionally "package/", but not reliably so), so the stored package's
+ * files are named relative to the package root.
  */
 export function stripArchiveRoot(files: FileSet): FileSet {
   return files.remap(name => {

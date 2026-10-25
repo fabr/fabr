@@ -50,10 +50,8 @@ describe("e2e: js_package metadata", () => {
   });
 
   it("carries glob metacharacters into the payload as themselves, unescaped", () => {
-    /* The regression this guards: a MAP value reached the payload through the
-     * name's PATTERN rendering, so any metacharacter in ordinary prose arrived
-     * backslash-escaped ("a \\(b\\)"). A value is text — only a matcher wants
-     * the escaped form. */
+    /* A MAP value is text, so a metacharacter in it reaches the payload
+     * unescaped; only a matcher wants the escaped form. */
     const result = runFabr(projectWith('description = "Fast (and small)! a|b * [x]";'), [
       "-DJS_TARGET=es2020",
       "cat",

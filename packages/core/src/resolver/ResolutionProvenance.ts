@@ -21,7 +21,8 @@ import { IProvenanceStep, registerProvenanceRenderer } from "../core/Provenance"
 import { resolutionExplainer } from "./MVSResolution";
 import { Requirement, ROOT_REQUIRER, Selected } from "./Types";
 
-/** A root requirement as it was written: the package, and the version it states. */
+/** Render a root requirement as it was written: the package, and the version
+ * it states. */
 function written(root: Requirement): string {
   return root.versionConstraint === undefined ? root.name : `${root.name}:${root.versionConstraint}`;
 }
@@ -47,9 +48,9 @@ export interface IResolutionOrigin<V> extends IProvenanceStep {
 }
 
 /**
- * The selection owning `path` within a mounted closure: the one whose package
- * name is a leading component-prefix of the path (longest wins — a scoped npm
- * name is simply a two-component prefix). Purely positional: the selections
+ * Find the selection owning `path` within a mounted closure: the one whose
+ * package name is a leading component-prefix of the path (longest wins — a
+ * scoped npm name is simply a two-component prefix). Purely positional: the selections
  * carry every name in the closure, so no ecosystem naming convention is
  * needed. Undefined when nothing owns it — e.g. a path mounted under a
  * dependency *alias*, which is not a resolution name.

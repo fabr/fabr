@@ -106,8 +106,8 @@ function hoisted(swc: ISwc, content: string, filename: string): string {
 }
 
 /**
- * The compiler's own source map for this file, as JSON, so the hoist's map can
- * be chained onto it and a stack trace still names the original TypeScript.
+ * Read the compiler's own source map for this file, as JSON, so the hoist's map
+ * can be chained onto it and a stack trace still names the original TypeScript.
  *
  * Both spellings are handled because both occur: an inline `data:` map (what a
  * single-file transform emits) and a sibling `.map` file (what fabr's `tsc`

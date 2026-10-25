@@ -163,7 +163,7 @@ export class ExecutionContext {
    * process lifetime by `execute`/`executePipeline` — a command pipeline's
    * stages are pipe-wired and must co-run, so a pipeline is ONE unit (admitting
    * its stages individually could wedge it half-started) — and a step's own
-   * staging and collection, admitted through `IActionContext.admit`. Admissions
+   * staging and collection, admitted through `ActionContext.admit`. Admissions
    * are never nested: a step holds no slot while waiting for another, so there
    * is no hold-and-wait, and a step may fan out as many executions as it likes
    * (the per-file test run). Cache hits and the resolution memos sharing that
@@ -286,13 +286,13 @@ export class ExecutionContext {
     );
   }
 
-  /** This run's state for `key`, or undefined if no plugin has established it
+  /** Get this run's state for `key`, or undefined if no plugin has established it
    *  yet. Use {@link getOrCreatePluginContext} to read-or-initialize in one step. */
   public getPluginContext<T>(key: PluginKey<T>): T | undefined {
     return this.pluginContexts.get(key as PluginKey<unknown>) as T | undefined;
   }
 
-  /** This run's state for `key`, creating it on first access via `create` (so a
+  /** Get this run's state for `key`, creating it on first access via `create` (so a
    *  plugin's per-run state — e.g. a parsed `.npmrc` — is built once and shared by
    *  all its instances across the run's BuildContexts). */
   public getOrCreatePluginContext<T>(key: PluginKey<T>, create: () => T): T {

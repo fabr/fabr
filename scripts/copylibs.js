@@ -19,9 +19,9 @@
 
 /* Make each package's devchain (tsc) build content-identical to the package
  * fabr itself produces, so `yarn build` is a faithful stand-in and not just a
- * bootstrap. Two source assets tsc leaves behind that the fabr build carries:
- *   - lib/ .fabr libraries: the system include path resolves lib/ next to the
- *     package entry point (see packageLibDir), never from the source tree;
+ * bootstrap. Three things tsc leaves behind that the fabr build carries:
+ *   - lib/ .fabr libraries: core and each plugin contribute theirs from lib/
+ *     next to the package entry point (packageLibDir), never from the source tree;
  *   - hand-authored .d.ts under src/: the fabr build's `srcs = **\/*.ts` glob
  *     passes them through, but tsc never copies .d.ts *inputs* to outDir;
  *   - js's generated lib/package-extensions.json (the `package_extensions`

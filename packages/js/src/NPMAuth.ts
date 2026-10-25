@@ -88,8 +88,8 @@ export function parseNpmrc(content: string): Map<string, string> {
   return entries;
 }
 
-/** The absolute path of the user `~/.npmrc` — read through a FileSource (the
- *  execution's absolute source), not a raw `fs` read. */
+/** @return the absolute path of the user `~/.npmrc` — read through a
+ *  FileSource (the execution's absolute source), not a raw `fs` read. */
 export function userNpmrcPath(): string {
   return path.join(os.homedir(), ".npmrc");
 }
@@ -285,7 +285,7 @@ function isHttpUrl(value: unknown): value is string {
   }
 }
 
-/** The `authUrl`/`doneUrl` pair of a web-auth challenge body; throws if absent. */
+/** Read the `authUrl`/`doneUrl` pair of a web-auth challenge body; throws if absent. */
 function toWebAuthUrls(json: unknown): { authUrl: string; doneUrl: string } {
   const doc = toJsonObject(json);
   const { authUrl, doneUrl } = doc;
@@ -319,12 +319,12 @@ export function otpChallengeOf(response: HttpResponse): OtpChallenge | undefined
 }
 
 /**
- * npmjs's web-auth `doneUrl` names the canonical registry host even when the
- * write went to a proxy/mirror that forwards its responses, and polling the
- * canonical host would miss the session — so rewrite exactly that host to the
+ * Rewrite npmjs's canonical registry host in a web-auth `doneUrl` to the
  * registry origin the write used (preserving any path prefix the registry is
- * mounted under). Any other host is intentional and left alone. Mirrors
- * npm-profile's behavior.
+ * mounted under): the `doneUrl` names the canonical host even when the write
+ * went to a proxy/mirror that forwards its responses, and polling the
+ * canonical host would miss the session. Any other host is intentional and
+ * left alone. Mirrors npm-profile's behavior.
  */
 export function replaceDoneUrlOrigin(doneUrl: string, registryUrl: string): string {
   const done = new URL(doneUrl);
@@ -354,7 +354,7 @@ function delay(ms: number): Computable<void> {
   return Computable.from(resolve => setTimeout(() => resolve(undefined), ms));
 }
 
-/** The `{token}` of a completed web-auth ceremony; throws if absent. */
+/** Read the `{token}` of a completed web-auth ceremony; throws if absent. */
 function toWebAuthToken(json: unknown): string {
   const token = toJsonObject(json).token;
   if (typeof token !== "string" || token.length === 0) {
@@ -424,8 +424,8 @@ export class OtpSession {
   private pending?: Computable<string>;
 
   /**
-   * The session's current answer, acquiring one via `acquire` when there is
-   * none. `rejected` is a password the registry just refused: if it is the
+   * Get the session's current answer, acquiring one via `acquire` when there
+   * is none. `rejected` is a password the registry just refused: if it is the
    * cached one, it is discarded and a fresh acquisition started (a *freshly*
    * acquired refusal is not retried here — the caller bounds its attempts).
    */

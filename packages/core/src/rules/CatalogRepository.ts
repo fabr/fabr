@@ -144,8 +144,9 @@ export class CatalogRepository implements Repository, RepositoryCollection {
    * Vend the reference to a member. The member name is the whole literal up to
    * a projection `:` (versions live in the catalog, not the reference), so a `/`
    * inside a scoped name (`@types/node`) is part of the key, not a boundary. A
-   * trailing `:tail` projects into the pinned package. A `?` or `!` marker is
-   * the reference's own; one on a projection is refused.
+   * trailing `:tail` projects into the pinned package. A `?` or `!` ending the
+   * alias is the reference's marker; after a projection it is part of the
+   * pattern.
    */
   public getRepositoryRef(name: Name): RepositoryRef {
     /* A `?` or `!` ending the reference is a marker only on the alias alone;
@@ -182,13 +183,14 @@ export class CatalogRepository implements Repository, RepositoryCollection {
     );
   }
 
-  /** A catalog pins versions for reading; it is not a place content goes. */
+  /** Refuse a publish: a catalog pins versions for reading; it is not a place
+   *  content goes. */
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
     throw new FabrError(`a catalog is not a publish destination (cannot sync to '${name.toString()}')`);
   }
 }
 
-/** The provenance + concrete detail attributing one catalog entry (for a
+/** Attribute one catalog entry by provenance + concrete detail (for a
  * same-name conflict): a reference by what was written, a locally built
  * package by itself. */
 function conflictSide(entry: CatalogEntry): IConflictSource {

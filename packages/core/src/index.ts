@@ -17,13 +17,12 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-/* The generic bootstrap rules (flag, files, script[run], serve[run], generate,
- * patched, sync) and core's own lib/ are core's contribution to every build's
- * rule tables — assembled by `coreContribution()` (model/Loader) and seeded per
- * load, not registered by an import side effect. Language-specific rules live in their own packages
- * (@fabr-build/js et al) and contribute via their plugin `activate()`: the bootstrap
- * set is core + js + fabr; anything beyond that can be built by fabr itself and
- * loaded via a plugin declaration. */
+/* Core's rules (flag, files, script[run], serve[run], generate, patched, sync),
+ * repository types (catalog, fetch, repository_group, fabr_home) and
+ * lib/STD.fabr are its contribution to every load, assembled by
+ * `coreContribution()` (model/Loader). Language-specific rules live in their own
+ * packages (@fabr-build/js et al) and contribute through their plugin's
+ * `activate()`. */
 
 export * from "./Constants";
 export * from "./Fabr";

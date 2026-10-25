@@ -54,8 +54,8 @@ interface IMessageUtil {
 }
 
 /**
- * `test`'s failures as presentable text, one entry per raw failure message —
- * so the caller keeps the same shape it had, only readable. A message the
+ * Format `test`'s failures as presentable text, one entry per raw failure
+ * message — so the caller keeps the same shape it had, only readable. A message the
  * formatter declines to handle is passed through as it arrived.
  */
 export function formatFailures(test: IFormattableResult, projectConfig: unknown, globalConfig: unknown, testPath: string): string[] {
@@ -76,7 +76,7 @@ export function formatFailures(test: IFormattableResult, projectConfig: unknown,
 }
 
 /**
- * Jest's rendered failure as the report should carry it: without the
+ * Shape jest's rendered failure as the report should carry it: without the
  * `  ● suite › test` header (the report names the test itself) and without
  * jest's own body indent (the report indents the detail, and two indents read
  * as one deep one). Exported for its own tests — the rest of this module needs

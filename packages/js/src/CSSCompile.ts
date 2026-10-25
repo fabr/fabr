@@ -20,10 +20,11 @@
 /**
  * Host-side (tool-independent) helpers behind the sass_compile and css_postcss
  * rules: the naming policy for everything the two steps emit, and the options
- * documents handed to the standalone drivers (see cssDriver/sass-driver.ts and
- * cssDriver/postcss-driver.ts — resolved as the SASS_DRIVER and POSTCSS_DRIVER
- * runnables declared in JS.fabr). Everything here runs in the host during
- * evaluation; the Sass and postcss invocations are the drivers' job.
+ * documents handed to the standalone drivers (see @fabr-build/js-tools's
+ * cssDriver/sass-driver.ts and cssDriver/postcss-driver.ts — resolved as the
+ * SASS_DRIVER and POSTCSS_DRIVER runnables declared in JS.fabr). Everything
+ * here runs in the host during evaluation; the Sass and postcss invocations
+ * are the drivers' job.
  *
  * **The rule names, the driver writes.** Every output path in
  * {@link ISassOptions} and {@link IPostcssOptions} is computed here, so a
@@ -64,20 +65,22 @@ export const CSS_SRC_ROOT = "src";
  * the tools' deps neither collide with nor are visible to the sources. */
 export const CSS_TOOL_DIR = ".fabr-css";
 
-/** Whether a styled source is a Sass PARTIAL (`_foo.scss`) — included by another
- * stylesheet rather than compiled in its own right, so it produces nothing. */
+/** @return true if a styled source is a Sass PARTIAL (`_foo.scss`), otherwise
+ * false. A partial is included by another stylesheet rather than compiled in its
+ * own right, so it produces nothing. */
 export function isSassPartial(name: string): boolean {
   return name.split("/").pop()?.startsWith("_") === true;
 }
 
-/** Whether a styled source is a **css-module** — the `.module.` infix — so its
- * local names are scoped and exported to the importing JavaScript. */
+/** @return true if a styled source is a **css-module** (the `.module.` infix),
+ * whose local names are scoped and exported to the importing JavaScript,
+ * otherwise false. */
 export function isCssModule(name: string): boolean {
   return /\.module\.(css|scss|sass)$/i.test(name);
 }
 
 /**
- * The name the *scoping step* publishes a stylesheet under: it consumes the
+ * Name the stylesheet the *scoping step* publishes: it consumes the
  * `.module.` marker — which every bundler reads as "scope this", so a
  * stylesheet whose names are already final must not still carry it. Identity on
  * a plain stylesheet, whose names were never anything but final.
@@ -87,7 +90,7 @@ export function scopedCssName(name: string): string {
 }
 
 /**
- * The plain-CSS name a styled source lowers to end-to-end: `x.scss` → `x.css`,
+ * Name the plain CSS a styled source lowers to end-to-end: `x.scss` → `x.css`,
  * and `x.module.scss` → `x.css` as well — the sass step's lowering followed by
  * the scoping step's marker consumption.
  *
@@ -98,11 +101,11 @@ export function loweredCssName(name: string): string {
 }
 
 /**
- * The scope suffix a css-module's local names take: a digest of the package name
- * and the package-relative path of the *scoping step's input* (the
- * {@link sassLoweredName} — `a/x.module.css` whether the author wrote `.scss` or
- * `.css`), so it is a function of the file rather than of a bundle or of where
- * the file was staged.
+ * Compute the scope suffix a css-module's local names take: a digest of the
+ * package name and the package-relative path of the *scoping step's input* (the
+ * {@link sassLoweredName} — `a/x.module.css` whether the author wrote `.scss`
+ * or `.css`), so it is a function of the file rather than of a bundle or of
+ * where the file was staged.
  *
  * Distinctness across files rests on the digest rather than on construction, at
  * ~48 bits; {@link cssScopeCollision} catches the residue within a package, and
@@ -132,7 +135,7 @@ const SCOPE_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRST
 const SCOPE_LENGTH = 8;
 
 /**
- * Every output name the sass step produces for one Sass source, or undefined
+ * Name every output the sass step produces for one Sass source, or undefined
  * where it produces none (a Sass partial, which exists only to be included).
  */
 export function sassSourceOutputs(path: string, sourceMaps = false): ISassSource | undefined {
@@ -144,7 +147,7 @@ export function sassSourceOutputs(path: string, sourceMaps = false): ISassSource
 }
 
 /**
- * Every output name the postcss step produces for one stylesheet input.
+ * Name every output the postcss step produces for one stylesheet input.
  * `carriedMaps` is the step's map inputs: a plain stylesheet that arrived with
  * one (a lowered Sass source) carries it through; one that arrived without (an
  * authored `.css`, copied verbatim) has no transform for a map to describe.
@@ -177,11 +180,11 @@ export function postcssSourceOutputs(path: string, packageName: string, sourceMa
  * sub-target lowers the Sass sources (partials staged, never listed), then the
  * `css_postcss` sub-target runs the postcss chain over the lowered tree plus
  * the authored plain CSS — scoping the css-modules, publishing everything.
- * `deps` are the packages mounted for Sass `@use`/`@import` resolution (the
- * loadPaths analogue of node_modules); `packageName` is the identity scoped
- * names are derived from. Builds under BUILD_OPERATION=build — lowering is a
- * build even for a test target. An empty bucket skips both sub-targets, so a
- * project with no stylesheets never resolves the CSS toolchain.
+ * `deps` are the packages Sass `@use`/`@import` may load from, answered by the
+ * driver's importer from the dependency table; `packageName` is the identity
+ * scoped names are derived from. Builds under BUILD_OPERATION=build — lowering
+ * is a build even for a test target. An empty bucket skips both sub-targets, so
+ * a project with no stylesheets never resolves the CSS toolchain.
  *
  * The end-to-end conflict checks run here, over the author's own names — the
  * per-step checks in each rule see only that step's inputs, and a collision
@@ -222,10 +225,11 @@ export function compileCssSources(
 }
 
 /**
- * The whole-pipeline view of one styled source's outputs, for the end-to-end
- * conflict checks: the two steps' own naming functions composed. Every name
- * either step emits for the source, and the scope its locals take, keyed by the
- * name the AUTHOR wrote; undefined for a Sass partial, which produces nothing.
+ * Name one styled source's outputs across the whole pipeline, for the
+ * end-to-end conflict checks: the two steps' own naming functions composed.
+ * Every name either step emits for the source, and the scope its locals take,
+ * keyed by the name the AUTHOR wrote; undefined for a Sass partial, which
+ * produces nothing.
  */
 function cssPipelineOutputs(path: string, packageName: string): IPostcssSource | undefined {
   if (!isSassSource(path)) {
@@ -238,7 +242,8 @@ function cssPipelineOutputs(path: string, packageName: string): IPostcssSource |
   return { ...postcssSourceOutputs(sass.css, packageName), path };
 }
 
-/** The end-to-end output-name and scope checks, over the author's own names. */
+/** Run the end-to-end output-name and scope checks, over the author's own
+ * names. */
 function assertCssOutputsDisjoint(fileNames: string[], packageName: string): void {
   const sources = [...fileNames]
     .sort()
@@ -267,15 +272,15 @@ export interface ICssStepSource {
   map?: string;
 }
 
-/** Every path one source causes a driver to write. */
+/** List every path one source causes a driver to write. */
 function outputPathsOf(source: ICssStepSource): string[] {
   return [source.css, ...(source.shim ? [source.shim] : []), ...(source.map ? [source.map] : [])];
 }
 
 /**
- * The first pair of sources that would write the same file, or undefined if none
- * do — `x.module.scss` alongside `x.scss`, both lowering to `x.css`. `step` is
- * the targetdef the conflict is attributed to.
+ * Find the first pair of sources that would write the same file, or undefined
+ * if none do — `x.module.scss` alongside `x.scss`, both lowering to `x.css`.
+ * `step` is the targetdef the conflict is attributed to.
  *
  * Nothing downstream catches this: the driver's writes silently overwrite, and
  * the step's output is collected as one tree, never unioned.
@@ -303,8 +308,8 @@ export function cssOutputConflict(sources: ICssStepSource[], step: string): Conf
 }
 
 /**
- * The first pair of css-modules whose scope digests collide, or undefined if
- * none do — which would let two files' identically-named locals scope to one
+ * Find the first pair of css-modules whose scope digests collide, or undefined
+ * if none do — which would let two files' identically-named locals scope to one
  * class and bleed. Chance only, and only within a package, which is all one css
  * step can see. A collision is reported, never disambiguated: a file's scope is
  * a function of its own name alone.
@@ -325,7 +330,7 @@ export function cssScopeCollision(sources: Array<{ path: string; scope?: string 
 }
 
 /**
- * What to do about two stylesheets producing one file, said in terms of THESE
+ * Say what to do about two stylesheets producing one file, in terms of THESE
  * two — which of them is the css-module, and why that makes it land where it
  * does — ending with the generic "rename either of them".
  */
@@ -408,8 +413,8 @@ export function buildPostcssOptions(
 }
 
 /**
- * The stylesheets a dependency delivers, as a compose names them: by the name
- * the package is delivered under and the path within it, each with a scope of
+ * List the stylesheets each dependency holds, as a compose names them: by the
+ * name the package is bound under and the path within it, each with a scope of
  * its own so two of them cannot name one class alike.
  *
  * Scoped by delivered name: a compose takes a private copy, so the scope only
@@ -427,9 +432,10 @@ function composableStylesheets(deps: PackageFileSet[]): IPostcssOptions["composa
 }
 
 /**
- * How the css step's outputs are split where a consumer needs them apart: the
+ * Split the css step's outputs where a consumer needs them apart: the
  * **compile inputs** (the shims and declarations, which go into js_compile's
- * `srcs`) and the **content** (the stylesheets, which are delivered).
+ * `srcs`) and the **content** (the stylesheets, which ship as the build's
+ * output).
  *
  * Decided by extension over the step's whole output; the two sets partition it
  * exactly.
@@ -443,10 +449,10 @@ export function partitionCssOutput(output: FileSet): { compileInputs: FileSet; c
 }
 
 /**
- * The compile's whole knowledge of stylesheets, as `rewrite_imports` rules: each
- * a stylesheet specifier as an author writes it, paired with the file it really
- * names. Constant, so the compile is told it once rather than once per
- * stylesheet.
+ * Make the compile's whole knowledge of stylesheets, as `rewrite_imports`
+ * rules: each a stylesheet specifier as an author writes it, paired with the
+ * file it really names. Constant, so the compile is told it once rather than
+ * once per stylesheet.
  *
  * A module names its shim, the module that really carries the class map — so
  * the type comes from a source the pipeline compiles rather than a declaration
@@ -464,8 +470,9 @@ export function cssImportRewrites(): Name[] {
   return CSS_REWRITE_RULES.map(([selector, target]) => rule(selector, target));
 }
 
-/** `<selector> -> <target>`, as a rename over paths at any depth. `**\/` owns
- * its adjacent slash, so the pair is structure-preserving at the tree root too. */
+/** Make `<selector> -> <target>`, as a rename over paths at any depth. `**\/`
+ * owns its adjacent slash, so the pair is structure-preserving at the tree root
+ * too. */
 function rule(selector: string, target: string): Name {
   const build = (suffix: string): Name =>
     new NameBuilder().appendGlobMetachars("**").appendLiteralString("/").appendGlobMetachars("*").appendLiteralString(suffix).name();

@@ -476,9 +476,7 @@ describe("Name", () => {
 
   /* Two renderings, and which one a caller wants. `toString` is the name's TEXT
    * (what it denotes as a value, and what to show a user); `toGlobString` is the
-   * pattern a matcher compiles, and — being lossless — the name's identity. The
-   * bug this split fixes: a value site rendering through the pattern form put
-   * backslashes into a package.json payload. */
+   * pattern a matcher compiles, and — being lossless — the name's identity. */
   describe("toString vs toGlobString", () => {
     /* A literal built the way a quoted value is: metacharacters as data. */
     const literal = (text: string): Name => new NameBuilder().appendLiteralString(text).name();
@@ -511,7 +509,8 @@ describe("Name", () => {
 
     it("distinguishes a quoted metacharacter from live syntax — why identity uses the pattern form", () => {
       /* These two are different names; only toGlobString tells them apart, which
-       * is what keeps them off one cache key (see BuildAction's manifestOption). */
+       * is what keeps them off one cache key (an action key renders names with
+       * toGlobString). */
       const quoted = literal("*");
       const wildcard = new NameBuilder().appendGlobMetachars("*").name();
       expect(quoted.toString()).to.equal(wildcard.toString());

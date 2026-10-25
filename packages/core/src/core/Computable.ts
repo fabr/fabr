@@ -286,9 +286,9 @@ export abstract class ComputableSource<T> {
     }
   }
 
-  /** Check whether an input changing while this node awaits its first value
-   * means it must compute again. A derived node's does: its pending value was
-   * asked for from the inputs it had. */
+  /** @return true if an input changing while this node awaits its first value
+   * means it must compute again, otherwise false. A derived node's does: its
+   * pending value was asked for from the inputs it had. */
   protected recomputesWhileUnresolved(): boolean {
     return false;
   }
@@ -377,8 +377,9 @@ export abstract class ComputableSource<T> {
   protected maybeRecompute(): void {}
 
   /**
-   * Would this node's settled error go unobserved? True when it is settled Error
-   * and in the graph with no dependant that would *read* it. {@link Computable} narrows it
+   * @return true if this node's settled error would go unobserved, otherwise
+   * false: it is settled Error and in the graph with no dependant that would
+   * *read* it. {@link Computable} narrows it
    * to also exclude a binding node (which forwards to its `outer`). The
    * `dependants` check already excludes a detached node: a derived node that loses
    * its last dependant *detaches* (Detached, not Error), so only an eager,
@@ -389,8 +390,9 @@ export abstract class ComputableSource<T> {
   }
 
   /**
-   * Does depending on a node amount to observing its error? True for a derived node — it
-   * reads its inputs and propagates their failure onwards. False for a {@link Sink}, which
+   * @return true if depending on this node amounts to observing its error, otherwise
+   * false. True for a derived node — it reads its inputs and propagates their failure
+   * onwards. False for a {@link Sink}, which
    * holds a node attached without ever reading it: an edge that keeps a chain alive is not
    * an edge that reports its failure, so a seated chain must still answer for its own
    * errors (see {@link isUnhandledError}).
@@ -466,7 +468,7 @@ export class Computable<T> extends ComputableSource<T> {
     return this;
   }
 
-  /** Core derivation: a node computing `fn` over `deps` (or `errfn` on failure). */
+  /** Derive a node computing `fn` over `deps` (or `errfn` on failure). */
   public static deriving<U>(
     deps: ComputableSource<any>[],
     fn: (...args: any[]) => U | ComputableSource<U>,
@@ -546,10 +548,8 @@ export class Computable<T> extends ComputableSource<T> {
   }
 
   /**
-   * Once-and-once only version of {@link from}, typically for non-repeatable processes
-   * that need to avoid settling multiple times.
-   * @param fn
-   * @returns
+   * Create a cell like {@link from} that settles at most once, typically for
+   * non-repeatable processes that need to avoid settling multiple times.
    */
   public static fromOnce<T>(fn: (resolve: (value: T | Computable<T>) => void, reject: (err: Error) => void) => void): Computable<T> {
     const result = new Computable<T>();
@@ -612,8 +612,8 @@ export class Computable<T> extends ComputableSource<T> {
     return this.fn !== undefined;
   }
 
-  /** Check whether this node is in a maybe state: a value served before, with
-   * an input since marked maybe-invalid. */
+  /** @return true if this node is in a maybe state — a value served before,
+   * with an input since marked maybe-invalid — otherwise false. */
   private isMaybe(): boolean {
     return this.currentState === ComputableState.MaybeValid || this.currentState === ComputableState.MaybeError;
   }
@@ -720,8 +720,9 @@ export class Computable<T> extends ComputableSource<T> {
     this.settle(ComputableState.Error, same ? held : new CycleError(labels));
   }
 
-  /** Check whether `start` depends on `target` through any node, settled or
-   * not. Asked of a cyclic binding, to tell whether its cycle is still there. */
+  /** @return true if `start` depends on `target` through any node, settled or
+   * not, otherwise false. Asked of a cyclic binding, to tell whether its cycle
+   * is still there. */
   private static reaches(start: ComputableSource<unknown>, target: ComputableSource<unknown>): boolean {
     return Computable.pathBetween(start, target, node => node.inputs()) !== undefined;
   }
@@ -758,13 +759,13 @@ export class Computable<T> extends ComputableSource<T> {
     return undefined;
   }
 
-  /** The nodes this one depends on: its inputs and, where it has one, its binding. */
+  /** List the nodes this one depends on: its inputs and, where it has one, its binding. */
   private inputs(): ComputableSource<unknown>[] {
     return this.binding === undefined ? this.dependsOn : [...this.dependsOn, this.binding];
   }
 
   /**
-   * The nodes this one is waiting on: none where it is settled (its value is
+   * List the nodes this one is waiting on: none where it is settled (its value is
    * in hand, so nothing is held up behind it); otherwise its inputs, and its
    * binding only where it is waiting on that for certain — its own inputs
    * settled and no re-run owed. A node whose inputs are unsettled may re-run
@@ -917,8 +918,9 @@ export class Computable<T> extends ComputableSource<T> {
     this.holding.clear();
   }
 
-  /** Check whether this node can move on its own: a derived node owed a run
-   * it can make, or a cell still to be resolved by its executor. */
+  /** @return true if this node can move on its own — a derived node owed a
+   * run it can make, or a cell still to be resolved by its executor —
+   * otherwise false. */
   private canMove(): boolean {
     if (this.fn === undefined) {
       return this.binding === undefined && !this.isSettled();
@@ -952,7 +954,7 @@ export class Computable<T> extends ComputableSource<T> {
   }
 
   /**
-   * The binding delivering the inner's settled result. It lands only when this
+   * Take the inner's settled result from the binding. It lands only when this
    * node is coherent to receive it: own deps settled (canRun) and no re-run
    * pending — Invalid means an own-dep *value* changed and `fn` hasn't consumed
    * it yet; run() will unbind this binding and rebind from fresh inputs, so its
@@ -991,7 +993,7 @@ export class Computable<T> extends ComputableSource<T> {
   }
 
   /**
-   * The binding reporting that the inner revalidated unchanged: return to
+   * Take the binding's report that the inner revalidated unchanged: return to
    * settled only if the own-dep side is settled too and we are in a maybe state
    * (the only states a revalidation can restore); otherwise hold — the own-dep
    * side's own settle/revalidate converges us through maybeRecompute.
@@ -1014,7 +1016,8 @@ export class Computable<T> extends ComputableSource<T> {
    * only when both its own deps and the binding agree, so a consumer never
    * observes mixed-generation inputs across the boundary. */
 
-  /** A hard invalidate (the inner re-settled a changed value with no prior
+  /** Invalidate, and on a binding mark the outer maybe-invalid too: a hard
+   * invalidate (the inner re-settled a changed value with no prior
    * maybe-invalid wave) must still unsettle the outer, or a consumer sharing
    * another arm of the diamond reads the outer's stale value mid-cascade. The
    * outer only ever needs maybe: the definite new value arrives via settle.
@@ -1029,8 +1032,9 @@ export class Computable<T> extends ComputableSource<T> {
     }
   }
 
-  /** A maybe-invalid wave crosses a cyclic binding where the binding was
-   * settled, the cycle standing: the outer and what depends on it may be
+  /** Mark this node alone maybe-invalid, returning the nodes to mark after
+   * it — on a binding, its outer too where the wave crosses. A wave crosses
+   * a cyclic binding where the binding was settled, the cycle standing: the outer and what depends on it may be
    * about to change, if the batch cuts the cycle, and must hold until it is
    * decided (see {@link recheckCycle}). It does not cross one still pending:
    * the wave is then the outer's own cycle error on its way back around. */
@@ -1041,9 +1045,10 @@ export class Computable<T> extends ComputableSource<T> {
     return this.outer !== undefined && (!this.cyclic || settled) ? [...next, this.outer] : next;
   }
 
-  /** A cyclic binding that carried a wave into its outer: once the wave is
-   * done the outer's pending region is marked in full, and the outer holds on
-   * it, so that whichever of its nodes moves first asks the outer to decide. */
+  /** Have the outer hold on its pending region, on a cyclic binding that
+   * carried a wave into it: once the wave is done that region is marked in
+   * full, and the outer holds on it, so that whichever of its nodes moves
+   * first asks the outer to decide. */
   protected override afterMaybeInvalidWave(): void {
     if (this.carriedWave) {
       this.carriedWave = false;
@@ -1078,11 +1083,10 @@ export class Computable<T> extends ComputableSource<T> {
 const IDENTITY = (value: unknown): unknown => value;
 
 /**
- * Report an error that reached a sink with no handler to read it. Seating a node gives
- * it a dependant, so {@link ComputableSource.isUnhandledError} stops seeing it as
- * stranded — the sink is the observer now, and an observer without a handler must
- * surface the error rather than swallow it. Reported directly (not deferred like
- * {@link ComputableSource.checkUnhandledError}): a sink's handlers are fixed when it is
+ * Report an error that reached a {@link ComputableSource.once} tail with no `onError`:
+ * the tail is the error's observer, so with no handler it must surface the error rather
+ * than swallow it. Reported directly (not deferred like
+ * {@link ComputableSource.checkUnhandledError}): the tail's handlers are fixed when it is
  * built, so there is no late-handler window for the deferral to allow for.
  */
 function reportUnobserved(err: Error): void {

@@ -24,15 +24,12 @@
  * activation contributes the js rules, the npm repository type, and this
  * package's lib/ (JS.fabr), which the plugin declaration auto-includes.
  *
- * The package also ships the test runners the js test rules run (the
- * `js_script` declarations in JS.fabr, over the compiled entries in this
- * installation). Those runtimes live in src/testRunner/, src/jestRunner/ and
- * src/vitestRunner/, disjoint from this side of the package: they execute
- * standalone inside client test processes (no dependency on the host's core at
- * runtime), and nothing here imports them.
+ * The test runners and tool drivers the js rules run are bins of
+ * @fabr-build/js-tools, declared as `js_script` globals in JS.fabr; nothing
+ * here imports them.
  */
 
-import { packageLibFile, PluginContribution } from "@fabr-build/core";
+import { getPackageLibFile, PluginContribution } from "@fabr-build/core";
 import { buildJsPackageRule } from "./rules/BuildJSPackage";
 import { runJsPackageRule } from "./rules/RunJSPackage";
 import { jsCompileRule } from "./rules/BuildJSCompile";
@@ -57,7 +54,7 @@ export {
 } from "./JSPackage";
 
 /**
- * Plugin entry point: return this package's contribution — the js rules
+ * Return this package's contribution, as the plugin entry point — the js rules
  * (js_package build/run/test, js_test, js_script, js_compile, js_bundle,
  * sass_compile, css_postcss), the npm
  * repository type, and this package's `.fabr` library (JS.fabr), which a
@@ -79,6 +76,6 @@ export function activate(): PluginContribution {
       jsScriptRule,
     ],
     repositories: [npmRepositoryRegistration],
-    includes: [packageLibFile("@fabr-build/js", "JS.fabr")],
+    includes: [getPackageLibFile("@fabr-build/js", "JS.fabr")],
   };
 }

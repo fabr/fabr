@@ -24,22 +24,24 @@
  *
  * Like the test runner, this file runs in the *build* process, not in fabr:
  * it `require`s esbuild from its own staged node_modules and must not depend on
- * @fabr-build/core at runtime (the IBundleOptions import is type-only, erased at
- * compile). esbuild is required lazily inside {@link main} so the pure helpers
- * stay importable (for the unit tests) without esbuild installed.
+ * @fabr-build/core at runtime. esbuild is required lazily inside {@link main}
+ * so the pure helpers stay importable (for the unit tests) without esbuild
+ * installed.
  *
  * The resolver plugin implements two fabr policies esbuild can't express in
  * config:
  *
  *  - **Membership.** A bare import that names a declared dep is externalized
  *    (its import survives verbatim). A code import that resolves nowhere and is
- *    no dep is an error (declare it in srcs or deps). An asset reference (a CSS
+ *    no dep is left to esbuild, which decides whether it is fatal; a failure it
+ *    reports gets fabr's srcs/deps guidance. An asset reference (a CSS
  *    `url()`) that resolves nowhere is left as an external runtime URL.
  *  - **Single variant.** Within one bundle a package resolves to exactly one
  *    variant regardless of importer kind, defeating Node's dual-package hazard
  *    (esbuild would otherwise inline both the ESM and CJS copies). Bare
  *    specifiers resolve with the kind normalized to the bundle's native format,
- *    cached, and that answer is reused for every importer.
+ *    cached per importing directory (per package under a manifest), and that
+ *    answer is reused whatever the importer's kind.
  */
 
 import * as fs from "node:fs";
@@ -52,8 +54,7 @@ import type { IBundleOptions } from "./BundleOptions";
 
 /* Minimal structural typing for the slice of esbuild's API we use — esbuild is
  * fetched at build time rather than depended on, so its own types are not
- * available to compile this file (it is a test dependency, which is a different
- * thing); these mirror the documented shapes. */
+ * available to compile this file; these mirror the documented shapes. */
 interface ILocation {
   file: string;
   namespace?: string;
@@ -141,21 +142,22 @@ const ASSET_KINDS = new Set(["url-token"]);
  * ones whose specifier means a stylesheet and can never mean a JS module. */
 const STYLESHEET_KINDS = new Set(["import-rule", "composes-from", "url-token"]);
 
-/** The package name a bare specifier belongs to (`lodash/fp` → `lodash`,
+/** Get the package name a bare specifier belongs to (`lodash/fp` → `lodash`,
  * `@scope/pkg/sub` → `@scope/pkg`). */
 export function packageOf(specifier: string): string {
   const parts = specifier.split("/");
   return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
 }
 
-/** Whether a specifier is a bare package import (not a relative/absolute path). */
+/** @return true if a specifier is a bare package import (not a relative or
+ * absolute path), otherwise false. */
 export function isBareSpecifier(specifier: string): boolean {
   return !specifier.startsWith(".") && !specifier.startsWith("/");
 }
 
 /**
- * The css pipeline's resolve convention: a styled-source import maps to that
- * source's driver output, which is the same name with the Sass extension
+ * Apply the css pipeline's resolve convention: map a styled-source import to
+ * that source's driver output, which is the same name with the Sass extension
  * lowered to `.css` and — for a css-module — the `.module.` marker dropped,
  * scoping having consumed it. Plain `.css` is returned unchanged and left to
  * esbuild, so this stays a naming rule, not a CSS transform.
@@ -170,8 +172,8 @@ export function rewriteStyledImport(specifier: string): string {
 }
 
 /**
- * The JS shim beside a stylesheet, if fabr's css step wrote one — which is how a
- * value import of a scoped stylesheet finds its class-name map.
+ * Find the JS shim beside a stylesheet, if fabr's css step wrote one — which is
+ * how a value import of a scoped stylesheet finds its class-name map.
  *
  * Not a marker in the CSS and not a naming convention the bundle has to be told
  * about: the shim IS the delivery's own statement that the stylesheet's class
@@ -189,8 +191,9 @@ function scopedShimFor(cssPath: string): string | undefined {
 }
 
 /**
- * The fabr resolver plugin — membership + single-variant (see file header). The
- * bundle's native kind is the resolution kind bare specifiers are normalized to.
+ * Make the fabr resolver plugin — membership + single-variant (see file
+ * header). The bundle's native kind is the resolution kind bare specifiers are
+ * normalized to.
  * `unresolved` collects the bare specifiers this plugin could not answer, for
  * the guidance {@link unresolvedHelp} adds to whichever of them esbuild goes on
  * to report.
@@ -218,8 +221,9 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
   const kindMatters = new Map<string, boolean>();
 
   /**
-   * Whether the importer's kind can change which file this package answers with
-   * — i.e. whether it is worth spending a resolve to pin it.
+   * @return true if the importer's kind can change which file this package
+   * answers with — i.e. if it is worth spending a resolve to pin it — otherwise
+   * false.
    *
    * A package publishing no `exports` cannot: without a map the choice falls to
    * `mainFields`, which reads the same however the import was written. One whose
@@ -408,8 +412,8 @@ async function resolveSingleVariant(
 }
 
 /**
- * The conditions esbuild resolves a package's `exports` under, for an import of
- * `kind` on `platform`: `default`, the platform's, the kind's and
+ * Get the conditions esbuild resolves a package's `exports` under, for an
+ * import of `kind` on `platform`: `default`, the platform's, the kind's and
  * {@link EXTRA_CONDITIONS} (with `conditions` set, esbuild adds no `module`).
  */
 export function conditionsFor(kind: string, platform: IBundleOptions["platform"]): ReadonlySet<string> {
@@ -418,9 +422,9 @@ export function conditionsFor(kind: string, platform: IBundleOptions["platform"]
 }
 
 /**
- * The file a bare specifier names through the staged table, under the first of
- * `kinds` that answers — what esbuild's own resolution of it under that kind
- * gives, for a package whose `exports` map decides the file. Undefined where the
+ * Resolve a bare specifier through the staged table, under the first of
+ * `kinds` that answers, to the file esbuild's own resolution of it under that
+ * kind gives, for a package whose `exports` map decides the file. Undefined where the
  * table does not answer, or answers a file that is not there, for esbuild to
  * resolve (and report) itself.
  */
@@ -446,16 +450,16 @@ function variantFromTable(
   return undefined;
 }
 
-/** Whether a relative or absolute CSS `url()` names a file, as esbuild resolves
- * one: as written, or without a `?`/`#` suffix. */
+/** @return true if a relative or absolute CSS `url()` names a file, as esbuild
+ * resolves one: as written, or without a `?`/`#` suffix; otherwise false. */
 function assetOnDisk(specifier: string, resolveDir: string): boolean {
   const unsuffixed = specifier.replace(/[?#].*$/, "");
   return [specifier, unsuffixed].some(candidate => fs.existsSync(resolveVirtual(path.resolve(resolveDir, candidate))));
 }
 
-/** Whether an `exports` map names either of the conditions the importer's kind
- * selects, anywhere within it. A map that never mentions them answers the same
- * whichever way it is asked. */
+/** @return true if an `exports` map names `import`, `require` or `module-sync`
+ * anywhere within it, otherwise false. A map that never mentions them answers
+ * the same whichever way it is asked. */
 export function mentionsKind(exports: unknown): boolean {
   if (Array.isArray(exports)) {
     return exports.some(mentionsKind);
@@ -468,7 +472,7 @@ export function mentionsKind(exports: unknown): boolean {
   );
 }
 
-/** The pooled tree a staged path belongs to — `.fabr-tree/<hash>`, or its
+/** Get the pooled tree a staged path belongs to — `.fabr-tree/<hash>`, or its
  * virtual location `.fabr-tree/__virtual__/<variant>/<n>/<hash>`, which under a
  * manifest IS the importing package — or the path itself if it lies outside the
  * pool (the workspace's own sources, staged at the bundle root). */
@@ -478,8 +482,9 @@ export function treeOf(dir: string | undefined): string {
 }
 
 /**
- * Whether this bundle resolves through a PnP manifest, which esbuild reads
- * natively — no plugin involvement, and nothing for fabr to stage per package.
+ * @return true if this bundle resolves through a PnP manifest, which esbuild
+ * reads natively (the resolver plugin also consults it to pin variants),
+ * otherwise false.
  */
 function usesManifest(): boolean {
   return fs.existsSync(path.resolve(process.cwd(), PNP_DATA_FILE));
@@ -609,7 +614,7 @@ function nameMapSources(argv: string[], outdir: string): void {
   }
 }
 
-/** Every `.map` file under `dir`. */
+/** List every `.map` file under `dir`. */
 function mapFilesUnder(dir: string): string[] {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
     const full = path.join(dir, entry.name);
@@ -618,11 +623,11 @@ function mapFilesUnder(dir: string): string[] {
 }
 
 /**
- * esbuild's messages with every location made readable: moved through the
+ * Make every location in esbuild's messages readable: move it through the
  * file's own source map, where it carries one, to the line that was written
  * (esbuild's diagnostics name the file it parsed, though its output map
- * follows input maps), and named by the package it lies in — `ms@2.1.3/index.js`
- * — rather than by its place in the tree pool. A location outside any stored
+ * follows input maps), and name it by the package it lies in —
+ * `ms@2.1.3/index.js` — rather than by its place in the tree pool. A location outside any stored
  * package (the bundle's own sources) keeps its workspace path. A note located
  * in the PnP data file is dropped: the table is fabr's own staging, and
  * {@link unresolvedHelp} says what it would, in the terms of the build file.
@@ -651,7 +656,7 @@ export function readableMessages(messages: IMessage[], cwd: string, resolver: Pn
 }
 
 /**
- * Where `location` in `file` came from, by the source map the file names
+ * Find where `location` in `file` came from, by the source map the file names
  * (`//# sourceMappingURL=`, a sibling file or an inline `data:` URL), with the
  * original line's text where the map embeds the source; undefined where there
  * is no map or it maps nothing there. `file` is absolute; so is the answer.

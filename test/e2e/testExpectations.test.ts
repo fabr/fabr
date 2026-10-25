@@ -38,10 +38,8 @@ const TESTING_THING = started("Testing thing");
  */
 /* jest caps each test at `testTimeout` (30s); the fabr runner bounds tests
  * itself. Called as a BARE `jest`: under real jest the object is injected into
- * MODULE scope and is not on globalThis, so reaching it through globalThis was a
- * silent no-op — these suites have been running at 30s and only passing because
- * they finished in time. `@types/jest` rides the e2e target's deps, so the bare
- * name type-checks under the fabr compile too. */
+ * MODULE scope and is not on globalThis. `@types/jest` rides the e2e target's
+ * deps, so the bare name type-checks under the fabr compile too. */
 jest.setTimeout(90000);
 
 describe("e2e: recorded test expectations", () => {
@@ -93,8 +91,8 @@ function reportOf(failed) {
       "  srcs = src:**/*.ts;\n" +
       "  tests = src:**/*.test.ts;\n" +
       /* The records are `expectations`, not `srcs`: they are what the tests
-       * compare against and the only inputs -u may rewrite — never package
-       * content, which is what listing them as sources made them. */
+       * compare against and the only inputs -u may rewrite, and never package
+       * content. */
       "  test_expectations = src:**/__snapshots__/*.snap;\n" +
 
       "}\n",
@@ -176,13 +174,6 @@ function reportOf(failed) {
     expect(result.stderr).to.contain("is not valid for the 'build' command");
   });
 
-  /* Under watch, applying a write-back edits a file the build is WATCHING, so
-   * the write is an input change like any other and would rebuild on its own —
-   * a wasted test cycle whose only outcome is to write the identical bytes
-   * again. The echo is suppressed instead (see SourceFileSource's expected
-   * changes), and the point of the second half of this test is that suppressing
-   * it is not the same as calling the file up to date: a later real edit must
-   * still pick the refreshed record up. */
   describe("fabr's own runner", () => {
     /* node:test's snapshot assertions are stable from 23.4; on an older host
      * the runner refuses -u, which is not what these exercise. */
@@ -233,6 +224,13 @@ function reportOf(failed) {
     });
   });
 
+  /* Under watch, applying a write-back edits a file the build is WATCHING, so
+   * the write is an input change like any other and would rebuild on its own —
+   * a wasted test cycle whose only outcome is to write the identical bytes
+   * again. The echo is suppressed instead (see SourceFileSource's expected
+   * changes), and the point of the second half of this test is that suppressing
+   * it is not the same as calling the file up to date: a later real edit must
+   * still pick the refreshed record up. */
   describe("under watch", () => {
     it("does not re-test because of its own write-back, but still re-tests on a real change", async () => {
       const session = startFabrWatch(project("one"), ["-DJS_TARGET=es2020", "test", "-u", "-w", "thing"]);

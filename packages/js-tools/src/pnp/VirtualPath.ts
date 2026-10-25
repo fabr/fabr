@@ -17,10 +17,10 @@
 /**
  * PnP virtual paths (https://yarnpkg.com/advanced/pnp-spec, "Virtual
  * Packages"): `<base>/__virtual__/<hash>/<n>/<subpath>` names the file at
- * `dirname(<base>)`, stepped up `n` more times, then `<subpath>`. One real
- * directory can so be reached under several distinct paths, and a PnP table
- * tells its packages apart by path — which is how one content wired several
- * ways gets one row per wiring.
+ * `<base>`, stepped up `n` times, then `<subpath>`. One real directory can so
+ * be reached under several distinct paths, and a PnP table tells its packages
+ * apart by path — which is how one content wired several ways gets one row per
+ * wiring.
  *
  * The rule for every consumer: the virtual path IS the file's name (it is what
  * says which row a file belongs to); map it to the physical path only to touch
@@ -41,9 +41,9 @@ export const VIRTUAL_SEGMENT = "__virtual__";
 const VIRTUAL_PATTERN = /^(\/(?:[^/]+\/)*?(?:\$\$virtual|__virtual__))((?:\/((?:[^/]+-)?[a-f0-9]+)(?:\/([^/]+))?)?((?:\/.*)?))$/;
 
 /**
- * The physical path a (possibly) virtual path names — the path itself when it
- * has no virtual segment, or when the segment is malformed (as Yarn does).
- * Nested virtual segments resolve in turn.
+ * @return the physical path a (possibly) virtual path names — the path itself
+ * when it has no virtual segment, or when the segment is malformed (as Yarn
+ * does). Nested virtual segments resolve in turn.
  */
 export function resolveVirtual(file: string): string {
   const match = VIRTUAL_PATTERN.exec(file);
@@ -61,23 +61,24 @@ export function resolveVirtual(file: string): string {
   return resolved === file ? file : resolveVirtual(resolved);
 }
 
-/** Whether `file` is written through a virtual location. */
+/** @return true if `file` is written through a virtual location, otherwise
+ * false. */
 export function isVirtual(file: string): boolean {
   return resolveVirtual(file) !== file;
 }
 
-/** A virtual location over `physical`: `<pool>/__virtual__/<hash>/0/<name>`
- * for the directory `<pool>/<name>`. `hash` must be hex, which is what the
- * spec's readers accept. */
+/** @return a virtual location over `physical`:
+ * `<pool>/__virtual__/<hash>/0/<name>` for the directory `<pool>/<name>`.
+ * `hash` must be hex, which is what the spec's readers accept. */
 export function virtualLocation(physical: string, hash: string): string {
   return path.posix.join(path.posix.dirname(physical), VIRTUAL_SEGMENT, hash, "0", path.posix.basename(physical));
 }
 
 /**
- * `realpath` that keeps a virtual path virtual: the part before the virtual
- * segment is resolved, the rest kept as written — so a file reached through a
- * virtual location stays attributable to its row. A path with no virtual
- * segment is an ordinary realpath.
+ * Resolve `file` as `realpath` does, keeping a virtual path virtual: the part
+ * before the virtual segment is resolved, the rest kept as written — so a file
+ * reached through a virtual location stays attributable to its row. A path with
+ * no virtual segment is an ordinary realpath.
  */
 export function realpathKeepingVirtual(file: string, realpath: (file: string) => string = fs.realpathSync): string {
   const at = file.indexOf(`/${VIRTUAL_SEGMENT}/`);

@@ -97,12 +97,13 @@ const STRIPPED_FIELDS = new Set([
 const ARRAY_FIELDS = new Set(["keywords", "os", "cpu", "libc"]);
 
 /**
- * A manifest dependency block (`dependencies`, `optionalDependencies`, …) as a
- * name→constraint map. npm normalizes away anything that isn't an object of
- * strings — `"dependencies": []` is published and means "none" — and so do we:
- * a block that isn't an object, and any entry whose constraint isn't a string,
- * contributes nothing. (Reading them positionally instead would manufacture
- * requirements on packages named `0`, `1`, … that no registry can resolve.)
+ * Read a manifest dependency block (`dependencies`, `optionalDependencies`, …)
+ * as a name→constraint map. npm normalizes away anything that isn't an object
+ * of strings — `"dependencies": []` is published and means "none" — and so do
+ * we: a block that isn't an object, and any entry whose constraint isn't a
+ * string, contributes nothing. (Reading them positionally instead would
+ * manufacture requirements on packages named `0`, `1`, … that no registry can
+ * resolve.)
  */
 export function dependencyBlock(block: unknown): Map<string, string> {
   const entries = new Map<string, string>();
@@ -117,13 +118,14 @@ export function dependencyBlock(block: unknown): Map<string, string> {
 }
 
 /**
- * The requirement one dependency-block entry declares. Ordinarily the entry's
- * name IS the package and its value the constraint, but npm's **alias** form —
- * `"wrap-ansi-cjs": "npm:wrap-ansi@^7.0.0"` — names a different package, which
- * the requirer's own code then imports under the entry name (`@isaacs/cliui`
- * literally `require`s `'wrap-ansi-cjs'`). The alias rides on the requirement
- * as the local name; the constraint applies to the real package, so resolution
- * and version selection treat it as an ordinary requirement on `wrap-ansi`.
+ * Read the requirement one dependency-block entry declares. Ordinarily the
+ * entry's name IS the package and its value the constraint, but npm's **alias**
+ * form — `"wrap-ansi-cjs": "npm:wrap-ansi@^7.0.0"` — names a different package,
+ * which the requirer's own code then imports under the entry name
+ * (`@isaacs/cliui` literally `require`s `'wrap-ansi-cjs'`). The alias rides on
+ * the requirement as the local name; the constraint applies to the real
+ * package, so resolution and version selection treat it as an ordinary
+ * requirement on `wrap-ansi`.
  *
  * An alias with no version (`npm:wrap-ansi`) is unconstrained, exactly as a
  * bare `*` would be — the resolver reports it as such if nothing else pins the
@@ -149,7 +151,7 @@ export function dependencyRequirement(name: string, spec: string): Requirement {
 }
 
 /**
- * One dependency-block entry stating `requirement` — the inverse of
+ * Write one dependency-block entry stating `requirement` — the inverse of
  * {@link dependencyRequirement}, and the only place a generated manifest writes
  * a dependency. A requirement carrying a local alias is stated in npm's alias
  * form (`"typescript-6": "npm:typescript@6.0.0-beta"`), because the entry name
@@ -166,7 +168,7 @@ export function requirementSpec(requirement: Requirement): { name: string; spec:
 
 const ALIAS_PREFIX = "npm:";
 
-/** The peers a `peerDependenciesMeta` block marks `optional: true`. */
+/** Read the peers a `peerDependenciesMeta` block marks `optional: true`. */
 export function optionalPeers(block: unknown): Set<string> {
   const names = new Set<string>();
   if (isJsonObject(block)) {
@@ -189,18 +191,18 @@ export interface IDependencyDecls {
 }
 
 /**
- * The requirements a manifest declares, npm's reading: `required` is the
+ * Read the requirements a manifest declares, npm's reading: `required` is the
  * declared `dependencies` plus the `peerDependencies` (`provided` — the
- * consumer's tree supplies them; see NPMRepository.getRequirements for the
- * peer doctrine); `optional` is the `optionalDependencies` — which the caller
+ * consumer's tree supplies them; see NPMRepository.getRequirements for the peer
+ * doctrine); `optional` is the `optionalDependencies` — which the caller
  * decides how to gate (their os/cpu conditions live in the *dependency's* own
  * metadata, so this fold cannot judge them). npm's rule: an entry in
- * optionalDependencies overrides the same name in dependencies, so a dep
- * listed in both is optional (os/cpu-gated, dropped if the target doesn't
- * match) — @parcel/watcher lists its per-platform native binaries in both. An
- * `optional: true` peer ("if present, must match") is never auto-installed,
- * and one named only in `peerDependenciesMeta` is read as `*` (Yarn's and
- * pnpm's reading; npm ignores it); devDependencies stay ignored.
+ * optionalDependencies overrides the same name in dependencies, so a dep listed
+ * in both is optional (os/cpu-gated, dropped if the target doesn't match) —
+ * @parcel/watcher lists its per-platform native binaries in both. An
+ * `optional: true` peer ("if present, must match") is never auto-installed, and
+ * one named only in `peerDependenciesMeta` is read as `*` (Yarn's and pnpm's
+ * reading; npm ignores it); devDependencies stay ignored.
  */
 export function declaredDependencies(manifest: IDependencyDecls): { required: Requirement[]; optional: Requirement[] } {
   const optionalDeps = dependencyBlock(manifest.optionalDependencies);
@@ -230,9 +232,9 @@ export function declaredDependencies(manifest: IDependencyDecls): { required: Re
   return { required, optional: [...optionalDeps].map(([dep, spec]) => dependencyRequirement(dep, spec)) };
 }
 
-/** The error for a metadata key fabr reserves: attributed through the map's ghost
- *  origin to the written entry — even one that arrived through a shared map — with
- *  any splice/reference hops named in the message. */
+/** Make the error for a metadata key fabr reserves: attributed through the
+ *  map's ghost origin to the written entry — even one that arrived through a
+ *  shared map — with any splice/reference hops named in the message. */
 function rejectedMetadataKey(key: string, metadata: PropertyMap, reason: string): Error {
   return mapEntryError(metadata, key, `metadata key '${key}' ${reason}`);
 }
@@ -299,9 +301,9 @@ const DUAL_FORMATS: ReadonlyArray<IExportFormat> = [
  *  names the file rather than the subpath. */
 const DELIVERED_SPELLINGS: ReadonlyArray<string> = [JS_EXTENSION, CJS_JS_EXTENSION, ESM_JS_EXTENSION];
 
-/** The stem the compile emits a source under — its name without the extension —
- *  or undefined for a source that emits no module of its own to name a subpath
- *  for: a declaration file, a stylesheet, a JSON resource. */
+/** Find the stem the compile emits a source under — its name without the
+ *  extension — or undefined for a source that emits no module of its own to
+ *  name a subpath for: a declaration file, a stylesheet, a JSON resource. */
 function emittedStem(name: string): string | undefined {
   if (DECLARATION_FILE.test(name)) {
     return undefined;
@@ -309,8 +311,9 @@ function emittedStem(name: string): string | undefined {
   return /^(.*)\.[cm]?[jt]sx?$/.exec(name)?.[1];
 }
 
-/** A lone `default` renders as the bare target path npm's own manifests use;
- *  anything richer as the condition object, nested conditions and all. */
+/** Render conditions for the manifest: a lone `default` as the bare target path
+ *  npm's own manifests use, anything richer as the condition object, nested
+ *  conditions and all. */
 function renderConditions(conditions: ExportConditions): unknown {
   const sole = conditions.size === 1 ? conditions.get("default") : undefined;
   if (typeof sole === "string") {
@@ -321,12 +324,12 @@ function renderConditions(conditions: ExportConditions): unknown {
   );
 }
 
-/** The conditions one format answers a subpath with — its declarations where the
- *  compile emitted any, then its JavaScript — or undefined where this format has
- *  no file for the subpath at all. That happens for a source that pinned its own
- *  module format: an `.mts` entry point has an ES-module format and no CommonJS
- *  one, and publishing a `require` condition pointing at a file that was never
- *  emitted would be worse than not answering `require`. */
+/** Find the conditions one format answers a subpath with — its declarations
+ *  where the compile emitted any, then its JavaScript — or undefined where this
+ *  format has no file for the subpath at all. That happens for a source that
+ *  pinned its own module format: an `.mts` entry point has an ES-module format
+ *  and no CommonJS one, and publishing a `require` condition pointing at a file
+ *  that was never emitted would be worse than not answering `require`. */
 function formatConditions(names: ReadonlySet<string>, stem: string, format: IExportFormat): ExportConditions | undefined {
   const spelling = format.spellings.find(([js]) => names.has(`${stem}${js}`));
   if (spelling === undefined) {
@@ -341,19 +344,19 @@ function formatConditions(names: ReadonlySet<string>, stem: string, format: IExp
   return conditions;
 }
 
-/** How a subpath is spelled for a stem: the package root for a root `index`,
- *  else the stem said explicitly. */
+/** Spell the subpath for a stem: the package root for a root `index`, else the
+ *  stem said explicitly. */
 function subpathOf(stem: string): string {
   return stem === "index" ? "." : `./${stem}`;
 }
 
-/** The conditions every format that HAS a file for `stem` answers with, or
- *  undefined where no format does. One format publishes its conditions directly;
- *  several nest under the condition each answers. Flattening a dual entry to a
- *  single `types` beside `import`/`require` would be the commoner spelling and
- *  the wrong one — one declaration file cannot describe both formats, which is
- *  what a consumer's resolver reports as a module masquerading as the other
- *  kind. */
+/** Find the conditions every format that HAS a file for `stem` answers with, or
+ *  undefined where no format does. One format publishes its conditions
+ *  directly; several nest under the condition each answers. Flattening a dual
+ *  entry to a single `types` beside `import`/`require` would be the commoner
+ *  spelling and the wrong one — one declaration file cannot describe both
+ *  formats, which is what a consumer's resolver reports as a module
+ *  masquerading as the other kind. */
 function conditionsFor(names: ReadonlySet<string>, stem: string, formats: ReadonlyArray<IExportFormat>): ExportConditions | undefined {
   const published = formats
     .map(format => [format, formatConditions(names, stem, format)] as const)
@@ -365,8 +368,9 @@ function conditionsFor(names: ReadonlySet<string>, stem: string, formats: Readon
 }
 
 /**
- * The generated `exports` map: one entry per source the target names in
- * `exports`, published at the subpath its delivered counterpart already sits at.
+ * Generate the `exports` map: one entry per source the target names in
+ * `exports`, published at the subpath its delivered counterpart already sits
+ * at.
  *
  * The counterpart is found by replaying the compile's own `rewrite_imports`
  * rules over the source name — `foo.module.scss` is answered by `foo.css.js`,
@@ -432,7 +436,7 @@ function exportsByConvention(
 }
 
 /**
- * The subpaths naming a stem's delivered files by their own names, each paired
+ * List the subpaths naming a stem's built files by their own names, each paired
  * with what it resolves to. Every spelling the package actually contains gets
  * one, since each was reachable under its own name before there was a map.
  *
@@ -451,7 +455,8 @@ function spellingSubpaths(names: ReadonlySet<string>, stem: string, conditions: 
   });
 }
 
-/** Every file path a subpath's conditions resolve to, at any nesting depth. */
+/** Collect every file path a subpath's conditions resolve to, at any nesting
+ * depth. */
 function conditionTargets(conditions: ExportConditions, into = new Set<string>()): Set<string> {
   for (const value of conditions.values()) {
     if (typeof value === "string") {
@@ -463,7 +468,7 @@ function conditionTargets(conditions: ExportConditions, into = new Set<string>()
   return into;
 }
 
-/** The stem a delivered JavaScript file sits under, or undefined for anything
+/** Find the stem a built JavaScript file sits under, or undefined for anything
  *  that is not one — a declaration, a source map, an asset. */
 function deliveredStem(name: string): string | undefined {
   if (DECLARATION_FILE.test(name)) {
@@ -478,10 +483,10 @@ function deliveredStem(name: string): string | undefined {
  *  naming a delivered file outright. */
 const PATTERN_SUFFIXES: ReadonlyArray<string> = ["", JS_EXTENSION, ESM_JS_EXTENSION];
 
-/** What the wildcards resolve a captured stem to: every format's own first
+/** Make what the wildcards resolve a captured stem to: every format's own first
  *  spelling, declarations included — what an ordinary source emits under a dual
- *  build. A stem whose delivered files differ from this in any way is not covered
- *  by them and takes explicit keys instead. */
+ *  build. A stem whose delivered files differ from this in any way is not
+ *  covered by them and takes explicit keys instead. */
 function patternConditions(stem: string, formats: ReadonlyArray<IExportFormat>): ExportConditions {
   const answer = (format: IExportFormat): ExportConditions => {
     const [js, types] = format.spellings[0];
@@ -493,18 +498,20 @@ function patternConditions(stem: string, formats: ReadonlyArray<IExportFormat>):
   return formats.length === 1 ? answer(formats[0]) : new Map(formats.map(format => [format.condition, answer(format)]));
 }
 
-/** Whether two condition sets publish the same thing — compared as the manifest
- *  will carry them, since that is what a consumer resolves against. */
+/** @return true if two condition sets publish the same thing, otherwise false —
+ *  compared as the manifest will carry them, since that is what a consumer
+ *  resolves against. */
 function sameConditions(a: ExportConditions, b: ExportConditions): boolean {
   return JSON.stringify(renderConditions(a)) === JSON.stringify(renderConditions(b));
 }
 
 /**
- * Whether the wildcards answer everything this stem delivers, so it needs no
- * explicit key. Both halves are needed: they must resolve it to the right files
- * (`sameConditions`), AND it must deliver no spelling they do not name — a
- * `foo.cjs` beside a `foo.ts` is a different module sharing the stem, and the
- * wildcards would send `pkg/foo.cjs` to a `foo.cjs.js` that does not exist.
+ * @return true if the wildcards answer every file this stem has, so it needs no
+ * explicit key, otherwise false. Both halves are needed: they must resolve it
+ * to the right files (`sameConditions`), AND it must deliver no spelling they
+ * do not name — a `foo.cjs` beside a `foo.ts` is a different module sharing the
+ * stem, and the wildcards would send `pkg/foo.cjs` to a `foo.cjs.js` that does
+ * not exist.
  */
 function coveredByPatterns(names: ReadonlySet<string>, stem: string, conditions: ExportConditions, formats: ReadonlyArray<IExportFormat>): boolean {
   const delivered = DELIVERED_SPELLINGS.filter(spelling => names.has(`${stem}${spelling}`));
@@ -512,13 +519,14 @@ function coveredByPatterns(names: ReadonlySet<string>, stem: string, conditions:
 }
 
 /**
- * The `exports` map for a **dual** package whose target declares no entry points:
- * an emulation of what node resolves for these files with NO `exports` field at
- * all. A dual package must have a map — conditions are node's only mechanism for
- * choosing a format — while "declared nothing" has to go on meaning "narrowed
- * nothing", so every subpath a mapless package would serve keeps resolving, to
- * the same module, with the format chosen by the consumer's condition. Any
- * subpath question this map answers is judged against that baseline.
+ * Make the `exports` map for a **dual** package whose target declares no entry
+ * points: an emulation of what node resolves for these files with NO `exports`
+ * field at all. A dual package must have a map — conditions are node's only
+ * mechanism for choosing a format — while "declared nothing" has to go on
+ * meaning "narrowed nothing", so every subpath a mapless package would serve
+ * keeps resolving, to the same module, with the format chosen by the consumer's
+ * condition. Any subpath question this map answers is judged against that
+ * baseline.
  *
  * The regular case is three **wildcards**, one per subpath shape node's own
  * resolution publishes: `pkg/foo` (CommonJS extension search), `pkg/foo.js` (what
@@ -589,9 +597,10 @@ function exhaustiveExports(files: FileSet, formats: ReadonlyArray<IExportFormat>
   return renderExports(entries);
 }
 
-/** Whether a delivered file is reachable only under its own name: not a module
- *  (so no format publishes it), and not one of the artifacts nothing ever imports
- *  by name — a declaration, a source map, or the manifest itself. */
+/** @return true if a built file is reachable only under its own name, otherwise
+ *  false: not a module (so no format publishes it), and not one of the
+ *  artifacts nothing ever imports by name — a declaration, a source map, or the
+ *  manifest itself. */
 function isOpaqueContent(name: string): boolean {
   return deliveredStem(name) === undefined && !name.endsWith(".map") && !DECLARATION_FILE.test(name) && name !== "package.json";
 }
@@ -601,8 +610,8 @@ function isOpaqueContent(name: string): boolean {
  *  matched literally and are written as they are).
  *  Sorted, so the map does not carry a file set's iteration order into the
  *  manifest (its bytes are a cache input). `.` sorts first on its own — it is a
- *  prefix of every other subpath. Explicit subpaths are order-independent to
- *  node; only patterns are ordered, and there are none here. */
+ *  prefix of every other subpath. Node orders pattern keys by specificity
+ *  itself, so key order changes no resolution. */
 function renderExports(entries: Map<string, ExportConditions | string>): Record<string, unknown> {
   const map = new Map<string, unknown>(
     [...entries.keys()].sort().map(subpath => {
@@ -731,17 +740,18 @@ export function createPackageJson({
 }
 
 /**
- * The direct `dependencies` for the generated package.json — every declared
- * requirement, including `@types/*`. A `@types/*` dep can leak into the shipped
- * `.d.ts` (a node type in an exported signature emits `/// <reference
- * types="node" />`), making it part of the package's public type surface, so a
- * consumer type-checking against us needs it — DefinitelyTyped's own convention
- * (`@types/express` lists `@types/node` under `dependencies`). We don't yet scan
- * the emitted declarations to tell a leaked type dep from a compile-only one, so
- * the safe default is a plain `dependency` (harmless if unused: the consumer
- * dedupes it, and `@types/node` is near-ubiquitous). The version each states is
- * the declaration, not what fabr's joint resolution selected: a published
- * manifest says what the package *requires*, and the consumer resolves it.
+ * List the direct `dependencies` for the generated package.json — every
+ * declared requirement, including `@types/*`. A `@types/*` dep can leak into
+ * the shipped `.d.ts` (a node type in an exported signature emits
+ * `/// <reference types="node" />`), making it part of the package's public
+ * type surface, so a consumer type-checking against us needs it —
+ * DefinitelyTyped's own convention (`@types/express` lists `@types/node` under
+ * `dependencies`). We don't yet scan the emitted declarations to tell a leaked
+ * type dep from a compile-only one, so the safe default is a plain `dependency`
+ * (harmless if unused: the consumer dedupes it, and `@types/node` is
+ * near-ubiquitous). The version each states is the declaration, not what fabr's
+ * joint resolution selected: a published manifest says what the package
+ * *requires*, and the consumer resolves it.
  */
 function packageDependencies(declared: (Requirement | undefined)[]): Map<string, string> {
   const dependencies = new Map<string, string>();
@@ -755,9 +765,10 @@ function packageDependencies(declared: (Requirement | undefined)[]): Map<string,
 }
 
 /**
- * The `peerDependencies` for the generated package.json — the declared
- * requirements of `provided_deps`. Like `dependencies`, the version stated is the
- * declaration (what the package requires of its host), not what resolution pinned.
+ * List the `peerDependencies` for the generated package.json — the declared
+ * requirements of `provided_deps`. Like `dependencies`, the version stated is
+ * the declaration (what the package requires of its host), not what resolution
+ * pinned.
  */
 function peerDependenciesOf(providedDeclared: (Requirement | undefined)[]): Map<string, string> {
   const peerDependencies = new Map<string, string>();
@@ -835,7 +846,8 @@ function rewriteCoMemberField(
   return rewritten;
 }
 
-/** The release members this manifest depends on (for deps-first upload ordering). */
+/** List the release members this manifest depends on (for deps-first upload
+ * ordering). */
 export function memberDependencies(manifest: Record<string, unknown>, memberNames: ReadonlySet<string>): string[] {
   const names = new Set<string>();
   for (const field of DEPENDENCY_FIELDS) {
@@ -849,12 +861,13 @@ export function memberDependencies(manifest: Record<string, unknown>, memberName
 }
 
 /**
- * The install-relevant dependencies of a rewritten manifest that remain
- * unresolvable — a `*` constraint after co-member rewriting. A built-but-versionless
- * dep declares `*` (its version exists only at publish); if the sync doesn't
- * publish it (or publishes it at several versions, so no single rewrite exists),
- * the `*` survives to here — and a published package with an unconstrained
- * dependency is broken for every consumer, so the caller must reject it.
+ * List the install-relevant dependencies of a rewritten manifest that remain
+ * unresolvable — a `*` constraint after co-member rewriting. A
+ * built-but-versionless dep declares `*` (its version exists only at publish);
+ * if the sync doesn't publish it (or publishes it at several versions, so no
+ * single rewrite exists), the `*` survives to here — and a published package
+ * with an unconstrained dependency is broken for every consumer, so the caller
+ * must reject it.
  */
 export function unresolvableDependencies(manifest: Record<string, unknown>): string[] {
   const names: string[] = [];

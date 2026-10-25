@@ -205,7 +205,8 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
     return released;
   }
 
-  /** Whether the attach that captured `generation` is still the live one. The
+  /** @return true if the attach that captured `generation` is still the live
+   * one, otherwise false. The
    * generation check is the load-bearing half for a *reattached* query — the node
    * is attached again, so the base settle guard passes; only the generation tells
    * a superseded enumeration from the authoritative one, keeping it from
@@ -217,8 +218,9 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
     return generation === this.attachGeneration && this.state !== ComputableState.Detached;
   }
 
-  /** Whether the delivery that captured these tokens may still settle: its attach must
-   * still be live, and no later build may have started since (see {@link delivery}). */
+  /** @return true if the build that captured these tokens may still settle, otherwise
+   * false: its attach must still be live, and no later build may have started since (see
+   * {@link delivery}). */
   private isCurrentDelivery(generation: number, delivery: number): boolean {
     return this.isCurrent(generation) && delivery === this.delivery;
   }
@@ -280,8 +282,8 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
     return dropped;
   }
 
-  /** Whether `rel` lies within the subtree this query walks, and so could hold files it
-   * wants. An empty base (a name with no static prefix) spans the whole tree. */
+  /** @return true if `rel` lies within the subtree this query walks, and so could hold
+   * files it wants, otherwise false. An empty base (a name with no static prefix) spans the whole tree. */
   private withinBase(rel: string): boolean {
     return this.base === "" || rel === this.base || rel.startsWith(this.base + "/");
   }
@@ -391,7 +393,8 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
 }
 
 /**
- * FileSet implementation that loads the directory tree from the real FS on demand
+ * A FileSource over a directory on the real filesystem, enumerated on demand
+ * (and live under a WatchController).
  */
 export class FSFileSource implements FileSource {
   /** The tree this source serves, as an absolute path. Public because a name's
@@ -450,8 +453,8 @@ export class FSFileSource implements FileSource {
   }
 
   /**
-   * Whether a change at `rel` is one fabr itself just made, and so must not
-   * arm a rebuild of its own. `removed` distinguishes a deletion, which needs
+   * @return true if a change at `rel` is one fabr itself just made, and so must
+   * not arm a rebuild of its own, otherwise false. `removed` distinguishes a deletion, which needs
    * its own judgment: a removed file can never be re-read, so the usual
    * confirm-by-content backstop (ingest) will not run for it. Always false for
    * a plain filesystem source — nothing writes through one;
@@ -489,9 +492,9 @@ export class FSFileSource implements FileSource {
   /**
    * Ensure the single source-tree subscription exists, then hand each filesystem change
    * to every registered query ({@link TreeQuery.applyEvent}), scheduling a (debounced)
-   * re-settle for each that claims it. @parcel/watcher is pinned exact at >=2.5.0: 2.4.1 can deadlock natively when the kqueue
-   * fallback races a failing FSEvents start (upstream #187, fixed by #189 in 2.5.0;
-   * the wedged process ignores every signal but SIGKILL).
+   * re-settle for each that claims it. Requires @parcel/watcher 2.5.0 or later:
+   * earlier versions can deadlock natively when the kqueue fallback races a failing
+   * FSEvents start.
    */
   private ensureSubscription(controller: WatchController): void {
     if (this.subscription) {
@@ -583,8 +586,8 @@ export class FSFileSource implements FileSource {
 
 export const FS = {
   /**
-   * Obtain a FileSet representing a real directory on the filesystem.
-   * @param path
+   * Open a FileSource over the directory `dirname`, or reject where it does
+   * not exist.
    */
   get(dirname: string): Computable<FileSource> {
     return Computable.from<FileSource>((resolve, reject) => {
@@ -741,14 +744,14 @@ function enumerate(root: string, name: Name, prefix: string): Computable<{ names
    * `stat` only seeds the *initial* contents. A directory that matches the literal
    * side (its own create/modify event) ingests to `undefined` — a directory is
    * not a file — and drops out (see FSFileSource.ingest), so the set is exactly
-   * the path-as-file or the directory's files, whichever materializes. This is
+   * the path-as-file or the directory's files, whichever appears on disk. This is
    * also what lets a bare reference to a not-yet-existing directory fill when its
    * children are later created. */
   const file = staticPath(name);
   const abs = path.resolve(root, file);
   /* The two membership cases each honor a `-> tmpl` rename. `literal` covers the
    * path-is-a-file case: `makeProjector` renames the single file it names (a
-   * non-glob name's rename is a literal 0-wildcard template — Validate rejects a
+   * non-glob name's rename is a literal 0-wildcard template — the parser rejects a
    * mismatch). `subtree` covers the path-is-a-directory case: just as a bare `dir`
    * expands to `dir/**`, a bare `dir -> out` expands structure-preservingly to
    * `dir/** -> out/**`, so each file keeps its relative path under the new root
@@ -773,7 +776,7 @@ function enumerate(root: string, name: Name, prefix: string): Computable<{ names
 }
 
 /**
- * Exact-file enumeration for {@link FSFileSource.get}: the literal path when it
+ * Enumerate exactly the literal file for {@link FSFileSource.get}: the path when it
  * is a regular file, else nothing — no directory expansion, no walk. The
  * projection admits only the path itself, so under watch the query stays exactly
  * a probe of that one path: a file created there later fills it, a directory

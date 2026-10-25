@@ -60,7 +60,7 @@ interface ITestEvent {
 
 /**
  * The runner invocation fabr constructs (see TestPipeline): where to write the
- * report, which environment the tests were compiled for, whether recorded
+ * report, which environment the tests run in (node or jsdom), whether recorded
  * expectations are to be rewritten rather than checked, and the test files.
  */
 export interface IRunnerOptions {
@@ -158,7 +158,8 @@ function record(results: ITestResult[], event: ITestEvent, kind: "pass" | "fail"
 }
 
 /**
- * The captured stderr to attach to a failure as its trace, or undefined for none.
+ * Pick the captured stderr to attach to a failure as its trace, or undefined
+ * for none.
  *
  * Only a whole-FILE failure gets it. node:test names such a failure after the
  * file itself (there is no test to name — none registered), which is what tells
@@ -170,14 +171,15 @@ function fileFailureDetail(event: ITestEvent, stderr: CapturedStderr): string | 
   return isFileFailure(event) ? stderr.tail(event.file) : undefined;
 }
 
-/** Whether this event is the FILE failing rather than a test in it: node:test
- * names such a failure after the file, there being no test to name. */
+/** @return true if this event is the FILE failing rather than a test in it,
+ * otherwise false: node:test names such a failure after the file, there being
+ * no test to name. */
 function isFileFailure(event: ITestEvent): boolean {
   return event.file !== undefined && event.name === event.file;
 }
 
 /**
- * What a failure should say.
+ * Describe what a failure should say.
  *
  * A failed TEST arrives wrapped in an ERR_TEST_FAILURE whose `cause` is the
  * assertion error — the interesting part, unwrapped here; a failed snapshot
@@ -232,7 +234,8 @@ function forceExitOption(): { forceExit?: boolean } {
   return atLeastNode(20, 14) ? { forceExit: true } : {};
 }
 
-/** Whether the running node is at least the given version. */
+/** @return true if the running node is at least the given version, otherwise
+ * false. */
 export function atLeastNode(major: number, minor: number): boolean {
   const [runningMajor, runningMinor] = process.versions.node.split(".").map(Number);
   return runningMajor > major || (runningMajor === major && runningMinor >= minor);
@@ -257,7 +260,7 @@ function preloadOptions(preloads: string[], update: boolean): { execArgv?: strin
   return {};
 }
 
-/** A setup entry as a preload path. A local entry is relative to the
+/** Resolve a setup entry to a preload path. A local entry is relative to the
  * installation (the runner's own cwd); a bare module name is left to node's
  * resolution, which finds it in the installation's node_modules. */
 function resolveSetup(entry: string): string {

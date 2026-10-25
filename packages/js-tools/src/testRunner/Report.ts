@@ -40,10 +40,13 @@ import { referenceOfEntry, SOURCE_LOCATIONS_FILE } from "../support/SourceMap";
  */
 const INSTALL_MOUNTS = ["src", "build"];
 
+/** Memo of {@link reportPathOf}: the node:test flavour asks per *test*, not
+ * per file. */
+const reportPaths = new Map<string, string>();
+
 /**
- * How a test file should be NAMED in the report: as the source it was compiled
- * from. Fabr compiles ahead of the run, so the file executed is
- * `build/Foo.test.js` while the thing to point at is its source, and the
+ * Name a test file in the report as the source it was compiled from. Fabr
+ * compiles ahead of the run, so the file executed is `build/Foo.test.js` while the thing to point at is its source, and the
  * `.js.map` beside it records that authoritatively (a stem guess cannot tell
  * `Foo.test.ts` from a `Foo.test.js` next to it).
  *
@@ -52,11 +55,8 @@ const INSTALL_MOUNTS = ["src", "build"];
  * that reference gives (`packages/x/src/Foo.test.ts`). A map naming its source
  * relative to itself is named as the install lays it out, the mount (`src/`)
  * stripped. Degrades rather than fails: no map (a release build emits none)
- * leaves the compiled name, likewise stripped. Memoized because the node:test
- * flavour asks per *test*, not per file.
+ * leaves the compiled name, likewise stripped.
  */
-const reportPaths = new Map<string, string>();
-
 export function reportPathOf(file: string): string {
   let name = reportPaths.get(file);
   if (name === undefined) {

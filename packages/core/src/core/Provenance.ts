@@ -66,7 +66,7 @@ export interface IDerivedStep extends IProvenanceStep {
   readonly by: string;
 }
 
-/** A {@link IDerivedStep} for `from`, produced by `by`. */
+/** Make an {@link IDerivedStep} for `from`, produced by `by`. */
 export function derivedFrom(from: string, by: string): IDerivedStep {
   return { kind: DERIVED_PROVENANCE, from, by };
 }
@@ -302,7 +302,7 @@ export function renamingText(names: ReadonlyMap<string, string>): string {
   return JSON.stringify([...names].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)));
 }
 
-/** The `[from, to]` prefixes every entry of `names` follows, from the first
+/** Find the `[from, to]` prefixes every entry of `names` follows, from the first
  *  entry's longest common suffix; undefined where some entry does not. */
 function prefixMappingOf(names: ReadonlyMap<string, string>): [string, string] | undefined {
   const first = names.entries().next();
@@ -324,7 +324,7 @@ function prefixMappingOf(names: ReadonlyMap<string, string>): [string, string] |
   return [from, to];
 }
 
-/** A digest naming a step's own part, `kind` and `own`, over the steps
+/** Make a digest naming a step's own part, `kind` and `own`, over the steps
  *  beneath's: one line each. */
 export function namingDigest(kind: string, own: string, below: string): string {
   return below === "" ? `${kind} ${own}` : `${kind} ${own}\n${below}`;

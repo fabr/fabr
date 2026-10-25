@@ -202,7 +202,8 @@ export function systemErrorText(err: unknown): string {
 }
 
 /**
- * As systemErrorText, but naming the file the operation failed on where known.
+ * Describe an OS-level error as systemErrorText does, naming the file the
+ * operation failed on where known.
  */
 export function describeSystemError(err: unknown): string {
   const text = systemErrorText(err);
@@ -326,8 +327,8 @@ export function killLiveChildren(): void {
   }
 }
 
-/** Whether any member of `pid`'s group is still alive — signal 0 probes without
- * delivering, so ESRCH means the group has dissolved. */
+/** @return true if any member of `pid`'s group is still alive, otherwise false —
+ * signal 0 probes without delivering, so ESRCH means the group has dissolved. */
 function groupAlive(pid: number): boolean {
   try {
     process.kill(-pid, 0);
@@ -338,8 +339,8 @@ function groupAlive(pid: number): boolean {
 }
 
 /**
- * The step's own process exited — sweep its group for stragglers, resolving once the
- * group is gone.
+ * Sweep an exited step's process group for stragglers, resolving once the group is
+ * gone.
  *
  * The result is awaited before the step settles, so a straggler cannot still be writing
  * into the work dir when it is reclaimed. That matters only for a straggler which does
@@ -403,8 +404,8 @@ const DETACHED = GROUPS_SUPPORTED ? { detached: true } : {};
  */
 const FORCE_COLOR_ENV = { FORCE_COLOR: "1", CLICOLOR_FORCE: "1" };
 
-/** The `$ cmd args…` line shown at the head of an execution error, args quoted
- * where they wouldn't survive a shell round-trip. */
+/** Render the `$ cmd args…` line shown at the head of an execution error, args
+ * quoted where they wouldn't survive a shell round-trip. */
 function commandLine(cmd: string, args: string[]): string {
   return "$ " + [cmd, ...args].map(quoteArg).join(" ");
 }
@@ -516,8 +517,9 @@ function executeUnbounded(cmd: string, args: string[], cwd: string, env: Record<
  * to capture that stream as content under it (capturing stdout is only valid on
  * the final stage — an earlier stage's stdout feeds the pipe); absent means the
  * stream's default, which for stdout is the pipe or the pipeline's own output and
- * for stderr is the diagnostic sink. Shared by the resolved rule stage
- * ({@link ResolvedCommandStage}) and the run spec.
+ * for stderr is the diagnostic sink. Shared by a command's materialized stage
+ * (`MaterializedCommandStage`), the pipeline action's `RunnableStage` and
+ * {@link StageSpec}.
  *
  * `mergedTo` is a dup (`2>&1` / `1>&2`): the stream whose destination both share,
  * so one capture handle with the two interleaved in arrival order. It subsumes
@@ -555,8 +557,9 @@ interface Capture {
  * wired between consecutive stages, the head fed `stdin` (if any), and stream
  * each captured redirect straight into the content store via `createOutput`.
  * The stages' environment is `env` and nothing else (no FORCE_COLOR — captured
- * content must be the tool's raw bytes, not ANSI). Fails on the first stage to exit non-zero or by signal
- * (pipefail): a redirected stderr is the *user's* stream, so only an
+ * content must be the tool's raw bytes, not ANSI). Once every stage has ended,
+ * fails with the earliest stage (in pipeline order) that exited non-zero or by
+ * signal (pipefail): a redirected stderr is the *user's* stream, so only an
  * un-redirected stage's stderr is buffered (small) to report on failure. On
  * success resolves a FileSet of the captured content, each file named by its
  * redirect target; on failure every in-flight capture is discarded (nothing
@@ -887,9 +890,9 @@ export function signalInteractiveChild(signal: NodeJS.Signals): boolean {
   return true;
 }
 
-/** Whether fabr is attached to a terminal on any of its own standard streams —
- * i.e. whether a Ctrl-C at that terminal reached the foreground group as a
- * whole, this process included. */
+/** @return true if fabr is attached to a terminal on any of its own standard
+ * streams — i.e. a Ctrl-C at that terminal reached the foreground group as a
+ * whole, this process included — otherwise false. */
 function hasTerminal(): boolean {
   return process.stdin.isTTY === true || process.stdout.isTTY === true || process.stderr.isTTY === true;
 }

@@ -218,7 +218,7 @@ function adopt(target: Record<string, unknown>, source: object): void {
 }
 
 /**
- * Fake-timer defaults, with ONE deliberate divergence from jest's:
+ * Apply fabr's fake-timer defaults, with ONE deliberate divergence from jest's:
  * `setImmediate` and `process.nextTick` are not faked.
  *
  * There is no vm sandbox here, so circus and the child's own IPC report back to

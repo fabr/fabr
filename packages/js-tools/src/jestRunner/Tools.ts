@@ -27,7 +27,7 @@
  * install, resolved through a require anchored at this file, so it is
  * collision-free with the user's dependencies by construction: a test's own
  * `expect`, `chalk` or `pretty-format` coexists with jest's copies exactly as a
- * project's `typescript` coexists with `TSC`.
+ * project's `typescript` coexists with `TSC_DRIVER`'s.
  *
  * **The test installation** (the process's cwd is its compiled mount) holds
  * what the target itself declared. Only one thing is read from there — `jsdom`,
@@ -154,8 +154,8 @@ export function requireEnvironment(env: string, fromDocblock = false): void {
 export const RUNNER_ROOT = path.dirname(__dirname);
 
 /**
- * Whether a file is the code under test, as opposed to the runner's own
- * machinery or an installed dependency. Defined once because the hoist and
+ * @return true if a file is the code under test, as opposed to the runner's
+ * own machinery or an installed dependency, otherwise false. Defined once because the hoist and
  * `resetModules` must agree on the boundary: the hoist transforms exactly the
  * code under test, and a reset evicts exactly the code under test.
  */

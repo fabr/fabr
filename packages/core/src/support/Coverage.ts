@@ -43,7 +43,7 @@ export interface ICoverageRecord {
 /** Merged coverage, by source. */
 export type Coverage = Map<string, ICoverageRecord>;
 
-/** A count as lcov writes one: `-` is a branch whose block never ran. */
+/** Read a count as lcov writes one: `-` is a branch whose block never ran. */
 function countOf(text: string | undefined): number {
   const count = Number(text);
   return Number.isFinite(count) ? count : 0;
@@ -89,7 +89,7 @@ export function parseLcov(text: string): ICoverageRecord[] {
   return records;
 }
 
-/** Whether two branch tables number the same branches. */
+/** @return true if two branch tables number the same branches, otherwise false. */
 function sameBranches(left: Map<string, number>, right: Map<string, number>): boolean {
   return left.size === right.size && [...left.keys()].every(key => right.has(key));
 }

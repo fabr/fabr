@@ -69,7 +69,7 @@ export function getBuildCacheRoot(): string {
 }
 
 /**
- * @return the location in which we should stored 'cache' application data,
+ * @return the location in which we should store 'cache' application data,
  * following platform conventions where possible.
  */
 function getBaseCacheDir(): string {
@@ -85,7 +85,7 @@ function getBaseCacheDir(): string {
 }
 
 /**
- * The host machine facts injected as ambient constraints at every getConfig site.
+ * Get the host machine facts injected as ambient constraints at every getConfig site.
  * A single HOST platform triple (`arm64-apple-macosx15.0`, …) — TARGET defaults to
  * it (STD.fabr) and consumers gate on TARGET; the npm/native mapping lives in
  * core's Platform helper.

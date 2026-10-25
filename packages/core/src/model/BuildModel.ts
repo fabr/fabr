@@ -72,9 +72,9 @@ export class BuildModel {
   }
 
   /**
-   * A type-specific rule may guard only on what its type declares: each of its
-   * `targetProperties` must be a STRING property of the type's targetdef. A type
-   * with no targetdef has no schema to check against.
+   * Check that a type-specific rule guards only on what its type declares: each
+   * of its `targetProperties` must be a STRING property of the type's targetdef.
+   * A type with no targetdef has no schema to check against.
    */
   private assertTargetProperties(type: string, rule: RuleDefinition): void {
     const schema = this.root.getTargetDef(type)?.properties;
@@ -88,12 +88,12 @@ export class BuildModel {
     }
   }
 
-  /** The rules registered for `type` — the candidates selection tries first. */
+  /** Get the rules registered for `type` — the candidates selection tries first. */
   public getTargetRules(type: string): RuleDefinition[] {
     return this.targetRules.get(type) ?? [];
   }
 
-  /** The default (all-types) rules, consulted where no rule of the target's
+  /** Get the default (all-types) rules, consulted where no rule of the target's
    * own type applies. */
   public getDefaultRules(): RuleDefinition[] {
     return this.defaultRules;
@@ -182,9 +182,9 @@ export class BuildModel {
   }
 
   /**
-   * The declared target a written reference builds — its literal prefix, read
-   * exactly as resolution reads it, so `pkg:bin/x.js` and `pkg<BUILD_TYPE=release>`
-   * both name `pkg`. Undefined when the reference names no declared target at
+   * Look up the declared target a written reference builds — its literal
+   * prefix, read exactly as resolution reads it, so `pkg:bin/x.js` and
+   * `pkg<BUILD_TYPE=release>` both name `pkg`. Undefined when the reference names no declared target at
    * all (an external requirement, a bare path, an unknown name).
    *
    * This is for a caller holding a name it was *given* and needing to say

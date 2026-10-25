@@ -22,7 +22,8 @@
  * self-contained target `{ srcs = FILES; deps = PACKAGES }`. `srcs` are the Sass
  * sources (.scss/.sass, modules included — the `.module.` marker rides through
  * to the output name, since lowering is not scoping); `deps` are scss packages
- * mounted for Sass `@use`/`@import` resolution. Beside each stylesheet the step
+ * Sass `@use`/`@import` resolve into through the PnP table the step stages.
+ * Beside each stylesheet the step
  * writes its source map (when the build carries them) and nothing else;
  * scoping and shims are the css_postcss step's, which consumes this step's
  * output. The compiler is a build *tool*, independent of what it lowers,

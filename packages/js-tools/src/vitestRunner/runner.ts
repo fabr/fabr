@@ -56,7 +56,7 @@ interface IVitestNode {
 const importModule = new Function("specifier", "return import(specifier)") as (specifier: string) => Promise<unknown>;
 
 /**
- * Vitest's node API, from the TEST installation (resolved from `root`, the
+ * Load vitest's node API from the TEST installation (resolved from `root`, the
  * working directory inside it): the framework and its version are the target's
  * choice, declared among its `test_deps` like any other dependency.
  */

@@ -332,7 +332,7 @@ export class BuildContextImpl implements InternalBuildContext {
     return result;
   }
 
-  /** Check whether this is the configuration of exactly `constraints`. */
+  /** @return true if this is the configuration of exactly `constraints`, otherwise false. */
   public hasConstraints(constraints: Constraints): boolean {
     return this.constraints.equals(constraints);
   }
@@ -360,8 +360,8 @@ export class BuildContextImpl implements InternalBuildContext {
     );
   }
 
-  /** Check whether a guard's `pattern`, substituted, matches the property
-   * `value` it is written against. */
+  /** @return true if a guard's `pattern`, substituted, matches the property
+   * `value` it is written against, otherwise false. */
   private patternAdmits(pattern: Name, value: Property, stack?: IDependencyStack): Computable<boolean> {
     return this.substituteNameVars(pattern, stack).then(substituted => globMatcher(substituted.toGlobString())(value.toString()));
   }
@@ -758,7 +758,7 @@ export class BuildContextImpl implements InternalBuildContext {
   }
 
   /** Look up one block's items in written order: a `key = value;` entry sets its
-   * key (strings joined to one string; nested blocks to a sub-map, several to a
+   * key (strings to their word list; nested blocks to a sub-map, several to a
    * list of sub-maps — mixing rejected, statically for schema'd properties and
    * re-checked here for shared globals); a `NAME;` splice merges the named map's
    * entries in at that position. Later values win. Each entry records its ghost
@@ -1542,10 +1542,11 @@ export class BuildContextImpl implements InternalBuildContext {
   }
 
   /**
-   * Check whether `context` belongs to a target the run was asked to force
-   * (`-f`, see {@link ExecutionContext.forceTarget}). The question is put to
-   * the declared owner, so a forced target's anonymous sub-targets are forced
-   * with it, while the declared targets it depends on are served from cache.
+   * @return true if `context` belongs to a target the run was asked to force
+   * (`-f`, see {@link ExecutionContext.forceTarget}), otherwise false. The
+   * question is put to the declared owner, so a forced target's anonymous
+   * sub-targets are forced with it, while the declared targets it depends on
+   * are served from cache.
    */
   private forcedBuild(context: TargetContext): boolean {
     return this.execution.isForced(context.getDeclaredContext().target);

@@ -37,6 +37,10 @@ import { FabrError } from "./Errors";
  * row just re-hashes next start). One-shot runs write once, ungated. */
 const INDEX_WRITE_INTERVAL_MS = 30_000;
 
+/** What a project file's path from the root is prefixed with to make its
+ *  source path, a reference to it from the project root. */
+const SOURCE_PATH_PREFIX = "./";
+
 /**
  * FileSource for the local (mutable) source tree. Every source file it hands
  * back is **snapshotted** into the content-addressed blob store at the moment
@@ -48,10 +52,6 @@ const INDEX_WRITE_INTERVAL_MS = 30_000;
  *
  * TODO: Locking
  */
-/** What a project file's path from the root is prefixed with to make its
- *  source path, a reference to it from the project root. */
-const SOURCE_PATH_PREFIX = "./";
-
 export class SourceFileSource extends FSFileSource {
   private readonly cache: BuildCache;
   /**
@@ -117,19 +117,18 @@ export class SourceFileSource extends FSFileSource {
   }
 
   /**
-   * Write refreshed content back into the source tree — recorded test
-   * expectations, a golden test's blessed output.
+   * Write content back into the source tree — refreshed test expectations, or
+   * the coverage report.
    *
    * Under watch these destinations are *inputs being watched*, so the write is
    * an input change: this source records what it wrote and its content, and
    * recognizes the resulting events as its own echo (see
    * {@link isExpectedChange}) rather than arming a rebuild.
    *
-   * The DECISION stays the driver's — only under `-u`, only after a green
-   * build, and it is the driver that resolved each destination from the
-   * offering rule's input-relative names. This performs the writes it is asked
-   * to make, it does not choose which, and every one is a real change by
-   * construction (see {@link writeBackFile}). Containment is asserted here
+   * The DECISION stays the driver's: it chooses each write and its
+   * destination (an expectation only under `-u`, after a green build, located
+   * from the offering rule's input-relative names). This performs the writes
+   * it is asked to make, it does not choose which. Containment is asserted here
    * regardless of caller: the tree's boundary is this source's own invariant.
    */
   public applyWriteBack(writes: ReadonlyArray<IResolvedWriteBack>): Computable<string[]> {
@@ -185,7 +184,7 @@ export class SourceFileSource extends FSFileSource {
   }
 
   /**
-   * The file as a blob-backed FSFile, whose source path is its name here as a
+   * Ingest the file as a blob-backed FSFile, whose source path is its name here as a
    * reference (`./<name>`). A
    * file whose stat matches its source-index row (and whose blob the pool still
    * holds) is served from the row — no read, no hash; anything else takes the
@@ -364,7 +363,7 @@ export class SourceFileSource extends FSFileSource {
  */
 export type WritableSourceTree = FileSource & Pick<SourceFileSource, "root" | "locate" | "applyWriteBack">;
 
-/** A destination as this source names it (tree-relative, posix), or undefined
+/** Name a destination as this source does (tree-relative, posix), or undefined
  * if it lies outside the tree — which {@link SourceFileSource.applyWriteBack}
  * refuses anyway, so there is nothing to expect an echo from. */
 function toSourceName(root: string, destination: string): string | undefined {

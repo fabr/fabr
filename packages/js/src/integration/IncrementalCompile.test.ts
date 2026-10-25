@@ -1285,8 +1285,8 @@ function incrementalScenarios(): void {
     });
 
     it("cuts off an unread version of a package that coexists with a read one", async () => {
-      /* The closure holds two versions of `dup`: the compile reads the hoisted
-       * one and never opens the nested one. A bare naming would collide the two
+      /* The closure holds two versions of `dup`: the compile reads the direct
+       * one and never opens the one only `requirer` reaches. A bare naming would collide the two
        * and force the whole target back to keying on everything; instance
        * names give them a name each, so the ordinary cutoff applies to both. */
       const read = pkg("dup", "export declare const value: number;\n");
@@ -1477,7 +1477,7 @@ describe("incremental compiles against a bounded program", () => {
   });
 
   it("keeps the emitted specifiers naming what this compile emits, not what it read", async () => {
-    /* Threat 2: the emitted specifier must name `./util.js` — the file this
+    /* The emitted specifier must name `./util.js` — the file this
      * compile emits — however `util.ts` came to be in the program. It holds
      * because the rewriter resolves against the sources, which are all staged
      * whether or not they were rooted; the fixture is what keeps that true. */
@@ -1494,7 +1494,7 @@ describe("incremental compiles against a bounded program", () => {
   });
 
   it("inlines a const enum from the same place a full compile inlines it", async () => {
-    /* Threat 1: a referencing file inlines a const enum's VALUES, so the owner
+    /* A referencing file inlines a const enum's VALUES, so the owner
      * has to be in the program as the same kind of thing a full compile has it
      * as — every file the program holds is a source, so it inlines from the
      * source. */
@@ -1510,7 +1510,7 @@ describe("incremental compiles against a bounded program", () => {
   });
 
   it("compiles a const enum's owner correctly under isolatedModules too", async () => {
-    /* The sharp form of threat 1: `isolatedModules` rejects an ambient const
+    /* The sharp form of the const-enum case: `isolatedModules` rejects an ambient const
      * enum outright, so a compile that reached one would fail where a full
      * compile passes. fabr's generated projects do not set it — a project's own
      * can, and this is that project. */
@@ -1534,7 +1534,7 @@ describe("incremental compiles against a bounded program", () => {
   });
 
   it("keeps an incremental build's key from growing", async () => {
-    /* Threat 3: what the entry is keyed on must not drift as builds accumulate.
+    /* What the entry is keyed on must not drift as builds accumulate.
      * A wave opens fewer files than a full compile, so the key is composed from
      * what the base read laid under what this run read — and this is what says
      * the composition neither grows (keying on files nothing opened) nor
@@ -1567,7 +1567,7 @@ describe("incremental compiles against a bounded program", () => {
   });
 
   it("still sees an unwaved file's global contributions", async () => {
-    /* Threat 4: nothing imports a global, so no edge reaches the files a global
+    /* Nothing imports a global, so no edge reaches the files a global
      * change affects. The bound declines to narrow at all when a file that
      * affected global scope changes, and this is what says the resulting compile
      * still fails where a full one fails. */
@@ -1586,7 +1586,7 @@ describe("incremental compiles against a bounded program", () => {
   });
 
   it("handles a cycle with one member waved and the other only held", async () => {
-    /* Threat 5: a cycle whose members are on opposite sides of the wave — one
+    /* A cycle whose members are on opposite sides of the wave — one
      * checked and emitted, the other in the program but not built. */
     const base = {
       "a.ts": 'import type { B } from "./b";\nexport interface A {\n  b?: B;\n}\nexport const make = (): A => ({});\n',
@@ -1600,7 +1600,7 @@ describe("incremental compiles against a bounded program", () => {
   });
 
   it("resolves a self-reference through the package table like any other", async () => {
-    /* Threat 8, the bare-specifier half: a package's reference to itself is
+    /* Specifier binding, the bare-specifier half: a package's reference to itself is
      * answered by the package table rather than by a path probe, and lands on
      * one of its own files — which the wave may not have rooted. */
     const { incremental, full } = await editAndCompare(
@@ -1615,7 +1615,7 @@ describe("incremental compiles against a bounded program", () => {
   });
 
   it("resolves an unrooted neighbour however the specifier was written", async () => {
-    /* Threat 8, the relative half: extensionless, `.js`-spelled and directory
+    /* Specifier binding, the relative half: extensionless, `.js`-spelled and directory
      * specifiers must bind exactly what source resolution binds. */
     const { incremental, full } = await editAndCompare(
       {
@@ -1631,7 +1631,7 @@ describe("incremental compiles against a bounded program", () => {
   });
 
   it("holds the neighbours of a newly added file", async () => {
-    /* Threat 9: an addition is in the wave by definition and what it imports
+    /* An addition is in the wave by definition and what it imports
      * need not be, so the first thing it resolves is a file the bound did not
      * root — reached, like every other such file, by the compiler following the
      * import. */
@@ -1683,7 +1683,7 @@ describe("incremental compiles against a bounded program", () => {
   });
 
   it("reports diagnostics where a full compile reports them", async () => {
-    /* Threat 7: a diagnostic's position is read off the file the program holds,
+    /* A diagnostic's position is read off the file the program holds,
      * so a bounded compile must report the positions a full compile reports —
      * in a file it did not root as much as in one it did. */
     const base = {

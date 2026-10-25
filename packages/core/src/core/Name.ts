@@ -37,10 +37,10 @@ export enum NamePartKind {
   CommandSubst,
 }
 
-/** Whether a part's text is supplied from *outside* the name — a variable to
- * look up or a command to run. The two differ only in how that text is obtained,
- * which is the resolver's business and not the name's, so everything here treats
- * them alike. */
+/** @return true if a part's text is supplied from *outside* the name — a
+ * variable to look up or a command to run — otherwise false. The two differ only
+ * in how that text is obtained, which is the lookup's business and not the
+ * name's, so everything here treats them alike. */
 function isSubstituted(part: NamePart): boolean {
   return part.kind === NamePartKind.VarSubst || part.kind === NamePartKind.CommandSubst;
 }
@@ -217,12 +217,13 @@ export class Name {
   }
 
   /**
-   * The glob wildcard units of this name in written order — one entry per
+   * Get the glob wildcard units of this name in written order — one entry per
    * `*`/`**`/`?`/`[...]` run (a maximal run of glob metacharacters). Read by the
    * parser to enforce the rename rules: a rename glob's units must all be `*` or
    * `**` (so picomatch captures line up positionally with the template's slots),
-   * and the selector's and template's unit counts must match — both waived for a
-   * wildcard-free template, which replays nothing. A plain (non-rename) selector
+   * and the selector's and template's unit counts must match for a positional
+   * template — both waived for a wildcard-free template, which replays nothing,
+   * and the count rule for a `$n` template, which says which wildcard it takes. A plain (non-rename) selector
    * is unrestricted, so this is only consulted on rename surfaces.
    */
   public getGlobUnits(): string[] {
@@ -230,12 +231,12 @@ export class Name {
   }
 
   /**
-   * This rename target as a `String.replace` **replacement string**: each `*`/`**`
+   * Render this rename target as a `String.replace` **replacement string**: each `*`/`**`
    * slot becomes its positional capture reference (`$1`, `$2`, …), literal text
    * verbatim (with `$` escaped so it isn't read as a group reference). Paired with
    * the selector's {@link globCaptureRegex} by {@link makeRenamer}. Assumes
-   * substitution has run and (via Validate) that the slot count matches the
-   * selector's wildcard count.
+   * substitution has run and (as the parser guarantees) that a positional
+   * template's slot count matches the selector's wildcard count.
    */
   public toReplacement(): string {
     let slot = 0;
@@ -260,7 +261,7 @@ export class Name {
   }
 
   /**
-   * This name read as a **rename template**: any `$1`-style substitution becomes
+   * Read this name as a **rename template**: any `$1`-style substitution becomes
    * a capture back-reference ({@link NamePartKind.Backref}) instead of a
    * variable read.
    *
@@ -281,14 +282,14 @@ export class Name {
     return new Name(parts, this.constraints, this.renameTo);
   }
 
-  /** The wildcard indices this template back-references (`$1` → 1), in written
+  /** Get the wildcard indices this template back-references (`$1` → 1), in written
    * order; empty for a template that replays positionally or not at all. */
   public getBackrefIndices(): number[] {
     return this.parts.filter(part => part.kind === NamePartKind.Backref).map(part => Number(part.value));
   }
 
   /**
-   * This rename compiled for a consumer that cannot run fabr's glob language: a
+   * Compile this rename for a consumer that cannot run fabr's glob language: a
    * regular expression source and a `$n` replacement, needing only `RegExp` and
    * `String.replace`. {@link makeRenamer} is this plus the application.
    *
@@ -403,7 +404,7 @@ export class Name {
   }
 
   /**
-   * The alias portion (everything before the last `:`) as a slash path, or
+   * Get the alias portion (everything before the last `:`) as a slash path, or
    * undefined for a slash-form name. `escape` selects the rendering: escaped
    * feeds a pattern compiler ({@link globPrefixRegex}); unescaped is the path
    * itself, for comparison against real input paths — the two disagree
@@ -435,7 +436,7 @@ export class Name {
   }
 
   /**
-   * The selector's path components: this name split at every separator (`/`
+   * Split the selector into its path components, at every separator (`/`
    * and the `:` alias boundary alike — a `:` is a path separator on disk),
    * each component a Name of its own parts (globs and unsubstituted `${var}`s
    * preserved). Pure tokenization — no facets ride the components, and a
@@ -467,7 +468,7 @@ export class Name {
   }
 
   /**
-   * The cumulative slash-joined prefixes of {@link components}: `prefixes[i]`
+   * Get the cumulative slash-joined prefixes of {@link components}: `prefixes[i]`
    * is components 0…i rejoined with `/` — the reference's leading path at each
    * depth, ready to match against in-namespace names (the boundary probes of
    * archive descent; a fetch repository's member selection). Facet-free, like
@@ -526,9 +527,10 @@ export class Name {
     return this.parts.some(part => part.kind === NamePartKind.Glob);
   }
 
-  /** Whether any literal part contains the `:` level separator — used by Validate
-   * to reject it in a rename template (and in a REWRITE selector), where the
-   * pattern is matched/replayed against package-relative names, not references. */
+  /** @return true if any literal part contains the `:` level separator,
+   * otherwise false — used by the parser to reject it in a rename template and
+   * by Validate in a REWRITE selector, where the pattern is matched/replayed
+   * against package-relative names, not references. */
   public hasLevelSeparator(): boolean {
     return this.parts.some(part => part.kind === NamePartKind.Literal && part.value.includes(NAME_LEVEL_SEPARATOR));
   }
@@ -843,7 +845,7 @@ export class Name {
  * constructs a Name at module load. */
 const SLASH = Name.fromLiteral(NAME_COMPONENT_SEPARATOR);
 
-/** A resolved REWRITE property: a path to its renamed form, or undefined if no
+/** A looked-up REWRITE property: a path to its renamed form, or undefined if no
  * value in the property matched (rule policy decides what that means). */
 export type RewriteFn = (name: string) => string | undefined;
 
@@ -852,7 +854,7 @@ export type RewriteFn = (name: string) => string | undefined;
  * values, first-match-wins in written order: a `sel -> tmpl` value renames
  * selected paths (replaying captures into the rename target), a bare value is a
  * constant every path maps to (multi-entry misuse surfaces later as a rename
- * collision). Pure name logic — the only "resolution" a REWRITE needs is the
+ * collision). Pure name logic — the only lookup a REWRITE needs is the
  * variable substitution the caller runs before handing the Names here.
  */
 export function makeRewrite(names: Name[]): RewriteFn {

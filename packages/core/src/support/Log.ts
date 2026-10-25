@@ -153,7 +153,7 @@ export function stripAnsi(text: string): string {
  * (all Cf) that ride inside emoji and complex-script sequences. */
 const ZERO_WIDTH = new Set([0x200b, 0x200c, 0x200d, 0x2060, 0xfeff]);
 
-/** Columns one code point occupies on a terminal: 0 for combining marks and
+/** Count the columns one code point occupies on a terminal: 0 for combining marks and
  *  joiners, 2 for East-Asian Wide/Fullwidth (CJK, emoji), 1 otherwise
  *  (ambiguous-width included). A ZWJ emoji sequence counts each member. */
 function codePointWidth(cp: number): number {
@@ -168,7 +168,7 @@ function codePointWidth(cp: number): number {
 }
 
 /**
- * The columns `text` occupies on a terminal — NOT `String.length`, which
+ * Count the columns `text` occupies on a terminal — NOT `String.length`, which
  * counts UTF-16 code units. Expects plain text: strip escapes first
  * ({@link stripAnsi}).
  */
@@ -181,7 +181,7 @@ export function displayWidth(text: string): number {
 }
 
 /**
- * The longest prefix of `text` occupying at most `columns` columns: cut at a
+ * Cut `text` to its longest prefix occupying at most `columns` columns, at a
  * code-point boundary with zero-width followers kept beside their base, so a
  * surrogate pair is never split and a combining mark never orphaned.
  */

@@ -204,7 +204,7 @@ export function writeFileSet(targetDir: string, files: FileSet, options?: { copy
 }
 
 /**
- * Where a cache link points on this machine. A {@link CacheLink} carries only a
+ * Get where a cache link points on this machine. A {@link CacheLink} carries only a
  * cache-relative path — never a location, which is what keeps it portable
  * across cache moves — so the cache root rides along from whichever cache
  * produced the link. A link that has none cannot be staged: it names something
@@ -219,7 +219,7 @@ function cacheTargetOf(file: CacheLink): string {
   return target;
 }
 
-/** A staged entry with its resolved destination and that destination's parent,
+/** Make a staged entry with its resolved destination and that destination's parent,
  * containment asserted. Resolving up front is what lets the distinct parents be
  * created as one batch before any write starts. */
 function contained(root: string, name: string, file: IFile): { name: string; file: IFile; targetName: string; dirname: string } {
@@ -228,7 +228,8 @@ function contained(root: string, name: string, file: IFile): { name: string; fil
   return { name, file, targetName, dirname: path.dirname(targetName) };
 }
 
-/** Belt-and-braces backstop for the FileSet canonical-name invariant: names are
+/** Assert a resolved write target stays inside the staged root — a
+ * belt-and-braces backstop for the FileSet canonical-name invariant: names are
  * canonicalized at construction (no `../`, no absolute paths — see
  * canonicalFileName), so a resolved write target always stays inside the staged
  * root. But staging is the boundary where a violated invariant becomes
@@ -239,10 +240,8 @@ function assertContained(root: string, targetName: string, name: string): void {
   }
 }
 
-/** Monotonic across the whole process, so no two temp siblings ever share a name
- * — a per-call counter (reset to 0 each sync) would reuse `<pid>-0`, `<pid>-1`, …
- * every call, and a temp left behind by one failed sync would then collide (EEXIST)
- * with every later sync in the same process. */
+/** Monotonic across the whole process, so no two temp siblings ever share a
+ * name — a temp left by a failed sync cannot collide with a later one. */
 let tempCounter = 0;
 
 /**

@@ -77,14 +77,14 @@ function newBuilderNode(self?: INamedDecl): NSBuilderNode {
   return { self, content: new Map(), defaultTargets: new Map(), targetDefs: new Map() };
 }
 
-/** Whether a name is held by a (sub-)namespace rather than by declarations. */
+/** @return true if a name is held by a (sub-)namespace rather than by declarations, otherwise false. */
 function isBuilderNode(entry: BuilderEntry): entry is NSBuilderNode {
   return !("kind" in entry);
 }
 
 /** What to blame in a conflict against an existing entry: for a property, its
- * first declaration — they all share the name, and Validate has already made
- * them tell each other apart. */
+ * first declaration — they all share the name, and `addResolvableDecl` keeps
+ * their written keys distinct. */
 function blameFor(entry: BuilderEntry): INamedDecl | NSBuilderNode {
   if (isBuilderNode(entry)) {
     return entry;
@@ -248,9 +248,9 @@ export class NamespaceBuilder {
   }
 
   /**
-   * The entry under `key` in `parent`, as a namespace where it is a property: a
-   * property of a namespace's name is that namespace's fallback, so the
-   * namespace takes it over. Anything else there is returned as it is.
+   * Get the entry under `key` in `parent`, as a namespace where it is a
+   * property: a property of a namespace's name is that namespace's fallback, so
+   * the namespace takes it over. Anything else there is returned as it is.
    */
   private namespaceOf(parent: NSBuilderNode, key: string, decl: INamedDecl): BuilderEntry | undefined {
     const existing = parent.content.get(key) ?? parent.defaultTargets.get(key);

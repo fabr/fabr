@@ -89,7 +89,7 @@ const testLog = new LogFormatter(LogLevel.Info, console.error);
  * cache, so a single throwaway instance serves them all */
 const execution = new ExecutionContext(new BuildCache(".", testLog), testLog, EMPTY_FILESET, EMPTY_FILESET);
 
-/** A name as the driver hands one over. Every {@link BuildContext} method
+/** Make a name as the driver hands one over. Every {@link BuildContext} method
  * takes the decl its reference was written in (the CLI synthesizes one over
  * the command line, see CommandLineSource). */
 function writtenOnCommandLine(name: string): INameValue {
@@ -291,7 +291,7 @@ registerRule("test_rw", {}, context =>
 );
 
 /* Reads a MAP property, so a test can observe the resolved key -> value map
- * (order preserved, strings substituted and space-joined, sub-maps recursive);
+ * (order preserved, strings substituted and kept as word lists, sub-maps recursive);
  * `testMapObserver` additionally receives the map itself (for origin probes). */
 let lastMap: Array<[string, PropertyMapValue]> | undefined;
 let testMapObserver: ((map: PropertyMap) => void) | undefined;
@@ -674,9 +674,7 @@ registerRule("test_records_requirer", {}, context => {
 
 const testContributions: PluginContribution[] = [{ rules: testRules, repositories: testRepos }];
 
-/** `outcome`, or `otherwise` if it has not settled within two seconds — so a
- * build that never settles fails its test rather than hanging the suite. */
-/** The cycle `err` reports: unwrapped from the target boundaries around it, and read as the report reads it. */
+/** Get the cycle `err` reports: unwrapped from the target boundaries around it, and read as the report reads it. */
 function circularOf(err: unknown): CircularDependencyError {
   let cause = err;
   while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError || cause instanceof MultiError) {
@@ -687,6 +685,9 @@ function circularOf(err: unknown): CircularDependencyError {
   return (circular instanceof DependencyFailedError ? circular.cause : circular) as CircularDependencyError;
 }
 
+/** Await `outcome`, or yield `otherwise` if it has not settled within two
+ * seconds — so a build that never settles fails its test rather than hanging
+ * the suite. */
 function settledOr<T>(outcome: Promise<T>, otherwise: T): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const expiry = new Promise<T>(resolve => {
@@ -1037,8 +1038,8 @@ describe("BuildContext", () => {
   });
 
   it("Reports a cycle between global FILES properties instead of overflowing", async () => {
-    /* Global-property stack nodes carry no target, so only the property-decl
-     * cycle check can catch this — unguarded it recurses to a RangeError. */
+    /* A cycle between globals is found in the Computable graph like any other,
+     * and reported positioned rather than overflowing. */
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const input = "A = B;\nB = A;\n";
@@ -1135,8 +1136,8 @@ describe("BuildContext", () => {
   it("Lets a target property reference a same-named global (not a cycle)", async () => {
     /* Target properties are not in the `${}` namespace, so `${deps}` inside the
      * target's own `deps` binds to the global — and, not being referenceable, a
-     * target property can never close a cycle: the cycle check must skip its
-     * stack node, or this legitimate reference reports a false cycle. */
+     * target property can never close a cycle: this is no cycle, and must not
+     * be reported as one. */
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const input = "targetdef test_good { deps = PACKAGES; }\ndeps = sub;\ntest_good t { deps = ${deps}/*.txt; }\n";
@@ -2437,7 +2438,7 @@ describe("BuildContext", () => {
   it("A caller's override also wins over a requirement on a GLOBAL's value", async () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-    /* Same precedence rule, through getGlobalTarget: the rule forces
+    /* Same precedence rule, through getGlobalFileProperty: the rule forces
      * {FLAVOR: caller} while the global's written value carries <FLAVOR=ref>.
      * The override must ride as callerOverrides (applied after the
      * requirement), not be demoted to the ambient set (which it would beat). */
@@ -2825,9 +2826,7 @@ describe("unresolved-name diagnostics", () => {
   });
 });
 
-/* The mechanism behind plugin-declared driver tools (JS.fabr's `js_script
- * @fabr-build/js/postcss-driver { entry = ../cssDriver/postcss-driver.js; }`): a decl
- * written in an absolutely-pathed contributed lib file resolves a relative
+/* A decl written in an absolutely-pathed contributed lib file resolves a relative
  * FILES value against that file's own directory through its own FileSource
  * (the loader's absFileSource — no project-tree containment), and the result
  * is named by the written path's flattened tail (a leading `../` strips — the

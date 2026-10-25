@@ -1000,7 +1000,7 @@ function requestedName(
   return isPackage(source) && taken?.has(source) !== true && !isPlainNode(source) ? source.packageName : undefined;
 }
 
-/** Check whether two requests of one name are the same request. */
+/** @return true if two requests of one name are the same request, otherwise false. */
 function sameRequest(left: SourceRef | Unbuilt, right: SourceRef | Unbuilt): boolean {
   if (left instanceof RepositoryRef && right instanceof RepositoryRef) {
     const sameRegistry =
@@ -1121,9 +1121,10 @@ export function bindProvided<S extends Resolved>(sources: S[], taken?: ReadonlyS
   }
 
   const builder = new PackageGraphBuilder();
-  /** Check whether `pkg` is wired the same way in scopes `a` and `b`: each name
-   * anything below it wants supplied is answered in both by nothing, or by one
-   * package itself wired the same way in the two scopes answering it. A pair
+  /** @return true if `pkg` is wired the same way in scopes `a` and `b`,
+   * otherwise false: each name anything below it wants supplied is answered in
+   * both by nothing, or by one package itself wired the same way in the two
+   * scopes answering it. A pair
    * in `assumed` is one this comparison is already deciding, and counts as
    * alike — a package supplied by itself round a cycle is one wiring. */
   const wiredAlike = (pkg: Package, a: IScope, b: IScope, assumed: Set<string>): boolean => {
@@ -1446,8 +1447,8 @@ function gatherRequirements(sources: Array<SourceRef | Unbuilt>): {
   return { requests, locals, own };
 }
 
-/** Check whether `pkg` is a target's node: a package built in the project,
- * whose requirements are read off it. */
+/** @return true if `pkg` is a target's node — a package built in the project,
+ * whose requirements are read off it — otherwise false. */
 function isBuild(pkg: SourceRef | Unbuilt | Package | Reference): pkg is ResolvedNode {
   return pkg instanceof ResolvedNode && pkg.content.builds !== undefined;
 }
@@ -1468,14 +1469,15 @@ function resolvedAs(delivery: Resolved | RepositoryRef): Resolved[] {
   return delivery instanceof RepositoryRef ? [] : [delivery];
 }
 
-/** Check whether `request` is for a package its reference only permits (a `?`
- * alternate): it installs nothing, so what comes back is the requirement. */
+/** @return true if `request` is for a package its reference only permits (a
+ * `?` alternate), otherwise false. Such a request installs nothing, so what
+ * comes back is the requirement. */
 function installsNothing(request: PackageRequest): boolean {
   return request.reference.override === "alternate" && request.as === "package";
 }
 
-/** Check whether `request` is answered apart from its registry's joint batch:
- * an instance, or a request for files. */
+/** @return true if `request` is answered apart from its registry's joint
+ * batch (an instance, or a request for files), otherwise false. */
 function resolvedApart(request: PackageRequest): boolean {
   return request.as === "instance" || request.as === "files";
 }
@@ -1540,8 +1542,9 @@ function resolveRequests(
 }
 
 /**
- * Check whether `pkg` is what `reference` names: a version its repository's format
- * accepts for the requirement the reference states. Asked of a package already
+ * @return true if `pkg` is what `reference` names — a version its repository's
+ * format accepts for the requirement the reference states — otherwise false.
+ * Asked of a package already
  * known by the name the reference is required under. A reference whose
  * repository resolves no versions is answered by nothing.
  */
@@ -1569,8 +1572,9 @@ function answers(reference: RepositoryRef, pkg: Package): boolean {
  * package shipped at more than one version, from any source, is an error unless
  * each version is sanctioned. **"permissive"**: the closure is a sealed program
  * that is executed, not linked against (a runnable's install), so coexisting
- * versions are accepted and nest. Set by the consuming rule at its collection
- * point; never a constraint.
+ * versions are accepted and nest. Given by the framework to a single-surface
+ * collection (`collectLists`, `materializeShallow`); a rule's own requirements
+ * say it with `permissive()`. Never a constraint.
  */
 export interface ResolutionOptions {
   resolutionMode?: "strict" | "permissive";
@@ -1581,12 +1585,10 @@ export interface ResolutionOptions {
 export const PERMISSIVE_RESOLUTION: ResolutionOptions = { resolutionMode: "permissive" };
 
 /**
- * Run one reference's delivery, attributing any failure to the written
- * reference: the ref's carried provenance lets the driver point back at the
- * requirement as written (`@npm:pkg:ver`, `@catalog:name`), not just at the
- * consuming target. The shared per-reference attribution helper for repository
- * implementations (the batch-level analogue lives with each repository's
- * resolve, which knows its own root mapping).
+ * Run `deliver`, the work one reference asks of its repository, and attribute
+ * any failure to the written reference (a {@link RequirementResolutionError}):
+ * the ref's carried provenance lets the driver point back at the requirement as
+ * written (`@npm:pkg:ver`, `@catalog:name`), not just at the consuming target.
  */
 export function attributedTo<T>(reference: RepositoryRef, deliver: () => Computable<T>): Computable<T> {
   try {

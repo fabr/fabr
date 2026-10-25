@@ -91,9 +91,9 @@ export function computableWorkList<K, V>(
 }
 
 /**
- * The first item `fn` answers something for, or undefined where none does:
- * items are tried in order and `fn` is not called for any item after the one
- * that answers.
+ * Get what `fn` answers for the first item it answers anything for, or
+ * undefined where it answers for none: items are tried in order and `fn` is
+ * not called for any item after the one that answers.
  *
  * Sequential by contract, not by accident — the caller is relying on the tail
  * going untouched, so this is not interchangeable with a parallel search.

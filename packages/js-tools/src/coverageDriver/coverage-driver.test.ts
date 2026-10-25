@@ -18,9 +18,10 @@
  */
 
 /* The coverage driver converts real V8 coverage: a TypeScript fixture compiled
- * as js_compile compiles it (maps naming sources `fabr:./…`, no sources
- * embedded), run in a node process that writes V8 coverage, then converted by
- * the driver's bin, launched as fabr launches it. */
+ * with maps naming sources `fabr:./…` and, unlike js_compile's, no sources
+ * embedded (so the driver is shown to read none), run in a node process that
+ * writes V8 coverage, then converted by the driver's bin, launched as fabr
+ * launches it. */
 
 import * as assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";

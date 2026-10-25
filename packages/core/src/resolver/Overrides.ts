@@ -29,7 +29,7 @@ import { requiredAs, versionText } from "./Requirement";
 import { PackageName, Requirement, Selected, VersionDomain, Violation } from "./Types";
 
 /**
- * The canonical (`versionToString`) form of a written exact version, or
+ * Get the canonical (`versionToString`) form of a written exact version, or
  * undefined when the text is a range (or the domain has no exact-version
  * notion). Every sanction set must store this form: the sanction judgment
  * compares against `versionToString(selection)`, so a non-canonical spelling
@@ -90,8 +90,8 @@ export function collectSanctions<V, C>(
 }
 
 /**
- * The versions the user explicitly WROTE per package — `?` sanctions plus
- * exact unmarked pins (the catalog form; recognized via the domain's
+ * Collect the versions the user explicitly WROTE per package — `?` sanctions
+ * plus exact unmarked pins (the catalog form; recognized via the domain's
  * `exactVersion`, so a range stays a floor, not a written version), all in
  * canonical `versionToString` form. This is the right-hand side of the
  * sanction rule: a strict delivery ships only version sets ⊆ what was written.
@@ -117,10 +117,10 @@ export function writtenVersions<V, C>(
 }
 
 /**
- * Whether any selection of the violated package — principal or fork —
- * satisfies the violated constraint: the test for whether the resolver could
- * repair the edge at all. Nothing published satisfies an unrepaired one, so
- * no delivery mode (and no sanction) can honor it.
+ * @return true if any selection of the violated package — principal or fork —
+ * satisfies the violated constraint, otherwise false: the test for whether the
+ * resolver could repair the edge at all. Nothing published satisfies an
+ * unrepaired one, so no delivery mode (and no sanction) can honor it.
  */
 export function satisfiedByAnySelection<V, C>(
   domain: VersionDomain<V, C>,
@@ -139,9 +139,10 @@ export function satisfiedByAnySelection<V, C>(
 }
 
 /**
- * Whether any of `selections` is a version of the violated package that fails
- * the violated constraint — the violation as it stands among these selections
- * rather than against the resolution's principal.
+ * @return true if any of `selections` is a version of the violated package
+ * that fails the violated constraint, otherwise false — the violation as it
+ * stands among these selections rather than against the resolution's
+ * principal.
  */
 export function violatedAmong<V, C>(domain: VersionDomain<V, C>, selections: readonly Selected<V>[], violation: Violation<V>): boolean {
   let constraint: C;

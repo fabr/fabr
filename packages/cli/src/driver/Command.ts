@@ -53,9 +53,10 @@ export enum Mode {
  * shown inline — `fabr <name> <synopsis>`) and a one-line summary. The set of
  * commands the command line accepts is derived from this table.
  *
- * `build`/`test`/`run` are BUILD_OPERATION values; `ls`/`cat`/`cp`/`sync` are
- * driver-side verbs that build under BUILD_OPERATION=build and then list / dump /
- * copy-to-disk / publish the results; the `list-*` verbs are model-query verbs
+ * `build`/`test`/`run` are BUILD_OPERATION values; `ls`/`cat`/`cp` are
+ * driver-side verbs that materialize their names under the `files` operation and
+ * then list / dump / copy-to-disk the results, and `sync` packages under
+ * BUILD_OPERATION=build and publishes; the `list-*` verbs are model-query verbs
  * that load the model and print without building anything (so they need no
  * targets). */
 interface CommandSpec {
@@ -223,8 +224,8 @@ function printUsage(write: (message: string) => void = console.log): void {
   );
 }
 
-/** A malformed invocation: the diagnostic *and* the usage go to stderr (data
- * streams stay clean), and we exit non-zero. */
+/** Report a malformed invocation: the diagnostic *and* the usage go to stderr
+ * (data streams stay clean), and we exit non-zero. */
 function usageError(message: string): never {
   console.error(message);
   printUsage(console.error);
@@ -234,6 +235,10 @@ function usageError(message: string): never {
 /** One option flag as written, with the canonical form it is validated as. */
 type SeenFlag = { raw: string; flag: string };
 
+/** Where `--coverage` writes its report when not given a directory: jest's and
+ * c8's convention. */
+const DEFAULT_COVERAGE_DIR = "coverage";
+
 /**
  * Apply one `-`-leading argument to the options being built, recording the
  * flags that are only meaningful to some commands for validation against the
@@ -241,10 +246,6 @@ type SeenFlag = { raw: string; flag: string };
  * when a command was given, and (via {@link completeCommandLine}) the tail
  * deferred when one was not.
  */
-/** Where `--coverage` writes its report when not given a directory: jest's and
- * c8's convention. */
-const DEFAULT_COVERAGE_DIR = "coverage";
-
 function applyOption(arg: string, options: Options, seenFlags: SeenFlag[]): void {
   if (arg === "-w") {
     options.mode = Mode.Watch;
@@ -298,7 +299,8 @@ function applyOption(arg: string, options: Options, seenFlags: SeenFlag[]): void
   }
 }
 
-/** `-f` forces a rebuild of what was named *this* invocation; under `-w` there
+/** Refuse `-f` combined with `-w`. `-f` forces a rebuild of what was named
+ * *this* invocation; under `-w` there
  * is no such thing — every cycle would rebuild it, so the two together are more
  * likely a mistake than a request. Checked after each parsing pass, since the
  * two flags can land in different ones (`fabr -f x -w`). */

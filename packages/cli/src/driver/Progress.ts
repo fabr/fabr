@@ -256,7 +256,7 @@ export class ProgressReporter {
   }
 
   /**
-   * The pane, within the row budget the terminal allows: a row per task
+   * Build the pane, within the row budget the terminal allows: a row per task
    * actually running, in start order (so a row never moves while it is up), and
    * one line for the remainder.
    *
@@ -281,8 +281,8 @@ export class ProgressReporter {
     return { heading: this.style(SGR_BOLD, PANE_HEADING), rows: tail ? [...rows, tail] : rows };
   }
 
-  /** The one line for what didn't get a row — or nothing at all when everything
-   *  in flight is on screen. */
+  /** Make the one line for what didn't get a row — or nothing at all when
+   *  everything in flight is on screen. */
   private remainder(unlisted: number, waiting: number): IPaneRow | undefined {
     const parts = [
       [unlisted, "running"],
@@ -293,8 +293,8 @@ export class ProgressReporter {
     return parts.length === 0 ? undefined : { left: this.style(SGR_DIM, `  … ${parts.join(", ")}`), right: "" };
   }
 
-  /** Incidental task — always a fetch (see {@link incidental}) — as one row per
-   *  resource kind ("Fetching metadata (12)"), timed from the oldest still
+  /** Summarise incidental tasks — always fetches (see {@link incidental}) — as
+   *  one row per resource kind ("Fetching metadata (12)"), timed from the oldest still
    *  running. */
   private summaryRows(items: Array<{ task: IFetchTask; started: number }>): IPaneRow[] {
     const kinds = new Map<string, number[]>();
@@ -313,8 +313,9 @@ export class ProgressReporter {
     }));
   }
 
-  /** A pane row: what the task is, and how it is going — a download's bytes
-   *  where it has them, and always the elapsed time. */
+  /** Make a pane row: what the task is, and how it is going — its progress
+   *  measure where it has one (a download's bytes, a test run's files and
+   *  outcomes), and always the elapsed time. */
   private row(item: IRunningTask): IPaneRow {
     const elapsed = formatDuration(this.now() - item.started);
     const progress = item.progress ? formatProgress(item.progress) + "  " : "";
@@ -323,7 +324,7 @@ export class ProgressReporter {
 }
 
 /**
- * How far along a task is, in whichever terms it measures itself: a
+ * Format how far along a task is, in whichever terms it measures itself: a
  * download in bytes, a test run in files done and what they found.
  */
 function formatProgress(progress: TaskProgress): string {
@@ -333,7 +334,7 @@ function formatProgress(progress: TaskProgress): string {
 }
 
 /**
- * A test run in flight: files finished of the total, and the outcomes they have
+ * Format a test run in flight: files finished of the total, and the outcomes they have
  * reported. The failures are named only when there are some.
  */
 function formatTestRun(files: number, totalFiles: number, passed: number, failed: number): string {
@@ -342,7 +343,7 @@ function formatTestRun(files: number, totalFiles: number, passed: number, failed
 }
 
 /**
- * A download's progress: a bar, its percentage and the size it is heading for
+ * Format a download's progress: a bar, its percentage and the size it is heading for
  * where the origin declared one, else the bare bytes so far (a chunked
  * response has no total to be a fraction of).
  */
@@ -361,7 +362,7 @@ const BAR_WIDTH = 10;
 const BAR_EIGHTHS = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
 
 /**
- * A `fraction` (0..1) as a bar of {@link BAR_WIDTH} cells. The boundary cell is
+ * Draw a `fraction` (0..1) as a bar of {@link BAR_WIDTH} cells. The boundary cell is
  * drawn to the nearest eighth, so a slow download is visibly moving between
  * whole cells rather than appearing stalled for a tenth of its length.
  */
@@ -373,7 +374,7 @@ function formatBar(fraction: number): string {
 }
 
 /**
- * What a task IS, in one phrase — the same text in the start line, the
+ * Describe what a task IS, in one phrase — the same text in the start line, the
  * completion line and the pane row, so the three are recognizably one thing.
  * Free of the surrounding context (which required it, under what constraints):
  * that is {@link context}, added to the line that introduces the item.
@@ -401,8 +402,9 @@ function describe(task: TaskDescription): string {
 }
 
 /**
- * The CLI's policy for task that goes unrecorded in the log: a registry index
- * read is a step within task already being reported (a resolution makes dozens
+ * @return true if the task is incidental — the CLI's policy for a task that goes
+ * unrecorded in the log — otherwise false. A registry index read is a step
+ * within a task already being reported (a resolution makes dozens
  * of them), so it is shown in the pane while it runs and never logged. The
  * event states the fact (a fetch's `role`); this is the decision made from it.
  * Only a fetch is ever incidental, which the narrowing carries to the summary
@@ -412,7 +414,7 @@ function incidental(task: TaskDescription): task is IFetchTask {
   return task.kind === "fetch" && task.role === "index";
 }
 
-/** The context a start line adds to {@link describe}: the explicit constraints
+/** Render the context a start line adds to {@link describe}: the explicit constraints
  *  the target builds under, and the chain of targets that required it. */
 function context(task: TaskDescription): string {
   if (task.kind !== "target-build") {
@@ -422,8 +424,8 @@ function context(task: TaskDescription): string {
   return renderConstraints(task.constraints) + requiredBy;
 }
 
-/** How a step's output lines are attributed: the declared target the task
- *  belongs to. Not the sub-target label — two steps of one target are both that
+/** Name whom a step's output lines are attributed to: the declared target the
+ *  task belongs to. Not the sub-target label — two steps of one target are both that
  *  target's output, and the prefix is there to say *whose* line this is. */
 function attribution(task: TaskDescription): string {
   switch (task.kind) {
@@ -438,8 +440,8 @@ function attribution(task: TaskDescription): string {
   }
 }
 
-/** `: <why>` for a failed task's completion line, or "" when its error says
- * nothing on one line. */
+/** Render `: <why>` for a failed task's completion line, or "" when its error
+ * says nothing on one line. */
 function failureReason(error: Error | undefined): string {
   const summary = error === undefined ? undefined : errorSummary(error);
   return summary === undefined ? "" : `: ${summary}`;

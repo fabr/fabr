@@ -31,7 +31,9 @@ import { FabrError } from "../core/Errors";
  * Not supported (parseConstraint throws): dist-tags. Prerelease versions are
  * ordered per the semver spec, but the npm rule that prereleases only match
  * ranges explicitly mentioning a prerelease of the same triple is not
- * implemented (plain ordering is used instead). Build metadata (`1.2.3+abc`) is
+ * implemented: `satisfies` uses plain ordering, and lowestSatisfying (the
+ * floor-raise pick) admits prereleases only when the constraint mentions one,
+ * of any triple. Build metadata (`1.2.3+abc`) is
  * accepted by the grammar but discarded — SemverVersion has no field for it —
  * so it never round-trips through versionToString; harmless for npm, which
  * forbids build metadata in published versions (so it never appears in registry
@@ -152,8 +154,9 @@ function lowerOf(p: IPartialVersion): SemverVersion {
 }
 
 /**
- * The exclusive upper bound implied by the unspecified components of a partial
- * version (e.g. 1.2 -> 1.3.0, 1 -> 2.0.0), or undefined if fully unbounded.
+ * Get the exclusive upper bound implied by the unspecified components of a
+ * partial version (e.g. 1.2 -> 1.3.0, 1 -> 2.0.0), or undefined if fully
+ * unbounded.
  */
 function upperOfPartial(p: IPartialVersion): SemverVersion | undefined {
   if (p.major === undefined) {
@@ -168,8 +171,9 @@ function upperOfPartial(p: IPartialVersion): SemverVersion | undefined {
 }
 
 /**
- * '^' fixes the leftmost non-zero component (^1.2.3 -> <2.0.0, ^0.2.3 -> <0.3.0,
- * ^0.0.3 -> <0.0.4); unspecified trailing components widen accordingly.
+ * Make the range '^' writes: it fixes the leftmost non-zero component
+ * (^1.2.3 -> <2.0.0, ^0.2.3 -> <0.3.0, ^0.0.3 -> <0.0.4); unspecified trailing
+ * components widen accordingly.
  */
 function caretRange(p: IPartialVersion, lower: SemverVersion): IRange {
   if (p.major === undefined) {
@@ -189,8 +193,8 @@ function caretRange(p: IPartialVersion, lower: SemverVersion): IRange {
 }
 
 /**
- * '~' admits patch-level changes (~1.2.3 -> <1.3.0), or minor-level if no minor
- * is given (~1 -> <2.0.0).
+ * Make the range '~' writes: it admits patch-level changes (~1.2.3 -> <1.3.0),
+ * or minor-level if no minor is given (~1 -> <2.0.0).
  */
 function tildeRange(p: IPartialVersion, lower: SemverVersion): IRange {
   if (p.major === undefined) {
@@ -281,9 +285,9 @@ function intersectRanges(a: IRange, b: IRange): IRange {
 }
 
 /**
- * npm hyphen range: 'A - B' is >=A together with the <= reading of B — a
- * partial B admits its whole prefix ('1.2.3 - 2.3' is <2.4.0, '1.2.3 - 2' is
- * <3.0.0; per npm, mirroring the '<=' partial rule), a wildcard B is
+ * Make an npm hyphen range: 'A - B' is >=A together with the <= reading of B
+ * — a partial B admits its whole prefix ('1.2.3 - 2.3' is <2.4.0, '1.2.3 - 2'
+ * is <3.0.0; per npm, mirroring the '<=' partial rule), a wildcard B is
  * unbounded above. Each side reuses the ordinary partial-version machinery.
  */
 function hyphenRange(left: string, right: string): IRange {
@@ -348,15 +352,16 @@ function versionInRange(version: SemverVersion, range: IRange): boolean {
 }
 
 /**
- * Whether any bound of the constraint carries a prerelease component — npm's
- * opt-in signal that prerelease versions are admissible (`^1.2.3-beta.4`).
+ * @return true if any bound of the constraint carries a prerelease component
+ * — npm's opt-in signal that prerelease versions are admissible
+ * (`^1.2.3-beta.4`) — otherwise false.
  */
 function mentionsPrerelease(constraint: SemverConstraint): boolean {
   return constraint.ranges.some(range => range.min.prerelease.length > 0 || (range.max?.prerelease.length ?? 0) > 0);
 }
 
 /**
- * The lowest of `versions` satisfying `constraint`, under npm's prerelease
+ * Find the lowest of `versions` satisfying `constraint`, under npm's prerelease
  * contract: a prerelease version is a candidate only when the constraint
  * itself mentions one (node-semver's opt-in; a prerelease sorts *below* its
  * release, so admitting them unasked would pick `4.0.1-rc.0` over an

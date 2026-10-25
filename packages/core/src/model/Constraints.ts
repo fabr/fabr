@@ -63,7 +63,7 @@ export function preferredOperation(operations: string[]): string | undefined {
 export const TARGET = "TARGET";
 
 /**
- * The entries of `constraints` worth showing a reader: all but the `ambient`
+ * Select the entries of `constraints` worth showing a reader: all but the `ambient`
  * keys, and but the values running a tool pins explicitly, so that they would
  * otherwise read as a choice — a TARGET equal to HOST, and COVERAGE off.
  */
@@ -119,9 +119,10 @@ export function operationOf(constraints: Constraints): string {
 }
 
 /**
- * An immutable, interned set of scalar build-config constraints (`BUILD_OPERATION`,
+ * An immutable set of scalar build-config constraints (`BUILD_OPERATION`,
  * `TARGET`, `BUILD_TYPE`, and `-D`/`<k=v>` overrides). A distinct constraint set is
- * a distinct {@link BuildContext} (interned by value — see {@link equals}).
+ * a distinct {@link BuildContext}: value-equal sets ({@link equals}) denote the
+ * same one.
  *
  * Construct via {@link of} (from a plain record) or {@link with} (layer another set
  * on top); there is no public constructor. The common operation overrides are the
@@ -144,7 +145,7 @@ export class Constraints {
     return this.values.get(key);
   }
 
-  /** Whether `key` is constrained. */
+  /** @return true if `key` is constrained, otherwise false. */
   public has(key: string): boolean {
     return this.values.has(key);
   }
@@ -157,7 +158,7 @@ export class Constraints {
     return this.values.size === 0;
   }
 
-  /** This set with `overrides` layered on top — a later key wins; returns this set
+  /** Layer `overrides` on top of this set — a later key wins; returns this set
    * unchanged when `overrides` is absent or empty. */
   public with(overrides?: Constraints): Constraints {
     if (!overrides || overrides.values.size === 0) {
@@ -179,7 +180,7 @@ export class Constraints {
     return this.values.entries();
   }
 
-  /** Value equality — same keys mapping to same values (the interning key). */
+  /** @return true if `other` holds the same keys mapping to the same values, otherwise false. */
   public equals(other: Constraints): boolean {
     if (other === this) {
       return true;
@@ -202,7 +203,7 @@ export class Constraints {
 export const BUILD_OVERRIDE = Constraints.of({ [BUILD_OPERATION]: "build" });
 
 /** Resolve a target in order to *run* it — `BUILD_OPERATION=run`. Note TARGET is
- * pinned back to HOST separately (see BuildContext.runOverrides). */
+ * pinned back to HOST separately (see TargetContext.runOverrides). */
 export const RUN_OVERRIDE = Constraints.of({ [BUILD_OPERATION]: "run" });
 
 /** Resolve a dependency for its output files only — `BUILD_OPERATION=files` (see

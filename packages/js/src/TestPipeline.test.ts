@@ -36,9 +36,9 @@ describe("selectCompiledTestFiles", () => {
   });
 
   it("includes a .js test source's compiled output, not only .ts/.tsx (the M2 case)", () => {
-    /* A `foo.test.js` source → stem `foo.test` → compiled `foo.test.js`. The old
-     * `.ts`-only name prediction dropped it → a silently-green run; here it's
-     * selected because js_compile actually emitted it. */
+    /* A `foo.test.js` source → stem `foo.test` → compiled `foo.test.js`,
+     * selected because js_compile emitted it, not by predicting the name from a
+     * `.ts` source. */
     const tree = fileSetOf("foo.test.js");
     expect(selectCompiledTestFiles(tree, new Set(["foo.test"]))).to.deep.equal(["foo.test.js"]);
   });

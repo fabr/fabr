@@ -60,9 +60,9 @@ export interface IReportedModule {
 }
 
 /**
- * The options one invocation runs vitest with, for the test files of `options`
- * in the installation whose working directory is `root`, each worker loading
- * the runner's own `preloads` before the target's setup entries. Nothing is
+ * Make the options one invocation runs vitest with, for the test files of
+ * `options` in the installation whose working directory is `root`, each worker
+ * loading the runner's own `preloads` before the target's setup entries. Nothing is
  * read from a config file: what a suite needs is what the target declares.
  *
  * Modules load through node's own loader (`viteModuleRunner: false`), which is
@@ -94,9 +94,9 @@ const NO_TESTS = "No test suite found in file";
 const STATUS: Record<string, TestStatus> = { passed: "passed", failed: "failed", skipped: "skipped" };
 
 /**
- * The results of one test file: each of its tests, or a single failure of the
- * file where it could not be loaded, or registered no tests at all — which is a
- * mistake to report, not a suite that passed.
+ * Convert the results of one test file: each of its tests, or a single failure
+ * of the file where it could not be loaded, or registered no tests at all —
+ * which is a mistake to report, not a suite that passed.
  */
 export function toTestResults(module: IReportedModule): ITestResult[] {
   const filePath = reportPathOf(module.moduleId);
@@ -126,16 +126,17 @@ export function toTestResults(module: IReportedModule): ITestResult[] {
   });
 }
 
-/** A failure not attributable to any test file: an error vitest caught outside
- * every test (an unhandled rejection, a failure of the run itself). */
+/** Report a failure not attributable to any test file: an error vitest caught
+ * outside every test (an unhandled rejection, a failure of the run itself). */
 export function toRunFailure(error: IReportedError): ITestResult {
   return { name: "(outside any test)", status: "failed", duration: 0, ...describeErrors([error]) };
 }
 
 /**
- * A failure's one-line message — the first line of its first error — and the
- * rest as its trace: the remainder of each message, the matcher's difference,
- * and the stack, a test with several errors keeping them all.
+ * Split a failure into its one-line message — the first line of its first
+ * error — and the rest as its trace: the remainder of each message, the
+ * matcher's difference, and the stack, a test with several errors keeping them
+ * all.
  */
 function describeErrors(errors: ReadonlyArray<IReportedError>): { message: string; trace?: string } {
   const [summary = "failed", ...detail] = errors
@@ -148,7 +149,7 @@ function describeErrors(errors: ReadonlyArray<IReportedError>): { message: strin
 /** Vitest's wording for a snapshot that does not match its record, or has none. */
 const SNAPSHOT_MISMATCH = /^Snapshot `.*` mismatched$/;
 
-/** A failed snapshot's message with the way to accept the new value, which
+/** Add to a failed snapshot's message the way to accept the new value, which
  * vitest's own flag is not: nobody running `fabr test` can pass it. */
 function withFabrRemedy(message: string): string {
   return SNAPSHOT_MISMATCH.test(message) ? `${message}. Run 'fabr test -u' to record the new value.` : message;
@@ -158,9 +159,10 @@ function withFabrRemedy(message: string): string {
 const FRAME_LOCATION = /^\s*(at (?:.*? )?)\(?((?:file:\/\/)?\/[^():]+):(\d+):(\d+)\)?$/;
 
 /**
- * A stack's frames in the code under test — those inside a dependency, and
- * those with no file of their own, dropped — each naming the SOURCE position its compiled one came from,
- * where the compiled file has a source map.
+ * Filter a stack to its frames in the code under test — those inside a
+ * dependency, and those with no file of their own, dropped — each naming the
+ * SOURCE position its compiled one came from, where the compiled file has a
+ * source map.
  */
 export function framesOf(stack: string | undefined): string | undefined {
   const frames = (stack ?? "")
@@ -179,8 +181,8 @@ export function framesOf(stack: string | undefined): string | undefined {
   return frames.length > 0 ? frames.join("\n") : undefined;
 }
 
-/** The source position (1-based) the given compiled one maps to, or the
- * compiled position itself where the file has no usable source map. */
+/** Map a compiled position to the source position (1-based) it came from, or
+ * keep the compiled position where the file has no usable source map. */
 function sourcePositionOf(compiled: string, line: number, column: number): { line: number; column: number } {
   try {
     const map = new SourceMap(JSON.parse(fs.readFileSync(`${compiled}.map`, "utf8")) as SourceMapPayload);

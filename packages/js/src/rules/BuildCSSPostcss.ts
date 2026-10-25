@@ -29,9 +29,9 @@
  *
  * `deps` are readable, never published: a cross-file `composes` resolves within
  * this step's own inputs, or — for a package-shaped specifier — under the
- * dependency mount. They are staged as a real tree rather than described in a
- * manifest, since the compose loader resolves a path. The tool is resolved
- * apart as the POSTCSS_DRIVER runnable and mounted under a tool dir.
+ * dependency's location in the PnP table the step stages beside the sources.
+ * The tool is resolved apart as the POSTCSS_DRIVER runnable and mounted under a
+ * tool dir.
  */
 
 import {

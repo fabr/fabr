@@ -70,11 +70,11 @@ export interface BuildContext {
   materialize(ref: INameValue): Computable<Array<FileSource | NamespaceRef>>;
 
   /**
-   * Test whether `ref` is a name the project declares — a target, a global or
-   * a repository — or one this configuration was given a value for, once its
-   * `${NAME}` parts are substituted and any `<k=v>` on it set aside. A
-   * declared target's name with a `?` or `!` marker counts. A path, a pattern
-   * and a selection of a target's files are not.
+   * @return true if `ref` is a name the project declares — a target, a global
+   * or a repository — or one this configuration was given a value for, once its
+   * `${NAME}` parts are substituted and any `<k=v>` on it set aside, otherwise
+   * false. A declared target's name with a `?` or `!` marker counts. A path, a
+   * pattern and a selection of a target's files do not.
    */
   isDeclared(ref: INameValue): Computable<boolean>;
 
@@ -254,7 +254,8 @@ export interface InternalBuildContext extends BuildContext {
    *   to that value.
    * - A **property** resolves to the sources its value names, the targets
    *   among them resolved in the same way.
-   * - A **repository** resolves to the repository.
+   * - A **repository** resolves to a {@link NamespaceRef} over it, and a
+   *   plain FileSource a provider makes (`fetch`) to that source.
    *
    * `name` is a whole declared name, with no projection and no `<k=v>`. One
    * that nothing declares and no constraint supplies throws. The result is
@@ -300,7 +301,8 @@ export interface InternalBuildContext extends BuildContext {
 
   /**
    * Get the entry the build cache holds under `manifest`, making it with
-   * `create` if it is not there. `create` runs through the run's execution funnel.
+   * `create` if it is not there. `create` is handed the run's process funnel
+   * (`ActionContext.processLimit`) for any work it admits.
    */
   getCachedOrBuild(
     manifest: string,

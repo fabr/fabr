@@ -33,7 +33,7 @@ export class JSPluginContext {
 
   constructor(private readonly execution: ExecutionContext) {}
 
-  /** The run's registry-auth authority, loaded (`.npmrc` parse) once per run. */
+  /** Get the run's registry-auth authority, loading it (`.npmrc` parse) once per run. */
   public npmAuth(): Computable<NPMAuth> {
     if (!this.npmAuthMemo) {
       this.npmAuthMemo = NPMAuth.load(this.execution);
@@ -45,7 +45,7 @@ export class JSPluginContext {
 /** The js plugin's handle for its {@link JSPluginContext} on the ExecutionContext. */
 export const JS_PLUGIN_KEY = new PluginKey<JSPluginContext>("@fabr-build/js");
 
-/** The run's shared js plugin context, created on first access. */
+/** Get the run's shared js plugin context, creating it on first access. */
 export function jsPluginContext(execution: ExecutionContext): JSPluginContext {
   return execution.getOrCreatePluginContext(JS_PLUGIN_KEY, () => new JSPluginContext(execution));
 }

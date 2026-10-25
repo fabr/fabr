@@ -25,10 +25,8 @@ import { spawnOrphanReaper, startFabrWatch } from "./harness";
  * shell and a single SIGTERM stops it (no orphaned sleep). */
 /* jest caps each test at `testTimeout` (30s); the fabr runner bounds tests
  * itself. Called as a BARE `jest`: under real jest the object is injected into
- * MODULE scope and is not on globalThis, so reaching it through globalThis was a
- * silent no-op — these suites have been running at 30s and only passing because
- * they finished in time. `@types/jest` rides the e2e target's deps, so the bare
- * name type-checks under the fabr compile too. */
+ * MODULE scope and is not on globalThis. `@types/jest` rides the e2e target's
+ * deps, so the bare name type-checks under the fabr compile too. */
 jest.setTimeout(90000);
 
 /* A server that binds a Unix socket at a *stable* cwd-relative path (a `script`
@@ -64,8 +62,8 @@ describe("e2e: run watch mode (fabr run -w)", () => {
       await session.waitFor("Watching for changes", { timeoutMs: 60000 });
 
       /* Change the program: the old server keeps its socket for ~600ms after
-       * SIGTERM. If the supervisor spawned the replacement synchronously (the old
-       * bug), it would try to bind while the old one still holds the address and
+       * SIGTERM. If the supervisor spawned the replacement synchronously, it
+       * would try to bind while the old one still holds the address and
        * fail (EADDRINUSE). It must instead wait for the old child to exit — then
        * the new one binds cleanly. */
       session.write("src/server.sh", SOCKET_SERVER("SERVER V2"));
@@ -128,8 +126,7 @@ describe("e2e: run watch mode (fabr run -w)", () => {
 
   it("is reaped by the harness's orphan daemon when the harness's pipe drops (SIGKILL-proof)", async () => {
     /* SIGKILL of a test worker runs no exit hook, so the in-process reaper
-     * can't fire — the leak that used to accumulate orphaned `run -w`
-     * processes. The backstop is the orphan-reaper daemon: it holds a pipe from
+     * can't fire. The backstop is the orphan-reaper daemon: it holds a pipe from
      * the harness and sweeps its registered pids when that pipe closes. The
      * kernel closes the pipe identically on SIGKILL and on an explicit drop, so
      * dropPipe() here exercises the exact death signal without this test having

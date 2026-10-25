@@ -202,8 +202,9 @@ const enum CommandOpKind {
   Dup,
 }
 
-/** Whether an operator takes a following target name. A dup (`2>&1`) is the one
- * redirect that does not — it names a stream, not a destination. */
+/** @return true if an operator takes a following target name, otherwise false.
+ * A dup (`2>&1`) is the one redirect that does not — it names a stream, not a
+ * destination. */
 function takesTarget(op: CommandOpKind): boolean {
   return op !== CommandOpKind.Pipe && op !== CommandOpKind.Dup;
 }
@@ -294,7 +295,8 @@ function isWhitespace(ch: number): boolean {
   return (ch >= 0x09 && ch <= 0x0d) || isWhiteSpaceChar(ch);
 }
 
-/** The `->` arrow must be whitespace-delimited: what may follow the `>`. */
+/** @return true if `ch` may follow the `>` of a `->` arrow (which must be
+ * whitespace-delimited), otherwise false. */
 function isArrowTerminator(ch: number | undefined): boolean {
   return ch === undefined || isWhitespace(ch);
 }
@@ -379,8 +381,9 @@ function isIdentifier(text?: string): text is string {
   return true;
 }
 
-/** True iff `text` is a SIMPLE_NAME: starts like an identifier, body is
- * identifier chars plus `/` and `.` (a superset of {@link isIdentifier}). */
+/** @return true if `text` is a SIMPLE_NAME (starts like an identifier, body is
+ * identifier chars plus `/` and `.` — a superset of {@link isIdentifier}),
+ * otherwise false. */
 function isSimpleName(text: string): boolean {
   const first = text.codePointAt(0);
   if (first === undefined || !isFirstIdentChar(first)) return false;
@@ -476,8 +479,9 @@ const DIAG_UNTERMINATED_EXTGLOB = new Diagnostic<{ leader: string; loc: ISourceP
   "Unterminated extglob group '{leader}', expected ')' (quote it to match literally)"
 );
 
-/** Whether a name IS the bare `*` wildcard — one glob unit of `*` and no literal
- * text — as opposed to a quoted `'*'`, which is that literal character. */
+/** @return true if a name IS the bare `*` wildcard — one glob unit of `*` and no
+ * literal text — otherwise false, as for a quoted `'*'`, which is that literal
+ * character. */
 function isWildcardKey(name: Name): boolean {
   const units = name.getGlobUnits();
   return units.length === 1 && units[0] === "*" && name.toString() === "*";
@@ -486,7 +490,9 @@ function isWildcardKey(name: Name): boolean {
 /**
  * Check that the template's wildcards can be replayed from the selector's: the
  * same number on both sides, and `*`/`**` only (a `?`/`[...]` run captures
- * inconsistently, so it cannot fill a slot).
+ * inconsistently, so it cannot fill a slot). A template replaying by number
+ * (`$1`) need not match counts, but each index must name a selector wildcard,
+ * and the positional and numbered forms may not be mixed.
  *
  * A **wildcard-free template** is exempt from both rules: it names one file
  * outright, replaying nothing, so the selector may be any pattern. It is
@@ -1056,8 +1062,8 @@ export class BuildParser {
   }
 
   /**
-   * The `&M` half of a dup redirect (`2>&1`), the reader sitting on the `&`.
-   * Consumes it and the fd digits. Fabr's process model has exactly two streams,
+   * Read the `&M` half of a dup redirect (`2>&1`), the reader sitting on the `&`:
+   * consume it and the fd digits. Fabr's process model has exactly two streams,
    * so only 1 and 2 are fds — anything else (`2>&3`, `2>&`, `2>&x`) is a
    * positioned error naming what is available, rather than a silent mis-parse
    * into a redirect targeting a file called `&3`.
@@ -1096,8 +1102,8 @@ export class BuildParser {
    * IncludeDecl ::= 'include' NAME ';'
    *
    * The name is a path relative to the including file, which may **glob**
-   * (`include rules/*.fabr;`) — naming every file that matches, none being no
-   * error. Variables are not: which files make up the model must be readable
+   * (`include rules/*.fabr;`) — naming every file that matches; a pattern
+   * matching none is an error, as a missing path is. Variables are not: which files make up the model must be readable
    * from the build files themselves, never from a value that varies by config.
    */
   private parseIncludeDecl(): IIncludeDecl {
@@ -1164,8 +1170,8 @@ export class BuildParser {
   }
 
   /**
-   * A command-pipeline operator at the current position — consumed and returned
-   * as its {@link CommandOpKind} (with source offset), else undefined. `<`/`>`
+   * Consume and return the command-pipeline operator at the current position, as
+   * its {@link CommandOpKind} (with source offset), else undefined. `<`/`>`
    * reuse LANGLE/RANGLE (a spaced `<` is not a `<k=v>` constraint, which binds
    * only when abutting); `2>`/`&>` arrive as their own folded tokens. A `>`
    * preceded by `-` is the mis-spaced rename arrow, not a redirect — reported
@@ -1209,9 +1215,10 @@ export class BuildParser {
     return { op, at };
   }
 
-  /** Whether the current token begins a command operator (peek, no consume) —
-   * the arg loop uses it to stop before an operator without swallowing it (and
-   * without the `-`-before-`>` rename hint {@link tryCommandOp} applies). */
+  /** @return true if the current token begins a command operator (peek, no
+   * consume), otherwise false. The arg loop uses it to stop before an operator
+   * without swallowing it (and without the `-`-before-`>` rename hint
+   * {@link tryCommandOp} applies). */
   private atCommandOp(): boolean {
     switch (this.token.type) {
       case TokenType.PIPE:
@@ -1281,7 +1288,7 @@ export class BuildParser {
     return stages;
   }
 
-  /** Stage 0, from the words already collected before the first operator: the
+  /** Build stage 0 from the words already collected before the first operator: the
    * first is the command, the rest args. Empty (a leading operator) or a block
    * word is a positioned error. */
   private firstStage(words: IValue[], firstOp: CommandOp): PendingStage {
@@ -1326,7 +1333,7 @@ export class BuildParser {
     }
   }
 
-  /** The pipeline inside a substitution: the first stage's words, then — if an
+  /** Parse the pipeline inside a substitution: the first stage's words, then — if an
    * operator follows — the ordinary {@link parseCommand}. Whichever path parsed
    * it, the token it stopped on must be the closing backtick: any other
    * terminator (the property's own `;`, a `}`, EOF) means the substitution was
@@ -1354,8 +1361,8 @@ export class BuildParser {
     return [{ command: this.asWord(command), args: args.map(word => this.asWord(word)) }];
   }
 
-  /** Whether the current token ends a command — the property's own terminators,
-   * plus the backtick that closes a substitution. */
+  /** @return true if the current token ends a command — the property's own
+   * terminators, plus the backtick that closes a substitution — otherwise false. */
   private atCommandEnd(): boolean {
     return (
       this.token.type === TokenType.SEMI ||
@@ -1525,7 +1532,7 @@ export class BuildParser {
   }
 
   /**
-   * The optional suffix after a reference's base token: an abutting `<k=v>`
+   * Parse the optional suffix after a reference's base token: an abutting `<k=v>`
    * constraint requirement and/or a `-> template` rename. Factored out so the
    * left-factored spaced-`<` path (a detached constraint on a preceding value,
    * or a redirect target reference) reuses the exact same tail handling.
@@ -1827,7 +1834,7 @@ export class BuildParser {
      * start the next entry/statement. On the first pipeline operator (`|`, `<`,
      * `>`, …) the whole RHS is a command: hand the words gathered so far to
      * parseCommand as stage 0. A bare `cmd args` with no operator stays a value
-     * list (getCommand folds the single stage). */
+     * list (getCommandPipeline folds it into a single stage). */
     while (this.token.type !== TokenType.SEMI && this.token.type !== TokenType.RBRACE) {
       /* A spaced `<` after a reference is ambiguous between a detached `<k=v>`
        * constraint on that reference and a stdin redirect. Left-factor it: the
@@ -2058,7 +2065,7 @@ export class BuildParser {
           break;
         case TokenType.RBRACE:
           if (depth === 0) {
-            return; /* the body's own close — leave it for parseTargetDecl */
+            return; /* the body's own close — left for the caller */
           }
           depth--;
           break;

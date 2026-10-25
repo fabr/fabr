@@ -334,10 +334,9 @@ describe("the js exec step's build state", () => {
 
   it("is read once by an incremental pnp compile, however many accessors it asks", async () => {
     /* The contrast that keeps the case above from passing vacuously — and the
-     * coherence pin: this compile asks for all four of `lastInputs`,
-     * `lastDiscovered`, `incrementalState` and `previousOutputs`, and they must
-     * describe ONE build, so they answer from one memoized read rather than
-     * four. */
+     * coherence pin: this compile asks for all three of `changedFiles`,
+     * `incrementalState` and `previousOutputs`, and they must describe ONE
+     * build, so they answer from one memoized read rather than three. */
     expect(await stateReads({ layout: PNP, depsReport: DEPS_REPORT_FILE, stateDir: STATE_DIR, changes: CHANGES_FILE })).to.equal(1);
   });
 
@@ -883,12 +882,9 @@ describe("the js exec step's discoverable deps", () => {
 });
 
 /**
- * A closure with no finite `node_modules` encoding — a cross-generation version
- * cycle. Only PnP can deliver one (the table expresses it; no tree does), and
- * keying needs no tree, so it gets discovery like everything else: instance
- * names for the report, content for the key, the whole-deps manifest for a
- * non-reporting run. The assemblers still refuse it, because an install
- * genuinely has no layout for it.
+ * A cross-generation version cycle keys like any closure: instance names for
+ * the report, content for the key, the whole-deps manifest for a non-reporting
+ * run.
  */
 describe("a closure with no finite tree encoding", () => {
   /* a@1 → b@1 → a@2 → b@2 → a@1: every hop needs a version other than the one

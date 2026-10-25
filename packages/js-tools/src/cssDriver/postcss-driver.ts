@@ -44,7 +44,8 @@
  * specifier naming nothing reachable — a Sass partial, a file no dependency
  * delivers — fails loudly.
  *
- * Usage: node postcss-driver.js --manifest=<path-to-manifest.json>
+ * Usage: fabr-postcss --manifest=<options.json> [--deps-report <file>]
+ * [--source-paths <file>]
  *
  * Runs in the *build* process, not in fabr: it `require`s postcss and
  * postcss-modules from its own staged node_modules and must not depend on
@@ -103,8 +104,8 @@ interface IModulesOptions {
 type IPostcssModules = (options: IModulesOptions) => unknown;
 
 /**
- * The JS shim for a css-module: the class-name map as an ES module, plus a
- * side-effect import of the stylesheet it belongs to.
+ * @return the JS shim for a css-module: the class-name map as an ES module,
+ * plus a side-effect import of the stylesheet it belongs to.
  *
  * The import is how a bundler learns the CSS belongs in the output, and how a
  * test runner's asset stub knows to ignore it. Emitted as ESM: the shim is a
@@ -158,9 +159,10 @@ export function scopeFailure(rel: string, err: unknown, where?: { root: string; 
   return new Error(`${at}: css-modules: ${message}`);
 }
 
-/** The staged-path → scope table: every stylesheet input of this step, keyed by
- * resolved path, carrying the scope its classes take when they are scoped. What
- * both compose hooks consult — a plain stylesheet is composable too, its rules
+/** The staged-path → scope table: every stylesheet input of this step and
+ * every dependency stylesheet a compose may name, keyed by resolved path,
+ * carrying the scope its classes take when they are scoped. What both compose
+ * hooks consult — a plain stylesheet is composable too, its rules
  * arriving in the importer as a scoped private copy. */
 export type ScopeTable = Map<string, string>;
 
@@ -168,7 +170,7 @@ export type ScopeTable = Map<string, string>;
  * as the file the step staged for it. */
 export type PackageStylesheets = ReadonlyMap<string, string>;
 
-/** The specifier naming a composable stylesheet of a dependency. */
+/** @return the specifier naming a composable stylesheet of a dependency. */
 export function composableSpecifier(entry: IPostcssOptions["composable"][number]): string {
   return `${entry.package}/${entry.path}`;
 }
@@ -187,7 +189,7 @@ export function scopeTableOf(options: IPostcssOptions, packages: PackageStyleshe
 }
 
 /**
- * The scoped name of one local class: `<local>_<scope of the file that
+ * @return the scoped name of one local class: `<local>_<scope of the file that
  * declares it>`, the scope looked up by the file postcss-modules is naming —
  * which during compose resolution is the *composed* file, not the one whose
  * run this is. A file absent from the table is no stylesheet of this
@@ -208,8 +210,9 @@ export function scopedNameOf(table: ScopeTable, srcRoot: string, local: string, 
  * Resolve a compose specifier (`composes: x from '<specifier>'`) to the staged
  * input it names: a specifier written against a Sass source maps to the
  * lowered input beside the importer ({@link sassLoweredName}, the rule the
- * resolve rules encode). The mapped path must be a stylesheet of this compilation;
- * anything else — a Sass partial, another package's file — is refused with the
+ * resolve rules encode). The mapped path must be in the scope table — a
+ * stylesheet of this step, or one a package dependency hands this step; anything
+ * else (a Sass partial, a file no dependency provides) is refused with the
  * specifier and the importer named, never a bare ENOENT.
  */
 export function resolveComposePath(
@@ -232,8 +235,8 @@ export function resolveComposePath(
   return resolved;
 }
 
-/** A file's display name: its staged-root-relative path where it has one, its
- * basename otherwise. */
+/** @return a file's display name: its staged-root-relative path where it has
+ * one, its basename otherwise. */
 function displayName(filename: string, srcRoot: string): string {
   const staged = `${path.resolve(srcRoot)}/`;
   const resolved = path.resolve(filename);
@@ -254,8 +257,9 @@ interface IPostcssTools {
 
 /**
  * Process one stylesheet input and write everything the options document names
- * for it. A css-module is scoped (its map chained from its input's annotation);
- * anything else is copied through unchanged, its map carried beside it.
+ * for it. A css-module is scoped (its map chained through the input map the
+ * options name as `prev`); anything else is copied through unchanged, its map
+ * carried beside it.
  */
 async function processFile(source: IPostcssSource, options: IPostcssOptions, tools: IPostcssTools, table: ScopeTable): Promise<void> {
   const inputPath = path.join(options.srcRoot, source.path);

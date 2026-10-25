@@ -29,7 +29,7 @@ import { resolveBarePackage } from "../resolver/PackageResolver";
 import { RepositoryReader } from "../core/Repository";
 
 /**
- * The {@link RepositoryReader} serving ONE declared package from content — what
+ * Make the {@link RepositoryReader} serving ONE declared package from content — what
  * a `repository_group` **content route** constructs:
  *
  * ```

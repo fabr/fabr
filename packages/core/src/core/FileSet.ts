@@ -229,7 +229,7 @@ export class FileSet implements FileSource {
   /**
    * This set's own delivered name — what a graph *edge* pointing at it is
    * called, and so how a discovered-deps path names the step that reaches it
-   * (see BuildAction's DepsPath). Empty for an ordinary set: its files are already
+   * (see Manifest's DepsPath). Empty for an ordinary set: its files are already
    * named, so they are reached directly rather than through a step.
    *
    * Unversioned deliberately — it names the binding, not the thing bound: two
@@ -297,7 +297,7 @@ export class FileSet implements FileSource {
   }
 
   /**
-   * Resolve projections to positions *within this set* rather than extracting
+   * Locate projections' matches *within this set* rather than extracting
    * the files: a map from each matched member's own name to the name the
    * projection gives it.
    *
@@ -366,8 +366,8 @@ export class FileSet implements FileSource {
     return Computable.resolve(this.content.get(name));
   }
 
-  /** Synchronous member lookup by exact name — the FileSource `get` is the
-   * Computable-valued interface form; a FileSet's membership is immediate. */
+  /** Look up a member by exact name, synchronously — the FileSource `get` is
+   * the Computable-valued interface form; a FileSet's membership is immediate. */
   public getFile(name: string): IFile | undefined {
     return this.content.get(name);
   }
@@ -376,7 +376,7 @@ export class FileSet implements FileSource {
     return Computable.resolve(this);
   }
 
-  /** The sole file when this set holds exactly one, else undefined — the projection a
+  /** Get the sole file when this set holds exactly one, else undefined — the projection a
    * single-file query applies to reduce its (0-or-1-element) FileSet to that file. */
   public getSingleFile(): IFile | undefined {
     return this.content.size === 1 ? this.content.values().next().value : undefined;
@@ -395,7 +395,7 @@ export class FileSet implements FileSource {
   }
 
   /**
-   * The hash of this set's {@link toManifest} — a stable identity for its
+   * Hash this set's {@link toManifest}: a stable identity for its
    * content, distinguishing exactly what the manifest distinguishes (names,
    * content hashes and modes) and nothing else: not provenance, not the
    * delivery that produced it.
@@ -450,7 +450,7 @@ export class FileSet implements FileSource {
   }
 
   /**
-   * This set mounted under `prefix` — every name prefixed, nothing dropped,
+   * Mount this set under `prefix` — every name prefixed, nothing dropped,
    * renamed or merged. The layout counterpart of {@link rename}: a canonical
    * prefix onto a canonical name is canonical, so one canonicalization of the
    * prefix stands in for one per file, and no collision is possible (a constant
@@ -628,7 +628,7 @@ interface IMergeOrigin extends IProvenanceStep {
   readonly byPrefix: ReadonlyMap<string, ReadonlyArray<IMergeSource>>;
 }
 
-/** A merge-provenance step over `sources`, or undefined when none carries an
+/** Make a merge-provenance step over `sources`, or undefined when none carries an
  * origin — nothing to attribute, so don't pay for a step that can never explain. */
 function mergeOrigin(sources: IMergeSource[]): IMergeOrigin | undefined {
   if (!sources.some(source => source.fileset.origin !== undefined)) {
@@ -711,7 +711,7 @@ registerProvenanceNaming(FILESET_MERGE_PROVENANCE, {
   },
 });
 
-/** The origin of a set renamed from one with `origin`, each new name to its
+/** Get the origin of a set renamed from one with `origin`, each new name to its
  * old one in `from`: a rename step over it where any name changed. */
 function renamedOrigin(origin: IProvenanceStep | undefined, from: ReadonlyMap<string, string>): IProvenanceStep | undefined {
   if (origin === undefined || [...from].every(([name, was]) => name === was)) {
@@ -721,7 +721,7 @@ function renamedOrigin(origin: IProvenanceStep | undefined, from: ReadonlyMap<st
   return step;
 }
 
-/** The merged-in set holding `path`, and the name it holds it under. */
+/** Find the merged-in set holding `path`, and the name it holds it under. */
 function contributorOf(merge: IMergeOrigin, path: string): { fileset: FileSet; rel: string } | undefined {
   for (const { prefix, fileset } of merge.sources) {
     if (path.startsWith(prefix)) {

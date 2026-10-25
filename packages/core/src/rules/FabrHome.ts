@@ -83,7 +83,7 @@ function toInstalledManifest(json: unknown): IInstalledManifest {
 }
 
 /**
- * The directory of the package `name` installed where node would look for it
+ * Locate the directory of the package `name` installed where node would look for it
  * from `from` — the first `node_modules/<name>` holding a `package.json`, from
  * `from` up — or undefined if there is none. Found by where it is installed,
  * not by resolving a module of it, so its `exports` (which says what may be
@@ -103,8 +103,8 @@ function locate(name: string, from: string): string | undefined {
   }
 }
 
-/** The names of the packages installed in `scope`, in every `node_modules`
- *  node's search from `from` would look in. */
+/** List the names of the packages installed in `scope`, in every
+ *  `node_modules` node's search from `from` would look in. */
 function installedIn(scope: string, from: string): string[] {
   const found = new Set<string>();
   for (let dir = path.resolve(from); ; dir = path.dirname(dir)) {
@@ -123,7 +123,7 @@ function installedIn(scope: string, from: string): string[] {
   }
 }
 
-/** The package installed at `directory`, read through `files` (a source over
+/** Read the package installed at `directory` through `files` (a source over
  *  absolute paths): its manifest, and its files less its `node_modules`. */
 function readInstalled(files: FileSource, directory: string): Computable<{ manifest: IInstalledManifest; files: FileSet }> {
   const prefix = `${path.relative("/", directory)}/`;
@@ -149,7 +149,7 @@ function readInstalled(files: FileSource, directory: string): Computable<{ manif
 }
 
 /**
- * The installed package `name` at `directory`, with every package it brings
+ * Read the installed package `name` at `directory`, with every package it brings
  * with it wired as its dependencies — each located as node locates it from the
  * requiring package's own directory, and each with the delivering reference's
  * `steps` in its provenance. A missing required dependency is an installation
@@ -287,7 +287,7 @@ export class FabrHomeRepository implements Repository, RepositoryLookup {
   }
 }
 
-/** A `fabr_home` repository type looking packages up from `resolveFrom` —
+/** Register a `fabr_home` repository type looking packages up from `resolveFrom` —
  *  fabr's own code by default; tests look up from within a fixture. */
 export function fabrHomeRegistration(resolveFrom: string = INSTALLED_FROM): RepositoryRegistration {
   return {

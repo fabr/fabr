@@ -30,7 +30,7 @@ import {
   FabrError,
   hashString,
   isJsonObject,
-  packageLibFile,
+  getPackageLibFile,
   parseConstraint,
   parseJson,
   SEMVER,
@@ -67,7 +67,7 @@ export class PackageExtensions {
   ) {}
 
   /**
-   * `decls` with every repair selecting `name@version` applied. Additive only:
+   * Apply every repair selecting `name@version` to `decls`. Additive only:
    * a repair supplies a dependency or peer the manifest declares under no
    * field at all and never replaces one it states, and an optional-peer mark is
    * added only where the manifest gives that peer no metadata of its own.
@@ -113,8 +113,8 @@ export class PackageExtensions {
 export const NO_PACKAGE_EXTENSIONS = new PackageExtensions([], "none");
 
 /**
- * The extension document — Yarn's `packageExtensions` array of `[selector,
- * data]` pairs, the selector `name@range` — as the repairs it lists. Throws on
+ * Convert the extension document — Yarn's `packageExtensions` array of
+ * `[selector, data]` pairs, the selector `name@range` — to the repairs it lists. Throws on
  * any shape it does not know, a field included: a repair half-applied would be
  * a silently different resolution.
  */
@@ -174,7 +174,7 @@ export function useInstalledPackageExtensions(extensions: PackageExtensions): vo
 
 export function installedPackageExtensions(): PackageExtensions {
   if (installed === undefined) {
-    const file = packageLibFile("@fabr-build/js", PACKAGE_EXTENSIONS_FILE);
+    const file = getPackageLibFile("@fabr-build/js", PACKAGE_EXTENSIONS_FILE);
     const text = fs.readFileSync(file, "utf8");
     installed = new PackageExtensions(parseJson(text, file, toPackageExtensions), hashString(text));
   }

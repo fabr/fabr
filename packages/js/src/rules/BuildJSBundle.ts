@@ -19,8 +19,9 @@
 
 /**
  * The js_bundle[build] rule: bundle a source tree into a self-contained
- * artifact with esbuild. srcs is what goes into the bundle (packages mount at
- * node_modules and are inlined; loose files land at the working root); deps is
+ * artifact with esbuild. srcs is what goes into the bundle (packages are
+ * reached through the staged PnP table and inlined; loose files land at the
+ * working root); deps is
  * runtime-provided and externalized by identity; entry names the source(s) to
  * bundle; output optionally renames each entry's result.
  *
@@ -203,7 +204,8 @@ function uniqueByName(packages: PackageFileSet[]): PackageFileSet[] {
 }
 
 /** Build the loose sources and stage the bundle. Packages among `srcs` are
- * already built: they mount at node_modules and esbuild inlines them. The loose
+ * already built: esbuild reaches them through the PnP table and inlines them.
+ * The loose
  * files are compiled first (`compileContents`) and esbuild links the output, so
  * a bundled source is type-checked and gets the target's source-mode flags and
  * JSX runtime like any other. `transpileJs` is off: esbuild downlevels plain
@@ -212,7 +214,7 @@ function uniqueByName(packages: PackageFileSet[]): PackageFileSet[] {
  * An entry need not also be listed in `srcs` — union dedups; a same path
  * resolving to *different* files across `entry`/`srcs` is a real conflict
  * `unionAll` asserts. scss `@use` of shared partials resolves against the src
- * packages (the css loadPaths). */
+ * packages, through the table the css step's importer reads. */
 function composeBundle(context: TargetContext, inputs: IBundleInputs): Computable<RuleResult> {
   const containedEntries = inputs.entry.filter(isContainedEntry);
   /* Everything else is a loose entry, staged at the bundle root and built with

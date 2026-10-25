@@ -104,7 +104,7 @@ export class MockRegistry {
    * and must not cost a stat each time. */
   private readonly rootMocks = new Map<string, string>();
   /** Serves `@jest/globals`, which the hoisted `jest.mock` calls require. Set
-   * by the preload once the globals exist. */
+   * by the child (runTestFile) once the jest object can be made. */
   public jestGlobalsFor: (caller: ILoaderModule | undefined) => unknown = () => ({});
 
   constructor(private readonly root: string, private readonly moduleMocker: IModuleMocker) {
@@ -132,8 +132,8 @@ export class MockRegistry {
     this.mockSerial++;
   }
 
-  /** A new generation: memoized mock instances and the code under test are both
-   * reloaded on next require. The runner's own machinery and everything in the
+  /** Start a new generation: memoized mock instances and the code under test
+   * are both reloaded on next require. The runner's own machinery and everything in the
    * sealed tool mount stay cached — evicting those would tear the layer out
    * from under the very test that asked for a reset. */
   public resetModules(): void {
@@ -158,8 +158,8 @@ export class MockRegistry {
   /* ---- serving (both seams) ---- */
 
   /**
-   * What to hand back for `request` loaded from `caller`, or {@link NOT_MOCKED}
-   * to let node load it normally.
+   * Serve `request` loaded from `caller`: what to hand back, or
+   * {@link NOT_MOCKED} to let node load it normally.
    */
   public serve(request: string, caller: ILoaderModule | undefined): unknown {
     if (request === "@jest/globals") {
@@ -209,10 +209,11 @@ export class MockRegistry {
   }
 
   /**
-   * A factory-less `jest.mock('./x')`: jest's contract is that a MANUAL mock
-   * wins over the automock — an adjacent `__mocks__/<name>` beside the resolved
-   * module, or a root `__mocks__/<package>` entry — and only where neither
-   * exists is a mock derived from the real module's shape.
+   * Make the module a factory-less `jest.mock('./x')` serves: jest's contract
+   * is that a MANUAL mock wins over the automock — an adjacent
+   * `__mocks__/<name>` beside the resolved module, or a root
+   * `__mocks__/<package>` entry — and only where neither exists is a mock
+   * derived from the real module's shape.
    */
   private manualOrAutomock(key: string, request: string): unknown {
     const manual = adjacentMock(key) ?? this.rootMocks.get(request);
@@ -247,8 +248,8 @@ export class MockRegistry {
   }
 
   /**
-   * Whether something is registered under this exact key — no resolution of its
-   * own. The ESM seam asks in these terms because it has already been handed
+   * @return true if something is registered under this exact key — no
+   * resolution of its own — otherwise false. The ESM seam asks in these terms because it has already been handed
    * node's resolution of the specifier, and asking again from inside a resolve
    * hook is how you get an infinite regress.
    */
@@ -268,7 +269,7 @@ export class MockRegistry {
   }
 
   /**
-   * The real module, mock registrations bypassed (`jest.requireActual`). The
+   * Load the real module, mock registrations bypassed (`jest.requireActual`). The
    * bypass is for THIS module only, and only while it is loading: its own
    * dependencies keep going through the registry, which is jest's semantics and
    * the point of the call — a factory that mocks part of a module and takes the
@@ -292,7 +293,8 @@ export class MockRegistry {
     }
   }
 
-  /** The mocked module, even where nothing registered one (`jest.requireMock`). */
+  /** Get the mocked module, even where nothing registered one
+   * (`jest.requireMock`). */
   public requireMock(request: string, caller: ILoaderModule | undefined): unknown {
     const served = this.serve(request, caller);
     if (served !== NOT_MOCKED) {
@@ -319,7 +321,7 @@ export class MockRegistry {
     return createRequire(caller?.filename ?? path.join(this.root, "index.js"));
   }
 
-  /** The registry key for a registration. An unresolvable specifier is
+  /** Make the registry key for a registration. An unresolvable specifier is
    * legitimately keyed by its text for a `{virtual: true}` mock or an unmock
    * (there is nothing real to protect), for an asset request (judged on the
    * request — see Assets.ts), and for a package whose mock is a root
@@ -354,7 +356,7 @@ export class MockRegistry {
   }
 
   /**
-   * An automatic mock of the real module: every function replaced by a mock
+   * Make an automatic mock of the real module: every function replaced by a mock
    * function, the shape otherwise preserved. This is the one algorithm not
    * worth reinventing — it is jest-mock's, driven off the real module's
    * metadata.
@@ -386,17 +388,17 @@ function esmExports(): Map<string, unknown> {
 const COMPILED_TREE = "build";
 
 /**
- * The root-level `__mocks__` convention: a file named for an installed package
- * mocks it *without* any `jest.mock` call. Listed once at startup — it is
- * consulted on every bare require, and the directory cannot change under a
- * hermetic run. A source tree's root `__mocks__` is staged under the compiled
+ * List the root-level `__mocks__` entries: by convention a file named for an
+ * installed package mocks it *without* any `jest.mock` call. Listed once at
+ * startup — it is consulted on every bare require, and the directory cannot
+ * change under a hermetic run. A source tree's root `__mocks__` is staged under the compiled
  * mount (`build/__mocks__` — the pipeline stages the compile's output tree, not
  * the source layout), so that is the directory that matters; the bare install
  * root is listed too, second, so a file there — nothing stages one today — is
  * still honoured but never shadows a compiled entry. (Adjacent `__mocks__`
  * directories, which mock user modules only when a factory-less `jest.mock`
  * asks, are instead probed beside the resolved module — see
- * {@link MockRegistry.serve}.)
+ * {@link adjacentMock}.)
  */
 function listRootMocks(root: string): Map<string, string> {
   const mocks = new Map<string, string>();
@@ -424,7 +426,7 @@ function listRootMocks(root: string): Map<string, string> {
 }
 
 /**
- * The adjacent-`__mocks__` convention: a user module's manual mock is
+ * Find a user module's manual mock by the adjacent-`__mocks__` convention:
  * `__mocks__/<name>.js` in the resolved file's own directory (the staged tree
  * is compiled, so the mock is a `.js` whatever its source was). Only for user
  * modules — a package's manual mock is the root convention above, so anything
@@ -444,8 +446,8 @@ interface ILoaderModuleClass {
 }
 
 /**
- * Install both seams. Idempotent per process (each test file is its own
- * process, so this runs exactly once in practice).
+ * Install both seams. Call once per process: a second call wraps the loader
+ * again (each test file is its own process, so it runs exactly once).
  */
 export function installSeams(registry: MockRegistry): void {
   installCommonJsSeam(registry);
@@ -453,7 +455,7 @@ export function installSeams(registry: MockRegistry): void {
 }
 
 /**
- * The CommonJS seam. Consult the registry, then **delegate** — `_load` is
+ * Install the CommonJS seam: consult the registry, then **delegate** — `_load` is
  * wrapped, not replaced, so everything node's loader does (ESM-only packages
  * via `require(esm)`, conditional exports, the cache) keeps working.
  */
@@ -467,7 +469,7 @@ function installCommonJsSeam(registry: MockRegistry): void {
 }
 
 /**
- * The ES-module seam. `module.registerHooks` is synchronous and in-thread, so
+ * Install the ES-module seam. `module.registerHooks` is synchronous and in-thread, so
  * it fires for every ESM edge — including edges *inside* a package loaded via
  * `require(esm)`, and dynamic `import()`. A mocked specifier resolves to a
  * synthetic module whose source reads the same instance the CJS seam serves.
@@ -477,8 +479,8 @@ function installCommonJsSeam(registry: MockRegistry): void {
  * a fresh URL is the only way to ask for one.
  */
 function installEsmSeam(registry: MockRegistry): void {
-  /* Reached dynamically: registerHooks postdates the @types/node fabr builds
-   * against, and the host check has already established that it is there. */
+  /* The host check (assertSupportedHost) has already established that
+   * registerHooks is there. */
   const { registerHooks } = Module as unknown as { registerHooks: (hooks: unknown) => void };
   registerHooks({
     resolve(specifier: string, context: unknown, nextResolve: (s: string, c: unknown) => { url: string }): unknown {
@@ -554,7 +556,7 @@ function withoutHooks<T>(fn: () => T): T {
 }
 
 /**
- * Source for a mocked module's ESM format. The registration is hoisted above
+ * Generate the source of a mocked module's ESM form. The registration is hoisted above
  * every require, so the instance already exists here and its export names are
  * enumerable — which is what lets named imports link.
  */
@@ -575,20 +577,21 @@ function isIdentifier(name: string): boolean {
   return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name);
 }
 
-/** The synthetic URL for a mocked key, stamped with the registration state —
+/** Make the synthetic URL for a mocked key, stamped with the registration state —
  * see {@link MockRegistry.mockStamp}. */
 function mockUrl(registry: MockRegistry, key: string): string {
   return `${MOCK_SCHEME}${registry.mockStamp}/${encodeURIComponent(key)}`;
 }
 
-/** The key a synthetic URL carries, the stamp dropped (it exists only to
+/** Get the key a synthetic URL carries, the stamp dropped (it exists only to
  * defeat the ESM module map's caching, never to be read back). */
 function keyFromMockUrl(url: string): string {
   return decodeURIComponent(url.slice(MOCK_SCHEME.length).replace(/^[\d-]+\//, ""));
 }
 
-/** Whether a module (by filename) is the runner's own machinery, which the
- * registry never mocks for — see the exemption in {@link MockRegistry.serve}. */
+/** @return true if a module (by filename) is the runner's own machinery, which
+ * the registry never mocks for — see the exemption in
+ * {@link MockRegistry.serve} — otherwise false. */
 function isRunnerInternal(filename: string | undefined): boolean {
   return filename !== undefined && filename.startsWith(RUNNER_ROOT + path.sep);
 }

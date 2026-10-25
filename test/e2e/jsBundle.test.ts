@@ -153,8 +153,8 @@ for (const entry of opts.entries) {
 
   it("fails on a literal package entry that names nothing, even alongside a good one", () => {
     /* The miss judgment belongs to the ref (which holds the written reference's
-     * error), not to each locate caller: judged per-entry, a typo'd entry among
-     * several used to be silently dropped and the bundle built without it. */
+     * error), not to each locate caller, so a literal entry naming nothing fails
+     * the bundle even beside one that resolves. */
     const project = {
       ...STUB_TSC,
       "PROJECT.fabr": [

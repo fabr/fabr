@@ -38,36 +38,40 @@ import { DriverMemo, ICompilePlan, IMemoEdge } from "./Planning";
 /** What the wave needs of the world around it — supplied by the driver, which
  * owns the program, the resolution and the emit. */
 export interface IWaveHost {
-  /** Every project file this compile holds, by node name: the wave's
+  /** @return every project file this compile holds, by node name: the wave's
    * universe when global scope forces it wide. */
   projectFiles(): string[];
-  /** How to build a wave member — check and emit it, answering whether what
-   * its consumers can see of it changed: its emitted declaration against the
-   * base build's, or, for a file that emits no interface artifact, whether its
-   * own content moved (which the plan's seeds already state). Undefined where
-   * there is nothing to build: a deleted file, or a dependency's declaration
-   * (which this compile reads but never emits). */
+  /** @return how to build a wave member — check and emit it, answering whether
+   * what its consumers can see of it changed: its emitted declaration against
+   * the base build's, or, for a file that emits no interface artifact, whether
+   * its own content moved (which the plan's seeds already state). Undefined
+   * where there is nothing to build: a deleted file, or a dependency's
+   * declaration (which this compile reads but never emits). */
   fileFor(name: string): (() => boolean) | undefined;
-  /** Whether the file now at `name` affects global scope — asked of the file's
-   * NEW form, since removing a global declaration changes global scope just as
-   * adding one does. Undefined for a name with no file (a deletion). */
+  /** @return true if the file now at `name` affects global scope, otherwise
+   * false — asked of the file's NEW form, since removing a global declaration
+   * changes global scope just as adding one does. Undefined for a name with no
+   * file (a deletion). */
   isGlobal(name: string): boolean | undefined;
-  /** What an edge of `from` names, resolved as this compile resolves — the
-   * driver is the authority, so a memo edge that recorded no target is answered
-   * rather than guessed at. */
+  /** @return what an edge of `from` names, resolved as this compile resolves —
+   * the driver is the authority, so a memo edge that recorded no target is
+   * answered rather than guessed at. */
   targetOf(from: string, edge: IMemoEdge): string | undefined;
-  /** Whether THIS program is rooted at a subset of the project — the question
-   * the plan's own bound cannot answer, since the caller's fallback hands the
-   * same plan to a program rooted at everything. */
+  /** @return true if THIS program is rooted at a subset of the project,
+   * otherwise false — the question the plan's own bound cannot answer, since
+   * the caller's fallback hands the same plan to a program rooted at
+   * everything. */
   isBoundRooted(): boolean;
-  /** The wave is about to become every project file: the carried base output
-   * tree cannot be incrementally corrected by a full emit (an output whose name
-   * nothing current produces would linger), so the host discards it first. */
+  /** Announce that the wave is about to become every project file: the carried
+   * base output tree cannot be incrementally corrected by a full emit (an
+   * output whose name nothing current produces would linger), so the host
+   * discards it first. */
   expanding(): void;
-  /** Whether this run has become void — {@link fileFor} was asked for an
-   * on-disk project file the program is not holding. Checked after every
-   * member, so a void run stops emitting drafts from a program known to be
-   * incomplete rather than building the rest of the wave on it. */
+  /** @return true if this run has become void, otherwise false —
+   * {@link fileFor} was asked for an on-disk project file the program is not
+   * holding. Checked after every member, so a void run stops emitting drafts
+   * from a program known to be incomplete rather than building the rest of the
+   * wave on it. */
   voided(): boolean;
 }
 
@@ -162,10 +166,11 @@ export function runWave(plan: ICompilePlan, host: IWaveHost): IWaveResult {
 }
 
 /**
- * Whether this change bounds nothing — a file affecting **global scope**, whose
- * declarations are facts about the whole program rather than about anyone who
- * imports it. Nothing imports a global, so no edge can reach its dependents and
- * the only honest wave is every file.
+ * @return why this change bounds nothing, or undefined where it is bounded: the
+ * reason is a file affecting **global scope**, whose declarations are facts
+ * about the whole program rather than about anyone who imports it. Nothing
+ * imports a global, so no edge can reach its dependents and the only honest
+ * wave is every file.
  *
  * Judged against the memo's flag AND the file's new form, because both
  * directions count: adding a global declaration and removing one each change
@@ -183,8 +188,8 @@ function globalExpansion(seeds: ReadonlySet<string>, memo: DriverMemo, host: IWa
   return undefined;
 }
 
-/** The reverse of one edge kind over the plan's memo: for each node, who names
- * it. */
+/** @return the reverse of one edge kind over the plan's memo: for each node,
+ * who names it. */
 function reverseEdges(memo: DriverMemo, host: IWaveHost, kind: "use" | "forwarding"): Map<string, string[]> {
   const reverse = new Map<string, string[]>();
   for (const [name, file] of memo) {
@@ -201,8 +206,8 @@ function reverseEdges(memo: DriverMemo, host: IWaveHost, kind: "use" | "forwardi
   return reverse;
 }
 
-/** Everything that transitively republishes `name`, itself included. Grow-only,
- * so a forwarding cycle terminates. */
+/** @return everything that transitively republishes `name`, itself included.
+ * Grow-only, so a forwarding cycle terminates. */
 function closure(name: string, forwarders: ReadonlyMap<string, string[]>): Set<string> {
   const found = new Set<string>();
   const pending = [name];

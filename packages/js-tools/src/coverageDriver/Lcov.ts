@@ -119,7 +119,7 @@ export function mergeRecord(into: ICoverageRecord, other: ICoverageRecord): void
   }
 }
 
-/** Write records as an lcov document, sources and lines in order. */
+/** Render records as an lcov document, sources and lines in order. */
 export function lcovOf(records: Iterable<ICoverageRecord>): string {
   const sorted = [...records].sort((left, right) => (left.source < right.source ? -1 : left.source > right.source ? 1 : 0));
   return sorted

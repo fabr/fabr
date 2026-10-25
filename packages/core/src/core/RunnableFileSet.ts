@@ -26,13 +26,16 @@ import type { Repository } from "./Repository";
 import { SymlinkFile } from "./SymlinkFile";
 import { FabrError } from "./Errors";
 
+const NO_ENV: ReadonlyMap<string, string> = new Map();
+
 /**
  * A FileSet that is *runnable*: the assembled, ready-to-launch install of a
  * target (its files, laid out so it can be staged and executed), plus a
  * descriptor of how to launch it. It is what a `BUILD_OPERATION=run` rule
- * yields; a consumer (`fabr run`, the generic `run` target, golden tests) stages
- * its files, reduces it to a command line with `toCommandLine`, then resolves
- * argv[0] (via findExecutable) and spawns it under whatever I/O it needs.
+ * yields; a consumer (`fabr run`, a `generate` command stage, a tool a rule
+ * runs) stages its files, reduces it to a command line with `toCommandLine`,
+ * then resolves argv[0] (via findExecutable) and spawns it under whatever I/O
+ * it needs.
  *
  * The launchable entries live in an inner **`surface`** FileSet: the primary
  * package's files (findable by path, e.g. `bin/tsc`) unioned with a `SymlinkFile`
@@ -52,12 +55,10 @@ import { FabrError } from "./Errors";
  * `toCommandLine` resolves the launch entry from the surface: the sole declared
  * bin, or (a bin-less package with) a sole file, else the "which entry?" error.
  * Each candidate resolves to an install path (a symlink → its target, a file →
- * `root`/name), deduped by path (a bin and its own file collapse — the file
- * wins). `RunnableFileSet.forEntry` builds the common single definite-entry
- * runnable (a `js_script`/`script`), as a one-symlink surface.
+ * `root`/name), deduped by path (a bin and the file it targets collapse — the
+ * bin keeps its name). `RunnableFileSet.forEntry` builds the common single
+ * definite-entry runnable (a `js_script`/`script`), as a one-symlink surface.
  */
-const NO_ENV: ReadonlyMap<string, string> = new Map();
-
 export class RunnableFileSet extends FileSet {
   constructor(
     files: Iterable<[string, IFile]>,
@@ -67,7 +68,7 @@ export class RunnableFileSet extends FileSet {
     public readonly interpreter?: string,
     /** The primary package's mount within the install (e.g. `node_modules/@fabr-build/cli`); a `surface` file resolves to `root`/name. */
     public readonly root: string = "",
-    /** The launch surface: package files (by path) + a SymlinkFile per bin (by command → install path). `find` searches this. */
+    /** The launch surface: package files (by path) + a SymlinkFile per bin (by command → install path). `locate`/`select` search this. */
     public readonly surface: FileSet = EMPTY_FILESET,
     /** The hot-swappable content partition (a `serve` target's `files`): the subset of the
      * install that is the program's *data*, synced in place under watch rather than
@@ -85,7 +86,7 @@ export class RunnableFileSet extends FileSet {
     super(files instanceof FileSet ? files : new Map(files), origin ?? (files instanceof FileSet ? files.origin : undefined));
   }
 
-  /** A runnable with a single, definite launch entry — a `js_script`/`script`: a one-symlink surface. */
+  /** Make a runnable with a single, definite launch entry — a `js_script`/`script`: a one-symlink surface. */
   public static forEntry(
     files: Iterable<[string, IFile]>,
     entry: string,
@@ -100,7 +101,7 @@ export class RunnableFileSet extends FileSet {
     return new RunnableFileSet(this, this.args, this.interpreter, this.root, this.surface, this.served, this.launchCwd, this.env, origin);
   }
 
-  /** This runnable offering a different launch surface — how a projection is
+  /** Get this runnable offering a different launch surface — how a projection is
    * applied ({@link selectEntry}), the install and everything else unchanged. */
   public withSurface(surface: FileSet): RunnableFileSet {
     return new RunnableFileSet(this, this.args, this.interpreter, this.root, surface, this.served, this.launchCwd, this.env, this.origin);
@@ -133,7 +134,7 @@ export class RunnableFileSet extends FileSet {
   }
 
   /**
-   * Manifest of the **program partition** — the install minus the served-content
+   * Render the manifest of the **program partition** — the install minus the served-content
    * names. With no served partition this is the whole-install manifest. What a
    * supervisor keys restarts on (content-only changes sync in place instead);
    * a name in `served` IS the served file — a same-name collision with the
@@ -259,7 +260,7 @@ export class RunnableFileSet extends FileSet {
     return byPath;
   }
 
-  /** The launch entry (install path): the sole candidate after dedup, else the "which entry?" error. */
+  /** Get the launch entry (install path): the sole candidate after dedup, else the "which entry?" error. */
   private resolveEntry(): string {
     const byPath = this.installPaths(this.defaultCandidates());
     const paths = [...byPath.keys()];
@@ -270,9 +271,9 @@ export class RunnableFileSet extends FileSet {
   }
 
   /**
-   * A bare package with no declared bin isn't runnable without naming a file;
-   * multiple bins (or an ambiguous projection — `projected`) is a "which one?"
-   * instead.
+   * Make the error for an entry that cannot be chosen: a bare package with no
+   * declared bin isn't runnable without naming a file; multiple bins (or an
+   * ambiguous projection — `projected`) is a "which one?" instead.
    */
   private ambiguityError(labels: string[], projected = false): Error {
     const declaresBin = [...this.surface].some(([, file]) => file instanceof SymlinkFile);
@@ -286,7 +287,7 @@ export class RunnableFileSet extends FileSet {
   }
 
   /**
-   * The default launch candidates when nothing was projected: the sole declared
+   * Get the default launch candidates when nothing was projected: the sole declared
    * bin, or (for a bin-less package) a sole file — anything else needs narrowing,
    * so hand back the ambiguous set (the bins, else all files) for the error.
    */
@@ -305,7 +306,7 @@ export class RunnableFileSet extends FileSet {
     return this.root ? `${this.root}/${rel}` : rel;
   }
 
-  /** A short identifier for errors — the primary package name, or "the runnable". */
+  /** Name this runnable for an error — the primary package name, or "the runnable". */
   private describe(): string {
     return this.root ? `'${this.root.replace(/^node_modules\//, "")}'` : "the runnable";
   }
@@ -319,7 +320,7 @@ export class RunnableFileSet extends FileSet {
  * This is the one place that reading is applied. A ref stays inert data — how a
  * projection applies is decided by the **base's** class, at the point a consumer
  * demands something of it, never by the producer that suspended it. A ref over a
- * package collapses to content (`FileSetRef.flat`/`locate`); a ref over a
+ * package collapses to content (`FileSetRef.select`/`locate`); a ref over a
  * runnable collapses to a launcher, here.
  *
  * @return undefined when the source is not (a projection over) a runnable, and

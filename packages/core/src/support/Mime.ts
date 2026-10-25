@@ -68,7 +68,8 @@ export function sniffMime(head: Buffer): string {
   }
 }
 
-/** Whether this mime names an archive fabr can expand (see Expand.ts / Unpack.ts). */
+/** @return true if this mime names an archive fabr can expand (see Expand.ts /
+ * Unpack.ts), otherwise false. */
 export function isArchiveMime(mime: string): boolean {
   return mime === MIME_GZIP || mime === MIME_TAR || mime === MIME_ZIP || mime === MIME_XZ;
 }

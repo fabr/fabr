@@ -23,21 +23,20 @@ import { FabrError } from "./Errors";
 import type { IProjection } from "./Reference";
 
 /**
- * A resolved source with pending projections — **pure data**: the suspended
- * remainder of a resolution walk, holding no behavior beyond accumulating
+ * A looked-up source with pending projections — **pure data**: the suspended
+ * remainder of a lookup walk, holding no behavior beyond accumulating
  * further narrowing. Deliberately NOT a FileSource (like RepositoryRef): it
  * cannot honestly promise files until the projections are applied, and how
- * they apply is the consumer's business — the RESOLVER resumes the walk
+ * they apply is the consumer's business — the build context resumes the walk
  * (`applyProjections`: the polymorphic `find` chain with archive descent,
  * expansion cached in the build cache), while a reinterpreting consumer gives
  * the projections its own meaning (js_script's package entry replays them as
  * bin selection on the runnable it builds — a raw `find` fold, no walk).
- * Produced by lookupFileSource for a projection landing on a target-output
- * *package* (the one base type whose `find` erases the information conversion
- * needs; runnables' own `find` preserves theirs, and plain/directory finds
- * have nothing to preserve, so those stay eager), and uniformly by the
- * delivery machinery as the pending form of every projected repository
- * delivery (stampProvenance + projections — see RepositoryRef.applyTo).
+ * Produced by lookupFileSource for a projection landing on a package or a
+ * runnable (keeping a package's identity and a runnable's launch machinery;
+ * plain/directory sources project eagerly), and by RepositoryRef.applyTo as
+ * the pending form of every projection into what a repository hands back
+ * (stampProvenance + projections).
  * Ordinary consumers never see one: the model layer finishes pending refs as
  * its collections come back; a CONTAINED property instead hands the
  * pending ref to a reinterpreting consumer.
@@ -79,8 +78,8 @@ export class FileSourceRef {
 }
 
 /**
- * A pending ref whose base is already materialized — a delivered fileset or a
- * built package.
+ * A pending ref whose base is already materialized — a fetched fileset, a
+ * built package, or a runnable.
  */
 export class FileSetRef extends FileSourceRef {
   public declare readonly source: FileSet;

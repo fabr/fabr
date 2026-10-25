@@ -95,9 +95,10 @@ export function vendPackageRef<V, C>(source: RefSource & Repository, format: Pac
   return new RepositoryRef(source, { ...identity, renameTo: name.getRenameTo()?.toString() });
 }
 
-/** Whether `written` is not yet a complete reference: it states only a name,
- *  which `format` refuses as a requirement without a version. A reference
- *  stating a version is complete, and a malformed one is refused as written. */
+/** @return true if `written` is not yet a complete reference, otherwise
+ *  false: it states only a name, which `format` refuses as a requirement
+ *  without a version. A reference stating a version is complete, and a
+ *  malformed one is refused as written. */
 function isIncomplete<V, C>(format: PackageFormat<V, C>, written: Requirement): boolean {
   if (written.versionConstraint !== undefined) {
     return false;
@@ -146,7 +147,7 @@ export function markerOnProjection(name: Name): Error {
 }
 
 /**
- * The requirement that depending on `source` declares — what a generated
+ * Get the requirement that depending on `source` declares — what a generated
  * manifest records, as opposed to what a joint resolution pinned:
  *
  * - a built package is versionless until it is published, so it declares its
@@ -205,7 +206,8 @@ export function declaredRequirement(source: SourceRef | ResolvedNode | Dependenc
   return declared.then(requirement => (requirement === undefined ? undefined : knownAs(requirement, source.renameTo)));
 }
 
-/** Check whether `source` is an edge, as distinct from a package or a reference. */
+/** @return true if `source` is an edge, as distinct from a package or a
+ * reference, otherwise false. */
 function isDependency(source: SourceRef | ResolvedNode | Dependency): source is Dependency {
   return !isPackage(source) && !(source instanceof RepositoryRef) && "reference" in source && !("find" in source);
 }
@@ -222,7 +224,7 @@ export function requestedConstraint(reference: Reference | undefined): string | 
 }
 
 /**
- * A declared requirement as known by `name` — the local name its requirer
+ * Rename a declared requirement to `name` — the local name its requirer
  * imports it under, recorded as {@link Requirement.renameTo} so a generated
  * manifest can state it (npm: `"typescript-6": "npm:typescript@6.0.0-beta"`).
  * A name matching the package's own renames nothing, and neither does none.
@@ -232,10 +234,9 @@ export function knownAs(requirement: Requirement, name: string | undefined): Req
 }
 
 /**
- * An already-resolved package made runnable by whatever delivered it: pure
- * format convention, keyed off the registry the package came from (a catalog
- * passes its member's own source). The closure the package carries is kept —
- * never re-resolved.
+ * Make an already-resolved package runnable: pure format convention, keyed
+ * off the registry the package came from (a catalog passes its member's own
+ * source). The closure the package carries is kept — never re-resolved.
  */
 export function runnableFrom(source: RefSource, pkg: PackageFileSet): Computable<RunnableFileSet> {
   if (isRepositoryReader(source)) {
@@ -452,7 +453,8 @@ function buildsOf<V, C>(
   return new Builds(built, carried, roots);
 }
 
-/** Check whether `pkg` is a target known to build no package: it holds no name. */
+/** @return true if `pkg` is a target known to build no package (it holds no
+ * name), otherwise false. */
 export function isPlainNode(pkg: Package): boolean {
   return pkg instanceof ResolvedNode && pkg.content.plain === true;
 }
@@ -495,7 +497,7 @@ function withBuilds<V, C>(registry: RepositoryReader<V, C> | undefined, builds: 
  */
 
 /**
- * The requirement a reference states, once its repository's format accepts
+ * Read the requirement a reference states, once its repository's format accepts
  * it: the package, the version constraint, any override marker, and the name
  * it is to be delivered under — a renamed package being one of its own.
  */
@@ -574,7 +576,8 @@ export function resolvePackages<V, C>(
   const references = requests.map(request => request.reference);
   /* No operation here: a resolution is a function of the requirements alone
    * (build and run share one), and what varies by operation is the SHAPE of
-   * the delivery, decided by the repository in its own `deliver`. */
+   * the answer, which the collection point decides from the repository's
+   * `operation`. */
   return Computable.resolve(undefined).then(() => {
     const listed = buildsOf(registry, locals, own, sources);
     const requested = new Map<RepositoryRef, Requirement>();
@@ -913,18 +916,18 @@ export function packageClosure<V, C>(
     .catch(err => attributeResolutionFailure(err, references, requirements));
 }
 
-/** The written form of a reference into this domain, for pasteable
- * suggestions — rendered with the repository name the references were written against
- * (a suggestion must read exactly as the user would write it here; the
- * registry's own identity — a url — is the fallback when no reference
- * carries one, e.g. programmatic use). */
+/** Make the renderer of the written form of a reference into this domain,
+ * for pasteable suggestions — rendered with the repository name the
+ * references were written against (a suggestion must read exactly as the user
+ * would write it here; the registry's own identity — a url — is the fallback
+ * when no reference carries one, e.g. programmatic use). */
 function refTextFor(references: RepositoryRef[], registry: { identity: string }): RefRenderer {
   const name = repositoryNameOf(references) ?? registry.identity;
   return (pkg, versionText, marker) => writtenReference(name, pkg, versionText, marker);
 }
 
-/** A selected package at a version as a reference to it would be written
- * against the repository named `repository`, renamed where it is. */
+/** Write a selected package at a version as a reference to it would be
+ * written against the repository named `repository`, renamed where it is. */
 function writtenReference(repository: string, pkg: PackageIdentity, versionText: string, marker?: "?" | "!"): string {
   if (isBuildVersion(versionText)) {
     return buildReference(pkg.name, versionText, marker);
@@ -933,8 +936,9 @@ function writtenReference(repository: string, pkg: PackageIdentity, versionText:
   return pkg.publishedName === undefined ? written : `${written} -> ${pkg.name}`;
 }
 
-/** The declared repository name the batch's references were written against (they share
- * a source, so the first stamped one speaks for the batch). */
+/** Find the declared repository name the batch's references were written
+ * against (they share a source, so the first stamped one speaks for the
+ * batch). */
 function repositoryNameOf(references: RepositoryRef[]): string | undefined {
   return references.find(reference => reference.repositoryName !== undefined)?.repositoryName;
 }
@@ -973,7 +977,7 @@ function attributeResolutionFailure(err: unknown, references: RepositoryRef[], r
 /**
  * A resolution's graph of resolved nodes: one node per selection, made the
  * first time something reaches it, each carrying **all** of its dependency
- * edges, bound to the node the resolution chose ({@link edgeBinding}'s
+ * edges, bound to the node the resolution chose (`edgeBinding`'s
  * answer, read off the precomputed edge map). NO layout is decided here:
  * hoisting and private nesting are the consuming assembler's business
  * (assembleNodeModules).
@@ -1127,8 +1131,8 @@ class ResolutionGraph<V, C> {
   }
 }
 
-/** The provenance origin of a delivered closure: the root requirement and the
- * selections that answer "why is this package here / why this version". It
+/** Make the provenance origin of a resolved closure: the root requirement and
+ * the selections that answer "why is this package here / why this version". It
  * carries no registry identity — "who provided this" is answered by following
  * the chain to the written reference and the declaration it names. */
 function resolutionOrigin<V, C>(
@@ -1145,13 +1149,14 @@ function resolutionOrigin<V, C>(
 }
 
 /**
- * A package's own files, with no dependency closure and no joint resolution —
- * what BUILD_OPERATION=files asks for. A top-level root's minimal-version
+ * Resolve a package's own files, with no dependency closure and no joint
+ * resolution — what a file request asks for (BUILD_OPERATION=files, or a
+ * projection's files). A top-level root's minimal-version
  * selection is simply its constraint's lower bound (nothing else constrains
  * it), so this is exactly the version the joint path would give the root,
  * reached without walking — or fetching — the closure; any projection stays
  * pending on the delivered ref (RepositoryRef.applyTo), finished by the
- * driving context. For a repository's `deliver` to call: it mints the
+ * driving context. For a repository's `fetchFiles` to call: it mints the
  * `Selected` and the resolution provenance a delivered package carries.
  */
 export function resolveBarePackage<V, C>(registry: RepositoryReader<V, C>, reference: RepositoryRef): Computable<FileSet> {
@@ -1195,8 +1200,8 @@ interface DeclaredRequirements {
   readonly provided: ReadonlyMap<string, Provided>;
 }
 
-/** The package `reference` names at its lower bound, carrying what `declared`
- * gives for that published name and version. */
+/** Fetch the package `reference` names at its lower bound, carrying what
+ * `declared` gives for that published name and version. */
 function barePackage<V, C>(
   registry: RepositoryReader<V, C>,
   reference: RepositoryRef,
@@ -1283,7 +1288,7 @@ export function fetchPinnedPackage<V, C>(registry: RepositoryReader<V, C>, refer
 }
 
 /**
- * What the generic repair suggester needs from the domain (see
+ * Make what the generic repair suggester needs from the domain (see
  * resolver/ResolutionReport): the written reference form, the registry's
  * version list, and a memoized enrichment-free re-resolve.
  */
@@ -1311,6 +1316,8 @@ function suggestSourcesFor<V, C>(
 }
 
 /**
+ * Resolve `roots` jointly against `registry`, memoized in the build cache.
+ *
  * Resolutions are persisted in the build cache: under minimal version selection
  * the result is a pure function of the (canonically ordered) root requirements
  * and the (immutable) declared metadata of the packages they reach, so a cached
@@ -1359,7 +1366,7 @@ function getJointResolution<V, C>(
           { kind: "repository-resolve", repository: repositoryName ?? registry.identity, consumer: context.name, requirements: rootKeys },
           () =>
             resolveMVS(roots, domain, withBuilds(registry, builds)).then(result => {
-              /* Hard errors (unparseable constraints, unconstrained-only
+              /* Hard errors (unparseable constraints, floorless-only
                * requirements) are not repairable in any mode. Grouped and
                * enriched with pin suggestions before throwing — typed + per-error
                * root attribution, so the resolve catch can map each failure to
@@ -1402,14 +1409,14 @@ function validatedResolutionDoc<V, C>(
   });
 }
 
-/** A request for the package `reference` names. */
+/** Make a request for the package `reference` names. */
 export function packageRequest(reference: RepositoryRef): PackageRequest {
   return { reference, as: "package" };
 }
 
-/** The origin of the package `name` that `registry` publishes at `version`,
- *  made with `origin`: under a step naming it by the reference that resolves to
- *  it (`@npm:react:18.2.0`), where the registry has a name. */
+/** Make the origin of the package `name` that `registry` publishes at
+ *  `version`, made with `origin`: under a step naming it by the reference that
+ *  resolves to it (`@npm:react:18.2.0`), where the registry has a name. */
 function namedFrom<V, C>(registry: RepositoryReader<V, C>, name: string, version: V, origin: IProvenanceStep | undefined): IProvenanceStep | undefined {
   const declared = registry.name;
   if (declared === undefined) {

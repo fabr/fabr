@@ -1473,11 +1473,12 @@ describe("force overrides", () => {
   });
 });
 
-/* The resolution stores where each edge leads (MVSResolution.edges) instead of
- * leaving every consumer to recompute it. These pin the stored answers to the
- * rule that produced them — the contract a layout relies on. */
+/* The resolution stores where each edge leads (MVSResolution.edges). These
+ * pin the stored answers to the rule that produced them — the contract a
+ * layout relies on. */
 describe("resolved edges", () => {
-  /** What a consumer would compute for itself, the old way. */
+  /** Recompute each node's edges from its requirements by edgeBinding: the
+   * oracle the stored edges must match. */
   function recomputed(result: MVSResolution<SemverVersion>): Map<string, Map<string, string>> {
     const edges = new Map<string, Map<string, string>>();
     for (const sel of result.selections) {

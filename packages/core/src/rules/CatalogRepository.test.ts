@@ -118,8 +118,8 @@ describe("CatalogRepository.getRepositoryRef", () => {
 });
 
 /**
- * The catalog through the model — the real path (provider + resolvePackageSet +
- * the resolution layer's driver over the backing registries). A backing
+ * The catalog through the model — the real path (provider + resolveCollection +
+ * the consumer's collection point over the backing registries). A backing
  * registry records requirement reads and fetches separately, so a test can
  * prove versions resolve for the whole catalog up front while package contents
  * are fetched only when a member is actually named.

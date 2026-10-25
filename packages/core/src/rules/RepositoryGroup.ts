@@ -61,22 +61,22 @@ export interface Route<V, C> {
   readonly member: RepositoryReader<V, C>;
 }
 
-/** The canonical text of a route key (`@fortawesome/*`, `lodash`, `*`). */
+/** Render the canonical text of a route key (`@fortawesome/*`, `lodash`, `*`). */
 export function routeKeyText(key: RouteKey): string {
   return key.components.join("/") + (key.prefix ? "*" : "");
 }
 
-/** The primary specificity metric: total literal length (see {@link bestRoute}
- * for the exact-over-prefix tie-break). */
+/** Measure a key's specificity: its total literal length (see
+ * {@link moreSpecific} for the exact-over-prefix tie-break). */
 function literalLength(key: RouteKey): number {
   return key.components.join("/").length;
 }
 
-/** Whether `a` is the more specific of two MATCHING keys: longer literal wins;
- * on equal literals an exact key beats its prefix twin (`foo` over `foo*` for
- * the name `foo` — the one shape where two distinct keys match with equal
- * length). Total for any two distinct canonical keys, so declaration order
- * never decides. */
+/** @return true if `a` is the more specific of two MATCHING keys, otherwise
+ * false: longer literal wins; on equal literals an exact key beats its prefix
+ * twin (`foo` over `foo*` for the name `foo` — the one shape where two distinct
+ * keys match with equal length). Total for any two distinct canonical keys, so
+ * declaration order never decides. */
 function moreSpecific(a: RouteKey, b: RouteKey): boolean {
   const byLength = literalLength(a) - literalLength(b);
   return byLength !== 0 ? byLength > 0 : !a.prefix && b.prefix;
@@ -108,13 +108,13 @@ export function parseRouteKey(text: string): RouteKey | { error: string } {
   return { components, prefix };
 }
 
-/** Name components, both `/` and `:` bounding — the same boundaries reference
- * names use (Name's separator set). */
+/** Split a name into components, both `/` and `:` bounding — the same
+ * boundaries reference names use (Name's separator set). */
 function splitComponents(text: string): string[] {
   return text.split(/[/:]/);
 }
 
-/** Whether `key` claims `parts` (see {@link RouteKey}). */
+/** @return true if `key` claims `parts` (see {@link RouteKey}), otherwise false. */
 function routeMatches(key: RouteKey, parts: string[]): boolean {
   const depth = key.components.length;
   if (depth > parts.length) {
@@ -130,10 +130,10 @@ function routeMatches(key: RouteKey, parts: string[]): boolean {
 }
 
 /**
- * The route serving `name` — longest literal match wins (an exact key always
- * beats every prefix key it extends; two distinct keys of equal length cannot
- * both match, so there is no tie and declaration order carries no meaning).
- * Undefined when no route claims the name. `name` may be a bare package name
+ * Find the route serving `name` — longest literal match wins, and at equal
+ * length an exact key beats its prefix twin ({@link moreSpecific}), so
+ * declaration order carries no meaning. Undefined when no route claims the
+ * name. `name` may be a bare package name
  * or a written reference/coordinate — the key's own depth decides how much it
  * claims, so trailing version/projection components cannot confuse it.
  */
@@ -220,8 +220,8 @@ export class RepositoryGroup<V, C>
   }
 
   /**
-   * Publishing is pure pass-through: the routed member vends its own ref
-   * (validating the address shape itself), so the sync binds directly to the
+   * Vend the routed member's own publish ref — pure pass-through: the member
+   * vends it (validating the address shape itself), so the sync binds to the
    * destination registry (`BuildSync` partitions a release by destination). A
    * member without the vend (a content route) is refused here, routes listed.
    */
@@ -247,12 +247,12 @@ export class RepositoryGroup<V, C>
     return this.routes.map(route => `${routeKeyText(route.key)}=${route.member.identity}`).join(" ");
   }
 
-  /** The registry serving `pkg`, undefined when no route claims it. */
+  /** Find the registry serving `pkg`, undefined when no route claims it. */
   private memberFor(pkg: string): RepositoryReader<V, C> | undefined {
     return bestRoute(this.routes, pkg)?.member;
   }
 
-  /** The registry serving `pkg`, or the miss error (see the class comment). */
+  /** Find the registry serving `pkg`, or make the miss error (see the class comment). */
   private routed(pkg: string): RepositoryReader<V, C> | Error {
     const member = this.memberFor(pkg);
     if (member) {
@@ -291,7 +291,7 @@ export class RepositoryGroup<V, C>
     return member instanceof Error ? Computable.reject(member) : member.fetchFiles(reference);
   }
 
-  /** Environment keys deduplicated across the members — with a shared format
+  /** Join the members' environment keys, deduplicated — with a shared format
    * they answer alike, but the memo key must be right even if they differ. */
   public environmentKey(): Computable<string> {
     return Computable.forAll(
@@ -300,7 +300,7 @@ export class RepositoryGroup<V, C>
     );
   }
 
-  /** Post-resolution policy runs per member, each over its routed slice of the
+  /** Run post-resolution policy per member, each over its routed slice of the
    * finished graph (members without a policy contribute none). */
   public validateSelections(selections: Selected<V>[]): Computable<void> {
     const slices = new Map<RepositoryReader<V, C>, Selected<V>[]>();
@@ -327,12 +327,12 @@ export class RepositoryGroup<V, C>
 }
 
 /**
- * A `repository_group` declares one package **domain** served by several
- * registries: every member is a route — a literal package-name prefix mapped
- * to a registry — and references written against the group resolve in ONE
- * joint resolution, each per-name lookup dispatched to the registry the name
- * routes to (longest literal match wins; `*` is the empty prefix, so it sorts
- * last under the same rule). The motivating shape:
+ * Create the repository a `repository_group` declares: one package **domain**
+ * served by several registries. Every member is a route — a literal
+ * package-name prefix mapped to a registry — and references written against
+ * the group resolve in ONE joint resolution, each per-name lookup dispatched
+ * to the registry the name routes to (longest literal match wins; `*` is the
+ * empty prefix, so it sorts last under the same rule). The motivating shape:
  *
  * ```
  * npm_repository @fa  { url = "https://npm.fontawesome.com/"; }
@@ -351,7 +351,8 @@ export class RepositoryGroup<V, C>
  *
  * A route's value may instead be package **content** — a fetched archive's
  * expansion, a local directory — in which case the value IS the one package
- * the key names, resolved from the ecosystem's manifest inside it:
+ * the key names, resolved from the ecosystem's manifest inside it
+ * (`amperize = @dl:amperize.tgz:*:**;`).
  *
  * The content-served package participates in the joint resolution like any
  * registry-served one (its declared version answers range requirements on the

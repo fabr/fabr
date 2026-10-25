@@ -142,7 +142,7 @@ export class SyncSource implements FileSource {
   }
 
   /**
-   * Exact file lookup within a member — how a projection walker's descent probe
+   * Look up a file exactly within a member — how a projection walker's descent probe
    * lands on an artifact. A member coordinate itself is no file (it names a
    * namespace entry, as a directory would), so only a name *under* one resolves.
    */
@@ -158,7 +158,7 @@ export class SyncSource implements FileSource {
   }
 
   /**
-   * The carriers a name selects, packaged, in publish order (deps-first via
+   * Package the carriers a name selects, in publish order (deps-first via
    * {@link publishOrder}); every member when no name narrows it. THE selection
    * primitive — {@link find} is this plus a layout, and takes the same names,
    * so `members()` and `members(**)` are the same selection by construction.
@@ -176,7 +176,7 @@ export class SyncSource implements FileSource {
   }
 
   /**
-   * The members a pattern could reach: those it names or matches outright, plus
+   * List the members a pattern could reach: those it names or matches outright, plus
    * those it addresses *into* — judged by whether any component-prefix of the
    * pattern matches the coordinate, which admits a `**` at any depth. An
    * over-approximation on purpose: packaging a member the projection then
@@ -190,8 +190,9 @@ export class SyncSource implements FileSource {
     );
   }
 
-  /** The given carriers as one FileSet under their coordinates — the release's
-   *  file namespace, built for exactly the members a projection touches. */
+  /** Lay the given carriers out as one FileSet under their coordinates — the
+   *  release's file namespace, built for exactly the members a projection
+   *  touches. */
   private laidOut(paths: string[], carriers: ReadonlyArray<PublishableFileSet>): FileSet {
     return FileSet.unionAll(...carriers.map((carrier, i) => carrier.mountedAt(paths[i])));
   }
@@ -250,7 +251,7 @@ export class SyncSource implements FileSource {
     });
   }
 
-  /** Every caller reaches a member by a key taken from {@link table}. */
+  /** Get the member at `path`, a key taken from {@link table}. */
   private member(path: string): Member {
     return this.table.get(path)!;
   }
@@ -263,8 +264,8 @@ export class SyncSource implements FileSource {
   }
 }
 
-/** A coordinate as a name in the release namespace: the alias separator is a
- *  path separator, so `@npm:x:1.0.0` is addressed as `@npm/x/1.0.0`. */
+/** Spell a coordinate as a name in the release namespace: the alias separator
+ *  is a path separator, so `@npm:x:1.0.0` is addressed as `@npm/x/1.0.0`. */
 function memberPath(coordinate: string): string {
   return coordinate.replaceAll(NAME_LEVEL_SEPARATOR, NAME_COMPONENT_SEPARATOR);
 }
@@ -318,7 +319,7 @@ function members(context: TargetContext): Computable<Map<string, Member>> {
 }
 
 /**
- * A member coordinate may not be a path prefix of another — with both
+ * Refuse a member coordinate that is a path prefix of another — with both
  * `@npm/x/1.0.0` and `@npm/x/1.0.0/extra` declared, `release/@npm/x/1.0.0/extra`
  * would be ambiguous between the deeper member and a projection into the
  * shorter one. Rejected at declaration so the ambiguity is impossible by
@@ -386,7 +387,7 @@ export const syncRule: RuleDefinition = {
   evaluate: syncPackages,
 };
 
-/** The name a member's content requirement is stated under: its written
+/** Name a member's content requirement: by its written
  * coordinate, which is also the property its content is read from. */
 function contentKey(decl: IPropertyDecl): string {
   return decl.name.toBaseString();

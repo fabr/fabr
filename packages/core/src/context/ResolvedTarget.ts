@@ -156,7 +156,8 @@ export abstract class ResolvedTarget extends ResolvedNode implements TargetNode 
  * read in, and how to build it. Materializing it builds it.
  *
  * To whatever requires it, it is a node named as the target is, requiring
- * what its rule states as passed on: its `dependencies` and `provided`, or
+ * what its rule states as passed on: its `dependencies`, `provided` and
+ * `optional_provided`, or
  * the version and requirements of the one package it `extends`, or nothing.
  * What it builds — a package, or files — is known when it is built.
  */
@@ -170,7 +171,7 @@ export class DeclaredResolvedTarget extends ResolvedTarget {
 
   /**
    * Make the resolved target `context` names, whose requirements resolved to
-   * `resolved` and which `evaluate` builds, in the configuration `source`.
+   * `resolved` and which `evaluate` builds, in `context`'s configuration.
    */
   public static of(
     context: DeclaredTargetContext,

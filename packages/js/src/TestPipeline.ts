@@ -140,7 +140,7 @@ const SNAPSHOT_BELONGS_TO = parseName(`**/${SNAPSHOT_DIR}/*.snap`).withRenameTo(
 const SETUP_STEM = "setupTests";
 
 /**
- * The runner's ambient globals types, extracted from its resolved install (a
+ * Extract the runner's ambient globals types from its resolved install (a
  * test-globals.d.ts anywhere among its files) and mounted as the synthetic
  * @types package the test compile auto-includes; empty when the runner ships
  * none. Part of the runner contract for a framework whose runner supplies them
@@ -152,7 +152,7 @@ function runnerGlobalsTypes(runner: FileSet): FileSet {
   return found ? FileSet.layout({ [GLOBALS_TYPES_MOUNT]: found[1] }) : EMPTY_FILESET;
 }
 
-/** The location of each of `sources` in the test installation (under
+/** Record the location of each of `sources` in the test installation (under
  *  {@link COMPILE_SRC_DIR}), by its source path. */
 function sourceLocations(sources: FileSet): MemoryFile {
   const rows = [...sources.sourcePaths]
@@ -231,8 +231,8 @@ export function testRequirements(written: TestRequirements): TestRequirements {
 }
 
 /**
- * The shared test pipeline: compile the whole source tree (tests included, so
- * their relative imports resolve against the code under test), lay it out as
+ * Run the shared test pipeline: compile the whole source tree (tests included,
+ * so their relative imports resolve against the code under test), lay it out as
  * a runnable installation together with the deps, the test-only deps and the
  * runner, and execute the runner over the compiled test files. The output
  * artifact is the test report; a red run fails the target with the report's
@@ -349,10 +349,10 @@ export function compileAndRunTests(
 }
 
 /**
- * The install's self-mount: `node_modules/<packageName>` as a SYMLINK back to
- * the install root, so the compiled tree's self-referential requires
- * (`@scope/pkg/sub`, which `paths` resolved at compile time but which survive
- * verbatim into the emitted JS) resolve when the tests run.
+ * Make the install's self-mount: `node_modules/<packageName>` as a SYMLINK to
+ * the compiled tree (`build/`), so the compiled tree's self-referential
+ * requires (`@scope/pkg/sub`, which `paths` resolved at compile time but which
+ * survive verbatim into the emitted JS) resolve when the tests run.
  *
  * A symlink rather than a second copy of the tree: node resolves a module to
  * its realpath, so `require("@scope/pkg/sub")` and a relative `require("./sub")`
@@ -374,8 +374,8 @@ function selfMount(packageName: string | undefined): FileSet {
   return FileSet.layout({ [packageName]: new SymlinkFile(up + COMPILE_OUT_DIR) });
 }
 
-/** The runnable test files: the JS entries of the *actual* compiled tree whose
- * stem is one of the declared tests' stems, sorted for determinism. No
+/** Select the runnable test files: the JS entries of the *actual* compiled tree
+ * whose stem is one of the declared tests' stems, sorted for determinism. No
  * source→output name is predicted — js_compile named these; we only select.
  * `.mjs`/`.cjs` are the outputs of a `.mts`/`.cts` test. */
 export function selectCompiledTestFiles(compiled: FileSet, testStems: Set<string>): string[] {
@@ -386,7 +386,7 @@ export function selectCompiledTestFiles(compiled: FileSet, testStems: Set<string
 }
 
 /**
- * The compiled setup script, or undefined for a target that has none.
+ * Select the compiled setup script, or undefined for a target that has none.
  *
  * Selected out of the ACTUAL compiled tree by stem, exactly as the test files
  * are — the source→output naming is js_compile's, never re-derived here. It is
@@ -410,8 +410,8 @@ export function selectCompiledSetupFile(compiled: FileSet): string | undefined {
 interface ITestRun {
   compiled: Computable<FileSet>;
   copied: FileSet;
-  /** The compile's own `src/` tree, mounted beside the output so each `.js.map`
-   * resolves — see the layout in planTestRun. */
+  /** The compile's own `src/` tree, staged beside the output as the compile
+   * laid it out — see the layout in planTestRun. */
   compileSrcs: FileSet;
   nodeModules: FileSet;
   resources: FileSet;
@@ -446,13 +446,12 @@ interface ITestRun {
  * compiled tree — the output of the shared js_compile sub-target — is passed
  * in as a concrete input to the test-run action.
  *
- * The run is a **sub-target** rather than an action yielded directly, so its
- * output is observed here, in resolution: the report is the target's content,
- * and any refreshed snapshot files become write-back candidates paired with
- * their source locations. Because that reshaping is plain resolution code, it
- * re-runs every evaluation — so the candidates reconstruct on the CACHE-HIT
- * path too (a warm replay of an update run whose writes were never applied
- * still offers them).
+ * The run is yielded as the test-run action with a reshape
+ * ({@link reshapeTestResult}): the report is the target's content, and any
+ * refreshed snapshot files become write-back candidates paired with their
+ * source locations. The reshape is applied every evaluation, so the candidates
+ * reconstruct on the CACHE-HIT path too (a warm replay of an update run whose
+ * writes were never applied still offers them).
  */
 function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResult> {
   return run.compiled.then(compiledTree => {
@@ -469,13 +468,11 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
      * sources tsc passed through (a `./x.json` import), and loose resource deps. */
     const runtime = FileSet.unionAll(compiledTree, stripPackageJson(run.copied), run.resources);
     /* Laid out AS THE COMPILE LAID IT OUT — output under `build/`, sources under
-     * `src/` — because each `.js.map` names its source relative to that pairing
-     * (`../../src/foo.ts`). Re-rooting the output at the install root leaves
-     * every one of those paths resolving outside the install: node still maps
-     * stack frames to `foo.ts` (the positions are in the map) but nothing can
-     * READ that file, so jest's code frame — which loads the file the top frame
-     * names — silently renders nothing. `node_modules` and `package.json` stay
-     * at the root, where node's walk-up finds them from `build/` just as well.
+     * `src/` — so a map entry naming its source relatively still resolves, and
+     * {@link SOURCE_LOCATIONS_FILE} records where each source with a source path
+     * is staged, for a runner opening the source a map's `fabr:` entry names.
+     * `node_modules` and `package.json` stay at the root, where node's walk-up
+     * finds them from `build/` just as well.
      *
      * `build/` is ALSO the working directory (see the test-run action): a test's paths —
      * `./x` from cwd or `__dirname`-relative alike — then mean what they mean in
@@ -556,9 +553,9 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
 }
 
 /**
- * What a measured run adds to the install, and the coverage driver's command
- * line, run from the install root. Measured is every compiled script of the
- * compile but the tests and the setup script, and of every package built in
+ * Stage what a measured run adds to the install, and make the coverage driver's
+ * command line, run from the install root. Measured is every compiled script of
+ * the compile but the tests and the setup script, and of every package built in
  * the project, by where the install lays it out.
  */
 function measuredRun(
@@ -603,11 +600,11 @@ function reshapeTestResult(result: FileSet, tests: FileSet, recorded: FileSet): 
  * Pair each refreshed snapshot file with where it belongs in the user's tree.
  *
  * The run works in compiled names (`Foo.test.js`) and the source tree in source
- * names (`Foo.test.tsx`), so the two sides are matched on the **stem** — which
- * is exactly how the runner found the checked-in file in the first place. That
- * also handles a brand-new snapshot, which the runner necessarily emits under
- * the compiled name: the destination name is derived here, from the test
- * source, so what lands in the tree is jest's standard `<test file>.snap`
+ * names (`Foo.test.tsx`), so the two sides are matched by exact source name,
+ * else on the **stem** — for a runner that names a record after the compiled
+ * file. That also handles a brand-new snapshot, which the runner necessarily
+ * emits under the compiled name: the destination name is derived here, from the
+ * test source, so what lands in the tree is jest's standard `<test file>.snap`
  * either way.
  *
  * Each candidate names the TEST it belongs beside; resolving that to a place on
@@ -647,16 +644,17 @@ export function snapshotWriteBacks(snapshots: FileSet, tests: FileSet, recorded:
   return refreshed.size === 0 ? [] : [{ files: new FileSet(refreshed), belongsTo: SNAPSHOT_BELONGS_TO, origin: tests.origin }];
 }
 
-/** Where a test source's record sits relative to it — jest's convention, and
- * the name a write-back lands under. */
+/** Name where a test source's record sits relative to it — jest's convention,
+ * and the name a write-back lands under. */
 function snapshotNameFor(testName: string): string {
   return posix.join(posix.dirname(testName), SNAPSHOT_DIR, `${posix.basename(testName)}.snap`);
 }
 
-/** The test stem a collected `<dir>/__snapshots__/<test file>.snap` belongs to
- * (`a/__snapshots__/Foo.test.js.snap` → `a/Foo.test`), or undefined if the name
- * isn't a snapshot file. Both extensions come off: the `.snap`, then the test
- * file's own — which is what makes a compiled name and a source name meet. */
+/** Find the test stem a collected `<dir>/__snapshots__/<test file>.snap`
+ * belongs to (`a/__snapshots__/Foo.test.js.snap` → `a/Foo.test`), or undefined
+ * if the name isn't a snapshot file. Both extensions come off: the `.snap`,
+ * then the test file's own — which is what makes a compiled name and a source
+ * name meet. */
 function snapshotStem(name: string): string | undefined {
   const dir = posix.dirname(name);
   if (posix.basename(dir) !== SNAPSHOT_DIR || !name.endsWith(".snap")) {

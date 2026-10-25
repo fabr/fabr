@@ -29,8 +29,8 @@ describe("MemoryFile", () => {
 
   it("a conflict between generated files reports rather than crashing", () => {
     /* Two different generated package.json at one path, with no provenance:
-     * the ConflictError message falls back to getDisplayName, which used to
-     * throw "Method not implemented" and mask the real conflict diagnostic. */
+     * the ConflictError message falls back to getDisplayName, which must not
+     * throw and mask the real conflict diagnostic. */
     const a = new FileSet(new Map([["pkg/package.json", MemoryFile.from('{"a":1}')]]));
     const b = new FileSet(new Map([["pkg/package.json", MemoryFile.from('{"b":2}')]]));
     let err: unknown;

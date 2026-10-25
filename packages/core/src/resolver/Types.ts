@@ -59,12 +59,12 @@ export interface Requirement {
   readonly versionConstraint: string | undefined;
   /**
    * A user-written override marker on an exact version (`@npm:pkg:1.4.2?` /
-   * `@npm:pkg:2.0.0!`; `version` carries the bare version):
+   * `@npm:pkg:2.0.0!`; `versionConstraint` carries the bare version):
    *
    * - `"force"` (`!`) — full substitution, npm-`overrides` semantics: every
    *   requirement on the package, from any requirer, is replaced by exactly
    *   this version at resolve time. Ranges the forced version does not
-   *   satisfy are recorded as {@link MVSResolution.coerced} — data, never
+   *   satisfy are recorded as `MVSResolution.coerced` — data, never
    *   violations. Participates in resolution (and its memo identity).
    * - `"alternate"` (`?`) — a sanction plus a supply of last resort, never an
    *   ordinary demand: it contributes no floor and mounts nothing of its own.
@@ -72,7 +72,7 @@ export interface Requirement {
    *   (MVSResolver's enqueue): only when the converged tree requires the
    *   package solely floorlessly does the written version supply a selection.
    *   Included in the canonical roots and the resolution memo key (its
-   *   {@link requirementKey} carries the marker); the sanction itself is
+   *   `requirementKey` carries the marker); the sanction itself is
    *   judged by the consumer at delivery.
    */
   readonly override?: "alternate" | "force";
@@ -156,7 +156,7 @@ export interface Selected<V> {
    * Resolver-internal and NOT persisted: it is the marking pass's own working
    * state, used to prune superseded nodes and to scope each root's binding. A
    * consumer carving the resolution into per-root subsets walks the edges
-   * forward instead ({@link reachableFrom}); this index answers the opposite
+   * forward instead (`MVSResolution.reachable`); this index answers the opposite
    * question ("which roots reach me").
    */
   reachableFrom?: number[];
@@ -187,7 +187,7 @@ export type PackageIdentity = Pick<Selected<unknown>, "name" | "publishedName">;
  * tool delivery, which nests the fork privately). A violation no fork repairs
  * — nothing published satisfies its constraint — is undeliverable in every
  * mode; a consumer detects that by checking the selections (no selection of
- * `name` satisfies `version`).
+ * `name` satisfies `versionConstraint` — `satisfiedByAnySelection`).
  */
 export interface Violation<V> {
   name: PackageName;
@@ -291,7 +291,7 @@ export interface VersionDomain<V, C> {
    * What a provided requirement outside the range of the selection it binds
    * comes to. It is never repaired by a fork — a private copy is the opposite
    * of provided — so the mismatch is either `"tolerate"`d (bound anyway and
-   * recorded as {@link MVSResolution.shared}) or `"refuse"`d (a violation). An
+   * recorded as `MVSResolution.shared`) or `"refuse"`d (a violation). An
    * ecosystem with provided requirements states which; absent refuses.
    */
   readonly providedMismatch?: "tolerate" | "refuse";
@@ -325,9 +325,9 @@ export interface VersionDomain<V, C> {
   exactVersion?(text: string): V | undefined;
 
   /**
-   * Whether the version is suggestion-eligible (not a prerelease): the repair
-   * suggester proposes only stable versions. Optional: a domain without it
-   * treats every version as stable.
+   * @return true if the version is suggestion-eligible (not a prerelease),
+   * otherwise false: the repair suggester proposes only stable versions.
+   * Optional: a domain without it treats every version as stable.
    */
   isStable?(version: V): boolean;
 }
@@ -366,7 +366,7 @@ export interface RequirementSource<V> {
  * Resolution, so it can key/address entries (a catalog keys its members by this)
  * *without* fetching them. `name` is the identity the repository addresses
  * entries by (npm: the package name), or — when the reference writes a rename —
- * the name that rename gives the delivery (see {@link renamedAs}), so an
+ * the name that rename gives the delivery (see `renamedAs`), so an
  * addressing key and the package it addresses can never disagree.
  */
 export interface ResolvedRoot {
@@ -393,11 +393,11 @@ export interface Resolution {
  *   it: an edge of that package's node in the resolution, bound like any
  *   package's requirement, with nothing written on it the collection's;
  * - `"files"` — the files its projection selects, on their own: it joins no
- *   resolution, pins nothing and brings no closure (see {@link fileRequests});
+ *   resolution, pins nothing and brings no closure (see `fileRequests`);
  * - `"instance"` — the package it names, on its own: it joins no resolution and
  *   pins nothing, and the package carries the requirements it declares as
  *   references to the same repository, for the collection point it reaches to
- *   resolve (see {@link instanceRequests}).
+ *   resolve (see `instanceRequests`).
  */
 export interface PackageRequest {
   readonly reference: RepositoryRef;
@@ -420,7 +420,7 @@ export interface ResolutionContext {
    * The packages this context was given already bound — a sub-target's
    * inputs, which its creator collected. One among the sources of a
    * collection here is delivered as it stands, like an
-   * {@link instanceRequests instance}: its edges were resolved where it came
+   * instance (`instanceRequests`): its edges were resolved where it came
    * from, with requirements this context does not hold.
    */
   readonly given?: ReadonlySet<PackageFileSet>;
@@ -434,7 +434,7 @@ export interface ResolutionContext {
  * or carry, as it is asked of its repository, and each registry's joint
  * resolution of its batch — computed when first wanted, once, and fetching
  * nothing. Any subset of the sources is delivered from it
- * ({@link resolveSources}) under the one selection.
+ * (`resolveSources`) under the one selection.
  */
 export interface ResolvedCollection {
   readonly requests: ReadonlyMap<RepositoryRef, PackageRequest>;
@@ -456,14 +456,14 @@ export interface ResolvedCollection {
    * name. A package of that name there is replaced by it.
    */
   readonly members: ReadonlyMap<string, Package>;
-  /** The packages among the sources taken as {@link instanceRequests
-   * instances}: delivered as they stand, and no candidate. */
+  /** The packages among the sources taken as instances
+   * (`instanceRequests`): delivered as they stand, and no candidate. */
   readonly instances: ReadonlySet<Package>;
 }
 
 /**
  * A member of a collection a repository resolved, as
- * {@link RepositoryCollection.member} answers it. The collection point that
+ * `RepositoryCollection.member` answers it. The collection point that
  * asked delivers it.
  */
 export interface ResolvedMember {

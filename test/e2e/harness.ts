@@ -22,7 +22,7 @@
  * runs the built fabr CLI against it as a subprocess, capturing stdout / stderr
  * / exit status. These tests exercise the whole stack through the real command
  * line. They dual-run like every other suite: under jest, and under `fabr test`
- * itself via the `fabr_e2e` js_test target (which carries @fabr-build/cli as a dep,
+ * itself via the `e2e_tests` js_test target (which carries @fabr-build/cli as a dep,
  * so the CLI under test is the one that {@link FABR} resolves — see below).
  *
  * Plugins resolve from the fabr installation (`require.resolve`), not the
@@ -56,11 +56,9 @@ const CHILD_PATH = [path.dirname(NODE), "/usr/bin", "/bin", process.env.PATH]
 
 /* One cache per test file: content-addressed, so sharing it across that file's
  * fixtures just reuses the stub-tsc / package builds, while keeping concurrent
- * files off each other's store (fabr has no cross-process cache locking). Wound
- * up when the file's tests are done — nothing outlives them, and left to the OS's
- * temp reaper these accumulated a dir per test file per run (thousands of them,
- * hundreds of megabytes). An `afterAll` rather than a process exit hook: jest
- * ends its workers by signal, which runs no exit hook. */
+ * files off each other's store (fabr has no cross-process cache locking).
+ * Removed when the file's tests are done. An `afterAll` rather than a process
+ * exit hook: jest ends its workers by signal, which runs no exit hook. */
 const CACHE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-e2e-cache-"));
 afterAll(() => fs.rmSync(CACHE_DIR, { recursive: true, force: true }));
 
@@ -259,7 +257,7 @@ export interface OrphanReaper {
 }
 
 /** Spawn a reaper daemon. Fully unref'd: it must never keep the harness's own
- * event loop alive (that's the wedge that used to hang `fabr test` runs). */
+ * event loop alive. */
 export function spawnOrphanReaper(): OrphanReaper {
   const daemon = spawn(NODE, ["-e", REAPER_SCRIPT], { stdio: ["pipe", "ignore", "ignore"] });
   daemon.unref();
@@ -355,11 +353,6 @@ export const STUB_TSC_CONFIG =
  * waits are on explicit stderr signals (not sleeps) with a timeout, to stay
  * deterministic. Equally the harness for any long-running fabr a test signals
  * rather than waits out — a one-shot `fabr run` of a program that doesn't exit.
- *
- * `env` adds to the child's (otherwise minimal) environment, overriding what the
- * harness sets — e.g. a `FABR_CACHE_DIR` the test owns, so it can inspect fabr's
- * work tree after the session has been stopped (the session's own cache dir goes
- * with it).
  */
 export interface WatchSession {
   /** The project directory (mutate fixture files here via {@link write}). */
@@ -397,6 +390,15 @@ function toGlobalRegExp(pattern: string | RegExp): RegExp {
   return new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g");
 }
 
+/**
+ * Write `files` into a fresh temp project dir and start `fabr <args>` there as a
+ * {@link WatchSession}.
+ *
+ * `env` adds to the child's (otherwise minimal) environment, overriding what the
+ * harness sets — e.g. a `FABR_CACHE_DIR` the test owns, so it can inspect fabr's
+ * work tree after the session has been stopped (the session's own cache dir goes
+ * with it).
+ */
 export function startFabrWatch(files: Record<string, string>, args: string[], env?: Record<string, string>): WatchSession {
   if (!fs.existsSync(FABR)) {
     throw new Error(`fabr is not built at ${FABR} — run 'yarn build' (the 'yarn dist' gate does this)`);

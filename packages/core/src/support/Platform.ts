@@ -84,7 +84,7 @@ const ARCH_TO_NODE: Record<string, string> = {
 
 /** node/npm platform vocabulary: process.platform / process.arch, plus libc. */
 export interface NpmPlatform {
-  /** process.platform vocabulary: darwin, linux, win32 (undefined if unrecognized). */
+  /** process.platform vocabulary: darwin, linux, win32, android (undefined if unrecognized). */
   os?: string;
   /** process.arch vocabulary: x64, arm64, ia32, arm (undefined if unrecognized). */
   cpu?: string;
@@ -93,7 +93,7 @@ export interface NpmPlatform {
 }
 
 /**
- * The platform triple for the machine fabr is currently running on — the value of
+ * Compute the platform triple for the machine fabr is currently running on — the value of
  * the injected HOST fact (and the default for TARGET). Built from
  * process.arch/platform (+ the Darwin kernel version and libc detection); no
  * subprocess. Falls back to `<arch>-<platform>` for platforms we don't spell.
@@ -112,7 +112,7 @@ export function hostTriple(): string {
   }
 }
 
-/** node arch → triple arch field, per OS (GNU spells arm64 `aarch64`; Apple `arm64`). */
+/** Map a node arch to the triple arch field, per OS (GNU spells arm64 `aarch64`; Apple `arm64`). */
 function nodeArchToTriple(arch: string, gnuStyle: boolean): string {
   switch (arch) {
     case "x64":
@@ -131,8 +131,8 @@ function nodeArchToTriple(arch: string, gnuStyle: boolean): string {
 /**
  * Map a Darwin kernel version (`os.release()`, e.g. `24.6.0`) to the macOS product
  * version the `macosx…` triple component wants. Kernel major 20+ is macOS 11+
- * (major = kernel − 9); 5..19 is the 10.x era (10.<kernel − 4>). The minor is
- * always `.0` — a deployment floor, since the kernel major only pins the product
+ * (major = kernel − 9); 5..19 is the 10.x era (10.<kernel − 4>). For macOS 11+
+ * the minor is always `.0` — a deployment floor, since the kernel major only pins the product
  * major (avoiding a `sw_vers` subprocess).
  */
 function darwinToMacOS(release: string): string {

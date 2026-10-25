@@ -251,12 +251,9 @@ targetdef js_package {
     test_framework = STRING default ${JS_TEST_FRAMEWORK};
     # The package's version.
     version = STRING;
-    # Other `package.json` fields, such as `description`, `license` and
-    # `repository`. A value is a string, a block for an object
-    # (`repository = { type = git; url = …; };`), or several blocks for an
-    # array. Fields fabr generates (`name`, `version`, `main`, `exports`,
-    # `dependencies` and the like) and fields a published package doesn't carry
-    # (`devDependencies`, `scripts`, `private`, …) are rejected.
+    # Other `package.json` fields (`description`, `license`, `repository`): a
+    # string, a block for an object, or several blocks for an array. Fields fabr
+    # generates or a published package doesn't carry are rejected.
     metadata = MAP;
 }
 
@@ -283,8 +280,8 @@ targetdef js_bundle {
     # Packages the environment the bundle runs in already has. Imports of them
     # are left in the output and their code is not included.
     deps = PACKAGES;
-    # Renames the output files, which are otherwise named after each entry with
-    # a `.js` extension: `*.js -> *.min.js`.
+    # Renames for the output files, otherwise each entry's name with a `.js`
+    # extension: `*.js -> *.min.js`.
     output = REWRITE;
     # Constants to substitute at compile time (esbuild's `define`). Each value
     # is JavaScript source text, so a string needs its own quotes:
@@ -380,8 +377,8 @@ targetdef js_compile {
     deps = PACKAGES;
     # The package name the sources can import themselves by.
     package_name = STRING;
-    # Set to `.mjs` to name the emitted JavaScript `.mjs` rather than `.js`,
-    # with the imports between the files written to match.
+    # The extension the emitted JavaScript takes instead of `.js` (`.mjs`), with
+    # the imports between the files written to match.
     module_extension = STRING;
     # Rules that rename import specifiers (`*.scss -> *.css`), applied when
     # resolving an import and to the import written in the output.

@@ -90,7 +90,7 @@ export class CycleError extends FabrError {
 }
 
 /**
- * The help for a failure: that of the nearest error along `err`'s chain of
+ * Find the help for a failure: that of the nearest error along `err`'s chain of
  * causes, itself included, that carries any; empty when none does.
  */
 export function helpOf(err: Error): string[] {

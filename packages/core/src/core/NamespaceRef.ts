@@ -110,7 +110,7 @@ export class NamespaceRef extends Reference {
     return err instanceof RequirementResolutionError ? err : new RequirementResolutionError([this], err);
   }
 
-  /** The repository's name this one completed by `name`, written after `separator`. */
+  /** Complete this repository name by `name`, written after `separator`. */
   private completedBy(name: Name, separator: string): Name {
     return this.name === "" ? name : name.withPrefix(`${this.name}${separator}`);
   }

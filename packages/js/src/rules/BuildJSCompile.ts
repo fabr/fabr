@@ -74,7 +74,7 @@ import {
   STATE_DIR_FLAG,
 } from "@fabr-build/js-tools";
 
-/** Where the toolchain is mounted in the working dir — disjoint from src/node_modules/build. */
+/** Where the toolchain is mounted in the working dir — disjoint from src/ and build/. */
 const TOOL_DIR = ".tools/tsc";
 
 /**
@@ -192,8 +192,8 @@ export function makeTsConfig(
   /** Whether the sources declared the `dom` flag — see usesDom. */
   hasDom = false,
   /** The automatic `@types` inclusions, where the compiler cannot discover them
-   * for itself (see {@link automaticTypes}); omitted under the classic layout,
-   * where tsc's own scan is authoritative. */
+   * for itself (see {@link automaticTypes}); omitted, tsc's own scan
+   * applies. */
   types?: string[],
   /** Whether to emit JS source maps: by default, where the build type is one
    * that carries them. */
@@ -283,9 +283,8 @@ export function makeTsConfig(
 /** Where the {@link importRewrites} document is staged, and what the flag names. */
 const REWRITES_FILE = "rewrite-imports.json";
 
-/** What names it on the driver's command line. Known independently on both
- * sides, like the bundle driver's manifest name: the driver runs standalone and
- * the rule must not import it. */
+/** What names it on the driver's command line; must match the driver's own
+ * REWRITES_FLAG (tsc-driver.ts). */
 const REWRITES_FLAG = "--rewrite-imports";
 
 /** Where the `resources` property's names are staged, and what the flag names.
@@ -366,10 +365,8 @@ function compileTypescript(context: TargetContext, { srcs: srcSets, deps, resour
       /* The ES level these sources are written against (an `es<level>` flag
        * among deps), which drives `lib` and the class-field semantics. */
       const sourceVersion = resolveSourceVersion(depFlags);
-      /* js_compile owns how its dependencies reach the compiler (only it needs
-       * to) and its JSX runtime: both read the ordered direct deps directly. A
-       * .tsx/.jsx source needs a jsxImportSource (auto-detected from the deps);
-       * a JSX-free compile omits it. */
+      /* A .tsx/.jsx source needs a jsxImportSource (auto-detected from the
+       * direct deps); a JSX-free compile omits it. */
       const hasJsx = [...srcs].some(([name]) => {
         const lower = name.toLowerCase();
         return lower.endsWith(".tsx") || lower.endsWith(".jsx");
@@ -452,7 +449,7 @@ function compileTypescript(context: TargetContext, { srcs: srcSets, deps, resour
             layout: PNP,
             label: "compile",
             config,
-            /* The three locations the argv above names, so the step stages and
+            /* The four locations the argv above names, so the step stages and
              * collects the files the driver was told to use. The compile reads
              * a handful of declaration files out of a whole closure and reports
              * which, so the entry is keyed on that selection rather than on the

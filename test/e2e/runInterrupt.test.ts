@@ -22,15 +22,11 @@ import { startFabrWatch } from "./harness";
 
 /* Stopping a one-shot `fabr run` — SIGTERM from a supervisor or CI job, the
  * ordinary way to stop a running program — must take the launched program with
- * it and leave no staged install behind. Both used to fail: fabr routes its
- * termination signals through process.exit (so the build-step group sweep runs),
- * which skips the Computable `finally` that gave up the staged dir, and the
- * launched program shares fabr's process group so a directed signal never
- * reached it. A private cache keeps the staging assertions off the other suites'
- * work trees. */
+ * it and release its hold on the kept install. A private cache keeps the
+ * staging assertions off the other suites' work trees. */
 describe("e2e: interrupting a one-shot run", () => {
-  /** The entries of `cache`'s `work/` that are a program's kept installs (the
-   * directories) and the holds on them. */
+  /** List the entries of `cache`'s `work/` that are a program's kept installs
+   * (the directories) and the holds on them. */
   function keptInstalls(cache: string): { installs: string[]; holds: string[] } {
     const work = path.join(cache, "work");
     const kept = fs.existsSync(work) ? fs.readdirSync(work).filter(name => name.includes("@")) : [];
@@ -40,7 +36,7 @@ describe("e2e: interrupting a one-shot run", () => {
     };
   }
 
-  /** True once `pid` is gone (kill(0) is the liveness probe). */
+  /** @return true if `pid` is gone (kill(0) is the liveness probe), otherwise false. */
   function isDead(pid: number): boolean {
     try {
       process.kill(pid, 0);

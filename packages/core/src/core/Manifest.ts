@@ -60,7 +60,7 @@ export type DiscoveredDeps = Map<string, ReadonlyArray<DepsPath>>;
  * resolves to nothing: a permanent absence, silently dropping the file from
  * the key.
  *
- * Mirrored in @fabr-build/js's pnp/ReadSet.ts for the driver side, which must
+ * Mirrored in @fabr-build/js-tools's pnp/ReadSet.ts for the driver side, which must
  * not depend on core at runtime — keep the two in sync.
  */
 export function joinDepsPath(path: DepsPath): string {
@@ -81,7 +81,7 @@ export function splitDepsPath(name: string): string[] {
  */
 
 /**
- * A file name as a manifest row carries it. `encodeURI` escapes the space (the
+ * Encode a file name as a manifest row carries it. `encodeURI` escapes the space (the
  * field separator) and the newline while leaving a path's `/` and a
  * specifier's `:@&` legible.
  */
@@ -175,7 +175,7 @@ export const ABSENT_PREFIX = "# absent ";
  * does. */
 const BASE_SEAL_PREFIX = "# end ";
 
-/** A recorded base as the record stores it: the text verbatim, sealed. Applied
+/** Seal a recorded base as the record stores it: the text verbatim, then the seal. Applied
  * where the record is written, not where the key material is built — the seal
  * frames the FILE against damage and is no fact about the build. */
 export function sealRecordedBase(text: string): string {
@@ -184,7 +184,7 @@ export function sealRecordedBase(text: string): string {
 }
 
 /**
- * A recorded base read back: every row it holds, and every path that found
+ * Read a recorded base back: every row it holds, and every path that found
  * nothing. Framing is skipped; what refuses damage is the seal — undefined for
  * a document whose last line is not one, or whose count does not match what
  * was read, which covers a truncated copy, a torn one, and a document written
@@ -205,7 +205,7 @@ export function parseRecordedBase(text: string): { rows: IManifestRow[]; absent:
   return rows.length + absent.length === claimed ? { rows, absent } : undefined;
 }
 
-/** The meaningful lines of a base's text — one scanner behind the seal's count
+/** Scan the meaningful lines of a base's text — one scanner behind the seal's count
  * and the read-back, so the two can never disagree about what counts. */
 function scanBase(text: string): { rows: IManifestRow[]; absent: string[] } {
   const rows: IManifestRow[] = [];
@@ -263,7 +263,7 @@ export interface ISourceIndexMeta {
  * record then reads as absent, costing one re-hash per file. */
 const SOURCE_INDEX_MAGIC = "!source-index 2 ";
 
-/** A source index as bytes: the magic + header, then one
+/** Serialize a source index: the magic + header, then one
  * `hash size mtimeMs <trust> name mime` row per file in canonical (code-unit)
  * name order — `=` a verified row, `?` an unverified one — count sealed in
  * the header like every manifest. */
@@ -310,7 +310,7 @@ export function parseSourceIndex(text: string): { meta: ISourceIndexMeta; rows: 
   return rows.size === header.rows ? { meta: { root, algorithm, writtenAt }, rows } : undefined;
 }
 
-/** One row back, or undefined for a line that is not one — every field must be
+/** Read one row back, or undefined for a line that is not one — every field must be
  * non-empty (`Number("")` is 0, so an empty numeric field would otherwise read
  * as a value), and the trust mark must be exactly `=` or `?`. The mime is the
  * rest-of-line after the name, so a mime with a space cannot corrupt the
@@ -359,7 +359,7 @@ function parseSourceIndexRow(line: string): ISourceIndexRow | undefined {
  * unread, costing one cold build per anchor. */
 const DISCOVERED_DEPS_MAGIC = "!discovered-deps 4";
 
-/** A selection as the discovered-deps record's bytes: sections and paths both
+/** Serialize a selection as the discovered-deps record's bytes: sections and paths both
  * in canonical order, so one selection has one spelling (and so one
  * content-addressed record file). */
 export function serializeDiscoveredDeps(selection: DiscoveredDeps): string {

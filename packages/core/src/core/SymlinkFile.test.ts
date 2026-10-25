@@ -130,7 +130,7 @@ describe("CacheLink", () => {
       const files = new FileSet(
         new Map<string, import("./FileSet").IFile>([
           [".fabr-tree", new CacheLink("tree", cache)],
-          /* An ordinary symlink escaping the tree keeps today's containment: the
+          /* An ordinary symlink escaping the tree is still contained: the
            * exemption is per-class, not a widening of the guard. */
           ["node_modules/escape", new SymlinkFile(path.join(cache, "tree"))],
           /* THE LAUNDERING REGRESSION: a delivered symlink whose target text

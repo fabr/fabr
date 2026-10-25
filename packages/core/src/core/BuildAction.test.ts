@@ -191,12 +191,9 @@ describe("the config digest", () => {
   });
 
   it("reads nothing but the options — per-file inputs and the pool are not identity", () => {
-    /* Anchor fields carry no unassembled packages in production — a tool
-     * arrives as its assembled install, ordinary per-file content inside
-     * `inputs` — so a tool change reaches the build through the action key and
-     * the memo's per-file diff (a changed non-graph file forces the driver's
-     * full recompile), never through the digest. The digest is therefore a
-     * pure function of `options`. */
+    /* The digest reads only `config`: per-file inputs, packages among them,
+     * and the discoverable deps reach the key through the action key, never
+     * through the digest. */
     const dep = (content: string): PackageFileSet =>
       new PackageFileSet(new Map([["index.d.ts", MemoryFile.from(content)]]), "left-pad", "1.0.0", []);
     const base = { inputs: { srcs: sources("one") }, config: { argv: ["tsc"] } };
@@ -255,8 +252,8 @@ describe("the key fold over package inputs", () => {
   });
 
   it("DOES distinguish direct from transitive — what a package is reached by is what a mount sees", () => {
-    /* `scoped` and `pnp` both decide visibility from the direct list — the
-     * top-level row is `dependencyList(roots)` — so the same instances reached
+    /* The node_modules top level and the pnp table both decide visibility
+     * from the direct list — the pnp top-level row is `dependencyList(roots)` — so the same instances reached
      * two ways are not the same input: dropping a declared dep that survives
      * transitively must move the key. */
     const { a, b } = graph("b");

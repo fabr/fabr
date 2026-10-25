@@ -25,8 +25,8 @@
  * by construction): `process.env`, native state, leaked handles and heap are
  * all separate per file.
  *
- * Invoked by the parent (runner.ts) as a forked child; the result goes back
- * over the IPC channel. Anything that kills the process before that — a module
+ * Run in-process by runner.ts for a single-file invocation, or as a forked
+ * child for a list, the result then going back over the IPC channel. Anything that kills the process before that — a module
  * that fails to load, a broken preload — leaves no message, and the parent
  * reports the file as failed using the stderr it captured.
  */
@@ -72,7 +72,7 @@ export interface IChildResult {
   execError?: string;
 }
 
-/** The two jest libraries this module constructs by name. */
+/** jest-mock, as this module constructs it. */
 interface IMockerModule {
   ModuleMocker: new (global: unknown) => IMocker & IMockerControls & { getMetadata(c: unknown): unknown; generateFromMetadata(m: unknown): unknown };
 }
@@ -154,7 +154,7 @@ interface IDocblockModule {
 }
 
 /**
- * The environment this file runs in — `request.env` unless the file's leading
+ * Choose the environment this file runs in — `request.env` unless the file's leading
  * docblock says otherwise (see environmentFor). The docblock is read from the
  * SOURCE the test was compiled from, as jest reads it, falling back to the
  * compiled file where the source is not staged.
@@ -186,7 +186,7 @@ const FRAMEWORK_GLOBALS = [
 ];
 
 /**
- * The `@jest/globals` namespace for one caller. `jest` is the caller's own (its
+ * Make the `@jest/globals` namespace for one caller. `jest` is the caller's own (its
  * module specifiers resolve against that caller); everything else is read off
  * the global object at serve time — a module can only import `@jest/globals`
  * while circus is loading it, which is after circus installed the globals. A
@@ -205,9 +205,10 @@ export function makeJestGlobals(jest: unknown): Record<string, unknown> {
   return namespace;
 }
 
-/** A throw need not be an Error: a string or object rejection must still be
- * reported as what it was — an undefined execError would make the parent
- * misread the failure as "this file registered no tests". */
+/** Describe a thrown value, which need not be an Error: a string or object
+ * rejection must still be reported as what it was — an undefined execError
+ * would make the parent misread the failure as "this file registered no
+ * tests". */
 export function describeThrown(err: unknown): string {
   return err instanceof Error ? err.stack ?? err.message : `Non-Error thrown: ${inspect(err)}`;
 }

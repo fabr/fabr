@@ -202,7 +202,7 @@ export class TerminalStream {
     this.out.write = adopted;
   }
 
-  /** Whether this stream paints a live pane at all. Read by whoever is
+  /** @return true if this stream paints a live pane at all, otherwise false. Read by whoever is
    *  deciding what the *log* must carry: with a pane showing what is running,
    *  the log needn't also announce it. */
   public get hasPane(): boolean {
@@ -233,8 +233,8 @@ export class TerminalStream {
     this.repaint();
   }
 
-  /** The pane's content may have changed — repaint now rather than at the next
-   *  tick, so a row appears and disappears with the event that caused it. */
+  /** Repaint now, the pane's content having possibly changed, rather than at
+   *  the next tick, so a row appears and disappears with the event that caused it. */
   public paneChanged(): void {
     this.repaint();
   }
@@ -301,7 +301,7 @@ export class TerminalStream {
   }
 
   /**
-   * The pane as it should look now — empty when there is none to paint (no
+   * Render the pane as it should look now — empty when there is none to paint (no
    * terminal, suspended, or no work in flight: an empty pane is nothing at all,
    * not a bare heading over an idle build).
    *
@@ -325,7 +325,7 @@ export class TerminalStream {
   }
 
   /**
-   * How many rows the screen can spare (see {@link MAX_PANE_FRACTION}). Told to
+   * Count how many rows the screen can spare (see {@link MAX_PANE_FRACTION}). Told to
    * the pane source, which spends them; only this component knows the screen.
    */
   private rowBudget(): number {
@@ -334,7 +334,7 @@ export class TerminalStream {
   }
 
   /**
-   * The backstop for a source that overspends its budget: cut, and say so
+   * Cut the rows of a source that overspends its budget (the backstop), and say so
    * rather than truncate silently — a pane showing 6 of 30 with no sign of the
    * other 24 reads as "that is everything running".
    */
@@ -349,7 +349,7 @@ export class TerminalStream {
     return [...rows.slice(0, kept), { left: `  … +${rows.length - kept} more`, right: "" }];
   }
 
-  /** The columns available to a pane line, one short of the terminal's own so a
+  /** Count the columns available to a pane line, one short of the terminal's own so a
    *  full-width line can't wrap. `||`, not `??`: a pty whose size nobody set
    *  reports 0 columns, which is an absence dressed as a number. */
   private width(): number {
@@ -405,7 +405,8 @@ export function withTerminalSuspended<T>(run: () => Computable<T>): Computable<T
   }
 }
 
-/** The unbracketed form, for a hand-over whose end is an event rather than the
+/** Suspend the active terminal until {@link resumeActiveTerminal} — the
+ *  unbracketed form of {@link withTerminalSuspended}, for a hand-over whose end is an event rather than the
  *  settling of a chain (the supervised `run -w` child, which outlives the build
  *  that launched it and is only over when it exits). */
 export function suspendActiveTerminal(): void {
@@ -416,7 +417,7 @@ export function resumeActiveTerminal(): void {
   active?.resume();
 }
 
-/** Whether a written chunk left the cursor at the start of a fresh line. */
+/** @return true if a written chunk left the cursor at the start of a fresh line, otherwise false. */
 function endsLine(chunk: unknown): boolean {
   if (typeof chunk === "string") {
     return chunk.endsWith("\n");
@@ -459,7 +460,7 @@ export function layoutRow(row: IPaneRow, width: number): string {
   return left + pad + right;
 }
 
-/** Printable columns: escapes occupy none, and width is display columns
+/** Count printable columns: escapes occupy none, and width is display columns
  *  (CJK/emoji count 2), since the erase counts what the terminal drew. */
 function visibleLength(text: string): number {
   return displayWidth(stripAnsi(text));

@@ -66,8 +66,7 @@ interface INode {
   loc?: { start: unknown };
 }
 
-/* As much of each library as the driver uses: they are not fabr dependencies
- * (they come with the tool's install), so their own types are not available. */
+/* As much of each library as the driver uses, typed locally. */
 interface IAcorn {
   parse(code: string, options: Record<string, unknown>): INode;
 }
@@ -113,14 +112,14 @@ export function startStaticMembersAtKey(node: unknown): void {
   }
 }
 
-/** Whether `node` is a branch V8 cannot count: a parameter's default, evaluated
- * with no counter of its own. */
+/** @return true if `node` is a branch V8 cannot count — a parameter's default,
+ * evaluated with no counter of its own — otherwise false. */
 function uncountableBranch(node: INode, type: string): boolean {
   return type === "branch" && node.type === "AssignmentPattern";
 }
 
-/** The source map a compiled file names in its `sourceMappingURL` comment, or
- * none. */
+/** Read the source map a compiled file names in its `sourceMappingURL`
+ * comment, or none. */
 function sourceMapOf(file: string, code: string): { map: unknown; dir: string } | undefined {
   const comment = /\/\/[#@] sourceMappingURL=(\S+)\s*$/.exec(code);
   if (comment === null) {

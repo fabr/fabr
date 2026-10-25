@@ -54,10 +54,9 @@ function diskFile(abspath: string): IFile {
   return file;
 }
 
-/** Unpack into a fresh temp dir (production always unpacks into a clean
- * cache-owned scratch dir; a shared dir would trip the case-collision guard on
- * debris from a prior run). The returned FileSet's hashes are computed during
- * unpack, so it stays valid after the dir is removed. */
+/** Unpack through a throwaway BuildCache's CAS output. The returned FileSet's
+ * hashes are computed during unpack, so it stays valid after the cache dir is
+ * removed. */
 async function unpackInTemp(tarball: Buffer): Promise<FileSet> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-pack-cache-"));
   const cache = new BuildCache(dir, new LogFormatter(LogLevel.Info, () => undefined));

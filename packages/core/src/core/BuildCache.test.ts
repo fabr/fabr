@@ -899,7 +899,7 @@ describe("BuildCache discovered dependencies", () => {
 
   it("does not serve a stale entry when a direct binding is re-bound over a surviving instance", async () => {
     /**
-     * The re-bind hazard (diagnosed 2026-08-31, fixed by recording the path).
+     * The re-bind hazard.
      *
      * The direct binding for the name `lodash` moves from 4.0.0 to 5.0.0, while
      * 4.0.0 survives in the closure — byte-identical — as a transitive of
@@ -1014,10 +1014,9 @@ describe("BuildCache discovered dependencies", () => {
   });
 
   it("keeps every distinct read set, and still finds the matching one", async () => {
-    /* Ten distinct read sets under one anchor. Records accumulate — nothing
-     * prunes them until the cache GC covers these directories — and the lookup
-     * walks them in whatever order they are read, so a long list costs probes
-     * and never a wrong answer. */
+    /* Ten distinct read sets under one anchor. Records accumulate until the
+     * GC ages them out, and the lookup walks them in whatever order they are
+     * read, so a long list costs probes and never a wrong answer. */
     const headers = (count: number): Record<string, string> => {
       const names = Array.from({ length: 10 }, (_unused, index) => `h${index}.h`);
       return Object.fromEntries([["a.h", names.slice(0, count).join(",")], ...names.map(name => [name, "x"])]);
@@ -1127,8 +1126,8 @@ describe("BuildCache discovered dependencies", () => {
     /* A step that declares discoverable inputs and discovers nothing is taken
      * the only safe way — as having read all of them — so the entry lives
      * under the anchor plus the whole discoverable manifest: literally what the
-     * complete key would have said. Predict reconstructs that key with no
-     * memo, so no record is recorded either. */
+     * complete key would have said. The lookup reconstructs that key with no
+     * record, so none is written either. */
     const discoverable = discoverableDeps({ "a.h": "", "b.h": "one" });
     const demand = (files: ActionFileInputs): Promise<FileSet> =>
       toPromise(
@@ -1156,10 +1155,6 @@ describe("BuildCache discovered dependencies", () => {
      * own. That is the general case and packages are the special one (they
      * nest, so reaching their files takes edges first); nothing here is a
      * package path with the packages taken out.
-     *
-     * Discovery over such an input used to buy exactly nothing: an unnamed
-     * member could not be narrowed, so every discoverable dep rode the key whether it
-     * was read or not.
      */
     const headers = (contents: Record<string, string>): ActionFileInputs => ({
       headers: [new FileSet(new Map(Object.entries(contents).map(([name, text]) => [name, MemoryFile.from(text)])))],
@@ -1191,10 +1186,9 @@ describe("BuildCache discovered dependencies", () => {
 
   it("keys an input the selection never mentioned WHOLE, and one it did by its paths", async () => {
     /**
-     * The defect this pins: core used to read an unmentioned input as "the run
-     * read nothing of it" — a claim only a recorder can make — so a discoverable
-     * input its recorder had never been taught about keyed as though it were
-     * irrelevant, and editing anything in it moved no key. A silent stale hit.
+     * An unmentioned input is not "the run read nothing of it" — a claim only a
+     * recorder can make — so a discoverable input its recorder was never taught
+     * about keys whole, and editing anything in it moves the key.
      *
      * The two halves are asserted against each other in one run, because it is
      * the *difference* that is the contract (see the three states of DiscoveredDeps):
@@ -1323,11 +1317,12 @@ describe("BuildCache discovered dependencies", () => {
 });
 
 /**
- * The build-state record: one directory per target key holding three facts
- * about one build — `inputs` (fabr's own manifest of what that build was made
- * of, whose rows are NOT pool claims), `outputs` (a symlink to the entry it
- * produced) and `state` (the tool's kept files, blob-backed). Both manifests
- * are optional and every combination is legal; the pairing is what the
+ * The build-state record: one directory per target key whose `current` link
+ * names a generation directory holding one build's parts — `inputs` and
+ * `discovered` (fabr's own rows of what that build was given and what it
+ * accessed, written together and NOT pool claims), `outputs` (a symlink to
+ * the entry it produced) and `state` (the tool's kept files, blob-backed).
+ * The base and `state` are each optional and every combination is legal; the pairing is what the
  * directory exists for. The cache owns where it lives, its integrity, and when
  * a stale attempt may write one; what the tool's bytes mean is the tool's
  * business alone.
@@ -1466,7 +1461,7 @@ describe("BuildCache build state", () => {
   });
 
   it("answers nothing when the tool's blob has gone", async () => {
-    /* A wiped pool (or the future GC): the record cannot say what the tool
+    /* A wiped pool (or the GC's sweep): the record cannot say what the tool
      * knew, so there is no record — a cold build, never an error. */
     const targetKey = "target-key-swept";
     await record(targetKey);
@@ -1506,8 +1501,8 @@ describe("BuildCache build state", () => {
   });
 
   it("surfaces a real IO failure rather than reading it as an absent part", async () => {
-    /* Now that a missing part and a damaged one both read as absent, this is
-     * the only thing keeping an UNREADABLE one out of that bucket too:
+    /* A missing part and a damaged one both read as absent; this is the only
+     * thing keeping an UNREADABLE one out of that bucket too:
      * swallowing it would take the target key cold on every build, forever,
      * with nothing said. */
     const targetKey = "target-key-unreadable";
@@ -2249,7 +2244,7 @@ describe("BuildCache.ensureTree (the tree pool)", () => {
 
   it("builds in the work tree, so the pool only ever holds complete trees", async () => {
     /* Nothing partial is ever visible under `tree/` — which is what lets a
-     * scan of it (a future GC, an fsck) trust every directory it sees, with no
+     * scan of it (the GC, an fsck) trust every directory it sees, with no
      * skip-the-temps convention to know about. The temp is a work dir like any
      * other, so its cleanup rides the work tree's exit hook and startup sweep. */
     const cache = new BuildCache(root, NULL_LOG);

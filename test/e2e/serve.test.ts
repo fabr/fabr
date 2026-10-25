@@ -26,10 +26,8 @@ import { startFabrWatch } from "./harness";
 
 /* jest caps each test at `testTimeout` (30s); the fabr runner bounds tests
  * itself. Called as a BARE `jest`: under real jest the object is injected into
- * MODULE scope and is not on globalThis, so reaching it through globalThis was a
- * silent no-op — these suites have been running at 30s and only passing because
- * they finished in time. `@types/jest` rides the e2e target's deps, so the bare
- * name type-checks under the fabr compile too. */
+ * MODULE scope and is not on globalThis. `@types/jest` rides the e2e target's
+ * deps, so the bare name type-checks under the fabr compile too. */
 jest.setTimeout(90000);
 
 /* The server announces itself, then polls `data.txt` in its cwd and announces
@@ -145,9 +143,7 @@ describe("e2e: serve target under fabr run -w", () => {
     /* The docs_serve shape: `files` come through a generate dependency, so the
      * rebuild work happens beneath a *dependency* of the requested target. The
      * per-cycle status marker must attribute that work to the request ("Built
-     * app") — the top-level target's own evaluation yields no action, and
-     * before the demand-chain attribution the cycle reported the contradictory
-     * "Already up to date" right before "Updating app content". */
+     * app") — the top-level target's own evaluation yields no action. */
     const session = startFabrWatch(
       {
         "PROJECT.fabr":

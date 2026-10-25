@@ -339,8 +339,8 @@ export function unmaterialized(
 ): Unmaterialized<Record<string, RequiredSources>> {
   let held: Computable<void> | undefined;
   const check = (): Computable<void> => (held ??= resolved.check());
-  /* One memo per requirement, which both forms read, so what one call gave
-   * content the other does not materialize again. The names a call finds
+  /* One memo per requirement, which every form reads, so what one call gave
+   * content no other materializes again. The names a call finds
    * unmaterialized are materialized together, as one collection. */
   const each = new Map<string, Computable<Collected>>();
   const materialize = (names: string[]): Computable<Collected[]> => {
@@ -372,9 +372,10 @@ export function unmaterialized(
   };
 }
 
-/** The packages among a collected requirement as the edges to them. A
+/** List the packages among a collected requirement as the edges to them. A
  * package among it with no reference — one a sub-target was handed in hand,
- * which no reference asked for — has no edge, and is read materialized. */
+ * which no reference asked for — has no edge and is refused: such a
+ * requirement is read with `materialize`. */
 function packageEdges(name: string, collected: Collected): Array<Dependency<PackageFileSet>> {
   return collected.sources.flatMap((source, at): Array<Dependency<PackageFileSet>> => {
     if (!(source instanceof PackageFileSet)) {

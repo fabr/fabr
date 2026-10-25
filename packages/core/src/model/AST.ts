@@ -206,7 +206,7 @@ export interface IMapSpliceDecl extends IBaseDecl {
 /** One item of a `{ ... }` block: a `key = value;` entry or a `NAME;` splice. */
 export type IMapItemDecl = IPropertyDecl | IMapSpliceDecl;
 
-/** @return true if any of the property's values is a `{ ... }` map block. */
+/** @return true if any of the property's values is a `{ ... }` map block, otherwise false. */
 export function hasMapValue(prop: IPropertyDecl): boolean {
   return prop.values.some(isMapValue);
 }
@@ -285,7 +285,7 @@ export type IPlainNamedDecl = INamespaceDecl | ITargetDefDecl;
 
 export type INamedDecl = IResolvableDecl | IPlainNamedDecl;
 
-/** A declaration's name as a plain string, whichever kind it is — for the
+/** Get a declaration's name as a plain string, whichever kind it is — for the
  * namespace machinery, which indexes all four alike. A resolvable decl's facets
  * are left off ({@link Name.toBaseString}): they qualify the declaration, not
  * the name it goes under. */
@@ -320,7 +320,7 @@ export function getDeclKindName(kind: DeclKind): string {
   }
 }
 
-/** The source span of a declaration: its position, plus the extent of its
+/** Get the source span of a declaration: its position, plus the extent of its
  * name/value where the parser recorded one (rendered as an underline). */
 export function declPosn(decl: IBaseDecl): ISourceSpan {
   return { ...decl.source, offset: decl.offset, endOffset: decl.endOffset };

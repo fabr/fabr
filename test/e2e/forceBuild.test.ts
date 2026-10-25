@@ -27,9 +27,9 @@ import { runFabr, STUB_TSC, STUB_TSC_CONFIG } from "./harness";
  *
  * `gen`'s command names the package `tool_pkg` as the program to run, so it is
  * a genuine dependency reached under BUILD_OPERATION=run — and `js_package[run]`
- * re-enters its own build with no dependency stack. That is precisely what an
- * "is this a top-level request?" reading of the build graph mistakes for a
- * named target (fabr's own docs build has this shape). */
+ * reaches its own `[build]` result through an operation hop. Force marks the
+ * named declaration, so it must not reach the tool's build (fabr's own docs
+ * build has this shape). */
 const PROJECT =
   "plugin @fabr-build/js;\n\n" +
   STUB_TSC_CONFIG +
@@ -41,9 +41,9 @@ const FILES = {
   "pkgsrc/bin/cli.ts": 'process.stdout.write("hello\\n");\n',
 };
 
-/** The runs share one cache (the harness's), so a repeat of an identical
- * fixture is a cache hit — which is what gives a forced run something to
- * defeat. */
+/** Run fabr over the fixture. The runs share one cache (the harness's), so a
+ * repeat of an identical fixture is a cache hit — which is what gives a forced
+ * run something to defeat. */
 function build(...args: string[]): { stderr: string; status: number } {
   const result = runFabr({ "PROJECT.fabr": PROJECT, ...FILES }, ["-DJS_TARGET=es2020", ...args]);
   return { stderr: result.stderr, status: result.status };
@@ -57,9 +57,8 @@ describe("e2e: forced builds (-f)", () => {
     const forced = build("-f", "build", "gen");
     expect(forced.status).to.equal(0);
     expect(forced.stderr, "the named target is rebuilt").to.contain("Building gen");
-    /* The tool is a dependency, and its build is reached by a path carrying no
-     * dependency stack — so this is the assertion that force follows what was
-     * named rather than the shape of the request. */
+    /* The tool is a dependency, so it is not forced with the target that was
+     * named. */
     expect(forced.stderr, "the tool it depends on is not").to.not.contain("tool_pkg");
 
     expect(build("build", "gen").stderr, "and the forced result is cached again").to.contain("Already up to date");

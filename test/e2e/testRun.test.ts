@@ -22,17 +22,15 @@ import * as fs from "node:fs";
 import { runFabr, STUB_TSC, STUB_TSC_CONFIG } from "./harness";
 
 /* `fabr test` end to end: compile a package's tests and run them under fabr's
- * own runner (sourced from the installed @fabr-build/js — no runner configuration,
- * no npm), proving both outcomes through the real CLI. The fixture asserts with
+ * own runner (sourced from the installed @fabr-build/js-tools — no runner
+ * configuration, no npm), proving both outcomes through the real CLI. The fixture asserts with
  * node:assert so it needs no downloaded assertion library; the stub tsc copies
  * the type-free test verbatim. A red run must fail the command AND render the
  * failure as a test outcome, not a build error. */
 /* jest caps each test at `testTimeout` (30s); the fabr runner bounds tests
  * itself. Called as a BARE `jest`: under real jest the object is injected into
- * MODULE scope and is not on globalThis, so reaching it through globalThis was a
- * silent no-op — these suites have been running at 30s and only passing because
- * they finished in time. `@types/jest` rides the e2e target's deps, so the bare
- * name type-checks under the fabr compile too. */
+ * MODULE scope and is not on globalThis. `@types/jest` rides the e2e target's
+ * deps, so the bare name type-checks under the fabr compile too. */
 jest.setTimeout(90000);
 
 describe("e2e: fabr test (runner from @fabr-build/js)", () => {
@@ -131,10 +129,9 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
   });
 
   it("stages a non-package resource dep at the install root for a test to read", () => {
-    /* J3: a loose resource dep (a .json tsc reads but never emits) must be carried
-     * into the test install at the root — next to the compiled tests — while
-     * packages mount under node_modules, as RunJSScript does. Without it the .json
-     * would land at node_modules/config.json and the relative require would miss. */
+    /* A loose resource dep (a .json tsc reads but never emits) is carried into
+     * the test install at the root — next to the compiled tests — while packages
+     * mount under node_modules, as RunJSScript does. */
     const result = runFabr(
       {
         ...STUB_TSC,

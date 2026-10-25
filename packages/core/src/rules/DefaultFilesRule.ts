@@ -27,14 +27,16 @@ import { RuleDefinition, RuleResult } from "./Types";
 import { FabrError } from "../core/Errors";
 
 /**
- * The generic `files` rule: registered as a default (all-types) rule, so it is
- * selected for any target under BUILD_OPERATION=files that has no more specific
- * rule of its own. "files" means "give me the output files and no more" — it is
- * a weaker form of `build`, so this simply re-evaluates the same target under
+ * Hand back a target's files, as the generic `files` rule: registered as a
+ * default (all-types) rule, so it is selected for any target under
+ * BUILD_OPERATION=files that has no more specific rule of its own. "files"
+ * means "give me the output files and no more" — it is a weaker form of
+ * `build`, so this simply re-evaluates the same target under
  * BUILD_OPERATION=build and hands back its files. The value of the distinct
- * operation is not here but at the leaves: a consumer that reads `files` off its
- * context (an `@npm:` repository, say) can deliver strictly less — a package's
- * own files with no dependency closure — when only the files are wanted.
+ * operation is not here but at the leaves: a consumer that reads `files` off
+ * its context (an `@npm:` repository, say) can deliver strictly less — a
+ * package's own files with no dependency closure — when only the files are
+ * wanted.
  *
  * What `files` may skip is *work*, never content: the names a reference resolves
  * to must not depend on the operation it was written under. So every file source

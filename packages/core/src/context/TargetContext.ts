@@ -619,10 +619,10 @@ export class DeclaredTargetContext extends TargetContext {
 
   public getWildcardProperties(overrides?: Constraints): Computable<{ key: Name; decl: IPropertyDecl }[]> {
     /* EVERY property the targetdef does not explicitly declare is a member —
-     * a reference-shaped name carries its parsed keyRef, and a bare identifier
-     * (`lodash = @npm;`) IS its own key. The schema's `*` entry is the wildcard
-     * TYPE declaration, not a property named `*`, so a literal `*` member (a
-     * group's catch-all route) is a member like any other. */
+     * a reference-shaped name and a bare identifier (`lodash = @npm;`) alike,
+     * each read back as the member's substituted `key`. The schema's `*` entry
+     * is the wildcard TYPE declaration, not a property named `*`, so a literal
+     * `*` member (a group's catch-all route) is a member like any other. */
     const declared = this.target.properties.filter(
       prop => prop.name.toBaseString() === "*" || !this.targetDef.properties.has(prop.name.toBaseString())
     );
@@ -696,7 +696,7 @@ export class AnonymousTargetContext extends TargetContext {
     return this.declared.name;
   }
 
-  /** An anonymous sub-target has no declaration body, so no wildcard properties. */
+  /** Get no wildcard properties: an anonymous sub-target has no declaration body. */
   public getWildcardProperties(): Computable<{ key: Name; decl: IPropertyDecl }[]> {
     return Computable.resolve([]);
   }
@@ -705,7 +705,7 @@ export class AnonymousTargetContext extends TargetContext {
    * declared default. A default is looked up with no target declaration: it
    * was written in the targetdef. */
 
-  /** A sub-target's command input: the {@link CommandValue} the caller
+  /** Get a sub-target's command input: the {@link CommandValue} the caller
    * supplies, else the type's declared default. */
   protected getCommandStages(name: string): Computable<ICommandStageLookup[]> {
     const value = this.inputs[name];
@@ -748,7 +748,7 @@ export class AnonymousTargetContext extends TargetContext {
     return Computable.resolve(value instanceof Name ? [value] : (value as Name[]));
   }
 
-  /** A sub-target's projection input, if the caller supplied a Name in the bag
+  /** Get a sub-target's projection input, if the caller supplied a Name in the bag
    * (a bare selector or a `-> tmpl` rename), else the type's declared default.
    * A bag entry that is not a Name declares none — and takes no default, having
    * been supplied. */
@@ -761,7 +761,7 @@ export class AnonymousTargetContext extends TargetContext {
     return Computable.resolve(value instanceof Name ? value : undefined);
   }
 
-  /** A sub-target's map input: the resolved map the caller supplies — entry
+  /** Get a sub-target's map input: the resolved map the caller supplies — entry
    * origins and all, when it is one a declared target read — else the type's
    * declared default. */
   public getMap(name: string, overrides?: Constraints): Computable<PropertyMap> {

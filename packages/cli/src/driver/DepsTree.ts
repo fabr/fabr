@@ -97,7 +97,7 @@ export interface DependencyTree {
   readonly conflicts?: Conflicts;
 }
 
-/** The edges to the packages among `sources`, each with the reference it was
+/** List the edges to the packages among `sources`, each with the reference it was
  * resolved for. */
 function edgesOf(sources: ReadonlyArray<Resolved>, references: ReadonlyArray<Reference | undefined>): Dependency[] {
   return sources.flatMap((source, at): Dependency[] => {

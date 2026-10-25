@@ -57,9 +57,8 @@ describe("e2e: command substitution", () => {
   });
 
   it("composes with adjacent text, as a part rather than a whole value", () => {
-    /* `` v`ver`-final `` is the case that ruled out treating a backtick
-     * expression as a whole value: it must concatenate exactly as `${...}` does,
-     * and stay ONE argument while doing it. */
+    /* A substitution concatenates with adjacent text exactly as `${...}` does,
+     * and the result stays ONE argument. */
     const result = generated("echoarg v`ver`-final");
     expect(result.status).to.equal(0);
     expect(result.stdout).to.equal("v1.2.3-final");
@@ -150,9 +149,8 @@ describe("e2e: command substitution", () => {
   });
 
   it("cannot have its value displaced by a redirect naming the capture", () => {
-    /* Captures share one namespace, last writer wins — so before every name was
-     * generated, `2> <capture>` silently replaced the value with stderr. No
-     * reserved name could have fixed it: a target is substitutable (`> ${X}`). */
+    /* A redirect inside a substitution is captured under a generated name,
+     * whatever it names, so no redirect target can name the value's capture. */
     expect(generated("echoarg `noisy 2> stdout`").stdout).to.equal("out");
     expect(generated("echoarg `noisy 2> value`").stdout).to.equal("out");
   });

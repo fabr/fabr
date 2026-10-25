@@ -68,7 +68,7 @@ describe("FSFileSource.ingest", () => {
 
   it("treats a directory as absent, not an error", async () => {
     /* A not-yet-existing directory reference matches the path itself; when that
-     * path materializes as a directory its own event ingests here — a directory
+     * path appears as a directory its own event ingests here — a directory
      * is not a file, so it must be absent rather than an EISDIR hard error. */
     fs.mkdirSync(path.join(root, "adir"));
     const src = new FSFileSource(root);
@@ -168,8 +168,7 @@ describe("FSFileSource enumeration window (TreeQuery)", () => {
   it("a not-yet-existing directory reference claims a later child file (not the literal matcher)", async () => {
     /* 'watchdir' does not exist when enumerated, so its type (file vs directory)
      * is unknown; the projection must accept both, so a later watchdir/child.ts
-     * is claimed and fills the set. With the old literal-only matcher the child
-     * was dropped and the set never filled. */
+     * is claimed and fills the set. */
     const src = new FSFileSource(root);
     const query = src.find(Name.fromLiteral("watchdir")) as TreeQuery;
     const initial = await toPromise(query);
@@ -177,7 +176,7 @@ describe("FSFileSource enumeration window (TreeQuery)", () => {
 
     fs.mkdirSync(path.join(root, "watchdir"));
     fs.writeFileSync(path.join(root, "watchdir", "child.ts"), "x");
-    /* The event is claimed (true); the old literal-only matcher dropped it (false). */
+    /* The event is claimed. */
     expect(query.applyEvent("watchdir/child.ts", false)).to.equal(true);
   });
 
@@ -462,8 +461,8 @@ describe("FSFileSource rename resolution", () => {
     fs.writeFileSync(path.join(root, "single.txt"), "x");
     const to = Name.fromLiteral("renamed.txt");
     expect(await resolved(Name.fromLiteral("single.txt").withRenameTo(to))).to.deep.equal(["renamed.txt"]);
-    /* The regression: picomatch strips a leading `./` from the rename pattern but
-     * not the input, so a `./single.txt` name used to match nothing. */
+    /* picomatch strips a leading `./` from the rename pattern but not the
+     * input; a `./single.txt` name must still match. */
     expect(await resolved(Name.fromLiteral("./single.txt").withRenameTo(to))).to.deep.equal(["renamed.txt"]);
   });
 
@@ -478,11 +477,8 @@ describe("FSFileSource rename resolution", () => {
   });
 });
 
-/* The regression: a pure-literal extglob (`!(Validation)/**`) matched nothing,
- * because the group's characters were literal to the name model while picomatch
- * read them as an extglob — so the walk based at a directory named
- * `!(Validation)`, which does not exist. A group with an interior wildcard
- * (`!(V*)`) accidentally worked, its glob part cutting the base back to "".
+/* An extglob group, even a pure-literal one (`!(Validation)/**`), is glob to the
+ * name model as it is to picomatch, so it never becomes part of the walk base.
  * These enumerate for real, so the walk base and the match must agree. */
 describe("FSFileSource extglob enumeration", () => {
   let root: string;

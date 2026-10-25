@@ -71,7 +71,7 @@ export function parseJson<T>(text: string | Buffer, what: string, convert: JsonC
   }
 }
 
-/** The converter for a document nothing further is claimed about. */
+/** Convert a document nothing further is claimed about: any JSON object. */
 export function toJsonObject(json: unknown): Record<string, unknown> {
   if (!isJsonObject(json)) {
     throw new FabrError("expected a JSON object");
@@ -79,8 +79,9 @@ export function toJsonObject(json: unknown): Record<string, unknown> {
   return json;
 }
 
-/** A JSON object — the shape a value must have before any field can be read off
- * it. Excludes `null` and arrays, both of which are `typeof === "object"`. */
+/** @return true if `value` is a JSON object — the shape a value must have before
+ * any field can be read off it — otherwise false. Excludes `null` and arrays,
+ * both of which are `typeof === "object"`. */
 export function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

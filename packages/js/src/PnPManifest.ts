@@ -22,9 +22,9 @@
  * table instead of a tree.
  *
  * A package's tree is content-named and mounted once; *what it sees* is a row
- * here. The format is Yarn's: esbuild reads `.pnp.data.json` natively, and the
- * tsc driver (tscDriver/tsc-driver.ts) reads it for a compiler that has no PnP
- * support of its own.
+ * here. The format is Yarn's; @fabr-build/js-tools's PnpResolver reads it for
+ * every driver (tsc, bundle, sass, postcss), none of whose tools reads it
+ * natively.
  *
  * PnP is package-granular: the table answers "which directory is this package
  * here", and the file part of a specifier (`main`/`types`/extensions) is
@@ -69,11 +69,11 @@ export interface IPnpManifest {
   readonly state: IPnpSerializedState;
   /** Every package with a row, one instance per row. */
   readonly packages: ReadonlyArray<PackageFileSet>;
-  /** Where a package's row locates it, relative to the working directory:
+  /** Locate a package's row, relative to the working directory:
    * {@link treeMountOf}, or — for one of several wirings of the same content in
    * this manifest — a virtual location over that tree, one per wiring. */
   mountOf(pkg: PackageFileSet): string;
-  /** The manifest as the file to stage. */
+  /** Make the manifest the file to stage. */
   toFile(): MemoryFile;
 }
 
@@ -83,8 +83,9 @@ const INFO = [
 ];
 
 /**
- * Sources address their direct dependencies by name, so a name is one package:
- * two versions under one name could not both be imported.
+ * Refuse two packages of one name among the direct deps: sources address their
+ * direct dependencies by name, so two versions under one name could not both be
+ * imported.
  *
  * @throws the conflict between the two, for the rule compiling against them to
  * report before it yields anything that could be served from the cache.
@@ -189,9 +190,9 @@ export function pnpManifestOf(directDeps: FileSet[], self?: ISelfPackage): IPnpM
 }
 
 /**
- * Row references for one manifest's installation: {@link referenceOf} wherever
- * a package id is wired one way, and a distinct reference per wiring where an
- * id is wired several ways ({@link nodeNaming}).
+ * Name the row references for one manifest's installation: {@link referenceOf}
+ * wherever a package id is wired one way, and a distinct reference per wiring
+ * where an id is wired several ways ({@link nodeNaming}).
  */
 function referencesOf(roots: ReadonlyArray<PackageFileSet>): (pkg: PackageFileSet) => string {
   const naming = nodeNaming(roots);
@@ -207,7 +208,7 @@ function referencesOf(roots: ReadonlyArray<PackageFileSet>): (pkg: PackageFileSe
 }
 
 /**
- * Where each row's files live. A row's location is its content's tree, shared
+ * Locate each row's files. A row's location is its content's tree, shared
  * by every row of that content — the same package under two names — so long as
  * they bind the same dependencies. Content wired more than one way in this
  * manifest gets a virtual location per wiring instead ({@link virtualLocation}),
@@ -235,8 +236,8 @@ function locations(
 }
 
 /**
- * The sources being compiled, WHEN they are a package: a row under the name
- * they may import themselves by.
+ * Make the row for the sources being compiled, WHEN they are a package: a row
+ * under the name they may import themselves by.
  *
  * It resolves everything the top-level row does, plus its own name — which is
  * the whole of what a package's self-reference means, and subsumes the
@@ -246,7 +247,7 @@ function locations(
  *
  * `SOFT`, like the top-level row and like a Yarn workspace: it is a place in
  * the project, not a package materialized in the pool — which is also what
- * keeps it out of the pool-facing queries (see PnPResolver.packageOf).
+ * keeps it out of the pool-facing queries (see PnpResolver.packageOf).
  */
 function selfPackageRow(
   self: ISelfPackage,
@@ -294,7 +295,7 @@ export function referenceOf(pkg: PackageFileSet): string {
 }
 
 /**
- * One package's row payload: where its content is, and every name it may
+ * Make one package's row payload: where its content is, and every name it may
  * resolve — its own included, so a package can import itself by name.
  *
  * `supplied` is the compilation's own declared surface, written into the rows of
@@ -328,10 +329,10 @@ function packageInfo(
   };
 }
 
-/** Whether a package arrived from a repository — its provenance carries a
- * resolution step — as opposed to being built by a target of this project. The
- * question provenance exists to answer, so no property of the content itself is
- * consulted. */
+/** @return true if a package arrived from a repository — its provenance carries
+ * a resolution step — as opposed to being built by a target of this project,
+ * otherwise false. The question provenance exists to answer, so no property of
+ * the content itself is consulted. */
 function isResolved(pkg: PackageFileSet): boolean {
   for (let step = pkg.origin; step !== undefined; step = step.parent) {
     if (step.kind === PACKAGE_RESOLUTION_PROVENANCE) {
@@ -341,8 +342,8 @@ function isResolved(pkg: PackageFileSet): boolean {
   return false;
 }
 
-/** The packages barred from the fallback pool, in PnP's `[name, [references]]`
- * shape and sorted for byte-stability. */
+/** List the packages barred from the fallback pool, in PnP's
+ * `[name, [references]]` shape and sorted for byte-stability. */
 function exclusionList(excluded: ReadonlyArray<PackageFileSet>, referenceIn: (pkg: PackageFileSet) => string): Array<[string, string[]]> {
   const byName = new Map<string, string[]>();
   for (const pkg of excluded) {
@@ -356,9 +357,9 @@ function exclusionList(excluded: ReadonlyArray<PackageFileSet>, referenceIn: (pk
   return [...byName].map(([name, references]): [string, string[]] => [name, [...references].sort()]).sort(byText(([name]) => name));
 }
 
-/** Edges as PnP dependency entries, sorted and deduplicated by name (a graph
- * cannot bind one name twice at one node; a repeat would be a delivery bug, and
- * taking the first keeps the table well-formed rather than ambiguous). */
+/** Write edges as PnP dependency entries, sorted and deduplicated by name (a
+ * graph cannot bind one name twice at one node; a repeat would be a delivery
+ * bug, and taking the first keeps the table well-formed rather than ambiguous). */
 function dependencyList(
   deps: ReadonlyArray<PackageFileSet>,
   referenceIn: (pkg: PackageFileSet) => string
@@ -373,28 +374,27 @@ function dependencyList(
 }
 
 /**
- * Where a package's files are staged, relative to the working directory: its
- * tree under the pool mount, named by the package's content digest — the same
- * hex string the FileSet carries, that a package node's signature quotes, and
- * that the cache derives the tree from ({@link BuildCache.ensureTree}). A tree
- * is content alone, so the same bytes are one directory however many
+ * Locate where a package's files are staged, relative to the working directory:
+ * its tree under the pool mount, named by the package's content digest — the
+ * same hex string the FileSet carries, that a package node's signature quotes,
+ * and that the cache derives the tree from ({@link BuildCache.ensureTree}). A
+ * tree is content alone, so the same bytes are one directory however many
  * environments deliver them.
  */
 export function treeMountOf(pkg: PackageFileSet): string {
   return `${TREE_MOUNT}/${pkg.toManifestHash()}`;
 }
 
-/** Ascending comparator over a text projection — every list in the manifest is
- * sorted through one, so the bytes are a function of the graph and not of
- * traversal order. */
+/** Make an ascending comparator over a text projection — every list in the
+ * manifest is sorted through one, so the bytes are a function of the graph and
+ * not of traversal order. */
 function byText<T>(of: (value: T) => string): (a: T, b: T) => number {
   return (a, b) => (of(a) < of(b) ? -1 : of(a) > of(b) ? 1 : 0);
 }
 
-/** The manifest's bytes: two-space JSON like Yarn's own, newline-terminated.
+/** Serialize the manifest: two-space JSON like Yarn's own, newline-terminated.
  * Nothing here is machine- or time-dependent, so identical graphs give
- * identical bytes — which is what lets this one file stand in for the whole
- * closure in the action key. */
+ * identical bytes. */
 function serialize(state: IPnpSerializedState): string {
   return `${JSON.stringify(state, undefined, 2)}\n`;
 }

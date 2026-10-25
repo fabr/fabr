@@ -50,9 +50,9 @@ function withTimeout<T>(c: Computable<T>, ms = 2000): Promise<T> {
 }
 
 describe("Unpack", () => {
-  /* Unpack now streams each entry straight into the content-addressed store, so
-   * a test provides a CAS-output factory backed by a temp BuildCache (rather than
-   * a scratch directory). The returned FileSet holds blob-backed files. */
+  /* Unpack streams each entry straight into the content-addressed store, so a
+   * test provides a CAS-output factory backed by a temp BuildCache. The returned
+   * FileSet holds blob-backed files. */
   let cacheDir: string;
   let createOutput: () => IOutputHandle;
   beforeEach(() => {
@@ -150,7 +150,7 @@ describe("Unpack", () => {
   it("rejects (rather than hanging) when the stream errors before a full header", async () => {
     const ins = new Readable({ read() {} });
     const result = unpackStream(ins, createOutput);
-    /* Fewer than MIN_HEAD_LENGTH bytes arrive, then the connection fails. */
+    /* Fewer than SNIFF_LENGTH bytes arrive, then the connection fails. */
     setImmediate(() => {
       ins.push(Buffer.alloc(16));
       ins.destroy(new Error("connection reset"));

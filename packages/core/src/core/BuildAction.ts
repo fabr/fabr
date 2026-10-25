@@ -103,8 +103,8 @@ export interface IBuildActionDefinition {
 export class BuildAction {
   constructor(
     public readonly step: IBuildActionDefinition,
-    /** Per-file material, manifested file-by-file into the action key. Carries
-     * no unassembled packages — those belong in {@link discoverable}. */
+    /** Per-file material, manifested into the action key file by file, or as
+     * the package graph for its PackageFileSet members ({@link manifestGraph}). */
     public readonly inputs: ActionFileInputs,
     /** The step's configuration: all of it is target-key identity
      * ({@link configDigest}); file-shaped members are staged with the inputs. */
@@ -153,7 +153,7 @@ export class BuildAction {
   }
 
   /**
-   * The durable cache key of a target's action — *whose build is this*, the
+   * Make the durable cache key of a target's action — *whose build is this*, the
    * coordinate a build-state record hangs off. Content-free (step id+version,
    * decl identity, sub-target label, config digest), so it survives every edit
    * and the next build can find its base; configuration IS part of it, so each
@@ -179,7 +179,7 @@ export class BuildAction {
   }
 
   /**
-   * The key material this action is demanded under: `rule:<id>:<version>`, then
+   * Render the key material this action is demanded under: `rule:<id>:<version>`, then
    * the file-inputs section, then the config section, each under its own header
    * line with one `name=manifest` line per member, names sorted. Both sections
    * are always rendered, so an empty one cannot alias a shifted one.
@@ -199,7 +199,7 @@ export class BuildAction {
  * member off the action it received. The member NAMES are each step's own
  * vocabulary, which is why these know none. */
 
-/** The named per-file input, which must be a single FileSet. */
+/** Take the named per-file input, which must be a single FileSet. */
 export function fileSetInput(action: BuildAction, name: string): FileSet {
   const value = action.inputs[name];
   if (!(value instanceof FileSet)) {
@@ -208,7 +208,7 @@ export function fileSetInput(action: BuildAction, name: string): FileSet {
   return value;
 }
 
-/** The named config member, which must be a list of strings. */
+/** Take the named config member, which must be a list of strings. */
 export function stringListConfig(action: BuildAction, name: string): string[] {
   const value = action.config[name];
   if (!Array.isArray(value) || value.some(element => typeof element !== "string")) {
@@ -217,7 +217,7 @@ export function stringListConfig(action: BuildAction, name: string): string[] {
   return value;
 }
 
-/** The named config member, which must be a string (or absent, given a fallback). */
+/** Take the named config member, which must be a string (or absent, given a fallback). */
 export function stringConfig(action: BuildAction, name: string, fallback?: string): string {
   const value = action.config[name] ?? fallback;
   if (typeof value !== "string") {
@@ -226,7 +226,7 @@ export function stringConfig(action: BuildAction, name: string, fallback?: strin
   return value;
 }
 
-/** The file-shaped members of the action's config, unioned — what an exec step
+/** Union the file-shaped members of the action's config — what an exec step
  * stages into the work dir beside the inputs. Two members carrying the same
  * name for different files are the ordinary staging conflict. */
 export function configFiles(action: BuildAction): FileSet {
@@ -234,7 +234,7 @@ export function configFiles(action: BuildAction): FileSet {
 }
 
 /**
- * A declaration's identity as something that survives the process: the target's
+ * Name a declaration by an identity that survives the process: the target's
  * name plus the file it was written in, as the loader named that file.
  */
 export function declIdentity(decl: ITargetDecl): string {
@@ -242,7 +242,7 @@ export function declIdentity(decl: ITargetDecl): string {
 }
 
 /**
- * The configuration half of an action's key: the manifest of `config`, whole.
+ * Digest the configuration half of an action's key: the manifest of `config`, whole.
  * Nothing of `inputs` participates, and the discoverable deps are not consulted.
  *
  * Note for rule authors: content passed as config lands here, making every
@@ -252,7 +252,7 @@ export function configDigest(action: BuildAction): string {
   return hashString(manifestConfig(action.config));
 }
 
-/** The config section of an action key: keys in sorted order, one
+/** Render the config section of an action key: keys in sorted order, one
  * `name=manifest` line each (a FileSet member's manifest is a multi-line
  * block, as in the inputs section). */
 export function manifestConfig(config: ActionConfig): string {
@@ -262,7 +262,7 @@ export function manifestConfig(config: ActionConfig): string {
     .join("\n");
 }
 
-/** One config member as key material. A `Name` manifests by `toGlobString`,
+/** Render one config member as key material. A `Name` manifests by `toGlobString`,
  * which is lossless where `toString` is not (a quoted `'*'` and a wildcard `*`
  * render alike, colliding two different projections onto one key). */
 function manifestConfigValue(value: ActionConfigValue): string {
@@ -287,8 +287,8 @@ function manifestConfigValue(value: ActionConfigValue): string {
 export type ActionFileInputs = Record<string, FileSet | FileSet[]>;
 
 /**
- * The input set for the current run, narrowed to the discovered dependencies from a
- * previous run.
+ * One discoverable input narrowed to a selection: a recorded one at lookup, or
+ * the run's own at commit.
  *
  * Always a genuine selection: an input the selection never mentioned is
  * settled by `narrowDeps` to the selection a run that read EVERYTHING would
@@ -330,17 +330,19 @@ export function manifestFileInputs(inputs: ActionFileInputs, sourcePathInputs: R
 }
 
 /**
- * The key formula for a discovered-deps entry: the anchor (the HASH of
+ * Render the key of a discovered-deps entry: the anchor (the HASH of
  * {@link BuildAction.actionKey}) followed by one section per discoverable
- * input — that input's manifest, then the paths that found nothing.
+ * input — that input's manifest, the source-path digest of each route read,
+ * then the paths that found nothing.
  */
 export function preciseActionKey(anchor: string, used: INarrowedDeps): string {
   return [anchor, narrowedSections(used)].join("\n");
 }
 
-/** The per-input sections of {@link preciseActionKey}: that input's manifest,
- * then its absent paths. Sorts both the input names and each input's absences,
- * so the text is a function of what it was handed and not of arrival order. */
+/** Render the per-input sections of {@link preciseActionKey}: that input's
+ * manifest, its source-path digest lines, then its absent paths. Sorts the
+ * input names and each input's digests and absences, so the text is a
+ * function of what it was handed and not of arrival order. */
 function narrowedSections(used: INarrowedDeps): string {
   return Object.keys(used)
     .sort()
@@ -361,7 +363,7 @@ function narrowedSections(used: INarrowedDeps): string {
 const SOURCE_PATHS_PREFIX = "# source-paths ";
 
 /**
- * One per-file input as key material: the loose members' file manifests, then
+ * Render one per-file input as key material: the loose members' file manifests, then
  * the package graph as {@link manifestGraph} walks it, each with its
  * {@link FileSet.sourcePathsDigest} where `sourcePaths`. List order does not
  * participate; how a package is REACHED does.
@@ -377,7 +379,7 @@ function manifestFileInput(value: FileSet | ReadonlyArray<FileSet>, sourcePaths:
 }
 
 /**
- * The package graph as key material, in the same path vocabulary as a
+ * Render the package graph as key material, in the same path vocabulary as a
  * discovered-deps record: one line per root and one per edge, each holding the
  * path the node is reached by, its content hash, and what `digest` gives it
  * (its {@link FileSet.sourcePathsDigest}, or nothing).
@@ -389,8 +391,8 @@ function manifestFileInput(value: FileSet | ReadonlyArray<FileSet>, sourcePaths:
  * the direct list (a length-one path), the bindings, and the contents.
  *
  * The walk is canonically ordered, roots and edges alike, since a first-seen
- * path is only well defined against a fixed order. Inert {@link RepositoryRef}
- * edges are omitted: an assembler cannot see through them.
+ * path is only well defined against a fixed order. An edge not yet bound to a
+ * package is omitted: an assembler cannot see through it.
  */
 function manifestGraph(members: ReadonlyArray<FileSet>, digest: (pkg: FileSet) => string): string[] {
   const lines: string[] = [];
@@ -399,7 +401,7 @@ function manifestGraph(members: ReadonlyArray<FileSet>, digest: (pkg: FileSet) =
 }
 
 /**
- * The canonical walk: every root, then every edge, each visited at its
+ * Walk the package graph canonically: every root, then every edge, each visited at its
  * first-seen path — so the count is one call per root plus one per edge rather
  * than one per distinct route, which a shared graph makes exponential. Roots and
  * edges are canonically ordered, a first-seen path being well defined only
@@ -430,7 +432,7 @@ export function walkPackages(members: ReadonlyArray<FileSet>, reached: (pkg: Pac
   }
 }
 
-/** The package members of a list, in canonical order — by delivered name, then
+/** Pick the package members of a list, in canonical order — by delivered name, then
  * by content, two instances of one name being distinct nodes. */
 function packageMembers(members: ReadonlyArray<FileSet | Reference>): PackageFileSet[] {
   return members

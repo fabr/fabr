@@ -99,7 +99,7 @@ export interface IPnpError extends Error {
   data: Record<string, unknown>;
 }
 
-/** A PnP API failure, shaped as the runtime throws them. */
+/** Make a PnP API failure, shaped as the runtime throws them. */
 export function pnpError(pnpCode: PnpErrorCode, message: string, data: Record<string, unknown> = {}, code?: string): IPnpError {
   return Object.assign(new Error(message), {
     code: code ?? (NOT_FOUND.has(pnpCode) ? "MODULE_NOT_FOUND" : pnpCode),

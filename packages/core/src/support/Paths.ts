@@ -55,8 +55,9 @@ export function canonicalFileName(name: string): string {
 }
 
 /**
- * Whether `name` is already canonical — defined as the fixed point of
- * {@link canonicalFileName}, so the two can never drift. Beyond the FileSet
+ * @return true if `name` is already canonical, otherwise false — canonical
+ * being defined as the fixed point of {@link canonicalFileName}, so the two can
+ * never drift. Beyond the FileSet
  * fast path, this is the general "is this string usable as a path?" test for
  * any name that will be used verbatim as path structure (e.g. a package name,
  * mounted at `node_modules/<name>`): a name canonicalization would change or

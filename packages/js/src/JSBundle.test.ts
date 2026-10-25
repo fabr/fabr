@@ -29,7 +29,7 @@ function pkg(name: string, deps: PackageFileSet[] = []): PackageFileSet {
 
 const sorted = (names: string[]): string[] => [...names].sort((x, y) => x.localeCompare(y));
 
-/** A rewrite that renames by a single selector -> replacement, else no-match. */
+/** A rewrite that matches nothing. */
 const noRewrite: RewriteFn = () => undefined;
 
 describe("computeExternalNames", () => {

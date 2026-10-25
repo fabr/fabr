@@ -21,11 +21,12 @@
  * means is the dependency table's — composition, who may see whom. What a
  * subpath means WITHIN that package is the package's own, and `exports` is where
  * it says so; that half lives in {@link PackageExports}. What is left over —
- * extensions, `main`/`types`, index files — is ordinary filesystem work, which
- * the caller hands to the compiler it drives.
+ * extensions, `main`/`types`, index files — is ordinary filesystem work: the
+ * caller's own (the tsc driver hands it to the compiler), or
+ * {@link PnpResolver.resolveUnqualified}'s for a caller of the PnP API.
  *
- * Runs standalone inside a build step (the tsc driver's process), so it depends
- * on nothing but node — the manifest type import is erased at compile.
+ * Runs standalone inside the drivers' build-step processes, so it depends on
+ * nothing but node — the manifest type import is erased at compile.
  */
 
 import * as fs from "node:fs";
@@ -67,8 +68,8 @@ function locatorKey(name: string | null, reference: PnpDependencyTarget): Locato
   return `${name ?? ""}\0${typeof reference === "string" ? reference : ""}`;
 }
 
-/** The `@types` package that supplies typings for `name`, in npm's mangled
- * spelling (`@scope/pkg` → `@types/scope__pkg`). */
+/** @return the `@types` package that supplies typings for `name`, in npm's
+ * mangled spelling (`@scope/pkg` → `@types/scope__pkg`). */
 export function typesPackageName(name: string): string {
   return name.startsWith("@") ? `@types/${name.substring(1).replace("/", "__")}` : `@types/${name}`;
 }
@@ -116,8 +117,8 @@ interface ILocationEntry {
  *
  * A resolver carries the CONDITIONS it resolves under: a property of the
  * consumer rather than of any one lookup — a driver resolves for exactly one
- * world (tsc for `types`, Sass for `sass`) for its whole run. {@link resolveAll}
- * takes a per-lookup override.
+ * world (tsc for `types`) for its whole run. {@link resolveAll} and
+ * `resolveRequest` take a per-lookup override.
  */
 export class PnpResolver implements IPnpApi {
   public readonly VERSIONS = { std: 3, resolveVirtual: 1, getAllLocators: 1 };
@@ -139,8 +140,8 @@ export class PnpResolver implements IPnpApi {
    * sources, and the self row that names them as a package) — the distinction
    * the store-facing queries below turn on. */
   private readonly byLocation: ILocationEntry[] = [];
-  /** The same entries keyed by the directory they name, each list in
-   * `byLocation`'s order: the index behind every which-package-holds-this-path
+  /** The same entries keyed by the directory they name, each list
+   * last-registered first: the index behind every which-package-holds-this-path
    * question ({@link innermostAt}). */
   private readonly byDirectory = new Map<string, ILocationEntry[]>();
   /** The physical directories behind every virtual location, in both
@@ -193,8 +194,8 @@ export class PnpResolver implements IPnpApi {
    * @param root the directory the manifest's relative locations resolve against
    * (the staged workspace).
    * @param conditions the export conditions this consumer satisfies, e.g.
-   * `types`/`import` for a compiler, `sass` for a stylesheet compiler.
-   * `default` is always satisfied and need not be given.
+   * `types`/`import` for a compiler. `default` is always satisfied and need not
+   * be given.
    */
   constructor(state: IPnpSerializedState, root: string, conditions: Iterable<string>, options: IPnpResolverOptions = {}) {
     if (state.ignorePatternData !== null && state.ignorePatternData !== undefined) {
@@ -265,9 +266,6 @@ export class PnpResolver implements IPnpApi {
     /* Longest first: a package's location can sit inside another's (bundled
      * content), and the innermost is the one asking. */
     this.byLocation.sort((left, right) => right.prefix.length - left.prefix.length);
-    /* Built from the sorted array so each directory's own list keeps that
-     * order, which is what makes the index answer exactly as the scan did where
-     * rows share a location. */
     for (const entry of this.byLocation) {
       const at = entry.prefix.slice(0, -1);
       const held = this.byDirectory.get(at) ?? [];
@@ -280,7 +278,7 @@ export class PnpResolver implements IPnpApi {
   }
 
   /**
-   * Rows that share a location see the union of their tables.
+   * Give rows that share a location the union of their tables.
    *
    * Several rows CAN share one: the same content resolved under two names (an
    * alias beside the real package) is one directory, and a file inside it
@@ -326,8 +324,8 @@ export class PnpResolver implements IPnpApi {
   }
 
   /**
-   * The innermost entry containing `target` that `admits` accepts — the one
-   * primitive under every containing-package question here.
+   * @return the innermost entry containing `target` that `admits` accepts — the
+   * one primitive under every containing-package question here.
    *
    * Walks the path upward through {@link byDirectory}: an entry contains
    * `target` exactly when its directory is `target` or an ancestor of it, so
@@ -352,10 +350,10 @@ export class PnpResolver implements IPnpApi {
   }
 
   /**
-   * `found`, the entry answering for `target` — refused when `target` lies in
-   * the physical tree of content the manifest locates only virtually. Such a
-   * path is a leak of the tree's physical spelling, and answering it would
-   * silently pick the wrong row (or none).
+   * Return `found`, the entry answering for `target`, or throw when `target`
+   * lies in the physical tree of content the manifest locates only virtually.
+   * Such a path is a leak of the tree's physical spelling, and answering it
+   * would silently pick the wrong row (or none).
    */
   private owning(target: string, found: ILocationEntry | undefined): ILocationEntry | undefined {
     const inside = withSeparator(target);
@@ -366,9 +364,9 @@ export class PnpResolver implements IPnpApi {
   }
 
   /**
-   * Which package a file belongs to: the row whose location is its longest
-   * containing prefix, else the top-level package (the sources being compiled,
-   * whose location is the root itself).
+   * Look up which package a file belongs to: the row whose location is its
+   * longest containing prefix, else the top-level package (the sources being
+   * compiled, whose location is the root itself).
    *
    * Several rows may share a location — the same content resolved under two
    * names, an alias beside the real package — in which case their tables are
@@ -387,9 +385,9 @@ export class PnpResolver implements IPnpApi {
   }
 
   /**
-   * Which package a path inside the store belongs to, and where within it —
-   * the reverse of {@link locationOf}, for turning a resolved location back
-   * into something a consumer can resolve for itself.
+   * Look up which package a path inside the store belongs to, and where within
+   * it — the reverse of {@link locationOf}, for turning a resolved location
+   * back into something a consumer can resolve for itself.
    *
    * A store entry IS the package root, so the remainder maps to a subpath one
    * for one. Rows sharing a location (an alias beside the real package) are
@@ -429,9 +427,9 @@ export class PnpResolver implements IPnpApi {
     };
   }
 
-  /** The subpath a consumer writes to reach the package-relative `file`: its
-   * published name where the package's `exports` map gives it one, else the file
-   * itself. */
+  /** @return the subpath a consumer writes to reach the package-relative
+   * `file`: its published name where the package's `exports` map gives it one,
+   * else the file itself. */
   private publishedAs(location: string, file: string): string {
     const exports = this.manifestAt(location).exports;
     const published =
@@ -445,10 +443,10 @@ export class PnpResolver implements IPnpApi {
   }
 
   /**
-   * The directories this compilation's packages live in, in every spelling a
-   * resolved path can carry — the store as this compilation sees it. What it is
-   * for: recognizing a path that names the BUILD's layout rather than a
-   * package, wherever one might otherwise be written down.
+   * @return the directories this compilation's packages live in, in every
+   * spelling a resolved path can carry — the store as this compilation sees it.
+   * What it is for: recognizing a path that names the BUILD's layout rather
+   * than a package, wherever one might otherwise be written down.
    */
   public get treeRoots(): ReadonlyArray<string> {
     /* Derived once; read per file. */
@@ -463,7 +461,7 @@ export class PnpResolver implements IPnpApi {
   }
 
   /**
-   * The directory `name` occupies as seen from `issuer`: the issuer's own
+   * @return the directory `name` occupies as seen from `issuer`: the issuer's own
    * binding, else the fallback pool. Undefined means the table has no answer,
    * which is a resolution failure for the caller to report as one.
    */
@@ -506,10 +504,10 @@ export class PnpResolver implements IPnpApi {
   }
 
   /**
-   * The directory of this build's own sources that `name` names from `issuer` —
-   * the self row, which names them as a package — or undefined where `name`
-   * binds to anything else, or to nothing. Records no edge: the sources are no
-   * dependency (see {@link edges}).
+   * @return the directory of this build's own sources that `name` names from
+   * `issuer` — the self row, which names them as a package — or undefined where
+   * `name` binds to anything else, or to nothing. Records no edge: the sources
+   * are no dependency (see {@link edges}).
    */
   public sourceLocationOf(name: string, issuer: string): string | undefined {
     const bound = this.rows.get(this.locatorOf(issuer))?.dependencies.get(name);
@@ -517,8 +515,8 @@ export class PnpResolver implements IPnpApi {
   }
 
   /**
-   * Every resolution this run performed — the edges the step chains into walks
-   * (see {@link IResolutionEdge}).
+   * @return every resolution this run performed — the edges the step chains
+   * into walks (see {@link IResolutionEdge}).
    *
    * A resolution answered by the SOURCES is left out: they are the
    * compilation's own files, which no walk over the delivered graph names and
@@ -529,10 +527,10 @@ export class PnpResolver implements IPnpApi {
   }
 
   /**
-   * The package locations whose `package.json` this resolver read — the half a
-   * file listing cannot supply: resolution consults a package's `exports` map
-   * to decide which file a specifier names, so an `exports` edit moves the
-   * answer without touching the file that used to be the answer.
+   * @return the package locations whose `package.json` this resolver read —
+   * the half a file listing cannot supply: resolution consults a package's
+   * `exports` map to decide which file a specifier names, so an `exports` edit
+   * moves the answer without touching the file it moves away from.
    */
   public manifestsConsulted(): ReadonlyArray<string> {
     return [...this.consultedManifests];
@@ -582,10 +580,10 @@ export class PnpResolver implements IPnpApi {
   }
 
   /**
-   * The **instance name** of a resolved file: `<name>#<reference>/<path within
-   * it>` — which exact node of the delivered graph was read, and where in it —
-   * or undefined for anything outside a materialized package (the sources being
-   * compiled, the tool's own install, the compiler's libs).
+   * @return the **instance name** of a resolved file: `<name>#<reference>/<path
+   * within it>` — which exact node of the delivered graph was read, and where
+   * in it — or undefined for anything outside a materialized package (the
+   * sources being compiled, the tool's own install, the compiler's libs).
    *
    * Store-free on purpose: the reference is the row's own locator reference,
    * already in the table, so the name says nothing about this machine. Distinct
@@ -606,10 +604,10 @@ export class PnpResolver implements IPnpApi {
   }
 
   /**
-   * The **path name** of a resolved file: the names an edge chain calls its
-   * package by, then the file within it — `@types/jest expect index.d.ts`. This
-   * is what fabr calls a dependency's file everywhere (its key material, its
-   * recorded base, its change lists), so a driver reporting these names and
+   * @return the **path name** of a resolved file: the names an edge chain calls
+   * its package by, then the file within it — `@types/jest expect index.d.ts`.
+   * This is what fabr calls a dependency's file everywhere (its key material,
+   * its recorded base, its change lists), so a driver reporting these names and
    * reading them back needs no translation in either direction.
    *
    * One canonical route per package — the first the walk reaches it by — so the
@@ -635,12 +633,12 @@ export class PnpResolver implements IPnpApi {
   }
 
   /**
-   * The path name of a bare specifier's FAILED package lookup, as seen from
-   * `issuer` — `thing package.json`, the route the lookup took ending at the
-   * manifest every package carries — or undefined where the lookup succeeded
-   * (or was never made, or the specifier names no package). The same name the
-   * read set reports the absence under, so a consumer recording it needs no
-   * translation against a later change list.
+   * @return the path name of a bare specifier's FAILED package lookup, as seen
+   * from `issuer` — `thing package.json`, the route the lookup took ending at
+   * the manifest every package carries — or undefined where the lookup
+   * succeeded (or was never made, or the specifier names no package). The same
+   * name the read set reports the absence under, so a consumer recording it
+   * needs no translation against a later change list.
    *
    * Answered from the resolutions this run already performed, never by looking
    * anything up: asking about a lookup is not making one.
@@ -661,9 +659,9 @@ export class PnpResolver implements IPnpApi {
   }
 
   /**
-   * The canonical route to the package an INSTANCE name calls out, or to the
-   * top level for the empty name — what a route out of {@link edges} hangs off.
-   * Undefined for an instance the table does not place.
+   * @return the canonical route to the package an INSTANCE name calls out, or
+   * to the top level for the empty name — what a route out of {@link edges}
+   * hangs off. Undefined for an instance the table does not place.
    */
   public routeOf(instance: string): string[] | undefined {
     if (instance === "") {
@@ -675,9 +673,9 @@ export class PnpResolver implements IPnpApi {
   }
 
   /**
-   * Each package's canonical route from the top-level row: breadth-first, so
-   * the shortest wins and a repeat within a level is dropped. The table is fixed
-   * after construction, so this is computed once.
+   * @return each package's canonical route from the top-level row:
+   * breadth-first, so the shortest wins and a repeat within a level is dropped.
+   * The table is fixed after construction, so this is computed once.
    *
    * The source rows are not packages and are skipped — a route through them
    * would name the compilation itself, which is no dependency of anything.
@@ -706,10 +704,10 @@ export class PnpResolver implements IPnpApi {
   }
 
   /**
-   * What a specifier names as seen from `issuer`, both halves answered: the
-   * FILE a package's `exports` map publishes for the subpath, or — for a package
-   * that declares no `exports` — the directory-plus-subpath the caller then
-   * probes for itself, which is the classic behavior and all node ever did
+   * Resolve what a specifier names as seen from `issuer`, both halves answered:
+   * the FILE a package's `exports` map publishes for the subpath, or — for a
+   * package that declares no `exports` — the directory-plus-subpath the caller
+   * then probes for itself, which is the classic behavior and all node ever did
    * before `exports` existed.
    *
    * Undefined is a resolution failure and covers both of its reasons: no row for
@@ -728,8 +726,9 @@ export class PnpResolver implements IPnpApi {
   }
 
   /**
-   * Every file the specifier may name, in the order the package prefers them —
-   * {@link resolveSpecifier}'s answer first, then the ones it passed over.
+   * @return every file the specifier may name, in the order the package prefers
+   * them — {@link resolveSpecifier}'s answer first, then the ones it passed
+   * over.
    *
    * For a caller whose question a condition does not directly answer. A
    * condition names an implementation; a compiler wants declarations, and a
@@ -764,7 +763,7 @@ export class PnpResolver implements IPnpApi {
     return this.within(location, exportsSubpath(split.subpath), conditions);
   }
 
-  /** Where a subpath of the package at `location` may live, honoring its
+  /** @return where a subpath of the package at `location` may live, honoring its
    * `exports` map when it has one. A package that publishes no map offers one
    * answer, the path itself, for the caller to probe. */
   private within(location: string, subpath: string, conditions: IConditionSet): string[] {
@@ -779,18 +778,18 @@ export class PnpResolver implements IPnpApi {
     return targets.map(target => path.join(location, target.slice(2)));
   }
 
-  /** Whether the package `name` resolves to from `issuer` publishes an `exports`
-   * map — which, when it does, alone decides what can be loaded from it, each
-   * target naming a file exactly. */
+  /** @return true if the package `name` resolves to from `issuer` publishes an
+   * `exports` map — which, when it does, alone decides what can be loaded from
+   * it, each target naming a file exactly — otherwise false. */
   public hasExportsMap(name: string, issuer: string): boolean {
     const location = this.locationOf(name, issuer);
     return location !== undefined && this.manifestAt(location).exports != null;
   }
 
-  /** A `#name` specifier through the issuing package's `imports` map — a file of
-   * that package, or another package's name, which resolves from the same
-   * issuer so the redirection sees exactly what the package that wrote it may
-   * see. */
+  /** Resolve a `#name` specifier through the issuing package's `imports` map,
+   * to a file of that package or to another package's name, which resolves
+   * from the same issuer so the redirection sees exactly what the package that
+   * wrote it may see. */
   private resolveSubpathImport(specifier: string, issuer: string, conditions: IConditionSet): string[] {
     const scope = this.scopeOf(issuer);
     const imports = scope && this.manifestAt(scope).imports;
@@ -805,12 +804,12 @@ export class PnpResolver implements IPnpApi {
   }
 
   /**
-   * The package scope of `file`, as node, Yarn and the compiler find it: the
-   * nearest directory above it holding a `package.json` — which may sit inside
-   * a package (a nested `dist/package.json`) or above its row (the sources' own
-   * `package.json` at the workspace root) — searched no higher than the
-   * workspace root. An issuer ending in `/` names a directory, whose own
-   * `package.json` counts.
+   * @return the package scope of `file`, as node, Yarn and the compiler find
+   * it: the nearest directory above it holding a `package.json` — which may sit
+   * inside a package (a nested `dist/package.json`) or above its row (the
+   * sources' own `package.json` at the workspace root) — searched no higher
+   * than the workspace root. An issuer ending in `/` names a directory, whose
+   * own `package.json` counts.
    */
   private scopeOf(file: string): string | undefined {
     const root = path.resolve(this.root);
@@ -824,9 +823,9 @@ export class PnpResolver implements IPnpApi {
     }
   }
 
-  /** The `exports`/`imports` of the package at `location`, empty for one that
-   * declares neither or has no readable manifest at all (a location this
-   * compilation never materialized). */
+  /** @return the `exports`/`imports` of the package at `location`, empty for
+   * one that declares neither or has no readable manifest at all (a location
+   * this compilation never materialized). */
   private manifestAt(location: string): IPackageManifest {
     /* Recorded on every consultation, not only on the read that filled the
      * cache: what a consumer keying on reads needs is which packages' manifests
@@ -863,9 +862,9 @@ export class PnpResolver implements IPnpApi {
     return this.registry.get(locator.name)?.get(locator.reference) ?? null;
   }
 
-  /** The package whose location is `location`'s innermost containing one, or
-   * null for a path outside the table. Also answers for a location's realpath
-   * spelling. */
+  /** @return the package whose location is `location`'s innermost containing
+   * one, or null for a path outside the table. Also answers for a location's
+   * realpath spelling. */
   public findPackageLocator(location: string): PackageLocator | null {
     const target = path.resolve(location);
     const entry = this.owning(target, this.innermostAt(target, () => true));
@@ -978,7 +977,7 @@ export class PnpResolver implements IPnpApi {
     return this.resolveUnqualified(remapped, { extensions: opts.extensions });
   }
 
-  /** A locator's information, which the table must hold. */
+  /** @return a locator's information, which the table must hold. */
   private informationOf(locator: PackageLocator): IPackageInformation {
     const information = this.getPackageInformation(locator);
     if (information === null) {
@@ -987,7 +986,7 @@ export class PnpResolver implements IPnpApi {
     return information;
   }
 
-  /** `unqualified` through its package's `exports` map, where the request
+  /** Map `unqualified` through its package's `exports` map, where the request
    * names a package that has one; any other path unchanged. */
   private applyExports(request: string, unqualified: string, conditions: ReadonlySet<string>): string {
     if (STRICT_REQUEST.test(request)) {
@@ -1021,7 +1020,7 @@ export class PnpResolver implements IPnpApi {
     return path.join(location, target[0].slice(2));
   }
 
-  /** A `#name` request through the issuing package's `imports` map. */
+  /** Resolve a `#name` request through the issuing package's `imports` map. */
   private resolvePrivateRequest(request: string, issuer: string, conditions: ReadonlySet<string>, opts: ResolveRequestOptions): string | null {
     const location = this.scopeOf(issuer);
     const imports = location === undefined ? undefined : readManifest(location).imports;
@@ -1052,7 +1051,8 @@ const PACKAGE_REQUEST = /^(?![a-zA-Z]:[\\/]|\\\\|\.{0,2}(?:\/|$))((?:node:)?(?:@
 /** A request that is explicitly a path. */
 const STRICT_REQUEST = /^(\/|\.{1,2}(\/|$))/;
 
-/** The issuer a non-absolute request needs. */
+/** @return the issuer a non-absolute request needs, throwing where there is
+ * none. */
 function requireIssuer(request: string, issuer: string | null): string {
   if (!issuer) {
     throw pnpError("API_ERROR", "pnp: an issuer is required when the request is neither a builtin nor absolute", { request });
@@ -1061,7 +1061,7 @@ function requireIssuer(request: string, issuer: string | null): string {
 }
 
 /**
- * Node's file resolution for an unqualified path: the file itself, a
+ * Resolve an unqualified path as node resolves a file: the file itself, a
  * directory's `main`, the path with each extension, a directory's `index` with
  * each. Filesystem questions go to the physical path; the answer keeps the
  * name it was asked by.
@@ -1126,10 +1126,10 @@ interface IPackageManifest {
   readonly imports?: ExportsValue;
 }
 
-/** The manifest at `location`, empty when there is none to read. An unreadable
- * or unparseable one is the same answer as none: whoever BUILT that package
- * reports what is wrong with it, and a resolver that threw here would fail every
- * compile that merely has the package in its table. */
+/** @return the manifest at `location`, empty when there is none to read. An
+ * unreadable or unparseable one is the same answer as none: whoever BUILT that
+ * package reports what is wrong with it, and a resolver that threw here would
+ * fail every compile that merely has the package in its table. */
 function readManifest(location: string): IPackageManifest {
   try {
     const json = JSON.parse(fs.readFileSync(path.join(resolveVirtual(location), "package.json"), "utf8")) as IPackageManifest;
@@ -1150,7 +1150,7 @@ function describing<T>(location: string, lookup: () => T): T {
   }
 }
 
-/** A row's dependency entries as name → locator. A `null` target is an
+/** @return a row's dependency entries as name → locator. A `null` target is an
  * unsatisfied peer: recorded as absent, so it falls back like any other
  * undeclared name rather than resolving to nothing. */
 function dependencyMap(entries: Array<[string, PnpDependencyTarget]>): Map<string, string> {
@@ -1164,9 +1164,9 @@ function dependencyMap(entries: Array<[string, PnpDependencyTarget]>): Map<strin
   return map;
 }
 
-/** The row a dependency entry points at: a bare reference names the package
- * under the requirer's own spelling of it, a `[name, reference]` tuple names
- * another package under an alias. */
+/** @return the row a dependency entry points at: a bare reference names the
+ * package under the requirer's own spelling of it, a `[name, reference]` tuple
+ * names another package under an alias. */
 function targetKey(name: string, target: PnpDependencyTarget): LocatorKey | undefined {
   if (target === null) {
     return undefined;
@@ -1174,9 +1174,9 @@ function targetKey(name: string, target: PnpDependencyTarget): LocatorKey | unde
   return Array.isArray(target) ? locatorKey(target[0], target[1]) : locatorKey(name, target);
 }
 
-/** The location with every symlink in it resolved — a virtual location staying
- * virtual — or the location itself when it cannot be read (a row for a package
- * this compilation never materializes). */
+/** @return the location with every symlink in it resolved — a virtual location
+ * staying virtual — or the location itself when it cannot be read (a row for a
+ * package this compilation never materializes). */
 function realpathOf(location: string): string {
   try {
     return realpathKeepingVirtual(location);
@@ -1185,15 +1185,15 @@ function realpathOf(location: string): string {
   }
 }
 
-/** A locator key's instance name: `<name>#<reference>`. Only meaningful for a
- * stored, named row (a source row has no reference to name). */
+/** @return a locator key's instance name: `<name>#<reference>`. Only meaningful
+ * for a stored, named row (a source row has no reference to name). */
 function instanceOfLocator(locator: LocatorKey): string {
   const split = locator.indexOf("\0");
   return `${locator.slice(0, split)}#${locator.slice(split + 1)}`;
 }
 
-/** A file's instance name: its holding row's instance, then its path within
- * that row. */
+/** @return a file's instance name: its holding row's instance, then its path
+ * within that row. */
 function instanceName(entry: ILocationEntry, target: string): string {
   const relative = path.relative(entry.prefix, target).split(path.sep).join("/");
   const at = `${entry.name}#${entry.reference}`;

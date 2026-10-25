@@ -42,8 +42,8 @@ import { atLeastNode, IRunnerOptions, parseRunnerArgs, runTestFiles } from "./Ru
 const SNAPSHOT_NODE = [23, 4] as const;
 
 /**
- * Environments this flavour provides. It runs tests in the node process it is
- * given, so `node` is the only one it can honestly claim — a target declaring
+ * Refuse an environment this flavour does not provide. It runs tests in the
+ * node process it is given, so `node` is the only one it can honestly claim — a target declaring
  * the `dom` flag needs a runner that installs a DOM (the jest and vitest
  * flavours do).
  */

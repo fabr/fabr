@@ -18,7 +18,7 @@
  */
 
 /**
- * The closest candidate to `input` by edit distance (case-insensitive), or
+ * Find the closest candidate to `input` by edit distance (case-insensitive), or
  * undefined when no candidate is plausibly a slip of it — the "did you mean?"
  * primitive behind unresolved-name diagnostics. The allowance scales with the
  * input (one edit per three characters, capped at three), so a short name only
@@ -40,7 +40,7 @@ export function closestMatch(input: string, candidates: Iterable<string>): strin
   return best;
 }
 
-/** Levenshtein distance, capped: any true distance above `cap` reports as
+/** Compute the Levenshtein distance, capped: any true distance above `cap` reports as
  * `cap + 1` (with a cheap length-difference pre-check and an early exit when a
  * whole row exceeds the cap — the usual bounded-DP shape). */
 function editDistance(a: string, b: string, cap: number): number {

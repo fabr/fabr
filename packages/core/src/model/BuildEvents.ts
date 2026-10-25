@@ -88,8 +88,9 @@ export interface ITaskStartEvent extends ITaskEvent {
 }
 
 /**
- * Task state update - fired either when a task transitions from waiting to running,
- * or when a task-specific update is available (bytes fetched, tests run)
+ * Task state update - fired whenever the task's state changes (running or
+ * waiting), and whenever it reports a new progress measure (bytes fetched,
+ * tests run).
  */
 export interface ITaskProgressEvent extends ITaskEvent {
   kind: "task-progress";

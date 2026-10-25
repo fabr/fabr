@@ -84,7 +84,7 @@ describe("pnpManifestOf", () => {
     expect(top.linkType).to.equal("SOFT");
     expect(top.packageDependencies.map(([name]) => name)).to.deep.equal(["chalk", "left-pad"]);
     /* The transitive dep is a row of its own, but the sources cannot name it —
-     * the undeclared-transitive rule, now a table lookup rather than a position. */
+     * the undeclared-transitive rule, as a table lookup. */
     expect(rowsOf(manifest, "ansi-styles").size).to.equal(1);
     expect(dependencyOf(top, "ansi-styles")).to.equal(undefined);
   });
@@ -247,10 +247,8 @@ describe("pnpManifestOf", () => {
   });
 
   it("emits the documented schema, verbatim", async () => {
-    /* A golden test on the BYTES: this file is what every PnP-aware consumer
-     * reads (esbuild natively, fabr's tsc driver, a node loader later), and it
-     * is also the one input the compile's cache key hashes — so a change to it
-     * is a change to both, and must be a deliberate one. */
+    /* A golden test on the BYTES: this file is what every PnP driver reads
+     * through PnpResolver, so a change to it must be a deliberate one. */
     const manifest = pnpManifestOf([pkg("chalk", "1.0.0", [pkg("ansi-styles")])]);
     const bytes = await toPromise(manifest.toFile().readString());
     /* Read back by NAME, not by position: what the golden text pins is the

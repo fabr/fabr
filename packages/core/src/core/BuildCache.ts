@@ -86,9 +86,6 @@ import { Semaphore } from "../support/Semaphore";
 import { Diagnostic, Log } from "../support/Log";
 import { SNIFF_LENGTH, sniffMime } from "../support/Mime";
 
-/** What a fetch `process` callback is handed alongside the response stream.
- * Large content should stream straight into the store via {@link createOutput},
- * never through the scratch dir. */
 /** What a download asks for, made only where the cache holds no answer. */
 export interface IFetchRequest {
   url: string;
@@ -98,10 +95,13 @@ export interface IFetchRequest {
   process: (content: Readable, ctx: IFetchContext) => Computable<FileSet>;
 }
 
+/** What a fetch `process` callback is handed alongside the response stream.
+ * Large content should stream straight into the store via {@link createOutput},
+ * never through the scratch dir. */
 export interface IFetchContext {
   /** A cache-owned scratch dir the process may write files into. */
   readonly targetDir: string;
-  /** A streaming CAS-output factory (see {@link getTemporaryWriteStream}). */
+  /** A streaming CAS-output factory (see {@link BuildCache.getTemporaryWriteStream}). */
   readonly createOutput: () => IOutputHandle;
 }
 
@@ -318,7 +318,7 @@ export class BuildCache {
   /** The content pool: one file per distinct content, named by its hash — what
    * every entry's files are ultimately backed by (see {@link ensureBlob}). */
   private readonly blobRoot: string;
-  /** The tree pool: one directory per materialized tree, named by the manifest
+  /** The tree pool: one directory per tree written to disk, named by the manifest
    * hash of its contents — see {@link ensureTree}. */
   private readonly treeRoot: string;
   /** Every process's work tree lives under here, one subtree each. */
@@ -354,7 +354,7 @@ export class BuildCache {
    * sharing a cache duplicate the effort, each in its own work tree. */
   private readonly inflight = new Map<string, Computable<FileSet>>();
 
-  /** Trees currently being materialized, by name — the dedup {@link inflight}
+  /** Trees currently being written, by name — the dedup {@link inflight}
    * gives entries. */
   private readonly inflightTrees = new Map<string, Computable<string>>();
 
@@ -510,7 +510,7 @@ export class BuildCache {
     }
   }
 
-  /** What was last recorded of a kept work dir's contents (see
+  /** Read what was last recorded of a kept work dir's contents (see
    * {@link recordKeptWorkDir}); undefined where nothing usable is, which is to
    * say its contents are unknown. */
   public keptWorkDirRecord(dir: string): Computable<FileSet | undefined> {
@@ -529,7 +529,7 @@ export class BuildCache {
     return this.storeManifest(record, files).then(() => undefined);
   }
 
-  /** A temp path in this process's work tree for an atomic write: create it
+  /** Make a temp path in this process's work tree for an atomic write: create it
    * there, then rename it into the store (same filesystem by construction). */
   private tempPath(what: string): string {
     fs.mkdirSync(this.ownWorkRoot, { recursive: true });
@@ -549,7 +549,7 @@ export class BuildCache {
   }
 
   /**
-   * The entry for `cacheKey`, built by `create` if it is not already held.
+   * Look up the entry for `cacheKey`, built by `create` if it is not already held.
    *
    * With {@link ICreateOptions.discoverable} the demand is two-phase: the key is
    * an anchor, so the lookup is a {@link cacheGetDiscovered} instead, and the result is
@@ -602,7 +602,7 @@ export class BuildCache {
         )
       );
     /* The entry's class — the key text's namespace, stamped into the manifest
-     * header for the GC's per-kind policy and stats. */
+     * header; nothing reads it yet. */
     const cls = keyClass(cacheKey);
     /* The lock separates DISCOVERABLE SETS as well as actions: two demands can
      * share an anchor and differ in their discoverable deps (a superseded watch
@@ -805,7 +805,7 @@ export class BuildCache {
   }
 
   /**
-   * A streaming write into the content store (see {@link IOutputHandle}), the
+   * Open a streaming write into the content store (see {@link IOutputHandle}), the
    * counterpart of {@link ensureBlob}: bytes are hashed on the fly and spooled
    * to a temp file, which `finalize` places in the pool under the completed
    * hash. `discard` drops it unplaced.
@@ -943,7 +943,7 @@ export class BuildCache {
    * either way `from` is consumed. */
   private renameIntoPool(from: string, blobPath: string): Computable<void> {
     return rename(from, blobPath).catch(renameErr => {
-      /* rename failed: if another writer already materialised the blob first
+      /* rename failed: if another writer already placed the blob first
        * (same content by hash) that is success, else a real error. Either way
        * drop the leftover `from`, then settle on which it was. */
       const won = fs.existsSync(blobPath);
@@ -957,7 +957,7 @@ export class BuildCache {
 
   /*
    * ── Tree pool ───────────────────────────────────────────────
-   * The blob pool one dimension up: one directory per materialized tree, named
+   * The blob pool one dimension up: one directory per tree written to disk, named
    * by the manifest hash of its contents, files hardlinked out of the blob pool.
    * Immutable, shared, published atomically, aged out by the GC — a consumer
    * re-`ensureTree`s by name per run, which rebuilds anything swept and
@@ -976,11 +976,11 @@ export class BuildCache {
   }
 
   /**
-   * Materialize `files` once, permanently, and return the path of the tree. An
+   * Write `files` out as a tree once, permanently, and return its path. An
    * existing tree is served as it stands; a missing one is built in a temp
    * sibling and published by a single atomic rename.
    *
-   * **The tree at `tree/<H>` is the materialization of the FileSet whose
+   * **The tree at `tree/<H>` is the on-disk form of the FileSet whose
    * manifest hashes to `H`** — there is no key to pass, so a deleted tree
    * rebuilds under the same name and any tree can be checked by re-manifesting
    * what it holds. (Its files carry the blob pool's read-only bits, not the
@@ -1040,8 +1040,9 @@ export class BuildCache {
             }
           })
         )
-        /* Eager politeness on the failure path — the rename consumed it on the
-         * success path, and the work-tree sweep is the backstop for neither. */
+        /* Removes the temp on the failure path; on success the rename has
+         * already consumed it. The work tree's exit hook and startup sweep are
+         * backstops. */
         .finally(() => this.releaseWorkDir(temp))
         .then(() => entry)
     );
@@ -1175,13 +1176,13 @@ export class BuildCache {
    * selection anymore, and ages out.
    */
 
-  /** Where an anchor's discovered-deps records live: a directory of immutable
+  /** Locate an anchor's discovered-deps records: a directory of immutable
    * files, each named by the hash of the name-set it holds. */
   private discoveredDepsDir(anchor: string): string {
     return path.resolve(this.depsRoot, anchor);
   }
 
-  /** The record files under an anchor, in readdir order; empty for an anchor
+  /** List the record files under an anchor, in readdir order; empty for an anchor
    * with no directory. */
   private discoveredDepsFiles(anchor: string): Computable<string[]> {
     const dir = this.discoveredDepsDir(anchor);
@@ -1191,7 +1192,7 @@ export class BuildCache {
     );
   }
 
-  /** One record file's document. Undefined for anything that doesn't read as
+  /** Read one record file's document. Undefined for anything that doesn't read as
    * one. */
   private readDiscoveredDepsDoc(file: string): Computable<DiscoveredDeps | undefined> {
     return readFile(file)
@@ -1227,7 +1228,7 @@ export class BuildCache {
    * correctness.
    */
 
-  /** Where a source root's records live, plus the identity they are judged by.
+  /** Locate a source root's records, plus the identity they are judged by.
    * The dir name is only a collision-free address (the work tree's owner-naming
    * pattern applied to a different coordinate); each record's header carries the
    * real path, which is the actual identity. Host-tagged because source paths
@@ -1243,14 +1244,14 @@ export class BuildCache {
     return { dir: path.resolve(this.projectsRoot, `${hostTag()}-${hashString(root)}`), root };
   }
 
-  /** The source-index record within {@link projectDir}. */
+  /** Locate the source-index record within {@link projectDir}. */
   private projectRecord(rootPath: string): { file: string; root: string } {
     const { dir, root } = this.projectDir(rootPath);
     return { file: path.resolve(dir, PROJECT_SOURCES_FILE), root };
   }
 
   /**
-   * The source index recorded for `rootPath`, or undefined where there is
+   * Read the source index recorded for `rootPath`, or undefined where there is
    * nothing usable to give — absent, torn, another hash algorithm's, or another
    * root's (an address collision). Advisory: absence costs re-hashing every
    * source, never an error and never a different build.
@@ -1282,7 +1283,7 @@ export class BuildCache {
     );
   }
 
-  /** The pool path holding `hash`, or undefined where the pool does not
+  /** Look up the pool path holding `hash`, or undefined where the pool does not
    * currently hold that content. The source index's blob-presence gate: the
    * index sits outside the manifest⇒blobs invariant (it references blobs it
    * does not guarantee), so presence is checked, never assumed. */
@@ -1305,14 +1306,14 @@ export class BuildCache {
    * next write ({@link sweepSupersededGenerations}).
    */
 
-  /** Where a target key's build-state record lives: a directory of generation
+  /** Locate a target key's build-state record: a directory of generation
    * directories addressed through one `current` symlink. */
   private buildStatePath(targetKey: string): string {
     return path.resolve(this.incrementalRoot, targetKey);
   }
 
   /**
-   * The build state recorded for `targetKey`, or undefined where there is
+   * Read the build state recorded for `targetKey`, or undefined where there is
    * nothing usable to build on. Damage of any kind — no directory, a file in
    * its place, an unparseable manifest, a dangling `outputs` link, an
    * entry or a state file whose blob has been reclaimed — costs the caller a
@@ -1383,7 +1384,7 @@ export class BuildCache {
     );
   }
 
-  /** The rows of a recorded base as files. Blob-backed like any other stored
+  /** Make the rows of a recorded base into files. Blob-backed like any other stored
    * file, but nothing ever opens one — the rows exist to be diffed, so they go
    * in uningested and their blobs are not checked. */
   private rowsAsFiles(rows: ReadonlyArray<IManifestRow>): FileSet {
@@ -1396,7 +1397,7 @@ export class BuildCache {
     );
   }
 
-  /** A record part read as its own text — the base is key material, not an
+  /** Read a record part as its own text — the base is key material, not an
    * entry manifest. Absent where there is no file to read (never recorded,
    * mid-replacement, ENOTDIR), and damage is the parser's
    * judgement; a genuine IO failure rethrows exactly as {@link readManifest}'s
@@ -1577,7 +1578,7 @@ export class BuildCache {
   }
 
   /**
-   * One file of a build-state record, or undefined where the record has nothing
+   * Read one file of a build-state record, or undefined where the record has nothing
    * usable to give under that name — never written, evicted (the `outputs`
    * link's ENOENT), a record directory that is not there or is caught
    * mid-replacement, a file in its place (ENOTDIR), or a
@@ -1595,8 +1596,8 @@ export class BuildCache {
    * committed, so a read takes no lock; only creation is serialized.
    */
 
-  /** Whether every file of an entry is still backed by the pool — see
-   * {@link readBuildState}. */
+  /** @return true if every file of an entry is still backed by the pool,
+   * otherwise false — see {@link readBuildState}. */
   private isWholeEntry(files: FileSet): boolean {
     for (const [, file] of files) {
       if (!(file instanceof SymlinkFile) && !fs.existsSync(path.resolve(this.blobRoot, file.hash))) {
@@ -1615,7 +1616,7 @@ export class BuildCache {
   }
 
   /**
-   * The manifest at `file`, or undefined where there is none to use — a missing
+   * Read the manifest at `file`, or undefined where there is none to use — a missing
    * file, or a damaged one. **The reader for every manifest fabr stores.**
    *
    * A damaged manifest is DELETED so its entry rebuilds cleanly; the delete is
@@ -1701,7 +1702,7 @@ export class BuildCache {
   }
 
   /**
-   * Refuse to materialize a tree from a file living at a path the cache does not
+   * Refuse to write a tree from a file living at a path the cache does not
    * own — content someone else holds and may still write to. A path-backed file
    * arriving here means something upstream broke the delivery contract; fetched,
    * built, snapshot and generated content are all fine.
@@ -1897,9 +1898,9 @@ export class BuildCache {
   }
 
   /**
-   * No store-mutating work in flight: entry attempts (a superseded straggler
-   * included — it stays inflight until it commits), tree materializations,
-   * and build-state writes. Index writes are deliberately absent: an index
+   * @return true if no store-mutating work is in flight, otherwise false.
+   * Store-mutating work is entry attempts (a superseded straggler included —
+   * it stays inflight until it commits), tree writes, and build-state writes. Index writes are deliberately absent: an index
    * row self-heals through the presentBlob gate, so it needs no protection
    * from the sweep.
    */
@@ -1907,8 +1908,8 @@ export class BuildCache {
     return this.inflight.size === 0 && this.inflightTrees.size === 0 && this.activeStateWrites === 0;
   }
 
-  /** Whether the daily trim is due — the `gc/last` stamp is over the interval
-   * old, or has never been written. */
+  /** @return true if the daily trim is due — the `gc/last` stamp is over the
+   * interval old, or has never been written — otherwise false. */
   private gcDue(): boolean {
     try {
       return this.now() - fs.statSync(path.join(this.gcRoot, GC_LAST_FILE)).mtimeMs > GC_INTERVAL_MS;
@@ -1918,9 +1919,9 @@ export class BuildCache {
   }
 
   /**
-   * Whether this process is the only live fabr using the store — judged from
-   * the `work/` registry exactly as {@link reclaimWorkTree} judges
-   * reapability. A foreign host's pids mean nothing here, but its recency
+   * @return true if this process is the only live fabr using the store,
+   * otherwise false — judged from the `work/` registry exactly as
+   * {@link reclaimWorkTree} judges reapability. A foreign host's pids mean nothing here, but its recency
    * does: a foreign work tree newer than the grace window defers the run
    * entirely. (That deferral is a belt, not a claim — shared-filesystem
    * caches are out of scope for automatic GC.)
@@ -2105,8 +2106,8 @@ export class BuildCache {
    * The expire step: delete entry manifests past {@link GC_MAX_AGE_MS}, and any
    * manifest at the root;
    * likewise expired incremental
-   * records, discovered-deps records (and then-empty anchors), and tree dirs;
-   * and reap dead-pid work trees. A root-level name the layout doesn't
+   * records, discovered-deps records (and then-empty anchors), tree dirs and
+   * unheld kept work dirs; and reap dead-pid work trees. A root-level name the layout doesn't
    * recognize is left alone — another fabr version's store, or a shared
    * directory's contents, are not this layout's to delete.
    */
@@ -2183,14 +2184,14 @@ export class BuildCache {
   }
 
   /**
-   * The mark step: parse every surviving manifest and collect the blob hashes
+   * Run the mark step: parse every surviving manifest and collect the blob hashes
    * the survivors reference, seeded with the live projects' rooted snapshot
    * blobs. A manifest that fails to parse, or references a blob already
    * missing, is damage — deleted, {@link readManifest}'s philosophy (kept
    * unreadable, it would have its blobs swept out from under it).
    * Surviving incremental records' `state` manifests are real pool claims and mark too;
    * their `inputs`/`discovered` parts are diff bases, never pool claims, and
-   * the `outputs` link names a root manifest governed by its own aging.
+   * the `outputs` link names an entry manifest governed by its own aging.
    *
    * @return the marked and present blob sets, or undefined when preempted.
    */
@@ -2253,7 +2254,7 @@ export class BuildCache {
     return { marked, present };
   }
 
-  /** The blob hashes one stored manifest references, or undefined for a file
+  /** List the blob hashes one stored manifest references, or undefined for a file
    * that does not parse as one — which the caller judges as damage AND
    * deletes; this helper only ever reads. An absent file is an empty claim; a
    * genuine IO failure rethrows and aborts the pass ({@link readManifest}'s
@@ -2277,7 +2278,7 @@ export class BuildCache {
     }
   }
 
-  /** The sweep step: discard blobs that are unmarked AND older than
+  /** Run the sweep step: discard blobs that are unmarked AND older than
    * {@link GC_MAX_AGE_MS} — the age test, not merely the grace window, so
    * unrooted content a build keeps re-writing (a recordless project's source
    * snapshots) churns at most once per window.
@@ -2316,8 +2317,9 @@ export class BuildCache {
     }
   }
 
-  /** Whether `mtimeMs` is older than `windowMs` AND older than the grace
-   * window — nothing inside the grace is ever deleted, regardless of policy. */
+  /** @return true if `mtimeMs` is older than `windowMs` AND older than the
+   * grace window, otherwise false — nothing inside the grace is ever deleted,
+   * regardless of policy. */
   private pastWindow(mtimeMs: number, windowMs: number): boolean {
     const age = this.now() - mtimeMs;
     return age > windowMs && age > GC_GRACE_MS;
@@ -2357,7 +2359,7 @@ export interface ICollectOptions {
   shouldAbort?: () => boolean;
 }
 
-/** The namespace of a key text (`rule:` / `memo:` / `fetch:`) — the class its
+/** Read the namespace of a key text (`rule:` / `memo:` / `fetch:`) — the class its
  * entry's manifest header is stamped with. */
 function keyClass(cacheKey: string): string | undefined {
   return /^([a-z]+):/.exec(cacheKey)?.[1];
@@ -2377,7 +2379,8 @@ export class ActionContext {
 
   /**
    * @param cache the run's build cache, which backs `createOutput`,
-   *   `ensureTree`, `treePool` and {@link buildState}.
+   *   `ensureTree`, `treePool` and the build-state accessors
+   *   (`changedFiles`, `incrementalState`, `previousOutputs`).
    * @param processLimit the machine-wide execution funnel.
    * @param workDir this action's scratch directory.
    * @param targetKey the coordinate a build-state record hangs off. Absent for
@@ -2402,13 +2405,13 @@ export class ActionContext {
     private readonly sourcePathInputs: ReadonlyArray<string> = []
   ) {}
 
-  /** A streaming CAS-output factory: bytes are hashed as written and placed
+  /** Open a streaming CAS output: bytes are hashed as written and placed
    * straight into the content store. */
   public createOutput(): IOutputHandle {
     return this.cache.getTemporaryWriteStream();
   }
 
-  /** Materialize a tree in the cache's pool and answer its path. */
+  /** Write a tree into the cache's pool and answer its path. */
   public ensureTree(files: FileSet): Computable<string> {
     return this.cache.ensureTree(files);
   }
@@ -2432,7 +2435,7 @@ export class ActionContext {
   }
 
   /**
-   * What moved since the last green build of this target key, as one answer:
+   * Diff against the last green build of this target key, as one answer:
    * names present now that the base lacked (`added` — a new source, or a
    * dependency lookup that found nothing then and finds a package now), names
    * whose content moved (`changed`), and names the base had that are gone
@@ -2461,7 +2464,7 @@ export class ActionContext {
   }
 
   /**
-   * The files that build's tool asked to keep, as it left them. Absent where it
+   * Read the files the last green build's tool asked to keep, as it left them. Absent where it
    * kept none or they are no longer readable, in which case the tool plans cold
    * — see {@link BuildResult.incrementalState}.
    */
@@ -2470,7 +2473,7 @@ export class ActionContext {
   }
 
   /**
-   * What that build produced, for a step emitting its delta over the previous
+   * Read what that build produced, for a step emitting its delta over the previous
    * output rather than a whole one. Named for the earlier build, not for this
    * action's own outputs.
    */
@@ -2479,7 +2482,7 @@ export class ActionContext {
   }
 
   /**
-   * The one read the three accessors answer from — memoized, so they cannot
+   * Read the record the three accessors answer from — memoized, so they cannot
    * disagree about which build they describe and a second caller joins the
    * first's read instead of starting another. A step that asks for none of them
    * reads nothing.
@@ -2502,7 +2505,7 @@ export class ActionContext {
  * Module-private implementation below this point.
  */
 
-/** A recorded half, or undefined where it says nothing — absent and empty are
+/** Take a recorded half, or undefined where it says nothing — absent and empty are
  * one answer. */
 function withContent(files: FileSet | undefined): FileSet | undefined {
   return files === undefined || files.size === 0 ? undefined : files;
@@ -2512,11 +2515,6 @@ function withContent(files: FileSet | undefined): FileSet | undefined {
  * A run always names its own (see {@link ICreateOptions}). */
 const UNBOUNDED_FUNNEL = new Semaphore(Number.MAX_SAFE_INTEGER);
 
-/**
- * Whether a refresh failure is transient enough to justify serving a stale copy:
- * any transport failure, any 5xx, and the two retry-later 4xx (408, 429). Every
- * other 4xx is a definite origin answer and must surface as itself.
- */
 /** How long to wait before each retry of a fetch that failed transiently:
  *  two retries, the second after a longer pause. */
 const FETCH_RETRY_DELAYS_MS = [1000, 4000];
@@ -2552,8 +2550,9 @@ function delay(ms: number): Computable<void> {
 }
 
 /**
- * Whether a fetch failed transiently, so it is worth trying again and, once
- * retries are spent, a held copy may be served instead: a response the origin
+ * @return true if a fetch failed transiently, otherwise false. A transient
+ * failure is worth trying again and, once retries are spent, a held copy may
+ * be served instead: a response the origin
  * marks as temporary (408, 429, 5xx), or the connection or stream failing under
  * it. A definite answer (another 4xx) or a failure of the content itself
  * (integrity, a corrupt archive) is not.
@@ -2621,21 +2620,21 @@ class BuildFile implements IFile {
   }
 }
 
-/** Whether the entry may be served as it stands: the manifest itself says — an
- * entry without cache-control metadata is immutable (fresh forever), one with
- * it is fresh until its expiry. */
+/** @return true if the entry may be served as it stands, otherwise false: the
+ * manifest itself says — an entry without cache-control metadata is immutable
+ * (fresh forever), one with it is fresh until its expiry. */
 function isFresh(entry: ICacheEntry, now: number): boolean {
   return entry.meta === undefined || entry.meta.expires > now;
 }
 
-/** This machine's identity within a work-tree owner name (`<host>-<pid>`),
+/** Make this machine's identity within a work-tree owner name (`<host>-<pid>`),
  * reduced to one path segment with no `-` so the pid splits off unambiguously.
  * Only ever compared against names this same function produced. */
 function hostTag(): string {
   return os.hostname().replace(/[^\w.]/g, "_") || "host";
 }
 
-/** The pid within a `<host>-<pid>` owner name — a work-tree dir or a
+/** Read the pid within a `<host>-<pid>` owner name — a work-tree dir or a
  * collection marker's owner half — when the host is THIS host; undefined for
  * another host's name (whose pids mean nothing here) or anything
  * unparseable. */
@@ -2648,8 +2647,8 @@ function thisHostPid(owner: string): number | undefined {
   return Number.isInteger(pid) && pid > 0 ? pid : undefined;
 }
 
-/** Whether a `work/` subdirectory belongs to a process of THIS host that is
- * gone — the only foreign trees safe to remove. A name we can't read as one of
+/** @return true if a `work/` subdirectory belongs to a process of THIS host
+ * that is gone — the only foreign trees safe to remove — otherwise false. A name we can't read as one of
  * our own is left alone, as is any tree owned by another host. */
 function isReapable(owner: string): boolean {
   const pid = thisHostPid(owner);
@@ -2676,7 +2675,7 @@ function takeHold(file: string): boolean {
   return false;
 }
 
-/** The live process holding the hold file `file`, if any. */
+/** Look up the live process holding the hold file `file`, if any. */
 function holderOf(file: string): number | undefined {
   let pid: number;
   try {
@@ -2687,7 +2686,7 @@ function holderOf(file: string): number | undefined {
   return Number.isInteger(pid) && pid > 0 && isProcessAlive(pid) ? pid : undefined;
 }
 
-/** The kept work dir a `work/` entry of THIS host belongs to — the dir itself,
+/** Name the kept work dir a `work/` entry of THIS host belongs to — the dir itself,
  * its hold or its record — as its name without the suffix; undefined for any
  * other entry. */
 function keptDirOf(name: string): string | undefined {
@@ -2702,8 +2701,9 @@ function keptDirOf(name: string): string | undefined {
   return name;
 }
 
-/** Signal 0 probes for existence without delivering anything: EPERM means the
- * pid exists but belongs to another user (alive), ESRCH that it is gone. */
+/** @return true if `pid` names a live process, otherwise false. Probes with
+ * signal 0, which sends nothing: EPERM means the pid exists but belongs to
+ * another user (alive), ESRCH that it is gone. */
 function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -2714,7 +2714,7 @@ function isProcessAlive(pid: number): boolean {
 }
 
 /**
- * The INPUTS half of a build's recorded base: what was actually GIVEN to the
+ * Render the INPUTS half of a build's recorded base: what was actually GIVEN to the
  * run — one row per file of the non-discoverable inputs, from the same bag the
  * key's own serialization walks. The discoverable inputs are excluded whole
  * because their diffing face is the {@link recordedDiscovered} part — what the
@@ -2744,7 +2744,7 @@ function recordedInputs(inputs: ActionFileInputs, discoverable: ReadonlyArray<st
 }
 
 /**
- * The DISCOVERED half of a build's recorded base: what the run tried to
+ * Render the DISCOVERED half of a build's recorded base: what the run tried to
  * access, successfully or not — one row per file at the path it was reached
  * by, plus the paths that found nothing. Every input is a genuine selection
  * (see {@link narrowDeps}), so the rows are its files' flat-spelled names as
@@ -2768,7 +2768,7 @@ function baseRows(used: INarrowedDeps): string[] {
 }
 
 /**
- * The {@link ActionContext.changedFiles} comparison: the recorded base against
+ * Compare for {@link ActionContext.changedFiles}: the recorded base against
  * the action's current inputs, each half judged in its own world. The action's
  * own inputs compare by staged name against the current bag; a discovered
  * access compares by re-resolving its path against the current delivery —
@@ -2877,7 +2877,7 @@ export function narrowDeps(
 }
 
 /**
- * The maximal selection of an input — what a run that read the whole delivery
+ * Make the maximal selection of an input — what a run that read the whole delivery
  * would have reported, in the report's own vocabulary: every loose member's
  * file, every package's file at the path the canonical walk gives it, and one
  * manifest lookup per walk visit — a root or an EDGE, the same

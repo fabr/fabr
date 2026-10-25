@@ -131,8 +131,9 @@ const dispatcher = new EnvHttpProxyAgent({
   connectionWindowSize: CONNECTION_WINDOW_BYTES,
 }).compose(interceptors.redirect({ maxRedirections: MAX_REDIRECTS }));
 
-/** Reject a non-HTTP(S) URL with a clear message rather than a transport-layer
- * error; fabr only ever fetches over http/https. */
+/** Make the error refusing a non-HTTP(S) URL — a clear message rather than a
+ * transport-layer error — or undefined for http/https, the only protocols fabr
+ * fetches over. */
 function unsupportedProtocol(urlstring: string): Error | undefined {
   const protocol = new URL(urlstring).protocol;
   return protocol === "https:" || protocol === "http:" ? undefined : new FabrError("Unsupported protocol: " + protocol);
@@ -196,7 +197,7 @@ export function sendRequest(urlstring: string, request: HttpRequest): Computable
 /**
  * The HTTP cache-control facts of a response, parsed: when the copy must next
  * be revalidated before serving, and the validators to revalidate it with.
- * Returned by {@link openConditionalUrlStream} alongside the content (and
+ * Returned by {@link openUrlStream} alongside the content (and
  * persisted by the build cache as a non-immutable entry's `!meta` header).
  */
 export interface ICacheControl {
@@ -228,7 +229,7 @@ export interface UrlStreamResponse {
 }
 
 /**
- * The declared body size, or undefined when the origin declared none — or
+ * Parse the declared body size: undefined when the origin declared none — or
  * declared nonsense. A size is only ever used to render a fraction, so an
  * unusable one degrades to "no total" rather than failing the download.
  */
@@ -335,7 +336,7 @@ function parseCacheControl(headers: http.IncomingHttpHeaders, now: number): ICac
 }
 
 /**
- * The freshness lifetime (ms) a response's own headers declare:
+ * Get the freshness lifetime (ms) a response's own headers declare:
  * `Cache-Control: max-age` wins (`no-cache`/`no-store` count as zero —
  * revalidate every time); else `Expires`, aged relative to the response's
  * `Date` (the origin's clock, avoiding skew against ours) or `now` when

@@ -47,8 +47,8 @@ interface CollectedPackages {
   nodeOf: (pkg: PackageFileSet) => string;
 }
 
-/** Every package instance a delivery reaches, keyed by node name, with the
- * loose (non-package) sets passed through. */
+/** Collect every package instance the given sets reach, keyed by node name,
+ * with the loose (non-package) sets passed through. */
 function collectPackages(sets: FileSet[]): CollectedPackages {
   const nodeOf = nodeNaming(sets);
   const byNode = new Map<string, PackageFileSet>();
@@ -82,10 +82,10 @@ function collectPackages(sets: FileSet[]): CollectedPackages {
 }
 
 /**
- * Assemblers only: within one installation a `packageId` names one package —
- * two instances under one id with different CONTENT are two packages claiming
- * one identity, which no layout can hold. The same package wired two ways is
- * two nodes, each with a directory of its own ({@link assembleNodeModules}).
+ * Refuse two instances under one `packageId` with different CONTENT: within one
+ * installation an id names one package, and two contents claiming one identity
+ * are two packages no layout can hold. The same package wired two ways is two
+ * nodes, each with a directory of its own ({@link assembleNodeModules}).
  */
 function assertOneContentPerId(collected: CollectedPackages): void {
   const byId = new Map<string, PackageFileSet>();
@@ -108,7 +108,7 @@ export const INSTANCE_AREA = ".fabr";
 const INSTANCE_NAME_LIMIT = 120;
 
 /**
- * The instance directory name of every node of an installation:
+ * Name the instance directory of every node of an installation:
  * `<name>@<version>` (a scoped name's `/` written `+`), plus a suffix telling
  * the wirings apart where one package is installed wired several ways.
  */
@@ -143,7 +143,7 @@ export function packageDirectories(sets: FileSet[]): Map<PackageFileSet, string>
   );
 }
 
-/** A relative symlink at `from` naming `to`, both paths within one tree. */
+/** Make a relative symlink at `from` naming `to`, both paths within one tree. */
 function linkEntry(from: string, to: string): [string, IFile] {
   return [from, new SymlinkFile(posix.relative(posix.dirname(from), to))];
 }

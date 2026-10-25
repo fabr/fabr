@@ -34,7 +34,7 @@ export interface IRuleSelection {
   candidates: IJudgedKey[][];
 }
 
-/** A rule's guard record as a guard: each pattern parsed. */
+/** Parse a rule's guard record into a guard, each pattern parsed. */
 function guardOf(record: Record<string, string> | undefined): NameConstraint[] {
   return Object.entries(record ?? {}).map(([key, pattern]): NameConstraint => [key, rulePattern(pattern)]);
 }

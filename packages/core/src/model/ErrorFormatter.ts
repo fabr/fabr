@@ -67,9 +67,9 @@ const NO_RULE_VERBS = new Map([
 
 /**
  * Converts a build failure (tree) into human-readable diagnostics on the log:
- * owns every detail of how an error report reads. Swappable — the driver
- * holds one; an alternative presentation (JSON, IDE integration) implements
- * the same interface.
+ * owns every detail of how an error report reads. {@link reportFailure} uses
+ * the default {@link DiagnosticErrorFormatter}; an alternative presentation
+ * (JSON, IDE integration) implements the same interface.
  */
 export interface ErrorFormatter {
   report(log: Log, err: Error): void;
@@ -206,7 +206,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
     }
   }
 
-  /** One root cause → its final message and structured detail. */
+  /** Describe one root cause as its final message and structured detail. */
   private describe(cause: Error, owner: DependencyFailedError | undefined): IDiagnostic {
     if (cause instanceof NoRuleFoundError) {
       return this.describeNoRule(cause);
@@ -265,7 +265,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
   }
 
   /**
-   * A name that resolves to itself: anchored at the reference that closed the
+   * Describe a name that resolves to itself: anchored at the reference that closed the
    * cycle — the mistake — with the rest of the loop following as the usual
    * "required by" notes. A self-reference has no such hop, so it instead points
    * at the declaration the name reached: the evidence that it resolved to a
@@ -296,7 +296,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
     };
   }
 
-  /** No rule matched the target's type: anchored at the declaration, the verb
+  /** Describe a target whose type no rule matched: anchored at the declaration, the verb
    * from the operation in effect, only the override constraints shown. What the
    * type *does* support is the remedy, named as the command that would do it. */
   private describeNoRule(cause: NoRuleFoundError): IDiagnostic {
@@ -312,7 +312,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
   }
 
   /**
-   * A requirement that failed to resolve, anchored at the reference behind it
+   * Describe a requirement that failed to resolve, anchored at the reference behind it
    * when that reference was written in the failing target itself; otherwise —
    * a reference carried in from a dependency, or none written at all — at the
    * failing target, with every culprit reference as a note saying where it was
@@ -344,7 +344,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
     };
   }
 
-  /** Execution failures of one target, as a single diagnostic; an anonymous
+  /** Describe the execution failures of one target as a single diagnostic; an anonymous
    * sub-target (label set) reports with its verb ("Compiling X failed"). */
   private describeExecution(err: DependencyFailedError, causes: Error[]): IDiagnostic {
     const detail = describeCauses(causes, declName(err.target));
@@ -354,7 +354,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
     return { message, loc: declPosn(err.target) };
   }
 
-  /** A provenance chain as notes, or a no-origin fallback line. */
+  /** Render a provenance chain as notes, or a no-origin fallback line. */
   private chainNotes(chain: IProvenanceStep | undefined, label?: string, path?: string): IDiagnosticNote[] {
     const notes = renderProvenance(chain, { path, elideConstraintKeys: this.ambientConstraintKeys });
     if (notes.length === 0 && label !== undefined) {
@@ -371,7 +371,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
 }
 
 /**
- * What a target with no applicable rule could have matched. Where its type has
+ * Describe what a target with no applicable rule could have matched. Where its type has
  * rules for the operation asked of it, those rules are listed, each with what
  * it requires and (in parentheses) what this target has where that differs;
  * where it has none, the operations the type does support are the remedy.
@@ -411,8 +411,8 @@ function noteKey(note: IDiagnosticNote): string {
 }
 
 /**
- * Check whether `longer` passes every written hop of `shorter`, in order, and
- * has more written hops besides. `shorter` is then the same route with hops
+ * @return true if `longer` passes every written hop of `shorter`, in order, and
+ * has more written hops besides, otherwise false. `shorter` is then the same route with hops
  * left out, as when a failure reaches a target that holds the failed thing in
  * its graph without having written a reference to it.
  */
@@ -445,7 +445,7 @@ function describeCauses(causes: Error[], owner: string): string {
   return `${causes.length} errors:\n` + causes.map(cause => "  " + describeCause(cause, owner).split("\n").join("\n  ")).join("\n");
 }
 
-/** An execution error's text — a failed command's output attributed to its
+/** Render an execution error's text — a failed command's output attributed to its
  *  target and stream (`app out| …`), exactly as the live stream shows it. */
 function describeCause(cause: Error, owner: string): string {
   if (!(cause instanceof CommandFailedError)) {
@@ -458,7 +458,7 @@ function describeCause(cause: Error, owner: string): string {
 const DEFAULT_FORMATTER: ErrorFormatter = new DiagnosticErrorFormatter();
 
 /**
- * One line saying why `err` happened, for a mark beside the work that failed
+ * Summarize in one line why `err` happened, for a mark beside the work that failed
  * (the failure report stays the full account): the innermost cause's message,
  * or for a failed command its exit status; several failures by the first and a
  * count. Undefined for an error with nothing to say.

@@ -117,14 +117,14 @@ export class CacheLink extends SymlinkFile {
     this.cacheRoot = cacheRoot;
   }
 
-  /** Where this link points on THIS machine, or undefined when it carries no
+  /** Get where this link points on THIS machine, or undefined when it carries no
    * cache root (nothing has told it where the cache is, so it cannot be
    * staged). */
   public resolveTarget(): string | undefined {
     return this.cacheRoot === undefined ? undefined : path.resolve(this.cacheRoot, this.relpath);
   }
 
-  /** The same link resolved against `cacheRoot` — same identity, different
+  /** Get the same link resolved against `cacheRoot` — same identity, different
    * machine-local location. */
   public withCacheRoot(cacheRoot: string): CacheLink {
     return new CacheLink(this.relpath, cacheRoot);
@@ -132,7 +132,7 @@ export class CacheLink extends SymlinkFile {
 }
 
 /**
- * A cache link's path, normalized, having checked it stays inside the cache.
+ * Normalize a cache link's path, checking it stays inside the cache.
  * Every caller is fabr itself, so an escape is a fabr bug and not a condition
  * to handle: it throws rather than degrading to something staging would have to
  * second-guess.

@@ -32,7 +32,8 @@
  * relative to the map as a consumer resolves them. The css_postcss step chains
  * through those maps like any other consumer — it is not owed a special form.
  *
- * Usage: node sass-driver.js --manifest=<path-to-manifest.json>
+ * Usage: fabr-sass --manifest=<options.json> [--deps-report <file>]
+ * [--source-paths <file>]
  *
  * Runs in the *build* process, not in fabr: it `require`s sass-embedded and the
  * importer from its own staged node_modules and must not depend on
@@ -141,8 +142,8 @@ async function processFile(source: ISassSource, options: ISassOptions, tools: IS
   writeOut(options.outdir, source.css, css);
 }
 
-/** The package-load importer, required only where there is a table to resolve
- * through. */
+/** @return the package-load importer, required only where there is a table to
+ * resolve through. */
 function pnpImporter(): ISassPnpImporterModule {
   /* eslint-disable-next-line @typescript-eslint/no-var-requires */
   return require("@fabr-build/sass-pnp-importer") as ISassPnpImporterModule;

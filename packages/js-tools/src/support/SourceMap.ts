@@ -41,13 +41,13 @@ export const SOURCE_LOCATIONS_FILE = ".fabr-source-locations.json";
 /** The scheme of a map entry fabr writes. */
 const FABR_SCHEME = "fabr:";
 
-/** Whether a map entry is an absolute URL (`fabr:…`, `webpack://…`), which a
- *  tool composing maps leaves as it is. */
+/** @return true if a map entry is an absolute URL (`fabr:…`, `webpack://…`),
+ *  which a tool composing maps leaves as it is, otherwise false. */
 function isAbsoluteEntry(entry: string): boolean {
   return /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(entry);
 }
 
-/** The table's rows: a staged file's name to its source path, or a staged
+/** Read the table's rows: a staged file's name to its source path, or a staged
  *  directory's name, ending in `/`, to the prefix of its files' source paths. */
 export function readSourcePaths(file: string): ReadonlyMap<string, string> {
   const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -65,7 +65,7 @@ export function readSourcePaths(file: string): ReadonlyMap<string, string> {
 }
 
 /**
- * The text of the map at `mapFile` with every relative `sources` entry
+ * Rewrite `text`, the map at `mapFile`, so every relative `sources` entry is
  * named as a fabr reference: resolved against the map, and named by
  * `referenceOf` from its path relative to `root` — or left as it is where
  * that names nothing. An absolute entry is kept, and `sourceRoot` is dropped,
@@ -103,9 +103,9 @@ export interface IStagedReferenceOptions {
 }
 
 /**
- * How a tool names a source it staged, from the table a step staged and named
- * on its command line ({@link SOURCE_PATHS_FLAG}, written `--flag value` or
- * `--flag=value`): by the table's row for it or for the innermost directory
+ * Make the namer a tool uses for a source it staged, from the table a step
+ * staged and named on its command line ({@link SOURCE_PATHS_FLAG}, written
+ * `--flag value` or `--flag=value`): by the table's row for it or for the innermost directory
  * holding it, or failing both, with `withinPackages`, by a package containing
  * it. Undefined for a source none names, and wholly where no table was staged.
  */
@@ -164,7 +164,8 @@ function packageReferences(paths: ReadonlyMap<string, string>): (staged: string)
   };
 }
 
-/** The value of `flag` on a command line, as `--flag value` or `--flag=value`. */
+/** Get the value of `flag` on a command line, as `--flag value` or
+ * `--flag=value`. */
 function flagValue(argv: string[], flag: string): string | undefined {
   const at = argv.indexOf(flag);
   if (at >= 0) {
@@ -173,8 +174,8 @@ function flagValue(argv: string[], flag: string): string | undefined {
   return argv.find(arg => arg.startsWith(`${flag}=`))?.slice(flag.length + 1);
 }
 
-/** The reference a fabr map entry names, without its scheme; undefined for any
- *  other entry. */
+/** Get the reference a fabr map entry names, without its scheme; undefined for
+ *  any other entry. */
 export function referenceOfEntry(entry: string): string | undefined {
   return entry.startsWith(FABR_SCHEME) ? entry.slice(FABR_SCHEME.length) : undefined;
 }

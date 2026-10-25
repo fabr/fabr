@@ -143,11 +143,11 @@ export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log
 }
 
 /**
- * The per-value shape rules for one property against its schema type — shared
- * by a written property ({@link validateTarget}) and a targetdef's own
+ * Check the per-value shape rules for one property against its schema type —
+ * shared by a written property ({@link validateTarget}) and a targetdef's own
  * `default` ({@link validateTargetDef}): block<->MAP agreement, command
- * placement, then either the MAP entry rules or the `sel -> tmpl` rename
- * primitive (REWRITE / templated FILES).
+ * placement, then either the MAP entry rules or the REWRITE rules
+ * ({@link validateRenameValue}).
  */
 function validatePropertyShape(prop: IPropertyDecl, type: PropertyType, log: Log): boolean {
   let isValid = true;

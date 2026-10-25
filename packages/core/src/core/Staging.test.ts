@@ -79,8 +79,8 @@ describe("getResultFileSet", () => {
   });
 
   it("collects under a subdir and names results relative to it (string dir:glob)", async () => {
-    /* The plain-string path (the exec/test-report callers) is unchanged by the
-     * projection unification: `dir:glob` selects under dir, names relative to it. */
+    /* The plain-string path (the exec/test-report callers): `dir:glob` selects
+     * under dir, names relative to it. */
     fs.mkdirSync(path.join(work, "site"));
     fs.writeFileSync(path.join(work, "site", "index.html"), "page");
     fs.writeFileSync(path.join(work, "stray.html"), "outside");
@@ -277,8 +277,8 @@ describe("syncFileSet", () => {
   });
 
   it("runs cleanly a second time in the same process (no temp-name collision)", async () => {
-    /* Two syncs in one process must not reuse temp names — a regression guard for
-     * the per-call counter reset that let a leftover temp poison later syncs. */
+    /* Two syncs in one process must not reuse temp names: a leftover temp would
+     * otherwise collide with a later sync. */
     const v1 = fileset({ "a.txt": "1" });
     await toPromise(writeFileSet(work, v1));
     await toPromise(syncFileSet(work, v1, fileset({ "a.txt": "2" })));

@@ -430,9 +430,9 @@ describe("repository_group (through the model)", () => {
   });
 
   it("reads an exact bare-name route (no keyRef) as a route like any other", async () => {
-    /* `lodash = @a;` lexes as a bare identifier and carries no keyRef — the
-     * route table must be read off property names, or exact unscoped routes
-     * silently vanish. */
+    /* `lodash = @a;` lexes as a bare identifier, which is its own key — the
+     * route table must take every wildcard member's key, or exact unscoped
+     * routes silently vanish. */
     const { model } = build(
       REGISTRIES +
         "repository_group @deps { lodash = @a; * = @b; }\n" +

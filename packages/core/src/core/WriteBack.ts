@@ -22,14 +22,14 @@
  * USER'S SOURCE TREE — recorded snapshots a test run refreshed, a golden test's
  * blessed expectations. The build invariants fix the shape: actions are
  * hermetic and cache entries are memos, so nothing inside the build graph may
- * write to (or embed absolute paths of) the source tree. Only *resolution*
+ * write to (or embed absolute paths of) the source tree. Only the *rule*
  * knows which produced file corresponds to which source file, and only the
  * **driver** may touch the user's tree, at explicit request.
  *
  * So a candidate list rides the built result as a partition on the FileSet —
  * runtime-only ghost data, never serialized, never in a manifest or cache key,
  * exactly like provenance and a runnable's launch descriptor. Because the rule
- * computes it in resolution (re-run every evaluation), the candidates
+ * computes it in the action's reshape (applied every evaluation), the candidates
  * reconstruct on the CACHE-HIT path too: a warm replay of an update run whose
  * writes were never applied still offers them.
  */
@@ -55,8 +55,9 @@ import { FabrError } from "./Errors";
  * emitted: the runner only ever sees compiled names). Where that input actually
  * lives on this machine is a generic provenance question with one answer for
  * every producer, and belongs to the layer that is allowed to touch the tree —
- * so the driver resolves it ({@link locateSource}) and nothing in the model
- * layer ever manufactures an absolute source-tree path.
+ * so the driver locates it (its source path, then SourceFileSource.locate)
+ * and nothing in the model layer ever manufactures an absolute source-tree
+ * path.
  */
 export interface IWriteBackCandidate {
   /** What to put back, named in the SAME NAMESPACE as the inputs it corresponds
@@ -86,7 +87,7 @@ export interface IResolvedWriteBack {
 /**
  * A built result that additionally offers source-tree write-backs. The FileSet
  * itself is the target's ordinary content (a test report); `candidates` is the
- * ghost partition the driver reads. Constructed by the rule in resolution; a
+ * ghost partition the driver reads. Constructed by the rule's reshape; a
  * plain FileSet (no candidates) is the normal case and needs no wrapper.
  */
 export class WriteBackFileSet extends FileSet {
@@ -104,8 +105,8 @@ export class WriteBackFileSet extends FileSet {
 }
 
 /**
- * The write-back candidates offered by whatever was just built — the driver's
- * accessor, applied to a target's resolved sources. Anything that isn't a
+ * Gather the write-back candidates offered by whatever was just built — the
+ * driver's accessor, applied to a target's materialized sources. Anything that isn't a
  * {@link WriteBackFileSet} offers none, so this is total over any result.
  */
 export function writeBackCandidates(sources: ReadonlyArray<SourceRef>): IWriteBackCandidate[] {
@@ -142,11 +143,11 @@ let tempCounter = 0;
  * resolving outside it is refused, the same containment discipline staging
  * applies in the other direction).
  *
- * Every candidate IS a change — whoever built the list compared the produced
- * content against the recorded input it came from, both of which it holds
- * hashed, and dropped what matched. So nothing here re-reads the destination to
- * ask: an unchanged record never reaches this function, which is also what
- * keeps its mtime and, under watch, means no event at all.
+ * A test expectation's candidate is already a change — whoever built the list
+ * compared the produced content against the recorded input it came from, both
+ * of which it holds hashed, and dropped what matched. So nothing here re-reads
+ * the destination to ask: an unchanged record never reaches this function,
+ * which is also what keeps its mtime and, under watch, means no event at all.
  *
  * The mechanics live here; the CALLER is {@link SourceFileSource.applyWriteBack},
  * which owns the tree being written to and is therefore the only thing able to
@@ -176,7 +177,7 @@ export function writeBackFile(write: IResolvedWriteBack, realRoot: string, obser
   });
 }
 
-/** The directories `mkdir -p` is about to create, deepest first: those that do
+/** List the directories `mkdir -p` is about to create, deepest first: those that do
  * not exist yet, up to (never including) the tree root. */
 function missingAncestors(dir: string, realRoot: string): string[] {
   const missing: string[] = [];
@@ -188,7 +189,7 @@ function missingAncestors(dir: string, realRoot: string): string[] {
 
 
 /**
- * A write-back destination must stay inside the project. The candidate's path
+ * Assert a write-back destination stays inside the project. The candidate's path
  * comes from a source file's own recorded location, so this can only fire on a
  * genuinely out-of-tree input (a reference reaching outside the project root) —
  * but this is the boundary where a bad path becomes damage to the user's disk,
@@ -203,7 +204,7 @@ function assertContained(destination: string, realRoot: string): void {
   }
 }
 
-/** `dir` resolved through symlinks, tolerating that its deeper components may
+/** Resolve `dir` through symlinks, tolerating that its deeper components may
  * not exist yet (a brand-new `__snapshots__/`): the nearest existing ancestor
  * is resolved for real and the not-yet-created remainder appended. */
 function realParent(dir: string): string {

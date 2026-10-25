@@ -94,7 +94,7 @@ const PACKUMENT_FILE = "packument.json";
  *  READMEs and publish history of the full one. */
 const ABBREVIATED_PACKUMENT = "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*";
 
-/** name → version for the names `assignments` assign exactly one distinct
+/** Map name → version for the names `assignments` assign exactly one distinct
  *  version — the names a manifest dependency can be unambiguously rewritten to. */
 function uniqueAssignments(assignments: readonly NpmPublishIdentity[]): Map<string, string> {
   const byName = new Map<string, Set<string>>();
@@ -105,10 +105,10 @@ function uniqueAssignments(assignments: readonly NpmPublishIdentity[]): Map<stri
 }
 
 /**
- * A package name as ONE registry path segment: npm percent-encodes the `/` of a
- * scoped name (`@types/node` → `@types%2fnode`) on every read. npmjs also
- * accepts the raw slash, but a registry or proxy routing on path segments reads
- * that as a package `@types` with a sub-resource, and answers 404.
+ * Encode a package name as ONE registry path segment: npm percent-encodes the
+ * `/` of a scoped name (`@types/node` → `@types%2fnode`) on every read. npmjs
+ * also accepts the raw slash, but a registry or proxy routing on path segments
+ * reads that as a package `@types` with a sub-resource, and answers 404.
  */
 function packagePath(pkg: string): string {
   return pkg.replace(/\//g, "%2f");
@@ -179,22 +179,23 @@ export class NPMRepository
     return new RepositoryPublishRef(this, this.format.parsePublishCoordinate(name));
   }
 
-  /* The run's registry-auth authority (the combined project + user `.npmrc`,
-   * plus the per-registry second-factor sessions), loaded once per run and
-   * shared across every NPMRepository instance (held on the ExecutionContext
-   * via the js plugin context, not per instance); the project `.npmrc` is read
-   * through the source FS, so it re-settles if it changes in watch mode. */
+  /* Get the run's registry-auth authority (the combined project + user
+   * `.npmrc`, plus the per-registry second-factor sessions), loaded once per
+   * run and shared across every NPMRepository instance (held on the
+   * ExecutionContext via the js plugin context, not per instance); the project
+   * `.npmrc` is read through the source FS, so it re-settles if it changes in
+   * watch mode. */
   private npmAuth(): Computable<NPMAuth> {
     return jsPluginContext(this.context.execution).npmAuth();
   }
 
   /**
-   * The `Authorization` header for a request to `url`, from the combined `.npmrc`
-   * — used for both reads (private packages / a private registry) and the publish
-   * write. Auth is keyed per registry (longest-prefix match), so a request to a
-   * host with no configured credential — a public registry, or a tarball CDN whose
-   * url came from registry metadata — is anonymous, with no risk of leaking a
-   * credential off-registry.
+   * Get the `Authorization` header for a request to `url`, from the combined
+   * `.npmrc` — used for both reads (private packages / a private registry) and
+   * the publish write. Auth is keyed per registry (longest-prefix match), so a
+   * request to a host with no configured credential — a public registry, or a
+   * tarball CDN whose url came from registry metadata — is anonymous, with no
+   * risk of leaking a credential off-registry.
    */
   private authHeadersFor(url: string): Computable<Record<string, string>> {
     return this.npmAuth().then(auth => auth.getHeadersFor(url));
@@ -290,13 +291,14 @@ export class NPMRepository
   }
 
   /**
-   * Upload a packaged artifact to this registry (the one side effect): reads the
-   * sidecar manifest, hashes the tarball for `dist.integrity`/`shasum`, builds
-   * the `libnpmpublish` packument envelope, and PUTs it to the escaped package
-   * name; a 409 (version already present) is the already-synced status. Pure
-   * upload mechanics — release orchestration (ordering, skipping) is the generic
-   * layer's. The credential is resolved here — the repository owns its own
-   * authentication — from the environment or the per-registry `.npmrc`.
+   * Upload a packaged artifact to this registry (the one side effect): reads
+   * the sidecar manifest, hashes the tarball for `dist.integrity`/`shasum`,
+   * builds the `libnpmpublish` packument envelope, and PUTs it to the escaped
+   * package name; a 409, or npmjs's 403 "cannot publish over" (version already
+   * present), is the already-synced status. Pure upload mechanics — release
+   * orchestration (ordering, skipping) is the generic layer's. The credential
+   * is resolved here — the repository owns its own authentication — from the
+   * per-registry `.npmrc` (with `${VAR}` substitution).
    */
   public publish(artifact: PublishableFileSet): Computable<PublishStatus> {
     const { name, version } = artifact.destination;
@@ -321,18 +323,19 @@ export class NPMRepository
   }
 
   /**
-   * The platform we are building for, projected to npm's {os, cpu, libc}
-   * vocabulary — read off the TARGET property (a clang/LLVM triple; `default
-   * TARGET = ${HOST}`) via the same property surface every rule sees, then run
-   * through core's lossy `tripleToNpm`. Native selection consumes the triple
-   * verbatim; this projection is only what the npm os/cpu/libc gate matches on.
+   * Get the platform we are building for, projected to npm's {os, cpu, libc}
+   * vocabulary — read off the TARGET property (a clang/LLVM triple;
+   * `default TARGET = ${HOST}`) via the same property surface every rule sees,
+   * then run through core's lossy `tripleToNpm`. Native selection consumes the
+   * triple verbatim; this projection is only what the npm os/cpu/libc gate
+   * matches on.
    */
   private targetPlatform(): Computable<NpmPlatform> {
     return this.context.getGlobalString(TARGET).then(triple => tripleToNpm(triple));
   }
 
   /**
-   * What an npm resolution is computed *for* beyond its roots: the target
+   * Name what an npm resolution is computed *for* beyond its roots: the target
    * platform, which gates which optional deps exist, and the package
    * extensions, which add requirements — inputs to the graph, not only to
    * delivery, so the domain folds them into the resolution memo key.
@@ -352,14 +355,14 @@ export class NPMRepository
     return this.context.operation;
   }
 
-  /** RepositoryReader implementation: the package's own files at the
-   * reference's lower bound, with no closure. */
+  /** Fetch the package's own files at the reference's lower bound, with no
+   * closure (RepositoryReader implementation). */
   public fetchFiles(reference: RepositoryRef): Computable<FileSet> {
     return Computable.resolve(undefined).then(() => resolveBarePackage(this, reference));
   }
 
   /**
-   * RepositoryReader implementation: the requirements of pkg@version are its
+   * Read the requirements of pkg@version (RepositoryReader implementation): its
    * declared `dependencies` and `peerDependencies` (the shared manifest
    * reading, {@link declaredDependencies}), plus the `optionalDependencies`
    * that are installable on the target. The dominant use of the latter is
@@ -424,14 +427,13 @@ export class NPMRepository
   }
 
   /**
-   * The floor-raise hook (see RepositoryReader): the lowest *published* version
-   * of `pkg` satisfying `constraint`, consulted only when the constraint's own
-   * minimum turned out unpublished. Reads the **packument** — the registry's
-   * mutable per-package version list — through the mutable-fetch TTL cache
-   * (origin-derived freshness, revalidated when stale, never frozen); if the
-   * cached list satisfies nothing, that is evidence it may be stale, so it is
-   * force-revalidated once before giving up. Deterministic modulo registry
-   * append.
+   * Find, as the floor-raise hook (see RepositoryReader), the lowest
+   * *published* version of `pkg` satisfying `constraint`, consulted only when
+   * the constraint's own minimum turned out unpublished. Reads the
+   * **packument** — the registry's per-package version list, held for the run
+   * (see {@link packument}); if the held list satisfies nothing, that is
+   * evidence it may be stale, so it is re-read once before giving up.
+   * Deterministic modulo registry append.
    *
    * A package the registry has never heard of (a typo'd name) has no published
    * versions at all, which is a definite answer rather than a stale one: it
@@ -458,15 +460,15 @@ export class NPMRepository
     });
   }
 
-  /** The registry's version list for repair suggestions (see RepositoryReader):
-   *  the packument read, without the staleness retry (suggestions are advisory). */
+  /** List the registry's versions for repair suggestions (see
+   *  RepositoryReader): the packument read, without the staleness retry
+   *  (suggestions are advisory). */
   public availableVersions(pkg: string): Computable<SemverVersion[] | undefined> {
     return this.publishedVersions(pkg, false);
   }
 
-  /** The package's published versions, from its packument, or undefined if
-   * the registry has no such package. Unparseable version strings are
-   * skipped. */
+  /** List the package's published versions, from its packument, or undefined if
+   * the registry has no such package. Unparseable version strings are skipped. */
   private publishedVersions(pkg: string, forceRevalidate: boolean): Computable<SemverVersion[] | undefined> {
     return this.packument(pkg, forceRevalidate).then(versions =>
       versions === undefined
@@ -482,11 +484,12 @@ export class NPMRepository
   }
 
   /**
-   * The package's abbreviated packument — each published version's metadata,
-   * by version — or undefined if the registry has no such package (its 404).
-   * A version's entry never changes once published, so a held packument is
-   * kept for every version it lists; `forceRevalidate` re-reads it, for a
-   * caller asking about a version it lacks. Read once per run either way.
+   * Read the package's abbreviated packument — each published version's
+   * metadata, by version — or undefined if the registry has no such package
+   * (its 404). A version's entry never changes once published, so a held
+   * packument is kept for every version it lists; `forceRevalidate` re-reads
+   * it, for a caller asking about a version it lacks. Read once per run either
+   * way.
    */
   private packument(pkg: string, forceRevalidate: boolean): Computable<ReadonlyMap<string, INPMPackageMetadata> | undefined> {
     const held = forceRevalidate ? this.revalidatedPackuments : this.packuments;

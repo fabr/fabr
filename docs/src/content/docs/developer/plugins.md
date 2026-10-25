@@ -81,13 +81,13 @@ runtime dependency on `@fabr-build/core`; type-only imports are fine.
 The main module exports a function `activate` that returns the plugin's contribution:
 
 ```ts
-import { packageLibFile, PluginContribution } from "@fabr-build/core";
+import { getPackageLibFile, PluginContribution } from "@fabr-build/core";
 
 export function activate(): PluginContribution {
   return {
     rules: [textLint],
     repositories: [],
-    includes: [packageLibFile("@example/text-lint", "LINT.fabr")],
+    includes: [getPackageLibFile("@example/text-lint", "LINT.fabr")],
   };
 }
 ```
@@ -99,7 +99,7 @@ what the plugin provides, once per load of a project.
 |---|---|
 | `rules` | The rules that build the plugin's target types: see [Rules](#rules). |
 | `repositories` | Repository types: see [Repository types](#repository-types). |
-| `includes` | Absolute paths of the plugin's `.fabr` files. `packageLibFile(name, file)` gives the path of `file` in the `lib/` directory of the installed package `name`. |
+| `includes` | Absolute paths of the plugin's `.fabr` files. `getPackageLibFile(name, file)` gives the path of `file` in the `lib/` directory of the installed package `name`. |
 
 A target type's schema, its `targetdef`, is declared in a `.fabr` file, not in code: see
 [Targetdef declarations](/reference/syntax/#targetdef-declarations).
