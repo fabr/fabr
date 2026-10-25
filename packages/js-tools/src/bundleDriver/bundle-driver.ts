@@ -130,6 +130,9 @@ interface IEsbuild {
  * CSS/JSON are concatenated/parsed natively; JS/TS are compiled. */
 const CODE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".css", ".json", ".txt"]);
 
+/** The conditions the bundle adds to esbuild's own (see {@link toEsbuildOptions}). */
+const EXTRA_CONDITIONS = ["module-sync"];
+
 /** The importer kinds that reference an *asset* (a URL in a stylesheet) rather
  * than code: a miss on one of these is an external runtime URL, not an error. */
 const ASSET_KINDS = new Set(["url-token"]);
@@ -263,6 +266,9 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
 
         /* Asset references (CSS url()) resolve on disk if vendored (esbuild's
          * file loader then emits them) or become an external runtime URL. */
+        if (ASSET_KINDS.has(args.kind) && !isBareSpecifier(args.path)) {
+          return assetOnDisk(args.path, args.resolveDir) ? null : { path: args.path, external: true };
+        }
         if (ASSET_KINDS.has(args.kind)) {
           const probe = await build.resolve(args.path, {
             kind: args.kind,
@@ -305,7 +311,10 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
            * without a round trip back out to us. */
           return null;
         }
-        const resolved = await resolveSingleVariant(build, { ...args, path: specifier }, nativeKind, otherKind);
+        const resolved =
+          (manifest !== undefined && specifier === args.path
+            ? variantFromTable(manifest, specifier, args.importer || `${args.resolveDir}/`, [nativeKind, otherKind], options.platform)
+            : undefined) ?? (await resolveSingleVariant(build, { ...args, path: specifier }, nativeKind, otherKind));
         if (resolved) {
           variantCache.set(variantKey, resolved);
           return resolved;
@@ -398,6 +407,52 @@ async function resolveSingleVariant(
   return undefined;
 }
 
+/**
+ * The conditions esbuild resolves a package's `exports` under, for an import of
+ * `kind` on `platform`: `default`, the platform's, the kind's and
+ * {@link EXTRA_CONDITIONS} (with `conditions` set, esbuild adds no `module`).
+ */
+export function conditionsFor(kind: string, platform: IBundleOptions["platform"]): ReadonlySet<string> {
+  const byKind = kind === "require-call" || kind === "require-resolve" ? "require" : "import";
+  return new Set(["default", platform, byKind, ...EXTRA_CONDITIONS]);
+}
+
+/**
+ * The file a bare specifier names through the staged table, under the first of
+ * `kinds` that answers — what esbuild's own resolution of it under that kind
+ * gives, for a package whose `exports` map decides the file. Undefined where the
+ * table does not answer, or answers a file that is not there, for esbuild to
+ * resolve (and report) itself.
+ */
+function variantFromTable(
+  resolver: PnpResolver,
+  specifier: string,
+  issuer: string,
+  kinds: string[],
+  platform: IBundleOptions["platform"]
+): IOnResolveResult | undefined {
+  for (const kind of kinds) {
+    let file: string | undefined;
+    try {
+      file = resolver.resolveAll(specifier, issuer, conditionsFor(kind, platform))[0];
+    } catch {
+      /* An invalid `exports` map: esbuild's own reading decides. */
+      return undefined;
+    }
+    if (file !== undefined && fs.existsSync(resolveVirtual(file))) {
+      return { path: file };
+    }
+  }
+  return undefined;
+}
+
+/** Whether a relative or absolute CSS `url()` names a file, as esbuild resolves
+ * one: as written, or without a `?`/`#` suffix. */
+function assetOnDisk(specifier: string, resolveDir: string): boolean {
+  const unsuffixed = specifier.replace(/[?#].*$/, "");
+  return [specifier, unsuffixed].some(candidate => fs.existsSync(resolveVirtual(path.resolve(resolveDir, candidate))));
+}
+
 /** Whether an `exports` map names either of the conditions the importer's kind
  * selects, anywhere within it. A map that never mentions them answers the same
  * whichever way it is asked. */
@@ -456,7 +511,7 @@ function toEsbuildOptions(options: IBundleOptions, unresolved: Set<string>): Rec
      * marks an ESM entry that may be loaded synchronously — what node 22 and
      * later require() — and fabr's compiler resolves it, so the bundler must
      * too; esbuild consumes ESM whatever format it is emitting. */
-    conditions: ["module-sync"],
+    conditions: EXTRA_CONDITIONS,
     ...(options.define ? { define: options.define } : {}),
     ...(options.inject ? { inject: options.inject } : {}),
     /* Load-bearing under a manifest, and only there: esbuild finds the manifest

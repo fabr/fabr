@@ -127,7 +127,10 @@ describe("unresolvedHelp", () => {
  * bundle's own format and reuse that answer, so the choice cannot depend on who
  * is asking.
  */
-describe("the bundle driver's single-variant rule, over real esbuild", () => {
+/* Under either layout: esbuild answers the pinned resolution itself where the
+ * packages are a `node_modules` tree, and the staged table answers it where they
+ * are pool trees named by a PnP manifest. */
+for (const layout of ["node_modules", "pnp"] as const) describe(`the bundle driver's single-variant rule, over real esbuild (${layout})`, () => {
   let work: string;
 
   beforeEach(() => {
@@ -152,11 +155,27 @@ describe("the bundle driver's single-variant rule, over real esbuild", () => {
 
   /** Install `dualpkg` with the given `exports` map, both copies present. */
   function publishing(exports: unknown): void {
-    const pkg = path.join(work, "node_modules/dualpkg");
-    fs.mkdirSync(pkg, { recursive: true });
-    fs.writeFileSync(path.join(pkg, "package.json"), JSON.stringify({ name: "dualpkg", version: "1.0.0", exports }));
-    fs.writeFileSync(path.join(pkg, "esm.mjs"), 'export const marker = "ESM_COPY";\n');
-    fs.writeFileSync(path.join(pkg, "cjs.cjs"), 'module.exports = { marker: "CJS_COPY" };\n');
+    const files = new Map<string, MemoryFile>([
+      ["package.json", MemoryFile.from(JSON.stringify({ name: "dualpkg", version: "1.0.0", exports }))],
+      ["esm.mjs", MemoryFile.from('export const marker = "ESM_COPY";\n')],
+      ["cjs.cjs", MemoryFile.from('module.exports = { marker: "CJS_COPY" };\n')],
+    ]);
+    const write = (dir: string): void => {
+      fs.mkdirSync(dir, { recursive: true });
+      for (const [name, file] of files) {
+        fs.writeFileSync(path.join(dir, name), file.getBuffer().value as Buffer);
+      }
+    };
+    if (layout === "node_modules") {
+      write(path.join(work, "node_modules/dualpkg"));
+      return;
+    }
+    const manifest = pnpManifestOf([new PackageFileSet(files, "dualpkg", "1.0.0", [])]);
+    for (const pkg of manifest.packages) {
+      write(path.join(work, "store", path.basename(treeMountOf(pkg))));
+    }
+    fs.symlinkSync(path.join(work, "store"), path.join(work, ".fabr-tree"));
+    fs.writeFileSync(path.join(work, PNP_DATA_FILE), manifest.toFile().getBuffer().value as Buffer);
   }
 
   /** Bundle in `format` and answer which copies of the package came out. */
