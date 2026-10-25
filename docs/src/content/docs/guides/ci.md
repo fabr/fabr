@@ -5,28 +5,30 @@ description: How to run fabr in CI — installing it, what to cache, what its ou
 
 Running fabr in CI needs little setup: install Node.js and fabr, run the same commands you run
 locally, and keep fabr's cache between runs. There is no dependency install step, because fabr
-fetches packages as part of the build.
+fetches packages, and the Node.js release your tools and tests run on, as part of the build.
 
 ```yaml
 # GitHub Actions
 steps:
   - uses: actions/checkout@v4
   - uses: actions/setup-node@v4
-    id: node
     with:
       node-version: 22
   - run: npm install -g @fabr-build/cli@0.3.1
   - uses: actions/cache@v4
     with:
       path: ~/.cache/fabr
-      key: fabr-${{ runner.os }}-${{ runner.arch }}-${{ steps.node.outputs.node-version }}-${{ github.sha }}
-      restore-keys: fabr-${{ runner.os }}-${{ runner.arch }}-${{ steps.node.outputs.node-version }}-
+      key: fabr-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+      restore-keys: fabr-${{ runner.os }}-${{ runner.arch }}-
   - run: fabr test ALL
 ```
 
 ## Install
 
-Fabr needs Node.js 22.19 or later, and `node` on the `PATH`.
+Fabr needs Node.js 22.19 or later, and `node` on the `PATH`, to run itself. That is the only use
+of the runner's Node.js: your tools and tests run on the release the
+[`NODE` setting](/reference/js/dependencies/#the-nodejs-version) names, which fabr downloads and
+keeps in its cache, so the version `actions/setup-node` installs doesn't affect what is built.
 
 Install a specific version of `@fabr-build/cli`, so that CI and your team use the same one; a
 build file has no way to require a fabr version. `fabr --version` prints what is installed.
@@ -108,12 +110,9 @@ start of the next.
 - **Save it on every run**, with a key that changes each time and a prefix to restore from, as in
   the example at the top of this page. A cache saved once and never updated stops matching as the
   project changes.
-- **Key it by operating system and architecture.** Platform-specific packages and the results
-  built with them differ between platforms, so a cache shared across them mostly grows.
-- **Key it by Node.js version.** Fabr doesn't track which `node` a step ran with, so a cache built
-  with one Node.js version would be reused, passing test runs included, by a job running
-  another. The example takes the exact version from `actions/setup-node`'s output, so a new
-  Node.js release starts a new cache.
+- **Key it by operating system and architecture.** Platform-specific packages, the Node.js
+  release, and the results built with them differ between platforms, so a cache shared across
+  them mostly grows. The runner's own Node.js version doesn't need to be in the key.
 - **Save it after `fabr` has finished**, not while it is running. A finished run leaves nothing
   half-written behind.
 - **Use an archive format that keeps hardlinks and modification times.** The cache stores each
@@ -139,10 +138,10 @@ Two things qualify that:
   publishes or deploys, a cache that an untrusted job could have saved. On GitHub, a pull request
   from a fork can't write to the base branch's cache; with other systems and self-hosted runners,
   check how caches are scoped, or publish from a job that starts with an empty cache.
-- **Tools on the runner aren't tracked by version.** A cache restored into a job with a different
-  `node` serves results built with the old one, which is why the cache key above includes the
-  Node.js version. See
-  [Known limitations](/known-limitations/#host-tools-arent-hermetically-sealed-yet).
+- **`sh` isn't tracked by version.** A [`script`](/reference/standard-rules/#script) target runs
+  on the runner's `sh`, and a cache restored into a job with a different shell, or different
+  programs for a script to start, serves results built with the old ones. See
+  [Known limitations](/known-limitations/#shell-scripts-run-on-the-sh-on-your-machine).
 
 ### Size
 
@@ -188,10 +187,13 @@ measured.
 ## Network access
 
 Fabr contacts the npm registry (or the registry `NPM_REPOSITORY_URL` names), the hosts that
-registry's packages are downloaded from, and the URLs of any `fetch` targets.
+registry's packages are downloaded from, `nodejs.org` and `unofficial-builds.nodejs.org` for the
+Node.js release, and the URLs of any `fetch` targets.
 
-- **A build whose packages are all in the cache makes no requests.** Published versions are never
-  re-fetched.
+- **A build whose packages and Node.js release are all in the cache makes no requests.**
+  Published versions are never re-fetched. The exception is a `NODE` setting that names a version
+  range, for which fabr rechecks nodejs.org's list of releases about once an hour; write an exact
+  version to avoid it.
 - **Proxies** are taken from `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`.
 - **Private registries** take credentials from `.npmrc`, where a value can come from the
   environment: `//npm.example.com/:_authToken=${NPM_TOKEN}`. See

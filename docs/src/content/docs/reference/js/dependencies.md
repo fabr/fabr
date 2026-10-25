@@ -25,6 +25,7 @@ are.
 | Workspace `catalog:` (pnpm, Yarn) | A [catalog](#catalogs). |
 | `patch-package`, `pnpm patch`, `yarn patch` | A [`patched` target](#patching-a-package). |
 | `postinstall` scripts | Not run. |
+| `.nvmrc`, or Volta's `volta.node` | The [`NODE` setting](#the-nodejs-version). Fabr downloads that release and runs your tools and tests on it. |
 
 ## Declaring a dependency
 
@@ -407,6 +408,7 @@ downloaded. Each is a target with a setting's name — `TSC_DRIVER`, `JS_BUNDLER
 | `SASS` | `@npm:sass-embedded:1.100.0` | [Sass](/reference/js/stylesheets/) |
 | `POSTCSS`, `POSTCSS_MODULES` | `@npm:postcss:8.5.28`, `@npm:postcss-modules:9.0.1` | css-modules |
 | `JEST` | `@npm:jest:30.3.0` | The [`jest` test framework](/reference/js/testing/#jest) |
+| `NODE` | `@node:24.22.1:bin/node` | The Node.js binary every JavaScript program runs on; see [The Node.js version](#the-nodejs-version) |
 
 A setting can name a catalog member (`TYPESCRIPT = @pkg:typescript;`), so that the compiler and
 the `typescript` your code imports are the same version.
@@ -415,6 +417,89 @@ To run a package's command-line program directly, use `fabr run` with the same k
 `fabr run @npm:prettier:3.3.3 --check src`. Where a package has more than one program, name it:
 `fabr run @npm:typescript:5.6.3:tsc`.
 
+### The Node.js version
+
+Fabr downloads the Node.js release that JavaScript programs run on, rather than using the `node`
+on your `PATH`. The `NODE` setting names it, `@node:24.22.1:bin/node` by default, and every
+JavaScript program fabr starts runs on that binary:
+
+- the TypeScript compiler, the bundler, and the Sass and PostCSS steps;
+- the test runners, and every test process they start;
+- `js_script` targets, a `js_package` under `fabr run`, and a registry package's program
+  (`fabr run @npm:prettier:3.3.3`);
+- any of these used as a stage of a `generate` command.
+
+`fabr` itself is a Node.js program, so it runs on whichever `node` starts it, which must be
+Node.js 22.19 or later. That version and the one `NODE` names are independent: switching your
+machine's Node.js, with `nvm use` or an upgrade, changes nothing that fabr builds.
+
+To use another release, set `NODE` in your build file:
+
+```
+NODE = @node:22.15.0:bin/node;
+```
+
+Changing `NODE` rebuilds and retests everything that ran on the previous binary, because the
+binary is part of each tool's installation. For a single run, set it on the command line instead:
+`fabr test -DNODE=@node:22.15.0:bin/node mylib`.
+
+A range is accepted, and as with packages, fabr selects the
+[lowest published version that satisfies it](#how-versions-are-chosen): `@node:^22.15.0` is
+22.15.0, and `@node:22` is 22.0.0, not the latest 22.x release. Write the exact version you
+want.
+
+#### The `@node` repository
+
+`@node` is a repository of Node.js releases, as nodejs.org publishes them, for the platform being
+built for:
+
+| Reference | The files it names |
+|---|---|
+| `@node:24.22.1` | The whole release: `bin/node`, `bin/npm`, `lib/`, `include/` and the rest. |
+| `@node:24.22.1:bin/node` | The `node` binary. |
+
+The same references work on the command line, so `fabr run @node:24.22.1:bin/node --version`
+runs that release, and `fabr ls '@node:24.22.1:bin/*'` lists its programs.
+
+Releases are available for macOS and Linux, on x64 and arm64, including Linux with musl libc.
+Builds that nodejs.org doesn't publish, such as the musl ones, are downloaded from
+[unofficial-builds.nodejs.org](https://unofficial-builds.nodejs.org/). On any other platform the
+build fails with:
+
+```
+error: Failed to build mytool: Node.js releases are not available for 'x86_64-unknown-freebsd'
+…
+help: set NODE to a node binary for this platform
+```
+
+To download releases from a mirror, declare `@node` yourself with its URL, laid out as
+`https://nodejs.org/dist` is:
+
+```
+node_distribution @node { url = "https://nodejs.example.com/dist"; }
+```
+
+Builds that the mirror doesn't have are still downloaded from unofficial-builds.nodejs.org.
+
+#### Using a Node.js binary you already have
+
+`NODE` can name any executable file in your project instead. A build file can only name files in
+its own project, so link the binary into it:
+
+```sh
+ln -s "$(command -v node)" tools/node
+```
+
+```
+NODE = ./tools/node;
+```
+
+A path outside the project, such as `NODE = /usr/local/bin/node;`, fails with
+`'/usr/local/bin/node' is outside the source tree`. Fabr reads the file the link points to and
+tracks its contents, so replacing that binary rebuilds what ran on it. It doesn't track shared
+libraries the binary loads: a Node.js that links its libraries dynamically, as Homebrew's does,
+can still change behaviour without fabr noticing.
+
 ## Downloads and the cache
 
 Package metadata and tarballs are downloaded as a build needs them and kept in fabr's cache
@@ -422,6 +507,12 @@ Package metadata and tarballs are downloaded as a build needs them and kept in f
 `FABR_CACHE_DIR`). A published version never changes, so once downloaded it isn't fetched again,
 and a build whose dependencies are all cached makes no network requests. Each tarball is checked
 against the integrity hash the registry publishes before it is used.
+
+Node.js releases are kept the same way. The first build that needs one downloads it, about 30 MB,
+and checks it against the `SHASUMS256.txt` file published with the release. Where `NODE` names a
+range, fabr also reads nodejs.org's list of releases, and checks it again once nodejs.org's caching
+headers say the copy is stale (currently after an hour); without a network connection it uses the
+copy it has, with a warning. An exact version needs no list.
 
 Deleting the cache is always safe: the next build downloads what it needs and selects the same
 versions.
@@ -443,4 +534,8 @@ versions.
 | `Catalog @pkg has no member 'x'` | The catalog doesn't list `x` | Add it to the catalog's `deps`. |
 | `Catalog entry '…' projects into a package` | A catalog entry that names a file inside a package | List the whole package, and name the file where you use it: `@pkg:x:path/to/file`. |
 | A package behaves like an older release than the one npm installed | Minimal version selection chose the lowest satisfying version | Raise the requirement to the version you need. |
+| `Node.js releases are not available for '…'` | No Node.js release is published for the platform | Point `NODE` at a binary for it; see [Using a Node.js binary you already have](#using-a-nodejs-binary-you-already-have). |
+| `Node.js 24.99.0 is not published at https://nodejs.org/dist` | `NODE` names a version that doesn't exist | Correct the version in `NODE`. |
+| `Node.js … is not published for linux-arm64-musl` (or another platform) | That release has no build for the platform, on nodejs.org or unofficial-builds | Choose another version, or point `NODE` at a binary for the platform. |
+| `'…' is outside the source tree`, from `NODE` | `NODE` names a file outside your project | Link the binary into the project; see [Using a Node.js binary you already have](#using-a-nodejs-binary-you-already-have). |
 | A package fails at run time looking for a file its install script would have created | Install scripts aren't run | Look for a prebuilt variant of the package, or [patch](#patching-a-package) it. |

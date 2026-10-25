@@ -38,6 +38,27 @@ describe("e2e: js_script (runnable) + generate", () => {
     expect(result.stdout).to.equal("e2e ran\n");
   });
 
+  it("runs on the node NODE names, through the tree pool rather than found on PATH", () => {
+    /* The harness points a js-plugin fixture's NODE at the node running this
+     * suite; the program runs as that file, from its tree in the cache's pool. */
+    const result = runFabr(
+      {
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\n\n" +
+          "js_script gen_prog { entry = src:gen.js; }\n" +
+          "generate gen { run = gen_prog; output = out:**; }\n",
+        "src/gen.js":
+          'require("fs").mkdirSync("out", { recursive: true });\n' +
+          'require("fs").writeFileSync("out/node.txt", process.version + " " + process.execPath);\n',
+      },
+      ["cat", "gen:node.txt"]
+    );
+    expect(result.status, result.stderr).to.equal(0);
+    const [version, execPath] = result.stdout.split(" ");
+    expect(version).to.equal(process.version);
+    expect(execPath, "reached through the tree pool's link").to.match(/\/tree\/[0-9a-f]{64}\/\.fabr-host-node$/);
+  });
+
   it("appends the run target's args to the runnable", () => {
     const result = runFabr(
       {

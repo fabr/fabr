@@ -40,9 +40,10 @@ import {
   stringConfig,
   stringListConfig,
   writeFileSet,
+  TREE_MOUNT,
 } from "@fabr-build/core";
 import { assembleNodeModules } from "./NodeModules";
-import { pnpManifestOf, TREE_MOUNT, treeMountOf } from "./PnPManifest";
+import { pnpManifestOf, treeMountOf } from "./PnPManifest";
 import { PNP_DATA_FILE } from "@fabr-build/js-tools";
 import { splitDepsPath, toRunReport } from "@fabr-build/js-tools";
 

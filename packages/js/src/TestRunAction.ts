@@ -115,7 +115,7 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
     .then(() =>
       coverageArgv === undefined
         ? undefined
-        : execute(ctx.processLimit, findExecutable(coverageArgv[0]), coverageArgv.slice(1), workDir, declared, { ...report, output: undefined })
+        : execute(ctx.processLimit, findExecutable(coverageArgv[0], workDir), coverageArgv.slice(1), workDir, declared, { ...report, output: undefined })
     )
     .then(() => getResultFileSet(workDir, outputs))
     .then(result => ({ result }));
@@ -184,7 +184,7 @@ function runOneFile(
    * take slots of the machine's funnel like any others, and a run waiting for
    * one must not look like a run in progress. */
   const report = { ...taskReport, output: undefined };
-  return execute(ctx.processLimit, findExecutable(argv[0]), invocation, join(ctx.workDir, COMPILE_OUT_DIR), env, report)
+  return execute(ctx.processLimit, findExecutable(argv[0], join(ctx.workDir, COMPILE_OUT_DIR)), invocation, join(ctx.workDir, COMPILE_OUT_DIR), env, report)
     .then(
       () => undefined,
       (err: Error) => err

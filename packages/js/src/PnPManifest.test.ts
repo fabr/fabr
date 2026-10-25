@@ -32,7 +32,8 @@ import {
 import { packageNodeSignature } from "@fabr-build/core";
 import * as path from "path";
 import type { IPnpPackageInfo, PnpDependencyTarget } from "@fabr-build/js-tools";
-import { assertOnePackagePerName, pnpManifestOf, TREE_MOUNT, treeMountOf } from "./PnPManifest";
+import { TREE_MOUNT } from "@fabr-build/core";
+import { assertOnePackagePerName, pnpManifestOf, treeMountOf } from "./PnPManifest";
 import { resolveVirtual } from "@fabr-build/js-tools";
 
 /** A package as a REPOSITORY delivered it — carrying a resolution provenance,

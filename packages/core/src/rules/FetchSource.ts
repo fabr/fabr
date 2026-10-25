@@ -20,13 +20,13 @@
 import crypto from "crypto";
 import { Readable } from "stream";
 import { Computable, ComputableSource } from "../core/Computable";
-import { FabrError, IntegrityError, toError } from "../core/Errors";
+import { FabrError, IntegrityError } from "../core/Errors";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
 import { IFetchContext } from "../core/BuildCache";
 import { HASH_ALGORITHM } from "../core/FSWrapper";
 import { Name } from "../core/Name";
 import { IProvenanceStep, registerProvenanceDescriber, registerProvenanceRenderer } from "../core/Provenance";
-import { ExpectedDigest, isIntegrity, parseIntegrity, verifyingStream } from "../support/Integrity";
+import { ExpectedDigest, isIntegrity, parseIntegrity, verifiedStream } from "../support/Integrity";
 import { TargetContext } from "../context/index";
 import { RepositoryRegistration } from "./Types";
 import { mapComputable } from "../support/Functional";
@@ -140,14 +140,10 @@ class FetchSource implements FileSource {
         Computable.resolve({
           url: member.url,
           process: (content: Readable, ctx: IFetchContext) => {
-          const { hashing, verify } = verifyingStream(member.digest, member.url);
+          const { stream, verify } = verifiedStream(content, member.digest, member.url);
           const output = ctx.createOutput();
-          /* pipe() does not forward a source error: a body dropped mid-stream
-           * (reset, idle timeout) must fail this attempt through the hasher,
-           * not raise an unhandled 'error' on the bare response. */
-          content.on("error", err => hashing.destroy(toError(err)));
-          content.pipe(hashing).pipe(output.stream, { end: false });
-          return streamed(hashing)
+          stream.pipe(output.stream, { end: false });
+          return streamed(stream)
             .then(
               () => {
                 /* Before finalize: a digest mismatch must leave nothing behind. */

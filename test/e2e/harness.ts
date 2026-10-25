@@ -54,6 +54,29 @@ const CHILD_PATH = [path.dirname(NODE), "/usr/bin", "/bin", process.env.PATH]
   .filter(Boolean)
   .join(path.delimiter);
 
+/* A fixture using the js plugin runs its tools on the node running this suite,
+ * rather than downloading the release NODE names: NODE is pointed at a link to
+ * it inside the project, since a build file names only files of its own tree. */
+const HOST_NODE_LINK = ".fabr-host-node";
+
+/** Get a fixture file as written, a js-plugin project's PROJECT.fabr with NODE
+ *  pointed at {@link HOST_NODE_LINK}. */
+function fixtureContent(rel: string, content: string): string {
+  return rel === "PROJECT.fabr" && content.includes("plugin @fabr-build/js;") && !/^\s*NODE\s*=/m.test(content)
+    ? `${content}\nNODE = ${HOST_NODE_LINK};\n`
+    : content;
+}
+
+/** Write `files` into the fixture project `dir`, with the link NODE names. */
+function writeFixture(dir: string, files: Record<string, string>): void {
+  for (const [rel, content] of Object.entries(files)) {
+    const abs = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, fixtureContent(rel, content));
+  }
+  fs.symlinkSync(NODE, path.join(dir, HOST_NODE_LINK));
+}
+
 /* One cache per test file: content-addressed, so sharing it across that file's
  * fixtures just reuses the stub-tsc / package builds, while keeping concurrent
  * files off each other's store (fabr has no cross-process cache locking).
@@ -132,11 +155,7 @@ export function runFabr(
   }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-e2e-proj-"));
   try {
-    for (const [rel, content] of Object.entries(files)) {
-      const abs = path.join(dir, rel);
-      fs.mkdirSync(path.dirname(abs), { recursive: true });
-      fs.writeFileSync(abs, content);
-    }
+    writeFixture(dir, files);
     const result = spawnSync(NODE, [FABR, ...args], {
       cwd: subdir ? path.join(dir, subdir) : dir,
       env: { PATH: CHILD_PATH, FABR_CACHE_DIR: CACHE_DIR },
@@ -189,11 +208,7 @@ export function runFabrClosingStream(
     throw new Error(`fabr is not built at ${FABR} — run 'yarn build' (the 'yarn dist' gate does this)`);
   }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-e2e-proj-"));
-  for (const [rel, content] of Object.entries(files)) {
-    const abs = path.join(dir, rel);
-    fs.mkdirSync(path.dirname(abs), { recursive: true });
-    fs.writeFileSync(abs, content);
-  }
+  writeFixture(dir, files);
   const child = spawn(NODE, [FABR, ...args], {
     cwd: dir,
     env: { PATH: CHILD_PATH, FABR_CACHE_DIR: CACHE_DIR },
@@ -407,11 +422,9 @@ export function startFabrWatch(files: Record<string, string>, args: string[], en
   const write = (rel: string, content: string): void => {
     const abs = path.join(dir, rel);
     fs.mkdirSync(path.dirname(abs), { recursive: true });
-    fs.writeFileSync(abs, content);
+    fs.writeFileSync(abs, fixtureContent(rel, content));
   };
-  for (const [rel, content] of Object.entries(files)) {
-    write(rel, content);
-  }
+  writeFixture(dir, files);
 
   /* A private cache (not the shared CACHE_DIR): a watch session's rebuilds churn
    * the store while other e2e suites build in parallel — an isolated cache keeps

@@ -17,6 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import type { RunnableFileSet } from "../core/RunnableFileSet";
 import { Computable } from "../core/Computable";
 import type { FileSet } from "../core/FileSet";
 import type { Package, PackageFileSet } from "../core/PackageFileSet";
@@ -425,6 +426,9 @@ export interface ResolutionContext {
    */
   readonly given?: ReadonlySet<PackageFileSet>;
   getGlobalString(name: string): Computable<string>;
+  /** Get `runnable` launched through the runnable the global `interpreter`
+   *  names (see {@link RunnableFileSet.launchedBy}). */
+  launchedBy(runnable: RunnableFileSet, interpreter: string): Computable<RunnableFileSet>;
   memoize(tag: string, key: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet>;
   runTask<T>(task: TaskDescription, run: (report: ITaskReport) => Computable<T>): Computable<T>;
 }

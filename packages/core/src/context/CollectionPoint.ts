@@ -273,7 +273,7 @@ function resolveBatch(
           }
           return closures!().then(assembled => {
             const pkg = assembled[position.get(request)!];
-            return pkg === undefined ? EMPTY_FILESET : operation === "run" ? runnableNode(pkg, held => source.format.makeRunnable(held)) : pkg;
+            return pkg === undefined ? EMPTY_FILESET : operation === "run" ? runnableNode(pkg, held => source.format.makeRunnable(held, context)) : pkg;
           });
         }
         return request.as === "files" && source.resolveFiles !== undefined
@@ -347,7 +347,7 @@ function resolveMember(
         ).withHelp(`run the target directly rather than through ${repository}`);
       });
     }
-    return resolved().then(pkg => runnableNode(pkg, held => attributedTo(reference, () => runnableFrom(entry.source, held))));
+    return resolved().then(pkg => runnableNode(pkg, held => attributedTo(reference, () => runnableFrom(context, entry.source, held))));
   });
 }
 

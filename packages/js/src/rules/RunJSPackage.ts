@@ -38,11 +38,11 @@ export const runJsPackageRule: RuleDefinition = defineRule({
   type: "js_package",
   properties: { [BUILD_OPERATION]: "run" },
   requirements: context => ({ pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE) }),
-  evaluateMaterialized: (_context, { pkg }) => {
+  evaluateMaterialized: (context, { pkg }) => {
     const built = pkg.find((source): source is PackageFileSet => source instanceof PackageFileSet);
     if (!built) {
       throw new FabrError("internal: js_package[build] did not yield a package");
     }
-    return makeNpmRunnable(built);
+    return makeNpmRunnable(context, built);
   },
 });

@@ -60,7 +60,7 @@ export function runInteractive(cache: BuildCache, key: string, runnable: Runnabl
     /* The program owns the terminal while it runs (it inherits fabr's stdio),
      * so fabr's own display steps aside for the duration. */
     .then(() =>
-      withTerminalSuspended(() => executeInteractive(findExecutable(argv[0]), argv.slice(1), launchDir(runnable, dir), launchEnv(runnable)))
+      withTerminalSuspended(() => executeInteractive(findExecutable(argv[0], launchDir(runnable, dir)), argv.slice(1), launchDir(runnable, dir), launchEnv(runnable)))
     )
     .finally(() => cache.releaseKeptWorkDir(dir));
 }
@@ -319,7 +319,7 @@ export class RunSupervisor {
       if (wasRunning) {
         this.log.log(DIAG_RESTART, { name: this.name });
       }
-      const child = spawnInteractive(findExecutable(argv[0]), argv.slice(1), launchDir(runnable, install.dir), launchEnv(runnable));
+      const child = spawnInteractive(findExecutable(argv[0], launchDir(runnable, install.dir)), argv.slice(1), launchDir(runnable, install.dir), launchEnv(runnable));
       /* The supervised program owns the terminal from here until it exits —
        * which outlives the build that launched it, so the hand-over is bracketed
        * by the child's own lifetime rather than by a chain. Rebuild diagnostics

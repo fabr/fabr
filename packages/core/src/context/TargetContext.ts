@@ -528,6 +528,11 @@ export abstract class TargetContext {
   public getGlobalFileProperty(name: string, overrides?: Constraints): Computable<SourceRef[]> {
     return this.context.resolveTarget(name, this.stack, overrides);
   }
+
+  /** Get `runnable` launched through the runnable the global `interpreter` names. */
+  public launchedBy(runnable: RunnableFileSet, interpreter: string): Computable<RunnableFileSet> {
+    return this.getGlobalRunnable(interpreter).then(launcher => runnable.launchedBy(launcher, this.execution.buildCache));
+  }
 }
 
 /**

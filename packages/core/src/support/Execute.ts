@@ -214,19 +214,22 @@ export function describeSystemError(err: unknown): string {
 
 /**
  * Locate an executable. A name with a path separator is used directly (as a
- * shell does — a command containing a slash is not PATH-searched), which also
- * lets a caller resolve a specific binary by absolute path without any PATH.
- * A bare name is searched on the PATH environment variable. Note the PATH
- * search is a short-term measure (the result is an untracked input from the
- * environment) until runtimes are modelled as proper dependencies.
+ * shell does — a command containing a slash is not PATH-searched), relative to
+ * `cwd`, the directory the command will run in; this also lets a caller name a
+ * specific binary by absolute path without any PATH. A bare name is searched
+ * on the PATH environment variable. Note the PATH search is a short-term
+ * measure (the result is an untracked input from the environment) until
+ * runtimes are modelled as proper dependencies.
+ * @return the executable's path, absolute where `name` has a path separator.
  * @throws ExecutionError if the executable cannot be found.
  */
-export function findExecutable(name: string): string {
+export function findExecutable(name: string, cwd = process.cwd()): string {
   if (path.basename(name) !== name) {
+    const located = path.resolve(cwd, name);
     try {
-      fs.accessSync(name, fs.constants.X_OK);
-      if (fs.statSync(name).isFile()) {
-        return name;
+      fs.accessSync(located, fs.constants.X_OK);
+      if (fs.statSync(located).isFile()) {
+        return located;
       }
     } catch {
       /* fall through to the error */
@@ -597,7 +600,7 @@ function pipelineUnbounded(
     const argvs: string[][] = [];
     for (const spec of specs) {
       try {
-        argvs.push([findExecutable(spec.argv[0]), ...spec.argv.slice(1)]);
+        argvs.push([findExecutable(spec.argv[0], cwd), ...spec.argv.slice(1)]);
       } catch (e) {
         return reject(new ExecutionError(`${stageCommandLine(spec)}\nunable to execute: ${systemErrorText(e)}`));
       }

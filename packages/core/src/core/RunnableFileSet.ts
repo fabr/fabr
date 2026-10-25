@@ -25,6 +25,8 @@ import { IProvenanceStep } from "./Provenance";
 import type { Repository } from "./Repository";
 import { SymlinkFile } from "./SymlinkFile";
 import { FabrError } from "./Errors";
+import { Computable } from "./Computable";
+import { TREE_MOUNT } from "./BuildCache";
 
 const NO_ENV: ReadonlyMap<string, string> = new Map();
 
@@ -64,8 +66,10 @@ export class RunnableFileSet extends FileSet {
     files: Iterable<[string, IFile]>,
     /** Fixed leading args, before any the caller appends. */
     public readonly args: string[] = [],
-    /** A PATH tool that runs the entry (e.g. "node"); omitted → the entry is itself executable. */
-    public readonly interpreter?: string,
+    /** What runs the entry: a bare command found on PATH (`sh`), or a runnable
+     * (`NODE`), reached through the cache's tree pool (see {@link launchedBy}).
+     * Omitted → the entry is itself executable. */
+    public readonly interpreter?: string | RunnableFileSet,
     /** The primary package's mount within the install (e.g. `node_modules/@fabr-build/cli`); a `surface` file resolves to `root`/name. */
     public readonly root: string = "",
     /** The launch surface: package files (by path) + a SymlinkFile per bin (by command → install path). `locate`/`select` search this. */
@@ -91,7 +95,7 @@ export class RunnableFileSet extends FileSet {
     files: Iterable<[string, IFile]>,
     entry: string,
     args: string[] = [],
-    interpreter?: string
+    interpreter?: string | RunnableFileSet
   ): RunnableFileSet {
     const surface = new FileSet(new Map<string, IFile>([[path.posix.basename(entry), new SymlinkFile(entry)]]));
     return new RunnableFileSet(files, args, interpreter, "", surface);
@@ -99,6 +103,32 @@ export class RunnableFileSet extends FileSet {
 
   public withOrigin(origin: IProvenanceStep): RunnableFileSet {
     return new RunnableFileSet(this, this.args, this.interpreter, this.root, this.surface, this.served, this.launchCwd, this.env, origin);
+  }
+
+  /**
+   * Get this runnable launched through `interpreter`, which is written once to
+   * `pool`'s tree pool and reached through the pool's link, carried in this
+   * runnable's install at {@link TREE_MOUNT}. Its content is in any key this
+   * runnable's command line or install is: the command line names it by hash.
+   */
+  public launchedBy(
+    interpreter: RunnableFileSet,
+    pool: { ensureTree(files: FileSet): Computable<string>; readonly treePoolLink: SymlinkFile }
+  ): Computable<RunnableFileSet> {
+    return pool.ensureTree(interpreter).then(
+      () =>
+        new RunnableFileSet(
+          FileSet.unionAll(this, new FileSet(new Map([[TREE_MOUNT, pool.treePoolLink]]))),
+          this.args,
+          interpreter,
+          this.root,
+          this.surface,
+          this.served,
+          this.launchCwd,
+          this.env,
+          this.origin
+        )
+    );
   }
 
   /** Get this runnable offering a different launch surface — how a projection is
@@ -177,20 +207,31 @@ export class RunnableFileSet extends FileSet {
    * Reduce this runnable to a command line: the interpreter (if any) as the
    * command, then the launch entry, the runnable's own fixed args, then the
    * caller's. Pure — no filesystem or PATH access; the caller resolves argv[0]
-   * with findExecutable and spawns. `base` prepends a (relative) mount prefix to
-   * the entry — for a tool staged under a subdir of the launch cwd (e.g. a
-   * compiler mounted apart from the workspace it operates on). `anchor` (the
-   * staged install dir) instead makes the entry absolute, for launching with a
-   * cwd *other* than the install (fabr run, in the user's directory); with
-   * neither, the entry stays install-relative (the exec step, cwd == install).
+   * with findExecutable, relative to the directory it launches in, and spawns.
+   * `base` prepends a (relative) mount prefix to the entry — for a tool staged
+   * under a subdir of the launch cwd (e.g. a compiler mounted apart from the
+   * workspace it operates on). `anchor` (the staged install dir) instead makes
+   * the entry absolute, for launching with a cwd *other* than the install (fabr
+   * run, in the user's directory); with neither, the entry stays
+   * install-relative (the exec step, cwd == install). A runnable interpreter
+   * is its own command line, placed under the tree pool's link, taking this
+   * one's entry and arguments as its caller's.
    * @throws if no single entry resolves — the "which entry?" error, deferred to
    * launch so a projection has the chance to pick one.
    */
   public toCommandLine(callerArgs: string[] = [], opts?: { anchor?: string; base?: string }): string[] {
-    const resolved = this.resolveEntry();
-    const based = opts?.base ? path.posix.join(opts.base, resolved) : resolved;
-    const entry = opts?.anchor ? path.resolve(opts.anchor, based) : based;
-    return [...(this.interpreter ? [this.interpreter] : []), entry, ...this.args, ...callerArgs];
+    const based = (installPath: string): string => (opts?.base ? path.posix.join(opts.base, installPath) : installPath);
+    const entry = based(this.resolveEntry());
+    const line = [opts?.anchor ? path.resolve(opts.anchor, entry) : entry, ...this.args, ...callerArgs];
+    if (this.interpreter instanceof RunnableFileSet) {
+      return this.interpreter.toCommandLine(line, { ...opts, base: based(path.posix.join(TREE_MOUNT, this.interpreter.toManifestHash())) });
+    }
+    if (this.interpreter !== undefined) {
+      return [this.interpreter, ...line];
+    }
+    /* The entry is the command: a bare name would be searched for on PATH. */
+    const [command, ...rest] = line;
+    return [command.includes("/") ? command : `./${command}`, ...rest];
   }
 
   /**

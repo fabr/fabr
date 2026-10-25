@@ -21,7 +21,7 @@
  * @fabr-build/js: the Javascript/NPM ecosystem support for fabr, loaded as a fabr
  * plugin (`plugin @fabr-build/js;` — see docs/src/content/docs/developer/plugins.md
  * for the plugin contract):
- * activation contributes the js rules, the npm repository type, and this
+ * activation contributes the js rules, the npm and Node.js repository types, and this
  * package's lib/ (JS.fabr), which the plugin declaration auto-includes.
  *
  * The test runners and tool drivers the js rules run are bins of
@@ -40,6 +40,7 @@ import { testJsPackageRules } from "./rules/TestJSPackage";
 import { jsTestRules } from "./rules/TestJSTest";
 import { jsScriptRule } from "./rules/RunJSScript";
 import { npmRepositoryRegistration } from "./NPMRepository";
+import { nodeDistributionRegistration } from "./NodeDistribution";
 
 /* The compile pipeline helpers, for other js rules to build on (in-tree only:
  * cross-plugin extension isn't supported yet — see docs/src/content/docs/developer/plugins.md) */
@@ -75,7 +76,7 @@ export function activate(): PluginContribution {
       ...jsTestRules,
       jsScriptRule,
     ],
-    repositories: [npmRepositoryRegistration],
+    repositories: [npmRepositoryRegistration, nodeDistributionRegistration],
     includes: [getPackageLibFile("@fabr-build/js", "JS.fabr")],
   };
 }

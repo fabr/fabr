@@ -18,8 +18,8 @@
  */
 
 import crypto from "crypto";
-import { Transform } from "stream";
-import { IntegrityError } from "../core/Errors";
+import { Readable, Transform } from "stream";
+import { IntegrityError, toError } from "../core/Errors";
 
 /**
  * Subresource Integrity (https://www.w3.org/TR/SRI/) — `<algorithm>-<base64>`,
@@ -102,4 +102,18 @@ export function verifyingStream(expected: ExpectedDigest | undefined, resource: 
     }
   };
   return { hashing, verify };
+}
+
+/**
+ * Check a download's `content` against `expected` as it streams: `stream`
+ * carries the bytes on, and `verify`, called once they have all passed (and
+ * before anything is committed), throws {@link IntegrityError} if they do not
+ * match. A failure of `content` mid-transfer fails `stream`, so a dropped
+ * response fails the attempt rather than raising an unhandled error.
+ */
+export function verifiedStream(content: Readable, expected: ExpectedDigest | undefined, resource: string): { stream: Transform; verify: () => void } {
+  const { hashing, verify } = verifyingStream(expected, resource);
+  content.on("error", err => hashing.destroy(toError(err)));
+  content.pipe(hashing);
+  return { stream: hashing, verify };
 }

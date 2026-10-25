@@ -48,7 +48,13 @@ describe("Flag", () => {
     const flag = new Flag("ts/no_strict", []);
     const [[materialized]] = await toPromise(
       collectLists(
-        { name: "test", getGlobalString: () => Computable.resolve("build"), memoize: (_t, _k, create) => create("unused"), runTask: (_task, run) => run(SILENT_REPORT) },
+        {
+          name: "test",
+          getGlobalString: () => Computable.resolve("build"),
+          launchedBy: (_runnable, name) => Computable.reject(new Error(`no global '${name}' in this test`)),
+          memoize: (_t, _k, create) => create("unused"),
+          runTask: (_task, run) => run(SILENT_REPORT),
+        },
         [[flag]]
       )
     );

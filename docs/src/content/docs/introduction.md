@@ -93,7 +93,7 @@ step.
 ## The same result every time
 
 Fabr treats a build as a function of its inputs: the same sources, build file and settings always
-produce the same output. Two things follow.
+produce the same output. Three things follow.
 
 - **There are no lockfiles.** Dependency versions are chosen by
   [minimal version selection](/reference/js/dependencies/#how-versions-are-chosen), which depends
@@ -103,9 +103,13 @@ produce the same output. Two things follow.
   reuses a result whenever the inputs that produced it are unchanged. Deleting the cache changes
   how long the next build takes and nothing else. It is at `~/Library/Caches/fabr` on macOS and
   `~/.cache/fabr` on Linux, or wherever `FABR_CACHE_DIR` says.
+- **Node.js is an input too.** Fabr downloads the Node.js release that your tools and tests run
+  on, named by the [`NODE` setting](/reference/js/dependencies/#the-nodejs-version), rather than
+  using the `node` on your `PATH`, so switching your machine's Node.js doesn't change a build.
 
-One gap remains: programs fabr finds on your machine, such as `node`, are not yet part of that
-guarantee. See [Known limitations](/known-limitations/#host-tools-arent-hermetically-sealed-yet).
+One gap remains: the `sh` that runs `script` targets, and the programs a script starts, are found
+on your machine and aren't part of that guarantee. See
+[Known limitations](/known-limitations/#shell-scripts-run-on-the-sh-on-your-machine).
 
 ## Terms used in these docs
 

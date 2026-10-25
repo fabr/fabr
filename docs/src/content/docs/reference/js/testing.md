@@ -24,6 +24,7 @@ running that framework's own command.
 | DOM tests (jsdom) | no | yes | yes |
 | Module mocking | `node:test`'s `mock` | `jest.mock`, `__mocks__` directories | `vi.mock` |
 | Stylesheet and image imports in tested code | work | work | work |
+| Needs, as the [Node.js version](#the-nodejs-version) | 23.4 or later for snapshots | 22.15 or later | 22.15 or later |
 | Configuration file | none | `jest.config.js` is not read | `vitest.config.ts` is not read |
 
 Choose a framework for the whole project with the `JS_TEST_FRAMEWORK` setting, or for one target
@@ -127,6 +128,14 @@ Some things differ from running a test framework's own command:
 
 Tests run in a staged copy of the compiled tree, not in your project directory, and see only what
 the target declares.
+
+### The Node.js version
+
+Tests run on the Node.js release that the
+[`NODE` setting](/reference/js/dependencies/#the-nodejs-version) names, not on the `node` installed
+on your machine, and so does a program a test starts through `process.execPath`. The version
+requirements on this page are requirements on that release; the default, Node.js 24.22.1, meets
+them all. Changing `NODE` runs the tests again.
 
 ### Environment variables
 
@@ -337,8 +346,9 @@ it("renders the greeting", (t: TestContext) => {
 
 What to know:
 
-- **Snapshots need Node.js 23.4 or later.** On an earlier version, `fabr test -u` fails with
-  `Recorded snapshots need node 23.4 or later`.
+- **Snapshots need Node.js 23.4 or later** as the [`NODE`](/reference/js/dependencies/#the-nodejs-version)
+  release. With an earlier one, `fabr test -u` fails with `Recorded snapshots need node 23.4 or
+  later (this is 22.15.0), so there is nothing to update`.
 - **`--test-only` isn't supported, so `it.only` and `describe.only` have no effect.** Node.js
   honours `only` when it is started with that flag, and fabr has no way to pass it, so the other
   tests still run. Use `it.skip`, or `{ skip: true }`, on the tests you want left out.
@@ -382,7 +392,8 @@ js_package mylib {
   jest 29 and 30 are supported.
 - **Add `jsdom`** to `test_deps`, with the `dom` flag, for [DOM tests](#dom-tests).
 
-The jest framework needs Node.js 22.15 or later.
+The jest framework needs Node.js 22.15 or later as the
+[`NODE`](/reference/js/dependencies/#the-nodejs-version) release.
 
 ### Coming from jest.config.js
 
@@ -467,7 +478,8 @@ js_package mylib {
 
 - **`vitest`**, version 4.1 or later, in `test_deps`. Earlier versions can't load tests without
   Vite.
-- **Node.js 22.15 or later.**
+- **Node.js 22.15 or later** as the [`NODE`](/reference/js/dependencies/#the-nodejs-version)
+  release.
 - **`@npm:@types/deep-eql:4.0.2?`** is needed because vitest's type declarations require that
   package without a minimum version, so nothing else selects one. If it's missing, the build
   prints the line to add.
@@ -563,7 +575,8 @@ the runner starts are measured as long as that variable is passed on.
 | `These tests need a DOM environment … but 'jsdom' is not among its dependencies` | The `dom` flag without the `jsdom` package | Add `@npm:jsdom:<version>` to `test_deps`. |
 | `This test has no recorded snapshot`, or `No recorded snapshot for this test` | A new snapshot, or a `.snap` file that isn't declared | Run `fabr test -u`, and check the file is matched by `test_expectations`. |
 | `EACCES: permission denied, open '…/__snapshots__/x.test.ts.snap'` under `fabr test -u`, or `.snap` files in the built package | The `.snap` files are matched by `srcs`, not `test_expectations` | Match them with `test_expectations` only. |
-| `Recorded snapshots need node 23.4 or later` | `node` framework snapshots on an older Node.js | Use Node.js 23.4 or later. |
+| `Recorded snapshots need node 23.4 or later` | `node` framework snapshots, with `NODE` set to an older release | Set [`NODE`](/reference/js/dependencies/#the-nodejs-version) to Node.js 23.4 or later. |
+| `The jest compatibility runner needs node 22.15 or later`, or `The vitest runner needs node 22.15 or later` | `NODE` is set to an older release | Set [`NODE`](/reference/js/dependencies/#the-nodejs-version) to Node.js 22.15 or later. |
 | `Test target has more than one setupTests script` | Two `setupTests` files at the root of the source tree, such as a `.ts` and a `.js` | Keep one. |
 | `The jest compatibility runner supports jest 29 and 30, but JEST is pinned to …` | `JEST` names another major version | Set `JEST` to a jest 29 or 30 release. |
 | `fabr runs vitest 4.1 or later, but the target's vitest is …` | An older vitest in `test_deps` | Use vitest 4.1 or later. |

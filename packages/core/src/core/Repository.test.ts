@@ -200,6 +200,7 @@ describe("NamespaceRef", () => {
 const RESOLUTION_CONTEXT: ResolutionContext = {
   name: "test",
   getGlobalString: () => Computable.resolve("build"),
+  launchedBy: (_runnable, name) => Computable.reject(new Error(`no global '${name}' in this test`)),
   memoize: (_tag, _key, create) => create("unused"),
   runTask: (_task, run) => run(SILENT_REPORT),
 };

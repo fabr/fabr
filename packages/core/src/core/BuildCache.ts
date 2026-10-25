@@ -300,6 +300,10 @@ const PROJECT_SOURCES_FILE = "sources";
 /** An entry manifest's filename: a hashed key plus the suffix. */
 const CLAIMED_MANIFEST = /^[0-9a-f]{64}\.manifest$/;
 
+/** Where the tree pool is mounted in a staged workspace: one symlink, so every
+ * location reached through it is relative and says nothing about this machine. */
+export const TREE_MOUNT = ".fabr-tree";
+
 /**
  * The build cache: entries keyed by an input manifest hash, over a
  * content-addressed blob pool that also backs source snapshots and step outputs.
@@ -969,8 +973,8 @@ export class BuildCache {
     return this.treeRoot;
   }
 
-  /** The tree pool as a mountable link, for a step that addresses trees by name
-   * itself rather than mounting one at a position. */
+  /** The tree pool as a mountable link (at {@link TREE_MOUNT}), for a step that
+   * addresses trees by name itself rather than mounting one at a position. */
   public get treePoolLink(): CacheLink {
     return new CacheLink(path.relative(this.root, this.treeRoot), this.root);
   }

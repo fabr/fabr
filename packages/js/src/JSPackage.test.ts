@@ -27,7 +27,11 @@ import {
   MemoryFile,
   PackageFileSet,
   PackageGraphBuilder,
+  ResolutionContext,
+  RunnableFileSet,
+  SILENT_REPORT,
   SymlinkFile,
+  TREE_MOUNT,
   dependenciesOn,
 } from "@fabr-build/core";
 import {
@@ -50,6 +54,22 @@ import {
   usesNodeGlobals,
   withBinShebangs,
 } from "./JSPackage";
+
+/** A stand-in for the program the `NODE` global names. */
+const NODE = RunnableFileSet.forEntry(new Map([["bin/node", new MemoryFile(Buffer.from("#!/bin/sh\n"), 0o755)]]), "bin/node");
+
+/** A tree pool that keeps nothing, whose link is {@link POOL_LINK}. */
+const POOL_LINK = new SymlinkFile("pool");
+const POOL = { ensureTree: () => Computable.resolve("unused"), treePoolLink: POOL_LINK };
+
+/** A consumer whose `NODE` names {@link NODE}. */
+const NODE_CONTEXT: ResolutionContext = {
+  name: "test",
+  getGlobalString: () => Computable.resolve("build"),
+  launchedBy: (runnable, interpreter) => (interpreter === "NODE" ? runnable.launchedBy(NODE, POOL) : Computable.reject(new Error(interpreter))),
+  memoize: (_tag, _key, create) => create("unused"),
+  runTask: (_task, run) => run(SILENT_REPORT),
+};
 
 /** Snapshot a FileSet's entries into a plain map for synchronous inspection. */
 function entries(set: FileSet): Map<string, IFile> {
@@ -362,7 +382,7 @@ describe("makeNpmRunnable", () => {
     builder.wire(other, dependenciesOn(helper2, tool));
     builder.seal();
 
-    const install = new Map(await settle(makeNpmRunnable(tool)));
+    const install = new Map(await settle(makeNpmRunnable(NODE_CONTEXT, tool)));
     const target = (name: string): string => (install.get(name) as SymlinkFile).target;
     expect(target("node_modules/tool")).to.equal(".fabr/tool@1.0.0/node_modules/tool");
     expect(install.has("node_modules/.fabr/tool@1.0.0/node_modules/tool/bin/tool.js")).to.equal(true);
@@ -381,12 +401,31 @@ describe("makeNpmRunnable", () => {
       "typescript",
       "5.4.5"
     );
-    const runnable = await settle(makeNpmRunnable(pkg));
+    const runnable = await settle(makeNpmRunnable(NODE_CONTEXT, pkg));
     /* The bin command 'tsc' resolves to a SymlinkFile whose target has no stray
      * '/./' — otherwise the same-install-path dedup at launch sees two entries. */
     const link = new Map(runnable.surface).get("tsc");
     expect(link).to.be.instanceOf(SymlinkFile);
     expect((link as SymlinkFile).target).to.equal("node_modules/typescript/bin/tsc");
+  });
+
+  it("launches the package through the program NODE names, reached through the tree pool", async () => {
+    const json = JSON.stringify({ name: "tool", version: "1.0.0", bin: { tool: "bin/tool.js" } });
+    const pkg = new PackageFileSet(
+      new Map<string, IFile>([
+        ["package.json", MemoryFile.from(json)],
+        ["bin/tool.js", MemoryFile.from("#!/usr/bin/env node\n")],
+      ]),
+      "tool",
+      "1.0.0"
+    );
+    const runnable = await settle(makeNpmRunnable(NODE_CONTEXT, pkg));
+    expect(new Map(runnable).get(TREE_MOUNT)).to.equal(POOL_LINK);
+    expect(runnable.toCommandLine(["x"], { base: "tool" })).to.deep.equal([
+      `tool/${TREE_MOUNT}/${NODE.toManifestHash()}/bin/node`,
+      "tool/node_modules/tool/bin/tool.js",
+      "x",
+    ]);
   });
 });
 

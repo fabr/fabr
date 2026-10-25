@@ -38,6 +38,7 @@ number.
 - Sass and postcss steps recompile only when a stylesheet they read changes.
 - postcss resolves `composes` from packages through the PnP table.
 - Add test coverage reporting (`COVERAGE=on`).
+- Add node distribution repository to download node.js.
 
 ## Fabr 0.3.0
 @fabr-build/core:

@@ -59,6 +59,7 @@ import {
   formatJSTarget,
   makeNpmRunnable,
   moduleTypeFile,
+  NODE_GLOBAL,
   parseJSTarget,
   resourceFiles,
   soleModuleFormat,
@@ -103,7 +104,7 @@ function defineJsRunnable(
        * its declared bin (or the pending projection's pick) the entry —
        * with the deps bundled into its install. */
       if (sole instanceof PackageFileSet || (sole instanceof FileSetRef && sole.source instanceof PackageFileSet)) {
-        return makeNpmRunnable(sole, deps, argv);
+        return makeNpmRunnable(context, sole, deps, argv);
       }
       /* File-mode: the entry IS the script file. A plain-JS entry is
        * contributed to the install verbatim and launched under node; a
@@ -154,7 +155,7 @@ function defineJsRunnable(
               resources,
               new FileSet(new Map([["package.json", moduleTypeFile(format)]]))
             );
-            return RunnableFileSet.forEntry(install, launchName, argv, "node");
+            return context.launchedBy(RunnableFileSet.forEntry(install, launchName, argv), NODE_GLOBAL);
           });
         }
 
@@ -162,7 +163,7 @@ function defineJsRunnable(
          * under node_modules, loose files at their own paths). */
         const loose = deps.filter(d => !(d instanceof PackageFileSet));
         const install = FileSet.unionAll(FileSet.layout({ node_modules: assembleNodeModules(packages) }), ...loose, entrySet);
-        return RunnableFileSet.forEntry(install, entryName, argv, "node");
+        return context.launchedBy(RunnableFileSet.forEntry(install, entryName, argv), NODE_GLOBAL);
       });
     }
   );

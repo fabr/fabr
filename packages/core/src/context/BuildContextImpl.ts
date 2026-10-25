@@ -186,13 +186,18 @@ export class BuildContextImpl implements InternalBuildContext {
    * the TargetContext, which satisfies the interface directly.
    */
   private resolutionContext(name = "<command line>"): ResolutionContext {
-    return {
+    const context: ResolutionContext = {
       name,
       getGlobalString: name => this.getProperty(name).then(prop => prop.toString()),
+      launchedBy: (runnable, interpreter) =>
+        this.resolveTarget(interpreter, undefined, RUN_OVERRIDE)
+          .then(sources => collectRunnable(this, context, sources, interpreter))
+          .then(launcher => runnable.launchedBy(launcher, this.execution.buildCache)),
       memoize: (tag, key, create) =>
         this.getCachedOrBuild(`memo:${tag} ${key}`, ctx => create(ctx.workDir).then(result => ({ result }))),
       runTask: (task, run) => this.execution.runTask(task, run),
     };
+    return context;
   }
 
   /**

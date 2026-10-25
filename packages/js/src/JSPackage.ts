@@ -45,6 +45,7 @@ import {
   PackageFileSet,
   parseJson,
   readJsonFile,
+  ResolutionContext,
   RunnableFileSet,
   SymlinkFile,
   TargetContext,
@@ -983,6 +984,9 @@ export function withBinShebangs(contents: FileSet): Computable<FileSet> {
   );
 }
 
+/** The global naming the program a JS program is launched with: node. */
+export const NODE_GLOBAL = "NODE";
+
 /**
  * Make a materialized package runnable: mount the package and its materialized
  * dependency closure as node_modules, and launch a bin under node. The
@@ -1012,6 +1016,7 @@ export function withBinShebangs(contents: FileSet): Computable<FileSet> {
  * `fabr run` meaning), not the resolver's namespace walk.
  */
 export function makeNpmRunnable(
+  context: ResolutionContext,
   entry: PackageFileSet | FileSetRef,
   extras: FileSet[] = [],
   args: string[] = []
@@ -1038,9 +1043,10 @@ export function makeNpmRunnable(
         surface.set(name, file);
       }
     }
-    const runnable = new RunnableFileSet(install, args, "node", root, new FileSet(surface));
+    return context.launchedBy(new RunnableFileSet(install, args, undefined, root, new FileSet(surface)), NODE_GLOBAL);
+  }).then(runnable => {
     if (!(entry instanceof FileSetRef)) {
-      return Computable.resolve(runnable);
+      return runnable;
     }
     /* Apply the pending projections as bin selection — the REINTERPRETATION the
      * pending ref exists for, not the namespace walk. Resolved here rather than

@@ -22,7 +22,7 @@ import * as crypto from "node:crypto";
 import * as http from "node:http";
 import { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
-import { Computable, FabrError, FileSet, IntegrityError, MemoryFile, versionToString } from "@fabr-build/core";
+import { Computable, FabrError, FileSet, IntegrityError, MemoryFile, verifiedStream, versionToString } from "@fabr-build/core";
 import {
   expectedTarballDigest,
   NPM_FORMAT,
@@ -30,7 +30,6 @@ import {
   publishToRegistry,
   toPackumentVersions,
   toPublishAccess,
-  verifyTarballStream,
 } from "./NPMProtocol";
 import { OtpChallenge } from "./NPMAuth";
 import { NO_PACKAGE_EXTENSIONS, useInstalledPackageExtensions } from "./PackageExtensions";
@@ -118,19 +117,18 @@ describe("expectedTarballDigest", () => {
   });
 });
 
-describe("verifyTarballStream", () => {
+describe("verifying a tarball against its dist digest", () => {
   const bytes = Buffer.from("a plausible tarball payload");
   const sha512 = crypto.createHash("sha512").update(bytes).digest("base64");
   const sha1 = crypto.createHash("sha1").update(bytes).digest("hex");
 
   /** Feed `bytes` through the hashing pass-through to completion, then verify. */
   async function check(dist: { integrity?: string; shasum?: string }): Promise<void> {
-    const { hashing, verify } = verifyTarballStream(dist, "https://example.com/pkg-1.0.0.tgz");
+    const { stream, verify } = verifiedStream(Readable.from([bytes]), expectedTarballDigest(dist), "https://example.com/pkg-1.0.0.tgz");
     await new Promise<void>((resolve, reject) => {
-      hashing.on("data", () => undefined);
-      hashing.on("end", resolve);
-      hashing.on("error", reject);
-      Readable.from([bytes]).pipe(hashing);
+      stream.on("data", () => undefined);
+      stream.on("end", resolve);
+      stream.on("error", reject);
     });
     verify();
   }

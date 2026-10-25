@@ -27,6 +27,8 @@ import { MemoryFile } from "./MemoryFS";
 import { Name, NameBuilder } from "./Name";
 import { parseName } from "../model/Parser";
 import { RunnableFileSet, toRunnable } from "./RunnableFileSet";
+import { Computable } from "./Computable";
+import { TREE_MOUNT } from "./BuildCache";
 
 describe("RunnableFileSet", () => {
   it("carries its launch descriptor and is a FileSet", () => {
@@ -56,6 +58,22 @@ describe("RunnableFileSet.toCommandLine", () => {
     /* interpreter-less: the anchored (absolute) entry becomes argv[0] itself. */
     const bare = RunnableFileSet.forEntry(new Map(), "bin/tool", []);
     expect(bare.toCommandLine([], { anchor: "/staged" })).to.deep.equal([path.resolve("/staged", "bin/tool")]);
+  });
+
+  it("runs through a runnable interpreter, reached by its hash under the tree pool's link", async () => {
+    const node = RunnableFileSet.forEntry(new Map([["bin/node", MemoryFile.from("node")]]), "bin/node", ["--flag"]);
+    const link = new SymlinkFile("pool");
+    const ensured: string[] = [];
+    const pool = { ensureTree: (files: FileSet) => (ensured.push(files.toManifestHash()), Computable.resolve("unused")), treePoolLink: link };
+    const runnable = await new Promise<RunnableFileSet>((resolve, reject) =>
+      RunnableFileSet.forEntry(new Map(), "run.js", ["fixed"]).launchedBy(node, pool).then(resolve, reject)
+    );
+    const at = `${TREE_MOUNT}/${node.toManifestHash()}`;
+    expect(ensured).to.deep.equal([node.toManifestHash()]);
+    expect(new Map(runnable).get(TREE_MOUNT)).to.equal(link);
+    expect(runnable.toCommandLine(["x"])).to.deep.equal([`${at}/bin/node`, "--flag", "run.js", "fixed", "x"]);
+    expect(runnable.toCommandLine([], { base: "tool" })).to.deep.equal([`tool/${at}/bin/node`, "--flag", "tool/run.js", "fixed"]);
+    expect(runnable.toCommandLine([], { anchor: "/staged" })).to.deep.equal([path.resolve("/staged", at, "bin/node"), "--flag", path.resolve("/staged", "run.js"), "fixed"]);
   });
 });
 

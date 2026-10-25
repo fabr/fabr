@@ -9,7 +9,7 @@ runnable. The whole project is a `PROJECT.fabr` file and your sources: there is 
 
 ## Install
 
-Fabr needs Node.js 22.19 or later. Install the `fabr` command globally:
+Fabr needs Node.js 22.19 or later to run. Install the `fabr` command globally:
 
 ```sh
 npm install -g @fabr-build/cli
@@ -17,6 +17,11 @@ npm install -g @fabr-build/cli
 
 That also installs `@fabr-build/js`, the plugin with the JavaScript and TypeScript rules, and
 `@fabr-build/js-tools`, the compiler driver, test runners and other programs the plugin runs.
+
+Those programs, your tests and your own scripts run on a Node.js release that fabr downloads on
+the first build, 24.22.1 unless you choose another, rather than on the Node.js you installed, so
+the version on your machine doesn't affect what is built; see
+[The Node.js version](/reference/js/dependencies/#the-nodejs-version).
 
 :::caution
 Install `@fabr-build/cli` only. Adding `@fabr-build/js` to the command makes npm install a second
@@ -148,7 +153,7 @@ To run an existing jest or vitest suite, or for snapshots, DOM tests and coverag
 ## Running programs
 
 A `js_script` is a Node.js program: `entry` is the file to run, and `deps` the packages it
-imports.
+imports. It runs on the same downloaded Node.js release as your tests.
 
 ```
 js_script tool {

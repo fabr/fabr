@@ -1,6 +1,6 @@
 ---
 title: Known limitations
-description: Current limitations and rough edges in fabr you should be aware of — host-tool hermeticity, npm install-time behaviour, cache concurrency, and watch-mode cleanup.
+description: Current limitations and rough edges in fabr you should be aware of — shell scripts' host tools, npm install-time behaviour, cache concurrency, and watch-mode cleanup.
 ---
 
 Fabr builds, tests and runs real JavaScript and TypeScript projects, itself included, but it is
@@ -12,28 +12,27 @@ that feature: see [Testing](/reference/js/testing/),
 
 | Limitation | Effect |
 |---|---|
-| [Programs on your machine aren't tracked](#host-tools-arent-hermetically-sealed-yet) | A different version of `node` can change results without fabr noticing. |
+| [Shell scripts use the `sh` on your machine](#shell-scripts-run-on-the-sh-on-your-machine) | A different `sh`, or a different program a script runs, can change results without fabr noticing. |
 | [npm install-time behaviour is missing](#npm-packages-that-rely-on-install-time-behaviour) | Packages that need a `postinstall` script may not work. |
 | [No lock between fabr processes](#concurrent-fabr-processes-duplicate-work-rather-than-sharing-it) | Two builds at once may each do the same work; deleting the cache under `fabr run` removes the running program. |
 | [A force-killed watch leaves its program running](#watch-mode-can-leave-a-program-running-if-fabr-is-force-killed) | `kill -9` on fabr orphans the program it started. |
 
-## Host tools aren't hermetically sealed yet
+## Shell scripts run on the `sh` on your machine
 
 Fabr intends a build to depend only on its
-[declared inputs](/introduction/#the-same-result-every-time). The programs it runs from your
-machine are the exception today. `node`, which runs every JavaScript tool, and `sh`, which runs
-shell scripts, are found by searching your `PATH` when each step runs, and what fabr records about
-them is only their name: not where they were found, and not which version they are.
+[declared inputs](/introduction/#the-same-result-every-time). JavaScript programs meet that: they
+run on the Node.js release that the [`NODE` setting](/reference/js/dependencies/#the-nodejs-version)
+names, which fabr downloads and tracks like any other input. A [`script`](/reference/standard-rules/#script)
+target is the exception. It runs under the `sh` that fabr finds on your `PATH`, and what fabr records
+about it is only its name: not where it was found, and not which shell or version it is. The same
+goes for any program the script starts.
 
-So **a different `node` can change a result without invalidating the cache.** After you switch
-Node.js versions, with `nvm use`, an upgrade, or a different `PATH`, fabr reuses results built with
-the old one, including passing test runs. Builds on two machines with different Node.js versions
-aren't guaranteed to match.
+So **a different `sh`, or a different version of a program a script runs, can change a result
+without invalidating the cache.** Fabr reuses results built with the old one.
 
-**Workaround:** use the same Node.js version on machines that should produce the same results,
-and delete the cache after switching versions, or keep a cache for each version with
-`FABR_CACHE_DIR`. In CI, include the Node.js version in the cache key; see
-[Continuous integration](/guides/ci/#saving-it).
+**Workaround:** write the step as a `js_script` where you can, so that it runs on the Node.js
+release `NODE` names. Otherwise, keep the shell and the programs scripts use the same on machines
+that should produce the same results, and delete the cache after changing them.
 
 ## npm packages that rely on install-time behaviour
 

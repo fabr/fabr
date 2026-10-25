@@ -90,6 +90,14 @@ fabr run @npm:typescript:5.6.3:tsc --version  # a package's command-line program
 Everything after the target is passed to the program unchanged, including a `--`. Options meant
 for fabr go before the target.
 
+A JavaScript program, such as a `js_script`, a `js_package` with a program, or an npm package's
+command, runs on the Node.js release the
+[`NODE` setting](/reference/js/dependencies/#the-nodejs-version) names, not on the `node` on your
+`PATH`; `process.execPath` in the program is that binary. Because the program gets your
+environment, a `NODE_OPTIONS` you have set applies to it, and a release older than your own
+Node.js may reject an option in it. `fabr run @node:24.22.1:bin/node` runs a Node.js release
+itself.
+
 fabr installs the program, with everything it needs, into a directory in its cache, and keeps that
 directory for the next run of the same program from the same project with the same `-D` settings:
 running it again updates only the files that changed. Two copies of one program running at the same

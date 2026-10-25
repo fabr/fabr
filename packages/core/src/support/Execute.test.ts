@@ -32,6 +32,7 @@ import {
   execute,
   executeInteractive,
   executePipeline,
+  findExecutable,
   IOutputHandle,
   lineSplitter,
   SILENT_REPORT,
@@ -101,6 +102,20 @@ function collectSettlements<T>(c: Computable<T>, graceMs = 150): Promise<Array<{
     );
   });
 }
+
+describe("findExecutable", () => {
+  it("finds a name with a path separator relative to the directory it will run in", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-find-exec-"));
+    try {
+      fs.mkdirSync(path.join(dir, "bin"));
+      fs.writeFileSync(path.join(dir, "bin", "tool"), "#!/bin/sh\n", { mode: 0o755 });
+      expect(findExecutable("bin/tool", dir)).to.equal(path.join(dir, "bin", "tool"));
+      expect(() => findExecutable("bin/tool", os.tmpdir())).to.throw(/is not an executable file/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("lineSplitter", () => {
   /** Feed `chunks` through a splitter and collect the lines it emits. */

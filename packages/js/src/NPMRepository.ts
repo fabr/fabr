@@ -17,14 +17,13 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { Readable } from "node:stream";
 import {
   FabrError,
-  IFetchContext,
+  fetchArchive,
+  fetchDocument,
   resolveBarePackage,
   Computable,
   FileSet,
-  HttpStatusError,
   IFile,
   lowestSatisfying,
   MemoryFile,
@@ -40,7 +39,6 @@ import {
   PublishableFileSet,
   PublishMember,
   PublishStatus,
-  readStream,
   Reference,
   RepositoryReader,
   Repository,
@@ -49,6 +47,7 @@ import {
   RepositoryRef,
   RepositoryRegistration,
   RepositoryWriter,
+  MemoryCache,
   Requirement,
   Selected,
   select,
@@ -58,7 +57,6 @@ import {
   TARGET,
   toJsonObject,
   tripleToNpm,
-  unpackStream,
   vendPackageRef,
   versionChildren,
   VersionNotFoundError,
@@ -66,6 +64,7 @@ import {
   constraintOf,
 } from "@fabr-build/core";
 import {
+  expectedTarballDigest,
   INPMPackageMetadata,
   matchesTargetPlatform,
   platformGateAdmits,
@@ -79,7 +78,6 @@ import {
   stripArchiveRoot,
   tarballBasename,
   unsupportedPlatformReason,
-  verifyTarballStream,
 } from "./NPMProtocol";
 import { declaredDependencies, memberDependencies, rewriteManifest, unresolvableDependencies } from "./PackageJson";
 import { installedPackageExtensions, PackageExtensions } from "./PackageExtensions";
@@ -132,11 +130,11 @@ export class NPMRepository
   /** The access level this repository's publishes request (see {@link PublishAccess}). */
   private readonly access: PublishAccess;
   /* In-process memo over the persistent metadata cache, keyed by "pkg/version" */
-  private readonly metadataCache: Map<string, Computable<INPMPackageMetadata>>;
+  private readonly metadataCache = new MemoryCache<string, INPMPackageMetadata>();
   /** Each package's packument as read this run, and as re-read when it lacked a
    *  version asked for. */
-  private readonly packuments = new Map<string, Computable<ReadonlyMap<string, INPMPackageMetadata> | undefined>>();
-  private readonly revalidatedPackuments = new Map<string, Computable<ReadonlyMap<string, INPMPackageMetadata> | undefined>>();
+  private readonly packuments = new MemoryCache<string, ReadonlyMap<string, INPMPackageMetadata> | undefined>();
+  private readonly revalidatedPackuments = new MemoryCache<string, ReadonlyMap<string, INPMPackageMetadata> | undefined>();
   /** The repairs applied to every manifest this registry serves; the shipped
    * list unless a caller supplies one. */
   private readonly extensions: () => PackageExtensions;
@@ -145,7 +143,6 @@ export class NPMRepository
     this.url = url.replace(/\/+$/, "");
     this.context = context;
     this.access = access;
-    this.metadataCache = new Map();
     this.extensions = extensions === undefined ? installedPackageExtensions : () => extensions;
   }
 
@@ -493,46 +490,23 @@ export class NPMRepository
    */
   private packument(pkg: string, forceRevalidate: boolean): Computable<ReadonlyMap<string, INPMPackageMetadata> | undefined> {
     const held = forceRevalidate ? this.revalidatedPackuments : this.packuments;
-    let result = held.get(pkg);
-    if (result === undefined) {
+    return held.getOrCreate(pkg, () => {
       const url = `${this.url}/${packagePath(pkg)}`;
       const what = `package document for ${pkg} from ${this.url}`;
-      result = this.context
-        .fetch(
-          url,
-          "npm:packument:2",
-          () =>
-            this.authHeadersFor(url).then(headers => ({
-              url,
-              headers: { ...headers, accept: ABBREVIATED_PACKUMENT },
-              process: (content: Readable) =>
-                readStream(content).then(data => {
-                  /* The reader throws on anything unusable, so an invalid document
-                   * is never cached; what is kept is only what fabr reads. */
-                  const versions = parseJson(data, what, toPackumentVersions);
-                  return new FileSet(new Map([[PACKUMENT_FILE, MemoryFile.from(JSON.stringify({ versions: Object.fromEntries(versions) }))]]));
-                }),
-            })),
-          /* An index read: a resolution makes one of these per package it
-           * walks, and the resolve that asked is the item worth recording. */
-          { resource: "package document", role: "index" },
-          forceRevalidate ? { forceRevalidate: true } : undefined
-        )
-        .then(files => files.readFile(PACKUMENT_FILE))
-        .then(
-          data => parseJson(data, what, toPackumentVersions) as ReadonlyMap<string, INPMPackageMetadata> | undefined,
-          err => {
-            if (err instanceof HttpStatusError && err.statusCode === 404) {
-              return undefined;
-            }
-            throw err;
-          }
-        );
-      held.set(pkg, result);
-      /* A transient failure is read again when next asked, not kept for the run. */
-      result.catch(() => held.delete(pkg));
-    }
-    return result;
+      return fetchDocument<ReadonlyMap<string, INPMPackageMetadata>>(this.context, {
+        url,
+        file: PACKUMENT_FILE,
+        tag: "npm:packument:2",
+        /* An index read: a resolution makes one of these per package it walks,
+         * and the resolve that asked is the item worth recording. */
+        report: { resource: "package document", role: "index" },
+        convert: text => parseJson(text, what, toPackumentVersions),
+        /* What is kept is only what fabr reads. */
+        keep: versions => JSON.stringify({ versions: Object.fromEntries(versions) }),
+        headers: () => this.authHeadersFor(url).then(headers => ({ ...headers, accept: ABBREVIATED_PACKUMENT })),
+        options: forceRevalidate ? { forceRevalidate: true } : undefined,
+      });
+    });
   }
 
   /**
@@ -611,52 +585,26 @@ export class NPMRepository
    */
   private versionDocument(pkg: string, version: string): Computable<INPMPackageMetadata> {
     const key = pkg + "/" + version;
-    let result = this.metadataCache.get(key);
-    if (!result) {
+    return this.metadataCache.getOrCreate(key, () => {
       const metadataUrl = `${this.url}/${packagePath(pkg)}/${version}`;
-      result = this.context
-        .fetch(
-          metadataUrl,
-          "npm:metadata:1",
-          () =>
-            this.authHeadersFor(metadataUrl).then(headers => ({
-              url: metadataUrl,
-              headers,
-              process: (content: Readable) =>
-                readStream(content).then(data => {
-                  const meta = parseMetadataResponse(data, key);
-                  return new FileSet(new Map([[METADATA_FILE, MemoryFile.from(JSON.stringify(meta))]]));
-                }),
-            })),
-          /* As the version list: one per package version considered. */
-          { resource: "metadata", role: "index" }
-        )
-        .then(files => files.readFile(METADATA_FILE))
-        /* Re-validated on the way out, not asserted: the cache entry is the
-         * document as fetched, so it is judged by the same reader whether it
-         * arrives from the registry or from disk — one place decides what a
-         * usable metadata document is. */
-        .then(data => parseMetadataResponse(data, key))
-        .catch(err => {
-          /* Translate the registry's HTTP 404 into the fact it means — typed,
-           * so the resolver can distinguish an unpublished version (raisable)
-           * from an unreachable registry. */
-          if (err instanceof HttpStatusError && err.statusCode === 404) {
-            throw new VersionNotFoundError(pkg, version, `NPM package ${pkg}@${version} not found at ${this.url}`);
-          }
-          throw err;
-        });
-      this.metadataCache.set(key, result);
-      /* Evict the memo on failure so a transient transport error (dropped
-       * connection, timeout) is retried, not cached for the whole run. This is a
-       * deliberate side-effect observer: `.catch` returns a *new*, discarded
-       * computable — the returned `result` is unchanged and still rejects for
-       * callers; only the map entry is dropped. It is attached *after* set() on
-       * purpose — a synchronous rejection would otherwise run before set() and
-       * evict nothing, leaving set() to cache the failure. */
-      result.catch(() => this.metadataCache.delete(key));
-    }
-    return result;
+      return fetchDocument(this.context, {
+        url: metadataUrl,
+        file: METADATA_FILE,
+        tag: "npm:metadata:1",
+        /* As the version list: one per package version considered. */
+        report: { resource: "metadata", role: "index" },
+        convert: text => parseMetadataResponse(text, key),
+        keep: meta => JSON.stringify(meta),
+        headers: () => this.authHeadersFor(metadataUrl),
+      }).then(meta => {
+        /* The registry's 404, typed, so the resolver can tell an unpublished
+         * version (raisable) from an unreachable registry. */
+        if (meta === undefined) {
+          throw new VersionNotFoundError(pkg, version, `NPM package ${pkg}@${version} not found at ${this.url}`);
+        }
+        return meta;
+      });
+    });
   }
 
   public fetch(pkg: string, version: SemverVersion): Computable<PackageFileSet> {
@@ -664,32 +612,20 @@ export class NPMRepository
     /* Kept by registry and version, not by tarball url: a published version
      * never changes, so a package fetched before is had without reading its
      * metadata, which is only where the url is. */
-    return this.context
-      .fetch(
-        `${this.identity} ${pkg}@${exact}`,
-        "npm:package:1",
-        () =>
-          this.getVersionMetadata(pkg, exact).then(meta =>
-            this.authHeadersFor(meta.dist.tarball).then(headers => ({
-              url: meta.dist.tarball,
-              headers,
-              process: (content: Readable, { createOutput }: IFetchContext) => {
-                /* Verify the tarball against the registry's promised digest as it
-                 * streams: a mismatch throws before the entry commits, so tampered
-                 * or truncated-but-valid content never enters the immutable cache. */
-                const { hashing, verify } = verifyTarballStream(meta.dist, meta.dist.tarball);
-                content.on("error", err => hashing.destroy(err instanceof Error ? err : new FabrError(String(err))));
-                content.pipe(hashing);
-                return unpackStream(hashing, createOutput).then(files => {
-                  verify();
-                  return stripArchiveRoot(files);
-                });
-              },
-            }))
-          ),
-        { resource: "package", role: "content" }
-      )
-      .then(files => new PackageFileSet(files, pkg, exact));
+    return fetchArchive(this.context, {
+      key: `${this.identity} ${pkg}@${exact}`,
+      tag: "npm:package:1",
+      report: { resource: "package", role: "content" },
+      source: () =>
+        this.getVersionMetadata(pkg, exact).then(meta =>
+          this.authHeadersFor(meta.dist.tarball).then(headers => ({
+            url: meta.dist.tarball,
+            expected: expectedTarballDigest(meta.dist),
+            headers,
+          }))
+        ),
+      keep: stripArchiveRoot,
+    }).then(files => new PackageFileSet(files, pkg, exact));
   }
 }
 

@@ -32,7 +32,8 @@ import * as path from "node:path";
 import { FileSet, IFile, MemoryFile, PackageFileSet, dependenciesOn } from "@fabr-build/core";
 import type { ISassOptions } from "@fabr-build/js-tools";
 import { DEPS_REPORT_FILE, DEPS_REPORT_FLAG, PNP_DATA_FILE, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG, toRunReport } from "@fabr-build/js-tools";
-import { pnpManifestOf, TREE_MOUNT, treeMountOf } from "../PnPManifest";
+import { TREE_MOUNT } from "@fabr-build/core";
+import { pnpManifestOf, treeMountOf } from "../PnPManifest";
 import { relativeToMap, relocateCssSources, SassDriver, sourceMapComment } from "@fabr-build/js-tools";
 
 const { main, sassFailure } = SassDriver;

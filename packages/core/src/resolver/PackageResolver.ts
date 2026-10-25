@@ -234,13 +234,14 @@ export function knownAs(requirement: Requirement, name: string | undefined): Req
 }
 
 /**
- * Make an already-resolved package runnable: pure format convention, keyed
- * off the registry the package came from (a catalog passes its member's own
- * source). The closure the package carries is kept — never re-resolved.
+ * Make an already-resolved package runnable for `context`'s consumer: pure
+ * format convention, keyed off the registry the package came from (a catalog
+ * passes its member's own source). The closure the package carries is kept —
+ * never re-resolved.
  */
-export function runnableFrom(source: RefSource, pkg: PackageFileSet): Computable<RunnableFileSet> {
+export function runnableFrom(context: ResolutionContext, source: RefSource, pkg: PackageFileSet): Computable<RunnableFileSet> {
   if (isRepositoryReader(source)) {
-    return source.format.makeRunnable(pkg);
+    return source.format.makeRunnable(pkg, context);
   }
   return Computable.reject(new FabrError(`'${pkg.packageName}' was delivered by a repository that cannot make it runnable`));
 }

@@ -32,7 +32,8 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { FileSet, IFile, MemoryFile, PACKAGE_RESOLUTION_PROVENANCE, PackageFileSet, dependenciesOn } from "@fabr-build/core";
-import { type ISelfPackage, pnpManifestOf, TREE_MOUNT, treeMountOf } from "../PnPManifest";
+import { TREE_MOUNT } from "@fabr-build/core";
+import { type ISelfPackage, pnpManifestOf, treeMountOf } from "../PnPManifest";
 import {
   type IPnpApi,
   type IPnpSerializedState,

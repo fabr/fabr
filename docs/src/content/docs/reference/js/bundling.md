@@ -226,7 +226,8 @@ with `sync` or run with `fabr run`. Other targets use its files by reference.
 - **Copy it out**, to deploy it: `fabr cp -DBUILD_TYPE=release web ./dist` writes the files to
   `./dist/web/`.
 - **Run a Node.js bundle** by making it a `js_script`'s entry:
-  `js_script worker { entry = worker_bundle:main.js; }`.
+  `js_script worker { entry = worker_bundle:main.js; }`. It runs on the Node.js release that the
+  [`NODE` setting](/reference/js/dependencies/#the-nodejs-version) names.
 - **Put it in a larger set of files**, such as a site, by selecting and renaming:
   `web:** -> assets/**`.
 

@@ -23,7 +23,7 @@ import { IProjection } from "../core/Reference";
 import { Name } from "../core/Name";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
-import { Requirement, VersionDomain } from "./Types";
+import { Requirement, ResolutionContext, VersionDomain } from "./Types";
 
 /**
  * A package as its ecosystem's manifest declares it — what
@@ -93,7 +93,8 @@ export interface PackageFormat<V, C> extends VersionDomain<V, C> {
    * carries (no re-resolution). Launching is ecosystem convention (npm: bin
    * entries under a node_modules mount), not transport: every registry of the
    * format launches a package the same way, and the repository faces delegate
-   * here.
+   * here. `context` is the consumer's, whose configuration names the tools a
+   * launch needs (npm: `NODE`).
    */
-  makeRunnable(pkg: PackageFileSet): Computable<RunnableFileSet>;
+  makeRunnable(pkg: PackageFileSet, context: ResolutionContext): Computable<RunnableFileSet>;
 }

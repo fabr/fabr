@@ -29,7 +29,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { FileSet, IFile, MemoryFile, PackageFileSet } from "@fabr-build/core";
 import { DEPS_REPORT_FILE, DEPS_REPORT_FLAG, type IPostcssOptions, PNP_DATA_FILE, PostcssDriver, toRunReport } from "@fabr-build/js-tools";
-import { pnpManifestOf, TREE_MOUNT, treeMountOf } from "../PnPManifest";
+import { TREE_MOUNT } from "@fabr-build/core";
+import { pnpManifestOf, treeMountOf } from "../PnPManifest";
 
 const { main } = PostcssDriver;
 

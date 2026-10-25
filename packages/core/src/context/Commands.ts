@@ -21,6 +21,7 @@ import { Computable } from "../core/Computable";
 import { FabrError } from "../core/Errors";
 import { FileSet, FileSource } from "../core/FileSet";
 import { FileSetRef } from "../core/FileSetRef";
+import { PackageFileSet } from "../core/PackageFileSet";
 import { Name } from "../core/Name";
 import { Repository, SourceRef } from "../core/Repository";
 import { PERMISSIVE_RESOLUTION } from "./CollectionPoint";
@@ -108,7 +109,8 @@ export function collectRunnable(
 }
 
 /** Pick the runnable out of materialized sources, or throw naming the
- * property or global that was expected to yield one. */
+ * property or global that was expected to yield one. Plain files with no
+ * runnable among them are one, launched directly: its entry the sole file. */
 function asRunnable(sources: ReadonlyArray<FileSource | Repository | FileSetRef>, name: string): RunnableFileSet {
   for (const source of sources) {
     /* A projected runnable arrives pending; demanding a launcher is exactly the
@@ -117,6 +119,13 @@ function asRunnable(sources: ReadonlyArray<FileSource | Repository | FileSetRef>
     const runnable = toRunnable(source);
     if (runnable) {
       return runnable;
+    }
+  }
+  const files = sources.filter((source): source is FileSet => source instanceof FileSet && !(source instanceof PackageFileSet));
+  if (files.length > 0 && files.length === sources.length) {
+    const install = FileSet.unionAll(...files);
+    if (!install.isEmpty()) {
+      return new RunnableFileSet(install, [], undefined, "", install);
     }
   }
   throw new FabrError(`'${name}' must name a runnable (its BUILD_OPERATION=run result)`);

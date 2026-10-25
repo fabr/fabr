@@ -50,14 +50,12 @@ import {
   markerOnProjection,
   sendRequest,
   toJsonObject,
-  verifyingStream,
 } from "@fabr-build/core";
 import { otpChallengeOf, OtpProvider } from "./NPMAuth";
 import { makeNpmRunnable } from "./JSPackage";
 import { declaredDependencies } from "./PackageJson";
 import { installedPackageExtensions } from "./PackageExtensions";
 import * as crypto from "node:crypto";
-import { Transform } from "node:stream";
 
 export interface ISignature {
   keyid: string;
@@ -239,22 +237,6 @@ export function expectedTarballDigest(dist: {
     return { algorithm: "sha1", encoding: "hex", value: dist.shasum.toLowerCase() };
   }
   return undefined;
-}
-
-/**
- * Prepare integrity verification for a streamed tarball. Returns a hashing
- * pass-through to feed the unpacker (`content.pipe(hashing)`, then unpack
- * `hashing`) and a `verify` to call once the stream is fully consumed: it hashes
- * every byte that passed through and throws {@link IntegrityError} on mismatch —
- * inside the fetch `process` callback, so a bad tarball never enters the cache.
- * A `dist` with no usable digest yields an identity pass-through and a no-op
- * `verify` (nothing promised, nothing to check — npm behaves the same).
- */
-export function verifyTarballStream(
-  dist: { integrity?: string; shasum?: string },
-  url: string
-): { hashing: Transform; verify: () => void } {
-  return verifyingStream(expectedTarballDigest(dist), url);
 }
 
 /**
@@ -665,7 +647,7 @@ export const NPM_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
   validateRequirement: validateNpmRequirement,
   parsePublishCoordinate: parseNpmPublishCoordinate,
   readContentPackage: readNpmContentPackage,
-  makeRunnable: makeNpmRunnable,
+  makeRunnable: (pkg, context) => makeNpmRunnable(context, pkg),
 };
 
 /**

@@ -234,6 +234,14 @@ testRules.push(
  * a FILES property naming one, and a global naming one. */
 registerRule("test_tool", {}, context => context.getRunnableProperty("tool").then(() => EMPTY_FILESET));
 registerRule("test_globalrunnable", {}, context => context.getGlobalRunnable("TOOLGLOBAL").then(() => EMPTY_FILESET));
+/* Records the command line of the tool a global names. */
+let lastCommandLine: string[] | undefined;
+registerRule("test_toolline", {}, context =>
+  context.getGlobalRunnable("TOOLGLOBAL").then(tool => {
+    lastCommandLine = tool.toCommandLine(["x"]);
+    return EMPTY_FILESET;
+  })
+);
 /* Reads a STRING global under a caller override, for testing override precedence
  * against a <k=v> requirement written on the global's value (the getGlobalString /
  * string path — the counterpart of test_globaltool). */
@@ -2303,6 +2311,21 @@ describe("BuildContext", () => {
     it("is accepted where it is the program named to run", async () => {
       expect(await outcome("@reg:tool", "run")).to.equal("accepted");
     });
+  });
+
+  it("Reads plain files named as a tool as a program launched directly", async () => {
+    const root = fs.mkdtempSync(nodePath.join(os.tmpdir(), "fabr-plain-tool-test-"));
+    try {
+      const execution = new ExecutionContext(new BuildCache(root, testLog), testLog, EMPTY_FILESET, EMPTY_FILESET);
+      const source = new FileSet(new Map([["bin/tool", new MemoryFile(Buffer.from("#!/bin/sh\n"), 0o755)]]));
+      const input = "targetdef test_toolline { }\nTOOLGLOBAL = bin/tool;\ntest_toolline t { }\n";
+      const model = toBuildModel([parseBuildString(source, "TEST.fabr", input, testLog)], testLog, testContributions);
+      lastCommandLine = undefined;
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("t"));
+      expect(lastCommandLine).to.deep.equal(["bin/tool", "x"]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("Caches build steps at the boundary and announces only real work", async () => {

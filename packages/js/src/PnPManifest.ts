@@ -42,13 +42,9 @@ import {
   PackageFileSet,
   packageNameConflict,
   reachablePackages,
+  TREE_MOUNT,
 } from "@fabr-build/core";
 import { type IPnpPackageInfo, type IPnpSerializedState, type PnpDependencyTarget, virtualLocation } from "@fabr-build/js-tools";
-
-/** Where the tree pool is mounted in the staged workspace — one symlink per
- * action, so every location in the manifest is relative and its bytes say
- * nothing about this machine. */
-export const TREE_MOUNT = ".fabr-tree";
 
 /** The sources being compiled, when they carry a package identity: the name
  * they may import themselves by, and where they are staged (a directory path

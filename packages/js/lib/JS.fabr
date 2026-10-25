@@ -360,6 +360,20 @@ targetdef npm_repository {
 }
 
 #
+# Node.js releases as nodejs.org publishes them, for the target platform:
+#
+#     node_distribution @node { }
+#
+# `@node:24.22.1` is then that release, and `@node:24.22.1:bin/node` its node
+# binary. Each archive is checked against the release's SHASUMS256.txt.
+#
+targetdef node_distribution {
+    # The URL releases are published under, laid out as nodejs.org/dist is
+    # (or a mirror).
+    url = REQUIRED STRING;
+}
+
+#
 # The target types below are normally created for you by the ones above, and
 # rarely need declaring.
 #
@@ -436,6 +450,19 @@ default npm_repository @npm {
     url = ${NPM_REPOSITORY_URL};
     access = public;
 }
+
+#
+# Node.js releases, from nodejs.org.
+#
+default node_distribution @node {
+    url = "https://nodejs.org/dist";
+ }
+
+#
+# The node binary every JavaScript tool, test and `js_script` runs on. A project
+# pins another release with `NODE = @node:<version>:bin/node;`.
+#
+default NODE = @node:24.22.1:bin/node;
 
 ##################### Driver tools ########################
 
