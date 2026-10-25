@@ -22,6 +22,7 @@ import { BuildCache } from "./core/BuildCache";
 import { Computable } from "./core/Computable";
 import { FSFileSource } from "./core/FSFileSource";
 import { FabrError } from "./core/Errors";
+import { refuseNamespaces } from "./core/NamespaceRef";
 import { ProjectedPackage, Resolved, SourceRef } from "./core/Repository";
 import { ResolvedTarget } from "./context/index";
 import { getSourceFileSource, SourceFileSource } from "./core/SourceFileSource";
@@ -164,7 +165,7 @@ function build(config: BuildContext, refs: INameValue[]): Computable<SourceRef[]
     refs.map(ref => requireDeclared(config, ref)),
     () => undefined
   );
-  return refs.map(ref => declared.then(() => config.materialize(ref)));
+  return refs.map(ref => declared.then(() => config.materialize(ref)).then(sources => refuseNamespaces(sources)));
 }
 
 /** Refuse `ref` where it is not a name the project declares. */

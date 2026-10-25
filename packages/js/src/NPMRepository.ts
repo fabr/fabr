@@ -29,6 +29,7 @@ import {
   lowestSatisfying,
   MemoryFile,
   Name,
+  NamespaceRef,
   isRepositoryReader,
   NpmPlatform,
   PackageFileSet,
@@ -40,6 +41,7 @@ import {
   PublishMember,
   PublishStatus,
   readStream,
+  Reference,
   RepositoryReader,
   Repository,
   TargetContext,
@@ -58,6 +60,7 @@ import {
   tripleToNpm,
   unpackStream,
   vendPackageRef,
+  versionChildren,
   VersionNotFoundError,
   versionToString,
   constraintOf,
@@ -155,8 +158,21 @@ export class NPMRepository
     return this.context.name;
   }
 
-  public getRepositoryRef(name: Name): RepositoryRef {
+  public getRepositoryRef(name: Name): RepositoryRef | NamespaceRef {
     return vendPackageRef(this, this.format, name);
+  }
+
+  /** List a package's published versions, read afresh from its packument.
+   *  Neither the registry's every package nor a scope's can be listed. */
+  public children({ name: namespace }: NamespaceRef): Computable<Map<string, Reference>> {
+    if (namespace === "" || /^@[^/]*$/.test(namespace)) {
+      return Computable.reject(
+        new FabrError(`the registry at ${this.url} cannot list every package ${namespace === "" ? "it holds" : `in ${namespace}`}`).withHelp(
+          `name a package to list its versions, as in '${this.name}:${namespace === "" ? "" : `${namespace}/`}<package>'`
+        )
+      );
+    }
+    return versionChildren(this, this.format, namespace, this.publishedVersions(namespace, true));
   }
 
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {

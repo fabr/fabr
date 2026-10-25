@@ -44,12 +44,14 @@ import {
   LogLevel,
   MemoryFile,
   Name,
+  NamespaceRef,
   PackageFileSet,
   PackageIdentity,
   parseName,
   parseRouteKey,
   parseVersion,
   RefSource,
+  Repository,
   RepositoryGroup,
   RepositoryPublishRef,
   RepositoryRef,
@@ -80,6 +82,14 @@ import {
   splitNpmReference,
   unsupportedPlatformReason,
 } from "./NPMProtocol";
+
+/** `ref` as the package reference a test vends it as. */
+function refOf(ref: RepositoryRef | NamespaceRef): RepositoryRef {
+  if (!(ref instanceof RepositoryRef)) {
+    throw new Error(`'${ref.toString()}' names a namespace`);
+  }
+  return ref;
+}
 
 function selection(
   pkg: string,
@@ -199,7 +209,7 @@ describe("splitNpmReference", () => {
   it("reads a version the lexer saw as a glob, whatever projection follows it", () => {
     /* `*` (an x-range) is a glob character, so the name's literal prefix ends
      * inside the version; the boundary is found over the written text. */
-    const vend = (written: string): RepositoryRef => vendPackageRef({} as RefSource, NPM_FORMAT, parseName(written));
+    const vend = (written: string): RepositoryRef => refOf(vendPackageRef({} as RefSource & Repository, NPM_FORMAT, parseName(written)));
     const projectionsOf = (ref: RepositoryRef): string[][] => ref.projections.map(p => [p.pattern.toBaseString(), p.prefix]);
     expect(vend("tslib:1.14.1?").toString()).to.equal("tslib:1.14.1?");
     expect(vend("tslib:1.14.1?").override).to.equal("alternate");
@@ -223,7 +233,7 @@ describe("splitNpmReference", () => {
   it("gives a rename facet to exactly one half — the projection when there is one", () => {
     /* Which half holds the facet is what decides whether `-> ` means a package
      * rename or a file rename, so the split must never hand it to both. */
-    const vend = (written: string): RepositoryRef => vendPackageRef({} as RefSource, NPM_FORMAT, parseName(written));
+    const vend = (written: string): RepositoryRef => refOf(vendPackageRef({} as RefSource & Repository, NPM_FORMAT, parseName(written)));
     const projected = vend("stream-browserify:3.0.0:lib/*.js -> *.mjs");
     expect(projected.renameTo).to.equal(undefined);
     expect(projected.projections[0].pattern.getRenameTo()?.toString()).to.equal("*.mjs");
@@ -486,7 +496,7 @@ describe("cyclic dependency closures through resolve + materialize", () => {
       [`${REG}/tarball/pong.tgz`]: packageTarball("pong.marker"),
     };
     const repo = npmRepository(REG, fakeContext("build", served, []));
-    const ref = repo.getRepositoryRef(Name.fromLiteral("ping:1.0.0"));
+    const ref = refOf(repo.getRepositoryRef(Name.fromLiteral("ping:1.0.0")));
 
     const [delivered] = await toPromise(drive(repo, [ref]));
     const ping = delivered as PackageFileSet;
@@ -532,7 +542,7 @@ describe("NPMRepository package extensions", () => {
 
   async function cssOf(extensions: PackageExtensions): Promise<PackageFileSet> {
     const repo = npmRepository(REG, fakeContext("build", served, []), extensions);
-    const refs = [repo.getRepositoryRef(Name.fromLiteral("widget:1.0.0")), repo.getRepositoryRef(Name.fromLiteral("react:18.0.0"))];
+    const refs = [refOf(repo.getRepositoryRef(Name.fromLiteral("widget:1.0.0"))), refOf(repo.getRepositoryRef(Name.fromLiteral("react:18.0.0")))];
     const [widget] = await toPromise(drive(repo, refs));
     return (widget as PackageFileSet).packages[0];
   }
@@ -564,7 +574,7 @@ describe("NPMRepository resolveAll under files", () => {
       [`${REG}/tarball/2.4.1.tgz`]: packageTarball(),
     };
     const repo = npmRepository(REG, fakeContext(FILES_OPERATION, served, fetched));
-    const ref = repo.getRepositoryRef(Name.fromLiteral("@parcel/watcher:2.4.1"));
+    const ref = refOf(repo.getRepositoryRef(Name.fromLiteral("@parcel/watcher:2.4.1")));
 
     const [delivered] = await toPromise(drive(repo, [ref]));
 
@@ -615,7 +625,7 @@ describe("NPMRepository resolveAll under files", () => {
       [`${REG}/tarball/1.2.0.tgz`]: packageTarball(),
     };
     const repo = npmRepository(REG, fakeContext(FILES_OPERATION, served, fetched));
-    const ref = repo.getRepositoryRef(Name.fromLiteral("left-pad:^1.2.0"));
+    const ref = refOf(repo.getRepositoryRef(Name.fromLiteral("left-pad:^1.2.0")));
 
     const [delivered] = await toPromise(drive(repo, [ref]));
 
@@ -624,7 +634,7 @@ describe("NPMRepository resolveAll under files", () => {
 
   it("rejects projecting into a floorless version", async () => {
     const repo = npmRepository(REG, fakeContext(FILES_OPERATION, {}, []));
-    const ref = repo.getRepositoryRef(Name.fromLiteral("left-pad:*"));
+    const ref = refOf(repo.getRepositoryRef(Name.fromLiteral("left-pad:*")));
 
     const err = await rejection(() => drive(repo, [ref]));
     expect(err.message).to.match(/without a version lower bound/);
@@ -652,7 +662,7 @@ describe("NPMRepository file requests", () => {
     /* left-pad@1.2.0's dependency is not served: walking its closure would
      * reject with 'unexpected fetch'. */
     const repo = npmRepository(REG, fakeContext("build", served, fetched));
-    const [delivered] = await collect(repo, [repo.getRepositoryRef(parseName("left-pad:1.2.0:index.js"))]);
+    const [delivered] = await collect(repo, [refOf(repo.getRepositoryRef(parseName("left-pad:1.2.0:index.js")))]);
 
     expect(delivered).to.be.instanceOf(FileSetRef);
     const base = (delivered as FileSetRef).source;
@@ -665,8 +675,8 @@ describe("NPMRepository file requests", () => {
     const fetched: string[] = [];
     const repo = npmRepository(REG, fakeContext("build", served, fetched));
     const [files, app] = await collect(repo, [
-      repo.getRepositoryRef(parseName("left-pad:1.2.0:index.js")),
-      repo.getRepositoryRef(parseName("app:1.0.0")),
+      refOf(repo.getRepositoryRef(parseName("left-pad:1.2.0:index.js"))),
+      refOf(repo.getRepositoryRef(parseName("app:1.0.0"))),
     ]);
 
     expect((files as FileSetRef).source).to.not.be.instanceOf(PackageFileSet);
@@ -676,7 +686,7 @@ describe("NPMRepository file requests", () => {
 
   it("stays a package request where its consumer keeps the package", async () => {
     const repo = npmRepository(REG, fakeContext("build", served, []));
-    const ref = repo.getRepositoryRef(parseName("left-pad:1.3.0:index.js"));
+    const ref = refOf(repo.getRepositoryRef(parseName("left-pad:1.3.0:index.js")));
     const [delivered] = await collect(repo, [ref], false);
 
     expect((delivered as FileSetRef).source).to.be.instanceOf(PackageFileSet);
@@ -826,6 +836,46 @@ describe("NPMRepository lowestAvailable", () => {
 
     const err = await rejection(() => toPromise(repo.lowestAvailable("left-pad", "^1.0.0")));
     expect(err.message).to.equal(`503 Service Unavailable: ${url}`);
+  });
+});
+
+describe("NPMRepository children", () => {
+  it("vends a name stating no version as an incomplete reference, for the rest of the name to complete", () => {
+    const repo = npmRepository(REG, fakeContext("build", {}, []));
+    const namespace = repo.getRepositoryRef(parseName("left-pad"));
+    expect(namespace).to.be.instanceOf(NamespaceRef);
+    expect((namespace as NamespaceRef).name).to.equal("left-pad");
+    /* The rest of the name completes it. */
+    expect(refOf((namespace as NamespaceRef).getRepositoryRef(parseName("1.6.0"), ":")).toString()).to.equal("left-pad:1.6.0");
+    /* A marker or a rename still asks for a package, which needs a version. */
+    expect(repo.getRepositoryRef(parseName("left-pad!"))).to.be.instanceOf(RepositoryRef);
+    expect(repo.getRepositoryRef(parseName("left-pad -> pad"))).to.be.instanceOf(RepositoryRef);
+  });
+
+  it("lists a package's published versions newest first, each pinned exactly, from a fresh packument", async () => {
+    const fetched: string[] = [];
+    const served = { [`${REG}/left-pad`]: packumentOf("left-pad", ["1.0.0", "2.0.0", "1.6.0"]) };
+    const repo = npmRepository(REG, fakeContext("build", served, fetched));
+
+    const children = await toPromise(new NamespaceRef(repo, "left-pad", undefined, "@npm").children());
+
+    expect([...children.keys()]).to.deep.equal(["2.0.0", "1.6.0", "1.0.0"]);
+    const pinned = children.get("1.6.0") as RepositoryRef;
+    expect(pinned.toString()).to.equal("left-pad:1.6.0");
+    expect(fetched).to.deep.equal([`${REG}/left-pad`]);
+  });
+
+  it("refuses to list a package the registry does not have, a scope, or the whole registry", async () => {
+    const url = `${REG}/no-such-package-xyzzy`;
+    const repo = npmRepository(REG, fakeContext("build", { [url]: new HttpStatusError(404, url) }, []));
+
+    const missing = await rejection(() => toPromise(new NamespaceRef(repo, "no-such-package-xyzzy").children()));
+    expect(missing).to.be.instanceOf(RequirementResolutionError);
+    expect(missing.message).to.equal("no package 'no-such-package-xyzzy' is published");
+    const whole = await rejection(() => toPromise(new NamespaceRef(repo).children()));
+    expect(whole.message).to.equal(`the registry at ${REG} cannot list every package it holds`);
+    const scope = await rejection(() => toPromise(new NamespaceRef(repo, "@types").children()));
+    expect(scope.message).to.equal(`the registry at ${REG} cannot list every package in @types`);
   });
 });
 
@@ -1295,7 +1345,7 @@ describe("NPMRepository read authentication", () => {
       REG,
       authCapturingContext(FILES_OPERATION, served, captured, "//registry.example.org/:_authToken=secret-token")
     );
-    const ref = repo.getRepositoryRef(Name.fromLiteral("left-pad:1.2.0"));
+    const ref = refOf(repo.getRepositoryRef(Name.fromLiteral("left-pad:1.2.0")));
 
     await toPromise(drive(repo, [ref]));
 
@@ -1314,7 +1364,7 @@ describe("NPMRepository read authentication", () => {
       [`${REG}/tarball/1.2.0.tgz`]: packageTarball(),
     };
     const repo = npmRepository(REG, authCapturingContext(FILES_OPERATION, served, captured));
-    const ref = repo.getRepositoryRef(Name.fromLiteral("left-pad:1.2.0"));
+    const ref = refOf(repo.getRepositoryRef(Name.fromLiteral("left-pad:1.2.0")));
 
     await toPromise(drive(repo, [ref]));
 
@@ -1346,7 +1396,7 @@ describe("override markers", () => {
   /* Refs stamped with the alias a build file would have written them under,
    * so suggestions render pasteably (the alias rides the ref now). */
   const refsFor = (repo: NPMRepository, names: string[]): RepositoryRef[] =>
-    names.map(name => repo.getRepositoryRef(parseName(name)).withRepositoryName("@npm"));
+    names.map(name => refOf(repo.getRepositoryRef(parseName(name))).withRepositoryName("@npm"));
 
   it("judges a collection whose every reference is a projection kept in its package", async () => {
     /* A needs C ~1.5 and B needs C ^2.5, so two versions of C ship. Each
@@ -1604,7 +1654,7 @@ describe("merged layout across a batch", () => {
   /* Refs stamped with the alias a build file would have written them under,
    * so suggestions render pasteably (the alias rides the ref now). */
   const refsFor = (repo: NPMRepository, names: string[]): RepositoryRef[] =>
-    names.map(name => repo.getRepositoryRef(parseName(name)).withRepositoryName("@npm"));
+    names.map(name => refOf(repo.getRepositoryRef(parseName(name))).withRepositoryName("@npm"));
 
   it("keeps a member on the version its edge binds across a merge with a sibling delivery", async () => {
     const repo = npmRepository(REG, fakeContext("build", served, []));
@@ -1642,7 +1692,7 @@ describe("package rename", () => {
   /* Refs stamped with the alias a build file would have written them under,
    * so suggestions render pasteably (the alias rides the ref now). */
   const refsFor = (repo: NPMRepository, names: string[]): RepositoryRef[] =>
-    names.map(name => repo.getRepositoryRef(parseName(name)));
+    names.map(name => refOf(repo.getRepositoryRef(parseName(name))));
 
   it("delivers the package under the written name, and mounts it there", async () => {
     const repo = npmRepository(REG, fakeContext("build", served, []));
@@ -1816,7 +1866,7 @@ describe("multi-route domains (repository groups)", () => {
   it("dispatches transitive metadata and fetches to the routed member", async () => {
     const fetched: string[] = [];
     const repo = groupDomain(fakeContext("build", served, fetched), [["@scope/*", PRIV], ["*", REG]]);
-    const ref = repo.getRepositoryRef(Name.fromLiteral("app:1.0.0"));
+    const ref = refOf(repo.getRepositoryRef(Name.fromLiteral("app:1.0.0")));
 
     const [delivered] = await toPromise(drive(repo, [ref]));
     const app = delivered as PackageFileSet;
@@ -1836,7 +1886,7 @@ describe("multi-route domains (repository groups)", () => {
       return memoize(tag, key, fn);
     };
     const repo = groupDomain(context, [["@scope/*", PRIV], ["*", REG]]);
-    await toPromise(drive(repo, [repo.getRepositoryRef(Name.fromLiteral("app:1.0.0"))]));
+    await toPromise(drive(repo, [refOf(repo.getRepositoryRef(Name.fromLiteral("app:1.0.0")))]));
     expect(memoKeys).to.have.lengthOf(1);
     expect(memoKeys[0]).to.contain(NPM_FORMAT.resolutionTag);
     expect(memoKeys[0]).to.contain(`@scope/*=${PRIV}`);
@@ -1847,7 +1897,7 @@ describe("multi-route domains (repository groups)", () => {
     /* A closed domain (no catch-all): not an error class of its own — the
      * domain simply does not serve the package. */
     const repo = groupDomain(fakeContext("build", served, []), [["@scope/*", PRIV]]);
-    const err = await rejection(() => toPromise(drive(repo, [repo.getRepositoryRef(Name.fromLiteral("left-pad:1.0.0"))])));
+    const err = await rejection(() => toPromise(drive(repo, [refOf(repo.getRepositoryRef(Name.fromLiteral("left-pad:1.0.0")))])));
     expect(err.message).to.contain("has no route serving 'left-pad'");
     expect(err.message).to.contain("@scope/*");
   });
@@ -1864,7 +1914,7 @@ describe("multi-route domains (repository groups)", () => {
       }),
     };
     const repo = groupDomain(fakeContext("build", gated, []), [["@scope/*", PRIV], ["*", REG]]);
-    const err = await rejection(() => toPromise(drive(repo, [repo.getRepositoryRef(Name.fromLiteral("app:1.0.0"))])));
+    const err = await rejection(() => toPromise(drive(repo, [refOf(repo.getRepositoryRef(Name.fromLiteral("app:1.0.0")))])));
     expect(err.message).to.contain("@scope/native@1.0.0 is not supported for the target platform");
   });
 

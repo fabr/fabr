@@ -139,6 +139,22 @@ describe("FabrHomeRepository", () => {
     expect((scope as NamespaceRef).name).to.equal("@fabr-build");
   });
 
+  it("lists the packages installed in a scope, and refuses to list the whole installation", async () => {
+    install(path.join(root, "node_modules", "@fabr-build", "core", "node_modules", "@fabr-build", "inner"), { name: "@fabr-build/inner" });
+    install(path.join(root, "node_modules", "@other", "x"), { name: "@other/x" });
+    const repo = repository();
+    const children = await toPromise(new NamespaceRef(repo, "@fabr-build").children());
+    /* Every node_modules node's search from fabr's code looks in is listed, nearest or not; another
+     * scope is not. */
+    expect([...children.keys()]).to.deep.equal(["core", "inner", "tool"]);
+    expect((children.get("tool") as RepositoryRef).name).to.equal("@fabr-build/tool");
+    const whole = await toPromise(new NamespaceRef(repo).children()).then(
+      () => undefined,
+      (err: Error) => err.message
+    );
+    expect(whole).to.equal("fabr's whole installation cannot be listed");
+  });
+
   it("projects into the package after a ':'", () => {
     const ref = packageRef(repository(), Name.fromLiteral("@fabr-build/tool:lib/x.js"));
     expect(ref.name.toString()).to.equal("@fabr-build/tool");

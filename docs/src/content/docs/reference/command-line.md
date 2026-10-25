@@ -98,6 +98,17 @@ fabr ls mylib
 fabr ls -l 'mylib:*.js'
 ```
 
+A reference to a package with no version, or to a repository, lists what it contains: an npm
+package's published versions, newest first; a catalog's members; or the packages installed in a
+scope of `@fabr-home`. Nothing is downloaded or built to list them, and `-l` makes no difference.
+
+```sh
+fabr ls @npm:esbuild
+fabr ls @pkg
+```
+
+npm can't list every package it holds, so `fabr ls @npm` is an error.
+
 ### `cat`
 
 Builds what the references name and writes the contents of the files to stdout.

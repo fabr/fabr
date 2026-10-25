@@ -39,6 +39,7 @@ import {
   IFile,
   getTestReport,
   Name,
+  NamespaceRef,
   parseName,
   Log,
   LogFormatter,
@@ -51,6 +52,8 @@ import {
   ITargetDefDecl,
   PropertyType,
   PublishableFileSet,
+  Reference,
+  refuseNamespaces,
   reportFailure,
   SyncSource,
   testOperation,
@@ -200,7 +203,7 @@ export function runFabr(options: Options): Promise<void> {
   switch (options.command) {
     case "ls":
       return runWith(options, (model, execution, site) =>
-        Computable.forAll(resolveNames(model, options, execution, site), (...results) => listTargets(options, results))
+        Computable.forAll(listedNames(model, options, execution, site), (...results) => listTargets(options, results))
       );
     case "cat":
       return runWith(options, (model, execution, site) =>
@@ -494,7 +497,8 @@ function runProgram(
   const supervisor = watch ? supervisors.of(execution, key, target, args) : undefined;
   /* The name is the program (`fabr run @npm:http-server:14.1.1`), so under
    * `run` materialize resolves its closure permissively, as a rule's `tool` is. */
-  return config.materialize(options.commandLine.refFor(target, site)).then<void | Takeover>(sources => {
+  return config.materialize(options.commandLine.refFor(target, site)).then<void | Takeover>(materialized => {
+    const sources = refuseNamespaces(materialized);
     /* A projected runnable (`fabr run pkg:tsc`) arrives pending — this is the
      * point a launcher is demanded, so it collapses here. */
     const runnable = sources.map(toRunnable).find(Boolean);
@@ -561,7 +565,9 @@ function shellTarget(
  */
 function syncTargets(model: BuildModel, options: Options, execution: ExecutionContext, site: IInvocationSite): Computable<void> {
   const config = configFor(model, options, execution, "build");
-  const resolved = options.targets.map(name => config.materialize(options.commandLine.refFor(name, site)));
+  const resolved = options.targets.map(name =>
+    config.materialize(options.commandLine.refFor(name, site)).then(sources => refuseNamespaces(sources))
+  );
   return Computable.forAll(resolved, (...results: SourceRef[][]) =>
     Computable.forAll(
       results.map((sources, i) => membersOf(sources, options.targets[i])),
@@ -814,7 +820,32 @@ function resolveNames(
   return options.targets.map(name =>
     config
       .materialize(options.commandLine.refFor(name, site))
-      .then(sources => Computable.forAll(sources.map(openedOut), (...opened: SourceRef[]) => opened))
+      .then(sources => openedAll(refuseNamespaces(sources)))
+  );
+}
+
+/** Open out each of `sources` (see {@link openedOut}). */
+function openedAll(sources: SourceRef[]): Computable<SourceRef[]> {
+  return Computable.forAll(sources.map(openedOut), (...opened: SourceRef[]) => opened);
+}
+
+/** What `ls` lists of each name, materialized as {@link resolveNames} does:
+ * its files, or the children of the namespace it names (a repository's, such as
+ * `@npm:glob`'s versions). */
+function listedNames(
+  model: BuildModel,
+  options: Options,
+  execution: ExecutionContext,
+  site: IInvocationSite
+): Computable<Map<string, Reference> | SourceRef[]>[] {
+  const config = configFor(model, options, execution, FILES_OPERATION);
+  return options.targets.map(name =>
+    config
+      .materialize(options.commandLine.refFor(name, site))
+      .then((sources): Computable<Map<string, Reference> | SourceRef[]> => {
+        const [only] = sources;
+        return sources.length === 1 && only instanceof NamespaceRef ? only.children() : openedAll(refuseNamespaces(sources));
+      })
   );
 }
 
@@ -996,22 +1027,22 @@ function matchedNoFiles(name: string): Error {
 
 /**
  * For `fabr ls`, the listing is the outcome: print each built target's
- * contents (sorted by name), with a `target:` header when more than one
- * target was requested. A target is by definition a built thing, so its
- * results are FileSets already — enumerated per source, blank-line separated
- * (a multi-source target lists each source as if each were named, never
- * unioned into one flat set). Listing output is the command's data, so it
- * goes straight to stdout rather than through the diagnostic log.
+ * contents (sorted by name), or a namespace's children, with a `target:` header
+ * when more than one target was requested. A target is by definition a built
+ * thing, so its results are FileSets already — enumerated per source,
+ * blank-line separated (a multi-source target lists each source as if each were
+ * named, never unioned into one flat set). Listing output is the command's
+ * data, so it goes straight to stdout rather than through the diagnostic log.
  */
-function listTargets(options: Options, results: SourceRef[][]): Computable<void> {
+function listTargets(options: Options, results: Array<Map<string, Reference> | SourceRef[]>): Computable<void> {
   return Computable.forAll(
     results.map(sources =>
-      Computable.forAll(
-        sources
-          .filter((source): source is FileSet => source instanceof FileSet)
-          .map(set => renderListing(set, options.longListing)),
-        (...perSource: string[][]) => perSource.flatMap((lines, i) => (i > 0 ? ["", ...lines] : lines))
-      )
+      sources instanceof Map
+        ? Computable.resolve(renderChildren(sources))
+        : Computable.forAll(
+            sources.filter((source): source is FileSet => source instanceof FileSet).map(set => renderListing(set, options.longListing)),
+            (...perSource: string[][]) => perSource.flatMap((lines, i) => (i > 0 ? ["", ...lines] : lines))
+          )
     ),
     (...listings: string[][]) => {
       listings.forEach((lines, i) => {
@@ -1321,6 +1352,15 @@ function renderPropertyValue(decl: IPropertyDecl): string {
  * supports in `[...]` (omitted when it has none — e.g. a repository type). */
 function renderTargetDefHeader(def: ITargetDefDecl, operations: string[]): string {
   return operations.length > 0 ? `${def.name} [${operations.join(", ")}]` : def.name;
+}
+
+/**
+ * @return the listing lines for a namespace's children: each name, in the order
+ * listed, a child that is itself a namespace marked with a trailing `/`. A
+ * child is a name, not content, so the long form shows the same.
+ */
+function renderChildren(children: Map<string, Reference>): string[] {
+  return [...children].map(([name, child]) => (child instanceof NamespaceRef ? `${name}/` : name));
 }
 
 /**

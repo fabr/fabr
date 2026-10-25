@@ -42,6 +42,7 @@ import { DependencyFailedError, NameResolutionError } from "../model/Errors";
 import { FabrError } from "../core/Errors";
 import { Name } from "../core/Name";
 import { Property } from "../model/Property";
+import { writtenSeparator } from "../model/Namespace";
 import { IDependencyStack, requestingTargets, useSiteOf } from "./Stack";
 import { ReferenceLabel } from "../model/Errors";
 import {
@@ -322,7 +323,7 @@ export abstract class TargetContext {
       if (!namespace) {
         throw new FabrError(`'${name.toString()}' does not name a repository`);
       }
-      return namespace.getRepositoryPublishRef(match.rest, match.name);
+      return namespace.getRepositoryPublishRef(match.rest, writtenSeparator(match.retainedPrefix), match.name);
     });
   }
 

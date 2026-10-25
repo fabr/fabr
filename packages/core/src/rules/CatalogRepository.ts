@@ -28,6 +28,9 @@ import { Requirement } from "../resolver/Types";
 import { chainSteps, describeProvenance } from "../core/Provenance";
 import { ConflictError, FabrError, IConflictSource, RequirementResolutionError } from "../core/Errors";
 import { Name } from "../core/Name";
+import { compareText } from "../support/Functional";
+import type { Reference } from "../core/Reference";
+import type { NamespaceRef } from "../core/NamespaceRef";
 /* A catalog is a collection point of its own, the one outside context/, so it
  * takes these from the module rather than the package's API. */
 import { consumeMarker, Markers, resolveCollection } from "../context/CollectionPoint";
@@ -160,6 +163,23 @@ export class CatalogRepository implements Repository, RepositoryCollection {
       renameTo: member.getRenameTo()?.toString(),
       ...(override === undefined ? {} : { override }),
     });
+  }
+
+  /** List the catalog's members by the address each is pinned under, in
+   *  code-unit order. Nothing is fetched or built: the catalog's resolution is
+   *  all it reads. */
+  public children({ name: namespace }: NamespaceRef): Computable<Map<string, Reference>> {
+    if (namespace !== "") {
+      return Computable.reject(new FabrError(`Catalog ${this.catalogName} has no namespace '${namespace}'`));
+    }
+    return this.resolved.then(
+      ({ entries }) =>
+        new Map(
+          [...entries.keys()]
+            .sort(compareText)
+            .map((name): [string, Reference] => [name, new RepositoryRef(this, { name, versionConstraint: undefined })])
+        )
+    );
   }
 
   /** A catalog pins versions for reading; it is not a place content goes. */

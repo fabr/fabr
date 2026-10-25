@@ -22,6 +22,7 @@ import type { ActionContext, ICreateOptions } from "../core/BuildCache";
 import type { Computable } from "../core/Computable";
 import type { FileSet, FileSource } from "../core/FileSet";
 import type { IProjection } from "../core/Reference";
+import type { NamespaceRef } from "../core/NamespaceRef";
 import type { Name } from "../core/Name";
 import type { Materialized, SourceRef } from "../core/Repository";
 import type { Unbuilt } from "../core/TargetRef";
@@ -59,11 +60,14 @@ export interface BuildContext {
   /**
    * Materialize what `ref` names: build every target it reaches and fetch
    * every external reference, and return the content. A delivered package comes back as that
-   * package's own files, without its dependency closure. Under
-   * `BUILD_OPERATION=run` the name is a program to launch, and what it
-   * requires is resolved permissively.
+   * package's own files, without its dependency closure. A namespace (a
+   * repository named on its own, or a namespace of one such as `@npm:glob`)
+   * has no content and comes back as it stands: a caller wanting content
+   * refuses it ({@link refuseNamespaces}), and one listing names lists its
+   * children. Under `BUILD_OPERATION=run` the name is a program to launch,
+   * and what it requires is resolved permissively.
    */
-  materialize(ref: INameValue): Computable<FileSource[]>;
+  materialize(ref: INameValue): Computable<Array<FileSource | NamespaceRef>>;
 
   /**
    * Test whether `ref` is a name the project declares — a target, a global or

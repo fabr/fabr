@@ -70,6 +70,17 @@ export interface Repository {
    * cannot project into an address you are creating.
    */
   getRepositoryPublishRef(name: Name): RepositoryPublishRef;
+
+  /**
+   * List the children of the name `ref` names in this repository ({@link
+   * NamespaceRef.name}, empty for the whole repository): each child's name
+   * within it, in the order the repository lists them, mapped to the
+   * reference that names the child. Names only — nothing is fetched or
+   * resolved to list them. Rejects where it cannot be listed (a registry
+   * cannot enumerate every package it holds). OPTIONAL: absent, nothing in the
+   * repository can be listed.
+   */
+  children?(ref: NamespaceRef): Computable<Map<string, Reference>>;
 }
 
 export function isRepository(source: unknown): source is Repository {

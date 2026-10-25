@@ -21,7 +21,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as nodePath from "node:path";
 import { Computable } from "../core/Computable";
-import { EMPTY_FILESET, FileSet } from "../core/FileSet";
+import { EMPTY_FILESET, FileSet, FileSource } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import {
   ProjectedPackage,
@@ -62,7 +62,7 @@ import { PackageFormat } from "../resolver/PackageFormat";
 import { Requirement } from "../resolver/Types";
 import { resolveBarePackage, vendPackageRef } from "../resolver/PackageResolver";
 import { RepositoryReader } from "../core/Repository";
-import { NamespaceRef } from "../core/NamespaceRef";
+import { NamespaceRef, refuseNamespaces } from "../core/NamespaceRef";
 import {
   CircularDependencyError,
   DependencyFailedError,
@@ -384,7 +384,7 @@ class TestRegistry implements Repository, RepositoryReader<SemverVersion, Semver
     public readonly name: string
   ) {}
 
-  public getRepositoryRef(name: Name): RepositoryRef {
+  public getRepositoryRef(name: Name): RepositoryRef | NamespaceRef {
     return vendPackageRef(this, REGISTRY_FORMAT, name);
   }
 
@@ -412,6 +412,35 @@ class TestRegistry implements Repository, RepositoryReader<SemverVersion, Semver
  * cache, and each test's model is a fresh registry. */
 let registries = 0;
 registerRepositoryProvider("test_registry", context => Computable.resolve(new TestRegistry(`${context.name}#${++registries}`, context.operation, context.name)));
+
+/* A registry whose references must state a version, as npm's must: a name with
+ * none is not yet a complete reference. */
+const VERSIONED_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
+  ...REGISTRY_FORMAT,
+  resolutionTag: "buildcontexttest:versioned:1",
+  splitReference: (name: Name) => {
+    const written = name.toBaseString();
+    const colon = written.lastIndexOf(":");
+    return colon === -1
+      ? { name: written, versionConstraint: undefined }
+      : { name: written.substring(0, colon), versionConstraint: written.substring(colon + 1) };
+  },
+  validateRequirement: requirement => {
+    if (requirement.versionConstraint === undefined) {
+      throw new Error(`'${requirement.name}' states no version`);
+    }
+  },
+};
+class TestVersionedRegistry extends TestRegistry {
+  public override readonly format = VERSIONED_FORMAT;
+
+  public override getRepositoryRef(name: Name): RepositoryRef | NamespaceRef {
+    return vendPackageRef(this, VERSIONED_FORMAT, name);
+  }
+}
+registerRepositoryProvider("test_versioned_registry", context =>
+  Computable.resolve(new TestVersionedRegistry(`${context.name}#${++registries}`, context.operation, context.name))
+);
 
 /** A repository answering every name with the package of that name, marked as
  * its answer, and a bare scope with the namespace of it — a stand-in for
@@ -3048,6 +3077,38 @@ describe("contributed-lib-relative FILES", () => {
   });
 });
 
+describe("an incomplete reference", () => {
+  const input =
+    "targetdef test_versioned_registry { }\n" +
+    "test_versioned_registry @reg { }\n" +
+    "A = @reg:foo;\n" +
+    "T = @reg:@scope;\n";
+
+  function materialize(name: string): Computable<Array<FileSource | NamespaceRef>> {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+    return model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine(name));
+  }
+
+  it("is completed by the rest of the name written after it, with ':'", async () => {
+    const [pkg] = await Promise.resolve(materialize("A:1.2.0"));
+    expect((pkg as PackageFileSet).packageName).to.equal("foo");
+    expect((pkg as PackageFileSet).version).to.equal("1.2.0");
+  });
+
+  it("is completed by the rest of the name written after it, with '/'", async () => {
+    const [pkg] = await Promise.resolve(materialize("T/foo:1.0.0"));
+    expect((pkg as PackageFileSet).packageName).to.equal("@scope/foo");
+  });
+
+  it("is refused where it is used as a package before it is complete", async () => {
+    const sources = await Promise.resolve(materialize("A"));
+    expect(() => refuseNamespaces(sources)).to.throw("'@reg:foo' is not a complete reference, so it names no package or files");
+  });
+});
+
 describe("a namespace's fallback property", () => {
   const preamble = "targetdef test_ns_repo { }\ntargetdef test_package { }\ntest_ns_repo @root { }\n";
 
@@ -3064,20 +3125,6 @@ describe("a namespace's fallback property", () => {
     const [source] = await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine(name));
     const pkg = source as PackageFileSet;
     return { name: pkg.packageName, fallback: (await pkg.get("from-fallback")) !== undefined };
-  }
-
-  /** The innermost cause of materializing `name`, or "materialized". */
-  async function failure(model: ReturnType<typeof toBuildModel>, name: string): Promise<string> {
-    return Promise.resolve(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine(name))).then(
-      () => "materialized",
-      (err: Error) => {
-        let cause: unknown = err;
-        while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError) {
-          cause = cause.cause;
-        }
-        return (cause as Error).message;
-      }
-    );
   }
 
   it("answers an undeclared name under the namespace as a projection into its value", async () => {
@@ -3103,9 +3150,12 @@ describe("a namespace's fallback property", () => {
     expect(await answer(model, "@ns/other")).to.deep.equal({ name: "@ns/other", fallback: true });
   });
 
-  it("refuses the namespace's own name where files are wanted, as its value is a repository", async () => {
+  it("materializes the namespace's own name as its value, a namespace of a repository, which content refuses", async () => {
     const { model } = load("default @ns = @root:@ns;\ntest_package @ns/tool { }\n");
-    expect(await failure(model, "@ns")).to.match(/names a repository, not a package or files/);
+    const sources = await Promise.resolve(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("@ns")));
+    expect(sources).to.have.lengthOf(1);
+    expect(sources[0]).to.be.instanceOf(NamespaceRef);
+    expect(() => refuseNamespaces(sources)).to.throw("'@root:@ns' is not a complete reference, so it names no package or files");
   });
 
   it("conflicts with a target of the namespace's name", () => {

@@ -16,6 +16,7 @@ version number.
 - Fix handling of constraints in variable substitutions.
 - Keep persistent working directories for command-line run targets.
 - Add incremental support to the generic generate target.
+- Support ls of namespaces (where the parent is able to support it).
 
 @fabr-build/cli:
 - Add `fabr deps`: print the dependency tree of targets or packages, marking conflicting versions `(!)`.

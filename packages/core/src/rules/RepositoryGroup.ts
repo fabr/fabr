@@ -33,9 +33,10 @@ import {
 import { TargetContext } from "../context/index";
 import { Requirement, Selected } from "../resolver/Types";
 import { PackageFormat } from "../resolver/PackageFormat";
-import { vendPackageRef } from "../resolver/PackageResolver";
+import { vendPackageRef, versionChildren } from "../resolver/PackageResolver";
 import { contentPackageMember } from "./ContentPackage";
 import { NamespaceRef } from "../core/NamespaceRef";
+import type { Reference } from "../core/Reference";
 import { RepositoryRegistration } from "./Types";
 
 /**
@@ -183,10 +184,39 @@ export class RepositoryGroup<V, C>
     return this.context.name;
   }
 
-  public getRepositoryRef(name: Name): RepositoryRef {
+  public getRepositoryRef(name: Name): RepositoryRef | NamespaceRef {
     /* The ref's source is the GROUP, so every reference written against it
      * lands in one joint batch at the consumer's collection point. */
     return vendPackageRef(this, this.format, name);
+  }
+
+  /** List a package's versions as the member it routes to lists them, each
+   *  version's reference addressed to the group. */
+  public children({ name: namespace }: NamespaceRef): Computable<Map<string, Reference>> {
+    if (namespace === "") {
+      return Computable.reject(
+        new FabrError(`${this.groupName} cannot list every package it serves`).withHelp(
+          `name a package to list its versions, as in '${this.groupName}:<package>'`
+        )
+      );
+    }
+    const member = this.routed(namespace);
+    if (member instanceof Error) {
+      return Computable.reject(member);
+    }
+    const listing = (member as Partial<Repository>).children;
+    if (listing === undefined) {
+      return versionChildren(this, this.format, namespace, member.availableVersions?.(namespace) ?? Computable.resolve(undefined));
+    }
+    return listing.call(member, new NamespaceRef(member as Repository & typeof member, namespace)).then(
+      children =>
+        new Map(
+          [...children].map(([name, child]): [string, Reference] => [
+            name,
+            child instanceof RepositoryRef ? new RepositoryRef(this, { name: child.name, versionConstraint: child.versionConstraint }) : child,
+          ])
+        )
+    );
   }
 
   /**

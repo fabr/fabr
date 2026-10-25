@@ -51,6 +51,13 @@ export interface IPrefixMatch {
   rest: Name;
 }
 
+/** The separator the rest of a name was written after, given the
+ *  {@link IPrefixMatch.retainedPrefix} of its match: `:`, which retains
+ *  nothing, or `/`, which retains the prefix through it. */
+export function writtenSeparator(retainedPrefix: string): ":" | "/" {
+  return retainedPrefix === "" ? ":" : "/";
+}
+
 /**
  * A namespace is a target-like entity that contains other targets or properties.
  *

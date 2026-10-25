@@ -32,7 +32,8 @@ import { hashString } from "../core/FSWrapper";
 import { MemoryFile } from "../core/MemoryFS";
 import { Name } from "../core/Name";
 import { contentOf, Dependency, dependencyName, isPackage, Package, PackageFileSet, PackageGraphBuilder, ResolvedNode, Provided } from "../core/PackageFileSet";
-import { isRepositoryReader, RefSource, RepositoryReader, RepositoryRef, SourceRef } from "../core/Repository";
+import { isRepositoryReader, RefSource, Repository, RepositoryReader, RepositoryRef, SourceRef } from "../core/Repository";
+import { NamespaceRef } from "../core/NamespaceRef";
 import { TargetRef } from "../core/TargetRef";
 import { PackageRequest, ResolutionContext, Resolution, ResolvedRoot } from "./Types";
 import { chainSteps, IProvenanceStep, ISourcePathStep, SOURCE_PATH_PROVENANCE } from "../core/Provenance";
@@ -72,9 +73,11 @@ const RESOLUTION_FILE = "resolution.json";
  * requirement's override, and is refused on a reference that selects files.
  * The repository is the ref's source: at the consumer's collection point
  * references group by that source, so everything written against one
- * repository resolves in one joint batch.
+ * repository resolves in one joint batch. A name that is not yet a complete
+ * reference (`glob`, where the format's references must state a version) is
+ * vended as a {@link NamespaceRef}, for the rest of the name to complete.
  */
-export function vendPackageRef<V, C>(source: RefSource, format: PackageFormat<V, C>, name: Name): RepositoryRef {
+export function vendPackageRef<V, C>(source: RefSource & Repository, format: PackageFormat<V, C>, name: Name): RepositoryRef | NamespaceRef {
   /* A `?` or `!` ending the reference is a marker only where the identity runs
    * to its end; after a projection it is the last character of the pattern. A
    * rename written on the identity is the package's; one written after a
@@ -84,9 +87,54 @@ export function vendPackageRef<V, C>(source: RefSource, format: PackageFormat<V,
     return new RepositoryRef(source, written).find(projection.pattern, projection.prefix);
   }
   const override = name.getMarker();
+  if (override === undefined && name.getRenameTo() === undefined && !name.hasGlob() && isIncomplete(format, written)) {
+    return new NamespaceRef(source, written.name);
+  }
   const split = override === undefined ? written : format.splitReference(name.withoutMarker());
   const identity = override === undefined ? split : { ...split, override };
   return new RepositoryRef(source, { ...identity, renameTo: name.getRenameTo()?.toString() });
+}
+
+/** Whether `written` is not yet a complete reference: it states only a name,
+ *  which `format` refuses as a requirement without a version. A reference
+ *  stating a version is complete, and a malformed one is refused as written. */
+function isIncomplete<V, C>(format: PackageFormat<V, C>, written: Requirement): boolean {
+  if (written.versionConstraint !== undefined) {
+    return false;
+  }
+  try {
+    format.validateRequirement(written);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * List a package's published `versions` as the children of its namespace (see
+ * {@link Repository.children}): newest first, each mapped to the reference
+ * pinning it exactly, addressed to `source`. Rejects where the registry has no
+ * such package (`versions` undefined).
+ */
+export function versionChildren<V, C>(
+  source: RefSource,
+  format: PackageFormat<V, C>,
+  pkg: string,
+  versions: Computable<V[] | undefined>
+): Computable<Map<string, Reference>> {
+  return versions.then(published => {
+    if (published === undefined) {
+      throw new FabrError(`no package '${pkg}' is published`);
+    }
+    return new Map(
+      [...published]
+        .sort((a, b) => format.compare(b, a))
+        .map((version): [string, Reference] => {
+          const text = format.versionToString(version);
+          return [text, new RepositoryRef(source, { name: pkg, versionConstraint: text })];
+        })
+    );
+  });
 }
 
 /** Make the error for an override marker written on a reference that selects

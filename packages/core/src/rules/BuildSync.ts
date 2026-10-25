@@ -22,6 +22,7 @@ import { BUILD_OPERATION, FILES_OVERRIDE } from "../model/Constraints";
 import { Computable, ComputableSource } from "../core/Computable";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
 import { RepositoryPublishRef, RepositoryWriter, SourceRef } from "../core/Repository";
+import { refuseNamespaces } from "../core/NamespaceRef";
 import { PublishableFileSet } from "../core/PublishableFileSet";
 import { Name, NAME_COMPONENT_SEPARATOR, NAME_LEVEL_SEPARATOR } from "../core/Name";
 import { FabrError, toError } from "../core/Errors";
@@ -223,7 +224,7 @@ export class SyncSource implements FileSource {
   private packageBatch(paths: string[]): Computable<PublishableFileSet[]> {
     const release = [...this.table.values()].map(member => member.assigned);
     return Computable.forAll(
-      paths.map(path => this.content.materialize(contentKey(this.member(path).decl))),
+      paths.map(path => this.content.materialize(contentKey(this.member(path).decl)).then(sources => refuseNamespaces(sources))),
       (...content: FileSet[][]) => content
     ).then(content => {
       const batches = new Map<RepositoryWriter, { path: string; index: number }[]>();

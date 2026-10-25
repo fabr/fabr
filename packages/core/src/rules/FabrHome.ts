@@ -38,6 +38,8 @@ import { NamespaceRef } from "../core/NamespaceRef";
 import { PackageFileSet, PackageGraphBuilder } from "../core/PackageFileSet";
 import { chainSteps, IProvenanceStep, registerProvenanceDescriber, registerProvenanceRenderer } from "../core/Provenance";
 import { RefSource, Repository, RepositoryLookup, RepositoryPublishRef, RepositoryRef } from "../core/Repository";
+import type { Reference } from "../core/Reference";
+import { compareText } from "../support/Functional";
 import { isJsonObject, readJsonFile, toJsonObject } from "../support/Json";
 import type { TargetContext } from "../context/index";
 import { RepositoryRegistration } from "./Types";
@@ -97,6 +99,26 @@ function locate(name: string, from: string): string | undefined {
     }
     if (path.dirname(dir) === dir) {
       return undefined;
+    }
+  }
+}
+
+/** The names of the packages installed in `scope`, in every `node_modules`
+ *  node's search from `from` would look in. */
+function installedIn(scope: string, from: string): string[] {
+  const found = new Set<string>();
+  for (let dir = path.resolve(from); ; dir = path.dirname(dir)) {
+    if (path.basename(dir) !== "node_modules") {
+      const scopeDir = path.join(dir, "node_modules", scope);
+      const entries = fs.existsSync(scopeDir) ? fs.readdirSync(scopeDir) : [];
+      for (const entry of entries) {
+        if (fs.existsSync(path.join(scopeDir, entry, "package.json"))) {
+          found.add(entry);
+        }
+      }
+    }
+    if (path.dirname(dir) === dir) {
+      return [...found];
     }
   }
 }
@@ -220,6 +242,31 @@ export class FabrHomeRepository implements Repository, RepositoryLookup {
     return colon === -1
       ? new RepositoryRef(this, { name: name.toBaseString(), versionConstraint: undefined, renameTo: name.getRenameTo()?.toString() })
       : new RepositoryRef(this, { name: literal.substring(0, colon), versionConstraint: undefined }).find(name.substring(colon + 1));
+  }
+
+  /** List the packages installed in a scope, found as {@link locate} finds
+   *  each: by name, in code-unit order. Fabr's whole installation cannot be
+   *  listed. */
+  public children({ name: namespace }: NamespaceRef): Computable<Map<string, Reference>> {
+    if (namespace === "") {
+      return Computable.reject(
+        new FabrError("fabr's whole installation cannot be listed").withHelp("name a scope to list its packages, as in '@fabr-home:@fabr-build'")
+      );
+    }
+    try {
+      return Computable.resolve(
+        new Map(
+          installedIn(namespace, this.resolveFrom)
+            .sort(compareText)
+            .map((name): [string, Reference] => [
+              name,
+              new RepositoryRef(this, { name: `${namespace}/${name}`, versionConstraint: undefined }),
+            ])
+        )
+      );
+    } catch (err) {
+      return Computable.reject(toError(err));
+    }
   }
 
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {

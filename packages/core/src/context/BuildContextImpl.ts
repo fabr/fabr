@@ -79,7 +79,7 @@ import { closestMatch } from "../support/Suggest";
 import { Name, NameConstraint, NamePart, NamePartKind } from "../core/Name";
 import { globMatcher } from "../support/Glob";
 import { parseName } from "../model/Parser";
-import { IPrefixMatch, IPropertyEntry } from "../model/Namespace";
+import { IPrefixMatch, IPropertyEntry, writtenSeparator } from "../model/Namespace";
 import { Property } from "../model/Property";
 import { IModelStep, ISubstitution, MODEL_PROVENANCE } from "../model/ModelProvenance";
 import { BuildContext, InternalBuildContext } from "./BuildContext";
@@ -277,15 +277,16 @@ export class BuildContextImpl implements InternalBuildContext {
       } else if (source instanceof RepositoryRef || source instanceof FileSetRef) {
         references.push(source.find(pattern, prefix));
       } else if (source instanceof NamespaceRef) {
-        /* The rest is a requirement identifier followed by an optional projection into the
-         * delivered content — the repository vends the ref for the whole name: its identity portion
+        /* The rest completes the name, after the separator it was written with, into a requirement
+         * identifier followed by an optional projection into the delivered content — the repository
+         * vends the ref for the whole name: its identity portion
          * claimed (`esbuild:0.28.1`), the remainder packed in as a projection into the resolved
          * package (`:package.json`), riding the normal find/naming path (any rename facet rides the
          * projection). The written-name rule applies to the projection, not to the requirement
          * itself. */
         /* Stamp the alias the repository was reached by, as written — how the resolution layer
          * renders suggestions and progress in the user's own spelling. */
-        references.push(source.getRepositoryRef(pattern, repositoryName));
+        references.push(source.getRepositoryRef(pattern, writtenSeparator(prefix), repositoryName));
       } else if (source instanceof PackageFileSet || source instanceof RunnableFileSet) {
         /* A projection into a package or a runnable defers as a FileSetRef, keeping a package's
          * identity and a runnable's launch machinery (its projection names an entry, not files).
@@ -928,12 +929,19 @@ export class BuildContextImpl implements InternalBuildContext {
     return source;
   }
 
-  public materialize(ref: INameValue, stack?: IDependencyStack): Computable<FileSource[]> {
+  public materialize(ref: INameValue, stack?: IDependencyStack): Computable<Array<FileSource | NamespaceRef>> {
     /* Under `run` the name IS the program, so its closure is a sealed install. */
     const options = this.constraints.get(BUILD_OPERATION) === "run" ? PERMISSIVE_RESOLUTION : undefined;
-    return this.lookupFileValue(ref.value, stack, { relativeTo: ref })
-      .then(sources => materializeShallow(this.resolutionContext(), sources, options))
-      .then(delivered => this.applyProjections(delivered));
+    return this.lookupFileValue(ref.value, stack, { relativeTo: ref }).then(sources => {
+      const namespaces = sources.filter((source): source is NamespaceRef => source instanceof NamespaceRef);
+      return materializeShallow(
+        this.resolutionContext(),
+        sources.filter(source => !(source instanceof NamespaceRef)),
+        options
+      )
+        .then(delivered => this.applyProjections(delivered))
+        .then((content): Array<FileSource | NamespaceRef> => [...content, ...namespaces]);
+    });
   }
 
   /** Look up the sources `name` names. `substituted` says the name as written

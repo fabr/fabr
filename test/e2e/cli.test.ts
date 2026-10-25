@@ -95,6 +95,18 @@ describe("e2e: driver CLI", () => {
     expect(runFabr(project, ["ls", "*.txt"], undefined, "src").stdout).to.equal("a.txt\nb.txt\n");
   });
 
+  it("lists a namespace's children, names only, and refuses it where files are wanted", () => {
+    /* `@fabr-home:@fabr-build` is the scope fabr is installed in: listing it names the packages there
+     * (fabr's own among them) without delivering any, with or without -l. */
+    const listed = runFabr(project, ["ls", "@fabr-home:@fabr-build"]);
+    expect(listed.status).to.equal(0);
+    expect(listed.stdout.split("\n")).to.include("core");
+    expect(runFabr(project, ["ls", "-l", "@fabr-home:@fabr-build"]).stdout).to.equal(listed.stdout);
+    const cat = runFabr(project, ["cat", "@fabr-home:@fabr-build"]);
+    expect(cat.status).to.equal(1);
+    expect(cat.stderr).to.contain("'@fabr-home:@fabr-build' is not a complete reference, so it names no package or files");
+  });
+
   it("prefers a declared name over a same-named directory", () => {
     /* Same precedence as anywhere else: the target/property prefix is matched
      * first, and only a name that declares nothing reaches the filesystem. */
