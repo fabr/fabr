@@ -1,0 +1,9 @@
+js_package @fabr-build/core {
+  srcs = src:**/*.ts lib/** ../../README.md -> README.md ../../COPYING -> LICENSE;
+  tests = src:**/*.test.ts;
+  deps = @pkg:@types/node @pkg:@parcel/watcher @pkg:picomatch @pkg:undici @pkg:@napi-rs/lzma @pkg:diff
+         @pkg:yauzl @pkg:yazl unicode_properties tar_stream;
+  compile_deps = @pkg:@types/yauzl @pkg:@types/yazl;
+  test_deps = chai jest_types;
+  metadata = { FABR_METADATA; description = Fabr core }
+}

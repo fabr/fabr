@@ -1,0 +1,16 @@
+# The runtime half of the plugin: the drivers and test runners fabr launches,
+# and the documents they read. The plugin's own tests check the two halves agree.
+js_package @fabr-build/js-tools {
+  srcs = src:**/*.ts ../../README.md -> README.md ../../COPYING -> LICENSE;
+  exports = src:index.ts;
+  tests = src:**/*.test.ts;
+  # The coverage driver's libraries.
+  deps = @pkg:@types/node @pkg:ast-v8-to-istanbul @pkg:acorn @pkg:@bcoe/v8-coverage;
+  # The test runners write core's CTRF report, whose types they compile against;
+  # nothing loads core at run time.
+  compile_deps = @fabr-build/core;
+  # postcss / postcss-modules: the PostCSS driver's tests scope real stylesheets.
+  # typescript: the coverage driver's tests compile a fixture to measure.
+  test_deps = chai jest_types @pkg:postcss @pkg:postcss-modules @pkg:typescript;
+  metadata = { FABR_METADATA; description = Fabr JS support plugin tools }
+}

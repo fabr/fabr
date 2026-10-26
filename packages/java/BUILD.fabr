@@ -1,0 +1,11 @@
+# The Java plugin. Fabr does not need it to build itself, so only fabr builds it.
+js_package @fabr-build/java {
+  srcs = src:**/*.ts lib/** ../../README.md -> README.md ../../COPYING -> LICENSE;
+  exports = src:index.ts;
+  tests = src:**/*.test.ts;
+  deps = @pkg:@types/node @pkg:sax;
+  compile_deps = @pkg:@types/sax;
+  provided_deps = @fabr-build/core;
+  test_deps = chai jest_types;
+  metadata = { FABR_METADATA; description = Fabr Java support plugin }
+}

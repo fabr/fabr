@@ -1,6 +1,7 @@
 plugin @fabr-build/js;
 
 include docs/BUILD.fabr;
+include packages/*/BUILD.fabr;
 
 FABR_VERSION=0.3.1;
 FABR_METADATA = {
@@ -98,103 +99,12 @@ chai = @pkg:chai @pkg:@types/chai @pkg:chai-as-promised @pkg:@types/chai-as-prom
 unicode_properties = @pkg:unicode-properties @pkg:@types/unicode-properties;
 tar_stream = @pkg:tar-stream @pkg:@types/tar-stream;
 
-js_package @fabr-build/core {
-  srcs = packages/core/src:**/*.ts packages/core:lib/** README.md COPYING -> LICENSE;
-  tests = packages/core/src:**/*.test.ts;
-  deps = @pkg:@types/node @pkg:@parcel/watcher @pkg:picomatch @pkg:undici @pkg:@napi-rs/lzma @pkg:diff
-         @pkg:yauzl @pkg:yazl unicode_properties tar_stream;
-  compile_deps = @pkg:@types/yauzl @pkg:@types/yazl;
-  test_deps = chai jest_types;
-  metadata = { FABR_METADATA; description = Fabr core }
-}
-
-# The curated npm package-extension list (Yarn's, which pnpm also applies) as
-# the JSON @fabr-build/js ships in lib/. The list's module loads nothing else,
-# so the script takes that one file rather than the package.
-js_script package_extensions_json {
-  entry = scripts:package-extensions-json.js;
-  deps = @npm:@yarnpkg/extensions:2.0.7:lib/index.js -> yarnpkg-extensions.js;
-}
-
-generate package_extensions {
-  run = package_extensions_json > package-extensions.json;
-}
-
-# The runtime half of the plugin: the drivers and test runners fabr launches,
-# and the documents they read. The plugin's own tests check the two halves agree.
-js_package @fabr-build/js-tools {
-  srcs = packages/js-tools/src:**/*.ts README.md COPYING -> LICENSE;
-  exports = packages/js-tools/src:index.ts;
-  tests = packages/js-tools/src:**/*.test.ts;
-  # The coverage driver's libraries.
-  deps = @pkg:@types/node @pkg:ast-v8-to-istanbul @pkg:acorn @pkg:@bcoe/v8-coverage;
-  # The test runners write core's CTRF report, whose types they compile against;
-  # nothing loads core at run time.
-  compile_deps = @fabr-build/core;
-  # postcss / postcss-modules: the PostCSS driver's tests scope real stylesheets.
-  # typescript: the coverage driver's tests compile a fixture to measure.
-  test_deps = chai jest_types @pkg:postcss @pkg:postcss-modules @pkg:typescript;
-  metadata = { FABR_METADATA; description = Fabr JS support plugin tools }
-}
-
 # Stage 0: compiling @fabr-build/js-tools needs a tsc driver, so this build takes
 # the one installed with the fabr running it rather than the one it builds.
 @fabr-boot = @fabr-home:@fabr-build;
 js_script TSC_DRIVER {
   entry = @fabr-boot/js-tools:fabr-tsc;
   deps = ${TYPESCRIPT};
-}
-
-js_package @fabr-build/js {
-  srcs = packages/js/src:**/*.ts packages/js:lib/** package_extensions:** -> lib/** README.md COPYING -> LICENSE;
-  exports = packages/js/src:index.ts;
-  tests = packages/js/src:**/*.test.ts;
-  # The Sass importer is no import of the plugin's: it rides along so installing
-  # fabr installs it, for the Sass driver (SASS_PNP_IMPORTER).
-  deps = @pkg:@types/node @fabr-build/js-tools @fabr-build/sass-pnp-importer;
-  provided_deps = @fabr-build/core;
-  # typescript / esbuild: the tsc and bundle drivers' tests drive the real tools
-  # (each driver itself requires its own from the tool install fabr stages,
-  # never from here). The bundler's single-variant rule is a claim about what
-  # esbuild does with a package's conditions, so only the real one can hold it.
-  # @yarnpkg/pnp: the PnP resolver is checked against Yarn's own runtime.
-  # sass-embedded + the importer: the Sass driver's tests lower real stylesheets.
-  test_deps = chai jest_types tar_stream @pkg:typescript @pkg:esbuild @pkg:postcss @pkg:postcss-modules
-              @pkg:@yarnpkg/pnp @pkg:@yarnpkg/fslib @pkg:sass-embedded @fabr-build/sass-pnp-importer;
-  metadata = { FABR_METADATA; description = Fabr JS support plugin }
-}
-
-js_package @fabr-build/sass-pnp-importer {
-  srcs = packages/sass-pnp-importer/src:**/*.ts packages/sass-pnp-importer:README.md COPYING -> LICENSE;
-  exports = packages/sass-pnp-importer/src:index.ts;
-  tests = packages/sass-pnp-importer/src:**/*.test.ts;
-  deps = @pkg:@types/node;
-  test_deps = chai jest_types @pkg:sass-embedded @pkg:@yarnpkg/pnp @pkg:@yarnpkg/fslib;
-  metadata = {
-    FABR_METADATA;
-    keywords = sass sass-importer pnp plug-n-play yarn;
-    description = "A Sass importer resolving package stylesheets through a Plug'n'Play dependency table";
-  }
-}
-
-# The Java plugin. Fabr does not need it to build itself, so only fabr builds it.
-js_package @fabr-build/java {
-  srcs = packages/java/src:**/*.ts packages/java:lib/** README.md COPYING -> LICENSE;
-  exports = packages/java/src:index.ts;
-  tests = packages/java/src:**/*.test.ts;
-  deps = @pkg:@types/node @pkg:sax;
-  compile_deps = @pkg:@types/sax;
-  provided_deps = @fabr-build/core;
-  test_deps = chai jest_types;
-  metadata = { FABR_METADATA; description = Fabr Java support plugin }
-}
-
-js_package @fabr-build/cli {
-  srcs = packages/cli/src:**/*.ts README.md COPYING -> LICENSE;
-  tests = packages/cli/src:**/*.test.ts;
-  deps = @pkg:@types/node @fabr-build/core @fabr-build/js;
-  test_deps = chai jest_types;
-  metadata = { FABR_METADATA; description = Fabr CLI }
 }
 
 # End-to-end tests: drive the built fabr CLI directly. The harness is a plain

@@ -1,0 +1,12 @@
+js_package @fabr-build/sass-pnp-importer {
+  srcs = src:**/*.ts README.md ../../COPYING -> LICENSE;
+  exports = src:index.ts;
+  tests = src:**/*.test.ts;
+  deps = @pkg:@types/node;
+  test_deps = chai jest_types @pkg:sass-embedded @pkg:@yarnpkg/pnp @pkg:@yarnpkg/fslib;
+  metadata = {
+    FABR_METADATA;
+    keywords = sass sass-importer pnp plug-n-play yarn;
+    description = "A Sass importer resolving package stylesheets through a Plug'n'Play dependency table";
+  }
+}

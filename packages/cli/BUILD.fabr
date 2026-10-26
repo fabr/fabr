@@ -1,0 +1,7 @@
+js_package @fabr-build/cli {
+  srcs = src:**/*.ts ../../README.md -> README.md ../../COPYING -> LICENSE;
+  tests = src:**/*.test.ts;
+  deps = @pkg:@types/node @fabr-build/core @fabr-build/js;
+  test_deps = chai jest_types;
+  metadata = { FABR_METADATA; description = Fabr CLI }
+}

@@ -1,0 +1,30 @@
+# The curated npm package-extension list (Yarn's, which pnpm also applies) as
+# the JSON @fabr-build/js ships in lib/. The list's module loads nothing else,
+# so the script takes that one file rather than the package.
+js_script package_extensions_json {
+  entry = ../../scripts:package-extensions-json.js;
+  deps = @npm:@yarnpkg/extensions:2.0.7:lib/index.js -> yarnpkg-extensions.js;
+}
+
+generate package_extensions {
+  run = package_extensions_json > package-extensions.json;
+}
+
+js_package @fabr-build/js {
+  srcs = src:**/*.ts lib/** package_extensions:** -> lib/** ../../README.md -> README.md ../../COPYING -> LICENSE;
+  exports = src:index.ts;
+  tests = src:**/*.test.ts;
+  # The Sass importer is no import of the plugin's: it rides along so installing
+  # fabr installs it, for the Sass driver (SASS_PNP_IMPORTER).
+  deps = @pkg:@types/node @fabr-build/js-tools @fabr-build/sass-pnp-importer;
+  provided_deps = @fabr-build/core;
+  # typescript / esbuild: the tsc and bundle drivers' tests drive the real tools
+  # (each driver itself requires its own from the tool install fabr stages,
+  # never from here). The bundler's single-variant rule is a claim about what
+  # esbuild does with a package's conditions, so only the real one can hold it.
+  # @yarnpkg/pnp: the PnP resolver is checked against Yarn's own runtime.
+  # sass-embedded + the importer: the Sass driver's tests lower real stylesheets.
+  test_deps = chai jest_types tar_stream @pkg:typescript @pkg:esbuild @pkg:postcss @pkg:postcss-modules
+              @pkg:@yarnpkg/pnp @pkg:@yarnpkg/fslib @pkg:sass-embedded @fabr-build/sass-pnp-importer;
+  metadata = { FABR_METADATA; description = Fabr JS support plugin }
+}
