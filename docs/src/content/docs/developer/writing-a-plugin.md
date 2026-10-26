@@ -65,7 +65,7 @@ targetdef text_lint {
 The rule is the code that builds targets of the type. Create `src/index.ts`:
 
 ```ts
-import { defineRule, FileSet, MemoryFile, getPackageLibFile, PluginContribution } from "@fabr-build/core";
+import { defineRule, FileSet, MemoryFile, getLibFile, PluginContribution } from "@fabr-build/core";
 
 const textLint = defineRule({
   type: "text_lint",
@@ -80,7 +80,7 @@ const textLint = defineRule({
 export function activate(): PluginContribution {
   return {
     rules: [textLint],
-    includes: [getPackageLibFile("@example/text-lint", "LINT.fabr")],
+    includes: [getLibFile(__dirname, "LINT.fabr")],
   };
 }
 ```
@@ -95,7 +95,7 @@ A rule has two halves:
   the files, as a `files.txt` it returns directly.
 
 `activate` is what fabr calls to load the plugin. It returns the rules and the `.fabr` files to
-include; `getPackageLibFile` locates a file in the installed package's `lib/` directory.
+include; `getLibFile(__dirname, …)` locates a file in the `lib/` directory beside the main module.
 
 Build the package and look at what it contains:
 
@@ -217,7 +217,7 @@ Because `TEXT_LINTER` is a `default`, a project can point it at a linter of its 
 the rule to run the tool:
 
 ```ts
-import { createExecAction, defineRule, FileSet, getPackageLibFile, PluginContribution } from "@fabr-build/core";
+import { createExecAction, defineRule, FileSet, getLibFile, PluginContribution } from "@fabr-build/core";
 
 const textLint = defineRule({
   type: "text_lint",

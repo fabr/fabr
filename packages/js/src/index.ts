@@ -29,7 +29,7 @@
  * here imports them.
  */
 
-import { getPackageLibFile, PluginContribution } from "@fabr-build/core";
+import { getLibFile, PluginContribution } from "@fabr-build/core";
 import { buildJsPackageRule } from "./rules/BuildJSPackage";
 import { runJsPackageRule } from "./rules/RunJSPackage";
 import { jsCompileRule } from "./rules/BuildJSCompile";
@@ -77,6 +77,6 @@ export function activate(): PluginContribution {
       jsScriptRule,
     ],
     repositories: [npmRepositoryRegistration, nodeDistributionRegistration],
-    includes: [getPackageLibFile("@fabr-build/js", "JS.fabr")],
+    includes: [getLibFile(__dirname, "JS.fabr")],
   };
 }

@@ -86,31 +86,28 @@ export function coreContribution(): PluginContribution {
   return {
     rules: [flagRule, defaultFilesRule, scriptRunRule, serveRunRule, generateRule, patchedRule, syncRule],
     repositories: [catalogRepositoryRegistration, fetchSourceRegistration, repositoryGroupRegistration, fabrHomeRegistration()],
-    includes: [getPackageLibFile("@fabr-build/core", "STD.fabr")],
+    /* This module is in model/, beside core's entry point. */
+    includes: [getLibFile(path.dirname(__dirname), "STD.fabr")],
   };
 }
 
 /**
- * @return the lib/ directory of an installed package, located next to the
- * package's ENTRY POINT — i.e. within the built package content, never the
- * source tree. The devchain copies lib/ into build/ beside the compiled
- * output (scripts/copylibs.js); a fabr-built package has its entry point and
- * lib/ together at the package root.
+ * @return the absolute path of `file` in the lib/ directory beside a package's
+ * entry point, which is in `entryDir`: for a plugin to name its `.fabr` files
+ * in its contribution's `includes`, passing its entry module's `__dirname`.
+ * Found relative to the code asking, so a plugin built in the project finds
+ * its own files, not an installed copy's. The devchain copies lib/ into
+ * build/ beside the compiled output (scripts/copylibs.js); a fabr-built
+ * package has its entry point and lib/ together at the package root.
  */
-export function packageLibDir(packageName: string): string {
-  return path.join(path.dirname(require.resolve(packageName)), "lib");
-}
-
-/** @return the absolute path of a `.fabr` file in an installed package's lib/,
- * for a plugin (or core) to name in its contribution's `includes`. */
-export function getPackageLibFile(packageName: string, file: string): string {
-  return path.join(packageLibDir(packageName), file);
+export function getLibFile(entryDir: string, file: string): string {
+  return path.join(entryDir, "lib", file);
 }
 
 /* A work-list key is a bare file path: which source reads it rides on the name's
  * shape, per the naming contract — project files are named relative to the project
  * source's root (the entry file is, and file-relative include resolution keeps it
- * that way), while plugin/core lib files are absolute ({@link getPackageLibFile}). */
+ * that way), while plugin/core lib files are absolute ({@link getLibFile}). */
 
 /** @return true if a path an include resolved to has climbed out of the project
  * tree, otherwise false. A project file's includes are held to the tree; a lib

@@ -27,17 +27,19 @@ and the `catalog`, `fetch`, `repository_group` and `fabr_home` repository types,
 declaration.
 
 Fabr finds a plugin the way Node.js finds a module: from where fabr itself is installed. Install
-the plugin in the same place as `@fabr-build/cli`, for example in your project:
+the plugin in the same place as `@fabr-build/cli`, in your project or globally:
 
 ```sh
 npm install --save-dev @fabr-build/cli @example/text-lint
 npx fabr build
 ```
 
-A plugin that cannot be found is an error (`Plugin '@example/text-lint' is not installed`). So is
-one installed where it would load its own copy of `@fabr-build/core` rather than fabr's: a
-separately installed global package does, so a plugin cannot be added to a global install of
-fabr. `@fabr-build/js` is a dependency of `@fabr-build/cli`, so it is installed with it.
+```sh
+npm install -g @fabr-build/cli @example/text-lint
+```
+
+A plugin that cannot be found is an error (`Plugin '@example/text-lint' is not installed`).
+`@fabr-build/js` is a dependency of `@fabr-build/cli`, so it is installed with it.
 
 ## The plugin package
 
@@ -66,10 +68,11 @@ js_package @example/text-lint {
 ```
 
 A plugin depends on `@fabr-build/core` as a **peer dependency** (`provided_deps`, written to the
-package's `package.json` as `peerDependencies`). It must use fabr's own copy of core, never a copy
-of its own: the classes and values a rule exchanges with fabr are core's, and a second copy of
-core would make them a different, incompatible set. A plugin imports what it needs from
-`@fabr-build/core` directly. [Writing a plugin](/developer/writing-a-plugin/) builds, tests and
+package's `package.json` as `peerDependencies`). A plugin imports what it needs from
+`@fabr-build/core` directly, and always gets fabr's own copy, whatever copy its install holds: the
+classes and values a rule exchanges with fabr are core's, and a second copy would make them a
+different, incompatible set. So the version range a plugin declares for core must include the
+version of the fabr that loads it, or loading it is an error. [Writing a plugin](/developer/writing-a-plugin/) builds, tests and
 publishes a plugin this way.
 
 ### Tools in a package of their own
@@ -112,13 +115,13 @@ in for every installed `@fabr-build/*` package; see
 The main module exports a function `activate` that returns the plugin's contribution:
 
 ```ts
-import { getPackageLibFile, PluginContribution } from "@fabr-build/core";
+import { getLibFile, PluginContribution } from "@fabr-build/core";
 
 export function activate(): PluginContribution {
   return {
     rules: [textLint],
     repositories: [],
-    includes: [getPackageLibFile("@example/text-lint", "LINT.fabr")],
+    includes: [getLibFile(__dirname, "LINT.fabr")],
   };
 }
 ```
@@ -130,7 +133,7 @@ what the plugin provides, once per load of a project.
 |---|---|
 | `rules` | The rules that build the plugin's target types: see [Rules](#rules). |
 | `repositories` | Repository types: see [Repository types](#repository-types). |
-| `includes` | Absolute paths of the plugin's `.fabr` files. `getPackageLibFile(name, file)` gives the path of `file` in the `lib/` directory of the installed package `name`. |
+| `includes` | Absolute paths of the plugin's `.fabr` files. `getLibFile(__dirname, file)`, called from the plugin's main module, gives the path of `file` in the `lib/` directory beside it. |
 
 A target type's schema, its `targetdef`, is declared in a `.fabr` file, not in code: see
 [Targetdef declarations](/reference/syntax/#targetdef-declarations).

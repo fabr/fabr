@@ -23,7 +23,7 @@
  * repositories, and `JAVA.fabr`.
  */
 
-import { getPackageLibFile, PluginContribution } from "@fabr-build/core";
+import { getLibFile, PluginContribution } from "@fabr-build/core";
 import { buildJarPackageRule } from "./rules/BuildJarPackage";
 import { runJarPackageRule } from "./rules/RunJarPackage";
 import { javaCompileRule } from "./rules/BuildJavaCompile";
@@ -34,6 +34,6 @@ export function activate(): PluginContribution {
   return {
     rules: [buildJarPackageRule, runJarPackageRule, javaCompileRule],
     repositories: [mavenRepositoryRegistration, jdkDistributionRegistration],
-    includes: [getPackageLibFile("@fabr-build/java", "JAVA.fabr")],
+    includes: [getLibFile(__dirname, "JAVA.fabr")],
   };
 }

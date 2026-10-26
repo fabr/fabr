@@ -30,7 +30,7 @@ import {
   FabrError,
   hashString,
   isJsonObject,
-  getPackageLibFile,
+  getLibFile,
   parseConstraint,
   parseJson,
   SEMVER,
@@ -174,7 +174,8 @@ export function useInstalledPackageExtensions(extensions: PackageExtensions): vo
 
 export function installedPackageExtensions(): PackageExtensions {
   if (installed === undefined) {
-    const file = getPackageLibFile("@fabr-build/js", PACKAGE_EXTENSIONS_FILE);
+    /* This module is beside the plugin's entry point. */
+    const file = getLibFile(__dirname, PACKAGE_EXTENSIONS_FILE);
     const text = fs.readFileSync(file, "utf8");
     installed = new PackageExtensions(parseJson(text, file, toPackageExtensions), hashString(text));
   }

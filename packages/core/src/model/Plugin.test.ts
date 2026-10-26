@@ -21,7 +21,7 @@ import { expect } from "chai";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { duplicateCoreError, resolvePackageFrom } from "./Plugin";
+import { coreVersionError, hostCoreResolver, resolvePackageFrom } from "./Plugin";
 
 /* A name of no significance to either test runner's module resolution — jest
  * maps `@fabr-build/core` itself by name, so the resolution rules are exercised
@@ -77,25 +77,28 @@ describe("plugin package resolution", () => {
   });
 });
 
-describe("plugin core-sharing check", () => {
+describe("the host's core, for plugins", () => {
   const HOST = "/host/node_modules/@fabr-build/core/index.js";
-  const OTHER = "/plugin/node_modules/@fabr-build/core/index.js";
 
-  it("reports a plugin that would load a core other than the host's", () => {
-    const err = duplicateCoreError("@test/plugin", HOST, OTHER);
-    expect(err?.message).to.match(/would load its own copy of @fabr-build\/core/);
-    /* Both named, so the report says which copies actually collided. */
-    expect(err?.message).to.contain(HOST);
-    expect(err?.message).to.contain(OTHER);
-    expect(err?.message).to.contain("@test/plugin");
+  it("answers a request for core with the host's copy, and passes every other on", () => {
+    const asked: string[] = [];
+    const resolve = hostCoreResolver((request: string) => {
+      asked.push(request);
+      return `/elsewhere/${request}`;
+    }, HOST);
+    expect(resolve("@fabr-build/core")).to.equal(HOST);
+    expect(resolve("sax")).to.equal("/elsewhere/sax");
+    expect(asked).to.deep.equal(["sax"]);
   });
 
-  it("accepts a plugin resolving the host's own core", () => {
-    expect(duplicateCoreError("@test/plugin", HOST, HOST)).to.equal(undefined);
+  it("refuses a plugin whose declared range for core excludes the host's version", () => {
+    const err = coreVersionError("@test/plugin", "0.3.1", "0.4.0");
+    expect(err?.message).to.equal("Plugin '@test/plugin' requires @fabr-build/core 0.3.1, but this fabr's is 0.4.0");
+    expect(coreVersionError("@test/plugin", "^0.3.0", "0.3.4")).to.equal(undefined);
   });
 
-  it("accepts a side that resolves no core at all", () => {
-    expect(duplicateCoreError("@test/plugin", HOST, undefined)).to.equal(undefined);
-    expect(duplicateCoreError("@test/plugin", undefined, OTHER)).to.equal(undefined);
+  it("accepts a plugin or host that states no version", () => {
+    expect(coreVersionError("@test/plugin", undefined, "0.4.0")).to.equal(undefined);
+    expect(coreVersionError("@test/plugin", "0.3.1", undefined)).to.equal(undefined);
   });
 });
