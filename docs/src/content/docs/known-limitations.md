@@ -60,8 +60,9 @@ neither has built will each build it.
 This costs time, not correctness. Each process works in a directory of its own and adds a result
 to the cache in a single step, so two runs can't corrupt an entry between them.
 
-**Workaround:** none is needed for correctness. To avoid the repeated work, don't run two builds
-of the same project at once, or give each its own cache with `FABR_CACHE_DIR`.
+**Workaround:** none is needed for correctness. To avoid the repeated work, don't start two
+builds of the same unbuilt change at once, for example in two worktrees of one branch. Builds of
+different changes, or of one already built, share the cache as usual.
 
 Relatedly, `fabr run` installs the program it runs in the cache, and keeps the install there to
 reuse on the next run, so deleting the cache while `fabr run` or `fabr run -w` is running deletes

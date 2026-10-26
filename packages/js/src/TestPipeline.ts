@@ -493,8 +493,9 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
        * flavour's docblock) opens it from here. */
       [SOURCE_LOCATIONS_FILE]: sourceLocations(run.compileSrcs),
     });
-    /* Bare interpreter (e.g. "node"): resolved against PATH inside the step, so
-     * no host-specific absolute path enters the action manifest.
+    /* The runner's node is reached through the tree pool by its content hash
+     * (`RunnableFileSet.launchedBy`), so no host path enters the action
+     * manifest.
      *
      * The invocation carries neither the report name nor the test files: the
      * step invokes the runner once PER FILE (the contract permits any partition

@@ -217,9 +217,8 @@ export function describeSystemError(err: unknown): string {
  * shell does — a command containing a slash is not PATH-searched), relative to
  * `cwd`, the directory the command will run in; this also lets a caller name a
  * specific binary by absolute path without any PATH. A bare name is searched
- * on the PATH environment variable. Note the PATH search is a short-term
- * measure (the result is an untracked input from the environment) until
- * runtimes are modelled as proper dependencies.
+ * on the PATH environment variable, and what it finds (the `sh` a `script`
+ * runs on) is an input fabr does not track.
  * @return the executable's path, absolute where `name` has a path separator.
  * @throws ExecutionError if the executable cannot be found.
  */

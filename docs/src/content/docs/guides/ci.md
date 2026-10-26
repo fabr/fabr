@@ -101,9 +101,10 @@ nothing, and a change rebuilds only what depends on it.
 
 The cache is a directory on the machine: `~/.cache/fabr` on Linux and `~/Library/Caches/fabr` on
 macOS. To put it somewhere else, set `FABR_CACHE_DIR`, and keep it outside the project directory
-so that no source pattern can match its contents. There is no shared or remote cache for several
-machines to use at once, so in CI you save the directory at the end of a run and restore it at the
-start of the next.
+so that no source pattern can match its contents. Keep it on a local disk: like most build
+caches, it relies on renames being atomic, which network filesystems such as NFS don't reliably
+guarantee. There is no shared or remote cache for several machines to use at once, so in CI you
+save the directory at the end of a run and restore it at the start of the next.
 
 ### Saving it
 

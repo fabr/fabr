@@ -42,6 +42,7 @@ If you build a TypeScript project with npm scripts, `tsc`, a bundler and a test 
 | You do this now | With fabr |
 |---|---|
 | `npm install` after every pull | Nothing. Dependencies are fetched as a build needs them. |
+| Install and build again in each new clone or git worktree | Nothing to install, and only what differs to build: every checkout on your machine shares [one cache](#the-same-result-every-time). |
 | Run scripts in the right order: build, then test | Name what you want: `fabr test mylib`. Fabr derives the order and runs steps in parallel. |
 | Start each tool's watch mode | Add `-w` to any command: `fabr test -w mylib`. |
 | `npm ls` to see which versions you got | `fabr deps mylib` prints the dependency tree a target resolves to, without downloading the packages. |
@@ -102,7 +103,16 @@ produce the same output. Three things follow.
 - **The cache is never an input.** Fabr keeps what it has built and downloaded in a cache, and
   reuses a result whenever the inputs that produced it are unchanged. Deleting the cache changes
   how long the next build takes and nothing else. It is at `~/Library/Caches/fabr` on macOS and
-  `~/.cache/fabr` on Linux, or wherever `FABR_CACHE_DIR` says.
+  `~/.cache/fabr` on Linux, or wherever `FABR_CACHE_DIR` says; keep it on a local disk rather than
+  a network filesystem.
+
+  Results are found by what went into them, not by where the project is, so every checkout on
+  your machine shares them. A new clone or `git worktree` starts with the dependency versions
+  already chosen, the packages already downloaded and everything unchanged already built: its first
+  `fabr test` reads each source file once and builds only what differs from what any checkout has
+  built before. Keeping several worktrees, one per branch or task, costs almost nothing. (Two
+  builds of the same new change running at once each do the work; see
+  [Known limitations](/known-limitations/#concurrent-fabr-processes-duplicate-work-rather-than-sharing-it).)
 - **Node.js is an input too.** Fabr downloads the Node.js release that your tools and tests run
   on, named by the [`NODE` setting](/reference/js/dependencies/#the-nodejs-version), rather than
   using the `node` on your `PATH`, so switching your machine's Node.js doesn't change a build.
