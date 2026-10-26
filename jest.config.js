@@ -37,6 +37,7 @@ module.exports = {
      * under jest (jestRunner/ loads jest's libraries from its own tool mount) */
     "!**/packages/js-tools/src/testRunner/**",
     "!**/packages/js-tools/src/jestRunner/**",
+    "!**/packages/java/**",
   ],
   moduleNameMapper: {
     "^@fabr-build/core$": "<rootDir>/packages/core/src/index.ts",
@@ -63,5 +64,6 @@ module.exports = {
    * tests are not among them: each requires its tool lazily inside main(), so
    * nothing at load needs esbuild or sass, and the parts under test are either
    * pure or drive a tool declared as a test dependency. */
-  testPathIgnorePatterns: ["/node_modules/", "/build/", "/packages/js-tools/src/testRunner/"],
+  /* packages/java is built and tested only by fabr. */
+  testPathIgnorePatterns: ["/node_modules/", "/build/", "/packages/js-tools/src/testRunner/", "/packages/java/"],
 };

@@ -60,7 +60,10 @@ function memoryOutput(): IOutputHandle {
         stream.on("end", () => resolve(new MemoryFile(Buffer.concat(chunks))));
         stream.end();
       }),
-    discard: () => stream.destroy(),
+    discard: (): Computable<void> => {
+      stream.destroy();
+      return Computable.resolve(undefined);
+    },
   };
 }
 
@@ -111,6 +114,19 @@ describe("findExecutable", () => {
       fs.writeFileSync(path.join(dir, "bin", "tool"), "#!/bin/sh\n", { mode: 0o755 });
       expect(findExecutable("bin/tool", dir)).to.equal(path.join(dir, "bin", "tool"));
       expect(() => findExecutable("bin/tool", os.tmpdir())).to.throw(/is not an executable file/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("finds a name with no extension as its .exe on Windows only", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-find-exec-"));
+    try {
+      fs.mkdirSync(path.join(dir, "bin"));
+      fs.writeFileSync(path.join(dir, "bin", "javac.exe"), "MZ", { mode: 0o755 });
+      expect(findExecutable("bin/javac", dir, "win32")).to.equal(path.join(dir, "bin", "javac.exe"));
+      expect(findExecutable("bin/javac.exe", dir, "win32")).to.equal(path.join(dir, "bin", "javac.exe"));
+      expect(() => findExecutable("bin/javac", dir, "linux")).to.throw(/is not an executable file/);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

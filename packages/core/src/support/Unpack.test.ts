@@ -24,6 +24,12 @@ import * as path from "path";
 import * as tar from "tar-stream";
 import * as xz from "@napi-rs/lzma/xz";
 import { unpackStream } from "./Unpack";
+import { readZipMember } from "./UnpackZip";
+import { packToZip } from "./PackZip";
+import * as zlib from "zlib";
+import * as crypto from "crypto";
+import { FileSet } from "../core/FileSet";
+import { MemoryFile } from "../core/MemoryFS";
 import { IOutputHandle } from "./Execute";
 import { BuildCache } from "../core/BuildCache";
 import { SymlinkFile } from "../core/SymlinkFile";
@@ -201,5 +207,205 @@ describe("Unpack", () => {
     expect(await result.get("package/ok.txt")).to.not.equal(undefined);
     expect(await result.get("etc/fabr-tar-slip.txt"), "absolute name stripped to relative, kept").to.not.equal(undefined);
     expect(await result.get("../fabr-tar-slip.txt"), "'../' escape dropped").to.equal(undefined);
+  });
+
+  describe("zip", () => {
+    /** A zip entry for {@link handZip}: deflated unless `stored`, its sizes in
+     *  a data descriptor after the data where `descriptor`, and `mode` (with
+     *  its file type) in the central directory. */
+    interface HandEntry {
+      name: string;
+      content: string | Buffer;
+      stored?: boolean;
+      descriptor?: boolean;
+      mode?: number;
+      badCrc?: boolean;
+    }
+
+    /** Write a zip by hand, as tools other than fabr do (the JDK's `jar` writes data descriptors). */
+    function handZip(entries: HandEntry[]): Buffer {
+      const chunks: Buffer[] = [];
+      const central: Buffer[] = [];
+      let offset = 0;
+      for (const entry of entries) {
+        const name = Buffer.from(entry.name, "utf8");
+        const raw = typeof entry.content === "string" ? Buffer.from(entry.content, "utf8") : entry.content;
+        const data = entry.stored ? raw : zlib.deflateRawSync(raw);
+        const crc = zlib.crc32(raw) ^ (entry.badCrc ? 1 : 0);
+        const local = Buffer.alloc(30);
+        local.writeUInt32LE(0x04034b50, 0);
+        local.writeUInt16LE(20, 4);
+        local.writeUInt16LE(0x0800 | (entry.descriptor ? 0x8 : 0), 6);
+        local.writeUInt16LE(entry.stored ? 0 : 8, 8);
+        if (!entry.descriptor) {
+          local.writeUInt32LE(crc >>> 0, 14);
+          local.writeUInt32LE(data.length, 18);
+          local.writeUInt32LE(raw.length, 22);
+        }
+        local.writeUInt16LE(name.length, 26);
+        const descriptor = Buffer.alloc(entry.descriptor ? 16 : 0);
+        if (entry.descriptor) {
+          descriptor.writeUInt32LE(0x08074b50, 0);
+          descriptor.writeUInt32LE(crc >>> 0, 4);
+          descriptor.writeUInt32LE(data.length, 8);
+          descriptor.writeUInt32LE(raw.length, 12);
+        }
+        const header = Buffer.alloc(46);
+        header.writeUInt32LE(0x02014b50, 0);
+        header.writeUInt16LE((3 << 8) | 20, 4);
+        header.writeUInt16LE(20, 6);
+        header.writeUInt16LE(0x0800, 8);
+        header.writeUInt16LE(entry.stored ? 0 : 8, 10);
+        header.writeUInt32LE(crc >>> 0, 16);
+        header.writeUInt32LE(data.length, 20);
+        header.writeUInt32LE(raw.length, 24);
+        header.writeUInt16LE(name.length, 28);
+        header.writeUInt32LE(((entry.mode ?? 0o100644) * 0x10000) >>> 0, 38);
+        header.writeUInt32LE(offset, 42);
+        central.push(header, name);
+        chunks.push(local, name, data, descriptor);
+        offset += local.length + name.length + data.length + descriptor.length;
+      }
+      const directory = Buffer.concat(central);
+      const end = Buffer.alloc(22);
+      end.writeUInt32LE(0x06054b50, 0);
+      end.writeUInt16LE(entries.length, 8);
+      end.writeUInt16LE(entries.length, 10);
+      end.writeUInt32LE(directory.length, 12);
+      end.writeUInt32LE(offset, 16);
+      return Buffer.concat([...chunks, directory, end]);
+    }
+
+    /** Stream `zip` in chunks of `size` bytes, so entries and headers straddle chunk boundaries. */
+    function chunked(zip: Buffer, size: number): Readable {
+      const pieces: Buffer[] = [];
+      for (let at = 0; at < zip.length; at += size) {
+        pieces.push(zip.subarray(at, at + size));
+      }
+      return Readable.from(pieces);
+    }
+
+    async function contents(files: FileSet): Promise<Record<string, string>> {
+      const read: Record<string, string> = {};
+      for (const [name, file] of files) {
+        read[name] = file instanceof SymlinkFile ? `-> ${file.target}` : await file.readString();
+      }
+      return read;
+    }
+
+    it("reads back what packToZip writes, without its directory entries, in chunks of any size", async () => {
+      const zip = await packToZip(
+        new FileSet(
+          new Map([
+            ["META-INF/MANIFEST.MF", MemoryFile.from("Manifest-Version: 1.0\r\n")],
+            ["com/x/A.class", MemoryFile.from("a".repeat(500))],
+            ["empty.txt", MemoryFile.from("")],
+          ])
+        )
+      );
+      for (const size of [1, 7, 64, zip.length]) {
+        const files = await withTimeout(unpackStream(chunked(zip, size), createOutput));
+        expect(await contents(files), `in chunks of ${size}`).to.deep.equal({
+          "META-INF/MANIFEST.MF": "Manifest-Version: 1.0\r\n",
+          "com/x/A.class": "a".repeat(500),
+          "empty.txt": "",
+        });
+      }
+    });
+
+    it("reads entries whose sizes follow their data, stored or deflated", async () => {
+      const zip = handZip([
+        { name: "a.txt", content: "deflated ".repeat(40), descriptor: true },
+        { name: "b.txt", content: "stored, and holding PK\x07\x08 inside", stored: true, descriptor: true },
+        { name: "c.txt", content: "", descriptor: true },
+        { name: "d.txt", content: "plain" },
+      ]);
+      for (const size of [1, 5, zip.length]) {
+        const files = await withTimeout(unpackStream(chunked(zip, size), createOutput));
+        expect(await contents(files), `in chunks of ${size}`).to.deep.equal({
+          "a.txt": "deflated ".repeat(40),
+          "b.txt": "stored, and holding PK\x07\x08 inside",
+          "c.txt": "",
+          "d.txt": "plain",
+        });
+      }
+    });
+
+    it("goes on past an entry that fills its inflater and ends within a chunk", async () => {
+      /* Incompressible, so the deflated entry overruns the inflater's buffer
+       * before the next entry begins in the same chunk. */
+      const blocks: Buffer[] = [crypto.createHash("sha256").update("seed").digest()];
+      while (blocks.length < 10000) {
+        blocks.push(crypto.createHash("sha256").update(blocks[blocks.length - 1]).digest());
+      }
+      const noise = Buffer.concat(blocks);
+      const zip = handZip([
+        { name: "noise.bin", content: noise },
+        { name: "after.txt", content: "after" },
+      ]);
+      const files = await withTimeout(unpackStream(Readable.from([zip]), createOutput), 10000);
+      expect(await files.getFile("after.txt")!.readString()).to.equal("after");
+      expect((await files.getFile("noise.bin")!.getBuffer()).equals(noise)).to.equal(true);
+    });
+
+    it("takes modes and symlinks from the central directory", async () => {
+      const zip = handZip([
+        { name: "bin/tool", content: "#!/bin/sh\n", mode: 0o100755 },
+        { name: "bin/alias", content: "tool", mode: 0o120777, stored: true },
+        { name: "readme", content: "hi" },
+      ]);
+      const files = await withTimeout(unpackStream(Readable.from([zip]), createOutput));
+      expect(await contents(files)).to.deep.equal({ "bin/tool": "#!/bin/sh\n", "bin/alias": "-> tool", readme: "hi" });
+      expect(files.getFile("bin/tool")!.mode & 0o777).to.equal(0o755);
+      expect(files.getFile("readme")!.mode & 0o777).to.equal(0o644);
+    });
+
+    it("refuses an archive with a name that escapes the tree", async () => {
+      const refused = await withTimeout(
+        unpackStream(Readable.from([handZip([{ name: "../evil", content: "x" }, { name: "ok", content: "y" }])]), createOutput)
+      ).then(
+        () => "",
+        (err: Error) => err.message
+      );
+      expect(refused).to.match(/ZIP archive cannot be read: invalid relative path: \.\.\/evil/);
+    });
+
+    it("refuses an entry whose content does not match its CRC-32, and a truncated archive", async () => {
+      const corrupt = await withTimeout(unpackStream(Readable.from([handZip([{ name: "a", content: "x", badCrc: true }])]), createOutput)).then(
+        () => "",
+        (err: Error) => err.message
+      );
+      expect(corrupt).to.match(/ZIP entry 'a' is corrupt/);
+      const whole = handZip([{ name: "a", content: "x" }]);
+      const truncated = await withTimeout(unpackStream(Readable.from([whole.subarray(0, whole.length - 30)]), createOutput)).then(
+        () => "",
+        (err: Error) => err.message
+      );
+      expect(truncated).to.match(/ZIP archive cannot be read: .*truncated/);
+    });
+
+    it("rejects (rather than hanging) when the stream drops mid-archive", async () => {
+      const zip = handZip([{ name: "a.txt", content: "a".repeat(5000), stored: true }]);
+      const ins = new Readable({ read() {} });
+      const result = unpackStream(ins, createOutput);
+      setImmediate(() => {
+        ins.push(zip.subarray(0, 600));
+        setImmediate(() => ins.destroy(new Error("connection dropped")));
+      });
+      const failure = await withTimeout(result).then(
+        () => "",
+        (err: Error) => err.message
+      );
+      expect(failure).to.equal("connection dropped");
+    });
+
+    it("reads one member, passing over the rest", async () => {
+      const zip = handZip([
+        { name: "big.bin", content: "z".repeat(1000), descriptor: true },
+        { name: "META-INF/MANIFEST.MF", content: "Main-Class: x.Y\r\n" },
+      ]);
+      expect((await withTimeout(readZipMember(zip, "META-INF/MANIFEST.MF")))?.toString()).to.equal("Main-Class: x.Y\r\n");
+      expect(await withTimeout(readZipMember(zip, "missing"))).to.equal(undefined);
+    });
   });
 });

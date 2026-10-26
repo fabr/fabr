@@ -96,3 +96,15 @@ export function isCanonicalFileName(name: string): boolean {
   }
   return true;
 }
+
+/** Normalize an archive entry name to a safe relative FileSet key: strip a leading
+ * `/` (an absolute archive name → relative, standard tar behavior) and collapse
+ * `.`/`..` segments. A name that still escapes the tree (a `../` traversal in an
+ * untrusted network archive) or is empty returns undefined — dropped. */
+export function normalizeEntryName(raw: string): string | undefined {
+  const normalized = path.posix.normalize(raw.replace(/^\/+/, ""));
+  if (normalized === "" || normalized === "." || normalized === ".." || normalized.startsWith("../")) {
+    return undefined;
+  }
+  return normalized;
+}

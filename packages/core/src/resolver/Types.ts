@@ -298,6 +298,13 @@ export interface VersionDomain<V, C> {
   readonly providedMismatch?: "tolerate" | "refuse";
 
   /**
+   * True where every delivery of the ecosystem is flat — one version of each
+   * package, as on a JVM classpath — so a violated edge is never repaired by a
+   * fork and stays a violation for the strict check to judge.
+   */
+  readonly flat?: boolean;
+
+  /**
    * @return true if the version fully satisfies the constraint (including any
    * upper bounds, which minimumOf ignores). Used to detect conflicts after
    * selection.
@@ -427,8 +434,8 @@ export interface ResolutionContext {
   readonly given?: ReadonlySet<PackageFileSet>;
   getGlobalString(name: string): Computable<string>;
   /** Get `runnable` launched through the runnable the global `interpreter`
-   *  names (see {@link RunnableFileSet.launchedBy}). */
-  launchedBy(runnable: RunnableFileSet, interpreter: string): Computable<RunnableFileSet>;
+   *  names, given `interpreterArgs` before the entry (see {@link RunnableFileSet.launchedBy}). */
+  launchedBy(runnable: RunnableFileSet, interpreter: string, interpreterArgs?: readonly string[]): Computable<RunnableFileSet>;
   memoize(tag: string, key: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet>;
   runTask<T>(task: TaskDescription, run: (report: ITaskReport) => Computable<T>): Computable<T>;
 }

@@ -18,14 +18,13 @@
  */
 
 import * as path from "path";
-import { Readable, Writable } from "stream";
-import type { IOutputHandle } from "./Execute";
+import { Readable } from "stream";
 import { Computable, ComputableSource } from "../core/Computable";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
-import { MemoryFile } from "../core/MemoryFS";
 import { Name } from "../core/Name";
 import { isArchiveMime, sniffMime } from "./Mime";
 import { unpackStream } from "./Unpack";
+import { MemoryOutput } from "../core/MemoryFS";
 
 /**
  * An archive read as a **directory of the same name**: the equivalence that lets
@@ -205,25 +204,3 @@ export function expandOnce(file: IFile): Computable<FileSet> {
  *  normalization, mode bits), so expansions memoized by an older fabr are not
  *  served (cache entries are memos, never inputs). */
 export const EXPAND_TAG = "expand:1";
-
-/** An in-memory sink for {@link unpackStream}: entries land as MemoryFiles,
- *  which whoever caches the expansion then ingests (see
- *  BuildContextImpl.expandArchive → BuildCache). */
-class MemoryOutput implements IOutputHandle {
-  private readonly chunks: Buffer[] = [];
-
-  public readonly stream = new Writable({
-    write: (chunk: Buffer, _encoding: BufferEncoding, done: () => void): void => {
-      this.chunks.push(Buffer.from(chunk));
-      done();
-    },
-  });
-
-  public finalize(_name: string, mode?: number): Computable<IFile> {
-    return Computable.resolve(new MemoryFile(Buffer.concat(this.chunks), mode));
-  }
-
-  public discard(): void {
-    this.chunks.length = 0;
-  }
-}

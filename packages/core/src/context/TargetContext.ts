@@ -22,7 +22,7 @@ import { Computable } from "../core/Computable";
 import { ITaskReport } from "../support/Execute";
 import { FileSet, FileSource } from "../core/FileSet";
 import { RepositoryPublishRef, Repository, SourceRef } from "../core/Repository";
-import { collectLists } from "./CollectionPoint";
+import { collectLists, ResolutionOptions } from "./CollectionPoint";
 import { FileSetRef } from "../core/FileSetRef";
 import { NamespaceRef } from "../core/NamespaceRef";
 import { IProjection, Miss } from "../core/Reference";
@@ -361,10 +361,11 @@ export abstract class TargetContext {
    * them are built, references resolved and fetched, and pending projections
    * applied (descending into archives); content passes through. A
    * `repository_group` content route reads the source it serves this way, while
-   * it is resolved.
+   * it is resolved. They are a collection of their own, strict unless
+   * `options` says otherwise (a tool's packages, resolved permissively).
    */
-  public materializeSources(sources: SourceRef[]): Computable<(FileSource | Repository | FileSet)[]> {
-    return collectLists(this, [sources], undefined, [true]).then(([delivered]) => this.context.applyProjections(delivered));
+  public materializeSources(sources: SourceRef[], options?: ResolutionOptions): Computable<(FileSource | Repository | FileSet)[]> {
+    return collectLists(this, [sources], options, [true]).then(([delivered]) => this.context.applyProjections(delivered));
   }
 
   /**
@@ -522,9 +523,10 @@ export abstract class TargetContext {
     return this.context.resolveTarget(name, this.stack, overrides);
   }
 
-  /** Get `runnable` launched through the runnable the global `interpreter` names. */
-  public launchedBy(runnable: RunnableFileSet, interpreter: string): Computable<RunnableFileSet> {
-    return this.getGlobalRunnable(interpreter).then(launcher => runnable.launchedBy(launcher, this.execution.buildCache));
+  /** Get `runnable` launched through the runnable the global `interpreter`
+   *  names, given `interpreterArgs` before the entry. */
+  public launchedBy(runnable: RunnableFileSet, interpreter: string, interpreterArgs?: readonly string[]): Computable<RunnableFileSet> {
+    return this.getGlobalRunnable(interpreter).then(launcher => runnable.launchedBy(launcher, this.execution.buildCache, interpreterArgs));
   }
 }
 

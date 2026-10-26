@@ -1,0 +1,123 @@
+/*
+ * Copyright (c) 2026 Nathan Keynes <nkeynes@deadcoderemoval.net>
+ *
+ * This file is part of Fabr.
+ *
+ * Fabr is free software: you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
+ *
+ * Fabr is distributed in the hope that it will be useful, but WITHOUT ANY
+ * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+ * details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * Fabr. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+/**
+ * The Maven format: how a reference to a Maven artifact is written and read.
+ *
+ * A package's name is `group/artifact` (`org.slf4j/slf4j-api`), which is also
+ * how a target building one is named. A reference may be written that way or
+ * as Maven writes a coordinate: `@maven:org.slf4j/slf4j-api:1.7.36` and
+ * `@maven:org.slf4j:slf4j-api:1.7.36` are the same reference, and anything
+ * after the version is a projection into the package. Run, a package starts
+ * the `Main-Class` its jar's manifest names.
+ */
+
+import { Computable, FabrError, IProjection, markerOnProjection, Name, PackageFormat, Requirement } from "@fabr-build/core";
+import { jarMainClass, makeJarRunnable } from "./JarPackage";
+import { MAVEN_VERSIONS, MavenConstraint, MavenVersion } from "./MavenVersion";
+
+/** Name a Maven package as fabr does: `group/artifact`. */
+export function mavenName(groupId: string, artifactId: string): string {
+  return `${groupId}/${artifactId}`;
+}
+
+/** Split a Maven package's name into its group and artifact; throws on a name
+ *  that is not `group/artifact`. */
+export function splitMavenName(name: string): { groupId: string; artifactId: string } {
+  const slash = name.indexOf("/");
+  if (slash <= 0 || slash === name.length - 1 || name.indexOf("/", slash + 1) !== -1) {
+    throw new FabrError(`'${name}' is not a Maven package name (expected '<group>/<artifact>')`);
+  }
+  return { groupId: name.substring(0, slash), artifactId: name.substring(slash + 1) };
+}
+
+/**
+ * Split a written reference (after `@maven:`) into the package, its version,
+ * and any projection after the version. The group and artifact are separated
+ * by `/` or `:`; the version runs to the next `:` or `/`.
+ */
+function splitMavenReference(name: Name): Requirement & { projection?: IProjection } {
+  const written = name.toBaseString();
+  const firstColon = written.indexOf(":");
+  const firstSlash = written.indexOf("/");
+  /* `group/artifact…` where a slash comes first, else `group:artifact…`. */
+  const separator = firstSlash !== -1 && (firstColon === -1 || firstSlash < firstColon) ? firstSlash : firstColon;
+  if (separator === -1) {
+    return { name: written, versionConstraint: undefined };
+  }
+  const groupId = written.substring(0, separator);
+  const afterGroup = separator + 1;
+  const artifactEnd = written.indexOf(":", afterGroup);
+  if (artifactEnd === -1) {
+    return { name: mavenName(groupId, written.substring(afterGroup)), versionConstraint: undefined };
+  }
+  const packageName = mavenName(groupId, written.substring(afterGroup, artifactEnd));
+  const versionStart = artifactEnd + 1;
+  const nextColon = written.indexOf(":", versionStart);
+  const nextSlash = written.indexOf("/", versionStart);
+  const boundary = nextColon === -1 ? nextSlash : nextSlash === -1 ? nextColon : Math.min(nextColon, nextSlash);
+  if (boundary === -1) {
+    return { name: packageName, versionConstraint: written.substring(versionStart) };
+  }
+  const version = written.substring(versionStart, boundary);
+  if (version.endsWith("?") || version.endsWith("!")) {
+    throw markerOnProjection(name);
+  }
+  const prefix = written[boundary] === "/" ? written.substring(0, boundary) + "/" : "";
+  return { name: packageName, versionConstraint: version, projection: { pattern: name.substring(boundary + 1), prefix } };
+}
+
+/** Check a Maven reference: a `group/artifact` name, and a valid version or
+ *  range; an override marker needs an exact version. */
+function validateMavenRequirement({ name, versionConstraint, override }: Requirement): void {
+  splitMavenName(name);
+  if (versionConstraint === undefined) {
+    throw new FabrError(`Missing version in Maven reference '${name}' (expected '<group>/<artifact>:<version-or-range>')`);
+  }
+  try {
+    MAVEN_VERSIONS.parseConstraint(versionConstraint);
+  } catch {
+    throw new FabrError(`'${versionConstraint}' is not a valid Maven version or range`).withHelp(
+      "write a version (1.7.36) or a range ([1.0,2.0))"
+    );
+  }
+  if (override !== undefined && MAVEN_VERSIONS.exactVersion?.(versionConstraint) === undefined) {
+    throw new FabrError(`'${versionConstraint}' is not a valid override for ${name}: a marker needs an exact version`);
+  }
+}
+
+export const MAVEN_FORMAT: PackageFormat<MavenVersion, MavenConstraint> = {
+  ...MAVEN_VERSIONS,
+  resolutionTag: "maven:resolve:1",
+  splitReference: splitMavenReference,
+  validateRequirement: validateMavenRequirement,
+  parsePublishCoordinate: () => {
+    throw new FabrError("publishing to a Maven repository is not supported yet");
+  },
+  readContentPackage: () => Computable.reject(new FabrError("content cannot be read as a Maven package yet")),
+  makeRunnable: (pkg, context) =>
+    jarMainClass(pkg).then(mainClass => {
+      if (mainClass === undefined) {
+        throw new FabrError(`${pkg.packageName ?? "the package"} cannot be run: its jar's manifest names no Main-Class`).withHelp(
+          "declare a jar_package with an `entry`, and this package among its deps"
+        );
+      }
+      return makeJarRunnable(context, pkg, mainClass);
+    }),
+};

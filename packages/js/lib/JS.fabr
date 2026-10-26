@@ -226,6 +226,10 @@ targetdef js_package {
     # the sources are built against them, and they are written to
     # `peerDependencies` marked optional.
     optional_provided_deps = PACKAGES;
+    # Packages the sources are compiled against that the published package
+    # does not need, such as one imported only for its types. Not written to
+    # `package.json`.
+    compile_deps = PACKAGES;
     # The package's public entry points, named by the sources they compile
     # from. They are compiled even if `srcs` doesn't list them.
     exports = FILES;

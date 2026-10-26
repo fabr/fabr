@@ -42,7 +42,7 @@ The version is an exact version or any npm range: `^2.1.0`, `~2.1.0`, `2.x`, `>=
 that contains a space or one of `< > = |` needs quotes, as in `@npm:send:">=0.19.0"`. A dist-tag
 such as `latest` is rejected, because what it names changes over time.
 
-Four properties of a `js_package` take dependencies, and they differ in what the published
+Five properties of a `js_package` take dependencies, and they differ in what the published
 package says about them:
 
 | Property | Used for | In the generated `package.json` |
@@ -50,6 +50,7 @@ package says about them:
 | `deps` | Packages the code imports | `dependencies` |
 | `provided_deps` | Packages the code imports but whoever uses the package supplies, such as `react` for a component library | `peerDependencies` |
 | `optional_provided_deps` | As `provided_deps`, for packages whoever uses the package may leave out. The package is still built against them. | `peerDependencies`, marked optional in `peerDependenciesMeta` |
+| `compile_deps` | Packages the code is compiled against that the published package doesn't need, such as one imported only for types that don't appear in its declarations | Not written |
 | `test_deps` | Packages only the tests import | Not written |
 
 The range written to `package.json` is the one you declared: `@npm:lodash:^4.17.0` becomes
@@ -58,9 +59,10 @@ The range written to `package.json` is the one you declared: `@npm:lodash:^4.17.
 and [Packages built in your project](#packages-built-in-your-project).
 
 `@types` packages go in `deps` alongside the packages they describe, and so does anything else the
-compiler needs to see.
+compiler needs to see whose types can appear in the package's declarations. A package imported
+only for types the declarations never mention can go in `compile_deps`.
 
-A reference is a dependency only in a property that takes packages, such as the four above. In a
+A reference is a dependency only in a property that takes packages, such as the five above. In a
 property that takes files, such as `resources`, `@npm:normalize.css:8.0.1` is that package's own
 files, with nothing it depends on; see [Property kinds](/reference/syntax/#property-kinds).
 

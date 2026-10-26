@@ -21,6 +21,8 @@ import { Computable } from "./Computable";
 import { hashString } from "./FSWrapper";
 import { DEFAULT_FILE_MODE, IFile } from "./FileSet";
 import { sniffMime } from "../support/Mime";
+import type { IOutputHandle } from "../support/Execute";
+import { Writable } from "stream";
 
 export class MemoryFile implements IFile {
   private content: Buffer;
@@ -57,5 +59,26 @@ export class MemoryFile implements IFile {
 
   public getBuffer(): Computable<Buffer> {
     return Computable.resolve(this.content);
+  }
+}
+
+/** An in-memory output for an archive being unpacked (see `unpackStream`): entries land as MemoryFiles. */
+export class MemoryOutput implements IOutputHandle {
+  private readonly chunks: Buffer[] = [];
+
+  public readonly stream = new Writable({
+    write: (chunk: Buffer, _encoding: BufferEncoding, done: () => void): void => {
+      this.chunks.push(Buffer.from(chunk));
+      done();
+    },
+  });
+
+  public finalize(_name: string, mode?: number): Computable<IFile> {
+    return Computable.resolve(new MemoryFile(Buffer.concat(this.chunks), mode));
+  }
+
+  public discard(): Computable<void> {
+    this.chunks.length = 0;
+    return Computable.resolve(undefined);
   }
 }

@@ -27,10 +27,10 @@ import { BUILD_OPERATION, BUILD_OVERRIDE, Computable, defineRule, RuleDefinition
 import { compileAndRunTests, TestRequirements, TEST_FRAMEWORKS, testRequirements } from "../TestPipeline";
 
 /**
- * State the package's test requirements. Its `provided_deps` and
- * `optional_provided_deps` are more `deps` here, compiled and installed
- * identically: a test install is self-contained, with no host to supply them and
- * no manifest to distinguish them.
+ * State the package's test requirements. Its `provided_deps`,
+ * `optional_provided_deps` and `compile_deps` are more `deps` here, compiled
+ * and installed identically: a test install is self-contained, with no host to
+ * supply them and no manifest to distinguish them.
  */
 function requirements(context: TargetContext): Computable<TestRequirements> {
   return Computable.forAll(
@@ -40,15 +40,16 @@ function requirements(context: TargetContext): Computable<TestRequirements> {
       context.getPackageProperty("deps", BUILD_OVERRIDE),
       context.getPackageProperty("provided_deps", BUILD_OVERRIDE),
       context.getPackageProperty("optional_provided_deps", BUILD_OVERRIDE),
+      context.getPackageProperty("compile_deps", BUILD_OVERRIDE),
       context.getPackageProperty("test_deps", BUILD_OVERRIDE),
       context.getFileProperty("test_resources", BUILD_OVERRIDE),
       context.getFileProperty("test_expectations", BUILD_OVERRIDE),
     ],
-    (srcs, tests, deps, provided, optional, test_deps, test_resources, expectations) =>
+    (srcs, tests, deps, provided, optional, compileOnly, test_deps, test_resources, expectations) =>
       testRequirements({
         srcs,
         tests,
-        deps: new PackageSources([...deps.sources, ...provided.sources, ...optional.sources]),
+        deps: new PackageSources([...deps.sources, ...provided.sources, ...optional.sources, ...compileOnly.sources]),
         test_deps,
         test_resources,
         expectations,

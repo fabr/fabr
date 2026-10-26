@@ -92,6 +92,7 @@ function requirements(context: TargetContext): Computable<{
   dependencies: Computable<PackageSources>;
   provided: Computable<PackageSources>;
   optional_provided: Computable<PackageSources>;
+  compile_deps: Computable<PackageSources>;
   test_deps: Computable<LooseSources>;
   test_resources: Computable<SourceRef[]>;
   test_expectations: Computable<SourceRef[]>;
@@ -106,6 +107,8 @@ function requirements(context: TargetContext): Computable<{
       dependencies: context.getPackageProperty("deps"),
       provided: context.getPackageProperty("provided_deps"),
       optional_provided: context.getPackageProperty("optional_provided_deps"),
+      /* Compiled against, and private to the build: not passed on. */
+      compile_deps: context.getPackageProperty("compile_deps"),
       /* Only the loose files of `test_deps`, which are subtracted from `srcs`:
        * a build resolves and fetches nothing the tests alone need. */
       test_deps: context.getLooseFileProperty("test_deps"),
@@ -154,6 +157,7 @@ function buildJsPackage(
     dependencies: FileSet[];
     provided: FileSet[];
     optional_provided: FileSet[];
+    compile_deps: FileSet[];
     test_deps: FileSet[];
     test_resources: FileSet[];
     test_expectations: FileSet[];
@@ -174,6 +178,7 @@ function buildJsPackage(
           dependencies: deps,
           provided,
           optional_provided: optionalProvided,
+          compile_deps: compileOnly,
           test_deps: testDepSources,
           test_resources: testResourceSources,
           test_expectations: expectationSources,
@@ -202,7 +207,7 @@ function buildJsPackage(
             (source): source is FileSet => !(source instanceof Flag)
           );
           const compileSources = sources.minus(tests).minus(FileSet.unionAll(...testOnlySources));
-          const compileDeps = [...deps, ...provided, ...optionalProvided].filter((dep): dep is FileSet => dep instanceof FileSet);
+          const compileDeps = [...deps, ...provided, ...optionalProvided, ...compileOnly].filter((dep): dep is FileSet => dep instanceof FileSet);
           /* Declared (not resolved) requirements for the generated manifest: each
            * reports what was *written* — an inline `@npm:pkg:1.2.3` off the
            * reference the edge was resolved for, a catalog dep from the catalog's

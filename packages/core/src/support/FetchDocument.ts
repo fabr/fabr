@@ -20,9 +20,9 @@
 import { Readable } from "stream";
 import { Computable } from "../core/Computable";
 import { FetchOptions, IFetchContext, IFetchRequest } from "../core/BuildCache";
-import { HttpStatusError } from "../core/Errors";
+import { HttpStatusError, toError } from "../core/Errors";
 import { readStream } from "../core/Fetch";
-import { FileSet } from "../core/FileSet";
+import { FileSet, IFile } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import { IFetchReport } from "../model/BuildEvents";
 import { ExpectedDigest, verifiedStream } from "./Integrity";
@@ -91,8 +91,8 @@ export function fetchDocument<T>(context: CacheFetcher, request: IDocumentReques
     );
 }
 
-/** Where an archive is downloaded from, found only when it is not cached. */
-export interface IArchiveSource {
+/** Where an archive or file is downloaded from, found only when it is not cached. */
+export interface IDownloadSource {
   readonly url: string;
   /** The digest the archive must match, where its publisher states one. */
   readonly expected: ExpectedDigest | undefined;
@@ -108,7 +108,7 @@ export interface IArchiveRequest {
   readonly tag: string;
   readonly report: IFetchReport;
   /** Find where to download it from: asked only on a cache miss. */
-  readonly source: () => Computable<IArchiveSource>;
+  readonly source: () => Computable<IDownloadSource>;
   /** Reshape the unpacked files before they are kept (strip the top directory). */
   readonly keep?: (files: FileSet) => FileSet;
 }
@@ -137,4 +137,74 @@ export function fetchArchive(context: CacheFetcher, request: IArchiveRequest): C
       })),
     request.report
   );
+}
+
+/**
+ * Strip the single root directory an archive wraps its contents in (npm's
+ * `package/`, a release's `node-v24.22.1-darwin-arm64/`), naming each file
+ * relative to it: a `keep` for {@link fetchArchive}.
+ */
+export function stripArchiveRoot(files: FileSet): FileSet {
+  return files.remap(name => {
+    const idx = name.indexOf("/");
+    return idx === -1 ? undefined : name.substring(idx + 1);
+  });
+}
+
+/** A single file to fetch with {@link fetchFile}. */
+export interface IFileRequest {
+  /** The cache key, which names the file without its url (a registry's package and version). */
+  readonly key: string;
+  /** The cache tag it is kept under, bumped when what is kept changes shape. */
+  readonly tag: string;
+  readonly report: IFetchReport;
+  /** The name the file is kept under. */
+  readonly name: string;
+  /** Find where to download it from: asked only on a cache miss. */
+  readonly source: () => Computable<IDownloadSource>;
+}
+
+/**
+ * Fetch one file through the build cache, never unpacked, checked against its
+ * digest as it streams into the store, so a mismatched download is never kept.
+ */
+export function fetchFile(context: CacheFetcher, request: IFileRequest): Computable<FileSet> {
+  const { name } = request;
+  return context.fetch(
+    request.key,
+    request.tag,
+    () =>
+      request.source().then(({ url, expected, headers }) => ({
+        url,
+        ...(headers ? { headers } : {}),
+        process: (content: Readable, { createOutput }: IFetchContext) => {
+          const { stream, verify } = verifiedStream(content, expected, url);
+          const output = createOutput();
+          stream.pipe(output.stream, { end: false });
+          return streamed(stream)
+            .then(
+              () => {
+                /* Before finalize: a digest mismatch must leave nothing behind. */
+                try {
+                  verify();
+                } catch (err) {
+                  return output.discard().then(() => Computable.reject<IFile>(toError(err)));
+                }
+                return output.finalize(name);
+              },
+              err => output.discard().then(() => Computable.reject<IFile>(toError(err)))
+            )
+            .then((file: IFile) => new FileSet(new Map([[name, file]])));
+        },
+      })),
+    request.report
+  );
+}
+
+/** Settle when a stream has been fully consumed (or failed). */
+function streamed(stream: NodeJS.ReadableStream): Computable<void> {
+  return Computable.from<void>((resolve, reject) => {
+    stream.on("end", () => resolve(undefined));
+    stream.on("error", err => reject(err instanceof Error ? err : new Error(String(err))));
+  });
 }

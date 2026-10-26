@@ -608,14 +608,8 @@ describe("BuildCache", () => {
     const cache = new BuildCache(root, NULL_LOG);
     const handle = cache.getTemporaryWriteStream();
     handle.stream.write("partial");
-    handle.discard();
-    /* discard() is void — the callers are synchronous error paths — so the
-     * removal completes in the background, after the fd closes; polled, since
-     * a loaded machine gives the background no particular schedule. */
-    const deadline = Date.now() + 5000;
-    while (spoolFiles(root).length > 0 && Date.now() < deadline) {
-      await new Promise(resolve => setTimeout(resolve, 25));
-    }
+    /* Settled once the fd is closed and the spool removed. */
+    await new Promise(resolve => handle.discard().then(resolve));
     expect(spoolFiles(root)).to.deep.equal([]);
   });
 });

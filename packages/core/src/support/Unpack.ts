@@ -20,33 +20,19 @@
 import { Readable, Writable } from "stream";
 import { createUnzip } from "zlib";
 import { createDecompressStream } from "@napi-rs/lzma/xz";
-import * as path from "path";
-import * as tar from "tar-stream";
 import type { IOutputHandle } from "./Execute";
 import { Computable } from "../core/Computable";
-import { mapComputable } from "./Functional";
-import { FileSet, IFile } from "../core/FileSet";
-import { SymlinkFile } from "../core/SymlinkFile";
+import { FileSet } from "../core/FileSet";
 import { MIME_GZIP, MIME_TAR, MIME_XZ, MIME_ZIP, SNIFF_LENGTH, sniffMime } from "./Mime";
 import { FabrError } from "../core/Errors";
+import { extractTar } from "./UnpackTar";
+import { extractZip } from "./UnpackZip";
 
 /* Cap on nested compression layers: a real package is a single gzip layer over
  * a tar (`.tgz`), so anything beyond a small bound is a malformed or hostile
  * archive (an unbounded gzip-of-gzip nesting from a compromised registry). The
  * cumulative decompressed-size ceiling — the real bomb defense — is future work. */
 const MAX_COMPRESSION_LAYERS = 4;
-
-/** Normalize a tar entry name to a safe relative FileSet key: strip a leading
- * `/` (an absolute archive name → relative, standard tar behavior) and collapse
- * `.`/`..` segments. A name that still escapes the tree (a `../` traversal in an
- * untrusted network tarball) or is empty returns undefined — dropped. */
-function normalizeEntryName(raw: string): string | undefined {
-  const normalized = path.posix.normalize(raw.replace(/^\/+/, ""));
-  if (normalized === "" || normalized === "." || normalized === ".." || normalized.startsWith("../")) {
-    return undefined;
-  }
-  return normalized;
-}
 
 /**
  * Unpack an archive stream into a {@link FileSet}, streaming each entry directly
@@ -88,86 +74,17 @@ export function unpackStream(ins: Readable, createOutput: () => IOutputHandle): 
           return xz;
         }
         case MIME_TAR: {
-          const extract = tar.extract();
-          const files: Computable<[string, IFile]>[] = [];
-          /* Every emitted entry, keyed by its (normalized) in-archive name, so a
-           * later hardlink can resolve to the file its `linkname` already produced. */
-          const byName = new Map<string, Computable<IFile>>();
-          const emit = (name: string, file: Computable<[string, IFile]>): void => {
-            files.push(file);
-            byName.set(name, file.then(([, f]) => f));
-          };
-          extract.on("entry", (headers, entry, next) => {
-            entry.on("end", () => next());
-            const name = normalizeEntryName(headers.name);
-            if (name === undefined || headers.type === "directory") {
-              /* A directory carries no file; a name that escapes the tree (a `../`
-               * traversal in an untrusted network tarball) is dropped. */
-              entry.resume();
-            } else if (headers.type === "symlink") {
-              /* A symlink names its target (`linkname`, relative to the link's own
-               * directory) and has no body — emit a SymlinkFile carrying the target
-               * and drain the (empty) entry. The target may escape the tree; that
-               * is guarded when the set is staged (writeFileSet), not here. */
-              emit(name, Computable.resolve([name, new SymlinkFile(headers.linkname ?? "")]));
-              entry.resume();
-            } else if (headers.type === "link") {
-              /* A hardlink has no body — its `linkname` names an earlier entry
-               * whose content it shares. Content-addressed storage makes that a
-               * pure dedup: reuse the target's file (same hash → one blob, two
-               * names). An unknown target (dropped for escaping, or malformed)
-               * drops the link too. */
-              const target = byName.get(normalizeEntryName(headers.linkname ?? "") ?? "");
-              if (target) {
-                emit(name, target.then(f => [name, f]));
-              }
-              entry.resume();
-            } else {
-              /* A regular file: stream its body straight into a CAS blob (the sink
-               * hashes as it writes), preserving the entry's full permission bits
-               * (setuid/setgid/sticky included) so an executable — e.g. esbuild's
-               * native binary in @esbuild/<platform> — lands runnable. `finalize`
-               * places the blob under its content hash and yields the file;
-               * `{ end: false }` leaves the sink for finalize to end, not the pipe. */
-              const mode = (headers.mode ?? 0o644) & 0o7777;
-              const output = createOutput();
-              emit(
-                name,
-                Computable.from<[string, IFile]>((resolveFile, rejectFile) => {
-                  /* A write/read failure settles this file AND the whole unpack (a
-                   * stalled tar whose `finish` never fires can't hang the outer),
-                   * and drops the half-written blob. */
-                  const fail = (err: Error): void => {
-                    output.discard();
-                    rejectFile(err);
-                    reject(err);
-                  };
-                  output.stream.on("error", fail);
-                  entry.on("error", fail);
-                  entry.pipe(output.stream, { end: false });
-                  entry.on("end", () => {
-                    output.finalize(name, mode).then(file => resolveFile([name, file]), fail);
-                  });
-                })
-              );
-            }
-          });
-          extract.on("finish", () => {
-            resolve(
-              mapComputable(files, file => file).then(f => {
-                const fileMap = new Map<string, IFile>();
-                f.forEach(([name, file]) => fileMap.set(name, file));
-                return new FileSet(fileMap);
-              })
-            );
-          });
-          return extract;
+          const { sink, result } = extractTar(createOutput);
+          resolve(result);
+          return sink;
         }
-        case MIME_ZIP:
-          reject(new FabrError("ZIP archives are not supported (expected a gzip-compressed tarball)"));
-          return null;
+        case MIME_ZIP: {
+          const { sink, result } = extractZip(createOutput);
+          resolve(result);
+          return sink;
+        }
         default:
-          reject(new FabrError("Unsupported archive file (expected a gzip-compressed tarball)"));
+          reject(new FabrError("Unsupported archive file (expected a tarball, compressed or not, or a zip)"));
           return null;
       }
     }

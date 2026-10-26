@@ -189,10 +189,10 @@ export class BuildContextImpl implements InternalBuildContext {
     const context: ResolutionContext = {
       name,
       getGlobalString: name => this.getProperty(name).then(prop => prop.toString()),
-      launchedBy: (runnable, interpreter) =>
+      launchedBy: (runnable, interpreter, interpreterArgs) =>
         this.resolveTarget(interpreter, undefined, this.runOverrides())
           .then(sources => collectRunnable(this, context, sources, interpreter))
-          .then(launcher => runnable.launchedBy(launcher, this.execution.buildCache)),
+          .then(launcher => runnable.launchedBy(launcher, this.execution.buildCache, interpreterArgs)),
       memoize: (tag, key, create) =>
         this.getCachedOrBuild(`memo:${tag} ${key}`, ctx => create(ctx.workDir).then(result => ({ result }))),
       runTask: (task, run) => this.execution.runTask(task, run),

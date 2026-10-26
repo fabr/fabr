@@ -62,6 +62,7 @@ import {
   VersionNotFoundError,
   versionToString,
   constraintOf,
+  stripArchiveRoot,
 } from "@fabr-build/core";
 import {
   expectedTarballDigest,
@@ -75,7 +76,6 @@ import {
   PublishAccess,
   publishToRegistry,
   toPublishAccess,
-  stripArchiveRoot,
   tarballBasename,
   unsupportedPlatformReason,
 } from "./NPMProtocol";

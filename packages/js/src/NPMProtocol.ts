@@ -649,15 +649,3 @@ export const NPM_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
   readContentPackage: readNpmContentPackage,
   makeRunnable: (pkg, context) => makeNpmRunnable(context, pkg),
 };
-
-/**
- * Strip the single root directory npm tarballs wrap the package contents in
- * (conventionally "package/", but not reliably so), so the stored package's
- * files are named relative to the package root.
- */
-export function stripArchiveRoot(files: FileSet): FileSet {
-  return files.remap(name => {
-    const idx = name.indexOf("/");
-    return idx === -1 ? undefined : name.substring(idx + 1);
-  });
-}

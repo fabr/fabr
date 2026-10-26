@@ -110,17 +110,34 @@ export class RunnableFileSet extends FileSet {
    * `pool`'s tree pool and reached through the pool's link, carried in this
    * runnable's install at {@link TREE_MOUNT}. Its content is in any key this
    * runnable's command line or install is: the command line names it by hash.
+   * `interpreterArgs` go after the interpreter's own args, before this
+   * runnable's entry (`java -jar <entry>`).
    */
   public launchedBy(
     interpreter: RunnableFileSet,
-    pool: { ensureTree(files: FileSet): Computable<string>; readonly treePoolLink: SymlinkFile }
+    pool: { ensureTree(files: FileSet): Computable<string>; readonly treePoolLink: SymlinkFile },
+    interpreterArgs: readonly string[] = []
   ): Computable<RunnableFileSet> {
+    const launcher =
+      interpreterArgs.length === 0
+        ? interpreter
+        : new RunnableFileSet(
+            interpreter,
+            [...interpreter.args, ...interpreterArgs],
+            interpreter.interpreter,
+            interpreter.root,
+            interpreter.surface,
+            interpreter.served,
+            interpreter.launchCwd,
+            interpreter.env,
+            interpreter.origin
+          );
     return pool.ensureTree(interpreter).then(
       () =>
         new RunnableFileSet(
           FileSet.unionAll(this, new FileSet(new Map([[TREE_MOUNT, pool.treePoolLink]]))),
           this.args,
-          interpreter,
+          launcher,
           this.root,
           this.surface,
           this.served,

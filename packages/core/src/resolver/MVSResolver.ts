@@ -749,7 +749,7 @@ function resolvePhase<V, C>(
             selected: judged.version,
           });
         }
-        if (!forcedPkg && !providedEdge && !domain.satisfies(bound.version, constraint)) {
+        if (!forcedPkg && !providedEdge && !domain.flat && !domain.satisfies(bound.version, constraint)) {
           unsatisfied.push({ req, requiredBy: from, constraint });
         }
         if (!reachable.has(bound)) {

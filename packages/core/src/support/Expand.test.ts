@@ -27,10 +27,11 @@ import { FileSet, IFile } from "../core/FileSet";
 import { FSFileSource } from "../core/FSFileSource";
 import { MemoryFile } from "../core/MemoryFS";
 import { Name, NameBuilder } from "../core/Name";
-import { packToTarball } from "./Pack";
+import { packToTarball } from "./PackTar";
+import { packToZip } from "./PackZip";
 import { descentPrefixes, expandOnce, findWithDescent } from "./Expand";
 
-/** A zip-magic file: an archive by mime, but not one fabr can expand. */
+/** A file with a zip's magic and no zip after it: an archive by mime, but not one fabr can expand. */
 const zipFile = (): MemoryFile => new MemoryFile(Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(300)]));
 
 /** A `.tgz` shaped like a git archive: everything under one root directory. */
@@ -220,9 +221,9 @@ describe("Expand", () => {
     });
 
     it("skips an unexpandable archive a glob probe merely swept", async () => {
-      /* A glob boundary is speculative: a zip (archive mime, but fabr can't
-       * expand it) sitting where the sweep lands must contribute nothing, not
-       * fail the projection that never named it. */
+      /* A glob boundary is speculative: a corrupt zip (archive mime, but fabr
+       * can't expand it) sitting where the sweep lands must contribute nothing,
+       * not fail the projection that never named it. */
       const set = new FileSet(
         new Map([
           ["things/a.zip", zipFile()],
@@ -241,7 +242,15 @@ describe("Expand", () => {
       } catch (err) {
         failure = err as Error;
       }
-      expect(String(failure)).to.contain("ZIP archives are not supported");
+      expect(String(failure)).to.contain("ZIP archive cannot be read");
+    });
+
+    it("descends into a zip like a directory", async () => {
+      const zip = await packToZip(new FileSet(new Map([["META-INF/MANIFEST.MF", MemoryFile.from("Main-Class: A\r\n")], ["A.class", MemoryFile.from("x")]])));
+      const set = new FileSet(new Map([["lib/a.jar", new MemoryFile(zip)]]));
+      const found = await findWithDescent(set, selector("lib/a.jar:META-INF/*"), "", expandOnce);
+      expect(names(found)).to.deep.equal(["META-INF/MANIFEST.MF"]);
+      expect(await found.getFile("META-INF/MANIFEST.MF")!.readString()).to.equal("Main-Class: A\r\n");
     });
 
     it("descends in an absolutely-rooted namespace once the pattern is rebased", async () => {

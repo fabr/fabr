@@ -1,0 +1,147 @@
+##################### Global Properties ####################
+
+#
+# The Maven repository that `@maven` refers to. Set it to use a mirror for
+# every package.
+#
+
+default MAVEN_REPOSITORY_URL = https://repo1.maven.org/maven2;
+
+#
+# The Java release compiled classes run on, written `jvm<release>`: `jvm17`,
+# `jvm21`. Sources declared with a `java<release>` flag compile for that
+# release instead, which must not be later.
+#
+
+default JVM_TARGET = jvm21;
+
+#
+# The Java compiler: a `javac`, such as a JDK release's
+# (`JAVAC = @jdk:21.0.12.1+1:javac;`).
+#
+
+default JAVAC = @jdk:21.0.12.1+1:javac;
+
+#
+# The Java runtime programs run on: a `java`, such as a JDK release's
+# (`JAVA = @jdk:21.0.12.1+1:java;`).
+#
+
+default JAVA = @jdk:21.0.12.1+1:java;
+
+#################### Source version flags ##################
+
+# The sources are written for Java 8: using a later language feature or API
+# is a compile error, whatever release `JVM_TARGET` names.
+flag java8 { }
+# The sources are written for Java 11. See `java8`.
+flag java11 { }
+# The sources are written for Java 17. See `java8`.
+flag java17 { }
+# The sources are written for Java 21. See `java8`.
+flag java21 { }
+# The sources are written for Java 25. See `java8`.
+flag java25 { }
+
+####################### Target types #######################
+
+#
+# Build a jar from Java sources and resources:
+#
+#     jar_package com.example/app {
+#       srcs = src/main/java:**/*.java;
+#       resources = src/main/resources:**;
+#       deps = @maven:org.slf4j:slf4j-api:1.7.36;
+#       entry = src/main/java:com/example/Main.java;
+#     }
+#
+# `fabr run` runs its `entry` with the jar and everything it requires on the
+# classpath.
+#
+
+targetdef jar_package {
+    # The Java sources, named by their package path (`com/example/Main.java`).
+    srcs = FILES;
+    # The packages the sources use, and `java<release>` flags.
+    deps = PACKAGES;
+    # Packages the sources use that whatever runs the jar must provide, such as
+    # the servlet API a container supplies. The jar does not carry them.
+    provided_deps = PACKAGES;
+    # As `provided_deps`, for packages whatever runs the jar may leave out: the
+    # jar uses them where they are present.
+    optional_provided_deps = PACKAGES;
+    # Packages the sources are compiled against that nothing needs when the jar
+    # runs, such as an annotations-only jar. They are not passed on.
+    compile_deps = PACKAGES;
+    # The annotation processors the compiler runs, such as lombok: packages,
+    # resolved apart from the ones the sources use.
+    processors = PACKAGES;
+    # Files to put in the jar as they are, named as they are found on the
+    # classpath (`application.properties`).
+    resources = FILES;
+    # The source of the class the program starts in, which the jar's manifest
+    # names as its `Main-Class`.
+    entry = FILES;
+}
+
+#
+# The target types below are normally created for you by the ones above, and
+# rarely need declaring.
+#
+
+#
+# Compile Java sources to classes. A `jar_package` does this for its own
+# sources.
+#
+
+targetdef java_compile {
+    # The Java sources.
+    srcs = FILES;
+    # The packages the sources use, and `java<release>` flags.
+    deps = PACKAGES;
+    # The annotation processors the compiler runs: packages, resolved apart
+    # from `deps`.
+    processors = PACKAGES;
+}
+
+#
+# A Maven repository, laid out as Maven Central is.
+#
+
+targetdef maven_repository {
+    # The URL the repository is published under.
+    url = REQUIRED STRING;
+}
+
+#
+# Eclipse Temurin JDK releases, from the Adoptium API: `@jdk:21.0.12.1+1` is
+# that release for the target platform, and `@jdk:21.0.12.1+1:javac` its
+# compiler. A release is named as Adoptium names it, less its `jdk-` prefix
+# (`@jdk:8u302-b08` for Java 8); `fabr ls @jdk` lists them. fabr declares
+# `@jdk` for you; declaring it yourself points it at a mirror of the API:
+#
+#     jdk_distribution @jdk { url = "https://adoptium.example.com"; }
+#
+
+targetdef jdk_distribution {
+    # The URL the Adoptium API is served under.
+    url = REQUIRED STRING;
+}
+
+####################### Repository ##########################
+
+#
+# Maven Central, or the repository `MAVEN_REPOSITORY_URL` names.
+#
+
+default maven_repository @maven {
+    url = ${MAVEN_REPOSITORY_URL};
+}
+
+#
+# JDK releases, from the Adoptium API.
+#
+
+default jdk_distribution @jdk {
+    url = "https://api.adoptium.net";
+}

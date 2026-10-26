@@ -61,8 +61,8 @@ import {
   VersionNotFoundError,
   versionToString,
   NamespaceRef,
+  stripArchiveRoot,
 } from "@fabr-build/core";
-import { stripArchiveRoot } from "./NPMProtocol";
 
 /** Where the Node.js project publishes builds nodejs.org/dist does not carry
  *  (musl, before 22.23.3 / 24.20.0 / 26.8.0, and on arm64), in the same layout. */

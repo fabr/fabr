@@ -63,8 +63,10 @@ export interface IOutputHandle {
    * cache-backed file named `name`. `mode` is the file's real permission bits
    * (default non-executable), carried so an unpacked executable survives. */
   finalize(name: string, mode?: number): Computable<IFile>;
-  /** Abandon the stream and delete its temp file — nothing enters the store. */
-  discard(): void;
+  /** Abandon the stream and delete its temp file — nothing enters the store.
+   * Settles once nothing of the output is left; a synchronous error path may
+   * leave it to finish in the background. */
+  discard(): Computable<void>;
 }
 
 /**
@@ -212,26 +214,43 @@ export function describeSystemError(err: unknown): string {
   return target ? `${text}: ${target}` : text;
 }
 
+/** The suffix Windows looks for on a command named without one. */
+const WINDOWS_EXECUTABLE_SUFFIX = ".exe";
+
+/** @return the names `name` may be found under on `platform`: on Windows, a name with no extension also with `.exe`. */
+function executableNames(name: string, platform: NodeJS.Platform): string[] {
+  return platform === "win32" && path.extname(name) === "" ? [name, name + WINDOWS_EXECUTABLE_SUFFIX] : [name];
+}
+
+/** @return `candidate` if it is an executable file, otherwise undefined. */
+function executableFile(candidate: string): string | undefined {
+  try {
+    fs.accessSync(candidate, fs.constants.X_OK);
+    return fs.statSync(candidate).isFile() ? candidate : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Locate an executable. A name with a path separator is used directly (as a
  * shell does — a command containing a slash is not PATH-searched), relative to
  * `cwd`, the directory the command will run in; this also lets a caller name a
  * specific binary by absolute path without any PATH. A bare name is searched
  * on the PATH environment variable, and what it finds (the `sh` a `script`
- * runs on) is an input fabr does not track.
+ * runs on) is an input fabr does not track. On Windows a name with no
+ * extension is also looked for with `.exe`.
  * @return the executable's path, absolute where `name` has a path separator.
  * @throws ExecutionError if the executable cannot be found.
  */
-export function findExecutable(name: string, cwd = process.cwd()): string {
+export function findExecutable(name: string, cwd = process.cwd(), platform: NodeJS.Platform = process.platform): string {
+  const names = executableNames(name, platform);
   if (path.basename(name) !== name) {
-    const located = path.resolve(cwd, name);
-    try {
-      fs.accessSync(located, fs.constants.X_OK);
-      if (fs.statSync(located).isFile()) {
-        return located;
+    for (const candidate of names) {
+      const found = executableFile(path.resolve(cwd, candidate));
+      if (found !== undefined) {
+        return found;
       }
-    } catch {
-      /* fall through to the error */
     }
     throw new ExecutionError(`'${name}' is not an executable file`);
   }
@@ -239,14 +258,11 @@ export function findExecutable(name: string, cwd = process.cwd()): string {
     if (dir.length === 0) {
       continue;
     }
-    const candidate = path.join(dir, name);
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      if (fs.statSync(candidate).isFile()) {
-        return candidate;
+    for (const candidate of names) {
+      const found = executableFile(path.join(dir, candidate));
+      if (found !== undefined) {
+        return found;
       }
-    } catch {
-      /* Not here; keep looking */
     }
   }
   throw new ExecutionError(`Unable to find '${name}' in PATH`);

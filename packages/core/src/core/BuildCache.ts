@@ -893,12 +893,7 @@ export class BuildCache {
           });
           sink.end();
         }),
-      discard: (): void => {
-        /* Fire-and-forget: every caller is a synchronous error path that rejects at once
-         * (see IOutputHandle.discard), so the removal lands in the background once the
-         * fd is closed rather than being skipped for want of somewhere to await it. */
-        teardown(() => undefined);
-      },
+      discard: (): Computable<void> => Computable.fromOnce<void>(resolve => teardown(() => resolve(undefined))),
     };
   }
 

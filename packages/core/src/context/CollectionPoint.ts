@@ -278,7 +278,7 @@ function resolveBatch(
         }
         return request.as === "files" && source.resolveFiles !== undefined
           ? attributedTo(reference, () => source.resolveFiles!(reference).then(files => new FileSet(files, files.origin)))
-          : source.resolve(reference);
+          : attributedTo(reference, () => source.resolve(reference));
       }),
       (...resolved: Array<FileSet | ResolvedNode | PendingFiles>) => resolved
     );

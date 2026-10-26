@@ -21,7 +21,7 @@ import * as zlib from "zlib";
 import { Readable } from "stream";
 import * as tar from "tar-stream";
 import { expect } from "chai";
-import { packToTarball } from "./Pack";
+import { packToTarball } from "./PackTar";
 import { unpackStream } from "./Unpack";
 import { BuildCache } from "../core/BuildCache";
 import { LogFormatter, LogLevel } from "./Log";

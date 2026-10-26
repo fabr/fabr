@@ -58,8 +58,9 @@ function fakeContext(members: Record<string, string>, log: FetchLog, body: strin
           log.finalized.push(name);
           return Computable.resolve(storedFile(name, body));
         },
-        discard: (): void => {
+        discard: (): Computable<void> => {
           log.discarded++;
+          return Computable.resolve(undefined);
         },
       };
       return process(typeof body === "string" ? Readable.from([body]) : body, { createOutput: () => output } as unknown as IFetchContext);

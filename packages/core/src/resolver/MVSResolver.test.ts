@@ -379,6 +379,23 @@ describe("MVSResolver", () => {
     expect(result.errors).to.deep.equal([]);
   });
 
+  it("never forks in a flat domain: the violation stays for the strict check", () => {
+    const result = resolve(
+      { B: "^1.0.0", C: "^1.0.0" },
+      {
+        B: { "1.0.0": { D: "^1.0.0" } },
+        C: { "1.0.0": { D: "^2.0.0" } },
+        D: { "1.0.0": {}, "2.0.0": {} },
+      },
+      false,
+      { ...SEMVER, flat: true }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["B@1.0.0", "C@1.0.0", "D@2.0.0"]);
+    expect(result.violations.map(v => [v.name, v.requiredBy])).to.deep.equal([["D", "B@1.0.0"]]);
+    expect(result.edges.get("B@1.0.0")?.get("D")).to.equal("D@2.0.0");
+    expect(result.errors).to.deep.equal([]);
+  });
+
   it("reports upper bound violations as data without rejecting", () => {
     const result = resolve(
       { D: "~1.1.0", E: "1.0.0" },

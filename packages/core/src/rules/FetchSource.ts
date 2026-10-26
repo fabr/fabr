@@ -18,15 +18,14 @@
  */
 
 import crypto from "crypto";
-import { Readable } from "stream";
 import { Computable, ComputableSource } from "../core/Computable";
 import { FabrError, IntegrityError } from "../core/Errors";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
-import { IFetchContext } from "../core/BuildCache";
 import { HASH_ALGORITHM } from "../core/FSWrapper";
 import { Name } from "../core/Name";
 import { IProvenanceStep, registerProvenanceDescriber, registerProvenanceRenderer } from "../core/Provenance";
-import { ExpectedDigest, isIntegrity, parseIntegrity, verifiedStream } from "../support/Integrity";
+import { ExpectedDigest, isIntegrity, parseIntegrity } from "../support/Integrity";
+import { fetchFile } from "../support/FetchDocument";
 import { TargetContext } from "../context/index";
 import { RepositoryRegistration } from "./Types";
 import { mapComputable } from "../support/Functional";
@@ -135,36 +134,13 @@ class FetchSource implements FileSource {
    * itself — never unpacked (see the class comment).
    */
   private download(path: string, member: FetchMember): Computable<IFile> {
-    return this.context
-      .fetch(member.url, FETCH_TAG, () =>
-        Computable.resolve({
-          url: member.url,
-          process: (content: Readable, ctx: IFetchContext) => {
-          const { stream, verify } = verifiedStream(content, member.digest, member.url);
-          const output = ctx.createOutput();
-          stream.pipe(output.stream, { end: false });
-          return streamed(stream)
-            .then(
-              () => {
-                /* Before finalize: a digest mismatch must leave nothing behind. */
-                try {
-                  verify();
-                } catch (err) {
-                  output.discard();
-                  throw err;
-                }
-                return output.finalize(path);
-              },
-              err => {
-                output.discard();
-                throw err;
-              }
-            )
-            .then((file: IFile) => new FileSet(new Map([[path, file]])));
-          },
-        }),
-        { resource: path, role: "content" }
-      )
+    return fetchFile(this.context, {
+      key: member.url,
+      tag: FETCH_TAG,
+      report: { resource: path, role: "content" },
+      name: path,
+      source: () => Computable.resolve({ url: member.url, expected: member.digest }),
+    })
       .then(files => {
         /* By single file rather than by name: the cache entry is keyed on the
          * URL, so content first ingested under another declared name serves
@@ -209,14 +185,6 @@ interface FetchMember {
 
 /** Bumped when what is stored under a fetch key changes shape. */
 const FETCH_TAG = "fetch:1";
-
-/** Settle when a stream has been fully consumed (or failed). */
-function streamed(stream: NodeJS.ReadableStream): Computable<void> {
-  return Computable.from<void>((resolve, reject) => {
-    stream.on("end", () => resolve(undefined));
-    stream.on("error", err => reject(err instanceof Error ? err : new FabrError(String(err))));
-  });
-}
 
 /**
  * Judge a delivered file against the declared digest. The streaming check in
