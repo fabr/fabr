@@ -29,6 +29,7 @@ import {
   BuildAction,
   BuildResult,
   Computable,
+  EMPTY_FILESET,
   FabrError,
   FileSet,
   fileSetInput,
@@ -255,7 +256,7 @@ export function makeJarRunnable(
     ["Main-Class", mainClass],
     ["Class-Path", [...own, ...classpath.map(([name]) => encodeURI(name))].join(" ")],
   ]);
-  return packToZip(new FileSet(new Map([[MANIFEST_NAME, manifest]])), { first: [MANIFEST_NAME] }).then(launcher => {
+  return packToZip(new FileSet(new Map([[MANIFEST_NAME, manifest]])), EMPTY_FILESET, { first: [MANIFEST_NAME] }).then(launcher => {
     const install = FileSet.unionAll(
       new FileSet(new Map([...classpath, [LAUNCHER, new MemoryFile(launcher)]])),
       own.length === 0 ? new FileSet(new Map()) : classes!.mountedAt(CLASSES_DIR)
@@ -264,10 +265,10 @@ export function makeJarRunnable(
   });
 }
 
-/** Write the jar named by the action's `name` from its `files`, the manifest first. */
+/** Write the jar named by the action's `name` from its `files`, the manifest first, and its `stored` files uncompressed. */
 function runJar(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
   const name = stringConfig(action, "name");
-  return packToZip(fileSetInput(action, "files"), { first: [MANIFEST_NAME] }).then(jar =>
+  return packToZip(fileSetInput(action, "files"), fileSetInput(action, "stored"), { first: [MANIFEST_NAME] }).then(jar =>
     ctx
       .admit(report, () => {
         fs.writeFileSync(path.join(ctx.workDir, name), jar);
@@ -277,9 +278,9 @@ function runJar(action: BuildAction, ctx: ActionContext, report: ITaskReport): C
   );
 }
 
-export const JAR_ACTION: IBuildActionDefinition = { id: "java:jar", version: 1, run: runJar };
+export const JAR_ACTION: IBuildActionDefinition = { id: "java:jar", version: 3, run: runJar };
 
-/** Make the action writing `files` as the jar `name`. */
-export function createJarAction(files: FileSet, name: string): BuildAction {
-  return new BuildAction(JAR_ACTION, { files }, { name });
+/** Make the action writing `files`, and `stored` uncompressed, as the jar `name`. */
+export function createJarAction(files: FileSet, name: string, stored: FileSet = EMPTY_FILESET): BuildAction {
+  return new BuildAction(JAR_ACTION, { files, stored }, { name });
 }

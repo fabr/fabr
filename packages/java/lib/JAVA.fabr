@@ -30,15 +30,9 @@ default JAVAC = @jdk:21.0.12.1+1:javac;
 default JAVA = @jdk:21.0.12.1+1:java;
 
 #
-# The JUnit Platform launcher tests run with, resolved with the tests' own
-# packages: the launcher of the platform their test engines are built for.
-#
-
-default JUNIT_PLATFORM_LAUNCHER = @mvn:org.junit.platform:junit-platform-launcher:1.11.4;
-
-#
 # The jar that runs a `jar_package`'s tests on the JUnit Platform and reports
-# what happened: fabr's own, by default.
+# what happened: fabr's own, by default. It runs with the JUnit Platform
+# launcher the tests' own `test_deps` name.
 #
 
 default JAVA_TEST_RUNNER = @fabr-build/java:fabr-junit-runner.jar;
@@ -68,18 +62,24 @@ default flag java25 { }
 #       deps = @mvn:org.slf4j:slf4j-api:1.7.36;
 #       main_class = com.example.Main;
 #       tests = src/test/java:**/*.java;
-#       test_deps = @mvn:org.junit.jupiter:junit-jupiter:5.11.4;
+#       test_deps = @mvn:org.junit:junit-bom:5.11.4
+#                   @mvn:org.junit.jupiter:junit-jupiter
+#                   @mvn:org.junit.platform:junit-platform-launcher;
 #     }
 #
 # `fabr run` runs its `main_class` with the jar and everything it requires on
 # the classpath, and `fabr test` runs the tests its `tests` compile to on the
-# JUnit Platform, with the test engines in its `test_deps`.
+# JUnit Platform, with the test engines and the platform's launcher in its
+# `test_deps`.
 #
 
 targetdef jar_package {
-    # The Java sources, named by their package path (`com/example/Main.java`).
+    # The Java sources.
     srcs = FILES;
-    # The packages the sources use, and `java<release>` flags.
+    # The packages the sources use, and `java<release>` flags. A BOM here
+    # (`@mvn:org.springframework.boot:spring-boot-dependencies:2.7.18`) gives
+    # the versions of the packages it manages where they are used, so those
+    # may be written without one (`@mvn:org.springframework.boot:spring-boot-starter-web`).
     deps = PACKAGES;
     # Packages the sources use that whatever runs the jar must provide, such as
     # the servlet API a container supplies. The jar does not carry them.
@@ -96,14 +96,21 @@ targetdef jar_package {
     # Files to put in the jar as they are, named as they are found on the
     # classpath (`application.properties`).
     resources = FILES;
+    # As `resources`, but stored in the jar uncompressed. Typically used
+    # for nested jars so that they can be read in place.
+    stored = FILES;
     # The class the program starts in (`com.example.Main`), which the jar's
     # manifest names as its `Main-Class`: one of the jar's, or of a package it
     # requires.
     main_class = STRING;
+    # Further attributes of the jar's manifest (`Implementation-Version`,
+    # `Automatic-Module-Name`), each a string.
+    manifest = MAP;
     # The test sources, compiled against the jar. The test engines on the
     # classpath find the tests among the classes they compile to.
     tests = FILES;
-    # Packages only the tests use, such as JUnit's API and test engine.
+    # Packages only the tests use: JUnit's API, its test engines and the JUnit
+    # Platform launcher they run on, of one JUnit release.
     test_deps = PACKAGES;
     # Files on the classpath the tests run with, as `resources` are.
     test_resources = FILES;

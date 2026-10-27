@@ -57,7 +57,7 @@ import org.junit.platform.launcher.core.LauncherFactory;
  * Each directory is searched for test classes, and must be on the classpath.
  * The sources file has a line per class, its name and its source path
  * separated by a tab; a result is named by the source path of its class. The
- * exit status is 1 where a test failed.
+ * exit status is 1 where a test failed, or where no test was found.
  */
 public final class Runner {
     private Runner() {}
@@ -87,13 +87,25 @@ public final class Runner {
             System.err.println("fabr-junit-runner: --report=<file> is required");
             System.exit(2);
         }
-        LauncherDiscoveryRequest request = LauncherDiscoveryRequestBuilder.request().selectors(DiscoverySelectors.selectClasspathRoots(roots)).build();
-        Results results = new Results(sources);
+        Results results = null;
         long start = System.currentTimeMillis();
-        Launcher launcher = LauncherFactory.create();
-        launcher.execute(request, results);
+        try {
+            results = new Results(sources);
+            LauncherDiscoveryRequest request = LauncherDiscoveryRequestBuilder.request().selectors(DiscoverySelectors.selectClasspathRoots(roots)).build();
+            Launcher launcher = LauncherFactory.create();
+            launcher.execute(request, results);
+        } catch (NoClassDefFoundError missing) {
+            System.err.println("fabr-junit-runner: the JUnit Platform launcher is not on the classpath (" + missing.getMessage()
+                + "): add org.junit.platform:junit-platform-launcher, of the tests' JUnit release, to test_deps");
+            System.exit(2);
+        }
         long stop = System.currentTimeMillis();
         Files.write(Paths.get(report), results.toCtrf(start, stop).getBytes(StandardCharsets.UTF_8));
+        if (results.tests.isEmpty()) {
+            /* The tests compiled, so finding none means no engine could run them. */
+            System.err.println("fabr-junit-runner: no tests were found: no test engine on the classpath found a test among the classes in " + roots);
+            System.exit(1);
+        }
         System.exit(results.failed > 0 ? 1 : 0);
     }
 

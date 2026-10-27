@@ -45,6 +45,10 @@ function mockRegistry(data: Record<string, Record<string, Record<string, string>
           /* `real -> name` is a requirement on `real`, renamed. */
           const [dep, renameTo] = written.split(" -> ");
           const renamed = renameTo === undefined ? {} : { renameTo };
+          /* 'bom ' is a BOM's dependency: a floor where something else requires the package. */
+          if (constraint.startsWith("bom ")) {
+            return { name: dep, versionConstraint: constraint.substring(4), bom: true, ...renamed };
+          }
           /* 'peer? ' is npm's `peerDependenciesMeta: { optional: true }`. */
           if (constraint.startsWith("peer? ")) {
             return { name: dep, versionConstraint: constraint.substring(6), provided: "optional", ...renamed };
@@ -637,6 +641,50 @@ describe("MVSResolver", () => {
       ["react", "^16.3.0 || ^17.0.0", "hoc@2.0.0", "18.2.0"],
     ]);
     expect(shared.edges.get("hoc@2.0.0")?.get("react")).to.equal("react@18.2.0");
+  });
+
+  it("a BOM's dependency raises the floor of a package the tree requires, and is no edge of the BOM", () => {
+    const result = resolve(
+      { app: "1.0.0" },
+      {
+        app: { "1.0.0": { bom: "1.0.0", lib: ">=1.0.0" } },
+        bom: { "1.0.0": { lib: "bom 2.0.0", unused: "bom 1.0.0" } },
+        lib: { "1.0.0": {}, "2.0.0": {} },
+        unused: { "1.0.0": {} },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["app@1.0.0", "bom@1.0.0", "lib@2.0.0"]);
+    expect([...(result.edges.get("bom@1.0.0") ?? [])]).to.deep.equal([]);
+    expect([...(result.edges.get("app@1.0.0") ?? [])]).to.deep.equal([
+      ["bom", "bom@1.0.0"],
+      ["lib", "lib@2.0.0"],
+    ]);
+    expect(result.errors).to.deep.equal([]);
+  });
+
+  it("a BOM's dependency gives a requirement that states no version its version, and never lowers one", () => {
+    const data = {
+      app: { "1.0.0": { bom: "1.0.0", lib: "", other: "3.0.0" } },
+      bom: { "1.0.0": { lib: "bom 2.0.0", other: "bom 2.0.0" } },
+      lib: { "1.0.0": {}, "2.0.0": {} },
+      other: { "2.0.0": {}, "3.0.0": {} },
+    };
+    const result = resolve({ app: "1.0.0" }, data);
+    expect(selectionStrings(result)).to.deep.equal(["app@1.0.0", "bom@1.0.0", "lib@2.0.0", "other@3.0.0"]);
+    expect(result.errors).to.deep.equal([]);
+  });
+
+  it("a BOM's dependency applies to a package a raised floor brings in", () => {
+    const result = resolve(
+      { app: "1.0.0" },
+      {
+        app: { "1.0.0": { bom: "1.0.0", lib: ">=1.0.0" } },
+        bom: { "1.0.0": { lib: "bom 2.0.0", helper: "bom 1.5.0" } },
+        lib: { "1.0.0": {}, "2.0.0": { helper: ">=1.0.0" } },
+        helper: { "1.0.0": {}, "1.5.0": {} },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["app@1.0.0", "bom@1.0.0", "helper@1.5.0", "lib@2.0.0"]);
   });
 
   it("an optional peer binds what the tree provides", () => {

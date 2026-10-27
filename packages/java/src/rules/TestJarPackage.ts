@@ -21,11 +21,11 @@
  * The jar_package[test] rule: compile the tests against the package's own jar,
  * and run the test classes they compile to on the JUnit Platform with
  * `JAVA_TEST_RUNNER`, which finds them itself, with the jar and everything it
- * and the tests require on the classpath.
+ * and the tests require on the classpath, the platform's launcher among them.
  */
 
 import * as path from "path";
-import { BUILD_OVERRIDE, Computable, defineRule, FabrError, FileSet, IFile, MemoryFile, RuleResult, TargetContext, TREE_MOUNT } from "@fabr-build/core";
+import { BUILD_OVERRIDE, Computable, defineRule, EMPTY_FILESET, FabrError, FileSet, IFile, MemoryFile, RuleResult, TargetContext, TREE_MOUNT } from "@fabr-build/core";
 import { classpathOf, packageOf, processorsOf } from "../JarPackage";
 import { createTestRunAction } from "../TestRunAction";
 
@@ -37,14 +37,11 @@ interface TestInputs {
   optional_provided: FileSet[];
   compile_deps: FileSet[];
   test_deps: FileSet[];
-  launcher: FileSet[];
 }
 
 /** The `jar_package` rule, under `test`. */
 export default defineRule({
-  /* The package under test is its own build; the JUnit Platform launcher is
-   * resolved with the tests' own packages, so the platform it runs is the one
-   * their engine was built for. */
+  /* The package under test is its own build. */
   requirements(context) {
     return {
       pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE),
@@ -54,7 +51,6 @@ export default defineRule({
       optional_provided: context.getPackageProperty("optional_provided_deps"),
       compile_deps: context.getPackageProperty("compile_deps"),
       test_deps: context.getPackageProperty("test_deps"),
-      launcher: context.getGlobalPackageProperty("JUNIT_PLATFORM_LAUNCHER"),
     };
   },
   evaluateMaterialized(context, inputs) {
@@ -78,7 +74,8 @@ const RUNNER_CLASS = "build.fabr.junit.Runner";
 function testJar(context: TargetContext, inputs: TestInputs): Computable<RuleResult> {
   const tests = FileSet.unionAll(...inputs.tests);
   if (tests.isEmpty()) {
-    throw new FabrError(`${context.name} has no tests`).withHelp("set `tests` to the test sources");
+    /* No tests declared: trivially green, with nothing to run. */
+    return Computable.resolve(EMPTY_FILESET);
   }
   const runtime = [...inputs.pkg, ...inputs.provided, ...inputs.optional_provided, ...inputs.test_deps];
   const classes = processorsOf(context).then(processors =>
@@ -101,7 +98,7 @@ function testJar(context: TargetContext, inputs: TestInputs): Computable<RuleRes
   return Computable.forAll([classes, runner, sourcesTable(tests), context.getGlobalRunnable("JAVA")], (compiled, runnerJar, sources, java) => {
     const pool = context.execution.buildCache;
     return pool.ensureTree(java).then(() => {
-      const jars = classpathOf([...runtime, ...inputs.launcher]);
+      const jars = classpathOf(runtime);
       const classpath = [TEST_CLASSES_DIR, TEST_RESOURCES_DIR, RUNNER_JAR, ...jars.map(([name]) => path.posix.join(CLASSPATH_DIR, name))].join(path.delimiter);
       const staged = FileSet.unionAll(
         compiled.mountedAt(TEST_CLASSES_DIR),

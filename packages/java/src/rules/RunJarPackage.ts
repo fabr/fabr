@@ -24,7 +24,7 @@
  */
 
 import { BUILD_OVERRIDE, Computable, defineRule, FabrError, FileSet, PackageFileSet, RunnableFileSet, TargetContext } from "@fabr-build/core";
-import { makeJarRunnable } from "../JarPackage";
+import { jarMainClass, makeJarRunnable } from "../JarPackage";
 
 /** The `jar_package` rule, under `run`. */
 export default defineRule({
@@ -41,8 +41,11 @@ function runnableJar(context: TargetContext, pkg: FileSet[], mainClass: string |
   if (!built) {
     throw new FabrError("internal: jar_package[build] did not yield a package");
   }
-  if (mainClass === undefined) {
-    throw new FabrError(`${context.name} has no main_class, so it cannot be run`).withHelp("set `main_class` to the class the program starts in");
-  }
-  return makeJarRunnable(context, [built], mainClass);
+  /* Where main_class is not given, the manifest may name the class (`manifest = { Main-Class = … }`). */
+  return (mainClass === undefined ? jarMainClass(built) : Computable.resolve(mainClass)).then(start => {
+    if (start === undefined) {
+      throw new FabrError(`${context.name} has no main_class, so it cannot be run`).withHelp("set `main_class` to the class the program starts in");
+    }
+    return makeJarRunnable(context, [built], start);
+  });
 }

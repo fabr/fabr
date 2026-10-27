@@ -523,15 +523,6 @@ export abstract class TargetContext {
     return this.context.resolveTarget(name, this.stack, overrides);
   }
 
-  /**
-   * Read a global's unmaterialized sources as packages — the global
-   * counterpart of {@link getPackageProperty}, for a rule's `requirements` to
-   * name, so its references resolve jointly with the target's other packages.
-   */
-  public getGlobalPackageProperty(name: string, overrides?: Constraints): Computable<PackageSources> {
-    return this.getGlobalFileProperty(name, overrides).then(sources => new PackageSources(sources));
-  }
-
   /** Get `runnable` launched through the runnable the global `interpreter`
    *  names, given `interpreterArgs` before the entry. */
   public launchedBy(runnable: RunnableFileSet, interpreter: string, interpreterArgs?: readonly string[]): Computable<RunnableFileSet> {

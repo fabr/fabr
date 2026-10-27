@@ -21,7 +21,7 @@ import { ActionContext, ICreateOptions } from "../core/BuildCache";
 import { Computable, ComputableSource } from "../core/Computable";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
 import { FSFileSource } from "../core/FSFileSource";
-import { isRepository, Materialized, ProjectedPackage, renamedAs, RepositoryRef, SourceRef } from "../core/Repository";
+import { isRepository, isRepositoryReader, Materialized, ProjectedPackage, renamedAs, RepositoryRef, SourceRef } from "../core/Repository";
 import { ResolutionContext } from "../resolver/Types";
 import { PERMISSIVE_RESOLUTION } from "./CollectionPoint";
 import { materializeShallow, resolveLists } from "./CollectionPoint";
@@ -952,7 +952,8 @@ export class BuildContextImpl implements InternalBuildContext {
   public materialize(ref: INameValue, stack?: IDependencyStack): Computable<Array<FileSource | NamespaceRef>> {
     /* Under `run` the name IS the program, so its closure is a sealed install. */
     const options = this.constraints.get(BUILD_OPERATION) === "run" ? PERMISSIVE_RESOLUTION : undefined;
-    return this.lookupFileValue(ref.value, stack, { relativeTo: ref }).then(sources => {
+    return this.lookupFileValue(ref.value, stack, { relativeTo: ref }).then(found => {
+      const sources = found.map(versionsOf);
       const namespaces = sources.filter((source): source is NamespaceRef => source instanceof NamespaceRef);
       return materializeShallow(
         this.resolutionContext(),
@@ -1630,4 +1631,23 @@ function unmatchedError(name: string, entry: IPropertyEntry): Error {
   return new FabrError(`'${name}' is declared, but no declaration of it applies to this configuration`).withHelp(
     `it is declared under ${guards.join(", ")} — add an unguarded declaration, or a 'default ${name} = …;'`
   );
+}
+
+/**
+ * @return `source`, or, where it is a registry's reference to a package that
+ * states no version and selects nothing of it, the namespace of the package's
+ * published versions: a name materialized on its own has no requirement to
+ * take a version from, so it names the versions, as an incomplete reference
+ * does.
+ */
+function versionsOf(source: SourceRef): SourceRef {
+  return source instanceof RepositoryRef &&
+    source.versionConstraint === undefined &&
+    source.override === undefined &&
+    source.projections.length === 0 &&
+    isRepositoryReader(source.source) &&
+    isRepository(source.source) &&
+    source.source.children !== undefined
+    ? new NamespaceRef(source.source, source.name, undefined, source.repositoryName)
+    : source;
 }

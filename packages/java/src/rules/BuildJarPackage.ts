@@ -31,9 +31,11 @@ import {
   defineRule,
   Dependency,
   dependencyName,
+  FabrError,
   EMPTY_FILESET,
   FileSet,
   PackageFileSet,
+  PropertyMap,
   Provided,
   RuleResult,
   TargetContext,
@@ -43,6 +45,7 @@ import { checkMainClass, createJarAction, MANIFEST_NAME, manifestFile, processor
 interface JarInputs {
   srcs: FileSet[];
   resources: FileSet[];
+  stored: FileSet[];
   dependencies: FileSet[];
   provided: FileSet[];
   optional_provided: FileSet[];
@@ -64,6 +67,7 @@ export default defineRule({
     return {
       srcs: context.getFileProperty("srcs"),
       resources: context.getFileProperty("resources"),
+      stored: context.getFileProperty("stored"),
       dependencies: context.getPackageProperty("deps"),
       provided: context.getPackageProperty("provided_deps"),
       optional_provided: context.getPackageProperty("optional_provided_deps"),
@@ -78,9 +82,10 @@ export default defineRule({
         requirements.packages("provided"),
         requirements.packages("optional_provided"),
         context.getProperty("main_class"),
+        context.getMap("manifest"),
       ],
-      (inputs, dependencies, provided, optional_provided, mainClass) =>
-        buildJar(context, inputs, { dependencies, provided, optional_provided }, mainClass?.toString())
+      (inputs, dependencies, provided, optional_provided, mainClass, manifest) =>
+        buildJar(context, inputs, { dependencies, provided, optional_provided }, manifestAttributesOf(context.name, mainClass?.toString(), manifest))
     );
   },
 });
@@ -105,7 +110,37 @@ function packageOf(context: TargetContext, files: FileSet, edges: JarEdges): Pac
   );
 }
 
-function buildJar(context: TargetContext, inputs: JarInputs, edges: JarEdges, mainClass: string | undefined): Computable<RuleResult> {
+/** What a jar's manifest says besides what fabr writes: the class it starts in, checked against the jar, and the attributes `manifest` writes. */
+interface JarAttributes {
+  mainClass?: string;
+  written: Array<[string, string]>;
+}
+
+/**
+ * @return the attributes the jar's manifest is given: `main_class` as its
+ * `Main-Class`, and each of `manifest`'s entries, a string, in order. A
+ * `Main-Class` may come from either, not both, and `Manifest-Version` is the
+ * format's.
+ */
+function manifestAttributesOf(name: string, mainClass: string | undefined, manifest: PropertyMap): JarAttributes {
+  const written = [...manifest].map(([key, value]): [string, string] => {
+    if (!Array.isArray(value) || value.some(item => typeof item !== "string")) {
+      throw new FabrError(`${name}'s manifest attribute '${key}' is a string, not a block`);
+    }
+    return [key, (value as string[]).join(" ")];
+  });
+  const keys = written.map(([key]) => key.toLowerCase());
+  if (keys.includes("manifest-version")) {
+    throw new FabrError(`${name}'s manifest cannot set Manifest-Version: the jar format's own`);
+  }
+  if (mainClass !== undefined && keys.includes("main-class")) {
+    throw new FabrError(`${name} names its Main-Class twice, as main_class and in its manifest`).withHelp("keep one of them");
+  }
+  return { mainClass, written };
+}
+
+function buildJar(context: TargetContext, inputs: JarInputs, edges: JarEdges, attributes: JarAttributes): Computable<RuleResult> {
+  const { mainClass } = attributes;
   const { srcs, resources } = inputs;
   const sources = FileSet.unionAll(...srcs);
   const runtime = [...inputs.dependencies, ...inputs.provided, ...inputs.optional_provided];
@@ -121,9 +156,16 @@ function buildJar(context: TargetContext, inputs: JarInputs, edges: JarEdges, ma
       );
   return classes.then(compiled =>
     (mainClass === undefined ? Computable.resolve(undefined) : checkMainClass(context.name, mainClass, compiled, runtime)).then(() => {
-    const manifest = manifestFile([["Manifest-Version", "1.0"], ["Created-By", "fabr"], ...(mainClass === undefined ? [] : [["Main-Class", mainClass] as [string, string]])]);
+    const manifest = manifestFile([
+      ["Manifest-Version", "1.0"],
+      ["Created-By", "fabr"],
+      ...(mainClass === undefined ? [] : [["Main-Class", mainClass] as [string, string]]),
+      ...attributes.written,
+    ]);
     const contents = FileSet.unionAll(compiled, ...resources, new FileSet(new Map([[MANIFEST_NAME, manifest]])));
-    return createJarAction(contents, jarNameOf(context.name)).withReshape(files => packageOf(context, files, edges));
+    return createJarAction(contents, jarNameOf(context.name), FileSet.unionAll(...inputs.stored)).withReshape(files =>
+      packageOf(context, files, edges)
+    );
     })
   );
 }

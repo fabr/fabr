@@ -55,11 +55,14 @@ describe("MAVEN_FORMAT", () => {
     expect(refOf('com.example:lib:"[1.0,2.0)"').versionConstraint).to.equal("[1.0,2.0)");
   });
 
-  it("reads a reference with no version as a namespace", () => {
-    for (const written of ["org.slf4j/slf4j-api", "org.slf4j:slf4j-api", "org.slf4j"]) {
-      expect(vend(written)).to.be.instanceOf(NamespaceRef);
+  it("reads a package with no version as a requirement, for a BOM to give its version, and a group as a namespace", () => {
+    for (const written of ["org.slf4j/slf4j-api", "org.slf4j:slf4j-api"]) {
+      const ref = vend(written);
+      expect(ref).to.be.instanceOf(RepositoryRef);
+      expect([(ref as RepositoryRef).name, (ref as RepositoryRef).versionConstraint]).to.deep.equal(["org.slf4j/slf4j-api", undefined]);
     }
-    expect((vend("org.slf4j:slf4j-api") as NamespaceRef).name).to.equal("org.slf4j/slf4j-api");
+    expect(vend("org.slf4j")).to.be.instanceOf(NamespaceRef);
+    expect(() => MAVEN_FORMAT.validateRequirement({ name: "org.slf4j/slf4j-api", versionConstraint: undefined, override: "force" })).to.throw(/states no version/);
   });
 
   it("takes a marker on an exact version, and refuses one on a range or a projection", () => {

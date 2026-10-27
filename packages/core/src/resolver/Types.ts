@@ -107,6 +107,15 @@ export interface Requirement {
    *   (`zustand` optionally peering on `react`).
    */
   readonly provided?: "expected" | "optional";
+  /**
+   * A BOM's dependency (Maven's `dependencyManagement`, Gradle's `platform`):
+   * a floor on the package where something else requires it, which never
+   * requires the package itself. Where the resolution requires the package,
+   * by any other edge, floored or not, this one's minimum joins the selection
+   * as an ordinary demand; where nothing does, it does nothing. It is no edge
+   * of its requirer: nothing is laid out, bound or judged through it.
+   */
+  readonly bom?: true;
 }
 
 /**

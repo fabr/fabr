@@ -22,7 +22,7 @@ import * as yazl from "yazl";
 import { Computable } from "../core/Computable";
 import { readStream } from "../core/Fetch";
 import { mapComputable } from "./Functional";
-import { FileSet } from "../core/FileSet";
+import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { SymlinkFile } from "../core/SymlinkFile";
 
 export interface ZipOptions {
@@ -49,12 +49,19 @@ function ancestorsOf(name: string): string[] {
 }
 
 /**
- * Pack a FileSet into a zip archive (a jar), with `yazl`. Every directory
- * above a file gets an entry of its own, entries are written in sorted name
- * order after `options.first`, and each carries a fixed date and the file's
- * own mode, so the output is deterministic. Symlinks are refused.
+ * Pack files into a zip archive (a jar), with `yazl`: `compressed` deflated,
+ * and `stored` kept uncompressed, as a jar nested in a jar must be for a loader
+ * that reads it in place. Every directory above a file gets an entry of its
+ * own, entries are written in sorted name order after `options.first`, and
+ * each carries a fixed date and the file's own mode, so the output is
+ * deterministic. A name in both sets, and a symlink, are refused.
  */
-export function packToZip(files: FileSet, options: ZipOptions = {}): Computable<Buffer> {
+export function packToZip(compressed: FileSet, stored: FileSet = EMPTY_FILESET, options: ZipOptions = {}): Computable<Buffer> {
+  const both = [...stored].map(([name]) => name).filter(name => compressed.getFile(name) !== undefined);
+  if (both.length > 0) {
+    return Computable.reject(new Error(`cannot zip '${both[0]}' both compressed and stored`));
+  }
+  const files = FileSet.unionAll(compressed, stored);
   const names = [...files].map(([name]) => name);
   const directories = new Set(names.flatMap(ancestorsOf));
   const first = (options.first ?? []).filter(name => files.getFile(name) !== undefined);
@@ -76,7 +83,12 @@ export function packToZip(files: FileSet, options: ZipOptions = {}): Computable<
       if (content === undefined) {
         zip.addEmptyDirectory(name, { mtime: ZIP_DATE, mode: ZIP_DIRECTORY_MODE, forceDosTimestamp: true });
       } else {
-        zip.addBuffer(content, name, { mtime: ZIP_DATE, mode: ZIP_FILE_TYPE | (files.getFile(name)!.mode & 0o7777), forceDosTimestamp: true });
+        zip.addBuffer(content, name, {
+          mtime: ZIP_DATE,
+          mode: ZIP_FILE_TYPE | (files.getFile(name)!.mode & 0o7777),
+          forceDosTimestamp: true,
+          compress: stored.getFile(name) === undefined,
+        });
       }
     });
     /* yazl's output stream is a PassThrough. */

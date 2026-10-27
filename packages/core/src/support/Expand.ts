@@ -171,9 +171,9 @@ function descend(candidate: BoundaryCandidate, pattern: Name, prefix: string, ex
     return Computable.resolve(EMPTY_FILESET);
   }
   /* A glob-swept candidate is speculative — the pattern merely swept past this
-   * file — so one that cannot actually be expanded (an unsupported archive
-   * kind like zip, gzip wrapping non-tar content, a corrupt or unreadable
-   * file) contributes nothing, per the globs-are-lenient convention. A
+   * file — so one that cannot actually be expanded (gzip wrapping non-tar
+   * content, a corrupt or unreadable file) contributes nothing, per the
+   * globs-are-lenient convention. A
    * literal probe is a path the user WROTE: its expansion failure is a real,
    * reportable error. */
   const expansion = named ? expand(file) : expand(file).catch(() => EMPTY_FILESET);

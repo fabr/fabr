@@ -19,7 +19,7 @@ js_package @fabr-build/java-boot {
 # stage, the one published, does.
 fabr_plugin @fabr-build/java {
   srcs = @fabr-build/java-boot;
-  libs = lib/JAVA.fabr;
+  libs = ./lib/JAVA.fabr;
   resources<STAGE=1> = fabr-junit-runner;
 }
 

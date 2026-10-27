@@ -17,7 +17,7 @@
 import * as zlib from "zlib";
 import { expect } from "chai";
 import { packToZip } from "./PackZip";
-import { FileSet, IFile } from "../core/FileSet";
+import { EMPTY_FILESET, FileSet, IFile } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import { SymlinkFile } from "../core/SymlinkFile";
 
@@ -29,14 +29,14 @@ function fileSetOf(entries: Record<string, string>): FileSet {
   return new FileSet(map);
 }
 
-/** Read a zip's entries back through its central directory: name, mode and
- *  content (undefined for a directory), in archive order. */
-function readZip(zip: Buffer): Array<{ name: string; mode: number; content?: string }> {
+/** Read a zip's entries back through its central directory: name, mode,
+ *  compression method and content (undefined for a directory), in archive order. */
+function readZip(zip: Buffer): Array<{ name: string; mode: number; method: number; content?: string }> {
   const end = zip.length - 22;
   expect(zip.readUInt32LE(end)).to.equal(0x06054b50);
   const count = zip.readUInt16LE(end + 10);
   let at = zip.readUInt32LE(end + 16);
-  const entries: Array<{ name: string; mode: number; content?: string }> = [];
+  const entries: Array<{ name: string; mode: number; method: number; content?: string }> = [];
   for (let index = 0; index < count; index++) {
     expect(zip.readUInt32LE(at)).to.equal(0x02014b50);
     const method = zip.readUInt16LE(at + 10);
@@ -51,7 +51,7 @@ function readZip(zip: Buffer): Array<{ name: string; mode: number; content?: str
     const data = zip.subarray(dataStart, dataStart + compressed);
     const content = method === 8 ? zlib.inflateRawSync(data) : data;
     expect(zlib.crc32(content)).to.equal(crc);
-    entries.push(name.endsWith("/") ? { name, mode } : { name, mode, content: content.toString("utf8") });
+    entries.push(name.endsWith("/") ? { name, mode, method } : { name, mode, method, content: content.toString("utf8") });
     at += 46 + nameLength;
   }
   return entries;
@@ -61,6 +61,7 @@ describe("packToZip", () => {
   it("writes every file and the directories above it, leading entries first", async () => {
     const zip = await packToZip(
       fileSetOf({ "com/x/A.class": "a".repeat(200), "app.properties": "k=v", "META-INF/MANIFEST.MF": "Manifest-Version: 1.0\r\n" }),
+      EMPTY_FILESET,
       { first: ["META-INF/MANIFEST.MF"] }
     );
     const entries = readZip(zip);
@@ -93,6 +94,24 @@ describe("packToZip", () => {
     }
     /* 1980-01-01 00:00 is DOS time 0, date (0 << 9) | (1 << 5) | 1; no extra field, so no extended timestamp. */
     expect(stamps).to.deep.equal(Array.from({ length: 3 }, () => [0, 0x21, 0]));
+  });
+
+  it("stores the files named stored uncompressed, and deflates the rest", async () => {
+    const zip = await packToZip(fileSetOf({ "b.txt": "y".repeat(200) }), fileSetOf({ "BOOT-INF/lib/a.jar": "x".repeat(200) }));
+    const methods = readZip(zip).filter(entry => entry.content !== undefined).map(entry => [entry.name, entry.method]);
+    /* 0 is stored, 8 deflated. */
+    expect(methods).to.deep.equal([
+      ["BOOT-INF/lib/a.jar", 0],
+      ["b.txt", 8],
+    ]);
+  });
+
+  it("refuses a name both compressed and stored", async () => {
+    const refused = await packToZip(fileSetOf({ "a.jar": "x" }), fileSetOf({ "a.jar": "y" })).then(
+      () => undefined,
+      (err: Error) => err
+    );
+    expect(refused?.message).to.match(/both compressed and stored/);
   });
 
   it("refuses a symlink", async () => {

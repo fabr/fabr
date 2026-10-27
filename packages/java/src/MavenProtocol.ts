@@ -84,11 +84,14 @@ function splitMavenReference(name: Name): Requirement & { projection?: IProjecti
 }
 
 /** Check a Maven reference: a `group/artifact` name, and a valid version or
- *  range; an override marker needs an exact version. */
+ *  range, or none, for a BOM to give; an override marker needs an exact version. */
 function validateMavenRequirement({ name, versionConstraint, override }: Requirement): void {
   splitMavenName(name);
   if (versionConstraint === undefined) {
-    throw new FabrError(`Missing version in Maven reference '${name}' (expected '<group>/<artifact>:<version-or-range>')`);
+    if (override !== undefined) {
+      throw new FabrError(`${name} states no version, so a marker means nothing on it`).withHelp("write the version the marker is for");
+    }
+    return;
   }
   try {
     MAVEN_VERSIONS.parseConstraint(versionConstraint);
@@ -104,7 +107,7 @@ function validateMavenRequirement({ name, versionConstraint, override }: Require
 
 export const MAVEN_FORMAT: PackageFormat<MavenVersion, MavenConstraint> = {
   ...MAVEN_VERSIONS,
-  resolutionTag: "maven:resolve:1",
+  resolutionTag: "maven:resolve:2",
   splitReference: splitMavenReference,
   validateRequirement: validateMavenRequirement,
   parsePublishCoordinate: () => {

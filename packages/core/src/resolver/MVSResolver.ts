@@ -257,6 +257,10 @@ function resolvePhase<V, C>(
      * tree requires only floorlessly), and the packages seen floorlessly
      * required — the trigger condition, judged at quiescence. */
     const alternateAnswers = new Map<string, { version: V; publishedName?: string }>();
+    /* BOM dependencies, deferred to quiescence: each fires as an ordinary
+     * demand once the tree requires its package by another edge. */
+    const bomReqs: Array<{ req: Requirement; requiredBy: string }> = [];
+    const bomFired = new Set<{ req: Requirement; requiredBy: string }>();
     const alternateFired = new Set<string>();
     const floorlessRequired = new Set<string>();
 
@@ -299,6 +303,10 @@ function resolvePhase<V, C>(
          * pruning must not fail the whole resolution. followEdge reparses the
          * constraint (deterministically the same error) on exactly the edges
          * that are in effect. */
+        return;
+      }
+      if (req.bom) {
+        bomReqs.push({ req, requiredBy });
         return;
       }
       if (req.override === "alternate") {
@@ -510,7 +518,8 @@ function resolvePhase<V, C>(
       };
       try {
         registry.getRequirements(req.name, version).then(requirements => {
-          nodeRequirements.set(id, requirements);
+          /* A BOM's dependencies are no edges of the node: they only offer floors (see enqueue). */
+          nodeRequirements.set(id, requirements.filter(req => !req.bom));
           for (const req of requirements) {
             enqueue(req, id);
           }
@@ -553,7 +562,12 @@ function resolvePhase<V, C>(
       const supplying = [...alternateAnswers].filter(
         ([pkg]) => !alternateFired.has(pkg) && floorlessRequired.has(pkg) && !publishedPkgs.has(pkg)
       );
-      if (firing.length === 0 && supplying.length === 0) {
+      /* A BOM's dependency on a package the tree requires by another edge,
+       * floored or not, offers its floor. */
+      const flooring = bomReqs.filter(
+        entry => !bomFired.has(entry) && (selectedPkgs.has(requiredAs(entry.req)) || floorlessRequired.has(requiredAs(entry.req)))
+      );
+      if (firing.length === 0 && supplying.length === 0 && flooring.length === 0) {
         finish();
         return;
       }
@@ -561,6 +575,10 @@ function resolvePhase<V, C>(
       for (const entry of firing) {
         providedFired.add(entry);
         enqueue({ ...entry.req, provided: undefined }, entry.requiredBy);
+      }
+      for (const entry of flooring) {
+        bomFired.add(entry);
+        enqueue({ ...entry.req, bom: undefined }, entry.requiredBy);
       }
       for (const [pkg, { version, publishedName }] of supplying) {
         alternateFired.add(pkg);

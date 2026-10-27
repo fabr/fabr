@@ -35,5 +35,5 @@ js_package @fabr-build/js-boot {
 # the installed copy (`plugin @fabr-boot/js;`), so this is built, not used.
 fabr_plugin @fabr-build/js {
   srcs = @fabr-build/js-boot;
-  libs = lib/JS.fabr;
+  libs = ./lib/JS.fabr;
 }

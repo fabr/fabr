@@ -56,6 +56,26 @@ import { parseXml, xmlChild, xmlChildren } from "./Xml";
 
 const METADATA_FILE = "maven-metadata.xml";
 
+/**
+ * @return the BOM dependencies of a `pom`-packaged package: each jar its
+ * effective `dependencyManagement` gives a version, once per package. A
+ * package of any other packaging manages only its own build, and has none.
+ */
+function bomDependencies(pom: EffectivePom): Requirement[] {
+  if (pom.packaging !== "pom") {
+    return [];
+  }
+  const managed = new Map<string, Requirement>();
+  for (const dependency of pom.dependencyManagement) {
+    const name = mavenName(dependency.groupId, dependency.artifactId);
+    if (dependency.version === undefined || dependency.classifier !== undefined || (dependency.type ?? "jar") !== "jar" || managed.has(name)) {
+      continue;
+    }
+    managed.set(name, { name, versionConstraint: dependency.version, bom: true });
+  }
+  return [...managed.values()];
+}
+
 /** The file extension an artifact of each packaging is published with, where it is not `jar`. */
 const PACKAGING_EXTENSIONS = new Map([
   ["war", "war"],
@@ -136,16 +156,21 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     return Computable.resolve("");
   }
 
-  /** Get the requirements of a package: what its effective POM passes on, its
-   *  optional and provided-scope dependencies as optional provided requirements. */
+  /**
+   * Get the requirements of a package: what its effective POM passes on, its
+   * optional and provided-scope dependencies as optional provided
+   * requirements; and, for a BOM (a `pom`-packaged package), the jars its
+   * `dependencyManagement` manages, as its BOM dependencies.
+   */
   public getRequirements(name: string, version: MavenVersion): Computable<Requirement[]> {
-    return this.effectivePomOf(name, version.text).then(pom =>
-      passedOnDependencies(pom).map(({ dependency, optional }) => ({
+    return this.effectivePomOf(name, version.text).then(pom => [
+      ...passedOnDependencies(pom).map(({ dependency, optional }) => ({
         name: mavenName(dependency.groupId, dependency.artifactId),
         versionConstraint: dependency.version,
         ...(optional ? { provided: "optional" as const } : {}),
-      }))
-    );
+      })),
+      ...bomDependencies(pom),
+    ]);
   }
 
   public lowestAvailable(name: string, constraint: string): Computable<MavenVersion | undefined> {
