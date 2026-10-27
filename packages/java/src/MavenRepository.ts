@@ -166,26 +166,35 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     return Computable.resolve(undefined).then(() => resolveBarePackage(this, reference));
   }
 
-  /** Fetch a package's artifact, checked against its `.sha1`: nothing for a `pom`-packaged one. */
+  /**
+   * Fetch a package's artifact, checked against its `.sha1`. A `pom`-packaged
+   * package has one only where a jar is published beside its POM, as a
+   * dependency on it fetches the jar whatever the POM's packaging says;
+   * otherwise (a BOM, an aggregator) it has none.
+   */
   public fetch(name: string, version: MavenVersion): Computable<PackageFileSet> {
     const coordinate = this.coordinateOf(name, version.text);
     return this.effectivePomOf(name, version.text).then(pom => {
-      if (pom.packaging === "pom") {
-        return new PackageFileSet([], name, version.text);
-      }
       const file = `${coordinate.artifactId}-${coordinate.version}.${PACKAGING_EXTENSIONS.get(pom.packaging) ?? "jar"}`;
       const artifactUrl = `${this.versionUrl(coordinate)}/${file}`;
-      return fetchFile(this.context, {
-        key: `${this.identity} ${coordinateText(coordinate)}`,
-        tag: "maven:artifact:1",
-        report: { resource: "artifact", role: "content" },
-        name: file,
-        source: () =>
-          this.sha1Of(artifactUrl).then(sha1 => ({
-            url: artifactUrl,
-            expected: sha1 === undefined ? undefined : { algorithm: "sha1", encoding: "hex" as const, value: sha1 },
-          })),
-      }).then(files => new PackageFileSet(files, name, version.text));
+      const fetchArtifact = (sha1: () => Computable<string | undefined>): Computable<PackageFileSet> =>
+        fetchFile(this.context, {
+          key: `${this.identity} ${coordinateText(coordinate)}`,
+          tag: "maven:artifact:1",
+          report: { resource: "artifact", role: "content" },
+          name: file,
+          source: () =>
+            sha1().then(expected => ({
+              url: artifactUrl,
+              expected: expected === undefined ? undefined : { algorithm: "sha1", encoding: "hex" as const, value: expected },
+            })),
+        }).then(files => new PackageFileSet(files, name, version.text));
+      if (pom.packaging !== "pom") {
+        return fetchArtifact(() => this.sha1Of(artifactUrl));
+      }
+      return this.sha1Of(artifactUrl).then(sha1 =>
+        sha1 === undefined ? new PackageFileSet([], name, version.text) : fetchArtifact(() => Computable.resolve(sha1))
+      );
     });
   }
 

@@ -22,8 +22,8 @@
  *
  * A package's name is `group/artifact` (`org.slf4j/slf4j-api`), which is also
  * how a target building one is named. A reference may be written that way or
- * as Maven writes a coordinate: `@maven:org.slf4j/slf4j-api:1.7.36` and
- * `@maven:org.slf4j:slf4j-api:1.7.36` are the same reference, and anything
+ * as Maven writes a coordinate: `@mvn:org.slf4j/slf4j-api:1.7.36` and
+ * `@mvn:org.slf4j:slf4j-api:1.7.36` are the same reference, and anything
  * after the version is a projection into the package. Run, a package starts
  * the `Main-Class` its jar's manifest names.
  */
@@ -48,7 +48,7 @@ export function splitMavenName(name: string): { groupId: string; artifactId: str
 }
 
 /**
- * Split a written reference (after `@maven:`) into the package, its version,
+ * Split a written reference (after `@mvn:`) into the package, its version,
  * and any projection after the version. The group and artifact are separated
  * by `/` or `:`; the version runs to the next `:` or `/`.
  */
@@ -113,11 +113,15 @@ export const MAVEN_FORMAT: PackageFormat<MavenVersion, MavenConstraint> = {
   readContentPackage: () => Computable.reject(new FabrError("content cannot be read as a Maven package yet")),
   makeRunnable: (pkg, context) =>
     jarMainClass(pkg).then(mainClass => {
+      const name = pkg.packageName ?? "the package";
+      if (![...pkg].some(([file]) => file.endsWith(".jar"))) {
+        throw new FabrError(`${name} cannot be run: it publishes no jar`);
+      }
       if (mainClass === undefined) {
-        throw new FabrError(`${pkg.packageName ?? "the package"} cannot be run: its jar's manifest names no Main-Class`).withHelp(
-          "declare a jar_package with an `entry`, and this package among its deps"
+        throw new FabrError(`${name} cannot be run: its jar's manifest names no Main-Class`).withHelp(
+          "declare a jar_package with a `main_class`, and this package among its deps"
         );
       }
-      return makeJarRunnable(context, pkg, mainClass);
+      return makeJarRunnable(context, [pkg], mainClass);
     }),
 };

@@ -221,23 +221,46 @@ const LIB_DIR = "lib";
 /** The jar `java -jar` starts. */
 const LAUNCHER = "launcher.jar";
 
+/** Where a program's own compiled classes are laid out in its install. */
+const CLASSES_DIR = "classes";
+
+/** What a Java program runs with besides its packages: its own classes, its arguments and the JVM's. */
+export interface JavaProgramOptions {
+  /** Classes compiled for the program itself, first on the classpath. */
+  classes?: FileSet;
+  /** Arguments given the program, before the caller's. */
+  args?: readonly string[];
+  /** Arguments given the JVM, before the program. */
+  jvmArgs?: readonly string[];
+}
+
 /**
- * Make `pkg` runnable on `JAVA`, starting `mainClass`, with it and everything
- * it requires on the classpath. The install holds each jar under `lib/` and a
- * launcher jar whose manifest names the class and, relative to itself, the
- * classpath, so `java -jar` starts it from whatever directory.
+ * Make a program runnable on `JAVA`, starting `mainClass`, with `deps` and
+ * everything they require on the classpath, after any `classes` of its own.
+ * The install holds each jar under `lib/` and a launcher jar whose manifest
+ * names the class and, relative to itself, the classpath, so `java -jar`
+ * starts it from whatever directory.
  */
-export function makeJarRunnable(context: ResolutionContext, pkg: PackageFileSet, mainClass: string): Computable<RunnableFileSet> {
-  const classpath = classpathOf([pkg]).map(([name, file]): [string, IFile] => [path.posix.join(LIB_DIR, name), file]);
+export function makeJarRunnable(
+  context: ResolutionContext,
+  deps: readonly FileSet[],
+  mainClass: string,
+  { classes, args = [], jvmArgs = [] }: JavaProgramOptions = {}
+): Computable<RunnableFileSet> {
+  const classpath = classpathOf(deps).map(([name, file]): [string, IFile] => [path.posix.join(LIB_DIR, name), file]);
+  const own = classes === undefined || classes.isEmpty() ? [] : [`${CLASSES_DIR}/`];
   const manifest = manifestFile([
     ["Manifest-Version", "1.0"],
     ["Created-By", "fabr"],
     ["Main-Class", mainClass],
-    ["Class-Path", classpath.map(([name]) => encodeURI(name)).join(" ")],
+    ["Class-Path", [...own, ...classpath.map(([name]) => encodeURI(name))].join(" ")],
   ]);
   return packToZip(new FileSet(new Map([[MANIFEST_NAME, manifest]])), { first: [MANIFEST_NAME] }).then(launcher => {
-    const install = new FileSet(new Map([...classpath, [LAUNCHER, new MemoryFile(launcher)]]));
-    return context.launchedBy(RunnableFileSet.forEntry(install, LAUNCHER), "JAVA", ["-jar"]);
+    const install = FileSet.unionAll(
+      new FileSet(new Map([...classpath, [LAUNCHER, new MemoryFile(launcher)]])),
+      own.length === 0 ? new FileSet(new Map()) : classes!.mountedAt(CLASSES_DIR)
+    );
+    return context.launchedBy(RunnableFileSet.forEntry(install, LAUNCHER, [...args]), "JAVA", [...jvmArgs, "-jar"]);
   });
 }
 

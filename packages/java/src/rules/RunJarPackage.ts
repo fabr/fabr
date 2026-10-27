@@ -44,5 +44,5 @@ function runnableJar(context: TargetContext, pkg: FileSet[], mainClass: string |
   if (mainClass === undefined) {
     throw new FabrError(`${context.name} has no main_class, so it cannot be run`).withHelp("set `main_class` to the class the program starts in");
   }
-  return makeJarRunnable(context, built, mainClass);
+  return makeJarRunnable(context, [built], mainClass);
 }

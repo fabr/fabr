@@ -1,7 +1,7 @@
 ##################### Global Properties ####################
 
 #
-# The Maven repository that `@maven` refers to. Set it to use a mirror for
+# The Maven repository that `@mvn` refers to. Set it to use a mirror for
 # every package.
 #
 
@@ -34,7 +34,7 @@ default JAVA = @jdk:21.0.12.1+1:java;
 # packages: the launcher of the platform their test engines are built for.
 #
 
-default JUNIT_PLATFORM_LAUNCHER = @maven:org.junit.platform:junit-platform-launcher:1.11.4;
+default JUNIT_PLATFORM_LAUNCHER = @mvn:org.junit.platform:junit-platform-launcher:1.11.4;
 
 #
 # The jar that runs a `jar_package`'s tests on the JUnit Platform and reports
@@ -65,10 +65,10 @@ default flag java25 { }
 #     jar_package com.example/app {
 #       srcs = src/main/java:**/*.java;
 #       resources = src/main/resources:**;
-#       deps = @maven:org.slf4j:slf4j-api:1.7.36;
+#       deps = @mvn:org.slf4j:slf4j-api:1.7.36;
 #       main_class = com.example.Main;
 #       tests = src/test/java:**/*.java;
-#       test_deps = @maven:org.junit.jupiter:junit-jupiter:5.11.4;
+#       test_deps = @mvn:org.junit.jupiter:junit-jupiter:5.11.4;
 #     }
 #
 # `fabr run` runs its `main_class` with the jar and everything it requires on
@@ -107,6 +107,35 @@ targetdef jar_package {
     test_deps = PACKAGES;
     # Files on the classpath the tests run with, as `resources` are.
     test_resources = FILES;
+}
+
+#
+# A Java program, made to run: its sources compiled and the packages it
+# requires, started in its main class. `fabr run` runs it, and a `generate`
+# command may use it as a tool:
+#
+#     java_program spotbugs {
+#       deps = @mvn:com.github.spotbugs:spotbugs:4.8.6;
+#       args = -textui;
+#     }
+#
+
+targetdef java_program {
+    # The program's own Java sources, compiled against `deps`.
+    srcs = FILES;
+    # The packages the program runs with, and `java<release>` flags.
+    deps = PACKAGES;
+    # The annotation processors the compiler runs on `srcs`: packages,
+    # resolved apart from `deps`.
+    processors = PACKAGES;
+    # The class the program starts in (`com.example.Main`). Where it is not
+    # given, the class of the sole source, or with no sources, the `Main-Class`
+    # of the sole package's jar.
+    main_class = STRING;
+    # Arguments given the program, before any its caller gives.
+    args = STRING;
+    # Arguments given the JVM, before the program: `-Xmx2g`, `"-Dname=value"`.
+    jvm_args = STRING;
 }
 
 #
@@ -159,7 +188,7 @@ targetdef jdk_distribution {
 # Maven Central, or the repository `MAVEN_REPOSITORY_URL` names.
 #
 
-default maven_repository @maven {
+default maven_repository @mvn {
     url = ${MAVEN_REPOSITORY_URL};
 }
 
@@ -178,6 +207,7 @@ rule jar_package pkg<BUILD_OPERATION=build> = @fabr-build/java:rules/BuildJarPac
 rule jar_package pkg<BUILD_OPERATION=run> = @fabr-build/java:rules/RunJarPackage;
 rule jar_package pkg<BUILD_OPERATION=test> = @fabr-build/java:rules/TestJarPackage;
 rule java_compile c = @fabr-build/java:rules/BuildJavaCompile;
+rule java_program p<BUILD_OPERATION=run> = @fabr-build/java:rules/RunJavaProgram;
 
 repository maven_repository = @fabr-build/java:MavenRepository;
 repository jdk_distribution = @fabr-build/java:JdkDistribution;
