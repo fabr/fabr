@@ -29,6 +29,20 @@ default JAVAC = @jdk:21.0.12.1+1:javac;
 
 default JAVA = @jdk:21.0.12.1+1:java;
 
+#
+# The JUnit Platform launcher tests run with, resolved with the tests' own
+# packages: the launcher of the platform their test engines are built for.
+#
+
+default JUNIT_PLATFORM_LAUNCHER = @maven:org.junit.platform:junit-platform-launcher:1.11.4;
+
+#
+# The jar that runs a `jar_package`'s tests on the JUnit Platform and reports
+# what happened: fabr's own, by default.
+#
+
+default JAVA_TEST_RUNNER = @fabr-build/java:fabr-junit-runner.jar;
+
 #################### Source version flags ##################
 
 # The sources are written for Java 8: using a later language feature or API
@@ -52,11 +66,14 @@ default flag java25 { }
 #       srcs = src/main/java:**/*.java;
 #       resources = src/main/resources:**;
 #       deps = @maven:org.slf4j:slf4j-api:1.7.36;
-#       entry = src/main/java:com/example/Main.java;
+#       main_class = com.example.Main;
+#       tests = src/test/java:**/*.java;
+#       test_deps = @maven:org.junit.jupiter:junit-jupiter:5.11.4;
 #     }
 #
-# `fabr run` runs its `entry` with the jar and everything it requires on the
-# classpath.
+# `fabr run` runs its `main_class` with the jar and everything it requires on
+# the classpath, and `fabr test` runs the tests its `tests` compile to on the
+# JUnit Platform, with the test engines in its `test_deps`.
 #
 
 targetdef jar_package {
@@ -79,9 +96,17 @@ targetdef jar_package {
     # Files to put in the jar as they are, named as they are found on the
     # classpath (`application.properties`).
     resources = FILES;
-    # The source of the class the program starts in, which the jar's manifest
-    # names as its `Main-Class`.
-    entry = FILES;
+    # The class the program starts in (`com.example.Main`), which the jar's
+    # manifest names as its `Main-Class`: one of the jar's, or of a package it
+    # requires.
+    main_class = STRING;
+    # The test sources, compiled against the jar. The test engines on the
+    # classpath find the tests among the classes they compile to.
+    tests = FILES;
+    # Packages only the tests use, such as JUnit's API and test engine.
+    test_deps = PACKAGES;
+    # Files on the classpath the tests run with, as `resources` are.
+    test_resources = FILES;
 }
 
 #
@@ -151,6 +176,7 @@ default jdk_distribution @jdk {
 #
 rule jar_package pkg<BUILD_OPERATION=build> = @fabr-build/java:rules/BuildJarPackage;
 rule jar_package pkg<BUILD_OPERATION=run> = @fabr-build/java:rules/RunJarPackage;
+rule jar_package pkg<BUILD_OPERATION=test> = @fabr-build/java:rules/TestJarPackage;
 rule java_compile c = @fabr-build/java:rules/BuildJavaCompile;
 
 repository maven_repository = @fabr-build/java:MavenRepository;

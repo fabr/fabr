@@ -25,7 +25,8 @@ import type { BuildModel } from "./BuildModel";
 import type { ExecutionContext } from "./ExecutionContext";
 import { IPrefixMatch } from "./Namespace";
 import { BUILD_OPERATION, Constraints } from "./Constraints";
-import { FileSet } from "../core/FileSet";
+import { FileSet, IFile } from "../core/FileSet";
+import { MemoryFile } from "../core/MemoryFS";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { Diagnostic, ISourcePosition, Log } from "../support/Log";
 import { CORE_PACKAGE } from "../Constants";
@@ -48,6 +49,9 @@ import { Computable, ComputableSource } from "../core/Computable";
 interface IFabrPluginModule {
   activate?: () => void;
 }
+
+/** A package's manifest. */
+export const MANIFEST = "package.json";
 
 /** The `package.json` field that marks a package as a fabr plugin, listing its `.fabr` files. */
 export const PLUGIN_MANIFEST_FIELD = "@fabr-build/plugin";
@@ -330,4 +334,15 @@ function pluginManifest(model: BuildModel, decl: IPluginDecl, execution: Executi
       }
       return manifest;
     });
+}
+
+/** Make the plugin `name`'s `package.json` from its base package's, `base`: named `name`, listing `libs` as the plugin's `.fabr` files. */
+export function pluginPackageJson(base: IFile | undefined, name: string, libs: string[]): Computable<IFile> {
+  if (base === undefined) {
+    throw new FabrError(`a 'fabr_plugin' target's 'srcs' is a package with a ${MANIFEST}`);
+  }
+  return base.readString().then(text => {
+    const manifest = { ...parseJson(text, MANIFEST, toJsonObject), name, [PLUGIN_MANIFEST_FIELD]: { libs } };
+    return MemoryFile.from(JSON.stringify(manifest, undefined, 2) + "\n");
+  });
 }

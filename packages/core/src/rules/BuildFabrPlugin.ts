@@ -26,13 +26,10 @@
  * plugin as it is published and installed.
  */
 
-import { Computable } from "../core/Computable";
 import { FabrError } from "../core/Errors";
-import { FileSet, IFile } from "../core/FileSet";
-import { MemoryFile } from "../core/MemoryFS";
+import { FileSet } from "../core/FileSet";
 import { PackageFileSet } from "../core/PackageFileSet";
-import { PLUGIN_MANIFEST_FIELD } from "../model/Plugin";
-import { parseJson, toJsonObject } from "../support/Json";
+import { MANIFEST, pluginPackageJson } from "../model/Plugin";
 import { defineRule } from "./Types";
 
 /** The `fabr_plugin` rule. */
@@ -51,23 +48,9 @@ export default defineRule({
     }
     const libNames = [...FileSet.unionAll(...libs)].map(([name]) => name).sort();
     const files = [...FileSet.unionAll(base, ...libs, ...resources)].filter(([name]) => name !== MANIFEST);
-    return pluginManifest(base, context.name, libNames).then(
+    return pluginPackageJson(base.getFile(MANIFEST), context.name, libNames).then(
       manifest =>
         new PackageFileSet(new FileSet(new Map([...files, [MANIFEST, manifest]])), context.name, base.version, base.dependencies, base.origin, base.provided)
     );
   },
 });
-
-const MANIFEST = "package.json";
-
-/** Make the base package's `package.json` named `name`, listing `libs` as the plugin's `.fabr` files. */
-function pluginManifest(base: PackageFileSet, name: string, libs: string[]): Computable<IFile> {
-  const file = base.getFile(MANIFEST);
-  if (file === undefined) {
-    throw new FabrError(`a 'fabr_plugin' target's 'srcs' is a package with a ${MANIFEST}`);
-  }
-  return file.readString().then(text => {
-    const manifest = { ...parseJson(text, MANIFEST, toJsonObject), name, [PLUGIN_MANIFEST_FIELD]: { libs } };
-    return MemoryFile.from(JSON.stringify(manifest, undefined, 2) + "\n");
-  });
-}

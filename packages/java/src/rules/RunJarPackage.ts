@@ -18,32 +18,31 @@
  */
 
 /**
- * The jar_package[run] rule: run the package's `entry` class on `JAVA`, with
+ * The jar_package[run] rule: run the package's `main_class` on `JAVA`, with
  * the package and everything it requires on the classpath (see
  * {@link makeJarRunnable}).
  */
 
 import { BUILD_OVERRIDE, Computable, defineRule, FabrError, FileSet, PackageFileSet, RunnableFileSet, TargetContext } from "@fabr-build/core";
-import { mainClassOf, makeJarRunnable } from "../JarPackage";
+import { makeJarRunnable } from "../JarPackage";
 
 /** The `jar_package` rule, under `run`. */
 export default defineRule({
   requirements(context) {
-    return { pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE), entry: context.getFileProperty("entry") };
+    return { pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE) };
   },
-  evaluateMaterialized(context, { pkg, entry }) {
-    return runnableJar(context, pkg, entry);
+  evaluateMaterialized(context, { pkg }) {
+    return context.getProperty("main_class").then(mainClass => runnableJar(context, pkg, mainClass?.toString()));
   },
 });
 
-function runnableJar(context: TargetContext, pkg: FileSet[], entry: FileSet[]): Computable<RunnableFileSet> {
+function runnableJar(context: TargetContext, pkg: FileSet[], mainClass: string | undefined): Computable<RunnableFileSet> {
   const built = pkg.find((source): source is PackageFileSet => source instanceof PackageFileSet);
   if (!built) {
     throw new FabrError("internal: jar_package[build] did not yield a package");
   }
-  const mainClass = mainClassOf(entry);
   if (mainClass === undefined) {
-    throw new FabrError(`${context.name} has no entry, so it cannot be run`).withHelp("set `entry` to the source of the class the program starts in");
+    throw new FabrError(`${context.name} has no main_class, so it cannot be run`).withHelp("set `main_class` to the class the program starts in");
   }
   return makeJarRunnable(context, built, mainClass);
 }

@@ -19,7 +19,7 @@
 
 import { expect } from "chai";
 import { FileSet, Flag, MemoryFile, PackageFileSet, packToZip, RefSource, RepositoryRef } from "@fabr-build/core";
-import { classpathOf, jarMainClass, javaRelease, mainClassOf, MANIFEST_NAME, manifestAttributes, manifestFile } from "./JarPackage";
+import { checkMainClass, classFileOf, classpathOf, jarMainClass, javaRelease, MANIFEST_NAME, manifestAttributes, manifestFile, packageOf } from "./JarPackage";
 
 const files = (...names: string[]): FileSet => new FileSet(new Map(names.map(name => [name, MemoryFile.from(name)])));
 
@@ -32,11 +32,25 @@ describe("javaRelease", () => {
   });
 });
 
-describe("mainClassOf", () => {
-  it("names the class of the entry's source, and refuses anything else", () => {
-    expect(mainClassOf([files("com/example/Main.java")])).to.equal("com.example.Main");
-    expect(mainClassOf([])).to.equal(undefined);
-    expect(() => mainClassOf([files("a.java", "b.java")])).to.throw(/one .java source/);
+describe("packageOf", () => {
+  it("reads the package a source declares, past comments and package annotations", () => {
+    expect(packageOf("package com.example;\nclass A {}")).to.equal("com.example");
+    expect(packageOf("/* licence */\n// note\n@Deprecated\npackage com . example ;\n")).to.equal("com.example");
+    expect(packageOf("// package not.this;\nclass A {}")).to.equal("");
+    expect(packageOf("import x.Y;\nclass A {}")).to.equal("");
+  });
+});
+
+describe("checkMainClass", () => {
+  it("accepts a class the jar holds or one a package it requires holds, and refuses any other", async () => {
+    expect(classFileOf("com.example.Main")).to.equal("com/example/Main.class");
+    await checkMainClass("app", "com.example.Main", files("com/example/Main.class"), []);
+    const jar = await packToZip(files("org/lib/Main.class"));
+    const lib = new PackageFileSet(new FileSet(new Map([["lib-1.0.jar", new MemoryFile(jar)]])), "org/lib", "1.0");
+    await checkMainClass("app", "org.lib.Main", files(), [lib]);
+    let refused: Error | undefined;
+    await checkMainClass("app", "com.example.Missing", files("com/example/Main.class"), [lib]).catch((err: Error) => (refused = err));
+    expect(refused?.message).to.match(/main_class 'com.example.Missing' is no class/);
   });
 });
 

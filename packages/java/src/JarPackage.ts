@@ -123,16 +123,39 @@ export function processorsOf(context: TargetContext): Computable<FileSet[]> {
     .then(materialized => materialized.filter((source): source is FileSet => source instanceof FileSet));
 }
 
-/** @return the class `entry` names (`com/example/Main.java` → `com.example.Main`), or undefined where there is none. */
-export function mainClassOf(entry: readonly FileSet[]): string | undefined {
-  const names = entry.flatMap(files => [...files].map(([name]) => name));
-  if (names.length === 0) {
-    return undefined;
+/**
+ * @return the package a Java source declares (`package com.example;` →
+ * `com.example`), or "" for the unnamed package: its first declaration,
+ * after any comments and package annotations.
+ */
+export function packageOf(source: string): string {
+  const code = source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, " ");
+  const declared = /^\s*(?:@[\w.]+\s*(?:\([^)]*\))?\s*)*package\s+([\w$]+(?:\s*\.\s*[\w$]+)*)\s*;/.exec(code);
+  return declared === null ? "" : declared[1].replace(/\s+/g, "");
+}
+
+/** @return the name of the class file `className` is compiled to (`com.example.Main` → `com/example/Main.class`). */
+export function classFileOf(className: string): string {
+  return `${className.replace(/\./g, "/")}.class`;
+}
+
+/**
+ * Check that `mainClass` is a class the jar holds (`classes`) or one of the
+ * jars it runs with (`deps`) does, reporting it as `name`'s otherwise.
+ */
+export function checkMainClass(name: string, mainClass: string, classes: FileSet, deps: readonly FileSet[]): Computable<void> {
+  const classFile = classFileOf(mainClass);
+  if (classes.getFile(classFile) !== undefined) {
+    return Computable.resolve(undefined);
   }
-  if (names.length > 1 || !names[0].endsWith(".java")) {
-    throw new FabrError(`entry must name one .java source, the class the program starts in; it names ${names.join(", ")}`);
-  }
-  return names[0].slice(0, -".java".length).replace(/\//g, ".");
+  return Computable.forAll(
+    classpathOf(deps).map(([, jar]) => jar.getBuffer().then(buffer => readZipMember(buffer, classFile))),
+    (...found) => {
+      if (found.every(member => member === undefined)) {
+        throw new FabrError(`${name}'s main_class '${mainClass}' is no class of its sources or of what it requires`);
+      }
+    }
+  );
 }
 
 /**

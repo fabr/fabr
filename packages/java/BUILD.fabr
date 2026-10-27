@@ -13,8 +13,26 @@ js_package @fabr-build/java-boot {
   metadata = { FABR_METADATA; description = Fabr Java support plugin }
 }
 
-# The plugin, built in the project: its code and JAVA.fabr.
+# The plugin, built in the project: its code, JAVA.fabr and the test runner.
+# The runner is built with the plugin's own rules, so the plugin is used at a
+# stage that carries no runner (`STAGE=0`), and the plugin built at the next
+# stage, the one published, does.
 fabr_plugin @fabr-build/java {
   srcs = @fabr-build/java-boot;
   libs = lib/JAVA.fabr;
+  resources<STAGE=1> = fabr-junit-runner;
+}
+
+# Which stage of a plugin built with its own rules is built: 0, without what
+# those rules build; 1, with it.
+STAGE = 1;
+
+plugin @fabr-build/java<STAGE=0>;
+
+# The runner `jar_package` tests run with by default: it runs test classes on
+# the JUnit Platform and reports in CTRF. It runs on Java 11 and later.
+jar_package fabr-junit-runner {
+  srcs = runner:*.java;
+  deps = java11;
+  compile_deps = @maven:org.junit.platform:junit-platform-launcher:1.11.4;
 }

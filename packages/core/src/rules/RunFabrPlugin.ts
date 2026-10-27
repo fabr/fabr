@@ -18,16 +18,46 @@
  */
 
 /**
- * The `fabr_plugin` target as a program: its base package (`srcs`) installed
- * with its closure, for the host. This is what fabr loads the plugin's code
- * from.
+ * The `fabr_plugin` target as a program: the plugin package (its base package,
+ * `srcs`, with its `libs` and `resources` and its plugin `package.json`)
+ * installed with the base package's closure, for the host. This is what fabr
+ * loads the plugin's code from, so its rules find its files as an installed
+ * plugin's do.
  */
 
+import * as path from "node:path";
+
+import { FileSet } from "../core/FileSet";
+import { RunnableFileSet } from "../core/RunnableFileSet";
+import { SymlinkFile } from "../core/SymlinkFile";
+import { BUILD_OVERRIDE } from "../model/Constraints";
+import { MANIFEST, pluginPackageJson } from "../model/Plugin";
 import { defineRule } from "./Types";
 
 /** The `fabr_plugin` rule, under `run`. */
 export default defineRule({
-  evaluateResolved(context) {
-    return context.getRunnableProperty("srcs");
+  requirements(context) {
+    return { libs: context.getFileProperty("libs", BUILD_OVERRIDE), resources: context.getFileProperty("resources", BUILD_OVERRIDE) };
+  },
+  evaluateMaterialized(context, { libs, resources }) {
+    return context.getRunnableProperty("srcs").then(code => {
+      const directory = packageDirectory(code);
+      const manifestName = path.posix.join(directory, MANIFEST);
+      const libNames = [...FileSet.unionAll(...libs)].map(([name]) => name).sort();
+      return pluginPackageJson(code.getFile(manifestName), context.name, libNames).then(manifest => {
+        const added = FileSet.unionAll(...libs, ...resources, new FileSet(new Map([[MANIFEST, manifest]])));
+        const install = FileSet.unionAll(code.remap(name => (name === manifestName ? undefined : name)), added.mountedAt(directory));
+        return new RunnableFileSet(install, code.args, code.interpreter, code.root, code.surface, code.served, code.launchCwd, code.env, code.origin);
+      });
+    });
   },
 });
+
+/** @return the directory the package `code` runs is laid out in within its install: its root, following the links that lead there. */
+function packageDirectory(code: RunnableFileSet): string {
+  let directory = code.root;
+  for (let file = code.getFile(directory); file instanceof SymlinkFile; file = code.getFile(directory)) {
+    directory = path.posix.normalize(path.posix.join(path.posix.dirname(directory), file.target));
+  }
+  return directory;
+}

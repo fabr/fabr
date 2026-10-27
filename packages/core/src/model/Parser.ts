@@ -463,7 +463,7 @@ const DIAG_INVALID_IMPLEMENTATION = new Diagnostic<{ loc: ISourcePosition }>(
 );
 const DIAG_INVALID_PLUGIN = new Diagnostic<{ loc: ISourcePosition }>(
   LogLevel.Error,
-  "A plugin is named by a reference, with no glob patterns or variables"
+  "A plugin is named by a reference, with no glob patterns, variables or rename"
 );
 const DIAG_DUP_SCHEMA_KEY = new Diagnostic<{ key: string; loc: ISourcePosition }>(
   LogLevel.Error,
@@ -1161,20 +1161,21 @@ export class BuildParser {
   }
 
   /**
-   * PluginDecl ::= 'plugin' NAME ';'
+   * PluginDecl ::= 'plugin' Reference ';'
    */
   private parsePluginDecl(): IPluginDecl {
     const token = this.token;
     if (token.type !== TokenType.IDENTIFIER && token.type !== TokenType.SIMPLE_NAME && token.type !== TokenType.NAME) {
       this.unexpectedTokenError("Name");
     }
-    const name = this.tokenToName(token);
-    if (name.hasVarSubst() || name.hasGlob()) {
-      this.invalidPluginName();
+    const name = this.parseReference();
+    if (name.hasVarSubst() || name.hasGlob() || name.getRenameTo() !== undefined) {
+      this.log.log(DIAG_INVALID_PLUGIN, { loc: { ...this.source, offset: token.start } });
+      throw new FabrError(PARSE_ERROR);
     }
-    this.nextToken();
+    const endOffset = this.prevTokenEnd;
     this.consumeIfToken(TokenType.SEMI);
-    return { kind: DeclKind.Plugin, source: this.source, offset: token.start, endOffset: this.prevTokenEnd, name };
+    return { kind: DeclKind.Plugin, source: this.source, offset: token.start, endOffset, name };
   }
 
   /**
@@ -2394,11 +2395,6 @@ export class BuildParser {
     throw new FabrError(PARSE_ERROR);
   }
 
-  private invalidPluginName(): never {
-    this.log.log(DIAG_INVALID_PLUGIN, { loc: { ...this.source, offset: this.token.start } });
-    throw new FabrError(PARSE_ERROR);
-  }
-
   /**
    * Parse a statement.
    *
@@ -2408,7 +2404,7 @@ export class BuildParser {
    * PropertyDecl ::= NAME Guard? '=' expr ';'
    * TargetDecl ::= NAME NAME '{' PropertyList '}'
    * IncludeDecl ::= 'include' NAME ';'
-   * PluginDecl ::= 'plugin' NAME ';'
+   * PluginDecl ::= 'plugin' Reference ';'
    * TargetDefDecl ::= 'targetdef' NAME '{' PropertyTypeList '}'
    * DefaultDecl ::= 'default' ( PropertyDecl | TargetDecl | 'rule' RuleBody )
    * RuleDecl ::= 'rule' NAME RuleBody

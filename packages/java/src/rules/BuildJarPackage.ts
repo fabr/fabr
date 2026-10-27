@@ -38,11 +38,10 @@ import {
   RuleResult,
   TargetContext,
 } from "@fabr-build/core";
-import { createJarAction, MANIFEST_NAME, mainClassOf, manifestFile, processorsOf } from "../JarPackage";
+import { checkMainClass, createJarAction, MANIFEST_NAME, manifestFile, processorsOf } from "../JarPackage";
 
 interface JarInputs {
   srcs: FileSet[];
-  entry: FileSet[];
   resources: FileSet[];
   dependencies: FileSet[];
   provided: FileSet[];
@@ -64,7 +63,6 @@ export default defineRule({
   requirements(context) {
     return {
       srcs: context.getFileProperty("srcs"),
-      entry: context.getFileProperty("entry"),
       resources: context.getFileProperty("resources"),
       dependencies: context.getPackageProperty("deps"),
       provided: context.getPackageProperty("provided_deps"),
@@ -74,8 +72,15 @@ export default defineRule({
   },
   evaluateResolved(context, requirements) {
     return Computable.forAll(
-      [requirements.materializeAll(), requirements.packages("dependencies"), requirements.packages("provided"), requirements.packages("optional_provided")],
-      (inputs, dependencies, provided, optional_provided) => buildJar(context, inputs, { dependencies, provided, optional_provided })
+      [
+        requirements.materializeAll(),
+        requirements.packages("dependencies"),
+        requirements.packages("provided"),
+        requirements.packages("optional_provided"),
+        context.getProperty("main_class"),
+      ],
+      (inputs, dependencies, provided, optional_provided, mainClass) =>
+        buildJar(context, inputs, { dependencies, provided, optional_provided }, mainClass?.toString())
     );
   },
 });
@@ -100,10 +105,10 @@ function packageOf(context: TargetContext, files: FileSet, edges: JarEdges): Pac
   );
 }
 
-function buildJar(context: TargetContext, inputs: JarInputs, edges: JarEdges): Computable<RuleResult> {
-  const { srcs, entry, resources } = inputs;
-  const sources = FileSet.unionAll(...srcs, ...entry);
-  const mainClass = mainClassOf(entry);
+function buildJar(context: TargetContext, inputs: JarInputs, edges: JarEdges, mainClass: string | undefined): Computable<RuleResult> {
+  const { srcs, resources } = inputs;
+  const sources = FileSet.unionAll(...srcs);
+  const runtime = [...inputs.dependencies, ...inputs.provided, ...inputs.optional_provided];
   const compileDeps = [...inputs.dependencies, ...inputs.provided, ...inputs.optional_provided, ...inputs.compile_deps];
   const classes = sources.isEmpty()
     ? Computable.resolve(EMPTY_FILESET)
@@ -114,9 +119,11 @@ function buildJar(context: TargetContext, inputs: JarInputs, edges: JarEdges): C
           { label: "Compiling", constraints: BUILD_OVERRIDE }
         )
       );
-  return classes.then(compiled => {
+  return classes.then(compiled =>
+    (mainClass === undefined ? Computable.resolve(undefined) : checkMainClass(context.name, mainClass, compiled, runtime)).then(() => {
     const manifest = manifestFile([["Manifest-Version", "1.0"], ["Created-By", "fabr"], ...(mainClass === undefined ? [] : [["Main-Class", mainClass] as [string, string]])]);
     const contents = FileSet.unionAll(compiled, ...resources, new FileSet(new Map([[MANIFEST_NAME, manifest]])));
     return createJarAction(contents, jarNameOf(context.name)).withReshape(files => packageOf(context, files, edges));
-  });
+    })
+  );
 }

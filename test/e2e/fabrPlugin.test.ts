@@ -57,6 +57,25 @@ describe("e2e: a plugin built in the project", () => {
     expect(result.stdout).to.equal("Hello\n");
   });
 
+  it("builds a plugin's resources with its own rules, used at a stage without them", () => {
+    const files = project("STAGE = 1;\ngreeting welcome { text = Welcome; }\n");
+    files["PROJECT.fabr"] = files["PROJECT.fabr"]
+      .replace("plugin greeter;", "plugin greeter<STAGE=0>;")
+      .replace("libs = plugin/lib/GREET.fabr; }", "libs = plugin/lib/GREET.fabr; resources<STAGE=1> = welcome; }");
+    const result = runFabr(files, ["cat", "greeter:greeting.txt"]);
+    expect(result.stderr).to.not.match(/^error/m);
+    expect(result.status).to.equal(0);
+    expect(result.stdout).to.equal("Welcome\n");
+  });
+
+  it("reports a plugin whose resources need its own rules, unstaged, as a cycle", () => {
+    const files = project("greeting welcome { text = Welcome; }\n");
+    files["PROJECT.fabr"] = files["PROJECT.fabr"].replace("libs = plugin/lib/GREET.fabr; }", "libs = plugin/lib/GREET.fabr; resources = welcome; }");
+    const result = runFabr(files, ["cat", "hello:greeting.txt"]);
+    expect(result.status).to.not.equal(0);
+    expect(result.stderr).to.match(/[Cc]ircular|cycle/);
+  });
+
   it("builds nothing of the plugin where nothing uses its rules", () => {
     const result = runFabr(project(), ["cat", "notes"]);
     expect(result.status).to.equal(0);

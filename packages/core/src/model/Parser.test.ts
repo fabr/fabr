@@ -628,6 +628,7 @@ describe("Parser Tests", () => {
     expect(summarize(parseValid("plugin @fabr-home:@example/lint;\nplugin @npm:@example/lint:1.2.0;"))).to.deep.equal(
       summary({ plugins: ["@fabr-home:@example/lint", "@npm:@example/lint:1.2.0"] })
     );
+    expect(parseValid("plugin greeter<STAGE=0>;").plugins[0].name.getConstraints().map(([key, value]) => `${key}=${value.toString()}`)).to.deep.equal(["STAGE=0"]);
     expect(summarize(parseValid("js_package my-target {\n  srcs = src:*.ts; }"))).to.deep.equal(
       summary({ targets: { "my-target": { type: "js_package", properties: { srcs: ["src:+glob(*)+.ts"] } } } })
     );
@@ -654,10 +655,10 @@ describe("Parser Tests", () => {
 
   it("Plugin Decl with invalid name", () => {
     expect(parseInvalid("plugin ${TEST_PLUGIN};")).to.deep.equal([
-      diagnosticBlock(1, 8, "A plugin is named by a reference, with no glob patterns or variables", "plugin ${TEST_PLUGIN};"),
+      diagnosticBlock(1, 8, "A plugin is named by a reference, with no glob patterns, variables or rename", "plugin ${TEST_PLUGIN};"),
     ]);
     expect(parseInvalid("plugin @fabr/*;")).to.deep.equal([
-      diagnosticBlock(1, 8, "A plugin is named by a reference, with no glob patterns or variables", "plugin @fabr/*;"),
+      diagnosticBlock(1, 8, "A plugin is named by a reference, with no glob patterns, variables or rename", "plugin @fabr/*;"),
     ]);
   });
 
