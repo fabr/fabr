@@ -18,16 +18,23 @@
  */
 
 import { TargetContext } from "../context/index";
-import { BUILD_OPERATION, BUILD_OVERRIDE, FILES_OPERATION } from "../model/Constraints";
+import { BUILD_OVERRIDE } from "../model/Constraints";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { isFileSource } from "../core/Repository";
-import { RuleDefinition, RuleResult } from "./Types";
+import { defineRule, RuleResult } from "./Types";
 import { FabrError } from "../core/Errors";
 
+/** The `files` rule, of every type: see {@link deliverFiles}. */
+export default defineRule({
+  evaluateResolved(context) {
+    return deliverFiles(context);
+  },
+});
+
 /**
- * Hand back a target's files, as the generic `files` rule: registered as a
+ * Hand back a target's files, as the generic `files` rule: declared as a
  * default (all-types) rule, so it is selected for any target under
  * BUILD_OPERATION=files that has no more specific rule of its own. "files"
  * means "give me the output files and no more" — it is a weaker form of
@@ -55,6 +62,3 @@ function deliverFiles(context: TargetContext): Computable<RuleResult> {
     return files.map(source => (source instanceof PackageFileSet ? new FileSet(source, source.origin) : source));
   });
 }
-
-/* No `type` → a default (all-types) rule. */
-export const defaultFilesRule: RuleDefinition = { properties: { [BUILD_OPERATION]: FILES_OPERATION }, evaluate: deliverFiles };

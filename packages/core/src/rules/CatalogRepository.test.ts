@@ -24,7 +24,7 @@ import { TargetRef, Unbuilt } from "../core/TargetRef";
 import { ResolvedTarget } from "../context/ResolvedTarget";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { CatalogRepository, catalogRepositoryRegistration } from "./CatalogRepository";
-import { patchedRule } from "./BuildPatched";
+import patched from "./BuildPatched";
 import { Repository, RepositoryRef } from "../core/Repository";
 import { NamespaceRef } from "../core/NamespaceRef";
 import { Requirement } from "../resolver/Types";
@@ -35,13 +35,13 @@ import { MemoryFile } from "../core/MemoryFS";
 import { BuildCache } from "../core/BuildCache";
 import { Name } from "../core/Name";
 import { permissive, ResolvedRequirements, TargetContext } from "../context/index";
-import { Constraints, RUN_OVERRIDE } from "../model/Constraints";
+import { BUILD_OPERATION, Constraints, RUN_OVERRIDE } from "../model/Constraints";
 import { BuildModel } from "../model/BuildModel";
 import { ExecutionContext } from "../model/ExecutionContext";
 import { parseBuildString, parseName } from "../model/Parser";
 import { INameValue, syntheticValue } from "../model/AST";
 import { StringReader } from "../support/StringReader";
-import { toBuildModel } from "../model/Sema";
+import { toBuildModel } from "../model/ModelBuilder";
 import { LogFormatter, LogLevel } from "../support/Log";
 import { defineRule, PluginContribution, RuleDefinition } from "./Types";
 import * as fs from "node:fs";
@@ -503,7 +503,7 @@ describe("CatalogRepository (through the model)", () => {
   });
   const contributions: PluginContribution[] = [
     {
-      rules: [depsRule, runRule, toolRule, globalToolRule, sealedRule, packageRule, patchRule, modeRule, mixedRule, misreadRule, wrongTypeRule, filesOfRule, bothRule, looseRule, patchedRule, passRule, subRule, builtRule, statedRule, driftRule],
+      rules: [depsRule, runRule, toolRule, globalToolRule, sealedRule, packageRule, patchRule, modeRule, mixedRule, misreadRule, wrongTypeRule, filesOfRule, bothRule, looseRule, { type: "patched", properties: { [BUILD_OPERATION]: "build" }, ...patched }, passRule, subRule, builtRule, statedRule, driftRule],
       repositories: [
         { type: "package_repo", provider: (context: TargetContext) => Computable.resolve(backing(context.name)) },
         catalogRepositoryRegistration,

@@ -35,13 +35,11 @@
  */
 
 import {
-  BUILD_OPERATION,
   Computable,
   EMPTY_FILESET,
   FileSet,
   MemoryFile,
   PackageFileSet,
-  RuleDefinition,
   defineRule,
   RuleResult,
   TargetContext,
@@ -50,6 +48,16 @@ import { buildPostcssOptions, CSS_OUTDIR, CSS_SRC_ROOT, CSS_TOOL_DIR } from "../
 import { emitsSourceMap } from "../JSPackage";
 import { DEPS_REPORT_FILE, DEPS_REPORT_FLAG, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "@fabr-build/js-tools";
 import { createNodeExecAction, PNP } from "../NodeExecAction";
+
+/** The `css_postcss` rule. */
+export default defineRule({
+  requirements(context) {
+    return { srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps") };
+  },
+  evaluateMaterialized(context, collected) {
+    return buildCssPostcss(context, collected);
+  },
+});
 
 function buildCssPostcss(context: TargetContext, collected: { srcs: FileSet[]; deps: FileSet[] }): Computable<RuleResult> {
   return Computable.forAll(
@@ -95,10 +103,3 @@ function buildCssPostcss(context: TargetContext, collected: { srcs: FileSet[]; d
     }
   );
 }
-
-export const buildCssPostcssRule: RuleDefinition = defineRule({
-  type: "css_postcss",
-  properties: { [BUILD_OPERATION]: "build" },
-  requirements: context => ({ srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps") }),
-  evaluateMaterialized: (context, collected) => buildCssPostcss(context, collected),
-});

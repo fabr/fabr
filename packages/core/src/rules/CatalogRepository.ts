@@ -333,3 +333,6 @@ function createCatalog(context: TargetContext): Computable<Repository> {
 }
 
 export const catalogRepositoryRegistration: RepositoryRegistration = { type: "catalog", provider: createCatalog };
+
+/** The implementation STD.fabr's `repository` declaration names. */
+export default createCatalog;

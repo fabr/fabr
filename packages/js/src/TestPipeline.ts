@@ -188,6 +188,20 @@ export const TEST_FRAMEWORKS: ReadonlyMap<string, ITestFramework> = new Map([
   ["vitest", { runner: "JS_VITEST_RUNNER", module: "esm", globalsTypes: false }],
 ]);
 
+/**
+ * Get the test framework the target's STRING property `property` names, or
+ * fail naming the frameworks there are.
+ */
+export function testFramework(context: TargetContext, property: string): Computable<ITestFramework> {
+  return context.getRequiredProperty(property).then(name => {
+    const framework = TEST_FRAMEWORKS.get(name.toString());
+    if (framework === undefined) {
+      throw new FabrError(`'${name.toString()}' is not a test framework (${[...TEST_FRAMEWORKS.keys()].join(", ")})`);
+    }
+    return framework;
+  });
+}
+
 /** What a test target requires, as written (unmaterialized): everything the
  * evaluation consumes from the build graph, so it all resolves jointly. */
 export type TestRequirements = {

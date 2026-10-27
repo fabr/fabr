@@ -279,3 +279,6 @@ function createRepository(context: TargetContext): Computable<Repository> {
 }
 
 export const jdkDistributionRegistration: RepositoryRegistration = { type: "jdk_distribution", provider: createRepository };
+
+/** The implementation JAVA.fabr's `repository` declaration names. */
+export default createRepository;

@@ -32,7 +32,8 @@ import type { INameValue } from "./model/AST";
 import { BuildModel } from "./model/BuildModel";
 import { BuildCycle, ExecutionContext } from "./model/ExecutionContext";
 import { reportFailure } from "./model/ErrorFormatter";
-import { loadProject } from "./model/Loader";
+import { coreContribution, loadProject } from "./model/Loader";
+import { Constraints } from "./model/Constraints";
 import { SyncSource } from "./rules/BuildSync";
 import { Diagnostic, Log } from "./support/Log";
 
@@ -52,6 +53,8 @@ export interface IFabrOptions {
   log: Log;
   /** Watch the source tree: filesystem changes become build cycles. */
   watch?: boolean;
+  /** The machine fabr runs on (`HOST`), which a plugin built in the project is built for. */
+  host?: Constraints;
 }
 
 /**
@@ -69,6 +72,8 @@ export class Fabr {
   /** The project source tree, concretely — the write-back face the driver's
    *  invocation site needs (the execution holds it as a plain FileSource). */
   public readonly sourceFileSource: SourceFileSource;
+  /** The machine fabr runs on, as a configuration (see {@link IFabrOptions.host}). */
+  private readonly host: Constraints;
   /** Present when watching; the driver drives shutdown through {@link WatchController.close}. */
   public readonly controller?: WatchController;
   /** The run's cycle counter — what {@link maybeCollectGarbage}'s preemption
@@ -76,6 +81,7 @@ export class Fabr {
   private readonly cycle: BuildCycle;
 
   constructor(options: IFabrOptions) {
+    this.host = options.host ?? Constraints.of({});
     const cache = new BuildCache(options.cacheRoot, options.log);
     /* Shared: the controller advances it per applied batch; the execution
      * reads it and emits the cycle boundaries. */
@@ -120,7 +126,7 @@ export class Fabr {
    * {@link ExecutionContext.observeEvaluation}).
    */
   public evaluate<T>(operation: (model: BuildModel) => Computable<T>): Computable<T> {
-    const evaluation = loadProject(this.execution, PROJECT_FILENAME).then(operation);
+    const evaluation = loadProject(this.execution, PROJECT_FILENAME, coreContribution(), this.host).then(operation);
     this.execution.observeEvaluation(evaluation);
     return evaluation.finally(() => this.sourceFileSource.persistIndex());
   }

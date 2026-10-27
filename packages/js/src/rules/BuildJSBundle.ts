@@ -34,7 +34,6 @@
  */
 
 import {
-  BUILD_OPERATION,
   defineRule,
   ContainedSources,
   Computable,
@@ -47,7 +46,6 @@ import {
   MemoryFile,
   PackageFileSet,
   RewriteFn,
-  RuleDefinition,
   RuleResult,
   RunnableFileSet,
   TargetContext,
@@ -65,6 +63,30 @@ import {
   computeExternalNames,
   IBundleEntrySource,
 } from "../JSBundle";
+
+/** The `js_bundle` rule. */
+export default defineRule({
+  /**
+   * State the bundle's contents, read under the bundle's input `JS_TARGET` and
+   * resolved as one collection. The bundler is a build tool, independent of what it compiles, so
+   * it is resolved apart.
+   */
+  requirements(
+    context: TargetContext
+  ): Computable<{ srcs: Computable<PackageSources>; entry: Computable<ContainedSources>; deps: Computable<PackageSources> }> {
+    return context.getGlobalString("JS_TARGET").then(target => {
+      const inputTarget = bundleInputTarget(parseJSTarget(target));
+      return {
+        srcs: context.getPackageProperty("srcs", inputTarget),
+        entry: context.getContainedFileProperty("entry", inputTarget),
+        deps: context.getPackageProperty("deps", inputTarget),
+      };
+    });
+  },
+  evaluateMaterialized(context, contents) {
+    return buildJsBundle(context, contents);
+  },
+});
 
 /** Where the esbuild toolchain + driver mount — disjoint from the workspace's
  * own node_modules so the tool's deps neither collide with nor are visible to
@@ -278,24 +300,6 @@ interface IBundleContents {
   deps: FileSet[];
 }
 
-/**
- * State the bundle's contents, read under the bundle's input `JS_TARGET` and
- * resolved as one collection. The bundler is a build tool, independent of what it compiles, so
- * it is resolved apart.
- */
-function requirements(
-  context: TargetContext
-): Computable<{ srcs: Computable<PackageSources>; entry: Computable<ContainedSources>; deps: Computable<PackageSources> }> {
-  return context.getGlobalString("JS_TARGET").then(target => {
-    const inputTarget = bundleInputTarget(parseJSTarget(target));
-    return {
-      srcs: context.getPackageProperty("srcs", inputTarget),
-      entry: context.getContainedFileProperty("entry", inputTarget),
-      deps: context.getPackageProperty("deps", inputTarget),
-    };
-  });
-}
-
 function buildJsBundle(context: TargetContext, contents: IBundleContents): Computable<RuleResult> {
   return Computable.forAll([context.getGlobalString("JS_TARGET"), context.getGlobalString("BUILD_TYPE")], (target, buildType) =>
     buildWithInputs(context, parseJSTarget(target), buildType, contents)
@@ -346,10 +350,3 @@ function buildWithInputs(context: TargetContext, jsTarget: JSTarget, buildType: 
     }
   );
 }
-
-export const buildJsBundleRule: RuleDefinition = defineRule({
-  type: "js_bundle",
-  properties: { [BUILD_OPERATION]: "build" },
-  requirements,
-  evaluateMaterialized: buildJsBundle,
-});

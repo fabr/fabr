@@ -39,13 +39,22 @@
  */
 
 import { MaterializedCommandPipeline, TargetContext, toEnvironment } from "../context/index";
-import { BUILD_OPERATION } from "../model/Constraints";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { Name } from "../core/Name";
 import { createPipelineAction, IKeptState, stagePipeline } from "./PipelineAction";
-import { defineRule, RuleDefinition, RuleResult } from "./Types";
+import { defineRule, RuleResult } from "./Types";
 import { FabrError } from "../core/Errors";
+
+/** The `generate` rule. */
+export default defineRule({
+  requirements(context) {
+    return { srcs: context.getFileProperty("srcs") };
+  },
+  evaluateMaterialized(context, { srcs }) {
+    return generate(context, srcs);
+  },
+});
 
 function generate(context: TargetContext, srcSets: FileSet[]): Computable<RuleResult> {
   return Computable.forAll(
@@ -79,10 +88,3 @@ function assemblePipeline(
   const { files, specs } = stagePipeline(stages, srcs);
   return createPipelineAction(files, specs, stages[0].stdin, output, "generate", env, kept);
 }
-
-export const generateRule: RuleDefinition = defineRule({
-  type: "generate",
-  properties: { [BUILD_OPERATION]: "build" },
-  requirements: context => ({ srcs: context.getFileProperty("srcs") }),
-  evaluateMaterialized: (context, { srcs }) => generate(context, srcs),
-});

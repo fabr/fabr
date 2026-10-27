@@ -27,6 +27,8 @@ import {
   IIncludeDecl,
   IMapItemDecl,
   IPluginDecl,
+  IRepositoryDecl,
+  IRuleDecl,
   IPropertyDecl,
   ICommandStage,
   CommandPipeline,
@@ -406,9 +408,10 @@ const MAX_BLOCK_DEPTH = 100;
  * what it means: on a *use* (a reference) it is a **requirement** — the
  * configuration that reference must be built under, so its values are exact; on
  * a *decl* (a property key) it is a **guard** — the configuration the
- * declaration participates in, so its values are patterns.
+ * declaration participates in, so its values are patterns. A **rule**'s guard is
+ * a guard whose keys may also name its target's properties.
  */
-type ConstraintKind = "requirement" | "guard";
+type ConstraintKind = "requirement" | "guard" | "rule";
 
 const DIAG_PARSE_ERROR = new Diagnostic<{ actual: string; expected: string; loc: ISourcePosition }>(
   LogLevel.Error,
@@ -450,9 +453,17 @@ const DIAG_ABSOLUTE_INCLUDE = new Diagnostic<{ loc: ISourcePosition }>(
   LogLevel.Error,
   "Include paths must be relative to the including file"
 );
+const DIAG_RULE_GUARD_KEY = new Diagnostic<{ key: string; param: string; loc: ISourcePosition }>(
+  LogLevel.Error,
+  "Rule guard '{key}' is neither a property of the configuration nor one of '{param}'"
+);
+const DIAG_INVALID_IMPLEMENTATION = new Diagnostic<{ loc: ISourcePosition }>(
+  LogLevel.Error,
+  "An implementation names an entry of a package, as 'package:entry' (no glob patterns or variables)"
+);
 const DIAG_INVALID_PLUGIN = new Diagnostic<{ loc: ISourcePosition }>(
   LogLevel.Error,
-  "Plugin names must be plain target names (no glob patterns or variables)"
+  "A plugin is named by a reference, with no glob patterns or variables"
 );
 const DIAG_DUP_SCHEMA_KEY = new Diagnostic<{ key: string; loc: ISourcePosition }>(
   LogLevel.Error,
@@ -573,13 +584,14 @@ export class BuildParser {
     this.token = { type: TokenType.ERROR, start: 0 };
     this.source = source;
     this.result = {
-      namespaces: [],
       targets: [],
       targetdefs: [],
       properties: [],
       defaults: [],
       includes: [],
       plugins: [],
+      rules: [],
+      repositories: [],
     };
     this.nextToken();
   }
@@ -1153,20 +1165,16 @@ export class BuildParser {
    */
   private parsePluginDecl(): IPluginDecl {
     const token = this.token;
-    if (token.type === TokenType.IDENTIFIER || token.type === TokenType.SIMPLE_NAME) {
-      this.nextToken();
-      this.consumeIfToken(TokenType.SEMI);
-      return {
-        kind: DeclKind.Plugin,
-        source: this.source,
-        offset: token.start,
-        name: token.text,
-      };
-    } else if (token.type === TokenType.NAME) {
-      this.invalidPluginName();
-    } else {
+    if (token.type !== TokenType.IDENTIFIER && token.type !== TokenType.SIMPLE_NAME && token.type !== TokenType.NAME) {
       this.unexpectedTokenError("Name");
     }
+    const name = this.tokenToName(token);
+    if (name.hasVarSubst() || name.hasGlob()) {
+      this.invalidPluginName();
+    }
+    this.nextToken();
+    this.consumeIfToken(TokenType.SEMI);
+    return { kind: DeclKind.Plugin, source: this.source, offset: token.start, endOffset: this.prevTokenEnd, name };
   }
 
   /**
@@ -1683,7 +1691,8 @@ export class BuildParser {
           pending = undefined;
         } else {
           const key = this.token;
-          if (key.type !== TokenType.IDENTIFIER) {
+          /* A rule's guard may name a property of its target, as `pkg.test_framework`. */
+          if (key.type !== TokenType.IDENTIFIER && !(kind === "rule" && key.type === TokenType.SIMPLE_NAME)) {
             this.unexpectedTokenError("a constraint key");
           }
           keyText = key.text;
@@ -2141,6 +2150,75 @@ export class BuildParser {
   }
 
   /**
+   * RuleBody ::= NAME RuleGuard? '=' NAME ';'
+   *              ^
+   * RuleGuard ::= '<' RuleGuardKey '=' NAME ( ',' RuleGuardKey '=' NAME )* '>'
+   * RuleGuardKey ::= NAME | <param> '.' NAME
+   *
+   * The rule of `type`, or of every type where undefined; `offset` is where the
+   * declaration starts.
+   */
+  private parseRuleDecl(type: string | undefined, offset: number): IRuleDecl {
+    const param = this.token;
+    if (param.type !== TokenType.IDENTIFIER) {
+      this.unexpectedTokenError("the rule's target parameter");
+    }
+    this.nextToken();
+    const properties: NameConstraint[] = [];
+    const targetProperties: NameConstraint[] = [];
+    if (this.token.type === TokenType.LANGLE && this.token.start === this.prevTokenEnd) {
+      this.nextToken();
+      for (const [key, pattern] of this.parseConstraintList(undefined, "rule")) {
+        if (key.startsWith(param.text + ".")) {
+          targetProperties.push([key.substring(param.text.length + 1), pattern]);
+        } else if (key.includes(".")) {
+          this.log.log(DIAG_RULE_GUARD_KEY, { key, param: param.text, loc: { ...this.source, offset: param.start } });
+          throw new FabrError(PARSE_ERROR);
+        } else {
+          properties.push([key, pattern]);
+        }
+      }
+    }
+    this.consumeToken(TokenType.EQUALS);
+    const implementation = this.parseImplementation();
+    return { kind: DeclKind.Rule, source: this.source, offset, type, param: param.text, properties, targetProperties, implementation };
+  }
+
+  /**
+   * RepositoryDecl ::= 'repository' NAME '=' NAME ';'
+   *                     ^
+   */
+  private parseRepositoryDecl(offset: number): IRepositoryDecl {
+    const type = this.token;
+    if (type.type !== TokenType.IDENTIFIER) {
+      this.unexpectedTokenError("a repository type");
+    }
+    this.nextToken();
+    this.consumeToken(TokenType.EQUALS);
+    return { kind: DeclKind.Repository, source: this.source, offset, type: type.text, implementation: this.parseImplementation() };
+  }
+
+  /**
+   * Parse a rule's or repository's implementation, a reference to an entry of
+   * a package (`@fabr-build/js:rules/BuildJSPackage`), and the `;` after it.
+   */
+  private parseImplementation(): INameValue {
+    const token = this.token;
+    if (token.type !== TokenType.IDENTIFIER && token.type !== TokenType.SIMPLE_NAME && token.type !== TokenType.NAME) {
+      this.unexpectedTokenError("a package entry");
+    }
+    const value = this.tokenToName(token);
+    if (value.hasVarSubst() || value.hasGlob() || !value.hasLevelSeparator()) {
+      this.log.log(DIAG_INVALID_IMPLEMENTATION, { loc: { ...this.source, offset: token.start } });
+      throw new FabrError(PARSE_ERROR);
+    }
+    this.nextToken();
+    const endOffset = this.prevTokenEnd;
+    this.consumeToken(TokenType.SEMI);
+    return { kind: DeclKind.NameValue, source: this.source, offset: token.start, endOffset, value };
+  }
+
+  /**
    * TargetDefDecl ::= 'targetdef' NAME '{' PropertyTypeList '}'
    *                     ^
    */
@@ -2332,7 +2410,10 @@ export class BuildParser {
    * IncludeDecl ::= 'include' NAME ';'
    * PluginDecl ::= 'plugin' NAME ';'
    * TargetDefDecl ::= 'targetdef' NAME '{' PropertyTypeList '}'
-   * DefaultDecl ::= 'default' ( PropertyDecl | TargetDecl )
+   * DefaultDecl ::= 'default' ( PropertyDecl | TargetDecl | 'rule' RuleBody )
+   * RuleDecl ::= 'rule' NAME RuleBody
+   * RuleBody ::= NAME RuleGuard? '=' NAME ';'
+   * RepositoryDecl ::= 'repository' NAME '=' NAME ';'
    */
 
   public parseStatement(): void {
@@ -2346,8 +2427,17 @@ export class BuildParser {
         this.result.includes.push(this.parseIncludeDecl());
       } else if (token.text === "plugin") {
         this.result.plugins.push(this.parsePluginDecl());
+      } else if (token.text === "default" && next.type === TokenType.IDENTIFIER && next.text === "rule") {
+        this.nextToken();
+        this.result.rules.push(this.parseRuleDecl(undefined, token.start));
       } else if (token.text === "default") {
         this.result.defaults.push(this.parseDefaultDecl(doc));
+      } else if (token.text === "rule" && next.type === TokenType.IDENTIFIER) {
+        const type = next.text;
+        this.nextToken();
+        this.result.rules.push(this.parseRuleDecl(type, token.start));
+      } else if (token.text === "repository" && next.type === TokenType.IDENTIFIER) {
+        this.result.repositories.push(this.parseRepositoryDecl(token.start));
       } else if (next.type === TokenType.EQUALS || next.type === TokenType.LANGLE) {
         /* `<` here is the property's constraint guard (`TSC<TARGET=…> = …`) —
          * part of the key, which the discriminating read above has already

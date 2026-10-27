@@ -20,27 +20,14 @@
 /**
  * @fabr-build/js: the Javascript/NPM ecosystem support for fabr, loaded as a fabr
  * plugin (`plugin @fabr-build/js;` — see docs/src/content/docs/developer/plugins.md
- * for the plugin contract):
- * activation contributes the js rules, the npm and Node.js repository types, and this
- * package's lib/ (JS.fabr), which the plugin declaration auto-includes.
+ * for the plugin contract). Its package.json lists lib/JS.fabr, which declares
+ * the js rules and the npm and Node.js repository types, each implemented by a
+ * module this package exports (`rules/*`, `NPMRepository`, `NodeDistribution`).
  *
  * The test runners and tool drivers the js rules run are bins of
  * @fabr-build/js-tools, declared as `js_script` globals in JS.fabr; nothing
  * here imports them.
  */
-
-import { getLibFile, PluginContribution } from "@fabr-build/core";
-import { buildJsPackageRule } from "./rules/BuildJSPackage";
-import { runJsPackageRule } from "./rules/RunJSPackage";
-import { jsCompileRule } from "./rules/BuildJSCompile";
-import { buildJsBundleRule } from "./rules/BuildJSBundle";
-import { buildSassCompileRule } from "./rules/BuildSassCompile";
-import { buildCssPostcssRule } from "./rules/BuildCSSPostcss";
-import { testJsPackageRules } from "./rules/TestJSPackage";
-import { jsTestRules } from "./rules/TestJSTest";
-import { jsScriptRule } from "./rules/RunJSScript";
-import { npmRepositoryRegistration } from "./NPMRepository";
-import { nodeDistributionRegistration } from "./NodeDistribution";
 
 /* The compile pipeline helpers, for other js rules to build on (in-tree only:
  * cross-plugin extension isn't supported yet — see docs/src/content/docs/developer/plugins.md) */
@@ -53,30 +40,3 @@ export {
   parseJSTarget,
   passthroughFiles,
 } from "./JSPackage";
-
-/**
- * Return this package's contribution, as the plugin entry point — the js rules
- * (js_package build/run/test, js_test, js_script, js_compile, js_bundle,
- * sass_compile, css_postcss), the npm
- * repository type, and this package's `.fabr` library (JS.fabr), which a
- * `plugin @fabr-build/js;` declaration auto-includes. Pure: no global registration
- * (see docs/src/content/docs/developer/plugins.md); the host merges this into the
- * build model's rule tables.
- */
-export function activate(): PluginContribution {
-  return {
-    rules: [
-      buildJsPackageRule,
-      runJsPackageRule,
-      jsCompileRule,
-      buildJsBundleRule,
-      buildSassCompileRule,
-      buildCssPostcssRule,
-      ...testJsPackageRules,
-      ...jsTestRules,
-      jsScriptRule,
-    ],
-    repositories: [npmRepositoryRegistration, nodeDistributionRegistration],
-    includes: [getLibFile(__dirname, "JS.fabr")],
-  };
-}

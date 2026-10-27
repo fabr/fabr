@@ -19,7 +19,7 @@
 
 import { expect } from "chai";
 import { BuildAction, Computable, configFiles, FileSet, Flag, MemoryFile, Property, RunnableFileSet, TargetContext } from "@fabr-build/core";
-import { jsCompileRule, jsxModeFor, makeTsConfig } from "./BuildJSCompile";
+import jsCompileRule, { jsxModeFor, makeTsConfig } from "./BuildJSCompile";
 import { parseJSTarget } from "../JSPackage";
 
 function toPromise<T>(computable: Computable<T>): Promise<T> {

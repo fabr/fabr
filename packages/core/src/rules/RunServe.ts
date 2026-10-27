@@ -31,27 +31,28 @@
  */
 
 import { toEnvironment } from "../context/index";
-import { BUILD_OPERATION, BUILD_OVERRIDE } from "../model/Constraints";
+import { BUILD_OVERRIDE } from "../model/Constraints";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
-import { defineRule, RuleDefinition, RuleResult } from "./Types";
+import { defineRule, RuleResult } from "./Types";
 
-/* deps/files are ordinary build content, read under build rather than the run
- * operation this rule is selected by (constraints otherwise propagate). Both
- * are read for their files, as script's are: each requirement delivers its
- * own — a repository reference the package's files alone, a target what it
- * built — and nothing is resolved together. `tool` is read apart in
- * `evaluate`, under the run operation (getRunnableProperty), as a program to
- * execute on this machine, and built alongside them rather than after. */
-export const serveRunRule: RuleDefinition = defineRule({
-  type: "serve",
-  properties: { [BUILD_OPERATION]: "run" },
-  requirements: context => ({
-    deps: context.getFileProperty("deps", BUILD_OVERRIDE),
-    files: context.getFileProperty("files", BUILD_OVERRIDE),
-  }),
-  evaluateResolved: (context, requirements) =>
-    Computable.forAll(
+/** The `serve` rule, under `run`. */
+export default defineRule({
+  /* deps/files are ordinary build content, read under build rather than the run
+   * operation this rule is selected by (constraints otherwise propagate). Both
+   * are read for their files, as script's are: each requirement delivers its
+   * own — a repository reference the package's files alone, a target what it
+   * built — and nothing is resolved together. `tool` is read apart in
+   * `evaluate`, under the run operation (getRunnableProperty), as a program to
+   * execute on this machine, and built alongside them rather than after. */
+  requirements(context) {
+    return {
+      deps: context.getFileProperty("deps", BUILD_OVERRIDE),
+      files: context.getFileProperty("files", BUILD_OVERRIDE),
+    };
+  },
+  evaluateResolved(context, requirements) {
+    return Computable.forAll(
       [
         requirements.materializeAll(),
         context.getRunnableProperty("tool"),
@@ -65,5 +66,6 @@ export const serveRunRule: RuleDefinition = defineRule({
         const install = FileSet.unionAll(tool, ...deps, served);
         return tool.withServedContent(install, served, args ? args.getValues() : [], env);
       }
-    ),
+    );
+  },
 });

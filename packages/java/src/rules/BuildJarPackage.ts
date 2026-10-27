@@ -26,7 +26,6 @@
 
 import * as path from "path";
 import {
-  BUILD_OPERATION,
   BUILD_OVERRIDE,
   Computable,
   defineRule,
@@ -36,7 +35,6 @@ import {
   FileSet,
   PackageFileSet,
   Provided,
-  RuleDefinition,
   RuleResult,
   TargetContext,
 } from "@fabr-build/core";
@@ -58,6 +56,29 @@ interface JarEdges {
   provided: ReadonlyArray<Dependency<PackageFileSet>>;
   optional_provided: ReadonlyArray<Dependency<PackageFileSet>>;
 }
+
+/** The `jar_package` rule, under `build`. */
+export default defineRule({
+  /* `dependencies`, `provided` and `optional_provided` are what the package
+   * passes on; `compile_deps` is compiled against and private to the build. */
+  requirements(context) {
+    return {
+      srcs: context.getFileProperty("srcs"),
+      entry: context.getFileProperty("entry"),
+      resources: context.getFileProperty("resources"),
+      dependencies: context.getPackageProperty("deps"),
+      provided: context.getPackageProperty("provided_deps"),
+      optional_provided: context.getPackageProperty("optional_provided_deps"),
+      compile_deps: context.getPackageProperty("compile_deps"),
+    };
+  },
+  evaluateResolved(context, requirements) {
+    return Computable.forAll(
+      [requirements.materializeAll(), requirements.packages("dependencies"), requirements.packages("provided"), requirements.packages("optional_provided")],
+      (inputs, dependencies, provided, optional_provided) => buildJar(context, inputs, { dependencies, provided, optional_provided })
+    );
+  },
+});
 
 /** @return the name of the jar a target builds: the last part of its name (`org.slf4j/slf4j-api` → `slf4j-api.jar`). */
 export function jarNameOf(target: string): string {
@@ -99,24 +120,3 @@ function buildJar(context: TargetContext, inputs: JarInputs, edges: JarEdges): C
     return createJarAction(contents, jarNameOf(context.name)).withReshape(files => packageOf(context, files, edges));
   });
 }
-
-export const buildJarPackageRule: RuleDefinition = defineRule({
-  type: "jar_package",
-  properties: { [BUILD_OPERATION]: "build" },
-  /* `dependencies`, `provided` and `optional_provided` are what the package
-   * passes on; `compile_deps` is compiled against and private to the build. */
-  requirements: context => ({
-    srcs: context.getFileProperty("srcs"),
-    entry: context.getFileProperty("entry"),
-    resources: context.getFileProperty("resources"),
-    dependencies: context.getPackageProperty("deps"),
-    provided: context.getPackageProperty("provided_deps"),
-    optional_provided: context.getPackageProperty("optional_provided_deps"),
-    compile_deps: context.getPackageProperty("compile_deps"),
-  }),
-  evaluateResolved: (context, requirements) =>
-    Computable.forAll(
-      [requirements.materializeAll(), requirements.packages("dependencies"), requirements.packages("provided"), requirements.packages("optional_provided")],
-      (inputs, dependencies, provided, optional_provided) => buildJar(context, inputs, { dependencies, provided, optional_provided })
-    ),
-});

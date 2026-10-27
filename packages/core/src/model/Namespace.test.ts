@@ -20,8 +20,12 @@
 import { expect } from "chai";
 import { DeclKind, IBuildFile, ITargetDecl } from "./AST";
 import { Name } from "../core/Name";
-import { Namespace } from "./Namespace";
-import { parseName } from "./Parser";
+import { Namespace, newNamespaceNode } from "./Namespace";
+import { parseBuildString, parseName } from "./Parser";
+import { toBuildModel } from "./ModelBuilder";
+import { BuildModel } from "./BuildModel";
+import { EMPTY_FILESET } from "../core/FileSet";
+import { LogFormatter, LogLevel } from "../support/Log";
 
 const fakeFile = {} as IBuildFile;
 
@@ -38,7 +42,9 @@ function targetDecl(name: string): ITargetDecl {
 }
 
 describe("Namespace.getPrefixMatch", () => {
-  const ns = new Namespace(new Map([["pkg", targetDecl("pkg")]]), new Map());
+  const node = newNamespaceNode();
+  node.content.set("pkg", targetDecl("pkg"));
+  const ns = Namespace.of(node);
 
   it("strips everything before ':' (glob immediately after the target)", () => {
     /* `pkg:*.js` — colon projection: result names retain nothing of the prefix. */
@@ -61,5 +67,36 @@ describe("Namespace.getPrefixMatch", () => {
     expect(match?.name).to.equal("pkg");
     expect(match?.retainedPrefix).to.equal("");
     expect(match?.rest.toString()).to.equal("build/*.js");
+  });
+});
+
+describe("Namespace, read as declarations are added", () => {
+  /** @return the model of `input`, failing on any error it reports. */
+  function modelOf(input: string): BuildModel {
+    const errors: string[] = [];
+    const log = new LogFormatter(LogLevel.Info, message => errors.push(message));
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, log)], log, []);
+    expect(errors).to.deep.equal([]);
+    return model;
+  }
+
+  it("answers a name with its default target where nothing else declares it", () => {
+    const model = modelOf("targetdef t { }\ndefault t x { }\n");
+    expect(model.getTargetDecl("x")?.type).to.equal("t");
+    expect(model.getTargets().map(({ name }) => name)).to.deep.equal(["x"]);
+  });
+
+  it("answers a name with an ordinary target over its default one, either declared first", () => {
+    for (const input of ["targetdef t { }\ntargetdef u { }\ndefault t x { }\nu x { }\n", "targetdef t { }\ntargetdef u { }\nu x { }\ndefault t x { }\n"]) {
+      expect(modelOf(input).getTargetDecl("x")?.type).to.equal("u");
+    }
+  });
+
+  it("keeps a default target as a property's fallback, either declared first", () => {
+    for (const input of ["targetdef t { }\ndefault t x { }\nx<K=a> = 1;\nK = b;\n", "targetdef t { }\nx<K=a> = 1;\ndefault t x { }\nK = b;\n"]) {
+      const entry = modelOf(input).getDecl("x");
+      expect(entry?.kind).to.equal(DeclKind.Property);
+      expect(entry?.kind === DeclKind.Property ? entry.fallbackTarget?.type : undefined).to.equal("t");
+    }
   });
 });

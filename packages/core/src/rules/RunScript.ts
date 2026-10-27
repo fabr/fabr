@@ -28,38 +28,43 @@
  * execute: running a runnable and collecting its output is `generate`'s job.
  */
 
-import { BUILD_OPERATION, BUILD_OVERRIDE } from "../model/Constraints";
+import { BUILD_OVERRIDE } from "../model/Constraints";
 import { FileSet } from "../core/FileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
-import { defineRule, RuleDefinition, RuleResult } from "./Types";
+import { defineRule, RuleResult } from "./Types";
 import { FabrError } from "../core/Errors";
 
-/* deps/entry are ordinary build content, read under build rather than the run
- * operation this rule is selected by (constraints otherwise propagate). Both
- * are read for their files: each requirement delivers its own — a repository
- * reference the package's files alone, a target what it built — and nothing
- * is resolved together. */
-export const scriptRunRule: RuleDefinition = defineRule({
-  type: "script",
-  properties: { [BUILD_OPERATION]: "run" },
-  requirements: context => ({
-    deps: context.getFileProperty("deps", BUILD_OVERRIDE),
-    entry: context.getFileProperty("entry", BUILD_OVERRIDE),
-  }),
-  evaluateMaterialized: (context, { deps, entry }) =>
-    context.getProperty("args").then((args): RuleResult => {
-      /* The entry is the script file itself — exactly one. (A shell script
-       * has no notion of a package bin; a packaged tool is js_script's job.) */
-      const entrySet = FileSet.unionAll(...entry);
-      const names = [...entrySet].map(([name]) => name);
-      if (names.length !== 1) {
-        throw new FabrError(
-          names.length === 0
-            ? "script 'entry' resolved to no file — name the script file itself"
-            : `script 'entry' resolved to ${names.length} files (${names.slice(0, 5).join(", ")}) — name exactly one`
-        );
-      }
-      const install = FileSet.unionAll(...deps, entrySet);
-      return RunnableFileSet.forEntry(install, names[0], args ? args.getValues() : [], "sh");
-    }),
+/** The `script` rule, under `run`. */
+export default defineRule({
+  /* deps/entry are ordinary build content, read under build rather than the run
+   * operation this rule is selected by (constraints otherwise propagate). Both
+   * are read for their files: each requirement delivers its own — a repository
+   * reference the package's files alone, a target what it built — and nothing
+   * is resolved together. */
+  requirements(context) {
+    return {
+      deps: context.getFileProperty("deps", BUILD_OVERRIDE),
+      entry: context.getFileProperty("entry", BUILD_OVERRIDE),
+    };
+  },
+  evaluateMaterialized(context, { deps, entry }) {
+    return context.getProperty("args").then(args => runnableScript(deps, entry, args?.getValues() ?? []));
+  },
 });
+
+/** Make the runnable of the script `entry`, with `deps` beside it, run with `args`. */
+function runnableScript(deps: FileSet[], entry: FileSet[], args: string[]): RuleResult {
+  /* The entry is the script file itself — exactly one. (A shell script has no
+   * notion of a package bin; a packaged tool is js_script's job.) */
+  const entrySet = FileSet.unionAll(...entry);
+  const names = [...entrySet].map(([name]) => name);
+  if (names.length !== 1) {
+    throw new FabrError(
+      names.length === 0
+        ? "script 'entry' resolved to no file — name the script file itself"
+        : `script 'entry' resolved to ${names.length} files (${names.slice(0, 5).join(", ")}) — name exactly one`
+    );
+  }
+  const install = FileSet.unionAll(...deps, entrySet);
+  return RunnableFileSet.forEntry(install, names[0], args, "sh");
+}

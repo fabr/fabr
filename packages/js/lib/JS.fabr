@@ -103,43 +103,43 @@ default JEST_TYPE_PINS = @npm:@types/node:20.12.7
 #
 
 # Turn off all of TypeScript's `strict` checks for this target's sources.
-flag ts/no_strict { }
+default flag ts/no_strict { }
 # Allow implicit `any` (`noImplicitAny: false`).
-flag ts/allow_implicit_any { }
+default flag ts/allow_implicit_any { }
 # Allow `this` to be implicitly `any` (`noImplicitThis: false`).
-flag ts/allow_implicit_this { }
+default flag ts/allow_implicit_this { }
 # Treat `null` and `undefined` as members of every type
 # (`strictNullChecks: false`), as TypeScript did before 2.0.
-flag ts/no_strict_null_checks { }
+default flag ts/no_strict_null_checks { }
 # Allow class properties that aren't definitely assigned
 # (`strictPropertyInitialization: false`).
-flag ts/no_strict_property_initialization { }
+default flag ts/no_strict_property_initialization { }
 # Compare function parameter types bivariantly (`strictFunctionTypes: false`),
 # as TypeScript did before 2.6.
-flag ts/no_strict_function_types { }
+default flag ts/no_strict_function_types { }
 # Leave the argument types of `bind`, `call` and `apply` unchecked
 # (`strictBindCallApply: false`), as TypeScript did before 3.2.
-flag ts/no_strict_bind_call_apply { }
+default flag ts/no_strict_bind_call_apply { }
 # Type a caught error as `any` rather than `unknown`
 # (`useUnknownInCatchVariables: false`), as TypeScript did before 4.4.
-flag ts/no_use_unknown_in_catch_variables { }
+default flag ts/no_use_unknown_in_catch_variables { }
 # Compile without `esModuleInterop`, for sources that import a callable
 # CommonJS module with `import * as x` rather than a default import.
-flag ts/no_es_module_interop { }
+default flag ts/no_es_module_interop { }
 # Leave side-effect imports unchecked (`noUncheckedSideEffectImports: false`),
 # so that `import "./typo.css"` naming no file is not an error. Needs
 # TypeScript 5.6 or later; an earlier compiler rejects the option.
-flag ts/allow_unchecked_side_effect_imports { }
+default flag ts/allow_unchecked_side_effect_imports { }
 # Compile decorators with the semantics TypeScript used before 5.0
 # (`experimentalDecorators: true`). Class fields are then assigned rather than
 # defined, because a defined field would hide the accessor a property decorator
 # installs.
-flag ts/experimental_decorators { }
+default flag ts/experimental_decorators { }
 # Also emit type metadata for decorators (`emitDecoratorMetadata: true`), as
 # dependency-injection containers built on `reflect-metadata` need. Imports used
 # only as types in decorated signatures are kept at run time. Turns on
 # `ts/experimental_decorators` too.
-flag ts/emit_decorator_metadata { provides = ts/experimental_decorators; }
+default flag ts/emit_decorator_metadata { provides = ts/experimental_decorators; }
 
 ################## Source version flags ###################
 
@@ -155,37 +155,37 @@ flag ts/emit_decorator_metadata { provides = ts/experimental_decorators; }
 
 # The sources are written against ES5: using a newer API is a compile error,
 # whatever version `JS_TARGET` emits.
-flag es5 { }
+default flag es5 { }
 # The same as `es2015`.
-flag es6 { }
+default flag es6 { }
 # The sources are written against ES2015: using a newer API is a compile error,
 # whatever version `JS_TARGET` emits. A package built from them needs a runtime
 # that supports ES2015, so the flag also applies to targets that depend on it.
-flag es2015 { }
+default flag es2015 { }
 # The sources are written against ES2016. See `es2015`.
-flag es2016 { }
+default flag es2016 { }
 # The sources are written against ES2017. See `es2015`.
-flag es2017 { }
+default flag es2017 { }
 # The sources are written against ES2018. See `es2015`.
-flag es2018 { }
+default flag es2018 { }
 # The sources are written against ES2019. See `es2015`.
-flag es2019 { }
+default flag es2019 { }
 # The sources are written against ES2020. See `es2015`.
-flag es2020 { }
+default flag es2020 { }
 # The sources are written against ES2021. See `es2015`.
-flag es2021 { }
+default flag es2021 { }
 # The sources are written against ES2022. See `es2015`.
-flag es2022 { }
+default flag es2022 { }
 # The sources are written against ES2023. See `es2015`.
-flag es2023 { }
+default flag es2023 { }
 # The sources may use the newest APIs the compiler knows. See `es2015`.
-flag esnext { }
+default flag esnext { }
 
 #
 # The sources use browser APIs. Adds the DOM type declarations to the compile,
 # and runs the target's tests in a jsdom environment.
 #
-flag dom { }
+default flag dom { }
 
 #
 # The sources use the globals Node.js gives every module: `process`, `Buffer`
@@ -194,7 +194,7 @@ flag dom { }
 # its `srcs`, and `global` to `globalThis`. In a bundle for Node.js it does
 # nothing.
 #
-flag js/node_globals { }
+default flag js/node_globals { }
 
 ################### JS-specific targets ####################
 
@@ -546,3 +546,19 @@ default js_script JS_JEST_RUNNER {
 default js_script JS_VITEST_RUNNER {
     entry = @fabr-build/js-tools:fabr-vitest-runner;
 }
+
+#
+# How the js target types are built, and the npm and Node.js repository types made.
+#
+rule js_package pkg<BUILD_OPERATION=build> = @fabr-build/js:rules/BuildJSPackage;
+rule js_package pkg<BUILD_OPERATION=run> = @fabr-build/js:rules/RunJSPackage;
+rule js_package pkg<BUILD_OPERATION=test> = @fabr-build/js:rules/TestJSPackage;
+rule js_test t<BUILD_OPERATION=test> = @fabr-build/js:rules/TestJSTest;
+rule js_script s<BUILD_OPERATION=run> = @fabr-build/js:rules/RunJSScript;
+rule js_compile c<BUILD_OPERATION=build> = @fabr-build/js:rules/BuildJSCompile;
+rule js_bundle b<BUILD_OPERATION=build> = @fabr-build/js:rules/BuildJSBundle;
+rule sass_compile c<BUILD_OPERATION=build> = @fabr-build/js:rules/BuildSassCompile;
+rule css_postcss c<BUILD_OPERATION=build> = @fabr-build/js:rules/BuildCSSPostcss;
+
+repository npm_repository = @fabr-build/js:NPMRepository;
+repository node_distribution = @fabr-build/js:NodeDistribution;

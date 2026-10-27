@@ -33,12 +33,24 @@ import {
   FileSet,
   IFile,
   MemoryFile,
-  RuleDefinition,
   RuleResult,
   TargetContext,
   TREE_MOUNT,
 } from "@fabr-build/core";
 import { classpathOf, javaRelease, processorsOf } from "../JarPackage";
+
+/** The `java_compile` rule. */
+export default defineRule({
+  requirements(context) {
+    return {
+      srcs: context.getFileProperty("srcs"),
+      deps: context.getPackageProperty("deps"),
+    };
+  },
+  evaluateMaterialized(context, inputs) {
+    return compileJava(context, inputs);
+  },
+});
 
 /** Where the sources are staged. */
 const SOURCE_DIR = "src";
@@ -102,13 +114,3 @@ function compileJava(context: TargetContext, { srcs, deps }: { srcs: FileSet[]; 
     });
   });
 }
-
-export const javaCompileRule: RuleDefinition = defineRule({
-  type: "java_compile",
-  properties: {},
-  requirements: context => ({
-    srcs: context.getFileProperty("srcs"),
-    deps: context.getPackageProperty("deps"),
-  }),
-  evaluateMaterialized: (context, inputs) => compileJava(context, inputs),
-});

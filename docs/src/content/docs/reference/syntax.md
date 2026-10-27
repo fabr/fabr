@@ -35,11 +35,13 @@ list-targetdefs` and `fabr list-properties` show it.
 
 ## Plugins and includes
 
-`plugin <package>;` loads a plugin, by the name of the npm package that provides it. The package
-has to be installed alongside fabr.
+`plugin <name>;` loads a plugin. The name is a reference to the package that provides it, read as
+any other: fabr's own plugins by their package names, another plugin installed alongside fabr
+through `@fabr-home`, or a `fabr_plugin` target of the project.
 
 ```
 plugin @fabr-build/js;
+plugin @fabr-home:@example/text-lint;
 ```
 
 Loading a plugin makes its target types and settings available; nothing else needs including.
@@ -557,9 +559,10 @@ targetdef script {
 }
 ```
 
-Building a target needs a rule for its type, and rules come from plugins, so defining a type in a
-build file is mostly useful alongside a plugin that supplies its rules. Writing plugins is
-described in the [plugin reference](/developer/plugins/).
+Building a target needs a rule for its type, and a rule's implementation comes from a plugin (see
+[Rule and repository declarations](#rule-and-repository-declarations)), so defining a type in a
+build file is mostly useful alongside a plugin. Writing plugins is described in the
+[plugin reference](/developer/plugins/).
 
 Each entry is `<property> = <kind>;`. A `*` in place of a property name gives a kind to every
 property not otherwise listed, for types whose targets take arbitrary keys:
@@ -620,3 +623,37 @@ targetdef script {
 - A `${…}` in a default is replaced with the value the setting has for the target being built, so
   a default can follow `${BUILD_TYPE}`.
 - `REQUIRED` and `default` can't be combined, and a `*` entry can't have a default.
+
+## Rule and repository declarations
+
+`rule` says how targets of a type are built: under which configuration, for which targets, and by
+what code.
+
+```
+rule js_package pkg<BUILD_OPERATION=build> = @fabr-build/js:rules/BuildJSPackage;
+rule js_package pkg<BUILD_OPERATION=test, pkg.test_framework=mocha> = @example/mocha:rules/TestMocha;
+default rule t<BUILD_OPERATION=files> = @fabr-build/core:rules/DefaultFilesRule;
+```
+
+- After `rule` comes the target type, then a name for the target. `default rule` is a rule for
+  every type, used for a type with no rule of its own that applies.
+- The guard, written against the name, says where the rule applies. A key is a property of the
+  build configuration (`BUILD_OPERATION`), or a string property of the target through its name
+  (`pkg.test_framework`). The values are glob patterns, as in a
+  [guarded property](#guarded-properties), and a rule with no guard applies everywhere.
+- Of the rules that apply to a target, the one with the most guard keys builds it, and two that
+  are equally specific are an error.
+- The value is the rule's implementation, an entry of a package: `@fabr-build/js:rules/BuildJSPackage`
+  is the module `rules/BuildJSPackage` that `@fabr-build/js` exports. The package must be fabr's
+  core or a plugin the project uses, and the name means the copy fabr loaded.
+
+`repository` says how repositories of a type are made:
+
+```
+repository npm_repository = @fabr-build/js:NPMRepository;
+```
+
+`rule` and `repository` followed by a name always begin these declarations, so neither can be used
+as a target type. Fabr's core and its plugins declare the standard rules and repository types in
+their own `.fabr` files. An implementation is loaded only when its rule first builds a target, or its repository type
+first makes a repository.

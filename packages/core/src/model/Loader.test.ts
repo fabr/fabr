@@ -263,12 +263,53 @@ describe("Loader", () => {
     return { error, logged };
   }
 
-  it("reports a plugin activation failure positioned at the declaration, then stops", async () => {
+  it("reports a plugin naming nothing declared positioned at the declaration, then stops", async () => {
     const { error, logged } = await loadErr(files({ "PROJECT.fabr": "plugin @fabr/definitely-not-installed;" }));
     expect(error).to.be.an.instanceOf(BuildFilesInvalidError);
     const out = logged.join("\n");
-    expect(out).to.match(/not installed/);
+    expect(out).to.match(/names nothing the project declares/);
     expect(out).to.match(/PROJECT\.fabr:1:8/);
+  });
+
+  /* Core's `fabr_plugin` type, for a project that does not include STD.fabr. */
+  const FABR_PLUGIN_DEF = "targetdef fabr_plugin { srcs = FILES; libs = FILES; }\n";
+
+  it("adds a plugin's files, which may use a plugin and declare a type the project's files use", async () => {
+    const model = await load(
+      files({
+        "PROJECT.fabr": FABR_PLUGIN_DEF + "fabr_plugin p { libs = p/P.fabr; }\nfabr_plugin q { libs = Q.fabr; }\nplugin p;\nthing t { x = 1; }\n",
+        "p/P.fabr": "targetdef thing { x = STRING; }\nplugin q;\ndefault from_p = yes;\n",
+        "Q.fabr": "default from_q = yes;\n",
+      }),
+      "PROJECT.fabr"
+    );
+    expect(propertyValue(model, "from_p")).to.equal("yes");
+    expect(propertyValue(model, "from_q")).to.equal("yes");
+    expect(model.getTargetDecl("t")?.type).to.equal("thing");
+  });
+
+  it("refuses a fabr_plugin in a plugin's files", async () => {
+    const { error, logged } = await loadErr(
+      files({
+        "PROJECT.fabr": FABR_PLUGIN_DEF + "fabr_plugin p { libs = P.fabr; }\nplugin p;\n",
+        "P.fabr": "default fabr_plugin q { libs = Q.fabr; }\n",
+        "Q.fabr": "",
+      })
+    );
+    expect(error).to.be.an.instanceOf(BuildFilesInvalidError);
+    expect(logged.join("\n")).to.match(/cannot declare a fabr_plugin/);
+  });
+
+  it("refuses an ordinary declaration in a plugin's files", async () => {
+    const { error, logged } = await loadErr(
+      files({
+        "PROJECT.fabr": FABR_PLUGIN_DEF + "fabr_plugin p { libs = P.fabr; }\nplugin p;\n",
+        "P.fabr": "default fine = yes;\nnot_fine = no;\n",
+      })
+    );
+    expect(error).to.be.an.instanceOf(BuildFilesInvalidError);
+    expect((error as BuildFilesInvalidError).errorCount).to.equal(1);
+    expect(logged.join("\n")).to.match(/declare only defaults/);
   });
 
   it("rejects the load when a build file has a syntax error (reported, then stops)", async () => {
@@ -491,6 +532,43 @@ describe("Loader (watch mode)", () => {
     await tree.write("lib/one.fabr", "one = 2;");
     expect(propertyValue(latest(load), "one")).to.equal("2");
     expect(load.failures.length).to.equal(1);
+  });
+
+  /* Core's `fabr_plugin` type, for a project that does not include STD.fabr. */
+  const PLUGIN_DEF = "targetdef fabr_plugin { srcs = FILES; libs = FILES; }\n";
+
+  it("adds a plugin's file appearing under its glob libs", async () => {
+    const tree = new LiveTree({ "PROJECT.fabr": PLUGIN_DEF + "fabr_plugin p { libs = p/*.fabr; }\nplugin p;\n", "p/a.fabr": "default a = 1;\n" });
+    const load = watchLoad(tree);
+    await drain();
+    expect(propertyValue(latest(load), "a")).to.equal("1");
+
+    await tree.write("p/b.fabr", "default b = 2;\n");
+    expect(load.failures).to.deep.equal([]);
+    expect(propertyValue(latest(load), "b")).to.equal("2");
+    expect(propertyValue(latest(load), "a")).to.equal("1");
+  });
+
+  it("reloads a plugin's file when it is edited", async () => {
+    const tree = new LiveTree({ "PROJECT.fabr": PLUGIN_DEF + "fabr_plugin p { libs = p/a.fabr; }\nplugin p;\n", "p/a.fabr": "default a = 1;\n" });
+    const load = watchLoad(tree);
+    await drain();
+
+    await tree.write("p/a.fabr", "default a = 2;\n");
+    expect(load.failures).to.deep.equal([]);
+    expect(propertyValue(latest(load), "a")).to.equal("2");
+  });
+
+  it("keeps a plugin's files when a project file is edited after them", async () => {
+    const tree = new LiveTree({ "PROJECT.fabr": PLUGIN_DEF + "fabr_plugin p { libs = p/a.fabr; }\nplugin p;\nown = 1;\n", "p/a.fabr": "default a = 1;\n" });
+    const load = watchLoad(tree);
+    await drain();
+
+    await tree.write("PROJECT.fabr", PLUGIN_DEF + "fabr_plugin p { libs = p/a.fabr; }\nplugin p;\nown = 2;\n");
+    expect(load.failures).to.deep.equal([]);
+    expect(propertyValue(latest(load), "own")).to.equal("2");
+    expect(propertyValue(latest(load), "a")).to.equal("1");
+    expect(load.logged).to.deep.equal([]);
   });
 
   it("still fails when a plainly included file is removed", async () => {

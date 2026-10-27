@@ -21,7 +21,7 @@ import { expect } from "chai";
 import { EMPTY_FILESET } from "../core/FileSet";
 import { LogFormatter, LogLevel } from "../support/Log";
 import { parseBuildString } from "./Parser";
-import { toBuildModel } from "./Sema";
+import { toBuildModel } from "./ModelBuilder";
 
 /* Targetdef schema validation (Validate.validateTarget) runs during model build
  * (NamespaceBuilder.resolve), logging a diagnostic per violation. Each case here

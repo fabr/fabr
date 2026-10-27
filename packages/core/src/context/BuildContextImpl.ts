@@ -40,7 +40,7 @@ import {
 import { RunnableFileSet, toRunnable } from "../core/RunnableFileSet";
 import { PackageFileSet, ResolvedNode } from "../core/PackageFileSet";
 import { BuildAction, BuildResult } from "../core/BuildAction";
-import { RuleDefinition, RuleResult, RepositoryProvider, SubTargetInputs } from "../rules/Types";
+import { RuleDefinition, RuleResult, RepositoryProvider, SelectableRule, SubTargetInputs } from "../rules/Types";
 import { BUILD_OPERATION, Constraints, COVERAGE, HOST, RUN_OVERRIDE, TARGET } from "../model/Constraints";
 import { TaskDescription } from "../model/BuildEvents";
 import { ExecutionContext } from "../model/ExecutionContext";
@@ -52,7 +52,6 @@ import {
   ICommandStage,
   IDecl,
   IMapItemDecl,
-  INamespaceDecl,
   ICommandValue,
   IMapValue,
   INameValue,
@@ -107,7 +106,7 @@ function withHints<T extends FabrError>(err: T, hints: string[]): T {
 
 interface IBuildModel {
   getConfig(constraints: Constraints, execution: ExecutionContext): BuildContext;
-  getDecl(name: string): IPropertyEntry | ITargetDecl | INamespaceDecl | undefined;
+  getDecl(name: string): IPropertyEntry | ITargetDecl | undefined;
   getTargetDef(name: string): ITargetDefDecl | undefined;
   getPrefixMatch(name: Name): IPrefixMatch | undefined;
   /** Name enumerations, for nearest-match suggestions and for recognizing a marked target name. */
@@ -115,8 +114,10 @@ interface IBuildModel {
   getProperties(): { name: string; decl: IPropertyDecl }[];
   /** The rule tables and repository providers, built per load from the contributions of core
    * and the active plugins. */
-  getTargetRules(type: string): RuleDefinition[];
-  getDefaultRules(): RuleDefinition[];
+  getTargetRules(type: string): SelectableRule[];
+  getDefaultRules(): SelectableRule[];
+  /** Get a selected rule with its implementation, loaded where it was declared. */
+  getRuleDefinition(rule: SelectableRule): Computable<RuleDefinition>;
   getRepositoryProvider(type: string): RepositoryProvider | undefined;
 }
 
@@ -1338,7 +1339,9 @@ export class BuildContextImpl implements InternalBuildContext {
       if (!selection.rule) {
         throw noRule(selection);
       }
-      return selection.rule;
+      return this.model.getRuleDefinition(selection.rule).catch(err => {
+        throw context.failure(err);
+      });
     });
   }
 

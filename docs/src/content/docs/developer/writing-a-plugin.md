@@ -14,7 +14,7 @@ You need fabr installed (see the [quick start](/quickstart-js/)) and Node.js 22.
 project that uses the finished plugin looks like this:
 
 ```
-plugin @example/text-lint;
+plugin @fabr-home:@example/text-lint;
 
 text_lint docs_lint {
   srcs = docs:**/*.md;
@@ -29,28 +29,35 @@ The plugin is a fabr project of its own:
 ```
 text-lint/
   PROJECT.fabr
-  src/index.ts        the rule, and activate()
-  lib/LINT.fabr       the target type
+  src/rules/TextLint.ts  the rule's implementation
+  lib/LINT.fabr       the target type, and its rule
   test/lint.test.ts   added in step 2
 ```
 
-`PROJECT.fabr` declares the plugin's package with `js_package`:
+`PROJECT.fabr` declares the plugin's code as a `js_package`, and the plugin as a `fabr_plugin`:
 
 ```
 plugin @fabr-build/js;
 
-js_package @example/text-lint {
-  srcs = src:**/*.ts lib/**;
-  exports = src:index.ts;
+js_package text_lint_code {
+  srcs = src:**/*.ts;
+  exports = src:rules/*.ts;
   provided_deps = @npm:@fabr-build/core:^0.3.1;
+}
+
+fabr_plugin @example/text-lint {
+  srcs = text_lint_code;
+  libs = lib/LINT.fabr;
 }
 ```
 
-`src:**/*.ts` compiles the TypeScript to the root of the package, and `lib/**` keeps the `.fabr`
-files in a `lib/` directory beside it, where fabr looks for them. `@fabr-build/core` is the
-interface a plugin is written against. It is a `provided_deps` dependency, npm's peer
+`src:**/*.ts` compiles the TypeScript to the root of the package, and `exports` makes each module
+under `rules/` importable, which is how fabr reaches a rule's implementation. `@fabr-build/core` is
+the interface a plugin is written against. It is a `provided_deps` dependency, npm's peer
 dependency: the plugin compiles against it, but when it runs it uses the copy of core that fabr
-itself loads. There is no `package.json` to write; fabr generates it from the target.
+itself loads. The `fabr_plugin` is the plugin as it is published: the code with its `.fabr` files
+added, and a `package.json` that marks it a plugin and lists them. There is no `package.json` to
+write; fabr generates it.
 
 A target type is declared in a `.fabr` file shipped with the plugin. Create `lib/LINT.fabr`:
 
@@ -62,30 +69,31 @@ targetdef text_lint {
 }
 ```
 
-The rule is the code that builds targets of the type. Create `src/index.ts`:
+A rule says which code builds targets of the type. Declare it in `LINT.fabr` too:
+
+```
+rule text_lint t = @example/text-lint:rules/TextLint;
+```
+
+The declaration names the type, a name for the target (`t`), and the module that implements the
+rule: `rules/TextLint` of the package `@example/text-lint`. Create that module,
+`src/rules/TextLint.ts`:
 
 ```ts
-import { defineRule, FileSet, MemoryFile, getLibFile, PluginContribution } from "@fabr-build/core";
+import { defineRule, FileSet, MemoryFile } from "@fabr-build/core";
 
-const textLint = defineRule({
-  type: "text_lint",
-  properties: {},
-  requirements: context => ({ srcs: context.getFileProperty("srcs") }),
-  evaluateMaterialized: (_context, { srcs }) => {
+export default defineRule({
+  requirements(context) {
+    return { srcs: context.getFileProperty("srcs") };
+  },
+  evaluateMaterialized(_context, { srcs }) {
     const names = [...FileSet.unionAll(...srcs)].map(([name]) => name).sort();
     return new FileSet(new Map([["files.txt", MemoryFile.from(names.join("\n") + "\n")]]));
   },
 });
-
-export function activate(): PluginContribution {
-  return {
-    rules: [textLint],
-    includes: [getLibFile(__dirname, "LINT.fabr")],
-  };
-}
 ```
 
-A rule has two halves:
+The implementation has two halves:
 
 - **`requirements`** states the target's file dependencies, here the files its `srcs` property
   names. It returns them without content: fabr resolves them first, and can show them with `fabr deps`
@@ -94,21 +102,21 @@ A rule has two halves:
   here `srcs` as a list of `FileSet`s, one for each source written. This first version only lists
   the files, as a `files.txt` it returns directly.
 
-`activate` is what fabr calls to load the plugin. It returns the rules and the `.fabr` files to
-include; `getLibFile(__dirname, …)` locates a file in the `lib/` directory beside the main module.
+A project using the plugin reads `LINT.fabr` straight from the plugin's package, and fabr loads the
+rule's module only when it first builds a `text_lint` target.
 
 Build the package and look at what it contains:
 
 ```sh
 $ fabr build @example/text-lint
-✓ Compiling @example/text-lint (0.8s)
+✓ Compiling text_lint_code (0.8s)
 Built @example/text-lint
 $ fabr ls @example/text-lint
-index.d.ts
-index.js
-index.js.map
 lib/LINT.fabr
 package.json
+rules/TextLint.d.ts
+rules/TextLint.js
+rules/TextLint.js.map
 ```
 
 ## 2. Testing the plugin
@@ -157,7 +165,7 @@ function fabr(files: { [name: string]: string }, ...args: string[]) {
 
 /** A project with a text_lint target over its docs, given `properties` as well. */
 function project(properties = ""): string {
-  return `plugin @example/text-lint;
+  return `plugin @fabr-home:@example/text-lint;
 
 text_lint docs_lint {
   srcs = docs:**/*.md;
@@ -188,7 +196,8 @@ e2e: 1 test passed
 ## 3. Running a tool
 
 A rule never runs a program itself: it returns a **build action** that does, and fabr runs and
-caches it. The linter is a small shell script. Add it as `lib/linter.sh`:
+caches it. The linter is a small shell script. Add it as `lib/linter.sh`, and to the plugin's
+files with `resources = lib/linter.sh;` in the `fabr_plugin`:
 
 ```sh
 #!/bin/sh
@@ -214,22 +223,23 @@ script @example/text-lint-tools/linter {
 
 `script` is core's target type for a shell script; `./linter.sh` is relative to the `.fabr` file.
 Because `TEXT_LINTER` is a `default`, a project can point it at a linter of its own. Then change
-the rule to run the tool:
+the rule's implementation to run the tool:
 
 ```ts
-import { createExecAction, defineRule, FileSet, getLibFile, PluginContribution } from "@fabr-build/core";
+import { createExecAction, defineRule, FileSet } from "@fabr-build/core";
 
-const textLint = defineRule({
-  type: "text_lint",
-  properties: {},
-  requirements: context => ({ srcs: context.getFileProperty("srcs") }),
-  evaluateMaterialized: (context, { srcs }) =>
-    context.getGlobalRunnable("TEXT_LINTER").then(linter => {
+export default defineRule({
+  requirements(context) {
+    return { srcs: context.getFileProperty("srcs") };
+  },
+  evaluateMaterialized(context, { srcs }) {
+    return context.getGlobalRunnable("TEXT_LINTER").then(linter => {
       const files = FileSet.unionAll(...srcs);
       const names = [...files].map(([name]) => name).sort();
       const staged = FileSet.unionAll(files, FileSet.layout({ ".linter": linter }));
       return createExecAction(staged, linter.toCommandLine(names, { base: ".linter" }), "lint-report.txt");
-    }),
+    });
+  },
 });
 ```
 

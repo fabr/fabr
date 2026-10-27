@@ -298,3 +298,6 @@ function createFetchSource(context: TargetContext): Computable<FileSource> {
 }
 
 export const fetchSourceRegistration: RepositoryRegistration = { type: "fetch", provider: createFetchSource };
+
+/** The implementation STD.fabr's `repository` declaration names. */
+export default createFetchSource;

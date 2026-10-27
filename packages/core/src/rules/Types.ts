@@ -101,7 +101,14 @@ export type RepositoryProvider = (context: TargetContext) => Computable<Reposito
  * that apply, the one naming the most keys (over both records) is selected, two
  * equally specific ones being an error.
  */
-export interface RuleDefinition {
+export interface RuleDefinition extends SelectableRule, RuleImplementation {}
+
+/**
+ * A rule as selection reads it: the type it builds and its guards. A rule
+ * declared in a `.fabr` file (`rule js_package pkg<BUILD_OPERATION=build> = …;`)
+ * is selected from these alone, before its implementation is loaded.
+ */
+export interface SelectableRule {
   /** Target type this rule builds; omitted → a default (all-types) rule. */
   type?: string;
   /** The guard over the build configuration: property name → pattern
@@ -113,6 +120,14 @@ export interface RuleDefinition {
    * For a rule with a `type`, each key must be a STRING property of that
    * type's targetdef. */
   targetProperties?: Record<string, string>;
+}
+
+/**
+ * How a rule builds a target. A package entry a `rule` declaration names
+ * exports one as its default export, its type and guards being the
+ * declaration's.
+ */
+export interface RuleImplementation {
   /**
    * State what the target requires: the files, packages and targets its
    * FILES and PACKAGES properties and globals name, under names of the rule's
@@ -177,19 +192,33 @@ type RuleEvaluation<P> =
     };
 
 /**
- * Define a rule whose evaluation is typed by what its `requirements` names.
+ * Define a rule whose evaluation is typed by what its `requirements` names:
+ * with a type and guards, a rule a contribution lists; without, the
+ * implementation a `rule` declaration names, which may require nothing.
  */
 export function defineRule<P extends Record<string, RequiredSources>>(
-  rule: Omit<RuleDefinition, "requirements" | "evaluate"> & {
-    requirements: (context: TargetContext) => P | Permissive<P> | Computable<P | Permissive<P>>;
+  rule: SelectableRule &
+    Omit<RuleImplementation, "requirements" | "evaluate"> & {
+      requirements: (context: TargetContext) => P | Permissive<P> | Computable<P | Permissive<P>>;
+    } & RuleEvaluation<P>
+): RuleDefinition;
+export function defineRule<P extends Record<string, RequiredSources> = Record<string, never>>(
+  rule: Omit<RuleImplementation, "requirements" | "evaluate"> & {
+    requirements?: (context: TargetContext) => P | Permissive<P> | Computable<P | Permissive<P>>;
   } & RuleEvaluation<P>
-): RuleDefinition {
+): RuleImplementation;
+export function defineRule<P extends Record<string, RequiredSources>>(
+  rule: Partial<SelectableRule> &
+    Omit<RuleImplementation, "requirements" | "evaluate"> & {
+      requirements?: (context: TargetContext) => P | Permissive<P> | Computable<P | Permissive<P>>;
+    } & RuleEvaluation<P>
+): RuleImplementation {
   const { evaluateResolved, evaluateMaterialized, ...definition } = rule;
   const evaluate: (context: TargetContext, requirements: Unmaterialized<P>) => Computable<RuleResult> =
     evaluateMaterialized === undefined
       ? evaluateResolved
       : (context, requirements) => requirements.materializeAll().then(materialized => evaluateMaterialized(context, materialized));
-  return { ...definition, evaluate: evaluate as RuleDefinition["evaluate"] };
+  return { ...definition, evaluate: evaluate as RuleImplementation["evaluate"] };
 }
 
 /** A repository type contributed to a build. */

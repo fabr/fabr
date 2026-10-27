@@ -46,7 +46,7 @@ import { ExecutionContext } from "../model/ExecutionContext";
 import { parseBuildString, parseName } from "../model/Parser";
 import { INameValue, syntheticValue } from "../model/AST";
 import { StringReader } from "../support/StringReader";
-import { toBuildModel } from "../model/Sema";
+import { toBuildModel } from "../model/ModelBuilder";
 import { LogFormatter, LogLevel } from "../support/Log";
 import { parseVersion, SEMVER, SemverConstraint, SemverVersion, versionToString } from "../resolver/Semver";
 import { Requirement, Selected } from "../resolver/Types";

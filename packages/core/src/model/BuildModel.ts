@@ -17,121 +17,53 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { DeclKind, INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl, PropertyType } from "./AST";
-import { IPrefixMatch, IPropertyEntry, Namespace } from "./Namespace";
+import { IPropertyDecl, ITargetDecl, ITargetDefDecl } from "./AST";
+import { IPrefixMatch, IPropertyEntry } from "./Namespace";
 import { BuildContext } from "../context/index";
-import { BuildContextImpl } from "../context/BuildContextImpl";
-import { BUILD_OPERATION, Constraints } from "./Constraints";
+import { Constraints } from "./Constraints";
 import { ExecutionContext } from "./ExecutionContext";
 import { Name } from "../core/Name";
-import { parseName } from "./Parser";
-import { RuleDefinition, PluginContribution, RepositoryProvider } from "../rules/Types";
-import { FabrError } from "../core/Errors";
+import { RepositoryProvider, RuleDefinition, SelectableRule } from "../rules/Types";
+import { Computable } from "../core/Computable";
 
 /**
- * Build model holds the generalized model-as-it-is-written in the build files.
- *
- * It primarily exists to maintain a cache from constraint sets to active build
- * configurations ({@link getConfig}).
+ * The model of a project: the declarations its build files and its plugins'
+ * make, read-only. It keeps the configurations made of it ({@link getConfig}).
  */
-export class BuildModel {
-  private root: Namespace;
-  private configs: BuildContextImpl[] = [];
-  /**
-   * The rules and repository providers available to this model — indexed from
-   * core's base contribution plus each active plugin's, so they reflect exactly
-   * the declared plugin set (not process-global registration).
-   */
-  private readonly targetRules: Map<string, RuleDefinition[]> = new Map();
-  private readonly defaultRules: RuleDefinition[] = [];
-  private readonly repositories: Map<string, RepositoryProvider> = new Map();
-
-  constructor(root: Namespace, contributions: PluginContribution[]) {
-    this.root = root;
-    for (const contribution of contributions) {
-      for (const rule of contribution.rules ?? []) {
-        if (rule.type === undefined) {
-          this.defaultRules.push(rule);
-        } else {
-          this.assertTargetProperties(rule.type, rule);
-          const rules = this.targetRules.get(rule.type) ?? [];
-          rules.push(rule);
-          this.targetRules.set(rule.type, rules);
-        }
-      }
-      for (const repository of contribution.repositories ?? []) {
-        /* A repository type names a resolution mechanism; two contributions
-         * claiming the same type is a plugin conflict, not a silent last-wins
-         * override — reject it. */
-        if (this.repositories.has(repository.type)) {
-          throw new FabrError(`Duplicate repository type '${repository.type}' registered by more than one plugin`);
-        }
-        this.repositories.set(repository.type, repository.provider);
-      }
-    }
-  }
-
-  /**
-   * Check that a type-specific rule guards only on what its type declares: each
-   * of its `targetProperties` must be a STRING property of the type's targetdef.
-   * A type with no targetdef has no schema to check against.
-   */
-  private assertTargetProperties(type: string, rule: RuleDefinition): void {
-    const schema = this.root.getTargetDef(type)?.properties;
-    if (!schema) {
-      return;
-    }
-    for (const key of Object.keys(rule.targetProperties ?? {})) {
-      if ((schema.get(key) ?? schema.get("*"))?.type !== PropertyType.String) {
-        throw new FabrError(`A rule for '${type}' selects on its property '${key}', which '${type}' does not declare as a STRING`);
-      }
-    }
-  }
-
+export interface BuildModel {
   /** Get the rules registered for `type` — the candidates selection tries first. */
-  public getTargetRules(type: string): RuleDefinition[] {
-    return this.targetRules.get(type) ?? [];
-  }
+  getTargetRules(type: string): SelectableRule[];
 
   /** Get the default (all-types) rules, consulted where no rule of the target's
    * own type applies. */
-  public getDefaultRules(): RuleDefinition[] {
-    return this.defaultRules;
-  }
+  getDefaultRules(): SelectableRule[];
 
-  public getRepositoryProvider(type: string): RepositoryProvider | undefined {
-    return this.repositories.get(type);
-  }
+  /** Get `rule` with its implementation: a declared rule's is loaded the first time. */
+  getRuleDefinition(rule: SelectableRule): Computable<RuleDefinition>;
+
+  getRepositoryProvider(type: string): RepositoryProvider | undefined;
 
   /** @return every declared targetdef (the build vocabulary), in declaration
    * order — for diagnostic listing (`fabr list-targetdefs`). */
-  public getTargetDefs(): ITargetDefDecl[] {
-    return this.root.getTargetDefs();
-  }
+  getTargetDefs(): ITargetDefDecl[];
 
   /** @return every buildable target declared in the project, with its
    * fully-qualified name — for diagnostic listing (`fabr list-targets`).
    * Repository instances (`npm_repository @npm`, `catalog @dep`) share the
    * target-decl shape but are not buildable targets, so they are excluded (a
    * type is a repository iff it has a registered provider). */
-  public getTargets(): { name: string; decl: ITargetDecl }[] {
-    return this.root.getTargets().filter(target => !this.repositories.has(target.decl.type));
-  }
+  getTargets(): { name: string; decl: ITargetDecl }[];
 
   /** @return every declared target — repository instances (`npm_repository
    * @npm`, `catalog @dep`) included — in declaration order. For the docs listing
    * (`fabr list-all`), which documents repositories alongside ordinary lib
    * targets; {@link getTargets} excludes them as not buildable. */
-  public getDeclaredTargets(): { name: string; decl: ITargetDecl }[] {
-    return this.root.getTargets();
-  }
+  getDeclaredTargets(): { name: string; decl: ITargetDecl }[];
 
   /** @return every property declared in the project (effective set — a `default`
    * counts unless overridden), for documenting the configuration surface
    * (`fabr list-targetdefs --json` emits the documented ones). */
-  public getProperties(): { name: string; decl: IPropertyDecl }[] {
-    return this.root.getProperties();
-  }
+  getProperties(): { name: string; decl: IPropertyDecl }[];
 
   /** @return the BUILD_OPERATION values for which a type-specific rule is
    * registered for `type` — the operations that type supports (`build`,
@@ -139,9 +71,7 @@ export class BuildModel {
    * reported as `"*"` (it applies to any operation). Default (all-types)
    * rules are excluded: they apply everywhere and so say nothing about a
    * particular type. */
-  public getOperations(type: string): string[] {
-    return [...new Set(this.getTargetRules(type).map(rule => rule.properties[BUILD_OPERATION] ?? "*"))].sort();
-  }
+  getOperations(type: string): string[];
 
   /**
    * @return the build configuration under the given (possibly empty set of)
@@ -149,37 +79,18 @@ export class BuildModel {
    * itself is purely the declarations as written; everything runtime (the
    * build cache, progress observers) rides in the ExecutionContext.
    */
-  public getConfig(constraints: Constraints, execution: ExecutionContext): BuildContext {
-    /* Todo: hash the constraints instead of linearly scanning */
-    for (const config of this.configs) {
-      if (config.execution === execution && config.hasConstraints(constraints)) {
-        return config;
-      }
-    }
-    const config = new BuildContextImpl(this, constraints, execution);
-    this.configs.push(config);
-    return config;
-  }
+  getConfig(constraints: Constraints, execution: ExecutionContext): BuildContext;
 
-  public getDecl(name: string): IPropertyEntry | ITargetDecl | INamespaceDecl | undefined {
-    return this.root.getDecl(name);
-  }
+  getDecl(name: string): IPropertyEntry | ITargetDecl | undefined;
 
   /** @return the target this name declares, or undefined if it names something
    * else (a property, a namespace) or nothing at all — for a caller that needs
    * a target's *type* (and so what can be done with it) before asking for it. */
-  public getTargetDecl(name: string): ITargetDecl | undefined {
-    const decl = this.root.getDecl(name);
-    return decl?.kind === DeclKind.Target ? decl : undefined;
-  }
+  getTargetDecl(name: string): ITargetDecl | undefined;
 
-  public getTargetDef(name: string): ITargetDefDecl | undefined {
-    return this.root.getTargetDef(name);
-  }
+  getTargetDef(name: string): ITargetDefDecl | undefined;
 
-  public getPrefixMatch(name: Name): IPrefixMatch | undefined {
-    return this.root.getPrefixMatch(name);
-  }
+  getPrefixMatch(name: Name): IPrefixMatch | undefined;
 
   /**
    * Look up the declared target a written reference builds — its literal
@@ -191,8 +102,5 @@ export class BuildModel {
    * something about the target behind it before building — the CLI's `-f`,
    * which marks what the command line named.
    */
-  public getReferencedTarget(name: string): ITargetDecl | undefined {
-    const match = this.getPrefixMatch(parseName(name).withConstraints([]));
-    return match && this.getTargetDecl(match.name);
-  }
+  getReferencedTarget(name: string): ITargetDecl | undefined;
 }

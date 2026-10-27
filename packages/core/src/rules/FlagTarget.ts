@@ -20,18 +20,25 @@
 import { TargetContext } from "../context/index";
 import { Computable } from "../core/Computable";
 import { FileSource } from "../core/FileSet";
-import { RuleDefinition } from "./Types";
+import { defineRule } from "./Types";
 import { Flag } from "../core/Flag";
 
 /**
- * Create the Flag a `flag` target names: an inert marker that rides the
- * dependency graph for rules to interpret (platform modes and the like). A
- * flag is a value, made where its target is resolved, and is never built or
- * cached.
+ * The `flag` rule: a flag is a value, made where its target is resolved, and is
+ * never built or cached.
  */
-export function createFlag(context: TargetContext): Computable<FileSource> {
+export default defineRule({
+  value: true,
+  evaluateResolved(context) {
+    return createFlag(context);
+  },
+});
+
+/**
+ * Create the Flag a `flag` target names: an inert marker that rides the
+ * dependency graph for rules to interpret (platform modes and the like).
+ */
+function createFlag(context: TargetContext): Computable<FileSource> {
   const name = context.name;
   return context.getFlags("provides").then(provides => new Flag(name, provides));
 }
-
-export const flagRule: RuleDefinition = { type: "flag", properties: {}, value: true, evaluate: createFlag };

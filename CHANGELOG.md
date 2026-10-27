@@ -4,6 +4,9 @@ and the Sass importer (`@fabr-build/sass-pnp-importer`) are released together an
 number.
 
 ## Fabr 0.4.0
+@fabr-build/core:
+- Introduce fabr_plugin target + move rule/repository decls out to spec.
+
 @fabr-build/java:
 - New: Java support.
 

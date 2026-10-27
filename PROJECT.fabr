@@ -1,4 +1,6 @@
-plugin @fabr-build/js;
+# Stage 0: fabr's repo is built by the js plugin installed with the fabr
+# running it (`@fabr-boot`, below), not the one in packages/js it builds.
+plugin @fabr-boot/js;
 
 include docs/BUILD.fabr;
 include packages/*/BUILD.fabr;
@@ -122,4 +124,4 @@ sync release {
   @npm:@fabr-build/sass-pnp-importer:${FABR_VERSION} = @fabr-build/sass-pnp-importer;
 }
 
-all = @fabr-build/core @fabr-build/js @fabr-build/js-tools @fabr-build/cli @fabr-build/sass-pnp-importer @fabr-build/java;
+all = @fabr-build/core @fabr-build/js-boot @fabr-build/js-tools @fabr-build/cli @fabr-build/sass-pnp-importer @fabr-build/java-boot;

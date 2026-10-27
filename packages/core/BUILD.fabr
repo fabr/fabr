@@ -1,5 +1,7 @@
 js_package @fabr-build/core {
   srcs = src:**/*.ts lib/** ../../README.md -> README.md ../../COPYING -> LICENSE;
+  # The entry point, and the modules STD.fabr's rule and repository declarations name.
+  exports = src:index.ts src:rules/!(*.test).ts;
   tests = src:**/*.test.ts;
   deps = @pkg:@types/node @pkg:@parcel/watcher @pkg:picomatch @pkg:undici @pkg:@napi-rs/lzma @pkg:diff
          @pkg:yauzl @pkg:yazl unicode_properties tar_stream;

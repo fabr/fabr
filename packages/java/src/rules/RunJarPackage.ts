@@ -23,8 +23,18 @@
  * {@link makeJarRunnable}).
  */
 
-import { BUILD_OPERATION, BUILD_OVERRIDE, Computable, defineRule, FabrError, FileSet, PackageFileSet, RuleDefinition, RunnableFileSet, TargetContext } from "@fabr-build/core";
+import { BUILD_OVERRIDE, Computable, defineRule, FabrError, FileSet, PackageFileSet, RunnableFileSet, TargetContext } from "@fabr-build/core";
 import { mainClassOf, makeJarRunnable } from "../JarPackage";
+
+/** The `jar_package` rule, under `run`. */
+export default defineRule({
+  requirements(context) {
+    return { pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE), entry: context.getFileProperty("entry") };
+  },
+  evaluateMaterialized(context, { pkg, entry }) {
+    return runnableJar(context, pkg, entry);
+  },
+});
 
 function runnableJar(context: TargetContext, pkg: FileSet[], entry: FileSet[]): Computable<RunnableFileSet> {
   const built = pkg.find((source): source is PackageFileSet => source instanceof PackageFileSet);
@@ -37,10 +47,3 @@ function runnableJar(context: TargetContext, pkg: FileSet[], entry: FileSet[]): 
   }
   return makeJarRunnable(context, built, mainClass);
 }
-
-export const runJarPackageRule: RuleDefinition = defineRule({
-  type: "jar_package",
-  properties: { [BUILD_OPERATION]: "run" },
-  requirements: context => ({ pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE), entry: context.getFileProperty("entry") }),
-  evaluateMaterialized: (context, { pkg, entry }) => runnableJar(context, pkg, entry),
-});

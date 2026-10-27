@@ -25,29 +25,24 @@
  * compiles as a sibling but is never run.
  */
 
-import { BUILD_OPERATION, BUILD_OVERRIDE, Computable, defineRule, RuleDefinition, TargetContext, PackageSources } from "@fabr-build/core";
-import { compileAndRunTests, TestRequirements, TEST_FRAMEWORKS, testRequirements } from "../TestPipeline";
+import { BUILD_OVERRIDE, Computable, defineRule, TargetContext, PackageSources } from "@fabr-build/core";
+import { compileAndRunTests, TestRequirements, testFramework, testRequirements } from "../TestPipeline";
 
-function requirements(context: TargetContext): Computable<TestRequirements> {
-  return Computable.forAll(
-    [
-      context.getFileProperty("tests", BUILD_OVERRIDE),
-      context.getPackageProperty("deps", BUILD_OVERRIDE),
-      context.getFileProperty("resources", BUILD_OVERRIDE),
-      context.getFileProperty("expectations", BUILD_OVERRIDE),
-    ],
-    (tests, deps, test_resources, expectations) =>
-      testRequirements({ srcs: [], tests, deps, test_deps: new PackageSources([]), test_resources, expectations })
-  );
-}
-
-/** One rule per test framework, selected on the target's `framework`. */
-export const jsTestRules: RuleDefinition[] = [...TEST_FRAMEWORKS].map(([name, framework]) =>
-  defineRule({
-    type: "js_test",
-    properties: { [BUILD_OPERATION]: "test" },
-    targetProperties: { framework: name },
-    requirements,
-    evaluateMaterialized: (context, collected) => compileAndRunTests(context, framework, { envProperty: "env" }, collected),
-  })
-);
+/** The `js_test` rule: the tests, run under the test framework the target's `framework` names. */
+export default defineRule({
+  requirements(context: TargetContext): Computable<TestRequirements> {
+    return Computable.forAll(
+      [
+        context.getFileProperty("tests", BUILD_OVERRIDE),
+        context.getPackageProperty("deps", BUILD_OVERRIDE),
+        context.getFileProperty("resources", BUILD_OVERRIDE),
+        context.getFileProperty("expectations", BUILD_OVERRIDE),
+      ],
+      (tests, deps, test_resources, expectations) =>
+        testRequirements({ srcs: [], tests, deps, test_deps: new PackageSources([]), test_resources, expectations })
+    );
+  },
+  evaluateMaterialized(context, collected) {
+    return testFramework(context, "framework").then(framework => compileAndRunTests(context, framework, { envProperty: "env" }, collected));
+  },
+});

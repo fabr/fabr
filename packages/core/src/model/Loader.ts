@@ -23,29 +23,17 @@ import { Computable, ComputableSource } from "../core/Computable";
 import { FileSource } from "../core/FileSet";
 import { Name } from "../core/Name";
 import { Diagnostic, ErrorTrackingLog, IDiagnosticNote, ISourceSpan, LogLevel } from "../support/Log";
-import { BuildFilesInvalidError } from "./Errors";
 import { StringReader } from "../support/StringReader";
 import { parseBuildFile } from "./Parser";
-import { declPosn, IBuildFileContents, IIncludeDecl, IPluginDecl } from "./AST";
+import { DeclKind, declPosn, IBuildFileContents, IIncludeDecl, INameValue, ITargetDecl } from "./AST";
 import { BuildModel } from "./BuildModel";
+import { ModelBuilder } from "./ModelBuilder";
 import { ExecutionContext } from "./ExecutionContext";
-import { activatePlugin } from "./Plugin";
-import { toBuildModel } from "./Sema";
+import { PluginResolution, resolvePlugin } from "./Plugin";
 import { PluginContribution } from "../rules/Types";
-import { flagRule } from "../rules/FlagTarget";
-import { defaultFilesRule } from "../rules/DefaultFilesRule";
-import { scriptRunRule } from "../rules/RunScript";
-import { serveRunRule } from "../rules/RunServe";
-import { generateRule } from "../rules/BuildGenerate";
-import { patchedRule } from "../rules/BuildPatched";
-import { syncRule } from "../rules/BuildSync";
-import { catalogRepositoryRegistration } from "../rules/CatalogRepository";
-import { fetchSourceRegistration } from "../rules/FetchSource";
-import { repositoryGroupRegistration } from "../rules/RepositoryGroup";
-import { fabrHomeRegistration } from "../rules/FabrHome";
 import { computableWorkList } from "../core/WorkList";
-import { select } from "../support/Functional";
 import { FabrError } from "../core/Errors";
+import { Constraints } from "./Constraints";
 
 /** An `include`d file could not be found on disk, positioned at the offending
  * `include` decl so the report underlines it (with a `-->` back to the file that
@@ -69,26 +57,20 @@ const DIAG_INCLUDE_OUTSIDE = new Diagnostic<{ filename: string; loc: ISourceSpan
   "Included file not found: {filename} (outside the project tree)"
 );
 
-/** A `plugin <name>;` whose activation failed (not installed, no `activate()`,
- * or `activate()` threw) — positioned at the declaration, with the underlying
- * reason as its detail. */
-const DIAG_PLUGIN_ACTIVATION = new Diagnostic<{ detail: string; loc: ISourceSpan }>(
+/** A `fabr_plugin` target's `libs` value that is not a path or pattern beside it. */
+const DIAG_PLUGIN_LIBS = new Diagnostic<{ loc: ISourceSpan }>(
   LogLevel.Error,
-  "{detail}"
+  "A plugin's libs are paths or patterns relative to the file declaring it, as an include's are"
 );
 
 /**
- * Core's own contribution to every build: the generic bootstrap rules (flag,
- * files, script[run], serve[run], generate, patched, sync) and STD.fabr, which is therefore **always present** —
- * no explicit `include STD.fabr;` needed. Seeds every load before any plugin.
+ * Core's own contribution to every build: STD.fabr, which is therefore **always
+ * present** — no explicit `include STD.fabr;` needed — and which declares core's
+ * rules and repository types. Seeds every load before any plugin.
  */
 export function coreContribution(): PluginContribution {
-  return {
-    rules: [flagRule, defaultFilesRule, scriptRunRule, serveRunRule, generateRule, patchedRule, syncRule],
-    repositories: [catalogRepositoryRegistration, fetchSourceRegistration, repositoryGroupRegistration, fabrHomeRegistration()],
-    /* This module is in model/, beside core's entry point. */
-    includes: [getLibFile(path.dirname(__dirname), "STD.fabr")],
-  };
+  /* This module is in model/, beside core's entry point. */
+  return { includes: [getLibFile(path.dirname(__dirname), "STD.fabr")] };
 }
 
 /**
@@ -180,83 +162,14 @@ interface IncludedFiles {
   errors: number;
 }
 
-/**
- * Resolve one `include` decl to the build files it names — the one place an
- * include's files are decided, plain path and pattern alike, since both are just
- * a match against the source.
- *
- * **An include must name at least one file**: a plain path that is not there and a
- * pattern that matches nothing are the same error, reported here (against the
- * decl, which is where the name was written) rather than at the read. So a file
- * that vanishes *between* this match and its read is nobody's error — the match is
- * already re-resolving, and reports again if it now names nothing.
- *
- * The match set is a **live query** over the source tree, so under watch a file
- * appearing or disappearing beneath a pattern re-resolves the including file's
- * step, and the work-list picks the file up (or drops it) exactly as if the
- * include had been edited to name it. Matches are returned in canonical order — a
- * build's meaning must not depend on the order a directory walk handed them back.
- */
-function resolveIncludeFiles(
-  execution: ExecutionContext,
-  fs: FileSource,
-  file: string,
-  include: IIncludeDecl,
-  includeSites: Map<string, IIncludeDecl>
-): ComputableSource<IncludedFiles> {
-  /* First writer wins — one positioned diagnostic per file is enough. */
-  const remember = (target: string): string => {
-    if (!includeSites.has(target)) {
-      includeSites.set(target, include);
-    }
-    return target;
-  };
-  /* An include climbing out of the project tree is dropped and reported against
-   * its decl, like a missing one. */
-  const outsideTree = (): IncludedFiles => {
-    execution.log.log(DIAG_INCLUDE_OUTSIDE, {
-      filename: include.name.toString(),
-      loc: declPosn(include),
-      notes: includeChain(includeSites, include),
-    });
-    return { files: [], errors: 1 };
-  };
-  const noFiles = (): IncludedFiles => {
-    execution.log.log(resolved?.exact === undefined ? DIAG_INCLUDE_NO_MATCH : DIAG_INCLUDE_NOT_FOUND, {
-      filename: include.name.toString(),
-      loc: declPosn(include),
-      notes: includeChain(includeSites, include),
-    });
-    return { files: [], errors: 1 };
-  };
-  const resolved = resolveIncludeName(file, include);
-  if (resolved === undefined) {
-    return Computable.resolve(outsideTree());
-  }
-  /* Matches come back named in the source's own namespace, which is the work-list's
-   * key form for a project file. A lib file's key is its absolute path, and no
-   * FileSet name can be absolute (they are canonicalized relative), so restore the
-   * separator the "/"-rooted absolute source names its results without. */
-  const absolute = path.isAbsolute(file);
-  return fs.find(resolved.pattern).then(matched => {
-    const files = [...matched]
-      .map(([name]) => (absolute ? path.sep + name : name))
-      .filter(name => resolved.exact === undefined || name === resolved.exact)
-      .sort()
-      .map(remember);
-    return files.length === 0 ? noFiles() : { files, errors: 0 };
-  });
-}
-
-/** One loaded build file: its parsed decls, the contribution of each plugin it
- * declares — carried on the value so collation gathers exactly the plugins that
- * are still declared by some reachable file — and its error count (parsing
+/** One loaded build file: its parsed decls and its error count (parsing
  * recovers past errors rather than throwing, and a missing `include` target is
  * reported the same way, so the count rides on the value to flow through the
  * reactive graph: memoized per file, re-counted only when that file re-parses). */
 interface LoadedFile {
+  /** The file's work-list key: relative to the project's root for a project file, absolute for a lib file. */
+  file: string;
   decls: IBuildFileContents;
-  plugins: PluginContribution[];
   parseErrors: number;
 }
 
@@ -264,50 +177,113 @@ interface LoadedFile {
  * time it was read: it contributes no decls, plugins, or further includes, and
  * logs nothing. */
 const NO_DECLS: IBuildFileContents = {
-  namespaces: [],
   targets: [],
   targetdefs: [],
   properties: [],
   defaults: [],
   includes: [],
   plugins: [],
+  rules: [],
+  repositories: [],
 };
 
+/** One round of a load: the files it read, a plugin's where `fromPlugin`, and what the plugins they made ready resolved to. */
+interface Round {
+  files: LoadedFile[];
+  fromPlugin: boolean;
+  plugins: PluginResolution[];
+}
+
 /**
- * Load and collate the project's build files into a BuildModel. Core is always
- * present (its rules and STD.fabr); a `plugin <name>;` declaration activates the
- * plugin, auto-including its `.fabr` files and contributing its rules/repos. The
- * collected contributions become the model's rule tables, so rule selection is
- * per-model rather than process-global.
+ * Reads a project's build files, and the files of the plugins they use, into a
+ * model. What it reads is kept across loads, so a load made again under watch
+ * neither re-reads nor re-reports a file that has not changed.
  */
-export function loadProject(
-  execution: ExecutionContext,
-  startFile: string,
-  /* The always-present base contribution — core's rules + STD.fabr. A parameter
-   * (defaulting to the real thing) only so tests can substitute a stub whose
-   * `includes` don't point at a real on-disk lib/ (unavailable under ts-jest,
-   * where the package resolves to src/, not the built tree). */
-  core: PluginContribution = coreContribution()
-): Computable<BuildModel> {
-  const contributions = new Map<string, PluginContribution>();
-  const activate = (decl: IPluginDecl): PluginContribution => {
-    let contribution = contributions.get(decl.name);
-    if (contribution === undefined) {
-      contribution = activatePlugin(decl);
-      contributions.set(decl.name, contribution);
-    }
-    return contribution;
-  };
-  const libFiles = (contribution: PluginContribution): string[] => contribution.includes ?? [];
-  /* The `include` decl that first pulled in each reached path, so a file that
+class ProjectLoader {
+  /** The `include` decl that first pulled in each reached path, so a file that
    * fails to load can be attributed to the include that named it (the work-list
    * keys only on the path, losing the site otherwise). First writer wins — one
    * positioned diagnostic per missing file is enough. */
-  const includeSites = new Map<string, IIncludeDecl>();
+  private readonly includeSites = new Map<string, IIncludeDecl>();
+  /** Each file's load. */
+  private readonly steps = new Map<string, ComputableSource<{ value: LoadedFile; next: string[] }>>();
+  /** Each `fabr_plugin` target's `libs`, resolved, by its declaration. */
+  private readonly libs = new Map<ITargetDecl, ComputableSource<IncludedFiles>>();
 
-  return computableWorkList<string, LoadedFile>([startFile, ...libFiles(core)], file => {
-    const fs = path.isAbsolute(file) ? execution.absFileSource : execution.sourceFileSource;
-    return fs.get(file).then(f => {
+  constructor(
+    private readonly execution: ExecutionContext,
+    private readonly startFile: string,
+    private readonly core: PluginContribution,
+    private readonly host: Constraints
+  ) {}
+
+  /**
+   * Load the model: read the project's files and core's, then, each round,
+   * resolve every plugin whose name's root is now declared and read the files
+   * those add, until a round resolves none.
+   */
+  public load(): Computable<BuildModel> {
+    return this.round([], [this.startFile, ...(this.core.includes ?? [])], false);
+  }
+
+  /**
+   * Read `roots`, a plugin's files where `fromPlugin`, after the rounds
+   * `previous`, then resolve the plugins now ready and read what they add.
+   * Each round makes its model afresh from the rounds before it, so a round
+   * read again (a file of it changed, under watch) just goes on from there.
+   */
+  private round(previous: Round[], roots: string[], fromPlugin: boolean): Computable<BuildModel> {
+    return this.walk(roots).then(files => {
+      const model = this.modelOf([...previous, { files, fromPlugin, plugins: [] }]);
+      const ready = model.pendingPlugins().flatMap(decl => {
+        const match = model.getPrefixMatch(decl.name);
+        return match === undefined ? [] : [{ decl, match }];
+      });
+      if (ready.length === 0) {
+        return model.finish();
+      }
+      return Computable.forAll(
+        ready.map(({ decl, match }) =>
+          resolvePlugin(model, decl, match, { execution: this.execution, host: this.host, libsOf: target => this.libsOf(target) })
+        ),
+        (...plugins: PluginResolution[]) => plugins
+      ).then(plugins => {
+        const added = plugins.flatMap(({ resolved }) => (resolved instanceof Error ? [] : resolved.files));
+        return this.round([...previous, { files, fromPlugin, plugins }], [...new Set(added)], true);
+      });
+    });
+  }
+
+  /** Make the model of `rounds`: each round's files, a file reached again added once, then the plugins it resolved, in name order. */
+  private modelOf(rounds: Round[]): ModelBuilder {
+    const model = new ModelBuilder(this.execution.log, [this.core]);
+    const read = new Set<string>();
+    for (const { files, fromPlugin, plugins } of rounds) {
+      const fresh = files.filter(file => !read.has(file.file) && read.add(file.file));
+      model.addFiles(
+        fresh.map(file => file.decls),
+        { fromPlugin, reported: fresh.reduce((total, file) => total + file.parseErrors, 0) }
+      );
+      for (const { decl, resolved, reported } of plugins) {
+        model.addPlugin(decl, resolved, reported);
+      }
+    }
+    return model;
+  }
+
+  /** Read the build files `roots` and the files they include. */
+  private walk(roots: string[]): Computable<LoadedFile[]> {
+    return computableWorkList<string, LoadedFile>(roots, file => this.loadFile(file)).then(loaded => [...loaded.values()]);
+  }
+
+  /** Read and parse `file`, once, with the files its includes name as the work-list's next. */
+  private loadFile(file: string): ComputableSource<{ value: LoadedFile; next: string[] }> {
+    const known = this.steps.get(file);
+    if (known !== undefined) {
+      return known;
+    }
+    const fs = path.isAbsolute(file) ? this.execution.absFileSource : this.execution.sourceFileSource;
+    const step = fs.get(file).then(f => {
       if (!f) {
         /* Every included file got here by matching its include, which reports the
          * match naming nothing; a file gone by the time we read it is therefore a
@@ -315,66 +291,133 @@ export function loadProject(
          * silent, leaving that include's own re-resolution to report if it now
          * names nothing at all. A seed/plugin-lib file has no include site — that
          * stays a hard error (no project, or a broken installed plugin). */
-        if (!includeSites.has(file)) {
+        if (!this.includeSites.has(file)) {
           throw new FabrError("File not found: " + file);
         }
-        return { value: { decls: NO_DECLS, plugins: [], parseErrors: 0 }, next: [] };
+        return { value: { file, decls: NO_DECLS, parseErrors: 0 }, next: [] };
       }
       return f.readString().then(content => {
         /* Parsing logs each error and recovers rather than throwing, so count
          * error diagnostics through a wrapper to know if this file parsed cleanly. */
-        const parseLog = new ErrorTrackingLog(execution.log);
+        const parseLog = new ErrorTrackingLog(this.execution.log);
         const decls = parseBuildFile({ fs, file, reader: new StringReader(content) }, parseLog);
-        /* Activation can fail (plugin not installed, no `activate()`, or it
-         * threw); report it positioned at the declaration and drop the plugin,
-         * counting it as a load error (halts the load like a parse error) rather
-         * than letting a bare, unpositioned Error escape. */
-        let pluginErrors = 0;
-        const plugins = select(decls.plugins, decl => {
-          try {
-            return activate(decl);
-          } catch (err) {
-            execution.log.log(DIAG_PLUGIN_ACTIVATION, {
-              detail: err instanceof Error ? err.message : String(err),
-              loc: declPosn(decl),
-            });
-            pluginErrors++;
-            return undefined;
-          }
-        });
         /* Each include resolves to the files it names — one path for a plain
          * include, however many currently match for a pattern (a live query, so
          * this file's step re-resolves when the set changes). */
-        const included = decls.includes.map(include =>
-          resolveIncludeFiles(execution, fs, file, include, includeSites)
-        );
+        const included = decls.includes.map(include => this.includedFiles(fs, file, include));
         return Computable.forAll(included, (...resolved) => ({
-          value: {
-            decls,
-            plugins,
-            parseErrors:
-              parseLog.errorCount + pluginErrors + resolved.reduce((total, one) => total + one.errors, 0),
-          },
-          next: [...resolved.flatMap(one => one.files), ...plugins.flatMap(libFiles)],
+          value: { file, decls, parseErrors: parseLog.errorCount + resolved.reduce((total, one) => total + one.errors, 0) },
+          next: resolved.flatMap(one => one.files),
         }));
       });
     });
-  }).then(loaded => {
-    const files = [...loaded.values()];
-    /* Identity-dedup suffices: activation memoized by name ⇒ one instance per plugin. */
-    const plugins = [...new Set(files.flatMap(file => file.plugins))];
-    /* Collation/validation likewise reports diagnostics rather than throwing;
-     * count them too, then fail the load as a whole if the build files held any
-     * error — a parse error in any file, or a sema/validation error here. The
-     * model is not sound, so the run must stop rather than build against it (in
-     * watch mode: leave the previous model resident). Every error has already
-     * been reported to the log; the rejection just halts. */
-    const modelLog = new ErrorTrackingLog(execution.log);
-    const model = toBuildModel(files.map(file => file.decls), modelLog, [core, ...plugins]);
-    const errorCount = files.reduce((total, file) => total + file.parseErrors, 0) + modelLog.errorCount;
-    if (errorCount > 0) {
-      throw new BuildFilesInvalidError(errorCount);
+    this.steps.set(file, step);
+    return step;
+  }
+
+  /**
+   * Resolve one `include` decl to the build files it names — the one place an
+   * include's files are decided, plain path and pattern alike, since both are just
+   * a match against the source.
+   *
+   * **An include must name at least one file**: a plain path that is not there and a
+   * pattern that matches nothing are the same error, reported here (against the
+   * decl, which is where the name was written) rather than at the read. So a file
+   * that vanishes *between* this match and its read is nobody's error — the match is
+   * already re-resolving, and reports again if it now names nothing.
+   *
+   * The match set is a **live query** over the source tree, so under watch a file
+   * appearing or disappearing beneath a pattern re-resolves the including file's
+   * step, and the work-list picks the file up (or drops it) exactly as if the
+   * include had been edited to name it. Matches are returned in canonical order — a
+   * build's meaning must not depend on the order a directory walk handed them back.
+   */
+  private includedFiles(fs: FileSource, file: string, include: IIncludeDecl): ComputableSource<IncludedFiles> {
+    const resolved = resolveIncludeName(file, include);
+    if (resolved === undefined) {
+      /* An include climbing out of the project tree is dropped and reported
+       * against its decl, like a missing one. */
+      return Computable.resolve(this.includeFailed(DIAG_INCLUDE_OUTSIDE, include));
     }
-    return model;
-  });
+    /* Matches come back named in the source's own namespace, which is the work-list's
+     * key form for a project file. A lib file's key is its absolute path, and no
+     * FileSet name can be absolute (they are canonicalized relative), so restore the
+     * separator the "/"-rooted absolute source names its results without. */
+    const absolute = path.isAbsolute(file);
+    return fs.find(resolved.pattern).then(matched => {
+      const files = [...matched]
+        .map(([name]) => (absolute ? path.sep + name : name))
+        .filter(name => resolved.exact === undefined || name === resolved.exact)
+        .sort();
+      if (files.length === 0) {
+        return this.includeFailed(resolved.exact === undefined ? DIAG_INCLUDE_NO_MATCH : DIAG_INCLUDE_NOT_FOUND, include);
+      }
+      for (const target of files) {
+        if (!this.includeSites.has(target)) {
+          this.includeSites.set(target, include);
+        }
+      }
+      return { files, errors: 0 };
+    });
+  }
+
+  /** Report `include` as naming no file, by `diagnostic`, with the chain of includes that reached it. */
+  private includeFailed(diagnostic: Diagnostic<{ filename: string; loc: ISourceSpan }>, include: IIncludeDecl): IncludedFiles {
+    this.execution.log.log(diagnostic, {
+      filename: include.name.toString(),
+      loc: declPosn(include),
+      notes: includeChain(this.includeSites, include),
+    });
+    return { files: [], errors: 1 };
+  }
+
+  /** Resolve the `libs` of the `fabr_plugin` target `target`, as includes of the file declaring it. */
+  private libsOf(target: ITargetDecl): ComputableSource<IncludedFiles> {
+    let resolved = this.libs.get(target);
+    if (resolved === undefined) {
+      const values = target.properties
+        .filter(prop => prop.name.toBaseString() === "libs")
+        .flatMap(prop => prop.values.filter((value): value is INameValue => value.kind === DeclKind.NameValue));
+      resolved = Computable.forAll(
+        values.map(value => {
+          if (value.value.hasVarSubst() || value.value.hasLevelSeparator()) {
+            this.execution.log.log(DIAG_PLUGIN_LIBS, { loc: declPosn(value) });
+            return Computable.resolve({ files: [], errors: 1 });
+          }
+          return this.includedFiles(target.source.fs, target.source.file, { ...value, kind: DeclKind.Include, name: value.value });
+        }),
+        (...each: IncludedFiles[]) => ({
+          files: each.flatMap(one => one.files),
+          errors: each.reduce((total, one) => total + one.errors, 0),
+        })
+      );
+      this.libs.set(target, resolved);
+    }
+    return resolved;
+  }
+}
+
+/**
+ * Load and collate the project's build files into a BuildModel. Core is always
+ * present (STD.fabr). The model is made in rounds: the project's files and
+ * core's first, then, each round, the `.fabr` files of the plugins the files
+ * so far use. A `plugin <name>;` is resolved as a reference in the model as it
+ * stands once the root of its name is declared there, and waits for a later
+ * round until it is; loading ends with the round that resolves none. A
+ * plugin's own files may declare only defaults, and no `fabr_plugin`, so
+ * nothing they add changes what an earlier round read. Nothing is built to load the model: a
+ * `fabr_plugin`'s code is built, under `run` for `host`, the first time a rule
+ * or repository it implements is used.
+ */
+export function loadProject(
+  execution: ExecutionContext,
+  startFile: string,
+  /* The always-present base contribution — core's STD.fabr. A parameter
+   * (defaulting to the real thing) only so tests can substitute a stub whose
+   * `includes` don't point at a real on-disk lib/ (unavailable under ts-jest,
+   * where the package resolves to src/, not the built tree). */
+  core: PluginContribution = coreContribution(),
+  host: Constraints = Constraints.of({})
+): Computable<BuildModel> {
+  return new ProjectLoader(execution, startFile, core, host).load();
 }

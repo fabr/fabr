@@ -26,19 +26,20 @@
  * (`fabr run pkg:cmd`).
  */
 
-import { BUILD_OPERATION, BUILD_OVERRIDE, FabrError, PackageFileSet, RuleDefinition, defineRule } from "@fabr-build/core";
+import { BUILD_OVERRIDE, FabrError, PackageFileSet, defineRule } from "@fabr-build/core";
 import { makeNpmRunnable } from "../JSPackage";
 
-/* The requirement is this package under build (the ambient operation here is
- * run), so its carried deps resolve at this collection point: a carried @types
- * dep needing @types/node is satisfied by the package's own explicit
- * @types/node dep, in the same batch. The package is made runnable via its
- * generated package.json bin, the same path an external `@npm:` package takes. */
-export const runJsPackageRule: RuleDefinition = defineRule({
-  type: "js_package",
-  properties: { [BUILD_OPERATION]: "run" },
-  requirements: context => ({ pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE) }),
-  evaluateMaterialized: (context, { pkg }) => {
+/** The `js_package` rule, under `run`. */
+export default defineRule({
+  /* The requirement is this package under build (the ambient operation here is
+   * run), so its carried deps resolve at this collection point: a carried @types
+   * dep needing @types/node is satisfied by the package's own explicit
+   * @types/node dep, in the same batch. The package is made runnable via its
+   * generated package.json bin, the same path an external `@npm:` package takes. */
+  requirements(context) {
+    return { pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE) };
+  },
+  evaluateMaterialized(context, { pkg }) {
     const built = pkg.find((source): source is PackageFileSet => source instanceof PackageFileSet);
     if (!built) {
       throw new FabrError("internal: js_package[build] did not yield a package");

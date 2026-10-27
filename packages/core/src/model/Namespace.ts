@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { DeclKind, INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl } from "./AST";
+import { DeclKind, INamedDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl } from "./AST";
 import { NAME_COMPONENT_SEPARATOR, Name } from "../core/Name";
 
 /**
@@ -34,6 +34,36 @@ export interface IPropertyEntry {
   /** A `default` TARGET of the same name, which answers wherever none of the
    * property's declarations applies (its guards exclude the configuration). */
   fallbackTarget?: ITargetDecl;
+}
+
+/** What a name in a namespace holds: a sub-namespace, a target, or the
+ * {@link IPropertyEntry} collecting every declaration of one property. */
+export type NamespaceEntry = NamespaceNode | ITargetDecl | IPropertyEntry;
+
+/** What one namespace holds: {@link NamespaceBuilder} adds to it, and a {@link Namespace} reads it. */
+export interface NamespaceNode {
+  self?: INamedDecl;
+  /** The property of this namespace's own name, which answers names nothing
+   * under it declares. */
+  fallback?: IPropertyEntry;
+  targetDefs: Map<string, ITargetDefDecl>;
+  content: Map<string, NamespaceEntry>;
+  /** `default` TARGETS, kept apart: one answers for its name where nothing in
+   * `content` does, and is a property's `fallbackTarget` where a property
+   * holds the name. */
+  defaultTargets: Map<string, ITargetDecl>;
+  /** The namespace reading this node, made the first time one is asked for. */
+  view?: Namespace;
+}
+
+/** Make a node holding nothing, for the namespace `self` declares, if any. */
+export function newNamespaceNode(self?: INamedDecl): NamespaceNode {
+  return { self, content: new Map(), defaultTargets: new Map(), targetDefs: new Map() };
+}
+
+/** @return true if a name is held by a (sub-)namespace rather than by declarations, otherwise false. */
+export function isNamespaceNode(entry: NamespaceEntry): entry is NamespaceNode {
+  return !("kind" in entry);
 }
 
 type ContentType = Namespace | ITargetDecl | IPropertyEntry;
@@ -63,63 +93,43 @@ export function writtenSeparator(retainedPrefix: string): ":" | "/" {
  *
  */
 export class Namespace {
-  private content: Map<string, ContentType>;
+  /** Make the namespace reading `node`, which reads what is added to it later too. */
+  constructor(private readonly node: NamespaceNode) {}
 
-  private targetDefs: Map<string, ITargetDefDecl>;
-
-  /* If it's an explicit namespace, keep it here; leave undefined for implicit ones */
-  private decl?: INamespaceDecl;
+  /** @return the namespace reading `node`. */
+  public static of(node: NamespaceNode): Namespace {
+    return (node.view ??= new Namespace(node));
+  }
 
   /** The property of this namespace's own name: it answers names under the
    *  namespace that nothing declares (the rest of the name is a projection
    *  into its value), and the namespace's name itself. */
-  private fallback?: IPropertyEntry;
-
-  constructor(
-    content: Map<string, ContentType>,
-    targetDefs: Map<string, ITargetDefDecl>,
-    decl?: INamespaceDecl,
-    fallback?: IPropertyEntry
-  ) {
-    this.content = content;
-    this.decl = decl;
-    this.targetDefs = targetDefs;
-    this.fallback = fallback;
+  private get fallback(): IPropertyEntry | undefined {
+    return this.node.fallback;
   }
 
-  /**
-   * @return every declaration of the property with the given name, in the two
-   * tiers a read consults, or undefined if there is no such property (either the
-   * name does not exist or it is not a property)
-   */
-  public getProperty(name: string): IPropertyEntry | undefined {
-    const item = this.getDecl(name);
-    if (item?.kind === DeclKind.Property) {
-      return item;
-    }
+  /** @return what `key` names here: what `content` holds, else a `default` target of the name. */
+  private entry(key: string): ContentType | undefined {
+    const found = this.node.content.get(key) ?? this.node.defaultTargets.get(key);
+    return found !== undefined && isNamespaceNode(found) ? Namespace.of(found) : found;
   }
 
-  /**
-   * @return the target with the given name or undefined if there is no such target
-   * (either the name does not exist or it is not a target)
-   */
-  public getTarget(name: string): ITargetDecl | undefined {
-    const item = this.getDecl(name);
-    if (item?.kind === DeclKind.Target) {
-      return item;
-    }
+  /** @return every name here with what it names, those `content` holds first. */
+  private entries(): Array<[string, ContentType]> {
+    const keys = [...this.node.content.keys(), ...[...this.node.defaultTargets.keys()].filter(key => !this.node.content.has(key))];
+    return keys.map((key): [string, ContentType] => [key, this.entry(key)!]);
   }
 
   public getTargetDef(name: string): ITargetDefDecl | undefined {
     const parts = name.split(NAME_COMPONENT_SEPARATOR);
     const targetName = parts.pop()!; /* Array must contain at least 1 element */
-    return this.getNamespacePrefix(parts)?.targetDefs.get(targetName);
+    return this.getNamespacePrefix(parts)?.node.targetDefs.get(targetName);
   }
 
   /** @return this namespace's own targetdefs, in declaration order (does not
    * recurse into sub-namespaces — targetdefs are conventionally top-level). */
   public getTargetDefs(): ITargetDefDecl[] {
-    return [...this.targetDefs.values()];
+    return [...this.node.targetDefs.values()];
   }
 
   /** @return every target declared in this namespace and, recursively, its
@@ -129,7 +139,7 @@ export class Namespace {
    * targets filters by type. */
   public getTargets(prefix = ""): { name: string; decl: ITargetDecl }[] {
     const result: { name: string; decl: ITargetDecl }[] = [];
-    for (const [key, item] of this.content) {
+    for (const [key, item] of this.entries()) {
       const qualified = prefix === "" ? key : prefix + NAME_COMPONENT_SEPARATOR + key;
       if (item instanceof Namespace) {
         result.push(...item.getTargets(qualified));
@@ -155,7 +165,7 @@ export class Namespace {
         result.push({ name, decl: first });
       }
     };
-    for (const [key, item] of this.content) {
+    for (const [key, item] of this.entries()) {
       const qualified = prefix === "" ? key : prefix + NAME_COMPONENT_SEPARATOR + key;
       if (item instanceof Namespace) {
         if (item.fallback !== undefined) {
@@ -194,7 +204,7 @@ export class Namespace {
     };
 
     for (let idx = 0; idx < parts.length; idx++) {
-      const next = node.content.get(parts[idx]);
+      const next = node.entry(parts[idx]);
       if (next instanceof Namespace) {
         node = next;
       } else if (next?.kind === DeclKind.Target || next?.kind === DeclKind.Property) {
@@ -209,34 +219,19 @@ export class Namespace {
   }
 
   /**
-   * @return the explicit (declared) namespace with the given name or undefined if there
-   * is no such namespace (either the name does not exist or it is not a namespace)
-   */
-  public getNamespace(name: string): INamespaceDecl | undefined {
-    const item = this.getDecl(name);
-    if (item?.kind === DeclKind.Namespace) {
-      return item;
-    }
-  }
-
-  /**
    * @return the decl with the given name, or undefined if there is no such decl.
    */
-  public getDecl(name: string): ITargetDecl | IPropertyEntry | INamespaceDecl | undefined {
+  public getDecl(name: string): ITargetDecl | IPropertyEntry | undefined {
     const parts = name.split(NAME_COMPONENT_SEPARATOR);
     const targetName = parts.pop()!; /* Array must contain at least 1 element */
-    const item = this.getNamespacePrefix(parts)?.content.get(targetName);
-    if (item instanceof Namespace) {
-      return item.decl ?? item.fallback;
-    } else {
-      return item;
-    }
+    const item = this.getNamespacePrefix(parts)?.entry(targetName);
+    return item instanceof Namespace ? item.fallback : item;
   }
 
   private getNamespacePrefix(parts: string[]): Namespace | undefined {
     let ns: Namespace = this;
     for (let idx = 0; idx < parts.length; ++idx) {
-      const next = ns.content.get(parts[idx]);
+      const next = ns.entry(parts[idx]);
       if (!(next instanceof Namespace)) {
         return undefined;
       }

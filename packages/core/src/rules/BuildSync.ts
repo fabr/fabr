@@ -18,7 +18,7 @@
  */
 
 import { RequiredSources, TargetContext, Unmaterialized } from "../context/index";
-import { BUILD_OPERATION, FILES_OVERRIDE } from "../model/Constraints";
+import { FILES_OVERRIDE } from "../model/Constraints";
 import { Computable, ComputableSource } from "../core/Computable";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
 import { RepositoryPublishRef, RepositoryWriter, SourceRef } from "../core/Repository";
@@ -28,7 +28,37 @@ import { Name, NAME_COMPONENT_SEPARATOR, NAME_LEVEL_SEPARATOR } from "../core/Na
 import { FabrError, toError } from "../core/Errors";
 import { declPosn, IPropertyDecl } from "../model/AST";
 import { DependencyFailedError, NameResolutionError } from "../model/Errors";
-import { RuleDefinition, RuleResult } from "./Types";
+import { RuleImplementation, RuleResult } from "./Types";
+
+/**
+ * The `sync` rule. There is no files rule of its own: packaging IS the fileset,
+ * so there is nothing a files view could skip, and the generic files rule (a
+ * build passthrough) serves it — which is what makes `fabr cat
+ * release/@npm/x/1.0.0/package.json` and the same reference written in a build
+ * script name the same thing.
+ */
+export default {
+  /* Each member's content is a requirement keyed by its written coordinate
+   * ({@link contentKey}), read for its files alone whatever the sync is asked
+   * for, and materialized only for the members a name reaches. The coordinates
+   * themselves are validated once, in evaluate ({@link syncPackages}). */
+  requirements(context) {
+    return context
+      .getWildcardProperties()
+      .then(
+        props =>
+          new Map(
+            props.map((prop): [string, Computable<SourceRef[]>] => [
+              contentKey(prop.decl),
+              context.getFileProperty(contentKey(prop.decl), FILES_OVERRIDE),
+            ])
+          )
+      );
+  },
+  evaluate(context, requirements) {
+    return syncPackages(context, requirements);
+  },
+} satisfies RuleImplementation;
 
 interface Member {
   /** The vended publish ref this member is assigned — destination + validated name. */
@@ -360,32 +390,6 @@ function validateMember(context: TargetContext, prop: { key: Name; decl: IProper
       throw new NameResolutionError(prop.key, declPosn(prop.decl), undefined, toError(err).message);
     });
 }
-
-/* No files rule of its own: packaging IS the fileset, so there is nothing a
- * files view could skip, and the generic files rule (a build passthrough)
- * serves it — which is what makes `fabr cat release/@npm/x/1.0.0/package.json`
- * and the same reference written in a build script name the same thing. */
-export const syncRule: RuleDefinition = {
-  type: "sync",
-  properties: { [BUILD_OPERATION]: "build" },
-  /* Each member's content is a requirement keyed by its written coordinate
-   * ({@link contentKey}), read for its files alone whatever the sync is asked
-   * for, and materialized only for the members a name reaches. The coordinates
-   * themselves are validated once, in evaluate ({@link syncPackages}). */
-  requirements: context =>
-    context
-      .getWildcardProperties()
-      .then(
-        props =>
-          new Map(
-            props.map((prop): [string, Computable<SourceRef[]>] => [
-              contentKey(prop.decl),
-              context.getFileProperty(contentKey(prop.decl), FILES_OVERRIDE),
-            ])
-          )
-      ),
-  evaluate: syncPackages,
-};
 
 /** Name a member's content requirement: by its written
  * coordinate, which is also the property its content is read from. */

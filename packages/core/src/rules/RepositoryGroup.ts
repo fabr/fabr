@@ -513,3 +513,6 @@ function routeValue(groupName: string, routeName: string, sources: readonly Sour
 }
 
 export const repositoryGroupRegistration: RepositoryRegistration = { type: "repository_group", provider: createRepositoryGroup };
+
+/** The implementation STD.fabr's `repository` declaration names. */
+export default createRepositoryGroup;

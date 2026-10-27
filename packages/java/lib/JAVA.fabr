@@ -33,15 +33,15 @@ default JAVA = @jdk:21.0.12.1+1:java;
 
 # The sources are written for Java 8: using a later language feature or API
 # is a compile error, whatever release `JVM_TARGET` names.
-flag java8 { }
+default flag java8 { }
 # The sources are written for Java 11. See `java8`.
-flag java11 { }
+default flag java11 { }
 # The sources are written for Java 17. See `java8`.
-flag java17 { }
+default flag java17 { }
 # The sources are written for Java 21. See `java8`.
-flag java21 { }
+default flag java21 { }
 # The sources are written for Java 25. See `java8`.
-flag java25 { }
+default flag java25 { }
 
 ####################### Target types #######################
 
@@ -145,3 +145,13 @@ default maven_repository @maven {
 default jdk_distribution @jdk {
     url = "https://api.adoptium.net";
 }
+
+#
+# How the Java target types are built, and the Maven and JDK repository types made.
+#
+rule jar_package pkg<BUILD_OPERATION=build> = @fabr-build/java:rules/BuildJarPackage;
+rule jar_package pkg<BUILD_OPERATION=run> = @fabr-build/java:rules/RunJarPackage;
+rule java_compile c = @fabr-build/java:rules/BuildJavaCompile;
+
+repository maven_repository = @fabr-build/java:MavenRepository;
+repository jdk_distribution = @fabr-build/java:JdkDistribution;

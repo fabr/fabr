@@ -40,8 +40,8 @@ import { buildOperation } from "../Fabr";
 import { materializeTargets, TargetRef } from "../core/TargetRef";
 import { ResolvedTarget } from "./ResolvedTarget";
 import { PublishableFileSet } from "../core/PublishableFileSet";
-import { SyncSource, syncRule } from "../rules/BuildSync";
-import { defaultFilesRule } from "../rules/DefaultFilesRule";
+import sync, { SyncSource } from "../rules/BuildSync";
+import files from "../rules/DefaultFilesRule";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { makeRewrite, Name } from "../core/Name";
 import { renderProvenance } from "../core/Provenance";
@@ -50,13 +50,13 @@ import { cycleErrorOf } from "../model/ErrorFormatter";
 import { LogFormatter, LogLevel } from "../support/Log";
 import { BuildAction, IBuildActionDefinition } from "../core/BuildAction";
 import { DiscoveredDeps } from "../core/Manifest";
-import { defineRule, PluginContribution, RepositoryProvider, RepositoryRegistration, RuleDefinition } from "../rules/Types";
+import { defineRule, PluginContribution, RepositoryProvider, RepositoryRegistration, RuleDefinition, RuleImplementation } from "../rules/Types";
 import { FSFileSource } from "../core/FSFileSource";
-import { scriptRunRule } from "../rules/RunScript";
+import script from "../rules/RunScript";
 import { BuildContext, InternalBuildContext } from "./BuildContext";
 import { ResolvedRequirements } from "./Collection";
 import { mapEntryOrigin, PropertyMap, PropertyMapValue } from "./PropertyMap";
-import { BUILD_OPERATION, BUILD_OVERRIDE, Constraints } from "../model/Constraints";
+import { BUILD_OPERATION, BUILD_OVERRIDE, Constraints, FILES_OPERATION } from "../model/Constraints";
 import { SEMVER, SemverConstraint, SemverVersion, versionToString } from "../resolver/Semver";
 import { PackageFormat } from "../resolver/PackageFormat";
 import { Requirement } from "../resolver/Types";
@@ -74,7 +74,8 @@ import { ExecutionContext } from "../model/ExecutionContext";
 import { declName, INameValue, syntheticValue } from "../model/AST";
 import { StringReader } from "../support/StringReader";
 import { parseBuildString, parseName } from "../model/Parser";
-import { toBuildModel } from "../model/Sema";
+import { toBuildModel } from "../model/ModelBuilder";
+import { BuildModel } from "../model/BuildModel";
 import chai, { expect } from "chai";
 import chaiAsPromised from "chai-as-promised";
 import { BuildCache } from "../core/BuildCache";
@@ -121,6 +122,10 @@ const internal = (config: BuildContext): InternalBuildContext => config as Inter
  * added to `testRules` and each repository type to `testRepos`, directly or
  * through `registerRule` and `registerRepositoryProvider`. */
 const testRules: RuleDefinition[] = [];
+/* Core's rules, with the type and guards STD.fabr declares them with. */
+const syncRule: RuleDefinition = { type: "sync", properties: { [BUILD_OPERATION]: "build" }, ...sync };
+const defaultFilesRule: RuleDefinition = { properties: { [BUILD_OPERATION]: FILES_OPERATION }, ...files };
+const scriptRunRule: RuleDefinition = { type: "script", properties: { [BUILD_OPERATION]: "run" }, ...script };
 const testRepos: RepositoryRegistration[] = [];
 function registerRule(type: string, properties: Record<string, string>, evaluate: RuleDefinition["evaluate"]): void {
   testRules.push({ type, properties, evaluate });
@@ -4055,5 +4060,77 @@ describe("BuildModel repository registration", () => {
         { repositories: [{ type: "dup", provider }] },
       ])
     ).to.throw(/Duplicate repository type 'dup'/);
+  });
+});
+
+describe("declared rules and repositories", () => {
+  /** Make the model of `input`, its declarations' implementations those of
+   * `implementations` by reference, each load recorded in `loaded`. */
+  function declaredModel(input: string, implementations: Map<string, unknown>, loaded: string[], errors: string[] = []): BuildModel {
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    return toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions, implementation => {
+      const reference = implementation.value.toString();
+      loaded.push(reference);
+      return implementations.has(reference) ? Computable.resolve(implementations.get(reference)) : Computable.reject(new Error(`no module ${reference}`));
+    });
+  }
+
+  const content = (text: string): RuleImplementation => ({
+    evaluate: () => Computable.resolve(new FileSet(new Map([["out.txt", MemoryFile.from(text)]]))),
+  });
+
+  /** @return the content of `out.txt` in what `name` materializes to. */
+  async function built(model: BuildModel, name: string, constraints: Record<string, string> = {}): Promise<string> {
+    const [files] = await model.getConfig(Constraints.of(constraints), execution).materialize(writtenOnCommandLine(name));
+    return (files as FileSet).getFile("out.txt")!.readString();
+  }
+
+  it("builds a target with the declared rule its guards select, loading only that rule's implementation", async () => {
+    const loaded: string[] = [];
+    const model = declaredModel(
+      "targetdef dt { kind = STRING; }\n" +
+        "rule dt t<t.kind=one> = @p/q:rules/One;\n" +
+        "rule dt t<t.kind=two> = @p/q:rules/Two;\n" +
+        "dt a { kind = two; }\n",
+      new Map([
+        ["@p/q:rules/One", content("one")],
+        ["@p/q:rules/Two", content("two")],
+      ]),
+      loaded
+    );
+    expect(loaded).to.deep.equal([]);
+    expect(await built(model, "a")).to.equal("two");
+    expect(loaded).to.deep.equal(["@p/q:rules/Two"]);
+  });
+
+  it("refuses a rule for a type nothing defines, or guarding on what its type does not declare", () => {
+    const errors: string[] = [];
+    declaredModel(
+      "targetdef dt { srcs = FILES; }\nrule nope n = @p/q:rules/R;\nrule dt t<t.srcs=x> = @p/q:rules/R;\n",
+      new Map(),
+      [],
+      errors
+    );
+    expect(errors.join("\n")).to.contain("A rule for unknown target type 'nope'");
+    expect(errors.join("\n")).to.contain("A rule for 'dt' selects on its property 'srcs', which 'dt' does not declare as a STRING");
+  });
+
+  it("fails a target whose rule's implementation cannot be loaded, naming the implementation", async () => {
+    const model = declaredModel("targetdef dt { }\nrule dt t = @p/q:rules/Missing;\ndt a { }\n", new Map(), []);
+    const failure = await built(model, "a").then(
+      () => undefined,
+      (err: Error) => err
+    );
+    expect(failure).to.be.instanceOf(DependencyFailedError);
+    expect((failure as DependencyFailedError).cause.message).to.match(/The rule implementation '@p\/q:rules\/Missing' could not be loaded: no module/);
+  });
+
+  it("makes a declared repository type's instances with its implementation", async () => {
+    const loaded: string[] = [];
+    const provider: RepositoryProvider = () => Computable.resolve(new FileSet(new Map([["out.txt", MemoryFile.from("repo")]])));
+    const model = declaredModel("targetdef dr { }\nrepository dr = @p/q:Repo;\ndr @r { }\n", new Map([["@p/q:Repo", provider]]), loaded);
+    expect(model.getTargets().map(target => target.name)).to.not.include("@r");
+    expect(await built(model, "@r")).to.equal("repo");
+    expect(loaded).to.deep.equal(["@p/q:Repo"]);
   });
 });

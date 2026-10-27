@@ -23,14 +23,14 @@ import { Name, NameConstraint } from "../core/Name";
 import { IJudgedKey } from "../model/Errors";
 import { parseName } from "../model/Parser";
 import { Property } from "../model/Property";
-import { RuleDefinition } from "../rules/Types";
+import { SelectableRule } from "../rules/Types";
 import type { IDependencyStack } from "./Stack";
 import type { TargetContext } from "./TargetContext";
 
 /** The outcome of selecting a rule for a target: the rule, if one applies, and
  * how each rule of the target's own type was judged. */
-export interface IRuleSelection {
-  rule: RuleDefinition | undefined;
+export interface IRuleSelection<R extends SelectableRule = SelectableRule> {
+  rule: R | undefined;
   candidates: IJudgedKey[][];
 }
 
@@ -57,13 +57,13 @@ function rulePattern(written: string): Name {
  * wildcard. Undefined if `applicable` is empty; two equally specific rules are
  * an error. `ruleSet` names the candidates in that error.
  */
-function mostSpecificRule(applicable: RuleDefinition[], ruleSet: string): RuleDefinition | undefined {
+function mostSpecificRule<R extends SelectableRule>(applicable: R[], ruleSet: string): R | undefined {
   if (applicable.length === 0) {
     return undefined;
   }
-  const specificity = (rule: RuleDefinition): number => guardOf(rule.properties).length + guardOf(rule.targetProperties).length;
+  const specificity = (rule: R): number => guardOf(rule.properties).length + guardOf(rule.targetProperties).length;
   let best = applicable[0];
-  let tiedAt: RuleDefinition | undefined;
+  let tiedAt: R | undefined;
   for (const rule of applicable.slice(1)) {
     if (specificity(rule) > specificity(best)) {
       best = rule;
@@ -74,7 +74,7 @@ function mostSpecificRule(applicable: RuleDefinition[], ruleSet: string): RuleDe
   }
   if (tiedAt) {
     /* Two equally specific rules both apply, and neither is picked. */
-    const show = (rule: RuleDefinition): string =>
+    const show = (rule: R): string =>
       `{${[...guardOf(rule.properties), ...guardOf(rule.targetProperties)].map(([key, pattern]) => `${key}=${pattern.toString()}`).join(", ")}}`;
     throw new FabrError(`Ambiguous ${ruleSet} rule selection: ${show(best)} and ${show(tiedAt)} are equally specific`);
   }
@@ -101,19 +101,19 @@ export interface IRuleGuards {
  * the target's failure. How each of `own` was judged comes back with it, for
  * saying why none applied.
  */
-export function selectRule(
-  own: RuleDefinition[],
-  defaults: RuleDefinition[],
+export function selectRule<R extends SelectableRule>(
+  own: R[],
+  defaults: R[],
   type: string,
   target: TargetContext,
   guards: IRuleGuards
-): Computable<IRuleSelection> {
-  const judge = (rules: RuleDefinition[]): Computable<IJudgedKey[][]> =>
+): Computable<IRuleSelection<R>> {
+  const judge = (rules: R[]): Computable<IJudgedKey[][]> =>
     Computable.forAll(
       rules.map(rule => judgeRule(rule, target, guards)),
       (...judged: IJudgedKey[][]) => judged
     );
-  const pick = (rules: RuleDefinition[], judged: IJudgedKey[][], ruleSet: string): RuleDefinition | undefined =>
+  const pick = (rules: R[], judged: IJudgedKey[][], ruleSet: string): R | undefined =>
     mostSpecificRule(
       rules.filter((_, i) => judged[i].every(key => key.matched)),
       ruleSet
@@ -136,7 +136,7 @@ export function selectRule(
 
 /** Judge each key of `rule`'s guards for `target`: the rule applies where
  * every one matched. A key with no value does not match. */
-function judgeRule(rule: RuleDefinition, target: TargetContext, guards: IRuleGuards): Computable<IJudgedKey[]> {
+function judgeRule(rule: SelectableRule, target: TargetContext, guards: IRuleGuards): Computable<IJudgedKey[]> {
   const stack = target.stack;
   const judge = (key: string, own: boolean, pattern: Name, value: Property | undefined): Computable<IJudgedKey> =>
     (value === undefined ? Computable.resolve(false) : guards.admits(pattern, value, stack)).then(matched => ({

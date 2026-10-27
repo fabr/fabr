@@ -47,7 +47,6 @@ import {
   MemoryFile,
   Name,
   PackageFileSet,
-  RuleDefinition,
   RuleResult,
   TargetContext,
 } from "@fabr-build/core";
@@ -73,6 +72,20 @@ import {
   STATE_DIR,
   STATE_DIR_FLAG,
 } from "@fabr-build/js-tools";
+
+/** The `js_compile` rule. */
+export default defineRule({
+  requirements(context) {
+    return {
+      srcs: context.getFileProperty("srcs"),
+      deps: context.getPackageProperty("deps"),
+      resources: context.getFileProperty("resources"),
+    };
+  },
+  evaluateMaterialized(context, inputs) {
+    return compileTypescript(context, inputs);
+  },
+});
 
 /** Where the toolchain is mounted in the working dir — disjoint from src/ and build/. */
 const TOOL_DIR = ".tools/tsc";
@@ -471,14 +484,3 @@ function compileTypescript(context: TargetContext, { srcs: srcSets, deps, resour
     }
   );
 }
-
-export const jsCompileRule: RuleDefinition = defineRule({
-  type: "js_compile",
-  properties: {},
-  requirements: context => ({
-    srcs: context.getFileProperty("srcs"),
-    deps: context.getPackageProperty("deps"),
-    resources: context.getFileProperty("resources"),
-  }),
-  evaluateMaterialized: (context, inputs) => compileTypescript(context, inputs),
-});

@@ -345,3 +345,6 @@ function createRepository(context: TargetContext): Computable<Repository> {
 }
 
 export const nodeDistributionRegistration: RepositoryRegistration = { type: "node_distribution", provider: createRepository };
+
+/** The implementation JS.fabr's `repository` declaration names. */
+export default createRepository;

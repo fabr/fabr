@@ -34,7 +34,6 @@
  */
 
 import {
-  BUILD_OPERATION,
   BUILD_OVERRIDE,
   Computable,
   Constraints,
@@ -42,7 +41,6 @@ import {
   FileSet,
   FileSetRef,
   PackageFileSet,
-  RuleDefinition,
   RuleResult,
   RunnableFileSet,
   TargetContext,
@@ -66,29 +64,35 @@ import {
   stripPackageJson,
 } from "../JSPackage";
 
+/** The `js_script` rule, under `run`. */
+export default defineRule({
+  /**
+   * State `deps` and `entry`, read under build rather than the run operation this
+   * rule is selected by. They resolve as one collection, so an entry package
+   * resolves with the deps' own pins. The install is a sealed program, executed
+   * and never linked against, so they are collected permissively: resolution
+   * repairs are accepted, each fork laid out as an instance of its own. `entry`
+   * is read contained, so a projected package arrives as a pending FileSetRef
+   * that makeNpmRunnable consumes directly: the projection selects the
+   * runnable's entry, as it does for `fabr run`.
+   */
+  requirements(
+    context: TargetContext
+  ): Permissive<{ deps: Computable<PackageSources>; entry: Computable<ContainedSources> }> {
+    return permissive({
+      deps: context.getPackageProperty("deps", BUILD_OVERRIDE),
+      entry: context.getContainedFileProperty("entry", BUILD_OVERRIDE),
+    });
+  },
+  evaluateMaterialized(context, inputs) {
+    return defineJsRunnable(context, inputs);
+  },
+});
+
 /** The compiled entry's emitted name: tsc keeps the module flavour
  * (`.mts`→`.mjs`, `.cts`→`.cjs`); `.ts`/`.tsx` emit `.js`. */
 export function compiledEntryName(entryName: string): string {
   return entryName.replace(/\.(?:([cm])?ts|tsx)$/i, (_match, flavour: string | undefined) => `.${(flavour ?? "").toLowerCase()}js`);
-}
-
-/**
- * State `deps` and `entry`, read under build rather than the run operation this
- * rule is selected by. They resolve as one collection, so an entry package
- * resolves with the deps' own pins. The install is a sealed program, executed
- * and never linked against, so they are collected permissively: resolution
- * repairs are accepted, each fork laid out as an instance of its own. `entry`
- * is read contained, so a projected package arrives as a pending FileSetRef
- * that makeNpmRunnable consumes directly: the projection selects the
- * runnable's entry, as it does for `fabr run`.
- */
-function requirements(
-  context: TargetContext
-): Permissive<{ deps: Computable<PackageSources>; entry: Computable<ContainedSources> }> {
-  return permissive({
-    deps: context.getPackageProperty("deps", BUILD_OVERRIDE),
-    entry: context.getContainedFileProperty("entry", BUILD_OVERRIDE),
-  });
 }
 
 function defineJsRunnable(
@@ -168,10 +172,3 @@ function defineJsRunnable(
     }
   );
 }
-
-export const jsScriptRule: RuleDefinition = defineRule({
-  type: "js_script",
-  properties: { [BUILD_OPERATION]: "run" },
-  requirements,
-  evaluateMaterialized: defineJsRunnable,
-});

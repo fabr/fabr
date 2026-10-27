@@ -3,8 +3,9 @@ title: Plugin reference
 description: The fabr plugin contract — how a plugin is installed and loaded, and the rules, repository types and .fabr files it contributes.
 ---
 
-A plugin is an npm package that adds target types to fabr. It contributes the rules that build
-them, any repository types they need, and the `.fabr` files that declare them. Everything
+A plugin is an npm package that adds target types to fabr. Its `.fabr` files declare the types, the
+rules that build them and any repository types they need, and its code implements the rules and
+repository types. Everything
 language-specific in fabr works this way: `@fabr-build/js`, which builds JavaScript and
 TypeScript, is a plugin like any other.
 
@@ -17,7 +18,7 @@ with [Writing a plugin](/developer/writing-a-plugin/).
 A build file loads a plugin with a `plugin` declaration:
 
 ```
-plugin @example/text-lint;
+plugin @fabr-home:@example/text-lint;
 ```
 
 The declaration brings in the plugin's own `.fabr` files, so its target types can be used straight
@@ -26,8 +27,12 @@ always present, so the `flag`, `script`, `generate`, `patched`, `serve` and `syn
 and the `catalog`, `fetch`, `repository_group` and `fabr_home` repository types, need no
 declaration.
 
-Fabr finds a plugin the way Node.js finds a module: from where fabr itself is installed. Install
-the plugin in the same place as `@fabr-build/cli`, in your project or globally:
+A plugin's name is read like any other reference. Fabr's own plugins are named as they are
+published, `@fabr-build/js` and `@fabr-build/java`: names in the `@fabr-build` scope mean the
+packages installed alongside fabr. Any other plugin installed alongside fabr is named through
+`@fabr-home`, the set of packages installed with it, and found the way Node.js finds a module:
+from where fabr itself is installed. Install the plugin in the same place as `@fabr-build/cli`, in
+your project or globally:
 
 ```sh
 npm install --save-dev @fabr-build/cli @example/text-lint
@@ -38,8 +43,51 @@ npx fabr build
 npm install -g @fabr-build/cli @example/text-lint
 ```
 
-A plugin that cannot be found is an error (`Plugin '@example/text-lint' is not installed`).
+```
+plugin @fabr-home:@example/text-lint;
+```
+
+A plugin can also be named through a repository: `plugin @npm:@example/text-lint:1.2.0;` fetches
+that version from npm, once a plugin declaring `@npm` (`@fabr-build/js`) is in use. A name is
+resolved once what it starts with is declared, by the project or by a plugin already in use, so the
+order the `plugin` declarations are written in means nothing; a name nothing declares is an error
+(`Plugin '@example/text-lint' names nothing the project declares`). A name the project declares can
+stand for an installed plugin: with `@boot = @fabr-home:@fabr-build;`, `plugin @boot/js;` uses the
+installed `@fabr-build/js`. The plugin's rules still name it as itself, so using one package under
+two names is an error.
 `@fabr-build/js` is a dependency of `@fabr-build/cli`, so it is installed with it.
+
+### A plugin built in the project
+
+A project can build a plugin it uses, so a plugin can be developed beside the projects that test
+it without being installed after each change. A `fabr_plugin` target declares it: the package that
+is its code, and its `.fabr` files.
+
+```
+plugin @fabr-build/js;
+plugin @example/text-lint;
+
+js_package text_lint_code {
+  srcs = src:**/*.ts;
+  exports = src:rules/*.ts;
+}
+
+fabr_plugin @example/text-lint {
+  srcs = text_lint_code;
+  libs = lib/LINT.fabr;
+}
+
+text_lint docs { srcs = docs/**/*.md; }
+```
+
+Where a `plugin` declaration names a `fabr_plugin` target, fabr reads the target's `libs` with the
+project's own files, before anything is built, and loads no installed copy. The plugin's code is
+built, for the machine fabr runs on, the first time a rule or repository it implements is used; a
+run that uses none of them builds none of it.
+
+Built (`fabr build @example/text-lint`), the target is the plugin as a package: its code with its
+`libs` and any `resources` added, and a `package.json` naming it as the plugin and listing its
+`libs`, which is what an installed copy is read from.
 
 ## The plugin package
 
@@ -47,23 +95,52 @@ An installed plugin package looks like this:
 
 ```
 @example/text-lint/
-  package.json      its main module, and a peer dependency on @fabr-build/core
-  index.js          exports activate()
+  package.json      marks the package a plugin, and lists its .fabr files
+  rules/
+    TextLint.js     a rule's implementation
   lib/
-    LINT.fabr       target types, globals, the plugin's own tool targets
+    LINT.fabr       target types, rules, globals, the plugin's own tool targets
     linter.sh       files those targets name
 ```
 
-The `.fabr` files go in a `lib/` directory beside the package's main module. Fabr can build the
-package itself, as a `js_package`:
+What makes the package a plugin is its `package.json`, which lists the plugin's `.fabr` files
+under `"@fabr-build/plugin"`, as paths within the package:
+
+```json
+{
+  "name": "@example/text-lint",
+  "@fabr-build/plugin": { "libs": ["lib/LINT.fabr"] },
+  "exports": { "./rules/*": "./rules/*.js" }
+}
+```
+
+Using a plugin reads those files and runs none of its code; `exports` makes importable each module
+a rule or repository declaration names. A package without the field is not a plugin, and naming
+it in a `plugin` declaration is an error.
+
+A plugin's `.fabr` files declare only defaults: `default` properties and targets (`default flag
+dom { }`, `default js_script TEXT_LINTER { … }`), along with target types, `rule` and `repository`
+declarations, and `plugin` declarations of the plugins it builds on. An ordinary declaration there
+is an error, and so is a `fabr_plugin`: only a project declares a plugin it builds. So a project's own declaration of a name always takes precedence, and a plugin used
+later never changes what was read before it.
+
+Fabr builds such a package from a [`fabr_plugin`](#a-plugin-built-in-the-project) target, which
+writes the `package.json` for it: the plugin's code is a `js_package`, and the `fabr_plugin` adds
+its `.fabr` files.
 
 ```
 plugin @fabr-build/js;
 
-js_package @example/text-lint {
-  srcs = src:**/*.ts lib/**;
-  exports = src:index.ts;
+js_package text_lint_code {
+  srcs = src:**/*.ts;
+  exports = src:rules/*.ts;
   provided_deps = @npm:@fabr-build/core:^0.3.1;
+}
+
+fabr_plugin @example/text-lint {
+  srcs = text_lint_code;
+  libs = lib/LINT.fabr;
+  resources = lib/linter.sh;
 }
 ```
 
@@ -112,55 +189,65 @@ in for every installed `@fabr-build/*` package; see
 
 ## activate()
 
-The main module exports a function `activate` that returns the plugin's contribution:
+A plugin needs no code beyond its implementations. Where its package has a main module, that
+module may export a function `activate`, which fabr calls once, when it first loads one of the
+plugin's implementations, before loading it:
 
 ```ts
-import { getLibFile, PluginContribution } from "@fabr-build/core";
-
-export function activate(): PluginContribution {
-  return {
-    rules: [textLint],
-    repositories: [],
-    includes: [getLibFile(__dirname, "LINT.fabr")],
-  };
+export function activate(): void {
+  /* … */
 }
 ```
 
-`activate` takes no arguments, registers nothing and has no side effects: fabr calls it to learn
-what the plugin provides, once per load of a project.
-
-| Field | What it holds |
-|---|---|
-| `rules` | The rules that build the plugin's target types: see [Rules](#rules). |
-| `repositories` | Repository types: see [Repository types](#repository-types). |
-| `includes` | Absolute paths of the plugin's `.fabr` files. `getLibFile(__dirname, file)`, called from the plugin's main module, gives the path of `file` in the `lib/` directory beside it. |
+A run that uses none of the plugin's rules or repository types loads none of its code, and so
+does not call it.
 
 A target type's schema, its `targetdef`, is declared in a `.fabr` file, not in code: see
 [Targetdef declarations](/reference/syntax/#targetdef-declarations).
 
 ## Rules
 
-A rule is the code that builds targets of a type. Write one with `defineRule`, which types what
-the rule's evaluation receives from what `requirements` returns:
+A rule says how targets of a type are built. It is declared in a `.fabr` file, and names the
+module that implements it:
+
+```
+rule text_lint t = @example/text-lint:rules/TextLint;
+rule js_test t<BUILD_OPERATION=test, t.framework=mocha> = @example/mocha:rules/TestMocha;
+default rule t<BUILD_OPERATION=files> = @fabr-build/core:rules/DefaultFilesRule;
+```
+
+A declaration names the target type, a name for the target, its guards, and its implementation.
+`default rule` is a rule for every type, consulted for a type with no rule of its own that applies.
+
+| Part | Meaning |
+|---|---|
+| `<BUILD_OPERATION=test>` | A guard on the build configuration: a property and a glob pattern its value must match. |
+| `<t.framework=mocha>` | A guard on the target's own properties, through its name. Each must be a string property of the type's `targetdef`. |
+| `@example/mocha:rules/TestMocha` | The implementation: an entry of a package, the module `rules/TestMocha` that `@example/mocha` exports. The package is a plugin the project uses, or `@fabr-build/core`; the name means the copy fabr loaded. |
+
+The implementation is the module's default export. Write it with `defineRule`, which types what
+the evaluation receives from what `requirements` returns:
 
 ```ts
-const textLint = defineRule({
-  type: "text_lint",
-  properties: {},
-  requirements: context => ({ srcs: context.getFileProperty("srcs") }),
-  evaluateMaterialized: (context, { srcs }) => /* … */,
+export default defineRule({
+  requirements(context) {
+    return { srcs: context.getFileProperty("srcs") };
+  },
+  evaluateMaterialized(context, { srcs }) {
+    /* … */
+  },
 });
 ```
 
 | Field | Meaning |
 |---|---|
-| `type` | The target type the rule builds. Omit it for a default rule, consulted for any type that has no rule of its own that applies. |
-| `properties` | A guard on the build configuration: property name → glob pattern, such as `{ BUILD_OPERATION: "test" }`. `{}` applies everywhere. |
-| `targetProperties` | A guard on the target's own string properties, such as `{ framework: "vitest" }`. Each key must be a string property of the type's `targetdef`. |
 | `requirements` | Returns what the target requires, or a `Computable` of it: see [Requirements](#requirements). |
 | `evaluateMaterialized` | Builds the target from its requirements, each given its content first: see [Evaluate](#evaluate). |
 | `evaluateResolved` | Builds the target from its requirements as resolved, giving them content when it asks. A rule has this or `evaluateMaterialized`, not both. |
 | `value` | `true` for a target that is a value with nothing to build, such as a flag: the rule is evaluated where the target is read, and its result stands for the target. |
+
+Fabr loads an implementation the first time its rule builds a target, so a rule that builds nothing
+in a run loads nothing.
 
 ### Which rule builds a target
 
@@ -168,11 +255,12 @@ A guard is matched as a declaration's guard is: the configuration's properties a
 `default`, a declared global and a `-D` option on the command line all count, and the patterns are
 globs. A key with no value makes the rule not apply. Of the rules that apply, the one naming the
 most keys across its two guards is chosen, and two equally specific rules are an error. A type's
-own rules are preferred to default rules.
+own rules are preferred to default rules. A rule is chosen from its declaration alone: nothing is
+loaded to choose it.
 
 The build verb is the `BUILD_OPERATION` property: `fabr test x` builds `x` with
-`BUILD_OPERATION=test`, so `properties: { BUILD_OPERATION: "test" }` makes a rule that runs under
-`fabr test` only. Configuration propagates to what a target depends on, so a rule for one operation
+`BUILD_OPERATION=test`, so `<BUILD_OPERATION=test>` makes a rule that runs under `fabr test`
+only. Configuration propagates to what a target depends on, so a rule for one operation
 reads its dependencies under `build` explicitly (`context.getFileProperty("deps", BUILD_OVERRIDE)`).
 
 ### Requirements
@@ -233,7 +321,9 @@ it first materializes them. A rule that assembles a program to be run rather tha
 returns its requirements wrapped in `permissive(…)`, and is not refused for them:
 
 ```ts
-requirements: context => permissive({ deps: context.getPackageProperty("deps") }),
+requirements(context) {
+  return permissive({ deps: context.getPackageProperty("deps") });
+},
 ```
 
 ### Evaluate
@@ -279,11 +369,15 @@ composition is always through sub-targets.
 
 ## Repository types
 
-A repository answers references such as `@npm:semver:7.6.0`. A plugin contributes a repository
-type as `{ type, provider }`, and a build file declares a repository of that
-type (`npm_repository @npm { … }`).
+A repository answers references such as `@npm:semver:7.6.0`. A repository type is declared in a
+`.fabr` file, naming the module that implements it, and a build file declares a repository of that
+type (`npm_repository @npm { … }`):
 
-The `provider` is called once per build configuration that uses the repository, with the
+```
+repository npm_repository = @fabr-build/js:NPMRepository;
+```
+
+The implementation is the module's default export, a `provider` function. It is called once per build configuration that uses the repository, with the
 declaration's `TargetContext`: its property readers, `memoize(tag, key, fn)` to cache the result of
 a resolution, `fetch(url, tag, process, report)` to download, and `runTask` to report progress. It
 returns a `Repository`, or a plain `FileSource` for a repository that only holds files.
@@ -306,8 +400,8 @@ answer every name in the group; see
 
 ## Current limitations
 
-- A plugin must be installed beside fabr; fabr cannot build a plugin from source and load it in
-  the same build.
+- A rule or repository declaration names an implementation of fabr's core or of a plugin the
+  project uses, not of any other package.
 - A plugin can build on `@fabr-build/core` only, not on another plugin's exports, since that would
   load a second copy of the other plugin.
 - The interface is the whole of `@fabr-build/core`. It is not yet versioned or stable.

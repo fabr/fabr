@@ -6,6 +6,11 @@
   "homepage": "https://github.com/fabr/fabr",
   "main": "build/index.js",
   "types": "build/index.d.ts",
+  "exports": {
+    ".": "./build/index.js",
+    "./rules/*": "./build/rules/*.js",
+    "./package.json": "./package.json"
+  },
   "dependencies": {
     "@napi-rs/lzma": "^1.5.1",
     "@parcel/watcher": "2.6.0",

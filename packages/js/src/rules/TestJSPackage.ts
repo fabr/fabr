@@ -23,48 +23,44 @@
  * resolve) and run against the package's deps.
  */
 
-import { BUILD_OPERATION, BUILD_OVERRIDE, Computable, defineRule, RuleDefinition, TargetContext, PackageSources } from "@fabr-build/core";
-import { compileAndRunTests, TestRequirements, TEST_FRAMEWORKS, testRequirements } from "../TestPipeline";
+import { BUILD_OVERRIDE, Computable, defineRule, TargetContext, PackageSources } from "@fabr-build/core";
+import { compileAndRunTests, TestRequirements, testFramework, testRequirements } from "../TestPipeline";
 
-/**
- * State the package's test requirements. Its `provided_deps`,
- * `optional_provided_deps` and `compile_deps` are more `deps` here, compiled
- * and installed identically: a test install is self-contained, with no host to
- * supply them and no manifest to distinguish them.
- */
-function requirements(context: TargetContext): Computable<TestRequirements> {
-  return Computable.forAll(
-    [
-      context.getFileProperty("srcs", BUILD_OVERRIDE),
-      context.getFileProperty("tests", BUILD_OVERRIDE),
-      context.getPackageProperty("deps", BUILD_OVERRIDE),
-      context.getPackageProperty("provided_deps", BUILD_OVERRIDE),
-      context.getPackageProperty("optional_provided_deps", BUILD_OVERRIDE),
-      context.getPackageProperty("compile_deps", BUILD_OVERRIDE),
-      context.getPackageProperty("test_deps", BUILD_OVERRIDE),
-      context.getFileProperty("test_resources", BUILD_OVERRIDE),
-      context.getFileProperty("test_expectations", BUILD_OVERRIDE),
-    ],
-    (srcs, tests, deps, provided, optional, compileOnly, test_deps, test_resources, expectations) =>
-      testRequirements({
-        srcs,
-        tests,
-        deps: new PackageSources([...deps.sources, ...provided.sources, ...optional.sources, ...compileOnly.sources]),
-        test_deps,
-        test_resources,
-        expectations,
-      })
-  );
-}
-
-/** One rule per test framework, selected on the package's `test_framework`. */
-export const testJsPackageRules: RuleDefinition[] = [...TEST_FRAMEWORKS].map(([name, framework]) =>
-  defineRule({
-    type: "js_package",
-    properties: { [BUILD_OPERATION]: "test" },
-    targetProperties: { test_framework: name },
-    requirements,
-    evaluateMaterialized: (context, collected) =>
-      compileAndRunTests(context, framework, { envProperty: "test_env", packageName: context.name }, collected),
-  })
-);
+/** The `js_package` rule, under `test`: the package's tests, run under the test framework its `test_framework` names. */
+export default defineRule({
+  /**
+   * State the package's test requirements. Its `provided_deps`,
+   * `optional_provided_deps` and `compile_deps` are more `deps` here, compiled
+   * and installed identically: a test install is self-contained, with no host to
+   * supply them and no manifest to distinguish them.
+   */
+  requirements(context: TargetContext): Computable<TestRequirements> {
+    return Computable.forAll(
+      [
+        context.getFileProperty("srcs", BUILD_OVERRIDE),
+        context.getFileProperty("tests", BUILD_OVERRIDE),
+        context.getPackageProperty("deps", BUILD_OVERRIDE),
+        context.getPackageProperty("provided_deps", BUILD_OVERRIDE),
+        context.getPackageProperty("optional_provided_deps", BUILD_OVERRIDE),
+        context.getPackageProperty("compile_deps", BUILD_OVERRIDE),
+        context.getPackageProperty("test_deps", BUILD_OVERRIDE),
+        context.getFileProperty("test_resources", BUILD_OVERRIDE),
+        context.getFileProperty("test_expectations", BUILD_OVERRIDE),
+      ],
+      (srcs, tests, deps, provided, optional, compileOnly, test_deps, test_resources, expectations) =>
+        testRequirements({
+          srcs,
+          tests,
+          deps: new PackageSources([...deps.sources, ...provided.sources, ...optional.sources, ...compileOnly.sources]),
+          test_deps,
+          test_resources,
+          expectations,
+        })
+    );
+  },
+  evaluateMaterialized(context, collected) {
+    return testFramework(context, "test_framework").then(framework =>
+      compileAndRunTests(context, framework, { envProperty: "test_env", packageName: context.name }, collected)
+    );
+  },
+});

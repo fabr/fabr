@@ -42,11 +42,22 @@ import { FileSet } from "../core/FileSet";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { getResultFileSet, writeFileSet } from "../core/Staging";
 import { SymlinkFile } from "../core/SymlinkFile";
-import { BUILD_OPERATION } from "../model/Constraints";
 import { TargetContext } from "../context/index";
 import { ITaskReport } from "../support/Execute";
 import { FilePatch, parsePatchFile } from "../support/Patch";
-import { defineRule, RuleDefinition, RuleResult } from "./Types";
+import { defineRule, RuleResult } from "./Types";
+
+/** The `patched` rule. */
+export default defineRule({
+  /* One package patched is a package again, at the version and with the
+   * requirements of the one it was made from. */
+  requirements(context) {
+    return { extends: context.getPackageProperty("srcs"), patches: context.getFileProperty("patches") };
+  },
+  evaluateMaterialized(context, { extends: srcs, patches }) {
+    return patched(context, { srcs, patches });
+  },
+});
 
 /** The path components a patch's names lose: the `a/`…`b/` git writes. */
 const STRIP = 1;
@@ -145,12 +156,3 @@ function applyChange(root: string, links: FileSet, change: FilePatch, patch: str
 }
 
 export const PATCH_ACTION: IBuildActionDefinition = { id: "core:patch", version: 1, run: runPatch };
-
-export const patchedRule: RuleDefinition = defineRule({
-  type: "patched",
-  properties: { [BUILD_OPERATION]: "build" },
-  /* One package patched is a package again, at the version and with the
-   * requirements of the one it was made from. */
-  requirements: context => ({ extends: context.getPackageProperty("srcs"), patches: context.getFileProperty("patches") }),
-  evaluateMaterialized: (context, { extends: srcs, patches }) => patched(context, { srcs, patches }),
-});

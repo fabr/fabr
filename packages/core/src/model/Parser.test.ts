@@ -34,7 +34,7 @@ import {
   IValue,
   PropertyType,
 } from "./AST";
-import { Name, NamePart, NamePartKind } from "../core/Name";
+import { Name, NameConstraint, NamePart, NamePartKind } from "../core/Name";
 import { parseBuildString, parseName } from "./Parser";
 
 function parseValid(text: string): IBuildFileContents {
@@ -158,7 +158,7 @@ function summarize(contents: IBuildFileContents): Record<string, unknown> {
   }
   return {
     includes: contents.includes.map(include => include.name.toString()),
-    plugins: contents.plugins.map(plugin => plugin.name),
+    plugins: contents.plugins.map(plugin => plugin.name.toString()),
     properties: propertyValues(contents.properties),
     defaults: defaultValues(contents.defaults),
     targets,
@@ -621,9 +621,12 @@ describe("Parser Tests", () => {
     );
   });
 
-  it("allows '-' and '.' in plugin and target names (real npm package names)", () => {
+  it("allows '-' and '.' in plugin and target names (real npm package names), and a plugin named through a repository", () => {
     expect(summarize(parseValid("plugin my-plugin;\nplugin lodash.merge;\nplugin @scope/a-b.c;"))).to.deep.equal(
       summary({ plugins: ["my-plugin", "lodash.merge", "@scope/a-b.c"] })
+    );
+    expect(summarize(parseValid("plugin @fabr-home:@example/lint;\nplugin @npm:@example/lint:1.2.0;"))).to.deep.equal(
+      summary({ plugins: ["@fabr-home:@example/lint", "@npm:@example/lint:1.2.0"] })
     );
     expect(summarize(parseValid("js_package my-target {\n  srcs = src:*.ts; }"))).to.deep.equal(
       summary({ targets: { "my-target": { type: "js_package", properties: { srcs: ["src:+glob(*)+.ts"] } } } })
@@ -651,10 +654,10 @@ describe("Parser Tests", () => {
 
   it("Plugin Decl with invalid name", () => {
     expect(parseInvalid("plugin ${TEST_PLUGIN};")).to.deep.equal([
-      diagnosticBlock(1, 8, "Plugin names must be plain target names (no glob patterns or variables)", "plugin ${TEST_PLUGIN};"),
+      diagnosticBlock(1, 8, "A plugin is named by a reference, with no glob patterns or variables", "plugin ${TEST_PLUGIN};"),
     ]);
     expect(parseInvalid("plugin @fabr/*;")).to.deep.equal([
-      diagnosticBlock(1, 8, "Plugin names must be plain target names (no glob patterns or variables)", "plugin @fabr/*;"),
+      diagnosticBlock(1, 8, "A plugin is named by a reference, with no glob patterns or variables", "plugin @fabr/*;"),
     ]);
   });
 
@@ -1470,6 +1473,55 @@ describe("Parser Tests", () => {
 
   /* The decl-position reading of the `<k=v>` facet: on a use it selects a
    * configuration (a requirement), on a declaration it matches one (a guard). */
+  describe("rule and repository declarations", () => {
+    const guard = (constraints: ReadonlyArray<NameConstraint>): string[] =>
+      constraints.map(([key, pattern]) => `${key}=${pattern.toString()}`);
+
+    it("parses a rule's type, parameter, guards and implementation", () => {
+      const [rule] = parseValid("rule js_package pkg<BUILD_OPERATION=test, pkg.test_framework=jest> = @fabr-build/js:rules/TestJSPackage;").rules;
+      expect(rule.type).to.equal("js_package");
+      expect(rule.param).to.equal("pkg");
+      expect(guard(rule.properties)).to.deep.equal(["BUILD_OPERATION=test"]);
+      expect(guard(rule.targetProperties)).to.deep.equal(["test_framework=jest"]);
+      expect(rule.implementation.value.toString()).to.equal("@fabr-build/js:rules/TestJSPackage");
+    });
+
+    it("parses a rule with no guard, and a default rule of every type", () => {
+      const rules = parseValid("rule js_compile c = @fabr-build/js:rules/BuildJSCompile;\ndefault rule t<BUILD_OPERATION=files> = @x/y:rules/Files;").rules;
+      expect(rules.map(rule => [rule.type, rule.param, guard(rule.properties)])).to.deep.equal([
+        ["js_compile", "c", []],
+        [undefined, "t", ["BUILD_OPERATION=files"]],
+      ]);
+    });
+
+    it("takes a guard's values as patterns", () => {
+      const [rule] = parseValid("rule t x<TARGET=*-linux-*> = @p/q:rules/R;").rules;
+      expect(guard(rule.properties)).to.deep.equal(["TARGET=*-linux-*"]);
+    });
+
+    it("parses a repository declaration", () => {
+      const [repository] = parseValid("repository npm_repository = @fabr-build/js:NPMRepository;").repositories;
+      expect([repository.type, repository.implementation.value.toString()]).to.deep.equal(["npm_repository", "@fabr-build/js:NPMRepository"]);
+    });
+
+    it("leaves a property or target named rule or repository as it is", () => {
+      const contents = parseValid("rule = x;\nrepository = y;\nrule_set r { }");
+      expect(contents.properties.map(prop => prop.name.toString())).to.deep.equal(["rule", "repository"]);
+      expect(contents.rules).to.deep.equal([]);
+    });
+
+    it("refuses a guard on a property of anything but the rule's parameter", () => {
+      expect(parseInvalid("rule t x<y.p=a> = @p/q:rules/R;").join("\n")).to.contain(
+        "Rule guard 'y.p' is neither a property of the configuration nor one of 'x'"
+      );
+    });
+
+    it("refuses an implementation that names no entry of a package", () => {
+      expect(parseInvalid("rule t x = rules/R;").join("\n")).to.contain("An implementation names an entry of a package");
+      expect(parseInvalid("rule t x = @p/q:rules/*;").join("\n")).to.contain("An implementation names an entry of a package");
+    });
+  });
+
   describe("constraint guards", () => {
     /** The guard on a decl, rendered `KEY=value, …` (empty string if unguarded). */
     function guardText(decl: IPropertyDecl): string {

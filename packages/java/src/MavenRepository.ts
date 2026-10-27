@@ -278,3 +278,6 @@ function createRepository(context: TargetContext): Computable<Repository> {
 }
 
 export const mavenRepositoryRegistration: RepositoryRegistration = { type: "maven_repository", provider: createRepository };
+
+/** The implementation JAVA.fabr's `repository` declaration names. */
+export default createRepository;

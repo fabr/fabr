@@ -10,9 +10,11 @@ generate package_extensions {
   run = package_extensions_json > package-extensions.json;
 }
 
-js_package @fabr-build/js {
-  srcs = src:**/*.ts lib/** package_extensions:** -> lib/** ../../README.md -> README.md ../../COPYING -> LICENSE;
-  exports = src:index.ts;
+# The plugin's code.
+js_package @fabr-build/js-boot {
+  srcs = src:**/*.ts package_extensions:** -> lib/** ../../README.md -> README.md ../../COPYING -> LICENSE;
+  # The entry point, and the modules JS.fabr's rule and repository declarations name.
+  exports = src:index.ts src:rules/!(*.test).ts src:NPMRepository.ts src:NodeDistribution.ts;
   tests = src:**/*.test.ts;
   # The Sass importer is no import of the plugin's: it rides along so installing
   # fabr installs it, for the Sass driver (SASS_PNP_IMPORTER).
@@ -27,4 +29,11 @@ js_package @fabr-build/js {
   test_deps = chai jest_types tar_stream @pkg:typescript @pkg:esbuild @pkg:postcss @pkg:postcss-modules
               @pkg:@yarnpkg/pnp @pkg:@yarnpkg/fslib @pkg:sass-embedded @fabr-build/sass-pnp-importer;
   metadata = { FABR_METADATA; description = Fabr JS support plugin }
+}
+
+# The plugin, as it is published: its code and JS.fabr. fabr's own repo uses
+# the installed copy (`plugin @fabr-boot/js;`), so this is built, not used.
+fabr_plugin @fabr-build/js {
+  srcs = @fabr-build/js-boot;
+  libs = lib/JS.fabr;
 }

@@ -249,3 +249,42 @@ targetdef flag {
     # Other flags this one turns on.
     provides = FILES;
 }
+
+#
+# A plugin built in the project: its code, the package `srcs` names, with its
+# `.fabr` files and resources. `plugin <name>;` uses it as it would an installed
+# plugin, reading `libs` before anything is built; its code is built, for the
+# machine fabr runs on, only when a rule it implements is first used.
+#
+#     fabr_plugin @example/text-lint {
+#       srcs = text_lint_code;
+#       libs = lib/LINT.fabr;
+#     }
+#
+targetdef fabr_plugin {
+    # The package that is the plugin's code, exporting the modules its rules name.
+    srcs = REQUIRED PACKAGES;
+    # The plugin's `.fabr` files: literal paths or patterns, relative to this
+    # file, read as written (no substitution, and every guard's together).
+    libs = FILES;
+    # Further files the plugin's package holds.
+    resources = FILES;
+}
+
+#
+# How core's own target types are built, and its repository types made.
+#
+rule flag f = @fabr-build/core:rules/FlagTarget;
+default rule t<BUILD_OPERATION=files> = @fabr-build/core:rules/DefaultFilesRule;
+rule script s<BUILD_OPERATION=run> = @fabr-build/core:rules/RunScript;
+rule serve s<BUILD_OPERATION=run> = @fabr-build/core:rules/RunServe;
+rule generate g<BUILD_OPERATION=build> = @fabr-build/core:rules/BuildGenerate;
+rule patched p<BUILD_OPERATION=build> = @fabr-build/core:rules/BuildPatched;
+rule sync s<BUILD_OPERATION=build> = @fabr-build/core:rules/BuildSync;
+rule fabr_plugin p<BUILD_OPERATION=build> = @fabr-build/core:rules/BuildFabrPlugin;
+rule fabr_plugin p<BUILD_OPERATION=run> = @fabr-build/core:rules/RunFabrPlugin;
+
+repository catalog = @fabr-build/core:rules/CatalogRepository;
+repository fetch = @fabr-build/core:rules/FetchSource;
+repository repository_group = @fabr-build/core:rules/RepositoryGroup;
+repository fabr_home = @fabr-build/core:rules/FabrHome;

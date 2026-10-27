@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { Name } from "../core/Name";
+import { Name, NameConstraint } from "../core/Name";
 import { StringReader } from "../support/StringReader";
 import { FileSource } from "../core/FileSet";
 import { ISourceSpan } from "../support/Log";
@@ -31,9 +31,10 @@ export enum DeclKind {
   Target,
   TargetDef,
   Include,
-  Namespace,
   Plugin,
   MapSplice,
+  Rule,
+  Repository,
 }
 
 interface IBaseDecl {
@@ -42,16 +43,6 @@ interface IBaseDecl {
   /** End offset (exclusive) of the declaration's name/value where recorded,
    * so diagnostics can underline the extent rather than a single caret */
   endOffset?: number;
-}
-
-export interface INamespaceDecl extends IBaseDecl {
-  kind: DeclKind.Namespace;
-  name: string;
-
-  namespaces: INamespaceDecl[];
-  targets: ITargetDecl[];
-  properties: IPropertyDecl[];
-  defaults: IResolvableDecl[];
 }
 
 export interface ITargetDecl extends IBaseDecl {
@@ -228,7 +219,36 @@ export interface IIncludeDecl extends IBaseDecl {
  */
 export interface IPluginDecl extends IBaseDecl {
   kind: DeclKind.Plugin;
-  name: string;
+  /** The reference to the plugin, as written. */
+  name: Name;
+}
+
+/**
+ * A `rule` declaration: `rule <type> <param><guards> = <implementation>;`, or
+ * `default rule <param><guards> = …;` for a rule of every type. The guards are
+ * those on the configuration (`BUILD_OPERATION=build`) and those on the
+ * target's own properties, written through the parameter
+ * (`pkg.test_framework=jest`). The implementation is a reference to an entry
+ * of a package (`@fabr-build/js:rules/BuildJSPackage`).
+ */
+export interface IRuleDecl extends IBaseDecl {
+  kind: DeclKind.Rule;
+  /** The target type; undefined for a rule of every type. */
+  type?: string;
+  /** The name the declaration gives the target, in guards on its properties. */
+  param: string;
+  /** The guard on the configuration: property name → pattern. */
+  properties: NameConstraint[];
+  /** The guard on the target's own properties: property name → pattern. */
+  targetProperties: NameConstraint[];
+  implementation: INameValue;
+}
+
+/** A `repository` declaration: `repository <type> = <implementation>;`. */
+export interface IRepositoryDecl extends IBaseDecl {
+  kind: DeclKind.Repository;
+  type: string;
+  implementation: INameValue;
 }
 
 export interface IBuildFile {
@@ -254,16 +274,17 @@ export function syntheticValue(value: Name, source: IBuildFile, offset: number, 
 }
 
 export interface IBuildFileContents {
-  namespaces: INamespaceDecl[];
   targets: ITargetDecl[];
   targetdefs: ITargetDefDecl[];
   properties: IPropertyDecl[];
   defaults: IResolvableDecl[];
   includes: IIncludeDecl[];
   plugins: IPluginDecl[];
+  rules: IRuleDecl[];
+  repositories: IRepositoryDecl[];
 }
 
-export type IDecl = ITargetDecl | IPropertyDecl | INamespaceDecl | IIncludeDecl | IPluginDecl | IValue;
+export type IDecl = ITargetDecl | IPropertyDecl | IIncludeDecl | IPluginDecl | IValue;
 
 /**
  * A declaration that a reference **resolves to** — hence one a configuration can
@@ -276,12 +297,10 @@ export type IDecl = ITargetDecl | IPropertyDecl | INamespaceDecl | IIncludeDecl 
  */
 export type IResolvableDecl = IPropertyDecl | ITargetDecl;
 
-/** A declaration named by a plain identifier path: it introduces a scope or a
- * type rather than something built, so there is no configuration for a name of
- * its to vary with. (The two are otherwise unrelated — a namespace shares the
- * value index with targets and properties, while a targetdef has an index of its
- * own; what unites them here is only the shape of the name.) */
-export type IPlainNamedDecl = INamespaceDecl | ITargetDefDecl;
+/** A declaration named by a plain identifier path: it introduces a type rather
+ * than something built, so there is no configuration for a name of its to vary
+ * with. */
+export type IPlainNamedDecl = ITargetDefDecl;
 
 export type INamedDecl = IResolvableDecl | IPlainNamedDecl;
 
@@ -293,14 +312,10 @@ export function declName(decl: INamedDecl): string {
   return typeof decl.name === "string" ? decl.name : decl.name.toBaseString();
 }
 
-export type IScope = INamespaceDecl | IBuildFileContents;
-
 export function getDeclKindName(kind: DeclKind): string {
   switch (kind) {
     case DeclKind.Include:
       return "include";
-    case DeclKind.Namespace:
-      return "namespace";
     case DeclKind.Property:
       return "property";
     case DeclKind.Target:
@@ -317,6 +332,10 @@ export function getDeclKindName(kind: DeclKind): string {
       return "plugin";
     case DeclKind.MapSplice:
       return "splice";
+    case DeclKind.Rule:
+      return "rule";
+    case DeclKind.Repository:
+      return "repository";
   }
 }
 

@@ -21,7 +21,12 @@ import { expect } from "chai";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { coreVersionError, hostCoreResolver, resolvePackageFrom } from "./Plugin";
+import { coreVersionError, hostCoreResolver, implementationLoader, resolvePackageFrom, toPluginLibs } from "./Plugin";
+import { INameValue, syntheticValue } from "./AST";
+import { parseName } from "./Parser";
+import { EMPTY_FILESET } from "../core/FileSet";
+import { StringReader } from "../support/StringReader";
+import { Computable } from "../core/Computable";
 
 /* A name of no significance to either test runner's module resolution — jest
  * maps `@fabr-build/core` itself by name, so the resolution rules are exercised
@@ -82,12 +87,14 @@ describe("the host's core, for plugins", () => {
 
   it("answers a request for core with the host's copy, and passes every other on", () => {
     const asked: string[] = [];
-    const resolve = hostCoreResolver((request: string) => {
-      asked.push(request);
-      return `/elsewhere/${request}`;
-    }, HOST);
-    expect(resolve("@fabr-build/core")).to.equal(HOST);
-    expect(resolve("sax")).to.equal("/elsewhere/sax");
+    const resolve = hostCoreResolver(HOST);
+    const next = (specifier: string): { url: string } => {
+      asked.push(specifier);
+      return { url: `file:///elsewhere/${specifier}` };
+    };
+    const context = { conditions: [], importAttributes: {}, parentURL: undefined };
+    expect(resolve("@fabr-build/core", context, next)).to.deep.equal({ url: "file://" + HOST, format: "commonjs", shortCircuit: true });
+    expect(resolve("sax", context, next)).to.deep.equal({ url: "file:///elsewhere/sax" });
     expect(asked).to.deep.equal(["sax"]);
   });
 
@@ -100,5 +107,61 @@ describe("the host's core, for plugins", () => {
   it("accepts a plugin or host that states no version", () => {
     expect(coreVersionError("@test/plugin", undefined, "0.4.0")).to.equal(undefined);
     expect(coreVersionError("@test/plugin", "0.3.1", undefined)).to.equal(undefined);
+  });
+});
+
+describe("implementations a declaration names", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-implementation-")));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** Write a package `name` exporting `rules/*` from `lib/`, and @return its manifest. */
+  function writeExporting(name: string): string {
+    const root = path.join(dir, "node_modules", ...name.split("/"));
+    fs.mkdirSync(path.join(root, "lib"), { recursive: true });
+    const manifest = path.join(root, "package.json");
+    fs.writeFileSync(manifest, JSON.stringify({ name, exports: { "./rules/*": "./lib/*.js" } }));
+    fs.writeFileSync(path.join(root, "lib", "Thing.js"), "exports.default = { from: __filename };");
+    fs.writeFileSync(path.join(root, "lib", "Bare.js"), "exports.other = 1;");
+    return manifest;
+  }
+
+  const reference = (written: string): INameValue => syntheticValue(parseName(written), { fs: EMPTY_FILESET, file: "TEST.fabr", reader: new StringReader(written) }, 0, written.length);
+
+  /** @return a package's `package.json` as a plugin's that is in hand. */
+  const inHand = (manifest: string) => (): Computable<string> => Computable.resolve(manifest);
+
+  it("loads an entry through the package's own exports, under the name the project uses for it", async () => {
+    const manifest = writeExporting("@test/plugin");
+    const load = implementationLoader(new Map([["@test/alias", inHand(manifest)]]));
+    expect(await load(reference("@test/alias:rules/Thing"))).to.deep.equal({ from: path.join(path.dirname(manifest), "lib", "Thing.js") });
+  });
+
+  it("refuses a package the project does not use, and an entry with no default export", async () => {
+    const load = implementationLoader(new Map([["@test/plugin", inHand(writeExporting("@test/plugin"))]]));
+    const failure = (written: string): Computable<string> =>
+      load(reference(written)).then(
+        () => "loaded",
+        (err: Error) => err.message
+      );
+    expect(await failure("@test/other:rules/Thing")).to.match(/'@test\/other' is neither @fabr-build\/core nor a plugin this project uses/);
+    expect(await failure("@test/plugin:rules/Bare")).to.match(/'@test\/plugin:rules\/Bare' has no default export/);
+  });
+});
+
+describe("a plugin's package.json", () => {
+  it("lists its .fabr files as a path or a list of them", () => {
+    expect(toPluginLibs({ libs: "lib/JS.fabr" })).to.deep.equal(["lib/JS.fabr"]);
+    expect(toPluginLibs({ libs: ["lib/A.fabr", "lib/B.fabr"] })).to.deep.equal(["lib/A.fabr", "lib/B.fabr"]);
+    expect(toPluginLibs({})).to.deep.equal([]);
+  });
+
+  it("refuses libs that are not paths", () => {
+    expect(() => toPluginLibs({ libs: [1] })).to.throw(/"@fabr-build\/plugin".libs is not a path or a list of them/);
+    expect(() => toPluginLibs("lib/JS.fabr")).to.throw();
   });
 });

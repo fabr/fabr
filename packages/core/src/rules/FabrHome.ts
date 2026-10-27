@@ -295,3 +295,6 @@ export function fabrHomeRegistration(resolveFrom: string = INSTALLED_FROM): Repo
     provider: (context: TargetContext) => Computable.resolve(new FabrHomeRepository(context.execution.absFileSource, resolveFrom)),
   };
 }
+
+/** The implementation STD.fabr's `repository` declaration names. */
+export default fabrHomeRegistration().provider;

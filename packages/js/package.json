@@ -6,6 +6,18 @@
   "homepage": "https://github.com/fabr/fabr",
   "main": "build/index.js",
   "types": "build/index.d.ts",
+  "exports": {
+    ".": "./build/index.js",
+    "./rules/*": "./build/rules/*.js",
+    "./NPMRepository": "./build/NPMRepository.js",
+    "./NodeDistribution": "./build/NodeDistribution.js",
+    "./package.json": "./package.json"
+  },
+  "@fabr-build/plugin": {
+    "libs": [
+      "build/lib/JS.fabr"
+    ]
+  },
   "peerDependencies": {
     "@fabr-build/core": "0.1.0"
   },

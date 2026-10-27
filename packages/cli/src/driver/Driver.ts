@@ -635,7 +635,7 @@ async function runWith(options: Options, operation: Operation, watch = false): P
     const sourceRoot = await getSourceRoot();
     /* The run itself lives in core; the driver hands it the paths its
      * environment policy chose. */
-    const fabr = new Fabr({ sourceRoot, cacheRoot: getBuildCacheRoot(), log, watch });
+    const fabr = new Fabr({ sourceRoot, cacheRoot: getBuildCacheRoot(), log, watch, host: Constraints.of(getHostProperties()) });
     const execution = fabr.execution;
     /* Where the user typed the command, in the source tree's own namespace: a
      * name given on the command line resolves its bare paths from here, as a

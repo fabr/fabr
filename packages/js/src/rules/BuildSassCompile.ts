@@ -35,13 +35,11 @@
  */
 
 import {
-  BUILD_OPERATION,
   Computable,
   defineRule,
   EMPTY_FILESET,
   FileSet,
   MemoryFile,
-  RuleDefinition,
   RuleResult,
   TargetContext,
 } from "@fabr-build/core";
@@ -49,6 +47,16 @@ import { buildSassOptions, CSS_OUTDIR, CSS_SRC_ROOT, CSS_TOOL_DIR } from "../CSS
 import { emitsSourceMap } from "../JSPackage";
 import { DEPS_REPORT_FILE, DEPS_REPORT_FLAG, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "@fabr-build/js-tools";
 import { createNodeExecAction, PNP } from "../NodeExecAction";
+
+/** The `sass_compile` rule. */
+export default defineRule({
+  requirements(context) {
+    return { srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps") };
+  },
+  evaluateMaterialized(context, collected) {
+    return buildSassCompile(context, collected);
+  },
+});
 
 function buildSassCompile(context: TargetContext, collected: { srcs: FileSet[]; deps: FileSet[] }): Computable<RuleResult> {
   return Computable.forAll(
@@ -87,10 +95,3 @@ function buildSassCompile(context: TargetContext, collected: { srcs: FileSet[]; 
     }
   );
 }
-
-export const buildSassCompileRule: RuleDefinition = defineRule({
-  type: "sass_compile",
-  properties: { [BUILD_OPERATION]: "build" },
-  requirements: context => ({ srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps") }),
-  evaluateMaterialized: (context, collected) => buildSassCompile(context, collected),
-});

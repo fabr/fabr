@@ -25,7 +25,6 @@
 
 import {
   Dependency,
-  BUILD_OPERATION,
   Computable,
   Constraints,
   FabrError,
@@ -34,13 +33,12 @@ import {
   PackageFileSet,
   Provided,
   readJsonFile,
-  RuleDefinition,
   RuleResult,
   TargetContext,
   toJsonObject,
   Flag,
   dependencyName,
-    defineRule,
+  defineRule,
   LooseSources,
   SourceRef,
   IFile,
@@ -59,6 +57,64 @@ import {
 import { NPM_FORMAT } from "../NPMProtocol";
 import { createPackageJson } from "../PackageJson";
 
+/** The `js_package` rule, under `build`. */
+export default defineRule({
+  /**
+   * State the package's requirements, resolved as one collection so this
+   * target's pins govern the lot (a package needing Node APIs lists
+   * `@types/node` among them). `dependencies` and `provided` are what the
+   * package passes on. `provided_deps` take part in resolution and the compile
+   * like `deps`, are written to `peerDependencies`, and are carried named as
+   * provided, so a consumer's collection point binds each to what it uses under
+   * that name. The compiler is resolved apart, by js_compile.
+   */
+  requirements(context: TargetContext): Computable<{
+    srcs: Computable<SourceRef[]>;
+    resources: Computable<SourceRef[]>;
+    tests: Computable<SourceRef[]>;
+    exports: Computable<SourceRef[]>;
+    dependencies: Computable<PackageSources>;
+    provided: Computable<PackageSources>;
+    optional_provided: Computable<PackageSources>;
+    compile_deps: Computable<PackageSources>;
+    test_deps: Computable<LooseSources>;
+    test_resources: Computable<SourceRef[]>;
+    test_expectations: Computable<SourceRef[]>;
+  }> {
+    return context.getProperty("version").then(version => {
+      assertPackageVersion(version?.toString());
+      return {
+        srcs: context.getFileProperty("srcs"),
+        resources: context.getFileProperty("resources"),
+        tests: context.getFileProperty("tests"),
+        exports: context.getFileProperty("exports"),
+        dependencies: context.getPackageProperty("deps"),
+        provided: context.getPackageProperty("provided_deps"),
+        optional_provided: context.getPackageProperty("optional_provided_deps"),
+        /* Compiled against, and private to the build: not passed on. */
+        compile_deps: context.getPackageProperty("compile_deps"),
+        /* Only the loose files of `test_deps`, which are subtracted from `srcs`:
+         * a build resolves and fetches nothing the tests alone need. */
+        test_deps: context.getLooseFileProperty("test_deps"),
+        test_resources: context.getFileProperty("test_resources"),
+        test_expectations: context.getFileProperty("test_expectations"),
+      };
+    });
+  },
+  evaluateResolved(context, requirements) {
+    return Computable.forAll(
+      [
+        requirements.materializeAll(),
+        requirements.packages("dependencies"),
+        requirements.packages("provided"),
+        requirements.packages("optional_provided"),
+      ],
+      (gathered, dependencies, provided, optional_provided) =>
+        buildJsPackage(context, gathered, { dependencies, provided, optional_provided })
+    );
+  },
+});
+
 /** A package needs no version, but one it states must be one npm can read: it
  * is written into the manifest, and everything that later resolves against
  * the package compares by it. */
@@ -73,49 +129,6 @@ function assertPackageVersion(version: string | undefined): void {
       "write it as major.minor.patch (1.0.0), optionally followed by a prerelease (1.0.0-beta.1)"
     );
   }
-}
-
-/**
- * State the package's requirements, resolved as one collection so this
- * target's pins govern the lot (a package needing Node APIs lists
- * `@types/node` among them). `dependencies` and `provided` are what the
- * package passes on. `provided_deps` take part in resolution and the compile
- * like `deps`, are written to `peerDependencies`, and are carried named as
- * provided, so a consumer's collection point binds each to what it uses under
- * that name. The compiler is resolved apart, by js_compile.
- */
-function requirements(context: TargetContext): Computable<{
-  srcs: Computable<SourceRef[]>;
-  resources: Computable<SourceRef[]>;
-  tests: Computable<SourceRef[]>;
-  exports: Computable<SourceRef[]>;
-  dependencies: Computable<PackageSources>;
-  provided: Computable<PackageSources>;
-  optional_provided: Computable<PackageSources>;
-  compile_deps: Computable<PackageSources>;
-  test_deps: Computable<LooseSources>;
-  test_resources: Computable<SourceRef[]>;
-  test_expectations: Computable<SourceRef[]>;
-}> {
-  return context.getProperty("version").then(version => {
-    assertPackageVersion(version?.toString());
-    return {
-      srcs: context.getFileProperty("srcs"),
-      resources: context.getFileProperty("resources"),
-      tests: context.getFileProperty("tests"),
-      exports: context.getFileProperty("exports"),
-      dependencies: context.getPackageProperty("deps"),
-      provided: context.getPackageProperty("provided_deps"),
-      optional_provided: context.getPackageProperty("optional_provided_deps"),
-      /* Compiled against, and private to the build: not passed on. */
-      compile_deps: context.getPackageProperty("compile_deps"),
-      /* Only the loose files of `test_deps`, which are subtracted from `srcs`:
-       * a build resolves and fetches nothing the tests alone need. */
-      test_deps: context.getLooseFileProperty("test_deps"),
-      test_resources: context.getFileProperty("test_resources"),
-      test_expectations: context.getFileProperty("test_expectations"),
-    };
-  });
 }
 
 /** Make the target's package: `files` under its name at `version`, requiring
@@ -303,20 +316,3 @@ function buildJsPackage(
     }
   );
 }
-
-export const buildJsPackageRule: RuleDefinition = defineRule({
-  type: "js_package",
-  properties: { [BUILD_OPERATION]: "build" },
-  requirements,
-  evaluateResolved: (context, requirements) =>
-    Computable.forAll(
-      [
-        requirements.materializeAll(),
-        requirements.packages("dependencies"),
-        requirements.packages("provided"),
-        requirements.packages("optional_provided"),
-      ],
-      (gathered, dependencies, provided, optional_provided) =>
-        buildJsPackage(context, gathered, { dependencies, provided, optional_provided })
-    ),
-});

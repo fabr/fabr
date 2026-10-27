@@ -26,13 +26,12 @@ import {
   getDeclKindName,
   IResolvableDecl,
   INamedDecl,
-  INamespaceDecl,
   IPropertyDecl,
   ITargetDecl,
   ITargetDefDecl,
 } from "./AST";
 import { NAME_COMPONENT_SEPARATOR } from "../core/Name";
-import { IPropertyEntry, Namespace } from "./Namespace";
+import { IPropertyEntry, isNamespaceNode, Namespace, NamespaceEntry, NamespaceNode, newNamespaceNode } from "./Namespace";
 
 const DIAG_DUPLICATE_DECL = Diagnostic.Error<{ kind: string; name: string; loc: ISourcePosition }>(
   "Duplicate declaration of {kind} '{name}'"
@@ -45,48 +44,13 @@ const DIAG_CONFLICT_DECL = Diagnostic.Error<{ kind: string; name: string; loc: I
 const DIAG_IMPLICIT_NAMESPACE_CONFLICT = Diagnostic.Error<{ kind: string; name: string; other: string; loc: ISourcePosition }>(
   "Declaration of {kind} '{name}' conflicts with implicit namespace containing '{other}'"
 );
-const DIAG_EXPLICIT_NAMESPACE_CONFLICT = Diagnostic.Error<{ kind: string; name: string; other: string; loc: ISourcePosition }>(
-  "Declaration of {kind} '{name}' conflicts with namespace '{other}'"
-);
-
 const DIAG_UNKNOWN_TARGET_TYPE = Diagnostic.Error<{ type: string; loc: ISourcePosition }>("Unknown target type '{type}'");
-
-/* A name holds what the finished namespace will hold: a sub-namespace still
- * under construction, a target, or the {@link IPropertyEntry} collecting every
- * declaration of one property (a guard lets one be declared once per
- * configuration it applies in). */
-type BuilderEntry = NSBuilderNode | ITargetDecl | IPropertyEntry;
-
-interface NSBuilderNode {
-  self?: INamedDecl;
-  /** The property of this namespace's own name, which answers names nothing
-   * under it declares. */
-  fallback?: IPropertyEntry;
-  targetDefs: Map<string, ITargetDefDecl>;
-  content: Map<string, BuilderEntry>;
-  /** `default` TARGETS only, held aside until the whole file set is in: an
-   * ordinary target of the name supersedes one outright, and an ordinary
-   * property keeps it as its fallback — either may not have been seen yet. A
-   * default property needs no such holding area — its two tiers both live in
-   * its entry, because which of them supplies it is not decided here at all
-   * (see {@link IPropertyEntry}). */
-  defaultTargets: Map<string, ITargetDecl>;
-}
-
-function newBuilderNode(self?: INamedDecl): NSBuilderNode {
-  return { self, content: new Map(), defaultTargets: new Map(), targetDefs: new Map() };
-}
-
-/** @return true if a name is held by a (sub-)namespace rather than by declarations, otherwise false. */
-function isBuilderNode(entry: BuilderEntry): entry is NSBuilderNode {
-  return !("kind" in entry);
-}
 
 /** What to blame in a conflict against an existing entry: for a property, its
  * first declaration — they all share the name, and `addResolvableDecl` keeps
  * their written keys distinct. */
-function blameFor(entry: BuilderEntry): INamedDecl | NSBuilderNode {
-  if (isBuilderNode(entry)) {
+function blameFor(entry: NamespaceEntry): INamedDecl | NamespaceNode {
+  if (isNamespaceNode(entry)) {
     return entry;
   }
   return entry.kind === DeclKind.Property ? entry.decls[0] ?? entry.defaults[0] : entry;
@@ -94,45 +58,16 @@ function blameFor(entry: BuilderEntry): INamedDecl | NSBuilderNode {
 
 export class NamespaceBuilder {
   private log: Log;
-  private root: NSBuilderNode;
+  private root: NamespaceNode;
+  /** Declarations superseded as they were added, validated with the rest by {@link resolve}. */
+  private superseded: IResolvableDecl[] = [];
 
   constructor(log: Log) {
     this.log = log;
-    this.root = newBuilderNode();
+    this.root = newNamespaceNode();
   }
 
-  public addNamespaceDecl(decl: INamespaceDecl, root: NSBuilderNode = this.root): boolean {
-    const nameParts = declName(decl).split(NAME_COMPONENT_SEPARATOR);
-    const simpleName = nameParts.pop()!;
-    const parent = this.getNodeFor(root, nameParts, decl);
-    if (parent) {
-      let node: NSBuilderNode;
-      const current = this.namespaceOf(parent, simpleName, decl);
-      if (current) {
-        if (!isBuilderNode(current)) {
-          this.conflictError(blameFor(current), decl);
-          return false;
-        } else {
-          /* merge; if it was implicit add the decl */
-          if (!current.self || current.self.kind !== DeclKind.Namespace) {
-            current.self = decl;
-          }
-          node = current;
-        }
-      } else {
-        node = newBuilderNode(decl);
-        parent.content.set(simpleName, node);
-      }
-      decl.namespaces.forEach(ns => this.addNamespaceDecl(ns, node));
-      decl.properties.forEach(prop => this.addDecl(prop, node));
-      decl.targets.forEach(target => this.addDecl(target, node));
-      decl.defaults.forEach(child => this.addDefaultDecl(child, node));
-      return true;
-    }
-    return false;
-  }
-
-  public addDecl(decl: ITargetDefDecl | ITargetDecl | IPropertyDecl, root: NSBuilderNode = this.root): boolean {
+  public addDecl(decl: ITargetDefDecl | ITargetDecl | IPropertyDecl, root: NamespaceNode = this.root): boolean {
     const nameParts = declName(decl).split(NAME_COMPONENT_SEPARATOR);
     const simpleName = nameParts.pop()!;
     const parent = this.getNodeFor(root, nameParts, decl);
@@ -152,7 +87,7 @@ export class NamespaceBuilder {
     return false;
   }
 
-  public addDefaultDecl(decl: IResolvableDecl, root: NSBuilderNode = this.root): boolean {
+  public addDefaultDecl(decl: IResolvableDecl, root: NamespaceNode = this.root): boolean {
     const nameParts = declName(decl).split(NAME_COMPONENT_SEPARATOR);
     const simpleName = nameParts.pop()!;
     const parent = this.getNodeFor(root, nameParts, decl);
@@ -175,7 +110,7 @@ export class NamespaceBuilder {
    * clash with a namespace — is the duplicate it looks like.
    */
   private addResolvableDecl(
-    node: NSBuilderNode,
+    node: NamespaceNode,
     simpleName: string,
     decl: IResolvableDecl,
     tier: "decls" | "defaults"
@@ -183,13 +118,12 @@ export class NamespaceBuilder {
     const existing = node.content.get(simpleName);
     if (decl.kind === DeclKind.Target) {
       if (tier === "defaults") {
-        /* Held aside until every file is in (see NSBuilderNode.defaultTargets). A
-         * name that is a namespace is not a target's to take, and a second
-         * `default` of the name — target or property — is a duplicate, not an
-         * override. */
+        /* Kept apart (see NamespaceNode.defaultTargets). A name that is a
+         * namespace is not a target's to take, and a second `default` of the
+         * name — target or property — is a duplicate, not an override. */
         const clash =
           node.defaultTargets.get(simpleName) ??
-          (existing !== undefined && (isBuilderNode(existing) || (existing.kind === DeclKind.Property && existing.defaults.length > 0))
+          (existing !== undefined && (isNamespaceNode(existing) || (existing.kind === DeclKind.Property && existing.defaults.length > 0))
             ? existing
             : undefined);
         if (clash) {
@@ -197,25 +131,28 @@ export class NamespaceBuilder {
           return false;
         }
         node.defaultTargets.set(simpleName, decl);
+        if (existing !== undefined && !isNamespaceNode(existing) && existing.kind === DeclKind.Property) {
+          existing.fallbackTarget = decl;
+        }
         return true;
       }
       /* An ordinary target takes the name, superseding a property that has only
        * `default` declarations; anything else there is a conflict. */
-      if (existing !== undefined && !(!isBuilderNode(existing) && existing.kind === DeclKind.Property && existing.decls.length === 0)) {
+      if (existing !== undefined && !(!isNamespaceNode(existing) && existing.kind === DeclKind.Property && existing.decls.length === 0)) {
         this.conflictError(blameFor(existing), decl);
         return false;
       }
-      if (existing !== undefined && !isBuilderNode(existing) && existing.kind === DeclKind.Property) {
+      if (existing !== undefined && !isNamespaceNode(existing) && existing.kind === DeclKind.Property) {
         /* Superseded, but declared: validated like any declaration. */
-        existing.defaults.forEach(superseded => this.validateDecl(superseded));
+        this.superseded.push(...existing.defaults);
       }
       node.content.set(simpleName, decl);
       return true;
     }
     if (tier === "defaults") {
-      if (existing !== undefined && !isBuilderNode(existing) && existing.kind === DeclKind.Target) {
+      if (existing !== undefined && !isNamespaceNode(existing) && existing.kind === DeclKind.Target) {
         /* An ordinary target supersedes a `default` property outright. */
-        this.validateDecl(decl);
+        this.superseded.push(decl);
         return true;
       }
       const defaultTarget = node.defaultTargets.get(simpleName);
@@ -224,7 +161,7 @@ export class NamespaceBuilder {
         return false;
       }
     }
-    if (existing && !isBuilderNode(existing) && existing.kind !== DeclKind.Property) {
+    if (existing && !isNamespaceNode(existing) && existing.kind !== DeclKind.Property) {
       this.conflictError(blameFor(existing), decl);
       return false;
     }
@@ -232,7 +169,7 @@ export class NamespaceBuilder {
     const entry: IPropertyEntry =
       existing === undefined
         ? { kind: DeclKind.Property, decls: [], defaults: [] }
-        : isBuilderNode(existing)
+        : isNamespaceNode(existing)
           ? (existing.fallback ??= { kind: DeclKind.Property, decls: [], defaults: [] })
           : existing;
     const clash = entry[tier].find(other => other.name.toString() === decl.name.toString());
@@ -241,6 +178,7 @@ export class NamespaceBuilder {
       return false;
     }
     entry[tier].push(decl);
+    entry.fallbackTarget ??= node.defaultTargets.get(simpleName);
     if (existing === undefined) {
       node.content.set(simpleName, entry);
     }
@@ -252,26 +190,27 @@ export class NamespaceBuilder {
    * property: a property of a namespace's name is that namespace's fallback, so
    * the namespace takes it over. Anything else there is returned as it is.
    */
-  private namespaceOf(parent: NSBuilderNode, key: string, decl: INamedDecl): BuilderEntry | undefined {
+  private namespaceOf(parent: NamespaceNode, key: string, decl: INamedDecl): NamespaceEntry | undefined {
     const existing = parent.content.get(key) ?? parent.defaultTargets.get(key);
-    if (existing === undefined || isBuilderNode(existing) || existing.kind !== DeclKind.Property) {
+    if (existing === undefined || isNamespaceNode(existing) || existing.kind !== DeclKind.Property) {
       return existing;
     }
-    const node: NSBuilderNode = { ...newBuilderNode(decl), fallback: existing };
+    const node: NamespaceNode = { ...newNamespaceNode(decl), fallback: existing };
     parent.content.set(key, node);
     return node;
   }
 
+  /** @return the namespace of everything added, which reads what is added later too. */
   public toNamespace(): Namespace {
-    return this.buildNamespace(this.root);
+    return Namespace.of(this.root);
   }
 
-  private getNodeFor(root: NSBuilderNode, parts: string[], decl: INamedDecl): NSBuilderNode | undefined {
+  private getNodeFor(root: NamespaceNode, parts: string[], decl: INamedDecl): NamespaceNode | undefined {
     let node = root;
     for (const part of parts) {
       const existing = this.namespaceOf(node, part, decl);
       if (existing) {
-        if (!isBuilderNode(existing)) {
+        if (!isNamespaceNode(existing)) {
           /* Is not a namespace but we needed one */
           this.conflictError(blameFor(existing), decl);
           return undefined;
@@ -279,7 +218,7 @@ export class NamespaceBuilder {
           node = existing;
         }
       } else {
-        const next = newBuilderNode(decl);
+        const next = newNamespaceNode(decl);
         node.content.set(part, next);
         node = next;
       }
@@ -291,9 +230,15 @@ export class NamespaceBuilder {
     return this.root.targetDefs.get(name);
   }
 
-  public resolve(node: NSBuilderNode = this.root): void {
+  /** Validate every declaration added so far against the targetdefs added so far. */
+  public validate(): void {
+    this.resolve(this.root);
+    this.superseded.forEach(decl => this.validateDecl(decl));
+  }
+
+  private resolve(node: NamespaceNode): void {
     node.content.forEach(child => {
-      if (isBuilderNode(child)) {
+      if (isNamespaceNode(child)) {
         this.resolve(child);
       } else {
         this.validateEntry(child);
@@ -338,30 +283,7 @@ export class NamespaceBuilder {
     }
   }
 
-  private buildNamespace(node: NSBuilderNode): Namespace {
-    const content = new Map<string, Namespace | ITargetDecl | IPropertyEntry>();
-    node.content.forEach((child, key) => {
-      content.set(key, isBuilderNode(child) ? this.buildNamespace(child) : child);
-    });
-    /* The one thing left to decide: where a `default` target applies. Where
-     * nothing else claimed the name, it takes it; an ordinary target supersedes
-     * it outright (a target carries no guard, so that is knowable here); an
-     * ordinary property keeps it as the fallback for configurations none of its
-     * declarations applies to, which only a read can know. A namespace cannot
-     * be here — that is the add-time conflict. */
-    node.defaultTargets.forEach((child, key) => {
-      const claimant = content.get(key);
-      if (claimant === undefined) {
-        content.set(key, child);
-      } else if (!(claimant instanceof Namespace) && claimant.kind === DeclKind.Property) {
-        content.set(key, { ...claimant, fallbackTarget: child });
-      }
-    });
-    const decl = node.self?.kind === DeclKind.Namespace ? node.self : undefined;
-    return new Namespace(content, node.targetDefs, decl, node.fallback);
-  }
-
-  private conflictError(decl: INamedDecl | NSBuilderNode, newDecl: INamedDecl): void {
+  private conflictError(decl: INamedDecl | NamespaceNode, newDecl: INamedDecl): void {
     const oldDecl = "kind" in decl ? decl : decl.self!;
     const name = declName(newDecl);
     if (declName(oldDecl) === name) {
@@ -371,7 +293,7 @@ export class NamespaceBuilder {
         name,
       });
     } else {
-      this.log.log(oldDecl.kind === DeclKind.Namespace ? DIAG_EXPLICIT_NAMESPACE_CONFLICT : DIAG_IMPLICIT_NAMESPACE_CONFLICT, {
+      this.log.log(DIAG_IMPLICIT_NAMESPACE_CONFLICT, {
         kind: getDeclKindName(newDecl.kind),
         loc: declPosn(newDecl),
         name,
