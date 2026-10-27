@@ -41,6 +41,7 @@ import { checkMainClass, jarMainClass, makeJarRunnable, packageOf, processorsOf 
 interface ProgramInputs {
   srcs: FileSet[];
   deps: FileSet[];
+  agents: FileSet[];
 }
 
 /** The `java_program` rule, under `run`. */
@@ -52,6 +53,7 @@ export default defineRule({
     return permissive({
       srcs: context.getFileProperty("srcs", BUILD_OVERRIDE),
       deps: context.getPackageProperty("deps", BUILD_OVERRIDE),
+      agents: context.getPackageProperty("agents", BUILD_OVERRIDE),
     });
   },
   evaluateMaterialized(context, inputs) {
@@ -65,7 +67,7 @@ export default defineRule({
 
 function runnableProgram(
   context: TargetContext,
-  { srcs, deps }: ProgramInputs,
+  { srcs, deps, agents }: ProgramInputs,
   stated: string | undefined,
   options: { args: string[]; jvmArgs: string[] }
 ): Computable<RunnableFileSet> {
@@ -80,7 +82,7 @@ function runnableProgram(
         )
       );
   return classes.then(compiled =>
-    mainClassOf(context, stated, sources, compiled, deps).then(mainClass => makeJarRunnable(context, deps, mainClass, { classes: compiled, ...options }))
+    mainClassOf(context, stated, sources, compiled, deps).then(mainClass => makeJarRunnable(context, deps, mainClass, { classes: compiled, agents, ...options }))
   );
 }
 

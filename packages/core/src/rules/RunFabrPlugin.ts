@@ -47,7 +47,18 @@ export default defineRule({
       return pluginPackageJson(code.getFile(manifestName), context.name, libNames).then(manifest => {
         const added = FileSet.unionAll(...libs, ...resources, new FileSet(new Map([[MANIFEST, manifest]])));
         const install = FileSet.unionAll(code.remap(name => (name === manifestName ? undefined : name)), added.mountedAt(directory));
-        return new RunnableFileSet(install, code.args, code.interpreter, code.root, code.surface, code.served, code.launchCwd, code.env, code.origin);
+        return new RunnableFileSet(
+          install,
+          code.args,
+          code.interpreter,
+          code.root,
+          code.surface,
+          code.served,
+          code.launchCwd,
+          code.env,
+          code.origin,
+          code.interpreterArgs
+        );
       });
     });
   },

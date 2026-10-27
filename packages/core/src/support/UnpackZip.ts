@@ -186,12 +186,25 @@ export function extractZip(createOutput: () => IOutputHandle): { sink: Writable;
 }
 
 /**
+ * Read the members of a zip archive held in memory that `select` accepts, by
+ * name, passing over the rest unread.
+ */
+export function readZipMembers(zip: Buffer, select: (name: string) => boolean): Computable<Map<string, Buffer>> {
+  return openZip(new MemoryFile(zip))
+    .then(opened => readEntries(opened, select, (entry, entryName, stream) => writeEntry(entry, entryName, stream, () => new MemoryOutput())))
+    .then(members =>
+      Computable.forAll(
+        members.map(([name, output]) => output.getBuffer().then((buffer): [string, Buffer] => [name, buffer])),
+        (...read: Array<[string, Buffer]>) => new Map(read)
+      )
+    );
+}
+
+/**
  * Read one member of a zip archive held in memory (a jar's
  * `META-INF/MANIFEST.MF`), passing over the rest unread: undefined where it
  * has no such member.
  */
 export function readZipMember(zip: Buffer, name: string): Computable<Buffer | undefined> {
-  return openZip(new MemoryFile(zip))
-    .then(opened => readEntries(opened, entry => entry === name, (entry, entryName, stream) => writeEntry(entry, entryName, stream, () => new MemoryOutput())))
-    .then(([member]) => (member === undefined ? undefined : member[1].getBuffer()));
+  return readZipMembers(zip, entry => entry === name).then(members => members.get(name));
 }

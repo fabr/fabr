@@ -61,11 +61,26 @@ const NO_ENV: ReadonlyMap<string, string> = new Map();
  * bin keeps its name). `RunnableFileSet.forEntry` builds the common single
  * definite-entry runnable (a `js_script`/`script`), as a one-symlink surface.
  */
+/** A part of an argument: text, or a file of the runnable's install, by its install path. */
+export type ArgumentPart = string | { readonly installPath: string };
+
+/** A fixed argument of a runnable: text, or parts joined into one argument (`--module-path=` and the jars). */
+export type RunnableArgument = string | readonly ArgumentPart[];
+
+/**
+ * @return `args` as command-line text, each install path named within
+ * `installDir`: the install's directory, as the command line reaches it.
+ */
+export function resolveArguments(args: readonly RunnableArgument[], installDir: string): string[] {
+  const part = (piece: ArgumentPart): string => (typeof piece === "string" ? piece : path.join(installDir, piece.installPath));
+  return args.map(arg => (typeof arg === "string" ? arg : arg.map(part).join("")));
+}
+
 export class RunnableFileSet extends FileSet {
   constructor(
     files: Iterable<[string, IFile]>,
     /** Fixed leading args, before any the caller appends. */
-    public readonly args: string[] = [],
+    public readonly args: readonly RunnableArgument[] = [],
     /** What runs the entry: a bare command found on PATH (`sh`), or a runnable
      * (`NODE`), reached through the cache's tree pool (see {@link launchedBy}).
      * Omitted → the entry is itself executable. */
@@ -85,7 +100,10 @@ export class RunnableFileSet extends FileSet {
     /** Environment variables the program is launched with, over whatever
      * environment its launcher gives it. */
     public readonly env: ReadonlyMap<string, string> = NO_ENV,
-    origin?: IProvenanceStep
+    origin?: IProvenanceStep,
+    /** Arguments given the interpreter before the entry (`--module-path …`), a
+     *  part of one naming a file of this runnable's own install. */
+    public readonly interpreterArgs: readonly RunnableArgument[] = []
   ) {
     super(files instanceof FileSet ? files : new Map(files), origin ?? (files instanceof FileSet ? files.origin : undefined));
   }
@@ -94,7 +112,7 @@ export class RunnableFileSet extends FileSet {
   public static forEntry(
     files: Iterable<[string, IFile]>,
     entry: string,
-    args: string[] = [],
+    args: readonly RunnableArgument[] = [],
     interpreter?: string | RunnableFileSet
   ): RunnableFileSet {
     const surface = new FileSet(new Map<string, IFile>([[path.posix.basename(entry), new SymlinkFile(entry)]]));
@@ -102,7 +120,7 @@ export class RunnableFileSet extends FileSet {
   }
 
   public withOrigin(origin: IProvenanceStep): RunnableFileSet {
-    return new RunnableFileSet(this, this.args, this.interpreter, this.root, this.surface, this.served, this.launchCwd, this.env, origin);
+    return new RunnableFileSet(this, this.args, this.interpreter, this.root, this.surface, this.served, this.launchCwd, this.env, origin, this.interpreterArgs);
   }
 
   /**
@@ -111,39 +129,27 @@ export class RunnableFileSet extends FileSet {
    * runnable's install at {@link TREE_MOUNT}. Its content is in any key this
    * runnable's command line or install is: the command line names it by hash.
    * `interpreterArgs` go after the interpreter's own args, before this
-   * runnable's entry (`java -jar <entry>`).
+   * runnable's entry (`java -jar <entry>`), naming files of this runnable's
+   * install as its own args do.
    */
   public launchedBy(
     interpreter: RunnableFileSet,
     pool: { ensureTree(files: FileSet): Computable<string>; readonly treePoolLink: SymlinkFile },
-    interpreterArgs: readonly string[] = []
+    interpreterArgs: readonly RunnableArgument[] = []
   ): Computable<RunnableFileSet> {
-    const launcher =
-      interpreterArgs.length === 0
-        ? interpreter
-        : new RunnableFileSet(
-            interpreter,
-            [...interpreter.args, ...interpreterArgs],
-            interpreter.interpreter,
-            interpreter.root,
-            interpreter.surface,
-            interpreter.served,
-            interpreter.launchCwd,
-            interpreter.env,
-            interpreter.origin
-          );
     return pool.ensureTree(interpreter).then(
       () =>
         new RunnableFileSet(
           FileSet.unionAll(this, new FileSet(new Map([[TREE_MOUNT, pool.treePoolLink]]))),
           this.args,
-          launcher,
+          interpreter,
           this.root,
           this.surface,
           this.served,
           this.launchCwd,
           this.env,
-          this.origin
+          this.origin,
+          [...this.interpreterArgs, ...interpreterArgs]
         )
     );
   }
@@ -151,7 +157,7 @@ export class RunnableFileSet extends FileSet {
   /** Get this runnable offering a different launch surface — how a projection is
    * applied ({@link selectEntry}), the install and everything else unchanged. */
   public withSurface(surface: FileSet): RunnableFileSet {
-    return new RunnableFileSet(this, this.args, this.interpreter, this.root, surface, this.served, this.launchCwd, this.env, this.origin);
+    return new RunnableFileSet(this, this.args, this.interpreter, this.root, surface, this.served, this.launchCwd, this.env, this.origin, this.interpreterArgs);
   }
 
   /**
@@ -176,7 +182,9 @@ export class RunnableFileSet extends FileSet {
       this.surface,
       served,
       "install",
-      new Map([...this.env, ...env])
+      new Map([...this.env, ...env]),
+      undefined,
+      this.interpreterArgs
     );
   }
 
@@ -239,7 +247,9 @@ export class RunnableFileSet extends FileSet {
   public toCommandLine(callerArgs: string[] = [], opts?: { anchor?: string; base?: string }): string[] {
     const based = (installPath: string): string => (opts?.base ? path.posix.join(opts.base, installPath) : installPath);
     const entry = based(this.resolveEntry());
-    const line = [opts?.anchor ? path.resolve(opts.anchor, entry) : entry, ...this.args, ...callerArgs];
+    const installDir = opts?.anchor ? path.resolve(opts.anchor, opts.base ?? "") : (opts?.base ?? "");
+    const own = [opts?.anchor ? path.resolve(opts.anchor, entry) : entry, ...resolveArguments(this.args, installDir), ...callerArgs];
+    const line = [...resolveArguments(this.interpreterArgs, installDir), ...own];
     if (this.interpreter instanceof RunnableFileSet) {
       return this.interpreter.toCommandLine(line, { ...opts, base: based(path.posix.join(TREE_MOUNT, this.interpreter.toManifestHash())) });
     }
@@ -247,7 +257,7 @@ export class RunnableFileSet extends FileSet {
       return [this.interpreter, ...line];
     }
     /* The entry is the command: a bare name would be searched for on PATH. */
-    const [command, ...rest] = line;
+    const [command, ...rest] = own;
     return [command.includes("/") ? command : `./${command}`, ...rest];
   }
 

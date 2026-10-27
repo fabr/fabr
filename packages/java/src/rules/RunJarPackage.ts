@@ -29,14 +29,14 @@ import { jarMainClass, makeJarRunnable } from "../JarPackage";
 /** The `jar_package` rule, under `run`. */
 export default defineRule({
   requirements(context) {
-    return { pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE) };
+    return { pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE), agents: context.getPackageProperty("agents", BUILD_OVERRIDE) };
   },
-  evaluateMaterialized(context, { pkg }) {
-    return context.getProperty("main_class").then(mainClass => runnableJar(context, pkg, mainClass?.toString()));
+  evaluateMaterialized(context, { pkg, agents }) {
+    return context.getProperty("main_class").then(mainClass => runnableJar(context, pkg, agents, mainClass?.toString()));
   },
 });
 
-function runnableJar(context: TargetContext, pkg: FileSet[], mainClass: string | undefined): Computable<RunnableFileSet> {
+function runnableJar(context: TargetContext, pkg: FileSet[], agents: FileSet[], mainClass: string | undefined): Computable<RunnableFileSet> {
   const built = pkg.find((source): source is PackageFileSet => source instanceof PackageFileSet);
   if (!built) {
     throw new FabrError("internal: jar_package[build] did not yield a package");
@@ -46,6 +46,6 @@ function runnableJar(context: TargetContext, pkg: FileSet[], mainClass: string |
     if (start === undefined) {
       throw new FabrError(`${context.name} has no main_class, so it cannot be run`).withHelp("set `main_class` to the class the program starts in");
     }
-    return makeJarRunnable(context, [built], start);
+    return makeJarRunnable(context, [built], start, { agents });
   });
 }

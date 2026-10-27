@@ -29,7 +29,6 @@ import {
   BuildAction,
   BuildResult,
   Computable,
-  EMPTY_FILESET,
   FabrError,
   FileSet,
   fileSetInput,
@@ -43,7 +42,10 @@ import {
   packToZip,
   PERMISSIVE_RESOLUTION,
   readZipMember,
+  readZipMembers,
   ResolutionContext,
+  ArgumentPart,
+  RunnableArgument,
   RunnableFileSet,
   stringConfig,
   TargetContext,
@@ -133,6 +135,34 @@ export function packageOf(source: string): string {
   const code = source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, " ");
   const declared = /^\s*(?:@[\w.]+\s*(?:\([^)]*\))?\s*)*package\s+([\w$]+(?:\s*\.\s*[\w$]+)*)\s*;/.exec(code);
   return declared === null ? "" : declared[1].replace(/\s+/g, "");
+}
+
+/** A module descriptor's name in a jar: at its root, or for a release of a multi-release jar. */
+function isDescriptor(name: string): boolean {
+  return name === "module-info.class" || /^META-INF\/versions\/\d+\/module-info\.class$/.test(name);
+}
+
+/**
+ * @return what `jar` is to the module system: an `explicit` module (it holds a
+ * module descriptor), an `automatic` one its manifest names
+ * (`Automatic-Module-Name`), or undefined for neither.
+ */
+export function moduleKindOf(jar: IFile): Computable<"explicit" | "automatic" | undefined> {
+  return jar
+    .getBuffer()
+    .then(buffer => readZipMembers(buffer, name => isDescriptor(name) || name === MANIFEST_NAME))
+    .then(members => {
+      if ([...members.keys()].some(isDescriptor)) {
+        return "explicit";
+      }
+      const manifest = members.get(MANIFEST_NAME);
+      return manifest !== undefined && manifestAttributes(manifest.toString("utf8")).has("Automatic-Module-Name") ? "automatic" : undefined;
+    });
+}
+
+/** @return true if `jar` is a module, explicit or automatic, otherwise false: what a module's compile puts on the module path. */
+export function isModularJar(jar: IFile): Computable<boolean> {
+  return moduleKindOf(jar).then(kind => kind !== undefined);
 }
 
 /** @return the name of the class file `className` is compiled to (`com.example.Main` → `com/example/Main.class`). */
@@ -233,42 +263,96 @@ export interface JavaProgramOptions {
   args?: readonly string[];
   /** Arguments given the JVM, before the program. */
   jvmArgs?: readonly string[];
+  /** Java agents the program runs with: each one's own jar is given the JVM
+   *  as a `-javaagent`, and what it requires joins the classpath. */
+  agents?: readonly FileSet[];
+}
+
+/** Where a program's jars go: on the module path, where it runs as a module, and on the classpath. */
+interface Placement {
+  modulePath?: Array<[string, IFile]>;
+  classpath: Array<[string, IFile]>;
 }
 
 /**
  * Make a program runnable on `JAVA`, starting `mainClass`, with `deps` and
- * everything they require on the classpath, after any `classes` of its own.
- * The install holds each jar under `lib/` and a launcher jar whose manifest
- * names the class and, relative to itself, the classpath, so `java -jar`
- * starts it from whatever directory.
+ * everything they require, after any `classes` of its own. The install holds
+ * each jar under `lib/` and a launcher jar whose manifest names the class and,
+ * relative to itself, the classpath, so `java -jar` starts it from whatever
+ * directory. A program whose own code is a module (its classes, or else its
+ * own jar, hold a module descriptor) runs as one: it and the jars that are
+ * modules go on the module path, the rest on the launcher's classpath.
  */
 export function makeJarRunnable(
   context: ResolutionContext,
   deps: readonly FileSet[],
   mainClass: string,
-  { classes, args = [], jvmArgs = [] }: JavaProgramOptions = {}
+  { classes, args = [], jvmArgs = [], agents = [] }: JavaProgramOptions = {}
 ): Computable<RunnableFileSet> {
-  const classpath = classpathOf(deps).map(([name, file]): [string, IFile] => [path.posix.join(LIB_DIR, name), file]);
-  const own = classes === undefined || classes.isEmpty() ? [] : [`${CLASSES_DIR}/`];
-  const manifest = manifestFile([
-    ["Manifest-Version", "1.0"],
-    ["Created-By", "fabr"],
-    ["Main-Class", mainClass],
-    ["Class-Path", [...own, ...classpath.map(([name]) => encodeURI(name))].join(" ")],
-  ]);
-  return packToZip(new FileSet(new Map([[MANIFEST_NAME, manifest]])), EMPTY_FILESET, { first: [MANIFEST_NAME] }).then(launcher => {
-    const install = FileSet.unionAll(
-      new FileSet(new Map([...classpath, [LAUNCHER, new MemoryFile(launcher)]])),
-      own.length === 0 ? new FileSet(new Map()) : classes!.mountedAt(CLASSES_DIR)
-    );
-    return context.launchedBy(RunnableFileSet.forEntry(install, LAUNCHER, [...args]), "JAVA", [...jvmArgs, "-jar"]);
-  });
+  const jars = classpathOf([...deps, ...agents]).map(([name, file]): [string, IFile] => [path.posix.join(LIB_DIR, name), file]);
+  /* Each agent's own jar, where the classpath lays it out: its package's, or a loose jar by its name. */
+  const agentArgs: RunnableArgument[] = agents.flatMap(agent =>
+    [...agent]
+      .filter(([name]) => name.endsWith(".jar"))
+      .map(([name]): RunnableArgument => [
+        "-javaagent:",
+        { installPath: path.posix.join(LIB_DIR, agent instanceof PackageFileSet && agent.packageName !== undefined ? `${agent.packageName}/${name}` : name) },
+      ])
+  );
+  const ownClasses = classes !== undefined && !classes.isEmpty();
+  const programJar = jars[0]?.[1];
+  const modular = ownClasses
+    ? Computable.resolve(classes.getFile("module-info.class") !== undefined)
+    : programJar === undefined
+      ? Computable.resolve(false)
+      : moduleKindOf(programJar).then(kind => kind === "explicit");
+  return modular
+    .then(
+      (isModule): Placement | Computable<Placement> =>
+        isModule
+          ? Computable.forAll(
+              jars.map(([, file]) => isModularJar(file)),
+              (...modules: boolean[]): Placement => ({
+                modulePath: jars.filter((_, index) => modules[index]),
+                classpath: jars.filter((_, index) => !modules[index]),
+              })
+            )
+          : { classpath: jars }
+    )
+    .then(({ modulePath, classpath }) => {
+      const own = !ownClasses ? [] : [`${CLASSES_DIR}/`];
+      const manifest = manifestFile([
+        ["Manifest-Version", "1.0"],
+        ["Created-By", "fabr"],
+        ["Main-Class", mainClass],
+        ["Class-Path", [...(modulePath === undefined ? own : []), ...classpath.map(([name]) => encodeURI(name))].join(" ")],
+      ]);
+      /* `-jar` loads the launcher's Main-Class from the module path's modules where they are resolved. */
+      const moduleArgs: RunnableArgument[] =
+        modulePath === undefined
+          ? []
+          : [
+              "--module-path",
+              [...(ownClasses ? [CLASSES_DIR] : []), ...modulePath.map(([name]) => name)].flatMap((installPath, index): ArgumentPart[] =>
+                index === 0 ? [{ installPath }] : [path.delimiter, { installPath }]
+              ),
+              "--add-modules",
+              "ALL-MODULE-PATH",
+            ];
+      return packToZip(new FileSet(new Map([[MANIFEST_NAME, manifest]])), { first: [MANIFEST_NAME] }).then(launcher => {
+        const install = FileSet.unionAll(
+          new FileSet(new Map([...jars, [LAUNCHER, new MemoryFile(launcher)]])),
+          ownClasses ? classes.mountedAt(CLASSES_DIR) : new FileSet(new Map())
+        );
+        return context.launchedBy(RunnableFileSet.forEntry(install, LAUNCHER, [...args]), "JAVA", [...jvmArgs, ...agentArgs, ...moduleArgs, "-jar"]);
+      });
+    });
 }
 
-/** Write the jar named by the action's `name` from its `files`, the manifest first, and its `stored` files uncompressed. */
+/** Write the jar named by the action's `name` from its `files`, the manifest first. */
 function runJar(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
   const name = stringConfig(action, "name");
-  return packToZip(fileSetInput(action, "files"), fileSetInput(action, "stored"), { first: [MANIFEST_NAME] }).then(jar =>
+  return packToZip(fileSetInput(action, "files"), { first: [MANIFEST_NAME] }).then(jar =>
     ctx
       .admit(report, () => {
         fs.writeFileSync(path.join(ctx.workDir, name), jar);
@@ -278,9 +362,9 @@ function runJar(action: BuildAction, ctx: ActionContext, report: ITaskReport): C
   );
 }
 
-export const JAR_ACTION: IBuildActionDefinition = { id: "java:jar", version: 3, run: runJar };
+export const JAR_ACTION: IBuildActionDefinition = { id: "java:jar", version: 4, run: runJar };
 
-/** Make the action writing `files`, and `stored` uncompressed, as the jar `name`. */
-export function createJarAction(files: FileSet, name: string, stored: FileSet = EMPTY_FILESET): BuildAction {
-  return new BuildAction(JAR_ACTION, { files, stored }, { name });
+/** Make the action writing `files` as the jar `name`. */
+export function createJarAction(files: FileSet, name: string): BuildAction {
+  return new BuildAction(JAR_ACTION, { files }, { name });
 }

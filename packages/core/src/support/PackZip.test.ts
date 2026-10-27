@@ -17,7 +17,7 @@
 import * as zlib from "zlib";
 import { expect } from "chai";
 import { packToZip } from "./PackZip";
-import { EMPTY_FILESET, FileSet, IFile } from "../core/FileSet";
+import { FileSet, IFile } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import { SymlinkFile } from "../core/SymlinkFile";
 
@@ -61,7 +61,6 @@ describe("packToZip", () => {
   it("writes every file and the directories above it, leading entries first", async () => {
     const zip = await packToZip(
       fileSetOf({ "com/x/A.class": "a".repeat(200), "app.properties": "k=v", "META-INF/MANIFEST.MF": "Manifest-Version: 1.0\r\n" }),
-      EMPTY_FILESET,
       { first: ["META-INF/MANIFEST.MF"] }
     );
     const entries = readZip(zip);
@@ -96,22 +95,17 @@ describe("packToZip", () => {
     expect(stamps).to.deep.equal(Array.from({ length: 3 }, () => [0, 0x21, 0]));
   });
 
-  it("stores the files named stored uncompressed, and deflates the rest", async () => {
-    const zip = await packToZip(fileSetOf({ "b.txt": "y".repeat(200) }), fileSetOf({ "BOOT-INF/lib/a.jar": "x".repeat(200) }));
+  it("stores a zip archive it holds uncompressed, and deflates the rest", async () => {
+    const nested = await packToZip(fileSetOf({ "a.txt": "x".repeat(200) }));
+    const zip = await packToZip(
+      new FileSet(new Map<string, IFile>([["BOOT-INF/lib/a.jar", new MemoryFile(nested)], ["b.txt", MemoryFile.from("y".repeat(200))]]))
+    );
     const methods = readZip(zip).filter(entry => entry.content !== undefined).map(entry => [entry.name, entry.method]);
     /* 0 is stored, 8 deflated. */
     expect(methods).to.deep.equal([
       ["BOOT-INF/lib/a.jar", 0],
       ["b.txt", 8],
     ]);
-  });
-
-  it("refuses a name both compressed and stored", async () => {
-    const refused = await packToZip(fileSetOf({ "a.jar": "x" }), fileSetOf({ "a.jar": "y" })).then(
-      () => undefined,
-      (err: Error) => err
-    );
-    expect(refused?.message).to.match(/both compressed and stored/);
   });
 
   it("refuses a symlink", async () => {

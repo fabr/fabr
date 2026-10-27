@@ -27,7 +27,7 @@ import { FileSetRef } from "../core/FileSetRef";
 import { NamespaceRef } from "../core/NamespaceRef";
 import { IProjection, Miss } from "../core/Reference";
 import { materializeTargets } from "../core/TargetRef";
-import { RunnableFileSet } from "../core/RunnableFileSet";
+import { RunnableArgument, RunnableFileSet } from "../core/RunnableFileSet";
 import { Dependency, PackageFileSet } from "../core/PackageFileSet";
 import { Requirement } from "../resolver/Types";
 import { declaredRequirement } from "../resolver/PackageResolver";
@@ -525,7 +525,7 @@ export abstract class TargetContext {
 
   /** Get `runnable` launched through the runnable the global `interpreter`
    *  names, given `interpreterArgs` before the entry. */
-  public launchedBy(runnable: RunnableFileSet, interpreter: string, interpreterArgs?: readonly string[]): Computable<RunnableFileSet> {
+  public launchedBy(runnable: RunnableFileSet, interpreter: string, interpreterArgs?: readonly RunnableArgument[]): Computable<RunnableFileSet> {
     return this.getGlobalRunnable(interpreter).then(launcher => runnable.launchedBy(launcher, this.execution.buildCache, interpreterArgs));
   }
 }

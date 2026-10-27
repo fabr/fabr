@@ -45,7 +45,6 @@ import { checkMainClass, createJarAction, MANIFEST_NAME, manifestFile, processor
 interface JarInputs {
   srcs: FileSet[];
   resources: FileSet[];
-  stored: FileSet[];
   dependencies: FileSet[];
   provided: FileSet[];
   optional_provided: FileSet[];
@@ -67,7 +66,6 @@ export default defineRule({
     return {
       srcs: context.getFileProperty("srcs"),
       resources: context.getFileProperty("resources"),
-      stored: context.getFileProperty("stored"),
       dependencies: context.getPackageProperty("deps"),
       provided: context.getPackageProperty("provided_deps"),
       optional_provided: context.getPackageProperty("optional_provided_deps"),
@@ -163,9 +161,7 @@ function buildJar(context: TargetContext, inputs: JarInputs, edges: JarEdges, at
       ...attributes.written,
     ]);
     const contents = FileSet.unionAll(compiled, ...resources, new FileSet(new Map([[MANIFEST_NAME, manifest]])));
-    return createJarAction(contents, jarNameOf(context.name), FileSet.unionAll(...inputs.stored)).withReshape(files =>
-      packageOf(context, files, edges)
-    );
+    return createJarAction(contents, jarNameOf(context.name)).withReshape(files => packageOf(context, files, edges));
     })
   );
 }

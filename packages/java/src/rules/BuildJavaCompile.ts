@@ -19,8 +19,8 @@
 
 /**
  * The java_compile rule: compile Java sources to class files with `JAVAC`,
- * against the classpath its `deps` make, for the release {@link javaRelease}
- * chooses. The annotation processors its `processors` name run, from a
+ * against the classpath its `deps` make (the module path, for sources that
+ * are a named module), for the release {@link javaRelease} chooses. The annotation processors its `processors` name run, from a
  * classpath of their own; with none, annotation processing is off.
  */
 
@@ -37,7 +37,7 @@ import {
   TargetContext,
   TREE_MOUNT,
 } from "@fabr-build/core";
-import { classpathOf, javaRelease, processorsOf } from "../JarPackage";
+import { classpathOf, isModularJar, javaRelease, processorsOf } from "../JarPackage";
 
 /** The `java_compile` rule. */
 export default defineRule({
@@ -73,6 +73,11 @@ function pathOption(option: string, dir: string, jars: ReadonlyArray<[string, IF
   return jars.length === 0 ? [] : [option, jars.map(([name]) => path.posix.join(dir, name)).join(path.delimiter)];
 }
 
+/** @return true if `sources` are a named module's: they include its `module-info.java`, otherwise false. */
+function isModule(sources: FileSet): boolean {
+  return [...sources].some(([name]) => path.posix.basename(name) === "module-info.java");
+}
+
 function staged(dir: string, jars: ReadonlyArray<[string, IFile]>): FileSet {
   return new FileSet(new Map(jars.map(([name, file]) => [path.posix.join(dir, name), file])));
 }
@@ -83,9 +88,18 @@ function compileJava(context: TargetContext, { srcs, deps }: { srcs: FileSet[]; 
   if (notJava.length > 0) {
     throw new FabrError(`java_compile compiles .java sources only, and was given ${notJava.join(", ")}`);
   }
-  const classpath = classpathOf(deps);
+  const jars = classpathOf(deps);
+  /* A named module (one compiled from a module-info.java) reads only the module
+   * path: the jars that are modules, explicit or named automatic ones, go there,
+   * and the rest stay on the classpath, as Gradle places them. */
+  const placed = isModule(sources)
+    ? Computable.forAll(
+        jars.map(([, file]) => isModularJar(file)),
+        (...modular: boolean[]) => ({ modulePath: jars.filter((_, index) => modular[index]), classpath: jars.filter((_, index) => !modular[index]) })
+      )
+    : Computable.resolve({ modulePath: [] as Array<[string, IFile]>, classpath: jars });
   const processors = processorsOf(context).then(classpathOf);
-  return Computable.forAll([context.getGlobalString("JVM_TARGET"), context.getGlobalRunnable("JAVAC"), processors], (jvmTarget, javac, processorPath) => {
+  return Computable.forAll([context.getGlobalString("JVM_TARGET"), context.getGlobalRunnable("JAVAC"), processors, placed], (jvmTarget, javac, processorPath, { modulePath, classpath }) => {
     const release = javaRelease(jvmTarget, deps);
     const pool = context.execution.buildCache;
     return pool.ensureTree(javac).then(() => {
@@ -98,6 +112,7 @@ function compileJava(context: TargetContext, { srcs, deps }: { srcs: FileSet[]; 
         "-implicit:none",
         "-d",
         CLASSES_DIR,
+        ...pathOption("--module-path", CLASSPATH_DIR, modulePath),
         ...pathOption("-classpath", CLASSPATH_DIR, classpath),
         ...[...sources].map(([name]) => path.posix.join(SOURCE_DIR, name)).sort(),
       ]
@@ -105,7 +120,7 @@ function compileJava(context: TargetContext, { srcs, deps }: { srcs: FileSet[]; 
         .join("\n");
       const files = FileSet.unionAll(
         sources.mountedAt(SOURCE_DIR),
-        staged(CLASSPATH_DIR, classpath),
+        staged(CLASSPATH_DIR, jars),
         staged(PROCESSOR_PATH_DIR, processorPath),
         new FileSet(new Map<string, IFile>([[ARGUMENTS_FILE, MemoryFile.from(argumentsText)], [TREE_MOUNT, pool.treePoolLink]]))
       );

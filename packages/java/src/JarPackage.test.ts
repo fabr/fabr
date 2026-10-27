@@ -19,7 +19,7 @@
 
 import { expect } from "chai";
 import { FileSet, Flag, MemoryFile, PackageFileSet, packToZip, RefSource, RepositoryRef } from "@fabr-build/core";
-import { checkMainClass, classFileOf, classpathOf, jarMainClass, javaRelease, MANIFEST_NAME, manifestAttributes, manifestFile, packageOf } from "./JarPackage";
+import { checkMainClass, classFileOf, classpathOf, isModularJar, jarMainClass, javaRelease, MANIFEST_NAME, manifestAttributes, manifestFile, packageOf } from "./JarPackage";
 
 const files = (...names: string[]): FileSet => new FileSet(new Map(names.map(name => [name, MemoryFile.from(name)])));
 
@@ -38,6 +38,17 @@ describe("packageOf", () => {
     expect(packageOf("/* licence */\n// note\n@Deprecated\npackage com . example ;\n")).to.equal("com.example");
     expect(packageOf("// package not.this;\nclass A {}")).to.equal("");
     expect(packageOf("import x.Y;\nclass A {}")).to.equal("");
+  });
+});
+
+describe("isModularJar", () => {
+  it("knows a module by its descriptor, a multi-release one's, or its Automatic-Module-Name", async () => {
+    const jar = async (...entries: Array<[string, string]>): Promise<MemoryFile> =>
+      new MemoryFile(await packToZip(new FileSet(new Map(entries.map(([name, text]) => [name, MemoryFile.from(text)])))));
+    expect(await isModularJar(await jar(["module-info.class", "x"], ["a/A.class", "x"]))).to.equal(true);
+    expect(await isModularJar(await jar(["META-INF/versions/9/module-info.class", "x"]))).to.equal(true);
+    expect(await isModularJar(await jar([MANIFEST_NAME, "Manifest-Version: 1.0\r\nAutomatic-Module-Name: org.lib\r\n"]))).to.equal(true);
+    expect(await isModularJar(await jar([MANIFEST_NAME, "Manifest-Version: 1.0\r\n"], ["a/A.class", "x"]))).to.equal(false);
   });
 });
 

@@ -22,7 +22,8 @@ import * as yazl from "yazl";
 import { Computable } from "../core/Computable";
 import { readStream } from "../core/Fetch";
 import { mapComputable } from "./Functional";
-import { EMPTY_FILESET, FileSet } from "../core/FileSet";
+import { FileSet } from "../core/FileSet";
+import { MIME_ZIP, sniffMime } from "./Mime";
 import { SymlinkFile } from "../core/SymlinkFile";
 
 export interface ZipOptions {
@@ -49,19 +50,15 @@ function ancestorsOf(name: string): string[] {
 }
 
 /**
- * Pack files into a zip archive (a jar), with `yazl`: `compressed` deflated,
- * and `stored` kept uncompressed, as a jar nested in a jar must be for a loader
- * that reads it in place. Every directory above a file gets an entry of its
+ * Pack a FileSet into a zip archive (a jar), with `yazl`. Each file is
+ * deflated, except one that is itself a zip archive (a nested jar), which is
+ * stored uncompressed: deflating it gains nothing, and a loader reading it in
+ * place needs it stored. Every directory above a file gets an entry of its
  * own, entries are written in sorted name order after `options.first`, and
  * each carries a fixed date and the file's own mode, so the output is
- * deterministic. A name in both sets, and a symlink, are refused.
+ * deterministic. Symlinks are refused.
  */
-export function packToZip(compressed: FileSet, stored: FileSet = EMPTY_FILESET, options: ZipOptions = {}): Computable<Buffer> {
-  const both = [...stored].map(([name]) => name).filter(name => compressed.getFile(name) !== undefined);
-  if (both.length > 0) {
-    return Computable.reject(new Error(`cannot zip '${both[0]}' both compressed and stored`));
-  }
-  const files = FileSet.unionAll(compressed, stored);
+export function packToZip(files: FileSet, options: ZipOptions = {}): Computable<Buffer> {
   const names = [...files].map(([name]) => name);
   const directories = new Set(names.flatMap(ancestorsOf));
   const first = (options.first ?? []).filter(name => files.getFile(name) !== undefined);
@@ -87,7 +84,7 @@ export function packToZip(compressed: FileSet, stored: FileSet = EMPTY_FILESET, 
           mtime: ZIP_DATE,
           mode: ZIP_FILE_TYPE | (files.getFile(name)!.mode & 0o7777),
           forceDosTimestamp: true,
-          compress: stored.getFile(name) === undefined,
+          compress: sniffMime(content) !== MIME_ZIP,
         });
       }
     });

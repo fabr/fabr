@@ -77,6 +77,33 @@ describe("RunnableFileSet.toCommandLine", () => {
   });
 });
 
+describe("RunnableFileSet arguments naming install files", () => {
+  it("names an install file wherever the install is reached, the program's own options before its entry", async () => {
+    const java = RunnableFileSet.forEntry(new Map([["bin/java", MemoryFile.from("java")]]), "bin/java");
+    const pool = { ensureTree: () => Computable.resolve("unused"), treePoolLink: new SymlinkFile("pool") };
+    const program = await new Promise<RunnableFileSet>((resolve, reject) =>
+      RunnableFileSet.forEntry(new Map(), "launcher.jar", [["--config=", { installPath: "etc/app.conf" }]])
+        .launchedBy(java, pool, [["--module-path=", { installPath: "lib/a.jar" }, ":", { installPath: "lib/b.jar" }], "-jar"])
+        .then(resolve, reject)
+    );
+    const at = `${TREE_MOUNT}/${java.toManifestHash()}`;
+    expect(program.toCommandLine([], { base: "tool" })).to.deep.equal([
+      `tool/${at}/bin/java`,
+      "--module-path=tool/lib/a.jar:tool/lib/b.jar",
+      "-jar",
+      "tool/launcher.jar",
+      "--config=tool/etc/app.conf",
+    ]);
+    expect(program.toCommandLine([], { anchor: "/staged" })).to.deep.equal([
+      path.resolve("/staged", at, "bin/java"),
+      `--module-path=${path.resolve("/staged/lib/a.jar")}:${path.resolve("/staged/lib/b.jar")}`,
+      "-jar",
+      path.resolve("/staged", "launcher.jar"),
+      `--config=${path.resolve("/staged/etc/app.conf")}`,
+    ]);
+  });
+});
+
 describe("toRunnable", () => {
   const runnableWithBin = (): RunnableFileSet =>
     /* forEntry gives a one-bin surface: command "tool" → SymlinkFile("bin/tool"). */

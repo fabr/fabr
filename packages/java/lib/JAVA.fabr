@@ -94,15 +94,16 @@ targetdef jar_package {
     # resolved apart from the ones the sources use.
     processors = PACKAGES;
     # Files to put in the jar as they are, named as they are found on the
-    # classpath (`application.properties`).
+    # classpath (`application.properties`). A jar or zip among them is stored
+    # uncompressed, so that a nested jar can be read in place.
     resources = FILES;
-    # As `resources`, but stored in the jar uncompressed. Typically used
-    # for nested jars so that they can be read in place.
-    stored = FILES;
     # The class the program starts in (`com.example.Main`), which the jar's
     # manifest names as its `Main-Class`: one of the jar's, or of a package it
     # requires.
     main_class = STRING;
+    # Java agents `fabr run` runs the jar with: each package's jar is given the
+    # JVM as a `-javaagent`, and what it requires joins the classpath.
+    agents = PACKAGES;
     # Further attributes of the jar's manifest (`Implementation-Version`,
     # `Automatic-Module-Name`), each a string.
     manifest = MAP;
@@ -143,6 +144,9 @@ targetdef java_program {
     args = STRING;
     # Arguments given the JVM, before the program: `-Xmx2g`, `"-Dname=value"`.
     jvm_args = STRING;
+    # Java agents the program runs with: each package's jar is given the JVM
+    # as a `-javaagent`, and what it requires joins the classpath.
+    agents = PACKAGES;
 }
 
 #
