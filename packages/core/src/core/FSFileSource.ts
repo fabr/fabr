@@ -25,7 +25,9 @@ import { Name } from "./Name";
 import { Computable, ComputableSource, ComputableState } from "./Computable";
 import { mapComputable } from "../support/Functional";
 import { DEFAULT_FILE_MODE, FileSet, IFile, FileSource } from "./FileSet";
-import { hashFile, isDirectoryError, isNotFound, readFile, readFileBuffer, stat, walkTree } from "./FSWrapper";
+import { hashFile, hashString, isDirectoryError, isNotFound, readFile, readFileBuffer, stat, walkTree } from "./FSWrapper";
+import type { BuildCache } from "./BuildCache";
+import { sniffMime } from "../support/Mime";
 import { FabrError, toError } from "./Errors";
 import { IProvenanceStep, namingDigest, registerProvenanceNaming, registerProvenanceRenderer, renamingText } from "./Provenance";
 import { PreparedUpdate, WatchController, WatchEntry } from "./WatchController";
@@ -247,11 +249,21 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
    * all — so neither half can be judged by the projection alone (a file-membership
    * predicate, which a directory path fails). A removal instead consults what we HOLD,
    * and a create additionally probes for a subtree to walk.
+   *
+   * A removal is checked against the disk: where the path is still there (a replace
+   * whose events arrived merged or out of order) it is dropped and then read again as
+   * a create, so the query holds what the tree holds now.
    */
   private applyDelta(rel: string, removed: boolean): boolean {
     if (removed) {
-      return this.dropSubtree(rel);
+      const dropped = this.dropSubtree(rel);
+      return fs.existsSync(path.resolve(this.root, rel)) ? this.applyCreate(rel) || dropped : dropped;
     }
+    return this.applyCreate(rel);
+  }
+
+  /** Apply a create or change at `rel`: @return true if it changed our files now, otherwise false. */
+  private applyCreate(rel: string): boolean {
     /* Both arms fire, deliberately. A bare-directory reference matches its own path, so
      * `mv elsewhere src` takes the literal arm — which ingests to `undefined`, a
      * directory being no file — and the subtree it just gained is found only by the
@@ -421,9 +433,18 @@ export class FSFileSource implements FileSource {
    * it detaches (see {@link TreeQuery}); one subscription, not one per query. */
   private readonly registrations = new Set<TreeQuery>();
 
-  constructor(root: string, watchController?: WatchController) {
+  /**
+   * When present, every file this source reads is copied into this blob pool as it
+   * is hashed, and is read from that copy from then on: content the source does not
+   * own (an installed package) is then held like anything else the cache holds.
+   * {@link SourceFileSource} copies in its own way and passes none.
+   */
+  private readonly pool?: BuildCache;
+
+  constructor(root: string, watchController?: WatchController, pool?: BuildCache) {
     this.root = root;
     this.watchController = watchController;
+    this.pool = pool;
   }
 
   /** What a file's path under this tree is prefixed with to make its source
@@ -551,19 +572,29 @@ export class FSFileSource implements FileSource {
    * ({@link SourceFileSource}) can blob-back the content. */
   public ingest(filename: string): Computable<FSFile | undefined> {
     const filepath = path.resolve(this.root, filename);
-    return hashFile(filepath)
-      .then(({ hash, mime }) => stat(filepath).then(stats => new FSFile(this.root, filename, stats, hash, mime)))
-      .catch(err => {
-        /* Gone since the event fired (the save-rename dance), or the path is a
-         * directory (a not-yet-existing reference whose entry itself surfaced as
-         * an event — see enumerate's not-found branch): either way it is not a
-         * file, so treat it as absent — a later create/change event re-adds real
-         * files — never a hard error. */
-        if (isNotFound(err) || isDirectoryError(err)) {
-          return undefined;
-        }
-        throw err;
-      });
+    const pool = this.pool;
+    const ingested =
+      pool === undefined
+        ? hashFile(filepath).then(({ hash, mime }) => stat(filepath).then(stats => new FSFile(this.root, filename, stats, hash, mime)))
+        : readFileBuffer(filepath).then(bytes =>
+            stat(filepath).then(stats => {
+              const hash = hashString(bytes);
+              return pool
+                .ensureBlob(hash, bytes, stats.mode)
+                .then(blobPath => new FSFile(this.root, filename, stats, hash, sniffMime(bytes), blobPath));
+            })
+          );
+    return ingested.catch(err => {
+      /* Gone since the event fired (the save-rename dance), or the path is a
+       * directory (a not-yet-existing reference whose entry itself surfaced as
+       * an event — see enumerate's not-found branch): either way it is not a
+       * file, so treat it as absent — a later create/change event re-adds real
+       * files — never a hard error. */
+      if (isNotFound(err) || isDirectoryError(err)) {
+        return undefined;
+      }
+      throw err;
+    });
   }
 
   public get(name: string): ComputableSource<IFile | undefined> {

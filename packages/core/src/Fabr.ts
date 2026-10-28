@@ -99,7 +99,7 @@ export class Fabr {
         )
       : undefined;
     this.sourceFileSource = getSourceFileSource(options.sourceRoot, cache, this.controller);
-    this.execution = new ExecutionContext(cache, options.log, this.sourceFileSource, new FSFileSource("/"), cycle);
+    this.execution = new ExecutionContext(cache, options.log, this.sourceFileSource, new FSFileSource("/", undefined, cache), cycle);
     /* The source index persists per settled cycle — cycle-end fires even when
      * every recomputed value was identical (a touch without an edit), which is
      * exactly when rows changed but no result did — and drains ungated when

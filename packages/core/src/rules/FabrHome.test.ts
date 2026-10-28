@@ -28,7 +28,9 @@ import { NamespaceRef } from "../core/NamespaceRef";
 import { PackageFileSet, reachablePackages } from "../core/PackageFileSet";
 import { FSFileSource } from "../core/FSFileSource";
 import { RepositoryRef } from "../core/Repository";
-import { FabrHomeRepository } from "./FabrHome";
+import { FabrHomeRepository, installedDirectoryOf } from "./FabrHome";
+import { BuildCache } from "../core/BuildCache";
+import { LogFormatter, LogLevel } from "../support/Log";
 
 /** A fixture installation: its `node_modules`, holding fabr's own package
  * (with `host` inside it, where fabr's code would be, looked up from) beside
@@ -114,6 +116,18 @@ describe("FabrHomeRepository", () => {
     const tools = reachablePackages([delivered]).filter(pkg => pkg.packageName === "@fabr-build/tool");
     expect(tools).to.have.lengthOf(1);
     expect(delivered.packages[0].packages[0]).to.equal(delivered);
+  });
+
+  it("delivers copies held in the blob pool, the package itself found where it is installed", async () => {
+    const cacheRoot = path.join(root, "cache");
+    const repo = new FabrHomeRepository(new FSFileSource("/", undefined, new BuildCache(cacheRoot, new LogFormatter(LogLevel.Info, () => undefined))), host);
+    const delivered = (await toPromise(repo.resolve(packageRef(repo, Name.fromLiteral("@fabr-build/tool"))))) as PackageFileSet;
+    for (const [, file] of [...delivered, ...delivered.packages[0]]) {
+      expect(file.getAbsPath()?.startsWith(cacheRoot + path.sep)).to.equal(true);
+    }
+    expect(installedDirectoryOf(delivered)).to.equal(path.join(root, "node_modules", "@fabr-build", "tool"));
+    expect(installedDirectoryOf(delivered.packages[0])).to.equal(path.join(root, "node_modules", "helper"));
+    expect(installedDirectoryOf(new FileSet(new Map()))).to.equal(undefined);
   });
 
   it("chains the reference's provenance into every package it delivers for it", async () => {

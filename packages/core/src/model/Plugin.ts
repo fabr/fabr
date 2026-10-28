@@ -28,6 +28,7 @@ import { BUILD_OPERATION, Constraints } from "./Constraints";
 import { FileSet, IFile } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import { RunnableFileSet } from "../core/RunnableFileSet";
+import { installedDirectoryOf } from "../rules/FabrHome";
 import { Diagnostic, ISourcePosition, Log } from "../support/Log";
 import { CORE_PACKAGE } from "../Constants";
 import { FabrError, toError } from "../core/Errors";
@@ -328,11 +329,11 @@ function pluginManifest(model: BuildModel, decl: IPluginDecl, execution: Executi
       if (source instanceof RunnableFileSet) {
         return execution.buildCache.ensureTree(source).then(tree => path.join(tree, source.root, "package.json"));
       }
-      const manifest = source instanceof FileSet ? source.getFile("package.json")?.getAbsPath() : undefined;
-      if (manifest === undefined) {
+      const directory = source instanceof FileSet && source.getFile("package.json") !== undefined ? installedDirectoryOf(source) : undefined;
+      if (directory === undefined) {
         throw new FabrError(`Plugin '${decl.name.toString()}' names no package`);
       }
-      return manifest;
+      return path.join(directory, "package.json");
     });
 }
 

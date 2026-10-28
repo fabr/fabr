@@ -151,13 +151,14 @@ describe("FSFileSource enumeration window (TreeQuery)", () => {
   });
 
   it("replays a delete from the window (a stale enumeration cannot resurrect it)", async () => {
-    /* The file is on disk so the stale enumeration lists it (and ingest succeeds);
-     * the buffered delete from the window must still win. */
+    /* The file was on disk when the enumeration listed it; the buffered delete from
+     * the window must still win. */
     fs.mkdirSync(path.join(root, "dir"));
     fs.writeFileSync(path.join(root, "dir", "gone.ts"), "x");
     const { query, resolveEnum } = windowedQuery("dir");
 
     const settled = toPromise(query);
+    fs.rmSync(path.join(root, "dir", "gone.ts"));
     query.applyEvent("dir/gone.ts", true); /* deleted mid-window → buffered */
     resolveEnum({ names: ["dir/gone.ts"], project: rel => rel }); /* stale snapshot still lists it */
 
@@ -411,6 +412,31 @@ describe("FSFileSource directory events (TreeQuery)", () => {
     fs.rmSync(path.join(root, "src", "a", "one.ts"));
     expect(query.applyEvent("src/a/one.ts", true)).to.equal(true);
     expect(await settleFully(query)).to.deep.equal(["src/a/nested/two.ts"]);
+  });
+
+  it("keeps a file whose delete event arrives while it is still on disk", async () => {
+    /* A replace whose events arrived merged or out of order: the delete names a file
+     * the tree still holds, so it is read again rather than lost. */
+    tree();
+    const query = new FSFileSource(root).find(Name.fromLiteral("src")) as TreeQuery;
+    await toPromise(query);
+    fs.writeFileSync(path.join(root, "src", "a", "one.ts"), "replaced");
+    expect(query.applyEvent("src/a/one.ts", true)).to.equal(true);
+    expect(await settleFully(query)).to.deep.equal(["src/a/nested/two.ts", "src/a/one.ts"]);
+    const file = await toPromise((query.value as FileSet).getFile("src/a/one.ts")!.readString());
+    expect(file).to.equal("replaced");
+  });
+
+  it("rereads a directory whose delete event arrives while it is still on disk", async () => {
+    /* Replaced wholesale: what it held before is dropped, what it holds now is found. */
+    tree();
+    const query = new FSFileSource(root).find(Name.fromLiteral("src")) as TreeQuery;
+    await toPromise(query);
+    fs.rmSync(path.join(root, "src", "a"), { recursive: true, force: true });
+    fs.mkdirSync(path.join(root, "src", "a"));
+    fs.writeFileSync(path.join(root, "src", "a", "three.ts"), "3");
+    expect(query.applyEvent("src/a", true)).to.equal(true);
+    expect(await settleFully(query)).to.deep.equal(["src/a/three.ts"]);
   });
 
   it("discards a rescan that lands under a newer attach", async () => {
