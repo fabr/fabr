@@ -23,7 +23,7 @@ import { BuildContext } from "../context/index";
 import { Constraints } from "./Constraints";
 import { ExecutionContext } from "./ExecutionContext";
 import { Name } from "../core/Name";
-import { RepositoryProvider, RuleDefinition, SelectableRule } from "../rules/Types";
+import { RepositoryProvider, RuleBlockDefinition, RuleDefinition, SelectableRule } from "../rules/Types";
 import { Computable } from "../core/Computable";
 
 /**
@@ -39,7 +39,7 @@ export interface BuildModel {
   getDefaultRules(): SelectableRule[];
 
   /** Get `rule` with its implementation: a declared rule's is loaded the first time. */
-  getRuleDefinition(rule: SelectableRule): Computable<RuleDefinition>;
+  getRuleDefinition(rule: SelectableRule): Computable<RuleDefinition | RuleBlockDefinition>;
 
   getRepositoryProvider(type: string): RepositoryProvider | undefined;
 

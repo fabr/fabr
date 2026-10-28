@@ -559,10 +559,10 @@ targetdef script {
 }
 ```
 
-Building a target needs a rule for its type, and a rule's implementation comes from a plugin (see
-[Rule and repository declarations](#rule-and-repository-declarations)), so defining a type in a
-build file is mostly useful alongside a plugin. Writing plugins is described in the
-[plugin reference](/developer/plugins/).
+Building a target needs a rule for its type (see
+[Rule and repository declarations](#rule-and-repository-declarations)): one a plugin provides, or
+one written in a `.fabr` file out of other targets, as [Writing your own rules](/guides/rules/)
+shows. Writing plugins is described in the [plugin reference](/developer/plugins/).
 
 Each entry is `<property> = <kind>;`. A `*` in place of a property name gives a kind to every
 property not otherwise listed, for types whose targets take arbitrary keys:
@@ -646,6 +646,31 @@ default rule t<BUILD_OPERATION=files> = @fabr-build/core:rules/DefaultFilesRule;
 - The value is the rule's implementation, an entry of a package: `@fabr-build/js:rules/BuildJSPackage`
   is the module `rules/BuildJSPackage` that `@fabr-build/js` exports. The package must be fabr's
   core or a plugin the project uses, and the name means the copy fabr loaded.
+  An implementation can also be written in `.fabr`; see [Rules written in `.fabr`](#rules-written-in-fabr).
+
+### Rules written in `.fabr`
+
+A rule's implementation can be written in `.fabr`, as targets that build its target. The guide
+[Writing your own rules](/guides/rules/) shows how to use one; this is the grammar.
+
+```
+rule js_package pkg<BUILD_OPERATION=lint> = report<BUILD_OPERATION=build> {
+    generate report { srcs = pkg.srcs; run = checker **/*.ts > lint.txt; }
+}
+rule version_module v<BUILD_OPERATION=build> = generate gen { run = stamp ${v.version} > version.ts; }
+```
+
+- **`= <reference> { <declarations> }`**: the reference says what the target is, and the block
+  declares the targets and properties it may name, guarded ones included and nothing else. The
+  block's names are looked up before the file's, and only within the rule.
+- **`= <type> <name> { <properties> }`** is the short form of a block declaring that one target,
+  its name the reference.
+- **The parameter** (`pkg`) stands for the target being built: `pkg.<property>` reads one of its
+  properties, as a value or as `${pkg.<property>}`, `pkg` alone is a reference to the target, and
+  `${pkg}` is its name.
+  A bare name starting `<parameter>.` always means the parameter's property.
+- What follows the `=` is told apart by what comes after the first name: `;` for a package entry,
+  a second name for the short form, and `{` after a reference for a block.
 
 `repository` says how repositories of a type are made:
 

@@ -338,3 +338,52 @@ describe("e2e: generate command pipelines", () => {
     expect(run("two\n")).to.equal("one\ntwo\n");
   });
 });
+
+describe("e2e: a rule written in .fabr", () => {
+  /* A lint operation on js_package, written in the project: one `generate`,
+   * built under `build` (`generate` has no `lint` rule), over the target's own
+   * sources, its report the target's result. */
+  const PROJECT =
+    "plugin @fabr-build/js;\n" +
+    "script lister { entry = tool:list.sh; }\n" +
+    "rule js_package pkg<BUILD_OPERATION=lint> = lint<BUILD_OPERATION=build> {\n" +
+    "    generate lint {\n" +
+    "        srcs = pkg.srcs;\n" +
+    "        run = lister **/*.ts > lint.txt;\n" +
+    "    }\n" +
+    "}\n" +
+    "js_package app { srcs = src:**/*.ts; }\n" +
+    "js_package lib { srcs = libsrc:**/*.ts; }\n";
+  const FILES = {
+    "PROJECT.fabr": PROJECT,
+    "tool/list.sh": 'for f in "$@"; do echo "checked $f"; done\n',
+    "src/a.ts": "export const a = 1;\n",
+    "src/b.ts": "export const b = 2;\n",
+    "libsrc/c.ts": "export const c = 3;\n",
+  };
+
+  it("builds each target the rule matches from its own properties", () => {
+    const app = runFabr(FILES, ["cat", "app<BUILD_OPERATION=lint>:lint.txt"]);
+    expect(app.status, app.stderr).to.equal(0);
+    expect(app.stdout).to.equal("checked a.ts\nchecked b.ts\n");
+    const lib = runFabr(FILES, ["cat", "lib<BUILD_OPERATION=lint>:lint.txt"]);
+    expect(lib.status, lib.stderr).to.equal(0);
+    expect(lib.stdout).to.equal("checked c.ts\n");
+  });
+
+  it("lists the operation with the operations of the plugin's types", () => {
+    const result = runFabr(FILES, ["list-operations"]);
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stdout).to.match(/^lint +js_package$/m);
+    expect(result.stdout).to.match(/^build +.*js_package/m);
+  });
+
+  it("builds targets under the operation when its name is the command", () => {
+    /* A checker that fails, so only the lint operation (not a build) fails. */
+    const failing = { ...FILES, "tool/list.sh": 'echo "bad $1" >&2; exit 1\n' };
+    const result = runFabr(failing, ["lint", "app"]);
+    expect(result.status).to.not.equal(0);
+    expect(result.stderr).to.contain("bad a.ts");
+    expect(runFabr(failing, ["build", "app"]).status).to.equal(0);
+  });
+});

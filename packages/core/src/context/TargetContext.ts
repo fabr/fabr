@@ -32,12 +32,24 @@ import { Dependency, PackageFileSet } from "../core/PackageFileSet";
 import { Requirement } from "../resolver/Types";
 import { declaredRequirement } from "../resolver/PackageResolver";
 import { Flag } from "../core/Flag";
-import { SubTargetInputs } from "../rules/Types";
+import { RuleBlockDefinition, SubTargetInputs } from "../rules/Types";
 import { Constraints, operationOf } from "../model/Constraints";
 import { IFetchReport, ITargetBuildTask, TaskDescription } from "../model/BuildEvents";
 import { ExecutionContext } from "../model/ExecutionContext";
 import { ITargetOrigin, TARGET_PROVENANCE } from "../model/Target";
-import { DeclKind, declPosn, IPropertyDecl, ITargetDecl, ITargetDefDecl, PropertyType, declName, mergedDecls, soleDecl } from "../model/AST";
+import {
+  DeclKind,
+  declPosn,
+  IPropertyDecl,
+  isNameValue,
+  ITargetDecl,
+  ITargetDefDecl,
+  IValue,
+  PropertyType,
+  declName,
+  mergedDecls,
+  soleDecl,
+} from "../model/AST";
 import { DependencyFailedError, NameResolutionError } from "../model/Errors";
 import { FabrError } from "../core/Errors";
 import { Name } from "../core/Name";
@@ -98,6 +110,11 @@ export abstract class TargetContext {
   /** The name of the (declared) target being built — what a rule refers to
    * itself as; for an anonymous sub-target, its declared owner's name. */
   public abstract get name(): string;
+
+  /** The name the target is declared under in its configuration: what its own configuration resolves it by. */
+  protected get declaredName(): string {
+    return this.name;
+  }
 
   /** The operation this target's configuration is under (see
    * {@link operationOf}). */
@@ -478,7 +495,7 @@ export abstract class TargetContext {
    * `stack`, so this target is named as the requester.
    */
   public buildSelfWithOverrides(overrides: Constraints): Computable<SourceRef[]> {
-    return this.context.resolveTarget(this.name, this.stack, overrides).then(materializeTargets);
+    return this.context.resolveTarget(this.declaredName, this.stack, overrides).then(materializeTargets);
   }
 
   /**
@@ -487,7 +504,7 @@ export abstract class TargetContext {
    * read as packages ({@link PackageSources}).
    */
   public resolveSelfWithOverrides(overrides: Constraints): Computable<PackageSources> {
-    return this.context.resolveTarget(this.name, this.stack, overrides).then(sources => new PackageSources(sources));
+    return this.context.resolveTarget(this.declaredName, this.stack, overrides).then(sources => new PackageSources(sources));
   }
 
   /**
@@ -575,6 +592,19 @@ export class DeclaredTargetContext extends TargetContext {
     return declName(this.target);
   }
 
+  protected get declaredName(): string {
+    return declName(this.target);
+  }
+
+  /**
+   * The target's name within its chain of scopes, which tells its build apart
+   * from every other: its own (`app`), and for a target a rule's block
+   * declares, the matched target's then its name in the block (`app/report`).
+   */
+  public get scopedName(): string {
+    return this.name;
+  }
+
   /* Every accessor looks up on the ambient configuration and passes the
    * caller's overrides as callerOverrides, so they outrank a `<k=v>` written on
    * a value (ambient < requirement < caller). Guards are judged under the
@@ -614,8 +644,66 @@ export class DeclaredTargetContext extends TargetContext {
     });
   }
 
-  public getDeclaredContext(): this {
+  public getDeclaredContext(): DeclaredTargetContext {
     return this;
+  }
+
+  /**
+   * Read the property `name` for a rule's block reading it as `<param>.name`,
+   * in the configuration `reader` the block reads it in. Which declarations
+   * apply is judged, and their values substituted, in this target's
+   * configuration with `alias` (the `<k=v>` written on the read) applied; what
+   * the values name is looked up in `reader` with `alias` applied, each value
+   * sited where it was written. The framework's own: a rule reads its target's
+   * properties through the readers.
+   */
+  public aliasedFiles(name: string, reader: Constraints, alias: Constraints | undefined, stack?: IDependencyStack): Computable<SourceRef[]> {
+    const at = this.context.inConfiguration(reader.with(alias));
+    return this.aliasedDecls(name, alias, stack).then(decls =>
+      Computable.forAll(
+        decls.map(decl => at.lookupFileProperty(decl, this.target, stack)),
+        (...lists: SourceRef[][]) => lists.flat()
+      )
+    );
+  }
+
+  /**
+   * Get the one declaration of `name` a rule's block reads as `<param>.name`
+   * where it chases a map or command property, as {@link aliasedFiles} judges
+   * it, with the configuration its values are looked up in. `prop` is
+   * undefined where no declaration applies.
+   */
+  public aliasedDecl(
+    name: string,
+    reader: Constraints,
+    alias: Constraints | undefined,
+    stack?: IDependencyStack
+  ): Computable<{ prop?: IPropertyDecl; context: InternalBuildContext }> {
+    const context = this.context.inConfiguration(reader.with(alias));
+    return this.aliasedDecls(name, alias, stack).then(decls => ({ prop: soleDecl(decls), context }));
+  }
+
+  /** Resolve this target in the configuration of `constraints`, as a reference to it written in a rule's block does. */
+  public resolveIn(constraints: Constraints, stack?: IDependencyStack): Computable<SourceRef[]> {
+    return this.context.inConfiguration(constraints).resolveTarget(this.declaredName, stack);
+  }
+
+  /** Get the declarations of `name` that apply under `alias`, their values substituted there. */
+  private aliasedDecls(name: string, alias: Constraints | undefined, stack?: IDependencyStack): Computable<IPropertyDecl[]> {
+    const at = this.context.getContextWithOverrides(alias);
+    return this.availableFor(name, alias).then(decls =>
+      Computable.forAll(
+        decls.map(decl =>
+          Computable.forAll(
+            decl.values.map(value =>
+              isNameValue(value) ? at.substituteName(value.value, stack).then((substituted): IValue => ({ ...value, value: substituted })) : Computable.resolve(value)
+            ),
+            (...values: IValue[]): IPropertyDecl => ({ ...decl, values })
+          )
+        ),
+        (...substituted: IPropertyDecl[]) => substituted
+      )
+    );
   }
 
   public getWildcardProperties(overrides?: Constraints): Computable<{ key: Name; decl: IPropertyDecl }[]> {
@@ -669,6 +757,8 @@ export class AnonymousTargetContext extends TargetContext {
   private readonly inputs: SubTargetInputs;
   private readonly declared: DeclaredTargetContext;
   private readonly label: string | undefined;
+  /** The context of the target whose rule made this one. */
+  public readonly creator?: TargetContext;
 
   constructor(
     context: InternalBuildContext,
@@ -676,12 +766,14 @@ export class AnonymousTargetContext extends TargetContext {
     inputs: SubTargetInputs,
     declared: DeclaredTargetContext,
     label: string | undefined,
-    stack?: IDependencyStack
+    stack?: IDependencyStack,
+    creator?: TargetContext
   ) {
     super(context, targetDef, stack);
     this.inputs = inputs;
     this.declared = declared;
     this.label = label;
+    this.creator = creator;
     this.given = new Set(
       Object.values(inputs)
         .flatMap((value): unknown[] => (Array.isArray(value) ? value : [value]))
@@ -801,4 +893,79 @@ export class AnonymousTargetContext extends TargetContext {
       label: this.label,
     };
   }
+}
+
+/**
+ * The context of a target a rule's block declares (`rule js_package pkg<…> =
+ * lint { generate lint { … } }`). It reads its properties from its
+ * declaration, in a configuration of the block, where the block's own names
+ * and the rule's parameter are looked up first. To the rest of the framework it
+ * is a sub-target of the target the rule matched: named as that target is,
+ * owned by its declared target, and labelled by the name the block gives it.
+ */
+export class ScopedTargetContext extends DeclaredTargetContext {
+  constructor(
+    target: ITargetDecl,
+    targetDef: ITargetDefDecl,
+    context: InternalBuildContext,
+    stack: IDependencyStack | undefined,
+    /** The rule whose block declares the target, and the target it matched. */
+    public readonly scope: { readonly rule: RuleBlockDefinition; readonly matched: TargetContext }
+  ) {
+    super(target, targetDef, context, stack);
+  }
+
+  /** The matched target's name: what the target's rule builds is that target's. */
+  public get name(): string {
+    return this.scope.matched.name;
+  }
+
+  /** The name the block declares the target under, which it is labelled by. */
+  public get label(): string {
+    return this.declaredName;
+  }
+
+  public getDeclaredContext(): DeclaredTargetContext {
+    return this.scope.matched.getDeclaredContext();
+  }
+
+  public get scopedName(): string {
+    const { matched } = this.scope;
+    const owner = matched instanceof DeclaredTargetContext ? matched.scopedName : `${matched.name}/${matched.taskDescription().label ?? ""}`;
+    return `${owner}/${this.label}`;
+  }
+
+  public stampProvenance(result: FileSet): FileSet {
+    /* No own provenance step: the declared owner stamps the composed result. */
+    return result;
+  }
+
+  public failure(err: Error): DependencyFailedError {
+    return new DependencyFailedError(this.getDeclaredContext().target, err, this.label);
+  }
+
+  public taskDescription(): ITargetBuildTask {
+    return { ...this.getDeclaredContext().taskDescription(), constraints: this.context.getConstraints(), label: this.label };
+  }
+}
+
+/**
+ * List the rules written in `.fabr` that `context` is inside the application
+ * of: the rule whose block declares it, the one whose block declares the
+ * target that rule matched, and so on, through the targets rules' code made,
+ * up to a declared target.
+ */
+export function enclosingRules(context: TargetContext): RuleBlockDefinition[] {
+  const rules: RuleBlockDefinition[] = [];
+  for (let at: TargetContext | undefined = context; at !== undefined; ) {
+    if (at instanceof ScopedTargetContext) {
+      rules.push(at.scope.rule);
+      at = at.scope.matched;
+    } else if (at instanceof AnonymousTargetContext) {
+      at = at.creator;
+    } else {
+      at = undefined;
+    }
+  }
+  return rules;
 }

@@ -4134,3 +4134,182 @@ describe("declared rules and repositories", () => {
     expect(loaded).to.deep.equal(["@p/q:Repo"]);
   });
 });
+
+describe("rules written in .fabr", () => {
+  /* Makes a `lintable` of its own, as a rule's code makes a sub-target. */
+  registerRule("test_maker", {}, context => context.subTarget("lintable", { content: "made" }));
+
+  const DEFS =
+    "targetdef lintable { content = STRING; srcs = FILES; defs = MAP; }\n" +
+    "targetdef test_file { content = STRING; }\n" +
+    "targetdef test_holds { deps = PACKAGES; }\n" +
+    "targetdef test_good { deps = PACKAGES; }\n" +
+    "targetdef test_package { }\n" +
+    "targetdef test_map { defines = MAP; }\n" +
+    "targetdef test_maker { }\n" +
+    "default FLAVOR = plain;\n";
+
+  /** Make the model of `input`, with the targetdefs the tests use, failing on any error it reports. */
+  function modelOf(input: string): BuildModel {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", DEFS + input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+    return model;
+  }
+
+  /** @return what `name` materializes to, as one set of files. */
+  async function filesOf(model: BuildModel, name: string, constraints: Record<string, string> = {}): Promise<FileSet> {
+    const sources = await model.getConfig(Constraints.of(constraints), execution).materialize(writtenOnCommandLine(name));
+    return FileSet.unionAll(...(sources as FileSet[]));
+  }
+
+  /** @return the text of `file` in what `name` materializes to. */
+  async function textOf(model: BuildModel, name: string, file = "f.txt", constraints: Record<string, string> = {}): Promise<string | undefined> {
+    return (await filesOf(model, name, constraints)).getFile(file)?.readString();
+  }
+
+  /** @return the error materializing `name` fails with. */
+  async function failureOf(model: BuildModel, name: string): Promise<Error> {
+    return model
+      .getConfig(Constraints.of({}), execution)
+      .materialize(writtenOnCommandLine(name))
+      .then(
+        () => expect.fail(`expected ${name} to fail`),
+        (err: Error) => err
+      );
+  }
+
+  it("builds a target as the one sub-target of a short-form rule, reading the target's properties through the parameter", async () => {
+    const model = modelOf(
+      "rule lintable pkg = test_file report { content = ${pkg.content}; }\n" + "lintable a { content = hello; }\nlintable b { content = goodbye; }\n"
+    );
+    expect(await textOf(model, "a")).to.equal("hello");
+    expect(await textOf(model, "b")).to.equal("goodbye");
+  });
+
+  it("reads a bare parameter property in a STRING property as that property's values", async () => {
+    const model = modelOf("rule lintable pkg = test_file report { content = pkg.content; }\nlintable a { content = hello; }\n");
+    expect(await textOf(model, "a")).to.equal("hello");
+  });
+
+  it("looks a parameter property's values up as files where the target wrote them, beside the block's own values", async () => {
+    const model = modelOf(
+      "rule lintable pkg = held { test_holds held { deps = pkg.srcs extra; } }\n" +
+        "test_file one { content = 1; }\ntest_file extra { content = 2; }\n" +
+        "lintable a { srcs = one; }\n"
+    );
+    await filesOf(model, "a");
+    const texts = await Promise.all(heldDeps.map(files => files.getFile("f.txt")!.readString()));
+    expect(texts.sort()).to.deep.equal(["1", "2"]);
+  });
+
+  it("looks the block's own names up before the file's, and the target's values in the file's", async () => {
+    const defs = "test_file one { content = 1; }\ntest_file extra { content = global; }\nlintable a { srcs = one extra; }\n";
+    const local = modelOf("rule lintable pkg = held { test_holds held { deps = extra; } test_file extra { content = local; } }\n" + defs);
+    await filesOf(local, "a");
+    expect(await Promise.all(heldDeps.map(files => files.getFile("f.txt")!.readString()))).to.deep.equal(["local"]);
+    const target = modelOf("rule lintable pkg = held { test_holds held { deps = pkg.srcs; } test_file extra { content = local; } }\n" + defs);
+    await filesOf(target, "a");
+    const texts = await Promise.all(heldDeps.map(files => files.getFile("f.txt")!.readString()));
+    expect(texts.sort()).to.deep.equal(["1", "global"]);
+  });
+
+  it("chases a parameter property naming a map, as a map property naming another", async () => {
+    const model = modelOf("rule lintable pkg = m { test_map m { defines = pkg.defs; } }\nlintable a { defs = { x = 1; }; }\n");
+    await filesOf(model, "a");
+    expect(lastMap).to.deep.equal([["x", ["1"]]]);
+  });
+
+  it("makes the target the package its result builds, which is built under the target's name", async () => {
+    const model = modelOf("rule lintable pkg = built { test_package built { } }\nlintable a { }\ntest_good c { deps = a; }\n");
+    await filesOf(model, "c");
+    const delivered = lastDepSets[0] as PackageFileSet;
+    expect(delivered).to.be.instanceOf(PackageFileSet);
+    expect(delivered.packageName).to.equal("a");
+  });
+
+  it("builds the result under the target's name, and another where the result is renamed", async () => {
+    const model = modelOf("rule lintable pkg = built -> other { test_package built { } }\nlintable a { }\ntest_good c { deps = a; }\n");
+    await filesOf(model, "c");
+    expect((lastDepSets[0] as PackageFileSet).packageName).to.equal("other");
+  });
+
+  it("substitutes the bare parameter as the target's name, a rename on the result included", async () => {
+    const model = modelOf(
+      "rule lintable pkg = built -> ${pkg}-api { test_package built { } }\nlintable a { }\ntest_good c { deps = a; }\n"
+    );
+    await filesOf(model, "c");
+    expect((lastDepSets[0] as PackageFileSet).packageName).to.equal("a-api");
+  });
+
+  it("substitutes the bare parameter in a property as the target's name", async () => {
+    const model = modelOf("rule lintable pkg = test_file report { content = made-for-${pkg}; }\nlintable a { }\n");
+    expect(await textOf(model, "a")).to.equal("made-for-a");
+  });
+
+  it("makes the target the files its result selects", async () => {
+    const model = modelOf("rule lintable pkg = report:f.txt -> out.txt { test_file report { content = x; } }\nlintable a { }\n");
+    expect(await textOf(model, "a", "out.txt")).to.equal("x");
+  });
+
+  it("names the target itself, in another configuration, through the bare parameter", async () => {
+    const model = modelOf(
+      "rule lintable pkg<FLAVOR=lint> = held { test_holds held { deps = pkg<FLAVOR=plain>; } }\n" +
+        "rule lintable pkg<FLAVOR=plain> = test_file report { content = ${pkg.content}; }\n" +
+        "lintable a { content = hello; }\n"
+    );
+    await filesOf(model, "a", { FLAVOR: "lint" });
+    expect(await heldDeps[0].getFile("f.txt")!.readString()).to.equal("hello");
+  });
+
+  it("judges the target's guards in its own configuration and a sub-target's reference in the sub-target's", async () => {
+    const model = modelOf(
+      "rule lintable pkg<FLAVOR=lint> = held { test_holds held { deps = pkg.srcs; } }\n" +
+        "test_file one { content = 1; }\ntest_file two { content = 2; }\n" +
+        "lintable a { srcs<FLAVOR=lint> = one; srcs<FLAVOR=plain> = two; }\n"
+    );
+    await filesOf(model, "a", { FLAVOR: "lint" });
+    expect(await heldDeps[0].getFile("f.txt")!.readString()).to.equal("1");
+  });
+
+  it("applies a rule to a target a rule's code made, reading the property it was given", async () => {
+    const model = modelOf("rule lintable pkg = test_file report { content = ${pkg.content}; }\ntest_maker m { }\n");
+    expect(await textOf(model, "m")).to.equal("made");
+  });
+
+  /** @return the messages of `err` and the errors it wraps, outermost first. */
+  function messagesOf(err: unknown): string[] {
+    const messages: string[] = [];
+    for (let at = err; at instanceof Error; at = at instanceof DependencyFailedError || at instanceof ReferenceFailedError ? at.cause : undefined) {
+      messages.push(at.message);
+    }
+    return messages;
+  }
+
+  it("refuses a rule applied inside its own application", async () => {
+    const model = modelOf("rule lintable pkg = inner { lintable inner { content = ${pkg.content}; } }\nlintable a { content = x; }\n");
+    expect(messagesOf(await failureOf(model, "a")).join("\n")).to.contain("'rule lintable pkg' is applied inside its own application");
+  });
+
+  it("refuses two rules applied inside each other's application", async () => {
+    const model = modelOf(
+      "targetdef other { content = STRING; }\n" +
+        "rule lintable pkg = inner { other inner { content = ${pkg.content}; } }\n" +
+        "rule other o = back { lintable back { content = ${o.content}; } }\n" +
+        "lintable a { content = x; }\n"
+    );
+    expect(messagesOf(await failureOf(model, "a")).join("\n")).to.contain("'rule lintable pkg' is applied inside its own application");
+  });
+
+  it("refuses a parameter property the rule's type does not declare", () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    toBuildModel(
+      [parseBuildString(EMPTY_FILESET, "TEST.fabr", DEFS + "rule lintable pkg = test_file r { content = pkg.nope; }\n", logger)],
+      logger,
+      testContributions
+    );
+    expect(errors.join("\n")).to.contain("'pkg.nope' reads a property 'lintable' does not declare");
+  });
+});

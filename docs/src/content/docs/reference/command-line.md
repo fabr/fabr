@@ -18,12 +18,13 @@ can be piped or redirected on its own.
 |---|---|
 | [`build`](#build) | Build targets. |
 | [`test`](#test) | Build and run targets' tests. |
+| [An operation's name](#an-operations-name) | Build targets under an operation a rule declares, such as `lint`. |
 | [`run`](#run) | Build a program and run it. |
 | [`ls`](#ls), [`cat`](#cat), [`cp`](#cp) | List, print or copy the files a target produces. |
 | [`deps`](#deps) | Print the dependency tree of targets or packages. |
 | [`shell`](#shell) | Open a shell in the directory a build step runs in, for debugging. |
 | [`sync`](#sync) | Publish packages. |
-| [`list-targets`](#list-targets), [`list-targetdefs`](#list-targetdefs), [`list-properties`](#list-properties), [`list-all`](#list-all) | Describe the project and what a build file can contain. |
+| [`list-targets`](#list-targets), [`list-targetdefs`](#list-targetdefs), [`list-operations`](#list-operations), [`list-properties`](#list-properties), [`list-all`](#list-all) | Describe the project and what a build file can contain. |
 
 ### Leaving the command out
 
@@ -75,6 +76,25 @@ new and changed snapshots are written back into your source tree after a passing
 file is named as it is written. With `--coverage`, the tests are measured for code coverage: a
 summary is printed and an lcov report written to `coverage/lcov.info`, or to `<dir>/lcov.info`
 with `--coverage=<dir>`; the directory is relative to the current directory. For JavaScript, see [Testing](/reference/js/testing/).
+
+### An operation's name
+
+A rule can give a target type an operation of its own, such as `lint` (see
+[Writing your own rules](/guides/rules/#a-rule-for-another-operation)). The operation's name is
+then a command that builds targets under it:
+
+```sh
+fabr lint app lib
+fabr lint -w app
+```
+
+`fabr lint app` builds `app` as `fabr build 'app<BUILD_OPERATION=lint>'` does, and takes the same
+options as `build`. Any operation a rule's guard names (`<BUILD_OPERATION=lint>`) can be given this
+way, and `fabr list-operations` lists them. A word no rule names as an operation
+is read as a target name, as before.
+
+An operation's name is a command even where the project also declares a target of that name, as
+`build` and `test` are: write `fabr build lint` to build the target, or put it after `--`.
 
 ### `run`
 
@@ -276,6 +296,18 @@ fabr list-targetdefs js_package
 ```
 
 `-l` adds where each is declared, and `--json` gives the output as JSON.
+
+### `list-operations`
+
+Lists every operation the project's rules declare, the standard ones included, with the target
+types that have a rule for each, in the order they are declared. `--json` gives the output as JSON.
+
+```
+build  generate, patched, sync, fabr_plugin, js_package, js_bundle, js_compile, sass_compile, css_postcss
+lint   js_package
+run    script, serve, fabr_plugin, js_package, js_script
+test   js_package, js_test
+```
 
 ### `list-properties`
 

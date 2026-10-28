@@ -65,6 +65,7 @@ export default defineConfig({
             { label: "Projects with several packages", link: "/guides/multi-package/" },
             { label: "Watch mode & dev servers", link: "/guides/watch/" },
             { label: "Continuous integration", link: "/guides/ci/" },
+            { label: "Writing your own rules", link: "/guides/rules/" },
           ],
         },
         {

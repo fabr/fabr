@@ -194,7 +194,7 @@ export class DeclaredResolvedTarget extends ResolvedTarget {
       .join(", ");
     return new DeclaredResolvedTarget(build, {
       content: {
-        key: `built ${context.name} ${configuration}`,
+        key: `built ${context.scopedName} ${configuration}`,
         files: () => build.built(plain),
         builds: context.name,
         configuration: shown,
@@ -224,3 +224,4 @@ export class DeclaredResolvedTarget extends ResolvedTarget {
     return new DeclaredResolvedTarget(this.build, { ...this.fields(), ...changes });
   }
 }
+

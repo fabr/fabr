@@ -139,6 +139,16 @@ export interface InternalBuildContext extends BuildContext {
   getContextWithOverrides(overrides?: Constraints): InternalBuildContext;
 
   /**
+   * Get the configuration of exactly `constraints` in which the same names are
+   * looked up as in this one: a rule's block's own names in a configuration
+   * of its block, the file's elsewhere.
+   */
+  inConfiguration(constraints: Constraints): InternalBuildContext;
+
+  /** Substitute every `${NAME}` and command in `name`, as a value's are. */
+  substituteName(name: Name, stack?: IDependencyStack): Computable<Name>;
+
+  /**
    * Get the declarations of a property that apply in this configuration: those
    * whose guard admits it, taken from the ordinary declarations if any of them
    * apply, else from the `default` ones. Empty means the property is unwritten

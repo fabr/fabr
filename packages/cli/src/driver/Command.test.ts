@@ -36,7 +36,11 @@ class ExitSignal extends Error {}
  * the error/usage paths (which call process.exit) are testable in-process.
  * `operationsOf` additionally finishes a command-less line ({@link
  * completeCommandLine}), whose own usage errors exit the same way. */
-function capture(args: string[], operationsOf?: (target: string) => string[]): { exit?: number; out: string[]; err: string[] } {
+function capture(
+  args: string[],
+  operationsOf?: (target: string) => string[],
+  declared?: ReadonlySet<string>
+): { exit?: number; out: string[]; err: string[] } {
   const out: string[] = [];
   const err: string[] = [];
   const origExit = process.exit;
@@ -52,7 +56,7 @@ function capture(args: string[], operationsOf?: (target: string) => string[]): {
   try {
     const options = parseCommandLine(["node", "fabr", ...args]);
     if (operationsOf) {
-      completeCommandLine(options, operationsOf);
+      completeCommandLine(options, operationsOf, declared);
     }
   } catch (e) {
     if (!(e instanceof ExitSignal)) {
@@ -392,6 +396,40 @@ describe("Command", () => {
       const { exit, err } = capture(["lib", "-l"], operationsOf);
       expect(exit).to.equal(1);
       expect(err[0]).to.match(/Option '-l' is not valid without a command/);
+    });
+
+    describe("an operation a rule declares", () => {
+      const declared = new Set(["lint"]);
+      function planWith(...args: string[]): ReturnType<typeof completeCommandLine> {
+        return completeCommandLine(parseCommandLine(["node", "fabr", ...args]), operationsOf, declared);
+      }
+
+      it("is a command building every target after it under the operation", () => {
+        expect(planWith("lint", "lib", "suite")).to.deep.equal({ build: [], test: [], operation: { name: "lint", targets: ["lib", "suite"] } });
+      });
+
+      it("takes the options build takes", () => {
+        const options = parseCommandLine(["node", "fabr", "lint", "-w", "lib"]);
+        completeCommandLine(options, operationsOf, declared);
+        expect(options.mode).to.equal(Mode.Watch);
+        expect(options.targets).to.deep.equal(["lib"]);
+      });
+
+      it("is a command over a target of the same name, which `--` reaches", () => {
+        const operations = new Map([...OPERATIONS, ["lint", ["build"]]]);
+        const options = parseCommandLine(["node", "fabr", "--", "lint"]);
+        expect(completeCommandLine(options, name => operations.get(name) ?? [], declared)).to.deep.equal({ build: ["lint"], test: [] });
+      });
+
+      it("is read as a target name where no rule declares it", () => {
+        expect(planWith("lib", "lint")).to.deep.equal({ build: ["lib", "lint"], test: [] });
+      });
+
+      it("requires a target", () => {
+        const { exit, err } = capture(["lint"], operationsOf, declared);
+        expect(exit).to.equal(1);
+        expect(err[0]).to.match(/The 'lint' command requires a target/);
+      });
     });
 
     it("watches a run alongside other targets (they are independent chains)", () => {

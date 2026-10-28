@@ -23,13 +23,17 @@ import {
   declPosn,
   hasMapValue,
   IMapItemDecl,
+  INameValue,
   IPropertyDecl,
   isCommandValue,
   isMapValue,
   isNameValue,
   IValue,
+  IRuleBlock,
+  IRuleDecl,
   ITargetDecl,
   ITargetDefDecl,
+  parameterProperty,
   PropertyType,
 } from "./AST";
 import { Diagnostic, ISourcePosition, Log, LogLevel } from "../support/Log";
@@ -52,6 +56,16 @@ const DIAG_DUPLICATE_PROPERTY = new Diagnostic<ITargetPropertyError>(
 const DIAG_MISSING_PROPERTY = new Diagnostic<ITargetPropertyError>(
   LogLevel.Error,
   "Missing required property '{property}' in {type} target '{target}'"
+);
+const DIAG_UNKNOWN_TARGET_TYPE = Diagnostic.Error<{ type: string; loc: ISourcePosition }>("Unknown target type '{type}'");
+const DIAG_RULE_LOCAL_DUPLICATE = Diagnostic.Error<{ name: string; loc: ISourcePosition }>(
+  "'{name}' is declared twice in this rule's block"
+);
+const DIAG_RULE_LOCAL_PARAMETER = Diagnostic.Error<{ name: string; loc: ISourcePosition }>(
+  "'{name}' is the rule's parameter, so the block cannot declare it"
+);
+const DIAG_RULE_PARAMETER_PROPERTY = Diagnostic.Error<{ param: string; property: string; type: string; loc: ISourcePosition }>(
+  "'{param}.{property}' reads a property '{type}' does not declare"
 );
 const DIAG_INVALID_REWRITE = new Diagnostic<{ detail: string; loc: ISourcePosition }>(
   LogLevel.Error,
@@ -329,4 +343,76 @@ function validateRenameValue(prop: IPropertyDecl, value: IValue, type: PropertyT
     return fail("a REWRITE selector cannot carry constraints");
   }
   return true;
+}
+
+/**
+ * Check a rule's block: each target against its targetdef (`targetDefOf`), each
+ * property structurally, each name declared once (a property may be written
+ * again under another guard) and none the parameter's, and, where the rule has
+ * a type, each `<param>.<property>` it reads against the type's targetdef.
+ *
+ * @return true if validation succeeds, otherwise false (and errors are written to the log).
+ */
+export function validateRuleBlock(
+  rule: IRuleDecl,
+  block: IRuleBlock,
+  targetDefOf: (type: string) => ITargetDefDecl | undefined,
+  log: Log
+): boolean {
+  let isValid = true;
+  const fail = (): void => {
+    isValid = false;
+  };
+  const kinds = new Map<string, DeclKind>();
+  const declare = (name: string, kind: DeclKind, loc: ISourcePosition): void => {
+    if (name === rule.param) {
+      log.log(DIAG_RULE_LOCAL_PARAMETER, { name, loc });
+      fail();
+    } else if (kinds.has(name) && (kind === DeclKind.Target || kinds.get(name) === DeclKind.Target)) {
+      log.log(DIAG_RULE_LOCAL_DUPLICATE, { name, loc });
+      fail();
+    }
+    kinds.set(name, kind);
+  };
+  for (const target of block.targets) {
+    declare(declName(target), DeclKind.Target, declPosn(target));
+    const targetDef = targetDefOf(target.type);
+    if (targetDef === undefined) {
+      log.log(DIAG_UNKNOWN_TARGET_TYPE, { type: target.type, loc: { ...target.source, offset: target.typeOffset } });
+      fail();
+    } else if (!validateTarget(target, targetDef, log)) {
+      fail();
+    }
+  }
+  for (const prop of block.properties) {
+    declare(declName(prop), DeclKind.Property, declPosn(prop));
+    if (!validateProperty(prop, log)) {
+      fail();
+    }
+  }
+  const schema = rule.type === undefined ? undefined : targetDefOf(rule.type);
+  if (schema !== undefined) {
+    const values = [block.result, ...[...block.properties, ...block.targets.flatMap(target => target.properties)].flatMap(writtenNames)];
+    for (const value of values) {
+      const property = parameterProperty(value.value, rule.param);
+      if (property !== undefined && !schema.properties.has(property) && !schema.properties.has("*")) {
+        log.log(DIAG_RULE_PARAMETER_PROPERTY, { param: rule.param, property, type: rule.type!, loc: declPosn(value) });
+        fail();
+      }
+    }
+  }
+  return isValid;
+}
+
+/** @return the names written as `prop`'s values: its plain values, and each command stage's command and arguments. */
+function writtenNames(prop: IPropertyDecl): INameValue[] {
+  return prop.values.flatMap((value): INameValue[] => {
+    if (isNameValue(value)) {
+      return [value];
+    }
+    if (isCommandValue(value)) {
+      return value.pipeline.flatMap(stage => [stage.command, ...stage.args]);
+    }
+    return [];
+  });
 }

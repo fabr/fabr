@@ -229,6 +229,8 @@ export function runFabr(options: Options): Promise<void> {
       return runWith(options, (model, execution) => listDeclaredTargets(model, options, execution));
     case "list-targetdefs":
       return runWith(options, model => listTargetDefs(model, options));
+    case "list-operations":
+      return runWith(options, model => listOperations(model, options));
     case "list-properties":
       return runWith(options, model => listProperties(model, options));
     case "list-all":
@@ -266,17 +268,18 @@ class Supervisors {
   }
 }
 
-/** Run `fabr build <targets>`: the core operation; the marker rides cycle-end. */
+/** Run `fabr build <targets>`, or build them under another `operation` (`fabr lint <targets>`): the core operation; the marker rides cycle-end. */
 function runBuild(
   model: BuildModel,
   options: Options,
   execution: ExecutionContext,
   site: IInvocationSite,
-  names: string[]
+  names: string[],
+  operation = "build"
 ): Computable<void> {
   markForced(model, options, execution, names);
   const refs = names.map(name => options.commandLine.refFor(name, site));
-  return buildOperation(configFor(model, options, execution, "build"), refs).then(() => undefined);
+  return buildOperation(configFor(model, options, execution, operation), refs).then(() => undefined);
 }
 
 /** Run `fabr test <targets>`: the core operation, with the summaries and
@@ -441,8 +444,11 @@ function runInferred(
   watch: boolean,
   supervisors: Supervisors
 ): Computable<void | Takeover> {
-  const plan = completeCommandLine(options, name => operationsOf(model, name));
+  const plan = completeCommandLine(options, name => operationsOf(model, name), declaredOperations(model));
   const groups: Computable<void>[] = [];
+  if (plan.operation !== undefined) {
+    groups.push(runBuild(model, options, execution, site, plan.operation.targets, plan.operation.name));
+  }
   if (plan.build.length > 0) {
     groups.push(runBuild(model, options, execution, site, plan.build));
   }
@@ -463,6 +469,17 @@ function runInferred(
    * prints before the launch — the command-less form is build-flavoured, and
    * a one-line summary ahead of the program is its status report.) */
   return Computable.forAll(groups, () => undefined).then(program);
+}
+
+/**
+ * @return the operations a rule declares that a command can name: each a rule's
+ * guard names literally, other than those the commands already are (`build`,
+ * `test`, `run`) and `files`, which `ls`, `cat` and `cp` read under.
+ */
+function declaredOperations(model: BuildModel): Set<string> {
+  const builtIn = new Set(["build", "test", "run", FILES_OPERATION]);
+  const declared = model.getTargetDefs().flatMap(def => model.getOperations(def.name));
+  return new Set(declared.filter(operation => !builtIn.has(operation) && !/[*?[\]{}!]/.test(operation)));
 }
 
 /** @return the operations the named target's type supports, or none at all if
@@ -1213,6 +1230,30 @@ function listTargetDefs(model: BuildModel, options: Options): Computable<void> {
       console.log(`  ${name.padEnd(width)}  ${type}${fallback}`);
     }
   });
+  return Computable.resolve(undefined);
+}
+
+/**
+ * `fabr list-operations`: print each operation a rule names, with the target
+ * types it has rules for, in name order. A model query — it builds nothing.
+ * `--json` emits `{ operations: [{ name, types }] }`.
+ */
+function listOperations(model: BuildModel, options: Options): Computable<void> {
+  const types = new Map<string, string[]>();
+  for (const def of model.getTargetDefs()) {
+    for (const operation of model.getOperations(def.name).filter(operation => operation !== "*")) {
+      types.set(operation, [...(types.get(operation) ?? []), def.name]);
+    }
+  }
+  const operations = [...types.keys()].sort().map(name => ({ name, types: types.get(name)! }));
+  if (options.json) {
+    console.log(JSON.stringify({ operations }, undefined, 2));
+    return Computable.resolve(undefined);
+  }
+  const width = Math.max(0, ...operations.map(({ name }) => name.length));
+  for (const { name, types } of operations) {
+    console.log(`${name.padEnd(width)}  ${types.join(", ")}`);
+  }
   return Computable.resolve(undefined);
 }
 

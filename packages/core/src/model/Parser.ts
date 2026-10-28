@@ -28,6 +28,7 @@ import {
   IMapItemDecl,
   IPluginDecl,
   IRepositoryDecl,
+  IRuleBlock,
   IRuleDecl,
   IPropertyDecl,
   ICommandStage,
@@ -461,6 +462,12 @@ const DIAG_INVALID_IMPLEMENTATION = new Diagnostic<{ loc: ISourcePosition }>(
   LogLevel.Error,
   "An implementation names an entry of a package, as 'package:entry' (no glob patterns or variables)"
 );
+/** The declarations a rule's block cannot hold, by their keyword. */
+const RULE_BLOCK_REFUSED = new Set(["include", "plugin", "rule", "targetdef", "default", "repository"]);
+const DIAG_RULE_BLOCK_DECL =new Diagnostic<{ keyword: string; loc: ISourcePosition }>(
+  LogLevel.Error,
+  "A rule's block declares only targets and properties, not '{keyword}'"
+);
 const DIAG_INVALID_PLUGIN = new Diagnostic<{ loc: ISourcePosition }>(
   LogLevel.Error,
   "A plugin is named by a reference, with no glob patterns, variables or rename"
@@ -683,7 +690,9 @@ export class BuildParser {
     try {
       this.nextToken();
       const name = this.token;
-      if (name.type !== TokenType.IDENTIFIER) {
+      /* A property name, or a property of one (`pkg.version`, a rule's parameter's). */
+      const parts = name.type === TokenType.SIMPLE_NAME ? name.text.split(".") : [];
+      if (name.type !== TokenType.IDENTIFIER && !(name.type === TokenType.SIMPLE_NAME && parts.length === 2 && parts.every(isIdentifier))) {
         this.unexpectedTokenError("a property name");
       }
       this.nextToken();
@@ -2151,7 +2160,7 @@ export class BuildParser {
   }
 
   /**
-   * RuleBody ::= NAME RuleGuard? '=' NAME ';'
+   * RuleBody ::= NAME RuleGuard? '=' RuleImplementation
    *              ^
    * RuleGuard ::= '<' RuleGuardKey '=' NAME ( ',' RuleGuardKey '=' NAME )* '>'
    * RuleGuardKey ::= NAME | <param> '.' NAME
@@ -2181,8 +2190,85 @@ export class BuildParser {
       }
     }
     this.consumeToken(TokenType.EQUALS);
-    const implementation = this.parseImplementation();
+    const implementation = this.parseRuleImplementation();
     return { kind: DeclKind.Rule, source: this.source, offset, type, param: param.text, properties, targetProperties, implementation };
+  }
+
+  /**
+   * RuleImplementation ::= NAME ';'                          a package entry
+   *                      | NAME NAME '{' PropertyList '}'      one target, the result
+   *                      | Reference '{' RuleBlockBody '}'    the result, and the block
+   *                        ^
+   *
+   * The forms are told apart by what follows the first token: a `;`, a second
+   * name, or a `{` after the reference.
+   */
+  private parseRuleImplementation(): INameValue | IRuleBlock {
+    const first = this.token;
+    if (first.type !== TokenType.IDENTIFIER && first.type !== TokenType.SIMPLE_NAME && first.type !== TokenType.NAME) {
+      this.unexpectedTokenError("a package entry, a target declaration or a reference");
+    }
+    this.nextToken();
+    if (first.type === TokenType.IDENTIFIER && (this.token.type === TokenType.IDENTIFIER || this.token.type === TokenType.SIMPLE_NAME)) {
+      const target = this.parseTargetDecl(first.text, first.start);
+      return { result: this.syntheticResult(target), targets: [target], properties: [] };
+    }
+    const value = this.parseRefSuffix(this.tokenToName(first));
+    const result: INameValue = { kind: DeclKind.NameValue, source: this.source, offset: first.start, endOffset: this.prevTokenEnd, value };
+    if (this.token.type === TokenType.LBRACE) {
+      return { result, ...this.parseRuleBlockBody() };
+    }
+    if (value.hasVarSubst() || value.hasGlob() || !value.hasLevelSeparator() || value.hasConstraints() || value.getRenameTo() !== undefined) {
+      this.log.log(DIAG_INVALID_IMPLEMENTATION, { loc: { ...this.source, offset: first.start } });
+      throw new FabrError(PARSE_ERROR);
+    }
+    this.consumeToken(TokenType.SEMI);
+    return result;
+  }
+
+  /** Make the result of a short-form rule: the name of its one target, written where the name is. */
+  private syntheticResult(target: ITargetDecl): INameValue {
+    return { kind: DeclKind.NameValue, source: this.source, offset: target.offset, endOffset: target.endOffset ?? target.offset, value: target.name };
+  }
+
+  /**
+   * RuleBlockBody ::= '{' ( TargetDecl | PropertyDecl | GuardBlock )* '}'
+   *                   ^
+   */
+  private parseRuleBlockBody(): { targets: ITargetDecl[]; properties: IPropertyDecl[] } {
+    const targets: ITargetDecl[] = [];
+    const properties: IPropertyDecl[] = [];
+    this.consumeToken(TokenType.LBRACE);
+    while (this.token.type !== TokenType.RBRACE && this.token.type !== TokenType.EOF) {
+      try {
+        const token = this.token;
+        if (token.type === TokenType.LANGLE) {
+          properties.push(...this.parseGuardBlock());
+        } else if (token.type === TokenType.IDENTIFIER) {
+          const doc = token.docComment;
+          const next = this.nextToken();
+          if (next.type === TokenType.EQUALS || next.type === TokenType.LANGLE) {
+            properties.push(this.parsePropertyDecl(this.finishPropertyKey(Name.fromLiteral(token.text)), token.start, doc));
+          } else if (RULE_BLOCK_REFUSED.has(token.text)) {
+            this.log.log(DIAG_RULE_BLOCK_DECL, { keyword: token.text, loc: { ...this.source, offset: token.start } });
+            throw new FabrError(PARSE_ERROR);
+          } else if (next.type === TokenType.IDENTIFIER || next.type === TokenType.SIMPLE_NAME) {
+            targets.push(this.parseTargetDecl(token.text, token.start, doc));
+          } else {
+            this.unexpectedTokenError("'=' or a target name");
+          }
+        } else {
+          this.unexpectedTokenError("a target or property declaration, or '}'");
+        }
+      } catch (error) {
+        if (!(error instanceof Error) || error.message !== PARSE_ERROR) {
+          throw error;
+        }
+        this.recoverInBody();
+      }
+    }
+    this.consumeToken(TokenType.RBRACE);
+    return { targets, properties };
   }
 
   /**
@@ -2408,7 +2494,7 @@ export class BuildParser {
    * TargetDefDecl ::= 'targetdef' NAME '{' PropertyTypeList '}'
    * DefaultDecl ::= 'default' ( PropertyDecl | TargetDecl | 'rule' RuleBody )
    * RuleDecl ::= 'rule' NAME RuleBody
-   * RuleBody ::= NAME RuleGuard? '=' NAME ';'
+   * RuleBody ::= NAME RuleGuard? '=' RuleImplementation
    * RepositoryDecl ::= 'repository' NAME '=' NAME ';'
    */
 

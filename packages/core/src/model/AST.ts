@@ -224,12 +224,44 @@ export interface IPluginDecl extends IBaseDecl {
 }
 
 /**
+ * A rule's implementation written in `.fabr`: `= <result> { <declarations> }`.
+ * The target the rule matches is what `result` names, looked up among the
+ * block's own targets and properties before the file's. The short form
+ * `= <type> <name> { … }` is the block holding that one target, its result
+ * the target's name.
+ */
+export interface IRuleBlock {
+  /** The reference saying what the target is. */
+  result: INameValue;
+  /** The sub-targets the block declares. */
+  targets: ITargetDecl[];
+  /** The properties the block declares. */
+  properties: IPropertyDecl[];
+}
+
+/**
+ * Get the property of a rule's parameter `param` that a name in its block
+ * reads: `srcs` for `pkg.srcs` or `pkg.srcs:**`. @return undefined where the
+ * name's first part is not `<param>.<property>`.
+ */
+export function parameterProperty(name: Name | string, param: string): string | undefined {
+  const first = (typeof name === "string" ? name : name.getLiteralPathPrefix()).split(/[:/]/)[0];
+  return first.startsWith(param + ".") && first.length > param.length + 1 ? first.substring(param.length + 1) : undefined;
+}
+
+/** @return true if `implementation` is written in `.fabr`, otherwise false. */
+export function isRuleBlock(implementation: INameValue | IRuleBlock): implementation is IRuleBlock {
+  return "result" in implementation;
+}
+
+/**
  * A `rule` declaration: `rule <type> <param><guards> = <implementation>;`, or
  * `default rule <param><guards> = …;` for a rule of every type. The guards are
  * those on the configuration (`BUILD_OPERATION=build`) and those on the
  * target's own properties, written through the parameter
  * (`pkg.test_framework=jest`). The implementation is a reference to an entry
- * of a package (`@fabr-build/js:rules/BuildJSPackage`).
+ * of a package (`@fabr-build/js:rules/BuildJSPackage`), or a block
+ * ({@link IRuleBlock}).
  */
 export interface IRuleDecl extends IBaseDecl {
   kind: DeclKind.Rule;
@@ -241,7 +273,7 @@ export interface IRuleDecl extends IBaseDecl {
   properties: NameConstraint[];
   /** The guard on the target's own properties: property name → pattern. */
   targetProperties: NameConstraint[];
-  implementation: INameValue;
+  implementation: INameValue | IRuleBlock;
 }
 
 /** A `repository` declaration: `repository <type> = <implementation>;`. */

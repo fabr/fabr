@@ -106,6 +106,12 @@ const COMMAND_SPECS: CommandSpec[] = [
     accepts: ["-l", "--json"],
   },
   {
+    name: "list-operations",
+    synopsis: "[--json]",
+    summary: "List the operations the project's rules declare, and the target types of each",
+    accepts: ["--json"],
+  },
+  {
     name: "list-properties",
     synopsis: "[-l] [--json]",
     summary: "List the global configuration properties and flags",
@@ -181,12 +187,15 @@ export interface Options {
  * What a command-less invocation resolves to once the model can say what each
  * named target supports: the targets to build and to test (in the order
  * written), and at most one to run — being interactive, it is necessarily last
- * and takes the rest of the command line as its argv.
+ * and takes the rest of the command line as its argv. Where the first word is
+ * an operation a rule declares (`fabr lint app`), the targets are built under
+ * that operation instead.
  */
 export interface CommandPlan {
   build: string[];
   test: string[];
   run?: { target: string; args: string[] };
+  operation?: { name: string; targets: string[] };
 }
 
 /** Write the usage text to the given sink — stdout for an explicit `-h`/`--help`
@@ -205,7 +214,9 @@ function printUsage(write: (message: string) => void = console.log): void {
     "Usage: fabr [command] [options] <targets>\n" +
       "With no command, each target takes the operation its type supports — build, else\n" +
       "test, else run — and a target that only runs takes the rest of the line as its own\n" +
-      "arguments. A target named like a command is reached by giving the command first.\n\n" +
+      "arguments. A target named like a command is reached by giving the command first.\n" +
+      "A project's rules may declare further operations, each a command of its own\n" +
+      "(`fabr lint app`): 'fabr list-operations' lists them.\n\n" +
       "Commands:\n" +
       commandLines +
       "\n\nOptions:\n" +
@@ -412,19 +423,31 @@ export function parseCommandLine(args: string[]): Options {
  * everything after it is the program's own argv, so an inferred run cannot be
  * followed by more fabr arguments. Options found in the tail apply as they
  * would anywhere else; only those every inferable command accepts are allowed.
+ * Where the first word is one of `operations`, the operations a rule declares,
+ * it is the command, and every positional after it a target built under it.
  *
  * Mutates `options` (it is the same parse, resumed) and returns the plan.
  */
-export function completeCommandLine(options: Options, operationsOf: (target: string) => string[]): CommandPlan {
+export function completeCommandLine(
+  options: Options,
+  operationsOf: (target: string) => string[],
+  operations: ReadonlySet<string> = new Set()
+): CommandPlan {
   const deferred = options.deferred ?? [];
   const plan: CommandPlan = { build: [], test: [] };
   const seenFlags: SeenFlag[] = [];
   let noMoreOptions = false;
+  /* An operation a rule declares is a command, as `build` is, over a target of the same name. */
+  const operation = deferred.length > 0 && operations.has(deferred[0]) ? { name: deferred[0], targets: [] as string[] } : undefined;
   for (const [index, arg] of deferred.entries()) {
-    if (!noMoreOptions && arg === "--") {
+    if (operation !== undefined && index === 0) {
+      plan.operation = operation;
+    } else if (!noMoreOptions && arg === "--") {
       noMoreOptions = true;
     } else if (!noMoreOptions && arg[0] === "-") {
       applyOption(arg, options, seenFlags);
+    } else if (operation !== undefined) {
+      operation.targets.push(arg);
     } else {
       const operation = preferredOperation(operationsOf(arg)) ?? "build";
       if (operation === "run") {
@@ -442,8 +465,11 @@ export function completeCommandLine(options: Options, operationsOf: (target: str
       usageError(`Option '${raw}' is not valid without a command`);
     }
   }
+  if (operation !== undefined && operation.targets.length === 0) {
+    usageError(`The '${operation.name}' command requires a target`);
+  }
   checkFlagsCoherent(options);
-  options.targets = [...plan.build, ...plan.test, ...(plan.run ? [plan.run.target] : [])];
+  options.targets = [...plan.build, ...plan.test, ...(plan.run ? [plan.run.target] : []), ...(operation?.targets ?? [])];
   options.runArgs = plan.run?.args;
   return plan;
 }

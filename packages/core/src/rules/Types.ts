@@ -22,6 +22,7 @@ import type { BuildAction } from "../core/BuildAction";
 import { FileSource } from "../core/FileSet";
 import { Name } from "../core/Name";
 import { Repository } from "../core/Repository";
+import type { IRuleBlock, IRuleDecl } from "../model/AST";
 import {
   CommandValue,
   MaterializedRequirements,
@@ -102,6 +103,22 @@ export type RepositoryProvider = (context: TargetContext) => Computable<Reposito
  * equally specific ones being an error.
  */
 export interface RuleDefinition extends SelectableRule, RuleImplementation {}
+
+/**
+ * A rule written in `.fabr` (`rule <type> <param><guards> = <result> { … }`):
+ * the target it matches is what its block's result reference names, the
+ * block's targets and properties looked up before the file's, and
+ * `<param>.<property>` reading the matched target's property.
+ */
+export interface RuleBlockDefinition extends SelectableRule {
+  /** The declaration, whose implementation is the block. */
+  readonly decl: IRuleDecl & { implementation: IRuleBlock };
+}
+
+/** @return true if `rule` is written in `.fabr`, otherwise false. */
+export function isRuleBlockDefinition(rule: RuleDefinition | RuleBlockDefinition): rule is RuleBlockDefinition {
+  return "decl" in rule;
+}
 
 /**
  * A rule as selection reads it: the type it builds and its guards. A rule

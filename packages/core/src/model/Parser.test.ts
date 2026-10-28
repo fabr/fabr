@@ -27,10 +27,12 @@ import {
   IResolvableDecl,
   IMapItemDecl,
   IPropertyDecl,
+  IRuleBlock,
   ITargetDecl,
   isCommandValue,
   isMapValue,
   isNameValue,
+  isRuleBlock,
   IValue,
   PropertyType,
 } from "./AST";
@@ -1484,7 +1486,8 @@ describe("Parser Tests", () => {
       expect(rule.param).to.equal("pkg");
       expect(guard(rule.properties)).to.deep.equal(["BUILD_OPERATION=test"]);
       expect(guard(rule.targetProperties)).to.deep.equal(["test_framework=jest"]);
-      expect(rule.implementation.value.toString()).to.equal("@fabr-build/js:rules/TestJSPackage");
+      const { implementation } = rule;
+      expect(isRuleBlock(implementation) ? undefined : implementation.value.toString()).to.equal("@fabr-build/js:rules/TestJSPackage");
     });
 
     it("parses a rule with no guard, and a default rule of every type", () => {
@@ -1520,6 +1523,43 @@ describe("Parser Tests", () => {
     it("refuses an implementation that names no entry of a package", () => {
       expect(parseInvalid("rule t x = rules/R;").join("\n")).to.contain("An implementation names an entry of a package");
       expect(parseInvalid("rule t x = @p/q:rules/*;").join("\n")).to.contain("An implementation names an entry of a package");
+    });
+
+    /** @return the block a rule's implementation is, failing the test where it is a package entry. */
+    function blockOf(text: string): IRuleBlock {
+      const { implementation } = parseValid(text).rules[0];
+      if (!isRuleBlock(implementation)) {
+        throw new Error("expected a block");
+      }
+      return implementation;
+    }
+
+    it("parses a short-form rule as a block of its one target, the result its name", () => {
+      const block = blockOf("rule js_package pkg<BUILD_OPERATION=lint> = generate lint {\n  srcs = pkg.srcs;\n  run = eslint > lint.txt;\n}");
+      expect(block.result.value.toString()).to.equal("lint");
+      expect(block.targets.map(target => [target.type, target.name.toString(), target.properties.map(prop => prop.name.toString())])).to.deep.equal([
+        ["generate", "lint", ["srcs", "run"]],
+      ]);
+      expect(block.properties).to.deep.equal([]);
+    });
+
+    it("parses a long-form rule's result, targets and properties, guards included", () => {
+      const block = blockOf(
+        "rule war_package pkg = contents:**<BUILD_TYPE=release> {\n  jar_package classes { srcs = pkg.srcs; }\n  contents = classes:**;\n  <TARGET=*-linux-*> { extra = a; }\n}"
+      );
+      expect(block.result.value.toString()).to.equal("contents:**<BUILD_TYPE=release>");
+      expect(block.targets.map(target => target.name.toString())).to.deep.equal(["classes"]);
+      expect(block.properties.map(prop => prop.name.toString())).to.deep.equal(["contents", "extra<TARGET=*-linux-*>"]);
+    });
+
+    it("parses a result requiring a configuration", () => {
+      const block = blockOf("rule t x = tool<BUILD_OPERATION=run> { script tool { entry = a.sh; } }");
+      expect(block.result.value.getConstraints().map(([key, value]) => `${key}=${value.toString()}`)).to.deep.equal(["BUILD_OPERATION=run"]);
+    });
+
+    it("refuses a declaration a rule's block cannot hold", () => {
+      expect(parseInvalid("rule t x = y { include ./a.fabr; }").join("\n")).to.contain("A rule's block declares only targets and properties, not 'include'");
+      expect(parseInvalid("rule t x = y { default z = 1; }").join("\n")).to.contain("not 'default'");
     });
   });
 

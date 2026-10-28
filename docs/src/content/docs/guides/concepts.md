@@ -177,8 +177,8 @@ A rule is what does the building. Each rule applies to one target type and one *
 `build`, `test` or `run`. The command you give chooses the operation, so `fabr test mylib` and
 `fabr build mylib` apply different rules to the same target.
 
-Rules are written in TypeScript and ship with fabr's core and its plugins; a build file can't
-define one. When a target type has several rules for an operation, the one that matches the
+The standard rules ship with fabr's core and its plugins, written in TypeScript, and a project can
+write its own in its `.fabr` files (see [Writing your own rules](/guides/rules/)). When a target type has several rules for an operation, the one that matches the
 current settings and the target's own properties most specifically is used. That is how, for example, a `js_package` with
 `test_framework = jest` is tested differently from one with `vitest`.
 

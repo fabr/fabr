@@ -25,7 +25,9 @@ import {
   IPluginDecl,
   IPropertyDecl,
   IRepositoryDecl,
+  IRuleBlock,
   IRuleDecl,
+  isRuleBlock,
   ITargetDecl,
   ITargetDefDecl,
   PropertyType,
@@ -39,7 +41,14 @@ import { BUILD_OPERATION, Constraints } from "./Constraints";
 import { ExecutionContext } from "./ExecutionContext";
 import { Name } from "../core/Name";
 import { parseName } from "./Parser";
-import { RuleDefinition, PluginContribution, RepositoryProvider, SelectableRule, RuleImplementation } from "../rules/Types";
+import {
+  RuleBlockDefinition,
+  RuleDefinition,
+  PluginContribution,
+  RepositoryProvider,
+  SelectableRule,
+  RuleImplementation,
+} from "../rules/Types";
 import { FabrError, MultiError, toError } from "../core/Errors";
 import { compareText } from "../support/Functional";
 import { Computable } from "../core/Computable";
@@ -47,6 +56,7 @@ import { NameConstraint } from "../core/Name";
 import { Diagnostic, ErrorTrackingLog, ISourcePosition, Log } from "../support/Log";
 import { BuildFilesInvalidError, DependencyFailedError, ReferenceFailedError } from "./Errors";
 import { checkPluginFile, implementationLoader, PluginPackage } from "./Plugin";
+import { validateRuleBlock } from "./Validate";
 
 const DIAG_RULE_UNKNOWN_TYPE = Diagnostic.Error<{ type: string; loc: ISourcePosition }>("A rule for unknown target type '{type}'");
 const DIAG_RULE_TARGET_PROPERTY = Diagnostic.Error<{ type: string; key: string; loc: ISourcePosition }>(
@@ -85,11 +95,17 @@ export class DeclaredRule implements SelectableRule {
     this.targetProperties = guardRecord(decl.targetProperties);
   }
 
-  /** @return the rule, its implementation loaded. */
-  public definition(): Computable<RuleDefinition> {
-    this.loaded ??= loadedImplementation(this.load, this.decl.implementation, "rule").then(implementation => {
+  /** @return the rule, its implementation loaded; a rule written in `.fabr` loads nothing. */
+  public definition(): Computable<RuleDefinition | RuleBlockDefinition> {
+    const { decl } = this;
+    if (isRuleBlock(decl.implementation)) {
+      const selectable = { type: this.type, properties: this.properties, targetProperties: this.targetProperties };
+      return Computable.resolve({ ...selectable, decl: decl as IRuleDecl & { implementation: IRuleBlock } });
+    }
+    const entry = decl.implementation;
+    this.loaded ??= loadedImplementation(this.load, entry, "rule").then(implementation => {
       if (typeof implementation !== "object" || implementation === null || typeof (implementation as RuleImplementation).evaluate !== "function") {
-        throw new FabrError(`'${this.decl.implementation.value.toString()}' is not a rule implementation (no evaluate)`);
+        throw new FabrError(`'${entry.value.toString()}' is not a rule implementation (no evaluate)`);
       }
       const { requirements, value, evaluate } = implementation as RuleImplementation;
       return { type: this.type, properties: this.properties, targetProperties: this.targetProperties, requirements, value, evaluate };
@@ -325,6 +341,9 @@ export class ModelBuilder implements BuildModel {
     }
     for (const rule of this.declaredRules) {
       const { decl } = rule;
+      if (isRuleBlock(decl.implementation)) {
+        validateRuleBlock(decl, decl.implementation, type => this.root.getTargetDef(type), this.log);
+      }
       if (decl.type === undefined) {
         continue;
       }
@@ -381,7 +400,7 @@ export class ModelBuilder implements BuildModel {
     return this.defaultRules;
   }
 
-  public getRuleDefinition(rule: SelectableRule): Computable<RuleDefinition> {
+  public getRuleDefinition(rule: SelectableRule): Computable<RuleDefinition | RuleBlockDefinition> {
     return rule instanceof DeclaredRule ? rule.definition() : Computable.resolve(rule as RuleDefinition);
   }
 
