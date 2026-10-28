@@ -174,4 +174,6 @@ The [command-line reference](/reference/command-line/) has the rest.
   such as a Spring Boot jar.
 - [Targets and configuration](/reference/java/targets/): every Java target and setting.
 - [Projects with several packages](/guides/multi-package/): targets that depend on each other.
+- [A Spring Boot server with a React front end](/examples/spring-boot-react/): a worked example
+  combining a Java server and a TypeScript front end in one project.
 - [Known limitations](/known-limitations/): rough edges worth knowing about up front.

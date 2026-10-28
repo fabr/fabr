@@ -824,9 +824,9 @@ export function rewriteManifest(
 }
 
 /**
- * Rewrite one dependency block's co-member entries to the members' assigned
- * versions. A `peerDependencies` entry pins **exact**: a peer is singleton-by-
- * identity (a `provided_deps` peer), so the consumer must supply the EXACT
+ * Rewrite one dependency block's co-member entries, by the package each names
+ * (its key, or the package an alias names), to the members' assigned versions.
+ * A `peerDependencies` entry pins **exact**: a peer is singleton-by-identity (a `provided_deps` peer), so the consumer must supply the EXACT
  * co-member instance the package was built against, not merely a semver-compatible
  * one — a range can't express "the same loaded module". Every other field takes a
  * caret range.
@@ -839,11 +839,12 @@ function rewriteCoMemberField(
   /* Entries fabr doesn't rewrite are passed through as published, whatever they
    * are — this rewrites a manifest, it doesn't validate one. */
   const rewritten: Record<string, unknown> = { ...deps };
-  for (const dep of Object.keys(rewritten)) {
-    const member = members.get(dep);
+  for (const [dep, spec] of Object.entries(rewritten)) {
+    /* The package an entry names: its key, or the package an alias names. */
+    const member = typeof spec === "string" ? members.get(dependencyRequirement(dep, spec).name) : undefined;
     if (member !== undefined) {
       const range = exact ? member.version : `^${member.version}`;
-      rewritten[dep] = member.name === dep ? range : `npm:${member.name}@${range}`;
+      rewritten[dep] = requirementSpec({ name: member.name, versionConstraint: range, renameTo: dep }).spec;
     }
   }
   return rewritten;
@@ -855,8 +856,8 @@ function rewriteCoMemberField(
 export function memberDependencies(manifest: Record<string, unknown>, memberNames: ReadonlyMap<string, string>): string[] {
   const names = new Set<string>();
   for (const field of DEPENDENCY_FIELDS) {
-    for (const dep of dependencyBlock(manifest[field]).keys()) {
-      const published = memberNames.get(dep);
+    for (const [dep, spec] of dependencyBlock(manifest[field])) {
+      const published = memberNames.get(dependencyRequirement(dep, spec).name);
       if (published !== undefined) {
         names.add(published);
       }
@@ -867,7 +868,8 @@ export function memberDependencies(manifest: Record<string, unknown>, memberName
 
 /**
  * List the install-relevant dependencies of a rewritten manifest that remain
- * unresolvable — a `*` constraint after co-member rewriting. A
+ * unresolvable — a `*` constraint after co-member rewriting, as the entry's own or
+ * an alias's. A
  * built-but-versionless dep declares `*` (its version exists only at publish);
  * if the sync doesn't publish it (or publishes it at several versions, so no
  * single rewrite exists), the `*` survives to here — and a published package
@@ -877,8 +879,9 @@ export function memberDependencies(manifest: Record<string, unknown>, memberName
 export function unresolvableDependencies(manifest: Record<string, unknown>): string[] {
   const names: string[] = [];
   for (const field of INSTALLED_DEPENDENCY_FIELDS) {
-    for (const [dep, constraint] of dependencyBlock(manifest[field])) {
-      if (constraint === "*") {
+    for (const [dep, spec] of dependencyBlock(manifest[field])) {
+      /* `*`, or an alias to a package at `*` (`npm:@acme/core@*`). */
+      if (dependencyRequirement(dep, spec).versionConstraint === "*") {
         names.push(dep);
       }
     }

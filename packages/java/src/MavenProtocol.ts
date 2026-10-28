@@ -129,7 +129,7 @@ export function parseMavenPublishCoordinate(name: Name): { name: string; version
 
 export const MAVEN_FORMAT: PackageFormat<MavenVersion, MavenConstraint> = {
   ...MAVEN_VERSIONS,
-  resolutionTag: "maven:resolve:2",
+  resolutionTag: "maven:resolve:3",
   splitReference: splitMavenReference,
   validateRequirement: validateMavenRequirement,
   parsePublishCoordinate: parseMavenPublishCoordinate,

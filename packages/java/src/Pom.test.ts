@@ -136,15 +136,9 @@ describe("effectivePom", () => {
     ]);
   });
 
-  it("passes on compile and runtime jars, optional and provided ones as optional, and not test or classified ones", async () => {
+  it("passes on compile and runtime jars, and not optional, provided, test or classified ones", async () => {
     const pom = await effective("com.example:databind:1.5");
-    expect(passedOnDependencies(pom).map(({ dependency, optional }) => `${dependency.artifactId}${optional ? " (optional)" : ""}`)).to.deep.equal([
-      "annotations",
-      "core",
-      "runtime-only",
-      "servlet (optional)",
-      "extra (optional)",
-    ]);
+    expect(passedOnDependencies(pom).map(dependency => dependency.artifactId)).to.deep.equal(["annotations", "core", "runtime-only"]);
   });
 
   it("refuses a dependency that is left without a version", async () => {

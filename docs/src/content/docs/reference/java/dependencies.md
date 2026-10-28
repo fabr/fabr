@@ -21,8 +21,9 @@ answer every time. This page covers declaring dependencies and how their version
 | `annotationProcessor`, `<annotationProcessorPaths>` | `processors`; see [Annotation processors](/reference/java/compiling/#annotation-processors). |
 | A BOM in `<dependencyManagement>` with `<scope>import</scope>` / `platform(…)` | The BOM in `deps`, `test_deps` or wherever its versions are used; see [BOMs](#boms). |
 | Nearest-wins conflict resolution | The highest version anything requires; see [How versions are chosen](#how-versions-are-chosen). |
-| `<exclusions>` | Not supported; see [Known issues](#known-issues). |
+| `<exclusions>` | See [Not currently supported](#not-currently-supported). |
 | `<repositories>`, `settings.xml` mirrors | A [`maven_repository`](#repositories), or `MAVEN_REPOSITORY_URL`. |
+| `<servers>` in `settings.xml` | The same file; see [Credentials](#credentials). |
 | `mvn dependency:tree` / `gradle dependencies` | `fabr deps <target>`. |
 
 ## Declaring a dependency
@@ -132,9 +133,8 @@ import. Of a POM's `<dependencies>`:
 
 | Declared in the POM | What fabr does with it |
 |---|---|
-| `compile` or `runtime` scope | A requirement of the package. |
-| `provided` scope, or `<optional>true</optional>` | Used where your build has the package anyway, at the version your build selects; never added on its own account. |
-| `test`, `system` scope | Ignored. |
+| `compile` or `runtime` scope | A requirement of the package. A `runtime` one is on your compile classpath too, where Gradle puts it only on the runtime classpath. |
+| `provided`, `test` or `system` scope, or `<optional>true</optional>` | Ignored, as Maven and Gradle ignore them. |
 | A dependency with a `<classifier>`, or of a type other than `jar` | Ignored. |
 
 `<exclusions>` and `<profiles>` are not read.
@@ -182,13 +182,50 @@ jar_package app {
 A package's own requirements are looked up in the repository it came from, so the repository must
 hold everything its packages require; a repository manager that proxies Central does.
 
-## Known issues
+### Credentials
+
+A repository that needs credentials gets them from your `~/.m2/settings.xml`, as Maven does. A
+`maven_repository` uses the `<server>` its `id` names, for reading and for
+[publishing](/reference/java/publishing/). Without an `id`, it uses the server named exactly as the
+repository is, `@corp`:
+
+```
+maven_repository @corp {
+  url = https://maven.corp.example.com/releases;
+  id = corp-releases;
+}
+```
+
+```xml
+<settings>
+  <servers>
+    <server>
+      <id>corp-releases</id>
+      <username>deploy</username>
+      <password>${env.CORP_MAVEN_PASSWORD}</password>
+    </server>
+  </servers>
+</settings>
+```
+
+For a mirror of Maven Central that needs credentials, declare `@mvn` yourself, which replaces the
+one fabr declares, with the mirror's URL and server:
+
+```
+maven_repository @mvn {
+  url = https://maven.corp.example.com/central;
+  id = corp-mirror;
+}
+```
+
+`${env.NAME}` reads an environment variable, as it does for Maven, which keeps the secret out of
+the file in CI. A server's `<configuration><httpHeaders>` are sent too, for a repository that reads
+a token from a header, such as GitLab's `Private-Token`. A password encrypted with Maven's master
+password can't be read; write it with `${env.NAME}` instead.
+
+## Not currently supported
 
 - `<exclusions>`, relocations and POM profiles are not read. A package that a dependency's POM
   requires can't be removed, only overridden with `!`.
-- A repository that needs credentials can't be used. Publishing is covered in
-  [Publishing](/reference/java/publishing/).
 - A reference can't name a classifier or type, such as `natives-linux` or a `test-jar`.
 - Timestamped `-SNAPSHOT` versions are not resolved.
-- A package whose POM declares a dependency as `provided` passes it on to whatever uses the
-  package as an optional requirement. Maven doesn't pass on `provided` dependencies at all.

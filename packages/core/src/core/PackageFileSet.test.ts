@@ -24,6 +24,17 @@ import { FileSet, IFile } from "./FileSet";
 import { assertSamePackageNode, flattenFileSetArray, PackageFileSet, PackageGraphBuilder, packageNodeSignature } from "./PackageFileSet";
 import { dependenciesOn } from "./Repository";
 
+describe("PackageFileSet metadata", () => {
+  it("keeps the metadata of the package it is made from, unless given its own", () => {
+    const metadata = new Map([["description", ["A library"]]]);
+    const pkg = new PackageFileSet(new Map([["a.txt", MemoryFile.from("a")]]), "lib", "1.0.0", [], undefined, undefined, metadata);
+    expect(pkg.withPackageName("alias").metadata).to.equal(metadata);
+    const builder = new PackageGraphBuilder();
+    expect(builder.node(pkg, "lib", "1.0.0").metadata).to.equal(metadata);
+    expect(new PackageFileSet(new Map(), "plain").metadata.size).to.equal(0);
+  });
+});
+
 describe("PackageGraphBuilder", () => {
   function files(tag: string): Map<string, IFile> {
     return new Map([["index.js", MemoryFile.from(`// ${tag}`)]]);

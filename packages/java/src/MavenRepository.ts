@@ -36,6 +36,7 @@ import {
   fetchDocument,
   fetchFile,
   FileSet,
+  HttpRequest,
   HttpResponse,
   IFile,
   MemoryCache,
@@ -63,6 +64,7 @@ import {
   VersionNotFoundError,
 } from "@fabr-build/core";
 import { MAVEN_FORMAT, mavenName, splitMavenName } from "./MavenProtocol";
+import { javaPluginContext } from "./MavenAuth";
 import { checksumFiles, mergedMetadata, metadataPath, packageMavenMember, repositoryPath } from "./MavenPublish";
 import { MavenConstraint, MavenVersion, MAVEN_VERSIONS } from "./MavenVersion";
 import { coordinateText, EffectivePom, effectivePom, parsePom, passedOnDependencies, PomCoordinate, RawPom } from "./Pom";
@@ -139,7 +141,9 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
 
   constructor(
     private readonly context: TargetContext,
-    private readonly url: string
+    private readonly url: string,
+    /** The id of the `settings.xml` server whose credentials it uses. */
+    private readonly serverId: string
   ) {}
 
   public get identity(): string {
@@ -203,7 +207,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     const { name, version } = artifact.destination;
     const { groupId, artifactId } = splitMavenName(name);
     const pomPath = repositoryPath(groupId, artifactId, version, `${artifactId}-${version}.pom`);
-    return sendRequest(`${this.url}/${pomPath}`, { method: "GET" }).then(existing => {
+    return this.request(pomPath, { method: "GET" }).then(existing => {
       if (existing.statusCode === 200) {
         return Computable.resolve<PublishStatus>("already-synced");
       }
@@ -223,7 +227,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
   /** Bring a package's `maven-metadata.xml` up to date with a version just uploaded. */
   private updateMetadata(groupId: string, artifactId: string, version: string): Computable<void> {
     const path = metadataPath(groupId, artifactId);
-    return sendRequest(`${this.url}/${path}`, { method: "GET" }).then(response => {
+    return this.request(path, { method: "GET" }).then(response => {
       if (response.statusCode !== 200 && response.statusCode !== 404) {
         throw this.failure("reading", path, response);
       }
@@ -238,11 +242,23 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
 
   /** `PUT` `bytes` at `path` in the repository. */
   private put(path: string, bytes: Buffer): Computable<void> {
-    return sendRequest(`${this.url}/${path}`, { method: "PUT", headers: { "content-type": "application/octet-stream" }, body: bytes }).then(response => {
+    return this.request(path, { method: "PUT", headers: { "content-type": "application/octet-stream" }, body: bytes }).then(response => {
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw this.failure("uploading", path, response);
       }
     });
+  }
+
+  /** Make a request to `path` in the repository, with its credentials. */
+  private request(path: string, request: HttpRequest): Computable<HttpResponse> {
+    return this.headers().then(headers => sendRequest(`${this.url}/${path}`, { ...request, headers: { ...headers, ...request.headers } }));
+  }
+
+  /** Get the headers each request to this repository is sent with: its server's credentials from `settings.xml`. */
+  private headers(): Computable<Record<string, string>> {
+    return javaPluginContext(this.context.execution)
+      .mavenAuth()
+      .then(auth => auth.headersFor(this.serverId));
   }
 
   private failure(doing: string, path: string, response: HttpResponse): FabrError {
@@ -256,17 +272,15 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
   }
 
   /**
-   * Get the requirements of a package: what its effective POM passes on, its
-   * optional and provided-scope dependencies as optional provided
-   * requirements; and, for a BOM (a `pom`-packaged package), the jars its
-   * `dependencyManagement` manages, as its BOM dependencies.
+   * Get the requirements of a package: what its effective POM passes on; and,
+   * for a BOM (a `pom`-packaged package), the jars its `dependencyManagement`
+   * manages, as its BOM dependencies.
    */
   public getRequirements(name: string, version: MavenVersion): Computable<Requirement[]> {
     return this.effectivePomOf(name, version.text).then(pom => [
-      ...passedOnDependencies(pom).map(({ dependency, optional }) => ({
+      ...passedOnDependencies(pom).map(dependency => ({
         name: mavenName(dependency.groupId, dependency.artifactId),
         versionConstraint: dependency.version,
-        ...(optional ? { provided: "optional" as const } : {}),
       })),
       ...bomDependencies(pom),
     ]);
@@ -308,9 +322,10 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
           report: { resource: "artifact", role: "content" },
           name: file,
           source: () =>
-            sha1().then(expected => ({
+            Computable.forAll([sha1(), this.headers()], (expected, headers) => ({
               url: artifactUrl,
               expected: expected === undefined ? undefined : { algorithm: "sha1", encoding: "hex" as const, value: expected },
+              headers,
             })),
         }).then(files => new PackageFileSet(files, name, version.text));
       if (pom.packaging !== "pom") {
@@ -344,7 +359,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
         key: `${this.identity} ${coordinateText(coordinate)} ${classifier}`,
         tag: "maven:classified:1",
         report: { resource: `${classifier} jar`, role: "content" },
-        source: () => Computable.resolve({ url, expected: { algorithm: "sha1", encoding: "hex" as const, value: sha1 } }),
+        source: () => this.headers().then(headers => ({ url, expected: { algorithm: "sha1", encoding: "hex" as const, value: sha1 }, headers })),
         keep: files => files.remap(entry => (entry === CLASSIFIED_MANIFEST ? undefined : entry)),
       });
     });
@@ -393,6 +408,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
         tag: "maven:pom:1",
         report: { resource: "POM", role: "index" },
         convert: text => parsePom(text, url),
+        headers: () => this.headers(),
       })
     );
   }
@@ -406,6 +422,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
       tag: "maven:sha1:1",
       report: { resource: "checksum", role: "index" },
       convert: text => toSha1(text, url),
+      headers: () => this.headers(),
     });
   }
 
@@ -420,6 +437,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
         tag: "maven:metadata:1",
         report: { resource: "version list", role: "index" },
         convert: text => toMetadataVersions(text, url),
+        headers: () => this.headers(),
         options: { immutable: false },
       }).then(listed =>
         listed?.flatMap(text => {
@@ -435,7 +453,10 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
 }
 
 function createRepository(context: TargetContext): Computable<Repository> {
-  return context.getRequiredString("url").then(url => new MavenRepository(context, url.replace(/\/+$/, "")));
+  return Computable.forAll(
+    [context.getRequiredString("url"), context.getProperty("id")],
+    (url, id) => new MavenRepository(context, url.replace(/\/+$/, ""), id?.toString() ?? context.name)
+  );
 }
 
 export const mavenRepositoryRegistration: RepositoryRegistration = { type: "maven_repository", provider: createRepository };

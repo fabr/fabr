@@ -8,8 +8,8 @@ is under active development. This page lists the places where its present behavi
 of what it intends, with a workaround for each. Limits of a particular feature are documented with
 that feature: see [Testing](/reference/js/testing/),
 [Stylesheets](/reference/js/stylesheets/#what-isnt-supported) and
-[TypeScript compilation](/reference/js/typescript/) for JavaScript, and the Known issues sections
-of the [Java reference](/reference/java/dependencies/#known-issues) pages.
+[TypeScript compilation](/reference/js/typescript/) for JavaScript, and the "Not currently supported"
+sections of the [Java reference](/reference/java/dependencies/#not-currently-supported) pages.
 
 | Limitation | Effect |
 |---|---|

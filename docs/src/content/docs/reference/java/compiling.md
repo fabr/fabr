@@ -16,20 +16,26 @@ you choose, against the jars its dependencies resolve to. This page covers what 
 | `<annotationProcessorPaths>` / `annotationProcessor` | [`processors`](#annotation-processors). |
 | `module-info.java` with the module path | Recognised, as Gradle does it; see [Modules](#modules). |
 | `project.build.sourceEncoding` | Always UTF-8. |
-| `<compilerArgs>` / `options.compilerArgs` | Not supported; see [Known issues](#known-issues). |
+| `-parameters` in `<compilerArgs>` / `options.compilerArgs` | On by default; see [Parameter names](#parameter-names). |
+| Other `<compilerArgs>` / `options.compilerArgs` | See [Not currently supported](#not-currently-supported). |
 
 ## What the compiler is given
 
 For every compile fabr runs:
 
 ```sh
-javac --release <N> -encoding UTF-8 -proc:none -implicit:none \
+javac --release <N> -encoding UTF-8 -proc:none -implicit:none -g -parameters \
       -d classes -classpath <the jars> <the sources>
 ```
 
 with `-processorpath <the processors>` in place of `-proc:none` where the target has
-[annotation processors](#annotation-processors), and `--module-path` where it is a
-[module](#modules). Only `.java` files may be among the sources; anything else is the error
+[annotation processors](#annotation-processors), `--module-path` where it is a
+[module](#modules). `-parameters` is left out with the [`java/no_parameters` flag](#parameter-names).
+
+`-g` records all of javac's debug information, local variable names included, as Maven and
+Gradle record it. A `release` build (`BUILD_TYPE=release`) is given `-g:source,lines` instead:
+file names and line numbers, for stack traces, without the local variable names a debugger
+shows. Only `.java` files may be among the sources; anything else is the error
 `java_compile compiles .java sources only, and was given …`. Put other files in `resources`.
 
 The classpath is the jars of the target's dependencies and everything they require, nearest
@@ -61,6 +67,21 @@ jar_package compat {
 
 A flag later than `JVM_TARGET` is an error, since the classes couldn't run:
 `the sources are written for Java 21, which a JVM_TARGET of jvm17 cannot run`.
+
+## Parameter names
+
+The compiled classes record their methods' parameter names, as `javac -parameters` makes them, for
+code that reads them by reflection, such as Spring binding a request parameter to a method
+parameter of the same name. Maven and Gradle leave this off unless a project, or Spring Boot's
+plugin, turns it on. A target that has the `java/no_parameters` flag in its `deps` leaves the names
+out:
+
+```
+jar_package app {
+  srcs = src/main/java:**/*.java;
+  deps = java/no_parameters;
+}
+```
 
 ## The JDK
 
@@ -119,8 +140,7 @@ without a `module-info.java` puts every jar on the classpath.
 `fabr run` runs a modular program on the module path too; see
 [Running programs](/reference/java/running/#modules).
 
-## Known issues
+## Not currently supported
 
-- There is no way to pass further options to `javac`: `-parameters` (which Spring uses to bind
-  parameters by name), `-Xlint`, `-Werror`, `-g` for local variable names in the debugger.
+- There is no way to pass further options to `javac`, such as `-Xlint` or `-Werror`.
 - The source encoding is always UTF-8.

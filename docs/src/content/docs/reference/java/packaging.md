@@ -80,6 +80,12 @@ unless you set it, for the release the jar is compiled for, against the same cla
 or module path, as the compile. Its warnings, such as `warning: no comment`, are shown with the
 step; an error in a doc comment fails it, as it fails `javadoc`.
 
+The javadoc covers the sources the jar's annotation processors generate too, such as AutoValue's
+`AutoValue_Point`. What Lombok adds is missing: Lombok changes the classes as they are compiled
+rather than writing sources, and `javadoc` reads sources. That is so in Maven and Gradle too, where
+a project documents Lombok code by running Lombok's `delombok` command first and giving `javadoc`
+its output.
+
 A `javadoc` target generates javadoc for any Java sources, against the packages its `deps` name.
 Javadoc documents the `.java` files among its `srcs` and reads the rest as it would from a source
 directory: a package's `package.html`, an `overview.html`, and a `doc-files` directory, which it
@@ -230,8 +236,6 @@ The jar has no `BOOT-INF/classpath.idx`, which Spring Boot's own plugins write t
 the jars on the classpath, and no `layers.idx` for layered container images.
 [Writing your own rules](/guides/rules/) explains the rule's parts.
 
-## Known issues
+## Not currently supported
 
 - The javadoc doesn't link to the JDK's documentation or to the dependencies' javadoc.
-- `javadoc` runs no annotation processors, so what one generates, such as Lombok's methods and
-  constructors, is missing from the javadoc.

@@ -17,7 +17,7 @@ are among the target's `test_deps` find and run the tests.
 | `<scope>test</scope>` / `testImplementation` | `test_deps`. |
 | Surefire / `useJUnitPlatform()` | Built in: tests always run on the JUnit Platform. |
 | Surefire bundles the platform launcher | The launcher is one of your `test_deps`. |
-| `-Dtest=…` / `--tests …` | Not supported; see [Known issues](#known-issues). |
+| `-Dtest=…` / `--tests …` | See [Not currently supported](#not-currently-supported). |
 | Test reports under `target/surefire-reports` | A summary per target, and a [CTRF](https://ctrf.io) report. |
 
 ## Setting up
@@ -79,7 +79,7 @@ the kind of tests they are (add `junit-jupiter` for JUnit 5, `junit-vintage-engi
 or the engine and the launcher are of different JUnit releases; give both their versions from one
 BOM.
 
-## Known issues
+## Not currently supported
 
 - A run can't be limited to some of the tests, as `-Dtest=` or `--tests` does.
 - All of a target's tests run in one JVM, which can't be given arguments of its own.

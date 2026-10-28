@@ -35,6 +35,7 @@ import {
   defineRule,
   FabrError,
   FileSet,
+  Flag,
   IFile,
   MemoryFile,
   RuleResult,
@@ -66,6 +67,18 @@ export default defineRule({
   },
 });
 
+/**
+ * @return the javac option for the debug information a build of `buildType`
+ * records: everything (`-g`), but a `release` build only source files and
+ * line numbers, for stack traces, without local variable names.
+ */
+function debugInformation(buildType: string | undefined): string {
+  return buildType === "release" ? "-g:source,lines" : "-g";
+}
+
+/** The flag among `deps` that has the classes leave out their methods' parameter names, which they otherwise record. */
+const NO_PARAMETERS_FLAG = "java/no_parameters";
+
 /** Where the sources are staged. */
 const SOURCE_DIR = "src";
 /** Where the classpath's jars are staged. */
@@ -88,7 +101,9 @@ function compileJava(context: TargetContext, { srcs, deps }: { srcs: FileSet[]; 
   const jars = classpathOf(deps);
   const placed = placedJars(sources, jars);
   const processors = processorsOf(context).then(classpathOf);
-  return Computable.forAll([context.getGlobalString("JVM_TARGET"), context.getGlobalRunnable("JAVAC"), processors, placed], (jvmTarget, javac, processorPath, { modulePath, classpath }) => {
+  return Computable.forAll(
+    [context.getGlobalString("JVM_TARGET"), context.getGlobalRunnable("JAVAC"), context.getGlobalString("BUILD_TYPE"), processors, placed],
+    (jvmTarget, javac, buildType, processorPath, { modulePath, classpath }) => {
     const release = javaRelease(jvmTarget, deps);
     const pool = context.execution.buildCache;
     return pool.ensureTree(javac).then(() => {
@@ -99,6 +114,8 @@ function compileJava(context: TargetContext, { srcs, deps }: { srcs: FileSet[]; 
         "UTF-8",
         ...(processorPath.length === 0 ? ["-proc:none"] : pathOption("-processorpath", PROCESSOR_PATH_DIR, processorPath)),
         "-implicit:none",
+        debugInformation(buildType),
+        ...(deps.some(dep => dep instanceof Flag && dep.name === NO_PARAMETERS_FLAG) ? [] : ["-parameters"]),
         "-d",
         COMPILED_CLASSES_DIR,
         "-s",

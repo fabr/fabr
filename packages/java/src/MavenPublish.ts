@@ -36,6 +36,8 @@ import {
   IFile,
   isRepositoryReader,
   MemoryFile,
+  MetadataMap,
+  MetadataValue,
   PackageFileSet,
   PublishableFileSet,
   PublishMember,
@@ -44,6 +46,7 @@ import {
 } from "@fabr-build/core";
 import { MAVEN_FORMAT, splitMavenName } from "./MavenProtocol";
 import { MAVEN_VERSIONS } from "./MavenVersion";
+import { PomDependency } from "./Pom";
 import { parseXml, xmlChild, xmlChildren } from "./Xml";
 
 /** The artifact files a member can publish, by extension, and the packaging its POM names for each. */
@@ -59,16 +62,31 @@ const CHECKSUMS: ReadonlyArray<[string, string]> = [
   ["sha1", "sha1"],
 ];
 
-/** A dependency as a POM records it. */
-export interface PomDependency {
-  readonly groupId: string;
-  readonly artifactId: string;
-  readonly version: string;
-  /** `provided` where the consumer supplies it; absent for an ordinary one. */
-  readonly scope?: "provided";
-  /** True where the consumer may leave it out. */
-  readonly optional?: boolean;
-}
+/** POM elements the generator writes itself, which `metadata` cannot give. */
+const GENERATED_ELEMENTS = new Set(["modelVersion", "groupId", "artifactId", "version", "packaging", "dependencies", "dependencyManagement"]);
+
+/** POM elements that only mean something to a build, which a published POM does not carry. */
+const BUILD_ELEMENTS = new Set([
+  "parent",
+  "modules",
+  "properties",
+  "build",
+  "reporting",
+  "profiles",
+  "repositories",
+  "pluginRepositories",
+  "distributionManagement",
+]);
+
+/** POM elements that hold a list, with the name of each element in it. */
+const LIST_ELEMENTS = new Map([
+  ["licenses", "license"],
+  ["developers", "developer"],
+  ["contributors", "contributor"],
+  ["mailingLists", "mailingList"],
+  ["otherArchives", "otherArchive"],
+  ["roles", "role"],
+]);
 
 /** What a POM records about a package. */
 export interface Pom {
@@ -76,9 +94,11 @@ export interface Pom {
   readonly artifactId: string;
   readonly version: string;
   readonly packaging: string;
+  /** Further elements: the package's `metadata`. */
+  readonly metadata: MetadataMap;
   readonly dependencies: readonly PomDependency[];
-  /** BOMs whose versions the package's dependencies are managed by, imported into its `dependencyManagement`. */
-  readonly imports: readonly PomDependency[];
+  /** The BOMs the package's dependencies are managed by, each imported (`type` pom, `scope` import). */
+  readonly dependencyManagement: readonly PomDependency[];
 }
 
 /** @return the path of `file` in a Maven repository, within the version's directory of `groupId:artifactId:version`. */
@@ -96,17 +116,81 @@ function escaped(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-function dependencyXml({ groupId, artifactId, version, scope, optional }: PomDependency, indent: string, extra: string[] = []): string[] {
+function dependencyXml({ groupId, artifactId, version, type, classifier, scope, optional }: PomDependency, indent: string): string[] {
   return [
     `${indent}<dependency>`,
     `${indent}  <groupId>${escaped(groupId)}</groupId>`,
     `${indent}  <artifactId>${escaped(artifactId)}</artifactId>`,
-    `${indent}  <version>${escaped(version)}</version>`,
-    ...extra.map(line => `${indent}  ${line}`),
-    ...(scope === undefined ? [] : [`${indent}  <scope>${scope}</scope>`]),
+    ...(version === undefined ? [] : [`${indent}  <version>${escaped(version)}</version>`]),
+    ...(type === undefined || type === "jar" ? [] : [`${indent}  <type>${escaped(type)}</type>`]),
+    ...(classifier === undefined ? [] : [`${indent}  <classifier>${escaped(classifier)}</classifier>`]),
+    ...(scope === undefined || scope === "compile" ? [] : [`${indent}  <scope>${escaped(scope)}</scope>`]),
     ...(optional ? [`${indent}  <optional>true</optional>`] : []),
     `${indent}</dependency>`,
   ];
+}
+
+/**
+ * Check a package's `metadata` can be written into its POM: no element the
+ * generator writes, none only a build reads, and names XML takes. `failure`
+ * makes the error for a problem under one of its entries, by that entry's key.
+ */
+export function checkPomMetadata(
+  name: string,
+  metadata: MetadataMap,
+  failure: (key: string, message: string) => Error = (_key, message) => new FabrError(message)
+): void {
+  const check = (entry: string, map: MetadataMap): void => {
+    for (const [key, value] of map) {
+      if (!/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(key)) {
+        throw failure(entry, `${name}'s metadata key '${key}' is not a POM element name`);
+      }
+      if (isMapList(value)) {
+        if (!LIST_ELEMENTS.has(key)) {
+          throw failure(
+            entry,
+            `${name}'s metadata gives <${key}> several blocks, and only a list element (${[...LIST_ELEMENTS.keys()].join(", ")}) takes them`
+          );
+        }
+        value.forEach(item => check(entry, item));
+      } else if (!isStrings(value)) {
+        check(entry, value);
+      }
+    }
+  };
+  for (const [key, value] of metadata) {
+    if (GENERATED_ELEMENTS.has(key)) {
+      throw failure(key, `${name}'s metadata cannot set <${key}>: fabr writes it into the POM`);
+    }
+    if (BUILD_ELEMENTS.has(key)) {
+      throw failure(key, `${name}'s metadata cannot set <${key}>: a published POM does not carry it`);
+    }
+    check(key, new Map([[key, value]]));
+  }
+}
+
+function isStrings(value: MetadataValue): value is readonly string[] {
+  return Array.isArray(value) && value.every(entry => typeof entry === "string");
+}
+
+function isMapList(value: MetadataValue): value is readonly MetadataMap[] {
+  return Array.isArray(value) && !isStrings(value);
+}
+
+/** Write one `metadata` entry as POM elements, at `indent`. */
+function metadataXml(key: string, value: MetadataValue, indent: string): string[] {
+  const child = LIST_ELEMENTS.get(key);
+  if (child !== undefined) {
+    const items: string[] = isStrings(value)
+      ? value.flatMap(word => [`${indent}  <${child}>${escaped(word)}</${child}>`])
+      : (isMapList(value) ? value : [value as MetadataMap]).flatMap(item => mapXml(child, item, `${indent}  `));
+    return [`${indent}<${key}>`, ...items, `${indent}</${key}>`];
+  }
+  return isStrings(value) ? [`${indent}<${key}>${escaped(value.join(" "))}</${key}>`] : mapXml(key, value as MetadataMap, indent);
+}
+
+function mapXml(key: string, map: MetadataMap, indent: string): string[] {
+  return [`${indent}<${key}>`, ...[...map].flatMap(([each, value]) => metadataXml(each, value, `${indent}  `)), `${indent}</${key}>`];
 }
 
 /** Write `pom` as a `pom.xml`. */
@@ -119,12 +203,13 @@ export function pomText(pom: Pom): string {
     `  <artifactId>${escaped(pom.artifactId)}</artifactId>`,
     `  <version>${escaped(pom.version)}</version>`,
     ...(pom.packaging === "jar" ? [] : [`  <packaging>${escaped(pom.packaging)}</packaging>`]),
-    ...(pom.imports.length === 0
+    ...[...pom.metadata].flatMap(([key, value]) => metadataXml(key, value, "  ")),
+    ...(pom.dependencyManagement.length === 0
       ? []
       : [
           `  <dependencyManagement>`,
           `    <dependencies>`,
-          ...pom.imports.flatMap(bom => dependencyXml(bom, "      ", ["<type>pom</type>", "<scope>import</scope>"])),
+          ...pom.dependencyManagement.flatMap(managed => dependencyXml(managed, "      ")),
           `    </dependencies>`,
           `  </dependencyManagement>`,
         ]),
@@ -219,7 +304,8 @@ function pomDependencyOf(
       return {};
     }
     const provided = pkg.provided.get(dependencyName(dep));
-    const scope = provided === "expected" ? { scope: "provided" as const } : provided === "optional" ? { optional: true } : {};
+    const scope = provided === "expected" ? { scope: "provided" } : {};
+    const optional = provided === "optional";
     const { reference } = dep;
     if (reference instanceof RepositoryRef) {
       if (!isRepositoryReader(reference.source) || reference.source.format !== MAVEN_FORMAT) {
@@ -229,9 +315,10 @@ function pomDependencyOf(
         throw new FabrError(`cannot publish ${destination.toString()}: no version to record for '${reference.toString()}'`);
       }
       const { groupId, artifactId } = splitMavenName(declared.name);
-      const recorded: PomDependency = { groupId, artifactId, version: declared.versionConstraint, ...scope };
       const bound = dep.package;
-      return bound instanceof PackageFileSet && bound.isEmpty() ? { bom: recorded } : { dependency: recorded };
+      return bound instanceof PackageFileSet && bound.isEmpty()
+        ? { bom: { groupId, artifactId, version: declared.versionConstraint, type: "pom", scope: "import", optional: false } }
+        : { dependency: { groupId, artifactId, version: declared.versionConstraint, ...scope, optional } };
     }
     const assigned = coordinateOfTarget(targets, declared.name);
     if (assigned === undefined) {
@@ -240,7 +327,7 @@ function pomDependencyOf(
       ).withHelp(`publish '${declared.name}' in the same sync`);
     }
     const { groupId, artifactId } = splitMavenName(assigned.name);
-    return { dependency: { groupId, artifactId, version: assigned.version, ...scope } };
+    return { dependency: { groupId, artifactId, version: assigned.version, ...scope, optional } };
   });
 }
 
@@ -266,8 +353,12 @@ export function packageMavenMember(
   ).then(recorded =>
     file.getBuffer().then(bytes => {
       const dependencies = recorded.flatMap(each => (each.dependency === undefined ? [] : [each.dependency]));
-      const imports = recorded.flatMap(each => (each.bom === undefined ? [] : [each.bom]));
-      const pom = Buffer.from(pomText({ groupId, artifactId, version, packaging: ARTIFACT_PACKAGING.get(extension)!, dependencies, imports }));
+      const dependencyManagement = recorded.flatMap(each => (each.bom === undefined ? [] : [each.bom]));
+      const metadata = content instanceof PackageFileSet ? content.metadata : new Map<string, MetadataValue>();
+      checkPomMetadata(destination.toString(), metadata);
+      const pom = Buffer.from(
+        pomText({ groupId, artifactId, version, packaging: ARTIFACT_PACKAGING.get(extension)!, metadata, dependencies, dependencyManagement })
+      );
       const artifactPath = repositoryPath(groupId, artifactId, version, `${artifactId}-${version}.${extension}`);
       const pomPath = repositoryPath(groupId, artifactId, version, `${artifactId}-${version}.pom`);
       const files: Array<[string, IFile]> = [

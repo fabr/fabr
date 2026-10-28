@@ -70,6 +70,12 @@ export default defineConfig({
           ],
         },
         {
+          label: "Examples",
+          items: [
+            { label: "Spring Boot with a React front end", link: "/examples/spring-boot-react/" },
+          ],
+        },
+        {
           label: "Reference",
           items: [
             { label: "Command line", link: "/reference/command-line/" },

@@ -35,11 +35,13 @@ import {
   EMPTY_FILESET,
   FileSet,
   PackageFileSet,
+  mapEntryError,
   PropertyMap,
   Provided,
   RuleResult,
   TargetContext,
 } from "@fabr-build/core";
+import { checkPomMetadata } from "../MavenPublish";
 import { checkMainClass, compileOutputOf, COMPILED_CLASSES_DIR, createJarAction, MANIFEST_NAME, manifestFile, processorsOf } from "../JarPackage";
 
 interface JarInputs {
@@ -81,9 +83,18 @@ export default defineRule({
         requirements.packages("optional_provided"),
         context.getProperty("main_class"),
         context.getMap("manifest"),
+        context.getMap("metadata"),
       ],
-      (inputs, dependencies, provided, optional_provided, mainClass, manifest) =>
-        buildJar(context, inputs, { dependencies, provided, optional_provided }, manifestAttributesOf(context.name, mainClass?.toString(), manifest))
+      (inputs, dependencies, provided, optional_provided, mainClass, manifest, metadata) => {
+        checkPomMetadata(context.name, metadata, (key, message) => mapEntryError(metadata, key, message));
+        return buildJar(
+          context,
+          inputs,
+          { dependencies, provided, optional_provided },
+          manifestAttributesOf(context.name, mainClass?.toString(), manifest),
+          metadata
+        );
+      }
     );
   },
 });
@@ -93,8 +104,8 @@ export function jarNameOf(target: string): string {
   return `${path.posix.basename(target)}.jar`;
 }
 
-/** Make the target's package: `files`, requiring what `edges` lead to, the provided ones named so. */
-function packageOf(context: TargetContext, files: FileSet, edges: JarEdges): PackageFileSet {
+/** Make the target's package: `files`, requiring what `edges` lead to, the provided ones named so, with its `metadata`. */
+function packageOf(context: TargetContext, files: FileSet, edges: JarEdges, metadata: PropertyMap): PackageFileSet {
   return new PackageFileSet(
     files,
     context.name,
@@ -104,7 +115,8 @@ function packageOf(context: TargetContext, files: FileSet, edges: JarEdges): Pac
     new Map([
       ...edges.provided.map((dep): [string, Provided] => [dependencyName(dep), "expected"]),
       ...edges.optional_provided.map((dep): [string, Provided] => [dependencyName(dep), "optional"]),
-    ])
+    ]),
+    metadata
   );
 }
 
@@ -137,7 +149,13 @@ function manifestAttributesOf(name: string, mainClass: string | undefined, manif
   return { mainClass, written };
 }
 
-function buildJar(context: TargetContext, inputs: JarInputs, edges: JarEdges, attributes: JarAttributes): Computable<RuleResult> {
+function buildJar(
+  context: TargetContext,
+  inputs: JarInputs,
+  edges: JarEdges,
+  attributes: JarAttributes,
+  metadata: PropertyMap
+): Computable<RuleResult> {
   const { mainClass } = attributes;
   const { srcs, resources } = inputs;
   const sources = FileSet.unionAll(...srcs);
@@ -161,7 +179,7 @@ function buildJar(context: TargetContext, inputs: JarInputs, edges: JarEdges, at
       ...attributes.written,
     ]);
     const contents = FileSet.unionAll(compiled, ...resources, new FileSet(new Map([[MANIFEST_NAME, manifest]])));
-    return createJarAction(contents, jarNameOf(context.name)).withReshape(files => packageOf(context, files, edges));
+    return createJarAction(contents, jarNameOf(context.name)).withReshape(files => packageOf(context, files, edges, metadata));
     })
   );
 }

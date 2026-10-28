@@ -30,10 +30,10 @@ fabr sync release     # publish it
 | `mvn deploy` / `gradle publish` | `fabr sync <target>`. |
 | `<distributionManagement>` / `publishing { repositories { … } }` | A `maven_repository` the `sync` entries name. |
 | `groupId`, `artifactId` and `version` in the POM | The coordinate written in the `sync` entry: `@corp:<group>:<artifact>:<version>`. |
-| A hand-written POM | Generated, from the target's dependencies. |
+| A hand-written POM | Generated, from the target's dependencies and its `metadata`. |
 | `mvn deploy -DskipTests`, a dry run | `fabr build` on the `sync` target, then `fabr ls`, `cat` or `cp`. |
 | Modules deployed together | Several entries in one `sync`; dependencies between them get the right versions. |
-| Credentials in `settings.xml` | Not supported yet; see [Known issues](#known-issues). |
+| Credentials in `settings.xml` | The same file; see [Credentials](/reference/java/dependencies/#credentials). |
 
 ## What is uploaded
 
@@ -77,11 +77,35 @@ built in this project`. That holds when one entry is published alone, too:
 `fabr sync 'release:@corp:com.example:greeter:1.0.0'` records `greeter_api` at the coordinate the
 `sync` gives it.
 
-## Known issues
+### Project information
 
-- A repository that needs credentials can't be published to.
+A `jar_package`'s `metadata` gives the rest of the POM: what Maven Central and repository
+browsers show about the package. Each entry is a POM element. A string is its text, and a block
+holds its child elements. `licenses`, `developers`, `contributors`, `mailingLists`,
+`otherArchives` and `roles` are lists: give one block for each item, and `roles` its words.
+
+```
+jar_package greeter {
+  srcs = src/main/java:**/*.java;
+  metadata = {
+    name = Greeter;
+    description = "Says hello, politely";
+    url = https://example.com/greeter;
+    licenses = { name = Apache-2.0; url = https://www.apache.org/licenses/LICENSE-2.0; } { name = MIT; };
+    developers = { id = jsmith; name = Jo Smith; roles = lead developer; };
+    scm = { url = https://github.com/example/greeter; };
+  }
+}
+```
+
+Elements fabr writes itself (`modelVersion`, `groupId`, `artifactId`, `version`, `packaging`,
+`dependencies`, `dependencyManagement`) and those only a build reads (`parent`, `modules`,
+`properties`, `build`, `reporting`, `profiles`, `repositories`, `pluginRepositories`,
+`distributionManagement`) are errors in `metadata`.
+
+## Not currently supported
+
 - Publishing to Maven Central is not supported: Central takes uploads only through its Portal,
   and requires PGP signatures and sources and javadoc jars beside each artifact.
 - No `-sources.jar` or `-javadoc.jar` is published.
 - A `-SNAPSHOT` version can't be published.
-- The POM records no name, description, licence or other project information.

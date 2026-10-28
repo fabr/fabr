@@ -290,26 +290,17 @@ export function effectivePom(pom: RawPom, load: PomLoader, what: string, depth =
 /** The scopes a consumer's classpath takes from a dependency, at compile and at run time. */
 const CLASSPATH_SCOPES = new Set(["compile", "runtime"]);
 
-/** A dependency an artifact passes on to whatever uses it, and whether it is an optional provided one. */
-export interface PassedOnDependency {
-  readonly dependency: PomDependency;
-  readonly optional: boolean;
-}
-
 /**
- * @return the dependencies an artifact passes on to whatever uses it: its jars
- * with no classifier in compile or runtime scope, and, as optional provided
- * requirements, the ones it marks optional or puts in provided scope (which
- * Maven itself does not pass on), bound only to what the consumer already has.
+ * @return the dependencies an artifact passes on to whatever uses it, as Maven
+ * and Gradle read them: its jars with no classifier in compile or runtime scope,
+ * except the ones it marks optional.
  */
-export function passedOnDependencies(pom: EffectivePom): PassedOnDependency[] {
-  return pom.dependencies
-    .filter(dependency => (dependency.type ?? "jar") === "jar" && dependency.classifier === undefined)
-    .flatMap(dependency => {
-      const scope = dependency.scope ?? "compile";
-      if (scope === "provided") {
-        return [{ dependency, optional: true }];
-      }
-      return CLASSPATH_SCOPES.has(scope) ? [{ dependency, optional: dependency.optional }] : [];
-    });
+export function passedOnDependencies(pom: EffectivePom): PomDependency[] {
+  return pom.dependencies.filter(
+    dependency =>
+      (dependency.type ?? "jar") === "jar" &&
+      dependency.classifier === undefined &&
+      CLASSPATH_SCOPES.has(dependency.scope ?? "compile") &&
+      !dependency.optional
+  );
 }

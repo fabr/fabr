@@ -251,9 +251,8 @@ an npm alias, since that is the name the dependant's code imports. With
 `@npm:@acme/widgets:1.2.0 = widgets;` in the `sync`, a dependant built with `deps = widgets;`
 publishes `"widgets": "npm:@acme/widgets@^1.2.0"`.
 
-A sibling depended on under another name (`deps = @acme/core -> core;`) is written as an npm
-alias with the sibling's `version` property, `"core": "npm:@acme/core@1.4.0"`, whether or not the
-`sync` publishes it; see [Known issues](#known-issues).
+A sibling depended on under another name (`deps = @acme/core -> core;`) is required the same way,
+as an npm alias: `"core": "npm:@acme/core@^1.4.0"`.
 
 ### Versions
 
@@ -310,15 +309,6 @@ sync release {
 - **Lifecycle scripts** (`prepublishOnly`, `prepack`, `prepare`).
 - **Version bumping, changelogs and git tags.**
 - **Publishing a `js_bundle`.** A bundle isn't a package.
-
-## Known issues
-
-- **A renamed sibling doesn't get the version being published.** Where `@acme/widgets` has
-  `deps = @acme/core -> core;`, its published `package.json` requires `@acme/core` at the
-  `version` property of the `@acme/core` target, not at the version in the `sync` entry. Without
-  a `version` property it is published as `"core": "npm:@acme/core@*"`, and no error is reported.
-  Until this is fixed, give a renamed sibling a `version` property equal to the version it is
-  published as, or depend on it by its own name.
 
 ## Troubleshooting
 

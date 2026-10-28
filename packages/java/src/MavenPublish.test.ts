@@ -18,21 +18,22 @@
  */
 
 import { expect } from "chai";
-import { checksumFiles, mergedMetadata, metadataPath, pomText, repositoryPath } from "./MavenPublish";
+import { checkPomMetadata, checksumFiles, mergedMetadata, metadataPath, pomText, repositoryPath } from "./MavenPublish";
 
 describe("pomText", () => {
-  it("records the coordinate, the dependencies with their scope, and the BOMs as imports", () => {
+  it("records the coordinate, the dependencies with their scope, and the BOMs imported in dependencyManagement", () => {
     const pom = pomText({
       groupId: "com.example",
       artifactId: "app",
       version: "1.0.0",
       packaging: "jar",
+      metadata: new Map(),
       dependencies: [
-        { groupId: "org.slf4j", artifactId: "slf4j-api", version: "1.7.36" },
-        { groupId: "jakarta.servlet", artifactId: "jakarta.servlet-api", version: "6.0.0", scope: "provided" },
+        { groupId: "org.slf4j", artifactId: "slf4j-api", version: "1.7.36", optional: false },
+        { groupId: "jakarta.servlet", artifactId: "jakarta.servlet-api", version: "6.0.0", scope: "provided", optional: false },
         { groupId: "com.example", artifactId: "extra", version: "2.0", optional: true },
       ],
-      imports: [{ groupId: "org.junit", artifactId: "junit-bom", version: "5.11.4" }],
+      dependencyManagement: [{ groupId: "org.junit", artifactId: "junit-bom", version: "5.11.4", type: "pom", scope: "import", optional: false }],
     });
     expect(pom).to.contain("<groupId>com.example</groupId>\n  <artifactId>app</artifactId>\n  <version>1.0.0</version>\n");
     expect(pom).not.to.contain("<packaging>");
@@ -45,16 +46,46 @@ describe("pomText", () => {
   });
 
   it("names a packaging other than jar, and leaves out what a package has none of", () => {
-    const pom = pomText({ groupId: "com.example", artifactId: "shop", version: "1.0", packaging: "war", dependencies: [], imports: [] });
+    const pom = pomText({ groupId: "com.example", artifactId: "shop", version: "1.0", packaging: "war", metadata: new Map(), dependencies: [], dependencyManagement: [] });
     expect(pom).to.contain("<packaging>war</packaging>");
     expect(pom).not.to.contain("<dependencies>");
     expect(pom).not.to.contain("<dependencyManagement>");
   });
 
   it("escapes what XML would read as markup", () => {
-    expect(pomText({ groupId: "a&b", artifactId: "c<d", version: "1", packaging: "jar", dependencies: [], imports: [] })).to.contain(
+    expect(pomText({ groupId: "a&b", artifactId: "c<d", version: "1", packaging: "jar", metadata: new Map(), dependencies: [], dependencyManagement: [] })).to.contain(
       "<groupId>a&amp;b</groupId>\n  <artifactId>c&lt;d</artifactId>"
     );
+  });
+});
+
+describe("POM metadata", () => {
+  const pom = (metadata: Map<string, unknown>): string =>
+    pomText({ groupId: "g", artifactId: "a", version: "1", packaging: "jar", metadata: metadata as never, dependencies: [], dependencyManagement: [] });
+
+  it("writes a string as an element, a block as nested elements, and a list element around its items", () => {
+    const text = pom(
+      new Map<string, unknown>([
+        ["name", ["Greeter", "app"]],
+        ["scm", new Map([["url", ["https://example.com/g"]]])],
+        ["licenses", [new Map([["name", ["Apache-2.0"]]]), new Map([["name", ["MIT"]]])]],
+        ["developers", new Map([["id", ["nk"]], ["roles", ["lead", "dev"]]])],
+      ])
+    );
+    expect(text).to.contain("  <name>Greeter app</name>\n");
+    expect(text).to.contain("  <scm>\n    <url>https://example.com/g</url>\n  </scm>\n");
+    expect(text).to.contain(
+      "  <licenses>\n    <license>\n      <name>Apache-2.0</name>\n    </license>\n    <license>\n      <name>MIT</name>\n    </license>\n  </licenses>\n"
+    );
+    expect(text).to.contain(
+      "  <developers>\n    <developer>\n      <id>nk</id>\n      <roles>\n        <role>lead</role>\n        <role>dev</role>\n      </roles>\n    </developer>\n  </developers>\n"
+    );
+  });
+
+  it("refuses an element fabr writes, one only a build reads, and several blocks for an element that is no list", () => {
+    expect(() => checkPomMetadata("app", new Map([["version", ["2"]]]))).to.throw(/cannot set <version>: fabr writes it/);
+    expect(() => checkPomMetadata("app", new Map([["build", new Map()]]))).to.throw(/cannot set <build>: a published POM does not carry it/);
+    expect(() => checkPomMetadata("app", new Map([["scm", [new Map(), new Map()]]]))).to.throw(/gives <scm> several blocks/);
   });
 });
 

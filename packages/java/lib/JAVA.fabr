@@ -63,6 +63,11 @@ default flag java21 { }
 # The sources are written for Java 25. See `java8`.
 default flag java25 { }
 
+# The compiled classes don't record their methods' parameter names, which
+# they otherwise do (`javac -parameters`) for code that reads them by
+# reflection.
+default flag java/no_parameters { }
+
 ####################### Target types #######################
 
 #
@@ -120,6 +125,10 @@ targetdef jar_package {
     # Further attributes of the jar's manifest (`Implementation-Version`,
     # `Automatic-Module-Name`), each a string.
     manifest = MAP;
+    # What the POM a `sync` publishes the jar with says about it beyond its
+    # coordinate and dependencies (`name`, `description`, `url`, `licenses`,
+    # `developers`, `scm`), each a POM element: a string, or a block.
+    metadata = MAP;
     # The test sources, compiled against the jar. The test engines on the
     # classpath find the tests among the classes they compile to.
     tests = FILES;
@@ -320,6 +329,9 @@ targetdef java_installation {
 targetdef maven_repository {
     # The URL the repository is published under.
     url = REQUIRED STRING;
+    # The id of the `<server>` in `~/.m2/settings.xml` whose credentials the
+    # repository uses. By default, the repository's own name (`@corp`).
+    id = STRING;
 }
 
 #

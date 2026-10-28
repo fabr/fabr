@@ -34,6 +34,17 @@ export type Provided = NonNullable<Requirement["provided"]>;
 const NOTHING_PROVIDED: ReadonlyMap<string, Provided> = new Map();
 
 /**
+ * What a package says about itself for publishing, beyond its name, version
+ * and dependencies (a description, a licence, where its source is): the
+ * `metadata` its target declares, a MAP property's value. Each entry is a
+ * string list, a nested map, or a list of maps.
+ */
+export type MetadataMap = ReadonlyMap<string, MetadataValue>;
+export type MetadataValue = readonly string[] | MetadataMap | readonly MetadataMap[];
+
+const NO_METADATA: MetadataMap = new Map();
+
+/**
  * A package, less its files: its name, its version, what each of its direct
  * edges is bound to, which of those are provided requirements, and where it
  * came from. A resolution produces it, and it is all that reading a package
@@ -206,6 +217,10 @@ export function contentOf(pkg: Package): PackageContent {
  * FileSets: once you reach inside a package, the result is just files.
  */
 export class PackageFileSet extends FileSet {
+  /** What the package says about itself for publishing: given, or else that
+   *  of the package it is made from. */
+  public readonly metadata: MetadataMap;
+
   constructor(
     files: Iterable<[string, IFile]>,
     public readonly packageName: string,
@@ -215,12 +230,14 @@ export class PackageFileSet extends FileSet {
 
     /* The names among `dependencies` that are provided requirements, each with
      * how strongly it is expected. */
-    public readonly provided: ReadonlyMap<string, Provided> = NOTHING_PROVIDED
+    public readonly provided: ReadonlyMap<string, Provided> = NOTHING_PROVIDED,
+    metadata?: MetadataMap
   ) {
     /* An existing FileSet passes straight through — the base shares its content
      * (already canonical) rather than copying and rechecking every name, which
      * is the whole cost of a restamp/re-wrap. Any other iterable is new names. */
     super(files instanceof FileSet ? files : new Map(files), origin ?? (files instanceof FileSet ? files.origin : undefined));
+    this.metadata = metadata ?? (files instanceof PackageFileSet ? files.metadata : NO_METADATA);
   }
 
   /** A package's delivered name — the name its requirers' edges call it by,

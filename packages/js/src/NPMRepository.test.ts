@@ -1283,6 +1283,26 @@ describe("NPMRepository publish", () => {
     expect(carrier.dependsOn).to.deep.equal(["@acme/widgets"]);
   });
 
+  it("rewrites a dependency on a sibling under another name to the version the release publishes it at", async () => {
+    const repo = new NPMRepository(REG, npmrcContext());
+    const widgets = coord(repo, "@acme/widgets:1.0.0");
+    const core = coord(repo, "@acme/core:1.4.0");
+    /* `deps = @acme/core -> core;` builds the alias form, with no version of its own. */
+    const content = publishFileSet({ "package.json": JSON.stringify({ name: "@acme/widgets", dependencies: { core: "npm:@acme/core@*" } }) });
+    const [carrier] = await repo.package([{ destination: widgets, content }], [widgets, core], new Map([["@acme/core", [core]]]));
+    const manifest = JSON.parse(await (await carrier.get("package.json"))!.readString());
+    expect(manifest.dependencies.core).to.equal("npm:@acme/core@^1.4.0");
+    expect(carrier.dependsOn).to.deep.equal(["@acme/core"]);
+  });
+
+  it("refuses a dependency on a sibling under another name that the release doesn't publish", async () => {
+    const repo = new NPMRepository(REG, npmrcContext());
+    const widgets = coord(repo, "@acme/widgets:1.0.0");
+    const content = publishFileSet({ "package.json": JSON.stringify({ name: "@acme/widgets", dependencies: { core: "npm:@acme/core@*" } }) });
+    const err = await rejection(() => toPromise(repo.package([{ destination: widgets, content }], [widgets], new Map())));
+    expect(err.message).to.match(/no version to record for 'core'/);
+  });
+
   it("rewrites by the release-wide assignment when twins share one version", async () => {
     const repo = new NPMRepository(REG, npmrcContext());
     const other = new NPMRepository(REG, npmrcContext());
