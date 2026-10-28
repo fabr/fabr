@@ -60,7 +60,7 @@ import { BUILD_OPERATION, BUILD_OVERRIDE, Constraints, FILES_OPERATION } from ".
 import { SEMVER, SemverConstraint, SemverVersion, versionToString } from "../resolver/Semver";
 import { PackageFormat } from "../resolver/PackageFormat";
 import { Requirement } from "../resolver/Types";
-import { resolveBarePackage, vendPackageRef } from "../resolver/PackageResolver";
+import { publishesNothingFor, resolveBarePackage, vendPackageRef } from "../resolver/PackageResolver";
 import { RepositoryReader } from "../core/Repository";
 import { NamespaceRef, refuseNamespaces } from "../core/NamespaceRef";
 import {
@@ -422,6 +422,14 @@ class TestRegistry implements Repository, RepositoryReader<SemverVersion, Semver
 
   public fetch(pkg: string, version: SemverVersion): Computable<PackageFileSet> {
     return Computable.resolve(new PackageFileSet(new Map([[`${pkg}/data.txt`, MemoryFile.from(pkg)]]), pkg, versionToString(version)));
+  }
+
+  /** Answer `doc` with one page per version, and publish nothing for any other operation. */
+  public fetchFor(pkg: string, version: SemverVersion, operation: string): Computable<FileSet> {
+    if (operation !== "doc") {
+      return Computable.reject(publishesNothingFor(this, pkg, operation));
+    }
+    return Computable.resolve(new FileSet(new Map([[`${pkg}/index.html`, MemoryFile.from(`doc of ${pkg}@${versionToString(version)}`)]])));
   }
 }
 /* A fresh identity per instance: a resolution is memoized by it through the
@@ -3858,6 +3866,22 @@ describe("a reference to a target", () => {
       ["pkg/data.txt", "@reg:pkg:1.2.0:pkg/data.txt"],
     ]);
     expect((pkg as FileSet).sourcePathPrefix).to.equal("@reg:pkg:1.2.0:");
+  });
+
+  it("answers a registry's reference under doc with what its version publishes, and refuses one it publishes nothing for", async () => {
+    const log = new LogFormatter(LogLevel.Info, () => undefined);
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", "targetdef test_registry { }\ntest_registry @reg { }\n", log)], log, testContributions);
+    const config = model.getConfig(Constraints.of({}), execution);
+    const [doc] = await config.materialize(writtenOnCommandLine("@reg:pkg:1.2.0<BUILD_OPERATION=doc>"));
+    expect(doc).not.to.be.instanceOf(PackageFileSet);
+    expect([...(doc as FileSet)].map(([name]) => name)).to.deep.equal(["pkg/index.html"]);
+    expect(await (doc as FileSet).get("pkg/index.html").then(file => file?.readString())).to.equal("doc of pkg@1.2.0");
+    try {
+      await config.materialize(writtenOnCommandLine("@reg:pkg:1.2.0<BUILD_OPERATION=sources>"));
+      expect.fail("expected the sources of pkg to be refused");
+    } catch (err) {
+      expect(String(err)).to.match(/publishes nothing for 'sources' beside pkg/);
+    }
   });
 
   it("hands a sub-target the packages it was given as they stand, provided requirements among them or not", async () => {

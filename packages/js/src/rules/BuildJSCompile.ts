@@ -29,7 +29,8 @@
  * derives the tsconfig, and lays out the working directory. The tool is
  * **mounted apart** from the workspace (under `TOOL_DIR`): its dependencies
  * must not collide with — nor be visible to — the sources'. It runs with cwd at
- * the workspace root and yields the `js:exec` action (output: `build/**`).
+ * the workspace root and yields the `js:exec` action (output: `build/**`). With
+ * no sources it compiles nothing and yields no files.
  *
  * The dependencies reach the compiler as a generated PnP manifest over the
  * cache's tree pool, so a compile stages only its own sources however large its
@@ -41,6 +42,7 @@ import {
   COVERAGE,
   COVERAGE_ON,
   defineRule,
+  EMPTY_FILESET,
   FabrError,
   FileSet,
   Flag,
@@ -343,6 +345,9 @@ interface CompileInputs {
 }
 
 function compileTypescript(context: TargetContext, { srcs: srcSets, deps, resources }: CompileInputs): Computable<RuleResult> {
+  if (srcSets.every(srcs => srcs.isEmpty())) {
+    return Computable.resolve(EMPTY_FILESET);
+  }
   return Computable.forAll(
     [
       context.getGlobalString("JS_TARGET"),

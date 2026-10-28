@@ -25,7 +25,7 @@ import { Dependency, dependencyName, isPackage, NodeFields, PackageFileSet, Prov
 
 import { Resolved, SourceRef } from "../core/Repository";
 import { TargetNode } from "../core/TargetRef";
-import { BUILD_OPERATION, FILES_OPERATION, shownConstraints } from "../model/Constraints";
+import { BUILD_OPERATION, isFilesOperation, shownConstraints } from "../model/Constraints";
 import { ITargetOrigin, TARGET_PROVENANCE } from "../model/Target";
 import { DEPENDENCIES_KEY, EXTENDS_KEY, OPTIONAL_PROVIDED_KEY, PROVIDED_KEY, ResolvedRequirements } from "./Collection";
 import { NameLabel } from "../model/Errors";
@@ -187,7 +187,7 @@ export class DeclaredResolvedTarget extends ResolvedTarget {
       .map(([key, value]) => `${key}=${value}`)
       .sort()
       .join(",");
-    const plain = constraints.get(BUILD_OPERATION) === FILES_OPERATION;
+    const plain = isFilesOperation(constraints.get(BUILD_OPERATION));
     const shown = shownConstraints(constraints)
       .map(([key, value]) => `${key}=${value}`)
       .sort()

@@ -51,9 +51,12 @@ function stubContext(packageName?: string): TargetContext {
 
 /** The rule's requirements, materialized to one source, with the source-mode
  * flags among `deps` exactly as a real build delivers them. */
-const collected = (flags: Flag[] = []): Parameters<typeof jsCompileRule.evaluate>[1] => {
+const collected = (
+  flags: Flag[] = [],
+  srcs: FileSet[] = [new FileSet(new Map([["a.ts", MemoryFile.from("export const x = 1;")]]))]
+): Parameters<typeof jsCompileRule.evaluate>[1] => {
   const parts = {
-    srcs: [new FileSet(new Map([["a.ts", MemoryFile.from("export const x = 1;")]]))],
+    srcs,
     deps: flags,
     resources: [],
   };
@@ -234,6 +237,14 @@ describe("makeTsConfig", () => {
       expect(cfg(bt).compilerOptions.declaration).to.equal(true);
       expect(cfg(bt).compilerOptions.declarationMap).to.equal(undefined);
     }
+  });
+});
+
+describe("js_compile with no sources", () => {
+  it("compiles nothing and yields no files", async () => {
+    const result = await toPromise(jsCompileRule.evaluate(stubContext(), collected([], [])));
+    expect(result).to.be.instanceOf(FileSet);
+    expect((result as FileSet).isEmpty()).to.equal(true);
   });
 });
 

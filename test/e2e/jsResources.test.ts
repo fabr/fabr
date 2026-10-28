@@ -60,4 +60,10 @@ describe("e2e: js_package resources", () => {
     expect(result.status).to.equal(0);
     expect(result.stdout).to.contain("export const x = 1");
   });
+
+  it("gives its sources and its resources under the sources operation", () => {
+    const result = runFabr(project, ["ls", "thing<BUILD_OPERATION=sources>"]);
+    expect(result.status).to.equal(0);
+    expect(result.stdout).to.equal("index.ts\nvendor.d.ts\nvendor.js\n");
+  });
 });

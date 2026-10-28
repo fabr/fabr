@@ -44,7 +44,7 @@ import {
 import { isRepositoryCollection, isRepositoryReader, Materialized, PendingFiles, ProjectedPackage, RefSource, RepositoryCollection, RepositoryReader, RepositoryRef, Resolved, SourceRef } from "../core/Repository";
 import { PackageRequest, Resolution, ResolutionContext, ResolvedCollection } from "../resolver/Types";
 import { packageRequest } from "../resolver/PackageResolver";
-import { FILES_OPERATION } from "../model/Constraints";
+import { DOC_OPERATION, isFilesOperation, SOURCES_OPERATION } from "../model/Constraints";
 import { Conflicts, findConflicts, NO_CONFLICTS, ResolvedBatch } from "../resolver/StrictCollection";
 import { constraintOf } from "../resolver/Requirement";
 import type { Requirement } from "../resolver/Types";
@@ -53,6 +53,7 @@ import {
   Bound,
   checkedResolution,
   fetchPinnedPackage,
+  resolvePublishedFor,
   instantiatePackage,
   isPlainNode,
   packageClosure,
@@ -250,7 +251,7 @@ function resolveBatch(
 ): Computable<Array<FileSet | ResolvedNode | PendingFiles>> {
   const operation = isRepositoryReader(source) ? source.operation : undefined;
   {
-    const joint = isRepositoryReader(source) && operation !== FILES_OPERATION ? requests.filter(request => !resolvedApart(request)) : [];
+    const joint = isRepositoryReader(source) && !isFilesOperation(operation) ? requests.filter(request => !resolvedApart(request)) : [];
     const position = new Map(joint.map((request, index) => [request, index]));
     /* One joint resolution of the batch, which runs only when a request
      * among it is answered. */
@@ -266,10 +267,10 @@ function resolveBatch(
         }
         if (isRepositoryReader(source)) {
           if (request.as === "files") {
-            return attributedTo(reference, () => source.fetchFiles(reference).then(files => new FileSet(files, files.origin)));
+            return attributedTo(reference, () => fetchFilesFor(source, reference, operation).then(files => new FileSet(files, files.origin)));
           }
-          if (operation === FILES_OPERATION) {
-            return Computable.resolve(new PendingFiles(() => attributedTo(reference, () => source.fetchFiles(reference))));
+          if (isFilesOperation(operation)) {
+            return Computable.resolve(new PendingFiles(() => attributedTo(reference, () => fetchFilesFor(source, reference, operation))));
           }
           return closures!().then(assembled => {
             const pkg = assembled[position.get(request)!];
@@ -283,6 +284,22 @@ function resolveBatch(
       (...resolved: Array<FileSet | ResolvedNode | PendingFiles>) => resolved
     );
   }
+}
+
+/**
+ * @return the operation, `doc` or `sources`, under which a registry's reference
+ * is answered with what its package's version publishes for it, or undefined
+ * where the reference is answered with the package's own files.
+ */
+function publishedOperation(operation: string | undefined): string | undefined {
+  return operation === DOC_OPERATION || operation === SOURCES_OPERATION ? operation : undefined;
+}
+
+/** Fetch the files `reference` names under `operation`: what its package
+ * publishes for a {@link publishedOperation}, and its own files otherwise. */
+function fetchFilesFor(source: RepositoryReader<unknown, unknown>, reference: RepositoryRef, operation: string | undefined): Computable<FileSet> {
+  const published = publishedOperation(operation);
+  return published === undefined ? source.fetchFiles(reference) : resolvePublishedFor(source, reference, published);
 }
 
 /**
@@ -320,11 +337,11 @@ function resolveMember(
     /* What a package of the project fails to build with is its own to report,
      * so only the repository's part is attributed to the reference. */
     const alone = (): Computable<FileSet> =>
-      local ? contentOf(entry).files().then(asOneSet) : attributedTo(reference, () => pinnedFiles(collection, entry));
+      local ? contentOf(entry).files().then(asOneSet) : attributedTo(reference, () => pinnedFiles(collection, entry, member.operation));
     if (request.as === "files") {
       return alone().then(files => new FileSet(files, files.origin));
     }
-    if (member.operation === FILES_OPERATION) {
+    if (isFilesOperation(member.operation)) {
       return new PendingFiles(alone);
     }
     const resolved = (): Computable<Package> =>
@@ -351,15 +368,16 @@ function resolveMember(
   });
 }
 
-/** Fetch the package `entry` names, alone, at the version `collection` resolved it to. */
-function pinnedFiles(collection: ResolvedCollection, entry: RepositoryRef): Computable<FileSet> {
+/** Fetch the package `entry` names, alone, at the version `collection` resolved it to, or what
+ * that version publishes for a {@link publishedOperation} `operation`. */
+function pinnedFiles(collection: ResolvedCollection, entry: RepositoryRef, operation: string): Computable<FileSet> {
   const source = entry.source;
   const resolution = collection.resolutions.get(source);
   if (!isRepositoryReader(source) || resolution === undefined) {
     throw new FabrError(`internal: '${entry.toString()}' has no resolution in its collection`);
   }
   return resolution()
-    .then(resolved => fetchPinnedPackage(source, entry, resolved))
+    .then(resolved => fetchPinnedPackage(source, entry, resolved, publishedOperation(operation)))
     .then(files => entry.applyTo(files) as FileSet);
 }
 
@@ -445,7 +463,7 @@ export function resolveCollection(
     /* A registry under the `files` operation resolves nothing: its
      * references are answered by their files, as a request for files is. */
     const packaged = batch.filter(request => !resolvedApart(request));
-    if (isRepositoryReader(source) && source.operation !== FILES_OPERATION && packaged.length > 0) {
+    if (isRepositoryReader(source) && !isFilesOperation(source.operation) && packaged.length > 0) {
       registries.set(source.identity, [...(registries.get(source.identity) ?? []), [source, packaged]]);
     }
   }
@@ -859,7 +877,7 @@ function conflictsOf(
     return isRepositoryCollection(source) && request?.as !== "files"
       ? [
           source.member(reference).then(({ collection: catalog, entry, operation }) =>
-            operation === FILES_OPERATION ? [] : resolvedBatches(catalog, entry instanceof RepositoryRef ? [entry] : [])
+            isFilesOperation(operation) ? [] : resolvedBatches(catalog, entry instanceof RepositoryRef ? [entry] : [])
           ),
         ]
       : [];

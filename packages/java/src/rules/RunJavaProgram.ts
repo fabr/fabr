@@ -36,7 +36,7 @@ import {
   RunnableFileSet,
   TargetContext,
 } from "@fabr-build/core";
-import { checkMainClass, jarMainClass, makeJarRunnable, packageOf, processorsOf } from "../JarPackage";
+import { checkMainClass, compileOutputOf, COMPILED_CLASSES_DIR, jarMainClass, makeJarRunnable, packageOf, processorsOf } from "../JarPackage";
 
 interface ProgramInputs {
   srcs: FileSet[];
@@ -81,7 +81,7 @@ function runnableProgram(
           { label: "Compiling", constraints: BUILD_OVERRIDE }
         )
       );
-  return classes.then(compiled =>
+  return classes.then(output => compileOutputOf(output, COMPILED_CLASSES_DIR)).then(compiled =>
     mainClassOf(context, stated, sources, compiled, deps).then(mainClass => makeJarRunnable(context, deps, mainClass, { classes: compiled, agents, ...options }))
   );
 }

@@ -1,5 +1,7 @@
 # Minimal project staged as the docs generator's input: it loads the standard
-# vocabulary (core is always present; the js plugin adds js_package et al) so
-# `fabr list-targetdefs --json`, run against it, documents exactly what a
-# fabr + @fabr-build/js user has. See PROJECT.fabr's `reference_docs` target.
+# vocabulary (core is always present; the js and java plugins add js_package,
+# jar_package et al) so `fabr list-targetdefs --json`, run against it,
+# documents exactly what a fabr + @fabr-build/js + @fabr-build/java user has.
+# See PROJECT.fabr's `reference_docs` target.
 plugin @fabr-build/js;
+plugin @fabr-build/java;

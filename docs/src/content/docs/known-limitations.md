@@ -3,12 +3,13 @@ title: Known limitations
 description: Current limitations and rough edges in fabr you should be aware of — shell scripts' host tools, npm install-time behaviour, cache concurrency, and watch-mode cleanup.
 ---
 
-Fabr builds, tests and runs real JavaScript and TypeScript projects, itself included, but it is
-under active development. This page lists the places where its present behaviour falls short of
-what it intends, with a workaround for each. Limits of a particular feature are documented with
+Fabr builds, tests and runs real JavaScript, TypeScript and Java projects, itself included, but it
+is under active development. This page lists the places where its present behaviour falls short
+of what it intends, with a workaround for each. Limits of a particular feature are documented with
 that feature: see [Testing](/reference/js/testing/),
 [Stylesheets](/reference/js/stylesheets/#what-isnt-supported) and
-[TypeScript compilation](/reference/js/typescript/).
+[TypeScript compilation](/reference/js/typescript/) for JavaScript, and the Known issues sections
+of the [Java reference](/reference/java/dependencies/#known-issues) pages.
 
 | Limitation | Effect |
 |---|---|

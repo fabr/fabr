@@ -208,8 +208,9 @@ default flag js/node_globals { }
 #       tests = src:**/*.test.ts;
 #     }
 #
-# `fabr build` produces the package, `fabr test` runs its tests, and `fabr run`
-# runs its command-line program, which is any script directly under `bin/`.
+# `fabr build` produces the package, `fabr test` runs its tests, `fabr run`
+# runs its command-line program, which is any script directly under `bin/`, and
+# `fabr sources` gives its sources.
 #
 
 targetdef js_package {
@@ -259,6 +260,15 @@ targetdef js_package {
     # string, a block for an object, or several blocks for an array. Fields fabr
     # generates or a published package doesn't carry are rejected.
     metadata = MAP;
+}
+
+#
+# A js_package's sources: its `srcs` and `resources`, with what they name
+# built under `build`.
+#
+
+rule js_package pkg<BUILD_OPERATION=sources> = contents<BUILD_OPERATION=build> {
+    contents = pkg.srcs pkg.resources;
 }
 
 #
@@ -406,6 +416,16 @@ targetdef js_compile {
     # Files that aren't compiled but that the sources import, such as
     # stylesheets, so that those imports resolve.
     resources = FILES;
+}
+
+#
+# The installation of packages: a `node_modules` tree of every package `deps`
+# hold or reach, with the loose files among `deps` at their own paths.
+#
+
+targetdef js_installation {
+    # The packages installed, and loose files.
+    deps = PACKAGES;
 }
 
 #
@@ -557,6 +577,7 @@ rule js_test t<BUILD_OPERATION=test> = @fabr-build/js:rules/TestJSTest;
 rule js_script s<BUILD_OPERATION=run> = @fabr-build/js:rules/RunJSScript;
 rule js_compile c<BUILD_OPERATION=build> = @fabr-build/js:rules/BuildJSCompile;
 rule js_bundle b<BUILD_OPERATION=build> = @fabr-build/js:rules/BuildJSBundle;
+rule js_installation i<BUILD_OPERATION=build> = @fabr-build/js:rules/BuildJSInstallation;
 rule sass_compile c<BUILD_OPERATION=build> = @fabr-build/js:rules/BuildSassCompile;
 rule css_postcss c<BUILD_OPERATION=build> = @fabr-build/js:rules/BuildCSSPostcss;
 

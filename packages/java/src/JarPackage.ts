@@ -27,6 +27,7 @@ import * as path from "path";
 import {
   ActionContext,
   BuildAction,
+  BUILD_OVERRIDE,
   BuildResult,
   Computable,
   FabrError,
@@ -115,13 +116,28 @@ export function classpathOf(deps: readonly FileSet[]): Array<[string, IFile]> {
 }
 
 /**
+ * Lay out the installation `deps` make: the jars of every package they hold
+ * or reach, each named by its own file name, and the loose files among them as
+ * they are. Two different files of one name are a conflict.
+ */
+export function installationOf(deps: readonly FileSet[]): FileSet {
+  const packages = closureOf(deps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet));
+  const loose = deps.filter(dep => !(dep instanceof PackageFileSet) && !(dep instanceof Flag));
+  return FileSet.unionAll(
+    ...packages.map(pkg => pkg.rename(name => (name.endsWith(".jar") ? path.posix.basename(name) : undefined))),
+    ...loose
+  );
+}
+
+/**
  * Materialize the target's annotation processors (`processors`). They are a
  * tool of the compile, so they are read when it is evaluated, not as a
- * requirement, and resolved as a collection of their own, permissively.
+ * requirement, under `build` whatever the target's operation, and resolved as
+ * a collection of their own, permissively.
  */
 export function processorsOf(context: TargetContext): Computable<FileSet[]> {
   return context
-    .getFileProperty("processors")
+    .getFileProperty("processors", BUILD_OVERRIDE)
     .then(sources => context.materializeSources(sources, PERMISSIVE_RESOLUTION))
     .then(materialized => materialized.filter((source): source is FileSet => source instanceof FileSet));
 }
@@ -137,26 +153,77 @@ export function packageOf(source: string): string {
   return declared === null ? "" : declared[1].replace(/\s+/g, "");
 }
 
-/** A module descriptor's name in a jar: at its root, or for a release of a multi-release jar. */
-function isDescriptor(name: string): boolean {
-  return name === "module-info.class" || /^META-INF\/versions\/\d+\/module-info\.class$/.test(name);
+/** Where a `java_compile`'s output holds the classes it compiled. */
+export const COMPILED_CLASSES_DIR = "classes";
+/** Where a `java_compile`'s output holds the sources its annotation processors generated. */
+export const GENERATED_SOURCES_DIR = "generated";
+
+/** @return the files a `java_compile` output holds under `dir`, named within it. */
+export function compileOutputOf(output: FileSet, dir: string): FileSet {
+  const prefix = `${dir}/`;
+  return output.remap(name => (name.startsWith(prefix) ? name.substring(prefix.length) : undefined));
+}
+
+/** Quote an argument for a JDK tool's argument file (`@file`). */
+export function quotedArgument(argument: string): string {
+  return `"${argument.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+/** Make a JDK tool's path option (`-classpath`, `--module-path`) of jars staged under `dir`, or nothing where there are none. */
+export function pathOption(option: string, dir: string, jars: ReadonlyArray<[string, IFile]>): string[] {
+  return jars.length === 0 ? [] : [option, jars.map(([name]) => path.posix.join(dir, name)).join(path.delimiter)];
+}
+
+/** Lay out `jars` under `dir`, each at its classpath name. */
+export function stagedJars(dir: string, jars: ReadonlyArray<[string, IFile]>): FileSet {
+  return new FileSet(new Map(jars.map(([name, file]) => [path.posix.join(dir, name), file])));
+}
+
+/**
+ * Place the classpath `jars` for a JDK tool reading `sources`: where the
+ * sources are a named module (they include a `module-info.java`), the jars
+ * that are modules go on the module path and the rest on the classpath, as
+ * Gradle places them; otherwise every jar goes on the classpath.
+ */
+export function placedJars(
+  sources: FileSet,
+  jars: Array<[string, IFile]>
+): Computable<{ modulePath: Array<[string, IFile]>; classpath: Array<[string, IFile]> }> {
+  const isModule = [...sources].some(([name]) => path.posix.basename(name) === "module-info.java");
+  return isModule
+    ? Computable.forAll(
+        jars.map(([, file]) => isModularJar(file)),
+        (...modular: boolean[]) => ({ modulePath: jars.filter((_, index) => modular[index]), classpath: jars.filter((_, index) => !modular[index]) })
+      )
+    : Computable.resolve({ modulePath: [], classpath: jars });
+}
+
+/** The module descriptor at a jar's root. */
+const DESCRIPTOR_NAME = "module-info.class";
+
+/** @return true if `name` is a module descriptor for one release of a multi-release jar, otherwise false. */
+function isVersionedDescriptor(name: string): boolean {
+  return /^META-INF\/versions\/\d+\/module-info\.class$/.test(name);
 }
 
 /**
  * @return what `jar` is to the module system: an `explicit` module (it holds a
- * module descriptor), an `automatic` one its manifest names
+ * module descriptor at its root, or for a release, where its manifest says it
+ * is `Multi-Release`), an `automatic` one its manifest names
  * (`Automatic-Module-Name`), or undefined for neither.
  */
 export function moduleKindOf(jar: IFile): Computable<"explicit" | "automatic" | undefined> {
   return jar
     .getBuffer()
-    .then(buffer => readZipMembers(buffer, name => isDescriptor(name) || name === MANIFEST_NAME))
+    .then(buffer => readZipMembers(buffer, name => name === DESCRIPTOR_NAME || isVersionedDescriptor(name) || name === MANIFEST_NAME))
     .then(members => {
-      if ([...members.keys()].some(isDescriptor)) {
+      const manifest = members.get(MANIFEST_NAME);
+      const attributes = manifest === undefined ? new Map<string, string>() : manifestAttributes(manifest.toString("utf8"));
+      const multiRelease = attributes.get("Multi-Release")?.toLowerCase() === "true";
+      if (members.has(DESCRIPTOR_NAME) || (multiRelease && [...members.keys()].some(isVersionedDescriptor))) {
         return "explicit";
       }
-      const manifest = members.get(MANIFEST_NAME);
-      return manifest !== undefined && manifestAttributes(manifest.toString("utf8")).has("Automatic-Module-Name") ? "automatic" : undefined;
+      return attributes.has("Automatic-Module-Name") ? "automatic" : undefined;
     });
 }
 

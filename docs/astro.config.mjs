@@ -58,6 +58,7 @@ export default defineConfig({
       sidebar: [
         { label: "Introduction", link: "/introduction/" },
         { label: "Quick start (JS/TS)", link: "/quickstart-js/" },
+        { label: "Quick start (Java)", link: "/quickstart-java/" },
         {
           label: "Guides",
           items: [
@@ -87,6 +88,17 @@ export default defineConfig({
             { label: "Testing", link: "/reference/js/testing/" },
             { label: "Bundling", link: "/reference/js/bundling/" },
             { label: "Publishing packages", link: "/reference/js/publishing/" },
+          ],
+        },
+        {
+          label: "Java reference",
+          items: [
+            { label: "Targets & configuration", link: "/reference/java/targets/" },
+            { label: "Dependencies", link: "/reference/java/dependencies/" },
+            { label: "Compiling", link: "/reference/java/compiling/" },
+            { label: "Testing", link: "/reference/java/testing/" },
+            { label: "Running programs", link: "/reference/java/running/" },
+            { label: "Packaging", link: "/reference/java/packaging/" },
           ],
         },
         {

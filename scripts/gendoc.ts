@@ -21,7 +21,7 @@
  * Docs generator: reads `fabr list-all --json` on stdin (the whole build
  * vocabulary — target types, config properties, flags) and writes the Markdown
  * reference pages into the given output directory — one per source package (core
- * -> standard-rules.md, JS plugin -> js-targets.md). Compiled and launched by fabr
+ * -> standard-rules.md, JS plugin -> js-targets.md, Java plugin -> java-targets.md). Compiled and launched by fabr
  * as a TypeScript js_script (the `gendoc` target); the pages are `.md`, not
  * `.mdx`, because the doc-comment prose contains `{ ... }` which MDX would parse
  * as JSX. The `generate` target collects them with an `output` glob (no `>` redirect).
@@ -87,7 +87,8 @@ interface Doc {
 
 /** A rendered page: its output filename, which contributions it covers (by source
  * location), and its front-matter. A targetdef/property/flag belongs to `core`
- * iff its location is in core's `STD.fabr`; everything else is the JS plugin. */
+ * iff its location is in core's `STD.fabr`, to the Java plugin iff it is in its
+ * `JAVA.fabr`; everything else is the JS plugin. */
 interface Group {
   file: string;
   title: string;
@@ -97,6 +98,7 @@ interface Group {
 }
 
 const inCore = (location: string | undefined): boolean => (location ?? "").includes("STD.fabr");
+const inJava = (location: string | undefined): boolean => (location ?? "").includes("JAVA.fabr");
 
 const GROUPS: Group[] = [
   {
@@ -106,7 +108,8 @@ const GROUPS: Group[] = [
     intro: [
       "The target types, configuration properties, and flags that ship in fabr's core (`STD.fabr`) and are",
       "always available, independent of any language plugin. Ecosystem-specific definitions (like",
-      "`js_package`) come from plugins — see [JavaScript targets and configuration](/reference/js/targets/).",
+      "`js_package`) come from plugins — see [JavaScript targets and configuration](/reference/js/targets/)",
+      "and [Java targets and configuration](/reference/java/targets/).",
       "",
       "This page is generated from `fabr list-all`, so it never drifts from the code.",
     ],
@@ -124,7 +127,21 @@ const GROUPS: Group[] = [
       "",
       "This page is generated from `fabr list-all`, so it never drifts from the code.",
     ],
-    isMember: location => !inCore(location),
+    isMember: location => !inCore(location) && !inJava(location),
+  },
+  {
+    file: "java-targets.md",
+    title: "Java targets and configuration",
+    description: "The Java target types, configuration, and flags from the @fabr-build/java plugin.",
+    intro: [
+      "The target types, configuration properties, and flags contributed by the `@fabr-build/java` plugin",
+      "(`plugin @fabr-build/java;`). They cover compiling, testing, running and packaging Java.",
+      "Core definitions (like `script` and `generate`) are in",
+      "[Core targets and configuration](/reference/standard-rules/).",
+      "",
+      "This page is generated from `fabr list-all`, so it never drifts from the code.",
+    ],
+    isMember: inJava,
   },
 ];
 

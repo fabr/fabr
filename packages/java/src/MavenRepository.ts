@@ -23,12 +23,15 @@
  * A package's requirements are the dependencies its effective POM passes on
  * (see {@link passedOnDependencies}), and its files are its artifact as
  * published (`slf4j-api-1.7.36.jar`), checked against the repository's
- * `.sha1`; a `pom`-packaged artifact has no files.
+ * `.sha1`; a `pom`-packaged artifact has no files. Under `doc` and `sources`
+ * a package is answered with the contents of its `-javadoc` or `-sources` jar.
  */
 
 import {
   Computable,
   FabrError,
+  DOC_OPERATION,
+  fetchArchive,
   fetchDocument,
   fetchFile,
   FileSet,
@@ -43,6 +46,7 @@ import {
   RepositoryRef,
   RepositoryRegistration,
   Requirement,
+  SOURCES_OPERATION,
   resolveBarePackage,
   TargetContext,
   vendPackageRef,
@@ -55,6 +59,15 @@ import { coordinateText, EffectivePom, effectivePom, parsePom, passedOnDependenc
 import { parseXml, xmlChild, xmlChildren } from "./Xml";
 
 const METADATA_FILE = "maven-metadata.xml";
+
+/** The classifier of the jar a version publishes for each operation it answers with one. */
+const CLASSIFIERS = new Map([
+  [DOC_OPERATION, "javadoc"],
+  [SOURCES_OPERATION, "sources"],
+]);
+
+/** The manifest of a classified jar, which belongs to the jar rather than to its contents. */
+const CLASSIFIED_MANIFEST = "META-INF/MANIFEST.MF";
 
 /**
  * @return the BOM dependencies of a `pom`-packaged package: each jar its
@@ -220,6 +233,34 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
       return this.sha1Of(artifactUrl).then(sha1 =>
         sha1 === undefined ? new PackageFileSet([], name, version.text) : fetchArtifact(() => Computable.resolve(sha1))
       );
+    });
+  }
+
+  /**
+   * Fetch what a version publishes for `doc` or `sources` (RepositoryReader
+   * implementation): the contents of its `-javadoc` or `-sources` jar, checked
+   * against its `.sha1`, less the jar's own manifest.
+   */
+  public fetchFor(name: string, version: MavenVersion, operation: string): Computable<FileSet> {
+    const classifier = CLASSIFIERS.get(operation);
+    const coordinate = this.coordinateOf(name, version.text);
+    if (classifier === undefined) {
+      return Computable.reject(new FabrError(`${this.url} publishes nothing for '${operation}' beside ${coordinateText(coordinate)}`));
+    }
+    const url = `${this.versionUrl(coordinate)}/${coordinate.artifactId}-${coordinate.version}-${classifier}.jar`;
+    return this.sha1Of(url).then(sha1 => {
+      if (sha1 === undefined) {
+        throw new FabrError(`${coordinateText(coordinate)} publishes no ${classifier} jar`).withHelp(
+          `${this.url} has no ${coordinate.artifactId}-${coordinate.version}-${classifier}.jar beside it`
+        );
+      }
+      return fetchArchive(this.context, {
+        key: `${this.identity} ${coordinateText(coordinate)} ${classifier}`,
+        tag: "maven:classified:1",
+        report: { resource: `${classifier} jar`, role: "content" },
+        source: () => Computable.resolve({ url, expected: { algorithm: "sha1", encoding: "hex" as const, value: sha1 } }),
+        keep: files => files.remap(entry => (entry === CLASSIFIED_MANIFEST ? undefined : entry)),
+      });
     });
   }
 

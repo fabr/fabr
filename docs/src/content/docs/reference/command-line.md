@@ -96,6 +96,18 @@ is read as a target name, as before.
 An operation's name is a command even where the project also declares a target of that name, as
 `build` and `test` are: write `fabr build lint` to build the target, or put it after `--`.
 
+Two such operations come with fabr's plugins, for target types that have a rule for them
+(`fabr list-operations` shows which):
+
+- `fabr sources <target>`: the target's sources, such as a `js_package`'s or a `jar_package`'s
+  `srcs` and `resources`.
+- `fabr doc <target>`: its documentation, such as a `jar_package`'s javadoc.
+
+A package reference from a registry can be read under them too, for what the registry publishes
+beside the package: `fabr ls '@mvn:org.slf4j:slf4j-api:1.7.36<BUILD_OPERATION=sources>'` lists
+the contents of its `-sources.jar`. A registry that publishes nothing for an operation, as npm
+publishes no separate sources or documentation, refuses the reference.
+
 ### `run`
 
 Builds a target as a program and runs it. The program has your terminal: its input, output and

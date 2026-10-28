@@ -33,7 +33,7 @@ import {
 import { TargetContext } from "../context/index";
 import { Requirement, Selected } from "../resolver/Types";
 import { PackageFormat } from "../resolver/PackageFormat";
-import { vendPackageRef, versionChildren } from "../resolver/PackageResolver";
+import { publishesNothingFor, vendPackageRef, versionChildren } from "../resolver/PackageResolver";
 import { contentPackageMember } from "./ContentPackage";
 import { NamespaceRef } from "../core/NamespaceRef";
 import type { Reference } from "../core/Reference";
@@ -322,6 +322,14 @@ export class RepositoryGroup<V, C>
   public fetch(pkg: string, version: V): Computable<PackageFileSet> {
     const member = this.routed(pkg);
     return member instanceof Error ? Computable.reject(member) : member.fetch(pkg, version);
+  }
+
+  public fetchFor(pkg: string, version: V, operation: string): Computable<FileSet> {
+    const member = this.routed(pkg);
+    if (member instanceof Error) {
+      return Computable.reject(member);
+    }
+    return member.fetchFor === undefined ? Computable.reject(publishesNothingFor(member, pkg, operation)) : member.fetchFor(pkg, version, operation);
   }
 
 }

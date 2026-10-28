@@ -16,18 +16,30 @@ default MAVEN_REPOSITORY_URL = https://repo1.maven.org/maven2;
 default JVM_TARGET = jvm21;
 
 #
-# The Java compiler: a `javac`, such as a JDK release's
-# (`JAVAC = @jdk:21.0.12.1+1:javac;`).
+# The JDK release the Java tools come from: `@jdk:21.0.12.1+1`, or any release
+# `fabr ls @jdk` lists.
 #
 
-default JAVAC = @jdk:21.0.12.1+1:javac;
+default JDK = @jdk:21.0.12.1+1;
 
 #
-# The Java runtime programs run on: a `java`, such as a JDK release's
-# (`JAVA = @jdk:21.0.12.1+1:java;`).
+# The Java compiler: a `javac`, by default the `JDK` release's.
 #
 
-default JAVA = @jdk:21.0.12.1+1:java;
+default JAVAC = JDK:javac;
+
+#
+# The Java runtime programs run on: a `java`, by default the `JDK` release's.
+#
+
+default JAVA = JDK:java;
+
+#
+# The Java documentation generator: a `javadoc`, by default the `JDK`
+# release's.
+#
+
+default JAVADOC = JDK:javadoc;
 
 #
 # The jar that runs a `jar_package`'s tests on the JUnit Platform and reports
@@ -70,7 +82,8 @@ default flag java25 { }
 # `fabr run` runs its `main_class` with the jar and everything it requires on
 # the classpath, and `fabr test` runs the tests its `tests` compile to on the
 # JUnit Platform, with the test engines and the platform's launcher in its
-# `test_deps`.
+# `test_deps`. `fabr doc` generates its javadoc, and `fabr sources` gives its
+# sources.
 #
 
 targetdef jar_package {
@@ -150,13 +163,121 @@ targetdef java_program {
 }
 
 #
+# A web application archive: the classes its sources compile to and its
+# `resources` under `WEB-INF/classes`, the installation of its `deps` under
+# `WEB-INF/lib`, and its `webapp` files at the root, packed as `<name>.war`:
+#
+#     war_package shop {
+#       srcs = src/main/java:**/*.java;
+#       webapp = src/main/webapp:**;
+#       deps = @mvn:org.apache.commons:commons-text:1.11.0;
+#       provided_deps = @mvn:jakarta.servlet:jakarta.servlet-api:6.0.0;
+#     }
+#
+
+targetdef war_package {
+    # The Java sources.
+    srcs = FILES;
+    # The packages the sources use, and `java<release>` flags.
+    deps = PACKAGES;
+    # Packages the sources use that the container supplies, such as the
+    # servlet API. The archive does not carry them.
+    provided_deps = PACKAGES;
+    # The annotation processors the compiler runs: packages, resolved apart
+    # from the ones the sources use.
+    processors = PACKAGES;
+    # Files on the application's classpath, under `WEB-INF/classes`.
+    resources = FILES;
+    # The web content, at the archive's root: pages, `WEB-INF/web.xml`.
+    webapp = FILES;
+}
+
+rule war_package w<BUILD_OPERATION=build> = war:*.jar -> *.war {
+    java_compile classes {
+        srcs = w.srcs;
+        deps = w.deps w.provided_deps;
+        processors = w.processors;
+    }
+    java_installation libs {
+        deps = w.deps;
+    }
+    jar_package war {
+        resources = classes:classes/** -> WEB-INF/classes/** w.resources:** -> WEB-INF/classes/**
+                    libs:** -> WEB-INF/lib/** w.webapp;
+    }
+}
+
+#
+# An enterprise application archive: its `modules` (the wars and jars it
+# deploys) and `resources` at the root, and the installation of its `deps`
+# under `lib`, packed as `<name>.ear`:
+#
+#     ear_package store {
+#       modules = shop;
+#       deps = @mvn:org.apache.commons:commons-lang3:3.14.0;
+#     }
+#
+
+targetdef ear_package {
+    # The modules the application deploys: `war_package` and `jar_package`
+    # archives.
+    modules = FILES;
+    # The packages the modules share, under `lib`.
+    deps = PACKAGES;
+    # Files at the archive's root, such as `META-INF/application.xml`.
+    resources = FILES;
+}
+
+rule ear_package e<BUILD_OPERATION=build> = ear:*.jar -> *.ear {
+    java_installation libs {
+        deps = e.deps;
+    }
+    jar_package ear {
+        resources = e.modules libs:** -> lib/** e.resources;
+    }
+}
+
+#
+# A jar_package's javadoc: of its `srcs`, and of the sources its annotation
+# processors generate.
+#
+
+rule jar_package pkg<BUILD_OPERATION=doc> = docs<BUILD_OPERATION=build> {
+    java_compile compile {
+        srcs = pkg.srcs;
+        deps = pkg.deps pkg.provided_deps pkg.optional_provided_deps pkg.compile_deps;
+        processors = pkg.processors;
+    }
+    javadoc docs {
+        srcs = pkg.srcs compile:generated/** -> **;
+        deps = pkg.deps pkg.provided_deps pkg.optional_provided_deps pkg.compile_deps;
+    }
+}
+
+#
+# A jar_package's sources, as a sources jar holds them: its `srcs`, the
+# sources its annotation processors generate, and its `resources`, with what
+# they name built under `build`.
+#
+
+rule jar_package pkg<BUILD_OPERATION=sources> = contents<BUILD_OPERATION=build> {
+    java_compile compile {
+        srcs = pkg.srcs;
+        deps = pkg.deps pkg.provided_deps pkg.optional_provided_deps pkg.compile_deps;
+        processors = pkg.processors;
+    }
+    contents = pkg.srcs compile:generated/** -> ** pkg.resources;
+}
+
+#
 # The target types below are normally created for you by the ones above, and
 # rarely need declaring.
 #
 
 #
-# Compile Java sources to classes. A `jar_package` does this for its own
-# sources.
+# Compile Java sources to classes: the classes under `classes/`, and the
+# sources its annotation processors generate under `generated/`. A
+# `jar_package` does this for its own sources.
 #
 
 targetdef java_compile {
@@ -167,6 +288,29 @@ targetdef java_compile {
     # The annotation processors the compiler runs: packages, resolved apart
     # from `deps`.
     processors = PACKAGES;
+}
+
+#
+# Generate the javadoc of Java sources: HTML documentation of their API. A
+# `jar_package` does this for its own sources under `doc`.
+#
+
+targetdef javadoc {
+    # The Java sources.
+    srcs = FILES;
+    # The packages the sources use, and `java<release>` flags.
+    deps = PACKAGES;
+}
+
+#
+# The installation of packages: the jars of every package `deps` hold or
+# reach, each by its own file name, with the loose files among `deps` as they
+# are.
+#
+
+targetdef java_installation {
+    # The packages installed, and loose files.
+    deps = PACKAGES;
 }
 
 #
@@ -217,7 +361,9 @@ default jdk_distribution @jdk {
 rule jar_package pkg<BUILD_OPERATION=build> = @fabr-build/java:rules/BuildJarPackage;
 rule jar_package pkg<BUILD_OPERATION=run> = @fabr-build/java:rules/RunJarPackage;
 rule jar_package pkg<BUILD_OPERATION=test> = @fabr-build/java:rules/TestJarPackage;
-rule java_compile c = @fabr-build/java:rules/BuildJavaCompile;
+rule java_compile c<BUILD_OPERATION=build> = @fabr-build/java:rules/BuildJavaCompile;
+rule javadoc d<BUILD_OPERATION=build> = @fabr-build/java:rules/BuildJavadoc;
+rule java_installation i<BUILD_OPERATION=build> = @fabr-build/java:rules/BuildJavaInstallation;
 rule java_program p<BUILD_OPERATION=run> = @fabr-build/java:rules/RunJavaProgram;
 
 repository maven_repository = @fabr-build/java:MavenRepository;

@@ -19,7 +19,7 @@
 
 import { expect } from "chai";
 import { FileSet, Flag, MemoryFile, PackageFileSet, packToZip, RefSource, RepositoryRef } from "@fabr-build/core";
-import { checkMainClass, classFileOf, classpathOf, isModularJar, jarMainClass, javaRelease, MANIFEST_NAME, manifestAttributes, manifestFile, packageOf } from "./JarPackage";
+import { checkMainClass, classFileOf, classpathOf, installationOf, isModularJar, jarMainClass, javaRelease, MANIFEST_NAME, manifestAttributes, manifestFile, packageOf } from "./JarPackage";
 
 const files = (...names: string[]): FileSet => new FileSet(new Map(names.map(name => [name, MemoryFile.from(name)])));
 
@@ -46,7 +46,10 @@ describe("isModularJar", () => {
     const jar = async (...entries: Array<[string, string]>): Promise<MemoryFile> =>
       new MemoryFile(await packToZip(new FileSet(new Map(entries.map(([name, text]) => [name, MemoryFile.from(text)])))));
     expect(await isModularJar(await jar(["module-info.class", "x"], ["a/A.class", "x"]))).to.equal(true);
-    expect(await isModularJar(await jar(["META-INF/versions/9/module-info.class", "x"]))).to.equal(true);
+    expect(
+      await isModularJar(await jar([MANIFEST_NAME, "Manifest-Version: 1.0\r\nMulti-Release: true\r\n"], ["META-INF/versions/9/module-info.class", "x"]))
+    ).to.equal(true);
+    expect(await isModularJar(await jar([MANIFEST_NAME, "Manifest-Version: 1.0\r\n"], ["META-INF/versions/9/module-info.class", "x"]))).to.equal(false);
     expect(await isModularJar(await jar([MANIFEST_NAME, "Manifest-Version: 1.0\r\nAutomatic-Module-Name: org.lib\r\n"]))).to.equal(true);
     expect(await isModularJar(await jar([MANIFEST_NAME, "Manifest-Version: 1.0\r\n"], ["a/A.class", "x"]))).to.equal(false);
   });
@@ -74,6 +77,19 @@ describe("classpathOf", () => {
       "com.example/app/app.jar",
       "org.example/leaf/leaf-1.0.jar",
       "local.jar",
+    ]);
+  });
+});
+
+describe("installationOf", () => {
+  it("names every jar a package reaches by its file name, with loose files as they are", () => {
+    const leaf = new PackageFileSet(files("leaf-1.0.jar", "leaf-1.0.pom"), "org.example/leaf", "1.0");
+    const reference = new RepositoryRef({} as RefSource, { name: "org.example/leaf", versionConstraint: "1.0" });
+    const app = new PackageFileSet(files("app.jar"), "com.example/app", undefined, [{ reference, package: leaf }]);
+    expect([...installationOf([app, files("com/example/Extra.class"), new Flag("java17", [])])].map(([name]) => name).sort()).to.deep.equal([
+      "app.jar",
+      "com/example/Extra.class",
+      "leaf-1.0.jar",
     ]);
   });
 });

@@ -26,7 +26,7 @@
 
 import * as path from "path";
 import { BUILD_OVERRIDE, Computable, defineRule, EMPTY_FILESET, FabrError, FileSet, IFile, MemoryFile, RuleResult, TargetContext, TREE_MOUNT } from "@fabr-build/core";
-import { classpathOf, packageOf, processorsOf } from "../JarPackage";
+import { classpathOf, compileOutputOf, COMPILED_CLASSES_DIR, packageOf, processorsOf } from "../JarPackage";
 import { createTestRunAction } from "../TestRunAction";
 
 interface TestInputs {
@@ -95,7 +95,8 @@ function testJar(context: TargetContext, inputs: TestInputs): Computable<RuleRes
       }
       return file;
     });
-  return Computable.forAll([classes, runner, sourcesTable(tests), context.getGlobalRunnable("JAVA")], (compiled, runnerJar, sources, java) => {
+  return Computable.forAll([classes, runner, sourcesTable(tests), context.getGlobalRunnable("JAVA")], (output, runnerJar, sources, java) => {
+    const compiled = compileOutputOf(output, COMPILED_CLASSES_DIR);
     const pool = context.execution.buildCache;
     return pool.ensureTree(java).then(() => {
       const jars = classpathOf(runtime);

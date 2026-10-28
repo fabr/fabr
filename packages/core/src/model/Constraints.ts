@@ -112,6 +112,23 @@ export const COVERAGE_ON = "on";
  */
 export const FILES_OPERATION = "files";
 
+/** The `doc` operation: a target's documentation, generated from its sources,
+ * or the documentation a registry publishes beside a package. */
+export const DOC_OPERATION = "doc";
+
+/** The `sources` operation: the source tree a target is built from, or the
+ * sources a registry publishes beside a package. */
+export const SOURCES_OPERATION = "sources";
+
+/**
+ * @return true if a registry's reference under `operation` is answered with
+ * files alone, fetched at its lower bound with no closure and no joint
+ * resolution (`files`, `doc`, `sources`), otherwise false.
+ */
+export function isFilesOperation(operation: string | undefined): boolean {
+  return operation === FILES_OPERATION || operation === DOC_OPERATION || operation === SOURCES_OPERATION;
+}
+
 /** Get the operation a configuration of `constraints` is under: the
  * `BUILD_OPERATION` it was given, or `build`, as STD.fabr defaults it. */
 export function operationOf(constraints: Constraints): string {

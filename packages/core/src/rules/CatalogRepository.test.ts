@@ -220,6 +220,11 @@ describe("CatalogRepository (through the model)", () => {
       this.fetched.push(`${pkg}@${versionToString(version)}`);
       return Computable.resolve(new PackageFileSet(new Map([[`${pkg}/data.txt`, contentOf(pkg)]]), pkg, versionToString(version)));
     }
+
+    public fetchFor(pkg: string, version: SemverVersion, operation: string): Computable<FileSet> {
+      this.fetched.push(`${pkg}@${versionToString(version)} ${operation}`);
+      return Computable.resolve(new FileSet(new Map([[`${pkg}/${operation}.html`, MemoryFile.from(`${operation} of ${pkg}`)]])));
+    }
   }
 
   /* One fixture file per package, shared by every version of it: the deps rule
@@ -615,6 +620,15 @@ describe("CatalogRepository (through the model)", () => {
     expect(delivered.packageName).to.equal("foo");
     expect(delivered.dependencies).to.deep.equal([]);
     expect(backings.get("@backing")!.fetched).to.deep.equal(["foo@1.0.0"]);
+  });
+
+  it("answers a member under doc with what its pinned version publishes for it", async () => {
+    const model = build("package_repo @backing { }\ncatalog @cat { deps = @backing:foo:1.2.0; }\n");
+    requirementTable.set("foo@1.2.0", [{ name: "bar", versionConstraint: "1.0.0" }]);
+    const [doc] = await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("@cat:foo<BUILD_OPERATION=doc>"));
+    expect([...(doc as FileSet)].map(([name]) => name)).to.deep.equal(["foo/doc.html"]);
+    expect(doc).not.to.be.instanceOf(PackageFileSet);
+    expect(backings.get("@backing")!.fetched).to.deep.equal(["foo@1.2.0 doc"]);
   });
 
   describe("judging a strict subset by what it ships", () => {

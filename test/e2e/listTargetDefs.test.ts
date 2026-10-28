@@ -50,11 +50,11 @@ describe("e2e: list-targetdefs", () => {
   it("includes plugin-contributed types, with operations from their rules", () => {
     /* Declaring the js plugin brings its target types into the model; a filter
      * argument narrows the listing to just the named type. js_package is
-     * built/tested/run, so all three operations show — the key property that
+     * built/tested/run and has sources, so all four operations show — the key property that
      * this is derived from live rule registration, not a static list. */
     const result = runFabr({ "PROJECT.fabr": "plugin @fabr-build/js;\n" }, ["list-targetdefs", "js_package"]);
     expect(result.status).to.equal(0);
-    expect(result.stdout).to.match(/^js_package \[build, run, test\]$/m);
+    expect(result.stdout).to.match(/^js_package \[build, run, sources, test\]$/m);
     expect(result.stdout).to.match(/metadata\s+MAP/);
     /* The filter excludes every other type. */
     expect(result.stdout).not.to.match(/^script/m);
@@ -66,7 +66,7 @@ describe("e2e: list-targetdefs", () => {
      * "which contribution supplied this". */
     const result = runFabr({ "PROJECT.fabr": "plugin @fabr-build/js;\n" }, ["list-targetdefs", "-l", "js_package", "script"]);
     expect(result.status).to.equal(0);
-    expect(result.stdout).to.match(/^js_package \[build, run, test\]\s+\S*JS\.fabr:\d+:\d+$/m);
+    expect(result.stdout).to.match(/^js_package \[build, run, sources, test\]\s+\S*JS\.fabr:\d+:\d+$/m);
     expect(result.stdout).to.match(/^script \[run\]\s+\S*STD\.fabr:\d+:\d+$/m);
   });
 

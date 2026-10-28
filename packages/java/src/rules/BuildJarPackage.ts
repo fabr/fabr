@@ -40,7 +40,7 @@ import {
   RuleResult,
   TargetContext,
 } from "@fabr-build/core";
-import { checkMainClass, createJarAction, MANIFEST_NAME, manifestFile, processorsOf } from "../JarPackage";
+import { checkMainClass, compileOutputOf, COMPILED_CLASSES_DIR, createJarAction, MANIFEST_NAME, manifestFile, processorsOf } from "../JarPackage";
 
 interface JarInputs {
   srcs: FileSet[];
@@ -152,7 +152,7 @@ function buildJar(context: TargetContext, inputs: JarInputs, edges: JarEdges, at
           { label: "Compiling", constraints: BUILD_OVERRIDE }
         )
       );
-  return classes.then(compiled =>
+  return classes.then(output => compileOutputOf(output, COMPILED_CLASSES_DIR)).then(compiled =>
     (mainClass === undefined ? Computable.resolve(undefined) : checkMainClass(context.name, mainClass, compiled, runtime)).then(() => {
     const manifest = manifestFile([
       ["Manifest-Version", "1.0"],

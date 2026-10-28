@@ -12,6 +12,7 @@ number.
 
 @fabr-build/js:
 - js_package now takes a compile_deps property for compile-only inputs.
+- Add sources operation.
 
 ## Fabr 0.3.1
 @fabr-build/core:

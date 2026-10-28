@@ -1165,6 +1165,39 @@ export function resolveBarePackage<V, C>(registry: RepositoryReader<V, C>, refer
 }
 
 /**
+ * Fetch what the package `reference` names publishes for `operation` (see
+ * {@link RepositoryReader.fetchFor}), at the reference's lower bound, with no
+ * closure and no joint resolution: the files a file request under that
+ * operation asks for.
+ */
+export function resolvePublishedFor<V, C>(registry: RepositoryReader<V, C>, reference: RepositoryRef, operation: string): Computable<FileSet> {
+  const { req, version, origin, unpublished } = lowerBound(registry, reference);
+  return publishedFor(registry, req.name, version, operation, origin).catch(unpublished);
+}
+
+/**
+ * Fetch what `name` at `version` publishes for `operation`, refusing where its
+ * registry publishes nothing beside its packages.
+ */
+function publishedFor<V, C>(
+  registry: RepositoryReader<V, C>,
+  name: string,
+  version: V,
+  operation: string,
+  origin: IProvenanceStep | undefined
+): Computable<FileSet> {
+  if (registry.fetchFor === undefined) {
+    return Computable.reject(publishesNothingFor(registry, name, operation));
+  }
+  return registry.fetchFor(name, version, operation).then(files => new FileSet(files, origin));
+}
+
+/** Make the error refusing `name` under `operation`, for a registry that publishes nothing beside its packages. */
+export function publishesNothingFor<V, C>(registry: RepositoryReader<V, C>, name: string, operation: string): FabrError {
+  return new FabrError(`${registry.name ?? "its repository"} publishes nothing for '${operation}' beside ${name}`);
+}
+
+/**
  * Resolve the package `reference` names as an **instance**: the package at the
  * reference's lower bound, carrying each requirement that version declares as
  * a reference to `registry`, the provided ones marked. Its files are fetched
@@ -1268,10 +1301,16 @@ function lowerBound<V, C>(
 /**
  * The files of the package a resolution's root is pinned to, with no
  * dependency closure: the version `resolution` bound `reference` to, fetched
- * alone. The pinned counterpart of {@link resolveBarePackage}, for a holder of
- * a stored resolution (a catalog).
+ * alone, or given `operation`, what that version publishes for it. The pinned
+ * counterpart of {@link resolveBarePackage} and {@link resolvePublishedFor},
+ * for a holder of a stored resolution (a catalog).
  */
-export function fetchPinnedPackage<V, C>(registry: RepositoryReader<V, C>, reference: RepositoryRef, resolution: Resolution): Computable<FileSet> {
+export function fetchPinnedPackage<V, C>(
+  registry: RepositoryReader<V, C>,
+  reference: RepositoryRef,
+  resolution: Resolution,
+  operation?: string
+): Computable<FileSet> {
   const { format } = registry;
   const { rootIndex, graph } = resolution as DomainResolution<V, C>;
   const req = requirementOf(format, reference);
@@ -1285,6 +1324,9 @@ export function fetchPinnedPackage<V, C>(registry: RepositoryReader<V, C>, refer
     throw new FabrError(`${requirementKey(req)} is a package built in this project, which its repository does not hold`);
   }
   const origin = resolutionOrigin(allowingBuilds(format), req, graph.selections);
+  if (operation !== undefined) {
+    return publishedFor(registry, bound.publishedName ?? bound.name, version, operation, origin);
+  }
   return registry.fetch(bound.publishedName ?? bound.name, version).then(pkg => new PackageFileSet(pkg, pkg.packageName, pkg.version, [], origin));
 }
 

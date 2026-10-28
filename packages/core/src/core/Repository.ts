@@ -210,6 +210,12 @@ export interface RepositoryReader<V, C> extends RequirementSource<V> {
   fetchFiles(reference: RepositoryRef): Computable<FileSet>;
   /** Fetch one exact package version's content. */
   fetch(name: string, version: V): Computable<PackageFileSet>;
+  /**
+   * Fetch what one exact package version publishes for `operation`, `doc` or
+   * `sources`: its documentation, or its source tree. Optional: a registry
+   * without it publishes neither.
+   */
+  fetchFor?(name: string, version: V, operation: string): Computable<FileSet>;
   /** Get the published-version list for repair suggestions; undefined when the
    * registry has no such package. Reads a mutable document — failure-path
    * only, and optional: absence means no suggestions. */
