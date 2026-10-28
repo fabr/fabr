@@ -101,6 +101,10 @@ describe("reportPathOf", () => {
     return file;
   };
 
+  afterAll(() => {
+    fs.rmSync(install, { recursive: true, force: true });
+  });
+
   it("names a compiled file by its source, relative to the source mount", () => {
     const file = stage("a.test.js", "a.test.ts");
     assert.equal(withInstallCwd(() => reportPathOf(file)), "a.test.ts");

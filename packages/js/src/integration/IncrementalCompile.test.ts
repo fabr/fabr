@@ -330,17 +330,6 @@ async function contentOf(files: FileSet, name: string): Promise<string> {
   return toPromise(files.readFile(name));
 }
 
-/** The same sources compiled from nothing, in a store of their own — the oracle
- * every incremental case is measured against. */
-async function compiledFromNothing(sources: Record<string, string>, target?: string): Promise<FileSet> {
-  const cold = new Compile(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-reference-")));
-  if (target !== undefined) {
-    cold.emit(target);
-  }
-  cold.write(sources);
-  return cold.build();
-}
-
 /**
  * Every incremental scenario. Each is asked the same question — *does the run
  * produce what a full compile of the same sources produces?* — because that is
@@ -368,6 +357,17 @@ function incrementalScenarios(): void {
       recordEngagement(compile);
       fs.rmSync(root, { recursive: true, force: true });
     });
+
+    /** The same sources compiled from nothing, in a store of their own — the
+     * oracle every incremental case is measured against. */
+    async function compiledFromNothing(sources: Record<string, string>, target?: string): Promise<FileSet> {
+      const cold = new Compile(fs.mkdtempSync(path.join(root, "reference-")));
+      if (target !== undefined) {
+        cold.emit(target);
+      }
+      cold.write(sources);
+      return cold.build();
+    }
 
     /** Every output a compile of these sources produces, so a test can say
      * "complete" and mean it. */
@@ -502,7 +502,7 @@ function incrementalScenarios(): void {
           reported = diagnosticLines(err.message);
         }
       );
-      const cold = new Compile(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-deleted-ref-")));
+      const cold = new Compile(fs.mkdtempSync(path.join(root, "deleted-ref-")));
       cold.write({ "index.ts": 'import { pad } from "./util";\nexport const padded = pad("x");\n' });
       let fromNothing: string[] = [];
       await cold.build().then(
@@ -1146,7 +1146,7 @@ function incrementalScenarios(): void {
       compile.write({ "index.ts": edit });
       const incremental = await compile.build();
       expect(compile.runs).to.equal(2);
-      const cold = new Compile(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-reference-self-")));
+      const cold = new Compile(fs.mkdtempSync(path.join(root, "reference-self-")));
       cold.asPackage("subject");
       cold.write({ ...SELF_REFERENCING_SOURCES, "index.ts": edit });
       expect(incremental.toManifest()).to.equal((await cold.build()).toManifest());
@@ -1357,7 +1357,7 @@ function incrementalScenarios(): void {
       expect(bumped.bound, "and it was bounded").to.not.equal(undefined);
       expect(bumped.bound!.roots, "at the depender alone").to.equal(1);
 
-      const cold = new Compile(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-dep-bump-ref-")), [
+      const cold = new Compile(fs.mkdtempSync(path.join(root, "dep-bump-ref-")), [
         pkg("used", "export declare const value: 2 | 4;\n"),
       ]);
       cold.write(sources);
@@ -1433,7 +1433,7 @@ describe("incremental compiles against a bounded program", () => {
     sources: Record<string, string>,
     options: { target?: string; project?: string } = {}
   ): Promise<FileSet> {
-    const cold = new Compile(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-bound-ref-")));
+    const cold = new Compile(fs.mkdtempSync(path.join(root, "bound-ref-")));
     if (options.target !== undefined) {
       cold.emit(options.target);
     }
@@ -1527,7 +1527,7 @@ describe("incremental compiles against a bounded program", () => {
     expect(compile.runs).to.equal(2);
     /* The question is not what the emit looks like under isolatedModules, but
      * that the bounded run's answer is the full compile's. */
-    const cold = new Compile(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-standin-ref-")));
+    const cold = new Compile(fs.mkdtempSync(path.join(root, "standin-ref-")));
     cold.strictModules();
     cold.write({ ...base, "use.ts": edited });
     expect(built.toManifest()).to.equal((await cold.build()).toManifest());
@@ -1698,7 +1698,7 @@ describe("incremental compiles against a bounded program", () => {
       () => "no failure",
       (err: Error) => err.message
     );
-    const cold = new Compile(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-standin-ref-")));
+    const cold = new Compile(fs.mkdtempSync(path.join(root, "standin-ref-")));
     cold.write({ ...base, "index.ts": broken });
     const reference = await cold.build().then(
       () => "no failure",

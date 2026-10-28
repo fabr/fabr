@@ -101,6 +101,10 @@ describe("installAssetHooks", () => {
       'import("./esm.mjs").then(m => console.log(JSON.stringify({ cjs: { title: styles.title, logo }, esm: m.default })));\n'
   );
 
+  afterAll(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it("makes stylesheet and binary imports yield their stubs on both loader seams", () => {
     const output = execFileSync(process.execPath, [path.join(dir, "probe.cjs")], { encoding: "utf8" });
     expect(JSON.parse(output)).to.deep.equal({
