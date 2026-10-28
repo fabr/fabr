@@ -92,14 +92,29 @@ const PACKUMENT_FILE = "packument.json";
  *  READMEs and publish history of the full one. */
 const ABBREVIATED_PACKUMENT = "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*";
 
-/** Map name → version for the names `assignments` assign exactly one distinct
- *  version — the names a manifest dependency can be unambiguously rewritten to. */
-function uniqueAssignments(assignments: readonly NpmPublishIdentity[]): Map<string, string> {
+/** Map name → its coordinate for the names `assignments` assign exactly one
+ *  distinct version — the names a manifest dependency can be unambiguously
+ *  rewritten to. */
+function uniqueAssignments(assignments: readonly NpmPublishIdentity[]): Map<string, NpmPublishIdentity> {
   const byName = new Map<string, Set<string>>();
   for (const { name, version } of assignments) {
     byName.set(name, (byName.get(name) ?? new Set()).add(version));
   }
-  return new Map(select([...byName], ([name, versions]) => (versions.size === 1 ? ([name, [...versions][0]] as const) : undefined)));
+  return new Map(
+    select([...byName], ([name, versions]) => (versions.size === 1 ? ([name, { name, version: [...versions][0] }] as const) : undefined))
+  );
+}
+
+/** Map a target's name → the one npm coordinate `targets` publish it at, for
+ *  the targets published at exactly one. */
+function uniqueTargets(targets: ReadonlyMap<string, readonly RepositoryPublishRef[]>): Map<string, NpmPublishIdentity> {
+  return new Map(
+    select([...targets], ([target, coordinates]) => {
+      const npm = coordinates.filter(coordinate => isRepositoryReader(coordinate.source) && coordinate.source.format === NPM_FORMAT);
+      const distinct = new Map(npm.map(({ name, version }) => [`${name}@${version}`, { name, version }]));
+      return distinct.size === 1 ? ([target, [...distinct.values()][0]] as const) : undefined;
+    })
+  );
 }
 
 /**
@@ -212,12 +227,18 @@ export class NPMRepository
    * distinct version; any install-relevant dependency still versionless after
    * rewriting (a built package this sync does not publish, or one it publishes
    * at conflicting versions with none at this destination) is unresolvable for
-   * every consumer, so packaging fails. Each member's files are laid out under
+   * every consumer, so packaging fails. A dependency on a target of the project
+   * that the release publishes under another name (`targets`) is rewritten to
+   * that coordinate in npm's alias form. Each member's files are laid out under
    * `package/` and gzip-tarred; its carrier holds that `.tgz` plus the rewritten
    * manifest as a sidecar (sans `dist`, which `publish` injects) and the
    * co-member dependency names for deps-first upload ordering.
    */
-  public package(members: PublishMember[], release: readonly RepositoryPublishRef[]): Computable<PublishableFileSet[]> {
+  public package(
+    members: PublishMember[],
+    release: readonly RepositoryPublishRef[],
+    targets: ReadonlyMap<string, readonly RepositoryPublishRef[]> = new Map()
+  ): Computable<PublishableFileSet[]> {
     /* The npm-shaped slice of the release: coordinates addressed to ANY npm
      * destination (so a cross-registry npm twin participates in the rewrite),
      * each with the name and version it assigns. A destination is npm
@@ -227,24 +248,32 @@ export class NPMRepository
      * file path, say) has no name/version and is ignored. */
     const npmRelease = release
       .filter(coordinate => isRepositoryReader(coordinate.source) && coordinate.source.format === NPM_FORMAT);
-    /* Later entries win the merge: own-batch assignments over release-wide. (A
-     * name can't be batch-unique but release-ambiguous *and missing* from the
-     * batch map — own coordinates are a subset of the release's.) */
-    const memberVersions = new Map([
+    /* Later entries win the merge: a name published by the release over a
+     * target's name, and own-batch assignments over release-wide. (A name can't
+     * be batch-unique but release-ambiguous *and missing* from the batch map —
+     * own coordinates are a subset of the release's.) */
+    const published = uniqueTargets(targets);
+    const coMembers = new Map([
+      ...published,
       ...uniqueAssignments(npmRelease),
       ...uniqueAssignments(members.map(member => member.destination)),
     ]);
-    const memberNames = new Set(npmRelease.map(identity => identity.name));
+    /* For upload order, every name a dependency may name a member by: the
+     * release's names, whatever versions they are published at, and its targets'. */
+    const memberNames = new Map([
+      ...[...published].map(([target, { name }]): [string, string] => [target, name]),
+      ...npmRelease.map(({ name }): [string, string] => [name, name]),
+    ]);
     return Computable.forAll(
-      members.map(member => this.packageMember(member, memberVersions, memberNames)),
+      members.map(member => this.packageMember(member, coMembers, memberNames)),
       (...carriers: PublishableFileSet[]) => carriers
     );
   }
 
   private packageMember(
     member: PublishMember,
-    memberVersions: ReadonlyMap<string, string>,
-    memberNames: ReadonlySet<string>
+    coMembers: ReadonlyMap<string, NpmPublishIdentity>,
+    memberNames: ReadonlyMap<string, string>
   ): Computable<PublishableFileSet> {
     const identity = member.destination;
     const { content } = member;
@@ -253,7 +282,7 @@ export class NPMRepository
         throw new FabrError(`cannot publish ${identity.name}: the built package has no package.json`);
       }
       return readJsonFile(manifestFile, toJsonObject).then(built => {
-        const manifest = rewriteManifest(built, identity, memberVersions);
+        const manifest = rewriteManifest(built, identity, coMembers);
         const dangling = unresolvableDependencies(manifest);
         if (dangling.length > 0) {
           throw new FabrError(

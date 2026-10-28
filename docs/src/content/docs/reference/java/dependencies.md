@@ -184,11 +184,10 @@ hold everything its packages require; a repository manager that proxies Central 
 
 ## Known issues
 
-- Publishing a jar to a Maven repository is not supported, and a built jar carries no
-  `pom.xml`.
 - `<exclusions>`, relocations and POM profiles are not read. A package that a dependency's POM
   requires can't be removed, only overridden with `!`.
-- A repository that needs credentials can't be used.
+- A repository that needs credentials can't be used. Publishing is covered in
+  [Publishing](/reference/java/publishing/).
 - A reference can't name a classifier or type, such as `natives-linux` or a `test-jar`.
 - Timestamped `-SNAPSHOT` versions are not resolved.
 - A package whose POM declares a dependency as `provided` passes it on to whatever uses the

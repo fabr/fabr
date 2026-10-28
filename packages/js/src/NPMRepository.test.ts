@@ -1267,6 +1267,22 @@ describe("NPMRepository publish", () => {
     expect(err.message).to.match(/no version to record for 'base'/);
   });
 
+  it("rewrites a dependency on a target published under another name to npm's alias form", async () => {
+    const repo = new NPMRepository(REG, npmrcContext());
+    const app = coord(repo, "app:1.0.0");
+    const widgets = coord(repo, "@acme/widgets:1.2.0");
+    const content = publishFileSet({
+      "package.json": JSON.stringify({ name: "app", dependencies: { widgets: "*" }, peerDependencies: { widgets: "*" } }),
+    });
+    /* The release publishes target `widgets` as @acme/widgets: app's code
+     * imports `widgets`, so the dependency keeps that name and aliases it. */
+    const [carrier] = await repo.package([{ destination: app, content }], [app, widgets], new Map([["widgets", [widgets]]]));
+    const manifest = JSON.parse(await (await carrier.get("package.json"))!.readString());
+    expect(manifest.dependencies.widgets).to.equal("npm:@acme/widgets@^1.2.0");
+    expect(manifest.peerDependencies.widgets).to.equal("npm:@acme/widgets@1.2.0");
+    expect(carrier.dependsOn).to.deep.equal(["@acme/widgets"]);
+  });
+
   it("rewrites by the release-wide assignment when twins share one version", async () => {
     const repo = new NPMRepository(REG, npmrcContext());
     const other = new NPMRepository(REG, npmrcContext());
@@ -1931,7 +1947,7 @@ describe("multi-route domains (repository groups)", () => {
     expect(scoped.source).to.not.equal(pub.source);
     /* And the bound member packages its own batch end to end. */
     const content = publishFileSet({ "package.json": JSON.stringify({ name: "@scope/x", version: "0.0.0-dev" }) });
-    const carriers = await toPromise(scoped.source.package([{ destination: scoped, content }], [scoped, pub]));
+    const carriers = await toPromise(scoped.source.package([{ destination: scoped, content }], [scoped, pub], new Map()));
     expect(carriers.map(carrier => carrier.provides)).to.deep.equal(["@scope/x"]);
   });
 

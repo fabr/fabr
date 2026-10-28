@@ -488,6 +488,10 @@ registerRepositoryProvider("test_ns_repo", () => Computable.resolve(new TestName
 /* Every member any destination has been asked to package, in call order — the
  * probe behind the "packages only what is named" test. */
 const packagedMembers: string[] = [];
+/* The content each member was handed to the writer as. */
+const packagedContent: FileSet[] = [];
+/* The targets each packaging was told the release publishes, by name. */
+const packagedTargets: Array<ReadonlyMap<string, readonly RepositoryPublishRef[]>> = [];
 
 /* Publish-capable repository double: vends publish refs, and packages each
  * member's content verbatim plus a `manifest.txt` naming its address — for
@@ -499,8 +503,14 @@ class TestPubRepo extends TestRepo implements RepositoryWriter {
     return new RepositoryPublishRef(this, { name: written.substring(0, colon), version: written.substring(colon + 1) });
   }
 
-  public package(members: PublishMember[]): Computable<PublishableFileSet[]> {
+  public package(
+    members: PublishMember[],
+    _release: readonly RepositoryPublishRef[],
+    targets: ReadonlyMap<string, readonly RepositoryPublishRef[]>
+  ): Computable<PublishableFileSet[]> {
+    packagedTargets.push(targets);
     packagedMembers.push(...members.map(member => member.destination.toString()));
+    packagedContent.push(...members.map(member => member.content));
     return Computable.resolve(
       members.map(
         member =>
@@ -1583,6 +1593,43 @@ describe("BuildContext", () => {
     };
     expect(await modeOf("lib-debug")).to.equal("debug");
     expect(await modeOf("lib")).to.equal("release");
+  });
+
+  it("Hands the writer a member's package with the edges its build bound, under any operation", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "default MODE = plain;\n" +
+      "targetdef test_pub { }\n" +
+      "targetdef test_package { }\n" +
+      "targetdef test_carrier { deps = PACKAGES; }\n" +
+      "targetdef sync { * = FILES; }\n" +
+      "test_pub pub { }\n" +
+      "test_package base { }\n" +
+      "test_carrier lib { deps = base; }\n" +
+      "sync shipped { pub:lib:1.0.0 = lib; }\n";
+    for (const operation of ["files", "build"]) {
+      /* A fresh model each time: under `files` the release is the one built under `build`. */
+      const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+      expect(errors).to.deep.equal([]);
+      packagedContent.length = 0;
+      await model.getConfig(Constraints.of({ [BUILD_OPERATION]: operation }), execution).materialize(writtenOnCommandLine("shipped:pub:lib:1.0.0:mode.txt"));
+      const [content] = packagedContent;
+      expect(content, operation).to.be.instanceOf(PackageFileSet);
+      const pkg = content as PackageFileSet;
+      expect(pkg.packageName).to.equal("lib");
+      expect(pkg.dependencies.map(dep => [dependencyName(dep), dep.package?.packageName])).to.deep.equal([["base", "base"]]);
+    }
+  });
+
+  it("Tells the writer every target the release publishes, packaging one member or all", async () => {
+    packagedTargets.length = 0;
+    await releaseConfig("build").materialize(writtenOnCommandLine("release/pub/alpha/1.0.0/manifest.txt"));
+    const [targets] = packagedTargets;
+    expect([...targets].map(([name, coordinates]) => [name, coordinates.map(each => each.toString())])).to.deep.equal([
+      ["c1", ["pub:alpha:1.0.0"]],
+      ["c2", ["pub:beta:2.0.0"]],
+    ]);
   });
 
   it("Packages only the members a reference names", async () => {

@@ -791,13 +791,15 @@ const INSTALLED_DEPENDENCY_FIELDS = ["dependencies", "optionalDependencies", "pe
 
 /**
  * Rewrite the built manifest for publication: assign the coordinate's name/version,
- * and rewrite any dependency that names a release co-member to that member's
- * assigned version. Returns a fresh object (never mutates the input).
+ * and rewrite any dependency `members` holds to the coordinate it holds for it:
+ * the version where the dependency is published under its own name, else npm's
+ * alias form (`npm:<name>@<range>`), so the code still imports the name it was
+ * built against. Returns a fresh object (never mutates the input).
  */
 export function rewriteManifest(
   manifest: Record<string, unknown>,
   coordinate: NpmPublishIdentity,
-  memberVersions: ReadonlyMap<string, string>
+  members: ReadonlyMap<string, NpmPublishIdentity>
 ): Record<string, unknown> {
   /* The assigned identity leads (a versionless built manifest has no `version`
    * to overwrite in place — appending it last would read oddly). */
@@ -815,7 +817,7 @@ export function rewriteManifest(
     if (isJsonObject(deps)) {
       /* A peerDependency pins exact; the rest take a caret range (see
        * {@link rewriteCoMemberField}). */
-      result[field] = rewriteCoMemberField(deps, memberVersions, field === "peerDependencies");
+      result[field] = rewriteCoMemberField(deps, members, field === "peerDependencies");
     }
   }
   return result;
@@ -831,29 +833,32 @@ export function rewriteManifest(
  */
 function rewriteCoMemberField(
   deps: Record<string, unknown>,
-  memberVersions: ReadonlyMap<string, string>,
+  members: ReadonlyMap<string, NpmPublishIdentity>,
   exact: boolean
 ): Record<string, unknown> {
   /* Entries fabr doesn't rewrite are passed through as published, whatever they
    * are — this rewrites a manifest, it doesn't validate one. */
   const rewritten: Record<string, unknown> = { ...deps };
   for (const dep of Object.keys(rewritten)) {
-    const memberVersion = memberVersions.get(dep);
-    if (memberVersion !== undefined) {
-      rewritten[dep] = exact ? memberVersion : `^${memberVersion}`;
+    const member = members.get(dep);
+    if (member !== undefined) {
+      const range = exact ? member.version : `^${member.version}`;
+      rewritten[dep] = member.name === dep ? range : `npm:${member.name}@${range}`;
     }
   }
   return rewritten;
 }
 
-/** List the release members this manifest depends on (for deps-first upload
- * ordering). */
-export function memberDependencies(manifest: Record<string, unknown>, memberNames: ReadonlySet<string>): string[] {
+/** List the release members this manifest depends on, by the names they are
+ * published under, given each name a dependency may name one by (for deps-first
+ * upload ordering). */
+export function memberDependencies(manifest: Record<string, unknown>, memberNames: ReadonlyMap<string, string>): string[] {
   const names = new Set<string>();
   for (const field of DEPENDENCY_FIELDS) {
     for (const dep of dependencyBlock(manifest[field]).keys()) {
-      if (memberNames.has(dep)) {
-        names.add(dep);
+      const published = memberNames.get(dep);
+      if (published !== undefined) {
+        names.add(published);
       }
     }
   }

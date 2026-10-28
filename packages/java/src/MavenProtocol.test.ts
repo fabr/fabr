@@ -77,6 +77,21 @@ describe("MAVEN_FORMAT", () => {
   });
 });
 
+describe("parseMavenPublishCoordinate", () => {
+  it("reads a coordinate with an exact version, written with colons or a slash", () => {
+    for (const written of ["com.example:app:1.0.0", "com.example/app:1.0.0"]) {
+      expect(MAVEN_FORMAT.parsePublishCoordinate(parseName(written))).to.deep.equal({ name: "com.example/app", version: "1.0.0" });
+    }
+  });
+
+  it("refuses a coordinate with no version, a range, a projection, or a -SNAPSHOT", () => {
+    expect(() => MAVEN_FORMAT.parsePublishCoordinate(parseName("com.example:app"))).to.throw(/must name a group, an artifact and a version/);
+    expect(() => MAVEN_FORMAT.parsePublishCoordinate(parseName('com.example:app:"[1.0,2.0)"'))).to.throw(/not an exact version/);
+    expect(() => MAVEN_FORMAT.parsePublishCoordinate(parseName("com.example:app:1.0.0:META-INF/*"))).to.throw(/must name a group/);
+    expect(() => MAVEN_FORMAT.parsePublishCoordinate(parseName("com.example:app:1.0.0-SNAPSHOT"))).to.throw(/-SNAPSHOT version/);
+  });
+});
+
 describe("splitMavenName", () => {
   it("splits group from artifact, and refuses anything else", () => {
     expect(splitMavenName("org.slf4j/slf4j-api")).to.deep.equal({ groupId: "org.slf4j", artifactId: "slf4j-api" });

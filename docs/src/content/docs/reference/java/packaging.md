@@ -21,6 +21,7 @@ and any other layout with a rule you write yourself out of the same pieces.
 | `mvn javadoc:javadoc` / `gradle javadoc` | `fabr doc app`; see [Javadoc and sources](#javadoc-and-sources). |
 | `maven-source-plugin` / `withSourcesJar()` | `fabr sources app`. |
 | `target/app.jar` / `build/libs/app.jar` | Kept in fabr's cache; `fabr cp app ./out` copies it out. |
+| `mvn deploy` | A `sync` target; see [Publishing](/reference/java/publishing/). |
 
 ## The jar
 
@@ -231,8 +232,6 @@ the jars on the classpath, and no `layers.idx` for layered container images.
 
 ## Known issues
 
-- A jar can't be published to a Maven repository; see
-  [Dependencies](/reference/java/dependencies/#known-issues).
 - The javadoc doesn't link to the JDK's documentation or to the dependencies' javadoc.
 - `javadoc` runs no annotation processors, so what one generates, such as Lombok's methods and
   constructors, is missing from the javadoc.

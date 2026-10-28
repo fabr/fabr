@@ -278,7 +278,14 @@ export interface RepositoryWriter {
    * unresolvable (an error), is this ecosystem's policy. Pure/cacheable — the
    * carriers' files ARE the wire artifact, returned parallel to `members`.
    */
-  package(members: PublishMember[], release: readonly RepositoryPublishRef[]): Computable<PublishableFileSet[]>;
+  package(
+    members: PublishMember[],
+    release: readonly RepositoryPublishRef[],
+    /** The coordinates the whole release publishes each target of the project
+     *  at, by the target's name, for a member whose dependency on a target is
+     *  recorded as that target's coordinate. */
+    targets: ReadonlyMap<string, readonly RepositoryPublishRef[]>
+  ): Computable<PublishableFileSet[]>;
 
   /**
    * Upload one prior {@link package} result to this repository's `url` — the one
@@ -328,9 +335,12 @@ export class PendingFiles {
 export type Resolved = Materialized | ResolvedNode | ProjectedPackage | TargetRef | PendingFiles;
 
 /** One member of a destination's publish batch: where the content goes (the
- *  vended publish ref) and the identityless built content to publish there. */
+ *  vended publish ref) and the built content to publish there. */
 export interface PublishMember {
   readonly destination: RepositoryPublishRef;
+  /** The member's content: where it is one package, that package as its build
+   *  made it, with the edges that build bound (a {@link PackageFileSet});
+   *  otherwise its files. */
   readonly content: FileSet;
 }
 

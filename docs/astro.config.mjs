@@ -99,6 +99,7 @@ export default defineConfig({
             { label: "Testing", link: "/reference/java/testing/" },
             { label: "Running programs", link: "/reference/java/running/" },
             { label: "Packaging", link: "/reference/java/packaging/" },
+            { label: "Publishing", link: "/reference/java/publishing/" },
           ],
         },
         {

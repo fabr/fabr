@@ -246,6 +246,11 @@ cannot publish @acme/widgets: no version to record for '@acme/core' — a depend
 Add the dependency to the `sync`, or give it a `version` property, which is then what dependants
 require.
 
+A package published under a name other than its target's is required under the target's name, as
+an npm alias, since that is the name the dependant's code imports. With
+`@npm:@acme/widgets:1.2.0 = widgets;` in the `sync`, a dependant built with `deps = widgets;`
+publishes `"widgets": "npm:@acme/widgets@^1.2.0"`.
+
 A sibling depended on under another name (`deps = @acme/core -> core;`) is written as an npm
 alias with the sibling's `version` property, `"core": "npm:@acme/core@1.4.0"`, whether or not the
 `sync` publishes it; see [Known issues](#known-issues).

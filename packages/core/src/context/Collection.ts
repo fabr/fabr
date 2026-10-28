@@ -67,6 +67,19 @@ export class LooseSources {
 }
 
 /**
+ * A property's sources, read for publishing: as the `files` reading reads
+ * them, a target built for its files and nothing joining the target's
+ * resolution, except that a package keeps its identity and the edges its own
+ * build bound, which a publish writes into the package's manifest. For `sync`
+ * alone.
+ */
+export class SyncSources {
+  /** Tells this from the other readings by type. */
+  public readonly read = "sync";
+  constructor(public readonly sources: SourceRef[]) {}
+}
+
+/**
  * The requirement keys the framework reads a meaning from: what a target
  * states under them it passes on, as requirements of whatever requires the
  * target too. Every other key is private to the target's build.
@@ -98,7 +111,7 @@ export type MaterializedRequirements<P> = {
 
 /** One requirement's sources as its reader returned them: bare, they are read
  * for their files alone. */
-type Read = SourceRef[] | PackageSources | ContainedSources | LooseSources;
+type Read = SourceRef[] | PackageSources | ContainedSources | LooseSources | SyncSources;
 
 /** One requirement as a rule states it: the sources a FILES or PACKAGES
  * property names, as its reader returned them. */
@@ -123,8 +136,9 @@ export function permissive<P extends Requirements>(requirements: P): Permissive<
 }
 
 /** How a requirement's sources are read: for their files alone, as packages,
- * as packages kept in their containers, or for the loose files among them. */
-type Reading = "files" | "packages" | "contained" | "loose";
+ * as packages kept in their containers, for the loose files among them, or for
+ * publishing. */
+type Reading = "files" | "packages" | "contained" | "loose" | "sync";
 
 /** One resolved requirement: its sources as the target's collection resolved
  * them, and how they are finished. */
@@ -292,7 +306,7 @@ export function resolveRequirements(target: TargetContext, required: Requirement
         lists.map((list, index) => (readings[index] === "loose" ? list.filter(source => !(source instanceof RepositoryRef)) : list)),
         readings.map(reading => reading !== "contained"),
         names.map(name => name === EXTENDS_KEY),
-        readings.map(reading => (reading === "files" || reading === "loose" ? "files" : undefined))
+        readings.map(reading => (reading === "files" || reading === "loose" || reading === "sync" ? "files" : undefined))
       ).then(
         ({ lists: resolved, references, conflicts }) =>
           new ResolvedRequirements(

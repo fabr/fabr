@@ -28,32 +28,42 @@
  */
 
 import {
+  compareText,
   Computable,
-  FabrError,
   DOC_OPERATION,
+  FabrError,
   fetchArchive,
   fetchDocument,
   fetchFile,
   FileSet,
+  HttpResponse,
+  IFile,
   MemoryCache,
+  MemoryFile,
   Name,
   NamespaceRef,
   PackageFileSet,
+  PublishableFileSet,
+  PublishMember,
+  PublishStatus,
   Reference,
   Repository,
   RepositoryPublishRef,
   RepositoryReader,
   RepositoryRef,
   RepositoryRegistration,
+  RepositoryWriter,
   Requirement,
-  SOURCES_OPERATION,
   resolveBarePackage,
+  sendRequest,
+  SOURCES_OPERATION,
   TargetContext,
   vendPackageRef,
   versionChildren,
   VersionNotFoundError,
 } from "@fabr-build/core";
 import { MAVEN_FORMAT, mavenName, splitMavenName } from "./MavenProtocol";
+import { checksumFiles, mergedMetadata, metadataPath, packageMavenMember, repositoryPath } from "./MavenPublish";
 import { MavenConstraint, MavenVersion, MAVEN_VERSIONS } from "./MavenVersion";
 import { coordinateText, EffectivePom, effectivePom, parsePom, passedOnDependencies, PomCoordinate, RawPom } from "./Pom";
 import { parseXml, xmlChild, xmlChildren } from "./Xml";
@@ -121,7 +131,7 @@ function lowestSatisfying(versions: readonly MavenVersion[], constraint: MavenCo
   return satisfying.find(version => MAVEN_VERSIONS.isStable?.(version) !== false) ?? satisfying[0];
 }
 
-export class MavenRepository implements Repository, RepositoryReader<MavenVersion, MavenConstraint> {
+export class MavenRepository implements Repository, RepositoryReader<MavenVersion, MavenConstraint>, RepositoryWriter {
   public readonly format = MAVEN_FORMAT;
   private readonly versions = new MemoryCache<string, MavenVersion[] | undefined>();
   private readonly poms = new MemoryCache<string, RawPom | undefined>();
@@ -160,8 +170,84 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     return versionChildren(this, this.format, name, this.publishedVersions(name));
   }
 
-  public getRepositoryPublishRef(): RepositoryPublishRef {
-    throw new FabrError(`${this.name} cannot be published to yet`);
+  /** Vend the publish coordinate `name` names: `<group>:<artifact>:<version>`, the version exact. */
+  public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
+    return new RepositoryPublishRef(this, this.format.parsePublishCoordinate(name));
+  }
+
+  /**
+   * Package this destination's members (RepositoryWriter implementation): each
+   * its artifact and a POM generated from what its package requires, with
+   * checksums, at their paths in the repository. A dependency on a target of
+   * the project records the coordinate the release publishes it at.
+   */
+  public package(
+    members: PublishMember[],
+    _release: readonly RepositoryPublishRef[],
+    targets: ReadonlyMap<string, readonly RepositoryPublishRef[]>
+  ): Computable<PublishableFileSet[]> {
+    const coMembers = new Set(members.map(member => member.destination.name));
+    return Computable.forAll(
+      members.map(member => packageMavenMember(member, targets, coMembers)),
+      (...carriers: PublishableFileSet[]) => carriers
+    );
+  }
+
+  /**
+   * Upload a packaged member (RepositoryWriter implementation), as `mvn deploy`
+   * does: each file `PUT` at its path, the POM last but for the package's
+   * `maven-metadata.xml`, which is read, merged and `PUT` after them. A member
+   * whose POM is already there is already synced.
+   */
+  public publish(artifact: PublishableFileSet): Computable<PublishStatus> {
+    const { name, version } = artifact.destination;
+    const { groupId, artifactId } = splitMavenName(name);
+    const pomPath = repositoryPath(groupId, artifactId, version, `${artifactId}-${version}.pom`);
+    return sendRequest(`${this.url}/${pomPath}`, { method: "GET" }).then(existing => {
+      if (existing.statusCode === 200) {
+        return Computable.resolve<PublishStatus>("already-synced");
+      }
+      if (existing.statusCode !== 404) {
+        throw this.failure("reading", pomPath, existing);
+      }
+      /* The POM goes up last, as it is what marks the version published. */
+      const files = [...artifact].sort(([a], [b]) => Number(a.startsWith(pomPath)) - Number(b.startsWith(pomPath)) || compareText(a, b));
+      const uploads = files.reduce<Computable<void>>(
+        (previous, [path, file]) => previous.then(() => file.getBuffer().then(bytes => this.put(path, bytes))),
+        Computable.resolve(undefined)
+      );
+      return uploads.then(() => this.updateMetadata(groupId, artifactId, version)).then((): PublishStatus => "published");
+    });
+  }
+
+  /** Bring a package's `maven-metadata.xml` up to date with a version just uploaded. */
+  private updateMetadata(groupId: string, artifactId: string, version: string): Computable<void> {
+    const path = metadataPath(groupId, artifactId);
+    return sendRequest(`${this.url}/${path}`, { method: "GET" }).then(response => {
+      if (response.statusCode !== 200 && response.statusCode !== 404) {
+        throw this.failure("reading", path, response);
+      }
+      const existing = response.statusCode === 200 ? response.body.toString("utf8") : undefined;
+      const merged = Buffer.from(mergedMetadata(existing, groupId, artifactId, version, new Date()));
+      return [[path, MemoryFile.from(merged.toString("utf8"))] as [string, IFile], ...checksumFiles(path, merged)].reduce<Computable<void>>(
+        (previous, [each, file]) => previous.then(() => file.getBuffer().then(bytes => this.put(each, bytes))),
+        Computable.resolve(undefined)
+      );
+    });
+  }
+
+  /** `PUT` `bytes` at `path` in the repository. */
+  private put(path: string, bytes: Buffer): Computable<void> {
+    return sendRequest(`${this.url}/${path}`, { method: "PUT", headers: { "content-type": "application/octet-stream" }, body: bytes }).then(response => {
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw this.failure("uploading", path, response);
+      }
+    });
+  }
+
+  private failure(doing: string, path: string, response: HttpResponse): FabrError {
+    const detail = response.body.toString("utf8").trim();
+    return new FabrError(`${doing} ${this.url}/${path} failed (${response.statusCode})${detail === "" ? "" : `: ${detail}`}`);
   }
 
   /** Name the environment a resolution depends on: none, as no artifact is chosen by platform. */

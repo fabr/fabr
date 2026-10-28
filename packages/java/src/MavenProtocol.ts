@@ -105,14 +105,34 @@ function validateMavenRequirement({ name, versionConstraint, override }: Require
   }
 }
 
+/**
+ * Parse a publish coordinate, `<group>:<artifact>:<version>` (or
+ * `<group>/<artifact>:<version>`), whose version is exact.
+ */
+export function parseMavenPublishCoordinate(name: Name): { name: string; version: string } {
+  const { name: packageName, versionConstraint, projection } = splitMavenReference(name);
+  const literal = name.toString();
+  if (versionConstraint === undefined || projection !== undefined) {
+    throw new FabrError(`publish coordinate '${literal}' must name a group, an artifact and a version (com.example:app:1.0.0)`);
+  }
+  splitMavenName(packageName);
+  if (versionConstraint.startsWith("[") || versionConstraint.startsWith("(") || MAVEN_VERSIONS.exactVersion?.(versionConstraint) === undefined) {
+    throw new FabrError(`'${versionConstraint}' is not an exact version, which a publish coordinate for '${packageName}' must name`).withHelp(
+      "write the version itself (1.0.0); a range cannot be published"
+    );
+  }
+  if (/-SNAPSHOT$/i.test(versionConstraint)) {
+    throw new FabrError(`publishing a -SNAPSHOT version (${literal}) is not supported`);
+  }
+  return { name: packageName, version: versionConstraint };
+}
+
 export const MAVEN_FORMAT: PackageFormat<MavenVersion, MavenConstraint> = {
   ...MAVEN_VERSIONS,
   resolutionTag: "maven:resolve:2",
   splitReference: splitMavenReference,
   validateRequirement: validateMavenRequirement,
-  parsePublishCoordinate: () => {
-    throw new FabrError("publishing to a Maven repository is not supported yet");
-  },
+  parsePublishCoordinate: parseMavenPublishCoordinate,
   readContentPackage: () => Computable.reject(new FabrError("content cannot be read as a Maven package yet")),
   makeRunnable: (pkg, context) =>
     jarMainClass(pkg).then(mainClass => {

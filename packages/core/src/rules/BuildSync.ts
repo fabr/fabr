@@ -18,10 +18,12 @@
  */
 
 import { RequiredSources, TargetContext, Unmaterialized } from "../context/index";
-import { FILES_OVERRIDE } from "../model/Constraints";
+import { BUILD_OVERRIDE } from "../model/Constraints";
+import { SyncSources } from "../context/Collection";
 import { Computable, ComputableSource } from "../core/Computable";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
 import { RepositoryPublishRef, RepositoryWriter, SourceRef } from "../core/Repository";
+import { TargetRef } from "../core/TargetRef";
 import { refuseNamespaces } from "../core/NamespaceRef";
 import { PublishableFileSet } from "../core/PublishableFileSet";
 import { Name, NAME_COMPONENT_SEPARATOR, NAME_LEVEL_SEPARATOR } from "../core/Name";
@@ -39,18 +41,20 @@ import { RuleImplementation, RuleResult } from "./Types";
  */
 export default {
   /* Each member's content is a requirement keyed by its written coordinate
-   * ({@link contentKey}), read for its files alone whatever the sync is asked
-   * for, and materialized only for the members a name reaches. The coordinates
-   * themselves are validated once, in evaluate ({@link syncPackages}). */
+   * ({@link contentKey}), built under `build` whatever the sync is asked for,
+   * read for publishing (a package with the edges its build bound, nothing
+   * resolved here), and materialized only for the members a name reaches. The
+   * coordinates themselves are validated once, in evaluate
+   * ({@link syncPackages}). */
   requirements(context) {
     return context
       .getWildcardProperties()
       .then(
         props =>
           new Map(
-            props.map((prop): [string, Computable<SourceRef[]>] => [
+            props.map((prop): [string, Computable<SyncSources>] => [
               contentKey(prop.decl),
-              context.getFileProperty(contentKey(prop.decl), FILES_OVERRIDE),
+              context.getFileProperty(contentKey(prop.decl), BUILD_OVERRIDE).then(sources => new SyncSources(sources)),
             ])
           )
       );
@@ -254,10 +258,11 @@ export class SyncSource implements FileSource {
    */
   private packageBatch(paths: string[]): Computable<PublishableFileSet[]> {
     const release = [...this.table.values()].map(member => member.assigned);
-    return Computable.forAll(
+    const materialized = Computable.forAll(
       paths.map(path => this.content.materialize(contentKey(this.member(path).decl)).then(sources => refuseNamespaces(sources))),
       (...content: FileSet[][]) => content
-    ).then(content => {
+    );
+    return Computable.forAll([this.publishedTargets(), materialized], (targets, content) => ({ targets, content })).then(({ targets, content }) => {
       const batches = new Map<RepositoryWriter, { path: string; index: number }[]>();
       paths.forEach((path, index) => {
         const writer = this.member(path).assigned.source;
@@ -270,15 +275,39 @@ export class SyncSource implements FileSource {
             .package(
               batch.map(({ path, index }) => ({
                 destination: this.member(path).assigned,
-                content: FileSet.unionAll(...content[index]),
+                content: content[index].length === 1 ? content[index][0] : FileSet.unionAll(...content[index]),
               })),
-              release
+              release,
+              targets
             )
             .then(packed => batch.forEach(({ index }, i) => (carriers[index] = packed[i])))
         ),
         () => carriers
       );
     });
+  }
+
+  /**
+   * Find the targets the whole release publishes: for each member whose content
+   * is a reference to one target and no more, that target's name with the
+   * member's coordinate. Only the written references are read: nothing is
+   * built or resolved.
+   */
+  private publishedTargets(): Computable<Map<string, RepositoryPublishRef[]>> {
+    const members = [...this.table.values()];
+    return Computable.forAll(
+      members.map(member => this.context.getFileProperty(contentKey(member.decl), BUILD_OVERRIDE)),
+      (...contents: SourceRef[][]) => {
+        const targets = new Map<string, RepositoryPublishRef[]>();
+        contents.forEach((sources, index) => {
+          const [only] = sources;
+          if (sources.length === 1 && only instanceof TargetRef && only.whole) {
+            targets.set(only.name, [...(targets.get(only.name) ?? []), members[index].assigned]);
+          }
+        });
+        return targets;
+      }
+    );
   }
 
   /** Get the member at `path`, a key taken from {@link table}. */
