@@ -386,7 +386,7 @@ function describe(task: TaskDescription): string {
        * else derives its verb from the operation. */
       const operation = operationOf(task.constraints);
       const verb = task.label ?? OPERATION_VERBS.get(operation) ?? `Running ${operation} on`;
-      return `${verb} ${declName(task.target)}`;
+      return `${verb} ${[...(task.subtargetNames ?? []), declName(task.target)].join(" for ")}`;
     }
     case "repository-resolve":
       /* Named by whose requirements they are (the consuming target, or the

@@ -21,7 +21,7 @@ import { ActionContext, ICreateOptions } from "../core/BuildCache";
 import { Computable, ComputableSource } from "../core/Computable";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
 import { FSFileSource } from "../core/FSFileSource";
-import { isRepository, isRepositoryReader, Materialized, ProjectedPackage, renamedAs, RepositoryRef, SourceRef } from "../core/Repository";
+import { isRepository, isRepositoryReader, Materialized, ProjectedPackage, renamedAs, RepositoryRef, Resolved, SourceRef } from "../core/Repository";
 import { ResolutionContext } from "../resolver/Types";
 import { PERMISSIVE_RESOLUTION } from "./CollectionPoint";
 import { materializeShallow, resolveLists } from "./CollectionPoint";
@@ -46,7 +46,7 @@ import {
   unmaterialized,
 } from "./Collection";
 import { RunnableFileSet, toRunnable } from "../core/RunnableFileSet";
-import { Dependency, dependencyName, isPackage, PackageFileSet, Provided, ResolvedNode } from "../core/PackageFileSet";
+import { Dependency, isPackage, PackageFileSet, ResolvedNode } from "../core/PackageFileSet";
 import { BuildAction, BuildResult } from "../core/BuildAction";
 import {
   isRuleBlockDefinition,
@@ -104,7 +104,7 @@ import { mergeMapInto, PropertyMap, PropertyMapValue, recordMapOrigin } from "./
 import { IDependencyStack, IUseFrame, useFrameOf, useSiteOf } from "./Stack";
 import { NameLabel, ReferenceLabel } from "../model/Errors";
 import { IRuleSelection, selectRule } from "./RuleSelection";
-import { BlockResolvedTarget, DeclaredResolvedTarget, BlockTargetNode } from "./ResolvedTarget";
+import { BlockResolvedTarget, DeclaredResolvedTarget, BlockTargetNode, passedOn } from "./ResolvedTarget";
 import {
   collectRunnable,
   captureStages,
@@ -2030,8 +2030,10 @@ class RuleScope {
    * edges the references among its `dependencies`, `provided` and
    * `optional_provided`, a reference to another of the block's targets bound
    * to that one's node, and its build the target's in the block's ordinary
-   * configuration of `constraints`. Every requirement is read, as resolving a
-   * target reads them, so a cycle among the block's targets is found here.
+   * configuration of `constraints`. What it passes on is what any target's
+   * node passes on ({@link passedOn}), its `extends` read as material. Every
+   * requirement is read, as resolving a target reads them, so a cycle among
+   * the block's targets is found here.
    */
   public blockTargetNode(context: DeclaredTargetContext, rule: RuleDefinition, constraints: Constraints): Computable<TargetNode> {
     const name = declName(context.target);
@@ -2053,29 +2055,26 @@ class RuleScope {
         const entries = requirementEntries(stated instanceof Permissive ? stated.requirements : stated);
         return Computable.forAll(
           entries.map(([, required]) => (required instanceof Computable ? required : Computable.resolve(required))),
-          (...values: Read[]) => new Map(entries.map(([key], index) => [key, sourcesOf(values[index])]))
+          (...values: Read[]) => new Map(entries.map(([key], index) => [key, values[index]]))
         );
       })
       .then(lists => {
-        if ((lists.get(EXTENDS_KEY) ?? []).length > 0) {
-          throw new FabrError(`'${name}' is made from a package ('extends'), which a rule's block cannot resolve with the rest of what the block requires`);
-        }
-        return Computable.forAll(
-          [DEPENDENCIES_KEY, PROVIDED_KEY, OPTIONAL_PROVIDED_KEY].map(key => edgesOf(lists.get(key) ?? [])),
-          (...edges: Dependency[][]) => edges
+        /* What the target is made from is read as material, as any target's
+         * is, which joins no resolution. */
+        const made = lists.get(EXTENDS_KEY);
+        const material =
+          made === undefined || sourcesOf(made).length === 0
+            ? Computable.resolve<ReadonlyArray<Resolved>>([])
+            : resolveRequirements(context, new Map([[EXTENDS_KEY, made]])).then(resolved => resolved.sources.get(EXTENDS_KEY) ?? []);
+        const transitive = [DEPENDENCIES_KEY, PROVIDED_KEY, OPTIONAL_PROVIDED_KEY];
+        const edges = Computable.forAll(
+          transitive.map(key => edgesOf(sourcesOf(lists.get(key) ?? []))),
+          (...each: Dependency[][]) => new Map(transitive.map((key, index) => [key, each[index]]))
+        );
+        return Computable.forAll([material, edges] as const, (madeFrom, byName) =>
+          BlockTargetNode.of(context, passedOn(madeFrom, key => byName.get(key) ?? []), target)
         );
       })
-      .then(([dependencies, provided, optional]) =>
-        BlockTargetNode.of(
-          context,
-          [...dependencies, ...provided, ...optional],
-          new Map<string, Provided>([
-            ...provided.map((dep): [string, Provided] => [dependencyName(dep), "expected"]),
-            ...optional.map((dep): [string, Provided] => [dependencyName(dep), "optional"]),
-          ]),
-          target
-        )
-      )
       .catch(err => {
         throw context.failure(err);
       });

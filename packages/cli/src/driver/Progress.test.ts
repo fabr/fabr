@@ -35,13 +35,14 @@ import { IPaneContent, TerminalStream } from "./Terminal";
  * cast — the AST decl type isn't constructible from here). */
 const target = (name: string): ITargetDecl => ({ name } as unknown as ITargetDecl);
 
-function building(name: string, label?: string): ITargetBuildTask {
+function building(name: string, label?: string, subtargetNames?: string[]): ITargetBuildTask {
   return {
     kind: "target-build",
     target: target(name),
     constraints: Constraints.of({}),
     requiredBy: [],
     label,
+    subtargetNames,
   };
 }
 
@@ -92,6 +93,13 @@ describe("ProgressReporter", () => {
     const { lines, reporter } = report();
     send(reporter, { kind: "task-start", id: 1, task: building("//pkg", "Compiling"), state: "running" });
     expect(lines[0]).to.equal("info:Compiling //pkg");
+  });
+
+  it("names a target of a rule's block by its name and those it is built for", () => {
+    const { lines, reporter } = report();
+    send(reporter, { kind: "task-start", id: 1, task: building("//shop", undefined, ["jar"]), state: "running" });
+    send(reporter, { kind: "task-start", id: 2, task: building("//shop", "Compiling", ["f", "inner"]), state: "running" });
+    expect(lines).to.deep.equal(["info:Building jar for //shop", "info:Compiling f for inner for //shop"]);
   });
 
   it("names the requiring chain and explicit constraints on the start line only", () => {

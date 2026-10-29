@@ -37,6 +37,7 @@ import {
   PropertyType,
 } from "./AST";
 import { Diagnostic, ISourcePosition, Log, LogLevel } from "../support/Log";
+import { NamePartKind } from "../core/Name";
 
 interface ITargetPropertyError {
   property: string;
@@ -394,10 +395,19 @@ export function validateRuleBlock(
   if (schema !== undefined) {
     const values = [block.result, ...[...block.properties, ...block.targets.flatMap(target => target.properties)].flatMap(writtenNames)];
     for (const value of values) {
-      const property = parameterProperty(value.value, rule.param);
-      if (property !== undefined && !schema.properties.has(property) && !schema.properties.has("*")) {
-        log.log(DIAG_RULE_PARAMETER_PROPERTY, { param: rule.param, property, type: rule.type!, loc: declPosn(value) });
-        fail();
+      /* The value read whole (`pkg.x`), and each `${pkg.x}` within it. */
+      const read = [
+        parameterProperty(value.value, rule.param),
+        ...value.value
+          .getSubstitutions()
+          .filter(part => part.kind === NamePartKind.VarSubst)
+          .map(part => parameterProperty(part.value, rule.param)),
+      ];
+      for (const property of new Set(read)) {
+        if (property !== undefined && !schema.properties.has(property) && !schema.properties.has("*")) {
+          log.log(DIAG_RULE_PARAMETER_PROPERTY, { param: rule.param, property, type: rule.type!, loc: declPosn(value) });
+          fail();
+        }
       }
     }
   }

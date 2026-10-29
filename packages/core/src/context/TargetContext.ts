@@ -876,7 +876,7 @@ export class AnonymousTargetContext extends TargetContext {
   }
 
   public failure(err: Error): DependencyFailedError {
-    return new DependencyFailedError(this.declared.target, err, this.label);
+    return new DependencyFailedError(this.declared.target, err, this.label, this.taskDescription().subtargetNames);
   }
 
   /**
@@ -886,7 +886,8 @@ export class AnonymousTargetContext extends TargetContext {
    */
   public taskDescription(): ITargetBuildTask {
     return {
-      ...this.declared.taskDescription(),
+      /* Its creator's, which names the target of a rule's block it is made for. */
+      ...(this.creator ?? this.declared).taskDescription(),
       /* This evaluation's own constraints (operation included), which may
        * differ from the owner's (a test compile forced to `build`). */
       constraints: this.context.getConstraints(),
@@ -941,11 +942,14 @@ export class ScopedTargetContext extends DeclaredTargetContext {
   }
 
   public failure(err: Error): DependencyFailedError {
-    return new DependencyFailedError(this.getDeclaredContext().target, err, this.label);
+    return new DependencyFailedError(this.getDeclaredContext().target, err, undefined, this.taskDescription().subtargetNames);
   }
 
   public taskDescription(): ITargetBuildTask {
-    return { ...this.getDeclaredContext().taskDescription(), constraints: this.context.getConstraints(), label: this.label };
+    /* Described as the target it is built for, with its own name: its verb is
+     * its operation's, as any target's is. */
+    const { kind, target, requiredBy, subtargetNames } = this.scope.matched.taskDescription();
+    return { kind, target, requiredBy, constraints: this.context.getConstraints(), subtargetNames: [this.label, ...(subtargetNames ?? [])] };
   }
 }
 

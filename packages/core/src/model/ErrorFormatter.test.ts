@@ -156,6 +156,14 @@ describe("DiagnosticErrorFormatter", () => {
     expect((diag.notes ?? []).map(note => note.message)).to.deep.equal(["required by RUNNER", "required by thing"]);
   });
 
+  it("names a target of a rule's block, and what it is built for, in its failure", () => {
+    const shop = targetDecl("shop");
+    expect(capture(new DependencyFailedError(shop, new Error("boom"), undefined, ["jar"]))[0].message).to.equal("Failed to build jar for shop: boom");
+    expect(capture(new DependencyFailedError(shop, new Error("boom"), "Compiling", ["f", "inner"]))[0].message).to.equal("Failed to build f for inner for shop: boom");
+    const compile = new DependencyFailedError(shop, new CommandFailedError("$ javac", [], "exited with error code 1"), "Compiling", ["jar"]);
+    expect(capture(compile)[0].message).to.equal("Compiling jar for shop failed:\n$ javac\nexited with error code 1");
+  });
+
   it("shows the whole chain where a failure also arrives with hops left out", () => {
     /* top requires mid, which requires leaf, which fails. top holds leaf in
      * its graph and builds it too, so the failure reaches top along the chain

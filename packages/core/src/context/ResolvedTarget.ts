@@ -32,11 +32,33 @@ import { NameLabel } from "../model/Errors";
 import type { DeclaredTargetContext } from "./TargetContext";
 
 /** What a target passes on to whatever requires it. */
-interface Stated {
+export interface Stated {
   version?: string;
   dependencies: ReadonlyArray<Dependency>;
   /** The names among `dependencies` that are provided requirements. */
   provided?: ReadonlyMap<string, Provided>;
+}
+
+/**
+ * Get what a target passes on to whatever requires it, from its requirements:
+ * where its `extends` (`made`) is one package, that package's version and
+ * requirements; otherwise the edges `edgesOf` gives for its `dependencies`,
+ * `provided` and `optional_provided`, the last two named provided.
+ */
+export function passedOn(made: ReadonlyArray<unknown>, edgesOf: (name: string) => Dependency[]): Stated {
+  const [only, ...others] = made;
+  if (others.length === 0 && isPackage(only)) {
+    return { version: only.version, dependencies: only.dependencies, provided: only.provided };
+  }
+  const provided = edgesOf(PROVIDED_KEY);
+  const optional = edgesOf(OPTIONAL_PROVIDED_KEY);
+  return {
+    dependencies: [...edgesOf(DEPENDENCIES_KEY), ...provided, ...optional],
+    provided: new Map([
+      ...provided.map((dep): [string, Provided] => [dependencyName(dep), "expected"]),
+      ...optional.map((dep): [string, Provided] => [dependencyName(dep), "optional"]),
+    ]),
+  };
 }
 
 /** A declared target's requirements and how to build it: what its node and
@@ -82,19 +104,7 @@ class TargetBuild {
         return [{ reference, package: source }];
       });
     };
-    const [only, ...others] = this.requirements.get(EXTENDS_KEY) ?? [];
-    if (others.length === 0 && isPackage(only)) {
-      return { version: only.version, dependencies: only.dependencies, provided: only.provided };
-    }
-    const provided = carried(PROVIDED_KEY);
-    const optional = carried(OPTIONAL_PROVIDED_KEY);
-    return {
-      dependencies: [...carried(DEPENDENCIES_KEY), ...provided, ...optional],
-      provided: new Map([
-        ...provided.map((dep): [string, Provided] => [dependencyName(dep), "expected"]),
-        ...optional.map((dep): [string, Provided] => [dependencyName(dep), "optional"]),
-      ]),
-    };
+    return passedOn(this.requirements.get(EXTENDS_KEY) ?? [], carried);
   }
 
   /**
@@ -254,18 +264,14 @@ export class BlockTargetNode extends ResolvedNode implements TargetNode {
   }
 
   /** Make the node of the target `context` names, which passes on `dependencies`, those named in `provided` provided, and which `target` resolves to build. */
-  public static of(
-    context: DeclaredTargetContext,
-    dependencies: ReadonlyArray<Dependency>,
-    provided: ReadonlyMap<string, Provided>,
-    target: () => Computable<ResolvedTarget>
-  ): BlockTargetNode {
+  public static of(context: DeclaredTargetContext, stated: Stated, target: () => Computable<ResolvedTarget>): BlockTargetNode {
     return new BlockTargetNode(context, target, {
       content: targetContent(context, () => target().then(resolved => resolved.content.files() as Computable<PackageFileSet | SourceRef[]>)),
       packageName: context.name,
-      dependencies,
+      version: stated.version,
+      dependencies: stated.dependencies,
       origin: targetOrigin(context),
-      provided,
+      provided: stated.provided ?? new Map(),
     });
   }
 

@@ -151,6 +151,10 @@ export interface ITargetBuildTask {
   /** For an anonymous sub-target: the action verb used as its display verb
    *  ("Compiling"); absent for a declared target. */
   label?: string;
+  /** For a target of a rule's block, or one made for it: the name the block
+   *  gives it and those of the block targets it is built for, innermost first
+   *  (`["jar"]` for a rule's `jar` built for `shop`); absent otherwise. */
+  subtargetNames?: readonly string[];
 }
 
 /**

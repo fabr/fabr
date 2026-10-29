@@ -189,10 +189,10 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
          * resolving a target directly, a GLOBAL the target reached (one its rule
          * read, or one a property of its named), whose value says nothing of who
          * wanted it, or a reference another declaration wrote (a catalog's
-         * entry, reached by a member of the catalog). An anonymous sub-target
-         * (label set) is part of its declared target. */
+         * entry, reached by a member of the catalog). A sub-target is part of
+         * its declared target. */
         const direct =
-          (cause instanceof DependencyFailedError && !cause.label) || (cause instanceof ReferenceFailedError && cause.target !== err.target);
+          (cause instanceof DependencyFailedError && !cause.isPart) || (cause instanceof ReferenceFailedError && cause.target !== err.target);
         const hops: IHop[] = direct
           ? [...trail, { message: `required by ${declName(err.target)}`, loc: declPosn(err.target), inferred: true }]
           : trail;
@@ -242,7 +242,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
         ? [...this.chainNotes(cause.left.provenance, undefined, cause.key), ...detailNote(cause.left), ...detailNote(cause.right)]
         : [cause.left, cause.right].flatMap(side => [...this.chainNotes(side.provenance, undefined, cause.key), ...detailNote(side)]);
       return owner
-        ? { message: `Failed to build ${owner.target.name}: ${cause.message}`, loc: declPosn(owner.target), notes, help: helpOf(cause) }
+        ? { message: `Failed to build ${failedName(owner)}: ${cause.message}`, loc: declPosn(owner.target), notes, help: helpOf(cause) }
         : { message: cause.message, notes, help: helpOf(cause) };
     }
     if (cause instanceof TargetNotPackageError) {
@@ -250,16 +250,16 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
       const requirer = cause.requirer instanceof RepositoryRef ? chainSteps(cause.requirer.steps, undefined) : cause.requirer.origin;
       const notes = [...this.chainNotes(requirer), ...this.chainNotes(cause.dependency.origin)];
       return owner
-        ? { message: `Failed to build ${owner.target.name}: ${cause.message}`, loc: declPosn(owner.target), notes, help: helpOf(cause) }
+        ? { message: `Failed to build ${failedName(owner)}: ${cause.message}`, loc: declPosn(owner.target), notes, help: helpOf(cause) }
         : { message: cause.message, notes, help: helpOf(cause) };
     }
     if (owner && cause instanceof TestsFailedError) {
       /* Tests failed: the target built fine, so report the (pre-rendered)
        * test summary rather than a build failure */
-      return { message: `${owner.target.name}: ${cause.message}`, loc: declPosn(owner.target) };
+      return { message: `${failedName(owner)}: ${cause.message}`, loc: declPosn(owner.target) };
     }
     if (owner) {
-      return { message: `Failed to build ${owner.target.name}: ${cause.message}`, loc: declPosn(owner.target), help: helpOf(cause) };
+      return { message: `Failed to build ${failedName(owner)}: ${cause.message}`, loc: declPosn(owner.target), help: helpOf(cause) };
     }
     return { message: cause.message, help: helpOf(cause) };
   }
@@ -325,7 +325,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
     const written = chain?.kind === MODEL_PROVENANCE && (owner === undefined || (chain as IModelStep).target === owner.target);
     if (!written) {
       const anchor = owner
-        ? { message: `Failed to build ${owner.target.name}: ${cause.message}`, loc: declPosn(owner.target) }
+        ? { message: `Failed to build ${failedName(owner)}: ${cause.message}`, loc: declPosn(owner.target) }
         : { message: cause.message };
       return { ...anchor, notes: [...this.refNotes(cause.refs, cause.delivered), ...cause.builds.flatMap(origin => this.chainNotes(origin))], help };
     }
@@ -345,12 +345,12 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
   }
 
   /** Describe the execution failures of one target as a single diagnostic; an anonymous
-   * sub-target (label set) reports with its verb ("Compiling X failed"). */
+   * sub-target (label set) reports with its verb ("Compiling X failed"), and a
+   * target of a rule's block by its names ("Compiling jar for X failed"). */
   private describeExecution(err: DependencyFailedError, causes: Error[]): IDiagnostic {
     const detail = describeCauses(causes, declName(err.target));
-    const message = err.label
-      ? `${err.label} ${err.target.name} failed:\n${detail}`
-      : `Failed to build ${err.target.name}: ${detail}`;
+    const name = failedName(err);
+    const message = err.label ? `${err.label} ${name} failed:\n${detail}` : `Failed to build ${name}: ${detail}`;
     return { message, loc: declPosn(err.target) };
   }
 
@@ -432,6 +432,11 @@ function retraces(longer: Trail, shorter: Trail): boolean {
 
 function trailKey(trail: IDiagnosticNote[]): string {
   return JSON.stringify(trail.map(noteKey));
+}
+
+/** @return the name a failure is reported under: its target's, after the names of the target of a rule's block it is and those that one is built for ("jar for shop"). */
+function failedName(err: DependencyFailedError): string {
+  return [...(err.subtargetNames ?? []), err.target.name].join(" for ");
 }
 
 /**

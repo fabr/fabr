@@ -205,7 +205,8 @@ guarded ones included.
 A target in the block is built under the name of the target the rule is building, as that target's
 own work, so whatever its rule names after its target is named after the target being built (see
 [Packages are named after the target](#a-rule-of-several-steps)). The block's name for a target is
-how the block refers to it, and how fabr's progress output labels its work (`report app`).
+how the block refers to it, and how fabr's progress output and errors name its work: `Building
+report for app`, `Compiling report for app failed`.
 
 ## Package versions
 
@@ -285,10 +286,9 @@ it on the target, or give it a default in the targetdef.
 
 ## Known issues
 
-- A property read through `${…}` that the type doesn't declare is reported when a target is built,
-  as `'g.whom' has no value`, rather than when fabr reads your files.
-- Progress output labels a step with the block's name for it (`report app`), not with a verb as
-  fabr's own steps are (`Compiling app`).
+- In a rule for every type (one that names no type), a property the parameter reads that the
+  matched target's type doesn't declare is reported only when a target is built, as
+  `'g.whom' has no value`, since there is no type to check it against when fabr reads your files.
 - A target in the block whose own type is built by a rule written in `.fabr` doesn't take part
   in the block's [package versions](#package-versions): its targets choose theirs apart.
 - Every target in a block is built under the target's name, and a property read as packages takes
@@ -297,7 +297,3 @@ it on the target, or give it a default in the targetdef.
   its type reads as packages: it fails with `'<name>' is required here as two different
   packages`. Give one of them a name of its own (`deps = api -> app-api impl;`), or, where you
   want their files, take them as files (`classes:classes/**`).
-- A target in the block made from a package (a `patched` target, or another type with `extends`)
-  can't be reached by the block's result: building the target fails with `'<name>' is made from a
-  package ('extends'), which a rule's block cannot resolve with the rest of what the block
-  requires`.

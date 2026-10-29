@@ -197,6 +197,19 @@ testRules.push(
       }),
   })
 );
+/* A package made from the package its `srcs` names, as `patched` is: named
+ * as the target, at that package's version. */
+testRules.push(
+  defineRule({
+    type: "test_made",
+    properties: {},
+    requirements: context => Computable.resolve({ extends: context.getPackageProperty("srcs") }),
+    evaluateMaterialized: (context, { extends: made }) => {
+      const base = made.find((pkg): pkg is PackageFileSet => pkg instanceof PackageFileSet);
+      return new PackageFileSet(new Map([["made.txt", MemoryFile.from(context.name)]]), context.name, base?.version);
+    },
+  })
+);
 /* As test_good, collecting its `deps` permissively. */
 testRules.push(
   defineRule({
@@ -716,6 +729,14 @@ let lastRequiredBy: string[] = [];
 registerRule("test_records_requirer", {}, context => {
   const task = context.taskDescription();
   lastRequiredBy = task.kind === "target-build" ? task.requiredBy.map(declName) : [];
+  return Computable.resolve(EMPTY_FILESET);
+});
+
+/* Records the names its task gives it as a target of a rule's block. */
+let lastSubtargetNames: readonly string[] | undefined;
+registerRule("test_records_names", {}, context => {
+  const task = context.taskDescription();
+  lastSubtargetNames = task.kind === "target-build" ? task.subtargetNames : undefined;
   return Computable.resolve(EMPTY_FILESET);
 });
 
@@ -4388,6 +4409,38 @@ describe("rules written in .fabr", () => {
     expect(messagesOf(failure).join("\n")).to.contain("nowhere");
   });
 
+  it("describes a target of the block by its name and those of the block targets it is built for", async () => {
+    const defs = "targetdef test_records_names { }\ntargetdef wrapper { }\n";
+    await filesOf(modelOf(defs + "rule lintable pkg = held { test_records_names held { } }\nlintable a { }\n"), "a");
+    expect(lastSubtargetNames).to.deep.equal(["held"]);
+    /* A rule applied to a target another block's target made. */
+    await filesOf(
+      modelOf(defs + "rule lintable pkg = held { test_records_names held { } }\nrule wrapper w = m { test_maker m { } }\nwrapper a { }\n"),
+      "a"
+    );
+    expect(lastSubtargetNames).to.deep.equal(["held", "m"]);
+  });
+
+  it("takes what a target of the block made from a package passes on from that package", async () => {
+    registryRequirements.set("base@1.0.0", [{ name: "shared", versionConstraint: "^1.0.0" }]);
+    registryRequirements.set("raiser@1.0.0", [{ name: "shared", versionConstraint: "^1.2.0" }]);
+    try {
+      const model = modelOf(
+        "targetdef test_registry { }\ntest_registry @reg { }\ntargetdef test_made { srcs = PACKAGES; }\n" +
+          "rule lintable pkg = held { test_made base { srcs = @reg:base:1.0.0; } test_good held { deps = pkg.srcs base @reg:raiser; } }\n" +
+          "lintable a { srcs = @reg:shared:^1.0.0; }\n"
+      );
+      await filesOf(model, "a");
+      const described = (pkg: PackageFileSet): string => `${pkg.packageName}@${pkg.version ?? "-"}`;
+      expect(lastDepSets.map(pkg => described(pkg as PackageFileSet)).sort()).to.deep.equal(["a@1.0.0", "raiser@1.0.0", "shared@1.2.0"]);
+      const made = lastDepSets.find(pkg => (pkg as PackageFileSet).packageName === "a") as PackageFileSet;
+      expect(made.packages.map(described)).to.deep.equal(["shared@1.2.0"]);
+    } finally {
+      registryRequirements.delete("base@1.0.0");
+      registryRequirements.delete("raiser@1.0.0");
+    }
+  });
+
   it("finds a cycle among the block's targets as a cycle", async () => {
     const model = modelOf("rule lintable pkg = held { test_holds held { deps = pkg.srcs other; } test_holds other { deps = held; } }\ntest_file one { content = 1; }\nlintable a { srcs = one; }\n");
     expect(circularOf(await failureOf(model, "a"))).to.be.instanceOf(CircularDependencyError);
@@ -4554,7 +4607,7 @@ describe("rules written in .fabr", () => {
     expect(messagesOf(await failureOf(model, "a")).join("\n")).to.contain("'rule lintable pkg' is applied inside its own application");
   });
 
-  it("refuses a parameter property the rule's type does not declare", () => {
+  it("refuses a parameter property the rule's type does not declare, read whole or substituted", () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     toBuildModel(
@@ -4563,5 +4616,12 @@ describe("rules written in .fabr", () => {
       testContributions
     );
     expect(errors.join("\n")).to.contain("'pkg.nope' reads a property 'lintable' does not declare");
+    errors.length = 0;
+    toBuildModel(
+      [parseBuildString(EMPTY_FILESET, "TEST.fabr", DEFS + "rule lintable pkg = test_file r { content = hello-${pkg.whom}; }\n", logger)],
+      logger,
+      testContributions
+    );
+    expect(errors.join("\n")).to.contain("'pkg.whom' reads a property 'lintable' does not declare");
   });
 });

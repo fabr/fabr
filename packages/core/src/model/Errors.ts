@@ -47,11 +47,20 @@ export class DependencyFailedError extends FabrError {
    * collapses the intermediate hop.
    */
   public readonly label?: string;
+  /** Set when the failure is a target of a rule's block, or one made for it:
+   * its names, as {@link ITargetBuildTask.subtargetNames}. */
+  public readonly subtargetNames?: readonly string[];
 
-  constructor(target: ITargetDecl, cause: Error, label?: string) {
+  constructor(target: ITargetDecl, cause: Error, label?: string, subtargetNames?: readonly string[]) {
     super(`dependency '${target.name}' failed`, cause);
     this.target = target;
     this.label = label;
+    this.subtargetNames = subtargetNames;
+  }
+
+  /** @return true if the failure is a part of `target` rather than the target itself, otherwise false. */
+  public get isPart(): boolean {
+    return this.label !== undefined || (this.subtargetNames?.length ?? 0) > 0;
   }
 }
 
