@@ -42,6 +42,7 @@ import {
   ITargetDecl,
   ITargetDefDecl,
   IValue,
+  optionalLibOf,
   PropertyType,
 } from "./AST";
 import { Diagnostic, ISourcePosition, Log, LogLevel } from "../support/Log";
@@ -289,6 +290,12 @@ function flattenStage({ stage, fds }: PendingStage): ICommandStage {
   }
   stage.mergedTo = mergedTo;
   return stage;
+}
+
+/** @return true if `name` is written `<package>:<path>`, an include of a plugin's optional lib, otherwise false. */
+function isOptionalLibName(name: Name): boolean {
+  const lib = optionalLibOf(name);
+  return lib !== undefined && lib.plugin !== "" && !lib.path.isEmpty() && !lib.path.hasLevelSeparator();
 }
 
 function isWhitespace(ch: number): boolean {
@@ -1124,7 +1131,8 @@ export class BuildParser {
    *
    * The name is a path relative to the including file, which may **glob**
    * (`include rules/*.fabr;`) — naming every file that matches; a pattern
-   * matching none is an error, as a missing path is. Variables are not: which files make up the model must be readable
+   * matching none is an error, as a missing path is. Or it is one of a
+   * plugin's `optional_libs`, `<package>:<path>`, which may glob likewise. Variables are not: which files make up the model must be readable
    * from the build files themselves, never from a value that varies by config.
    */
   private parseIncludeDecl(): IIncludeDecl {
@@ -1140,10 +1148,10 @@ export class BuildParser {
         this.absoluteIncludeName();
       } else if (name.hasVarSubst()) {
         this.invalidIncludeName("variables are not permitted");
-      } else if (name.hasLevelSeparator()) {
+      } else if (name.hasLevelSeparator() && !isOptionalLibName(name)) {
         /* A bare name token carries no `<...>`/`-> ` facet (only parseReference
          * layers those on), so `:` is the whole of reference syntax reachable here. */
-        this.invalidIncludeName("an include names a path, not a reference");
+        this.invalidIncludeName("an include names a path, or a plugin's optional lib as <package>:<path>");
       } else if (!name.hasGlob() && name.getSimpleName() === undefined) {
         /* The decl's own invariant: a name that does not glob is a single literal,
          * so the loader reads "plain path or pattern?" off `getSimpleName()` alone.

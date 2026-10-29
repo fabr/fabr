@@ -267,6 +267,10 @@ targetdef fabr_plugin {
     # The plugin's `.fabr` files: literal paths or patterns, relative to this
     # file, read as written (no substitution, and every guard's together).
     libs = FILES;
+    # The plugin's `.fabr` files a project reads only where it includes one,
+    # by its path within the plugin's package (`include <package>:<path>;`):
+    # literal paths or patterns, relative to this file, as `libs` are.
+    optional_libs = FILES;
     # Further files the plugin holds, beside its code as it runs. Files the
     # plugin's own rules build need a stage the plugin is used at without them
     # (`resources<STAGE=1> = …;` with `plugin X<STAGE=0>;`).

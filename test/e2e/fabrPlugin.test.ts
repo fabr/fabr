@@ -92,6 +92,25 @@ describe("e2e: a plugin built in the project", () => {
     expect(manifest["@fabr-build/plugin"]).to.deep.equal({ libs: ["plugin/lib/GREET.fabr"] });
   });
 
+  it("lists a plugin's optional libs in its package.json, and reads one only where it is included", () => {
+    const files = project("include greeter:plugin/lib/opt/farewell.fabr;\nfarewell bye { text = Goodbye; }\n");
+    files["PROJECT.fabr"] = files["PROJECT.fabr"].replace(
+      "libs = plugin/lib/GREET.fabr;",
+      "libs = plugin/lib/GREET.fabr; optional_libs = plugin/lib/opt/*.fabr;"
+    );
+    files["plugin/lib/opt/farewell.fabr"] = "targetdef farewell {\n  text = STRING;\n}\n\nrule farewell f = greeter:rules/Greeting;\n";
+    /* Not valid fabr: the project would fail to load if it were read. */
+    files["plugin/lib/opt/unused.fabr"] = "{ not fabr\n";
+    const manifest = JSON.parse(runFabr(files, ["cat", "greeter:package.json"]).stdout);
+    expect(manifest["@fabr-build/plugin"]).to.deep.equal({
+      libs: ["plugin/lib/GREET.fabr"],
+      optional_libs: ["plugin/lib/opt/farewell.fabr", "plugin/lib/opt/unused.fabr"],
+    });
+    const result = runFabr(files, ["cat", "bye:greeting.txt"]);
+    expect(result.stderr).to.not.match(/^error/m);
+    expect(result.stdout).to.equal("Goodbye\n");
+  });
+
   it("uses an installed plugin by a name the project gives it, its rules naming it as itself", () => {
     const files = {
       ...STUB_TSC,

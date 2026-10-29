@@ -21,6 +21,7 @@ import {
   DeclKind,
   declPosn,
   IBuildFileContents,
+  IIncludeDecl,
   INameValue,
   IPluginDecl,
   IPropertyDecl,
@@ -30,6 +31,7 @@ import {
   isRuleBlock,
   ITargetDecl,
   ITargetDefDecl,
+  optionalLibOf,
   PropertyType,
   declName,
 } from "./AST";
@@ -70,6 +72,14 @@ const DIAG_REPOSITORY_DUPLICATE = Diagnostic.Error<{ type: string; loc: ISourceP
 
 /** A `plugin <name>;` naming no plugin fabr can use, with the reason as its detail. */
 const DIAG_PLUGIN_UNUSABLE = Diagnostic.Error<{ detail: string; loc: ISourcePosition }>("{detail}");
+
+/** An include of a plugin's optional libs that names none of them. */
+const DIAG_OPTIONAL_LIB = Diagnostic.Error<{ detail: string; loc: ISourcePosition }>("Included file not found: {detail}");
+
+/** An include of the optional libs of a package no `plugin` declaration uses. */
+const DIAG_OPTIONAL_LIB_UNUSED = Diagnostic.Error<{ plugin: string; loc: ISourcePosition }>(
+  "Included file not found: '{plugin}' is not a plugin this project uses"
+);
 
 /**
  * Load what the package entry `implementation` names, a `rule` or `repository`
@@ -229,6 +239,12 @@ export class ModelBuilder implements BuildModel {
   private readonly declaredRepositories: IRepositoryDecl[] = [];
   /** The package each plugin's implementations are loaded from, by its package's own name. */
   private readonly packages = new Map<string, () => Computable<string>>();
+  /** Each plugin added, by its package's own name. */
+  private readonly plugins = new Map<string, PluginPackage>();
+  /** The includes of plugins' optional libs the files added make. */
+  private readonly optionalLibIncludes: IIncludeDecl[] = [];
+  /** The includes of optional libs resolved, to files or not. */
+  private readonly resolvedOptionalLibs = new Set<IIncludeDecl>();
   /** The first `plugin` declaration of each name the files added make. */
   private readonly pluginDecls = new Map<string, IPluginDecl>();
   /** The names of the `plugin` declarations resolved, to a plugin or not. */
@@ -301,6 +317,7 @@ export class ModelBuilder implements BuildModel {
           this.pluginDecls.set(decl.name.toString(), decl);
         }
       }
+      this.optionalLibIncludes.push(...file.includes.filter(include => optionalLibOf(include.name) !== undefined));
       file.properties.forEach(prop => this.builder.addDecl(prop));
       file.defaults.forEach(decl => this.builder.addDefaultDecl(decl));
       file.targetdefs.forEach(def => this.builder.addDecl(def));
@@ -340,7 +357,32 @@ export class ModelBuilder implements BuildModel {
     } else {
       let code: Computable<string> | undefined;
       this.packages.set(resolved.name, () => (code ??= resolved.code(this)));
+      this.plugins.set(resolved.name, resolved);
     }
+  }
+
+  /**
+   * @return the plugin added whose package is named `name`, or undefined where
+   * no plugin added is.
+   */
+  public getPlugin(name: string): PluginPackage | undefined {
+    return this.plugins.get(name);
+  }
+
+  /**
+   * Add what the include of a plugin's optional libs `decl` resolved to: the
+   * files it names, or the reason it names none, which is reported here.
+   */
+  public addOptionalLibs(decl: IIncludeDecl, resolved: string[] | Error): void {
+    this.resolvedOptionalLibs.add(decl);
+    if (resolved instanceof Error) {
+      this.log.log(DIAG_OPTIONAL_LIB, { detail: resolved.message, loc: declPosn(decl) });
+    }
+  }
+
+  /** @return each include of a plugin's optional libs not yet resolved, in the order the files added make them. */
+  public pendingOptionalLibs(): IIncludeDecl[] {
+    return this.optionalLibIncludes.filter(decl => !this.resolvedOptionalLibs.has(decl));
   }
 
   /** @return each `plugin` declaration not yet resolved, in name order. */
@@ -361,6 +403,14 @@ export class ModelBuilder implements BuildModel {
   public finish(): BuildModel {
     for (const decl of this.pendingPlugins()) {
       this.log.log(DIAG_PLUGIN_UNUSABLE, { detail: `Plugin '${decl.name.toString()}' names nothing the project declares`, loc: declPosn(decl) });
+    }
+    for (const decl of this.pendingOptionalLibs()) {
+      const plugin = optionalLibOf(decl.name)?.plugin;
+      this.log.log(DIAG_OPTIONAL_LIB_UNUSED, {
+        plugin: plugin ?? "",
+        loc: declPosn(decl),
+        help: [`use the plugin with a \`plugin\` declaration; '${plugin ?? ""}' is its package's own name`],
+      });
     }
     this.validate();
     this.held.splice(0).forEach(report => report(this.out));

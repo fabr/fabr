@@ -31,21 +31,24 @@ import { FileSet } from "../core/FileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { SymlinkFile } from "../core/SymlinkFile";
 import { BUILD_OVERRIDE } from "../model/Constraints";
-import { MANIFEST, pluginPackageJson } from "../model/Plugin";
+import { MANIFEST, pluginLibsOf, pluginPackageJson } from "../model/Plugin";
 import { defineRule } from "./Types";
 
 /** The `fabr_plugin` rule, under `run`. */
 export default defineRule({
   requirements(context) {
-    return { libs: context.getFileProperty("libs", BUILD_OVERRIDE), resources: context.getFileProperty("resources", BUILD_OVERRIDE) };
+    return {
+      libs: context.getFileProperty("libs", BUILD_OVERRIDE),
+      optional_libs: context.getFileProperty("optional_libs", BUILD_OVERRIDE),
+      resources: context.getFileProperty("resources", BUILD_OVERRIDE),
+    };
   },
-  evaluateMaterialized(context, { libs, resources }) {
+  evaluateMaterialized(context, { libs, optional_libs: optionalLibs, resources }) {
     return context.getRunnableProperty("srcs").then(code => {
       const directory = packageDirectory(code);
       const manifestName = path.posix.join(directory, MANIFEST);
-      const libNames = [...FileSet.unionAll(...libs)].map(([name]) => name).sort();
-      return pluginPackageJson(code.getFile(manifestName), context.name, libNames).then(manifest => {
-        const added = FileSet.unionAll(...libs, ...resources, new FileSet(new Map([[MANIFEST, manifest]])));
+      return pluginPackageJson(code.getFile(manifestName), context.name, pluginLibsOf(libs, optionalLibs)).then(manifest => {
+        const added = FileSet.unionAll(...libs, ...optionalLibs, ...resources, new FileSet(new Map([[MANIFEST, manifest]])));
         const install = FileSet.unionAll(code.remap(name => (name === manifestName ? undefined : name)), added.mountedAt(directory));
         return new RunnableFileSet(
           install,

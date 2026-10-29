@@ -1,12 +1,13 @@
 ---
 title: Packaging
-description: What a jar_package's jar holds, how to build wars and ears, and how to write a rule for an archive layout of your own, such as a Spring Boot executable jar.
+description: What a jar_package's jar holds, how to build wars, ears and Spring Boot executable jars, and how to write a rule for an archive layout of your own.
 ---
 
 A `jar_package` builds a jar. The other Java archives, a war, an ear or a Spring Boot executable
 jar, are jars with a different layout: the same classes and dependency jars, placed under
 different directories. Fabr builds the war and ear layouts with `war_package` and `ear_package`,
-and any other layout with a rule you write yourself out of the same pieces.
+a Spring Boot executable jar with `spring_boot_jar`, and any other layout with a rule you write
+yourself out of the same pieces.
 
 ## Coming from Maven or Gradle
 
@@ -17,7 +18,7 @@ and any other layout with a rule you write yourself out of the same pieces.
 | `<packaging>war</packaging>` / the `war` plugin | A [`war_package`](#wars). |
 | `<packaging>ear</packaging>` / the `ear` plugin | An [`ear_package`](#ears). |
 | `maven-dependency-plugin:copy-dependencies` | A [`java_installation`](#the-jars-a-program-needs). |
-| `spring-boot-maven-plugin` / the Spring Boot Gradle plugin | A [rule of your own](#a-layout-of-your-own-spring-boot); there is no built-in one. |
+| `spring-boot-maven-plugin` / the Spring Boot Gradle plugin | A [`spring_boot_jar`](#spring-boot-executable-jars). |
 | `mvn javadoc:javadoc` / `gradle javadoc` | `fabr doc app`; see [Javadoc and sources](#javadoc-and-sources). |
 | `maven-source-plugin` / `withSourcesJar()` | `fabr sources app`. |
 | `target/app.jar` / `build/libs/app.jar` | Kept in fabr's cache; `fabr cp app ./out` copies it out. |
@@ -167,13 +168,61 @@ ear_package store {
 `modules = shop` puts `shop.war` in the ear. Fabr doesn't write a `META-INF/application.xml`, which
 Java EE 5 and later don't require; to give one, put it among the `resources`.
 
-## A layout of your own: Spring Boot
+## Spring Boot executable jars
 
-A layout fabr doesn't build is a rule you write in your build file. A Spring Boot executable jar
-puts the application's classes under `BOOT-INF/classes/`, its dependency jars, uncompressed, under
-`BOOT-INF/lib/`, and the Spring Boot loader's classes at the root; its manifest starts the loader's
-`JarLauncher`, which starts the class named as `Start-Class`. Declare a target type for it, and a
-rule that builds it from a `java_compile`, a `java_installation` and a `jar_package`:
+A Spring Boot executable jar holds an application and every jar it needs, and starts with
+`java -jar`: the jars, uncompressed, under `BOOT-INF/lib/`, and the Spring Boot loader's classes at
+the root, whose `JarLauncher` starts the class the manifest names as `Start-Class`. A
+`spring_boot_jar` builds one from a `jar_package`. Its target type comes in an optional file of the
+Java plugin, which you include:
+
+```
+include @fabr-build/java:lib/spring-boot.fabr;
+
+jar_package server {
+  srcs = src/main/java:**/*.java;
+  resources = src/main/resources:**;
+  deps = @mvn:org.springframework.boot:spring-boot-dependencies:4.1.2
+         @mvn:org.springframework.boot:spring-boot-starter-webmvc
+         java21;
+  main_class = com.example.shop.ShopApplication;
+}
+
+spring_boot_jar shop {
+  app = server;
+  main_class = com.example.shop.ShopApplication;
+  loader = @mvn:org.springframework.boot:spring-boot-loader:4.1.2;
+}
+```
+
+`fabr build shop` builds `shop.jar`, holding `server.jar` and the jar of everything it requires
+under `BOOT-INF/lib/`. `fabr run server` runs the same application from its jars, for development.
+
+| Property | What it is |
+|---|---|
+| `app` | The application: a `jar_package`, with everything it requires. |
+| `main_class` | The class the application starts in. |
+| `loader` | `spring-boot-loader`, of the application's Spring Boot release. |
+| `launcher` | The loader's class that starts the jar. The default, `org.springframework.boot.loader.launch.JarLauncher`, is Spring Boot 3.2 and later's; before 3.2 it is `org.springframework.boot.loader.JarLauncher`. |
+
+The type and its rule are written in `.fabr`, in the Java plugin's `lib/spring-boot.fabr`, out of
+a `java_installation` and a `jar_package`; [A layout of your own](#a-layout-of-your-own) explains
+how such a rule is written. The jar differs from the one Spring Boot's own plugins write in three
+ways:
+
+- The application's classes are in its jar under `BOOT-INF/lib/`, not under `BOOT-INF/classes/`.
+  Spring Boot finds them either way; a tool that reads the layout, such as `java -Djarmode=tools`,
+  expects `BOOT-INF/classes/`. The layout below puts them there.
+- There is no `BOOT-INF/classpath.idx`, so Spring Boot puts the jars on the classpath in the order
+  they are stored in, which is by name. This matters only where two jars hold the same class.
+- There is no `layers.idx` for layered container images.
+
+## A layout of your own
+
+A layout fabr doesn't build is a rule you write in your build file. As an example, this one
+builds a Spring Boot executable jar from the application's sources, with its classes under
+`BOOT-INF/classes/` as Spring Boot's own plugins put them. Declare a target type for it, and a rule
+that builds it from a `java_compile`, a `java_installation` and a `jar_package`:
 
 ```
 targetdef boot_jar {
@@ -232,8 +281,8 @@ boot_jar demo {
   the jar's resources, not one of its classes.
 - From Spring Boot 3.2 the launcher is `org.springframework.boot.loader.launch.JarLauncher`.
 
-The jar has no `BOOT-INF/classpath.idx`, which Spring Boot's own plugins write to fix the order of
-the jars on the classpath, and no `layers.idx` for layered container images.
+The jar has no `BOOT-INF/classpath.idx`, which fixes the order of the jars on the classpath, and
+no `layers.idx` for layered container images.
 [Writing your own rules](/guides/rules/) explains the rule's parts.
 
 ## Not currently supported

@@ -59,6 +59,18 @@ The path can be a pattern, which includes every file that matches. It can't cont
 substitution, and it must name at least one file: a path that doesn't exist and a pattern that
 matches nothing are both errors.
 
+`include <package>:<path>;` reads one of the optional `.fabr` files a plugin provides, which a
+project reads only where it includes them. `<package>` is the plugin's package name, whatever name
+your `plugin` declaration uses for it, and `<path>` is the file's path within the package:
+
+```
+plugin @fabr-build/java;
+include @fabr-build/java:lib/spring-boot.fabr;
+```
+
+The project must use the plugin. The path can be a pattern, as above, and must name at least one of
+the plugin's optional files; the error lists the ones it has.
+
 ## Names
 
 | Name | Characters allowed |

@@ -86,8 +86,10 @@ built, for the machine fabr runs on, the first time a rule or repository it impl
 run that uses none of them builds none of it.
 
 Built (`fabr build @example/text-lint`), the target is the plugin as a package: its code with its
-`libs` and any `resources` added, and a `package.json` naming it as the plugin and listing its
-`libs`, which is what an installed copy is read from.
+`libs`, any [`optional_libs`](#optional-fabr-files) and any `resources` added, and a `package.json`
+naming it as the plugin and listing its `.fabr` files, which is what an installed copy is read
+from. A project including one of the target's `optional_libs` reads it from the project, as it
+does `libs`.
 
 ## The plugin package
 
@@ -124,6 +126,28 @@ declarations, and `plugin` declarations of the plugins it builds on. An ordinary
 is an error, and so is a `fabr_plugin`: only a project declares a plugin it builds. So a project's own declaration of a name always takes precedence, and a plugin used
 later never changes what was read before it.
 
+### Optional .fabr files
+
+A plugin can also provide `.fabr` files that a project reads only where it includes them: target
+types and rules for a framework some projects use, such as the Java plugin's Spring Boot
+executable jar. List them as `optional_libs`, beside `libs`:
+
+```json
+"@fabr-build/plugin": { "libs": ["lib/LINT.fabr"], "optional_libs": ["lib/markdown.fabr"] }
+```
+
+A project using the plugin includes one by the plugin's package name and the file's path within
+the package, whatever name its `plugin` declaration uses:
+
+```
+plugin @fabr-home:@example/text-lint;
+include @example/text-lint:lib/markdown.fabr;
+```
+
+An optional file follows the same rules as the plugin's other `.fabr` files: it declares only
+defaults, and its rules name the plugin's implementations as they do. Its own `include`s of paths
+are relative to it, within the package.
+
 Fabr builds such a package from a [`fabr_plugin`](#a-plugin-built-in-the-project) target, which
 writes the `package.json` for it: the plugin's code is a `js_package`, and the `fabr_plugin` adds
 its `.fabr` files.
@@ -140,9 +164,13 @@ js_package text_lint_code {
 fabr_plugin @example/text-lint {
   srcs = text_lint_code;
   libs = lib/LINT.fabr;
+  optional_libs = lib/markdown.fabr;
   resources = lib/linter.sh;
 }
 ```
+
+Each of `libs` and `optional_libs` is listed in the `package.json` by its path relative to the
+file declaring the target, which is its path in the package.
 
 A plugin depends on `@fabr-build/core` as a **peer dependency** (`provided_deps`, written to the
 package's `package.json` as `peerDependencies`). A plugin imports what it needs from

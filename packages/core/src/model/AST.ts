@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { Name, NameConstraint } from "../core/Name";
+import { Name, NAME_LEVEL_SEPARATOR, NameConstraint } from "../core/Name";
 import { StringReader } from "../support/StringReader";
 import { FileSource } from "../core/FileSet";
 import { ISourceSpan } from "../support/Log";
@@ -205,10 +205,22 @@ export function hasMapValue(prop: IPropertyDecl): boolean {
 export interface IIncludeDecl extends IBaseDecl {
   kind: DeclKind.Include;
   /**
-   * The included path, relative to the including file, either an simple filename
-   * or a glob expression (No variables or constraints)
+   * The included path, relative to the including file, either a simple filename
+   * or a glob expression; or one of a plugin's `optional_libs`, written
+   * `<package>:<path>` (see {@link optionalLibOf}). No variables or constraints.
    */
   name: Name;
+}
+
+/**
+ * @return the package name and the path or pattern within it that an include
+ * of `name` names where it includes one of a plugin's `optional_libs`
+ * (`@fabr-build/java:lib/spring-boot.fabr`), otherwise undefined.
+ */
+export function optionalLibOf(name: Name): { plugin: string; path: Name } | undefined {
+  const head = name.getLiteralPrefix();
+  const colon = head.indexOf(NAME_LEVEL_SEPARATOR);
+  return colon < 0 ? undefined : { plugin: head.substring(0, colon), path: name.substring(colon + 1) };
 }
 
 /**

@@ -29,7 +29,7 @@
 import { FabrError } from "../core/Errors";
 import { FileSet } from "../core/FileSet";
 import { PackageFileSet } from "../core/PackageFileSet";
-import { MANIFEST, pluginPackageJson } from "../model/Plugin";
+import { MANIFEST, pluginLibsOf, pluginPackageJson } from "../model/Plugin";
 import { defineRule } from "./Types";
 
 /** The `fabr_plugin` rule. */
@@ -38,19 +38,20 @@ export default defineRule({
     return {
       extends: context.getPackageProperty("srcs"),
       libs: context.getFileProperty("libs"),
+      optional_libs: context.getFileProperty("optional_libs"),
       resources: context.getFileProperty("resources"),
     };
   },
-  evaluateMaterialized(context, { extends: srcs, libs, resources }) {
+  evaluateMaterialized(context, { extends: srcs, libs, optional_libs: optionalLibs, resources }) {
     const [base] = srcs;
     if (srcs.length !== 1 || !(base instanceof PackageFileSet)) {
       throw new FabrError(`a 'fabr_plugin' target's 'srcs' is one package, the plugin's code`);
     }
-    const libNames = [...FileSet.unionAll(...libs)].map(([name]) => name).sort();
-    const files = [...FileSet.unionAll(base, ...libs, ...resources)].filter(([name]) => name !== MANIFEST);
-    return pluginPackageJson(base.getFile(MANIFEST), context.name, libNames).then(
+    const files = [...FileSet.unionAll(base, ...libs, ...optionalLibs, ...resources)].filter(([name]) => name !== MANIFEST);
+    return pluginPackageJson(base.getFile(MANIFEST), context.name, pluginLibsOf(libs, optionalLibs)).then(
       manifest =>
         new PackageFileSet(new FileSet(new Map([...files, [MANIFEST, manifest]])), context.name, base.version, base.dependencies, base.origin, base.provided)
     );
   },
 });
+

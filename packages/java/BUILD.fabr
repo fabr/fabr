@@ -20,6 +20,7 @@ js_package @fabr-build/java-boot {
 fabr_plugin @fabr-build/java {
   srcs = @fabr-build/java-boot;
   libs = ./lib/JAVA.fabr;
+  optional_libs = ./lib/spring-boot.fabr;
   resources<STAGE=1> = fabr-junit-runner;
 }
 

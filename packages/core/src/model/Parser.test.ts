@@ -217,12 +217,20 @@ describe("Parser Tests", () => {
     ]);
   });
 
-  it("rejects reference syntax in an include name", () => {
-    /* `lib:*.fabr` would name files *relative to* lib rather than under it — an
-     * include names a path, and the projection rules are not its business. */
-    expect(parseInvalid("include lib:*.fabr;")).to.deep.equal([
-      diagnosticBlock(1, 9, "Invalid include name: an include names a path, not a reference", "include lib:*.fabr;"),
-    ]);
+  it("reads an include of a plugin's optional lib, written <package>:<path>", () => {
+    expect(summarize(parseValid("include @fabr-build/java:lib/spring-boot.fabr;"))).to.deep.equal(
+      summary({ includes: ["@fabr-build/java:lib/spring-boot.fabr"] })
+    );
+    expect(summarize(parseValid("include @acme/rules:lib/*.fabr;"))).to.deep.equal(summary({ includes: ["@acme/rules:lib/*.fabr"] }));
+  });
+
+  it("rejects other reference syntax in an include name", () => {
+    /* `lib:x:*.fabr` is no package and a path within it, and a `:` after a
+     * pattern begins no package name at all. */
+    const message = "Invalid include name: an include names a path, or a plugin's optional lib as <package>:<path>";
+    expect(parseInvalid("include lib:x:*.fabr;")).to.deep.equal([diagnosticBlock(1, 9, message, "include lib:x:*.fabr;")]);
+    expect(parseInvalid("include lib/*:x.fabr;")).to.deep.equal([diagnosticBlock(1, 9, message, "include lib/*:x.fabr;")]);
+    expect(parseInvalid("include :x.fabr;")).to.deep.equal([diagnosticBlock(1, 9, message, "include :x.fabr;")]);
   });
 
   it("rejects an absolute include path", () => {

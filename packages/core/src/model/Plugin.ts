@@ -36,6 +36,8 @@ import * as Module from "module";
 import { pathToFileURL } from "url";
 import { parseConstraint, parseVersion, SEMVER } from "../resolver/Semver";
 import { parseJson, toJsonObject } from "../support/Json";
+import { globMatcher } from "../support/Glob";
+import { Name } from "../core/Name";
 import type { LoadImplementation } from "./ModelBuilder";
 import { Computable, ComputableSource } from "../core/Computable";
 
@@ -57,14 +59,26 @@ export const MANIFEST = "package.json";
 /** The `package.json` field that marks a package as a fabr plugin, listing its `.fabr` files. */
 export const PLUGIN_MANIFEST_FIELD = "@fabr-build/plugin";
 
+/** A plugin's `.fabr` files, as paths within its package. */
+export interface PluginLibs {
+  /** The files every project using the plugin reads. */
+  libs: string[];
+  /** The files a project reads only where it includes them, `include <package>:<path>;`. */
+  optionalLibs: string[];
+}
+
 /** Read the `@fabr-build/plugin` field of a `package.json`: its `.fabr` files, as paths within the package. */
-export function toPluginLibs(json: unknown): string[] {
+export function toPluginLibs(json: unknown): PluginLibs {
   const field = toJsonObject(json);
-  const libs = typeof field.libs === "string" ? [field.libs] : field.libs ?? [];
-  if (!Array.isArray(libs) || !libs.every((lib): lib is string => typeof lib === "string")) {
-    throw new FabrError(`"${PLUGIN_MANIFEST_FIELD}".libs is not a path or a list of them`);
-  }
-  return libs;
+  const listOf = (key: string): string[] => {
+    const value = field[key];
+    const list = typeof value === "string" ? [value] : value ?? [];
+    if (!Array.isArray(list) || !list.every((lib): lib is string => typeof lib === "string")) {
+      throw new FabrError(`"${PLUGIN_MANIFEST_FIELD}".${key} is not a path or a list of them`);
+    }
+    return list;
+  };
+  return { libs: listOf("libs"), optionalLibs: listOf("optional_libs") };
 }
 
 /**
@@ -174,17 +188,23 @@ function packagedPlugin(decl: IPluginDecl, manifest: string): PluginPackage {
     throw new FabrError(`${manifest}: a plugin's package.json names it`);
   }
   checkCoreVersion(decl.name.toString(), json);
-  let libs: string[];
+  let listed: PluginLibs;
   try {
-    libs = toPluginLibs(json[PLUGIN_MANIFEST_FIELD]).map(lib => path.join(path.dirname(manifest), lib));
+    listed = toPluginLibs(json[PLUGIN_MANIFEST_FIELD]);
   } catch (err) {
     throw new FabrError(`${manifest}: ${toError(err).message}`);
   }
-  const missing = libs.find(lib => !fs.existsSync(lib));
+  const directory = path.dirname(manifest);
+  const missing = [...listed.libs, ...listed.optionalLibs].find(lib => !fs.existsSync(path.join(directory, lib)));
   if (missing !== undefined) {
-    throw new FabrError(`${manifest}: "${PLUGIN_MANIFEST_FIELD}".libs lists ${missing}, which is not there`);
+    throw new FabrError(`${manifest}: "${PLUGIN_MANIFEST_FIELD}" lists ${path.join(directory, missing)}, which is not there`);
   }
-  return { name: json.name, files: libs, code: () => Computable.resolve(manifest) };
+  return {
+    name: json.name,
+    files: listed.libs.map(lib => path.join(directory, lib)),
+    optionalLibs: listed.optionalLibs.map(lib => ({ name: path.posix.normalize(lib), file: path.join(directory, lib) })),
+    code: () => Computable.resolve(manifest),
+  };
 }
 
 /** @return the path of the `package.json` of fabr's own core. */
@@ -251,8 +271,31 @@ export interface PluginPackage {
   name: string;
   /** The `.fabr` files it adds. */
   files: string[];
+  /** The `.fabr` files it adds where a project includes them. */
+  optionalLibs: OptionalLib[];
   /** Get the `package.json` of its code, which `model` builds where it is a `fabr_plugin` target. */
   code: (model: BuildModel) => Computable<string>;
+}
+
+/** One of a plugin's `optional_libs`. */
+export interface OptionalLib {
+  /** Its path within the plugin's package, which an include names it by. */
+  name: string;
+  /** The file to read: absolute for an installed plugin, relative to the project's root for one built in it. */
+  file: string;
+}
+
+/**
+ * @return the files of `plugin`'s optional libs that `pattern`, a path or
+ * pattern within its package, names, in canonical order.
+ */
+export function matchOptionalLibs(plugin: PluginPackage, pattern: Name): string[] {
+  const plain = pattern.getSimpleName();
+  const matches = plain !== undefined ? (name: string) => name === path.posix.normalize(plain) : globMatcher(pattern.toGlobString());
+  return plugin.optionalLibs
+    .filter(lib => matches(lib.name))
+    .map(lib => lib.file)
+    .sort();
 }
 
 /** What one `plugin` declaration resolved to, and the errors reported resolving it. */
@@ -295,14 +338,28 @@ export function resolvePlugin(
   model: BuildModel,
   decl: IPluginDecl,
   match: IPrefixMatch,
-  { execution, host, libsOf }: { execution: ExecutionContext; host: Constraints; libsOf: (target: ITargetDecl) => ComputableSource<{ files: string[]; errors: number }> }
+  {
+    execution,
+    host,
+    libsOf,
+  }: {
+    execution: ExecutionContext;
+    host: Constraints;
+    libsOf: (target: ITargetDecl, property: "libs" | "optional_libs") => ComputableSource<{ files: string[]; errors: number }>;
+  }
 ): Computable<PluginResolution> {
   const target = match.decl;
   if (target.kind === DeclKind.Target && target.type === FABR_PLUGIN && match.rest.isEmpty()) {
-    return libsOf(target).then(({ files, errors }) => ({
+    const directory = path.dirname(target.source.file);
+    return Computable.forAll([libsOf(target, "libs"), libsOf(target, "optional_libs")], (libs, optional) => ({
       decl,
-      resolved: { name: declName(target), files, code: (built: BuildModel) => pluginManifest(built, decl, execution, host) },
-      reported: errors,
+      resolved: {
+        name: declName(target),
+        files: libs.files,
+        optionalLibs: optional.files.map(file => ({ name: path.relative(directory, file).split(path.sep).join("/"), file })),
+        code: (built: BuildModel) => pluginManifest(built, decl, execution, host),
+      },
+      reported: libs.errors + optional.errors,
     }));
   }
   return pluginManifest(model, decl, execution, host).then(
@@ -337,13 +394,22 @@ function pluginManifest(model: BuildModel, decl: IPluginDecl, execution: Executi
     });
 }
 
-/** Make the plugin `name`'s `package.json` from its base package's, `base`: named `name`, listing `libs` as the plugin's `.fabr` files. */
-export function pluginPackageJson(base: IFile | undefined, name: string, libs: string[]): Computable<IFile> {
+/** @return the `.fabr` files a `fabr_plugin` lists, by their names in its package: `libs` and `optionalLibs`, each in canonical order. */
+export function pluginLibsOf(libs: FileSet[], optionalLibs: FileSet[]): PluginLibs {
+  const namesOf = (sets: FileSet[]): string[] => [...FileSet.unionAll(...sets)].map(([name]) => name).sort();
+  return { libs: namesOf(libs), optionalLibs: namesOf(optionalLibs) };
+}
+
+/**
+ * Make the plugin `name`'s `package.json` from its base package's, `base`:
+ * named `name`, listing `libs` and `optionalLibs` as the plugin's `.fabr` files.
+ */
+export function pluginPackageJson(base: IFile | undefined, name: string, { libs, optionalLibs }: PluginLibs): Computable<IFile> {
   if (base === undefined) {
     throw new FabrError(`a 'fabr_plugin' target's 'srcs' is a package with a ${MANIFEST}`);
   }
   return base.readString().then(text => {
-    const manifest = { ...parseJson(text, MANIFEST, toJsonObject), name, [PLUGIN_MANIFEST_FIELD]: { libs } };
+    const manifest = { ...parseJson(text, MANIFEST, toJsonObject), name, [PLUGIN_MANIFEST_FIELD]: { libs, ...(optionalLibs.length > 0 ? { optional_libs: optionalLibs } : {}) } };
     return MemoryFile.from(JSON.stringify(manifest, undefined, 2) + "\n");
   });
 }

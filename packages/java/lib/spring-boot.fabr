@@ -1,0 +1,40 @@
+#
+# A Spring Boot executable jar: the application's jar and the jars of
+# everything it requires under `BOOT-INF/lib`, and the Spring Boot loader's
+# classes at the root, started by `java -jar`. Include this file to use it:
+#
+#     include @fabr-build/java:lib/spring-boot.fabr;
+#
+#     spring_boot_jar shop {
+#       app = server;
+#       main_class = com.example.shop.ShopApplication;
+#       loader = @mvn:org.springframework.boot:spring-boot-loader:4.1.2;
+#     }
+#
+
+targetdef spring_boot_jar {
+    # The application: a `jar_package`, with everything it requires.
+    app = REQUIRED PACKAGES;
+    # The class the application starts in, which the loader starts.
+    main_class = REQUIRED STRING;
+    # The Spring Boot loader: `spring-boot-loader`, of the application's
+    # Spring Boot release.
+    loader = REQUIRED PACKAGES;
+    # The loader's class that starts the jar: Spring Boot 3.2 and later's,
+    # by default. Before 3.2 it is `org.springframework.boot.loader.JarLauncher`.
+    launcher = STRING default org.springframework.boot.loader.launch.JarLauncher;
+}
+
+rule spring_boot_jar b<BUILD_OPERATION=build> = jar {
+    java_installation libs {
+        deps = b.app;
+    }
+    jar_package jar {
+        resources = libs:** -> BOOT-INF/lib/** b.loader:*.jar:org/**;
+        manifest = {
+            Main-Class = ${b.launcher};
+            Start-Class = ${b.main_class};
+            Spring-Boot-Lib = BOOT-INF/lib/;
+        };
+    }
+}

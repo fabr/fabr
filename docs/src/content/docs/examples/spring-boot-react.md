@@ -245,51 +245,25 @@ files it serves without a restart.
 `fabr run` starts the server from its jar and its dependencies' jars, which suits development. To
 deploy, you usually want Spring Boot's executable jar: one file holding the application and every
 jar it needs, started with `java -jar`. With Maven or Gradle, Spring Boot's own plugin
-(`spring-boot-maven-plugin`, or the `bootJar` task) builds it. fabr has no built-in rule for that
-layout, so the declarations below take the plugin's place: a rule, written in your build file out of
-a `java_installation` and a `jar_package`, that builds the layout for any target of a new
-`boot_jar` type.
-[A layout of your own](/reference/java/packaging/#a-layout-of-your-own-spring-boot) explains the
-layout; this version takes the `server` jar as it is, so that the deployable jar is built from
-exactly what you run in development. Add to `backend/BUILD.fabr`:
+(`spring-boot-maven-plugin`, or the `bootJar` task) builds it. In fabr, a `spring_boot_jar`
+target builds it. Its target type and rule are written in `.fabr`, in an optional file of the Java
+plugin, which you include. Add to `backend/BUILD.fabr`:
 
 ```
-targetdef boot_jar {
-    # The application: a jar_package, with everything it requires.
-    app = PACKAGES;
-    # The application's main class.
-    main_class = REQUIRED STRING;
-    # The Spring Boot loader: `spring-boot-loader`, of the application's Spring Boot release.
-    loader = PACKAGES;
-}
+include @fabr-build/java:lib/spring-boot.fabr;
 
-rule boot_jar b<BUILD_OPERATION=build> = jar {
-    java_installation libs {
-        deps = b.app;
-    }
-    jar_package jar {
-        resources = libs:** -> BOOT-INF/lib/** b.loader:*.jar:org/**;
-        manifest = {
-            Main-Class = org.springframework.boot.loader.launch.JarLauncher;
-            Start-Class = ${b.main_class};
-            Spring-Boot-Lib = BOOT-INF/lib/;
-        };
-    }
-}
-
-boot_jar shop {
+spring_boot_jar shop {
     app = server;
     main_class = com.example.shop.ShopApplication;
     loader = @mvn:org.springframework.boot:spring-boot-loader:4.1.2;
 }
 ```
 
-- `java_installation libs` is `server.jar` and the jar of everything it requires, which the rename
-  places under `BOOT-INF/lib/`, stored uncompressed so that Spring Boot can read them in place. The
-  application's classes and static files are in `BOOT-INF/lib/server.jar`, where Spring Boot finds
-  them as it would under `BOOT-INF/classes/`.
-- `b.loader:*.jar:org/**` reads inside the loader's jar and puts its classes at the root of the
-  executable jar, where the manifest's `JarLauncher` starts them.
+`app = server` makes the executable jar from the `server` jar as it is, with everything it
+requires, so that what you deploy is exactly what you run in development. `loader` is Spring
+Boot's loader, of the same release as the application. See
+[Spring Boot executable jars](/reference/java/packaging/#spring-boot-executable-jars) for the
+layout and how it differs from the one Spring Boot's own plugins write.
 
 Build it as a release build, which minifies the bundle and leaves out its source maps:
 
@@ -310,4 +284,5 @@ runs on any Java 21 or later.
   to the server and a `js_test` for the front end, and run both with `fabr test`.
 - [Projects with several packages](/guides/multi-package/): sharing versions and settings as the
   project grows.
-- [Writing your own rules](/guides/rules/): how the `boot_jar` rule works.
+- [Writing your own rules](/guides/rules/): how a rule like `spring_boot_jar`'s is written in a
+  `.fabr` file.

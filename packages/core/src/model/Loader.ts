@@ -25,11 +25,11 @@ import { Name } from "../core/Name";
 import { Diagnostic, ErrorTrackingLog, IDiagnosticNote, ISourceSpan, LogLevel } from "../support/Log";
 import { StringReader } from "../support/StringReader";
 import { parseBuildFile } from "./Parser";
-import { DeclKind, declPosn, IBuildFileContents, IIncludeDecl, INameValue, ITargetDecl } from "./AST";
+import { DeclKind, declPosn, IBuildFileContents, IIncludeDecl, INameValue, ITargetDecl, optionalLibOf } from "./AST";
 import { BuildModel } from "./BuildModel";
 import { ModelBuilder } from "./ModelBuilder";
 import { ExecutionContext } from "./ExecutionContext";
-import { PluginResolution, resolvePlugin } from "./Plugin";
+import { matchOptionalLibs, PluginResolution, resolvePlugin } from "./Plugin";
 import { PluginContribution } from "../rules/Types";
 import { computableWorkList } from "../core/WorkList";
 import { FabrError } from "../core/Errors";
@@ -187,11 +187,21 @@ const NO_DECLS: IBuildFileContents = {
   repositories: [],
 };
 
-/** One round of a load: the files it read, a plugin's where `fromPlugin`, and what the plugins they made ready resolved to. */
+/** What one include of a plugin's optional libs resolved to: the files it names, or why it names none. */
+interface OptionalLibResolution {
+  decl: IIncludeDecl;
+  resolved: string[] | Error;
+}
+
+/**
+ * One round of a load: the files it read, a plugin's where `fromPlugin`, and
+ * what the plugins and the includes of optional libs they made ready resolved to.
+ */
 interface Round {
   files: LoadedFile[];
   fromPlugin: boolean;
   plugins: PluginResolution[];
+  optionalLibs: OptionalLibResolution[];
 }
 
 /**
@@ -207,8 +217,8 @@ class ProjectLoader {
   private readonly includeSites = new Map<string, IIncludeDecl>();
   /** Each file's load. */
   private readonly steps = new Map<string, ComputableSource<{ value: LoadedFile; next: string[] }>>();
-  /** Each `fabr_plugin` target's `libs`, resolved, by its declaration. */
-  private readonly libs = new Map<ITargetDecl, ComputableSource<IncludedFiles>>();
+  /** Each `fabr_plugin` target's `libs` and `optional_libs`, resolved, by its declaration and the property. */
+  private readonly libs = new Map<ITargetDecl, Map<string, ComputableSource<IncludedFiles>>>();
 
   constructor(
     private readonly execution: ExecutionContext,
@@ -219,8 +229,9 @@ class ProjectLoader {
 
   /**
    * Load the model: read the project's files and core's, then, each round,
-   * resolve every plugin whose name's root is now declared and read the files
-   * those add, until a round resolves none.
+   * resolve every plugin whose name's root is now declared, and every include
+   * of the optional libs of a plugin now added, and read the files those add,
+   * until a round resolves none.
    */
   public load(): Computable<BuildModel> {
     return this.round([], [this.startFile, ...(this.core.includes ?? [])], false);
@@ -234,31 +245,64 @@ class ProjectLoader {
    */
   private round(previous: Round[], roots: string[], fromPlugin: boolean): Computable<BuildModel> {
     return this.walk(roots).then(files => {
-      const model = this.modelOf([...previous, { files, fromPlugin, plugins: [] }]);
+      const model = this.modelOf([...previous, { files, fromPlugin, plugins: [], optionalLibs: [] }]);
       const ready = model.pendingPlugins().flatMap(decl => {
         const match = model.getPrefixMatch(decl.name);
         return match === undefined ? [] : [{ decl, match }];
       });
-      if (ready.length === 0) {
+      const optionalLibs = model.pendingOptionalLibs().flatMap(decl => this.optionalLibsOf(model, decl));
+      if (ready.length === 0 && optionalLibs.length === 0) {
         return model.finish();
       }
       return Computable.forAll(
         ready.map(({ decl, match }) =>
-          resolvePlugin(model, decl, match, { execution: this.execution, host: this.host, libsOf: target => this.libsOf(target) })
+          resolvePlugin(model, decl, match, {
+            execution: this.execution,
+            host: this.host,
+            libsOf: (target, property) => this.libsOf(target, property),
+          })
         ),
         (...plugins: PluginResolution[]) => plugins
       ).then(plugins => {
-        const added = plugins.flatMap(({ resolved }) => (resolved instanceof Error ? [] : resolved.files));
-        return this.round([...previous, { files, fromPlugin, plugins }], [...new Set(added)], true);
+        const added = [
+          ...plugins.flatMap(({ resolved }) => (resolved instanceof Error ? [] : resolved.files)),
+          ...optionalLibs.flatMap(({ resolved }) => (resolved instanceof Error ? [] : resolved)),
+        ];
+        return this.round([...previous, { files, fromPlugin, plugins, optionalLibs }], [...new Set(added)], true);
       });
     });
+  }
+
+  /**
+   * Resolve `decl`, an include of a plugin's optional libs, where `model` has
+   * added that plugin, to the files it names: @return its resolution, or none
+   * where the plugin is not yet added.
+   */
+  private optionalLibsOf(model: ModelBuilder, decl: IIncludeDecl): OptionalLibResolution[] {
+    const lib = optionalLibOf(decl.name);
+    const plugin = lib === undefined ? undefined : model.getPlugin(lib.plugin);
+    if (lib === undefined || plugin === undefined) {
+      return [];
+    }
+    const files = matchOptionalLibs(plugin, lib.path);
+    if (files.length === 0) {
+      const listed = plugin.optionalLibs.map(one => one.name).sort();
+      const detail = `'${plugin.name}' has no optional lib ${lib.path.toString()}`;
+      return [{ decl, resolved: new FabrError(listed.length === 0 ? `${detail}, and lists none` : `${detail} (it lists ${listed.join(", ")})`) }];
+    }
+    for (const file of files) {
+      if (!this.includeSites.has(file)) {
+        this.includeSites.set(file, decl);
+      }
+    }
+    return [{ decl, resolved: files }];
   }
 
   /** Make the model of `rounds`: each round's files, a file reached again added once, then the plugins it resolved, in name order. */
   private modelOf(rounds: Round[]): ModelBuilder {
     const model = new ModelBuilder(this.execution.log, [this.core]);
     const read = new Set<string>();
-    for (const { files, fromPlugin, plugins } of rounds) {
+    for (const { files, fromPlugin, plugins, optionalLibs } of rounds) {
       const fresh = files.filter(file => !read.has(file.file) && read.add(file.file));
       model.addFiles(
         fresh.map(file => file.decls),
@@ -266,6 +310,9 @@ class ProjectLoader {
       );
       for (const { decl, resolved, reported } of plugins) {
         model.addPlugin(decl, resolved, reported);
+      }
+      for (const { decl, resolved } of optionalLibs) {
+        model.addOptionalLibs(decl, resolved);
       }
     }
     return model;
@@ -304,7 +351,9 @@ class ProjectLoader {
         /* Each include resolves to the files it names — one path for a plain
          * include, however many currently match for a pattern (a live query, so
          * this file's step re-resolves when the set changes). */
-        const included = decls.includes.map(include => this.includedFiles(fs, file, include));
+        const included = decls.includes
+          .filter(include => optionalLibOf(include.name) === undefined)
+          .map(include => this.includedFiles(fs, file, include));
         return Computable.forAll(included, (...resolved) => ({
           value: { file, decls, parseErrors: parseLog.errorCount + resolved.reduce((total, one) => total + one.errors, 0) },
           next: resolved.flatMap(one => one.files),
@@ -371,12 +420,17 @@ class ProjectLoader {
     return { files: [], errors: 1 };
   }
 
-  /** Resolve the `libs` of the `fabr_plugin` target `target`, as includes of the file declaring it. */
-  private libsOf(target: ITargetDecl): ComputableSource<IncludedFiles> {
-    let resolved = this.libs.get(target);
+  /** Resolve the `libs` or `optional_libs`, `property`, of the `fabr_plugin` target `target`, as includes of the file declaring it. */
+  private libsOf(target: ITargetDecl, property: string): ComputableSource<IncludedFiles> {
+    let byProperty = this.libs.get(target);
+    if (byProperty === undefined) {
+      byProperty = new Map();
+      this.libs.set(target, byProperty);
+    }
+    let resolved = byProperty.get(property);
     if (resolved === undefined) {
       const values = target.properties
-        .filter(prop => prop.name.toBaseString() === "libs")
+        .filter(prop => prop.name.toBaseString() === property)
         .flatMap(prop => prop.values.filter((value): value is INameValue => value.kind === DeclKind.NameValue));
       resolved = Computable.forAll(
         values.map(value => {
@@ -391,7 +445,7 @@ class ProjectLoader {
           errors: each.reduce((total, one) => total + one.errors, 0),
         })
       );
-      this.libs.set(target, resolved);
+      byProperty.set(property, resolved);
     }
     return resolved;
   }
@@ -403,8 +457,10 @@ class ProjectLoader {
  * core's first, then, each round, the `.fabr` files of the plugins the files
  * so far use. A `plugin <name>;` is resolved as a reference in the model as it
  * stands once the root of its name is declared there, and waits for a later
- * round until it is; loading ends with the round that resolves none. A
- * plugin's own files may declare only defaults, and no `fabr_plugin`, so
+ * round until it is; an `include <package>:<path>;` of one of a plugin's
+ * `optional_libs` is resolved once the plugin whose package that names is
+ * added; loading ends with the round that resolves none. A
+ * plugin's own files, its optional libs among them, may declare only defaults, and no `fabr_plugin`, so
  * nothing they add changes what an earlier round read. Nothing is built to load the model: a
  * `fabr_plugin`'s code is built, under `run` for `host`, the first time a rule
  * or repository it implements is used.

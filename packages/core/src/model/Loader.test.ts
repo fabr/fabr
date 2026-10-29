@@ -312,6 +312,75 @@ describe("Loader", () => {
     expect(logged.join("\n")).to.match(/declare only defaults/);
   });
 
+  /* Core's `fabr_plugin` type with its optional libs. */
+  const OPTIONAL_PLUGIN_DEF = "targetdef fabr_plugin { srcs = FILES; libs = FILES; optional_libs = FILES; }\n";
+
+  it("reads a plugin's optional libs only where a project includes them, by their paths in its package", async () => {
+    const model = await load(
+      files({
+        "PROJECT.fabr": OPTIONAL_PLUGIN_DEF + "include p:extra/a.fabr;\ninclude ./p/BUILD.fabr;\nplugin p;\n",
+        "p/BUILD.fabr": "fabr_plugin p { libs = P.fabr; optional_libs = extra/*.fabr; }\n",
+        "p/P.fabr": "default from_p = yes;\n",
+        "p/extra/a.fabr": "default from_a = yes;\ninclude ./shared.fabr;\n",
+        "p/extra/b.fabr": "default from_b = yes;\n",
+        "p/extra/shared.fabr": "default from_shared = yes;\n",
+      }),
+      "PROJECT.fabr"
+    );
+    expect(propertyValue(model, "from_p")).to.equal("yes");
+    expect(propertyValue(model, "from_a")).to.equal("yes");
+    expect(propertyValue(model, "from_shared")).to.equal("yes");
+    expect(model.getDecl("from_b")).to.equal(undefined);
+  });
+
+  it("includes every optional lib a pattern matches, from a plugin's own files too", async () => {
+    const model = await load(
+      files({
+        "PROJECT.fabr": OPTIONAL_PLUGIN_DEF + "fabr_plugin p { libs = P.fabr; optional_libs = extra/*.fabr; }\nplugin p;\n",
+        "P.fabr": "include p:extra/*.fabr;\n",
+        "extra/a.fabr": "default from_a = yes;\n",
+        "extra/b.fabr": "default from_b = yes;\n",
+      }),
+      "PROJECT.fabr"
+    );
+    expect(propertyValue(model, "from_a")).to.equal("yes");
+    expect(propertyValue(model, "from_b")).to.equal("yes");
+  });
+
+  it("refuses an include of a file a plugin does not list as an optional lib, naming the ones it does", async () => {
+    const { error, logged } = await loadErr(
+      files({
+        "PROJECT.fabr": OPTIONAL_PLUGIN_DEF + "fabr_plugin p { libs = P.fabr; optional_libs = X.fabr; }\nplugin p;\ninclude p:P.fabr;\n",
+        "P.fabr": "",
+        "X.fabr": "",
+      })
+    );
+    expect(error).to.be.an.instanceOf(BuildFilesInvalidError);
+    expect(logged.join("\n")).to.match(/Included file not found: 'p' has no optional lib P\.fabr \(it lists X\.fabr\)[\s\S]*PROJECT\.fabr:4:9/);
+  });
+
+  it("refuses an include of the optional libs of a plugin the project does not use", async () => {
+    const { error, logged } = await loadErr(
+      files({
+        "PROJECT.fabr": OPTIONAL_PLUGIN_DEF + "fabr_plugin p { optional_libs = X.fabr; }\ninclude p:X.fabr;\n",
+        "X.fabr": "",
+      })
+    );
+    expect(error).to.be.an.instanceOf(BuildFilesInvalidError);
+    expect(logged.join("\n")).to.match(/'p' is not a plugin this project uses/);
+  });
+
+  it("refuses an ordinary declaration in a plugin's optional lib", async () => {
+    const { error, logged } = await loadErr(
+      files({
+        "PROJECT.fabr": OPTIONAL_PLUGIN_DEF + "fabr_plugin p { optional_libs = X.fabr; }\nplugin p;\ninclude p:X.fabr;\n",
+        "X.fabr": "not_fine = no;\n",
+      })
+    );
+    expect(error).to.be.an.instanceOf(BuildFilesInvalidError);
+    expect(logged.join("\n")).to.match(/declare only defaults/);
+  });
+
   it("rejects the load when a build file has a syntax error (reported, then stops)", async () => {
     const { error, logged } = await loadErr(files({ "PROJECT.fabr": "good = value;\n@@@ not valid\n" }));
     expect(error).to.be.an.instanceOf(BuildFilesInvalidError);

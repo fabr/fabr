@@ -170,8 +170,8 @@ The [command-line reference](/reference/command-line/) has the rest.
   modules.
 - [Testing](/reference/java/testing/): JUnit engines and test failures.
 - [Running programs](/reference/java/running/): `java_program`, JVM arguments and Java agents.
-- [Packaging](/reference/java/packaging/): the jar's manifest, wars, ears, and layouts of your own
-  such as a Spring Boot jar.
+- [Packaging](/reference/java/packaging/): the jar's manifest, wars, ears, Spring Boot executable
+  jars, and layouts of your own.
 - [Targets and configuration](/reference/java/targets/): every Java target and setting.
 - [Projects with several packages](/guides/multi-package/): targets that depend on each other.
 - [A Spring Boot server with a React front end](/examples/spring-boot-react/): a worked example

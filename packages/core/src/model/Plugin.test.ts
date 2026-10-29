@@ -21,7 +21,7 @@ import { expect } from "chai";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { coreVersionError, hostCoreResolver, implementationLoader, resolvePackageFrom, toPluginLibs } from "./Plugin";
+import { coreVersionError, hostCoreResolver, implementationLoader, matchOptionalLibs, PluginPackage, resolvePackageFrom, toPluginLibs } from "./Plugin";
 import { INameValue, syntheticValue } from "./AST";
 import { parseName } from "./Parser";
 import { EMPTY_FILESET } from "../core/FileSet";
@@ -155,13 +155,49 @@ describe("implementations a declaration names", () => {
 
 describe("a plugin's package.json", () => {
   it("lists its .fabr files as a path or a list of them", () => {
-    expect(toPluginLibs({ libs: "lib/JS.fabr" })).to.deep.equal(["lib/JS.fabr"]);
-    expect(toPluginLibs({ libs: ["lib/A.fabr", "lib/B.fabr"] })).to.deep.equal(["lib/A.fabr", "lib/B.fabr"]);
-    expect(toPluginLibs({})).to.deep.equal([]);
+    expect(toPluginLibs({ libs: "lib/JS.fabr" })).to.deep.equal({ libs: ["lib/JS.fabr"], optionalLibs: [] });
+    expect(toPluginLibs({ libs: ["lib/A.fabr", "lib/B.fabr"] })).to.deep.equal({ libs: ["lib/A.fabr", "lib/B.fabr"], optionalLibs: [] });
+    expect(toPluginLibs({})).to.deep.equal({ libs: [], optionalLibs: [] });
+  });
+
+  it("lists its optional libs likewise", () => {
+    expect(toPluginLibs({ libs: "lib/A.fabr", optional_libs: ["lib/b.fabr", "lib/c.fabr"] })).to.deep.equal({
+      libs: ["lib/A.fabr"],
+      optionalLibs: ["lib/b.fabr", "lib/c.fabr"],
+    });
   });
 
   it("refuses libs that are not paths", () => {
     expect(() => toPluginLibs({ libs: [1] })).to.throw(/"@fabr-build\/plugin".libs is not a path or a list of them/);
+    expect(() => toPluginLibs({ optional_libs: {} })).to.throw(/"@fabr-build\/plugin".optional_libs is not a path or a list of them/);
     expect(() => toPluginLibs("lib/JS.fabr")).to.throw();
+  });
+});
+
+describe("a plugin's optional libs", () => {
+  const plugin: PluginPackage = {
+    name: "@test/plugin",
+    files: [],
+    optionalLibs: [
+      { name: "lib/b.fabr", file: "/p/lib/b.fabr" },
+      { name: "lib/a.fabr", file: "/p/lib/a.fabr" },
+      { name: "extra/c.fabr", file: "/p/extra/c.fabr" },
+    ],
+    code: () => Computable.resolve("/p/package.json"),
+  };
+  const match = (written: string): string[] => matchOptionalLibs(plugin, parseName(written));
+
+  it("names one by its path within the package", () => {
+    expect(match("lib/a.fabr")).to.deep.equal(["/p/lib/a.fabr"]);
+    expect(match("./lib/a.fabr")).to.deep.equal(["/p/lib/a.fabr"]);
+  });
+
+  it("names every one a pattern matches, in canonical order", () => {
+    expect(match("lib/*.fabr")).to.deep.equal(["/p/lib/a.fabr", "/p/lib/b.fabr"]);
+    expect(match("**/*.fabr")).to.deep.equal(["/p/extra/c.fabr", "/p/lib/a.fabr", "/p/lib/b.fabr"]);
+  });
+
+  it("names nothing it does not list", () => {
+    expect(match("lib/d.fabr")).to.deep.equal([]);
   });
 });
