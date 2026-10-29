@@ -21,7 +21,7 @@ import { Computable } from "../core/Computable";
 import { FabrError } from "../core/Errors";
 import { FileSet } from "../core/FileSet";
 import { IProjection, Miss } from "../core/Reference";
-import { Dependency, dependencyName, isPackage, NodeFields, PackageFileSet, Provided, ResolvedNode } from "../core/PackageFileSet";
+import { Dependency, dependencyName, isPackage, NodeFields, PackageContent, PackageFileSet, Provided, ResolvedNode } from "../core/PackageFileSet";
 
 import { Resolved, SourceRef } from "../core/Repository";
 import { TargetNode } from "../core/TargetRef";
@@ -180,30 +180,12 @@ export class DeclaredResolvedTarget extends ResolvedTarget {
   ): DeclaredResolvedTarget {
     const build = new TargetBuild(context, resolved, evaluate);
     const stated = build.stated();
-    const origin: ITargetOrigin = { kind: TARGET_PROVENANCE, decl: context.target };
-    const constraints = context.taskDescription().constraints;
-    /* One target under two configurations is two nodes. */
-    const configuration = [...constraints]
-      .map(([key, value]) => `${key}=${value}`)
-      .sort()
-      .join(",");
-    const plain = isFilesOperation(constraints.get(BUILD_OPERATION));
-    const shown = shownConstraints(constraints)
-      .map(([key, value]) => `${key}=${value}`)
-      .sort()
-      .join(", ");
     return new DeclaredResolvedTarget(build, {
-      content: {
-        key: `built ${context.scopedName} ${configuration}`,
-        files: () => build.built(plain),
-        builds: context.name,
-        configuration: shown,
-        ...(plain ? { plain } : {}),
-      },
+      content: targetContent(context, plain => build.built(plain)),
       packageName: context.name,
       version: stated.version,
       dependencies: stated.dependencies,
-      origin,
+      origin: targetOrigin(context),
       provided: stated.provided ?? new Map(),
     });
   }
@@ -225,3 +207,104 @@ export class DeclaredResolvedTarget extends ResolvedTarget {
   }
 }
 
+/** Make the provenance of the node of the target `context` names. */
+function targetOrigin(context: DeclaredTargetContext): ITargetOrigin {
+  return { kind: TARGET_PROVENANCE, decl: context.target };
+}
+
+/**
+ * Make the content of the node of the target `context` names, in its
+ * configuration: what `built` builds, told whether the target is read for its
+ * files alone.
+ */
+function targetContent(context: DeclaredTargetContext, built: (plain: boolean) => Computable<PackageFileSet | SourceRef[]>): PackageContent {
+  const constraints = context.taskDescription().constraints;
+  /* One target under two configurations is two nodes. */
+  const configuration = [...constraints]
+    .map(([key, value]) => `${key}=${value}`)
+    .sort()
+    .join(",");
+  const plain = isFilesOperation(constraints.get(BUILD_OPERATION));
+  const shown = shownConstraints(constraints)
+    .map(([key, value]) => `${key}=${value}`)
+    .sort()
+    .join(", ");
+  return {
+    key: `built ${context.scopedName} ${configuration}`,
+    files: () => built(plain),
+    builds: context.name,
+    configuration: shown,
+    ...(plain ? { plain } : {}),
+  };
+}
+
+/**
+ * The node of a target of a rule's block with its requirements left
+ * unresolved: its edges the references among what it passes on, which the
+ * collection that requires it resolves, and its build the target's own,
+ * resolved where it is built (`target`).
+ */
+export class BlockTargetNode extends ResolvedNode implements TargetNode {
+  private constructor(
+    private readonly context: DeclaredTargetContext,
+    private readonly target: () => Computable<ResolvedTarget>,
+    fields: NodeFields
+  ) {
+    super(fields.content, fields.packageName, fields.version, fields.dependencies, fields.origin, fields.provided);
+  }
+
+  /** Make the node of the target `context` names, which passes on `dependencies`, those named in `provided` provided, and which `target` resolves to build. */
+  public static of(
+    context: DeclaredTargetContext,
+    dependencies: ReadonlyArray<Dependency>,
+    provided: ReadonlyMap<string, Provided>,
+    target: () => Computable<ResolvedTarget>
+  ): BlockTargetNode {
+    return new BlockTargetNode(context, target, {
+      content: targetContent(context, () => target().then(resolved => resolved.content.files() as Computable<PackageFileSet | SourceRef[]>)),
+      packageName: context.name,
+      dependencies,
+      origin: targetOrigin(context),
+      provided,
+    });
+  }
+
+  public materialize(): Computable<SourceRef[]> {
+    return this.target().then(resolved => resolved.materialize());
+  }
+
+  public projectBuilt(sources: SourceRef[], projection: IProjection, miss: Miss | undefined): SourceRef[] | Computable<SourceRef[]> {
+    return this.context.projectSources(sources, projection, miss);
+  }
+
+  public override copy(changes: Partial<NodeFields>): BlockTargetNode {
+    return new BlockTargetNode(this.context, this.target, { ...this.fields(), ...changes });
+  }
+}
+
+/**
+ * A target a rule written in `.fabr` builds: the node of what the rule's
+ * result names, in every respect and built as it is, except that what it
+ * requires (`resolved`) is what the rule's block resolves as one, shown as the
+ * target's own requirements.
+ */
+export class BlockResolvedTarget extends ResolvedTarget {
+  constructor(
+    private readonly result: ResolvedTarget,
+    public readonly resolved: ResolvedRequirements
+  ) {
+    super(result.content, result.packageName, result.version, result.dependencies, result.origin, result.provided);
+  }
+
+  public materialize(): Computable<SourceRef[]> {
+    return this.result.materialize();
+  }
+
+  public projectBuilt(sources: SourceRef[], projection: IProjection, miss: Miss | undefined): SourceRef[] | Computable<SourceRef[]> {
+    return this.result.projectBuilt(sources, projection, miss);
+  }
+
+  public override copy(changes: Partial<NodeFields>): BlockResolvedTarget {
+    return new BlockResolvedTarget(this.result.copy(changes) as ResolvedTarget, this.resolved);
+  }
+}

@@ -957,7 +957,7 @@ function resolveBuilt(
   files?: ReadonlySet<RepositoryRef>,
   instances?: ReadonlySet<RepositoryRef | Package>,
   markers?: Markers
-): Computable<{ resolved: Resolved[]; counts: number[]; conflicts: Conflicts }> {
+): Computable<{ resolved: Resolved[]; counts: number[]; conflicts: Conflicts; conflictsAmong: ResolvedLists["conflictsAmong"] }> {
   const sources = lists.flat();
   const given = context.given;
   const taken =
@@ -974,7 +974,12 @@ function resolveBuilt(
       /* Checked as bound: an offer the consumer answered with something else is
        * not in the installation, so it is not a version that ships. */
       const bound = bindProvided(delivered, taken);
-      return conflictsOf(context, collection, finished, bound).then(conflicts => ({ resolved: bound, counts, conflicts }));
+      return conflictsOf(context, collection, finished, bound).then(conflicts => ({
+        resolved: bound,
+        counts,
+        conflicts,
+        conflictsAmong: (shipped: ReadonlyArray<Resolved>) => conflictsOf(context, collection, finished, shipped),
+      }));
     });
   });
 }
@@ -1336,6 +1341,9 @@ export interface ResolvedLists {
   readonly lists: Resolved[][];
   readonly references: Array<Array<Reference | undefined>>;
   readonly conflicts: Conflicts;
+  /** Find what conflicts among `shipped`, some of what the collection
+   * resolved, used together without the rest. */
+  conflictsAmong(shipped: ReadonlyArray<Resolved>): Computable<Conflicts>;
 }
 
 /**
@@ -1372,7 +1380,7 @@ function resolveBuiltLists(
     ...(instantiated === undefined ? [] : instanceRequests(lists.filter((_, index) => instantiated[index]).flat())),
     ...forFiles.filter(isPackage).filter(pkg => !packaged.has(pkg)),
   ]);
-  return resolveBuilt(context, lists, files, instances, markers).then(({ resolved, counts, conflicts }) => {
+  return resolveBuilt(context, lists, files, instances, markers).then(({ resolved, counts, conflicts, conflictsAmong }) => {
     /* A source resolves to one entry, or to none: a `?` alternate. */
     const partitioned: Resolved[][] = [];
     const references: Array<Array<Reference | undefined>> = [];
@@ -1385,7 +1393,7 @@ function resolveBuiltLists(
       source += list.length;
       index += length;
     }
-    return { lists: partitioned, references, conflicts };
+    return { lists: partitioned, references, conflicts, conflictsAmong };
   });
 }
 

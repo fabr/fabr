@@ -54,7 +54,7 @@ import { defineRule, PluginContribution, RepositoryProvider, RepositoryRegistrat
 import { FSFileSource } from "../core/FSFileSource";
 import script from "../rules/RunScript";
 import { BuildContext, InternalBuildContext } from "./BuildContext";
-import { ResolvedRequirements } from "./Collection";
+import { permissive, ResolvedRequirements } from "./Collection";
 import { mapEntryOrigin, PropertyMap, PropertyMapValue } from "./PropertyMap";
 import { BUILD_OPERATION, BUILD_OVERRIDE, Constraints, FILES_OPERATION } from "../model/Constraints";
 import { SEMVER, SemverConstraint, SemverVersion, versionToString } from "../resolver/Semver";
@@ -193,6 +193,19 @@ testRules.push(
     evaluateResolved: (_context, requirements) =>
       requirements.materializeAll().then(({ deps }) => {
         heldDeps = deps;
+        return EMPTY_FILESET;
+      }),
+  })
+);
+/* As test_good, collecting its `deps` permissively. */
+testRules.push(
+  defineRule({
+    type: "test_loose",
+    properties: {},
+    requirements: context => Computable.resolve(permissive({ deps: context.getPackageProperty("deps") })),
+    evaluateResolved: (_context, requirements) =>
+      requirements.materializeAll().then(({ deps }) => {
+        lastDepSets = deps;
         return EMPTY_FILESET;
       }),
   })
@@ -4257,6 +4270,174 @@ describe("rules written in .fabr", () => {
     );
     expect(await textOf(model, "a")).to.equal("hello");
     expect(await textOf(model, "b")).to.equal("goodbye");
+  });
+
+  it("requires what the block's targets the result reaches require, as the target's properties and the rule's", async () => {
+    const defs = "test_file one { content = 1; }\ntest_file extra { content = 2; }\nlintable a { srcs = one; }\n";
+    const sectionsOf = async (rule: string): Promise<Array<[string, string[]]>> => {
+      const resolved = await modelOf(rule + defs).getConfig(Constraints.of({}), execution).resolve(writtenOnCommandLine("a"));
+      return [...requirementsOf(resolved)].map(([name, sources]) => [
+        name,
+        sources.map(source => (source instanceof ResolvedNode ? source.packageName : "files")).sort(),
+      ]);
+    };
+    /* What came from the target under the property it came from, once however
+     * many targets read it; what the block adds under the rule. */
+    expect(await sectionsOf("rule lintable pkg = held { test_holds held { deps = pkg.srcs extra other; } test_holds other { deps = pkg.srcs extra; } }\n")).to.deep.equal([
+      ["srcs", ["one"]],
+      ["required by lintable rule", ["extra"]],
+    ]);
+    /* A target the result does not reach is not among them. */
+    expect(await sectionsOf("rule lintable pkg = held { test_holds held { deps = extra; } test_holds other { deps = pkg.srcs; } }\n")).to.deep.equal([
+      ["required by lintable rule", ["extra"]],
+    ]);
+    /* What the result reference names itself, under the property it read. */
+    expect(await sectionsOf("rule lintable pkg = contents { contents = pkg.srcs extra; }\n")).to.deep.equal([
+      ["srcs", ["files"]],
+      ["required by lintable rule", ["files"]],
+    ]);
+    /* A result that is no target of the block shows what it requires itself. */
+    expect(
+      await sectionsOf(
+        "rule lintable pkg<FLAVOR=plain> = pkg<FLAVOR=lint> { }\nrule lintable pkg<FLAVOR=lint> = held { test_holds held { deps = pkg.srcs; } }\n"
+      )
+    ).to.deep.equal([["srcs", ["one"]]]);
+    /* The result reached through a property of the block, or as a selection. */
+    expect(await sectionsOf("rule lintable pkg = res { res = held; test_holds held { deps = pkg.srcs; } }\n")).to.deep.equal([["srcs", ["one"]]]);
+    expect(await sectionsOf("rule lintable pkg = held:** { libs = pkg.srcs; test_holds held { deps = libs extra; } }\n")).to.deep.equal([
+      ["srcs", ["one"]],
+      ["required by lintable rule", ["extra"]],
+    ]);
+  });
+
+  it("answers what the block's targets require of the target from one resolution, with what each adds beside it", async () => {
+    registryRequirements.set("raiser@1.0.0", [{ name: "shared", versionConstraint: "^1.2.0" }]);
+    const versionsOf = (deps: FileSet[]): string[] =>
+      deps.filter(pkg => pkg instanceof PackageFileSet).map(pkg => `${(pkg as PackageFileSet).packageName}@${(pkg as PackageFileSet).version}`).sort();
+    const build = async (rule: string): Promise<void> => {
+      const model = modelOf("targetdef test_registry { }\ntest_registry @reg { }\n" + rule + "lintable a { srcs = @reg:shared:^1.0.0; }\n");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
+    };
+    try {
+      /* What the result adds raises what every target takes from the target. */
+      await build("rule lintable pkg = other { test_holds held { deps = pkg.srcs; } test_good other { deps = pkg.srcs @reg:raiser held; } }\n");
+      expect(versionsOf(heldDeps)).to.deep.equal(["shared@1.2.0"]);
+      expect(versionsOf(lastDepSets)).to.deep.equal(["raiser@1.0.0", "shared@1.2.0"]);
+      /* What another target adds with what it takes from the target does too. */
+      await build("rule lintable pkg = held { test_holds held { deps = pkg.srcs other; } test_good other { deps = pkg.srcs @reg:raiser; } }\n");
+      expect(versionsOf(heldDeps)).to.deep.equal(["shared@1.2.0"]);
+      expect(versionsOf(lastDepSets)).to.deep.equal(["raiser@1.0.0", "shared@1.2.0"]);
+      /* What a target the result reads only for its files adds does too. */
+      await build("rule lintable pkg = held { test_holds held { deps = pkg.srcs other:**; } test_good other { deps = pkg.srcs @reg:raiser; } }\n");
+      expect(versionsOf(heldDeps)).to.deep.equal(["shared@1.2.0"]);
+      /* Whatever the result's configuration is substituted from. */
+      await build("F = plain;\nrule lintable pkg = other<FLAVOR=${F}> { test_holds held { deps = pkg.srcs; } test_good other { deps = pkg.srcs @reg:raiser held; } }\n");
+      expect(versionsOf(heldDeps)).to.deep.equal(["shared@1.2.0"]);
+      /* A target of the block named in another configuration resolves apart. */
+      await build("rule lintable pkg = held { test_holds held { deps = pkg.srcs other<FLAVOR=lint>; } test_good other { deps = pkg.srcs @reg:raiser; } }\n");
+      expect(versionsOf(heldDeps)).to.deep.equal(["shared@1.0.0"]);
+      expect(versionsOf(lastDepSets)).to.deep.equal(["raiser@1.0.0", "shared@1.2.0"]);
+      /* What a target the result does not reach requires is its own. */
+      await build("rule lintable pkg = held { test_holds held { deps = pkg.srcs; } test_good tool { deps = pkg.srcs @reg:raiser; } }\n");
+      expect(versionsOf(heldDeps)).to.deep.equal(["shared@1.0.0"]);
+    } finally {
+      registryRequirements.delete("raiser@1.0.0");
+    }
+  });
+
+  it("takes a target of the block whose rule is written in .fabr as the target its own block makes", async () => {
+    const model = modelOf(
+      "targetdef wrapper { content = STRING; }\nrule wrapper w = test_file f { content = ${w.content}; }\n" +
+        "rule lintable pkg = held { test_holds held { deps = pkg.srcs inner; } wrapper inner { content = x; } }\n" +
+        "test_file one { content = 1; }\nlintable a { srcs = one; }\n"
+    );
+    await filesOf(model, "a");
+    expect((await Promise.all(heldDeps.map(files => files.getFile("f.txt")!.readString()))).sort()).to.deep.equal(["1", "x"]);
+  });
+
+  it("reads two of the block's targets together for files, and as packages only under names of their own", async () => {
+    const files = modelOf("rule lintable pkg = res { res = held other; test_holds held { deps = pkg.srcs; } test_holds other { deps = pkg.srcs; } }\ntest_file one { content = 1; }\nlintable a { srcs = one; }\n");
+    await filesOf(files, "a");
+    const packages = "test_package held { } test_package other { } }\nlintable a { }\n";
+    expect(messagesOf(await failureOf(modelOf("rule lintable pkg = res { test_holds res { deps = held other; } " + packages), "a")).join("\n")).to.contain(
+      "'a' is required here as two different packages"
+    );
+    await filesOf(modelOf("rule lintable pkg = res { test_holds res { deps = held -> a-api other; } " + packages), "a");
+    expect(heldDeps.map(pkg => (pkg as PackageFileSet).packageName).sort()).to.deep.equal(["a", "a-api"]);
+  });
+
+  it("looks a global's value up where the file's names are, whatever the block declares", async () => {
+    const model = modelOf("LIBS = extra;\nrule lintable pkg = held { test_holds held { deps = LIBS; } test_file extra { content = local; } }\ntest_file extra { content = global; }\nlintable a { }\n");
+    await filesOf(model, "a");
+    expect(await Promise.all(heldDeps.map(files => files.getFile("f.txt")!.readString()))).to.deep.equal(["global"]);
+  });
+
+  it("resolves a target of the block whose rule is written in .fabr, reading the block's targets through its parameter, without a cycle", async () => {
+    const model = modelOf(
+      "targetdef wrapper { deps = PACKAGES; }\nrule wrapper w = f { test_holds f { deps = w.deps; } }\n" +
+        "rule lintable pkg = held { test_holds held { deps = pkg.srcs inner; } wrapper inner { deps = other; } test_file other { content = o; } }\n" +
+        "test_file one { content = 1; }\nlintable a { srcs = one; }\n"
+    );
+    await filesOf(model, "a");
+    expect(await Promise.all(heldDeps.flatMap(files => files.getFile("f.txt")?.readString() ?? []))).to.deep.equal(["1"]);
+  });
+
+  it("reports a result the rule's block cannot look up as the target's failure", async () => {
+    const failure = await failureOf(modelOf("rule lintable pkg = nowhere { }\nlintable a { }\n"), "a");
+    expect(failure).to.be.instanceOf(DependencyFailedError);
+    expect(messagesOf(failure).join("\n")).to.contain("nowhere");
+  });
+
+  it("finds a cycle among the block's targets as a cycle", async () => {
+    const model = modelOf("rule lintable pkg = held { test_holds held { deps = pkg.srcs other; } test_holds other { deps = held; } }\ntest_file one { content = 1; }\nlintable a { srcs = one; }\n");
+    expect(circularOf(await failureOf(model, "a"))).to.be.instanceOf(CircularDependencyError);
+  });
+
+  it("fails the target where a target of its rule's block cannot say what it requires", async () => {
+    const model = modelOf("rule lintable pkg = held { test_holds held { deps = pkg.srcs other; } test_holds other { deps = pkg.srcs nowhere; } }\ntest_file one { content = 1; }\nlintable a { srcs = one; }\n");
+    expect(messagesOf(await failureOf(model, "a")).join("\n")).to.contain("nowhere");
+  });
+
+  it("refuses a target of the block whose rule collects strictly for versions that conflict among what it uses", async () => {
+    registryRequirements.set("cx-raiser@1.0.0", [{ name: "cx", versionConstraint: "^2.0.0" }]);
+    try {
+      const model = modelOf(
+        "targetdef test_registry { }\ntest_registry @reg { }\n" +
+          "rule lintable pkg = other { test_holds held { deps = pkg.srcs; } test_good other { deps = pkg.srcs @reg:cx-raiser held; } }\n" +
+          "lintable a { srcs = @reg:cx:^1.0.0; }\n"
+      );
+      expect(messagesOf(await failureOf(model, "a")).join("\n")).to.contain("Resolution requires multiple versions of the same package:");
+      /* A target whose rule collects permissively is not refused, nor is one
+       * that uses only some of the versions. */
+      const loose = modelOf(
+        "targetdef test_registry { }\ntest_registry @reg { }\ntargetdef test_loose { deps = PACKAGES; }\n" +
+          "rule lintable pkg = other { test_holds held { deps = pkg.srcs; } test_loose other { deps = pkg.srcs @reg:cx-raiser held; } }\n" +
+          "lintable a { srcs = @reg:cx:^1.0.0; }\n"
+      );
+      await filesOf(loose, "a");
+    } finally {
+      registryRequirements.delete("cx-raiser@1.0.0");
+    }
+  });
+
+  it("binds what a target of the block passes on in the one collection", async () => {
+    registryRequirements.set("raiser@1.0.0", [{ name: "shared", versionConstraint: "^1.2.0" }]);
+    try {
+      /* `lib` passes its requirement of `shared` on to `other`, which binds it
+       * in the one collection, raised by what `other` adds. */
+      const model = modelOf(
+        "targetdef test_registry { }\ntest_registry @reg { }\ntargetdef test_carrier { deps = PACKAGES; }\nMODE = m;\n" +
+          "rule lintable pkg = other { test_carrier lib { deps = pkg.srcs; } test_good other { deps = pkg.srcs lib @reg:raiser; } }\n" +
+          "lintable a { srcs = @reg:shared:^1.0.0; }\n"
+      );
+      await model.getConfig(Constraints.of({ [BUILD_OPERATION]: "build" }), execution).materialize(writtenOnCommandLine("a"));
+      const described = (pkg: PackageFileSet): string => `${pkg.packageName}@${pkg.version ?? "-"}`;
+      expect(lastDepSets.map(pkg => described(pkg as PackageFileSet)).sort()).to.deep.equal(["a@-", "raiser@1.0.0", "shared@1.2.0"]);
+      const lib = lastDepSets.find(pkg => (pkg as PackageFileSet).packageName === "a") as PackageFileSet;
+      expect(lib.packages.map(described)).to.deep.equal(["shared@1.2.0"]);
+    } finally {
+      registryRequirements.delete("raiser@1.0.0");
+    }
   });
 
   it("reads a bare parameter property in a STRING property as that property's values", async () => {

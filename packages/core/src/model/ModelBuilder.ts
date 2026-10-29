@@ -31,6 +31,7 @@ import {
   ITargetDecl,
   ITargetDefDecl,
   PropertyType,
+  declName,
 } from "./AST";
 import { IPrefixMatch, IPropertyEntry, Namespace } from "./Namespace";
 import { BuildModel } from "./BuildModel";
@@ -76,6 +77,52 @@ const DIAG_PLUGIN_UNUSABLE = Diagnostic.Error<{ detail: string; loc: ISourcePosi
  */
 export type LoadImplementation = (implementation: INameValue) => Computable<unknown>;
 
+/** A rule written in `.fabr`, its block's declarations indexed by name. */
+class DeclaredBlockRule implements RuleBlockDefinition {
+  public readonly type?: string;
+  public readonly properties: Record<string, string>;
+  public readonly targetProperties?: Record<string, string>;
+  private readonly targets = new Map<string, ITargetDecl>();
+  private readonly declarations = new Map<string, IPropertyDecl[]>();
+
+  constructor(
+    selectable: SelectableRule,
+    public readonly decl: IRuleDecl & { implementation: IRuleBlock }
+  ) {
+    this.type = selectable.type;
+    this.properties = selectable.properties;
+    this.targetProperties = selectable.targetProperties;
+    for (const target of decl.implementation.targets) {
+      this.targets.set(declName(target), target);
+    }
+    for (const prop of decl.implementation.properties) {
+      const name = declName(prop);
+      this.declarations.set(name, [...(this.declarations.get(name) ?? []), prop]);
+    }
+  }
+
+  public local(name: string): ITargetDecl | IPropertyEntry | undefined {
+    const target = this.targets.get(name);
+    if (target !== undefined) {
+      return target;
+    }
+    const decls = this.declarations.get(name);
+    return decls === undefined ? undefined : { kind: DeclKind.Property, decls, defaults: [] };
+  }
+
+  public localTarget(name: string): ITargetDecl | undefined {
+    return this.targets.get(name);
+  }
+
+  public declares(target: ITargetDecl): boolean {
+    return this.targets.get(declName(target)) === target;
+  }
+
+  public declaresProperty(prop: IPropertyDecl): boolean {
+    return this.declarations.get(declName(prop))?.includes(prop) ?? false;
+  }
+}
+
 /**
  * A rule declared in a `.fabr` file: selected from its declaration, its
  * implementation loaded the first time it is selected ({@link definition}).
@@ -85,6 +132,7 @@ export class DeclaredRule implements SelectableRule {
   public readonly properties: Record<string, string>;
   public readonly targetProperties: Record<string, string>;
   private loaded?: Computable<RuleDefinition>;
+  private block?: RuleBlockDefinition;
 
   constructor(
     public readonly decl: IRuleDecl,
@@ -99,8 +147,7 @@ export class DeclaredRule implements SelectableRule {
   public definition(): Computable<RuleDefinition | RuleBlockDefinition> {
     const { decl } = this;
     if (isRuleBlock(decl.implementation)) {
-      const selectable = { type: this.type, properties: this.properties, targetProperties: this.targetProperties };
-      return Computable.resolve({ ...selectable, decl: decl as IRuleDecl & { implementation: IRuleBlock } });
+      return Computable.resolve((this.block ??= new DeclaredBlockRule(this, decl as IRuleDecl & { implementation: IRuleBlock })));
     }
     const entry = decl.implementation;
     this.loaded ??= loadedImplementation(this.load, entry, "rule").then(implementation => {

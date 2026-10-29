@@ -25,6 +25,7 @@ import { FileSetRef } from "../core/FileSetRef";
 import { Materialized, RepositoryRef, SourceRef } from "../core/Repository";
 import { checked, materializeLists, packageIn, resolveLists } from "./CollectionPoint";
 import type { Conflicts } from "../resolver/StrictCollection";
+import { TargetRef } from "../core/TargetRef";
 import { PackageFileSet, ResolvedNode, Dependency } from "../core/PackageFileSet";
 import { Resolved } from "../core/Repository";
 import type { InternalBuildContext } from "./BuildContext";
@@ -111,7 +112,7 @@ export type MaterializedRequirements<P> = {
 
 /** One requirement's sources as its reader returned them: bare, they are read
  * for their files alone. */
-type Read = SourceRef[] | PackageSources | ContainedSources | LooseSources | SyncSources;
+export type Read = SourceRef[] | PackageSources | ContainedSources | LooseSources | SyncSources;
 
 /** One requirement as a rule states it: the sources a FILES or PACKAGES
  * property names, as its reader returned them. */
@@ -163,7 +164,10 @@ export class ResolvedRequirements {
     /** The versions that conflict in the collection, found as it was resolved. */
     public readonly conflicts: Conflicts,
     /** Whether the requirements are collected {@link Permissive permissively}. */
-    public readonly permissive: boolean
+    public readonly permissive: boolean,
+    /** Find what conflicts among some of what the collection resolved, used
+     * together without the rest. */
+    private readonly conflictsAmong: (shipped: ReadonlyArray<Resolved>) => Computable<Conflicts> = () => Computable.resolve(conflicts)
   ) {
     this.sources = new Map([...entries].map(([name, entry]) => [name, entry.sources]));
     this.references = new Map([...entries].map(([name, entry]) => [name, entry.references]));
@@ -196,7 +200,64 @@ export class ResolvedRequirements {
       }
       return [name, entry];
     });
-    return new ResolvedRequirements(new Map(kept), this.conflicts, this.permissive);
+    return new ResolvedRequirements(new Map(kept), this.conflicts, this.permissive, this.conflictsAmong);
+  }
+
+  /**
+   * Get the requirements of the target `target` among these, each named
+   * `<target>.<name>`, as requirements named `<name>`, collected strictly
+   * unless `permissive`, with what conflicts among their sources alone.
+   */
+  public ofTarget(target: string, permissive: boolean): Computable<ResolvedRequirements> {
+    const kept = [...this.entries]
+      .filter(([name]) => name.startsWith(`${target}.`))
+      .map(([name, entry]): [string, ResolvedRequirement] => [name.substring(target.length + 1), entry]);
+    return this.conflictsAmong(kept.flatMap(([, { sources }]) => sources)).then(
+      conflicts => new ResolvedRequirements(new Map(kept), conflicts, permissive, this.conflictsAmong)
+    );
+  }
+
+  /**
+   * Regroup the sources of every requirement into requirements named by
+   * `section` (each source once, in the order first met: a reference left
+   * unresolved once per reference written alike), leaving out those it names
+   * no section for: what the collection resolved, shown other than by the
+   * requirements that asked for it.
+   */
+  public regrouped(section: (source: Resolved, reference: Reference | undefined) => string | undefined): ResolvedRequirements {
+    const sections = new Map<string, { sources: Resolved[]; references: Array<Reference | undefined>; reading: Reading }>();
+    const seen = new Set<Resolved>();
+    const seenReferences = new Map<unknown, Set<string>>();
+    const first = (source: Resolved): boolean => {
+      if (source instanceof TargetRef) {
+        const texts = seenReferences.get(source.source) ?? new Set<string>();
+        seenReferences.set(source.source, texts);
+        const text = [source.toString(), ...source.projections.map(({ pattern, prefix }) => `${prefix} ${pattern.toString()}`)].join(":");
+        if (texts.has(text)) {
+          return false;
+        }
+        texts.add(text);
+        return true;
+      }
+      if (seen.has(source)) {
+        return false;
+      }
+      seen.add(source);
+      return true;
+    };
+    for (const { sources, references, reading } of this.entries.values()) {
+      sources.forEach((source, at) => {
+        const name = section(source, references[at]);
+        if (name === undefined || !first(source)) {
+          return;
+        }
+        const held = sections.get(name) ?? { sources: [], references: [], reading };
+        held.sources.push(source);
+        held.references.push(references[at]);
+        sections.set(name, held);
+      });
+    }
+    return new ResolvedRequirements(sections, this.conflicts, this.permissive, this.conflictsAmong);
   }
 
   /** Materialize every requirement and finish it into what a rule reads,
@@ -284,7 +345,13 @@ function asMaterial(source: Resolved): Resolved {
  * nothing built. The strict check is left for when the requirements are
  * materialized ({@link ResolvedRequirements.check}).
  */
-export function resolveRequirements(target: TargetContext, required: Requirements | Permissive): Computable<ResolvedRequirements> {
+export function resolveRequirements(
+  target: TargetContext,
+  required: Requirements | Permissive,
+  /** Get the requirement name a key of `required` stands for, which the
+   * framework reads what it means from. */
+  requirementName: (key: string) => string = key => key
+): Computable<ResolvedRequirements> {
   const entries = requirementEntries(required instanceof Permissive ? required.requirements : required);
   return Computable.forAll(
     entries.map(([, value]) => (value instanceof Computable ? value : Computable.resolve(value))),
@@ -293,7 +360,7 @@ export function resolveRequirements(target: TargetContext, required: Requirement
       const lists = values.map((value): SourceRef[] => (Array.isArray(value) ? value : value.sources));
       const readings = values.map((value): Reading => (Array.isArray(value) ? "files" : value.read));
       /* What a target passes on is packages. */
-      const misread = names.find((name, index) => TRANSITIVE_KEYS.has(name) && readings[index] === "files" && lists[index].length > 0);
+      const misread = names.find((name, index) => TRANSITIVE_KEYS.has(requirementName(name)) && readings[index] === "files" && lists[index].length > 0);
       if (misread !== undefined) {
         throw new FabrError(`internal: the rule of '${target.name}' reads its '${misread}' requirement for files`).withHelp(
           "what a target passes on is packages: read it with getPackageProperty"
@@ -305,23 +372,24 @@ export function resolveRequirements(target: TargetContext, required: Requirement
          * files, it is left out unresolved. */
         lists.map((list, index) => (readings[index] === "loose" ? list.filter(source => !(source instanceof RepositoryRef)) : list)),
         readings.map(reading => reading !== "contained"),
-        names.map(name => name === EXTENDS_KEY),
+        names.map(name => requirementName(name) === EXTENDS_KEY),
         readings.map(reading => (reading === "files" || reading === "loose" || reading === "sync" ? "files" : undefined))
       ).then(
-        ({ lists: resolved, references, conflicts }) =>
+        ({ lists: resolved, references, conflicts, conflictsAmong }) =>
           new ResolvedRequirements(
             new Map(
               names.map((name, index) => [
                 name,
                 {
-                  sources: name === EXTENDS_KEY ? resolved[index].map(asMaterial) : resolved[index],
+                  sources: requirementName(name) === EXTENDS_KEY ? resolved[index].map(asMaterial) : resolved[index],
                   references: references[index],
                   reading: readings[index],
                 },
               ])
             ),
             conflicts,
-            required instanceof Permissive
+            required instanceof Permissive,
+            conflictsAmong
           )
       );
     }
@@ -405,7 +473,7 @@ function packageEdges(name: string, collected: Collected): Array<Dependency<Pack
   });
 }
 
-/** List a rule's requirements as entries, in the order written. */
-function requirementEntries(requirements: Requirements): Array<[string, RequiredSources]> {
+/** List a rule's requirements as pairs of name and sources, in the order written. */
+export function requirementEntries(requirements: Requirements): Array<[string, RequiredSources]> {
   return requirements instanceof Map ? [...requirements] : Object.entries(requirements);
 }

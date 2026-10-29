@@ -207,6 +207,30 @@ own work, so whatever its rule names after its target is named after the target 
 [Packages are named after the target](#a-rule-of-several-steps)). The block's name for a target is
 how the block refers to it, and how fabr's progress output labels its work (`report app`).
 
+## Package versions
+
+The result, and every target of the block it reaches through what each target requires, resolve
+their packages together, as the parts of one target do. A target is reached when another one
+names it among what it requires, for its package (`deps = api`) or only for its files
+(`resources = classes:classes/**`). So in a war rule, the `deps` that `classes` compiles against
+and the jars `libs` lays into `WEB-INF/lib` are the same versions, and a package any reached
+target adds beside `w.deps` raises a version for all of them.
+
+A target of the block that the result doesn't reach this way, such as a program another target
+runs as a command, has its versions chosen for it alone, as any tool's are.
+
+Versions that conflict are an error for a target in the block that uses them together, unless its
+type collects its packages permissively, as `java_program` does.
+
+## What `fabr deps` shows
+
+`fabr deps` on a target a rule builds shows that resolution from the target's side: a section for
+each of the target's own properties the block reads (`deps`, `provided_deps`), holding what it
+resolved to, and a section `required by <type> rule` for what the block adds itself. The block's
+own targets aren't shown; what they pass on is in those sections. Where the result is a target
+outside the block, such as the target itself under another operation, the target is that result,
+and `fabr deps` shows what it requires.
+
 ## Configuration
 
 A target in the block is built in the configuration the rule applies in, as any target a reference
@@ -265,7 +289,15 @@ it on the target, or give it a default in the targetdef.
   as `'g.whom' has no value`, rather than when fabr reads your files.
 - Progress output labels a step with the block's name for it (`report app`), not with a verb as
   fabr's own steps are (`Compiling app`).
-- The targets in one rule's block choose their package versions separately, each as a target of
-  its own would. Two that read the same `deps` choose the same versions, but one that adds a
-  package of its own can raise a version the other doesn't see.
-- `fabr deps` shows what the target's result requires, not the result itself.
+- A target in the block whose own type is built by a rule written in `.fabr` doesn't take part
+  in the block's [package versions](#package-versions): its targets choose theirs apart.
+- Every target in a block is built under the target's name, and a property read as packages takes
+  one package of each name. So a target of the block can't list two others of the block, or one
+  beside the target itself under other constraints (`pkg<BUILD_OPERATION=build>`), in a property
+  its type reads as packages: it fails with `'<name>' is required here as two different
+  packages`. Give one of them a name of its own (`deps = api -> app-api impl;`), or, where you
+  want their files, take them as files (`classes:classes/**`).
+- A target in the block made from a package (a `patched` target, or another type with `extends`)
+  can't be reached by the block's result: building the target fails with `'<name>' is made from a
+  package ('extends'), which a rule's block cannot resolve with the rest of what the block
+  requires`.

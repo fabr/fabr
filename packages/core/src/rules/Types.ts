@@ -22,7 +22,8 @@ import type { BuildAction } from "../core/BuildAction";
 import { FileSource } from "../core/FileSet";
 import { Name } from "../core/Name";
 import { Repository } from "../core/Repository";
-import type { IRuleBlock, IRuleDecl } from "../model/AST";
+import type { IPropertyDecl, IRuleBlock, IRuleDecl, ITargetDecl } from "../model/AST";
+import type { IPropertyEntry } from "../model/Namespace";
 import {
   CommandValue,
   MaterializedRequirements,
@@ -113,6 +114,14 @@ export interface RuleDefinition extends SelectableRule, RuleImplementation {}
 export interface RuleBlockDefinition extends SelectableRule {
   /** The declaration, whose implementation is the block. */
   readonly decl: IRuleDecl & { implementation: IRuleBlock };
+  /** Look up what the block declares under `name`, if it declares it: a target, or a property's declarations. */
+  local(name: string): ITargetDecl | IPropertyEntry | undefined;
+  /** Look up the target the block declares under `name`, if it declares one. */
+  localTarget(name: string): ITargetDecl | undefined;
+  /** @return true if `target` is one the block declares, otherwise false. */
+  declares(target: ITargetDecl): boolean;
+  /** @return true if `prop` is one the block declares, otherwise false. */
+  declaresProperty(prop: IPropertyDecl): boolean;
 }
 
 /** @return true if `rule` is written in `.fabr`, otherwise false. */
