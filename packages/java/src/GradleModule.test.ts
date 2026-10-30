@@ -56,7 +56,7 @@ describe("Gradle Module Metadata", () => {
   it("selects the runtime library variant for the standard JVM, and its files", () => {
     const variant = runtimeVariant(GUAVA, 21, "guava");
     expect(variant.name).to.equal("jreRuntimeElements");
-    expect(variant.files).to.deep.equal([{ name: "guava-33.3.1-jre.jar", url: "guava-33.3.1-jre.jar", sha1: "abc" }]);
+    expect(variant.files).to.deep.equal([{ name: "guava-33.3.1-jre.jar", url: "guava-33.3.1-jre.jar" }]);
     expect(variantRequirements(variant)).to.deep.equal([{ name: "com.google.guava/failureaccess", versionConstraint: "1.0.2" }]);
   });
 
@@ -158,6 +158,24 @@ describe("Gradle Module Metadata", () => {
     expect(requirementsOf({ strictly: "[1.0,2.0)", rejects: ["1.0"] })).to.deep.equal([{ name: "g/m", versionConstraint: "(1.0,2.0)" }]);
     expect(requirementsOf({ rejects: ["2.0"] })).to.deep.equal([{ name: "g/m", versionConstraint: "(,2.0),(2.0,)" }]);
     expect(() => requirementsOf({ strictly: "1.0", rejects: ["1.0"] })).to.throw(/g:m rejects every version it requires/);
+  });
+
+  it("reads a dependency's excludes", () => {
+    const variant = runtimeVariant(
+      toGradleModule({
+        formatVersion: "1.1",
+        variants: [
+          {
+            name: "runtime",
+            attributes: { "org.gradle.usage": "java-runtime" },
+            dependencies: [{ group: "g", module: "m", version: { requires: "1" }, excludes: [{ group: "org.slf4j", module: "*" }] }],
+          },
+        ],
+      }),
+      21,
+      "x"
+    );
+    expect(variantRequirements(variant)).to.deep.equal([{ name: "g/m", versionConstraint: "1", excludes: ["org.slf4j/*"] }]);
   });
 
   it("reads a variant another module holds as a requirement of that module", () => {

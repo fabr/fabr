@@ -23,7 +23,8 @@ answer every time. This page covers declaring dependencies and how their version
 | Nearest-wins conflict resolution | The highest version anything requires; see [How versions are chosen](#how-versions-are-chosen). |
 | `<classifier>linux-x86_64</classifier>` / `group:artifact:version:classifier` | `@mvn:<group>:<artifact>/<classifier>:<version>`; see [Classified jars](#classified-jars). |
 | `<type>zip</type>` / `group:artifact:version:classifier@zip` | `@mvn:<group>:<artifact>/<classifier>@zip:<version>`, or with no classifier `<artifact>@zip`; see [Files other than jars](#files-other-than-jars). |
-| `<exclusions>` | See [Not currently supported](#not-currently-supported). |
+| `<exclusions>` in a dependency's POM | Read, as Maven reads them; see [What fabr reads from a POM](#what-fabr-reads-from-a-pom). |
+| `<exclusions>` in your own build | See [Not currently supported](#not-currently-supported). |
 | `<repositories>`, `settings.xml` mirrors | A [`maven_repository`](#repositories), or `MAVEN_REPOSITORY_URL`. |
 | `<servers>` in `settings.xml` | The same file; see [Credentials](#credentials). |
 | `mvn dependency:tree` / `gradle dependencies` | `fabr deps <target>`. |
@@ -151,7 +152,11 @@ import. Of a POM's `<dependencies>`:
 | A `test-jar` dependency | A requirement of the package's `tests` jar. |
 | A dependency of another type (`zip`, `pom`, …) | Ignored. |
 
-`<exclusions>` and `<profiles>` are not read.
+A dependency's `<exclusions>` leave the packages they name, `*` matching any group or artifact,
+out of what that dependency brings in, its own and its dependencies' requirements alike, as in
+Maven and Gradle: a package is left out only where every path that reaches it excludes it, so one
+that something else requires is still installed. Exclusions written in a `<dependencyManagement>`
+entry apply beside a dependency's own. `<profiles>` are not read.
 
 A package's files are its one artifact, `<artifact>-<version>.jar` (`.war`, `.ear` and so on, from
 its `<packaging>`), checked against the `.sha1` the repository publishes beside it. A POM-packaged
@@ -179,6 +184,7 @@ Of that variant:
 |---|---|
 | `dependencies` | Requirements of the package. A version `requires` is a floor, a `strictly` one a range, or an exact version as `[1.2]`; `prefers` where nothing else is stated. The versions it `rejects` are cut out of it: requiring `1.0` and rejecting `1.2` is `[1.0,1.2),(1.2,)`. |
 | `dependencyConstraints` | Versions for the packages they name, where something requires them, as a BOM's are. |
+| A dependency's `excludes` | Read as a POM's `<exclusions>` are. |
 | A dependency on a platform | A requirement of the platform, whose constraints give versions, as a BOM's do. A library's dependency on an *enforced* platform is read the same way: forcing versions is the decision of the project that installs the library, which writes `!` on the BOM. |
 | An `artifactSelector` on a dependency | The [classified jar](#classified-jars) or other file it names. |
 | `files` | The package's files, checked against the SHA-1 the `.module` states. |
@@ -323,9 +329,9 @@ password can't be read; write it with `${env.NAME}` instead.
 
 ## Not currently supported
 
-- Exclusions are not read, neither a POM's `<exclusions>` nor a `.module`'s `excludes`, and
-  neither are relocations or POM profiles. A package that a dependency requires can't be
-  removed, only overridden with `!`.
+- A project can't write an exclusion of its own: a package a dependency requires can't be left
+  out, only overridden with `!`. Exclusions a dependency's POM or `.module` publishes are read.
+- Relocations and POM profiles are not read.
 - Two packages providing one capability, such as Guava and `google-collections`, are both
   installed, where Gradle reports a conflict.
 - A module's test fixtures can be required as its classified jar,

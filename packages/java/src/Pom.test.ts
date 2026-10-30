@@ -140,6 +140,27 @@ describe("effectivePom", () => {
     ]);
   });
 
+  it("reads a dependency's exclusions, with its managed ones beside them", async () => {
+    const pom = `<project><groupId>g</groupId><artifactId>a</artifactId><version>1</version>
+      <dependencyManagement><dependencies>
+        <dependency><groupId>x</groupId><artifactId>y</artifactId><version>2</version>
+          <exclusions><exclusion><groupId>m</groupId><artifactId>managed</artifactId></exclusion></exclusions></dependency>
+      </dependencies></dependencyManagement>
+      <dependencies>
+        <dependency><groupId>x</groupId><artifactId>y</artifactId>
+          <exclusions>
+            <exclusion><groupId>commons-logging</groupId><artifactId>commons-logging</artifactId></exclusion>
+            <exclusion><groupId>org.slf4j</groupId><artifactId>*</artifactId></exclusion>
+          </exclusions></dependency>
+        <dependency><groupId>x</groupId><artifactId>z</artifactId><version>3</version></dependency>
+      </dependencies></project>`;
+    const effectivePom = await effective("g:a:1", pom);
+    expect(passedOnDependencies(effectivePom).map(dependency => [dependency.artifactId, dependency.exclusions])).to.deep.equal([
+      ["y", ["commons-logging/commons-logging", "org.slf4j/*", "m/managed"]],
+      ["z", undefined],
+    ]);
+  });
+
   it("passes on compile and runtime jars, classified ones included, and not optional, provided, test-scoped or other types", async () => {
     const pom = await effective("com.example:databind:1.5");
     expect(passedOnDependencies(pom).map(dependency => [dependency.artifactId, dependency.classifier])).to.deep.equal([

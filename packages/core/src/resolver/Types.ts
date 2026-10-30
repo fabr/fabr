@@ -96,6 +96,14 @@ export interface Requirement {
    */
   readonly variant?: string;
   /**
+   * The packages left out of what this requirement brings in, by name, `*`
+   * matching any run of characters but `/` (`org.slf4j/*`): Maven's
+   * `<exclusions>`. A package is left out of what a package reached through
+   * this requirement requires, unless another path reaches it without
+   * excluding it.
+   */
+  readonly excludes?: readonly string[];
+  /**
    * The consumer's tree provides this package — the peer relationship, fabr's
    * `provided_deps` (which npm manifests spell `peerDependencies`, an
    * "optional" one also listed in `peerDependenciesMeta`). Either way the

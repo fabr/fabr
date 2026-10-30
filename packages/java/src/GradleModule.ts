@@ -67,13 +67,14 @@ export interface GradleDependency {
   readonly artifactSelector?: { readonly classifier?: string; readonly extension?: string };
   /** Whether it asks for a capability of the module other than its own, such as its test fixtures. */
   readonly requestsCapabilities: boolean;
+  /** The modules it excludes from what it brings in, as `<group>/<module>`, either part `*` for any. */
+  readonly excludes: readonly string[];
 }
 
-/** A file of a variant: its name, where it is relative to the `.module`, and its SHA-1 where stated. */
+/** A file of a variant: its name, and where it is relative to the `.module`. */
 export interface GradleFile {
   readonly name: string;
   readonly url: string;
-  readonly sha1?: string;
 }
 
 /** Read a `.module` document, `text`, published at `what`. */
@@ -143,13 +144,17 @@ function toDependency(json: unknown): GradleDependency {
     attributes: attributesOf(dependency.attributes),
     ...(selector === undefined ? {} : { artifactSelector: { ...(classifier === undefined ? {} : { classifier }), ...(extension === undefined ? {} : { extension }) } }),
     requestsCapabilities: arrayOf(dependency.requestedCapabilities, `${group}:${module}'s requestedCapabilities`).length > 0,
+    excludes: arrayOf(dependency.excludes, `${group}:${module}'s excludes`).map(exclude => {
+      const fields = toJsonObject(exclude);
+      return `${stringOf(fields.group, `${group}:${module}'s excluded group`)}/${stringOf(fields.module, `${group}:${module}'s excluded module`)}`;
+    }),
   };
 }
 
 function toFile(json: unknown): GradleFile {
   const file = toJsonObject(json);
   const name = stringOf(file.name, "a file's name");
-  return { name, url: stringOf(file.url, `${name}'s url`), ...(typeof file.sha1 === "string" ? { sha1: file.sha1 } : {}) };
+  return { name, url: stringOf(file.url, `${name}'s url`) };
 }
 
 /** Read a variant's or a dependency's attributes, each value as text. */
@@ -244,6 +249,7 @@ export function variantRequirements(variant: GradleVariant): Requirement[] {
           name: mavenName(dependency.group, dependency.module),
           versionConstraint: versionOf(dependency),
           ...(variantText === "" ? {} : { variant: variantText }),
+          ...(dependency.excludes.length === 0 ? {} : { excludes: dependency.excludes }),
         };
       }),
     ...variant.dependencyConstraints.map((constraint): Requirement => ({ name: mavenName(constraint.group, constraint.module), versionConstraint: versionOf(constraint), bom: true })),

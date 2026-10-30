@@ -19,7 +19,7 @@
 
 import { Computable } from "../core/Computable";
 import { FabrError, MetadataFetchError, toError, VersionNotFoundError } from "../core/Errors";
-import { constraintOf, dependencyNameOf, requiredAs, versionConstraintText } from "./Requirement";
+import { constraintOf, dependencyNameOf, excludedBy, requiredAs, versionConstraintText } from "./Requirement";
 import { edgeBinding, MVSResolution, nodeId as idOf } from "./MVSResolution";
 import {
   IRequirementEdge,
@@ -307,6 +307,16 @@ function resolvePhase<V, C>(
      * demand once the tree requires its package by another edge. */
     const bomReqs: Array<{ req: Requirement; requiredBy: string }> = [];
     const bomFired = new Set<{ req: Requirement; requiredBy: string }>();
+    /* The edges reaching each package, by the name it is selected under
+     * (an edge binds to the selection, whatever version it demanded), with
+     * the package requiring it and the exclusions written on each; and the
+     * requirements left out because every path to their requirer excludes
+     * their package — each fired once a path that does not exclude it is
+     * found (see excludedAt). */
+    const incoming = new Map<string, Array<{ from: string; excludes?: readonly string[] }>>();
+    const nodeDeclared = new Map<string, Requirement[]>();
+    const excludedReqs: Array<{ req: Requirement; requiredBy: string }> = [];
+    const excludedFired = new Set<{ req: Requirement; requiredBy: string }>();
     const alternateFired = new Set<string>();
     const floorlessRequired = new Set<string>();
 
@@ -535,9 +545,48 @@ function resolvePhase<V, C>(
       return new MetadataFetchError(pkg, domain.versionToString(version), path, rootPkg, toError(err));
     };
 
+    /** @return the package a node id (`name@version`) is of. */
+    const packageOf = (id: string): string => id.substring(0, id.lastIndexOf("@"));
+
+    /**
+     * @return true if every path from a root to the node `id` excludes the
+     * package `name`, otherwise false: a path that excludes it carries an
+     * edge whose requirement excludes it.
+     */
+    const excludedAt = (id: string, name: string): boolean => {
+      const start = packageOf(id);
+      const seen = new Set<string>([start]);
+      const stack = [start];
+      for (let at = stack.pop(); at !== undefined; at = stack.pop()) {
+        for (const { from, excludes } of incoming.get(at) ?? []) {
+          if (excludedBy(excludes, name)) {
+            continue;
+          }
+          if (from === ROOT_REQUIRER) {
+            return false;
+          }
+          const requirer = packageOf(from);
+          if (!seen.has(requirer)) {
+            seen.add(requirer);
+            stack.push(requirer);
+          }
+        }
+      }
+      return true;
+    };
+
+    /** Record the node `id`'s requirements that no path's exclusions leave out as its edges. */
+    const keepRequirements = (id: string): void => {
+      nodeRequirements.set(
+        id,
+        (nodeDeclared.get(id) ?? []).filter(req => !req.bom && !excludedAt(id, requiredAs(req)))
+      );
+    };
+
     const visit = (pkg: string, version: V, requiredBy: string, req: Requirement): void => {
       const id = nodeId(pkg, version);
       const entry: Demand = { req, requiredBy };
+      incoming.set(pkg, [...(incoming.get(pkg) ?? []), { from: requiredBy, excludes: req.excludes }]);
       const demands = nodeDemands.get(id);
       if (demands) {
         /* Metadata already demanded (or resolved); record the demand for raise
@@ -565,10 +614,17 @@ function resolvePhase<V, C>(
       };
       try {
         registry.getRequirements(req.name, version).then(requirements => {
-          /* A BOM's dependencies are no edges of the node: they only offer floors (see enqueue). */
-          nodeRequirements.set(id, requirements.filter(req => !req.bom));
+          /* A BOM's dependencies are no edges of the node: they only offer
+           * floors (see enqueue). A requirement every path to the node
+           * excludes waits for a path that does not. */
+          nodeDeclared.set(id, requirements);
+          keepRequirements(id);
           for (const req of requirements) {
-            enqueue(req, id);
+            if (!req.bom && excludedAt(id, requiredAs(req))) {
+              excludedReqs.push({ req, requiredBy: id });
+            } else {
+              enqueue(req, id);
+            }
           }
           if (--pending === 0) {
             settle();
@@ -614,11 +670,18 @@ function resolvePhase<V, C>(
       const flooring = bomReqs.filter(
         entry => !bomFired.has(entry) && (selectedPkgs.has(requiredAs(entry.req)) || floorlessRequired.has(requiredAs(entry.req)))
       );
-      if (firing.length === 0 && supplying.length === 0 && flooring.length === 0) {
+      /* An excluded requirement a path found since no longer excludes. */
+      const lifting = excludedReqs.filter(entry => !excludedFired.has(entry) && !excludedAt(entry.requiredBy, requiredAs(entry.req)));
+      if (firing.length === 0 && supplying.length === 0 && flooring.length === 0 && lifting.length === 0) {
         finish();
         return;
       }
       pending++;
+      for (const entry of lifting) {
+        excludedFired.add(entry);
+        keepRequirements(entry.requiredBy);
+        enqueue(entry.req, entry.requiredBy);
+      }
       for (const entry of firing) {
         providedFired.add(entry);
         enqueue({ ...entry.req, provided: undefined }, entry.requiredBy);

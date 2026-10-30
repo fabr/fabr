@@ -42,10 +42,16 @@ function mockRegistry(data: Record<string, Record<string, Record<string, string>
       }
       return Computable.resolve(
         Object.entries(deps).map(([written, constraint]): Requirement => {
-          /* `real -> name` is a requirement on `real`, renamed; `real#x` one on its variant `x`. */
-          const [named, renameTo] = written.split(" -> ");
+          /* `real -> name` is a requirement on `real`, renamed; `real#x` one on
+           * its variant `x`; `real excluding a,b` one excluding `a` and `b`. */
+          const [required, excluding] = written.split(" excluding ");
+          const [named, renameTo] = required.split(" -> ");
           const [dep, variant] = named.split("#");
-          const renamed = { ...(renameTo === undefined ? {} : { renameTo }), ...(variant === undefined ? {} : { variant }) };
+          const renamed = {
+            ...(renameTo === undefined ? {} : { renameTo }),
+            ...(variant === undefined ? {} : { variant }),
+            ...(excluding === undefined ? {} : { excludes: excluding.split(",") }),
+          };
           /* 'bom ' is a BOM's dependency: a floor where something else requires the package. */
           if (constraint.startsWith("bom ")) {
             return { name: dep, versionConstraint: constraint.substring(4), bom: true, ...renamed };
@@ -1295,6 +1301,49 @@ describe("fork packing", () => {
     /* Attributed through the first-reacher chain to the root whose subtree
      * demanded the erring node (X exact-pinned the fork) */
     expect(result.errors[0].rootName).to.equal("X");
+  });
+});
+
+describe("exclusions", () => {
+  const tree = {
+    A: { "1.0.0": { "B excluding C": "^1.0.0" } },
+    B: { "1.0.0": { C: "^1.0.0", D: "^1.0.0" } },
+    C: { "1.0.0": {} },
+    D: { "1.0.0": {} },
+  };
+
+  it("leave out what a requirement excludes from what it brings in", () => {
+    const result = resolveOrderIndependent({ A: "1.0.0" }, tree);
+    expect(selectionStrings(result).sort()).to.deep.equal(["A@1.0.0", "B@1.0.0", "D@1.0.0"]);
+    expect([...result.edgesOf("B@1.0.0").keys()]).to.deep.equal(["D"]);
+  });
+
+  it("keep a package another path reaches without excluding it", () => {
+    const result = resolveOrderIndependent({ A: "1.0.0", E: "1.0.0" }, { ...tree, E: { "1.0.0": { C: "^1.0.0" } } });
+    expect(selectionStrings(result).sort()).to.deep.equal(["A@1.0.0", "B@1.0.0", "C@1.0.0", "D@1.0.0", "E@1.0.0"]);
+    /* Every path to B still excludes C, so B has no edge to it. */
+    expect([...result.edgesOf("B@1.0.0").keys()]).to.deep.equal(["D"]);
+  });
+
+  it("keep what a requirer requires where another path reaches the requirer without excluding it", () => {
+    const result = resolveOrderIndependent({ A: "1.0.0", F: "1.0.0" }, { ...tree, F: { "1.0.0": { B: "^1.0.0" } } });
+    expect(selectionStrings(result).sort()).to.deep.equal(["A@1.0.0", "B@1.0.0", "C@1.0.0", "D@1.0.0", "F@1.0.0"]);
+    expect([...result.edgesOf("B@1.0.0").keys()].sort()).to.deep.equal(["C", "D"]);
+  });
+
+  it("carry an exclusion down every path below the requirement, and match a wildcard", () => {
+    const result = resolveOrderIndependent(
+      { A: "1.0.0" },
+      {
+        A: { "1.0.0": { "B excluding C*": "^1.0.0" } },
+        B: { "1.0.0": { X: "^1.0.0" } },
+        X: { "1.0.0": { C1: "^1.0.0", C2: "^1.0.0", D: "^1.0.0" } },
+        C1: { "1.0.0": {} },
+        C2: { "1.0.0": {} },
+        D: { "1.0.0": {} },
+      }
+    );
+    expect(selectionStrings(result).sort()).to.deep.equal(["A@1.0.0", "B@1.0.0", "D@1.0.0", "X@1.0.0"]);
   });
 });
 

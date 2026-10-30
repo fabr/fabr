@@ -44,6 +44,20 @@ export function requiredAs(req: Requirement): string {
   return req.renameTo ?? req.name;
 }
 
+/**
+ * @return true if `name` is matched by one of `patterns` (see
+ * {@link Requirement.excludes}), otherwise false.
+ */
+export function excludedBy(patterns: readonly string[] | undefined, name: string): boolean {
+  return (patterns ?? []).some(pattern => {
+    const expression = pattern
+      .split("*")
+      .map(part => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
+      .join("[^/]*");
+    return new RegExp(`^${expression}$`).test(name);
+  });
+}
+
 /** @return the name the variant `variant` of the package `name` is installed as: `<name>/<variant>`. */
 export function variantName(name: string, variant: string): string {
   return `${name}/${variant}`;
@@ -62,15 +76,16 @@ export function dependencyNameOf(req: Requirement): string {
  * an override changes what resolution means (a force substitutes outright; an
  * alternate can supply a floorless-only package's version), a rename makes it
  * a requirement on a package of another name, and being provided demands
- * nothing where the tree already selects the package, and a variant installs
- * other content — so all four are part
+ * nothing where the tree already selects the package, a variant installs
+ * other content, and exclusions change what it brings in — so all are part
  * of the identity, hence of any resolution memo key built from these.
  */
 export function requirementKey(req: Requirement): string {
   const role = req.provided === undefined ? "" : req.provided === "optional" ? " (optionally provided)" : " (provided)";
   const rename = requiredAs(req) === req.name ? "" : ` -> ${req.renameTo}`;
   const name = req.variant === undefined ? req.name : variantName(req.name, req.variant);
-  return `${req.versionConstraint === undefined ? name : `${name}:${req.versionConstraint}`}${markerOf(req.override)}${rename}${role}`;
+  const excludes = req.excludes === undefined || req.excludes.length === 0 ? "" : ` excluding ${[...req.excludes].sort().join(" ")}`;
+  return `${req.versionConstraint === undefined ? name : `${name}:${req.versionConstraint}`}${markerOf(req.override)}${rename}${role}${excludes}`;
 }
 
 /**

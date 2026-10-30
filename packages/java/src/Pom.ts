@@ -43,6 +43,8 @@ export interface PomDependency {
   readonly type?: string;
   readonly classifier?: string;
   readonly optional: boolean;
+  /** The packages it excludes from what it brings in, as `<group>/<artifact>`, either part `*` for any. */
+  readonly exclusions?: readonly string[];
 }
 
 /** A POM as written: nothing inherited, interpolated or managed. */
@@ -83,6 +85,14 @@ function readDependency(element: XmlElement, what: string): PomDependency {
   const scope = xmlText(element, "scope");
   const type = xmlText(element, "type");
   const classifier = xmlText(element, "classifier");
+  const exclusions = xmlChildren(xmlChild(element, "exclusions"), "exclusion").map(exclusion => {
+    const excludedGroup = xmlText(exclusion, "groupId");
+    const excludedArtifact = xmlText(exclusion, "artifactId");
+    if (excludedGroup === undefined || excludedArtifact === undefined) {
+      throw new FabrError(`${what}: an exclusion of ${groupId}:${artifactId} is missing its groupId or artifactId`);
+    }
+    return `${excludedGroup}/${excludedArtifact}`;
+  });
   return {
     groupId,
     artifactId,
@@ -91,6 +101,7 @@ function readDependency(element: XmlElement, what: string): PomDependency {
     ...(type === undefined ? {} : { type }),
     ...(classifier === undefined ? {} : { classifier }),
     optional: xmlText(element, "optional") === "true",
+    ...(exclusions.length === 0 ? {} : { exclusions }),
   };
 }
 
@@ -191,6 +202,7 @@ function interpolateDependency(dependency: PomDependency, interpolate: (text: st
     ...(type === undefined ? {} : { type }),
     ...(classifier === undefined ? {} : { classifier }),
     optional: dependency.optional,
+    ...(dependency.exclusions === undefined ? {} : { exclusions: dependency.exclusions.map(interpolate) }),
   };
 }
 
@@ -275,7 +287,14 @@ export function effectivePom(pom: RawPom, load: PomLoader, what: string, depth =
           if (filledVersion === undefined) {
             throw new FabrError(`${what}: dependency ${dependency.groupId}:${dependency.artifactId} has no version, and none is managed`);
           }
-          return { ...dependency, version: filledVersion, ...(filledScope === undefined ? {} : { scope: filledScope }) };
+          /* A managed dependency's exclusions apply beside its own. */
+          const exclusions = [...new Set([...(dependency.exclusions ?? []), ...(managedEntry?.exclusions ?? [])])];
+          return {
+            ...dependency,
+            version: filledVersion,
+            ...(filledScope === undefined ? {} : { scope: filledScope }),
+            ...(exclusions.length === 0 ? {} : { exclusions }),
+          };
         });
         return {
           groupId,

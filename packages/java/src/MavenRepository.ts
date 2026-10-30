@@ -376,6 +376,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
         name: mavenName(dependency.groupId, dependency.artifactId),
         versionConstraint: dependency.version,
         ...(dependency.classifier === undefined ? {} : { variant: dependency.classifier }),
+        ...(dependency.exclusions === undefined ? {} : { excludes: dependency.exclusions }),
       })),
       ...bomDependencies(pom),
     ]);
@@ -413,27 +414,29 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
 
   /**
    * Fetch the files of a package's variant, each where its `.module` places it,
-   * checked against the SHA-1 it states. A variant another module holds has
-   * none of its own.
+   * checked against the `.sha1` the repository publishes beside it: the hashes
+   * a `.module` states are not always the published files' (Jackson's are
+   * stale). A variant another module holds has none of its own.
    */
   private fetchVariantFiles(name: string, version: MavenVersion, variant: GradleVariant): Computable<PackageFileSet> {
     const coordinate = this.coordinateOf(name, version.text);
     const files = variant.availableAt === undefined ? variant.files : [];
     return Computable.forAll(
-      files.map(file =>
-        fetchFile(this.context, {
+      files.map(file => {
+        const url = `${this.versionUrl(coordinate)}/${file.url}`;
+        return fetchFile(this.context, {
           key: `${this.identity} ${coordinateText(coordinate)} ${file.name}`,
-          tag: "maven:module-file:1",
+          tag: "maven:module-file:2",
           report: { resource: file.name, role: "content" },
           name: file.name,
           source: () =>
-            this.headers().then(headers => ({
-              url: `${this.versionUrl(coordinate)}/${file.url}`,
-              expected: file.sha1 === undefined ? undefined : { algorithm: "sha1", encoding: "hex" as const, value: file.sha1 },
+            Computable.forAll([this.sha1Of(url), this.headers()], (sha1, headers) => ({
+              url,
+              expected: sha1 === undefined ? undefined : { algorithm: "sha1", encoding: "hex" as const, value: sha1 },
               headers,
             })),
-        })
-      ),
+        });
+      }),
       (...fetched: FileSet[]) => new PackageFileSet(FileSet.unionAll(...fetched), name, version.text)
     );
   }
