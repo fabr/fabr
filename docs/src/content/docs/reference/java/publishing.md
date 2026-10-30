@@ -95,7 +95,11 @@ written too. It differs from Maven's and Gradle's own spellings, which put the c
 fourth `:` part; in fabr a part after the version selects files, as in any reference, and a
 coordinate written that way is an error that says how to write it.
 
-The entry's content is packed into the jar, or, where it is one jar, is that jar. An entry for a
+A file other than a jar is named with its extension after an `@`, as a
+[dependency on one](/reference/java/dependencies/#files-other-than-jars) is:
+`@corp:com.example:greeter/dist@zip:1.0.0`. The entry's content is packed into the jar or zip, or,
+where it is one file of that extension, is that file; content for another extension must be that
+one file. An entry for a
 classifier `auto_attach` lists takes its place. The artifact the jar belongs beside must be
 published by the same `sync`: `cannot publish @corp:com.example/greeter/sources:1.0.0: the release
 publishes no com.example:greeter:1.0.0 for it to be beside`.

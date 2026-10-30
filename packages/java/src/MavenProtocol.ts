@@ -86,26 +86,42 @@ function splitMavenReference(name: Name): Requirement & { projection?: IProjecti
 }
 
 /**
- * Split an artifact as a reference writes it, `<artifact>/<classifier>`
- * where it names a classifier: @return the artifact, and the classifier as the
- * requirement's variant.
+ * Split an artifact as a reference writes it, `<artifact>/<classifier>`,
+ * `<artifact>/<classifier>@<extension>` or `<artifact>@<extension>` where it
+ * names a file other than the version's artifact: @return the artifact, and
+ * the rest as the requirement's variant (`linux-x86_64`, `bin@zip`, `@zip`).
  */
 function splitClassifier(written: string): { artifactId: string; variant: { variant?: string } } {
-  const slash = written.indexOf("/");
-  return slash === -1 ? { artifactId: written, variant: {} } : { artifactId: written.substring(0, slash), variant: { variant: written.substring(slash + 1) } };
+  const at = written.indexOf("@");
+  const named = at === -1 ? written : written.substring(0, at);
+  const extension = at === -1 ? "" : written.substring(at);
+  const slash = named.indexOf("/");
+  const artifactId = slash === -1 ? named : named.substring(0, slash);
+  const classifier = slash === -1 ? "" : named.substring(slash + 1);
+  return { artifactId, variant: classifier === "" && extension === "" ? {} : { variant: `${classifier}${extension}` } };
 }
 
-/** @return true if `classifier` can be a Maven classifier: a word a file's name can hold, otherwise false. */
-function isClassifier(classifier: string): boolean {
-  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(classifier);
+/**
+ * Read a Maven variant: @return the classifier it names, if any, and the
+ * extension of its file, `jar` where it names none.
+ */
+export function mavenVariantOf(variant: string): { classifier?: string; extension: string } {
+  const at = variant.indexOf("@");
+  const classifier = at === -1 ? variant : variant.substring(0, at);
+  return { ...(classifier === "" ? {} : { classifier }), extension: at === -1 ? "jar" : variant.substring(at + 1) };
+}
+
+/** @return true if `variant` names a classifier a file's name can hold, an extension, or both, otherwise false. */
+function isMavenVariant(variant: string): boolean {
+  return /^([A-Za-z0-9][A-Za-z0-9._-]*)?(@[A-Za-z0-9][A-Za-z0-9.]*)?$/.test(variant) && variant !== "";
 }
 
 /** Check a Maven reference: a `group/artifact` name, and a valid version or
  *  range, or none, for a BOM to give; an override marker needs an exact version. */
 function validateMavenRequirement({ name, versionConstraint, override, variant }: Requirement): void {
   splitMavenName(name);
-  if (variant !== undefined && !isClassifier(variant)) {
-    throw new FabrError(`'${variant}' is not a classifier, which ${name}/${variant} names`);
+  if (variant !== undefined && !isMavenVariant(variant)) {
+    throw new FabrError(`'${variant}' is not a classifier, an @extension or both, which ${name}/${variant} names`);
   }
   if (versionConstraint === undefined) {
     if (override !== undefined) {
@@ -127,12 +143,13 @@ function validateMavenRequirement({ name, versionConstraint, override, variant }
 
 /**
  * Parse a publish coordinate, `<group>:<artifact>:<version>` (or
- * `<group>/<artifact>:<version>`), whose version is exact, or with a
- * classifier after the artifact, `<group>:<artifact>/<classifier>:<version>`:
- * a file published beside the version's artifact (`-sources.jar`).
+ * `<group>/<artifact>:<version>`), whose version is exact, or with a variant
+ * after the artifact, `<group>:<artifact>/<classifier>[@<extension>]:<version>`
+ * or `<group>:<artifact>@<extension>:<version>`: a file published beside the
+ * version's artifact (`-sources.jar`, `-bin.zip`).
  */
-export function parseMavenPublishCoordinate(name: Name): { name: string; version: string; classifier?: string } {
-  const { name: packageName, versionConstraint: version, projection, variant: classifier } = splitMavenReference(name);
+export function parseMavenPublishCoordinate(name: Name): { name: string; version: string; variant?: string } {
+  const { name: packageName, versionConstraint: version, projection, variant } = splitMavenReference(name);
   const literal = name.toString();
   if (version === undefined || projection !== undefined) {
     /* A fourth part is read as a classifier elsewhere: say how fabr writes one. */
@@ -144,7 +161,7 @@ export function parseMavenPublishCoordinate(name: Name): { name: string; version
         : "a classifier follows the artifact, as in com.example:app/sources:1.0.0"
     );
   }
-  if (classifier !== undefined && !isClassifier(classifier)) {
+  if (variant !== undefined && !isMavenVariant(variant)) {
     throw new FabrError(`publish coordinate '${literal}' must name a group, an artifact, a classifier where it has one, and a version (com.example:app/sources:1.0.0)`);
   }
   splitMavenName(packageName);
@@ -156,7 +173,7 @@ export function parseMavenPublishCoordinate(name: Name): { name: string; version
   if (/-SNAPSHOT$/i.test(version)) {
     throw new FabrError(`publishing a -SNAPSHOT version (${literal}) is not supported`);
   }
-  return { name: packageName, version, ...(classifier === undefined ? {} : { classifier }) };
+  return { name: packageName, version, ...(variant === undefined ? {} : { variant }) };
 }
 
 export const MAVEN_FORMAT: PackageFormat<MavenVersion, MavenConstraint> = {

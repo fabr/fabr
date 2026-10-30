@@ -19,7 +19,7 @@
 
 import { expect } from "chai";
 import { FabrError, NamespaceRef, parseName, RefSource, Repository, RepositoryRef, vendPackageRef } from "@fabr-build/core";
-import { MAVEN_FORMAT, splitMavenName } from "./MavenProtocol";
+import { MAVEN_FORMAT, mavenVariantOf, splitMavenName } from "./MavenProtocol";
 
 const vend = (written: string): RepositoryRef | NamespaceRef => vendPackageRef({} as RefSource & Repository, MAVEN_FORMAT, parseName(written));
 
@@ -64,8 +64,19 @@ describe("MAVEN_FORMAT", () => {
     expect(projectionsOf(refOf("io.netty:netty-transport-native-epoll/linux-x86_64:4.1.110.Final:META-INF/*"))).to.deep.equal([["META-INF/*", ""]]);
   });
 
-  it("refuses a variant that is no classifier", () => {
-    expect(() => MAVEN_FORMAT.validateRequirement(refOf("io.netty:netty-transport-native-epoll/a/b:4.1.110.Final"))).to.throw(/'a\/b' is not a classifier/);
+  it("reads an extension after the artifact or its classifier into the variant", () => {
+    const tomcat = refOf("org.apache.tomcat:tomcat@zip:9.0.85");
+    expect([tomcat.name, tomcat.variant, tomcat.versionConstraint]).to.deep.equal(["org.apache.tomcat/tomcat", "@zip", "9.0.85"]);
+    const maven = refOf("org.apache.maven:apache-maven/bin@tar.gz:3.9.6");
+    expect([maven.name, maven.variant]).to.deep.equal(["org.apache.maven/apache-maven", "bin@tar.gz"]);
+    expect(mavenVariantOf("bin@tar.gz")).to.deep.equal({ classifier: "bin", extension: "tar.gz" });
+    expect(mavenVariantOf("@zip")).to.deep.equal({ extension: "zip" });
+    expect(mavenVariantOf("linux-x86_64")).to.deep.equal({ classifier: "linux-x86_64", extension: "jar" });
+  });
+
+  it("refuses a variant that is no classifier or extension", () => {
+    expect(() => MAVEN_FORMAT.validateRequirement(refOf("io.netty:netty-transport-native-epoll/a/b:4.1.110.Final"))).to.throw(/'a\/b' is not a classifier, an @extension or both/);
+    expect(() => MAVEN_FORMAT.validateRequirement(refOf("org.apache.tomcat:tomcat@:9.0.85"))).to.throw(/'@' is not a classifier/);
   });
 
   it("reads a quoted range as the version", () => {
@@ -110,7 +121,7 @@ describe("parseMavenPublishCoordinate", () => {
 
   it("reads a classifier written after the artifact, and refuses one that is no classifier", () => {
     for (const written of ["com.example:app/sources:1.0.0", "com.example/app/sources:1.0.0"]) {
-      expect(MAVEN_FORMAT.parsePublishCoordinate(parseName(written))).to.deep.equal({ name: "com.example/app", version: "1.0.0", classifier: "sources" });
+      expect(MAVEN_FORMAT.parsePublishCoordinate(parseName(written))).to.deep.equal({ name: "com.example/app", version: "1.0.0", variant: "sources" });
     }
     expect(() => MAVEN_FORMAT.parsePublishCoordinate(parseName("com.example:app/-x:1.0.0"))).to.throw(/a classifier where it has one/);
     expect(() => MAVEN_FORMAT.parsePublishCoordinate(parseName("com.example:app/a/b:1.0.0"))).to.throw(/a classifier where it has one/);

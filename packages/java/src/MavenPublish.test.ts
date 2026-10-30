@@ -22,14 +22,15 @@ import { Computable, FileSet, MemoryFile, PublishableFileSet, PublishStatus, rea
 import {
   checkPomMetadata,
   checksumFiles,
-  classifierOf,
   MavenPublishRef,
   mergedMetadata,
   metadataPath,
   packageClassifiedMember,
   packageMavenMember,
   pomText,
+  publishedFilePath,
   repositoryPath,
+  variantOf,
 } from "./MavenPublish";
 
 describe("pomText", () => {
@@ -140,15 +141,14 @@ describe("classified members", () => {
     package: () => Computable.resolve<PublishableFileSet[]>([]),
     publish: () => Computable.resolve<PublishStatus>("published"),
   };
-  const ref = (classifier?: string): MavenPublishRef =>
-    new MavenPublishRef(writer, { name: "com.example/app", version: "1.0.0", classifier }, "@corp");
+  const ref = (variant?: string): MavenPublishRef => new MavenPublishRef(writer, { name: "com.example/app", version: "1.0.0", variant }, "@corp");
   const files = (entries: Record<string, string>): FileSet =>
     new FileSet(new Map(Object.entries(entries).map(([name, text]) => [name, MemoryFile.from(text)])));
 
   it("are named with their classifier after the artifact", () => {
     expect(ref("sources").toString()).to.equal("@corp:com.example/app/sources:1.0.0");
     expect(ref().toString()).to.equal("@corp:com.example/app:1.0.0");
-    expect(classifierOf(ref("sources"))).to.equal("sources");
+    expect(variantOf(ref("sources"))).to.equal("sources");
     expect(ref("sources").withRepositoryName("@other").toString()).to.equal("@other:com.example/app/sources:1.0.0");
   });
 
@@ -162,6 +162,24 @@ describe("classified members", () => {
     const jar = await carrier.get("com/example/app/1.0.0/app-1.0.0-sources.jar");
     const members = await readZipMembers(await jar!.getBuffer(), () => true);
     expect(members.get("com/example/App.java")?.toString()).to.equal("class App {}");
+  });
+
+  it("lay out a variant's file by its classifier and extension", () => {
+    expect(publishedFilePath(ref("sources"))).to.equal("com/example/app/1.0.0/app-1.0.0-sources.jar");
+    expect(publishedFilePath(ref("bin@zip"))).to.equal("com/example/app/1.0.0/app-1.0.0-bin.zip");
+    expect(publishedFilePath(ref("@tar.gz"))).to.equal("com/example/app/1.0.0/app-1.0.0.tar.gz");
+  });
+
+  it("pack a tree as a zip, take one file of the extension as it is, and refuse to pack another", async () => {
+    const zipped = await packageClassifiedMember({ destination: ref("bin@zip"), content: files({ "bin/run.sh": "run" }) }, [ref(), ref("bin@zip")]);
+    expect([...zipped].map(([name]) => name)).to.include("com/example/app/1.0.0/app-1.0.0-bin.zip");
+    const tarball = await packageClassifiedMember({ destination: ref("bin@tar.gz"), content: files({ "made.tar.gz": "TGZ" }) }, [ref(), ref("bin@tar.gz")]);
+    expect(await (await tarball.get("com/example/app/1.0.0/app-1.0.0-bin.tar.gz"))!.readString()).to.equal("TGZ");
+    const refused = await packageClassifiedMember({ destination: ref("bin@tar.gz"), content: files({ "bin/run.sh": "run" }) }, [ref(), ref("bin@tar.gz")]).then(
+      () => undefined,
+      err => (err as Error).message
+    );
+    expect(refused).to.match(/its content must be one \.tar\.gz file/);
   });
 
   it("take content that is one jar as that jar", async () => {

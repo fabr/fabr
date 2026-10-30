@@ -22,6 +22,7 @@ answer every time. This page covers declaring dependencies and how their version
 | A BOM in `<dependencyManagement>` with `<scope>import</scope>` / `platform(…)` | The BOM in `deps`, `test_deps` or wherever its versions are used; see [BOMs](#boms). |
 | Nearest-wins conflict resolution | The highest version anything requires; see [How versions are chosen](#how-versions-are-chosen). |
 | `<classifier>linux-x86_64</classifier>` / `group:artifact:version:classifier` | `@mvn:<group>:<artifact>/<classifier>:<version>`; see [Classified jars](#classified-jars). |
+| `<type>zip</type>` / `group:artifact:version:classifier@zip` | `@mvn:<group>:<artifact>/<classifier>@zip:<version>`, or with no classifier `<artifact>@zip`; see [Files other than jars](#files-other-than-jars). |
 | `<exclusions>` | See [Not currently supported](#not-currently-supported). |
 | `<repositories>`, `settings.xml` mirrors | A [`maven_repository`](#repositories), or `MAVEN_REPOSITORY_URL`. |
 | `<servers>` in `settings.xml` | The same file; see [Credentials](#credentials). |
@@ -181,6 +182,25 @@ any reference. A classified jar's sources or javadoc are not read with `<BUILD_O
 or `doc`: where a package publishes them, they are a classified jar of their own (`/test-sources`
 for a `tests` jar's).
 
+### Files other than jars
+
+A version can also publish files that are not jars, such as a distribution: Tomcat publishes
+`tomcat-9.0.85.zip` and `tomcat-9.0.85.tar.gz`, and Apache Maven `apache-maven-3.9.6-bin.zip`. A
+POM doesn't say which files a version publishes, so a reference names the extension after an `@`,
+as Gradle writes it:
+
+```
+@mvn:org.apache.tomcat:tomcat@zip:9.0.85                # tomcat-9.0.85.zip
+@mvn:org.apache.maven:apache-maven/bin@tar.gz:3.9.6     # apache-maven-3.9.6-bin.tar.gz
+```
+
+Such a file is a package of its own, as a classified jar is, but goes on no classpath; use it
+where files are wanted, such as a `generate` target's `srcs` or `fabr cp`. A version that publishes
+no such file is the error `org.apache.tomcat:tomcat:9.0.85 publishes no rar`.
+
+A package's own artifact needs no extension: it is the one its POM's `<packaging>` names, a `.war`
+for a war.
+
 ## A dependency's javadoc and sources
 
 Under the `doc` and `sources` operations a Maven reference is answered with the package's
@@ -263,7 +283,8 @@ password can't be read; write it with `${env.NAME}` instead.
 
 - `<exclusions>`, relocations and POM profiles are not read. A package that a dependency's POM
   requires can't be removed, only overridden with `!`.
-- A reference can't name a type other than a jar.
+- A dependency in a POM of a type other than `jar` or `test-jar` (`zip`, `war`) is ignored, as it
+  is on Maven's classpath.
 - A classifier isn't chosen for the platform: a project building for several writes the
   classified jar of each.
 - Timestamped `-SNAPSHOT` versions are not resolved.

@@ -64,11 +64,11 @@ import {
   versionChildren,
   VersionNotFoundError,
 } from "@fabr-build/core";
-import { MAVEN_FORMAT, mavenName, parseMavenPublishCoordinate, splitMavenName } from "./MavenProtocol";
+import { MAVEN_FORMAT, mavenName, mavenVariantOf, parseMavenPublishCoordinate, splitMavenName } from "./MavenProtocol";
 import { javaPluginContext } from "./MavenAuth";
 import {
   checksumFiles,
-  classifierOf,
+  variantOf,
   MavenPublishRef,
   mergedMetadata,
   metadataPath,
@@ -214,11 +214,11 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
    * classifiers, built under the operation that answers with it.
    */
   public attachments(destination: RepositoryPublishRef): PublishAttachment[] {
-    if (classifierOf(destination) !== undefined) {
+    if (variantOf(destination) !== undefined) {
       return [];
     }
     return this.autoAttach.map(classifier => ({
-      destination: new MavenPublishRef(this, { name: destination.name, version: destination.version, classifier }, destination.repositoryName),
+      destination: new MavenPublishRef(this, { name: destination.name, version: destination.version, variant: classifier }, destination.repositoryName),
       operation: OPERATIONS.get(classifier)!,
     }));
   }
@@ -234,10 +234,10 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     release: readonly RepositoryPublishRef[],
     targets: ReadonlyMap<string, readonly RepositoryPublishRef[]>
   ): Computable<PublishableFileSet[]> {
-    const coMembers = new Set(members.filter(member => classifierOf(member.destination) === undefined).map(member => member.destination.name));
+    const coMembers = new Set(members.filter(member => variantOf(member.destination) === undefined).map(member => member.destination.name));
     return Computable.forAll(
       members.map(member =>
-        classifierOf(member.destination) === undefined ? packageMavenMember(member, targets, coMembers, release) : packageClassifiedMember(member, release)
+        variantOf(member.destination) === undefined ? packageMavenMember(member, targets, coMembers, release) : packageClassifiedMember(member, release)
       ),
       (...carriers: PublishableFileSet[]) => carriers
     );
@@ -252,9 +252,9 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
   public publish(artifact: PublishableFileSet): Computable<PublishStatus> {
     const { name, version } = artifact.destination;
     const { groupId, artifactId } = splitMavenName(name);
-    const classified = classifierOf(artifact.destination) !== undefined;
+    const classified = variantOf(artifact.destination) !== undefined;
     /* What marks the member published: a version's POM, or a classified jar itself. */
-    const marker = classified ? publishedFilePath(artifact.destination, "jar") : repositoryPath(groupId, artifactId, version, `${artifactId}-${version}.pom`);
+    const marker = classified ? publishedFilePath(artifact.destination) : repositoryPath(groupId, artifactId, version, `${artifactId}-${version}.pom`);
     return this.request(marker, { method: "GET" }).then(existing => {
       if (existing.statusCode === 200) {
         return Computable.resolve<PublishStatus>("already-synced");
@@ -417,23 +417,25 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
   }
 
   /**
-   * Fetch the jar a version publishes under a classifier, its variant
-   * `variant` (RepositoryReader implementation), checked against its `.sha1`.
+   * Fetch the file a version publishes as its variant `variant`
+   * (RepositoryReader implementation): the jar of a classifier, or a file of
+   * another extension, checked against its `.sha1`.
    */
   public fetchVariant(name: string, version: MavenVersion, variant: string): Computable<FileSet> {
     const coordinate = this.coordinateOf(name, version.text);
-    const file = `${coordinate.artifactId}-${coordinate.version}-${variant}.jar`;
+    const { classifier, extension } = mavenVariantOf(variant);
+    const file = `${coordinate.artifactId}-${coordinate.version}${classifier === undefined ? "" : `-${classifier}`}.${extension}`;
     const url = `${this.versionUrl(coordinate)}/${file}`;
     return this.sha1Of(url).then(sha1 => {
       if (sha1 === undefined) {
-        throw new FabrError(`${coordinateText(coordinate)} publishes no ${variant} jar`).withHelp(
+        throw new FabrError(`${coordinateText(coordinate)} publishes no ${classifier === undefined ? "" : `${classifier} `}${extension}`).withHelp(
           `${this.url} has no ${file}; require a version of ${name} that publishes one`
         );
       }
       return fetchFile(this.context, {
         key: `${this.identity} ${coordinateText(coordinate)} ${variant}`,
         tag: "maven:variant:1",
-        report: { resource: `${variant} jar`, role: "content" },
+        report: { resource: file, role: "content" },
         name: file,
         source: () => this.headers().then(headers => ({ url, expected: { algorithm: "sha1", encoding: "hex" as const, value: sha1 }, headers })),
       });
