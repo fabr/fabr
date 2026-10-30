@@ -47,8 +47,7 @@ import {
   defineRule,
   ContainedSources,
   PackageSources,
-  Permissive,
-  permissive,
+  ResolutionSpec,
 } from "@fabr-build/core";
 import { assembleNodeModules } from "../NodeModules";
 import {
@@ -78,11 +77,14 @@ export default defineRule({
    */
   requirements(
     context: TargetContext
-  ): Permissive<{ deps: Computable<PackageSources>; entry: Computable<ContainedSources> }> {
-    return permissive({
-      deps: context.getPackageProperty("deps", BUILD_OVERRIDE),
-      entry: context.getContainedFileProperty("entry", BUILD_OVERRIDE),
-    });
+  ): ResolutionSpec<{ deps: Computable<PackageSources>; entry: Computable<ContainedSources> }> {
+    return {
+      requirements: {
+        deps: context.getPackageProperty("deps", BUILD_OVERRIDE),
+        entry: context.getContainedFileProperty("entry", BUILD_OVERRIDE),
+      },
+      permissive: true,
+    };
   },
   evaluateMaterialized(context, inputs) {
     return defineJsRunnable(context, inputs);

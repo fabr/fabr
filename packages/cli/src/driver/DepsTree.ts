@@ -29,13 +29,20 @@ import {
   Dependency,
   dependencyName,
   requestedConstraint,
-  DEPENDENCIES_KEY,
-  OPTIONAL_PROVIDED_KEY,
-  PROVIDED_KEY,
   Conflicts,
   NO_CONFLICTS,
   versionText,
   ResolvedNode,
+  declName,
+  FileSet,
+  IModelStep,
+  IPropertyDecl,
+  IProvenanceStep,
+  ITargetDecl,
+  ITargetOrigin,
+  MODEL_PROVENANCE,
+  TARGET_PROVENANCE,
+  TargetRef,
 } from "@fabr-build/core";
 
 /** What a line of the tree may be marked with, and what each mark means. */
@@ -82,11 +89,6 @@ function label(dep: Dependency, style: Style): string {
 
 /** The heading each of a package's own requirements is printed under: the name
  * of the property that conventionally holds it. */
-const HEADINGS: ReadonlyMap<string, string> = new Map([
-  [DEPENDENCIES_KEY, "deps"],
-  [PROVIDED_KEY, "provided_deps"],
-  [OPTIONAL_PROVIDED_KEY, "optional_provided_deps"],
-]);
 
 /** One name's tree: its sections, each the edges to the packages a
  * requirement holds, and the versions conflicting among them. */
@@ -107,6 +109,76 @@ function edgesOf(sources: ReadonlyArray<Resolved>, references: ReadonlyArray<Ref
 }
 
 /**
+ * Split what `target` requires into sections by where each source was written:
+ * the target's own property it was read from (`deps`), or the rule, for what
+ * the rule requires itself (`required by <type> rule`). What the target's rule
+ * builds under the target's own name is part of the target, not something it
+ * requires, and is left out. Each source is shown once.
+ */
+function requiredAsWritten(target: ResolvedTarget): Map<string, Dependency[]> {
+  const decl = declOf(target.origin);
+  const ruleSection = `required by ${decl?.type ?? "its"} rule`;
+  const sections = new Map<string, { sources: Resolved[]; references: Array<Reference | undefined> }>();
+  const seen = new Set<unknown>();
+  const seenText = new Set<string>();
+  const first = (source: Resolved): boolean => {
+    if (source instanceof TargetRef) {
+      const text = [source.toString(), ...source.projections.map(({ pattern, prefix }) => `${prefix} ${pattern.toString()}`)].join(":");
+      if (seenText.has(text)) {
+        return false;
+      }
+      seenText.add(text);
+      return true;
+    }
+    if (seen.has(source)) {
+      return false;
+    }
+    seen.add(source);
+    return true;
+  };
+  for (const [name, sources] of target.resolved.sources) {
+    const references = target.resolved.references.get(name) ?? [];
+    sources.forEach((source, at) => {
+      const partOfTarget = source instanceof ResolvedNode && source !== target && source.content.builds === target.content.builds;
+      if (partOfTarget || !first(source)) {
+        return;
+      }
+      const property = decl === undefined ? undefined : propertyOf(references[at] ?? source, decl);
+      const section = property === undefined ? ruleSection : declName(property);
+      const held = sections.get(section) ?? { sources: [], references: [] };
+      held.sources.push(source);
+      held.references.push(references[at]);
+      sections.set(section, held);
+    });
+  }
+  return new Map([...sections].map(([section, { sources, references }]) => [section, edgesOf(sources, references)]));
+}
+
+/** Get the declaration of the target whose node `origin` is the provenance of, if it is a target's. */
+function declOf(origin: IProvenanceStep | undefined): ITargetDecl | undefined {
+  for (let step = origin; step !== undefined; step = step.parent) {
+    if (step.kind === TARGET_PROVENANCE) {
+      return (step as ITargetOrigin).decl;
+    }
+  }
+  return undefined;
+}
+
+/** Get the property of `decl` that `source` was read from, if it was read from one: the declaration on its first model step written in `decl`. */
+function propertyOf(source: unknown, decl: ITargetDecl): IPropertyDecl | undefined {
+  const inTarget = (step: IProvenanceStep): step is IModelStep => step.kind === MODEL_PROVENANCE && (step as IModelStep).target === decl;
+  if (source instanceof Reference) {
+    return source.steps.find(inTarget)?.property;
+  }
+  for (let step = source instanceof FileSet ? source.origin : undefined; step !== undefined; step = step.parent) {
+    if (inTarget(step)) {
+      return step.property;
+    }
+  }
+  return undefined;
+}
+
+/**
  * Split what a name resolved to into the tree's sections. One target is shown
  * by what it requires, a section per requirement, with what conflicts there.
  * Anything else (an external requirement, a catalog member, a global naming
@@ -117,16 +189,7 @@ export function sectionsOf(title: string, resolved: ResolvedRequirements): Depen
   const denoted = resolved.denoted;
   const [only] = denoted;
   if (denoted.length === 1 && only instanceof ResolvedTarget) {
-    return {
-      title,
-      parts: new Map(
-        [...only.resolved.sources].map(([name, sources]): [string, Dependency[]] => [
-          HEADINGS.get(name) ?? name,
-          edgesOf(sources, only.resolved.references.get(name) ?? []),
-        ])
-      ),
-      conflicts: only.resolved.conflicts,
-    };
+    return { title, parts: requiredAsWritten(only), conflicts: only.resolved.conflicts };
   }
   return { title, parts: new Map([["", edgesOf(denoted, resolved.references.get("") ?? [])]]), conflicts: resolved.conflicts };
 }

@@ -27,6 +27,7 @@ import { IProvenanceStep, rootedAt } from "./Provenance";
 import type { Reference } from "./Reference";
 import type { RepositoryRef, SourceRef } from "./Repository";
 import type { Requirement } from "../resolver/Types";
+import type { PackageFormat } from "../resolver/PackageFormat";
 
 /** How strongly a provided requirement is expected (see Requirement.provided). */
 export type Provided = NonNullable<Requirement["provided"]>;
@@ -80,6 +81,16 @@ export interface Dependency<P extends Package = Package> {
 }
 
 /** How a package's files are had, for one that does not hold them. */
+/**
+ * What a target builds, as its rule declares it before it is built: a package
+ * of that name, in that format and, where the rule knows it, at that version;
+ * or plain files. Resolution uses it for the target's node, and what the
+ * target builds is checked against it.
+ */
+export type Builds =
+  | { readonly package: string; readonly format?: PackageFormat<unknown, unknown>; readonly version?: string }
+  | "files";
+
 export interface PackageContent {
   /** Names the files without reading them: one key, one set of files. */
   readonly key: string;
@@ -88,16 +99,20 @@ export interface PackageContent {
   files(): Computable<FileSet | ReadonlyArray<SourceRef>>;
   /**
    * The target whose build the files are, by name. What a target builds is
-   * known when it is built: the node is a package where its build is one, and
-   * plain files otherwise.
+   * what its rule declares ({@link declared}), and otherwise known when it is
+   * built: the node is a package where its build is one, and plain files
+   * otherwise.
    */
   readonly builds?: string;
   /** The configuration the target is built under, as a message shows it
    * (`BUILD_TYPE=release`): empty where it is the ambient one. */
   readonly configuration?: string;
   /** Whether the build is known to be no package (the target was read for
-   * its files). Such a node claims no name among packages. */
+   * its files, or its rule declares it builds files). Such a node claims no
+   * name among packages. */
   readonly plain?: true;
+  /** What the target's rule declares it builds, where it declares it. */
+  readonly declared?: Builds;
 }
 
 /** What a {@link ResolvedNode} is made of. */
@@ -115,8 +130,8 @@ export interface NodeFields {
  * edge bound, and no files — only how to have them ({@link content}), which
  * {@link materializePackages} calls and nothing that reads the graph does. A
  * registry's node is a package. A target's node is whatever the target
- * builds, a package or plain files, which is known when it is built
- * ({@link PackageContent.builds}). The graph may be cyclic; build one with a
+ * builds, a package or plain files, which its rule declares or is known when
+ * it is built ({@link PackageContent.builds}). The graph may be cyclic; build one with a
  * {@link PackageGraphBuilder}.
  */
 export class ResolvedNode implements PackageMetadata {
@@ -146,9 +161,26 @@ export class ResolvedNode implements PackageMetadata {
     return this.copy({ content });
   }
 
-  /** See {@link PackageFileSet.withPackageName}. */
+  /**
+   * Make a copy named `packageName`, its content delivered under that name: a
+   * package renamed is a package of its own, which its key says.
+   */
   public withPackageName(packageName: string): ResolvedNode {
-    return this.copy({ packageName });
+    if (packageName === this.packageName) {
+      return this;
+    }
+    const { content } = this;
+    /* A rename names a package: what the rule declared is that package, renamed. */
+    const declared: Builds | undefined = content.declared === "files" ? content.declared : { ...content.declared, package: packageName };
+    return this.copy({
+      packageName,
+      content: {
+        ...content,
+        key: `${content.key} -> ${packageName}`,
+        files: () => content.files().then(files => (files instanceof PackageFileSet ? files.withPackageName(packageName) : files)),
+        declared,
+      },
+    });
   }
 
   /** Make a copy with `changes` made, of the same kind as this node. */
@@ -679,7 +711,10 @@ export function materializePackages(roots: ReadonlyArray<Package>): Computable<A
            * built: it has the one its build gave it. */
           const version = pkg.version ?? (files instanceof PackageFileSet ? files.version : undefined);
           const builds = pkg instanceof ResolvedNode ? pkg.content.builds : undefined;
-          held = builder.node(files, pkg.packageName, version, builds === undefined ? pkg.origin : rootedAt(pkg.origin, files.origin));
+          /* Named as its content names it: whatever renamed the node renamed
+           * its content too. */
+          const name = files instanceof PackageFileSet ? files.packageName : pkg.packageName;
+          held = builder.node(files, name, version, builds === undefined ? pkg.origin : rootedAt(pkg.origin, files.origin));
           made.set(pkg, held);
           builder.wire(
             held,

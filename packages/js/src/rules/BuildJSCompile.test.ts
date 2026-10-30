@@ -64,6 +64,9 @@ const collected = (
     materializeAll: () => Computable.resolve(parts),
     materialize: name => Computable.resolve(parts[name as keyof typeof parts]),
     packages: () => Computable.resolve([]),
+    get resolved(): never {
+      throw new Error("the rule does not read its requirements as resolved");
+    },
   };
 };
 

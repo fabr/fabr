@@ -21,7 +21,7 @@ import { Computable } from "../core/Computable";
 import { FabrError } from "../core/Errors";
 import { FileSet } from "../core/FileSet";
 import { IProjection, Miss } from "../core/Reference";
-import { Dependency, dependencyName, isPackage, NodeFields, PackageContent, PackageFileSet, Provided, ResolvedNode } from "../core/PackageFileSet";
+import { Builds, Dependency, dependencyName, isPackage, NodeFields, PackageContent, PackageFileSet, Provided, ResolvedNode } from "../core/PackageFileSet";
 
 import { Resolved, SourceRef } from "../core/Repository";
 import { TargetNode } from "../core/TargetRef";
@@ -117,6 +117,9 @@ class TargetBuild {
     const name = this.context.name;
     return this.materialize().then((sources): PackageFileSet | SourceRef[] => {
       const pkg = sources.find((source): source is PackageFileSet => source instanceof PackageFileSet);
+      if (!plain) {
+        this.checkDeclared(pkg);
+      }
       if (pkg === undefined || plain) {
         return sources.map(source => (source instanceof PackageFileSet ? new FileSet(source, source.origin) : source));
       }
@@ -141,6 +144,37 @@ class TargetBuild {
       }
       return pkg;
     });
+  }
+
+  /** Check that what the target built, the package `pkg` or files where there is none, is what its rule declares it builds. */
+  private checkDeclared(pkg: PackageFileSet | undefined): void {
+    const declared = this.resolved.builds;
+    const name = this.context.name;
+    const refuse = (message: string): never => {
+      throw this.context.failure(
+        new FabrError(`'${name}' ${message}`).withHelp(
+          "a rule declares what its target builds in `requirements` (`builds`), so that whatever requires the target is resolved with it as it is; what it builds must be that"
+        )
+      );
+    };
+    if (declared === undefined) {
+      return;
+    }
+    if (declared === "files") {
+      if (pkg !== undefined) {
+        refuse(`builds the package '${pkg.packageName}', though its rule declares it builds files`);
+      }
+      return;
+    }
+    if (pkg === undefined) {
+      return refuse(`builds files, though its rule declares the package '${declared.package}'`);
+    }
+    if (pkg.packageName !== declared.package) {
+      refuse(`builds the package '${pkg.packageName}', though its rule declares '${declared.package}'`);
+    }
+    if (declared.version !== undefined && pkg.version !== declared.version) {
+      refuse(`builds '${pkg.packageName}' at ${pkg.version ?? "no version"}, though its rule declares ${declared.version}`);
+    }
   }
 }
 
@@ -169,7 +203,9 @@ export abstract class ResolvedTarget extends ResolvedNode implements TargetNode 
  * what its rule states as passed on: its `dependencies`, `provided` and
  * `optional_provided`, or
  * the version and requirements of the one package it `extends`, or nothing.
- * What it builds — a package, or files — is known when it is built.
+ * What it builds — a package, or files — is what its rule declares
+ * (`ResolvedRequirements.builds`), checked when it is built, or otherwise
+ * known only then.
  */
 export class DeclaredResolvedTarget extends ResolvedTarget {
   private constructor(
@@ -191,9 +227,9 @@ export class DeclaredResolvedTarget extends ResolvedTarget {
     const build = new TargetBuild(context, resolved, evaluate);
     const stated = build.stated();
     return new DeclaredResolvedTarget(build, {
-      content: targetContent(context, plain => build.built(plain)),
-      packageName: context.name,
-      version: stated.version,
+      content: targetContent(context, plain => build.built(plain), resolved.builds),
+      packageName: declaredName(context, resolved.builds),
+      version: stated.version ?? declaredVersion(resolved.builds),
       dependencies: stated.dependencies,
       origin: targetOrigin(context),
       provided: stated.provided ?? new Map(),
@@ -203,6 +239,7 @@ export class DeclaredResolvedTarget extends ResolvedTarget {
   public get resolved(): ResolvedRequirements {
     return this.build.resolved;
   }
+
 
   public materialize(): Computable<SourceRef[]> {
     return this.build.materialize();
@@ -222,12 +259,27 @@ function targetOrigin(context: DeclaredTargetContext): ITargetOrigin {
   return { kind: TARGET_PROVENANCE, decl: context.target };
 }
 
+/** @return the name of the node of the target `context` names: the package its rule declares it builds, or the target's own. */
+function declaredName(context: DeclaredTargetContext, declared: Builds | undefined): string {
+  return declared === undefined || declared === "files" ? context.name : declared.package;
+}
+
+/** @return the version of the package a rule declares its target builds, where it declares one. */
+function declaredVersion(declared: Builds | undefined): string | undefined {
+  return declared === undefined || declared === "files" ? undefined : declared.version;
+}
+
 /**
  * Make the content of the node of the target `context` names, in its
  * configuration: what `built` builds, told whether the target is read for its
- * files alone.
+ * files alone, and what its rule declares it builds (`declared`), where it
+ * does. A target read for its files, or declared to build files, is plain.
  */
-function targetContent(context: DeclaredTargetContext, built: (plain: boolean) => Computable<PackageFileSet | SourceRef[]>): PackageContent {
+function targetContent(
+  context: DeclaredTargetContext,
+  built: (plain: boolean) => Computable<PackageFileSet | SourceRef[]>,
+  declared?: Builds
+): PackageContent {
   const constraints = context.taskDescription().constraints;
   /* One target under two configurations is two nodes. */
   const configuration = [...constraints]
@@ -244,7 +296,8 @@ function targetContent(context: DeclaredTargetContext, built: (plain: boolean) =
     files: () => built(plain),
     builds: context.name,
     configuration: shown,
-    ...(plain ? { plain } : {}),
+    ...(plain || declared === "files" ? { plain: true as const } : {}),
+    ...(declared === undefined ? {} : { declared }),
   };
 }
 
@@ -264,11 +317,11 @@ export class BlockTargetNode extends ResolvedNode implements TargetNode {
   }
 
   /** Make the node of the target `context` names, which passes on `dependencies`, those named in `provided` provided, and which `target` resolves to build. */
-  public static of(context: DeclaredTargetContext, stated: Stated, target: () => Computable<ResolvedTarget>): BlockTargetNode {
+  public static of(context: DeclaredTargetContext, stated: Stated, target: () => Computable<ResolvedTarget>, declared?: Builds): BlockTargetNode {
     return new BlockTargetNode(context, target, {
-      content: targetContent(context, () => target().then(resolved => resolved.content.files() as Computable<PackageFileSet | SourceRef[]>)),
-      packageName: context.name,
-      version: stated.version,
+      content: targetContent(context, () => target().then(resolved => resolved.content.files() as Computable<PackageFileSet | SourceRef[]>), declared),
+      packageName: declaredName(context, declared),
+      version: stated.version ?? declaredVersion(declared),
       dependencies: stated.dependencies,
       origin: targetOrigin(context),
       provided: stated.provided ?? new Map(),
@@ -285,32 +338,5 @@ export class BlockTargetNode extends ResolvedNode implements TargetNode {
 
   public override copy(changes: Partial<NodeFields>): BlockTargetNode {
     return new BlockTargetNode(this.context, this.target, { ...this.fields(), ...changes });
-  }
-}
-
-/**
- * A target a rule written in `.fabr` builds: the node of what the rule's
- * result names, in every respect and built as it is, except that what it
- * requires (`resolved`) is what the rule's block resolves as one, shown as the
- * target's own requirements.
- */
-export class BlockResolvedTarget extends ResolvedTarget {
-  constructor(
-    private readonly result: ResolvedTarget,
-    public readonly resolved: ResolvedRequirements
-  ) {
-    super(result.content, result.packageName, result.version, result.dependencies, result.origin, result.provided);
-  }
-
-  public materialize(): Computable<SourceRef[]> {
-    return this.result.materialize();
-  }
-
-  public projectBuilt(sources: SourceRef[], projection: IProjection, miss: Miss | undefined): SourceRef[] | Computable<SourceRef[]> {
-    return this.result.projectBuilt(sources, projection, miss);
-  }
-
-  public override copy(changes: Partial<NodeFields>): BlockResolvedTarget {
-    return new BlockResolvedTarget(this.result.copy(changes) as ResolvedTarget, this.resolved);
   }
 }

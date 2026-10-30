@@ -44,10 +44,7 @@ import { classpathOf, javaRelease, pathOption, placedJars, quotedArgument, stage
 /** The `javadoc` rule. */
 export default defineRule({
   requirements(context) {
-    return {
-      srcs: context.getFileProperty("srcs"),
-      deps: context.getPackageProperty("deps"),
-    };
+    return { requirements: { srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps") }, builds: "files" };
   },
   evaluateMaterialized(context, inputs) {
     return generateJavadoc(context, inputs);

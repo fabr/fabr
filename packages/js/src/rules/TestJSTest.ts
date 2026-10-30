@@ -25,12 +25,12 @@
  * compiles as a sibling but is never run.
  */
 
-import { BUILD_OVERRIDE, Computable, defineRule, TargetContext, PackageSources } from "@fabr-build/core";
+import { BUILD_OVERRIDE, Computable, defineRule, PackageSources, ResolutionSpec, TargetContext } from "@fabr-build/core";
 import { compileAndRunTests, TestRequirements, testFramework, testRequirements } from "../TestPipeline";
 
 /** The `js_test` rule: the tests, run under the test framework the target's `framework` names. */
 export default defineRule({
-  requirements(context: TargetContext): Computable<TestRequirements> {
+  requirements(context: TargetContext): Computable<ResolutionSpec<TestRequirements>> {
     return Computable.forAll(
       [
         context.getFileProperty("tests", BUILD_OVERRIDE),

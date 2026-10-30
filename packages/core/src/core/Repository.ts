@@ -561,10 +561,10 @@ export function renamedAs(source: SourceRef | ResolvedNode, renameTo: string, wr
     /* What a target builds is known when it is built. Delivered under another
      * name it is a package of that name, a build apart from the target's own:
      * its key says so, and its files are the one build's. */
-    const { content } = source;
-    return source.withPackageName(renameTo).withContent({
+    const renamed = source.withPackageName(renameTo);
+    const { content } = renamed;
+    return renamed.withContent({
       ...content,
-      key: `${content.key} -> ${renameTo}`,
       files: () =>
         content.files().then(files => {
           if (!(files instanceof PackageFileSet)) {

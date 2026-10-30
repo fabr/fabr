@@ -390,6 +390,12 @@ function buildOf(pkg: Package): string {
   return buildKey(configuration, hashString(content.key).slice(0, 8));
 }
 
+/** @return true if `pkg` may be a candidate of a resolution in `format`: a package built in the project declared in another format may not, otherwise false. */
+function inFormat(pkg: Package, format: object): boolean {
+  const declared = pkg instanceof ResolvedNode ? pkg.content.declared : undefined;
+  return declared === undefined || declared === "files" || declared.format === undefined || declared.format === format;
+}
+
 /**
  * Read the packages built in the project as candidates for a resolution of
  * `registry`'s references, or of builds alone where `registry` is undefined.
@@ -580,7 +586,8 @@ export function resolvePackages<V, C>(
    * the answer, which the collection point decides from the repository's
    * `operation`. */
   return Computable.resolve(undefined).then(() => {
-    const listed = buildsOf(registry, locals, own, sources);
+    /* A package built in the project in another format is no candidate here. */
+    const listed = buildsOf(registry, locals.filter(pkg => inFormat(pkg, format)), own, sources);
     const requested = new Map<RepositoryRef, Requirement>();
     for (const request of requests) {
       if (!requested.has(request.reference)) {
@@ -1035,7 +1042,10 @@ class ResolutionGraph<V, C> {
       node = builder.resolved(
         {
           key: `${registry.identity} ${id}`,
-          files: () => registry.fetch(selected.publishedName ?? selected.name, version),
+          files: () =>
+            registry
+              .fetch(selected.publishedName ?? selected.name, version)
+              .then(pkg => (pkg.packageName === selected.name ? pkg : pkg.withPackageName(selected.name))),
         },
         selected.name,
         registry.format.versionToString(version),
@@ -1327,7 +1337,7 @@ export function fetchPinnedPackage<V, C>(
   if (operation !== undefined) {
     return publishedFor(registry, bound.publishedName ?? bound.name, version, operation, origin);
   }
-  return registry.fetch(bound.publishedName ?? bound.name, version).then(pkg => new PackageFileSet(pkg, pkg.packageName, pkg.version, [], origin));
+  return registry.fetch(bound.publishedName ?? bound.name, version).then(pkg => new PackageFileSet(pkg, bound.name, pkg.version, [], origin));
 }
 
 /**

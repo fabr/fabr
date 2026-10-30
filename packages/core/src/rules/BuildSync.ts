@@ -49,15 +49,14 @@ export default {
   requirements(context) {
     return context
       .getWildcardProperties()
-      .then(
-        props =>
-          new Map(
-            props.map((prop): [string, Computable<SyncSources>] => [
-              contentKey(prop.decl),
-              context.getFileProperty(contentKey(prop.decl), BUILD_OVERRIDE).then(sources => new SyncSources(sources)),
-            ])
-          )
-      );
+      .then(props => ({
+        requirements: new Map(
+          props.map((prop): [string, Computable<SyncSources>] => [
+            contentKey(prop.decl),
+            context.getFileProperty(contentKey(prop.decl), BUILD_OVERRIDE).then(sources => new SyncSources(sources)),
+          ])
+        ),
+      }));
   },
   evaluate(context, requirements) {
     return syncPackages(context, requirements);

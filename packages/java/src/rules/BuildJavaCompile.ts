@@ -31,8 +31,8 @@ import * as path from "path";
 import {
   Computable,
   createExecAction,
-  EMPTY_FILESET,
   defineRule,
+  EMPTY_FILESET,
   FabrError,
   FileSet,
   Flag,
@@ -57,10 +57,7 @@ import {
 /** The `java_compile` rule. */
 export default defineRule({
   requirements(context) {
-    return {
-      srcs: context.getFileProperty("srcs"),
-      deps: context.getPackageProperty("deps"),
-    };
+    return { requirements: { srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps") }, builds: "files" };
   },
   evaluateMaterialized(context, inputs) {
     return compileJava(context, inputs);

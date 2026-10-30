@@ -24,25 +24,26 @@
  */
 
 import {
-  Dependency,
   Computable,
   Constraints,
+  defineRule,
+  Dependency,
+  dependencyName,
   FabrError,
   FileSet,
   FileSource,
+  Flag,
+  IFile,
+  LooseSources,
   PackageFileSet,
+  PackageSources,
   Provided,
   readJsonFile,
+  ResolutionSpec,
   RuleResult,
+  SourceRef,
   TargetContext,
   toJsonObject,
-  Flag,
-  dependencyName,
-  defineRule,
-  LooseSources,
-  SourceRef,
-  IFile,
-  PackageSources,
 } from "@fabr-build/core";
 import {
   compileContents,
@@ -68,7 +69,7 @@ export default defineRule({
    * provided, so a consumer's collection point binds each to what it uses under
    * that name. The compiler is resolved apart, by js_compile.
    */
-  requirements(context: TargetContext): Computable<{
+  requirements(context: TargetContext): Computable<ResolutionSpec<{
     srcs: Computable<SourceRef[]>;
     resources: Computable<SourceRef[]>;
     tests: Computable<SourceRef[]>;
@@ -80,24 +81,29 @@ export default defineRule({
     test_deps: Computable<LooseSources>;
     test_resources: Computable<SourceRef[]>;
     test_expectations: Computable<SourceRef[]>;
-  }> {
+  }>> {
     return context.getProperty("version").then(version => {
       assertPackageVersion(version?.toString());
+      const written = version?.toString();
+      const builds = { package: context.name, format: NPM_FORMAT, ...(written === undefined ? {} : { version: written }) };
       return {
-        srcs: context.getFileProperty("srcs"),
-        resources: context.getFileProperty("resources"),
-        tests: context.getFileProperty("tests"),
-        exports: context.getFileProperty("exports"),
-        dependencies: context.getPackageProperty("deps"),
-        provided: context.getPackageProperty("provided_deps"),
-        optional_provided: context.getPackageProperty("optional_provided_deps"),
-        /* Compiled against, and private to the build: not passed on. */
-        compile_deps: context.getPackageProperty("compile_deps"),
-        /* Only the loose files of `test_deps`, which are subtracted from `srcs`:
-         * a build resolves and fetches nothing the tests alone need. */
-        test_deps: context.getLooseFileProperty("test_deps"),
-        test_resources: context.getFileProperty("test_resources"),
-        test_expectations: context.getFileProperty("test_expectations"),
+        requirements: {
+          srcs: context.getFileProperty("srcs"),
+          resources: context.getFileProperty("resources"),
+          tests: context.getFileProperty("tests"),
+          exports: context.getFileProperty("exports"),
+          dependencies: context.getPackageProperty("deps"),
+          provided: context.getPackageProperty("provided_deps"),
+          optional_provided: context.getPackageProperty("optional_provided_deps"),
+          /* Compiled against, and private to the build: not passed on. */
+          compile_deps: context.getPackageProperty("compile_deps"),
+          /* Only the loose files of `test_deps`, which are subtracted from `srcs`:
+           * a build resolves and fetches nothing the tests alone need. */
+          test_deps: context.getLooseFileProperty("test_deps"),
+          test_resources: context.getFileProperty("test_resources"),
+          test_expectations: context.getFileProperty("test_expectations"),
+        },
+        builds,
       };
     });
   },

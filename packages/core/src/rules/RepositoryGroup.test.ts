@@ -326,7 +326,7 @@ describe("repository_group (through the model)", () => {
   const depsRule: RuleDefinition = defineRule({
     type: "test_deps",
     properties: {},
-    requirements: context => Computable.resolve({ deps: context.getPackageProperty("deps") }),
+    requirements: context => Computable.resolve({ requirements: { deps: context.getPackageProperty("deps") } }),
     evaluateResolved: (_context, requirements) =>
       requirements.materializeAll().then(({ deps }) => {
         lastDepSets = deps;

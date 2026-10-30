@@ -32,7 +32,6 @@ import {
   FabrError,
   FileSet,
   PackageFileSet,
-  permissive,
   RunnableFileSet,
   TargetContext,
 } from "@fabr-build/core";
@@ -50,11 +49,14 @@ export default defineRule({
    * program is run and never compiled against, so its packages are collected
    * permissively, as a tool's are. */
   requirements(context) {
-    return permissive({
-      srcs: context.getFileProperty("srcs", BUILD_OVERRIDE),
-      deps: context.getPackageProperty("deps", BUILD_OVERRIDE),
-      agents: context.getPackageProperty("agents", BUILD_OVERRIDE),
-    });
+    return {
+      requirements: {
+        srcs: context.getFileProperty("srcs", BUILD_OVERRIDE),
+        deps: context.getPackageProperty("deps", BUILD_OVERRIDE),
+        agents: context.getPackageProperty("agents", BUILD_OVERRIDE),
+      },
+      permissive: true,
+    };
   },
   evaluateMaterialized(context, inputs) {
     return Computable.forAll(

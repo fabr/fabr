@@ -54,25 +54,26 @@ import {
   COVERAGE_REPORT_FILENAME,
   EMPTY_FILESET,
   FabrError,
-  SymlinkFile,
   FileSet,
-  MemoryFile,
+  Flag,
   IFile,
   IWriteBackCandidate,
+  MemoryFile,
   PackageFileSet,
-  PropertyMap,
-  RunnableFileSet,
+  PackageSources,
   parseName,
-  TargetContext,
+  PropertyMap,
+  ResolutionSpec,
   RuleResult,
+  RunnableFileSet,
   SourceRef,
+  SymlinkFile,
+  TargetContext,
   TEST_EXPECTATIONS,
   TEST_REPORT_FILENAME,
+  toEnvironment,
   UPDATE_EXPECTATIONS,
   WriteBackFileSet,
-  Flag,
-  toEnvironment,
-  PackageSources,
 } from "@fabr-build/core";
 import { type ICoverageOptions, SOURCE_LOCATIONS_FILE } from "@fabr-build/js-tools";
 import { createTestRunAction } from "./TestRunAction";
@@ -234,14 +235,18 @@ export interface ITestSettings {
 }
 
 /**
- * Return a test target's requirements as written, or none where it declares no
- * `tests` at all, so that such a target fetches nothing under `fabr test`. A
- * declared `tests` that matches no files keeps its requirements.
+ * Make a test target's resolution spec: its requirements as written, or none
+ * where it declares no `tests` at all, so that such a target fetches nothing
+ * under `fabr test`. A declared `tests` that matches no files keeps its
+ * requirements.
  */
-export function testRequirements(written: TestRequirements): TestRequirements {
-  return written.tests.length === 0
-    ? { srcs: [], tests: [], deps: new PackageSources([]), test_deps: new PackageSources([]), test_resources: [], expectations: [] }
-    : written;
+export function testRequirements(written: TestRequirements): ResolutionSpec<TestRequirements> {
+  return {
+    requirements:
+      written.tests.length === 0
+        ? { srcs: [], tests: [], deps: new PackageSources([]), test_deps: new PackageSources([]), test_resources: [], expectations: [] }
+        : written,
+  };
 }
 
 /**

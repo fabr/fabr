@@ -23,7 +23,7 @@
  * resolve) and run against the package's deps.
  */
 
-import { BUILD_OVERRIDE, Computable, defineRule, TargetContext, PackageSources } from "@fabr-build/core";
+import { BUILD_OVERRIDE, Computable, defineRule, PackageSources, ResolutionSpec, TargetContext } from "@fabr-build/core";
 import { compileAndRunTests, TestRequirements, testFramework, testRequirements } from "../TestPipeline";
 
 /** The `js_package` rule, under `test`: the package's tests, run under the test framework its `test_framework` names. */
@@ -34,7 +34,7 @@ export default defineRule({
    * and installed identically: a test install is self-contained, with no host to
    * supply them and no manifest to distinguish them.
    */
-  requirements(context: TargetContext): Computable<TestRequirements> {
+  requirements(context: TargetContext): Computable<ResolutionSpec<TestRequirements>> {
     return Computable.forAll(
       [
         context.getFileProperty("srcs", BUILD_OVERRIDE),

@@ -25,8 +25,7 @@ import { FileSetRef } from "../core/FileSetRef";
 import { Materialized, RepositoryRef, SourceRef } from "../core/Repository";
 import { checked, materializeLists, packageIn, resolveLists } from "./CollectionPoint";
 import type { Conflicts } from "../resolver/StrictCollection";
-import { TargetRef } from "../core/TargetRef";
-import { PackageFileSet, ResolvedNode, Dependency } from "../core/PackageFileSet";
+import { Builds, PackageFileSet, ResolvedNode, Dependency } from "../core/PackageFileSet";
 import { Resolved } from "../core/Repository";
 import type { InternalBuildContext } from "./BuildContext";
 import type { TargetContext } from "./TargetContext";
@@ -123,17 +122,17 @@ export type RequiredSources = Read | Computable<Read>;
 export type Requirements = Record<string, RequiredSources> | ReadonlyMap<string, RequiredSources>;
 
 /**
- * Requirements collected permissively: a target built with them is not
- * refused for versions that conflict, as a sealed program install is not.
- * Made with {@link permissive}.
+ * What resolution needs to know of a target, as its rule's `requirements`
+ * returns it: the sources it requires, by name (`requirements`); whether they
+ * are collected permissively, so that a target built with them is not refused
+ * for versions that conflict, as a sealed program install is not
+ * (`permissive`); and what the target builds, where the rule knows
+ * (`builds`).
  */
-export class Permissive<P extends Requirements = Requirements> {
-  constructor(public readonly requirements: P) {}
-}
-
-/** Mark `requirements` as collected permissively: see {@link Permissive}. */
-export function permissive<P extends Requirements>(requirements: P): Permissive<P> {
-  return new Permissive(requirements);
+export interface ResolutionSpec<P extends Requirements = Requirements> {
+  readonly requirements: P;
+  readonly permissive?: boolean;
+  readonly builds?: Builds;
 }
 
 /** How a requirement's sources are read: for their files alone, as packages,
@@ -163,11 +162,13 @@ export class ResolvedRequirements {
     private readonly entries: ReadonlyMap<string, ResolvedRequirement>,
     /** The versions that conflict in the collection, found as it was resolved. */
     public readonly conflicts: Conflicts,
-    /** Whether the requirements are collected {@link Permissive permissively}. */
+    /** Whether the requirements are collected {@link ResolutionSpec.permissive permissively}. */
     public readonly permissive: boolean,
     /** Find what conflicts among some of what the collection resolved, used
      * together without the rest. */
-    private readonly conflictsAmong: (shipped: ReadonlyArray<Resolved>) => Computable<Conflicts> = () => Computable.resolve(conflicts)
+    private readonly conflictsAmong: (shipped: ReadonlyArray<Resolved>) => Computable<Conflicts> = () => Computable.resolve(conflicts),
+    /** What the target builds, as its rule declares it, where it does. */
+    public readonly builds?: Builds
   ) {
     this.sources = new Map([...entries].map(([name, entry]) => [name, entry.sources]));
     this.references = new Map([...entries].map(([name, entry]) => [name, entry.references]));
@@ -200,64 +201,22 @@ export class ResolvedRequirements {
       }
       return [name, entry];
     });
-    return new ResolvedRequirements(new Map(kept), this.conflicts, this.permissive, this.conflictsAmong);
+    return new ResolvedRequirements(new Map(kept), this.conflicts, this.permissive, this.conflictsAmong, this.builds);
   }
 
   /**
    * Get the requirements of the target `target` among these, each named
    * `<target>.<name>`, as requirements named `<name>`, collected strictly
-   * unless `permissive`, with what conflicts among their sources alone.
+   * unless `permissive`, of a target that builds what `builds` says, with
+   * what conflicts among their sources alone.
    */
-  public ofTarget(target: string, permissive: boolean): Computable<ResolvedRequirements> {
+  public ofTarget(target: string, permissive: boolean, builds?: Builds): Computable<ResolvedRequirements> {
     const kept = [...this.entries]
       .filter(([name]) => name.startsWith(`${target}.`))
       .map(([name, entry]): [string, ResolvedRequirement] => [name.substring(target.length + 1), entry]);
     return this.conflictsAmong(kept.flatMap(([, { sources }]) => sources)).then(
-      conflicts => new ResolvedRequirements(new Map(kept), conflicts, permissive, this.conflictsAmong)
+      conflicts => new ResolvedRequirements(new Map(kept), conflicts, permissive, this.conflictsAmong, builds)
     );
-  }
-
-  /**
-   * Regroup the sources of every requirement into requirements named by
-   * `section` (each source once, in the order first met: a reference left
-   * unresolved once per reference written alike), leaving out those it names
-   * no section for: what the collection resolved, shown other than by the
-   * requirements that asked for it.
-   */
-  public regrouped(section: (source: Resolved, reference: Reference | undefined) => string | undefined): ResolvedRequirements {
-    const sections = new Map<string, { sources: Resolved[]; references: Array<Reference | undefined>; reading: Reading }>();
-    const seen = new Set<Resolved>();
-    const seenReferences = new Map<unknown, Set<string>>();
-    const first = (source: Resolved): boolean => {
-      if (source instanceof TargetRef) {
-        const texts = seenReferences.get(source.source) ?? new Set<string>();
-        seenReferences.set(source.source, texts);
-        const text = [source.toString(), ...source.projections.map(({ pattern, prefix }) => `${prefix} ${pattern.toString()}`)].join(":");
-        if (texts.has(text)) {
-          return false;
-        }
-        texts.add(text);
-        return true;
-      }
-      if (seen.has(source)) {
-        return false;
-      }
-      seen.add(source);
-      return true;
-    };
-    for (const { sources, references, reading } of this.entries.values()) {
-      sources.forEach((source, at) => {
-        const name = section(source, references[at]);
-        if (name === undefined || !first(source)) {
-          return;
-        }
-        const held = sections.get(name) ?? { sources: [], references: [], reading };
-        held.sources.push(source);
-        held.references.push(references[at]);
-        sections.set(name, held);
-      });
-    }
-    return new ResolvedRequirements(sections, this.conflicts, this.permissive, this.conflictsAmong);
   }
 
   /** Materialize every requirement and finish it into what a rule reads,
@@ -345,14 +304,8 @@ function asMaterial(source: Resolved): Resolved {
  * nothing built. The strict check is left for when the requirements are
  * materialized ({@link ResolvedRequirements.check}).
  */
-export function resolveRequirements(
-  target: TargetContext,
-  required: Requirements | Permissive,
-  /** Get the requirement name a key of `required` stands for, which the
-   * framework reads what it means from. */
-  requirementName: (key: string) => string = key => key
-): Computable<ResolvedRequirements> {
-  const entries = requirementEntries(required instanceof Permissive ? required.requirements : required);
+export function resolveRequirements(target: TargetContext, spec: ResolutionSpec): Computable<ResolvedRequirements> {
+  const entries = requirementEntries(spec.requirements);
   return Computable.forAll(
     entries.map(([, value]) => (value instanceof Computable ? value : Computable.resolve(value))),
     (...values: Read[]) => {
@@ -388,12 +341,22 @@ export function resolveRequirements(
               ])
             ),
             conflicts,
-            required instanceof Permissive,
-            conflictsAmong
+            spec.permissive === true,
+            conflictsAmong,
+            spec.builds
           )
       );
     }
   );
+}
+
+/**
+ * Get the requirement name `key` stands for: its last part, so that a name a
+ * rule qualifies (`classes.extends`) is read as the name it qualifies, while
+ * only the plain name is what the target itself passes on.
+ */
+function requirementName(key: string): string {
+  return key.substring(key.lastIndexOf(".") + 1);
 }
 
 /**
@@ -412,6 +375,8 @@ export interface Unmaterialized<P> {
    * among it as the edges the target has to them: each with the reference
    * it was resolved for. Loose files among the requirement are left out. */
   packages<K extends keyof P & string>(name: K): Computable<Array<Dependency<PackageFileSet>>>;
+  /** The requirements as resolved, nothing materialized. */
+  readonly resolved: ResolvedRequirements;
 }
 
 /** Make `resolved` what a rule receives: see {@link Unmaterialized}. */
@@ -442,6 +407,7 @@ export function unmaterialized(
     );
   };
   return {
+    resolved,
     materializeAll: () =>
       check().then(() => {
         const names = [...resolved.sources.keys()];

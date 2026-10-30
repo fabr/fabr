@@ -39,7 +39,7 @@ import { IPrefixMatch, IPropertyEntry, Namespace } from "./Namespace";
 import { BuildModel } from "./BuildModel";
 import { NamespaceBuilder } from "./NamespaceBuilder";
 import { BuildContext } from "../context/index";
-import { BuildContextImpl } from "../context/BuildContextImpl";
+import { blockRuleDefinition, BuildContextImpl } from "../context/BuildContextImpl";
 import { BUILD_OPERATION, Constraints } from "./Constraints";
 import { ExecutionContext } from "./ExecutionContext";
 import { Name } from "../core/Name";
@@ -142,7 +142,7 @@ export class DeclaredRule implements SelectableRule {
   public readonly properties: Record<string, string>;
   public readonly targetProperties: Record<string, string>;
   private loaded?: Computable<RuleDefinition>;
-  private block?: RuleBlockDefinition;
+  private block?: RuleDefinition;
 
   constructor(
     public readonly decl: IRuleDecl,
@@ -154,10 +154,10 @@ export class DeclaredRule implements SelectableRule {
   }
 
   /** @return the rule, its implementation loaded; a rule written in `.fabr` loads nothing. */
-  public definition(): Computable<RuleDefinition | RuleBlockDefinition> {
+  public definition(): Computable<RuleDefinition> {
     const { decl } = this;
     if (isRuleBlock(decl.implementation)) {
-      return Computable.resolve((this.block ??= new DeclaredBlockRule(this, decl as IRuleDecl & { implementation: IRuleBlock })));
+      return Computable.resolve((this.block ??= blockRuleDefinition(new DeclaredBlockRule(this, decl as IRuleDecl & { implementation: IRuleBlock }))));
     }
     const entry = decl.implementation;
     this.loaded ??= loadedImplementation(this.load, entry, "rule").then(implementation => {
@@ -497,7 +497,7 @@ export class ModelBuilder implements BuildModel {
     return this.defaultRules;
   }
 
-  public getRuleDefinition(rule: SelectableRule): Computable<RuleDefinition | RuleBlockDefinition> {
+  public getRuleDefinition(rule: SelectableRule): Computable<RuleDefinition> {
     return rule instanceof DeclaredRule ? rule.definition() : Computable.resolve(rule as RuleDefinition);
   }
 

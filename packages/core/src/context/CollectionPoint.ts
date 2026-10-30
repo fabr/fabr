@@ -1600,7 +1600,7 @@ function answers(reference: RepositoryRef, pkg: Package): boolean {
  * that is executed, not linked against (a runnable's install), so coexisting
  * versions are accepted and nest. Given by the framework to a single-surface
  * collection (`collectLists`, `materializeShallow`); a rule's own requirements
- * say it with `permissive()`. Never a constraint.
+ * say it with `permissive` (`ResolutionSpec`). Never a constraint.
  */
 export interface ResolutionOptions {
   resolutionMode?: "strict" | "permissive";

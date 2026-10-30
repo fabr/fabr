@@ -27,10 +27,9 @@ import type { IPropertyEntry } from "../model/Namespace";
 import {
   CommandValue,
   MaterializedRequirements,
-  Permissive,
+  ResolutionSpec,
   PropertyMap,
   RequiredSources,
-  Requirements,
   TargetContext,
   Unmaterialized,
 } from "../context/index";
@@ -124,11 +123,6 @@ export interface RuleBlockDefinition extends SelectableRule {
   declaresProperty(prop: IPropertyDecl): boolean;
 }
 
-/** @return true if `rule` is written in `.fabr`, otherwise false. */
-export function isRuleBlockDefinition(rule: RuleDefinition | RuleBlockDefinition): rule is RuleBlockDefinition {
-  return "decl" in rule;
-}
-
 /**
  * A rule as selection reads it: the type it builds and its guards. A rule
  * declared in a `.fabr` file (`rule js_package pkg<BUILD_OPERATION=build> = …;`)
@@ -170,7 +164,15 @@ export interface RuleImplementation {
    * holds). `extends` is
    * the package the target is made from; where it is exactly one package,
    * the target passes on that package's version and requirements. Every
-   * other name is private to the target's build.
+   * other name is private to the target's build. A name a rule qualifies
+   * (`classes.extends`) is read as its last part is (here, as material), but
+   * only a plain name is passed on.
+   *
+   * It returns them as a {@link ResolutionSpec}: the requirements, whether
+   * they are collected permissively, and what the target builds (`builds`: a
+   * package of a name, format and version, or files), which its node is made
+   * from and its build is checked against. Undeclared, what the target builds
+   * is known when it is built.
    *
    * Optional: a rule without it requires nothing. What a rule reads for
    * itself in `evaluate` is outside the resolved graph, so a cycle through it
@@ -178,7 +180,7 @@ export interface RuleImplementation {
    * Returns the requirements as they are, or a Computable of them where they
    * depend on a value read first.
    */
-  requirements?: (context: TargetContext) => Requirements | Permissive | Computable<Requirements | Permissive>;
+  requirements?: (context: TargetContext) => ResolutionSpec | Computable<ResolutionSpec>;
   /**
    * Whether the target is a value, with nothing to build (a flag): `evaluate`
    * runs where the target is resolved, and what it yields stands for the
@@ -225,18 +227,18 @@ type RuleEvaluation<P> =
 export function defineRule<P extends Record<string, RequiredSources>>(
   rule: SelectableRule &
     Omit<RuleImplementation, "requirements" | "evaluate"> & {
-      requirements: (context: TargetContext) => P | Permissive<P> | Computable<P | Permissive<P>>;
+      requirements: (context: TargetContext) => ResolutionSpec<P> | Computable<ResolutionSpec<P>>;
     } & RuleEvaluation<P>
 ): RuleDefinition;
 export function defineRule<P extends Record<string, RequiredSources> = Record<string, never>>(
   rule: Omit<RuleImplementation, "requirements" | "evaluate"> & {
-    requirements?: (context: TargetContext) => P | Permissive<P> | Computable<P | Permissive<P>>;
+    requirements?: (context: TargetContext) => ResolutionSpec<P> | Computable<ResolutionSpec<P>>;
   } & RuleEvaluation<P>
 ): RuleImplementation;
 export function defineRule<P extends Record<string, RequiredSources>>(
   rule: Partial<SelectableRule> &
     Omit<RuleImplementation, "requirements" | "evaluate"> & {
-      requirements?: (context: TargetContext) => P | Permissive<P> | Computable<P | Permissive<P>>;
+      requirements?: (context: TargetContext) => ResolutionSpec<P> | Computable<ResolutionSpec<P>>;
     } & RuleEvaluation<P>
 ): RuleImplementation {
   const { evaluateResolved, evaluateMaterialized, ...definition } = rule;

@@ -36,11 +36,11 @@
 
 import {
   Computable,
+  defineRule,
   EMPTY_FILESET,
   FileSet,
   MemoryFile,
   PackageFileSet,
-  defineRule,
   RuleResult,
   TargetContext,
 } from "@fabr-build/core";
@@ -52,7 +52,7 @@ import { createNodeExecAction, PNP } from "../NodeExecAction";
 /** The `css_postcss` rule. */
 export default defineRule({
   requirements(context) {
-    return { srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps") };
+    return { requirements: { srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps") }, builds: "files" };
   },
   evaluateMaterialized(context, collected) {
     return buildCssPostcss(context, collected);

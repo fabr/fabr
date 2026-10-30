@@ -52,7 +52,7 @@ export default defineRule({
   /* One package patched is a package again, at the version and with the
    * requirements of the one it was made from. */
   requirements(context) {
-    return { extends: context.getPackageProperty("srcs"), patches: context.getFileProperty("patches") };
+    return { requirements: { extends: context.getPackageProperty("srcs"), patches: context.getFileProperty("patches") } };
   },
   evaluateMaterialized(context, { extends: srcs, patches }) {
     return patched(context, { srcs, patches });

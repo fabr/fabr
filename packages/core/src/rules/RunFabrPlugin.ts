@@ -38,9 +38,11 @@ import { defineRule } from "./Types";
 export default defineRule({
   requirements(context) {
     return {
-      libs: context.getFileProperty("libs", BUILD_OVERRIDE),
-      optional_libs: context.getFileProperty("optional_libs", BUILD_OVERRIDE),
-      resources: context.getFileProperty("resources", BUILD_OVERRIDE),
+      requirements: {
+        libs: context.getFileProperty("libs", BUILD_OVERRIDE),
+        optional_libs: context.getFileProperty("optional_libs", BUILD_OVERRIDE),
+        resources: context.getFileProperty("resources", BUILD_OVERRIDE),
+      },
     };
   },
   evaluateMaterialized(context, { libs, optional_libs: optionalLibs, resources }) {

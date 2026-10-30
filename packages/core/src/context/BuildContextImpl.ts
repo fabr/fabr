@@ -30,26 +30,25 @@ import { TargetNode, TargetRef, TargetSource, Unbuilt } from "../core/TargetRef"
 import { ResolvedTarget } from "./ResolvedTarget";
 import { NamespaceRef } from "../core/NamespaceRef";
 import { IProjection, jointMiss, Miss, Reference } from "../core/Reference";
-import { IProvenanceStep, registerReferenceStep } from "../core/Provenance";
+import { registerReferenceStep } from "../core/Provenance";
 import {
   DEPENDENCIES_KEY,
   EXTENDS_KEY,
   OPTIONAL_PROVIDED_KEY,
-  permissive,
-  Permissive,
+  PackageSources,
+  ResolutionSpec,
   PROVIDED_KEY,
   Read,
   RequiredSources,
   requirementEntries,
-  Requirements,
   resolveRequirements,
   unmaterialized,
+  Unmaterialized,
 } from "./Collection";
 import { RunnableFileSet, toRunnable } from "../core/RunnableFileSet";
-import { Dependency, isPackage, PackageFileSet, ResolvedNode } from "../core/PackageFileSet";
+import { Builds, Dependency, isPackage, PackageFileSet, ResolvedNode } from "../core/PackageFileSet";
 import { BuildAction, BuildResult } from "../core/BuildAction";
 import {
-  isRuleBlockDefinition,
   RuleBlockDefinition,
   RuleDefinition,
   RuleResult,
@@ -104,7 +103,7 @@ import { mergeMapInto, PropertyMap, PropertyMapValue, recordMapOrigin } from "./
 import { IDependencyStack, IUseFrame, useFrameOf, useSiteOf } from "./Stack";
 import { NameLabel, ReferenceLabel } from "../model/Errors";
 import { IRuleSelection, selectRule } from "./RuleSelection";
-import { BlockResolvedTarget, DeclaredResolvedTarget, BlockTargetNode, passedOn } from "./ResolvedTarget";
+import { DeclaredResolvedTarget, BlockTargetNode, passedOn } from "./ResolvedTarget";
 import {
   collectRunnable,
   captureStages,
@@ -135,7 +134,7 @@ interface IBuildModel {
   getTargetRules(type: string): SelectableRule[];
   getDefaultRules(): SelectableRule[];
   /** Get a selected rule with its implementation, loaded where it was declared. */
-  getRuleDefinition(rule: SelectableRule): Computable<RuleDefinition | RuleBlockDefinition>;
+  getRuleDefinition(rule: SelectableRule): Computable<RuleDefinition>;
   getRepositoryProvider(type: string): RepositoryProvider | undefined;
 }
 
@@ -170,14 +169,13 @@ registerReferenceStep(MODEL_PROVENANCE, {
 export class BuildContextImpl implements InternalBuildContext {
   public readonly execution: ExecutionContext;
   protected readonly constraints: Constraints;
-  private readonly model: IBuildModel;
+  public readonly model: IBuildModel;
   private propCache: Map<string, Computable<Property | undefined>>;
   private targetCache: Map<string, Computable<SourceRef[]>>;
   /** The rule-built targets of this configuration, resolved, by name. A
    * target's entry in `targetCache` is the reference to it. */
   private readonly resolvedTargets = new Map<string, Computable<ResolvedTarget>>();
   /** The instances of rules written in `.fabr`, by the declared name of the target each matched. */
-  private readonly scopes = new Map<string, RuleScope>();
 
   constructor(model: IBuildModel, constraints: Constraints, execution: ExecutionContext) {
     this.model = model;
@@ -1377,25 +1375,14 @@ export class BuildContextImpl implements InternalBuildContext {
     type: string,
     context: TargetContext,
     noRule: (selection: IRuleSelection) => Error
-  ): Computable<RuleDefinition | RuleBlockDefinition> {
+  ): Computable<RuleDefinition> {
     return this.selectRule(type, context).then(selection => {
       if (!selection.rule) {
         throw noRule(selection);
       }
-      return this.model.getRuleDefinition(selection.rule).then(
-        rule => {
-          /* A rule reached again through what its own block declares would be
-           * applied without end: its instances are made anew each time, so no
-           * node of the graph is met twice. */
-          if (isRuleBlockDefinition(rule) && enclosingRules(context).some(enclosing => enclosing.decl === rule.decl)) {
-            throw context.failure(recursiveRuleError(rule));
-          }
-          return rule;
-        },
-        err => {
-          throw context.failure(err);
-        }
-      );
+      return this.model.getRuleDefinition(selection.rule).catch(err => {
+        throw context.failure(err);
+      });
     });
   }
 
@@ -1404,7 +1391,7 @@ export class BuildContextImpl implements InternalBuildContext {
   public declaredRule(
     target: ITargetDecl,
     stack?: IDependencyStack
-  ): Computable<{ context: DeclaredTargetContext; rule: RuleDefinition | RuleBlockDefinition }> {
+  ): Computable<{ context: DeclaredTargetContext; rule: RuleDefinition }> {
     const context = this.targetContextFor(target, { evaluating: target, next: stack });
     const noRule = ({ candidates }: IRuleSelection): Error => new NoRuleFoundError(target, this.constraints, candidates);
     return this.ruleFor(target.type, context, noRule).then(rule => ({ context, rule }));
@@ -1425,9 +1412,6 @@ export class BuildContextImpl implements InternalBuildContext {
       );
     }
     return this.declaredRule(target, stack).then(({ context, rule }): Computable<SourceRef[]> => {
-      if (isRuleBlockDefinition(rule)) {
-        return this.resolveByBlock(context, rule, stack);
-      }
       if (rule.value) {
         return this.evaluateTarget(context, rule);
       }
@@ -1469,50 +1453,6 @@ export class BuildContextImpl implements InternalBuildContext {
       .catch(err => {
         throw context.failure(err);
       });
-  }
-
-  /**
-   * Resolve the target `context` evaluates with `rule`, a rule written in
-   * `.fabr`, to what its result names, and @return the reference to it. A
-   * result that is one whole target makes the target that one's node;
-   * anything else makes it a target of those files.
-   */
-  protected resolveByBlock(context: DeclaredTargetContext, rule: RuleBlockDefinition, stack?: IDependencyStack): Computable<SourceRef[]> {
-    const scope = this.scopeFor(context, rule);
-    /* The result's node, with what the result reference wrote on it (a
-     * `-> name`) applied, or a target of the files it names. A result of the
-     * block shows what the target requires as the target's own properties
-     * and the rule; one outside the block, what it requires itself. */
-    const resolved = scope
-      .result(this.constraints, stack)
-      .then(sources => {
-        const whole = soleWholeTarget(sources);
-        const node: Computable<ResolvedTarget> =
-          whole === undefined ? this.resolvedTargetByRule(context, resultRule(sources)) : whole.nodes().then(([one]) => one as ResolvedTarget);
-        if (whole !== undefined && !scope.isLocal(whole)) {
-          return node;
-        }
-        return Computable.forAll(
-          [node, scope.resolveBlockRequirements(stack)],
-          (result, { resolved: shared }): ResolvedTarget => new BlockResolvedTarget(result, scope.asMatchedRequirements(shared))
-        );
-      })
-      .catch(err => {
-        throw context.failure(err);
-      });
-    return this.holdResolved(context, resolved);
-  }
-
-  /** Get the instance of `rule`'s block for the target `context` evaluates, made on first demand. */
-  private scopeFor(context: DeclaredTargetContext, rule: RuleBlockDefinition): RuleScope {
-    const name = declName(context.target);
-    const held = this.scopes.get(name);
-    if (held !== undefined && held.rule.decl === rule.decl) {
-      return held;
-    }
-    const scope = new RuleScope(rule, context, this.constraints, this.model, this.execution);
-    this.scopes.set(name, scope);
-    return scope;
   }
 
   public resolvedTarget(name: string): Computable<ResolvedTarget> {
@@ -1562,15 +1502,6 @@ export class BuildContextImpl implements InternalBuildContext {
       throw new FabrError(`'${name}' is not a target that runs a command`);
     }
     return this.declaredRule(def, stack).then(({ context, rule }): Computable<BuildAction | undefined> | undefined => {
-      /* A rule written in `.fabr` runs its result's action, where that is one target's. */
-      if (isRuleBlockDefinition(rule)) {
-        return this.scopeFor(context, rule)
-          .result(this.constraints, stack)
-          .then(sources => {
-            const whole = soleWholeTarget(sources);
-            return whole === undefined ? undefined : (whole.source as BuildContextImpl).actionOfTarget(whole.name, stack);
-          });
-      }
       /* A value is content: nothing of it is built. */
       if (rule.value) {
         return undefined;
@@ -1657,13 +1588,7 @@ export class BuildContextImpl implements InternalBuildContext {
     );
     return buildContext
       .ruleFor(type, context, () => new FabrError(`No rule found for anonymous target type '${type}'`))
-      .then(rule =>
-        isRuleBlockDefinition(rule)
-          ? new RuleScope(rule, context, buildContext.constraints, this.model, this.execution)
-              .result(buildContext.constraints, owner.stack)
-              .then(sources => buildContext.evaluateTarget(context, resultRule(sources)))
-          : buildContext.evaluateTarget(context, rule)
-      );
+      .then(rule => buildContext.evaluateTarget(context, rule));
   }
 
   /**
@@ -1721,8 +1646,8 @@ export class BuildContextImpl implements InternalBuildContext {
 
 /** State what `rule` requires of the target `context` builds: nothing, for a
  * rule without `requirements`. */
-function statedRequirements(context: TargetContext, rule: RuleDefinition): Computable<Requirements | Permissive> {
-  const stated = rule.requirements?.(context) ?? {};
+function statedRequirements(context: TargetContext, rule: RuleDefinition): Computable<ResolutionSpec> {
+  const stated = rule.requirements?.(context) ?? { requirements: {} };
   return stated instanceof Computable ? stated : Computable.resolve(stated);
 }
 
@@ -1797,16 +1722,6 @@ function soleWholeTarget(sources: SourceRef[]): TargetRef | undefined {
   return others.length === 0 && only instanceof TargetRef && only.whole ? only : undefined;
 }
 
-/** Make the rule of a target that is the files `sources` name: its requirement `result`, read for files and given content as one set. */
-function resultRule(sources: SourceRef[]): RuleDefinition {
-  return {
-    properties: {},
-    requirements: () => ({ result: sources }),
-    evaluate: (_context, requirements) =>
-      requirements.materialize("result").then((sets): FileSet => (sets.length === 1 ? sets[0] : FileSet.unionAll(...sets))),
-  };
-}
-
 /** Make the error for `rule` selected for a target inside its own application. */
 function recursiveRuleError(rule: RuleBlockDefinition): FabrError {
   const { decl } = rule;
@@ -1836,63 +1751,83 @@ function requirementOf(name: Name): Constraints | undefined {
 interface BlockRequirements {
   /** What the result reference names, under {@link RESULT_KEY}, and each requirement of each target reached, named `<target>.<requirement>`. */
   readonly requirements: ReadonlyMap<string, RequiredSources>;
+  /** What the result reference names. */
+  readonly result: ReadonlyArray<SourceRef>;
   /** The requirement each key of `requirements` stands for. */
   readonly names: ReadonlyMap<string, string>;
-  /** Each target reached, by name, with whether its rule collects permissively. */
-  readonly reachedTargets: ReadonlyMap<string, { readonly permissive: boolean }>;
+  /** Each target reached, by name, with whether its rule collects permissively and what it declares it builds. */
+  readonly reachedTargets: ReadonlyMap<string, { readonly permissive: boolean; readonly builds?: Builds }>;
 }
 
-/** What the result of a rule's block and the block's targets it reaches require, resolved as one collection ({@link RuleScope.resolveBlockRequirements}). */
-interface ResolvedBlockRequirements {
-  /** What the result reference names, under {@link RESULT_KEY}, and each requirement of each target reached, named `<target>.<requirement>`. */
-  readonly resolved: ResolvedRequirements;
-  /** Each target reached, by name, with whether its rule collects permissively. */
-  readonly reachedTargets: ReadonlyMap<string, { readonly permissive: boolean }>;
-}
-
-/** The name of what a block's result reference names among {@link ResolvedBlockRequirements.resolved}: no `<target>.<requirement>`. */
+/** The name of what a block's result reference names among the requirements of a rule written in `.fabr`: no `<target>.<requirement>`. */
 const RESULT_KEY = "result";
+
+/** @return what the target `node` stands for builds, as its rule declares it: files where it is plain, the package its rule declares (renamed where it was) at the version it has, or nothing where its rule declares nothing. */
+function builtBy(node: Unbuilt | undefined): Builds | undefined {
+  if (!(node instanceof ResolvedNode)) {
+    return undefined;
+  }
+  const { declared, plain } = node.content;
+  if (plain === true || declared === "files") {
+    return "files";
+  }
+  return declared === undefined ? undefined : { ...declared, version: declared.version ?? node.version };
+}
 
 /** @return the sources of a requirement as read. */
 function sourcesOf(read: Read): SourceRef[] {
   return Array.isArray(read) ? read : read.sources;
 }
 
-/** Get the property of `matched` that `source` was read from, if it was read from one: the declaration on the first of its model steps written in `matched`. */
-function matchedProperty(source: unknown, matched: ITargetDecl): IPropertyDecl | undefined {
-  const inMatched = (step: IProvenanceStep): step is IModelStep => step.kind === MODEL_PROVENANCE && (step as IModelStep).target === matched;
-  if (source instanceof Reference) {
-    return source.steps.find(inMatched)?.property;
-  }
-  for (let step = source instanceof FileSet ? source.origin : undefined; step !== undefined; step = step.parent) {
-    if (inMatched(step)) {
-      return step.property;
-    }
-  }
-  return undefined;
+/**
+ * Make the definition of a rule written in `.fabr`, `block`: a rule as any
+ * other, its implementation the block's application to each target it is
+ * selected for ({@link RuleScope}).
+ */
+export function blockRuleDefinition(block: RuleBlockDefinition): RuleDefinition {
+  const scopeOf = (context: TargetContext): RuleScope =>
+    context.ruleState(block, () => {
+      /* Its instances are made anew in each application, so a rule applied
+       * inside its own application would be applied without end. */
+      if (enclosingRules(context).some(enclosing => enclosing.decl === block.decl)) {
+        throw context.failure(recursiveRuleError(block));
+      }
+      return new RuleScope(block, context);
+    });
+  return {
+    type: block.type,
+    properties: block.properties,
+    targetProperties: block.targetProperties,
+    requirements: context => Computable.resolve(undefined).then(() => scopeOf(context).requirements(context.stack)),
+    evaluate: (context, requirements) => scopeOf(context).evaluate(requirements),
+  };
 }
 
 /**
  * One application of a rule written in `.fabr`: its block, for the target it
- * matched, in the configuration the target is in. It holds the block's
- * configurations, two per constraint set ({@link config}), and resolves what
- * the block requires of the target as one collection
- * ({@link resolveBlockRequirements}).
+ * matched, in the configuration the target is in. Its requirements are what
+ * the block's result and the block's targets it reaches require
+ * ({@link requirements}), so the target's collection point is theirs; its
+ * evaluation builds the result ({@link evaluate}). It holds the block's
+ * configurations, two per constraint set ({@link config}).
  */
 class RuleScope {
   private readonly configs: ScopedBuildContext[] = [];
+  /** The state the rules of the block's targets keep, per configuration and target. */
+  private readonly states = new Map<ScopedBuildContext, Map<string, Map<object, unknown>>>();
   private resultConstraints?: Computable<Constraints>;
   private lookedUp?: Computable<BlockRequirements>;
-  private resolution?: Computable<ResolvedBlockRequirements>;
+  /** The matched target's requirements as resolved, where it has no resolved target to read them from (a target a rule's code made). */
+  private given?: ResolvedRequirements;
+  /** The configuration the rule applies in: the matched target's. */
+  private readonly constraints: Constraints;
 
   constructor(
     public readonly rule: RuleBlockDefinition,
-    public readonly matched: TargetContext,
-    /** The configuration the rule applies in: the matched target's. */
-    private readonly constraints: Constraints,
-    private readonly model: IBuildModel,
-    private readonly execution: ExecutionContext
-  ) {}
+    public readonly matched: TargetContext
+  ) {
+    this.constraints = matched.taskDescription().constraints;
+  }
 
   /** The rule's parameter, the name the block gives the matched target. */
   public get param(): string {
@@ -1909,8 +1844,8 @@ class RuleScope {
     if (held !== undefined) {
       return held;
     }
-    const parent = this.model.getConfig(constraints, this.execution) as BuildContextImpl;
-    const config = new ScopedBuildContext(this.model, constraints, this.execution, this, parent, unresolved);
+    const parent = this.matched.getDeclaredContext().configurationOf(constraints) as BuildContextImpl;
+    const config = new ScopedBuildContext(parent.model, constraints, parent.execution, this, parent, unresolved);
     this.configs.push(config);
     return config;
   }
@@ -1923,17 +1858,72 @@ class RuleScope {
   }
 
   /**
-   * Resolve as one collection, permissively, what the result and every
-   * target of the block it reaches require ({@link lookupBlockRequirements}),
-   * with how each of those targets collects. Done once.
+   * State what the matched target requires: what the block looks up for it
+   * ({@link lookupBlockRequirements}), collected permissively, the result
+   * among it as what the target is made from (`extends`) where it is one whole
+   * target, so the target passes on what the result passes on.
    */
-  public resolveBlockRequirements(stack?: IDependencyStack): Computable<ResolvedBlockRequirements> {
-    /* Filed before it runs, so a request made while it runs joins it. */
-    return (this.resolution ??= Computable.detached(() =>
-      this.lookupBlockRequirements(stack).then(({ requirements, names, reachedTargets }) =>
-        resolveRequirements(this.matched, permissive(new Map(requirements)), key => names.get(key) ?? key).then(resolved => ({ resolved, reachedTargets }))
-      )
-    ));
+  public requirements(stack?: IDependencyStack): Computable<ResolutionSpec> {
+    return this.lookupBlockRequirements(stack).then(({ requirements, result }) => {
+      const whole = soleWholeTarget([...result]);
+      if (whole === undefined) {
+        return { requirements: new Map(requirements), permissive: true, builds: "files" as const };
+      }
+      const rest = [...requirements].filter(([key]) => key !== RESULT_KEY);
+      return whole.nodes().then(([node]): ResolutionSpec => ({
+        requirements: new Map<string, RequiredSources>([[EXTENDS_KEY, new PackageSources([whole])], ...rest]),
+        permissive: true,
+        builds: builtBy(node),
+      }));
+    });
+  }
+
+  /**
+   * Build the matched target from `requirements`, its requirements resolved:
+   * what it is made from where the result is one whole target, with what the
+   * result reference wrote on it (a `-> name`) applied, and otherwise the files
+   * the result names, as one set.
+   */
+  public evaluate(requirements: Unmaterialized<Record<string, RequiredSources>>): Computable<RuleResult> {
+    this.given = requirements.resolved;
+    return requirements.resolved.sources.has(EXTENDS_KEY)
+      ? requirements.materialize(EXTENDS_KEY)
+      : requirements.materialize(RESULT_KEY).then((sets): FileSet => (sets.length === 1 ? sets[0] : FileSet.unionAll(...sets)));
+  }
+
+  /** Get the matched target's requirements as resolved: its part of them is what a target of the block it reaches requires. */
+  private collection(): Computable<ResolvedRequirements> {
+    const { matched } = this;
+    if (matched instanceof DeclaredTargetContext) {
+      return matched.resolvedSelf().then(target => target.resolved);
+    }
+    return this.given === undefined
+      ? Computable.reject(new FabrError(`internal: the requirements of '${matched.name}' are read before it is evaluated`))
+      : Computable.resolve(this.given);
+  }
+
+  /** Get the requirements of the block's target `name`, reached by the result: its part of the matched target's, collected and building as its rule declares (`reached`). */
+  public requirementsOf(name: string, reached: { readonly permissive: boolean; readonly builds?: Builds }): Computable<ResolvedRequirements> {
+    return this.collection().then(collected => collected.ofTarget(name, reached.permissive, reached.builds));
+  }
+
+  /** Get the state `rule` keeps for the block's target `name` in the configuration of `constraints`, made by `make` on first use: one in each configuration, however the target is looked up there. */
+  public ruleState<T>(name: string, constraints: Constraints, rule: object, make: () => T): T {
+    const config = this.config(constraints);
+    const byTarget = this.states.get(config) ?? new Map<string, Map<object, unknown>>();
+    this.states.set(config, byTarget);
+    const byRule = byTarget.get(name) ?? new Map<object, unknown>();
+    byTarget.set(name, byRule);
+    if (!byRule.has(rule)) {
+      byRule.set(rule, make());
+    }
+    return byRule.get(rule) as T;
+  }
+
+  /** Resolve the block's target `name` in the block's ordinary configuration of `constraints`, and @return it resolved. */
+  public resolvedTarget(name: string, constraints: Constraints, stack?: IDependencyStack): Computable<ResolvedTarget> {
+    const config = this.config(constraints);
+    return config.resolveTarget(name, stack).then(() => config.resolvedTarget(name));
   }
 
   /**
@@ -1945,7 +1935,7 @@ class RuleScope {
    * `<target>.<requirement>` (`names` gives the requirement each key stands
    * for), in the order the block declares its targets, after what the result
    * reference itself names, under {@link RESULT_KEY}. A target named under
-   * other constraints, or whose rule is written in `.fabr`, is not reached.
+   * other constraints is not reached.
    */
   public lookupBlockRequirements(stack?: IDependencyStack): Computable<BlockRequirements> {
     /* Filed before it runs, so a request made while it runs joins it. */
@@ -1956,6 +1946,7 @@ class RuleScope {
   private lookupReached(stack?: IDependencyStack): Computable<BlockRequirements> {
     interface Requires {
       readonly permissive: boolean;
+      readonly builds?: Builds;
       readonly entries: ReadonlyArray<[string, Read]>;
     }
     return this.resultConfiguration().then(constraints => {
@@ -1971,15 +1962,16 @@ class RuleScope {
           return held;
         }
         const requires = at.declaredRule(target, stack).then(({ context, rule }): Computable<Requires | undefined> => {
-          if (isRuleBlockDefinition(rule) || rule.value) {
+          if (rule.value) {
             return Computable.resolve(undefined);
           }
           return statedRequirements(context, rule).then(stated => {
-            const entries = requirementEntries(stated instanceof Permissive ? stated.requirements : stated);
+            const entries = requirementEntries(stated.requirements);
             return Computable.forAll(
               entries.map(([, required]) => (required instanceof Computable ? required : Computable.resolve(required))),
               (...values: Read[]): Requires => ({
-                permissive: stated instanceof Permissive,
+                permissive: stated.permissive === true,
+                builds: stated.builds,
                 entries: entries.map(([name], index): [string, Read] => [name, values[index]]),
               })
             );
@@ -2006,19 +1998,19 @@ class RuleScope {
         reach(named(sources), new Map()).then(reached => {
           const requirements = new Map<string, RequiredSources>([[RESULT_KEY, sources]]);
           const names = new Map<string, string>([[RESULT_KEY, RESULT_KEY]]);
-          const reachedTargets = new Map<string, { permissive: boolean }>();
+          const reachedTargets = new Map<string, { permissive: boolean; builds?: Builds }>();
           for (const target of targets) {
             const found = reached.get(target);
             if (found !== undefined) {
               const local = declName(target);
-              reachedTargets.set(local, { permissive: found.permissive });
+              reachedTargets.set(local, { permissive: found.permissive, builds: found.builds });
               for (const [name, value] of found.entries) {
                 requirements.set(`${local}.${name}`, value);
                 names.set(`${local}.${name}`, name);
               }
             }
           }
-          return { requirements, names, reachedTargets };
+          return { requirements, result: sources, names, reachedTargets };
         })
       );
     });
@@ -2037,8 +2029,7 @@ class RuleScope {
    */
   public blockTargetNode(context: DeclaredTargetContext, rule: RuleDefinition, constraints: Constraints): Computable<TargetNode> {
     const name = declName(context.target);
-    const built = this.config(constraints);
-    const target = (): Computable<ResolvedTarget> => built.resolveTarget(name, context.stack).then(() => built.resolvedTarget(name));
+    const target = (): Computable<ResolvedTarget> => this.resolvedTarget(name, constraints, context.stack);
     const edgesOf = (sources: ReadonlyArray<SourceRef>): Computable<Dependency[]> =>
       Computable.forAll(
         sources.map((source): Computable<Dependency[]> =>
@@ -2052,57 +2043,32 @@ class RuleScope {
       );
     return statedRequirements(context, rule)
       .then(stated => {
-        const entries = requirementEntries(stated instanceof Permissive ? stated.requirements : stated);
+        const entries = requirementEntries(stated.requirements);
         return Computable.forAll(
           entries.map(([, required]) => (required instanceof Computable ? required : Computable.resolve(required))),
-          (...values: Read[]) => new Map(entries.map(([key], index) => [key, values[index]]))
+          (...values: Read[]) => ({ builds: stated.builds, lists: new Map(entries.map(([key], index) => [key, values[index]])) })
         );
       })
-      .then(lists => {
+      .then(({ builds, lists }) => {
         /* What the target is made from is read as material, as any target's
          * is, which joins no resolution. */
         const made = lists.get(EXTENDS_KEY);
         const material =
           made === undefined || sourcesOf(made).length === 0
             ? Computable.resolve<ReadonlyArray<Resolved>>([])
-            : resolveRequirements(context, new Map([[EXTENDS_KEY, made]])).then(resolved => resolved.sources.get(EXTENDS_KEY) ?? []);
+            : resolveRequirements(context, { requirements: new Map([[EXTENDS_KEY, made]]) }).then(resolved => resolved.sources.get(EXTENDS_KEY) ?? []);
         const transitive = [DEPENDENCIES_KEY, PROVIDED_KEY, OPTIONAL_PROVIDED_KEY];
         const edges = Computable.forAll(
           transitive.map(key => edgesOf(sourcesOf(lists.get(key) ?? []))),
           (...each: Dependency[][]) => new Map(transitive.map((key, index) => [key, each[index]]))
         );
         return Computable.forAll([material, edges] as const, (madeFrom, byName) =>
-          BlockTargetNode.of(context, passedOn(madeFrom, key => byName.get(key) ?? []), target)
+          BlockTargetNode.of(context, passedOn(madeFrom, key => byName.get(key) ?? []), target, builds)
         );
       })
       .catch(err => {
         throw context.failure(err);
       });
-  }
-
-  /**
-   * Show what {@link resolveBlockRequirements} resolved as what the matched
-   * target requires: a requirement for each of its properties the block read
-   * (`deps` for `pkg.deps`), and one for what the block requires itself,
-   * named for the rule. The block's own targets are left out: what they pass
-   * on is among the rest.
-   */
-  public asMatchedRequirements(shared: ResolvedRequirements): ResolvedRequirements {
-    const matched = this.matched.getDeclaredContext().target;
-    const ruleSection = `required by ${this.rule.decl.type ?? matched.type} rule`;
-    return shared.regrouped((source, reference) => {
-      const written = reference ?? source;
-      if (this.isLocal(written)) {
-        return undefined;
-      }
-      const property = matchedProperty(written, matched);
-      return property === undefined ? ruleSection : declName(property);
-    });
-  }
-
-  /** @return true if `source` is a reference to one of the block's targets, otherwise false. */
-  public isLocal(source: unknown): boolean {
-    return source instanceof TargetRef && this.configs.some(config => config === source.source || config.nodes === source.source);
   }
 
   /** Resolve the block's target `name` in the block's ordinary configuration of `constraints`. */
@@ -2214,11 +2180,7 @@ class ScopedBuildContext extends BuildContextImpl {
           const reached = reachedTargets.get(local);
           return reached === undefined
             ? this.resolvedTargetByRule(context, rule)
-            : this.resolvedWith(
-                context,
-                rule,
-                this.scope.resolveBlockRequirements(context.stack).then(({ resolved }) => resolved.ofTarget(local, reached.permissive))
-              );
+            : this.resolvedWith(context, rule, this.scope.requirementsOf(local, reached));
         })
       );
     });

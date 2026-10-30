@@ -37,7 +37,7 @@ export default defineRule({
    * @types/node dep, in the same batch. The package is made runnable via its
    * generated package.json bin, the same path an external `@npm:` package takes. */
   requirements(context) {
-    return { pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE) };
+    return { requirements: { pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE) } };
   },
   evaluateMaterialized(context, { pkg }) {
     const built = pkg.find((source): source is PackageFileSet => source instanceof PackageFileSet);

@@ -259,7 +259,7 @@ the evaluation receives from what `requirements` returns:
 ```ts
 export default defineRule({
   requirements(context) {
-    return { srcs: context.getFileProperty("srcs") };
+    return { requirements: { srcs: context.getFileProperty("srcs") } };
   },
   evaluateMaterialized(context, { srcs }) {
     /* … */
@@ -269,7 +269,7 @@ export default defineRule({
 
 | Field | Meaning |
 |---|---|
-| `requirements` | Returns what the target requires, or a `Computable` of it: see [Requirements](#requirements). |
+| `requirements` | Returns what resolution needs to know of the target (what it requires, and what it builds), or a `Computable` of it: see [Requirements](#requirements). |
 | `evaluateMaterialized` | Builds the target from its requirements, each given its content first: see [Evaluate](#evaluate). |
 | `evaluateResolved` | Builds the target from its requirements as resolved, giving them content when it asks. A rule has this or `evaluateMaterialized`, not both. |
 | `value` | `true` for a target that is a value with nothing to build, such as a flag: the rule is evaluated where the target is read, and its result stands for the target. |
@@ -294,10 +294,11 @@ reads its dependencies under `build` explicitly (`context.getFileProperty("deps"
 ### Requirements
 
 `requirements(context)` reads the properties and globals that name the target's file
-dependencies (files, packages and other targets), and returns them as a map from a name of the
-rule's choosing to the sources read, or a `Computable` of that map where it depends on a value
-read first. Nothing is fetched or built here: fabr resolves the requirements, and they are given
-content for the rule's evaluation. Use a `Map` where the names come from the user.
+dependencies (files, packages and other targets), and returns a `ResolutionSpec`, or a
+`Computable` of one where it depends on a value read first: `{ requirements, permissive?, builds?
+}`, where `requirements` is a map from a name of the rule's choosing to the sources read. Nothing is
+fetched or built here: fabr resolves the requirements, and they are given content for the rule's
+evaluation. Use a `Map` where the names come from the user.
 
 Only `FILES` and `PACKAGES` properties are requirements. A string, map or command property has
 nothing to resolve: it has one form, its value, which the evaluation reads directly from `context`
@@ -346,13 +347,34 @@ when the target is built.
 package would be used at two versions that are not both allowed (with a `?`), the requirements are
 in conflict. The conflicts are found when the requirements are resolved, and a target fails when
 it first materializes them. A rule that assembles a program to be run rather than linked against
-returns its requirements wrapped in `permissive(…)`, and is not refused for them:
+sets `permissive`, and is not refused for them:
 
 ```ts
 requirements(context) {
-  return permissive({ deps: context.getPackageProperty("deps") });
+  return { requirements: { deps: context.getPackageProperty("deps") }, permissive: true };
 },
 ```
+
+**What the target builds.** Resolution places a target among what requires it before it is built,
+so it needs to know what the target will be: a package, and under what name, or plain files. A
+rule that knows says so with `builds`, beside its requirements:
+
+```ts
+requirements(context) {
+  return {
+    requirements: { dependencies: context.getPackageProperty("deps"), srcs: context.getFileProperty("srcs") },
+    builds: { package: context.name, format: NPM_FORMAT },
+  };
+},
+```
+
+`builds` is `{ package, format?, version? }` for a package (the format being the package format
+of the registry the package belongs with, such as `NPM_FORMAT`), or `"files"`. A target declared to
+build files claims no name among packages, so several can be required together; a package's
+node takes the declared name and version. What the rule builds is checked against it, and a rule
+that declares one thing and builds another fails with `'<target>' builds …, though its rule
+declares …`. A rule that declares nothing is placed as a package named as its target, and what it
+builds is found out when it is built.
 
 ### Evaluate
 

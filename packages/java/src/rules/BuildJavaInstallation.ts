@@ -29,7 +29,7 @@ import { installationOf } from "../JarPackage";
 /** The `java_installation` rule. */
 export default defineRule({
   requirements(context) {
-    return { deps: context.getPackageProperty("deps") };
+    return { requirements: { deps: context.getPackageProperty("deps") }, builds: "files" };
   },
   evaluateMaterialized(_context, { deps }: { deps: FileSet[] }) {
     return installationOf(deps);

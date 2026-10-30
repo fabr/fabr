@@ -44,13 +44,15 @@ export default defineRule({
   /* The package under test is its own build. */
   requirements(context) {
     return {
-      pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE),
-      tests: context.getFileProperty("tests"),
-      test_resources: context.getFileProperty("test_resources"),
-      provided: context.getPackageProperty("provided_deps"),
-      optional_provided: context.getPackageProperty("optional_provided_deps"),
-      compile_deps: context.getPackageProperty("compile_deps"),
-      test_deps: context.getPackageProperty("test_deps"),
+      requirements: {
+        pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE),
+        tests: context.getFileProperty("tests"),
+        test_resources: context.getFileProperty("test_resources"),
+        provided: context.getPackageProperty("provided_deps"),
+        optional_provided: context.getPackageProperty("optional_provided_deps"),
+        compile_deps: context.getPackageProperty("compile_deps"),
+        test_deps: context.getPackageProperty("test_deps"),
+      },
     };
   },
   evaluateMaterialized(context, inputs) {

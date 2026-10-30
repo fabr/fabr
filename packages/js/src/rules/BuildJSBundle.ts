@@ -34,23 +34,24 @@
  */
 
 import {
-  defineRule,
-  ContainedSources,
   Computable,
   Constraints,
+  ContainedSources,
+  defineRule,
   FabrError,
   FileSet,
   FileSetRef,
   Flag,
+  makeRewrite,
   mapEntryError,
   MemoryFile,
   PackageFileSet,
+  PackageSources,
+  ResolutionSpec,
   RewriteFn,
   RuleResult,
   RunnableFileSet,
   TargetContext,
-  makeRewrite,
-  PackageSources,
 } from "@fabr-build/core";
 import { compileContents, formatJSTarget, JSTarget, parseJSTarget, stripExtension, usesNodeGlobals } from "../JSPackage";
 import { createNodeExecAction, PNP } from "../NodeExecAction";
@@ -73,13 +74,16 @@ export default defineRule({
    */
   requirements(
     context: TargetContext
-  ): Computable<{ srcs: Computable<PackageSources>; entry: Computable<ContainedSources>; deps: Computable<PackageSources> }> {
+  ): Computable<ResolutionSpec<{ srcs: Computable<PackageSources>; entry: Computable<ContainedSources>; deps: Computable<PackageSources> }>> {
     return context.getGlobalString("JS_TARGET").then(target => {
       const inputTarget = bundleInputTarget(parseJSTarget(target));
       return {
-        srcs: context.getPackageProperty("srcs", inputTarget),
-        entry: context.getContainedFileProperty("entry", inputTarget),
-        deps: context.getPackageProperty("deps", inputTarget),
+        requirements: {
+          srcs: context.getPackageProperty("srcs", inputTarget),
+          entry: context.getContainedFileProperty("entry", inputTarget),
+          deps: context.getPackageProperty("deps", inputTarget),
+        },
+        builds: "files" as const,
       };
     });
   },

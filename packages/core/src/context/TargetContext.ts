@@ -67,6 +67,7 @@ import {
 } from "./Commands";
 import { ContainedSources, LooseSources, PackageSources } from "./Collection";
 import type { InternalBuildContext } from "./BuildContext";
+import type { ResolvedTarget } from "./ResolvedTarget";
 import type { PropertyMap } from "./PropertyMap";
 
 /**
@@ -94,6 +95,19 @@ export abstract class TargetContext {
     this.context = context;
     this.targetDef = targetDef;
     this.stack = stack;
+  }
+
+  private readonly ruleStates = new Map<object, unknown>();
+
+  /**
+   * Get the state `rule` keeps for this target, from stating what it requires
+   * to evaluating it, made by `make` on first use.
+   */
+  public ruleState<T>(rule: object, make: () => T): T {
+    if (!this.ruleStates.has(rule)) {
+      this.ruleStates.set(rule, make());
+    }
+    return this.ruleStates.get(rule) as T;
   }
 
   /**
@@ -688,6 +702,16 @@ export class DeclaredTargetContext extends TargetContext {
     return this.context.inConfiguration(constraints).resolveTarget(this.declaredName, stack);
   }
 
+  /** Get the configuration of `constraints` this target's names are looked up in. */
+  public configurationOf(constraints: Constraints): InternalBuildContext {
+    return this.context.inConfiguration(constraints);
+  }
+
+  /** Resolve this target where it is built, and @return it resolved. */
+  public resolvedSelf(): Computable<ResolvedTarget> {
+    return this.context.resolveTarget(this.declaredName, this.stack).then(() => this.context.resolvedTarget(this.declaredName));
+  }
+
   /** Get the declarations of `name` that apply under `alias`, their values substituted there. */
   private aliasedDecls(name: string, alias: Constraints | undefined, stack?: IDependencyStack): Computable<IPropertyDecl[]> {
     const at = this.context.getContextWithOverrides(alias);
@@ -910,10 +934,25 @@ export class ScopedTargetContext extends DeclaredTargetContext {
     targetDef: ITargetDefDecl,
     context: InternalBuildContext,
     stack: IDependencyStack | undefined,
-    /** The rule whose block declares the target, and the target it matched. */
-    public readonly scope: { readonly rule: RuleBlockDefinition; readonly matched: TargetContext }
+    /** The application of the rule whose block declares the target: the rule, the target it matched, and what it keeps per target of the block. */
+    public readonly scope: {
+      readonly rule: RuleBlockDefinition;
+      readonly matched: TargetContext;
+      /** Get the state `rule` keeps for the block's target `name` in the configuration of `constraints`, however looked up there. */
+      ruleState<T>(name: string, constraints: Constraints, rule: object, make: () => T): T;
+      /** Resolve the block's target `name` where it is built in the configuration of `constraints`, and @return it resolved. */
+      resolvedTarget(name: string, constraints: Constraints, stack?: IDependencyStack): Computable<ResolvedTarget>;
+    }
   ) {
     super(target, targetDef, context, stack);
+  }
+
+  public ruleState<T>(rule: object, make: () => T): T {
+    return this.scope.ruleState(this.declaredName, this.context.getConstraints(), rule, make);
+  }
+
+  public resolvedSelf(): Computable<ResolvedTarget> {
+    return this.scope.resolvedTarget(this.declaredName, this.context.getConstraints(), this.stack);
   }
 
   /** The matched target's name: what the target's rule builds is that target's. */

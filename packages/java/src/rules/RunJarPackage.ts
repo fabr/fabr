@@ -29,7 +29,7 @@ import { jarMainClass, makeJarRunnable } from "../JarPackage";
 /** The `jar_package` rule, under `run`. */
 export default defineRule({
   requirements(context) {
-    return { pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE), agents: context.getPackageProperty("agents", BUILD_OVERRIDE) };
+    return { requirements: { pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE), agents: context.getPackageProperty("agents", BUILD_OVERRIDE) } };
   },
   evaluateMaterialized(context, { pkg, agents }) {
     return context.getProperty("main_class").then(mainClass => runnableJar(context, pkg, agents, mainClass?.toString()));

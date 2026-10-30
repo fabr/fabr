@@ -34,7 +34,10 @@ const PROJECT =
   "js_script deps_tool { entry = tool/main.ts; deps = deps_lib; }\n" +
   "catalog @deps_cat { deps = deps_lib; }\n" +
   "js_package deps_viacat { srcs = viacat:**; deps = @deps_cat:deps_lib; }\n" +
-  "DEPS_ALL = deps_lib deps_helper;\n";
+  "DEPS_ALL = deps_lib deps_helper;\n" +
+  "targetdef deps_bundle_type { deps = PACKAGES; }\n" +
+  "rule deps_bundle_type b = inst { js_installation inst { deps = b.deps deps_helper; } }\n" +
+  "deps_bundle_type deps_bundle { deps = deps_lib; }\n";
 const FILES = {
   ...STUB_TSC,
   /* Type-free "TypeScript": the stub tsc copies it to .js verbatim. */
@@ -88,6 +91,23 @@ describe("e2e: fabr deps", () => {
     expect(result.stdout).to.equal(
       ["deps_tool", "deps", "└── deps_lib<JS_TARGET=es2020>", "    └── deps_base<JS_TARGET=es2020>", "", "deps_base", "No dependencies", ""].join("\n")
     );
+  });
+
+  it("shows a target a rule written in .fabr builds by the target's properties and the rule", () => {
+    const result = deps("deps_bundle");
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stdout).to.equal(
+      [
+        "deps_bundle",
+        "deps",
+        "└── deps_lib<JS_TARGET=es2020>",
+        "    └── deps_base<JS_TARGET=es2020>",
+        "required by deps_bundle_type rule",
+        "└── deps_helper<JS_TARGET=es2020>",
+        "",
+      ].join("\n")
+    );
+    expect(result.stderr).to.not.contain("Compiling");
   });
 
   it("reads through a catalog and a global, still building nothing", () => {

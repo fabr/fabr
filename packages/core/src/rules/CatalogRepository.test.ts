@@ -34,7 +34,7 @@ import { CircularDependencyError } from "../model/Errors";
 import { MemoryFile } from "../core/MemoryFS";
 import { BuildCache } from "../core/BuildCache";
 import { Name } from "../core/Name";
-import { permissive, ResolvedRequirements, TargetContext } from "../context/index";
+import { ResolvedRequirements, TargetContext } from "../context/index";
 import { BUILD_OPERATION, Constraints, RUN_OVERRIDE } from "../model/Constraints";
 import { BuildModel } from "../model/BuildModel";
 import { ExecutionContext } from "../model/ExecutionContext";
@@ -251,7 +251,7 @@ describe("CatalogRepository (through the model)", () => {
   const depsRule: RuleDefinition = defineRule({
     type: "test_deps",
     properties: {},
-    requirements: context => Computable.resolve({ deps: context.getPackageProperty("deps"), also: context.getPackageProperty("also") }),
+    requirements: context => Computable.resolve({ requirements: { deps: context.getPackageProperty("deps"), also: context.getPackageProperty("also") } }),
     evaluateResolved: (context, requirements) =>
       requirements.materializeAll().then(({ deps, also }) =>
         context
@@ -269,7 +269,7 @@ describe("CatalogRepository (through the model)", () => {
   const runRule: RuleDefinition = defineRule({
     type: "test_run",
     properties: {},
-    requirements: context => Computable.resolve({ tool: context.getPackageProperty("tool", RUN_OVERRIDE) }),
+    requirements: context => Computable.resolve({ requirements: { tool: context.getPackageProperty("tool", RUN_OVERRIDE) } }),
     evaluateResolved: (_context, requirements) =>
       requirements.materializeAll().then(({ tool }) => {
         lastTool = FileSet.unionAll(...tool);
@@ -288,7 +288,7 @@ describe("CatalogRepository (through the model)", () => {
   const sealedRule: RuleDefinition = defineRule({
     type: "test_sealed",
     properties: {},
-    requirements: context => Computable.resolve(permissive({ deps: context.getPackageProperty("deps") })),
+    requirements: context => Computable.resolve({ requirements: { deps: context.getPackageProperty("deps") }, permissive: true }),
     evaluateResolved: (_context, requirements) => requirements.materializeAll().then(() => EMPTY_FILESET),
   });
   const globalToolRule: RuleDefinition = {
@@ -348,9 +348,11 @@ describe("CatalogRepository (through the model)", () => {
     properties: {},
     requirements: (context: TargetContext) =>
       Computable.resolve({
-        dependencies: context.getPackageProperty("deps"),
-        provided: context.getPackageProperty("provided"),
-        optional_provided: context.getPackageProperty("optional"),
+        requirements: {
+          dependencies: context.getPackageProperty("deps"),
+          provided: context.getPackageProperty("provided"),
+          optional_provided: context.getPackageProperty("optional"),
+        },
       }),
     evaluate: (context: TargetContext) =>
       written(context, target => target.materialize()).then(
@@ -388,7 +390,7 @@ describe("CatalogRepository (through the model)", () => {
   const mixedRule: RuleDefinition = defineRule({
     type: "test_mixed",
     properties: {},
-    requirements: context => Computable.resolve({ srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps") }),
+    requirements: context => Computable.resolve({ requirements: { srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps") } }),
     evaluateResolved: (_context, requirements) =>
       requirements.materializeAll().then(({ srcs, deps }) => {
         lastFiles = srcs;
@@ -400,7 +402,7 @@ describe("CatalogRepository (through the model)", () => {
   const looseRule: RuleDefinition = defineRule({
     type: "test_loose",
     properties: {},
-    requirements: context => Computable.resolve({ deps: context.getPackageProperty("deps"), extra: context.getLooseFileProperty("extra") }),
+    requirements: context => Computable.resolve({ requirements: { deps: context.getPackageProperty("deps"), extra: context.getLooseFileProperty("extra") } }),
     evaluateResolved: (_context, requirements) =>
       requirements.materializeAll().then(({ deps, extra }) => {
         lastDepSets = deps;
@@ -422,14 +424,14 @@ describe("CatalogRepository (through the model)", () => {
   const wrongTypeRule: RuleDefinition = defineRule({
     type: "test_wrongtype",
     properties: {},
-    requirements: context => Computable.resolve({ srcs: context.getPackageProperty("srcs") }),
+    requirements: context => Computable.resolve({ requirements: { srcs: context.getPackageProperty("srcs") } }),
     evaluateResolved: (_context, requirements) => requirements.materializeAll().then(() => EMPTY_FILESET),
   });
   /* Reads for files a property its targetdef declares PACKAGES. */
   const filesOfRule: RuleDefinition = defineRule({
     type: "test_filesof",
     properties: {},
-    requirements: context => Computable.resolve({ pkgs: context.getFileProperty("pkgs") }),
+    requirements: context => Computable.resolve({ requirements: { pkgs: context.getFileProperty("pkgs") } }),
     evaluateResolved: (_context, requirements) =>
       requirements.materializeAll().then(({ pkgs }) => {
         lastFiles = pkgs;
@@ -440,7 +442,7 @@ describe("CatalogRepository (through the model)", () => {
   const misreadRule: RuleDefinition = defineRule({
     type: "test_misread",
     properties: {},
-    requirements: context => Computable.resolve({ dependencies: context.getFileProperty("deps") }),
+    requirements: context => Computable.resolve({ requirements: { dependencies: context.getFileProperty("deps") } }),
     evaluateResolved: (_context, requirements) => requirements.materializeAll().then(() => EMPTY_FILESET),
   });
   /* A package built against its deps: it collects them once, and carries what
@@ -449,7 +451,7 @@ describe("CatalogRepository (through the model)", () => {
   const builtRule: RuleDefinition = defineRule({
     type: "test_built",
     properties: {},
-    requirements: context => Computable.resolve({ dependencies: context.getPackageProperty("deps") }),
+    requirements: context => Computable.resolve({ requirements: { dependencies: context.getPackageProperty("deps") } }),
     evaluateResolved: (context, requirements) =>
       requirements.packages("dependencies").then(carried =>
         Computable.forAll([context.collectDeclaredRequirements(carried), context.getString("version")], (declared, version) => {
@@ -467,7 +469,7 @@ describe("CatalogRepository (through the model)", () => {
   const statedRule: RuleDefinition = defineRule({
     type: "test_stated",
     properties: {},
-    requirements: context => Computable.resolve({ dependencies: context.getPackageProperty("deps") }),
+    requirements: context => Computable.resolve({ requirements: { dependencies: context.getPackageProperty("deps") } }),
     evaluateResolved: (context, requirements) =>
       requirements.packages("dependencies").then(deps => {
         statedBuilt.push(context.name);
@@ -484,7 +486,7 @@ describe("CatalogRepository (through the model)", () => {
   const driftRule: RuleDefinition = defineRule({
     type: "test_drift",
     properties: {},
-    requirements: context => Computable.resolve({ deps: context.getPackageProperty("deps") }),
+    requirements: context => Computable.resolve({ requirements: { deps: context.getPackageProperty("deps") } }),
     evaluateResolved: (context, requirements) =>
       requirements
         .packages("deps")
@@ -495,14 +497,14 @@ describe("CatalogRepository (through the model)", () => {
   const passRule: RuleDefinition = defineRule({
     type: "test_pass",
     properties: {},
-    requirements: context => Computable.resolve({ deps: context.getPackageProperty("deps") }),
+    requirements: context => Computable.resolve({ requirements: { deps: context.getPackageProperty("deps") } }),
     evaluateResolved: (_context, requirements) => requirements.materializeAll().then(({ deps }) => Computable.resolve(deps[0])),
   });
   /* A target that collects its deps and hands the first to a sub-target. */
   const subRule: RuleDefinition = defineRule({
     type: "test_sub",
     properties: {},
-    requirements: context => Computable.resolve({ deps: context.getPackageProperty("deps") }),
+    requirements: context => Computable.resolve({ requirements: { deps: context.getPackageProperty("deps") } }),
     evaluateResolved: (context, requirements) =>
       requirements.materializeAll().then(({ deps }) => context.subTarget("test_deps", { deps: [deps[0]] })),
   });

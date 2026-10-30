@@ -43,8 +43,10 @@ export default defineRule({
    * is resolved together. */
   requirements(context) {
     return {
-      deps: context.getFileProperty("deps", BUILD_OVERRIDE),
-      entry: context.getFileProperty("entry", BUILD_OVERRIDE),
+      requirements: {
+        deps: context.getFileProperty("deps", BUILD_OVERRIDE),
+        entry: context.getFileProperty("entry", BUILD_OVERRIDE),
+      },
     };
   },
   evaluateMaterialized(context, { deps, entry }) {

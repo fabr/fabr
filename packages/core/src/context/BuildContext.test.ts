@@ -54,7 +54,7 @@ import { defineRule, PluginContribution, RepositoryProvider, RepositoryRegistrat
 import { FSFileSource } from "../core/FSFileSource";
 import script from "../rules/RunScript";
 import { BuildContext, InternalBuildContext } from "./BuildContext";
-import { permissive, ResolvedRequirements } from "./Collection";
+import { ResolvedRequirements } from "./Collection";
 import { mapEntryOrigin, PropertyMap, PropertyMapValue } from "./PropertyMap";
 import { BUILD_OPERATION, BUILD_OVERRIDE, Constraints, FILES_OPERATION } from "../model/Constraints";
 import { SEMVER, SemverConstraint, SemverVersion, versionToString } from "../resolver/Semver";
@@ -143,7 +143,7 @@ testRules.push(
   defineRule({
     type: "test_good",
     properties: {},
-    requirements: context => Computable.resolve({ deps: context.getPackageProperty("deps") }),
+    requirements: context => Computable.resolve({ requirements: { deps: context.getPackageProperty("deps") } }),
     evaluateResolved: (_context, requirements) =>
       requirements.materializeAll().then(({ deps }) => {
         lastDepSets = deps;
@@ -159,7 +159,7 @@ testRules.push(
     type: "test_slow",
     properties: {},
     requirements: context =>
-      Computable.from<void>(resolve => setTimeout(resolve, 5)).then(() => ({ deps: context.getPackageProperty("deps") })),
+      Computable.from<void>(resolve => setTimeout(resolve, 5)).then(() => ({ requirements: { deps: context.getPackageProperty("deps") } })),
     evaluateResolved: (_context, requirements) => requirements.materializeAll().then(() => EMPTY_FILESET),
   })
 );
@@ -176,7 +176,7 @@ testRules.push(
   defineRule({
     type: "test_carrier",
     properties: { [BUILD_OPERATION]: "build" },
-    requirements: context => Computable.resolve({ dependencies: context.getPackageProperty("deps") }),
+    requirements: context => Computable.resolve({ requirements: { dependencies: context.getPackageProperty("deps") } }),
     evaluateResolved: (context, requirements) =>
       Computable.forAll([requirements.packages("dependencies"), context.getGlobalString("MODE")], (dependencies, mode) =>
         new PackageFileSet(new Map([["mode.txt", MemoryFile.from(mode)]]), context.name, undefined, dependencies)
@@ -189,7 +189,7 @@ testRules.push(
   defineRule({
     type: "test_holds",
     properties: {},
-    requirements: context => Computable.resolve({ deps: context.getPackageProperty("deps") }),
+    requirements: context => Computable.resolve({ requirements: { deps: context.getPackageProperty("deps") } }),
     evaluateResolved: (_context, requirements) =>
       requirements.materializeAll().then(({ deps }) => {
         heldDeps = deps;
@@ -203,11 +203,29 @@ testRules.push(
   defineRule({
     type: "test_made",
     properties: {},
-    requirements: context => Computable.resolve({ extends: context.getPackageProperty("srcs") }),
+    requirements: context => Computable.resolve({ requirements: { extends: context.getPackageProperty("srcs") } }),
     evaluateMaterialized: (context, { extends: made }) => {
       const base = made.find((pkg): pkg is PackageFileSet => pkg instanceof PackageFileSet);
       return new PackageFileSet(new Map([["made.txt", MemoryFile.from(context.name)]]), context.name, base?.version);
     },
+  })
+);
+/* Builds files, as its rule declares. */
+testRules.push(
+  defineRule({
+    type: "test_plain",
+    properties: {},
+    requirements: () => ({ requirements: {}, builds: "files" }),
+    evaluateResolved: context => Computable.resolve(new FileSet(new Map([["plain.txt", MemoryFile.from(context.name)]]))),
+  })
+);
+/* Declares it builds a package named as the target, and builds files. */
+testRules.push(
+  defineRule({
+    type: "test_misdeclared",
+    properties: {},
+    requirements: context => ({ requirements: {}, builds: { package: context.name } }),
+    evaluateResolved: () => Computable.resolve(EMPTY_FILESET),
   })
 );
 /* As test_good, collecting its `deps` permissively. */
@@ -215,7 +233,7 @@ testRules.push(
   defineRule({
     type: "test_loose",
     properties: {},
-    requirements: context => Computable.resolve(permissive({ deps: context.getPackageProperty("deps") })),
+    requirements: context => Computable.resolve({ requirements: { deps: context.getPackageProperty("deps") }, permissive: true }),
     evaluateResolved: (_context, requirements) =>
       requirements.materializeAll().then(({ deps }) => {
         lastDepSets = deps;
@@ -237,7 +255,7 @@ testRules.push(
   defineRule({
     type: "test_override",
     properties: {},
-    requirements: context => Computable.resolve({ dep: context.getPackageProperty("dep", Constraints.of({ FLAVOR: "caller" })) }),
+    requirements: context => Computable.resolve({ requirements: { dep: context.getPackageProperty("dep", Constraints.of({ FLAVOR: "caller" })) } }),
     evaluateResolved: (_context, requirements) =>
       requirements.materializeAll().then(({ dep }) => {
         lastDeps = FileSet.unionAll(...dep);
@@ -253,7 +271,7 @@ testRules.push(
     type: "test_globaltool",
     properties: {},
     requirements: context =>
-      Computable.resolve({ tool: context.getGlobalFileProperty("GLOBALTOOL", Constraints.of({ FLAVOR: "caller" })) }),
+      Computable.resolve({ requirements: { tool: context.getGlobalFileProperty("GLOBALTOOL", Constraints.of({ FLAVOR: "caller" })) } }),
     evaluateResolved: (_context, requirements) =>
       requirements.materializeAll().then(({ tool }) => {
         lastDeps = FileSet.unionAll(...tool);
@@ -565,9 +583,11 @@ testRules.push(
     properties: {},
     requirements: context =>
       Computable.resolve({
-        adeps: context.getPackageProperty("adeps"),
-        bdeps: context.getPackageProperty("bdeps"),
-        globalSrc: context.getGlobalFileProperty("JOINT_GLOBAL"),
+        requirements: {
+          adeps: context.getPackageProperty("adeps"),
+          bdeps: context.getPackageProperty("bdeps"),
+          globalSrc: context.getGlobalFileProperty("JOINT_GLOBAL"),
+        },
       }),
     evaluateResolved: (_context, requirements) =>
       requirements.materializeAll().then(({ adeps, bdeps, globalSrc }) => {
@@ -3520,7 +3540,7 @@ describe("Rule selection", () => {
         type: "mid",
         properties: {},
         requirements: context =>
-          Computable.from<void>(resolve => setTimeout(resolve, 5)).then(() => ({ deps: context.getPackageProperty("deps") })),
+          Computable.from<void>(resolve => setTimeout(resolve, 5)).then(() => ({ requirements: { deps: context.getPackageProperty("deps") } })),
         evaluate: () => Computable.resolve(EMPTY_FILESET),
       },
     ]);
@@ -3627,7 +3647,7 @@ describe("inspecting a target's collection", () => {
       const deps = context.getPackageProperty("deps", BUILD_OVERRIDE);
       /* The package's own requirements under `build`; under `test`, a
        * requirement of the test run alone. */
-      return Computable.resolve({ srcs: context.getFileProperty("srcs"), [part === "deps" ? "dependencies" : part]: deps });
+      return Computable.resolve({ requirements: { srcs: context.getFileProperty("srcs"), [part === "deps" ? "dependencies" : part]: deps } });
     },
     evaluate: (context, requirements) =>
       Computable.forAll([requirements.materializeAll(), requirements.packages(part === "deps" ? "dependencies" : part)], (_collected, deps) => {
@@ -3639,7 +3659,7 @@ describe("inspecting a target's collection", () => {
   const filesRule: RuleDefinition = {
     type: "files",
     properties: {},
-    requirements: context => Computable.resolve({ srcs: context.getFileProperty("srcs") }),
+    requirements: context => Computable.resolve({ requirements: { srcs: context.getFileProperty("srcs") } }),
     evaluate: context => {
       proceeded.push(context.name);
       return Computable.resolve(new FileSet(new Map([["out.txt", new MemoryFile(Buffer.from(context.name))]])));
@@ -3649,7 +3669,7 @@ describe("inspecting a target's collection", () => {
   const runRule: RuleDefinition = {
     type: "lib",
     properties: { BUILD_OPERATION: "run" },
-    requirements: context => Computable.resolve({ pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE) }),
+    requirements: context => Computable.resolve({ requirements: { pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE) } }),
     evaluate: (context, requirements) =>
       requirements.materializeAll().then(({ pkg }) => {
         proceeded.push(`${context.name}[run]`);
@@ -3781,7 +3801,7 @@ describe("a reference to a target", () => {
   const libRule: RuleDefinition = {
     type: "lib",
     properties: {},
-    requirements: context => Computable.resolve({ dependencies: context.getPackageProperty("deps") }),
+    requirements: context => Computable.resolve({ requirements: { dependencies: context.getPackageProperty("deps") } }),
     evaluate: (context, requirements) =>
       Computable.forAll([requirements.materializeAll(), requirements.packages("dependencies")], (_collected, packages) => {
         evaluated.push(context.name);
@@ -3792,7 +3812,7 @@ describe("a reference to a target", () => {
   const genRule: RuleDefinition = {
     type: "gen",
     properties: {},
-    requirements: () => Computable.resolve({}),
+    requirements: () => Computable.resolve({ requirements: {} }),
     evaluate: context => {
       evaluated.push(context.name);
       return Computable.resolve(new FileSet(new Map([["out.txt", new MemoryFile(Buffer.from(context.name))]])));
@@ -3819,7 +3839,7 @@ describe("a reference to a target", () => {
   const brokenRule: RuleDefinition = {
     type: "broken",
     properties: {},
-    requirements: () => Computable.resolve({}),
+    requirements: () => Computable.resolve({ requirements: {} }),
     evaluate: () => Computable.reject(new FabrError("it broke")),
   };
   /* Records what each of its `deps` delivered: `package <name>` for a package,
@@ -3827,7 +3847,7 @@ describe("a reference to a target", () => {
   const userRule: RuleDefinition = {
     type: "user",
     properties: {},
-    requirements: context => Computable.resolve({ deps: context.getPackageProperty("deps") }),
+    requirements: context => Computable.resolve({ requirements: { deps: context.getPackageProperty("deps") } }),
     evaluate: (context, requirements) =>
       requirements.materializeAll().then(({ deps }) => {
         evaluated.push(context.name);
@@ -3842,14 +3862,14 @@ describe("a reference to a target", () => {
   const readerRule: RuleDefinition = {
     type: "reader",
     properties: {},
-    requirements: () => Computable.resolve({}),
+    requirements: () => Computable.resolve({ requirements: {} }),
     evaluate: context => context.getPackageProperty("extra").then(() => EMPTY_FILESET),
   };
   /* A package naming each of its `deps` as a provided requirement. */
   const peerLibRule: RuleDefinition = {
     type: "peerlib",
     properties: {},
-    requirements: context => Computable.resolve({ dependencies: context.getPackageProperty("deps") }),
+    requirements: context => Computable.resolve({ requirements: { dependencies: context.getPackageProperty("deps") } }),
     evaluate: (context, requirements) =>
       Computable.forAll([requirements.materializeAll(), requirements.packages("dependencies")], (_collected, packages) => {
         const provided = new Map(packages.map(edge => [dependencyName(edge), "expected" as const]));
@@ -3862,7 +3882,7 @@ describe("a reference to a target", () => {
   const outerRule: RuleDefinition = {
     type: "outer",
     properties: {},
-    requirements: context => Computable.resolve({ deps: context.getPackageProperty("deps") }),
+    requirements: context => Computable.resolve({ requirements: { deps: context.getPackageProperty("deps") } }),
     evaluate: (context, requirements) =>
       requirements.materializeAll().then(({ deps }) => {
         handed = deps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
@@ -3873,7 +3893,7 @@ describe("a reference to a target", () => {
   const innerRule: RuleDefinition = {
     type: "inner",
     properties: {},
-    requirements: context => Computable.resolve({ deps: context.getPackageProperty("deps") }),
+    requirements: context => Computable.resolve({ requirements: { deps: context.getPackageProperty("deps") } }),
     evaluate: (_context, requirements) =>
       requirements.materializeAll().then(({ deps }) => {
         const names = deps.map(dep => (dep instanceof PackageFileSet ? `${dep.packageName}:${handed.includes(dep)}` : "files"));
@@ -4293,42 +4313,33 @@ describe("rules written in .fabr", () => {
     expect(await textOf(model, "b")).to.equal("goodbye");
   });
 
-  it("requires what the block's targets the result reaches require, as the target's properties and the rule's", async () => {
+  it("requires what the block's result and the block's targets it reaches require", async () => {
     const defs = "test_file one { content = 1; }\ntest_file extra { content = 2; }\nlintable a { srcs = one; }\n";
-    const sectionsOf = async (rule: string): Promise<Array<[string, string[]]>> => {
+    const keysOf = async (rule: string): Promise<string[]> => {
       const resolved = await modelOf(rule + defs).getConfig(Constraints.of({}), execution).resolve(writtenOnCommandLine("a"));
-      return [...requirementsOf(resolved)].map(([name, sources]) => [
-        name,
-        sources.map(source => (source instanceof ResolvedNode ? source.packageName : "files")).sort(),
-      ]);
+      return [...requirementsOf(resolved).keys()];
     };
-    /* What came from the target under the property it came from, once however
-     * many targets read it; what the block adds under the rule. */
-    expect(await sectionsOf("rule lintable pkg = held { test_holds held { deps = pkg.srcs extra other; } test_holds other { deps = pkg.srcs extra; } }\n")).to.deep.equal([
-      ["srcs", ["one"]],
-      ["required by lintable rule", ["extra"]],
+    /* A whole result as what the target is made from; each target reached by its requirements. */
+    expect(await keysOf("rule lintable pkg = held { test_holds held { deps = pkg.srcs extra other; } test_holds other { deps = pkg.srcs extra; } }\n")).to.deep.equal([
+      "extends",
+      "held.deps",
+      "other.deps",
     ]);
     /* A target the result does not reach is not among them. */
-    expect(await sectionsOf("rule lintable pkg = held { test_holds held { deps = extra; } test_holds other { deps = pkg.srcs; } }\n")).to.deep.equal([
-      ["required by lintable rule", ["extra"]],
+    expect(await keysOf("rule lintable pkg = held { test_holds held { deps = extra; } test_holds other { deps = pkg.srcs; } }\n")).to.deep.equal([
+      "extends",
+      "held.deps",
     ]);
-    /* What the result reference names itself, under the property it read. */
-    expect(await sectionsOf("rule lintable pkg = contents { contents = pkg.srcs extra; }\n")).to.deep.equal([
-      ["srcs", ["files"]],
-      ["required by lintable rule", ["files"]],
+    /* What a result of files names, as `result`. */
+    expect(await keysOf("rule lintable pkg = contents { contents = pkg.srcs extra; }\n")).to.deep.equal(["result"]);
+    expect(await keysOf("rule lintable pkg = held:** { libs = pkg.srcs; test_holds held { deps = libs extra; } }\n")).to.deep.equal([
+      "result",
+      "held.deps",
     ]);
-    /* A result that is no target of the block shows what it requires itself. */
+    /* A result outside the block is what the target is made from, and reaches none of the block's targets. */
     expect(
-      await sectionsOf(
-        "rule lintable pkg<FLAVOR=plain> = pkg<FLAVOR=lint> { }\nrule lintable pkg<FLAVOR=lint> = held { test_holds held { deps = pkg.srcs; } }\n"
-      )
-    ).to.deep.equal([["srcs", ["one"]]]);
-    /* The result reached through a property of the block, or as a selection. */
-    expect(await sectionsOf("rule lintable pkg = res { res = held; test_holds held { deps = pkg.srcs; } }\n")).to.deep.equal([["srcs", ["one"]]]);
-    expect(await sectionsOf("rule lintable pkg = held:** { libs = pkg.srcs; test_holds held { deps = libs extra; } }\n")).to.deep.equal([
-      ["srcs", ["one"]],
-      ["required by lintable rule", ["extra"]],
-    ]);
+      await keysOf("rule lintable pkg<FLAVOR=plain> = pkg<FLAVOR=lint> { }\nrule lintable pkg<FLAVOR=lint> = held { test_holds held { deps = pkg.srcs; } }\n")
+    ).to.deep.equal(["extends"]);
   });
 
   it("answers what the block's targets require of the target from one resolution, with what each adds beside it", async () => {
@@ -4396,7 +4407,7 @@ describe("rules written in .fabr", () => {
   it("resolves a target of the block whose rule is written in .fabr, reading the block's targets through its parameter, without a cycle", async () => {
     const model = modelOf(
       "targetdef wrapper { deps = PACKAGES; }\nrule wrapper w = f { test_holds f { deps = w.deps; } }\n" +
-        "rule lintable pkg = held { test_holds held { deps = pkg.srcs inner; } wrapper inner { deps = other; } test_file other { content = o; } }\n" +
+        "rule lintable pkg = held { test_holds held { deps = pkg.srcs inner; } wrapper inner { deps = other:**; } test_file other { content = o; } }\n" +
         "test_file one { content = 1; }\nlintable a { srcs = one; }\n"
     );
     await filesOf(model, "a");
@@ -4437,6 +4448,30 @@ describe("rules written in .fabr", () => {
       expect(made.packages.map(described)).to.deep.equal(["shared@1.2.0"]);
     } finally {
       registryRequirements.delete("base@1.0.0");
+      registryRequirements.delete("raiser@1.0.0");
+    }
+  });
+
+  it("resolves a nested subtarget's packages with the block's", async () => {
+    registryRequirements.set("raiser@1.0.0", [{ name: "shared", versionConstraint: "^1.2.0" }]);
+    try {
+      const model = modelOf(
+        "targetdef test_registry { }\ntest_registry @reg { }\ntargetdef wrapper { deps = PACKAGES; }\n" +
+          "rule wrapper w = f { test_good f { deps = w.deps @reg:raiser; } }\n" +
+          "rule lintable pkg = held { test_holds held { deps = pkg.srcs inner; } wrapper inner { deps = pkg.srcs; } }\n" +
+          "lintable a { srcs = @reg:shared:^1.0.0; }\n"
+      );
+      await filesOf(model, "a");
+      const versionsOf = (deps: FileSet[]): string[] =>
+        deps
+          .filter(pkg => pkg instanceof PackageFileSet && pkg.version !== undefined)
+          .map(pkg => `${(pkg as PackageFileSet).packageName}@${(pkg as PackageFileSet).version}`)
+          .sort();
+      /* What the nested block adds raises the outer block's version, and the
+       * nested block builds with it. */
+      expect(versionsOf(heldDeps)).to.deep.equal(["shared@1.2.0"]);
+      expect(versionsOf(lastDepSets)).to.deep.equal(["raiser@1.0.0", "shared@1.2.0"]);
+    } finally {
       registryRequirements.delete("raiser@1.0.0");
     }
   });
@@ -4538,6 +4573,22 @@ describe("rules written in .fabr", () => {
     const model = modelOf("rule lintable pkg = built -> other { test_package built { } }\nlintable a { }\ntest_good c { deps = a; }\n");
     await filesOf(model, "c");
     expect((lastDepSets[0] as PackageFileSet).packageName).to.equal("other");
+    /* Named so when it is resolved, before anything is built. */
+    const [node] = (await model.getConfig(Constraints.of({}), execution).resolve(writtenOnCommandLine("a"))).denoted;
+    expect((node as ResolvedNode).packageName).to.equal("other");
+  });
+
+  it("takes targets declared to build files as files, claiming no name among packages", async () => {
+    const model = modelOf(
+      "targetdef test_plain { }\nrule lintable pkg = res { test_holds res { deps = one two; } test_plain one { } test_plain two { } }\nlintable a { }\n"
+    );
+    await filesOf(model, "a");
+    expect(heldDeps.map(files => [...files].map(([name]) => name)).flat()).to.deep.equal(["plain.txt", "plain.txt"]);
+  });
+
+  it("refuses a build that is not what its rule declares", async () => {
+    const model = modelOf("targetdef test_misdeclared { }\ntest_misdeclared m { }\ntest_good c { deps = m; }\n");
+    expect(messagesOf(await failureOf(model, "c")).join("\n")).to.contain("'m' builds files, though its rule declares the package 'm'");
   });
 
   it("substitutes the bare parameter as the target's name, a rename on the result included", async () => {

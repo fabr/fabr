@@ -36,10 +36,12 @@ import { defineRule } from "./Types";
 export default defineRule({
   requirements(context) {
     return {
-      extends: context.getPackageProperty("srcs"),
-      libs: context.getFileProperty("libs"),
-      optional_libs: context.getFileProperty("optional_libs"),
-      resources: context.getFileProperty("resources"),
+      requirements: {
+        extends: context.getPackageProperty("srcs"),
+        libs: context.getFileProperty("libs"),
+        optional_libs: context.getFileProperty("optional_libs"),
+        resources: context.getFileProperty("resources"),
+      },
     };
   },
   evaluateMaterialized(context, { extends: srcs, libs, optional_libs: optionalLibs, resources }) {

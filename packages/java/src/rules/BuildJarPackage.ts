@@ -31,17 +31,18 @@ import {
   defineRule,
   Dependency,
   dependencyName,
-  FabrError,
   EMPTY_FILESET,
+  FabrError,
   FileSet,
-  PackageFileSet,
   mapEntryError,
+  PackageFileSet,
   PropertyMap,
   Provided,
   RuleResult,
   TargetContext,
 } from "@fabr-build/core";
 import { checkPomMetadata } from "../MavenPublish";
+import { MAVEN_FORMAT } from "../MavenProtocol";
 import { checkMainClass, compileOutputOf, COMPILED_CLASSES_DIR, createJarAction, MANIFEST_NAME, manifestFile, processorsOf } from "../JarPackage";
 
 interface JarInputs {
@@ -66,12 +67,15 @@ export default defineRule({
    * passes on; `compile_deps` is compiled against and private to the build. */
   requirements(context) {
     return {
-      srcs: context.getFileProperty("srcs"),
-      resources: context.getFileProperty("resources"),
-      dependencies: context.getPackageProperty("deps"),
-      provided: context.getPackageProperty("provided_deps"),
-      optional_provided: context.getPackageProperty("optional_provided_deps"),
-      compile_deps: context.getPackageProperty("compile_deps"),
+      requirements: {
+        srcs: context.getFileProperty("srcs"),
+        resources: context.getFileProperty("resources"),
+        dependencies: context.getPackageProperty("deps"),
+        provided: context.getPackageProperty("provided_deps"),
+        optional_provided: context.getPackageProperty("optional_provided_deps"),
+        compile_deps: context.getPackageProperty("compile_deps"),
+      },
+      builds: { package: context.name, format: MAVEN_FORMAT },
     };
   },
   evaluateResolved(context, requirements) {
