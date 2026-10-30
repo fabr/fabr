@@ -31,6 +31,7 @@ import {
   RepositoryPublishRef,
   RepositoryRef,
   RepositoryWriter,
+  PublishAttachment,
   RepositoryLookup,
   SourceRef,
   Resolved,
@@ -568,6 +569,18 @@ class TestPubRepo extends TestRepo implements RepositoryWriter {
 
   public publish(): Computable<PublishStatus> {
     return Computable.resolve<PublishStatus>("published");
+  }
+
+  /* A member whose name starts `attached` has a `-doc` member beside it, built under `doc`. */
+  public attachments(destination: RepositoryPublishRef): PublishAttachment[] {
+    return destination.name.startsWith("attached") && !destination.name.endsWith("-doc")
+      ? [
+          {
+            destination: new RepositoryPublishRef(this, { name: `${destination.name}-doc`, version: destination.version }, destination.repositoryName),
+            operation: "doc",
+          },
+        ]
+      : [];
   }
 }
 registerRepositoryProvider("test_pub", () => Computable.resolve(new TestPubRepo()));
@@ -1674,6 +1687,49 @@ describe("BuildContext", () => {
       expect(pkg.packageName).to.equal("lib");
       expect(pkg.dependencies.map(dep => [dependencyName(dep), dep.package?.packageName])).to.deep.equal([["base", "base"]]);
     }
+  });
+
+  it("Adds the members a repository publishes beside one, where the content's type has a rule for their operation", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "default MODE = plain;\n" +
+      "targetdef test_pub { }\n" +
+      "targetdef test_file { content = STRING; }\n" +
+      "targetdef test_package { }\n" +
+      "targetdef test_carrier { deps = PACKAGES; }\n" +
+      "targetdef sync { * = FILES; }\n" +
+      "test_pub pub { }\n" +
+      "test_file c1 { content = one; }\n" +
+      "test_file c2 { content = two; }\n" +
+      "test_package base { }\n" +
+      "test_carrier lib { deps = base; }\n" +
+      "sync release {\n" +
+      "  pub:attachedfile:1.0.0 = c1;\n" +
+      "  pub:attachedlib:1.0.0 = lib;\n" +
+      "  pub:attachedown:1.0.0 = c1;\n" +
+      "  pub:attachedown-doc:1.0.0 = c2;\n" +
+      "}\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+    const [release] = await model.getConfig(Constraints.of({ [BUILD_OPERATION]: "build" }), execution).materialize(writtenOnCommandLine("release"));
+    const carriers = await (release as SyncSource).members();
+    /* `test_file` has a rule for any operation, so `c1` is attached; `test_carrier`
+     * has one for `build` only, so `lib` is not; a declared member at an
+     * attachment's coordinate is that member. */
+    expect(carriers.map(carrier => carrier.destination.toString()).sort()).to.deep.equal([
+      "pub:attachedfile-doc:1.0.0",
+      "pub:attachedfile:1.0.0",
+      "pub:attachedlib:1.0.0",
+      "pub:attachedown-doc:1.0.0",
+      "pub:attachedown:1.0.0",
+    ]);
+    const contentOf = async (member: string): Promise<string> => {
+      const carrier = carriers.find(each => each.destination.toString() === member)!;
+      return (await carrier.get("f.txt"))!.readString();
+    };
+    expect(await contentOf("pub:attachedfile-doc:1.0.0")).to.equal("one");
+    expect(await contentOf("pub:attachedown-doc:1.0.0")).to.equal("two");
   });
 
   it("Tells the writer every target the release publishes, packaging one member or all", async () => {
@@ -4559,6 +4615,12 @@ describe("rules written in .fabr", () => {
     const model = modelOf("rule lintable pkg = m { test_map m { defines = pkg.defs; } }\nlintable a { defs = { x = 1; }; }\n");
     await filesOf(model, "a");
     expect(lastMap).to.deep.equal([["x", ["1"]]]);
+  });
+
+  it("reads a map property the target does not set, named through the parameter, as an empty map", async () => {
+    const model = modelOf("rule lintable pkg = m { test_map m { defines = pkg.defs; } }\nlintable a { }\n");
+    await filesOf(model, "a");
+    expect(lastMap).to.deep.equal([]);
   });
 
   it("makes the target the package its result builds, which is built under the target's name", async () => {

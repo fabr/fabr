@@ -18,7 +18,19 @@
  */
 
 import { expect } from "chai";
-import { checkPomMetadata, checksumFiles, mergedMetadata, metadataPath, pomText, repositoryPath } from "./MavenPublish";
+import { Computable, FileSet, MemoryFile, PublishableFileSet, PublishStatus, readZipMembers, RepositoryWriter } from "@fabr-build/core";
+import {
+  checkPomMetadata,
+  checksumFiles,
+  classifierOf,
+  MavenPublishRef,
+  mergedMetadata,
+  metadataPath,
+  packageClassifiedMember,
+  packageMavenMember,
+  pomText,
+  repositoryPath,
+} from "./MavenPublish";
 
 describe("pomText", () => {
   it("records the coordinate, the dependencies with their scope, and the BOMs imported in dependencyManagement", () => {
@@ -119,5 +131,52 @@ describe("repository paths and checksums", () => {
     expect(files.map(([name]) => name)).to.deep.equal(["a/b.jar.md5", "a/b.jar.sha1"]);
     const texts = await Promise.all(files.map(([, file]) => new Promise<string>(resolve => file.readString().then(resolve))));
     expect(texts).to.deep.equal(["5d41402abc4b2a76b9719d911017c592", "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d"]);
+  });
+});
+
+describe("classified members", () => {
+  /* A writer to vend refs from: these tests only package. */
+  const writer: RepositoryWriter = {
+    package: () => Computable.resolve<PublishableFileSet[]>([]),
+    publish: () => Computable.resolve<PublishStatus>("published"),
+  };
+  const ref = (classifier?: string): MavenPublishRef =>
+    new MavenPublishRef(writer, { name: "com.example/app", version: "1.0.0", classifier }, "@corp");
+  const files = (entries: Record<string, string>): FileSet =>
+    new FileSet(new Map(Object.entries(entries).map(([name, text]) => [name, MemoryFile.from(text)])));
+
+  it("are named with their classifier after the artifact", () => {
+    expect(ref("sources").toString()).to.equal("@corp:com.example/app/sources:1.0.0");
+    expect(ref().toString()).to.equal("@corp:com.example/app:1.0.0");
+    expect(classifierOf(ref("sources"))).to.equal("sources");
+    expect(ref("sources").withRepositoryName("@other").toString()).to.equal("@other:com.example/app/sources:1.0.0");
+  });
+
+  it("pack a tree of files as the jar beside the artifact, with its checksums", async () => {
+    const carrier = await packageClassifiedMember({ destination: ref("sources"), content: files({ "com/example/App.java": "class App {}" }) }, [ref(), ref("sources")]);
+    expect([...carrier].map(([name]) => name).sort()).to.deep.equal([
+      "com/example/app/1.0.0/app-1.0.0-sources.jar",
+      "com/example/app/1.0.0/app-1.0.0-sources.jar.md5",
+      "com/example/app/1.0.0/app-1.0.0-sources.jar.sha1",
+    ]);
+    const jar = await carrier.get("com/example/app/1.0.0/app-1.0.0-sources.jar");
+    const members = await readZipMembers(await jar!.getBuffer(), () => true);
+    expect(members.get("com/example/App.java")?.toString()).to.equal("class App {}");
+  });
+
+  it("take content that is one jar as that jar", async () => {
+    const carrier = await packageClassifiedMember({ destination: ref("javadoc"), content: files({ "made.jar": "JAR" }) }, [ref(), ref("javadoc")]);
+    expect(await (await carrier.get("com/example/app/1.0.0/app-1.0.0-javadoc.jar"))!.readString()).to.equal("JAR");
+  });
+
+  it("need their version's artifact in the same release, which is uploaded after them", async () => {
+    const failure = await packageClassifiedMember({ destination: ref("sources"), content: files({ "A.java": "" }) }, [ref("sources")]).then(
+      () => undefined,
+      err => (err as Error).message
+    );
+    expect(failure).to.match(/the release publishes no com\.example:app:1\.0\.0 for it to be beside/);
+    const main = await packageMavenMember({ destination: ref(), content: files({ "app.jar": "JAR" }) }, new Map(), new Set(), [ref(), ref("sources")]);
+    const sources = await packageClassifiedMember({ destination: ref("sources"), content: files({ "A.java": "" }) }, [ref(), ref("sources")]);
+    expect(main.dependsOn).to.deep.equal([sources.provides]);
   });
 });

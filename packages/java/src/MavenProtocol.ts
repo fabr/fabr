@@ -107,24 +107,38 @@ function validateMavenRequirement({ name, versionConstraint, override }: Require
 
 /**
  * Parse a publish coordinate, `<group>:<artifact>:<version>` (or
- * `<group>/<artifact>:<version>`), whose version is exact.
+ * `<group>/<artifact>:<version>`), whose version is exact, or with a
+ * classifier after the artifact, `<group>:<artifact>/<classifier>:<version>`:
+ * a file published beside the version's artifact (`-sources.jar`).
  */
-export function parseMavenPublishCoordinate(name: Name): { name: string; version: string } {
-  const { name: packageName, versionConstraint, projection } = splitMavenReference(name);
+export function parseMavenPublishCoordinate(name: Name): { name: string; version: string; classifier?: string } {
+  const { name: written, versionConstraint: version, projection } = splitMavenReference(name);
   const literal = name.toString();
-  if (versionConstraint === undefined || projection !== undefined) {
-    throw new FabrError(`publish coordinate '${literal}' must name a group, an artifact and a version (com.example:app:1.0.0)`);
+  if (version === undefined || projection !== undefined) {
+    /* A fourth part is read as a classifier elsewhere: say how fabr writes one. */
+    const tail = projection?.prefix === "" ? projection.pattern.getSimpleName() : undefined;
+    const classified = version !== undefined && tail !== undefined && !/[:/]/.test(tail);
+    throw new FabrError(`publish coordinate '${literal}' must name a group, an artifact and a version (com.example:app:1.0.0)`).withHelp(
+      classified
+        ? `a classifier follows the artifact: write '${written.replace("/", ":")}/${version}:${tail}'`
+        : "a classifier follows the artifact, as in com.example:app/sources:1.0.0"
+    );
   }
+  const [groupId, artifactId, classifier, ...rest] = written.split("/");
+  if (rest.length > 0 || artifactId === undefined || (classifier !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(classifier))) {
+    throw new FabrError(`publish coordinate '${literal}' must name a group, an artifact, a classifier where it has one, and a version (com.example:app/sources:1.0.0)`);
+  }
+  const packageName = mavenName(groupId, artifactId);
   splitMavenName(packageName);
-  if (versionConstraint.startsWith("[") || versionConstraint.startsWith("(") || MAVEN_VERSIONS.exactVersion?.(versionConstraint) === undefined) {
-    throw new FabrError(`'${versionConstraint}' is not an exact version, which a publish coordinate for '${packageName}' must name`).withHelp(
+  if (version.startsWith("[") || version.startsWith("(") || MAVEN_VERSIONS.exactVersion?.(version) === undefined) {
+    throw new FabrError(`'${version}' is not an exact version, which a publish coordinate for '${packageName}' must name`).withHelp(
       "write the version itself (1.0.0); a range cannot be published"
     );
   }
-  if (/-SNAPSHOT$/i.test(versionConstraint)) {
+  if (/-SNAPSHOT$/i.test(version)) {
     throw new FabrError(`publishing a -SNAPSHOT version (${literal}) is not supported`);
   }
-  return { name: packageName, version: versionConstraint };
+  return { name: packageName, version, ...(classifier === undefined ? {} : { classifier }) };
 }
 
 export const MAVEN_FORMAT: PackageFormat<MavenVersion, MavenConstraint> = {

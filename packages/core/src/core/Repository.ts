@@ -288,6 +288,16 @@ export interface RepositoryWriter {
   ): Computable<PublishableFileSet[]>;
 
   /**
+   * @return the members this repository publishes beside one published at
+   * `destination` where the sync declares none at their coordinates: each its
+   * coordinate and the operation its content is built under, from the declared
+   * member's content (a Maven repository's `-sources.jar`, built under
+   * `sources`). A member whose content is no target of a type with a rule for
+   * that operation has none of it. Omitted, none.
+   */
+  attachments?(destination: RepositoryPublishRef): readonly PublishAttachment[];
+
+  /**
    * Upload one prior {@link package} result to this repository's `url` — the one
    * side effect: pure upload mechanics (envelope, credential, what counts as
    * already-published), nothing about the rest of the release. Authentication is
@@ -295,6 +305,14 @@ export interface RepositoryWriter {
    * credential conventions — so no token is threaded in.
    */
   publish(artifact: PublishableFileSet): Computable<PublishStatus>;
+}
+
+/** A member a repository publishes beside one a sync declares ({@link RepositoryWriter.attachments}). */
+export interface PublishAttachment {
+  /** Its coordinate. */
+  destination: RepositoryPublishRef;
+  /** The operation its content is built under, from the declared member's content. */
+  operation: string;
 }
 
 /** What a {@link RepositoryRef} resolves against: a repository's read face —

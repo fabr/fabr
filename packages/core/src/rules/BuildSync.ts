@@ -18,7 +18,7 @@
  */
 
 import { RequiredSources, TargetContext, Unmaterialized } from "../context/index";
-import { BUILD_OVERRIDE } from "../model/Constraints";
+import { BUILD_OPERATION, BUILD_OVERRIDE, Constraints } from "../model/Constraints";
 import { SyncSources } from "../context/Collection";
 import { Computable, ComputableSource } from "../core/Computable";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
@@ -27,7 +27,7 @@ import { TargetRef } from "../core/TargetRef";
 import { refuseNamespaces } from "../core/NamespaceRef";
 import { PublishableFileSet } from "../core/PublishableFileSet";
 import { Name, NAME_COMPONENT_SEPARATOR, NAME_LEVEL_SEPARATOR } from "../core/Name";
-import { FabrError, toError } from "../core/Errors";
+import { FabrError, helpOf, toError } from "../core/Errors";
 import { declPosn, IPropertyDecl } from "../model/AST";
 import { DependencyFailedError, NameResolutionError } from "../model/Errors";
 import { RuleImplementation, RuleResult } from "./Types";
@@ -40,23 +40,22 @@ import { RuleImplementation, RuleResult } from "./Types";
  * script name the same thing.
  */
 export default {
-  /* Each member's content is a requirement keyed by its written coordinate
-   * ({@link contentKey}), built under `build` whatever the sync is asked for,
-   * read for publishing (a package with the edges its build bound, nothing
-   * resolved here), and materialized only for the members a name reaches. The
-   * coordinates themselves are validated once, in evaluate
-   * ({@link syncPackages}). */
+  /* Each member's content is a requirement keyed by {@link Member.content},
+   * built under `build` whatever the sync is asked for (an attachment's under
+   * its own operation), read for publishing (a package with the edges its
+   * build bound, nothing resolved here), and materialized only for the members
+   * a name reaches. */
   requirements(context) {
-    return context
-      .getWildcardProperties()
-      .then(props => ({
-        requirements: new Map(
-          props.map((prop): [string, Computable<SyncSources>] => [
-            contentKey(prop.decl),
-            context.getFileProperty(contentKey(prop.decl), BUILD_OVERRIDE).then(sources => new SyncSources(sources)),
-          ])
-        ),
-      }));
+    return members(context).then(table => ({
+      requirements: new Map(
+        [...table.values()].map((member): [string, Computable<SyncSources>] => [
+          member.content,
+          context
+            .getFileProperty(contentKey(member.decl), member.operation === undefined ? BUILD_OVERRIDE : Constraints.of({ [BUILD_OPERATION]: member.operation }))
+            .then(sources => new SyncSources(sources)),
+        ])
+      ),
+    }));
   },
   evaluate(context, requirements) {
     return syncPackages(context, requirements);
@@ -66,11 +65,13 @@ export default {
 interface Member {
   /** The vended publish ref this member is assigned — destination + validated name. */
   readonly assigned: RepositoryPublishRef;
-  /** The member's property decl. Its `name` — the written coordinate's canonical
-   *  string (`@npm:X:1.0.1`) — is the member's identity in the build's namespace
-   *  (unique per decl, distinguishing members that share a package name) and
-   *  locates the right-hand side content. */
+  /** The member's property decl, which declares its content: an attachment's
+   *  is the declared member's it is published beside. */
   readonly decl: IPropertyDecl;
+  /** The key of the requirement its content is read as. */
+  readonly content: string;
+  /** The operation an attachment's content is built under; undefined for a declared member, built under `build`. */
+  readonly operation?: string;
 }
 
 /**
@@ -258,7 +259,7 @@ export class SyncSource implements FileSource {
   private packageBatch(paths: string[]): Computable<PublishableFileSet[]> {
     const release = [...this.table.values()].map(member => member.assigned);
     const materialized = Computable.forAll(
-      paths.map(path => this.content.materialize(contentKey(this.member(path).decl)).then(sources => refuseNamespaces(sources))),
+      paths.map(path => this.content.materialize(this.member(path).content).then(sources => refuseNamespaces(sources))),
       (...content: FileSet[][]) => content
     );
     return Computable.forAll([this.publishedTargets(), materialized], (targets, content) => ({ targets, content })).then(({ targets, content }) => {
@@ -293,7 +294,7 @@ export class SyncSource implements FileSource {
    * built or resolved.
    */
   private publishedTargets(): Computable<Map<string, RepositoryPublishRef[]>> {
-    const members = [...this.table.values()];
+    const members = [...this.table.values()].filter(member => member.operation === undefined);
     return Computable.forAll(
       members.map(member => this.context.getFileProperty(contentKey(member.decl), BUILD_OVERRIDE)),
       (...contents: SourceRef[][]) => {
@@ -349,8 +350,44 @@ function syncPackages(context: TargetContext, content: Unmaterialized<Record<str
   return members(context).then(table => new SyncSource(context, table, content));
 }
 
-/** Read the sync's members by coordinate (slash form), validating each coordinate. */
+/**
+ * Read the sync's members by coordinate (slash form), validating each
+ * coordinate: those it declares, then the attachments their repositories
+ * publish beside them ({@link attachmentsOf}).
+ */
 function members(context: TargetContext): Computable<Map<string, Member>> {
+  return declaredMembers(context).then(declared => attachmentsOf(context, declared));
+}
+
+/**
+ * Add to `declared` the attachments each member's repository publishes beside
+ * it ({@link RepositoryWriter.attachments}): each where the member's content is
+ * one target, whole, whose type has a rule for the attachment's operation, and
+ * the sync declares no member at its coordinate.
+ */
+function attachmentsOf(context: TargetContext, declared: Map<string, Member>): Computable<Map<string, Member>> {
+  const all = [...declared.values()];
+  return Computable.forAll(
+    all.map(member => context.getFileProperty(contentKey(member.decl), BUILD_OVERRIDE)),
+    (...contents: SourceRef[][]) => {
+      const table = new Map(declared);
+      all.forEach((member, index) => {
+        const [only] = contents[index];
+        const target = contents[index].length === 1 && only instanceof TargetRef && only.whole ? only.name : undefined;
+        for (const { destination, operation } of member.assigned.source.attachments?.(member.assigned) ?? []) {
+          const path = memberPath(destination.toString());
+          if (target !== undefined && !table.has(path) && context.hasTargetRule(target, operation)) {
+            table.set(path, { assigned: destination, decl: member.decl, content: `${member.content} ${operation}`, operation });
+          }
+        }
+      });
+      return table;
+    }
+  );
+}
+
+/** Read the members the sync declares by coordinate (slash form), validating each coordinate. */
+function declaredMembers(context: TargetContext): Computable<Map<string, Member>> {
   return context.getWildcardProperties().then(props =>
     Computable.forAll(
       props.map(prop => validateMember(context, prop)),
@@ -410,12 +447,13 @@ function rejectShadowedMembers(declaredName: string, table: ReadonlyMap<string, 
 function validateMember(context: TargetContext, prop: { key: Name; decl: IPropertyDecl }): Computable<Member> {
   return context
     .lookupPublishRef(prop.key)
-    .then(assigned => ({ assigned, decl: prop.decl }))
+    .then((assigned): Member => ({ assigned, decl: prop.decl, content: contentKey(prop.decl) }))
     .catch(err => {
       if (err instanceof DependencyFailedError) {
         throw err;
       }
-      throw new NameResolutionError(prop.key, declPosn(prop.decl), undefined, toError(err).message);
+      const error = toError(err);
+      throw new NameResolutionError(prop.key, declPosn(prop.decl), undefined, error.message).withHelp(helpOf(error));
     });
 }
 

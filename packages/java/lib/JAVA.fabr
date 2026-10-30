@@ -264,6 +264,22 @@ rule jar_package pkg<BUILD_OPERATION=doc> = docs<BUILD_OPERATION=build> {
 }
 
 #
+# A war_package's javadoc, as a jar_package's.
+#
+
+rule war_package w<BUILD_OPERATION=doc> = docs<BUILD_OPERATION=build> {
+    java_compile compile {
+        srcs = w.srcs;
+        deps = w.deps w.provided_deps;
+        processors = w.processors;
+    }
+    javadoc docs {
+        srcs = w.srcs compile:generated/** -> **;
+        deps = w.deps w.provided_deps;
+    }
+}
+
+#
 # A jar_package's sources, as a sources jar holds them: its `srcs`, the
 # sources its annotation processors generate, and its `resources`, with what
 # they name built under `build`.
@@ -276,6 +292,20 @@ rule jar_package pkg<BUILD_OPERATION=sources> = contents<BUILD_OPERATION=build> 
         processors = pkg.processors;
     }
     contents = pkg.srcs compile:generated/** -> ** pkg.resources;
+}
+
+#
+# A war_package's sources, as a jar_package's: its `srcs`, the sources its
+# annotation processors generate, and its `resources`, not its `webapp`.
+#
+
+rule war_package w<BUILD_OPERATION=sources> = contents<BUILD_OPERATION=build> {
+    java_compile compile {
+        srcs = w.srcs;
+        deps = w.deps w.provided_deps;
+        processors = w.processors;
+    }
+    contents = w.srcs compile:generated/** -> ** w.resources;
 }
 
 #
@@ -332,6 +362,10 @@ targetdef maven_repository {
     # The id of the `<server>` in `~/.m2/settings.xml` whose credentials the
     # repository uses. By default, the repository's own name (`@corp`).
     id = STRING;
+    # The jars a `sync` publishes beside each artifact it publishes here, by
+    # classifier: `sources`, `javadoc`, or both. A target with no `sources` or
+    # `doc` rule has none.
+    auto_attach = STRING;
 }
 
 #

@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { NamespaceRef, parseName, RefSource, Repository, RepositoryRef, vendPackageRef } from "@fabr-build/core";
+import { FabrError, NamespaceRef, parseName, RefSource, Repository, RepositoryRef, vendPackageRef } from "@fabr-build/core";
 import { MAVEN_FORMAT, splitMavenName } from "./MavenProtocol";
 
 const vend = (written: string): RepositoryRef | NamespaceRef => vendPackageRef({} as RefSource & Repository, MAVEN_FORMAT, parseName(written));
@@ -89,6 +89,24 @@ describe("parseMavenPublishCoordinate", () => {
     expect(() => MAVEN_FORMAT.parsePublishCoordinate(parseName('com.example:app:"[1.0,2.0)"'))).to.throw(/not an exact version/);
     expect(() => MAVEN_FORMAT.parsePublishCoordinate(parseName("com.example:app:1.0.0:META-INF/*"))).to.throw(/must name a group/);
     expect(() => MAVEN_FORMAT.parsePublishCoordinate(parseName("com.example:app:1.0.0-SNAPSHOT"))).to.throw(/-SNAPSHOT version/);
+  });
+
+  it("reads a classifier written after the artifact, and refuses one that is no classifier", () => {
+    for (const written of ["com.example:app/sources:1.0.0", "com.example/app/sources:1.0.0"]) {
+      expect(MAVEN_FORMAT.parsePublishCoordinate(parseName(written))).to.deep.equal({ name: "com.example/app", version: "1.0.0", classifier: "sources" });
+    }
+    expect(() => MAVEN_FORMAT.parsePublishCoordinate(parseName("com.example:app/-x:1.0.0"))).to.throw(/a classifier where it has one/);
+    expect(() => MAVEN_FORMAT.parsePublishCoordinate(parseName("com.example:app/a/b:1.0.0"))).to.throw(/a classifier where it has one/);
+  });
+
+  it("says how to write a classifier, given one as a fourth part", () => {
+    let help: string[] = [];
+    try {
+      MAVEN_FORMAT.parsePublishCoordinate(parseName("com.example:app:sources:1.0.0"));
+    } catch (err) {
+      help = (err as FabrError).help ?? [];
+    }
+    expect(help).to.deep.equal(["a classifier follows the artifact: write 'com.example:app/sources:1.0.0'"]);
   });
 });
 

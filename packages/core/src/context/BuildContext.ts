@@ -129,6 +129,13 @@ export interface InternalBuildContext extends BuildContext {
   /** Get the target `name` names in this configuration, resolved. */
   resolvedTarget(name: string): Computable<ResolvedTarget>;
 
+  /**
+   * @return the operations the type of the target declared as `name` has
+   * rules for (`build`, `doc`; `*` for a rule of any operation), or none where
+   * `name` declares no target.
+   */
+  getTargetOperations(name: string): string[];
+
   /** The run this configuration belongs to: its cache, log and event listeners. */
   readonly execution: ExecutionContext;
 

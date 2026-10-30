@@ -133,6 +133,8 @@ interface IBuildModel {
    * and the active plugins. */
   getTargetRules(type: string): SelectableRule[];
   getDefaultRules(): SelectableRule[];
+  /** Get the operations `type` has rules of its own for, `*` for a rule of any operation. */
+  getOperations(type: string): string[];
   /** Get a selected rule with its implementation, loaded where it was declared. */
   getRuleDefinition(rule: SelectableRule): Computable<RuleDefinition>;
   getRepositoryProvider(type: string): RepositoryProvider | undefined;
@@ -391,6 +393,11 @@ export class BuildContextImpl implements InternalBuildContext {
 
   public inConfiguration(constraints: Constraints): BuildContextImpl {
     return this.model.getConfig(constraints, this.execution) as BuildContextImpl;
+  }
+
+  public getTargetOperations(name: string): string[] {
+    const decl = this.lookupDecl(name);
+    return decl?.kind === DeclKind.Target ? this.model.getOperations(decl.type) : [];
   }
 
   public substituteName(name: Name, stack?: IDependencyStack): Computable<Name> {
@@ -805,8 +812,12 @@ export class BuildContextImpl implements InternalBuildContext {
     seen: Set<IPropertyDecl>,
     callerOverrides?: Constraints
   ): Computable<PropertyMap> {
-    return this.referencedProperty(name, info).then(({ prop, name: substituted, context }) => {
+    return this.referencedProperty(name, info).then(({ prop, property, name: substituted, context }) => {
       if (!prop) {
+        /* A property nothing sets here is an empty map. */
+        if (property) {
+          return new Map();
+        }
         throw new FabrError(`'${substituted.toString()}' does not name a map property`);
       }
       return context.lookupMapDecl(prop, undefined, stack, seen, callerOverrides);
@@ -1264,16 +1275,15 @@ export class BuildContextImpl implements InternalBuildContext {
    * (`run = shared_cmd`); each caller decides what a non-property result means.
    * `name` is the substituted reference, for the caller's message.
    */
-  public referencedProperty(ref: Name, info?: IDependencyStack): Computable<{ prop?: IPropertyDecl; name: Name; context: BuildContextImpl }> {
-    return this.substituteNameVars(ref, info).then(name => {
+  public referencedProperty(ref: Name, info?: IDependencyStack): Computable<ReferencedProperty> {
+    return this.substituteNameVars(ref, info).then((name): Computable<ReferencedProperty> | ReferencedProperty => {
       const def = this.lookupDecl(name.toString());
       if (def?.kind !== DeclKind.Property) {
-        return { prop: undefined, name, context: this };
+        return { prop: undefined, property: false, name, context: this };
       }
-      /* A chased map/command property is a single value, so it selects like one
-       * — and a name whose declarations all guard it out reads as "not a
-       * property here", which is what each caller's own fallback is for. */
-      return this.getAvailableDecls(def, info).then(applicable => ({ prop: soleDecl(applicable), name, context: this }));
+      /* A chased map/command property is a single value, so it selects like one;
+       * a property none of whose declarations applies here is unset. */
+      return this.getAvailableDecls(def, info).then(applicable => ({ prop: soleDecl(applicable), property: true, name, context: this }));
     });
   }
 
@@ -1314,8 +1324,11 @@ export class BuildContextImpl implements InternalBuildContext {
       const value = names[0];
       const info: IUseFrame = { property: prop, target, value, next: stack };
       const nextSeen = new Set(seen).add(prop);
-      return this.referencedProperty(value.value, info).then(({ prop: ref, context }) =>
-        ref ? context.getCommandPipeline(ref, undefined, stack, nextSeen) : Computable.resolve<CommandPipeline>([{ command: value, args: [] }])
+      /* A property nothing sets here is no command. */
+      return this.referencedProperty(value.value, info).then(({ prop: ref, property, context }) =>
+        ref
+          ? context.getCommandPipeline(ref, undefined, stack, nextSeen)
+          : Computable.resolve<CommandPipeline>(property ? [] : [{ command: value, args: [] }])
       );
     }
     const [command, ...args] = names;
@@ -1733,6 +1746,19 @@ function recursiveRuleError(rule: RuleBlockDefinition): FabrError {
   return new FabrError(`'${head}' is applied inside its own application`).withHelp(
     "a target its block declares, or one made from it, is matched by the same rule again, which would apply it without end"
   );
+}
+
+/**
+ * What a reference to a property names (see `referencedProperty`): the one
+ * declaration of it that applies here (`prop`), none where nothing sets it
+ * here; whether the name is a property at all (`property`); the name as
+ * substituted; and the configuration its values are looked up in.
+ */
+interface ReferencedProperty {
+  readonly prop?: IPropertyDecl;
+  readonly property: boolean;
+  readonly name: Name;
+  readonly context: BuildContextImpl;
 }
 
 /** @return the constraints a reference requires (`ref<k=v>`), if it requires any. */
@@ -2316,10 +2342,11 @@ class ScopedBuildContext extends BuildContextImpl {
     );
   }
 
-  public referencedProperty(ref: Name, info?: IDependencyStack): Computable<{ prop?: IPropertyDecl; name: Name; context: BuildContextImpl }> {
+  public referencedProperty(ref: Name, info?: IDependencyStack): Computable<ReferencedProperty> {
     const alias = this.scope.wholeAlias(ref);
     if (alias !== undefined) {
-      return this.scope.aliasedDecl(alias, this.constraints, requirementOf(ref), info).then(({ prop, context }) => ({ prop, name: ref, context }));
+      /* The parameter's property, set by the target or not. */
+      return this.scope.aliasedDecl(alias, this.constraints, requirementOf(ref), info).then(({ prop, context }) => ({ prop, property: true, name: ref, context }));
     }
     /* A property the block does not declare has its values looked up where the file's names are. */
     return super

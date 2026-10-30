@@ -20,7 +20,7 @@ yourself out of the same pieces.
 | `maven-dependency-plugin:copy-dependencies` | A [`java_installation`](#the-jars-a-program-needs). |
 | `spring-boot-maven-plugin` / the Spring Boot Gradle plugin | A [`spring_boot_jar`](#spring-boot-executable-jars). |
 | `mvn javadoc:javadoc` / `gradle javadoc` | `fabr doc app`; see [Javadoc and sources](#javadoc-and-sources). |
-| `maven-source-plugin` / `withSourcesJar()` | `fabr sources app`. |
+| `maven-source-plugin` / `withSourcesJar()` | `fabr sources app`; a `sync` publishes it with [`auto_attach`](/reference/java/publishing/#sources-and-javadoc-jars). |
 | `target/app.jar` / `build/libs/app.jar` | Kept in fabr's cache; `fabr cp app ./out` copies it out. |
 | `mvn deploy` | A `sync` target; see [Publishing](/reference/java/publishing/). |
 
@@ -64,9 +64,11 @@ jar can name a launcher that is among its `resources`; a jar can't name its main
 
 ## Javadoc and sources
 
-`fabr doc app` generates a `jar_package`'s javadoc, and `fabr sources app` gives its sources: its
-`srcs`, the sources its annotation processors generate, and its `resources`, laid out as a sources
-jar holds them. Both include the generated sources, such as AutoValue's `AutoValue_Point.java`,
+`fabr doc app` generates a `jar_package`'s or a `war_package`'s javadoc, and `fabr sources app`
+gives its sources: its `srcs`, the sources its annotation processors generate, and its
+`resources` (a war's `webapp` is not among them), laid out as a sources jar holds them. A `sync`
+can publish both beside the artifact; see
+[Sources and javadoc jars](/reference/java/publishing/#sources-and-javadoc-jars). Both include the generated sources, such as AutoValue's `AutoValue_Point.java`,
 because they are part of the jar's classes; the jar itself holds no sources. Each is a tree of files, which you
 look at as you would a build's:
 

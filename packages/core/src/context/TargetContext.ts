@@ -344,6 +344,12 @@ export abstract class TargetContext {
    * destination. `name` must already be substituted, as
    * {@link getWildcardProperties} gives a `sync`'s keys.
    */
+  /** @return true if the target declared as `name` has a rule for `operation`, otherwise false. */
+  public hasTargetRule(name: string, operation: string): boolean {
+    const operations = this.context.getTargetOperations(name);
+    return operations.includes(operation) || operations.includes("*");
+  }
+
   public lookupPublishRef(name: Name): Computable<RepositoryPublishRef> {
     const match = this.context.getPrefixTargetIfExists(name, this.stack);
     if (!match) {

@@ -41,8 +41,10 @@ import {
   PackageFileSet,
   PublishableFileSet,
   PublishMember,
+  packToZip,
   RepositoryPublishRef,
   RepositoryRef,
+  RepositoryWriter,
 } from "@fabr-build/core";
 import { MAVEN_FORMAT, splitMavenName } from "./MavenProtocol";
 import { MAVEN_VERSIONS } from "./MavenVersion";
@@ -268,7 +270,9 @@ export function mergedMetadata(existing: string | undefined, groupId: string, ar
  * one coordinate.
  */
 function coordinateOfTarget(targets: ReadonlyMap<string, readonly RepositoryPublishRef[]>, name: string): RepositoryPublishRef | undefined {
-  const found = (targets.get(name) ?? []).filter(each => isRepositoryReader(each.source) && each.source.format === MAVEN_FORMAT);
+  const found = (targets.get(name) ?? []).filter(
+    each => isRepositoryReader(each.source) && each.source.format === MAVEN_FORMAT && classifierOf(each) === undefined
+  );
   const distinct = new Map(found.map(each => [`${each.name}:${each.version}`, each]));
   return distinct.size === 1 ? [...distinct.values()][0] : undefined;
 }
@@ -340,7 +344,8 @@ function pomDependencyOf(
 export function packageMavenMember(
   member: PublishMember,
   targets: ReadonlyMap<string, readonly RepositoryPublishRef[]>,
-  coMembers: ReadonlySet<string>
+  coMembers: ReadonlySet<string>,
+  release: readonly RepositoryPublishRef[]
 ): Computable<PublishableFileSet> {
   const { destination, content } = member;
   const { groupId, artifactId } = splitMavenName(destination.name);
@@ -367,8 +372,84 @@ export function packageMavenMember(
         [pomPath, new MemoryFile(pom)],
         ...checksumFiles(pomPath, pom),
       ];
-      const dependsOn = dependencies.map(dep => `${dep.groupId}/${dep.artifactId}`).filter(name => coMembers.has(name));
+      const dependsOn = [
+        ...dependencies.map(dep => `${dep.groupId}/${dep.artifactId}`).filter(name => coMembers.has(name)),
+        ...release
+          .filter(each => each.name === destination.name && each.version === version && classifierOf(each) !== undefined)
+          .map(each => classifiedToken(each)),
+      ];
       return new PublishableFileSet(files, destination, destination.name, dependsOn);
+    })
+  );
+}
+
+/**
+ * A Maven publish coordinate: a version of a package, or, with a classifier, a
+ * file published beside the version's artifact (`-sources.jar`).
+ */
+export class MavenPublishRef extends RepositoryPublishRef {
+  /** The classifier of a file published beside the artifact, or undefined for the artifact itself. */
+  public readonly classifier?: string;
+
+  constructor(
+    source: RepositoryWriter,
+    coordinate: { readonly name: string; readonly version: string; readonly classifier?: string },
+    repositoryName?: string
+  ) {
+    super(source, coordinate, repositoryName);
+    this.classifier = coordinate.classifier;
+  }
+
+  public override withRepositoryName(repositoryName: string): MavenPublishRef {
+    return new MavenPublishRef(this.source, this, repositoryName);
+  }
+
+  public override toString(): string {
+    const coordinate = this.classifier === undefined ? `${this.name}:${this.version}` : `${this.name}/${this.classifier}:${this.version}`;
+    return this.repositoryName === undefined ? coordinate : `${this.repositoryName}:${coordinate}`;
+  }
+}
+
+/** @return the classifier `destination` publishes a file under, or undefined for a version's artifact. */
+export function classifierOf(destination: RepositoryPublishRef): string | undefined {
+  return destination instanceof MavenPublishRef ? destination.classifier : undefined;
+}
+
+/** @return the name a classified member is ordered by: its version's artifact is uploaded after it. */
+function classifiedToken(destination: RepositoryPublishRef): string {
+  return `${destination.name}:${classifierOf(destination)}`;
+}
+
+/** @return the path of the file `destination` publishes, classified or not, with `extension`. */
+export function publishedFilePath(destination: RepositoryPublishRef, extension: string): string {
+  const { groupId, artifactId } = splitMavenName(destination.name);
+  const classifier = classifierOf(destination);
+  const { version } = destination;
+  return repositoryPath(groupId, artifactId, version, `${artifactId}-${version}${classifier === undefined ? "" : `-${classifier}`}.${extension}`);
+}
+
+/**
+ * Package a classified member for a Maven repository: its content as the jar
+ * published beside its version's artifact, with its checksums. Content that is
+ * one jar is that jar; any other is packed into one. Its version's artifact
+ * must be published by the same release, which uploads it after this.
+ */
+export function packageClassifiedMember(member: PublishMember, release: readonly RepositoryPublishRef[]): Computable<PublishableFileSet> {
+  const { destination, content } = member;
+  if (!release.some(each => each.name === destination.name && each.version === destination.version && classifierOf(each) === undefined)) {
+    const { groupId, artifactId } = splitMavenName(destination.name);
+    return Computable.reject(
+      new FabrError(`cannot publish ${destination.toString()}: the release publishes no ${groupId}:${artifactId}:${destination.version} for it to be beside`).withHelp(
+        `publish ${groupId}:${artifactId}:${destination.version} in the same sync`
+      )
+    );
+  }
+  const files = [...content];
+  const jar = files.length === 1 && !files[0][0].includes("/") && files[0][0].endsWith(".jar") ? Computable.resolve(files[0][1]) : packToZip(content).then(zip => new MemoryFile(zip) as IFile);
+  return jar.then(file =>
+    file.getBuffer().then(bytes => {
+      const path = publishedFilePath(destination, "jar");
+      return new PublishableFileSet([[path, file], ...checksumFiles(path, bytes)], destination, classifiedToken(destination));
     })
   );
 }

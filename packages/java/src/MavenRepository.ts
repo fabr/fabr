@@ -45,6 +45,7 @@ import {
   NamespaceRef,
   PackageFileSet,
   PublishableFileSet,
+  PublishAttachment,
   PublishMember,
   PublishStatus,
   Reference,
@@ -63,9 +64,19 @@ import {
   versionChildren,
   VersionNotFoundError,
 } from "@fabr-build/core";
-import { MAVEN_FORMAT, mavenName, splitMavenName } from "./MavenProtocol";
+import { MAVEN_FORMAT, mavenName, parseMavenPublishCoordinate, splitMavenName } from "./MavenProtocol";
 import { javaPluginContext } from "./MavenAuth";
-import { checksumFiles, mergedMetadata, metadataPath, packageMavenMember, repositoryPath } from "./MavenPublish";
+import {
+  checksumFiles,
+  classifierOf,
+  MavenPublishRef,
+  mergedMetadata,
+  metadataPath,
+  packageClassifiedMember,
+  packageMavenMember,
+  publishedFilePath,
+  repositoryPath,
+} from "./MavenPublish";
 import { MavenConstraint, MavenVersion, MAVEN_VERSIONS } from "./MavenVersion";
 import { coordinateText, EffectivePom, effectivePom, parsePom, passedOnDependencies, PomCoordinate, RawPom } from "./Pom";
 import { parseXml, xmlChild, xmlChildren } from "./Xml";
@@ -77,6 +88,19 @@ const CLASSIFIERS = new Map([
   [DOC_OPERATION, "javadoc"],
   [SOURCES_OPERATION, "sources"],
 ]);
+
+/** The operation that answers with each classifier's jar. */
+const OPERATIONS = new Map([...CLASSIFIERS].map(([operation, classifier]) => [classifier, operation]));
+
+/** @return the classifiers `auto_attach`, `value`, lists, each one a jar an operation answers with. */
+function autoAttachOf(repository: string, value: { toString(): string } | undefined): string[] {
+  const classifiers = value === undefined ? [] : value.toString().split(/\s+/).filter(word => word !== "");
+  const unknown = classifiers.find(classifier => !OPERATIONS.has(classifier));
+  if (unknown !== undefined) {
+    throw new FabrError(`${repository}'s auto_attach names '${unknown}', which is not ${[...OPERATIONS.keys()].join(" or ")}`);
+  }
+  return [...new Set(classifiers)];
+}
 
 /** The manifest of a classified jar, which belongs to the jar rather than to its contents. */
 const CLASSIFIED_MANIFEST = "META-INF/MANIFEST.MF";
@@ -143,7 +167,9 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     private readonly context: TargetContext,
     private readonly url: string,
     /** The id of the `settings.xml` server whose credentials it uses. */
-    private readonly serverId: string
+    private readonly serverId: string,
+    /** The classifiers of the jars published beside each artifact a sync publishes here: `sources`, `javadoc`. */
+    private readonly autoAttach: readonly string[] = []
   ) {}
 
   public get identity(): string {
@@ -174,9 +200,27 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     return versionChildren(this, this.format, name, this.publishedVersions(name));
   }
 
-  /** Vend the publish coordinate `name` names: `<group>:<artifact>:<version>`, the version exact. */
+  /**
+   * Vend the publish coordinate `name` names: `<group>:<artifact>:<version>`,
+   * the version exact, or `<group>:<artifact>:<classifier>:<version>`.
+   */
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
-    return new RepositoryPublishRef(this, this.format.parsePublishCoordinate(name));
+    return new MavenPublishRef(this, parseMavenPublishCoordinate(name));
+  }
+
+  /**
+   * @return the jars published beside an artifact published at `destination`
+   * (RepositoryWriter implementation): one for each of `auto_attach`'s
+   * classifiers, built under the operation that answers with it.
+   */
+  public attachments(destination: RepositoryPublishRef): PublishAttachment[] {
+    if (classifierOf(destination) !== undefined) {
+      return [];
+    }
+    return this.autoAttach.map(classifier => ({
+      destination: new MavenPublishRef(this, { name: destination.name, version: destination.version, classifier }, destination.repositoryName),
+      operation: OPERATIONS.get(classifier)!,
+    }));
   }
 
   /**
@@ -187,12 +231,14 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
    */
   public package(
     members: PublishMember[],
-    _release: readonly RepositoryPublishRef[],
+    release: readonly RepositoryPublishRef[],
     targets: ReadonlyMap<string, readonly RepositoryPublishRef[]>
   ): Computable<PublishableFileSet[]> {
-    const coMembers = new Set(members.map(member => member.destination.name));
+    const coMembers = new Set(members.filter(member => classifierOf(member.destination) === undefined).map(member => member.destination.name));
     return Computable.forAll(
-      members.map(member => packageMavenMember(member, targets, coMembers)),
+      members.map(member =>
+        classifierOf(member.destination) === undefined ? packageMavenMember(member, targets, coMembers, release) : packageClassifiedMember(member, release)
+      ),
       (...carriers: PublishableFileSet[]) => carriers
     );
   }
@@ -206,21 +252,25 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
   public publish(artifact: PublishableFileSet): Computable<PublishStatus> {
     const { name, version } = artifact.destination;
     const { groupId, artifactId } = splitMavenName(name);
-    const pomPath = repositoryPath(groupId, artifactId, version, `${artifactId}-${version}.pom`);
-    return this.request(pomPath, { method: "GET" }).then(existing => {
+    const classified = classifierOf(artifact.destination) !== undefined;
+    /* What marks the member published: a version's POM, or a classified jar itself. */
+    const marker = classified ? publishedFilePath(artifact.destination, "jar") : repositoryPath(groupId, artifactId, version, `${artifactId}-${version}.pom`);
+    return this.request(marker, { method: "GET" }).then(existing => {
       if (existing.statusCode === 200) {
         return Computable.resolve<PublishStatus>("already-synced");
       }
       if (existing.statusCode !== 404) {
-        throw this.failure("reading", pomPath, existing);
+        throw this.failure("reading", marker, existing);
       }
-      /* The POM goes up last, as it is what marks the version published. */
-      const files = [...artifact].sort(([a], [b]) => Number(a.startsWith(pomPath)) - Number(b.startsWith(pomPath)) || compareText(a, b));
+      /* The marker goes up last, so a member is published only once all of it is there. */
+      const files = [...artifact].sort(([a], [b]) => Number(a.startsWith(marker)) - Number(b.startsWith(marker)) || compareText(a, b));
       const uploads = files.reduce<Computable<void>>(
         (previous, [path, file]) => previous.then(() => file.getBuffer().then(bytes => this.put(path, bytes))),
         Computable.resolve(undefined)
       );
-      return uploads.then(() => this.updateMetadata(groupId, artifactId, version)).then((): PublishStatus => "published");
+      return classified
+        ? uploads.then((): PublishStatus => "published")
+        : uploads.then(() => this.updateMetadata(groupId, artifactId, version)).then((): PublishStatus => "published");
     });
   }
 
@@ -454,8 +504,8 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
 
 function createRepository(context: TargetContext): Computable<Repository> {
   return Computable.forAll(
-    [context.getRequiredString("url"), context.getProperty("id")],
-    (url, id) => new MavenRepository(context, url.replace(/\/+$/, ""), id?.toString() ?? context.name)
+    [context.getRequiredString("url"), context.getProperty("id"), context.getProperty("auto_attach")],
+    (url, id, autoAttach) => new MavenRepository(context, url.replace(/\/+$/, ""), id?.toString() ?? context.name, autoAttachOf(context.name, autoAttach))
   );
 }
 
