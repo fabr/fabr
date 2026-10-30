@@ -126,14 +126,58 @@ export function resolveMVS<V, C>(
   domain: VersionDomain<V, C>,
   registry: RequirementSource<V>
 ): Computable<MVSResolution<V>> {
-  const attempt = (repairable: ReadonlySet<string>): Computable<MVSResolution<V>> =>
-    resolvePhase(roots, domain, registry, repairable).catch(err => {
-      if (err instanceof RepairsRequired) {
-        return attempt(new Set([...repairable, ...err.nodes]));
+  return forcedByBoms(roots, domain, registry).then(managed => {
+    const attempt = (repairable: ReadonlySet<string>): Computable<MVSResolution<V>> =>
+      resolvePhase(roots, domain, registry, repairable, managed).catch(err => {
+        if (err instanceof RepairsRequired) {
+          return attempt(new Set([...repairable, ...err.nodes]));
+        }
+        throw err;
+      });
+    return attempt(new Set());
+  });
+}
+
+/**
+ * Get the versions forced BOMs force: of each root forced with `!`, the BOM
+ * dependencies its version states, by package, each forcing the version it
+ * gives. A package a root forces itself, or an earlier BOM, keeps that force.
+ * Read before the walk, as a root's own requirements, so the walk starts with
+ * every force it is to apply.
+ */
+function forcedByBoms<V, C>(roots: readonly Requirement[], domain: VersionDomain<V, C>, registry: RequirementSource<V>): Computable<Map<string, V>> {
+  const forcedRoots = roots.filter(root => root.override === "force");
+  const explicit = new Set(forcedRoots.map(root => requiredAs(root)));
+  const versionOf = (req: Requirement): V | undefined => {
+    try {
+      return domain.minimumOf(constraintOf(domain, req.versionConstraint));
+    } catch {
+      return undefined;
+    }
+  };
+  return Computable.forAll(
+    forcedRoots.map(root => {
+      const version = versionOf(root);
+      if (version === undefined) {
+        return Computable.resolve<Requirement[]>([]);
       }
-      throw err;
-    });
-  return attempt(new Set());
+      try {
+        return registry.getRequirements(root.name, version).catch(() => [] as Requirement[]);
+      } catch {
+        return Computable.resolve<Requirement[]>([]);
+      }
+    }),
+    (...requirements: Requirement[][]) => {
+      const managed = new Map<string, V>();
+      for (const req of requirements.flat()) {
+        const version = req.bom === true && req.versionConstraint !== undefined ? versionOf(req) : undefined;
+        if (version !== undefined && !explicit.has(requiredAs(req)) && !managed.has(requiredAs(req))) {
+          managed.set(requiredAs(req), version);
+        }
+      }
+      return managed;
+    }
+  );
 }
 
 /** Internal signal: the converged tree has edges only these (unpublished)
@@ -188,7 +232,9 @@ function resolvePhase<V, C>(
   /** Node ids ({@link nodeId}) whose floors this walk may raise — the ones a
    * previous walk converged on as unpublished *winners*. Empty on the first
    * walk, so it is repair-free. */
-  repairable: ReadonlySet<string>
+  repairable: ReadonlySet<string>,
+  /** The versions forced BOMs force, by package ({@link forcedByBoms}). */
+  managed: ReadonlyMap<string, V> = new Map()
 ): Computable<MVSResolution<V>> {
   /* The walk knows a package by the name it is required as (its slot); the
    * registry is asked for it by the name it is published under. */
@@ -198,7 +244,7 @@ function resolvePhase<V, C>(
      * The caller validates at most one force per package (a generic defensive
      * first-in-canonical-order would mask the error); the resolver takes the
      * first. */
-    const forced = new Map<string, V>();
+    const forced = new Map<string, V>(managed);
     for (const root of roots) {
       if (root.override === "force" && !forced.has(requiredAs(root))) {
         try {
@@ -330,8 +376,9 @@ function resolvePhase<V, C>(
          * version's metadata fetched). The original constraint is judged at
          * convergence: unsatisfied means coerced, recorded as data. The force
          * root's own edge is the one demand offered to the pool, so the
-         * principal is the forced version by construction. */
-        if (req.override === "force") {
+         * principal is the forced version by construction; a version a forced
+         * BOM forces has no root, so each requirement on it offers it. */
+        if (req.override === "force" || managed.has(requiredAs(req))) {
           attempt(req, forcedVersion, requiredBy);
         } else {
           visit(requiredAs(req), forcedVersion, requiredBy, req);

@@ -27,6 +27,7 @@ answer every time. This page covers declaring dependencies and how their version
 | `<repositories>`, `settings.xml` mirrors | A [`maven_repository`](#repositories), or `MAVEN_REPOSITORY_URL`. |
 | `<servers>` in `settings.xml` | The same file; see [Credentials](#credentials). |
 | `mvn dependency:tree` / `gradle dependencies` | `fabr deps <target>`. |
+| Gradle Module Metadata (`.module`) | Read where the POM says it is published; see [Gradle Module Metadata](#gradle-module-metadata). |
 
 ## Declaring a dependency
 
@@ -127,6 +128,15 @@ A BOM's versions are minimums that apply only to packages something else require
 nothing to the build itself. A versionless reference with no BOM to give it a version is an error
 that says the package `is required ... without a version lower bound`.
 
+Written with `!`, a BOM's versions are the only ones its packages can have, as with Gradle's
+`enforcedPlatform`: each package it manages that something requires is that version, even where
+something requires a later one. A package also forced with its own `!` keeps that version.
+
+```
+deps = @mvn:org.springframework.boot:spring-boot-dependencies:4.0.0!
+       @mvn:org.springframework:spring-core:7.0.10;    # spring-core 7.0.1, the BOM's
+```
+
 ## What fabr reads from a POM
 
 Fabr reads the POM of every package it selects, with its parent POMs, the properties they define
@@ -148,6 +158,38 @@ its `<packaging>`), checked against the `.sha1` the repository publishes beside 
 artifact, such as a BOM, has no files unless the repository also publishes a jar for it. Its
 sources and javadoc jars are fetched only when
 [asked for](#a-dependencys-javadoc-and-sources).
+
+## Gradle Module Metadata
+
+Libraries published by Gradle often publish a `.module` file beside their POM, and say so in the
+POM with the comment `<!-- do_not_remove: published-with-gradle-metadata -->`. Where it does,
+fabr reads the package from the `.module` instead of the POM, as Gradle does. The `.module`
+describes a version as variants, such as Guava's `jre` and `android` flavours, each with its own
+dependencies and files, and fabr takes the variant a Java program runs with:
+
+- a library variant for running (`org.gradle.usage` `java-runtime`) on the standard JVM, for a
+  Java release no later than [`JVM_TARGET`](/reference/java/compiling/#the-java-release)'s, the
+  latest such release where there are several; or, for a module that is a platform (a BOM),
+  its platform variant;
+- not a variant providing another capability, such as the module's test fixtures.
+
+Of that variant:
+
+| In the `.module` | What fabr does with it |
+|---|---|
+| `dependencies` | Requirements of the package. A version `requires` is a floor, a `strictly` one a range, or an exact version as `[1.2]`; `prefers` where nothing else is stated. The versions it `rejects` are cut out of it: requiring `1.0` and rejecting `1.2` is `[1.0,1.2),(1.2,)`. |
+| `dependencyConstraints` | Versions for the packages they name, where something requires them, as a BOM's are. |
+| A dependency on a platform | A requirement of the platform, whose constraints give versions, as a BOM's do. A library's dependency on an *enforced* platform is read the same way: forcing versions is the decision of the project that installs the library, which writes `!` on the BOM. |
+| An `artifactSelector` on a dependency | The [classified jar](#classified-jars) or other file it names. |
+| `files` | The package's files, checked against the SHA-1 the `.module` states. |
+| `available-at` | A requirement of the module named, which holds the variant: a Kotlin Multiplatform library's root module answers with its `-jvm` module. |
+
+The runtime variant's dependencies are compiled against too, as a POM's `runtime` dependencies
+are, where Gradle compiles against the API variant's. The `.module` is read for a release no later
+than `JVM_TARGET`'s, so changing `JVM_TARGET` can select a different variant of a library that
+publishes one per release. Where no variant suits, it
+is the error `… has no variant a Java program on Java 17 can run with`, with the variants there
+are.
 
 ## Classified jars
 
@@ -281,10 +323,12 @@ password can't be read; write it with `${env.NAME}` instead.
 
 ## Not currently supported
 
-- `<exclusions>`, relocations and POM profiles are not read. A package that a dependency's POM
-  requires can't be removed, only overridden with `!`.
-- A dependency in a POM of a type other than `jar` or `test-jar` (`zip`, `war`) is ignored, as it
-  is on Maven's classpath.
-- A classifier isn't chosen for the platform: a project building for several writes the
-  classified jar of each.
+- Exclusions are not read, neither a POM's `<exclusions>` nor a `.module`'s `excludes`, and
+  neither are relocations or POM profiles. A package that a dependency requires can't be
+  removed, only overridden with `!`.
+- Two packages providing one capability, such as Guava and `google-collections`, are both
+  installed, where Gradle reports a conflict.
+- A module's test fixtures can be required as its classified jar,
+  `@mvn:<group>:<artifact>/test-fixtures:<version>`, but the dependencies Gradle publishes for
+  them are not read: write them beside it.
 - Timestamped `-SNAPSHOT` versions are not resolved.

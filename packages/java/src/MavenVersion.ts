@@ -359,3 +359,67 @@ export const MAVEN_VERSIONS: VersionDomain<MavenVersion, MavenConstraint> = {
   },
   isStable: version => !UNSTABLE.test(version.text),
 };
+
+/** @return the greater of two lower bounds, an absent one being no bound. */
+function greaterLower(a: Bound | undefined, b: Bound | undefined): Bound | undefined {
+  if (a === undefined || b === undefined) {
+    return a ?? b;
+  }
+  const order = compareMavenVersions(a.version, b.version);
+  return order > 0 ? a : order < 0 ? b : { version: a.version, inclusive: a.inclusive && b.inclusive };
+}
+
+/** @return the lesser of two upper bounds, an absent one being no bound. */
+function lesserUpper(a: Bound | undefined, b: Bound | undefined): Bound | undefined {
+  if (a === undefined || b === undefined) {
+    return a ?? b;
+  }
+  const order = compareMavenVersions(a.version, b.version);
+  return order < 0 ? a : order > 0 ? b : { version: a.version, inclusive: a.inclusive && b.inclusive };
+}
+
+/** @return true if `interval` admits no version, otherwise false. */
+function isEmpty({ lower, upper }: Interval): boolean {
+  if (lower === undefined || upper === undefined) {
+    return false;
+  }
+  const order = compareMavenVersions(lower.version, upper.version);
+  return order > 0 || (order === 0 && !(lower.inclusive && upper.inclusive));
+}
+
+/** @return the intervals of `constraint`, a soft one being its floor and up. */
+function intervalsOf(constraint: MavenConstraint): readonly Interval[] {
+  return constraint.kind === "soft" ? [{ lower: { version: constraint.floor, inclusive: true } }] : constraint.intervals;
+}
+
+/** @return what of `interval` lies outside `removed`: below it, and above it. */
+function subtract(interval: Interval, removed: Interval): Interval[] {
+  const below: Interval | undefined =
+    removed.lower === undefined ? undefined : { lower: interval.lower, upper: lesserUpper(interval.upper, { version: removed.lower.version, inclusive: !removed.lower.inclusive }) };
+  const above: Interval | undefined =
+    removed.upper === undefined ? undefined : { lower: greaterLower(interval.lower, { version: removed.upper.version, inclusive: !removed.upper.inclusive }), upper: interval.upper };
+  return [below, above].filter((piece): piece is Interval => piece !== undefined && !isEmpty(piece));
+}
+
+/**
+ * @return the range admitting what `constraint` admits but none of what
+ * `rejected` names (a version, or a range), written in Maven's range syntax
+ * (`[1.0,1.2),(1.2,)`), or undefined where it admits nothing.
+ */
+export function rangeExcluding(constraint: MavenConstraint, rejected: readonly MavenConstraint[]): string | undefined {
+  /* A rejected version is that version alone, not a floor. */
+  const removed = rejected.flatMap(reject =>
+    reject.kind === "soft" ? [{ lower: { version: reject.floor, inclusive: true }, upper: { version: reject.floor, inclusive: true } }] : reject.intervals
+  );
+  const kept = removed.reduce<Interval[]>((intervals, cut) => intervals.flatMap(interval => subtract(interval, cut)), [...intervalsOf(constraint)]);
+  if (kept.length === 0) {
+    return undefined;
+  }
+  return kept
+    .map(({ lower, upper }) =>
+      lower !== undefined && upper !== undefined && lower.inclusive && upper.inclusive && compareMavenVersions(lower.version, upper.version) === 0
+        ? `[${lower.version.text}]`
+        : `${lower?.inclusive ? "[" : "("}${lower?.version.text ?? ""},${upper?.version.text ?? ""}${upper?.inclusive ? "]" : ")"}`
+    )
+    .join(",");
+}

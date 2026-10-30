@@ -1318,6 +1318,25 @@ describe("force overrides", () => {
     expect(versionToString(result.coerced[0].selected)).to.equal("2.0.0");
   });
 
+  it("forces what a forced BOM manages, where it is required, and installs nothing else of it", () => {
+    /* Gradle's enforcedPlatform: the BOM's version of C answers A's higher
+     * floor, an explicit force of D beats the BOM's, and E, which nothing
+     * requires, is not installed. */
+    const result = resolve(
+      { A: "1.0.0", B: "1.0.0!", D: "3.0.0!" },
+      {
+        A: { "1.0.0": { C: "^1.5.0", D: "^1.0.0" } },
+        B: { "1.0.0": { C: "bom 1.2.0", D: "bom 2.0.0", E: "bom 1.0.0" } },
+        C: { "1.2.0": {}, "1.5.0": {} },
+        D: { "2.0.0": {}, "3.0.0": {} },
+        E: { "1.0.0": {} },
+      }
+    );
+    expect(selectionStrings(result).sort()).to.deep.equal(["A@1.0.0", "B@1.0.0", "C@1.2.0", "D@3.0.0"]);
+    expect(result.violations).to.deep.equal([]);
+    expect(result.coerced.map(edge => `${edge.name}@${versionToString(edge.selected)}`).sort()).to.deep.equal(["C@1.2.0", "D@3.0.0"]);
+  });
+
   describe("builds", () => {
     const domain = allowingBuilds(SEMVER);
     const debug = buildKey("BUILD_TYPE=debug", "aaaaaaaa");

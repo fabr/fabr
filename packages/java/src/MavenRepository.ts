@@ -79,6 +79,8 @@ import {
 } from "./MavenPublish";
 import { MavenConstraint, MavenVersion, MAVEN_VERSIONS } from "./MavenVersion";
 import { coordinateText, EffectivePom, effectivePom, parsePom, passedOnDependencies, PomCoordinate, RawPom } from "./Pom";
+import { GradleModule, GradleVariant, parseGradleModule, runtimeVariant, variantRequirements } from "./GradleModule";
+import { javaRelease } from "./JarPackage";
 import { parseXml, xmlChild, xmlChildren } from "./Xml";
 
 const METADATA_FILE = "maven-metadata.xml";
@@ -162,6 +164,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
   private readonly versions = new MemoryCache<string, MavenVersion[] | undefined>();
   private readonly poms = new MemoryCache<string, RawPom | undefined>();
   private readonly effectivePoms = new MemoryCache<string, EffectivePom>();
+  private readonly modules = new MemoryCache<string, GradleModule | undefined>();
 
   constructor(
     private readonly context: TargetContext,
@@ -317,8 +320,42 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
   }
 
   /** Name the environment a resolution depends on: none, as no artifact is chosen by platform. */
+  /** Name the environment a resolution depends on: the Java release, by which a `.module`'s variant is selected. */
   public environmentKey(): Computable<string> {
-    return Computable.resolve("");
+    return this.release().then(release => `java${release}`);
+  }
+
+  /** Get the Java release programs run on, which `JVM_TARGET` names. */
+  private release(): Computable<number> {
+    return this.context.getGlobalString("JVM_TARGET").then(target => javaRelease(target, []));
+  }
+
+  /**
+   * Get the variant of a package version's `.module` a Java program runs
+   * with, where its POM says Gradle published one beside it, or undefined
+   * where the POM describes it.
+   */
+  private runtimeVariantOf(name: string, version: string): Computable<GradleVariant | undefined> {
+    const coordinate = this.coordinateOf(name, version);
+    return this.requiredPom(coordinate).then(raw => {
+      if (!raw.gradleMetadata) {
+        return undefined;
+      }
+      const url = `${this.versionUrl(coordinate)}/${coordinate.artifactId}-${coordinate.version}.module`;
+      const module = this.modules.getOrCreate(url, () =>
+        fetchDocument(this.context, {
+          url,
+          file: "module.json",
+          tag: "maven:module:1",
+          report: { resource: "module metadata", role: "index" },
+          convert: text => parseGradleModule(text, url),
+          headers: () => this.headers(),
+        })
+      );
+      return Computable.forAll([module, this.release()], (found, release) =>
+        found === undefined ? undefined : runtimeVariant(found, release, coordinateText(coordinate))
+      );
+    });
   }
 
   /**
@@ -327,6 +364,13 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
    * manages, as its BOM dependencies.
    */
   public getRequirements(name: string, version: MavenVersion): Computable<Requirement[]> {
+    return this.runtimeVariantOf(name, version.text).then(variant =>
+      variant !== undefined ? variantRequirements(variant) : this.pomRequirements(name, version)
+    );
+  }
+
+  /** Get the requirements a package's effective POM states (see {@link getRequirements}). */
+  private pomRequirements(name: string, version: MavenVersion): Computable<Requirement[]> {
     return this.effectivePomOf(name, version.text).then(pom => [
       ...passedOnDependencies(pom).map(dependency => ({
         name: mavenName(dependency.groupId, dependency.artifactId),
@@ -362,6 +406,40 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
    * otherwise (a BOM, an aggregator) it has none.
    */
   public fetch(name: string, version: MavenVersion): Computable<PackageFileSet> {
+    return this.runtimeVariantOf(name, version.text).then(variant =>
+      variant !== undefined ? this.fetchVariantFiles(name, version, variant) : this.fetchPomArtifact(name, version)
+    );
+  }
+
+  /**
+   * Fetch the files of a package's variant, each where its `.module` places it,
+   * checked against the SHA-1 it states. A variant another module holds has
+   * none of its own.
+   */
+  private fetchVariantFiles(name: string, version: MavenVersion, variant: GradleVariant): Computable<PackageFileSet> {
+    const coordinate = this.coordinateOf(name, version.text);
+    const files = variant.availableAt === undefined ? variant.files : [];
+    return Computable.forAll(
+      files.map(file =>
+        fetchFile(this.context, {
+          key: `${this.identity} ${coordinateText(coordinate)} ${file.name}`,
+          tag: "maven:module-file:1",
+          report: { resource: file.name, role: "content" },
+          name: file.name,
+          source: () =>
+            this.headers().then(headers => ({
+              url: `${this.versionUrl(coordinate)}/${file.url}`,
+              expected: file.sha1 === undefined ? undefined : { algorithm: "sha1", encoding: "hex" as const, value: file.sha1 },
+              headers,
+            })),
+        })
+      ),
+      (...fetched: FileSet[]) => new PackageFileSet(FileSet.unionAll(...fetched), name, version.text)
+    );
+  }
+
+  /** Fetch a package's artifact as its POM's packaging names it (see {@link fetch}). */
+  private fetchPomArtifact(name: string, version: MavenVersion): Computable<PackageFileSet> {
     const coordinate = this.coordinateOf(name, version.text);
     return this.effectivePomOf(name, version.text).then(pom => {
       const file = `${coordinate.artifactId}-${coordinate.version}.${PACKAGING_EXTENSIONS.get(pom.packaging) ?? "jar"}`;

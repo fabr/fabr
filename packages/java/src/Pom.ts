@@ -26,6 +26,7 @@
 
 import { Computable, FabrError } from "@fabr-build/core";
 import { parseXml, XmlElement, xmlChild, xmlChildren, xmlText } from "./Xml";
+import { hasGradleMetadata } from "./GradleModule";
 
 /** An artifact's address in a Maven repository. */
 export interface PomCoordinate {
@@ -54,6 +55,8 @@ export interface RawPom {
   readonly properties: ReadonlyMap<string, string>;
   readonly dependencies: readonly PomDependency[];
   readonly dependencyManagement: readonly PomDependency[];
+  /** Whether Gradle published a `.module` beside it, which describes the version in its place. */
+  readonly gradleMetadata: boolean;
 }
 
 export interface EffectivePom extends PomCoordinate {
@@ -129,6 +132,7 @@ export function parsePom(text: string, what: string): RawPom {
     properties,
     dependencies,
     dependencyManagement: managed,
+    gradleMetadata: hasGradleMetadata(text),
   };
 }
 
