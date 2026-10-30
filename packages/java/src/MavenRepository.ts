@@ -331,6 +331,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
       ...passedOnDependencies(pom).map(dependency => ({
         name: mavenName(dependency.groupId, dependency.artifactId),
         versionConstraint: dependency.version,
+        ...(dependency.classifier === undefined ? {} : { variant: dependency.classifier }),
       })),
       ...bomDependencies(pom),
     ]);
@@ -411,6 +412,30 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
         report: { resource: `${classifier} jar`, role: "content" },
         source: () => this.headers().then(headers => ({ url, expected: { algorithm: "sha1", encoding: "hex" as const, value: sha1 }, headers })),
         keep: files => files.remap(entry => (entry === CLASSIFIED_MANIFEST ? undefined : entry)),
+      });
+    });
+  }
+
+  /**
+   * Fetch the jar a version publishes under a classifier, its variant
+   * `variant` (RepositoryReader implementation), checked against its `.sha1`.
+   */
+  public fetchVariant(name: string, version: MavenVersion, variant: string): Computable<FileSet> {
+    const coordinate = this.coordinateOf(name, version.text);
+    const file = `${coordinate.artifactId}-${coordinate.version}-${variant}.jar`;
+    const url = `${this.versionUrl(coordinate)}/${file}`;
+    return this.sha1Of(url).then(sha1 => {
+      if (sha1 === undefined) {
+        throw new FabrError(`${coordinateText(coordinate)} publishes no ${variant} jar`).withHelp(
+          `${this.url} has no ${file}; require a version of ${name} that publishes one`
+        );
+      }
+      return fetchFile(this.context, {
+        key: `${this.identity} ${coordinateText(coordinate)} ${variant}`,
+        tag: "maven:variant:1",
+        report: { resource: `${variant} jar`, role: "content" },
+        name: file,
+        source: () => this.headers().then(headers => ({ url, expected: { algorithm: "sha1", encoding: "hex" as const, value: sha1 }, headers })),
       });
     });
   }

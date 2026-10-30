@@ -88,6 +88,14 @@ export interface Requirement {
    */
   readonly renameTo?: DependencyName;
   /**
+   * The variant of the selected version the requirement installs, where it is
+   * not the version's own content: a Maven classifier (`linux-x86_64`). The
+   * package is selected under its name as any requirement on it is, so every
+   * variant of it is of one version; the variant is installed as a package of
+   * its own, named `<name>/<variant>`, requiring the package itself.
+   */
+  readonly variant?: string;
+  /**
    * The consumer's tree provides this package — the peer relationship, fabr's
    * `provided_deps` (which npm manifests spell `peerDependencies`, an
    * "optional" one also listed in `peerDependenciesMeta`). Either way the

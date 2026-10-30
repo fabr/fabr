@@ -99,6 +99,8 @@ const POMS = new Map([
     <dependency><groupId>com.example</groupId><artifactId>servlet</artifactId><version>1</version><scope>provided</scope></dependency>
     <dependency><groupId>com.example</groupId><artifactId>extra</artifactId><version>1</version><optional>true</optional></dependency>
     <dependency><groupId>com.example</groupId><artifactId>natives</artifactId><version>1</version><classifier>linux-x86_64</classifier></dependency>
+    <dependency><groupId>com.example</groupId><artifactId>harness</artifactId><version>1</version><type>test-jar</type></dependency>
+    <dependency><groupId>com.example</groupId><artifactId>bundle</artifactId><version>1</version><type>zip</type></dependency>
   </dependencies>
 </project>`,
   ],
@@ -131,14 +133,23 @@ describe("effectivePom", () => {
       "com.example:servlet:1 provided",
       "com.example:extra:1 compile",
       "com.example:natives:1 compile",
+      "com.example:harness:1 compile",
+      "com.example:bundle:1 compile",
       /* Inherited from the parent, its version and scope managed there. */
       "org.junit:junit:5.9.2 test",
     ]);
   });
 
-  it("passes on compile and runtime jars, and not optional, provided, test or classified ones", async () => {
+  it("passes on compile and runtime jars, classified ones included, and not optional, provided, test-scoped or other types", async () => {
     const pom = await effective("com.example:databind:1.5");
-    expect(passedOnDependencies(pom).map(dependency => dependency.artifactId)).to.deep.equal(["annotations", "core", "runtime-only"]);
+    expect(passedOnDependencies(pom).map(dependency => [dependency.artifactId, dependency.classifier])).to.deep.equal([
+      ["annotations", undefined],
+      ["core", undefined],
+      ["runtime-only", undefined],
+      ["natives", "linux-x86_64"],
+      /* A test-jar is its tests jar. */
+      ["harness", "tests"],
+    ]);
   });
 
   it("refuses a dependency that is left without a version", async () => {

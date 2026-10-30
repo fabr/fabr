@@ -422,9 +422,11 @@ const REGISTRY_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
   splitReference: (name: Name) => {
     const written = name.toBaseString();
     const colon = written.lastIndexOf(":");
-    return colon === -1
-      ? { name: written, versionConstraint: "1.0.0" }
-      : { name: written.substring(0, colon), versionConstraint: written.substring(colon + 1) };
+    const named = colon === -1 ? written : written.substring(0, colon);
+    /* `name/variant` names a variant, as a Maven classifier is written. */
+    const slash = named.startsWith("@") ? -1 : named.indexOf("/");
+    const identity = slash === -1 ? { name: named } : { name: named.substring(0, slash), variant: named.substring(slash + 1) };
+    return { ...identity, versionConstraint: colon === -1 ? "1.0.0" : written.substring(colon + 1) };
   },
   validateRequirement: () => undefined,
   parsePublishCoordinate: () => {
@@ -467,6 +469,11 @@ class TestRegistry implements Repository, RepositoryReader<SemverVersion, Semver
 
   public fetch(pkg: string, version: SemverVersion): Computable<PackageFileSet> {
     return Computable.resolve(new PackageFileSet(new Map([[`${pkg}/data.txt`, MemoryFile.from(pkg)]]), pkg, versionToString(version)));
+  }
+
+  /** Answer a variant with one file naming it. */
+  public fetchVariant(pkg: string, version: SemverVersion, variant: string): Computable<FileSet> {
+    return Computable.resolve(new FileSet(new Map([[`${pkg}-${variant}.txt`, MemoryFile.from(`${pkg}@${versionToString(version)}`)]])));
   }
 
   /** Answer `doc` with one page per version, and publish nothing for any other operation. */
@@ -4396,6 +4403,28 @@ describe("rules written in .fabr", () => {
     expect(
       await keysOf("rule lintable pkg<FLAVOR=plain> = pkg<FLAVOR=lint> { }\nrule lintable pkg<FLAVOR=lint> = held { test_holds held { deps = pkg.srcs; } }\n")
     ).to.deep.equal(["extends"]);
+  });
+
+  it("installs a registry package's variant as a package of its own, at the version selected for the package", async () => {
+    registryRequirements.set("app@1.0.0", [{ name: "native", versionConstraint: "^1.0.0", variant: "linux" }]);
+    try {
+      const model = modelOf(
+        "targetdef test_registry { }\ntest_registry @reg { }\ntest_holds h { deps = @reg:app:1.0.0 @reg:native/osx:^1.0.0 @reg:native:1.1.0; }\n"
+      );
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("h"));
+      const held = heldDeps.filter((pkg): pkg is PackageFileSet => pkg instanceof PackageFileSet);
+      /* Every variant of `native` is of the version selected for it, raised by its own requirement. */
+      expect(held.map(pkg => `${pkg.packageName}@${pkg.version}`)).to.deep.equal(["app@1.0.0", "native/osx@1.1.0", "native@1.1.0"]);
+      const osx = held[1];
+      expect([...osx].map(([name]) => name)).to.deep.equal(["native-osx.txt"]);
+      expect(osx.packages.map(pkg => `${pkg.packageName}@${pkg.version}`)).to.deep.equal(["native@1.1.0"]);
+      /* A variant a package requires is its edge of its own name. */
+      const [edge] = held[0].dependencies;
+      expect(dependencyName(edge)).to.equal("native/linux");
+      expect(edge.package && `${edge.package.packageName}@${edge.package.version}`).to.equal("native/linux@1.1.0");
+    } finally {
+      registryRequirements.delete("app@1.0.0");
+    }
   });
 
   it("answers what the block's targets require of the target from one resolution, with what each adds beside it", async () => {

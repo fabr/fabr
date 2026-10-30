@@ -51,6 +51,23 @@ describe("MAVEN_FORMAT", () => {
     expect(projectionsOf(kept)).to.deep.equal([["META-INF/*", "org.slf4j/slf4j-api:1.7.36/"]]);
   });
 
+  it("reads a classifier after the artifact as the variant, with a version or without", () => {
+    for (const written of ["io.netty:netty-transport-native-epoll/linux-x86_64:4.1.110.Final", "io.netty/netty-transport-native-epoll/linux-x86_64:4.1.110.Final"]) {
+      const ref = refOf(written);
+      expect([ref.name, ref.variant, ref.versionConstraint]).to.deep.equal(["io.netty/netty-transport-native-epoll", "linux-x86_64", "4.1.110.Final"]);
+      expect(ref.toString()).to.equal("io.netty/netty-transport-native-epoll/linux-x86_64:4.1.110.Final");
+      expect(ref.localName).to.equal("io.netty/netty-transport-native-epoll/linux-x86_64");
+    }
+    const versionless = vend("io.netty:netty-transport-native-epoll/linux-x86_64") as RepositoryRef;
+    expect([versionless.name, versionless.variant, versionless.versionConstraint]).to.deep.equal(["io.netty/netty-transport-native-epoll", "linux-x86_64", undefined]);
+    /* What follows the version is still a projection. */
+    expect(projectionsOf(refOf("io.netty:netty-transport-native-epoll/linux-x86_64:4.1.110.Final:META-INF/*"))).to.deep.equal([["META-INF/*", ""]]);
+  });
+
+  it("refuses a variant that is no classifier", () => {
+    expect(() => MAVEN_FORMAT.validateRequirement(refOf("io.netty:netty-transport-native-epoll/a/b:4.1.110.Final"))).to.throw(/'a\/b' is not a classifier/);
+  });
+
   it("reads a quoted range as the version", () => {
     expect(refOf('com.example:lib:"[1.0,2.0)"').versionConstraint).to.equal("[1.0,2.0)");
   });

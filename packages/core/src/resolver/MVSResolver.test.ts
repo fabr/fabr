@@ -19,7 +19,7 @@
 
 import { Computable } from "../core/Computable";
 import { resolveMVS } from "./MVSResolver";
-import { allowingBuilds, buildKey, isBuildVersion } from "./Requirement";
+import { allowingBuilds, buildKey, dependencyNameOf, isBuildVersion } from "./Requirement";
 import { edgeBinding, nodeId, MVSResolution } from "./MVSResolution";
 import { parseVersion, SEMVER, SemverConstraint, SemverVersion, versionToString } from "./Semver";
 import { MetadataFetchError, VersionNotFoundError } from "../core/Errors";
@@ -42,9 +42,10 @@ function mockRegistry(data: Record<string, Record<string, Record<string, string>
       }
       return Computable.resolve(
         Object.entries(deps).map(([written, constraint]): Requirement => {
-          /* `real -> name` is a requirement on `real`, renamed. */
-          const [dep, renameTo] = written.split(" -> ");
-          const renamed = renameTo === undefined ? {} : { renameTo };
+          /* `real -> name` is a requirement on `real`, renamed; `real#x` one on its variant `x`. */
+          const [named, renameTo] = written.split(" -> ");
+          const [dep, variant] = named.split("#");
+          const renamed = { ...(renameTo === undefined ? {} : { renameTo }), ...(variant === undefined ? {} : { variant }) };
           /* 'bom ' is a BOM's dependency: a floor where something else requires the package. */
           if (constraint.startsWith("bom ")) {
             return { name: dep, versionConstraint: constraint.substring(4), bom: true, ...renamed };
@@ -81,11 +82,15 @@ function mockRegistry(data: Record<string, Record<string, Record<string, string>
  * override, a trailing '?' an alternate (the resolver's override inputs;
  * parsing markers off written references is the repository's job). */
 function rootRequirements(roots: Record<string, string>): Requirement[] {
-  return Object.entries(roots).map(([written, constraint]) => {
-    /* `real -> name` is a requirement on `real`, renamed. */
+  return Object.entries(roots).map(([written, constraint]): Requirement => {
+    /* `real -> name` is a requirement on `real`, renamed; `real#x` one on its variant `x`. */
     const [pkg, renameTo] = written.split(" -> ");
     if (renameTo !== undefined) {
       return { name: pkg, versionConstraint: constraint, renameTo };
+    }
+    if (pkg.includes("#")) {
+      const [name, variant] = pkg.split("#");
+      return { name, versionConstraint: constraint, variant };
     }
     if (constraint.endsWith("!")) {
       return { name: pkg, versionConstraint: constraint.slice(0, -1), override: "force" as const };
@@ -1550,7 +1555,7 @@ describe("resolved edges", () => {
       const id = nodeId(SEMVER, sel.name, sel.version);
       const from = new Map<string, string>();
       for (const req of result.requirements.get(id) ?? []) {
-        const name = req.renameTo ?? req.name;
+        const name = dependencyNameOf(req);
         if (from.has(name)) {
           continue;
         }
@@ -1577,6 +1582,11 @@ describe("resolved edges", () => {
       { A: { "1.0.0": { C: "^1.0.0" } }, B: { "1.0.0": { C: "^2.0.0" } }, C: { "1.0.0": {}, "2.0.0": {} } },
     ],
     ["a cycle", { A: "^1.0.0" }, { A: { "1.0.0": { B: "^1.0.0" } }, B: { "1.0.0": { A: "^1.0.0" } } }],
+    [
+      "variants beside the package they are variants of",
+      { A: "^1.0.0", "N#x": "^1.0.0" },
+      { A: { "1.0.0": { N: "^1.1.0", "N#y": "^1.0.0" } }, N: { "1.0.0": {}, "1.1.0": {} } },
+    ],
   ];
 
   for (const [what, roots, data] of cases) {
@@ -1599,6 +1609,29 @@ describe("resolved edges", () => {
       });
     });
   }
+
+  describe("a variant", () => {
+    const n = { N: { "1.0.0": {}, "1.1.0": {} } };
+
+    it("is selected with the package it is a variant of, at its one version", () => {
+      /* The variant's floor and the package's own are floors of one selection. */
+      const result = resolve({ A: "1.0.0" }, { ...n, A: { "1.0.0": { "N#x": "^1.0.0", N: "^1.1.0" } } });
+      expect(selectionStrings(result).sort()).to.deep.equal(["A@1.0.0", "N@1.1.0"]);
+      expect(result.edgesOf("A@1.0.0")).to.deep.equal(new Map([["N/x", "N@1.1.0"], ["N", "N@1.1.0"]]));
+    });
+
+    it("is an edge of its own beside another variant of one package", () => {
+      const result = resolve({ A: "1.0.0" }, { ...n, A: { "1.0.0": { "N#x": "^1.0.0", "N#y": "^1.1.0" } } });
+      expect(selectionStrings(result).sort()).to.deep.equal(["A@1.0.0", "N@1.1.0"]);
+      expect([...result.edgesOf("A@1.0.0").keys()].sort()).to.deep.equal(["N/x", "N/y"]);
+    });
+
+    it("binds a root to the package's selection, raised by another root", () => {
+      const result = resolve({ "N#x": "^1.0.0", N: "^1.1.0" }, n);
+      expect(selectionStrings(result)).to.deep.equal(["N@1.1.0"]);
+      expect(result.rootBindings.map(at => (at === undefined ? undefined : selectionStrings(result)[at]))).to.deep.equal(["N@1.1.0", "N@1.1.0"]);
+    });
+  });
 
   describe("a renamed requirement", () => {
     const semver = { semver: { "6.3.1": {}, "7.5.0": {}, "7.6.0": {} } };

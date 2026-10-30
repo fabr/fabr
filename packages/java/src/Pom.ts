@@ -290,17 +290,21 @@ export function effectivePom(pom: RawPom, load: PomLoader, what: string, depth =
 /** The scopes a consumer's classpath takes from a dependency, at compile and at run time. */
 const CLASSPATH_SCOPES = new Set(["compile", "runtime"]);
 
+/** The classifier of the jar each dependency type other than `jar` names, as Maven's artifact handlers give it. */
+const TYPE_CLASSIFIERS = new Map([["test-jar", "tests"]]);
+
 /**
  * @return the dependencies an artifact passes on to whatever uses it, as Maven
- * and Gradle read them: its jars with no classifier in compile or runtime scope,
- * except the ones it marks optional.
+ * and Gradle read them: its jars, classified or not, in compile or runtime
+ * scope, except the ones it marks optional. A `test-jar` is its `tests` jar.
  */
 export function passedOnDependencies(pom: EffectivePom): PomDependency[] {
-  return pom.dependencies.filter(
-    dependency =>
-      (dependency.type ?? "jar") === "jar" &&
-      dependency.classifier === undefined &&
-      CLASSPATH_SCOPES.has(dependency.scope ?? "compile") &&
-      !dependency.optional
-  );
+  return pom.dependencies.flatMap(dependency => {
+    const type = dependency.type ?? "jar";
+    if ((type !== "jar" && !TYPE_CLASSIFIERS.has(type)) || !CLASSPATH_SCOPES.has(dependency.scope ?? "compile") || dependency.optional) {
+      return [];
+    }
+    const classifier = dependency.classifier ?? TYPE_CLASSIFIERS.get(type);
+    return [{ ...dependency, type: "jar", ...(classifier === undefined ? {} : { classifier }) }];
+  });
 }

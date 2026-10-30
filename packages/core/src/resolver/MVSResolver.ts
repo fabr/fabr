@@ -19,7 +19,7 @@
 
 import { Computable } from "../core/Computable";
 import { FabrError, MetadataFetchError, toError, VersionNotFoundError } from "../core/Errors";
-import { constraintOf, requiredAs, versionConstraintText } from "./Requirement";
+import { constraintOf, dependencyNameOf, requiredAs, versionConstraintText } from "./Requirement";
 import { edgeBinding, MVSResolution, nodeId as idOf } from "./MVSResolution";
 import {
   IRequirementEdge,
@@ -1154,12 +1154,13 @@ function resolvePhase<V, C>(
           const from = new Map<string, string>();
           for (const req of requirements.get(nodeId(sel.name, sel.version)) ?? []) {
             /* The requirer's own name for the edge — first declaration wins, as
-             * the layout reads it. */
-            const name = requiredAs(req);
+             * the layout reads it. A variant is an edge of its own, bound to the
+             * package's selection. */
+            const name = dependencyNameOf(req);
             if (from.has(name)) {
               continue;
             }
-            const target = edgeBinding(domain, candidates.get(name) ?? [], req);
+            const target = edgeBinding(domain, candidates.get(requiredAs(req)) ?? [], req);
             if (target) {
               from.set(name, nodeId(target.name, target.version));
             }

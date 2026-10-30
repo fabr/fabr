@@ -21,6 +21,7 @@ answer every time. This page covers declaring dependencies and how their version
 | `annotationProcessor`, `<annotationProcessorPaths>` | `processors`; see [Annotation processors](/reference/java/compiling/#annotation-processors). |
 | A BOM in `<dependencyManagement>` with `<scope>import</scope>` / `platform(…)` | The BOM in `deps`, `test_deps` or wherever its versions are used; see [BOMs](#boms). |
 | Nearest-wins conflict resolution | The highest version anything requires; see [How versions are chosen](#how-versions-are-chosen). |
+| `<classifier>linux-x86_64</classifier>` / `group:artifact:version:classifier` | `@mvn:<group>:<artifact>/<classifier>:<version>`; see [Classified jars](#classified-jars). |
 | `<exclusions>` | See [Not currently supported](#not-currently-supported). |
 | `<repositories>`, `settings.xml` mirrors | A [`maven_repository`](#repositories), or `MAVEN_REPOSITORY_URL`. |
 | `<servers>` in `settings.xml` | The same file; see [Credentials](#credentials). |
@@ -135,7 +136,9 @@ import. Of a POM's `<dependencies>`:
 |---|---|
 | `compile` or `runtime` scope | A requirement of the package. A `runtime` one is on your compile classpath too, where Gradle puts it only on the runtime classpath. |
 | `provided`, `test` or `system` scope, or `<optional>true</optional>` | Ignored, as Maven and Gradle ignore them. |
-| A dependency with a `<classifier>`, or of a type other than `jar` | Ignored. |
+| A dependency with a `<classifier>` | A requirement of the [classified jar](#classified-jars). |
+| A `test-jar` dependency | A requirement of the package's `tests` jar. |
+| A dependency of another type (`zip`, `pom`, …) | Ignored. |
 
 `<exclusions>` and `<profiles>` are not read.
 
@@ -144,6 +147,39 @@ its `<packaging>`), checked against the `.sha1` the repository publishes beside 
 artifact, such as a BOM, has no files unless the repository also publishes a jar for it. Its
 sources and javadoc jars are fetched only when
 [asked for](#a-dependencys-javadoc-and-sources).
+
+## Classified jars
+
+Some packages publish further jars beside each version, told apart by a classifier: a native
+library for each platform (`netty-transport-native-epoll-4.1.110.Final-linux-x86_64.jar`), a
+`tests` jar. A reference names one with the classifier after the artifact:
+
+```
+deps = @mvn:io.netty:netty-transport-native-epoll/linux-x86_64:4.1.110.Final;
+```
+
+The version is chosen for the package, not for the classified jar: every requirement on
+`netty-transport-native-epoll`, classified or not, raises the one version, and each classified jar
+is of that version. So a native library always matches the classes that load it. Requiring
+`…/linux-x86_64:4.1.100.Final` beside a library that requires `4.1.110.Final` gives
+`netty-transport-native-epoll-4.1.110.Final-linux-x86_64.jar`; `fabr deps` shows it as
+`io.netty/netty-transport-native-epoll/linux-x86_64:4.1.100.Final -> 4.1.110.Final`. A classified
+jar requires its package, and through it what the version's POM requires: a classified jar has no
+POM of its own.
+
+This is how Gradle resolves a classifier. Maven chooses a version for each classifier apart, by
+nearest wins, so a classified jar can end up at a different version from its package unless a BOM
+gives both, which is why Netty's BOM lists each classifier.
+
+Where the version chosen publishes no jar with the classifier, it is an error:
+`io.netty:netty-transport-native-epoll:4.1.110.Final publishes no linux-sparc jar`. Require a
+version that does.
+
+Spelling the classifier after the artifact differs from Maven's and Gradle's own notation, which
+put it in a further `:` part; in fabr what follows the version selects files from the jar, as in
+any reference. A classified jar's sources or javadoc are not read with `<BUILD_OPERATION=sources>`
+or `doc`: where a package publishes them, they are a classified jar of their own (`/test-sources`
+for a `tests` jar's).
 
 ## A dependency's javadoc and sources
 
@@ -227,5 +263,7 @@ password can't be read; write it with `${env.NAME}` instead.
 
 - `<exclusions>`, relocations and POM profiles are not read. A package that a dependency's POM
   requires can't be removed, only overridden with `!`.
-- A reference can't name a classifier or type, such as `natives-linux` or a `test-jar`.
+- A reference can't name a type other than a jar.
+- A classifier isn't chosen for the platform: a project building for several writes the
+  classified jar of each.
 - Timestamped `-SNAPSHOT` versions are not resolved.

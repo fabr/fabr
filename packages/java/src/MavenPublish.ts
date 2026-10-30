@@ -322,7 +322,16 @@ function pomDependencyOf(
       const bound = dep.package;
       return bound instanceof PackageFileSet && bound.isEmpty()
         ? { bom: { groupId, artifactId, version: declared.versionConstraint, type: "pom", scope: "import", optional: false } }
-        : { dependency: { groupId, artifactId, version: declared.versionConstraint, ...scope, optional } };
+        : {
+            dependency: {
+              groupId,
+              artifactId,
+              version: declared.versionConstraint,
+              ...(declared.variant === undefined ? {} : { classifier: declared.variant }),
+              ...scope,
+              optional,
+            },
+          };
     }
     const assigned = coordinateOfTarget(targets, declared.name);
     if (assigned === undefined) {

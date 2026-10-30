@@ -90,9 +90,10 @@ sync release {
 }
 ```
 
-This differs from Maven's and Gradle's own spellings, which put the classifier in a fourth `:`
-part; in fabr a part after the version selects files, as in any reference, and a coordinate
-written that way is an error that says how to write it.
+This is how a [dependency on a classified jar](/reference/java/dependencies/#classified-jars) is
+written too. It differs from Maven's and Gradle's own spellings, which put the classifier in a
+fourth `:` part; in fabr a part after the version selects files, as in any reference, and a
+coordinate written that way is an error that says how to write it.
 
 The entry's content is packed into the jar, or, where it is one jar, is that jar. An entry for a
 classifier `auto_attach` lists takes its place. The artifact the jar belongs beside must be

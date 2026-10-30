@@ -50,7 +50,9 @@ import {
   canonicalRequirements,
   constraintOf,
   isBuildVersion,
+  dependencyNameOf,
   requiredAs,
+  variantName,
   requirementKey,
   versionConstraintText,
   violationKey,
@@ -447,7 +449,7 @@ function buildsOf<V, C>(
         }
         const requirement: Requirement = { ...stated, override: undefined, ...role };
         requirements.push(requirement);
-        carried.set(reference, { from: id, name: requiredAs(requirement), requirement });
+        carried.set(reference, { from: id, name: dependencyNameOf(requirement), requirement });
       }
     }
     built.set(id, { pkg, build, requirements });
@@ -515,6 +517,7 @@ function requirementOf<V, C>(format: PackageFormat<V, C>, reference: Requirement
     versionConstraint: reference.versionConstraint,
     ...(reference.override === undefined ? {} : { override: reference.override }),
     ...(reference.renameTo === undefined || reference.renameTo === reference.name ? {} : { renameTo: reference.renameTo }),
+    ...(reference.variant === undefined ? {} : { variant: reference.variant }),
   };
 }
 
@@ -525,6 +528,7 @@ function requirementReference<V, C>(registry: RepositoryReader<V, C>, requiremen
     versionConstraint: requirement.versionConstraint,
     override: requirement.override,
     renameTo: requirement.renameTo === requirement.name ? undefined : requirement.renameTo,
+    variant: requirement.variant,
   });
 }
 
@@ -918,7 +922,7 @@ export function packageClosure<V, C>(
         /* The one node the selection is, whichever requirement reached it: a
          * build as it stands, which the collection point delivers in its own
          * right, or the registry's. */
-        return built.get(graph.id(bound))?.pkg ?? resolved.nodes.node(bound);
+        return built.get(graph.id(bound))?.pkg ?? (req.variant === undefined ? resolved.nodes.node(bound) : resolved.nodes.variantNode(bound, req.variant));
       });
     })
     .catch(err => attributeResolutionFailure(err, references, requirements));
@@ -1057,6 +1061,50 @@ class ResolutionGraph<V, C> {
     return node;
   }
 
+  /**
+   * Get the node of the variant `variant` of `selection`: the version's
+   * variant, requiring the version's own node, made the first time it is
+   * asked for.
+   */
+  public variantNode(selection: Selected<V | string>, variant: string): ResolvedNode {
+    const id = this.resolution.graph.id(selection);
+    const held = this.nodes.get(variantName(id, variant));
+    if (held !== undefined) {
+      return held;
+    }
+    const base = this.node(selection);
+    const builder = new PackageGraphBuilder();
+    const made = this.variantInstance(id, variant, base, builder);
+    builder.seal();
+    return made;
+  }
+
+  /** Make the node of the variant `variant` of `id`, whose own node is `base`, or get the one already made. */
+  private variantInstance(id: string, variant: string, base: ResolvedNode, builder: PackageGraphBuilder): ResolvedNode {
+    const key = variantName(id, variant);
+    let node = this.nodes.get(key);
+    if (node === undefined) {
+      const { registry } = this;
+      const { graph } = this.resolution;
+      const selected = graph.node(id)!;
+      const version = selected.version as V;
+      const name = variantName(selected.name, variant);
+      const versionText = registry.format.versionToString(version);
+      node = builder.resolved(
+        {
+          key: `${registry.identity} ${key}`,
+          files: () => fetchVariantOf(registry, selected.publishedName ?? selected.name, version, variant).then(files => new PackageFileSet(files, name, versionText)),
+        },
+        name,
+        versionText,
+        base.origin
+      );
+      builder.wire(node, [{ reference: pinnedReference(registry, graph.versionToString, selected), package: base }], new Map());
+      this.nodes.set(key, node);
+    }
+    return node;
+  }
+
   /** Wire `node`'s edges: each to the node this resolution binds it to. One
    * leading to a selection outside the result (a gated optional pruned from
    * the walk) is not carried, unless it is a provided requirement, which stays
@@ -1073,10 +1121,8 @@ class ResolutionGraph<V, C> {
     const optional = graph.optionalProvidedNames(id);
     /* What the node asked for under each name: its requirement, as a
      * reference to this registry. */
-    const asked = (name: string): RepositoryRef => {
-      const declared = graph.requirements.get(id)?.find(req => requiredAs(req) === name);
-      return requirementReference(registry, declared ?? { name, versionConstraint: undefined });
-    };
+    const declaredAs = (name: string): Requirement | undefined => graph.requirements.get(id)?.find(req => dependencyNameOf(req) === name);
+    const asked = (name: string): RepositoryRef => requirementReference(registry, declaredAs(name) ?? { name, versionConstraint: undefined });
     /* What a provided requirement is offered: a pin of the selection this
      * resolution bound it to, or, where it bound none, what the node declared. */
     const offered = (name: string, toId: string | undefined): RepositoryRef => {
@@ -1090,7 +1136,9 @@ class ResolutionGraph<V, C> {
     const dependencies = [...new Set([...edges.keys(), ...[...providedNames].sort()])].flatMap((name): Dependency[] => {
       const toId = edges.get(name);
       if (optional?.has(name) !== true && toId !== undefined && published(toId)) {
-        return [{ reference: asked(name), package: this.instance(toId, builder, pending) }];
+        const variant = declaredAs(name)?.variant;
+        const target = this.instance(toId, builder, pending);
+        return [{ reference: asked(name), package: variant === undefined ? target : this.variantInstance(toId, variant, target, builder) }];
       }
       /* An edge to a package built in the project holds that package as it
        * stands; the collection point merges it into its own graph. */
@@ -1182,7 +1230,25 @@ export function resolveBarePackage<V, C>(registry: RepositoryReader<V, C>, refer
  */
 export function resolvePublishedFor<V, C>(registry: RepositoryReader<V, C>, reference: RepositoryRef, operation: string): Computable<FileSet> {
   const { req, version, origin, unpublished } = lowerBound(registry, reference);
+  if (req.variant !== undefined) {
+    return Computable.reject(variantPublishesNothingFor(registry, req.name, req.variant, operation));
+  }
   return publishedFor(registry, req.name, version, operation, origin).catch(unpublished);
+}
+
+/** Make the error refusing `operation` on the variant `variant` of `name`, which is published as a variant of its own where it is published at all. */
+function variantPublishesNothingFor<V, C>(registry: RepositoryReader<V, C>, name: string, variant: string, operation: string): FabrError {
+  return new FabrError(`${registry.name ?? "its repository"} publishes nothing for '${operation}' beside the variant ${variantName(name, variant)}`).withHelp(
+    `name the variant of ${name} that holds what you want instead: a variant's '${operation}' is published, where it is, as a variant of its own`
+  );
+}
+
+/** Fetch the content of the variant `variant` of `name` at `version`, refusing where its registry publishes no variants. */
+export function fetchVariantOf<V, C>(registry: RepositoryReader<V, C>, name: string, version: V, variant: string): Computable<FileSet> {
+  if (registry.fetchVariant === undefined) {
+    return Computable.reject(new FabrError(`'${variantName(name, variant)}' names a variant of ${name}, and ${registry.name ?? "its repository"} publishes none`));
+  }
+  return registry.fetchVariant(name, version, variant);
 }
 
 /**
@@ -1252,8 +1318,14 @@ function barePackage<V, C>(
   declared: (name: string, version: V) => Computable<DeclaredRequirements>
 ): Computable<PackageFileSet> {
   const { req, version, origin, unpublished } = lowerBound(registry, reference);
+  const content: Computable<PackageFileSet> =
+    req.variant === undefined
+      ? registry.fetch(req.name, version)
+      : fetchVariantOf(registry, req.name, version, req.variant).then(
+          files => new PackageFileSet(files, variantName(req.name, req.variant!), registry.format.versionToString(version))
+        );
   return Computable.forAll(
-    [registry.fetch(req.name, version), declared(req.name, version)],
+    [content, declared(req.name, version)],
     (pkg, { dependencies, provided }) => new PackageFileSet(pkg, pkg.packageName, pkg.version, dependencies, origin, provided)
   ).catch(unpublished);
 }
@@ -1335,7 +1407,13 @@ export function fetchPinnedPackage<V, C>(
   }
   const origin = resolutionOrigin(allowingBuilds(format), req, graph.selections);
   if (operation !== undefined) {
-    return publishedFor(registry, bound.publishedName ?? bound.name, version, operation, origin);
+    return req.variant === undefined
+      ? publishedFor(registry, bound.publishedName ?? bound.name, version, operation, origin)
+      : Computable.reject(variantPublishesNothingFor(registry, bound.name, req.variant, operation));
+  }
+  if (req.variant !== undefined) {
+    const name = variantName(bound.name, req.variant);
+    return fetchVariantOf(registry, bound.publishedName ?? bound.name, version, req.variant).then(files => new PackageFileSet(files, name, format.versionToString(version), [], origin));
   }
   return registry.fetch(bound.publishedName ?? bound.name, version).then(pkg => new PackageFileSet(pkg, bound.name, pkg.version, [], origin));
 }

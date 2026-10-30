@@ -44,18 +44,33 @@ export function requiredAs(req: Requirement): string {
   return req.renameTo ?? req.name;
 }
 
+/** @return the name the variant `variant` of the package `name` is installed as: `<name>/<variant>`. */
+export function variantName(name: string, variant: string): string {
+  return `${name}/${variant}`;
+}
+
+/**
+ * @return the name a requirement's edge has in its requirer: the name it is
+ * required as, and for a variant, the variant's name under it.
+ */
+export function dependencyNameOf(req: Requirement): string {
+  return req.variant === undefined ? requiredAs(req) : variantName(requiredAs(req), req.variant);
+}
+
 /**
  * Make a requirement's canonical identity, marker, rename and role included:
  * an override changes what resolution means (a force substitutes outright; an
  * alternate can supply a floorless-only package's version), a rename makes it
  * a requirement on a package of another name, and being provided demands
- * nothing where the tree already selects the package — so all three are part
+ * nothing where the tree already selects the package, and a variant installs
+ * other content — so all four are part
  * of the identity, hence of any resolution memo key built from these.
  */
 export function requirementKey(req: Requirement): string {
   const role = req.provided === undefined ? "" : req.provided === "optional" ? " (optionally provided)" : " (provided)";
   const rename = requiredAs(req) === req.name ? "" : ` -> ${req.renameTo}`;
-  return `${req.versionConstraint === undefined ? req.name : `${req.name}:${req.versionConstraint}`}${markerOf(req.override)}${rename}${role}`;
+  const name = req.variant === undefined ? req.name : variantName(req.name, req.variant);
+  return `${req.versionConstraint === undefined ? name : `${name}:${req.versionConstraint}`}${markerOf(req.override)}${rename}${role}`;
 }
 
 /**

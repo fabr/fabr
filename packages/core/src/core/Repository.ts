@@ -30,7 +30,7 @@ import type { PublishableFileSet } from "./PublishableFileSet";
 import type { Requirement, RequirementSource, ResolvedMember, Selected } from "../resolver/Types";
 import type { PackageFormat } from "../resolver/PackageFormat";
 
-import { markerOf } from "../resolver/Requirement";
+import { markerOf, variantName } from "../resolver/Requirement";
 import { IProjection, Miss, NO_REFERENCE_FIELDS, Reference, ReferenceFields } from "./Reference";
 
 /**
@@ -216,6 +216,12 @@ export interface RepositoryReader<V, C> extends RequirementSource<V> {
    * without it publishes neither.
    */
   fetchFor?(name: string, version: V, operation: string): Computable<FileSet>;
+  /**
+   * Fetch the content of the variant `variant` of one exact package version
+   * (see {@link Requirement.variant}): a Maven classifier's jar. Optional: a
+   * registry without it publishes no variants.
+   */
+  fetchVariant?(name: string, version: V, variant: string): Computable<FileSet>;
   /** Get the published-version list for repair suggestions; undefined when the
    * registry has no such package. Reads a mutable document — failure-path
    * only, and optional: absence means no suggestions. */
@@ -425,6 +431,8 @@ export class RepositoryRef extends Reference implements Requirement {
   /** The version or range of it wanted, as written; absent where the
    *  repository's references state none (a catalog member). */
   public readonly versionConstraint: string | undefined;
+  /** The variant of the selected version it names, where it names one (see {@link Requirement.variant}). */
+  public readonly variant?: string;
 
   /**
    * Make the reference `identity` writes, addressed to `source`, made of
@@ -444,6 +452,15 @@ export class RepositoryRef extends Reference implements Requirement {
     super(fields);
     this.name = identity.name;
     this.versionConstraint = identity.versionConstraint;
+    if (identity.variant !== undefined) {
+      this.variant = identity.variant;
+    }
+  }
+
+  /** The name what this reference names is delivered under: the rename
+   * written on it, or its own, and for a variant, the variant's name under it. */
+  public override get localName(): string {
+    return this.variant === undefined ? super.localName : variantName(super.localName, this.variant);
   }
 
   /**
@@ -467,8 +484,8 @@ export class RepositoryRef extends Reference implements Requirement {
 
   /** The reference as written — the display form for messages. */
   public toString(): string {
-    const identity =
-      this.versionConstraint === undefined ? this.name : `${this.name}:${this.versionConstraint}${markerOf(this.override)}`;
+    const name = this.variant === undefined ? this.name : variantName(this.name, this.variant);
+    const identity = this.versionConstraint === undefined ? name : `${name}:${this.versionConstraint}${markerOf(this.override)}`;
     return this.renameTo === undefined ? identity : `${identity} -> ${this.renameTo}`;
   }
 
