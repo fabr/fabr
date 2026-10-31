@@ -42,7 +42,7 @@ scripts are for:
 | Command | What it does |
 |---|---|
 | `yarn build` | Compiles the packages with `tsc`, giving a first `fabr`, which `yarn fabr` runs. |
-| `yarn bootstrap` | Runs `yarn build`, uses the result to build the packages with fabr and copy them into `bootstrap/`, and then has *that* fabr run every package's tests and the end-to-end tests. The `fabr` script at the top of the repository runs the fabr in `bootstrap/`. |
+| `yarn bootstrap` | Runs `yarn build` and uses the result to build fabr's installation (`fabr_install`: the CLI and the plugins installed with it) and copy it into `bootstrap/`. *That* fabr then runs every package's tests and the end-to-end tests. The `fabr` script at the top of the repository runs the fabr in `bootstrap/`. |
 | `yarn dist` | Runs `yarn build`, the tests under jest, and eslint. |
 
 Before proposing a change, run both `yarn bootstrap` and `yarn dist`. The first shows that fabr

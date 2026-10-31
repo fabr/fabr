@@ -124,4 +124,10 @@ sync release {
   @npm:@fabr-build/sass-pnp-importer:${FABR_VERSION} = @fabr-build/sass-pnp-importer;
 }
 
+# fabr as it is installed: the CLI and the plugins installed with it, each
+# with everything it requires, laid out as `node_modules`.
+js_installation fabr_install {
+  deps = @fabr-build/cli @fabr-build/js @fabr-build/js-tools @fabr-build/sass-pnp-importer @fabr-build/java;
+}
+
 all = @fabr-build/core @fabr-build/js-boot @fabr-build/js-tools @fabr-build/cli @fabr-build/sass-pnp-importer @fabr-build/java-boot;
