@@ -126,7 +126,7 @@ function actionContext(cache: BuildCache, workDir: string): ActionContext {
 /** What the tool reported about the workspace it was run in. */
 interface IObserved {
   listing: string[];
-  /** Where `.fabr-tree` really points, when the step staged one. */
+  /** Where the pool beside the working directory really points. */
   pool?: string;
   /** The staged dependency table, when there is one. */
   table?: { packageRegistryData: Array<[string | null, Array<[string | null, { packageLocation: string; linkType: string }]>]> };
@@ -145,7 +145,7 @@ interface IObserved {
  */
 async function run(action: BuildAction, root: string): Promise<{ observed: IObserved; cache: BuildCache }> {
   const cache = new BuildCache(path.join(root, "cache"), NULL_LOG);
-  const workDir = fs.mkdtempSync(path.join(root, "work-"));
+  const workDir = cache.makeStepDir(fs.mkdtempSync(path.join(root, "work-")));
   const collected = (await toPromise(action.step.run(action, actionContext(cache, workDir), SILENT_REPORT))).result;
   const report = await toPromise(collected.readFile("observed.json"));
   return { observed: JSON.parse(report) as IObserved, cache };
@@ -168,7 +168,7 @@ const walk = (dir, base) => {
 };
 walk(".", "");
 const observed = { listing };
-if (fs.existsSync(".fabr-tree")) observed.pool = fs.realpathSync(".fabr-tree");
+if (fs.existsSync("../.fabr-tree")) observed.pool = fs.realpathSync("../.fabr-tree");
 if (fs.existsSync(".pnp.data.json")) {
   observed.table = JSON.parse(fs.readFileSync(".pnp.data.json", "utf8"));
   observed.resolves = {};
@@ -198,7 +198,7 @@ describe("createNodeExecAction layouts", () => {
 
   const sources = new FileSet(new Map<string, IFile>([["src/index.ts", MemoryFile.from("export const x = 1;")]]));
 
-  it("pnp: stages a table and one pool mount, and no node_modules", async () => {
+  it("pnp: stages a table and no node_modules, the pool beside the working directory", async () => {
     const dep = pkg("left-pad", "1.0.0", [pkg("b4a")]);
     const { observed, cache } = await run(
       createNodeExecAction(sources, [dep], TOOL, "out:**", { layout: PNP, label: "compile" }),
@@ -206,8 +206,10 @@ describe("createNodeExecAction layouts", () => {
     );
     expect(observed.listing).to.not.include("node_modules/");
     expect(observed.listing).to.include(".pnp.data.json");
-    /* One symlink to the pool, and every package the table names materialized
-     * in it — by the step, on this miss, not by the rule at evaluate. */
+    /* Nothing in the working directory leads into the pool, which every package
+     * the table names was materialized in — by the step, on this miss, not by
+     * the rule at evaluate. */
+    expect(observed.listing.filter(name => name.includes(".fabr-tree"))).to.deep.equal([]);
     expect(observed.pool).to.equal(fs.realpathSync(cache.treePath));
     expect(fs.readdirSync(cache.treePath)).to.have.lengthOf(2);
     /* Every row resolves from where the tool stood: the table and the mount

@@ -88,11 +88,13 @@ describe("the Sass driver, resolving package loads through fabr's table", () => 
   let root: string;
 
   beforeEach(() => {
-    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-sassdriver-")));
+    /* A step's working directory, in a directory of its own for the pool's link. */
+    root = path.join(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-sassdriver-"))), "work");
+    fs.mkdirSync(root);
   });
 
   afterEach(() => {
-    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(path.dirname(root), { recursive: true, force: true });
     process.exitCode = undefined;
   });
 
@@ -102,7 +104,7 @@ describe("the Sass driver, resolving package loads through fabr's table", () => 
     new PackageFileSet(files({ "package.json": JSON.stringify({ name, version }), ...entries }), name, version, dependenciesOn(...deps));
 
   /**
-   * Stage a workspace as the step does — the pool mounted as one link, each
+   * Stage a workspace as the step does — the pool's link beside it, each
    * content's tree once, the manifest beside the sources — then lower `source`
    * and answer the CSS and its map's sources.
    */
@@ -203,9 +205,12 @@ describe("the Sass driver, resolving package loads through fabr's table", () => 
       sources.every(source => !source.includes("__virtual__")),
       `no virtual location reaches the map: ${sources.join(", ")}`
     );
+    /* With no table to name them, a package's files lie outside the working
+     * directory and are named by their file name alone: no path into the pool,
+     * or anywhere else on this machine, reaches the map. */
     assert.ok(
-      sources.some(source => source.startsWith(`${TREE_MOUNT}/`) && source.endsWith("/_index.scss")),
-      `a package's file is named by its tree: ${sources.join(", ")}`
+      sources.every(source => source === "app.scss" || source === "_index.scss"),
+      `a package's file is named without its place: ${sources.join(", ")}`
     );
   });
 

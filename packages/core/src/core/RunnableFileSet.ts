@@ -125,22 +125,22 @@ export class RunnableFileSet extends FileSet {
 
   /**
    * Get this runnable launched through `interpreter`, which is written once to
-   * `pool`'s tree pool and reached through the pool's link, carried in this
-   * runnable's install at {@link TREE_MOUNT}. Its content is in any key this
-   * runnable's command line or install is: the command line names it by hash.
+   * `pool`'s tree pool and reached through the pool's link beside the launch
+   * directory ({@link toCommandLine}'s `pool`). Its content is in any key this
+   * runnable's command line is: the command line names it by hash.
    * `interpreterArgs` go after the interpreter's own args, before this
    * runnable's entry (`java -jar <entry>`), naming files of this runnable's
    * install as its own args do.
    */
   public launchedBy(
     interpreter: RunnableFileSet,
-    pool: { ensureTree(files: FileSet): Computable<string>; readonly treePoolLink: SymlinkFile },
+    pool: { ensureTree(files: FileSet): Computable<string> },
     interpreterArgs: readonly RunnableArgument[] = []
   ): Computable<RunnableFileSet> {
     return pool.ensureTree(interpreter).then(
       () =>
         new RunnableFileSet(
-          FileSet.unionAll(this, new FileSet(new Map([[TREE_MOUNT, pool.treePoolLink]]))),
+          this,
           this.args,
           interpreter,
           this.root,
@@ -239,19 +239,21 @@ export class RunnableFileSet extends FileSet {
    * the entry absolute, for launching with a cwd *other* than the install (fabr
    * run, in the user's directory); with neither, the entry stays
    * install-relative (the exec step, cwd == install). A runnable interpreter
-   * is its own command line, placed under the tree pool's link, taking this
-   * one's entry and arguments as its caller's.
+   * is its own command line, placed in the tree pool, taking this one's entry
+   * and arguments as its caller's. `pool` is where the pool is, as a path from
+   * the launch directory (or from `anchor`): {@link TREE_MOUNT} by default, for
+   * a launch in a step's working directory.
    * @throws if no single entry resolves — the "which entry?" error, deferred to
    * launch so a projection has the chance to pick one.
    */
-  public toCommandLine(callerArgs: string[] = [], opts?: { anchor?: string; base?: string }): string[] {
+  public toCommandLine(callerArgs: string[] = [], opts?: { anchor?: string; base?: string; pool?: string }): string[] {
     const based = (installPath: string): string => (opts?.base ? path.posix.join(opts.base, installPath) : installPath);
     const entry = based(this.resolveEntry());
     const installDir = opts?.anchor ? path.resolve(opts.anchor, opts.base ?? "") : (opts?.base ?? "");
     const own = [opts?.anchor ? path.resolve(opts.anchor, entry) : entry, ...resolveArguments(this.args, installDir), ...callerArgs];
     const line = [...resolveArguments(this.interpreterArgs, installDir), ...own];
     if (this.interpreter instanceof RunnableFileSet) {
-      return this.interpreter.toCommandLine(line, { ...opts, base: based(path.posix.join(TREE_MOUNT, this.interpreter.toManifestHash())) });
+      return this.interpreter.toCommandLine(line, { ...opts, base: path.posix.join(opts?.pool ?? TREE_MOUNT, this.interpreter.toManifestHash()) });
     }
     if (this.interpreter !== undefined) {
       return [this.interpreter, ...line];

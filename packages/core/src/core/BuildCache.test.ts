@@ -36,7 +36,7 @@ import { DEFAULT_FILE_MODE, FileSet, IFile } from "./FileSet";
 import { hashString } from "./FSWrapper";
 import { FSFile } from "./FSFileSource";
 import { MemoryFile } from "./MemoryFS";
-import { CacheLink, SymlinkFile } from "./SymlinkFile";
+import { SymlinkFile } from "./SymlinkFile";
 import { Log } from "../support/Log";
 import { expect } from "chai";
 import { dependenciesOn } from "./Repository";
@@ -330,7 +330,6 @@ describe("BuildCache", () => {
     );
     const link = (await toPromise(files.get("evil")))!;
     expect(link).to.be.instanceOf(SymlinkFile);
-    expect(link).to.not.be.instanceOf(CacheLink);
     expect((link as SymlinkFile).target).to.equal("fabr-cache:tree/../../../etc");
   });
 
@@ -2062,11 +2061,16 @@ describe("BuildCache work tree", () => {
     const cache = new BuildCache(root, NULL_LOG);
     const first = cache.holdKeptWorkDir("k1");
     const second = cache.holdKeptWorkDir("k1");
-    expect(path.basename(first)).to.equal(`${hostPrefix()}@k1.0`);
-    expect(path.basename(second)).to.equal(`${hostPrefix()}@k1.1`);
+    /* What is handed back is the slot's working directory, the tree pool's link
+     * beside it and not in it. */
+    expect(path.basename(first)).to.equal("work");
+    expect(path.basename(path.dirname(first))).to.equal(`${hostPrefix()}@k1.0`);
+    expect(path.basename(path.dirname(second))).to.equal(`${hostPrefix()}@k1.1`);
+    expect(fs.readlinkSync(path.join(path.dirname(first), ".fabr-tree"))).to.equal(cache.treePath);
+    expect(fs.readdirSync(first)).to.deep.equal([]);
     fs.writeFileSync(path.join(first, "kept.txt"), "x");
     cache.releaseKeptWorkDir(first);
-    expect(fs.existsSync(`${first}.hold`), "the hold is dropped").to.equal(false);
+    expect(fs.existsSync(`${path.dirname(first)}.hold`), "the hold is dropped").to.equal(false);
     /* A later process reclaims its work tree and takes the free slot, contents and all. */
     const later = new BuildCache(root, NULL_LOG);
     expect(later.holdKeptWorkDir("k1")).to.equal(first);
@@ -2082,11 +2086,24 @@ describe("BuildCache work tree", () => {
     fs.writeFileSync(path.join(work, `${hostPrefix()}@k2.0.hold`), String(process.ppid));
     fs.writeFileSync(path.join(work, `${hostPrefix()}@k2.1.hold`), String(deadPid()));
     const dir = cache.holdKeptWorkDir("k2");
-    expect(path.basename(dir)).to.equal(`${hostPrefix()}@k2.1`);
-    expect(fs.readFileSync(`${dir}.hold`, "utf8")).to.equal(String(process.pid));
+    expect(path.basename(path.dirname(dir))).to.equal(`${hostPrefix()}@k2.1`);
+    expect(fs.readFileSync(`${path.dirname(dir)}.hold`, "utf8")).to.equal(String(process.pid));
     /* The dead holder's hold went into this process's own work tree, not beside the slot. */
     expect(fs.readdirSync(work).filter(name => name.includes(".hold")).sort()).to.deep.equal([`${hostPrefix()}@k2.0.hold`, `${hostPrefix()}@k2.1.hold`]);
     expect(fs.readdirSync(path.join(work, `${hostPrefix()}-${process.pid}`)).some(name => name.startsWith("hold-"))).to.equal(true);
+    cache.releaseKeptWorkDir(dir);
+  });
+
+  it("clears a kept slot laid out with no working directory, and its record", () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const slot = path.join(root, "work", `${hostPrefix()}@k4.0`);
+    fs.mkdirSync(slot, { recursive: true });
+    fs.writeFileSync(path.join(slot, "index.js"), "x");
+    fs.writeFileSync(`${slot}.record`, "x");
+    const dir = cache.holdKeptWorkDir("k4");
+    expect(dir).to.equal(path.join(slot, "work"));
+    expect(fs.readdirSync(slot).sort()).to.deep.equal([".fabr-tree", "work"]);
+    expect(fs.existsSync(`${slot}.record`)).to.equal(false);
     cache.releaseKeptWorkDir(dir);
   });
 
@@ -2413,11 +2430,12 @@ describe("BuildCache garbage collection", () => {
     const held = cache.holdKeptWorkDir("gc");
     await toPromise(cache.recordKeptWorkDir(idle, new FileSet(new Map([["a.txt", MemoryFile.from("a")]]))));
     cache.releaseKeptWorkDir(idle);
-    age(idle, 40);
-    age(held, 40);
+    const [idleSlot, heldSlot] = [path.dirname(idle), path.dirname(held)];
+    age(idleSlot, 40);
+    age(heldSlot, 40);
     await runGC();
-    expect(fs.existsSync(idle), "the idle slot").to.equal(false);
-    expect(fs.existsSync(`${idle}.record`), "its record").to.equal(false);
+    expect(fs.existsSync(idleSlot), "the idle slot").to.equal(false);
+    expect(fs.existsSync(`${idleSlot}.record`), "its record").to.equal(false);
     expect(fs.existsSync(held), "the held slot").to.equal(true);
     cache.releaseKeptWorkDir(held);
   });

@@ -96,7 +96,7 @@ function generateJavadoc(context: TargetContext, { srcs, deps }: { srcs: FileSet
         const files = FileSet.unionAll(
           sources.mountedAt(SOURCE_DIR),
           stagedJars(CLASSPATH_DIR, jars),
-          new FileSet(new Map<string, IFile>([[ARGUMENTS_FILE, MemoryFile.from(argumentsText)], [TREE_MOUNT, pool.treePoolLink]]))
+          new FileSet(new Map<string, IFile>([[ARGUMENTS_FILE, MemoryFile.from(argumentsText)]]))
         );
         const argv = javadoc.toCommandLine([`@${ARGUMENTS_FILE}`], { base: path.posix.join(TREE_MOUNT, javadoc.toManifestHash()) });
         return createExecAction(files, argv, `${DOC_DIR}:**`);

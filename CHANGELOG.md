@@ -6,6 +6,7 @@ number.
 ## Fabr 0.4.0
 @fabr-build/core:
 - Introduce fabr_plugin target + move rule/repository decls out to spec.
+- Make the actual working dir a subdir, with the tree pool link (if present) outside - fixes excessive tree scanning.
 
 @fabr-build/java:
 - New: Java support.

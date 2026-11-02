@@ -111,7 +111,6 @@ function testJar(context: TargetContext, inputs: TestInputs): Computable<RuleRes
           new Map<string, IFile>([
             [RUNNER_JAR, runnerJar],
             [SOURCES_FILE, MemoryFile.from(sources)],
-            [TREE_MOUNT, pool.treePoolLink],
           ])
         )
       );

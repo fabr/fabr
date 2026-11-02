@@ -175,10 +175,13 @@ afterEach(() => {
 });
 
 /** A fresh workspace, by its real path (the runtime's paths are compared as
- * strings, so a symlinked tmpdir would differ in spelling only). */
+ * strings, so a symlinked tmpdir would differ in spelling only): a step's
+ * working directory, in a directory of its own for the tree pool beside it. */
 function workspace(): string {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-pnpcompat-")));
-  roots.push(root);
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-pnpcompat-")));
+  roots.push(dir);
+  const root = path.join(dir, "work");
+  fs.mkdirSync(root);
   return root;
 }
 

@@ -79,7 +79,7 @@ import {
 import { PackageFileSet } from "./PackageFileSet";
 import { mapComputable, mapObject } from "../support/Functional";
 import { registerTempTree, removeTempTree, writeFileSet } from "./Staging";
-import { CacheLink, SymlinkFile } from "./SymlinkFile";
+import { SymlinkFile } from "./SymlinkFile";
 import { computableFind } from "./WorkList";
 import { admitted, IOutputHandle, ITaskReport, type TaskTracker } from "../support/Execute";
 import { Semaphore } from "../support/Semaphore";
@@ -300,9 +300,15 @@ const PROJECT_SOURCES_FILE = "sources";
 /** An entry manifest's filename: a hashed key plus the suffix. */
 const CLAIMED_MANIFEST = /^[0-9a-f]{64}\.manifest$/;
 
-/** Where the tree pool is mounted in a staged workspace: one symlink, so every
- * location reached through it is relative and says nothing about this machine. */
-export const TREE_MOUNT = ".fabr-tree";
+/** Where the tree pool is, as a path from a step's working directory: one
+ * symlink beside it ({@link BuildCache.makeStepDir}), so every location reached
+ * through it is relative and says nothing about this machine, and nothing under
+ * the working directory leads into the pool. */
+export const TREE_MOUNT = "../.fabr-tree";
+/** The tree pool's link in a step's directory, beside its working directory. */
+const TREE_LINK = ".fabr-tree";
+/** A step's working directory, within the step's directory. */
+const STEP_WORK_DIR = "work";
 
 /**
  * The build cache: entries keyed by an input manifest hash, over a
@@ -385,7 +391,8 @@ export class BuildCache {
   private readonly servedTargetKeys = new Set<string>();
   private readonly servedDepsRecords = new Set<string>();
   private readonly servedTrees = new Set<string>();
-  /** The kept work dirs this process holds — see {@link holdKeptWorkDir}. */
+  /** The working directories of the kept work dirs this process holds — see
+   * {@link holdKeptWorkDir}. */
   private readonly heldKeptDirs = new Set<string>();
   /** The GC's own store: the `last` daily stamp and any live collection's
    * `running-<host>-<pid>` marker. */
@@ -474,37 +481,64 @@ export class BuildCache {
   }
 
   /**
+   * Lay out `dir` as a step's directory and return its working directory:
+   * `work/`, with the tree pool's link beside it, reached from the working
+   * directory as {@link TREE_MOUNT}. A tool that treats its working directory
+   * as the project it is given (a scanner walking it, a server serving it)
+   * cannot reach the pool through it. Idempotent.
+   */
+  public makeStepDir(dir: string): string {
+    const work = path.join(dir, STEP_WORK_DIR);
+    fs.mkdirSync(work, { recursive: true });
+    const link = path.join(dir, TREE_LINK);
+    if (fs.lstatSync(link, { throwIfNoEntry: false }) === undefined) {
+      fs.symlinkSync(this.treeRoot, link);
+    }
+    return work;
+  }
+
+  /**
    * Take a work dir that outlives this process, for work a later run takes up
-   * where this one left it: `work/<host>@<key>.<n>/`, the first slot of `key`
-   * that no live process holds, made where none is free. It holds whatever its
-   * last holder left there, as that holder recorded it
-   * ({@link keptWorkDirRecord}). The hold is `<dir>.hold`, naming the holding
-   * pid: {@link releaseKeptWorkDir} drops it, as does this process's exit, and a
-   * holder that died without either frees the slot for the next taker. The trim
-   * removes a slot nobody has held for {@link GC_MAX_AGE_MS}.
+   * where this one left it, and return its working directory: the slot is
+   * `work/<host>@<key>.<n>/`, the first of `key` that no live process holds,
+   * made where none is free, and laid out as a step's directory
+   * ({@link makeStepDir}). Its working directory holds whatever its last holder
+   * left there, as that holder recorded it ({@link keptWorkDirRecord}). The hold
+   * is `<slot>.hold`, naming the holding pid: {@link releaseKeptWorkDir} drops
+   * it, as does this process's exit, and a holder that died without either
+   * frees the slot for the next taker. The trim removes a slot nobody has held
+   * for {@link GC_MAX_AGE_MS}.
    */
   public holdKeptWorkDir(key: string): string {
     fs.mkdirSync(this.workRoot, { recursive: true });
-    for (let slot = 0; ; slot++) {
-      const dir = path.resolve(this.workRoot, `${hostTag()}${KEPT_MARK}${key}.${slot}`);
-      if (this.heldKeptDirs.has(dir) || !takeHold(`${dir}${KEPT_HOLD_SUFFIX}`, () => this.tempPath("hold"))) {
+    for (let n = 0; ; n++) {
+      const slot = path.resolve(this.workRoot, `${hostTag()}${KEPT_MARK}${key}.${n}`);
+      const work = path.join(slot, STEP_WORK_DIR);
+      if (this.heldKeptDirs.has(work) || !takeHold(`${slot}${KEPT_HOLD_SUFFIX}`, () => this.tempPath("hold"))) {
         continue;
       }
       if (this.heldKeptDirs.size === 0) {
         process.on("exit", () => this.releaseKeptWorkDirs());
       }
-      this.heldKeptDirs.add(dir);
-      fs.mkdirSync(dir, { recursive: true });
+      this.heldKeptDirs.add(work);
+      /* A slot with no working directory holds an install laid out at its root,
+       * which its record describes; neither is any use to a step's layout. */
+      if (fs.existsSync(slot) && !fs.existsSync(work)) {
+        fs.rmSync(slot, { recursive: true, force: true });
+        fs.rmSync(`${slot}${KEPT_RECORD_SUFFIX}`, { force: true });
+      }
+      this.makeStepDir(slot);
       /* The slot's recency, for the trim: it was used now. */
-      this.touchForRecency(dir);
-      return dir;
+      this.touchForRecency(slot);
+      return work;
     }
   }
 
-  /** Drop this process's hold on a kept work dir, leaving its contents. */
+  /** Drop this process's hold on a kept work dir, given as the working directory
+   * {@link holdKeptWorkDir} returned, leaving its contents. */
   public releaseKeptWorkDir(dir: string): void {
     if (this.heldKeptDirs.delete(dir)) {
-      fs.rmSync(`${dir}${KEPT_HOLD_SUFFIX}`, { force: true });
+      fs.rmSync(`${path.dirname(dir)}${KEPT_HOLD_SUFFIX}`, { force: true });
     }
   }
 
@@ -518,15 +552,16 @@ export class BuildCache {
    * {@link recordKeptWorkDir}); undefined where nothing usable is, which is to
    * say its contents are unknown. */
   public keptWorkDirRecord(dir: string): Computable<FileSet | undefined> {
-    return this.readManifest(`${dir}${KEPT_RECORD_SUFFIX}`).then(entry => entry?.files);
+    return this.readManifest(`${path.dirname(dir)}${KEPT_RECORD_SUFFIX}`).then(entry => entry?.files);
   }
 
-  /** Record a kept work dir's contents as `files`, or as unknown: a writer
+  /** Record a kept work dir's contents, given as the working directory
+   * {@link holdKeptWorkDir} returned, as `files`, or as unknown: a writer
    * records unknown before it changes the dir and the new contents after, so a
    * write that never finished reads as unknown, never as what it set out to
    * write. */
   public recordKeptWorkDir(dir: string, files: FileSet | undefined): Computable<void> {
-    const record = `${dir}${KEPT_RECORD_SUFFIX}`;
+    const record = `${path.dirname(dir)}${KEPT_RECORD_SUFFIX}`;
     if (files === undefined) {
       return deleteFile(record).catch(() => undefined);
     }
@@ -597,7 +632,7 @@ export class BuildCache {
         new ActionContext(
           this,
           options?.processLimit ?? UNBOUNDED_FUNNEL,
-          targetDir,
+          this.makeStepDir(targetDir),
           options?.targetKey,
           options?.force ?? false,
           action?.inputs,
@@ -966,12 +1001,6 @@ export class BuildCache {
   /** Where {@link ensureTree} publishes, as an absolute path on this machine. */
   public get treePath(): string {
     return this.treeRoot;
-  }
-
-  /** The tree pool as a mountable link (at {@link TREE_MOUNT}), for a step that
-   * addresses trees by name itself rather than mounting one at a position. */
-  public get treePoolLink(): CacheLink {
-    return new CacheLink(path.relative(this.root, this.treeRoot), this.root);
   }
 
   /**
@@ -2378,10 +2407,11 @@ export class ActionContext {
 
   /**
    * @param cache the run's build cache, which backs `createOutput`,
-   *   `ensureTree`, `treePool` and the build-state accessors
+   *   `ensureTree` and the build-state accessors
    *   (`changedFiles`, `incrementalState`, `previousOutputs`).
    * @param processLimit the machine-wide execution funnel.
-   * @param workDir this action's scratch directory.
+   * @param workDir this action's working directory, in a step's directory
+   *   ({@link BuildCache.makeStepDir}).
    * @param targetKey the coordinate a build-state record hangs off. Absent for
    *   an action belonging to no declared target, which therefore has none.
    * @param force this build was asked to redo its work, so it is given no base
@@ -2413,12 +2443,6 @@ export class ActionContext {
   /** Write a tree into the cache's pool and answer its path. */
   public ensureTree(files: FileSet): Computable<string> {
     return this.cache.ensureTree(files);
-  }
-
-  /** The cache's tree pool as a mountable link, for a step that stages the pool
-   * whole and addresses trees in it by name. */
-  public get treePool(): CacheLink {
-    return this.cache.treePoolLink;
   }
 
   /**

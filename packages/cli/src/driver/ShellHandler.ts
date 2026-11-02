@@ -55,7 +55,10 @@ export function shellInto(cache: BuildCache, name: string, action: BuildAction |
     log.log(DIAG_NO_SANDBOX, { name });
     return Computable.resolve(1);
   }
-  const dir = cache.createWorkDir("shell-");
+  const sandbox = cache.createWorkDir("shell-");
+  /* Laid out as the step's own directory, so the printed command, which names
+   * the tree pool from the working directory, runs there as written. */
+  const dir = cache.makeStepDir(sandbox);
   return writeFileSet(dir, files)
     .then(() => {
       log.log(DIAG_SHELL, { name, dir, commands: describeCommands(action!) });
@@ -66,7 +69,7 @@ export function shellInto(cache: BuildCache, name: string, action: BuildAction |
        * terminal for as long as the user is in it. */
       return withTerminalSuspended(() => executeInteractive(process.env.SHELL || "/bin/sh", [], dir, {}));
     })
-    .finally(() => cache.releaseWorkDir(dir));
+    .finally(() => cache.releaseWorkDir(sandbox));
 }
 
 /** Describe the command(s) the staged step would run, as `$ …` lines for the user to

@@ -319,7 +319,9 @@ function packageInfo(
     }
   }
   return {
-    packageLocation: `./${location}/`,
+    /* Yarn's spelling: a location in the table's directory is `./`-prefixed, one
+     * above it (the tree pool) is not. */
+    packageLocation: `${location.startsWith("../") ? "" : "./"}${location}/`,
     packageDependencies: [...own].sort(byText(([name]) => name)),
     linkType: "HARD",
   };

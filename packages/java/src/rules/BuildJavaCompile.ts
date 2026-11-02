@@ -127,7 +127,7 @@ function compileJava(context: TargetContext, { srcs, deps }: { srcs: FileSet[]; 
         sources.mountedAt(SOURCE_DIR),
         stagedJars(CLASSPATH_DIR, jars),
         stagedJars(PROCESSOR_PATH_DIR, processorPath),
-        new FileSet(new Map<string, IFile>([[ARGUMENTS_FILE, MemoryFile.from(argumentsText)], [TREE_MOUNT, pool.treePoolLink]]))
+        new FileSet(new Map<string, IFile>([[ARGUMENTS_FILE, MemoryFile.from(argumentsText)]]))
       );
       const argv = javac.toCommandLine([`@${ARGUMENTS_FILE}`], { base: path.posix.join(TREE_MOUNT, javac.toManifestHash()) });
       return createExecAction(files, argv, [`${COMPILED_CLASSES_DIR}/**`, `${GENERATED_SOURCES_DIR}/**`]);

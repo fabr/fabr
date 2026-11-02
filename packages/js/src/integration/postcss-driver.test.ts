@@ -38,11 +38,13 @@ describe("the postcss driver, composing from a dependency through fabr's table",
   let root: string;
 
   beforeEach(() => {
-    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-postcssdriver-")));
+    /* A step's working directory, in a directory of its own for the pool's link. */
+    root = path.join(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-postcssdriver-"))), "work");
+    fs.mkdirSync(root);
   });
 
   afterEach(() => {
-    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(path.dirname(root), { recursive: true, force: true });
   });
 
   const ds = (entries: Record<string, string>): PackageFileSet =>
@@ -59,7 +61,7 @@ describe("the postcss driver, composing from a dependency through fabr's table",
     );
 
   /**
-   * Stage a workspace as the step does — the pool mounted as one link, each
+   * Stage a workspace as the step does — the pool's link beside it, each
    * package's tree once, the manifest beside the sources — then scope `source`
    * as a css-module with `dep`'s stylesheets composable, and answer a reader of
    * the outputs.

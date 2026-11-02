@@ -72,6 +72,7 @@ import {
   TEST_EXPECTATIONS,
   TEST_REPORT_FILENAME,
   toEnvironment,
+  TREE_MOUNT,
   UPDATE_EXPECTATIONS,
   WriteBackFileSet,
 } from "@fabr-build/core";
@@ -529,8 +530,9 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
         ...(setupFile === undefined ? [] : [`--setup=./${setupFile}`]),
       ],
       /* The runner stays at the install root while the working directory is the
-       * compiled tree, so its entry is reached one level up. */
-      { base: `../${RUNNER_STAGE_DIR}` }
+       * compiled tree, so its entry, and the pool its node is in, are reached one
+       * level up. */
+      { base: `../${RUNNER_STAGE_DIR}`, pool: `../${TREE_MOUNT}` }
     );
     /* Under `check` the run's only output is the report; under `update` the
      * refreshed snapshot files are collected too. The selectors ride the action

@@ -40,7 +40,6 @@ import {
   stringConfig,
   stringListConfig,
   writeFileSet,
-  TREE_MOUNT,
 } from "@fabr-build/core";
 import { assembleNodeModules } from "./NodeModules";
 import { pnpManifestOf, treeMountOf } from "./PnPManifest";
@@ -146,18 +145,14 @@ export const NODE_EXEC_ACTION: IBuildActionDefinition = {
      * next miss that needs it rather than on every evaluation. */
     const manifest = pnpManifestOf(deps, selfPackage(action));
     const execPnP = (argv: string[], incremental?: Incremental, handover?: Handover): Computable<BuildResult> =>
-      mapComputable(manifest.packages, pkg => ctx.ensureTree(pkg)).then(trees =>
+      mapComputable(manifest.packages, pkg => ctx.ensureTree(pkg)).then(() =>
         exec(
           FileSet.unionAll(
             files,
             sourcePaths(EMPTY_FILESET, withPackages ? new Map(manifest.packages.map(pkg => [treeMountOf(pkg), pkg])) : undefined),
-            FileSet.layout({
-              [PNP_DATA_FILE]: manifest.toFile(),
-              /* The pool itself, mounted once: the manifest addresses trees by
-               * name, so one mount serves every row, and a table with no rows
-               * needs no mount at all. */
-              ...(trees.length > 0 ? { [TREE_MOUNT]: ctx.treePool } : {}),
-            })
+            /* The manifest addresses trees by name in the pool beside the
+             * working directory, so the trees need no mount of their own. */
+            FileSet.layout({ [PNP_DATA_FILE]: manifest.toFile() })
           ),
           argv,
           incremental,

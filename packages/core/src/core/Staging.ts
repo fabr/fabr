@@ -37,7 +37,7 @@ import { FileSet, IFile } from "./FileSet";
 import { FSFile } from "./FSFileSource";
 import { copyFile, deleteFile, hardlink, hashFile, mkdir, readOnlyPermissions, rename, symlink, walkTree, writeFile } from "./FSWrapper";
 import { Name } from "./Name";
-import { CacheLink, SymlinkFile } from "./SymlinkFile";
+import { SymlinkFile } from "./SymlinkFile";
 import { describeSystemError, killLiveChildren } from "../support/Execute";
 import { globMatcher } from "../support/Glob";
 
@@ -153,17 +153,6 @@ export function writeFileSet(targetDir: string, files: FileSet, options?: { copy
   function writeStaged(entries: typeof staged): Computable<void> {
     return mapComputable(entries, ({ name, file, targetName, dirname }) => {
       const filepath = file.getAbsPath();
-      if (file instanceof CacheLink) {
-        /* The one licensed escape from the staged tree, and it is per-CLASS, not
-         * a widening of the guard below. What licenses it is that being a cache
-         * link is not something content can claim: fabr constructs every one,
-         * nothing parses one back (so no delivered symlink can become one,
-         * whatever its target text spells), and the constructor has already
-         * checked the target stays inside the cache. The trust boundary is
-         * therefore the cache's own space — exactly the space the staged
-         * hardlinks already point into. */
-        return stage(symlink(cacheTargetOf(file), targetName), name);
-      }
       if (file instanceof SymlinkFile) {
         /* Security: a symlink whose target escapes the staged tree (via `..`, an
          * absolute path, or a symlinked parent component) could point at — or,
@@ -201,22 +190,6 @@ export function writeFileSet(targetDir: string, files: FileSet, options?: { copy
       );
     }).then(() => undefined);
   }
-}
-
-/**
- * Get where a cache link points on this machine. A {@link CacheLink} carries only a
- * cache-relative path — never a location, which is what keeps it portable
- * across cache moves — so the cache root rides along from whichever cache
- * produced the link. A link that has none cannot be staged: it names something
- * nothing can find, and silently dropping it (as the containment guard drops an
- * escaping symlink) would stage a subtly broken install instead.
- */
-function cacheTargetOf(file: CacheLink): string {
-  const target = file.resolveTarget();
-  if (target === undefined) {
-    throw new ExecutionError(`Cannot stage the cache link '${file.target}': it carries no cache location`);
-  }
-  return target;
 }
 
 /** Make a staged entry with its resolved destination and that destination's parent,
@@ -282,7 +255,7 @@ export function syncFileSet(targetDir: string, before: FileSet, after: FileSet):
     /* Same containment guard as writeFileSet: a symlink whose target escapes
      * the staged tree is silently not staged. */
     const written = changed.filter(({ file, dirname }) => {
-      if (!(file instanceof SymlinkFile) || file instanceof CacheLink) {
+      if (!(file instanceof SymlinkFile)) {
         return true;
       }
       realRoot ??= fs.realpathSync(root);
@@ -292,9 +265,6 @@ export function syncFileSet(targetDir: string, before: FileSet, after: FileSet):
     const writes = mapComputable(written, ({ file, targetName }) => {
       const temp = `${targetName}.fabr-sync-${process.pid}-${tempCounter++}`;
       const filepath = file.getAbsPath();
-      if (file instanceof CacheLink) {
-        return stageWrite(temp, targetName, symlink(cacheTargetOf(file), temp));
-      }
       if (file instanceof SymlinkFile) {
         return stageWrite(temp, targetName, symlink(file.target, temp));
       }

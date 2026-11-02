@@ -60,27 +60,31 @@ describe("RunnableFileSet.toCommandLine", () => {
     expect(bare.toCommandLine([], { anchor: "/staged" })).to.deep.equal([path.resolve("/staged", "bin/tool")]);
   });
 
-  it("runs through a runnable interpreter, reached by its hash under the tree pool's link", async () => {
+  it("runs through a runnable interpreter, reached by its hash in the tree pool beside the launch directory", async () => {
     const node = RunnableFileSet.forEntry(new Map([["bin/node", MemoryFile.from("node")]]), "bin/node", ["--flag"]);
-    const link = new SymlinkFile("pool");
     const ensured: string[] = [];
-    const pool = { ensureTree: (files: FileSet) => (ensured.push(files.toManifestHash()), Computable.resolve("unused")), treePoolLink: link };
+    const pool = { ensureTree: (files: FileSet) => (ensured.push(files.toManifestHash()), Computable.resolve("unused")) };
     const runnable = await new Promise<RunnableFileSet>((resolve, reject) =>
       RunnableFileSet.forEntry(new Map(), "run.js", ["fixed"]).launchedBy(node, pool).then(resolve, reject)
     );
-    const at = `${TREE_MOUNT}/${node.toManifestHash()}`;
-    expect(ensured).to.deep.equal([node.toManifestHash()]);
-    expect(new Map(runnable).get(TREE_MOUNT)).to.equal(link);
+    const hash = node.toManifestHash();
+    const at = `${TREE_MOUNT}/${hash}`;
+    expect(ensured).to.deep.equal([hash]);
+    /* The install carries nothing of the pool's. */
+    expect([...runnable]).to.deep.equal([]);
     expect(runnable.toCommandLine(["x"])).to.deep.equal([`${at}/bin/node`, "--flag", "run.js", "fixed", "x"]);
-    expect(runnable.toCommandLine([], { base: "tool" })).to.deep.equal([`tool/${at}/bin/node`, "--flag", "tool/run.js", "fixed"]);
-    expect(runnable.toCommandLine([], { anchor: "/staged" })).to.deep.equal([path.resolve("/staged", at, "bin/node"), "--flag", path.resolve("/staged", "run.js"), "fixed"]);
+    /* Mounted below the launch directory, the entry moves and the pool does not. */
+    expect(runnable.toCommandLine([], { base: "tool" })).to.deep.equal([`${at}/bin/node`, "--flag", "tool/run.js", "fixed"]);
+    expect(runnable.toCommandLine([], { base: "../tool", pool: `../${TREE_MOUNT}` })).to.deep.equal([`../${at}/bin/node`, "--flag", "../tool/run.js", "fixed"]);
+    expect(runnable.toCommandLine([], { anchor: "/staged/work" })).to.deep.equal([path.resolve("/staged/work", at, "bin/node"), "--flag", path.resolve("/staged/work", "run.js"), "fixed"]);
+    expect(path.resolve("/staged/work", at)).to.equal(`/staged/.fabr-tree/${hash}`);
   });
 });
 
 describe("RunnableFileSet arguments naming install files", () => {
   it("names an install file wherever the install is reached, the program's own options before its entry", async () => {
     const java = RunnableFileSet.forEntry(new Map([["bin/java", MemoryFile.from("java")]]), "bin/java");
-    const pool = { ensureTree: () => Computable.resolve("unused"), treePoolLink: new SymlinkFile("pool") };
+    const pool = { ensureTree: () => Computable.resolve("unused") };
     const program = await new Promise<RunnableFileSet>((resolve, reject) =>
       RunnableFileSet.forEntry(new Map(), "launcher.jar", [["--config=", { installPath: "etc/app.conf" }]])
         .launchedBy(java, pool, [["--module-path=", { installPath: "lib/a.jar" }, ":", { installPath: "lib/b.jar" }], "-jar"])
@@ -88,7 +92,7 @@ describe("RunnableFileSet arguments naming install files", () => {
     );
     const at = `${TREE_MOUNT}/${java.toManifestHash()}`;
     expect(program.toCommandLine([], { base: "tool" })).to.deep.equal([
-      `tool/${at}/bin/java`,
+      `${at}/bin/java`,
       "--module-path=tool/lib/a.jar:tool/lib/b.jar",
       "-jar",
       "tool/launcher.jar",

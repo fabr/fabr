@@ -138,7 +138,7 @@ function inDirectory(paths: ReadonlyMap<string, string>, staged: string): string
  * Name a staged path by the package whose files the table lists under a
  * directory containing it: `<package reference>:<path within>`. A package is
  * found by a row whose source path names its file under the package's
- * reference (`.fabr-tree/<hash>/lib/x.js` → `@npm:pkg:1.0.0:lib/x.js`), so a
+ * reference (`../.fabr-tree/<hash>/lib/x.js` → `@npm:pkg:1.0.0:lib/x.js`), so a
  * project file, named by its path, contributes none.
  */
 function packageReferences(paths: ReadonlyMap<string, string>): (staged: string) => string | undefined {

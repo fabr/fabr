@@ -146,8 +146,8 @@ for (const entry of opts.entries) {
     expect(result.status).to.equal(0);
     /* `in` is the path where the package's files are staged — not a copy
      * restaged at the bundle root. Under the default (manifest) resolution that
-     * is its tree under the pool mount. */
-    expect(result.stdout).to.match(/ENTRY=\.fabr-tree\/[0-9a-f]{64}\/index\.js/);
+     * is its tree in the pool beside the working directory. */
+    expect(result.stdout).to.match(/ENTRY=\.\.\/\.fabr-tree\/[0-9a-f]{64}\/index\.js/);
     expect(result.stdout).to.contain('const hello = "world";');
   });
 

@@ -58,9 +58,8 @@ import {
 /** A stand-in for the program the `NODE` global names. */
 const NODE = RunnableFileSet.forEntry(new Map([["bin/node", new MemoryFile(Buffer.from("#!/bin/sh\n"), 0o755)]]), "bin/node");
 
-/** A tree pool that keeps nothing, whose link is {@link POOL_LINK}. */
-const POOL_LINK = new SymlinkFile("pool");
-const POOL = { ensureTree: () => Computable.resolve("unused"), treePoolLink: POOL_LINK };
+/** A tree pool that keeps nothing. */
+const POOL = { ensureTree: () => Computable.resolve("unused") };
 
 /** A consumer whose `NODE` names {@link NODE}. */
 const NODE_CONTEXT: ResolutionContext = {
@@ -420,9 +419,8 @@ describe("makeNpmRunnable", () => {
       "1.0.0"
     );
     const runnable = await settle(makeNpmRunnable(NODE_CONTEXT, pkg));
-    expect(new Map(runnable).get(TREE_MOUNT)).to.equal(POOL_LINK);
     expect(runnable.toCommandLine(["x"], { base: "tool" })).to.deep.equal([
-      `tool/${TREE_MOUNT}/${NODE.toManifestHash()}/bin/node`,
+      `${TREE_MOUNT}/${NODE.toManifestHash()}/bin/node`,
       "tool/node_modules/tool/bin/tool.js",
       "x",
     ]);

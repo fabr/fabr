@@ -33,7 +33,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
-import { FileSet, IFile, MemoryFile, PackageFileSet, dependenciesOn } from "@fabr-build/core";
+import { FileSet, IFile, MemoryFile, PackageFileSet, TREE_MOUNT, dependenciesOn } from "@fabr-build/core";
 import { PNP_DATA_FILE, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "@fabr-build/js-tools";
 import { pnpManifestOf, treeMountOf } from "../PnPManifest";
 import { BundleDriver } from "@fabr-build/js-tools";
@@ -134,7 +134,9 @@ for (const layout of ["node_modules", "pnp"] as const) describe(`the bundle driv
   let work: string;
 
   beforeEach(() => {
-    work = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-variant-"));
+    /* A step's working directory, in a directory of its own for the pool's link. */
+    work = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-variant-")), "work");
+    fs.mkdirSync(work);
     /* One package reached two ways: an ESM importer and a CJS importer of the
      * same name, in one graph. Each copy carries a marker, so which of them the
      * bundle ended up holding is readable in the output. */
@@ -149,7 +151,7 @@ for (const layout of ["node_modules", "pnp"] as const) describe(`the bundle driv
   });
 
   afterEach(() => {
-    fs.rmSync(work, { recursive: true, force: true });
+    fs.rmSync(path.dirname(work), { recursive: true, force: true });
     process.exitCode = undefined;
   });
 
@@ -172,9 +174,9 @@ for (const layout of ["node_modules", "pnp"] as const) describe(`the bundle driv
     }
     const manifest = pnpManifestOf([new PackageFileSet(files, "dualpkg", "1.0.0", [])]);
     for (const pkg of manifest.packages) {
-      write(path.join(work, "store", path.basename(treeMountOf(pkg))));
+      write(path.join(work, "..", "store", path.basename(treeMountOf(pkg))));
     }
-    fs.symlinkSync(path.join(work, "store"), path.join(work, ".fabr-tree"));
+    fs.symlinkSync(path.join(work, "..", "store"), path.join(work, TREE_MOUNT));
     fs.writeFileSync(path.join(work, PNP_DATA_FILE), manifest.toFile().getBuffer().value as Buffer);
   }
 
@@ -286,11 +288,13 @@ describe("one package wired two ways, bundled by real esbuild through its virtua
   let work: string;
 
   beforeEach(() => {
-    work = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-virtualbundle-"));
+    /* A step's working directory, in a directory of its own for the pool's link. */
+    work = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-virtualbundle-")), "work");
+    fs.mkdirSync(work);
   });
 
   afterEach(() => {
-    fs.rmSync(work, { recursive: true, force: true });
+    fs.rmSync(path.dirname(work), { recursive: true, force: true });
     process.exitCode = undefined;
   });
 
@@ -301,7 +305,7 @@ describe("one package wired two ways, bundled by real esbuild through its virtua
     ]);
 
   /** The graph's manifest, staged as the step stages it: one physical tree per
-   * content in a store the workspace's pool mount links to. */
+   * content in a store the pool's link beside the workspace leads to. */
   function stage(): { left: PackageFileSet; right: PackageFileSet; manifest: ReturnType<typeof pnpManifestOf> } {
     const dep = (version: string): PackageFileSet =>
       new PackageFileSet(content("dep", version, `module.exports = { v: "dep${version}" };\n`), "dep", version, []);
@@ -313,7 +317,7 @@ describe("one package wired two ways, bundled by real esbuild through its virtua
       new PackageFileSet(shared, "shared", "1.0.0", dependenciesOn(dep("2.0.0")))
     ));
     const manifest = pnpManifestOf([left, right]);
-    const store = path.join(work, "store");
+    const store = path.join(work, "..", "store");
     for (const pkg of manifest.packages) {
       const tree = path.join(store, path.basename(treeMountOf(pkg)));
       fs.mkdirSync(tree, { recursive: true });
@@ -321,7 +325,7 @@ describe("one package wired two ways, bundled by real esbuild through its virtua
         fs.writeFileSync(path.join(tree, name), (file as MemoryFile).getBuffer().value as Buffer);
       }
     }
-    fs.symlinkSync(store, path.join(work, ".fabr-tree"));
+    fs.symlinkSync(store, path.join(work, TREE_MOUNT));
     fs.writeFileSync(path.join(work, PNP_DATA_FILE), manifest.toFile().getBuffer().value as Buffer);
     return { left, right, manifest };
   }
@@ -364,7 +368,7 @@ describe("one package wired two ways, bundled by real esbuild through its virtua
      * fabr built does; every other file is named by the step's table. */
     const { manifest } = stage();
     const left = manifest.packages.find(pkg => pkg.packageName === "left")!;
-    const leftTree = path.join(work, "store", path.basename(treeMountOf(left)));
+    const leftTree = path.join(work, "..", "store", path.basename(treeMountOf(left)));
     fs.appendFileSync(path.join(leftTree, "index.js"), "//# sourceMappingURL=index.js.map\n");
     fs.writeFileSync(
       path.join(leftTree, "index.js.map"),
@@ -405,7 +409,7 @@ describe("one package wired two ways, bundled by real esbuild through its virtua
      * and no staging path may reach the shipped map. */
     const { manifest } = stage();
     const left = manifest.packages.find(pkg => pkg.packageName === "left")!;
-    const leftTree = path.join(work, "store", path.basename(treeMountOf(left)));
+    const leftTree = path.join(work, "..", "store", path.basename(treeMountOf(left)));
     fs.appendFileSync(path.join(leftTree, "index.js"), "//# sourceMappingURL=dist/index.js.map\n");
     fs.mkdirSync(path.join(leftTree, "dist"), { recursive: true });
     fs.writeFileSync(
@@ -480,18 +484,20 @@ describe("bundle errors, over real esbuild", () => {
   let work: string;
 
   beforeEach(() => {
-    work = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-bundleerrors-"));
+    /* A step's working directory, in a directory of its own for the pool's link. */
+    work = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-bundleerrors-")), "work");
+    fs.mkdirSync(work);
   });
 
   afterEach(() => {
-    fs.rmSync(work, { recursive: true, force: true });
+    fs.rmSync(path.dirname(work), { recursive: true, force: true });
     process.exitCode = undefined;
   });
 
   /** Stage `packages` as the step does, bundle `entry.js`, and answer stderr. */
   async function bundleErrors(packages: PackageFileSet[], entry: string): Promise<string> {
     const manifest = pnpManifestOf(packages);
-    const store = path.join(work, "store");
+    const store = path.join(work, "..", "store");
     for (const pkg of manifest.packages) {
       const tree = path.join(store, path.basename(treeMountOf(pkg)));
       for (const [name, file] of pkg as FileSet) {
@@ -499,7 +505,7 @@ describe("bundle errors, over real esbuild", () => {
         fs.writeFileSync(path.join(tree, name), (file as MemoryFile).getBuffer().value as Buffer);
       }
     }
-    fs.symlinkSync(store, path.join(work, ".fabr-tree"));
+    fs.symlinkSync(store, path.join(work, TREE_MOUNT));
     fs.writeFileSync(path.join(work, PNP_DATA_FILE), manifest.toFile().getBuffer().value as Buffer);
     fs.writeFileSync(path.join(work, "entry.js"), entry);
     fs.writeFileSync(
@@ -565,6 +571,7 @@ describe("bundle errors, over real esbuild", () => {
 describe("treeOf", () => {
   it("answers the pooled tree a staged path belongs to", () => {
     assert.equal(treeOf(".fabr-tree/abc123/lib/deep/sub"), ".fabr-tree/abc123");
+    assert.equal(treeOf("../.fabr-tree/abc123/lib/deep/sub"), "../.fabr-tree/abc123");
     assert.equal(treeOf("/work/w-1/.fabr-tree/abc123"), "/work/w-1/.fabr-tree/abc123");
     assert.equal(
       treeOf("/work/w-1/.fabr-tree/__virtual__/0123456789abcdef/0/abc123/lib"),

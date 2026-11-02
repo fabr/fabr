@@ -95,7 +95,7 @@ describe("pnpManifestOf", () => {
     const chalk = pkg("chalk", "1.0.0", [styles]);
     const manifest = pnpManifestOf([chalk]);
     const [reference, info] = [...rowsOf(manifest, "chalk")][0];
-    expect(info.packageLocation).to.equal(`./${treeMountOf(chalk)}/`);
+    expect(info.packageLocation).to.equal(`${treeMountOf(chalk)}/`);
     expect(info.linkType).to.equal("HARD");
     /* Its own name resolves to itself (a package may import itself), and its
      * edge to the row that answers it. */
@@ -130,9 +130,10 @@ describe("pnpManifestOf", () => {
     const rows = [...rowsOf(manifest, "shared").values()];
     expect(rows).to.have.lengthOf(2);
     expect(rows[0].packageLocation).to.not.equal(rows[1].packageLocation);
-    const tree = `/root/${treeMountOf(left)}/`;
+    const tree = `${path.posix.join("/root", treeMountOf(left))}/`;
     for (const row of rows) {
-      expect(row.packageLocation).to.match(new RegExp(`^\\./${TREE_MOUNT}/__virtual__/[0-9a-f]{16}/0/`));
+      expect(row.packageLocation.startsWith(`${TREE_MOUNT}/__virtual__/`)).to.equal(true);
+      expect(row.packageLocation).to.match(/\/__virtual__\/[0-9a-f]{16}\/0\//);
       expect(resolveVirtual(path.posix.join("/root", row.packageLocation))).to.equal(tree);
     }
     expect(dependencyOf(rows[0], "dep")).to.not.equal(dependencyOf(rows[1], "dep"));
@@ -167,7 +168,7 @@ describe("pnpManifestOf", () => {
     const aliased = [...rowsOf(manifest, "stream").values()][0];
     /* One content entry, reached under the alias: the restamp is a row, never a
      * copy. */
-    expect(aliased.packageLocation).to.equal(`./${treeMountOf(real)}/`);
+    expect(aliased.packageLocation).to.equal(`${treeMountOf(real)}/`);
     expect(rowsOf(manifest, "stream-browserify").size).to.equal(0);
   });
 
@@ -358,7 +359,7 @@ describe("treeMountOf", () => {
      * manifest, with nothing to un-salt on the way — and it is the same name
      * the cache derives for itself from the files (BuildCache.ensureTree). */
     const delivered = pkg("tar-stream", "1.0.0", [pkg("b4a")]);
-    expect(treeMountOf(delivered)).to.equal(`.fabr-tree/${delivered.toManifestHash()}`);
+    expect(treeMountOf(delivered)).to.equal(`../.fabr-tree/${delivered.toManifestHash()}`);
     expect(packageNodeSignature(delivered)).to.contain(delivered.toManifestHash());
   });
 

@@ -485,11 +485,13 @@ describe("PnpResolver over one package wired two ways", () => {
   let root: string;
 
   beforeEach(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-pnpvariant-"));
+    /* A step's working directory, in a directory of its own for the tree pool. */
+    root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-pnpvariant-")), "work");
+    fs.mkdirSync(root);
   });
 
   afterEach(() => {
-    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(path.dirname(root), { recursive: true, force: true });
   });
 
   const files = (tag: string): Map<string, IFile> =>
