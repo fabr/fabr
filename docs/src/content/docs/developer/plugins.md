@@ -272,6 +272,7 @@ export default defineRule({
 | `requirements` | Returns what resolution needs to know of the target (what it requires, and what it builds), or a `Computable` of it: see [Requirements](#requirements). |
 | `evaluateMaterialized` | Builds the target from its requirements, each given its content first: see [Evaluate](#evaluate). |
 | `evaluateResolved` | Builds the target from its requirements as resolved, giving them content when it asks. A rule has this or `evaluateMaterialized`, not both. |
+| `describe` | Describes the target for an editor, as the rule would build it, without building it: see [Describe](#describe). Optional. |
 | `value` | `true` for a target that is a value with nothing to build, such as a flag: the rule is evaluated where the target is read, and its result stands for the target. |
 
 Fabr loads an implementation the first time its rule builds a target, so a rule that builds nothing
@@ -416,6 +417,37 @@ from the `inputs` you hand it, through the same rule a declared target of that t
 returns its output for you to use in your own action or result. A rule reads a sub-target's
 inputs with the same property readers it uses for a declared target. Actions do not nest:
 composition is always through sub-targets.
+
+### Describe
+
+`describe(context, requirements)` describes the target as the rule would build it under the
+configuration it is asked in, for an editor or another tool that needs to know what the build would
+do, without building it. [`fabr build-server`](/reference/command-line/#build-server) serves
+each target's description over the [Build Server
+Protocol](https://build-server-protocol.github.io/docs/specification). It receives the requirements
+as `evaluateResolved` does, and returns the description's files (a `FileSet`, or a `BuildAction`
+producing one, or a `Computable` of either):
+
+- `describe.json`, a BSP `BuildTarget`, its `SourceItem`s and the directories they are named from,
+  made with `describeTarget(context, requirements.resolved, options)` and
+  `descriptionFile(description)` from `@fabr-build/core`: `options` names the target's sources
+  and gives its `tags`, `languageIds`, its language payload as `dataKind` and `data`, and the
+  answers to the language requests BSP makes of it (`javacOptions`);
+- whatever files the payload and answers name, at the paths they name them by.
+
+A description names a project file as `./<path from the project root>` and a file of the
+description by its path within it; the server makes both absolute. The Java plugin, for instance,
+lays the classpath's jars out in the description and names them in `javacOptions`.
+
+`requirements.describeAll()` gives every requirement content as a description needs it: a target
+whose rule describes it is given its description (a `DescribedPackage` where it builds a
+package), and everything else its content. A package's description holds, beside the description
+itself, the files the package ships as they are, at their paths in the package, so that a step
+reading a dependency's files (Sass loading a partial) finds them in its description. So describing a target builds none of the targets it
+requires, only fetching what they depend on. `context.describeSubTarget(type, inputs, options)` is
+`subTarget`'s counterpart, describing an anonymous target through its rule's `describe`.
+
+A rule with no `describe` leaves its targets undescribed under that operation.
 
 ## Repository types
 

@@ -50,6 +50,7 @@ import {
   Name,
   PackageFileSet,
   RuleResult,
+  RunnableFileSet,
   TargetContext,
 } from "@fabr-build/core";
 import {
@@ -64,6 +65,7 @@ import {
 } from "../JSPackage";
 import { createNodeExecAction, PNP } from "../NodeExecAction";
 import { assertOnePackagePerName } from "../PnPManifest";
+import { describeUnit } from "../Description";
 import {
   CHANGES_FILE,
   CHANGES_FLAG,
@@ -89,6 +91,13 @@ export default defineRule({
   },
   evaluateMaterialized(context, inputs) {
     return compileTypescript(context, inputs);
+  },
+  /* The compilation unit an editor's TypeScript server is shown in place of the compile. */
+  describe(context, requirements) {
+    return requirements
+      .describeAll()
+      .then(inputs => compileSetup(context, inputs))
+      .then(setup => (setup === undefined ? EMPTY_FILESET : describeUnit(setup)));
   },
 });
 
@@ -341,27 +350,48 @@ export function importRewrites(rewrites: Name[]): Array<{ pattern: string; repla
 }
 
 /** A compile's requirements, materialized. */
-interface CompileInputs {
+export interface CompileInputs {
   srcs: FileSet[];
   deps: FileSet[];
   resources: FileSet[];
 }
 
-function compileTypescript(context: TargetContext, { srcs: srcSets, deps, resources }: CompileInputs): Computable<RuleResult> {
+/** What a compile is made of, worked out from its requirements and its configuration. */
+export interface ICompileSetup {
+  /** The tsconfig the compile runs with. */
+  tsconfig: Record<string, unknown>;
+  /** The sources, as the compile stages them under `src/`. */
+  srcs: FileSet;
+  /** The direct dependencies, packages and flags. */
+  deps: FileSet[];
+  /** The package the sources may import themselves as. */
+  packageName?: string;
+  moduleExtension?: string;
+  rewrites?: Array<{ pattern: string; replacement: string }>;
+  /** The delivered files no step compiles. */
+  resources: FileSet;
+}
+
+/** @return the names of `resources`, sorted, as the compile's driver is told them. */
+function resourceNamesOf(resources: FileSet): string[] {
+  return [...resources].map(([name]) => name).sort();
+}
+
+/** Work out the compile `inputs` make in `context`'s configuration, or undefined if they make none. */
+export function compileSetup(context: TargetContext, { srcs: srcSets, deps, resources }: CompileInputs): Computable<ICompileSetup | undefined> {
   if (srcSets.every(srcs => srcs.isEmpty())) {
-    return Computable.resolve(EMPTY_FILESET);
+    return Computable.resolve(undefined);
   }
   return Computable.forAll(
     [
       context.getGlobalString("JS_TARGET"),
-      context.getGlobalRunnable("TSC_DRIVER"),
       context.getGlobalString("BUILD_TYPE"),
       context.getProperty("package_name"),
       context.getProperty("module_extension"),
       context.getRewriteRules("rewrite_imports"),
       context.getGlobalString(COVERAGE),
     ],
-    (target, driver, buildType, packageNameProp, moduleExtensionProp, rewriteRules, coverage) => {
+    (target, buildType, packageNameProp, moduleExtensionProp, rewriteRules, coverage) => {
       assertOnePackagePerName(deps);
       /* Source-mode flags (strictness relaxations, the ES level) ride among
        * `deps` like any other dep; a flag materializes to nothing. */
@@ -396,11 +426,10 @@ function compileTypescript(context: TargetContext, { srcs: srcSets, deps, resour
        * itself; a compile declaring none carries no file, no flag, and no
        * change of key. */
       const rewrites = importRewrites(rewriteRules);
-      /* The target's delivered files no step compiles, by NAME — an import of
-       * one resolves as an empty module. Sorted, so the document is a function
-       * of the set and not of the order the sets were unioned. */
-      const resourceNames = [...FileSet.unionAll(...(resources ?? []))].map(([name]) => name).sort();
-      const build = (jsxImportSource: string): RuleResult => {
+      /* The target's delivered files no step compiles: an import of one
+       * resolves as an empty module. */
+      const resourceSet = FileSet.unionAll(...(resources ?? []));
+      const setup = (jsxImportSource: string): ICompileSetup => {
         const jsx = jsxImportSource ? { mode: jsxModeFor(buildType), importSource: jsxImportSource } : undefined;
         const tsconfig = makeTsConfig(
           jsTarget,
@@ -413,82 +442,94 @@ function compileTypescript(context: TargetContext, { srcs: srcSets, deps, resour
           automaticTypes(deps),
           emitsSourceMap(buildType) || coverage === COVERAGE_ON
         );
-        const workspace = {
-          [COMPILE_SRC_DIR]: srcs,
-          /* The driver's own install, compiler included: `typescript` is one of
-           * its declared dependencies, so it sits in the install's node_modules
-           * and the driver requires it from there. One mount, one pin
-           * (${TYPESCRIPT}) governing what compiles the sources. */
-          [TOOL_DIR]: driver,
-        };
-        /* The generated configuration, staged beside the sources but keyed as
-         * config: each distinct tsconfig (a format-pinned test compile, a
-         * release build) is its own target key with its own incremental base,
-         * and a config change never appears in the diff as a file no edge can
-         * bound. */
-        const config = FileSet.layout({
-          "tsconfig.json": new MemoryFile(Buffer.from(JSON.stringify(tsconfig))),
-          ...(rewrites ? { [REWRITES_FILE]: MemoryFile.from(JSON.stringify(rewrites)) } : {}),
-          ...(resourceNames.length === 0 ? {} : { [RESOURCES_FILE]: MemoryFile.from(JSON.stringify(resourceNames)) }),
-        });
-        /* The tool launches from its own mount (its deps resolve there); cwd is
-         * the workspace root, so `include` and dependency resolution alike
-         * resolve against the staged workspace.
-         *
-         * The dependencies go over UNASSEMBLED, with the layout named rather
-         * than built: composition is a table the step generates on a miss, so
-         * evaluation stages nothing and a hit costs nothing. */
-        /* The ES-module format of a dual package emits `.mjs` so its tree can ship
-         * beside the CommonJS format's. The driver does the renaming, because the
-         * specifiers it writes have to name the renamed siblings. */
-        const emitExtension = moduleExtension ? ["--emit-extension", moduleExtension] : [];
-        const rewriteFlag = rewrites ? [REWRITES_FLAG, REWRITES_FILE] : [];
-        const resourcesFlag = resourceNames.length === 0 ? [] : [RESOURCES_FLAG, RESOURCES_FILE];
-        return createNodeExecAction(
-          FileSet.layout(workspace),
-          deps,
-          driver.toCommandLine(
-            [
-              ...emitExtension,
-              ...rewriteFlag,
-              ...resourcesFlag,
-              DEPS_REPORT_FLAG,
-              DEPS_REPORT_FILE,
-              STATE_DIR_FLAG,
-              STATE_DIR,
-              CHANGES_FLAG,
-              CHANGES_FILE,
-              SOURCE_PATHS_FLAG,
-              SOURCE_PATHS_FILE,
-            ],
-            { base: TOOL_DIR }
-          ),
-          `${COMPILE_OUT_DIR}:**`,
-          {
-            layout: PNP,
-            label: "compile",
-            config,
-            /* The four locations the argv above names, so the step stages and
-             * collects the files the driver was told to use. The compile reads
-             * a handful of declaration files out of a whole closure and reports
-             * which, so the entry is keyed on that selection rather than on the
-             * whole deps input — editing a dependency this compile never opened
-             * then costs nothing. And it compiles incrementally: handed the last
-             * green build of this target key — its state, its output, and what
-             * changed since — the driver plans for itself and checks and emits
-             * only what the change reaches. */
-            depsReport: DEPS_REPORT_FILE,
-            stateDir: STATE_DIR,
-            changes: CHANGES_FILE,
-            sourcePaths: SOURCE_PATHS_FILE,
-            /* The sources' own package identity is a row like any other, which
-             * is how a package's references to itself resolve without the
-             * compiler ever searching for them. */
-            self: packageName ? { name: packageName, location: `./${COMPILE_SRC_DIR}/` } : undefined,
-          }
-        );
+        return { tsconfig, srcs, deps, packageName, moduleExtension, rewrites, resources: resourceSet };
       };
-      return hasJsx ? resolveJsxImportSource(deps).then(build) : build("");
+      return hasJsx ? resolveJsxImportSource(deps).then(setup) : setup("");
+    }
+  );
+}
+
+function compileTypescript(context: TargetContext, inputs: CompileInputs): Computable<RuleResult> {
+  return compileSetup(context, inputs).then(setup =>
+    setup === undefined ? EMPTY_FILESET : context.getGlobalRunnable("TSC_DRIVER").then(driver => compileAction(setup, driver))
+  );
+}
+
+/** Make the compile action for `setup`, run by `driver`. */
+function compileAction({ tsconfig, srcs, deps, packageName, moduleExtension, rewrites, resources }: ICompileSetup, driver: RunnableFileSet): RuleResult {
+  const resourceNames = resourceNamesOf(resources);
+  const workspace = {
+    [COMPILE_SRC_DIR]: srcs,
+    /* The driver's own install, compiler included: `typescript` is one of
+     * its declared dependencies, so it sits in the install's node_modules
+     * and the driver requires it from there. One mount, one pin
+     * (${TYPESCRIPT}) governing what compiles the sources. */
+    [TOOL_DIR]: driver,
+  };
+  /* The generated configuration, staged beside the sources but keyed as
+   * config: each distinct tsconfig (a format-pinned test compile, a
+   * release build) is its own target key with its own incremental base,
+   * and a config change never appears in the diff as a file no edge can
+   * bound. */
+  const config = FileSet.layout({
+    "tsconfig.json": new MemoryFile(Buffer.from(JSON.stringify(tsconfig))),
+    ...(rewrites ? { [REWRITES_FILE]: MemoryFile.from(JSON.stringify(rewrites)) } : {}),
+    ...(resourceNames.length === 0 ? {} : { [RESOURCES_FILE]: MemoryFile.from(JSON.stringify(resourceNames)) }),
+  });
+  /* The tool launches from its own mount (its deps resolve there); cwd is
+   * the workspace root, so `include` and dependency resolution alike
+   * resolve against the staged workspace.
+   *
+   * The dependencies go over UNASSEMBLED, with the layout named rather
+   * than built: composition is a table the step generates on a miss, so
+   * evaluation stages nothing and a hit costs nothing. */
+  /* The ES-module format of a dual package emits `.mjs` so its tree can ship
+   * beside the CommonJS format's. The driver does the renaming, because the
+   * specifiers it writes have to name the renamed siblings. */
+  const emitExtension = moduleExtension ? ["--emit-extension", moduleExtension] : [];
+  const rewriteFlag = rewrites ? [REWRITES_FLAG, REWRITES_FILE] : [];
+  const resourcesFlag = resourceNames.length === 0 ? [] : [RESOURCES_FLAG, RESOURCES_FILE];
+  return createNodeExecAction(
+    FileSet.layout(workspace),
+    deps,
+    driver.toCommandLine(
+      [
+        ...emitExtension,
+        ...rewriteFlag,
+        ...resourcesFlag,
+        DEPS_REPORT_FLAG,
+        DEPS_REPORT_FILE,
+        STATE_DIR_FLAG,
+        STATE_DIR,
+        CHANGES_FLAG,
+        CHANGES_FILE,
+        SOURCE_PATHS_FLAG,
+        SOURCE_PATHS_FILE,
+      ],
+      { base: TOOL_DIR }
+    ),
+    `${COMPILE_OUT_DIR}:**`,
+    {
+      layout: PNP,
+      label: "compile",
+      config,
+      /* The four locations the argv above names, so the step stages and
+       * collects the files the driver was told to use. The compile reads
+       * a handful of declaration files out of a whole closure and reports
+       * which, so the entry is keyed on that selection rather than on the
+       * whole deps input — editing a dependency this compile never opened
+       * then costs nothing. And it compiles incrementally: handed the last
+       * green build of this target key — its state, its output, and what
+       * changed since — the driver plans for itself and checks and emits
+       * only what the change reaches. */
+      depsReport: DEPS_REPORT_FILE,
+      stateDir: STATE_DIR,
+      changes: CHANGES_FILE,
+      sourcePaths: SOURCE_PATHS_FILE,
+      /* The sources' own package identity is a row like any other, which
+       * is how a package's references to itself resolve without the
+       * compiler ever searching for them. */
+      self: packageName ? { name: packageName, location: `./${COMPILE_SRC_DIR}/` } : undefined,
     }
   );
 }

@@ -23,6 +23,7 @@ import type { IProjection } from "./Reference";
 import { Computable, ComputableSource } from "./Computable";
 import { IDiagnosticNote } from "../support/Log";
 import {
+  derivedFromOf,
   IProvenanceStep,
   IRenameStep,
   namingDigest,
@@ -263,16 +264,32 @@ export class FileSet implements FileSource {
     return sourcePathOf(this.origin, name);
   }
 
+  /** Get what the file this set names `name` was produced from, as its
+   *  provenance gives it ({@link derivedFromOf}); undefined where no step
+   *  derived it. */
+  public derivedFromOf(name: string): string | undefined {
+    return derivedFromOf(this.origin, name);
+  }
+
   /** What its files' source paths depend on besides their names, as a hash:
    *  equal digests mean every name has the same source path. Empty where none
    *  has one. What an action's key records of an input in place of each file's
    *  source path. */
   public get sourcePathsDigest(): string {
     if (this.sourcePathsDigestText === undefined) {
-      const text = sourcePathsDigestOf(this.origin);
-      this.sourcePathsDigestText = text === "" ? "" : hashString(text);
+      this.sourcePathsDigestText = this.sourcePathsDigestOf([...this.content.keys()]);
     }
     return this.sourcePathsDigestText;
+  }
+
+  /** @return what the source paths of `names`, files of this set, depend on
+   *  besides the names, as a hash ({@link sourcePathsDigest} of those alone). */
+  public sourcePathsDigestOf(names: ReadonlyArray<string>): string {
+    if (names.length === this.content.size && this.sourcePathsDigestText !== undefined) {
+      return this.sourcePathsDigestText;
+    }
+    const text = sourcePathsDigestOf(this.origin, names);
+    return text === "" ? "" : hashString(text);
   }
 
   /** The prefix every file's source path is formed from, `<prefix><name>`,
@@ -679,6 +696,17 @@ registerProvenanceRenderer(FILESET_MERGE_PROVENANCE, (step, context): IDiagnosti
 /* A merge repositions content, so it must rebase before delegating — the same
  * "strip the mount prefix, find the holder, recurse" walk the renderer does. */
 registerProvenanceNaming(FILESET_MERGE_PROVENANCE, {
+  /* The least of the holders' answers, for the same reason as the source path's. */
+  derivedFrom: (step, path) => {
+    let least: string | undefined;
+    for (const { fileset, rel } of holdersOf(step as IMergeOrigin, path)) {
+      const from = fileset.derivedFromOf(rel);
+      if (from !== undefined && (least === undefined || from < least)) {
+        least = from;
+      }
+    }
+    return least;
+  },
   /* Where several contributors hold the name — one file, deduplicated by the
    * union — the least of their source paths, so it does not depend on the
    * order the union was given them in. */
@@ -696,15 +724,43 @@ registerProvenanceNaming(FILESET_MERGE_PROVENANCE, {
    * same reason. Where another contributor's mount overlaps its own, which of
    * them answers for a name depends on the names each holds, so those are
    * recorded too. */
-  digest: step => {
-    const { sources: all } = step as IMergeOrigin;
+  digest: (step, names) => {
+    /* Each contributor holding one of the names, with the names it holds. */
+    const merge = step as IMergeOrigin;
+    const holding = new Map<IMergeSource, string[]>(
+      names === undefined ? merge.sources.map(source => [source, [...source.fileset].map(([name]) => name)]) : []
+    );
+    for (const name of names ?? []) {
+      for (let end = 0; end !== -1; end = name.indexOf("/", end) + 1 || -1) {
+        const prefix = name.slice(0, end);
+        for (const source of merge.byPrefix.get(prefix) ?? []) {
+          const rel = name.slice(prefix.length);
+          if (source.fileset.getFile(rel) !== undefined) {
+            const rels = holding.get(source);
+            if (rels === undefined) {
+              holding.set(source, [rel]);
+            } else {
+              rels.push(rel);
+            }
+          }
+        }
+      }
+    }
+    const held = [...holding]
+      .map(([{ prefix, fileset }, rels]) => ({ prefix, fileset, names: rels }))
+      .filter(({ names: rels }) => rels.length > 0);
+    /* One contributor, at the root, names its files as it would alone. */
+    if (held.length === 1 && held[0].prefix === "") {
+      return sourcePathsDigestOf(held[0].fileset.origin, held[0].names);
+    }
     const overlaps = (prefix: string): boolean =>
-      all.filter(other => other.prefix.startsWith(prefix) || prefix.startsWith(other.prefix)).length > 1;
-    const sources = all
-      .filter(({ fileset }) => fileset.sourcePathsDigest !== "")
-      .map(({ prefix, fileset }) => {
-        const names = overlaps(prefix) ? ` ${hashString([...fileset].map(([name]) => name).sort().join("\n"))}` : "";
-        return `${JSON.stringify(prefix)}${names} ${fileset.sourcePathsDigest}`;
+      held.filter(other => other.prefix.startsWith(prefix) || prefix.startsWith(other.prefix)).length > 1;
+    const sources = held
+      .map(({ prefix, fileset, names: holding }) => ({ prefix, holding, digest: fileset.sourcePathsDigestOf(holding) }))
+      .filter(({ digest }) => digest !== "")
+      .map(({ prefix, holding, digest }) => {
+        const listed = overlaps(prefix) ? ` ${hashString([...holding].sort().join("\n"))}` : "";
+        return `${JSON.stringify(prefix)}${listed} ${digest}`;
       })
       .sort();
     return sources.length === 0 ? "" : namingDigest(FILESET_MERGE_PROVENANCE, sources.join(" "), "");

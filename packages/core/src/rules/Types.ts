@@ -203,6 +203,14 @@ export interface RuleImplementation {
    * caller-supplied inputs).
    */
   evaluate: (context: TargetContext, requirements: Unmaterialized<Record<string, RequiredSources>>) => Computable<RuleResult>;
+  /**
+   * Describe the target as this rule would build it, for tools other than
+   * fabr (an editor, a language server; see support/Description): given its
+   * requirements as `evaluate` is, it yields the description's files, or a
+   * build step that makes them. Optional: under a rule without it, the target
+   * is not described.
+   */
+  describe?: (context: TargetContext, requirements: Unmaterialized<Record<string, RequiredSources>>) => Computable<RuleResult>;
 }
 
 /** The `evaluate` a rule given to {@link defineRule} states: one of the two. */
@@ -226,27 +234,34 @@ type RuleEvaluation<P> =
  */
 export function defineRule<P extends Record<string, RequiredSources>>(
   rule: SelectableRule &
-    Omit<RuleImplementation, "requirements" | "evaluate"> & {
+    Omit<RuleImplementation, "requirements" | "evaluate" | "describe"> & {
       requirements: (context: TargetContext) => ResolutionSpec<P> | Computable<ResolutionSpec<P>>;
+      describe?: (context: TargetContext, requirements: Unmaterialized<P>) => Computable<RuleResult>;
     } & RuleEvaluation<P>
 ): RuleDefinition;
 export function defineRule<P extends Record<string, RequiredSources> = Record<string, never>>(
-  rule: Omit<RuleImplementation, "requirements" | "evaluate"> & {
+  rule: Omit<RuleImplementation, "requirements" | "evaluate" | "describe"> & {
     requirements?: (context: TargetContext) => ResolutionSpec<P> | Computable<ResolutionSpec<P>>;
+    describe?: (context: TargetContext, requirements: Unmaterialized<P>) => Computable<RuleResult>;
   } & RuleEvaluation<P>
 ): RuleImplementation;
 export function defineRule<P extends Record<string, RequiredSources>>(
   rule: Partial<SelectableRule> &
-    Omit<RuleImplementation, "requirements" | "evaluate"> & {
+    Omit<RuleImplementation, "requirements" | "evaluate" | "describe"> & {
       requirements?: (context: TargetContext) => ResolutionSpec<P> | Computable<ResolutionSpec<P>>;
+      describe?: (context: TargetContext, requirements: Unmaterialized<P>) => Computable<RuleResult>;
     } & RuleEvaluation<P>
 ): RuleImplementation {
-  const { evaluateResolved, evaluateMaterialized, ...definition } = rule;
+  const { evaluateResolved, evaluateMaterialized, describe, ...definition } = rule;
   const evaluate: (context: TargetContext, requirements: Unmaterialized<P>) => Computable<RuleResult> =
     evaluateMaterialized === undefined
       ? evaluateResolved
       : (context, requirements) => requirements.materializeAll().then(materialized => evaluateMaterialized(context, materialized));
-  return { ...definition, evaluate: evaluate as RuleImplementation["evaluate"] };
+  return {
+    ...definition,
+    evaluate: evaluate as RuleImplementation["evaluate"],
+    ...(describe === undefined ? {} : { describe: describe as RuleImplementation["describe"] }),
+  };
 }
 
 /** A repository type contributed to a build. */

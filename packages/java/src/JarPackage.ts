@@ -30,6 +30,7 @@ import {
   BUILD_OVERRIDE,
   BuildResult,
   Computable,
+  DescribedPackage,
   FabrError,
   FileSet,
   fileSetInput,
@@ -105,10 +106,13 @@ function closureOf(packages: readonly PackageFileSet[]): PackageFileSet[] {
  * Get the classpath `deps` make: the jars of every package they hold or
  * reach, nearest first, then any loose jars among them. Each is named where
  * it is laid out, `<package name>/<file>` (a loose jar by its own name), so
- * two packages' jars never collide.
+ * two packages' jars never collide. A described package holds a description,
+ * not jars: it adds none, but what it requires does.
  */
 export function classpathOf(deps: readonly FileSet[]): Array<[string, IFile]> {
-  const packages = closureOf(deps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet));
+  const packages = closureOf(deps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet)).filter(
+    pkg => !(pkg instanceof DescribedPackage)
+  );
   const jarsOf = (files: FileSet, under: string): Array<[string, IFile]> =>
     [...files].filter(([name]) => name.endsWith(".jar")).map(([name, file]) => [under === "" ? name : `${under}/${name}`, file]);
   const loose = deps.filter(dep => !(dep instanceof PackageFileSet) && !(dep instanceof Flag));

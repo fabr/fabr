@@ -18,6 +18,7 @@
  */
 
 import * as fs from "node:fs";
+import * as path from "node:path";
 import * as os from "node:os";
 import * as nodePath from "node:path";
 import { Computable } from "../core/Computable";
@@ -37,7 +38,7 @@ import {
   Resolved,
 } from "../core/Repository";
 import { dependencyName, isPackage, PackageFileSet, ResolvedNode } from "../core/PackageFileSet";
-import { buildOperation } from "../Fabr";
+import { buildOperation, describeOperation } from "../Fabr";
 import { materializeTargets, TargetRef } from "../core/TargetRef";
 import { ResolvedTarget } from "./ResolvedTarget";
 import { PublishableFileSet } from "../core/PublishableFileSet";
@@ -58,6 +59,7 @@ import { BuildContext, InternalBuildContext } from "./BuildContext";
 import { ResolvedRequirements } from "./Collection";
 import { mapEntryOrigin, PropertyMap, PropertyMapValue } from "./PropertyMap";
 import { BUILD_OPERATION, BUILD_OVERRIDE, Constraints, FILES_OPERATION } from "../model/Constraints";
+import { DESCRIPTION_FILE, describeTarget, descriptionFile } from "../support/Description";
 import { SEMVER, SemverConstraint, SemverVersion, versionToString } from "../resolver/Semver";
 import { PackageFormat } from "../resolver/PackageFormat";
 import { Requirement } from "../resolver/Types";
@@ -182,6 +184,14 @@ testRules.push(
       Computable.forAll([requirements.packages("dependencies"), context.getGlobalString("MODE")], (dependencies, mode) =>
         new PackageFileSet(new Map([["mode.txt", MemoryFile.from(mode)]]), context.name, undefined, dependencies)
       ),
+    /* Its description: core's fields, the files of its `deps` as its sources, and a payload. */
+    describe: (context, requirements) =>
+      requirements
+        .describeAll()
+        .then(({ dependencies }) =>
+          describeTarget(context, requirements.resolved, { sources: dependencies, tags: ["library"], languageIds: ["x"], dataKind: "x", data: { a: 1 } })
+        )
+        .then(descriptionFile),
   })
 );
 /* Holds what its `deps` were materialized as, entry by entry. */
@@ -240,6 +250,31 @@ testRules.push(
         lastDepSets = deps;
         return EMPTY_FILESET;
       }),
+  })
+);
+/* Reads its `deps` for the loose files among them. */
+testRules.push(
+  defineRule({
+    type: "test_loose_files",
+    properties: {},
+    requirements: context => ({ requirements: { deps: context.getLooseFileProperty("deps") } }),
+    evaluateMaterialized: (_context, { deps }) => {
+      lastDepSets = deps;
+      return EMPTY_FILESET;
+    },
+  })
+);
+/* Declares and builds a package named as the target, counting its builds. */
+let countedBuilds = 0;
+testRules.push(
+  defineRule({
+    type: "test_counted",
+    properties: {},
+    requirements: context => ({ requirements: {}, builds: { package: context.name } }),
+    evaluateResolved: context => {
+      countedBuilds += 1;
+      return Computable.resolve(new PackageFileSet(EMPTY_FILESET, context.name));
+    },
   })
 );
 registerRule("test_fail", {}, () => Computable.reject(new Error("reasons")));
@@ -818,6 +853,89 @@ async function testGetProperty(input: string, prop: string, constraints?: Record
 }
 
 describe("BuildContext", () => {
+  it("describes a target as its rule would build it: its identity, the operations it has rules for, the targets it requires", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input = "MODE = m;\ntargetdef test_carrier { deps = PACKAGES; }\ntest_carrier lib { }\ntest_carrier app { deps = lib; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+    const described = await model.getConfig(Constraints.of({ [BUILD_OPERATION]: "build" }), execution).describe(writtenOnCommandLine("app"));
+    const file = await described!.get(DESCRIPTION_FILE);
+    const text = (await file!.getBuffer()).toString("utf8");
+    expect(JSON.parse(text)).to.deep.equal({
+      target: {
+        id: { uri: "fabr:app" },
+        displayName: "app",
+        baseDirectory: "./",
+        tags: ["library"],
+        languageIds: ["x"],
+        dependencies: [{ uri: "fabr:lib" }],
+        capabilities: { canCompile: true, canTest: false, canRun: false, canDebug: false },
+        dataKind: "x",
+        data: { a: 1 },
+      },
+      /* `lib`'s files are no project file of `app`'s. */
+      sources: [],
+      roots: [],
+    });
+  });
+
+  it("describes every target of the project, each settling on its own, its description in the tree pool", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input = "MODE = m;\ntargetdef test_carrier { deps = PACKAGES; }\ntest_carrier lib { }\ntest_carrier app { deps = lib; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+    /* A run whose absolute-path source is not the one the model's files were read through. */
+    const run = new ExecutionContext(new BuildCache(cacheRoot, testLog), testLog, new FileSet(new Map()), new FileSet(new Map()));
+    const describing = describeOperation(model, operation => model.getConfig(Constraints.of({ [BUILD_OPERATION]: operation }), run), name => writtenOnCommandLine(name), run);
+    expect(describing.targets.map(({ name, operation }) => ({ name, operation }))).to.deep.equal([
+      { name: "lib", operation: "build" },
+      { name: "app", operation: "build" },
+    ]);
+    await describing.settled;
+    const app = await describing.targets[1].described;
+    expect(app?.description.target.dependencies).to.deep.equal([{ uri: "fabr:lib" }]);
+    expect(fs.existsSync(path.join(app!.directory, DESCRIPTION_FILE))).to.equal(true);
+  });
+
+  it("describes a target whose versions conflict as the resolution selected them, where its build refuses them", async () => {
+    registryRequirements.set("cx-raiser@1.0.0", [{ name: "cx", versionConstraint: "^2.0.0" }]);
+    try {
+      const errors: string[] = [];
+      const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+      const input =
+        "MODE = m;\ntargetdef test_registry { }\ntest_registry @reg { }\ntargetdef test_carrier { deps = PACKAGES; }\n" +
+        "test_carrier app { deps = @reg:cx:^1.0.0 @reg:cx-raiser:^1.0.0; }\n";
+      const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+      expect(errors).to.deep.equal([]);
+      const config = model.getConfig(Constraints.of({ [BUILD_OPERATION]: "build" }), execution);
+      const refused = await config.materialize(writtenOnCommandLine("app")).then(
+        () => undefined,
+        (err: unknown) => err
+      );
+      expect(refused).to.be.instanceOf(Error);
+      const described = await config.describe(writtenOnCommandLine("app"));
+      expect(described?.getFile(DESCRIPTION_FILE)).to.not.equal(undefined);
+    } finally {
+      registryRequirements.delete("cx-raiser@1.0.0");
+    }
+  });
+
+  it("Leaves a target out of a reading for loose files, unbuilt, where its rule declares it builds a package", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_loose_files { deps = PACKAGES; }\ntargetdef test_counted { }\ntargetdef test_plain { }\n" +
+      "test_counted lib { }\ntest_plain notes { }\ntest_loose_files app { deps = lib notes; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+    countedBuilds = 0;
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("app"));
+    expect(countedBuilds).to.equal(0);
+    expect(lastDepSets.flatMap(set => [...set].map(([name]) => name))).to.deep.equal(["plain.txt"]);
+  });
+
   it("Renames a built package a reference delivers ('mylib -> other')", async () => {
     /* The same `-> ` rule an external delivery goes through, applied where a
      * built package is referenced: nothing to project, so the rename is the
@@ -3858,6 +3976,7 @@ describe("inspecting a target's collection", () => {
 });
 
 describe("a reference to a target", () => {
+
   /** The targets whose rule was evaluated, in order. */
   let evaluated: string[] = [];
   /* A package made from its `deps`, with one file. */

@@ -44,7 +44,13 @@ import {
   SourceRef,
   TargetContext,
   toJsonObject,
+  describeTarget,
+  descriptionFile,
+  type MaterializedRequirements,
+  type RequiredSources,
+  type ResolvedRequirements,
 } from "@fabr-build/core";
+import { conventionalEmit, type ITypeScriptPayload, layOutUnits, MANIFEST_FILE, TSSERVER_PLUGIN, TYPESCRIPT_DATA_KIND } from "../Description";
 import {
   compileContents,
   dualFormatOutputs,
@@ -107,6 +113,10 @@ export default defineRule({
       };
     });
   },
+  /* The package as an editor is told of it: its build unit, and its manifest. */
+  describe(context, requirements) {
+    return requirements.describeAll().then(gathered => describePackage(context, gathered, requirements.resolved));
+  },
   evaluateResolved(context, requirements) {
     return Computable.forAll(
       [
@@ -120,6 +130,68 @@ export default defineRule({
     );
   },
 });
+
+/**
+ * Describe the package `context` evaluates (see Description): its BSP target,
+ * the unit its build compiles — described by `js_compile` over the same inputs
+ * — and the manifest its build writes, made from its declared entry points over
+ * the compile's conventional emit, beside the files it ships as they are. A
+ * dual package is described as its ES-module format.
+ */
+function describePackage(
+  context: TargetContext,
+  gathered: MaterializedRequirements<Record<string, RequiredSources>>,
+  resolved: ResolvedRequirements
+): Computable<RuleResult> {
+  const sets = gathered as unknown as Record<string, FileSet[]>;
+  const { exported, compileSources, compileDeps } = packageCompileInputs({
+    srcs: sets.srcs,
+    tests: sets.tests,
+    exports: sets.exports,
+    deps: [...sets.dependencies, ...sets.provided, ...sets.optional_provided, ...sets.compile_deps],
+    testOnly: [...sets.test_deps, ...sets.test_resources, ...sets.test_expectations],
+  });
+  return Computable.forAll(
+    [context.getGlobalString("JS_TARGET"), context.getProperty("version"), context.getMap("metadata")],
+    (target, version, metadata) => {
+      const jsTarget = parseJSTarget(target);
+      const constraints = jsTarget.module === "dual" ? Constraints.of({ JS_TARGET: formatJSTarget({ ...jsTarget, module: "esm" }) }) : undefined;
+      return compileContents(context, compileSources, compileDeps, { packageName: context.name, constraints, describe: true }).then(contents => {
+        const manifest = createPackageJson({
+          files: conventionalEmit(compileSources, jsTarget),
+          name: context.name,
+          version: version?.toString(),
+          declared: [],
+          provided: [],
+          optionalProvided: [],
+          jsTarget,
+          metadata,
+          exports: [...exported].map(([sourceName]) => sourceName),
+          rewrites: contents.rewrites,
+        });
+        const laidOut = layOutUnits(new Map([["build", contents.compiled]]));
+        const payload: ITypeScriptPayload = { units: laidOut.units, manifest: MANIFEST_FILE, plugin: TSSERVER_PLUGIN };
+        return describeTarget(context, resolved, {
+          sources: [compileSources],
+          tags: ["library"],
+          languageIds: ["typescript", "javascript"],
+          dataKind: TYPESCRIPT_DATA_KIND,
+          data: payload,
+        }).then(description =>
+          FileSet.unionAll(
+            descriptionFile(description),
+            laidOut.files,
+            FileSet.layout({ [MANIFEST_FILE]: manifest }),
+            /* What the package ships as it is, at its own paths: what a step
+             * reading the package's files (Sass, loading a partial) finds there. */
+            stripPackageJson(contents.passthrough),
+            ...sets.resources
+          )
+        );
+      });
+    }
+  );
+}
 
 /** A package needs no version, but one it states must be one npm can read: it
  * is written into the manifest, and everything that later resolves against
@@ -166,6 +238,49 @@ interface PackageEdges {
   optional_provided: ReadonlyArray<Dependency<PackageFileSet>>;
 }
 
+/** What a package's compile is made from. */
+export interface IPackageCompileInputs {
+  /** The sources the target names as its entry points. */
+  exported: FileSet;
+  /** `srcs` with the entry points. */
+  sources: FileSet;
+  /** What the package's compile compiles: the sources, less everything test-only. */
+  compileSources: FileSet;
+  /** What the compile is compiled against. */
+  compileDeps: FileSet[];
+}
+
+/**
+ * Work out what a package's compile is made from: its sources with its entry
+ * points, less its tests and everything else declared test-only, compiled
+ * against its dependencies.
+ */
+export function packageCompileInputs(parts: {
+  srcs: FileSet[];
+  tests: FileSet[];
+  exports: FileSet[];
+  deps: FileSet[];
+  testOnly: FileSet[];
+}): IPackageCompileInputs {
+  /* The declared entry points are compile inputs in their own right, so a
+   * target may name one that `srcs` does not cover (js_bundle's `entry` has
+   * the same relation to its `srcs`). Naming the same file twice is not a
+   * conflict — a union is by file identity, not by arrival. */
+  const exported = FileSet.unionAll(...parts.exports);
+  const sources = FileSet.unionAll(...parts.srcs, exported);
+  const tests = FileSet.unionAll(...parts.tests);
+  /* `srcs` minus everything declared test-only. `tests` is the obvious
+   * half; the other is the plain-SOURCE part of `test_deps` — test support
+   * that compiles with the test types in scope but is neither run nor
+   * shipped (an integration suite the entry file imports, a harness). A
+   * file named there is not package content, exactly as one named in
+   * `tests` is not. A Flag is excluded: it names nothing. */
+  const testOnlySources = parts.testOnly.filter((source): source is FileSet => !(source instanceof Flag));
+  const compileSources = sources.minus(tests).minus(FileSet.unionAll(...testOnlySources));
+  const compileDeps = parts.deps.filter((dep): dep is FileSet => dep instanceof FileSet);
+  return { exported, sources, compileSources, compileDeps };
+}
+
 function buildJsPackage(
   context: TargetContext,
   gathered: {
@@ -202,31 +317,16 @@ function buildJsPackage(
           test_resources: testResourceSources,
           test_expectations: expectationSources,
         }) => {
-          /* The declared entry points are compile inputs in their own right, so a
-           * target may name one that `srcs` does not cover (js_bundle's `entry` has
-           * the same relation to its `srcs`). Naming the same file twice is not a
-           * conflict — a union is by file identity, not by arrival. */
-          const exported = FileSet.unionAll(...exportSets);
+          const { exported, sources, compileSources, compileDeps } = packageCompileInputs({
+            srcs: srcSets,
+            tests: testSets,
+            exports: exportSets,
+            deps: [...deps, ...provided, ...optionalProvided, ...compileOnly],
+            testOnly: [...testDepSources, ...testResourceSources, ...expectationSources],
+          });
           const dual = jsTarget.module === "dual";
-          const sources = FileSet.unionAll(...srcSets, exported);
-          const tests = FileSet.unionAll(...testSets);
           /* If there's a 'package.json' in the source list, we can initialize the output package.json from it */
           const seedJson = sources.get("package.json").then(file => file && readJsonFile(file, toJsonObject));
-          /* `srcs` minus everything declared test-only. `tests` is the obvious
-           * half; the other is the plain-SOURCE part of `test_deps` — test support
-           * that compiles with the test types in scope but is neither run nor
-           * shipped (an integration suite the entry file imports, a harness). A
-           * file named there is not package content, exactly as one named in
-           * `tests` is not.
-           *
-           * `test_deps` arrives as its loose files alone, with nothing resolved
-           * for the packages it names; the other two are files. A Flag is
-           * excluded: it names nothing. */
-          const testOnlySources = [...testDepSources, ...testResourceSources, ...expectationSources].filter(
-            (source): source is FileSet => !(source instanceof Flag)
-          );
-          const compileSources = sources.minus(tests).minus(FileSet.unionAll(...testOnlySources));
-          const compileDeps = [...deps, ...provided, ...optionalProvided, ...compileOnly].filter((dep): dep is FileSet => dep instanceof FileSet);
           /* Declared (not resolved) requirements for the generated manifest: each
            * reports what was *written* — an inline `@npm:pkg:1.2.3` off the
            * reference the edge was resolved for, a catalog dep from the catalog's

@@ -27,6 +27,7 @@
 import * as path from "path";
 import { BUILD_OVERRIDE, Computable, defineRule, EMPTY_FILESET, FabrError, FileSet, IFile, MemoryFile, RuleResult, TargetContext, TREE_MOUNT } from "@fabr-build/core";
 import { classpathOf, compileOutputOf, COMPILED_CLASSES_DIR, packageOf, processorsOf } from "../JarPackage";
+import { describeJava } from "../Description";
 import { createTestRunAction } from "../TestRunAction";
 
 interface TestInputs {
@@ -57,6 +58,19 @@ export default defineRule({
   },
   evaluateMaterialized(context, inputs) {
     return testJar(context, inputs);
+  },
+  /* The tests as an editor compiles them: against the package's own build, as the run does. */
+  describe(context, requirements) {
+    return requirements.describeAll().then(inputs => {
+      const tests = FileSet.unionAll(...inputs.tests);
+      return tests.isEmpty()
+        ? EMPTY_FILESET
+        : describeJava(context, requirements.resolved, {
+            sources: tests,
+            deps: [...inputs.pkg, ...inputs.provided, ...inputs.optional_provided, ...inputs.test_deps, ...inputs.compile_deps],
+            tags: ["test"],
+          });
+    });
   },
 });
 

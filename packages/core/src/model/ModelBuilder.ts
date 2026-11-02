@@ -164,8 +164,8 @@ export class DeclaredRule implements SelectableRule {
       if (typeof implementation !== "object" || implementation === null || typeof (implementation as RuleImplementation).evaluate !== "function") {
         throw new FabrError(`'${entry.value.toString()}' is not a rule implementation (no evaluate)`);
       }
-      const { requirements, value, evaluate } = implementation as RuleImplementation;
-      return { type: this.type, properties: this.properties, targetProperties: this.targetProperties, requirements, value, evaluate };
+      const { requirements, value, evaluate, describe } = implementation as RuleImplementation;
+      return { type: this.type, properties: this.properties, targetProperties: this.targetProperties, requirements, value, evaluate, describe };
     });
     return this.loaded;
   }

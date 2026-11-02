@@ -33,6 +33,7 @@ import {
   postcssSourceOutputs,
   sassSourceOutputs,
   scopedCssName,
+  withDerivations,
 } from "./CSSCompile";
 import { sassLoweredName } from "@fabr-build/js-tools";
 
@@ -350,5 +351,24 @@ describe("cssImportRewrites", () => {
      * whenever any stylesheet appeared. */
     expect(cssImportRewrites().map(String)).to.deep.equal(cssImportRewrites().map(String));
     expect(cssImportRewrites()).to.have.lengthOf(5);
+  });
+});
+
+describe("withDerivations", () => {
+  it("states the stylesheet each output was produced from, and nothing for the rest", () => {
+    const sources = new FileSet(new Map([["Styles/app.scss", MemoryFile.from("")], ["Card.module.css", MemoryFile.from("")]]));
+    const output = new FileSet(
+      new Map([
+        ["Styles/app.css", MemoryFile.from("")],
+        ["Card.css", MemoryFile.from("")],
+        ["Card.css.ts", MemoryFile.from("")],
+        ["stray.txt", MemoryFile.from("")],
+      ])
+    );
+    const derived = withDerivations(output, sources, "pkg");
+    expect(derived.derivedFromOf("Styles/app.css")).to.equal("Styles/app.scss");
+    expect(derived.derivedFromOf("Card.css")).to.equal("Card.module.css");
+    expect(derived.derivedFromOf("Card.css.ts")).to.equal("Card.module.css");
+    expect(derived.derivedFromOf("stray.txt")).to.equal(undefined);
   });
 });

@@ -53,8 +53,10 @@ export interface IProvenanceStep {
  * name? Without the step recorded, a conflict can only report two paths and
  * leave the production that brought them together implicit.
  *
- * `from` is named as the producing step names it, so it matches what the user
- * would edit or rename rather than wherever the file was staged.
+ * `from` is the input's source path where it has one (`./src/Card.module.scss`),
+ * else its name as the producing step names it: what the user would edit or
+ * rename rather than wherever the file was staged. Stamped on the content a
+ * step produced, it is what {@link derivedFromOf} answers for each file.
  */
 export const DERIVED_PROVENANCE = "derived";
 
@@ -213,12 +215,13 @@ export interface IProvenanceNaming {
    */
   sourcePath(step: IProvenanceStep, path: string, below: (path: string) => string | undefined): string | undefined;
   /**
-   * Get what the step's answers depend on, besides the names asked for, as
-   * text: the same text wherever the answers are the same, for every name.
-   * `below` gives the steps beneath's. Empty where the step and those beneath
-   * name nothing.
+   * Get what the step's answers for `names` depend on, besides the names, as
+   * text: the same text wherever the answers for those names are the same.
+   * `names` undefined asks about every name. `below` gives the steps
+   * beneath's, for the names they have there. Empty where the step and those
+   * beneath name nothing.
    */
-  digest(step: IProvenanceStep, below: () => string): string;
+  digest(step: IProvenanceStep, names: ReadonlyArray<string> | undefined, below: (names: ReadonlyArray<string> | undefined) => string): string;
   /**
    * Get the prefix every file's source path is formed from, `<prefix><name>`,
    * where one prefix names every file of the content the step explains;
@@ -226,6 +229,12 @@ export interface IProvenanceNaming {
    * steps beneath's.
    */
   prefix?(step: IProvenanceStep, below: () => string | undefined): string | undefined;
+  /**
+   * Get what the file named `path` within the content the step explains was
+   * produced from (a {@link IDerivedStep}'s `from`), asking `below` as
+   * {@link sourcePath} does; a kind leaving it out passes the name through.
+   */
+  derivedFrom?(step: IProvenanceStep, path: string, below: (path: string) => string | undefined): string | undefined;
 }
 
 const PROVENANCE_NAMINGS = new Map<string, IProvenanceNaming>();
@@ -251,17 +260,37 @@ export function sourcePathOf(step: IProvenanceStep | undefined, path: string): s
 }
 
 /**
- * Get what the source paths of the content `step` explains depend on, besides
- * the files' names: equal text means every name has the same source path.
- * Empty where nothing in the chain names a file.
+ * Get what the file named `path` within the content `step` explains was
+ * produced from, as the innermost {@link IDerivedStep} covering it names it;
+ * undefined where no step derived it.
  */
-export function sourcePathsDigestOf(step: IProvenanceStep | undefined): string {
+export function derivedFromOf(step: IProvenanceStep | undefined, path: string): string | undefined {
+  if (step === undefined) {
+    return undefined;
+  }
+  const naming = PROVENANCE_NAMINGS.get(step.kind);
+  const below = (name: string): string | undefined => derivedFromOf(step.parent, name);
+  return naming?.derivedFrom === undefined ? below(path) : naming.derivedFrom(step, path, below);
+}
+
+/**
+ * Get what the source paths of `names` in the content `step` explains depend
+ * on, besides the names: equal text means each of them has the same source
+ * path. `names` undefined asks about every name. Empty where nothing in the
+ * chain names a file.
+ */
+export function sourcePathsDigestOf(step: IProvenanceStep | undefined, names?: ReadonlyArray<string>): string {
   if (step === undefined) {
     return "";
   }
   const naming = PROVENANCE_NAMINGS.get(step.kind);
-  const below = (): string => sourcePathsDigestOf(step.parent);
-  return naming === undefined ? below() : naming.digest(step, below);
+  const below = (beneath: ReadonlyArray<string> | undefined): string => sourcePathsDigestOf(step.parent, beneath);
+  return naming === undefined ? below(names) : naming.digest(step, names, below);
+}
+
+/** @return the entries of `table` whose keys are among `names`, or the whole table where `names` is undefined. */
+export function restrictedTo<T>(table: ReadonlyMap<string, T>, names: ReadonlyArray<string> | undefined): ReadonlyMap<string, T> {
+  return names === undefined ? table : new Map(names.flatMap((name): Array<[string, T]> => (table.has(name) ? [[name, table.get(name)!]] : [])));
 }
 
 /**
@@ -346,7 +375,7 @@ export interface ISourcePathStep extends IProvenanceStep {
 
 registerProvenanceNaming(SOURCE_PATH_PROVENANCE, {
   sourcePath: (step, path, below) => below(path) ?? `${(step as ISourcePathStep).sourcePath}:${path}`,
-  digest: (step, below) => namingDigest(SOURCE_PATH_PROVENANCE, JSON.stringify((step as ISourcePathStep).sourcePath), below()),
+  digest: (step, names, below) => namingDigest(SOURCE_PATH_PROVENANCE, JSON.stringify((step as ISourcePathStep).sourcePath), below(names)),
   prefix: (step, below) => wholeContentPrefix(step, (step as ISourcePathStep).sourcePath, below),
 });
 /* Explains nothing a diagnostic needs: the steps beneath say why the content
@@ -368,12 +397,21 @@ export interface IRenameStep extends IProvenanceStep {
 
 registerProvenanceNaming(RENAME_PROVENANCE, {
   sourcePath: (step, path, below) => below((step as IRenameStep).from.get(path) ?? path),
-  digest: (step, below) => {
-    const below_ = below();
-    return below_ === "" ? "" : namingDigest(RENAME_PROVENANCE, renamingText((step as IRenameStep).from), below_);
+  derivedFrom: (step, path, below) => below((step as IRenameStep).from.get(path) ?? path),
+  digest: (step, names, below) => {
+    const { from } = step as IRenameStep;
+    const below_ = below(names?.map(name => from.get(name) ?? name));
+    return below_ === "" ? "" : namingDigest(RENAME_PROVENANCE, renamingText(restrictedTo(from, names)), below_);
   },
 });
 registerProvenanceRenderer(RENAME_PROVENANCE, () => []);
+
+/* Names no source path: a produced file has none of its own. */
+registerProvenanceNaming(DERIVED_PROVENANCE, {
+  sourcePath: (_step, path, below) => below(path),
+  digest: (_step, names, below) => below(names),
+  derivedFrom: step => (step as IDerivedStep).from,
+});
 
 registerProvenanceRenderer(DERIVED_PROVENANCE, (step, context): IDiagnosticNote[] => {
   const derived = step as IDerivedStep;

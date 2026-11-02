@@ -23,6 +23,7 @@ import { FabrError } from "../core/Errors";
 import { FileSet } from "../core/FileSet";
 import { FileSetRef } from "../core/FileSetRef";
 import { Materialized, RepositoryRef, SourceRef } from "../core/Repository";
+import { TargetRef } from "../core/TargetRef";
 import { checked, materializeLists, packageIn, resolveLists } from "./CollectionPoint";
 import type { Conflicts } from "../resolver/StrictCollection";
 import { Builds, PackageFileSet, ResolvedNode, Dependency } from "../core/PackageFileSet";
@@ -56,7 +57,8 @@ export class PackageSources {
 
 /**
  * A property's sources, read for the loose files among them: what is no
- * package's. A repository's reference is left out unresolved, a target is
+ * package's. A repository's reference is left out unresolved, a target whose
+ * rule declares it builds a package is left out unbuilt, any other target is
  * built and left out where it builds a package, and so is a package or a
  * selection from one; nothing among them joins the target's resolution.
  */
@@ -221,12 +223,13 @@ export class ResolvedRequirements {
 
   /** Materialize every requirement and finish it into what a rule reads,
    * each source aligned with the reference it was resolved for. */
-  public materialize(config: InternalBuildContext): Computable<Map<string, Collected>> {
+  public materialize(config: InternalBuildContext, describe = false): Computable<Map<string, Collected>> {
     const names = [...this.entries.keys()];
     const entries = [...this.entries.values()];
     return materializeLists(
       entries.map(({ sources }) => sources),
-      entries.map(({ references }) => references)
+      entries.map(({ references }) => references),
+      describe
     ).then(({ lists, references }) =>
       Computable.forAll(
         lists.map((list, index) => finish(config, list, references[index], entries[index].reading)),
@@ -319,11 +322,12 @@ export function resolveRequirements(target: TargetContext, spec: ResolutionSpec)
           "what a target passes on is packages: read it with getPackageProperty"
         );
       }
-      return resolveLists(
+      return Computable.forAll(
+        lists.map((list, index) => (readings[index] === "loose" ? looseSources(list) : Computable.resolve(list))),
+        (...read: SourceRef[][]) => read
+      ).then(read => resolveLists(
         target,
-        /* A reference to a repository names a package: read for loose
-         * files, it is left out unresolved. */
-        lists.map((list, index) => (readings[index] === "loose" ? list.filter(source => !(source instanceof RepositoryRef)) : list)),
+        read,
         readings.map(reading => reading !== "contained"),
         names.map(name => requirementName(name) === EXTENDS_KEY),
         readings.map(reading => (reading === "files" || reading === "loose" || reading === "sync" ? "files" : undefined))
@@ -345,9 +349,32 @@ export function resolveRequirements(target: TargetContext, spec: ResolutionSpec)
             conflictsAmong,
             spec.builds
           )
-      );
+      ));
     }
   );
+}
+
+/**
+ * Leave out of `list`, read for loose files, what is known to be a package
+ * without building it: a repository's reference, unresolved, and a target
+ * whose rule declares it builds a package.
+ */
+function looseSources(list: SourceRef[]): Computable<SourceRef[]> {
+  return Computable.forAll(
+    list.map(source =>
+      source instanceof RepositoryRef
+        ? Computable.resolve(undefined)
+        : source instanceof TargetRef
+          ? source.resolveTarget().then(target => (isDeclaredPackage(target.content.declared) ? undefined : source))
+          : Computable.resolve(source)
+    ),
+    (...kept: Array<SourceRef | undefined>) => kept.filter((source): source is SourceRef => source !== undefined)
+  );
+}
+
+/** @return true if `declared`, what a rule declares its target builds, is a package, otherwise false. */
+function isDeclaredPackage(declared: Builds | undefined): boolean {
+  return declared !== undefined && declared !== "files";
 }
 
 /**
@@ -377,6 +404,12 @@ export interface Unmaterialized<P> {
   packages<K extends keyof P & string>(name: K): Computable<Array<Dependency<PackageFileSet>>>;
   /** The requirements as resolved, nothing materialized. */
   readonly resolved: ResolvedRequirements;
+  /** Materialize every requirement as a description needs it (see
+   * support/Description): a package a target builds, where its rule describes
+   * it, is its description, a `DescribedPackage`, and not its build. Versions
+   * that conflict are described as the resolution selected them, as `fabr deps`
+   * shows them: only a build refuses them. Done on the first call, once. */
+  describeAll(): Computable<MaterializedRequirements<P>>;
 }
 
 /** Make `resolved` what a rule receives: see {@link Unmaterialized}. */
@@ -390,6 +423,7 @@ export function unmaterialized(
    * content no other materializes again. The names a call finds
    * unmaterialized are materialized together, as one collection. */
   const each = new Map<string, Computable<Collected>>();
+  let described: Computable<unknown> | undefined;
   const materialize = (names: string[]): Computable<Collected[]> => {
     const pending = names.filter(name => !each.has(name));
     if (pending.length > 0) {
@@ -417,6 +451,12 @@ export function unmaterialized(
       }) as Computable<MaterializedRequirements<Record<string, RequiredSources>>>,
     materialize: name => check().then(() => materialize([name]).then(([list]) => list.sources)) as Computable<FileSet[]>,
     packages: name => check().then(() => materialize([name]).then(([list]) => packageEdges(name, list))),
+    describeAll: () =>
+      (described ??= resolved
+        .materialize(config, true)
+        .then(lists =>
+          Object.assign(Object.create(null), Object.fromEntries([...resolved.sources.keys()].map(name => [name, lists.get(name)?.sources ?? []])))
+        )) as Computable<MaterializedRequirements<Record<string, RequiredSources>>>,
   };
 }
 

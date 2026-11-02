@@ -17,6 +17,10 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+/* The packages the yarn devchain builds and tests (the bootstrap set); every
+ * other package is fabr's alone to build and test. */
+const BOOTSTRAP_SET = ["core", "js", "js-tools", "sass-pnp-importer", "cli"];
+
 module.exports = {
   /* Many suites spawn real OS processes (the e2e CLI, Execute's pipeline tests);
    * under full-suite parallelism their process startup contends for CPU, so the
@@ -26,18 +30,15 @@ module.exports = {
    * cleanup is for unit tests not to spawn real processes at all. */
   testTimeout: 30000,
   collectCoverage: true,
+  /* The bootstrap set's tests, and the end-to-end tests of the CLI it builds. */
+  roots: [...BOOTSTRAP_SET.map(name => `<rootDir>/packages/${name}`), "<rootDir>/test"],
   collectCoverageFrom: [
-    "**/src/**/*.ts",
-    "!**/node_modules/**",
+    ...BOOTSTRAP_SET.map(name => `packages/${name}/src/**/*.ts`),
     "!**/*.d.ts",
-    /* The astro docs site (docs/src) is not a fabr TS package — its `astro:*`
-     * virtual imports don't resolve under ts-jest */
-    "!**/docs/**",
     /* testRunner/ and jestRunner/ execute standalone in test child processes, not
      * under jest (jestRunner/ loads jest's libraries from its own tool mount) */
-    "!**/packages/js-tools/src/testRunner/**",
-    "!**/packages/js-tools/src/jestRunner/**",
-    "!**/packages/java/**",
+    "!packages/js-tools/src/testRunner/**",
+    "!packages/js-tools/src/jestRunner/**",
   ],
   moduleNameMapper: {
     "^@fabr-build/core$": "<rootDir>/packages/core/src/index.ts",
@@ -64,6 +65,5 @@ module.exports = {
    * tests are not among them: each requires its tool lazily inside main(), so
    * nothing at load needs esbuild or sass, and the parts under test are either
    * pure or drive a tool declared as a test dependency. */
-  /* packages/java is built and tested only by fabr. */
-  testPathIgnorePatterns: ["/node_modules/", "/build/", "/packages/js-tools/src/testRunner/", "/packages/java/"],
+  testPathIgnorePatterns: ["/node_modules/", "/build/", "/packages/js-tools/src/testRunner/"],
 };

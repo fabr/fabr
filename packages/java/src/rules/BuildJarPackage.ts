@@ -41,6 +41,7 @@ import {
   RuleResult,
   TargetContext,
 } from "@fabr-build/core";
+import { describeJava } from "../Description";
 import { checkPomMetadata } from "../MavenPublish";
 import { MAVEN_FORMAT } from "../MavenProtocol";
 import { checkMainClass, compileOutputOf, COMPILED_CLASSES_DIR, createJarAction, MANIFEST_NAME, manifestFile, processorsOf } from "../JarPackage";
@@ -99,6 +100,16 @@ export default defineRule({
           metadata
         );
       }
+    );
+  },
+  /* The jar as an editor compiles its sources: against what the build compiles them against. */
+  describe(context, requirements) {
+    return Computable.forAll([requirements.describeAll(), context.getProperty("main_class")], (inputs, mainClass) =>
+      describeJava(context, requirements.resolved, {
+        sources: FileSet.unionAll(...inputs.srcs),
+        deps: [...inputs.dependencies, ...inputs.provided, ...inputs.optional_provided, ...inputs.compile_deps],
+        tags: [mainClass === undefined ? "library" : "application"],
+      })
     );
   },
 });

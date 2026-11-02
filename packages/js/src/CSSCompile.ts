@@ -217,12 +217,40 @@ export function compileCssSources(
     if (inputs.isEmpty()) {
       return Computable.resolve(EMPTY_FILESET);
     }
-    return context.subTarget(
-      "css_postcss",
-      { srcs: inputs, deps, ...(packageName ? { package_name: packageName } : {}) },
-      { label: "Postprocessing styles", constraints: BUILD_OVERRIDE }
-    );
+    return context
+      .subTarget(
+        "css_postcss",
+        { srcs: inputs, deps, ...(packageName ? { package_name: packageName } : {}) },
+        { label: "Postprocessing styles", constraints: BUILD_OVERRIDE }
+      )
+      .then(output => withDerivations(output, css, packageName ?? ""));
   });
+}
+
+/**
+ * @return `output`, the pipeline's, with each file stating the stylesheet of
+ * `sources` it was produced from (a `derived` step, naming the stylesheet by
+ * its source path where it has one).
+ */
+export function withDerivations(output: FileSet, sources: FileSet, packageName: string): FileSet {
+  const names = [...sources].map(([name]) => name);
+  /* Each produced file by the index of its source in `names`. */
+  const producedFrom = new Map<string, number>();
+  names.forEach((name, index) => {
+    const outputs = cssPipelineOutputs(name, packageName);
+    for (const produced of outputs === undefined ? [] : outputPathsOf(outputs)) {
+      producedFrom.set(produced, index);
+    }
+  });
+  const bySource = output.partition(name => String(producedFrom.get(name) ?? "none"));
+  return FileSet.unionAll(
+    ...Object.entries(bySource).map(([index, files]) => {
+      const source = names[Number(index)];
+      return source === undefined
+        ? files
+        : files.withStep(derivedFrom(sources.sourcePathOf(source) ?? source, isSassSource(source) ? "sass_compile" : "css_postcss"));
+    })
+  );
 }
 
 /**

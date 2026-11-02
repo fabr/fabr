@@ -29,7 +29,7 @@ import { hashFile, hashString, isDirectoryError, isNotFound, readFile, readFileB
 import type { BuildCache } from "./BuildCache";
 import { sniffMime } from "../support/Mime";
 import { FabrError, toError } from "./Errors";
-import { IProvenanceStep, namingDigest, registerProvenanceNaming, registerProvenanceRenderer, renamingText } from "./Provenance";
+import { IProvenanceStep, namingDigest, registerProvenanceNaming, registerProvenanceRenderer, renamingText, restrictedTo } from "./Provenance";
 import { PreparedUpdate, WatchController, WatchEntry } from "./WatchController";
 
 export interface FSFileStats {
@@ -660,9 +660,11 @@ registerProvenanceNaming(SOURCE_TREE_PROVENANCE, {
     const rel = paths.get(name);
     return rel === undefined || sourcePathPrefix === undefined ? undefined : `${sourcePathPrefix}${rel}`;
   },
-  digest: step => {
+  digest: (step, names) => {
     const { sourcePathPrefix, paths } = step as ISourceTreeOrigin;
-    return sourcePathPrefix === undefined ? "" : namingDigest(SOURCE_TREE_PROVENANCE, `${JSON.stringify(sourcePathPrefix)} ${renamingText(paths)}`, "");
+    return sourcePathPrefix === undefined
+      ? ""
+      : namingDigest(SOURCE_TREE_PROVENANCE, `${JSON.stringify(sourcePathPrefix)} ${renamingText(restrictedTo(paths, names))}`, "");
   },
 });
 

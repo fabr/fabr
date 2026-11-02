@@ -26,6 +26,7 @@ import {
   requireWhole,
   BuildModel,
   buildOperation,
+  describeOperation,
   Computable,
   mapComputable,
   ComputableHandle,
@@ -80,6 +81,7 @@ import { runInteractive, RunSupervisor } from "./RunHandler";
 import { shellInto } from "./ShellHandler";
 import { DependencyTree, renderDependencyTrees, sectionsOf } from "./DepsTree";
 import { publishSync } from "./SyncHandler";
+import { BspServer } from "./BspServer";
 import { completeCommandLine, Mode, Options } from "./Command";
 import { getSourceRoot, getBuildCacheRoot, getHostProperties } from "./Environment";
 import { IInvocationSite } from "./CommandLineSource";
@@ -225,6 +227,28 @@ export function runFabr(options: Options): Promise<void> {
       return runWith(options, (model, execution, site) => shellTarget(model, options, execution, site));
     case "sync":
       return runWith(options, (model, execution, site) => syncTargets(model, options, execution, site));
+    case "build-server": {
+      /* One server for the run, across every model a reload makes. */
+      return getSourceRoot().then(root => {
+        const server = new BspServer(root);
+        /* Ended as a signal ends it, so the watch shuts down its watchers first. */
+        server.listen(() => process.kill(process.pid, "SIGTERM"));
+        return runWith(
+          options,
+          (model, execution, site) => {
+            const describing = describeOperation(
+              model,
+              operation => configFor(model, options, execution, operation),
+              name => options.commandLine.refFor(name, site),
+              execution
+            );
+            server.serve(describing, execution.log);
+            return describing.settled;
+          },
+          true
+        );
+      });
+    }
     case "list-targets":
       return runWith(options, (model, execution) => listDeclaredTargets(model, options, execution));
     case "list-targetdefs":

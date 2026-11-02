@@ -1,0 +1,10 @@
+# What the VSIX holds, as an allowlist: the extension's own files, and nothing
+# else of the directory vsce runs in.
+**
+!*.js
+!tsserver/*.js
+!package.json
+!README.md
+!icon.png
+!jdtls/*.jar
+!LICENSE

@@ -30,6 +30,7 @@ catalog @pkg {
   deps = @npm:typescript:5.4.5 @npm:@types/node:22.15.3
          @npm:chai:4.3.6 @npm:@types/chai:4.3.1
          @npm:@types/jest:30.0.0
+         @npm:@types/vscode:1.90.0
          @npm:chai-as-promised:7.1.1 @npm:@types/chai-as-promised:7.1.8
          @npm:@parcel/watcher:2.6.0
          @npm:picomatch:4.0.5
@@ -132,4 +133,4 @@ js_installation fabr_install {
   deps = @fabr-build/cli @fabr-build/js @fabr-build/js-tools @fabr-build/sass-pnp-importer @fabr-build/java;
 }
 
-all = @fabr-build/core @fabr-build/js-boot @fabr-build/js-tools @fabr-build/cli @fabr-build/sass-pnp-importer @fabr-build/java-boot;
+all = @fabr-build/core @fabr-build/js-boot @fabr-build/js-tools @fabr-build/cli @fabr-build/sass-pnp-importer @fabr-build/java-boot vscode-ext;

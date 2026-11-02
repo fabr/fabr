@@ -24,7 +24,7 @@
  */
 
 import { BUILD_OVERRIDE, Computable, defineRule, PackageSources, ResolutionSpec, TargetContext } from "@fabr-build/core";
-import { compileAndRunTests, TestRequirements, testFramework, testRequirements } from "../TestPipeline";
+import { compileAndRunTests, describeTests, TestRequirements, testFramework, testRequirements } from "../TestPipeline";
 
 /** The `js_package` rule, under `test`: the package's tests, run under the test framework its `test_framework` names. */
 export default defineRule({
@@ -57,6 +57,10 @@ export default defineRule({
           expectations,
         })
     );
+  },
+  /* The tests as an editor is told of them: the unit the run compiles. */
+  describe(context, requirements) {
+    return testFramework(context, "test_framework").then(framework => describeTests(context, framework, { envProperty: "test_env", packageName: context.name }, requirements));
   },
   evaluateMaterialized(context, collected) {
     return testFramework(context, "test_framework").then(framework =>

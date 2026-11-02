@@ -488,6 +488,19 @@ export abstract class TargetContext {
     });
   }
 
+  /**
+   * Describe the sub-target `subTarget` would build (see
+   * {@link RuleImplementation.describe}), or undefined if its rule describes
+   * nothing.
+   */
+  public describeSubTarget(
+    type: string,
+    inputs: SubTargetInputs,
+    options?: { label?: string; constraints?: Constraints }
+  ): Computable<FileSet | undefined> {
+    return this.context.describeSubTarget(this, type, inputs, options);
+  }
+
   /** Perform `run` as one tracked task on behalf of this target — see
    *  {@link ExecutionContext.runTask}. */
   public runTask<T>(task: TaskDescription, run: (report: ITaskReport) => Computable<T>): Computable<T> {

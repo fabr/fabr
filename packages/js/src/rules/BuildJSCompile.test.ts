@@ -62,6 +62,7 @@ const collected = (
   };
   return {
     materializeAll: () => Computable.resolve(parts),
+    describeAll: () => Computable.resolve(parts),
     materialize: name => Computable.resolve(parts[name as keyof typeof parts]),
     packages: () => Computable.resolve([]),
     get resolved(): never {

@@ -94,6 +94,13 @@ export interface BuildContext {
   getAction(ref: INameValue): Computable<BuildAction | undefined>;
 
   /**
+   * Describe the target `ref` names as its rule for this configuration's
+   * operation would build it (see `support/Description`): the description's
+   * files, or undefined where that rule describes nothing.
+   */
+  describe(ref: INameValue): Computable<FileSet | undefined>;
+
+  /**
    * Get a constraint's value as this configuration was given it, or undefined.
    * Declarations are not consulted, so a `default` property is not seen: use
    * {@link InternalBuildContext.getProperty} for a value that a declaration
@@ -310,6 +317,15 @@ export interface InternalBuildContext extends BuildContext {
     inputs: SubTargetInputs,
     options?: { label?: string; constraints?: Constraints }
   ): Computable<SourceRef[]>;
+
+  /** Describe a sub-target as {@link buildSubTarget} would build it, or
+   * undefined where its rule describes nothing. */
+  describeSubTarget(
+    owner: TargetContext,
+    type: string,
+    inputs: SubTargetInputs,
+    options?: { label?: string; constraints?: Constraints }
+  ): Computable<FileSet | undefined>;
 
   /**
    * Apply every projection still pending on materialized sources: each

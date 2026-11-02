@@ -75,6 +75,7 @@ export * from "./resolver/ResolutionProvenance";
 export * from "./resolver/ResolutionReport";
 export * from "./resolver/Semver";
 export * from "./resolver/Types";
+export * from "./support/Description";
 export * from "./support/Execute";
 export * from "./support/Semaphore";
 export * from "./support/Expand";

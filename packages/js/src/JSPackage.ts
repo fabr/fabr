@@ -702,6 +702,9 @@ export interface ICompileOptions {
    * build's.
    */
   label?: string;
+  /** Describe the compile instead of building it (see Description): what
+   * the compile yields is then its description. */
+  describe?: boolean;
 }
 
 /**
@@ -854,10 +857,10 @@ export function compileJsSources(
     ...(options.rewriteImports?.length ? { rewrite_imports: options.rewriteImports } : {}),
     ...(options.resources !== undefined && !options.resources.isEmpty() ? { resources: options.resources } : {}),
   };
-  return context.subTarget("js_compile", inputs, {
-    label: options.label ?? "Compiling",
-    constraints: BUILD_OVERRIDE.with(options.constraints),
-  });
+  const subTargetOptions = { label: options.label ?? (options.describe ? "Describing" : "Compiling"), constraints: BUILD_OVERRIDE.with(options.constraints) };
+  return options.describe
+    ? context.describeSubTarget("js_compile", inputs, subTargetOptions).then(described => described ?? EMPTY_FILESET)
+    : context.subTarget("js_compile", inputs, subTargetOptions);
 }
 
 /** Select the deps that are plain SOURCE rather than a package or a flag:

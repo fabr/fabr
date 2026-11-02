@@ -37,6 +37,7 @@ export * from "./pnp/ReadSet";
 export * from "./pnp/VirtualPath";
 export * from "./support/SourceMap";
 export * from "./tscDriver/Planning";
+export type { ITypeScriptUnit } from "./tsserverPlugin/TsserverPlugin";
 export * as BundleDriver from "./bundleDriver/bundle-driver";
 export * as CoverageDriver from "./coverageDriver/coverage-driver";
 export * as PostcssDriver from "./cssDriver/postcss-driver";

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?eclipse version="3.4"?>
+<plugin>
+  <!-- Ordered before Gradle's and Maven's importers, so a fabr project holding their files is fabr's. -->
+  <extension id="importers" point="org.eclipse.jdt.ls.core.importers">
+    <importer id="fabrProjectImporter" order="200" class="build.fabr.jdtls.FabrProjectImporter"/>
+  </extension>
+</plugin>

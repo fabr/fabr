@@ -30,7 +30,7 @@ import { dirname, join } from "path";
  * layout. That first hit is authoritative: we never climb past it (an ancestor
  * could be an unrelated package). The version is stamped only at release, so a
  * present-but-versionless package.json is an unreleased build. */
-function getVersion(): string {
+export function getVersion(): string {
   for (let dir = __dirname; ; ) {
     try {
       return JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).version ?? "0.0.0-dev";
@@ -93,6 +93,7 @@ const COMMAND_SPECS: CommandSpec[] = [
   { name: "cp", synopsis: "<sources…> <dest>", summary: "Build targets and copy their files to a destination directory", accepts: ["-q", "--no-progress"], requiresTarget: true },
   { name: "deps", synopsis: "<names>", summary: "Print the dependency tree of the given targets or packages", accepts: ["-q", "--no-progress"], requiresTarget: true },
   { name: "sync", synopsis: "<target>", summary: "Build and publish a sync target to its destination coordinates", accepts: ["-q", "--no-progress"], requiresTarget: true },
+  { name: "build-server", synopsis: "", summary: "Serve the project's described targets to an editor over the Build Server Protocol (stdio)", accepts: ["-q"] },
   {
     name: "list-targets",
     synopsis: "[-l] [--all] [--json] [names]",
@@ -272,6 +273,7 @@ function applyOption(arg: string, options: Options, seenFlags: SeenFlag[]): void
   } else if (arg === "--json") {
     options.json = true;
     seenFlags.push({ raw: arg, flag: "--json" });
+
   } else if (arg === "--all") {
     options.all = true;
     seenFlags.push({ raw: arg, flag: "--all" });

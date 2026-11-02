@@ -63,10 +63,13 @@ import { IWaveResult, runWave } from "./Wave";
  * spelled out where this driver reads or builds a value. */
 type Diagnostic = unknown;
 type SourceFile = unknown;
-type CompilerOptions = Record<string, unknown>;
+export type CompilerOptions = Record<string, unknown>;
 
 interface IResolvedModule {
   resolvedFileName: string;
+  /** The path the module was reached by, where that is not its file's own (a
+   * link). */
+  originalPath?: string;
   extension?: string;
   isExternalLibraryImport?: boolean;
   resolvedUsingTsExtension?: boolean;
@@ -263,7 +266,7 @@ interface IProgram {
 }
 type WriteFile = (fileName: string, text: string, writeByteOrderMark: boolean) => void;
 
-interface ICompilerHost {
+export interface ICompilerHost {
   getCurrentDirectory(): string;
   writeFile: WriteFile;
   /** Every file the compiler opens goes through here — sources, declaration
@@ -301,7 +304,7 @@ interface ICompilerHost {
     reusedNames: readonly (string | IFileReference)[] | undefined
   ) => readonly IResolvedTypeReferenceDirectiveWithFailedLookupLocations[];
 }
-interface ITypeScript {
+export interface ITypeScript {
   version: string;
   /** Every compiler option this release knows, for asking whether it has one
    * rather than whether its version implies it. Optional: a compiler that does
@@ -511,6 +514,13 @@ const EXIT_OK = 0;
 const EXIT_ERRORS_NO_OUTPUT = 1;
 export const EXIT_ERRORS = 2;
 
+/** The members of a host that {@link installResolution} reads, and the hooks it
+ * installs on it. */
+export type IResolutionHost = Pick<
+  ICompilerHost,
+  "fileExists" | "readFile" | "getCanonicalFileName" | "resolveModuleNameLiterals" | "resolveLibrary" | "resolveTypeReferenceDirectiveReferences"
+>;
+
 /**
  * Install resolution against the manifest on the compiler host.
  *
@@ -529,16 +539,16 @@ export const EXIT_ERRORS = 2;
  * which in a node_modules tree tsc finds by walking up and here comes out of
  * the same table.
  */
-function installResolution(
+export function installResolution(
   ts: ITypeScript,
-  host: ICompilerHost,
+  host: IResolutionHost,
   options: CompilerOptions,
   resolver: PnpResolver,
   root: string,
   rewrites?: IImportRewrite[],
   resourceNames?: string[]
 ): IInstalledResolution {
-  const cache = ts.createModuleResolutionCache(root, name => host.getCanonicalFileName(name), options);
+  let cache = ts.createModuleResolutionCache(root, name => host.getCanonicalFileName(name), options);
   /** The compile's source root, which bounds where a rewrite rule applies and
    * which the declared resource names are relative to. */
   const sourceRoot = typeof options.rootDir === "string" ? path.resolve(root, options.rootDir) : undefined;
@@ -935,8 +945,15 @@ function installResolution(
     answers.set(key, answer);
     return answer;
   };
-  host.resolveModuleNameLiterals = (literals, containingFile, _redirected, _options, containingSourceFile) =>
-    literals.map(literal => {
+  host.resolveModuleNameLiterals = (literals, containingFile, _redirected, _options, containingSourceFile) => {
+    /* A file's unresolved imports are passed again whenever it is resolved, so
+     * what was recorded of them is recorded afresh. */
+    for (const table of [presentResources, missingFiles]) {
+      for (const key of [...table.keys()].filter(key => key.startsWith(`${containingFile}\0`))) {
+        table.delete(key);
+      }
+    }
+    return literals.map(literal => {
       const answer = resolveModule(
         literal.text,
         containingFile,
@@ -959,6 +976,7 @@ function installResolution(
       }
       return answer;
     });
+  };
   /* A project may REPLACE one of the compiler's built-in libraries by depending
    * on `@typescript/lib-<name>` — a package the compiler looks for in
    * node_modules, which the PnP workspace does not have, so it is answered from
@@ -1020,8 +1038,9 @@ function installResolution(
   /* An import of a missing file the compiler let through — a `declare module`
    * pattern types it, or the compiler does not check side-effect imports — but
    * nothing will load. Reported only where the compiler reported nothing at the
-   * same specifier, so never twice. */
-  const finishDiagnostics = (diagnostics: readonly Diagnostic[]): readonly Diagnostic[] => {
+   * same specifier, so never twice; given a `file`, only that version of it
+   * (a language service's diagnostics of one file). */
+  const finishDiagnostics = (diagnostics: readonly Diagnostic[], file?: SourceFile): readonly Diagnostic[] => {
     const kept = withoutPresentResources(diagnostics);
     const reportedAt = new Set(
       kept.map(diagnostic => {
@@ -1030,6 +1049,7 @@ function installResolution(
       })
     );
     const added = [...missingFiles.values()]
+      .filter(missing => file === undefined || missing.file === file)
       .filter(missing => !reportedAt.has(`${(missing.file as unknown as ISourceFileInfo).fileName}\0${String(missing.start)}`))
       .map(
         missing =>
@@ -1046,6 +1066,10 @@ function installResolution(
   };
   return {
     finishDiagnostics,
+    invalidate: () => {
+      cache = ts.createModuleResolutionCache(root, name => host.getCanonicalFileName(name), options);
+      answers.clear();
+    },
     packageSpecifier: (specifier, containingFile) => completedSpecifiers.get(`${resolver.locatorOf(containingFile)}\0${specifier}`),
     ownSpecifier: ownRelative,
     exists: file => declared.has(file) || host.fileExists(file),
@@ -1055,8 +1079,11 @@ function installResolution(
 /** What installing resolution hands back to the compile: the diagnostic
  * finisher, the package specifiers the emit must write completed, and the
  * relative form of an import of the compile's own package. */
-interface IInstalledResolution {
-  finishDiagnostics(diagnostics: readonly Diagnostic[]): readonly Diagnostic[];
+export interface IInstalledResolution {
+  finishDiagnostics(diagnostics: readonly Diagnostic[], file?: SourceFile): readonly Diagnostic[];
+  /** Forget every lookup's answer, so the next asks the files again: what a
+   * language service does when its files may have changed. */
+  invalidate(): void;
   packageSpecifier(specifier: string, containingFile: string): string | undefined;
   ownSpecifier(specifier: string, containingFile: string): string | undefined;
   exists(file: string): boolean;
@@ -1071,8 +1098,8 @@ const RUNTIME_SUFFIXES = [".js", ".mjs", ".cjs", "/index.js", "/index.mjs", "/in
 const MISSING_FILE_ERROR = 79001;
 
 /** The compiler's "cannot find module" reports, as its lookup of a module
- * specifier makes them. */
-const MODULE_NOT_FOUND = new Set([2307, 2792]);
+ * specifier makes them (2882 a side-effect import's). */
+const MODULE_NOT_FOUND = new Set([2307, 2792, 2882]);
 
 /** @return true if `literal` is the specifier of an import that binds nothing
  * (`import "./theme.css"`), otherwise false. */
@@ -2446,7 +2473,7 @@ export function main(argv: string[]): number {
  * channel for a project asserting a fact about itself, which is the one place
  * a platform condition can honestly come from.
  */
-function conditionsOf(ts: ITypeScript, options: CompilerOptions, mode?: number): string[] {
+export function conditionsOf(ts: ITypeScript, options: CompilerOptions, mode?: number): string[] {
   const custom = Array.isArray(options.customConditions) ? (options.customConditions as string[]) : [];
   const commonjs = mode === undefined ? effectiveModule(ts, options) === ts.ModuleKind.CommonJS : mode === ts.ModuleKind.CommonJS;
   return ["types", commonjs ? "require" : "import", "module-sync", ...custom];
@@ -3244,7 +3271,7 @@ function emitExtensionOf(argv: string[]): string | undefined {
  * interface: everything recoverable comes back in `errors` and is rendered with
  * the rest.
  */
-function configHost(ts: ITypeScript): unknown {
+export function configHost(ts: ITypeScript): unknown {
   return {
     fileExists: (file: string) => ts.sys.fileExists(file),
     readFile: (file: string, encoding?: string) => ts.sys.readFile(file, encoding),

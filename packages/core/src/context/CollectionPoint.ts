@@ -33,6 +33,7 @@ import {
   dependencyName,
   equalNodes,
   isPackage,
+  describePackages,
   materializePackages,
   Package,
   PackageFileSet,
@@ -161,7 +162,9 @@ function packagesAmong(sources: ReadonlyArray<Resolved>): Package[] {
  */
 export function materializeLists(
   lists: ReadonlyArray<ReadonlyArray<Resolved>>,
-  references: ReadonlyArray<ReadonlyArray<Reference | undefined>>
+  references: ReadonlyArray<ReadonlyArray<Reference | undefined>>,
+  /* Describe the packages a target builds, where its rule describes it (see describePackages). */
+  describe = false
 ): Computable<{ lists: Materialized[][]; references: Array<Array<Reference | undefined>> }> {
   const referenceOf = (list: number, at: number): Reference | undefined => references[list]?.[at];
   const packages = lists.flatMap(packagesAmong);
@@ -175,7 +178,7 @@ export function materializeLists(
   }
   return Computable.forAll(
     [
-      materializePackages(packages).catch(withConstraint),
+      (describe ? describePackages(packages) : materializePackages(packages)).catch(withConstraint),
       Computable.forAll(
         targets.map(target => materializeTargets([target])),
         (...built: SourceRef[][]) => built

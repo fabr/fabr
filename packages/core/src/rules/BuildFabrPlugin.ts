@@ -27,8 +27,9 @@
  */
 
 import { FabrError } from "../core/Errors";
-import { FileSet } from "../core/FileSet";
-import { PackageFileSet } from "../core/PackageFileSet";
+import { EMPTY_FILESET, FileSet } from "../core/FileSet";
+import { DescribedPackage, PackageFileSet } from "../core/PackageFileSet";
+import { DESCRIPTION_EXTENDS, describeTarget, descriptionFile } from "../support/Description";
 import { MANIFEST, pluginLibsOf, pluginPackageJson } from "../model/Plugin";
 import { defineRule } from "./Types";
 
@@ -53,6 +54,19 @@ export default defineRule({
     return pluginPackageJson(base.getFile(MANIFEST), context.name, pluginLibsOf(libs, optionalLibs)).then(
       manifest =>
         new PackageFileSet(new FileSet(new Map([...files, [MANIFEST, manifest]])), context.name, base.version, base.dependencies, base.origin, base.provided)
+    );
+  },
+  /* The plugin as its package is described: its own target, and the package it
+   * is made from, where that describes itself, under `extends`. */
+  describe(context, requirements) {
+    return requirements.describeAll().then(({ extends: srcs, libs, optional_libs: optionalLibs }) =>
+      describeTarget(context, requirements.resolved, { sources: [...libs, ...optionalLibs] }).then(description => {
+        const [base] = srcs;
+        return FileSet.unionAll(
+          descriptionFile(description),
+          base instanceof DescribedPackage ? FileSet.layout({ [DESCRIPTION_EXTENDS]: base }) : EMPTY_FILESET
+        );
+      })
     );
   },
 });

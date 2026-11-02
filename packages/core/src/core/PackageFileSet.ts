@@ -113,6 +113,12 @@ export interface PackageContent {
   readonly plain?: true;
   /** What the target's rule declares it builds, where it declares it. */
   readonly declared?: Builds;
+  /**
+   * Get the target's description (see support/Description), where its rule
+   * describes it: what {@link describePackages} gives the node in place of
+   * its files.
+   */
+  describe?(): Computable<FileSet>;
 }
 
 /** What a {@link ResolvedNode} is made of. */
@@ -292,7 +298,7 @@ export class PackageFileSet extends FileSet {
   }
 
   public withOrigin(origin: IProvenanceStep): PackageFileSet {
-    return new PackageFileSet(this, this.packageName, this.version, this.dependencies, origin, this.provided);
+    return this.remade(this.packageName, origin);
   }
 
   /**
@@ -304,7 +310,13 @@ export class PackageFileSet extends FileSet {
    * but the mount point alone.
    */
   public withPackageName(packageName: string): PackageFileSet {
-    return new PackageFileSet(this, packageName, this.version, this.dependencies, this.origin, this.provided);
+    return this.remade(packageName, this.origin);
+  }
+
+  /** @return a copy of this package, of its own class, under `packageName` and `origin`. */
+  private remade(packageName: string, origin: IProvenanceStep | undefined): PackageFileSet {
+    const made = this.constructor as new (...args: ConstructorParameters<typeof PackageFileSet>) => PackageFileSet;
+    return new made(this, packageName, this.version, this.dependencies, origin, this.provided);
   }
 
   public getDependency(name: string): Dependency<PackageFileSet> | undefined {
@@ -572,7 +584,13 @@ export class PackageGraphBuilder {
   private sealed = false;
 
   /** Create a node with empty (unwired) dependencies. */
-  public node(files: Iterable<[string, IFile]>, packageName: string, version?: string, origin?: IProvenanceStep): PackageFileSet {
+  public node(
+    files: Iterable<[string, IFile]>,
+    packageName: string,
+    version?: string,
+    origin?: IProvenanceStep,
+    described = false
+  ): PackageFileSet {
     if (this.sealed) {
       throw new FabrError("PackageGraphBuilder is sealed");
     }
@@ -580,7 +598,9 @@ export class PackageGraphBuilder {
      * the builder fill them in after construction. */
     const dependencies: Array<Dependency<PackageFileSet>> = [];
     const provided = new Map<string, Provided>();
-    const pkg = new PackageFileSet(files, packageName, version, dependencies, origin, provided);
+    const pkg = described
+      ? new DescribedPackage(files, packageName, version, dependencies, origin, provided)
+      : new PackageFileSet(files, packageName, version, dependencies, origin, provided);
     this.pending.set(pkg, { dependencies, provided });
     return pkg;
   }
@@ -657,6 +677,23 @@ export function materializePackages(roots: ReadonlyArray<Package>): Computable<A
 /** As above, for roots known to be packages: a registry's. */
 export function materializePackages(roots: ReadonlyArray<Package>, packages: true): Computable<PackageFileSet[]>;
 export function materializePackages(roots: ReadonlyArray<Package>): Computable<Array<PackageFileSet | ReadonlyArray<SourceRef>>> {
+  return materializeGraph(roots, false);
+}
+
+/**
+ * Give each of `roots`, and each package it reaches, what a description needs
+ * of it (see support/Description): as {@link materializePackages} does, except
+ * that a target whose rule describes it is its description, a
+ * {@link DescribedPackage}, in place of its build. A target whose description
+ * fails is left out — a root as no sources, an edge to it unbound — so a
+ * description shows all it can; the failure is the target's own to report.
+ */
+export function describePackages(roots: ReadonlyArray<Package>): Computable<Array<PackageFileSet | ReadonlyArray<SourceRef>>> {
+  return materializeGraph(roots, true);
+}
+
+/** Materialize `roots` and what they reach, describing a target that describes itself where `describe` is set. */
+function materializeGraph(roots: ReadonlyArray<Package>, describe: boolean): Computable<Array<PackageFileSet | ReadonlyArray<SourceRef>>> {
   const all = reachableNodes(roots);
   const nodes = all.filter((pkg): pkg is ResolvedNode => pkg instanceof ResolvedNode);
   if (nodes.length === 0) {
@@ -680,10 +717,20 @@ export function materializePackages(roots: ReadonlyArray<Package>): Computable<A
       }
     }
   }
+  const describing = (node: ResolvedNode): boolean => describe && node.content.describe !== undefined;
   return Computable.forAll(
-    nodes.map(node => node.content.files()),
-    (...files: Array<FileSet | ReadonlyArray<SourceRef>>) => {
-      const content = new Map<Package, FileSet | ReadonlyArray<SourceRef>>(nodes.map((node, index) => [node, files[index]]));
+    nodes.map(node =>
+      describing(node) ? node.content.describe!().then(description => description, (): undefined => undefined) : node.content.files()
+    ),
+    (...files: Array<FileSet | ReadonlyArray<SourceRef> | undefined>) => {
+      const content = new Map<Package, FileSet | ReadonlyArray<SourceRef>>(
+        nodes.filter(node => !describing(node)).map(node => [node, files[nodes.indexOf(node)]!])
+      );
+      const descriptions = new Map<Package, FileSet>(
+        nodes.filter(node => describing(node) && files[nodes.indexOf(node)] !== undefined).map(node => [node, files[nodes.indexOf(node)] as FileSet])
+      );
+      /* The targets whose description failed. */
+      const failed = new Set<Package>(nodes.filter(node => describing(node) && files[nodes.indexOf(node)] === undefined));
       const builder = new PackageGraphBuilder();
       const made = new Map<Package, PackageFileSet>();
       /* A node's content where that is no package (what a target built as
@@ -705,6 +752,12 @@ export function materializePackages(roots: ReadonlyArray<Package>): Computable<A
           return pkg as PackageFileSet;
         }
         let held = made.get(pkg);
+        const description = descriptions.get(pkg);
+        if (held === undefined && description !== undefined) {
+          held = builder.node(description, pkg.packageName, pkg.version, pkg.origin, true);
+          made.set(pkg, held);
+          builder.wire(held, wiredDependencies(pkg), pkg.provided);
+        }
         if (held === undefined) {
           const files = (content.get(pkg) ?? pkg) as FileSet;
           /* A package built in the project states no version before it is
@@ -716,36 +769,47 @@ export function materializePackages(roots: ReadonlyArray<Package>): Computable<A
           const name = files instanceof PackageFileSet ? files.packageName : pkg.packageName;
           held = builder.node(files, name, version, builds === undefined ? pkg.origin : rootedAt(pkg.origin, files.origin));
           made.set(pkg, held);
-          builder.wire(
-            held,
-            pkg.dependencies.flatMap((dep): Array<Dependency<PackageFileSet>> => {
-              const bound = dep.package;
-              if (bound === undefined) {
-                return [{ reference: dep.reference }];
-              }
-              if (plain(bound) === undefined) {
-                return [{ reference: dep.reference, package: withFiles(bound) }];
-              }
-              /* What a package from elsewhere requires must be a package; so
-               * must what a target requires by a reference to a repository's
-               * package, while its reference to a target is answered by
-               * whatever that builds. */
-              if (builds === undefined) {
-                throw new TargetNotPackageError(pkg, bound);
-              }
-              if (dep.reference.requiresPackage === true) {
-                throw new TargetNotPackageError(dep.reference as RepositoryRef, bound);
-              }
-              return [];
-            }),
-            pkg.provided
-          );
+          builder.wire(held, wiredDependencies(pkg), pkg.provided);
         }
         return held;
       };
-      const result = roots.map(root => plain(root) ?? withFiles(root));
+      /* A package's edges, each to its dependency with files. */
+      function wiredDependencies(pkg: Package): Array<Dependency<PackageFileSet>> {
+        const builds = pkg instanceof ResolvedNode ? pkg.content.builds : undefined;
+        return pkg.dependencies.flatMap((dep): Array<Dependency<PackageFileSet>> => {
+          const bound = dep.package;
+          if (bound === undefined || failed.has(bound)) {
+            return [{ reference: dep.reference }];
+          }
+          if (plain(bound) === undefined) {
+            return [{ reference: dep.reference, package: withFiles(bound) }];
+          }
+          /* What a package from elsewhere requires must be a package; so
+           * must what a target requires by a reference to a repository's
+           * package, while its reference to a target is answered by
+           * whatever that builds. */
+          if (builds === undefined) {
+            throw new TargetNotPackageError(pkg, bound);
+          }
+          if (dep.reference.requiresPackage === true) {
+            throw new TargetNotPackageError(dep.reference as RepositoryRef, bound);
+          }
+          return [];
+        });
+      }
+      const result = roots.map(root => (failed.has(root) ? [] : plain(root) ?? withFiles(root)));
       builder.seal();
       return result;
     }
   );
 }
+
+/**
+ * A package built in the project, as a description refers to it
+ * (support/Description): its identity and its dependencies, with its own
+ * description in place of its files — so that describing a target describes,
+ * and does not build, the packages it requires. Its description is a target's
+ * as the Build Server Protocol shapes one
+ * (https://build-server-protocol.github.io/docs/specification#buildtarget).
+ */
+export class DescribedPackage extends PackageFileSet {}

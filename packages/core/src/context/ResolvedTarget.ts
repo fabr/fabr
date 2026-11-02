@@ -222,12 +222,13 @@ export class DeclaredResolvedTarget extends ResolvedTarget {
   public static of(
     context: DeclaredTargetContext,
     resolved: ResolvedRequirements,
-    evaluate: () => Computable<SourceRef[]>
+    evaluate: () => Computable<SourceRef[]>,
+    describe?: () => Computable<FileSet>
   ): DeclaredResolvedTarget {
     const build = new TargetBuild(context, resolved, evaluate);
     const stated = build.stated();
     return new DeclaredResolvedTarget(build, {
-      content: targetContent(context, plain => build.built(plain), resolved.builds),
+      content: targetContent(context, plain => build.built(plain), resolved.builds, describe),
       packageName: declaredName(context, resolved.builds),
       version: stated.version ?? declaredVersion(resolved.builds),
       dependencies: stated.dependencies,
@@ -278,8 +279,10 @@ function declaredVersion(declared: Builds | undefined): string | undefined {
 function targetContent(
   context: DeclaredTargetContext,
   built: (plain: boolean) => Computable<PackageFileSet | SourceRef[]>,
-  declared?: Builds
+  declared?: Builds,
+  describe?: () => Computable<FileSet>
 ): PackageContent {
+  let described: Computable<FileSet> | undefined;
   const constraints = context.taskDescription().constraints;
   /* One target under two configurations is two nodes. */
   const configuration = [...constraints]
@@ -298,6 +301,7 @@ function targetContent(
     configuration: shown,
     ...(plain || declared === "files" ? { plain: true as const } : {}),
     ...(declared === undefined ? {} : { declared }),
+    ...(describe === undefined ? {} : { describe: () => (described ??= Computable.detached(describe)) }),
   };
 }
 

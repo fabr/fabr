@@ -24,6 +24,7 @@ can be piped or redirected on its own.
 | [`deps`](#deps) | Print the dependency tree of targets or packages. |
 | [`shell`](#shell) | Open a shell in the directory a build step runs in, for debugging. |
 | [`sync`](#sync) | Publish packages. |
+| [`build-server`](#build-server) | Serve the project's targets to an editor. |
 | [`list-targets`](#list-targets), [`list-targetdefs`](#list-targetdefs), [`list-operations`](#list-operations), [`list-properties`](#list-properties), [`list-all`](#list-all) | Describe the project and what a build file can contain. |
 
 ### Leaving the command out
@@ -286,6 +287,21 @@ without uploading them, which is a way to check a release first.
 fabr build release    # produce the packages to be published
 fabr sync release     # publish them
 ```
+
+### `build-server`
+
+Describes every target of the project as each of its `build` and `test` rules would build it, and
+serves the descriptions over the [Build Server
+Protocol](https://build-server-protocol.github.io/docs/specification) on standard input and
+output, watching the project and sending `buildTarget/didChange` as descriptions change. Describing
+compiles no package. It is what an editor runs; see [VS Code support](/guides/vscode/).
+
+```sh
+fabr build-server
+```
+
+A target is identified as `fabr:<name>`, and its test run as `fabr:<name>?operation=test`.
+Diagnostics go to standard error.
 
 ### `list-targets`
 

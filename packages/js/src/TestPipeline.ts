@@ -75,7 +75,11 @@ import {
   TREE_MOUNT,
   UPDATE_EXPECTATIONS,
   WriteBackFileSet,
+  describeTarget,
+  descriptionFile,
+  type Unmaterialized,
 } from "@fabr-build/core";
+import { type ITypeScriptPayload, layOutUnits, TSSERVER_PLUGIN, TYPESCRIPT_DATA_KIND } from "./Description";
 import { type ICoverageOptions, SOURCE_LOCATIONS_FILE } from "@fabr-build/js-tools";
 import { createTestRunAction } from "./TestRunAction";
 import { posix } from "path";
@@ -83,6 +87,7 @@ import { COMPILE_OUT_DIR, COMPILE_SRC_DIR } from "./rules/BuildJSCompile";
 import { assembleNodeModules, packageDirectories } from "./NodeModules";
 import {
   compileContents,
+  type ICompiledContents,
   formatJSTarget,
   PinnedJSTarget,
   moduleTypeFile,
@@ -311,25 +316,8 @@ export function compileAndRunTests(
       const runtimeModules = assembleNodeModules(packages);
       const resources = resourceFiles(allDeps.filter(dep => !(dep instanceof PackageFileSet)));
 
-      /* Tests compile to the format their framework's runner loads,
-       * whatever the package itself is built as. Component-wise — the ES
-       * version and the environment are the target's own and are kept. */
-      const testTarget: PinnedJSTarget = { ...jsTarget, module: framework.module };
-      /* Set unconditionally, including when the target already emits
-       * that format: the override is then a different SPELLING of the same
-       * target (`es2020` formats back as `es2020-commonjs-node`), which
-       * parses identically, yields an identical tsconfig, and so shares the
-       * one compile by cache key.
-       *
-       * Built as the package would build it, stylesheets included — a test
-       * importing one gets the CSS the package ships, not raw Sass. */
-      return compileContents(context, sources, [...deps, ...testDeps, framework.globalsTypes ? runnerGlobalsTypes(runner) : EMPTY_FILESET], {
-        packageName: settings.packageName,
-        constraints: Constraints.of({ JS_TARGET: formatJSTarget(testTarget) }),
-        /* A distinct label: the test compile is its own work item (its tree
-         * includes the tests), with its own incremental base. */
-        label: "Compiling tests for",
-      }).then(built => {
+      const testTarget = testTargetOf(jsTarget, framework);
+      return testCompile(context, framework, settings, { sources, deps, testDeps, runner, testTarget }).then(built => {
         if (built.sources.ts.isEmpty() && built.sources.js.isEmpty() && built.sources.jsx.isEmpty()) {
           /* Tests are declared but none is a compilable source (.ts/.tsx/.js/.jsx),
            * so there is nothing to run — a loud failure, not a silent green. */
@@ -366,6 +354,92 @@ export function compileAndRunTests(
         }
       )
   );
+}
+
+/** The compile a test run makes: what it compiles, against what, and for which target. */
+interface ITestCompile {
+  sources: FileSet;
+  deps: FileSet[];
+  testDeps: FileSet[];
+  runner: FileSet;
+  testTarget: PinnedJSTarget;
+}
+
+/**
+ * @return the target a test target's tests compile for: the format their
+ * framework's runner loads, whatever the package itself is built as.
+ * Component-wise — the ES version and the environment are the target's own.
+ */
+function testTargetOf(jsTarget: ReturnType<typeof parseJSTarget>, framework: ITestFramework): PinnedJSTarget {
+  return { ...jsTarget, module: framework.module };
+}
+
+/**
+ * Compile a test target's sources and tests as its run does — or, with
+ * `describe`, describe that compile (see Description) — against its deps, its
+ * test-only deps and, where its framework's runner supplies them, the runner's
+ * globals.
+ */
+function testCompile(
+  context: TargetContext,
+  framework: ITestFramework,
+  settings: ITestSettings,
+  { sources, deps, testDeps, runner, testTarget }: ITestCompile,
+  describe = false
+): Computable<ICompiledContents> {
+  /* The target is set unconditionally, including when the package already
+   * emits that format: the override is then a different SPELLING of the same
+   * target (`es2020` formats back as `es2020-commonjs-node`), which parses
+   * identically, yields an identical tsconfig, and so shares the one compile
+   * by cache key.
+   *
+   * Built as the package would build it, stylesheets included — a test
+   * importing one gets the CSS the package ships, not raw Sass. */
+  return compileContents(context, sources, [...deps, ...testDeps, framework.globalsTypes ? runnerGlobalsTypes(runner) : EMPTY_FILESET], {
+    packageName: settings.packageName,
+    constraints: Constraints.of({ JS_TARGET: formatJSTarget(testTarget) }),
+    /* A distinct label: the test compile is its own work item (its tree
+     * includes the tests), with its own incremental base. */
+    label: describe ? "Describing tests for" : "Compiling tests for",
+    describe,
+  });
+}
+
+/**
+ * Describe a test target as its run would compile it: its BSP target, tagged
+ * a test, and its test unit — the run's compile of its sources and tests,
+ * resolved as the run resolves them.
+ */
+export function describeTests(
+  context: TargetContext,
+  framework: ITestFramework,
+  settings: ITestSettings,
+  requirements: Unmaterialized<TestRequirements>
+): Computable<RuleResult> {
+  return requirements.describeAll().then(({ srcs, tests: testSets, deps, test_deps: testDeps }) => {
+    const tests = FileSet.unionAll(...testSets);
+    if (tests.isEmpty()) {
+      return Computable.resolve(EMPTY_FILESET);
+    }
+    const sources = FileSet.unionAll(...srcs, tests).remap(name => (name === RUNNER_GLOBALS_TYPES ? undefined : name));
+    /* The runner is wanted only for the globals typings it supplies. */
+    return Computable.forAll(
+      [framework.globalsTypes ? context.getGlobalRunnable(framework.runner) : Computable.resolve(EMPTY_FILESET), context.getGlobalString("JS_TARGET", BUILD_OVERRIDE)],
+      (runner, target) =>
+        testCompile(context, framework, settings, { sources, deps, testDeps, runner, testTarget: testTargetOf(parseJSTarget(target), framework) }, true)
+          .then(built => {
+            const laidOut = layOutUnits(new Map([["test", built.compiled]]));
+            const payload: ITypeScriptPayload = { units: laidOut.units, plugin: TSSERVER_PLUGIN };
+            return describeTarget(context, requirements.resolved, {
+              sources: [sources],
+              tags: ["test"],
+              languageIds: ["typescript", "javascript"],
+              dataKind: TYPESCRIPT_DATA_KIND,
+              data: payload,
+            }).then(description => FileSet.unionAll(descriptionFile(description), laidOut.files));
+          })
+    );
+  });
 }
 
 /**

@@ -36,6 +36,7 @@ import { coreContribution, ILoadOptions, loadProject } from "./model/Loader";
 import { Constraints } from "./model/Constraints";
 import { SyncSource } from "./rules/BuildSync";
 import { Diagnostic, Log } from "./support/Log";
+import { DESCRIBED_OPERATIONS, DESCRIPTION_FILE, type IDescription } from "./support/Description";
 
 const DIAG_WATCH_WARNING = Diagnostic.Warn<{ message: string }>("{message}");
 
@@ -210,6 +211,75 @@ export function buildOperation(config: BuildContext, refs: INameValue[]): Comput
  *  (the test reports ride them as artifacts). */
 export function testOperation(config: BuildContext, refs: INameValue[]): Computable<SourceRef[][]> {
   return Computable.forAll(build(config, refs), (...results: SourceRef[][]) => results);
+}
+
+/** A target of a project as it is described, under one of the operations it is described under. */
+export interface IDescribingTarget {
+  name: string;
+  operation: string;
+  /** Its description as it lies in the cache's tree pool, or undefined where
+   * its rule describes nothing; a rejection where describing it failed. */
+  described: Computable<IPooledDescription | undefined>;
+}
+
+/** A description put in the cache's tree pool: the description, and the directory its tree lies at. */
+export interface IPooledDescription {
+  directory: string;
+  description: IDescription;
+}
+
+/** What {@link describeOperation} yields: each target as it is described, and their settling, all together. */
+export interface IDescribing {
+  targets: IDescribingTarget[];
+  settled: Computable<void>;
+}
+
+/**
+ * Describe every target of `model`'s project, as each operation it is
+ * described under would build it (`configOf` makes that operation's
+ * configuration, `refFor` the reference naming a target), putting each
+ * description in the cache's tree pool. Each target's description settles on
+ * its own, and settles again whenever it changes.
+ */
+export function describeOperation(
+  model: BuildModel,
+  configOf: (operation: string) => BuildContext,
+  refFor: (name: string) => INameValue,
+  execution: ExecutionContext
+): IDescribing {
+  const targets = model
+    .getTargets()
+    .filter(({ decl }) => decl.source.fs !== execution.absFileSource)
+    .flatMap(({ name, decl }) =>
+      DESCRIBED_OPERATIONS.filter(operation => model.getOperations(decl.type).includes(operation)).map(
+        (operation): IDescribingTarget => ({
+          name,
+          operation,
+          described: configOf(operation)
+            .describe(refFor(name))
+            .then(tree =>
+              tree === undefined
+                ? undefined
+                : Computable.forAll([execution.buildCache.ensureTree(tree), tree.get(DESCRIPTION_FILE)], (directory, file) =>
+                    file === undefined
+                      ? undefined
+                      : file.getBuffer().then(buffer => ({ directory, description: JSON.parse(buffer.toString("utf8")) as IDescription }))
+                  )
+            ),
+        })
+      )
+    );
+  /* Settled whether each described or failed: a failure is the target's, not the operation's. */
+  const settled = Computable.forAll(
+    targets.map(({ described }) =>
+      described.then(
+        (): void => undefined,
+        (): void => undefined
+      )
+    ),
+    (): void => undefined
+  );
+  return { targets, settled };
 }
 
 /**

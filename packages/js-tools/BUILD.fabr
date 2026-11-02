@@ -2,7 +2,8 @@
 # and the documents they read. The plugin's own tests check the two halves agree.
 js_package @fabr-build/js-tools {
   srcs = src:**/*.ts ../../README.md -> README.md ../../COPYING -> LICENSE;
-  exports = src:index.ts;
+  # The entry point, and the plugin an editor loads into its TypeScript server.
+  exports = src:index.ts src:tsserverPlugin/TsserverPlugin.ts;
   tests = src:**/*.test.ts;
   # The coverage driver's libraries.
   deps = @pkg:@types/node @pkg:ast-v8-to-istanbul @pkg:acorn @pkg:@bcoe/v8-coverage;

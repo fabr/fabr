@@ -1,0 +1,41 @@
+{
+  "displayName": "Fabr",
+  "publisher": "fabr-build",
+  "icon": "icon.png",
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "galleryBanner": {
+    "color": "#07131c",
+    "theme": "dark"
+  },
+  "preview": true,
+  "activationEvents": [
+    "workspaceContains:PROJECT.fabr"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Fabr runs the project's own build code, so it starts only in a trusted workspace."
+    }
+  },
+  "contributes": {
+    "javaExtensions": [
+      "./jdtls/fabr-jdtls-importer.jar"
+    ],
+    "configuration": {
+      "title": "Fabr",
+      "properties": {
+        "fabr.command": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "The command running the project's fabr; a leading ./ is the workspace folder. A lone .js file (fabr's bin/fabr.js) runs on VS Code's own Node.js. Empty: the project's installed fabr, run so, else fabr on the PATH."
+        }
+      }
+    }
+  }
+}

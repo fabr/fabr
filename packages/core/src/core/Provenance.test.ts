@@ -18,6 +18,8 @@
  */
 
 import { expect } from "chai";
+import { FileSet } from "./FileSet";
+import { MemoryFile } from "./MemoryFS";
 import { derivedFrom, describeProvenance, renderProvenance } from "./Provenance";
 
 describe("derived provenance", () => {
@@ -46,5 +48,20 @@ describe("derived provenance", () => {
 
   it("describes itself by the input, for one-line attribution", () => {
     expect(describeProvenance(derivedFrom("a/Card.module.scss", "css_postcss"))).to.equal("a/Card.module.scss");
+  });
+});
+
+describe("derivedFromOf", () => {
+  const produced = new FileSet(new Map([["Card.css", MemoryFile.from("a {}")]])).withStep(derivedFrom("./src/Card.scss", "sass_compile"));
+
+  it("answers what a file was produced from through a union and a rename", () => {
+    const merged = FileSet.unionAll(produced, new FileSet(new Map([["other.txt", MemoryFile.from("x")]])));
+    const renamed = merged.rename(name => `out/${name}`);
+    expect(renamed.derivedFromOf("out/Card.css")).to.equal("./src/Card.scss");
+    expect(renamed.derivedFromOf("out/other.txt")).to.equal(undefined);
+  });
+
+  it("names no source path for what it produced", () => {
+    expect(produced.sourcePathOf("Card.css")).to.equal(undefined);
   });
 });

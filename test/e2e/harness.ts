@@ -376,6 +376,10 @@ export interface WatchSession {
   readonly pid: number | undefined;
   /** Everything the process has written to stderr so far. */
   readonly stderr: string;
+  /** The process's stdin, for a protocol it speaks there (`fabr server`). */
+  readonly stdin: NodeJS.WritableStream;
+  /** The process's stdout, unread by the session. */
+  readonly stdout: NodeJS.ReadableStream;
   /** Write/overwrite a fixture file (relative to the project dir). */
   write(rel: string, content: string): void;
   /** Delete a fixture file (relative to the project dir). */
@@ -465,6 +469,8 @@ export function startFabrWatch(files: Record<string, string>, args: string[], en
     get stderr(): string {
       return stderr;
     },
+    stdin: child.stdin!,
+    stdout: child.stdout!,
     write,
     remove(rel): void {
       fs.rmSync(path.join(dir, rel), { force: true });

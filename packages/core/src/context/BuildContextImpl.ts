@@ -1462,7 +1462,14 @@ export class BuildContextImpl implements InternalBuildContext {
   /** Make the resolved target `context` evaluates with `rule`, whose requirements resolve to `requirements`. A failure is the target's. */
   protected resolvedWith(context: DeclaredTargetContext, rule: RuleDefinition, requirements: Computable<ResolvedRequirements>): Computable<ResolvedTarget> {
     return requirements
-      .then(resolved => DeclaredResolvedTarget.of(context, resolved, () => this.evaluateTarget(context, rule, resolved)))
+      .then(resolved =>
+        DeclaredResolvedTarget.of(
+          context,
+          resolved,
+          () => this.evaluateTarget(context, rule, resolved),
+          rule.describe === undefined ? undefined : () => this.describeWith(context, rule, resolved)
+        )
+      )
       .catch(err => {
         throw context.failure(err);
       });
@@ -1531,6 +1538,48 @@ export class BuildContextImpl implements InternalBuildContext {
       /* A resolution read here failed as the target's already. */
       return resolved === undefined ? applied() : resolved.then(applied);
     });
+  }
+
+  public describe(ref: INameValue, stack?: IDependencyStack): Computable<FileSet | undefined> {
+    return this.lookupContextFor(ref.value, undefined, stack).then(({ context, reference }) =>
+      context.describeTarget(reference.toString(), stack)
+    );
+  }
+
+  private describeTarget(name: string, stack?: IDependencyStack): Computable<FileSet | undefined> {
+    const def = this.lookupDecl(name);
+    if (def?.kind !== DeclKind.Target) {
+      throw new FabrError(`'${name}' is not a target`);
+    }
+    return this.declaredRule(def, stack).then(({ context, rule }): Computable<FileSet | undefined> | undefined => {
+      if (rule.value || rule.describe === undefined) {
+        return undefined;
+      }
+      /* Where the target was referenced it was resolved, and that is read. */
+      const resolved = this.resolvedTargets.get(declName(context.target))?.then(target => target.resolved);
+      return resolved === undefined ? this.describeWith(context, rule) : resolved.then(parts => this.describeWith(context, rule, parts));
+    });
+  }
+
+  /**
+   * Describe a target with `rule`, over `resolved`, its requirements, or where
+   * none are given over the rule's requirements resolved here: a yielded
+   * BuildAction is performed through the cache, and the files the description
+   * is made of are returned as one set.
+   */
+  private describeWith(context: TargetContext, rule: RuleDefinition, resolved?: ResolvedRequirements): Computable<FileSet> {
+    const describe = rule.describe!;
+    const held =
+      resolved === undefined
+        ? statedRequirements(context, rule).then(required => resolveRequirements(context, required))
+        : Computable.resolve(resolved);
+    return held
+      .then(requirements => describe(context, unmaterialized(this, requirements)))
+      .then(result => (result instanceof BuildAction ? this.runAction(result, context) : result))
+      .then(result => FileSet.unionAll(...(Array.isArray(result) ? result : [result]).filter((part): part is FileSet => part instanceof FileSet)))
+      .catch(err => {
+        throw context.failure(err);
+      });
   }
 
   public resolve(ref: INameValue, stack?: IDependencyStack): Computable<ResolvedRequirements> {
@@ -1602,6 +1651,23 @@ export class BuildContextImpl implements InternalBuildContext {
     return buildContext
       .ruleFor(type, context, () => new FabrError(`No rule found for anonymous target type '${type}'`))
       .then(rule => buildContext.evaluateTarget(context, rule));
+  }
+
+  public describeSubTarget(
+    owner: TargetContext,
+    type: string,
+    inputs: SubTargetInputs,
+    options?: { label?: string; constraints?: Constraints }
+  ): Computable<FileSet | undefined> {
+    const buildContext = this.getContextWithOverrides(options?.constraints);
+    const targetDef = this.model.getTargetDef(type);
+    if (!targetDef) {
+      throw new FabrError(`Internal error: sub-target type '${type}' has no registered targetdef`);
+    }
+    const context = new AnonymousTargetContext(buildContext, targetDef, inputs, owner.getDeclaredContext(), options?.label, owner.stack, owner);
+    return buildContext
+      .ruleFor(type, context, () => new FabrError(`No rule found for anonymous target type '${type}'`))
+      .then(rule => (rule.describe === undefined ? undefined : buildContext.describeWith(context, rule)));
   }
 
   /**
