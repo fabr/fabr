@@ -56,8 +56,8 @@ export default defineRule({
         new PackageFileSet(new FileSet(new Map([...files, [MANIFEST, manifest]])), context.name, base.version, base.dependencies, base.origin, base.provided)
     );
   },
-  /* The plugin as its package is described: its own target, and the package it
-   * is made from, where that describes itself, under `extends`. */
+  /* Describe the plugin as its package is described: its own target, and the
+   * package it is made from, where that describes itself, under `extends`. */
   describe(context, requirements) {
     return requirements.describeAll().then(({ extends: srcs, libs, optional_libs: optionalLibs }) =>
       describeTarget(context, requirements.resolved, { sources: [...libs, ...optionalLibs] }).then(description => {

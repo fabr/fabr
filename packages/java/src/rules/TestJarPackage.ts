@@ -59,7 +59,7 @@ export default defineRule({
   evaluateMaterialized(context, inputs) {
     return testJar(context, inputs);
   },
-  /* The tests as an editor compiles them: against the package's own build, as the run does. */
+  /* Describe the tests as an editor compiles them: against the package's own build, as the run does. */
   describe(context, requirements) {
     return requirements.describeAll().then(inputs => {
       const tests = FileSet.unionAll(...inputs.tests);

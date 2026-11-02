@@ -15,9 +15,9 @@
  */
 
 /**
- * The editor's TypeScript server shown a fabr project's compilation units as
- * their compiles see them: what an editor plugin loads into tsserver for the
- * projects of one fabr project. Each unit's imports resolve through the unit's
+ * What an editor plugin loads into tsserver for the projects of one fabr
+ * project, to show the editor's TypeScript server the project's compilation
+ * units as their compiles see them. Each unit's imports resolve through the unit's
  * PnP table with the tsc driver's own resolution; every other tsserver project
  * is left as it is.
  *
@@ -54,7 +54,7 @@ export interface ITypeScriptUnit {
   package?: string;
   /** The compile's import rewrite rules. */
   rewrites?: IImportRewrite[];
-  /** The files the unit's package delivers but no step compiles, by their paths from its config. */
+  /** The files the unit's package ships that no step compiles, by their paths from its config. */
   resources?: string[];
 }
 
@@ -177,7 +177,7 @@ export function decorateUnitProject(
   answerLinks(host, links);
   /* tsserver's auto-import project resolves the dependencies the manifests
    * above a file list with stock resolution: in a unit it can reach only what
-   * lies outside the unit. tsserver reads its absence as there being none. */
+   * lies outside the unit. With no provider, tsserver makes no such project. */
   info.project.getPackageJsonAutoImportProvider = () => undefined;
   info.project.projectService.logger.info(`fabr: ${unit.config} resolves through ${unit.table}`);
   return withFinishedDiagnostics(scopedAutoImports(info.languageService), installed);
@@ -207,8 +207,9 @@ function withFinishedDiagnostics(service: ILanguageService, installed: IInstalle
 /**
  * Resolve each import in the syntax server's inferred project by the unit of
  * the importing file — one whose config lists it, else the innermost whose
- * root holds it — under that unit's options, leaving an import from any other
- * file to the resolution `info`'s host already has.
+ * root holds it, else the first whose table locates it (a file of a package
+ * the unit installs) — under that unit's options, leaving an import from any
+ * other file to the resolution `info`'s host already has.
  */
 export function resolveByImporter(ts: IServerTypeScript, info: IPluginCreateInfo, units: readonly ITypeScriptUnit[]): void {
   const host = info.languageServiceHost;
@@ -217,20 +218,32 @@ export function resolveByImporter(ts: IServerTypeScript, info: IPluginCreateInfo
     .map(unit => {
       const parsed = ts.getParsedCommandLineOfConfigFile(unit.config, {}, configHost(ts));
       const options = parsed?.options ?? {};
+      const { resolution, resolver } = unitResolution(ts, host, unit, options, units, links);
       return {
         root: unit.root + path.sep,
         files: new Set((parsed?.fileNames ?? []).map(file => path.resolve(file))),
         options,
-        resolution: unitResolution(ts, host, unit, options, units, links).resolution,
+        resolution,
+        resolver,
       };
     })
     .sort((a, b) => b.root.length - a.root.length);
+  type Unit = (typeof byRoot)[number];
+  /* The unit whose table locates each importing file outside every unit, by the file. */
+  const locating = new Map<string, Unit | undefined>();
+  const locatedBy = (from: string): Unit | undefined => {
+    if (!locating.has(from)) {
+      locating.set(from, byRoot.find(candidate => locates(candidate.resolver, from)));
+    }
+    return locating.get(from);
+  };
   type Hook = (items: readonly unknown[], from: string, redirected: unknown, options: CompilerOptions, ...rest: unknown[]) => unknown;
   const hooks = host as unknown as Record<string, Hook | undefined>;
   for (const hook of ["resolveModuleNameLiterals", "resolveTypeReferenceDirectiveReferences"]) {
     const previous = hooks[hook];
     hooks[hook] = (items, from, redirected, options, ...rest) => {
-      const owner = byRoot.find(candidate => candidate.files.has(path.resolve(from))) ?? byRoot.find(candidate => from.startsWith(candidate.root));
+      const owner =
+        byRoot.find(candidate => candidate.files.has(path.resolve(from))) ?? byRoot.find(candidate => from.startsWith(candidate.root)) ?? locatedBy(from);
       const own = owner && (owner.resolution as unknown as Record<string, Hook | undefined>)[hook];
       return own !== undefined
         ? own(items, from, redirected, owner!.options, ...rest)
@@ -254,7 +267,7 @@ function unitResolution(
   options: CompilerOptions,
   units: readonly ITypeScriptUnit[],
   links: Map<string, string>
-): { resolution: IResolutionHost; installed: IInstalledResolution } {
+): { resolution: IResolutionHost; installed: IInstalledResolution; resolver: PnpResolver } {
   /* Every unit's package, the unit's own among them: a package may import
    * itself by name, and a package's tests import it as the package does. */
   const locals = units
@@ -339,7 +352,7 @@ function unitResolution(
       };
     }
   }
-  return { resolution, installed };
+  return { resolution, installed, resolver };
 }
 
 /** @return the extension of the declaration a source of `extension` is compiled to. */
@@ -350,6 +363,19 @@ function declarationExtension(extension: string): string {
 /** @return true if `extension`, a resolution's, is a JavaScript module's, otherwise false. */
 function isJavaScript(extension: string | undefined): boolean {
   return extension !== undefined && /^\.[cm]?jsx?$/.test(extension);
+}
+
+/**
+ * @return true if `resolver`'s table locates `file` in a package it installs,
+ * otherwise false: a file outside the table, or one it names only virtually,
+ * is not located.
+ */
+function locates(resolver: PnpResolver, file: string): boolean {
+  try {
+    return resolver.findPackageLocator(file) !== null;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -416,9 +442,24 @@ function outputLayout(
   };
 }
 
-/** @return `unit`'s compiler options, as its config states them. */
+/** Each unit config's options, by the config's path, with the text they were parsed from. */
+const parsedConfigs = new Map<string, { text: string; options: CompilerOptions }>();
+
+/**
+ * @return `unit`'s compiler options, as its config states them: parsed again
+ * only where the config's text has changed since it was last parsed.
+ */
 function parsedOptions(ts: IServerTypeScript, unit: ITypeScriptUnit): CompilerOptions {
-  return ts.getParsedCommandLineOfConfigFile(unit.config, {}, configHost(ts))?.options ?? {};
+  const text = ts.sys.readFile(unit.config);
+  const held = parsedConfigs.get(unit.config);
+  if (held !== undefined && held.text === text) {
+    return held.options;
+  }
+  const options = ts.getParsedCommandLineOfConfigFile(unit.config, {}, configHost(ts))?.options ?? {};
+  if (text !== undefined) {
+    parsedConfigs.set(unit.config, { text, options });
+  }
+  return options;
 }
 
 /**

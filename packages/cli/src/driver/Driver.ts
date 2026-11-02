@@ -46,12 +46,11 @@ import {
   LogFormatter,
   LogLevel,
   IPropertyDecl,
-  IPropertySchema,
   isFileSource,
   isNameValue,
   ITargetDecl,
   ITargetDefDecl,
-  PropertyType,
+  propertyTypeName,
   PublishableFileSet,
   Reference,
   refuseNamespaces,
@@ -82,6 +81,8 @@ import { shellInto } from "./ShellHandler";
 import { DependencyTree, renderDependencyTrees, sectionsOf } from "./DepsTree";
 import { publishSync } from "./SyncHandler";
 import { BspServer } from "./BspServer";
+import { JsonRpcConnection } from "./JsonRpc";
+import { LanguageServer } from "./LanguageServer";
 import { completeCommandLine, Mode, Options } from "./Command";
 import { getSourceRoot, getBuildCacheRoot, getHostProperties } from "./Environment";
 import { IInvocationSite } from "./CommandLineSource";
@@ -230,22 +231,42 @@ export function runFabr(options: Options): Promise<void> {
     case "build-server": {
       /* One server for the run, across every model a reload makes. */
       return getSourceRoot().then(root => {
-        const server = new BspServer(root);
         /* Ended as a signal ends it, so the watch shuts down its watchers first. */
-        server.listen(() => process.kill(process.pid, "SIGTERM"));
+        const end = (): void => void process.kill(process.pid, "SIGTERM");
+        const connection = new JsonRpcConnection(process.stdout);
+        const server = new BspServer(root, connection, end);
+        const language = new LanguageServer(root, connection, uri => server.isServed(uri));
+        connection.listen(process.stdin, end);
+        /* The driver's own log, which a describe failure is reported to: the
+         * run's also collects the diagnostics of loading the build files. */
+        let reporting: Log | undefined;
         return runWith(
           options,
           (model, execution, site) => {
+            language.useModel(model);
             const describing = describeOperation(
               model,
               operation => configFor(model, options, execution, operation),
               name => options.commandLine.refFor(name, site),
               execution
             );
-            server.serve(describing, execution.log);
+            server.serve(describing, reporting ?? execution.log, {
+              build: name => buildOperation(configFor(model, options, execution, "build"), [options.commandLine.refFor(name, site)]),
+              test: name => testOperation(configFor(model, options, execution, "test"), [options.commandLine.refFor(name, site)]),
+            });
             return describing.settled;
           },
-          true
+          true,
+          {
+            log: log => {
+              reporting = log;
+              return language.observe(log);
+            },
+            execution: execution => {
+              server.attach(execution);
+              language.attach(execution);
+            },
+          }
         );
       });
     }
@@ -640,7 +661,15 @@ function membersOf(sources: SourceRef[], name: string): Computable<PublishableFi
  * failure tree (exit 1) on error. Reaching a drained event loop without an
  * explicit exit is a stall bug, reported loudly (exit 2).
  */
-async function runWith(options: Options, operation: Operation, watch = false): Promise<void> {
+/** What a verb adds around its run: what it observes of the run's log, and of its execution once made. */
+interface IRunSetup {
+  /** The log the run reports to, made from the driver's own. */
+  log?: (log: Log) => Log;
+  /** Called with the run's execution, before anything is loaded. */
+  execution?: (execution: ExecutionContext) => void;
+}
+
+async function runWith(options: Options, operation: Operation, watch = false, setup: IRunSetup = {}): Promise<void> {
   /* Diagnostics and progress go to stderr; command data (ls listings, cat
    * file contents) goes to stdout, so a build can be filtered from its output.
    * Color is a render-time decision only (NO_COLOR is any non-empty value):
@@ -679,12 +708,13 @@ async function runWith(options: Options, operation: Operation, watch = false): P
     const fabr = new Fabr({
       sourceRoot,
       cacheRoot: getBuildCacheRoot(),
-      log,
+      log: setup.log?.(log) ?? log,
       watch,
       host: Constraints.of(getHostProperties()),
       includeOptionalLibs: options.includeOptional,
     });
     const execution = fabr.execution;
+    setup.execution?.(execution);
     /* Where the user typed the command, in the source tree's own namespace: a
      * name given on the command line resolves its bare paths from here, as a
      * name written in a build file resolves them from that file's directory. */
@@ -1196,27 +1226,6 @@ function formatDeclLocation(decl: ITargetDecl | ITargetDefDecl | IPropertyDecl):
   const span = declPosn(decl);
   const pos = span.reader.resolvePosition(span.offset);
   return pos ? `${span.file}:${pos.line}:${pos.column}` : span.file;
-}
-
-/** @return the source-level keyword for a property's type, as written in a
- * targetdef (`FILES`, `PACKAGES`, `STRING`, `MAP`, `COMMAND`, `REWRITE`). */
-function propertyTypeName(schema: IPropertySchema): string {
-  switch (schema.type) {
-    case PropertyType.FileSet:
-      return "FILES";
-    case PropertyType.Packages:
-      return "PACKAGES";
-    case PropertyType.String:
-      return "STRING";
-    case PropertyType.Map:
-      return "MAP";
-    case PropertyType.Command:
-      return "COMMAND";
-    case PropertyType.Rewrite:
-      return "REWRITE";
-    default:
-      return PropertyType[schema.type];
-  }
 }
 
 /**

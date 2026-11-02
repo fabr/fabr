@@ -42,7 +42,7 @@ export default defineRule({
         testRequirements({ srcs: [], tests, deps, test_deps: new PackageSources([]), test_resources, expectations })
     );
   },
-  /* The tests as an editor is told of them: the unit the run compiles. */
+  /* Describe the tests as an editor is told of them: the unit the run compiles. */
   describe(context, requirements) {
     return testFramework(context, "framework").then(framework => describeTests(context, framework, { envProperty: "env" }, requirements));
   },

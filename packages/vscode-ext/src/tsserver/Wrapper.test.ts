@@ -25,7 +25,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { layOutTsdk } from "./Wrapper";
+import { layOutTsdk, withPlugin } from "./Wrapper";
 
 /** The compiled modules beside this test, whether it runs compiled or from source. */
 const COMPILED = __filename.endsWith(".ts") ? path.resolve(__dirname, "../../build/tsserver") : __dirname;
@@ -138,6 +138,12 @@ describe("tsserver wrapper", () => {
     const result = await server!.request("semanticDiagnosticsSync", { file: file(name) });
     return (result.body as Array<{ code: number }>).map(d => d.code);
   };
+
+  it("keeps the client's watch events where no fabr project is registered, and drops them where one is", () => {
+    const argv = ["node", "tsserver.js", "--canUseWatchEvents", "--globalPlugins", "other"];
+    expect(withPlugin(argv, "/probe", false)).to.deep.equal(["node", "tsserver.js", "--canUseWatchEvents", "--globalPlugins", "other,fabr-tsserver-shim", "--pluginProbeLocations", "/probe"]);
+    expect(withPlugin(argv, "/probe", true)).to.deep.equal(["node", "tsserver.js", "--globalPlugins", "other,fabr-tsserver-shim", "--pluginProbeLocations", "/probe"]);
+  });
 
   it("serves a registered project's config in place of the real one", async () => {
     expect(await diagnosticCodes("project/src/a.ts")).to.deep.equal([7006]);

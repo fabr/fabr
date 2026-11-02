@@ -15,6 +15,11 @@ of the same name above it.
 - With Red Hat's Java extension installed, each `jar_package` is a Java project of the editor's:
   its sources, the jars the build compiles them against, and its tests with their own test
   dependencies.
+- Fabr's build files (`PROJECT.fabr`, `BUILD.fabr`) are highlighted, with an outline,
+  go-to-definition, hover documentation, completion, and their errors in the Problems view.
+- **Build** and **Test** above each target, the **Fabr: Build Target** and **Fabr: Test Target**
+  commands, and the Testing view build and test targets in the fabr the editor already runs, each
+  test's outcome shown beneath its target.
 
 A project that is not fabr's, around or beside a fabr project, keeps VS Code's ordinary behaviour.
 
@@ -27,18 +32,21 @@ fabr's `fabr build-server` to describe the project.
 ## Settings
 
 - `fabr.command`: the command running the project's fabr, as a list of arguments; a leading `./`
-  is the workspace folder. Empty (the default): the fabr installed in the project's
-  `node_modules`, else `fabr` on the `PATH`.
+  is the workspace folder. A lone `.js` file, such as an installation's
+  `node_modules/@fabr-build/cli/bin/fabr.js`, runs on VS Code's own Node.js, so starting it needs
+  nothing from the `PATH`. Empty (the default): the fabr installed in the project's
+  `node_modules`, run the same way, else `fabr` on the `PATH`.
 
 To start VS Code's TypeScript server through fabr's wrapper, the extension sets the user settings
-`js/ts.tsdk.path` and `typescript.tsdk` to a copy of VS Code's own TypeScript under
-`~/.fabr/vscode/tsdk`. The wrapper changes nothing outside a fabr project. Remove the two settings
-to undo it.
+`js/ts.tsdk.path` and `typescript.tsdk` to `~/.fabr/vscode/tsdk`, which runs VS Code's own
+TypeScript, once a fabr project has TypeScript or JavaScript targets. The wrapper changes nothing in
+a window with no fabr project open. Remove the two settings to undo it.
 
 ## Limitations
 
 - The editor's TypeScript is VS Code's own, not the version the build compiles with; where the two
   differ, the editor may report an error the build does not, or miss one.
-- TypeScript, JavaScript and Java only: stylesheets are left to VS Code's own support.
+- TypeScript, JavaScript, Java and fabr's build files only: stylesheets are left to VS Code's own
+  support.
 
 See [VS Code support](https://fabr.build/guides/vscode/) in fabr's documentation.

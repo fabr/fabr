@@ -36,6 +36,38 @@
           "description": "The command running the project's fabr; a leading ./ is the workspace folder. A lone .js file (fabr's bin/fabr.js) runs on VS Code's own Node.js. Empty: the project's installed fabr, run so, else fabr on the PATH."
         }
       }
-    }
+    },
+    "languages": [
+      {
+        "id": "fabr",
+        "aliases": [
+          "Fabr",
+          "fabr"
+        ],
+        "extensions": [
+          ".fabr"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "fabr",
+        "scopeName": "source.fabr",
+        "path": "./syntaxes/fabr.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "fabr.build",
+        "title": "Build Target",
+        "category": "Fabr"
+      },
+      {
+        "command": "fabr.test",
+        "title": "Test Target",
+        "category": "Fabr"
+      }
+    ]
   }
 }

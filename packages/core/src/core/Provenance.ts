@@ -406,7 +406,7 @@ registerProvenanceNaming(RENAME_PROVENANCE, {
 });
 registerProvenanceRenderer(RENAME_PROVENANCE, () => []);
 
-/* Names no source path: a produced file has none of its own. */
+/* Names no source path of its own: a produced file has none. */
 registerProvenanceNaming(DERIVED_PROVENANCE, {
   sourcePath: (_step, path, below) => below(path),
   digest: (_step, names, below) => below(names),

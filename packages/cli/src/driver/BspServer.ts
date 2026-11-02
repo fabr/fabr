@@ -31,15 +31,20 @@
  */
 
 import {
+  Computable,
+  ComputableHandle,
+  getTestReport,
   type IDescribing,
-  FabrError,
+  type ITestReport,
+  MultiError,
+  type SourceRef,
+  TestsFailedError,
   type IBuildTarget,
   type IDescription,
   type IJavacOptions,
   type ISourceItem,
-  type ISourceSpan,
+  type ExecutionContext,
   type Log,
-  LogLevel,
   reportFailure,
   targetIdentifier,
   toError,
@@ -48,6 +53,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { getVersion } from "./Command";
+import { type JsonRpcConnection, MethodNotFound } from "./JsonRpc";
+import { collectingLog, type IProtocolDiagnostic } from "./ProtocolDiagnostics";
+import { toDocumentParams, toTargetsParams } from "./ProtocolParams";
 
 /** The BSP version this server speaks. */
 export const BSP_VERSION = "2.1.0";
@@ -64,7 +72,7 @@ interface IServedTarget {
 const BUILD = "build";
 
 /** @return the identifier a target is served under: `fabr:<name>` as it builds, `fabr:<name>?operation=<operation>` otherwise. */
-function served({ name, operation }: { name: string; operation: string }): string {
+export function served({ name, operation }: { name: string; operation: string }): string {
   return operation === BUILD ? targetIdentifier(name).uri : `${targetIdentifier(name).uri}?operation=${operation}`;
 }
 
@@ -73,133 +81,43 @@ const CREATED = 1;
 const CHANGED = 2;
 const DELETED = 3;
 
-/** JSON-RPC's error codes this server answers with. */
-const METHOD_NOT_FOUND = -32601;
-const INTERNAL_ERROR = -32603;
-
-/** A JSON-RPC connection over a pair of streams, framed as LSP frames it. */
-export class JsonRpcConnection {
-  private buffer = Buffer.alloc(0);
-  /** The notifications sent before the client's `build/initialize` was answered, which are sent once it is. */
-  private held: unknown[] | undefined = [];
-
-  constructor(
-    private readonly output: NodeJS.WritableStream,
-    private readonly handle: (method: string, params: unknown) => unknown
-  ) {}
-
-  /** Read messages from `input` until it ends, then call `onEnd`. */
-  public listen(input: NodeJS.ReadableStream, onEnd: () => void): void {
-    input.on("data", (data: Buffer) => {
-      this.buffer = Buffer.concat([this.buffer, data]);
-      for (let message = this.next(); message !== undefined; message = this.next()) {
-        this.dispatch(message);
-      }
-    });
-    input.on("end", onEnd);
-  }
-
-  /** Send the notification `method`: once the client has been answered its `build/initialize`, and until then held. */
-  public notify(method: string, params: unknown): void {
-    if (this.held !== undefined) {
-      this.held.push({ jsonrpc: "2.0", method, params });
-    } else {
-      this.send({ jsonrpc: "2.0", method, params });
-    }
-  }
-
-  private next(): { id?: number | string; method?: string; params?: unknown } | undefined {
-    const blank = this.buffer.indexOf("\r\n\r\n");
-    if (blank < 0) {
-      return undefined;
-    }
-    const length = /^content-length: *(\d+)$/im.exec(this.buffer.subarray(0, blank).toString("latin1"));
-    if (length === null) {
-      throw new FabrError("a message with no Content-Length");
-    }
-    const start = blank + 4;
-    const end = start + Number(length[1]);
-    if (this.buffer.length < end) {
-      return undefined;
-    }
-    const body = this.buffer.subarray(start, end).toString("utf8");
-    this.buffer = this.buffer.subarray(end);
-    return JSON.parse(body);
-  }
-
-  private dispatch(message: { id?: number | string; method?: string; params?: unknown }): void {
-    if (message.method === undefined) {
-      return;
-    }
-    const isRequest = message.id !== undefined;
-    Promise.resolve()
-      .then(() => this.handle(message.method!, message.params))
-      .then(
-        result => {
-          if (isRequest) {
-            this.send({ jsonrpc: "2.0", id: message.id, result: result ?? null });
-          }
-          if (message.method === INITIALIZE && this.held !== undefined) {
-            const held = this.held;
-            this.held = undefined;
-            held.forEach(notification => this.send(notification));
-          }
-        },
-        (err: unknown) => {
-          const error = toError(err);
-          const code = error instanceof MethodNotFound ? METHOD_NOT_FOUND : INTERNAL_ERROR;
-          if (isRequest) {
-            this.send({ jsonrpc: "2.0", id: message.id, error: { code, message: error.message } });
-          }
-        }
-      );
-  }
-
-  private send(message: unknown): void {
-    const body = Buffer.from(JSON.stringify(message), "utf8");
-    this.output.write(`Content-Length: ${body.length}\r\n\r\n`);
-    this.output.write(body);
-  }
-}
-
-class MethodNotFound extends FabrError {}
-
-/** The request a client opens a connection with, before whose answer the server sends nothing. */
-const INITIALIZE = "build/initialize";
-
 /** How long announcements are held for others settling close behind them, in milliseconds. */
 const ANNOUNCE_DELAY_MS = 100;
 
-/** BSP's `DiagnosticSeverity`s. */
-const DIAGNOSTIC_ERROR = 1;
-const DIAGNOSTIC_WARNING = 2;
-
-/** A BSP (and LSP) diagnostic. */
-interface IBspDiagnostic {
-  range: IBspRange;
-  severity: number;
-  source: string;
-  message: string;
-  relatedInformation?: Array<{ location: { uri: string; range: IBspRange }; message: string }>;
+/** What the server builds or tests a target with, by its name, in the model it serves. */
+export interface IServedOperations {
+  build(name: string): Computable<SourceRef[][]>;
+  test(name: string): Computable<SourceRef[][]>;
 }
 
-/** A BSP range: zero-based lines and characters. */
-interface IBspRange {
-  start: { line: number; character: number };
-  end: { line: number; character: number };
+/** The languages of the targets the server builds and tests. */
+const LANGUAGE_IDS = ["typescript", "javascript", "java"];
+
+/** A range at a document's start, where a test's location names only its file. */
+const ZERO_RANGE = { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } };
+
+/** BSP's `TestStatus` of each outcome a test report records. */
+const TEST_STATUSES: Record<ITestReport["results"]["tests"][number]["status"], number> = { passed: 1, failed: 2, pending: 3, other: 3, skipped: 5 };
+
+/** @return a promise of what `computable` first settles to. */
+function settled<T>(computable: Computable<T>): Promise<T> {
+  return new Promise((resolve, reject) => computable.once(resolve, reject));
 }
 
-/** @return the range `loc` covers, or undefined where its offset lies outside its text. */
-function rangeOf(loc: ISourceSpan): IBspRange | undefined {
-  const start = loc.reader.resolvePosition(loc.offset);
-  if (start === undefined) {
-    return undefined;
+/** @return the test failure `err` reports, among the errors it holds, or undefined if it reports none. */
+function testsFailedIn(err: Error): TestsFailedError | undefined {
+  if (err instanceof TestsFailedError) {
+    return err;
   }
-  const end = loc.reader.resolvePosition(loc.endOffset) ?? start;
-  return {
-    start: { line: start.line - 1, character: start.column - 1 },
-    end: { line: end.line - 1, character: end.column - 1 },
-  };
+  const cause = (err as { cause?: unknown }).cause;
+  const inner = err instanceof MultiError ? err.errors : cause instanceof Error ? [cause] : [];
+  for (const each of inner) {
+    const found = testsFailedIn(each);
+    if (found !== undefined) {
+      return found;
+    }
+  }
+  return undefined;
 }
 
 /** BSP's `StatusCode`s, as a task finishes. */
@@ -207,7 +125,7 @@ const TASK_OK = 1;
 const TASK_ERROR = 2;
 const TASK_CANCELLED = 3;
 
-/** The `dataKind` of a describing task's finish, whose `data` names the targets that could not be described. */
+/** The `dataKind` of a describing task's start and finish: a finish's `data` names the targets that could not be described. */
 export const DESCRIBE_TASK_DATA_KIND = "fabr-describe";
 
 /**
@@ -218,8 +136,8 @@ export const DESCRIBE_TASK_DATA_KIND = "fabr-describe";
 export class BspServer {
   private readonly served = new Map<string, IServedTarget>();
   private loaded?: () => void;
+  /** Settled once a model is served, or the first cycle ends without one: what a request about the targets waits for until then. */
   private readonly ready = new Promise<void>(resolve => (this.loaded = resolve));
-  private readonly connection: JsonRpcConnection;
   private readonly changes = new Map<string, number>();
   private announcement?: NodeJS.Timeout;
   /** The targets whose description failed, by identifier. */
@@ -228,22 +146,23 @@ export class BspServer {
   private tasks = 0;
   /** The documents each target's last published diagnostics lie in, by target identifier. */
   private readonly published = new Map<string, Set<string>>();
+  /** The build and test operations of the model served, and the log their failures are reported to. */
+  private operations?: IServedOperations;
+  private log?: Log;
+  /** Each target served's name, by identifier. */
+  private names = new Map<string, string>();
   /** The describing task of a pass not yet finished. */
   private pass?: { id: string };
-  /** What ends the run. */
-  private end: () => void = () => process.exit(0);
+  /** What serves the current model's descriptions: reseated by each `serve`, so a superseded model's detach. */
+  private readonly serving = new ComputableHandle<void>();
 
+  /** Serve BSP over `connection`, for the project at `sourceRoot`, calling `end` when the client asks the server to exit. */
   constructor(
     private readonly sourceRoot: string,
-    output: NodeJS.WritableStream = process.stdout
+    private readonly connection: JsonRpcConnection,
+    private readonly end: () => void
   ) {
-    this.connection = new JsonRpcConnection(output, (method, params) => this.request(method, params));
-  }
-
-  /** Serve the requests read from `input`, calling `end` when it ends or the client asks the server to exit. */
-  public listen(end: () => void, input: NodeJS.ReadableStream = process.stdin): void {
-    this.end = end;
-    this.connection.listen(input, end);
+    connection.serve("bsp", (method, params) => this.request(method, params));
   }
 
   /**
@@ -253,7 +172,10 @@ export class BspServer {
    * describe is withdrawn; one whose description fails keeps what it last
    * served. A later call supersedes this one.
    */
-  public serve(describing: IDescribing, log: Log): void {
+  public serve(describing: IDescribing, log: Log, operations: IServedOperations): void {
+    this.operations = operations;
+    this.log = log;
+    this.names = new Map(describing.targets.map(target => [served(target), target.name]));
     const identifiers = new Set(describing.targets.map(served));
     for (const uri of [...this.served.keys()].filter(uri => !identifiers.has(uri))) {
       this.offer(uri, undefined);
@@ -267,11 +189,18 @@ export class BspServer {
     this.loaded?.();
     /* A pass started before this one and not ended is superseded. */
     if (this.pass !== undefined) {
-      this.connection.notify("build/taskFinish", { taskId: this.pass, eventTime: Date.now(), status: TASK_CANCELLED, message: "Superseded" });
+      this.connection.notify("build/taskFinish", {
+        taskId: this.pass,
+        eventTime: Date.now(),
+        status: TASK_CANCELLED,
+        message: "Superseded",
+        dataKind: DESCRIBE_TASK_DATA_KIND,
+        data: { failed: [] },
+      });
     }
     const task = this.startTask();
     this.pass = task;
-    /* The targets settled so far, and those with nothing to describe, which leave the total. */
+    /* The targets settled so far, and those with nothing to describe, which the total leaves out. */
     const reached = new Set<string>();
     const nothing = new Set<string>();
     const progress = (): void =>
@@ -292,9 +221,9 @@ export class BspServer {
       }
     };
     progress();
-    for (const target of describing.targets) {
+    const offered = describing.targets.map(target => {
       const uri = served(target);
-      target.described.then(
+      return target.described.then(
         pooled => {
           this.offer(uri, pooled === undefined ? undefined : this.toServed(target.name, target.operation, pooled.directory, pooled.description));
           this.publish(uri, []);
@@ -307,13 +236,16 @@ export class BspServer {
           reach(uri, true);
         }
       );
-    }
-    describing.settled.then(() => {
+    });
+    /* The pass finishes once every target is served as it settled: after each
+     * `offered` tail, never before one, and also where serving one failed. */
+    const finish = (): void => {
       if (this.pass === task) {
         this.pass = undefined;
         this.finishTask(task);
       }
-    });
+    };
+    this.serving.seat(Computable.forAll(offered, finish, finish));
   }
 
   /** Record whether the target `uri` failed, reporting a change once no pass is under way as a describing task of its own. */
@@ -331,49 +263,20 @@ export class BspServer {
 
   /**
    * Report `err` to `log`, and return what it reported with a position, as
-   * BSP diagnostics by the document each lies in.
+   * diagnostics by the document each lies in.
    */
-  private reported(log: Log, err: Error): Map<string, IBspDiagnostic[]> {
-    const diagnostics = new Map<string, IBspDiagnostic[]>();
-    const collecting: Log = {
-      log: (diagnostic, params) => {
-        log.log(diagnostic, params);
-        const range = params.loc === undefined ? undefined : rangeOf(params.loc);
-        if (range === undefined || diagnostic.level < LogLevel.Warn) {
-          return;
-        }
-        const document = this.documentOf(params.loc!);
-        const related = (params.notes ?? []).flatMap(note => {
-          const at = note.loc === undefined ? undefined : rangeOf(note.loc);
-          return at === undefined ? [] : [{ location: { uri: this.documentOf(note.loc!), range: at }, message: note.message }];
-        });
-        diagnostics.set(document, [
-          ...(diagnostics.get(document) ?? []),
-          {
-            range,
-            severity: diagnostic.level === LogLevel.Error ? DIAGNOSTIC_ERROR : DIAGNOSTIC_WARNING,
-            source: "fabr",
-            message: [diagnostic.message(params), ...(params.help ?? []).map(help => `help: ${help}`)].join("\n"),
-            ...(related.length === 0 ? {} : { relatedInformation: related }),
-          },
-        ]);
-      },
-    };
-    reportFailure(collecting, err);
+  private reported(log: Log, err: Error): Map<string, IProtocolDiagnostic[]> {
+    const diagnostics = new Map<string, IProtocolDiagnostic[]>();
+    reportFailure(collectingLog(this.sourceRoot, log, diagnostics), err);
     return diagnostics;
-  }
-
-  /** @return the URI of the document `loc` lies in. */
-  private documentOf(loc: ISourceSpan): string {
-    return pathToFileURL(path.resolve(this.sourceRoot, loc.file)).toString();
   }
 
   /**
    * Publish `diagnostics` as the target `uri`'s, by document, replacing what it
    * published before: a document it reports nothing in now is cleared.
    */
-  private publish(uri: string, diagnostics: Map<string, IBspDiagnostic[]> | []): void {
-    const current = diagnostics instanceof Map ? diagnostics : new Map<string, IBspDiagnostic[]>();
+  private publish(uri: string, diagnostics: Map<string, IProtocolDiagnostic[]> | []): void {
+    const current = diagnostics instanceof Map ? diagnostics : new Map<string, IProtocolDiagnostic[]>();
     const before = this.published.get(uri) ?? new Set<string>();
     for (const document of new Set([...before, ...current.keys()])) {
       this.connection.notify("build/publishDiagnostics", {
@@ -390,11 +293,114 @@ export class BspServer {
     }
   }
 
+  /**
+   * Build or test the targets a `buildTarget/compile` or `buildTarget/test`
+   * request names, as one task: a build's failure published as diagnostics, as
+   * a description's is; each test's outcome reported as a `test-start` and
+   * `test-finish` beneath the task, then each target's `test-report`.
+   *
+   * @return the request's result: its `originId`, and whether every target succeeded.
+   */
+  private async perform(operation: "build" | "test", { targets, originId }: { targets: string[]; originId?: string }): Promise<unknown> {
+    const operations = this.operations;
+    const log = this.log;
+    if (operations === undefined || log === undefined) {
+      return { originId, statusCode: TASK_ERROR };
+    }
+    this.tasks += 1;
+    const task = { id: `${operation}-${this.tasks}` };
+    const named = targets.map(uri => ({ uri, name: this.names.get(uri) }));
+    this.connection.notify("build/taskStart", {
+      taskId: task,
+      originId,
+      eventTime: Date.now(),
+      message: `${operation === "build" ? "Building" : "Testing"} ${named.map(({ uri, name }) => name ?? uri).join(", ")}`,
+    });
+    const outcomes = await Promise.all(
+      named.map(({ uri, name }) =>
+        name === undefined
+          ? Promise.resolve({ uri, error: new Error(`${uri} is not served`) as Error | undefined, report: undefined as ITestReport | undefined })
+          : settled(operations[operation](name)).then(
+              results => (operation === "test" ? settled(getTestReport(results.flat())) : Promise.resolve(undefined)).then(report => ({ uri, error: undefined, report })),
+              (err: unknown) => {
+                const error = toError(err);
+                const failed = testsFailedIn(error);
+                return { uri, error, report: failed?.report };
+              }
+            )
+      )
+    );
+    let tests = 0;
+    for (const { uri, error, report } of outcomes) {
+      if (error !== undefined && testsFailedIn(error) === undefined) {
+        this.publish(uri, this.reported(log, error));
+      } else {
+        this.publish(uri, []);
+      }
+      if (operation === "test" && report !== undefined) {
+        for (const test of report.results.tests) {
+          tests += 1;
+          const testTask = { id: `${task.id}/${tests}`, parents: [task.id] };
+          const location = test.filePath === undefined ? undefined : { uri: this.fileUri(`./${test.filePath}`), range: ZERO_RANGE };
+          const identity = { displayName: test.name, ...(location === undefined ? {} : { location }) };
+          this.connection.notify("build/taskStart", { taskId: testTask, originId, eventTime: Date.now(), dataKind: "test-start", data: identity });
+          this.connection.notify("build/taskFinish", {
+            taskId: testTask,
+            originId,
+            eventTime: Date.now(),
+            status: test.status === "failed" ? TASK_ERROR : TASK_OK,
+            dataKind: "test-finish",
+            data: {
+              ...identity,
+              status: TEST_STATUSES[test.status],
+              ...(test.message === undefined ? {} : { message: test.trace === undefined ? test.message : `${test.message}\n${test.trace}` }),
+            },
+          });
+        }
+        const { summary } = report.results;
+        this.connection.notify("build/taskFinish", {
+          taskId: { id: `${task.id}/${uri}`, parents: [task.id] },
+          originId,
+          eventTime: Date.now(),
+          status: summary.failed > 0 ? TASK_ERROR : TASK_OK,
+          dataKind: "test-report",
+          data: {
+            originId,
+            target: { uri },
+            passed: summary.passed,
+            failed: summary.failed,
+            ignored: summary.pending + summary.other,
+            cancelled: 0,
+            skipped: summary.skipped,
+            time: summary.stop - summary.start,
+          },
+        });
+      }
+    }
+    const statusCode = outcomes.every(({ error }) => error === undefined) ? TASK_OK : TASK_ERROR;
+    this.connection.notify("build/taskFinish", { taskId: task, originId, eventTime: Date.now(), status: statusCode });
+    return { originId, statusCode };
+  }
+
+  /** Answer a request waiting for a model from none once one of `execution`'s cycles has ended without serving one. */
+  public attach(execution: ExecutionContext): void {
+    execution.onBuildEvent(event => {
+      if (event.kind === "cycle-end") {
+        this.loaded?.();
+      }
+    });
+  }
+
+  /** @return true if the target `uri` names is served, otherwise false. */
+  public isServed(uri: string): boolean {
+    return this.served.has(uri);
+  }
+
   /** Start a describing task, and return its identifier. */
   private startTask(): { id: string } {
     this.tasks += 1;
     const task = { id: `describe-${this.tasks}` };
-    this.connection.notify("build/taskStart", { taskId: task, eventTime: Date.now(), message: "Describing targets" });
+    this.connection.notify("build/taskStart", { taskId: task, eventTime: Date.now(), message: "Describing targets", dataKind: DESCRIBE_TASK_DATA_KIND, data: {} });
     return task;
   }
 
@@ -477,15 +483,19 @@ export class BspServer {
   }
 
   private async request(method: string, params: unknown): Promise<unknown> {
-    const targetsOf = (value: unknown): string[] =>
-      ((value as { targets?: Array<{ uri: string }> } | undefined)?.targets ?? []).map(target => target.uri);
     switch (method) {
       case "build/initialize":
         return {
           displayName: "fabr",
           version: getVersion(),
           bspVersion: BSP_VERSION,
-          capabilities: { buildTargetChangedProvider: true, inverseSourcesProvider: true, dependencySourcesProvider: true },
+          capabilities: {
+            buildTargetChangedProvider: true,
+            inverseSourcesProvider: true,
+            dependencySourcesProvider: true,
+            compileProvider: { languageIds: LANGUAGE_IDS },
+            testProvider: { languageIds: LANGUAGE_IDS },
+          },
           /* The project's root, and the fabr installation serving it, which a
            * payload's modules resolve from. */
           data: { root: this.fileUri("./"), installation: installationDirectory() },
@@ -504,26 +514,32 @@ export class BspServer {
       case "buildTarget/sources":
         await this.ready;
         return {
-          items: targetsOf(params).map(uri => ({ target: { uri }, sources: this.byUri(uri)?.sources ?? [], roots: this.byUri(uri)?.roots ?? [] })),
+          items: toTargetsParams(params).targets.map(uri => ({ target: { uri }, sources: this.byUri(uri)?.sources ?? [], roots: this.byUri(uri)?.roots ?? [] })),
         };
       case "buildTarget/javacOptions":
         await this.ready;
         return {
-          items: targetsOf(params).flatMap(uri => {
+          items: toTargetsParams(params).targets.flatMap(uri => {
             const options = this.byUri(uri)?.javacOptions;
             return options === undefined ? [] : [{ target: { uri }, ...options }];
           }),
         };
       case "buildTarget/inverseSources": {
         await this.ready;
-        const file = (params as { textDocument?: { uri?: string } } | undefined)?.textDocument?.uri;
+        const file = toDocumentParams(params).uri;
         return {
           targets: [...this.served.values()].filter(served => served.sources.some(source => source.uri === file)).map(served => served.target.id),
         };
       }
+      case "buildTarget/compile":
+        await this.ready;
+        return this.perform("build", toTargetsParams(params));
+      case "buildTarget/test":
+        await this.ready;
+        return this.perform("test", toTargetsParams(params));
       case "buildTarget/dependencySources":
         await this.ready;
-        return { items: targetsOf(params).map(uri => ({ target: { uri }, sources: [] })) };
+        return { items: toTargetsParams(params).targets.map(uri => ({ target: { uri }, sources: [] })) };
       default:
         throw new MethodNotFound(`${method} is not served`);
     }

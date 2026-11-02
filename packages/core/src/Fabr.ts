@@ -269,7 +269,7 @@ export function describeOperation(
         })
       )
     );
-  /* Settled whether each described or failed: a failure is the target's, not the operation's. */
+  /* Settled once each target is described or has failed: a failure is the target's, not the operation's. */
   const settled = Computable.forAll(
     targets.map(({ described }) =>
       described.then(

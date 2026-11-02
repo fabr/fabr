@@ -416,6 +416,10 @@ export function describeTests(
   settings: ITestSettings,
   requirements: Unmaterialized<TestRequirements>
 ): Computable<RuleResult> {
+  /* A target that names no tests has no test run to describe. */
+  if ((requirements.resolved.sources.get("tests") ?? []).length === 0) {
+    return Computable.resolve(EMPTY_FILESET);
+  }
   return requirements.describeAll().then(({ srcs, tests: testSets, deps, test_deps: testDeps }) => {
     const tests = FileSet.unionAll(...testSets);
     if (tests.isEmpty()) {

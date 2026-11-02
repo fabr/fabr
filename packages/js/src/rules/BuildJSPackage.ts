@@ -113,7 +113,7 @@ export default defineRule({
       };
     });
   },
-  /* The package as an editor is told of it: its build unit, and its manifest. */
+  /* Describe the package as an editor is told of it: its build unit, and its manifest. */
   describe(context, requirements) {
     return requirements.describeAll().then(gathered => describePackage(context, gathered, requirements.resolved));
   },

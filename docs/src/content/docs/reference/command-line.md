@@ -292,7 +292,7 @@ fabr sync release     # publish them
 
 Describes every target of the project as each of its `build` and `test` rules would build it, and
 serves the descriptions over the [Build Server
-Protocol](https://build-server-protocol.github.io/docs/specification) on standard input and
+Protocol](https://build-server-protocol.github.io/docs/specification) (BSP) on standard input and
 output, watching the project and sending `buildTarget/didChange` as descriptions change. Describing
 compiles no package. It is what an editor runs; see [VS Code support](/guides/vscode/).
 
@@ -300,7 +300,17 @@ compiles no package. It is what an editor runs; see [VS Code support](/guides/vs
 fabr build-server
 ```
 
-A target is identified as `fabr:<name>`, and its test run as `fabr:<name>?operation=test`.
+A target is identified as `fabr:<name>`, and its test run as `fabr:<name>?operation=test`; a
+package that declares no tests has no test run. `buildTarget/compile` and `buildTarget/test` build
+and test targets in the same process, and a build's errors are sent as
+`build/publishDiagnostics`.
+
+The same connection also carries the [Language Server
+Protocol](https://microsoft.github.io/language-server-protocol/) (LSP) for the project's build
+files: outline, go-to-definition, hover, completion and code lenses. Each LSP message carries the
+header `Fabr-Protocol: lsp` beside its `Content-Length`; a message without it is BSP. Each protocol
+is initialized separately, and sends no notifications until its own `initialize` is answered.
+
 Diagnostics go to standard error.
 
 ### `list-targets`

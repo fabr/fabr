@@ -8,3 +8,5 @@
 !icon.png
 !jdtls/*.jar
 !LICENSE
+!language-configuration.json
+!syntaxes/*.json

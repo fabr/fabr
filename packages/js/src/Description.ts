@@ -86,7 +86,7 @@ export interface IUnitSummary {
   /** The compile's import rewrite rules (its `rewrite_imports` and the
    * stylesheet rules), as the tsc driver reads them. */
   rewrites: Array<{ pattern: string; replacement: string }>;
-  /** The files the package delivers but no step compiles, each by its path
+  /** The files the package ships that no step compiles, each by its path
    * from {@link root}: an import of one resolves. */
   resources: string[];
 }
@@ -298,10 +298,18 @@ const SOURCE_EXTENSION = /(?:\.d)?\.[cm]?[jt]sx?$/;
 /** The sources a compile compiles, as its config's `include` names them; its others are no program's files. */
 const COMPILED = /\.(?:[cm]?ts|tsx|[cm]?js|jsx)$/;
 
+/** Where a unit's table locates a tree of the cache's pool: `./.fabr-tree/<tree>/`, however a step reaches the pool. */
+const POOL_LOCATION = "./.fabr-tree/";
+
+/** Write a table's location of a pool tree, as a step's working directory reaches it, as a unit's table does. */
+function inPool(location: string): string {
+  return location.startsWith(`${TREE_MOUNT}/`) ? POOL_LOCATION + location.substring(TREE_MOUNT.length + 1) : location;
+}
+
 /** The step that puts a unit's fetched packages in the tree pool and makes its table. */
 const DESCRIBE_UNIT_ACTION: IBuildActionDefinition = {
   id: "js:describe-unit",
-  version: 3,
+  version: 4,
   run: (action: BuildAction, ctx: ActionContext): Computable<BuildResult> => {
     const deps = action.inputs.deps as FileSet[];
     const files = action.inputs.files as FileSet;
@@ -322,11 +330,11 @@ const DESCRIBE_UNIT_ACTION: IBuildActionDefinition = {
               const unit = roots[index];
               return unit === undefined ? [] : [[place(manifest.mountOf(pkg)), relativeLocation(root, unit)]];
             }),
-            ...pooled.map((pkg, index): [string, string] => [place(manifest.mountOf(pkg)), `./${TREE_MOUNT}/${views[index].toManifestHash()}/`]),
+            ...pooled.map((pkg, index): [string, string] => [place(manifest.mountOf(pkg)), `${POOL_LOCATION}${views[index].toManifestHash()}/`]),
           ]);
           for (const [, rows] of manifest.state.packageRegistryData) {
             for (const [, info] of rows) {
-              info.packageLocation = located.get(place(info.packageLocation)) ?? info.packageLocation;
+              info.packageLocation = located.get(place(info.packageLocation)) ?? inPool(info.packageLocation);
             }
           }
           return { result: FileSet.unionAll(files, FileSet.layout({ [PNP_DATA_FILE]: manifest.toFile() })) };

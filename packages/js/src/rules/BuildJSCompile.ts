@@ -92,7 +92,7 @@ export default defineRule({
   evaluateMaterialized(context, inputs) {
     return compileTypescript(context, inputs);
   },
-  /* The compilation unit an editor's TypeScript server is shown in place of the compile. */
+  /* Describe the compilation unit an editor's TypeScript server is shown in place of the compile. */
   describe(context, requirements) {
     return requirements
       .describeAll()
@@ -368,7 +368,7 @@ export interface ICompileSetup {
   packageName?: string;
   moduleExtension?: string;
   rewrites?: Array<{ pattern: string; replacement: string }>;
-  /** The delivered files no step compiles. */
+  /** The files the target ships that no step compiles. */
   resources: FileSet;
 }
 
@@ -426,7 +426,7 @@ export function compileSetup(context: TargetContext, { srcs: srcSets, deps, reso
        * itself; a compile declaring none carries no file, no flag, and no
        * change of key. */
       const rewrites = importRewrites(rewriteRules);
-      /* The target's delivered files no step compiles: an import of one
+      /* The files the target ships that no step compiles: an import of one
        * resolves as an empty module. */
       const resourceSet = FileSet.unionAll(...(resources ?? []));
       const setup = (jsxImportSource: string): ICompileSetup => {

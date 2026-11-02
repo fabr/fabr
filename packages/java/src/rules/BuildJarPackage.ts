@@ -102,7 +102,7 @@ export default defineRule({
       }
     );
   },
-  /* The jar as an editor compiles its sources: against what the build compiles them against. */
+  /* Describe the jar as an editor compiles its sources: against what the build compiles them against. */
   describe(context, requirements) {
     return Computable.forAll([requirements.describeAll(), context.getProperty("main_class")], (inputs, mainClass) =>
       describeJava(context, requirements.resolved, {

@@ -25,7 +25,7 @@
 
 import * as fs from "fs";
 import * as net from "net";
-import type { BspClient } from "./BspClient";
+import type { JsonRpcClient } from "./JsonRpcClient";
 
 /** A JSON-RPC message, as a connection reads it. */
 interface IMessage {
@@ -40,7 +40,7 @@ interface IMessage {
  *
  * @return the relay, once it is listening.
  */
-export function relayBuildServer(client: BspClient, initialized: unknown, socket: string): Promise<net.Server> {
+export function relayBuildServer(client: JsonRpcClient, initialized: unknown, socket: string): Promise<net.Server> {
   const connections = new Set<net.Socket>();
   client.onAnyNotification((method, params) => {
     for (const connection of connections) {
@@ -80,7 +80,7 @@ export function relayBuildServer(client: BspClient, initialized: unknown, socket
   });
 }
 
-/** Call `receive` with each message read from `input`, framed as LSP frames it. */
+/** Call `receive` with each message read from `input`, each framed by a `Content-Length` header as LSP frames one. */
 function readMessages(input: net.Socket, receive: (message: IMessage) => void): void {
   let buffer = Buffer.alloc(0);
   input.on("data", (data: Buffer) => {

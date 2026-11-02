@@ -243,7 +243,7 @@ function concludeRun(workDir: string, runs: IFileRun[]): void {
   const merged = mergeTestReports(runs.flatMap(run => (run.report ? [run.report] : [])));
   const { summary } = merged.results;
   if (summary.failed > 0) {
-    throw new TestsFailedError(formatTestFailures(merged), summary.failed, summary.tests);
+    throw new TestsFailedError(formatTestFailures(merged), summary.failed, summary.tests, merged);
   }
   fs.writeFileSync(join(workDir, TEST_REPORT_FILENAME), JSON.stringify(merged, undefined, 2));
 }

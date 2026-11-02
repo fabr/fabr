@@ -15,10 +15,10 @@
  */
 
 /**
- * The VS Code extension: for each workspace folder holding a fabr project, the
- * project's own fabr serving it (`fabr build-server`), and the editor's
- * TypeScript server shown the project's units through the wrapper the
- * extension points `js/ts.tsdk.path` at, and the server shared with the Java
+ * The VS Code extension: for each workspace folder holding a fabr project, it
+ * starts the project's own fabr serving it (`fabr build-server`), shows the
+ * editor's TypeScript server the project's units through the wrapper the
+ * extension points `js/ts.tsdk.path` at, and shares the server with the Java
  * language server's fabr importer, which asks for it with
  * {@link CONNECT_BUILD_SERVER_COMMAND}.
  */
@@ -30,9 +30,12 @@ import * as net from "net";
 import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
-import { BspClient } from "./BspClient";
+import { serveBuildFiles } from "./BuildFiles";
+import { type IServedProject, registerTargetCommands } from "./TargetCommands";
+import { JsonRpcClient } from "./JsonRpcClient";
 import { relayBuildServer } from "./BspRelay";
 import { composeProject, type IServedTarget } from "./ProjectDocument";
+import { isRecord, type IProtocolDiagnostic, toDiagnostic, toProtocolDiagnostics } from "./ProtocolDiagnostics";
 import { DOCUMENT_VERSION } from "./tsserver/Registry";
 import { layOutTsdk } from "./tsserver/Wrapper";
 
@@ -47,9 +50,15 @@ const REGISTRY = path.join(HOME, "registry.json");
 const CONNECT_BUILD_SERVER_COMMAND = "_fabr.connectBuildServer";
 
 const servers: ChildProcess[] = [];
+/** What each project's server shows in the editor, disposed of when it ends. */
+const served: vscode.Disposable[] = [];
+/** Each project's server and the targets it serves, by the project's root. */
+const projects = new Map<string, IServedProject>();
+/** What refreshes the Testing view's targets. */
+let refreshTests = (): void => undefined;
 const documents: string[] = [];
 /** Each project's server, by the project's root, once it is initialized: its client and its `build/initialize` result. */
-const initializedServers = new Map<string, Promise<{ client: BspClient; initialized: unknown }>>();
+const initializedServers = new Map<string, Promise<{ client: JsonRpcClient; initialized: unknown }>>();
 const relays: Array<Promise<net.Server>> = [];
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -64,6 +73,9 @@ export function deactivate(): void {
   for (const server of servers) {
     server.kill();
   }
+  for (const disposable of served) {
+    disposable.dispose();
+  }
   for (const relay of relays) {
     void relay.then(server => server.close(), () => undefined);
   }
@@ -76,8 +88,12 @@ function start(context: vscode.ExtensionContext): void {
   status.text = "fabr: starting";
   status.show();
   const problems = vscode.languages.createDiagnosticCollection("fabr");
-  context.subscriptions.push(output, status, problems);
+  const buildFileProblems = vscode.languages.createDiagnosticCollection("fabr-build-files");
+  context.subscriptions.push(output, status, problems, buildFileProblems);
   context.subscriptions.push(vscode.commands.registerCommand(SHOW_OUTPUT_COMMAND, () => output.show(true)));
+  const commands = registerTargetCommands(projects, output);
+  refreshTests = commands.refresh;
+  context.subscriptions.push(commands);
   context.subscriptions.push(
     vscode.commands.registerCommand(CONNECT_BUILD_SERVER_COMMAND, (rootUri: string, socket: string) => {
       const root = vscode.Uri.parse(rootUri).fsPath.replace(/\/$/, "");
@@ -91,33 +107,71 @@ function start(context: vscode.ExtensionContext): void {
       relayed.catch(err => output.appendLine(`fabr: cannot share ${root}'s build server at ${socket}: ${String(err)}`));
     })
   );
-  pointTsdk(output);
   for (const folder of vscode.workspace.workspaceFolders ?? []) {
     const root = folder.uri.fsPath;
     if (fs.existsSync(path.join(root, PROJECT_FILE))) {
-      serveProject(root, output, status, problems);
+      serveProject(root, output, status, problems, buildFileProblems);
     }
   }
 }
 
-/** Lay out the wrapper's `tsdk` over VS Code's bundled TypeScript, and point the user's `js/ts.tsdk.path` at it. */
-function pointTsdk(output: vscode.OutputChannel): void {
+/** What pointing the `tsdk` came to, once this activation has: see {@link pointTsdk}. */
+let pointing: Promise<boolean> | undefined;
+
+/**
+ * Lay out the wrapper's `tsdk` over VS Code's bundled TypeScript, and point the
+ * user's `js/ts.tsdk.path` at it, restarting the TypeScript server where that
+ * changed a setting. Done once per activation, when a project first has
+ * TypeScript or JavaScript units to serve.
+ *
+ * @return true if it changed a setting, and so restarted the server, otherwise false.
+ */
+function pointTsdk(output: vscode.OutputChannel): Promise<boolean> {
+  pointing ??= layOutAndPoint(output);
+  return pointing;
+}
+
+async function layOutAndPoint(output: vscode.OutputChannel): Promise<boolean> {
   const typescript = path.join(vscode.env.appRoot, "extensions", "node_modules", "typescript");
-  const version = (JSON.parse(fs.readFileSync(path.join(typescript, "package.json"), "utf8")) as { version: string }).version;
+  const manifest: unknown = JSON.parse(fs.readFileSync(path.join(typescript, "package.json"), "utf8"));
+  const version = isRecord(manifest) && typeof manifest.version === "string" ? manifest.version : undefined;
+  if (version === undefined) {
+    output.appendLine(`fabr: VS Code's TypeScript at ${typescript} states no version`);
+    return false;
+  }
   const tsdk = layOutTsdk(path.join(HOME, "tsdk"), { tsserver: path.join(typescript, "lib", "tsserver.js"), version, registry: REGISTRY });
   if (!fs.existsSync(REGISTRY)) {
     writeAtomically(REGISTRY, JSON.stringify({ version: DOCUMENT_VERSION, projects: [] }));
   }
   const settings = vscode.workspace.getConfiguration();
   const keys = ["js/ts.tsdk.path", "typescript.tsdk"].filter(key => settings.inspect<string>(key)?.globalValue !== tsdk);
-  /* A server started before the tsdk was laid out runs without the wrapper. */
-  void Promise.all(keys.map(key => settings.update(key, tsdk, vscode.ConfigurationTarget.Global)))
-    .then(() => vscode.commands.executeCommand("typescript.restartTsServer"))
-    .then(undefined, err => output.appendLine(`fabr: cannot point the TypeScript server at ${tsdk}: ${String(err)}`));
+  if (keys.length === 0) {
+    return false;
+  }
+  /* A server started before the settings named the tsdk runs without the wrapper. */
+  try {
+    await Promise.all(keys.map(key => settings.update(key, tsdk, vscode.ConfigurationTarget.Global)));
+    await vscode.commands.executeCommand("typescript.restartTsServer");
+    return true;
+  } catch (err) {
+    output.appendLine(`fabr: cannot point the TypeScript server at ${tsdk}: ${String(err)}`);
+    return false;
+  }
+}
+
+/** @return true if VS Code's TypeScript support is running, so that a TypeScript server may have started, otherwise false. */
+function typeScriptActive(): boolean {
+  return vscode.extensions.getExtension("vscode.typescript-language-features")?.isActive === true;
 }
 
 /** Start the server of the project at `root`, and keep its document current. */
-function serveProject(root: string, output: vscode.OutputChannel, status: vscode.StatusBarItem, problems: vscode.DiagnosticCollection): void {
+function serveProject(
+  root: string,
+  output: vscode.OutputChannel,
+  status: vscode.StatusBarItem,
+  problems: vscode.DiagnosticCollection,
+  buildFileProblems: vscode.DiagnosticCollection
+): void {
   const { argv, env } = commandFor(root);
   const [command, ...args] = argv;
   const server = spawn(command, [...args, "build-server"], { cwd: root, stdio: ["pipe", "pipe", "pipe"], env });
@@ -138,22 +192,49 @@ function serveProject(root: string, output: vscode.OutputChannel, status: vscode
       status.text = "fabr: not started";
     }
   });
-  const client = new BspClient(server.stdin!, server.stdout!);
+  const client = new JsonRpcClient(server.stdin!, server.stdout!);
+  /* The project's build files, through the language server the same process carries. */
+  const buildFiles = serveBuildFiles(root, new JsonRpcClient(server.stdin!, server.stdout!, "lsp"), buildFileProblems);
+  served.push(buildFiles);
+  server.on("exit", () => {
+    buildFiles.dispose();
+    /* `problems` is every project's: only what this one's server reported is cleared. */
+    reported.forEach((_, uri) => problems.delete(vscode.Uri.parse(uri)));
+  });
   const storage = path.join(HOME, "projects", crypto.createHash("sha256").update(root).digest("hex").slice(0, 16));
   const document = path.join(storage, "document.json");
   documents.push(document);
   let installation = "";
   let projectRoot = root;
-  let shown = "";
-  let ready: (server: { client: BspClient; initialized: unknown }) => void = () => {};
+  /* The document tsserver last read, and the paths it served: at first, what
+   * an earlier session left, listed at once so that a server starting now
+   * reads it rather than starting without it. */
+  let written = readIfPresent(document);
+  let shown = linksOf(written);
+  if (written !== undefined) {
+    const listed = registeredDocuments().includes(document);
+    updateRegistry(names => (names.includes(document) ? names : [...names, document]));
+    if (shown !== "") {
+      /* A TypeScript server started before the document was listed found none of its paths, and none of its watching. */
+      void pointTsdk(output).then(changed =>
+        !changed && !listed && typeScriptActive() ? vscode.commands.executeCommand("typescript.restartTsServer") : undefined
+      );
+    }
+  }
+  let ready: (server: { client: JsonRpcClient; initialized: unknown }) => void = () => {};
   initializedServers.set(root, new Promise(resolve => (ready = resolve)));
   /* What the status shows: the describing task's progress, the targets it failed to describe, and the targets composed. */
   let progress: { done: number; total: number } | undefined;
+  /* The describing task under way: only its progress and finish are the pass's. */
+  let describing: string | undefined;
   let failed: string[] = [];
   let shownTargets: number | undefined;
-  /* True if targets changed while a describing task ran: composed once it
-   * finishes, as each composition restarts tsserver. */
+  /* True if a refresh waits for the running describing task to finish: what
+   * the task changes is composed once, when it does, since each composition
+   * may reload or restart tsserver. */
   let held = false;
+  /* True once a describing pass has finished. */
+  let described = false;
   const showStatus = (): void => {
     const plural = (count: number): string => `${count} ${count === 1 ? "target" : "targets"}`;
     if (progress !== undefined) {
@@ -167,7 +248,12 @@ function serveProject(root: string, output: vscode.OutputChannel, status: vscode
   /* Each document's diagnostics by the target reporting them, as BSP publishes them. */
   const reported = new Map<string, Map<string, vscode.Diagnostic[]>>();
   client.onNotification("build/publishDiagnostics", params => {
-    const { textDocument, buildTarget, diagnostics } = params as IPublishDiagnostics;
+    const published = toPublishDiagnostics(params);
+    if (published === undefined) {
+      output.appendLine(`fabr: ignored a build/publishDiagnostics that is not one: ${JSON.stringify(params)}`);
+      return;
+    }
+    const { textDocument, buildTarget, diagnostics } = published;
     const byTarget = reported.get(textDocument.uri) ?? new Map<string, vscode.Diagnostic[]>();
     byTarget.set(buildTarget.uri, diagnostics.map(toDiagnostic));
     reported.set(textDocument.uri, byTarget);
@@ -175,25 +261,43 @@ function serveProject(root: string, output: vscode.OutputChannel, status: vscode
     const shown = new Map([...byTarget.values()].flat().map(diagnostic => [`${diagnostic.range.start.line}:${diagnostic.range.start.character}:${diagnostic.message}`, diagnostic]));
     problems.set(vscode.Uri.parse(textDocument.uri), [...shown.values()]);
   });
+  client.onNotification("build/taskStart", params => {
+    const notice = toTaskNotice(params);
+    if (notice.dataKind === DESCRIBE_TASK_DATA_KIND) {
+      describing = notice.task;
+    }
+  });
   client.onNotification("build/taskProgress", params => {
-    const { progress: done, total } = params as { progress?: number; total?: number };
-    progress = { done: done ?? 0, total: total ?? 0 };
-    showStatus();
+    const notice = toTaskNotice(params);
+    if (notice.task !== undefined && notice.task === describing) {
+      progress = { done: notice.progress ?? 0, total: notice.total ?? 0 };
+      showStatus();
+    }
   });
   client.onNotification("build/taskFinish", params => {
-    const { dataKind, data } = params as { dataKind?: string; data?: { failed?: string[] } };
+    const notice = toTaskNotice(params);
+    if (notice.dataKind !== DESCRIBE_TASK_DATA_KIND || notice.task !== describing) {
+      return;
+    }
+    describing = undefined;
     progress = undefined;
-    if (dataKind === DESCRIBE_TASK_DATA_KIND) {
-      failed = data?.failed ?? [];
+    /* A superseded pass is followed by the pass replacing it, whose finish ends the hold. */
+    const superseded = notice.status === TASK_CANCELLED;
+    if (!superseded) {
+      failed = notice.failed;
+      described = true;
     }
     showStatus();
-    if (held) {
+    if (!superseded && held) {
       held = false;
       requestRefresh();
     }
   });
   const refresh = async (): Promise<void> => {
     const { targets } = await client.request<{ targets: IServedTarget[] }>("workspace/buildTargets", {});
+    projects.set(root, { root, client, targets });
+    refreshTests();
+    buildFiles.refreshLenses();
     const composed = composeProject({
       root: projectRoot,
       installation,
@@ -208,14 +312,24 @@ function serveProject(root: string, output: vscode.OutputChannel, status: vscode
     for (const [file, text] of composed.files) {
       writeAtomically(file, text);
     }
-    writeAtomically(document, JSON.stringify(composed.document, null, 2));
-    updateRegistry(names => (names.includes(document) ? names : [...names, document]));
     shownTargets = targets.length;
     showStatus();
+    /* A document tsserver already read, and the registry still lists, is left as it is. */
+    const text = JSON.stringify(composed.document, null, 2);
+    if (text === written && registeredDocuments().includes(document)) {
+      return;
+    }
+    writeAtomically(document, text);
+    written = text;
+    updateRegistry(names => (names.includes(document) ? names : [...names, document]));
     /* A file tsserver already opened keeps the config it found, so a change in
-     * which paths are served takes a restart; anything else, a reload. */
-    const links = Object.keys(composed.document.links as Record<string, string>).join("\n");
-    await vscode.commands.executeCommand(links === shown ? "typescript.reloadProjects" : "typescript.restartTsServer");
+     * which paths are served takes a restart; anything else, a reload. Pointing
+     * the tsdk restarts it already. */
+    const links = linksOf(text);
+    const restarted = links !== "" && (await pointTsdk(output));
+    if (!restarted) {
+      await vscode.commands.executeCommand(links === shown ? "typescript.reloadProjects" : "typescript.restartTsServer");
+    }
     shown = links;
   };
   /* One refresh at a time: a change announced during one is taken up by one more after it. */
@@ -236,8 +350,15 @@ function serveProject(root: string, output: vscode.OutputChannel, status: vscode
         }
       });
   };
+  /* Until the server is initialized a change waits, and until its first
+   * describing pass ends a refresh does: one composed from a pass still
+   * running would replace a whole document with part of one. */
+  let started = false;
   client.onNotification("buildTarget/didChange", () => {
-    if (progress !== undefined) {
+    if (!started) {
+      return;
+    }
+    if (describing !== undefined) {
       held = true;
     } else {
       requestRefresh();
@@ -256,8 +377,12 @@ function serveProject(root: string, output: vscode.OutputChannel, status: vscode
       projectRoot = initialized.data?.root === undefined ? root : vscode.Uri.parse(initialized.data.root).fsPath.replace(/\/$/, "");
       client.notify("build/initialized", {});
       ready({ client, initialized });
-      requestRefresh();
-      return refreshing;
+      started = true;
+      if (described) {
+        requestRefresh();
+      } else {
+        held = true;
+      }
     })
     .catch(err => {
       output.appendLine(`fabr: ${String(err)}`);
@@ -265,48 +390,56 @@ function serveProject(root: string, output: vscode.OutputChannel, status: vscode
     });
 }
 
+/** @return `params` as a `build/publishDiagnostics`'s, or undefined where they are not one: a diagnostic that is no diagnostic is left out. */
+function toPublishDiagnostics(params: unknown): IPublishDiagnostics | undefined {
+  if (!isRecord(params) || !isRecord(params.textDocument) || !isRecord(params.buildTarget)) {
+    return undefined;
+  }
+  const { textDocument, buildTarget } = params;
+  if (typeof textDocument.uri !== "string" || typeof buildTarget.uri !== "string") {
+    return undefined;
+  }
+  return { textDocument: { uri: textDocument.uri }, buildTarget: { uri: buildTarget.uri }, diagnostics: toProtocolDiagnostics(params.diagnostics) };
+}
+
 /** What `build/publishDiagnostics` carries. */
 interface IPublishDiagnostics {
   textDocument: { uri: string };
   buildTarget: { uri: string };
-  diagnostics: IBspDiagnostic[];
-}
-
-/** A BSP diagnostic, as LSP shapes one. */
-interface IBspDiagnostic {
-  range: IBspRange;
-  severity?: number;
-  message: string;
-  relatedInformation?: Array<{ location: { uri: string; range: IBspRange }; message: string }>;
-}
-
-/** A BSP range: zero-based lines and characters. */
-interface IBspRange {
-  start: { line: number; character: number };
-  end: { line: number; character: number };
-}
-
-/** @return `range` as VS Code's. */
-function toRange(range: IBspRange): vscode.Range {
-  return new vscode.Range(range.start.line, range.start.character, range.end.line, range.end.character);
-}
-
-/** @return `diagnostic`, a BSP one, as VS Code's. */
-function toDiagnostic(diagnostic: IBspDiagnostic): vscode.Diagnostic {
-  /* BSP's severities count from 1 (error), VS Code's from 0. */
-  const severity = [vscode.DiagnosticSeverity.Error, vscode.DiagnosticSeverity.Warning, vscode.DiagnosticSeverity.Information, vscode.DiagnosticSeverity.Hint][
-    (diagnostic.severity ?? 1) - 1
-  ];
-  const shown = new vscode.Diagnostic(toRange(diagnostic.range), diagnostic.message, severity ?? vscode.DiagnosticSeverity.Error);
-  shown.source = "fabr";
-  shown.relatedInformation = diagnostic.relatedInformation?.map(
-    related => new vscode.DiagnosticRelatedInformation(new vscode.Location(vscode.Uri.parse(related.location.uri), toRange(related.location.range)), related.message)
-  );
-  return shown;
+  diagnostics: IProtocolDiagnostic[];
 }
 
 /** The `dataKind` of a describing task's finish, whose `data` names the targets that could not be described. */
 const DESCRIBE_TASK_DATA_KIND = "fabr-describe";
+
+/** BSP's `StatusCode` of a task that was cancelled. */
+const TASK_CANCELLED = 3;
+
+/** What a task notification says, as the status and the refresh read it. */
+interface ITaskNotice {
+  task?: string;
+  dataKind?: string;
+  status?: number;
+  progress?: number;
+  total?: number;
+  failed: string[];
+}
+
+/** @return what `params`, a `build/taskStart`, `taskProgress` or `taskFinish`'s, says, each field left out where it is not of its type. */
+function toTaskNotice(params: unknown): ITaskNotice {
+  const record = isRecord(params) ? params : {};
+  const taskId = isRecord(record.taskId) ? record.taskId : {};
+  const data = isRecord(record.data) ? record.data : {};
+  const number = (value: unknown): number | undefined => (typeof value === "number" ? value : undefined);
+  return {
+    ...(typeof taskId.id === "string" ? { task: taskId.id } : {}),
+    ...(typeof record.dataKind === "string" ? { dataKind: record.dataKind } : {}),
+    ...(number(record.status) === undefined ? {} : { status: number(record.status) }),
+    ...(number(record.progress) === undefined ? {} : { progress: number(record.progress) }),
+    ...(number(record.total) === undefined ? {} : { total: number(record.total) }),
+    failed: Array.isArray(data.failed) ? data.failed.filter((name): name is string => typeof name === "string") : [],
+  };
+}
 
 /** The command showing the Fabr output channel. */
 const SHOW_OUTPUT_COMMAND = "fabr.showOutput";
@@ -358,14 +491,35 @@ const SCRIPT = /\.[cm]?js$/;
 
 /** Rewrite the registry's document list through `change`, replacing the file whole. */
 function updateRegistry(change: (names: string[]) => string[]): void {
-  let names: string[] = [];
-  try {
-    names = (JSON.parse(fs.readFileSync(REGISTRY, "utf8")) as { projects?: string[] }).projects ?? [];
-  } catch {
-    names = [];
-  }
   /* Rewritten even when unchanged: a changed document is announced by the registry changing. */
-  writeAtomically(REGISTRY, JSON.stringify({ version: DOCUMENT_VERSION, projects: change(names), at: Date.now() }, null, 2));
+  writeAtomically(REGISTRY, JSON.stringify({ version: DOCUMENT_VERSION, projects: change(registeredDocuments()), at: Date.now() }, null, 2));
+}
+
+/** @return the documents the registry lists, or none where it is unreadable. */
+function registeredDocuments(): string[] {
+  try {
+    return (JSON.parse(fs.readFileSync(REGISTRY, "utf8")) as { projects?: string[] }).projects ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** @return `file`'s text, or undefined where there is none. */
+function readIfPresent(file: string): string | undefined {
+  try {
+    return fs.readFileSync(file, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+/** @return the paths `text`, a project's document, serves, or "" where it names none. */
+function linksOf(text: string | undefined): string {
+  try {
+    return Object.keys((JSON.parse(text ?? "{}") as { links?: Record<string, string> }).links ?? {}).join("\n");
+  } catch {
+    return "";
+  }
 }
 
 function writeAtomically(file: string, text: string): void {

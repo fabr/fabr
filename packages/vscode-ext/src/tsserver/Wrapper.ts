@@ -26,7 +26,7 @@
 import fs = require("fs");
 import * as path from "path";
 import { installOverlay, notifyRelinked } from "./Overlay";
-import { currentLinks, isMaskedConfig, readRegistry } from "./Registry";
+import { currentLinks, isMaskedConfig, readRegistry, registeredProjects } from "./Registry";
 import { SHIM_NAME } from "./Shim";
 
 /** The wrapper's configuration, in the `tsdk` directory. */
@@ -79,9 +79,9 @@ export function layOutTsdk(dir: string, layout: ITsdkLayout): string {
 /**
  * Run the TypeScript server for the `tsdk` directory `tsdk`: read its registry
  * and lay the projects' links over the filesystem, re-reading the registry when
- * it changes; add the shim to the server's plugins and drop
- * `--canUseWatchEvents` (the client would watch the real disk, where a link is
- * never seen to change); then load the real server.
+ * it changes; add the shim to the server's plugins and, where the registry
+ * lists a project, drop `--canUseWatchEvents` (the client would watch the real
+ * disk, where a link is never seen to change); then load the real server.
  */
 export function start(tsdk: string): void {
   const config = toWrapperConfig(JSON.parse(fs.readFileSync(path.join(tsdk, CONFIG_FILE), "utf8")));
@@ -97,13 +97,13 @@ export function start(tsdk: string): void {
     report(readRegistry(config.registry));
     notifyRelinked(fs, before, currentLinks());
   });
-  process.argv = withPlugin(process.argv, path.join(tsdk, "plugins"));
+  process.argv = withPlugin(process.argv, path.join(tsdk, "plugins"), registeredProjects().length > 0);
   require(config.tsserver);
 }
 
-/** @return `argv` with the shim added to its plugins and `--canUseWatchEvents` dropped. */
-export function withPlugin(argv: readonly string[], probe: string): string[] {
-  const result = argv.filter(arg => arg !== "--canUseWatchEvents");
+/** @return `argv` with the shim added to its plugins, and `--canUseWatchEvents` dropped where `serving`: where a fabr project is registered. */
+export function withPlugin(argv: readonly string[], probe: string, serving: boolean): string[] {
+  const result = serving ? argv.filter(arg => arg !== "--canUseWatchEvents") : [...argv];
   const extend = (flag: string, value: string): void => {
     const at = result.indexOf(flag);
     if (at < 0 || at + 1 >= result.length) {

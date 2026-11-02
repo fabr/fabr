@@ -443,11 +443,15 @@ lays the classpath's jars out in the description and names them in `javacOptions
 whose rule describes it is given its description (a `DescribedPackage` where it builds a
 package), and everything else its content. A package's description holds, beside the description
 itself, the files the package ships as they are, at their paths in the package, so that a step
-reading a dependency's files (Sass loading a partial) finds them in its description. So describing a target builds none of the targets it
-requires, only fetching what they depend on. `context.describeSubTarget(type, inputs, options)` is
-`subTarget`'s counterpart, describing an anonymous target through its rule's `describe`.
+reading a dependency's files (Sass loading a partial) finds them in its description. So describing
+a target builds none of the targets it requires, only fetching what they depend on.
+`context.describeSubTarget(type, inputs, options)` is `subTarget`'s counterpart, describing an
+anonymous target through its rule's `describe`.
 
-A rule with no `describe` leaves its targets undescribed under that operation.
+A rule with no `describe` leaves its targets undescribed under that operation. A `describe` that
+returns no `describe.json`, such as an empty `FileSet`, describes nothing for that target, and the
+server serves no target for it: the JavaScript test rules do this for a package that declares no
+`tests`, so that it has no test run in the editor.
 
 ## Repository types
 

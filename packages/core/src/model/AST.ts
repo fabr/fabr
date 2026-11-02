@@ -383,6 +383,27 @@ export function getDeclKindName(kind: DeclKind): string {
   }
 }
 
+/** @return the source-level keyword for a property's type, as written in a
+ * targetdef (`FILES`, `PACKAGES`, `STRING`, `MAP`, `COMMAND`, `REWRITE`). */
+export function propertyTypeName(schema: IPropertySchema): string {
+  switch (schema.type) {
+    case PropertyType.FileSet:
+      return "FILES";
+    case PropertyType.Packages:
+      return "PACKAGES";
+    case PropertyType.String:
+      return "STRING";
+    case PropertyType.Map:
+      return "MAP";
+    case PropertyType.Command:
+      return "COMMAND";
+    case PropertyType.Rewrite:
+      return "REWRITE";
+    default:
+      return PropertyType[schema.type];
+  }
+}
+
 /** Get the source span of a declaration: its position, plus the extent of its
  * name/value where the parser recorded one (rendered as an underline). */
 export function declPosn(decl: IBaseDecl): ISourceSpan {

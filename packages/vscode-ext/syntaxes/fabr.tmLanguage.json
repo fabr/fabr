@@ -1,0 +1,276 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Fabr",
+  "scopeName": "source.fabr",
+  "patterns": [
+    {
+      "include": "#statements"
+    }
+  ],
+  "repository": {
+    "statements": {
+      "patterns": [
+        {
+          "include": "#comment"
+        },
+        {
+          "include": "#targetdef"
+        },
+        {
+          "include": "#keyword-declaration"
+        },
+        {
+          "include": "#map-property"
+        },
+        {
+          "include": "#property"
+        },
+        {
+          "include": "#target"
+        },
+        {
+          "include": "#block"
+        },
+        {
+          "include": "#type"
+        },
+        {
+          "include": "#value"
+        }
+      ]
+    },
+    "comment": {
+      "name": "comment.line.number-sign.fabr",
+      "match": "#.*$"
+    },
+    "targetdef": {
+      "match": "\\b(targetdef)\\s+([A-Za-z_][\\w-]*)",
+      "captures": {
+        "1": {
+          "name": "keyword.control.fabr"
+        },
+        "2": {
+          "name": "entity.name.type.fabr"
+        }
+      }
+    },
+    "keyword-declaration": {
+      "match": "^\\s*(rule|repository|plugin|include)\\b(?:\\s+([A-Za-z_][\\w-]*)(?=\\s+[^\\s=;]))?",
+      "captures": {
+        "1": {
+          "name": "keyword.control.fabr"
+        },
+        "2": {
+          "name": "entity.name.type.fabr"
+        }
+      }
+    },
+    "target": {
+      "match": "^\\s*(?:(default)\\s+)?([A-Za-z_][\\w-]*)\\s+([^\\s{;=<]+)\\s*(<[^>]*>)?\\s*(?=\\{)",
+      "captures": {
+        "1": {
+          "name": "keyword.control.fabr"
+        },
+        "2": {
+          "name": "entity.name.type.fabr"
+        },
+        "3": {
+          "name": "entity.name.function.fabr"
+        },
+        "4": {
+          "patterns": [
+            {
+              "include": "#constraint"
+            }
+          ]
+        }
+      }
+    },
+    "property": {
+      "begin": "(?:^|(?<=[{;]))\\s*(?:(default)\\s+)?((?:[^\\s=<;{}#$]|\\$\\{[^}]*\\})+)\\s*(<[^>]*>)?\\s*(=)(?!=)",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.control.fabr"
+        },
+        "2": {
+          "name": "variable.other.property.fabr",
+          "patterns": [
+            {
+              "include": "#substitution"
+            }
+          ]
+        },
+        "3": {
+          "patterns": [
+            {
+              "include": "#constraint"
+            }
+          ]
+        },
+        "4": {
+          "name": "keyword.operator.assignment.fabr"
+        }
+      },
+      "end": ";|(?=\\})",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.terminator.fabr"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#comment"
+        },
+        {
+          "include": "#block"
+        },
+        {
+          "include": "#type"
+        },
+        {
+          "include": "#value"
+        }
+      ]
+    },
+    "block": {
+      "begin": "\\{",
+      "end": "\\}",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.section.block.begin.fabr"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.section.block.end.fabr"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#statements"
+        }
+      ]
+    },
+    "type": {
+      "name": "storage.type.fabr",
+      "match": "\\b(REQUIRED|FILES|PACKAGES|STRING|MAP|COMMAND|REWRITE)\\b"
+    },
+    "substitution": {
+      "match": "(\\$\\{)([^}<]*)(<[^>]*>)?(\\})",
+      "captures": {
+        "1": {
+          "name": "punctuation.definition.variable.begin.fabr"
+        },
+        "2": {
+          "name": "variable.other.substitution.fabr"
+        },
+        "3": {
+          "patterns": [
+            {
+              "include": "#constraint"
+            }
+          ]
+        },
+        "4": {
+          "name": "punctuation.definition.variable.end.fabr"
+        }
+      }
+    },
+    "constraint": {
+      "match": "(<)([^>]*)(>)",
+      "captures": {
+        "1": {
+          "name": "punctuation.definition.constraint.begin.fabr"
+        },
+        "2": {
+          "name": "entity.other.attribute-name.constraint.fabr"
+        },
+        "3": {
+          "name": "punctuation.definition.constraint.end.fabr"
+        }
+      }
+    },
+    "value": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.fabr",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.fabr",
+              "match": "\\\\."
+            }
+          ]
+        },
+        {
+          "name": "string.interpolated.command.fabr",
+          "begin": "`",
+          "end": "`"
+        },
+        {
+          "include": "#substitution"
+        },
+        {
+          "name": "keyword.operator.rename.fabr",
+          "match": "->"
+        },
+        {
+          "name": "keyword.operator.pipe.fabr",
+          "match": "\\||2>|&>|>|<(?![^>\\s]*=)"
+        },
+        {
+          "include": "#constraint"
+        },
+        {
+          "name": "keyword.operator.assignment.fabr",
+          "match": "(?<=\\s)=(?=\\s)"
+        },
+        {
+          "name": "string.unquoted.reference.fabr",
+          "match": "(?:[^\\s;{}\"#`$<|>]|\\$(?!\\{))+"
+        }
+      ]
+    },
+    "map-property": {
+      "begin": "(?:^|(?<=[{;]))\\s*(?:(default)\\s+)?((?:[^\\s=<;{}#$]|\\$\\{[^}]*\\})+)\\s*(<[^>]*>)?\\s*(=)(?!=)\\s*(\\{)",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.control.fabr"
+        },
+        "2": {
+          "name": "variable.other.property.fabr",
+          "patterns": [
+            {
+              "include": "#substitution"
+            }
+          ]
+        },
+        "3": {
+          "patterns": [
+            {
+              "include": "#constraint"
+            }
+          ]
+        },
+        "4": {
+          "name": "keyword.operator.assignment.fabr"
+        },
+        "5": {
+          "name": "punctuation.section.block.begin.fabr"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.section.block.end.fabr"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#statements"
+        }
+      ]
+    }
+  }
+}

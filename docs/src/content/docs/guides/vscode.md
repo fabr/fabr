@@ -54,6 +54,37 @@ The projects live in the Java language server's own workspace, not in yours: no 
 `.classpath` or `.settings` files are written. A change to a build file, such as a dependency
 added or removed, reaches the editor without reloading the window.
 
+## Build files
+
+The extension also knows fabr's own build files (`PROJECT.fabr`, `BUILD.fabr` and the rest):
+
+- their syntax is highlighted;
+- the Outline view and breadcrumbs list each file's targets, properties and target types;
+- **Go to Definition** on a reference opens the target or property it names, on a `${NAME}` the
+  property it substitutes, on a target's type its `targetdef`, and on an `include` the file;
+- a reference into a catalog, such as `@dep:@sentry/cli`, is two names: `@dep` opens the
+  catalog's declaration, and `@sentry/cli` the entry in its `deps` that provides it;
+- hovering a property shows its type and documentation from its target's `targetdef`, and
+  hovering a reference shows the declaration it names;
+- completion offers a target type's properties in a target's body, the project's targets and
+  properties after `=`, its properties after `${`, and the target types at the top level;
+- a syntax error is shown as you type, and any other error in a build file, such as a property
+  its target's type does not declare, once the file is saved;
+- **Build** above each target builds it, and **Test**, above a target that has tests, tests it.
+
+What a file says is read as it is typed; what its names refer to is the project as last saved.
+
+## Building and testing
+
+**Fabr: Build Target** and **Fabr: Test Target** in the Command Palette build or test a target
+you choose, as `fabr build` and `fabr test` would, in the same fabr the editor already runs, so
+what is already built is not built again. A build that fails is shown in the Problems view at
+the declaration that failed.
+
+The Testing view lists the project's targets that have tests: a `js_test`, or a package that
+declares `tests`. Running one runs its tests and shows each test beneath it, passed or failed,
+with a failure's message.
+
 ## How it works
 
 The extension runs `fabr build-server` in the workspace (see the
@@ -62,7 +93,8 @@ project and describes each of its targets over the
 [Build Server Protocol](https://build-server-protocol.github.io/), telling the extension when a
 description changes. For each package and each test run, the description holds its compilation
 unit: the sources it compiles, the compiler options it compiles them with, and where each package
-it imports is.
+it imports is. The same process serves the build files' language features, and builds and tests
+targets when you ask.
 
 For TypeScript, VS Code's TypeScript server is started through a small wrapper that shows it a `tsconfig.json` and
 `package.json` in each unit's source directory, as if they were there, and loads a plugin that
@@ -72,9 +104,10 @@ For Java, the extension adds an importer to the Java language server, which asks
 process for the project's Java targets.
 
 To start its TypeScript server through the wrapper, the extension sets the user settings
-`js/ts.tsdk.path` and `typescript.tsdk` to a copy of VS Code's own TypeScript under
-`~/.fabr/vscode/tsdk`. The wrapper changes nothing outside a fabr project, so every window keeps its
-ordinary behaviour. Remove the two settings to undo it.
+`js/ts.tsdk.path` and `typescript.tsdk` to `~/.fabr/vscode/tsdk`, which runs VS Code's own
+TypeScript, once a fabr project has TypeScript or JavaScript targets. The wrapper changes nothing in
+a window with no fabr project open, so every other window keeps its ordinary behaviour. Remove the
+two settings to undo it.
 
 ## Settings
 
@@ -90,13 +123,23 @@ else is still shown: a package that imports the failed one keeps its own sources
 imports of the failed package do not resolve. Fixing the failure brings the target back without
 reloading the window.
 
+A large project can need more memory than VS Code gives its TypeScript server by default
+(3 GB): checking slows to a crawl, or the server restarts. Raise
+`typescript.tsserver.maxTsServerMemory`, in megabytes, to 6144 or more.
+
 ## Limitations
 
 - **The editor's TypeScript is VS Code's own** (TypeScript 6 in current VS Code), not the
   version the build compiles with. Where the two differ — a library type added in one, a check
   tightened in the other — the editor may report an error the build does not, or miss one.
-- **TypeScript, JavaScript and Java**, and only in VS Code. Stylesheets, the `.fabr` files
-  themselves and other editors are not yet supported: VS Code's own Sass and CSS support resolves
+- **While VS Code's TypeScript server loads a project**, which takes several seconds for a large
+  one, hovers show `(loading...)` and VS Code answers go-to-definition from the open files alone.
+  Imports still resolve as the build resolves them, into packages and from one package to its
+  dependencies, but an `export * from` line is not followed, and neither is an import inside a
+  package the build installs more than one way (for example, against two versions of a peer
+  dependency). Both work once loading finishes, with nothing to reopen.
+- **TypeScript, JavaScript, Java and fabr's build files**, and only in VS Code. Stylesheets and
+  other editors are not yet supported: VS Code's own Sass and CSS support resolves
   a package's stylesheets through `node_modules`.
 - **Java**: annotation processors do not run in the editor, and the sources a processor would
   generate are missing; a module's sources (`module-info.java`) are checked on the classpath.

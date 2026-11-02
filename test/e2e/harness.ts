@@ -376,7 +376,7 @@ export interface WatchSession {
   readonly pid: number | undefined;
   /** Everything the process has written to stderr so far. */
   readonly stderr: string;
-  /** The process's stdin, for a protocol it speaks there (`fabr server`). */
+  /** The process's stdin, for a protocol it speaks there (`fabr build-server`). */
   readonly stdin: NodeJS.WritableStream;
   /** The process's stdout, unread by the session. */
   readonly stdout: NodeJS.ReadableStream;

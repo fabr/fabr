@@ -58,7 +58,7 @@ export default defineRule({
         })
     );
   },
-  /* The tests as an editor is told of them: the unit the run compiles. */
+  /* Describe the tests as an editor is told of them: the unit the run compiles. */
   describe(context, requirements) {
     return testFramework(context, "test_framework").then(framework => describeTests(context, framework, { envProperty: "test_env", packageName: context.name }, requirements));
   },

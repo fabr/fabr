@@ -409,4 +409,21 @@ describe("tsserver plugin", () => {
     const dep = service.getDefinitionAtPosition(main, positionOf(main, '"dep"'));
     expect(dep?.map(d => d.fileName)).to.deep.equal([fixture.file("store/dep/index.d.ts")]);
   });
+
+  it("resolves an import in the syntax server from a package no unit holds, through a unit whose table locates it", () => {
+    write(fixture.root, {
+      "store/inner/package.json": JSON.stringify({ name: "inner", version: "1.0.0", types: "index.d.ts" }),
+      "store/inner/index.d.ts": "export declare const deep: number;\n",
+      "store/dep/index.d.ts": 'import { deep } from "inner";\nexport declare const real: typeof deep;\n',
+      "app/.pnp.data.json": table([
+        [null, null, "./", [["dep", "1.0.0"], ["lib", "local"]]],
+        ["dep", "1.0.0", "../store/dep/", [["dep", "1.0.0"], ["inner", "1.0.0"]]],
+        ["inner", "1.0.0", "../store/inner/", [["inner", "1.0.0"]]],
+        ["lib", "local", "../lib/", [["lib", "local"]]],
+      ]),
+    });
+    const dep = fixture.file("store/dep/index.d.ts");
+    const service = open(projectService(fixture.units, ts.LanguageServiceMode.PartialSemantic), dep);
+    expect(service.getDefinitionAtPosition(dep, positionOf(dep, '"inner"'))?.map(d => d.fileName)).to.deep.equal([fixture.file("store/inner/index.d.ts")]);
+  });
 });

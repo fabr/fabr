@@ -5,11 +5,12 @@
 # package's generated package.json is made from.
 js_package vscode-ext {
   srcs = src:**/*.ts extension.json -> package.json README.md icon.png ../../COPYING -> LICENSE
+         language-configuration.json syntaxes/*.json
          fabr-jdtls-importer:*.jar -> jdtls/*.jar;
   # The extension's entry point, and the modules the tsdk directory loads.
   exports = src:index.ts src:tsserver/Wrapper.ts src:tsserver/Shim.ts;
   tests = src:**/*.test.ts;
-  # The units a project document carries are the plugin implementation's.
+  # js-tools: the type of the units a project document carries, which its plugin defines.
   compile_deps = @pkg:@types/node @fabr-build/js-tools @pkg:@types/vscode;
   # typescript: the wrapper's tests run a real tsserver behind it.
   test_deps = chai jest_types @pkg:typescript;

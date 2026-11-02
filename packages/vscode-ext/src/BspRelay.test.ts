@@ -20,10 +20,10 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { PassThrough } from "node:stream";
-import { BspClient } from "./BspClient";
+import { JsonRpcClient } from "./JsonRpcClient";
 import { relayBuildServer } from "./BspRelay";
 
-/** Frame `message` as LSP frames it. */
+/** Frame `message` by a `Content-Length` header, as LSP frames one. */
 function frame(message: unknown): string {
   const body = JSON.stringify(message);
   return `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`;
@@ -73,7 +73,7 @@ describe("build server relay", () => {
     const toServerStream = new PassThrough();
     fromServer = new PassThrough();
     toServer = reader(toServerStream);
-    relay = await relayBuildServer(new BspClient(toServerStream, fromServer), { displayName: "fabr", data: { root: "file:///p/" } }, socket);
+    relay = await relayBuildServer(new JsonRpcClient(toServerStream, fromServer), { displayName: "fabr", data: { root: "file:///p/" } }, socket);
     connection = net.connect(socket);
     fromRelay = reader(connection);
   });

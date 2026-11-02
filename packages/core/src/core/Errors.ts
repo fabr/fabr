@@ -30,6 +30,7 @@ import { describeProvenance, IProvenanceStep } from "./Provenance";
 import type { Reference } from "./Reference";
 import type { RepositoryRef } from "./Repository";
 import type { OutputStream } from "../support/Execute";
+import type { ITestReport } from "../support/TestResult";
 import type { Package } from "./PackageFileSet";
 
 /**
@@ -216,11 +217,14 @@ export class TestsFailedError extends FabrError {
   public readonly failed: number;
   /** Total number of tests that ran */
   public readonly total: number;
+  /** The run's report, each test's outcome, where the run made one. */
+  public readonly report?: ITestReport;
 
-  constructor(message: string, failed: number, total: number) {
+  constructor(message: string, failed: number, total: number, report?: ITestReport) {
     super(message);
     this.failed = failed;
     this.total = total;
+    this.report = report;
   }
 }
 

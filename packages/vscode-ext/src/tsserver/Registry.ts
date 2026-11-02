@@ -123,7 +123,6 @@ export function toRegistry(json: unknown): string[] {
   return record.projects;
 }
 
-/** @return the project a project document describes. */
 /** @return `json`, a unit's import rewrite rules, each a pattern and its replacement. */
 function toRewrites(json: unknown): Array<{ pattern: string; replacement: string }> {
   if (!Array.isArray(json)) {
@@ -146,6 +145,7 @@ function toNames(json: unknown, what: string): string[] {
   return json as string[];
 }
 
+/** @return the project a project document describes. */
 export function toProjectDocument(json: unknown): IProjectDocument {
   const record = toVersioned(json, "project document");
   const text = (value: unknown, what: string): string => {
