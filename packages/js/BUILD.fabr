@@ -14,7 +14,7 @@ generate package_extensions {
 js_package @fabr-build/js-boot {
   srcs = src:**/*.ts package_extensions:** -> lib/** ../../README.md -> README.md ../../COPYING -> LICENSE;
   # The entry point, and the modules JS.fabr's rule and repository declarations name.
-  exports = src:index.ts src:rules/!(*.test).ts src:NPMRepository.ts src:NodeDistribution.ts;
+  exports = src:index.ts src:rules/!(*.test).ts src:NPMRepository.ts src:NodeDistribution.ts src:BrowserRepository.ts;
   tests = src:**/*.test.ts;
   # The Sass importer is no import of the plugin's: it rides along so installing
   # fabr installs it, for the Sass driver (SASS_PNP_IMPORTER).
@@ -27,6 +27,7 @@ js_package @fabr-build/js-boot {
   # @yarnpkg/pnp: the PnP resolver is checked against Yarn's own runtime.
   # sass-embedded + the importer: the Sass driver's tests lower real stylesheets.
   test_deps = chai jest_types tar_stream @pkg:typescript @pkg:esbuild @pkg:postcss @pkg:postcss-modules
+              @pkg:autoprefixer @pkg:browserslist @pkg:caniuse-lite @pkg:baseline-browser-mapping
               @pkg:@yarnpkg/pnp @pkg:@yarnpkg/fslib @pkg:sass-embedded @fabr-build/sass-pnp-importer;
   metadata = { FABR_METADATA; description = Fabr JS support plugin }
 }

@@ -195,7 +195,7 @@ describe("postcssSourceOutputs", () => {
     expect(postcssSourceOutputs("a/Foo.module.css", "pkg", true).map).to.equal("a/Foo.css.map");
   });
 
-  it("copies a plain stylesheet through under its own name, carrying a map it arrived with", () => {
+  it("keeps a plain stylesheet's name, chaining its map through one it arrived with", () => {
     const bare = postcssSourceOutputs("a/Foo.css", "pkg", true);
     expect(bare.css).to.equal("a/Foo.css");
     /* Not a module, so its own output keeps its names and it gets no shim —
@@ -204,11 +204,14 @@ describe("postcssSourceOutputs", () => {
     expect(bare.module).to.equal(false);
     expect(bare.shim).to.equal(undefined);
     expect(bare.scope).to.equal(cssScopeDigest("pkg", "a/Foo.css"));
-    /* An authored `.css` arrives with no map, and nothing happened for one to
-     * describe. */
-    expect(bare.map).to.equal(undefined);
-    /* A lowered Sass stylesheet arrives with one, and it rides through. */
+    /* An authored `.css` arrives with no map; its output gets one, prefixing
+     * being a change to describe, and none in a build without maps. */
+    expect(bare.prev).to.equal(undefined);
+    expect(bare.map).to.equal("a/Foo.css.map");
+    expect(postcssSourceOutputs("a/Foo.css", "pkg", false).map).to.equal(undefined);
+    /* A lowered Sass stylesheet arrives with one, which its output map chains through. */
     const carried = postcssSourceOutputs("a/Foo.css", "pkg", true, new Set(["a/Foo.css.map"]));
+    expect(carried.prev).to.equal("a/Foo.css.map");
     expect(carried.map).to.equal("a/Foo.css.map");
   });
 });
@@ -252,15 +255,17 @@ describe("buildSassOptions", () => {
 
 describe("buildPostcssOptions", () => {
   it("names every stylesheet, carrying the maps beside them rather than listing them", () => {
-    const options = buildPostcssOptions(["a/Foo.module.css", "a/Foo.module.css.map", "b.css", "b.css.map"], "pkg", true);
+    const options = buildPostcssOptions(["a/Foo.module.css", "a/Foo.module.css.map", "b.css", "b.css.map"], "pkg", "baseline 2023", true);
     expect(options.srcRoot).to.equal(CSS_SRC_ROOT);
     expect(options.outdir).to.equal(CSS_OUTDIR);
     expect(options.sources.map(source => source.path)).to.deep.equal(["a/Foo.module.css", "b.css"]);
-    /* A module's carried map is its chain input; a passthrough's rides through
-     * under its own name. */
+    /* Every stylesheet is processed, so each carried map is its chain input,
+     * and each gets a map of its own. */
     expect(options.sources[0].prev).to.equal("a/Foo.module.css.map");
     expect(options.sources[0].map).to.equal("a/Foo.css.map");
+    expect(options.sources[1].prev).to.equal("b.css.map");
     expect(options.sources[1].map).to.equal("b.css.map");
+    expect(options.browsers).to.equal("baseline 2023");
   });
 
   it("explains the clash in terms of the two files, not just that there is one", () => {
@@ -268,7 +273,7 @@ describe("buildPostcssOptions", () => {
      * collide at all — the answer is the '.module' rule, which they may never
      * have met. */
     try {
-      buildPostcssOptions(["a/Nav.module.css", "a/Nav.css"], "pkg");
+      buildPostcssOptions(["a/Nav.module.css", "a/Nav.css"], "pkg", "baseline 2023");
       expect.fail("expected a conflict");
     } catch (err) {
       const help = (err as FabrError).help;
@@ -282,11 +287,11 @@ describe("buildPostcssOptions", () => {
   });
 
   it("allows stylesheets that merely share a stem across directories", () => {
-    expect(() => buildPostcssOptions(["a/Foo.module.css", "b/Foo.css"], "pkg")).to.not.throw();
+    expect(() => buildPostcssOptions(["a/Foo.module.css", "b/Foo.css"], "pkg", "baseline 2023")).to.not.throw();
   });
 
   it("refuses a Sass source, which enters at sass_compile", () => {
-    expect(() => buildPostcssOptions(["a/Foo.scss"], "pkg")).to.throw(/'a\/Foo\.scss' is a Sass source/);
+    expect(() => buildPostcssOptions(["a/Foo.scss"], "pkg", "baseline 2023")).to.throw(/'a\/Foo\.scss' is a Sass source/);
   });
 });
 

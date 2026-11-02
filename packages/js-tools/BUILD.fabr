@@ -11,6 +11,6 @@ js_package @fabr-build/js-tools {
   compile_deps = @fabr-build/core;
   # postcss / postcss-modules: the PostCSS driver's tests scope real stylesheets.
   # typescript: the coverage driver's tests compile a fixture to measure.
-  test_deps = chai jest_types @pkg:postcss @pkg:postcss-modules @pkg:typescript;
+  test_deps = chai jest_types @pkg:postcss @pkg:postcss-modules @pkg:autoprefixer @pkg:browserslist @pkg:caniuse-lite @pkg:baseline-browser-mapping @pkg:typescript;
   metadata = { FABR_METADATA; description = Fabr JS support plugin tools }
 }

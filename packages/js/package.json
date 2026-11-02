@@ -11,6 +11,7 @@
     "./rules/*": "./build/rules/*.js",
     "./NPMRepository": "./build/NPMRepository.js",
     "./NodeDistribution": "./build/NodeDistribution.js",
+    "./BrowserRepository": "./build/BrowserRepository.js",
     "./package.json": "./package.json"
   },
   "@fabr-build/plugin": {

@@ -77,8 +77,8 @@ export interface IPostcssSource {
   module: boolean;
   /** The JS shim carrying the class-name map (css-modules only). */
   shim?: string;
-  /** The map the input ARRIVED with (relative to the options' `srcRoot`), for a
-   * module's output map to chain through; absent for an authored stylesheet. */
+  /** The map the input ARRIVED with (relative to the options' `srcRoot`), for the
+   * output map to chain through; absent for an authored stylesheet. */
   prev?: string;
   /** Where the source map goes, relative to the options' `outdir`: chained through
    * {@link prev} for a module, carried through beside a plain stylesheet that
@@ -104,4 +104,8 @@ export interface IPostcssOptions {
   srcRoot: string;
   /** Where the driver writes outputs, relative to the working dir. */
   outdir: string;
+  /** The browsers every stylesheet is prefixed for, as a browserslist query
+   * naming each one's lowest version (`safari >= 17.2, chrome >= 120`), or ""
+   * for none. */
+  browsers: string;
 }

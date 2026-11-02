@@ -18,11 +18,12 @@
  * Fabr's postcss driver: the runtime executed (standalone, under node) inside a
  * css_postcss build step. Its inputs are plain CSS — Sass sources arrive
  * already lowered by the sass_compile step, `.module.` marker intact — and it
- * runs the postcss chain over them, of which css-modules is the first plugin:
- * a css-module is scoped (every local renamed `<local>_<scope>`) and written
+ * runs the postcss chain over every one of them: css-modules first, then
+ * autoprefixer, for the browsers the options list (`BROWSER_TARGET`). A
+ * css-module is scoped (every local renamed `<local>_<scope>`) and written
  * under its final name beside a TypeScript shim carrying its class-name map —
  * which types the map as well as holding it, so nothing declares it twice; any
- * other stylesheet is copied through unchanged. Source maps chain: the map an input arrived with
+ * other stylesheet keeps its name and its class names. Source maps chain: the map an input arrived with
  * rides the options document as `prev`, so a position in the scoped output
  * resolves through the rename AND through Sass's nesting expansion, back to
  * the line the author wrote. A step ships only annotations it wrote: whatever
@@ -72,7 +73,6 @@ import {
   relativeToMap,
   relocateCssSources,
   sassLoweredName,
-  sourceMapComment,
   withoutAnnotations,
   writeDepsReport,
   writeOut,
@@ -102,7 +102,8 @@ interface IModulesOptions {
   resolve(file: string, importer: string): string;
 }
 type IPostcssModules = (options: IModulesOptions) => unknown;
-
+/** autoprefixer, given the browsers to prefix for. */
+type IAutoprefixer = (options: { overrideBrowserslist: string }) => unknown;
 /**
  * @return the JS shim for a css-module: the class-name map as an ES module,
  * plus a side-effect import of the stylesheet it belongs to.
@@ -247,6 +248,8 @@ function displayName(filename: string, srcRoot: string): string {
 interface IPostcssTools {
   postcss: IPostcss;
   modules: IPostcssModules;
+  /** autoprefixer, configured for the build's browsers, where it names any: the last plugin every stylesheet runs. */
+  prefixer: unknown[];
   /** How a staged source is named in a map, where the step staged a table. */
   referenceOf?: (staged: string, own?: string) => string | undefined;
   /** The dependencies' stylesheets a compose may name. */
@@ -257,32 +260,12 @@ interface IPostcssTools {
 
 /**
  * Process one stylesheet input and write everything the options document names
- * for it. A css-module is scoped (its map chained through the input map the
- * options name as `prev`); anything else is copied through unchanged, its map
- * carried beside it.
+ * for it. Every stylesheet is prefixed for the build's browsers; a css-module is
+ * also scoped, and gets its class-name shim. Its map chains through the input
+ * map the options name as `prev`.
  */
 async function processFile(source: IPostcssSource, options: IPostcssOptions, tools: IPostcssTools, table: ScopeTable): Promise<void> {
   const inputPath = path.join(options.srcRoot, source.path);
-  if (!source.module) {
-    /* Copied through, with the annotation restated for the map this step
-     * writes — never the input's, which named the input's own map. */
-    const copied = withoutAnnotations(fs.readFileSync(inputPath, "utf8"));
-    if (source.map !== undefined) {
-      const carried = JSON.parse(fs.readFileSync(path.join(options.srcRoot, source.map), "utf8")) as IRawSourceMap;
-      const mapDir = path.dirname(path.join(options.srcRoot, source.map));
-      const where = { root: process.cwd(), srcRoot: options.srcRoot, mapDir };
-      const finished =
-        tools.referenceOf === undefined
-          ? relativeToMap(relocateCssSources(carried, where), source.map)
-          : referencedCssSources(carried, source.map, where, tools.referenceOf);
-      writeOut(options.outdir, source.map, JSON.stringify(finished));
-      writeOut(options.outdir, source.css, copied + sourceMapComment(source.map));
-    } else {
-      writeOut(options.outdir, source.css, copied);
-    }
-    return;
-  }
-
   const css = fs.readFileSync(inputPath, "utf8");
   const wantsMap = source.map !== undefined;
   /* Whether Sass ran before this step: the lowered input arrives with its map
@@ -295,11 +278,9 @@ async function processFile(source: IPostcssSource, options: IPostcssOptions, too
   /* postcss would mangle the input map's fabr references while composing it
    * (see carriedReferences), so they cross it carried. */
   const chained = prev === undefined || tools.referenceOf === undefined ? prev : carriedReferences(prev);
-  let scoped: IPostcssResult;
   let exported: Record<string, string> = {};
-  try {
-    scoped = await tools
-      .postcss([
+  const scoping = source.module
+    ? [
         tools.modules({
           generateScopedName: (local: string, filename: string): string => scopedNameOf(table, options.srcRoot, local, filename),
           getJSON: (_file: string, json: Record<string, string>): void => {
@@ -314,16 +295,19 @@ async function processFile(source: IPostcssSource, options: IPostcssOptions, too
             return resolved;
           },
         }),
-      ])
-      .process(css, {
-        from: inputPath,
-        to: path.join(options.outdir, source.css),
-        /* Naming the annotation (rather than `false`) is what makes postcss
-         * CLEAR the annotations its inputs carried — every one in the root, so
-         * a composed stylesheet's rides out with the rules it inlined — and
-         * write this step's own in their place. */
-        ...(wantsMap ? { map: { ...(chained ? { prev: chained } : {}), inline: false, annotation: annotationName(source.map!) } } : {}),
-      });
+      ]
+    : [];
+  let scoped: IPostcssResult;
+  try {
+    scoped = await tools.postcss([...scoping, ...tools.prefixer]).process(css, {
+      from: inputPath,
+      to: path.join(options.outdir, source.css),
+      /* Naming the annotation (rather than `false`) is what makes postcss
+       * CLEAR the annotations its inputs carried — every one in the root, so
+       * a composed stylesheet's rides out with the rules it inlined — and
+       * write this step's own in their place. */
+      ...(wantsMap ? { map: { ...(chained ? { prev: chained } : {}), inline: false, annotation: annotationName(source.map!) } } : {}),
+    });
   } catch (err) {
     throw scopeFailure(source.path, err, { root: process.cwd(), srcRoot: options.srcRoot });
   }
@@ -355,9 +339,15 @@ export async function main(argv: string[]): Promise<void> {
   /* eslint-disable @typescript-eslint/no-var-requires */
   const postcss = require("postcss") as IPostcss;
   const modules = require("postcss-modules") as IPostcssModules;
+  const autoprefixer = require("autoprefixer") as IAutoprefixer;
   /* eslint-enable @typescript-eslint/no-var-requires */
 
   const options = JSON.parse(fs.readFileSync(parseManifestPath(argv, "postcss-driver"), "utf8")) as IPostcssOptions;
+  /* The browser data is a pinned input, so its age says nothing about this
+   * build; browserslist's warning that it is old reads the clock. */
+  process.env.BROWSERSLIST_IGNORE_OLD_DATA = "1";
+  /* No browsers named, nothing to prefix for. */
+  const prefixer = options.browsers === "" ? [] : [autoprefixer({ overrideBrowserslist: options.browsers })];
   /* The dependencies are a table beside the sources, nothing mounted: each
    * composable stylesheet is located through it, as the sources see it. A file
    * is read where its bytes are, and reported as the table locates it. */
@@ -387,7 +377,7 @@ export async function main(argv: string[]): Promise<void> {
     }
   };
   for (const source of options.sources) {
-    await processFile(source, options, { postcss, modules, referenceOf, packages, onCompose }, table);
+    await processFile(source, options, { postcss, modules, prefixer, referenceOf, packages, onCompose }, table);
   }
   writeDepsReport(argv, resolver?.readSetOf(reads) ?? [], resolver?.edges());
 }

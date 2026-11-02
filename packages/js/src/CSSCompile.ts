@@ -171,7 +171,8 @@ export function postcssSourceOutputs(path: string, packageName: string, sourceMa
     css: path,
     scope,
     module: false,
-    ...(carriedMaps?.has(`${path}.map`) ? { map: `${path}.map` } : {}),
+    ...(carriedMaps?.has(`${path}.map`) ? { prev: `${path}.map` } : {}),
+    ...(sourceMaps ? { map: `${path}.map` } : {}),
   };
 }
 
@@ -385,12 +386,13 @@ export function buildSassOptions(fileNames: string[], sourceMaps = false): ISass
 /**
  * Assemble the postcss driver's options from the step's input names — the
  * stylesheets, with any `.map` beside them carried as map inputs rather than
- * listed as sources. A Sass source is refused: it enters at sass_compile, and
- * arrives here lowered.
+ * listed as sources, every stylesheet prefixed for `browsers` (`BROWSER_TARGET`).
+ * A Sass source is refused: it enters at sass_compile, and arrives here lowered.
  */
 export function buildPostcssOptions(
   fileNames: string[],
   packageName: string,
+  browsers: string,
   sourceMaps = false,
   deps: PackageFileSet[] = []
 ): IPostcssOptions {
@@ -409,7 +411,7 @@ export function buildPostcssOptions(
   if (collision !== undefined) {
     throw collision.withHelp(SCOPE_COLLISION_HELP);
   }
-  return { sources, composable: composableStylesheets(deps), srcRoot: CSS_SRC_ROOT, outdir: CSS_OUTDIR };
+  return { sources, composable: composableStylesheets(deps), srcRoot: CSS_SRC_ROOT, outdir: CSS_OUTDIR, browsers };
 }
 
 /**

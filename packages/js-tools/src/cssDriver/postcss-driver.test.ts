@@ -124,7 +124,7 @@ describe("the compose hooks", () => {
     ],
     composable: [],
     srcRoot: "/work/src",
-    outdir: "/work/out",
+    outdir: "/work/out", browsers: "baseline 2023"
   };
   const table = scopeTableOf(options);
 
@@ -208,8 +208,8 @@ describe("postcss-driver, over the real plugin set", () => {
     fs.rmSync(work, { recursive: true, force: true });
   });
 
-  /** Stage `files` under src/, run the driver over `sources`, and read back. */
-  async function run(files: Record<string, string>, sources: IPostcssSource[]): Promise<(name: string) => string> {
+  /** Stage `files` under src/, run the driver over `sources` for `browsers`, and read back. */
+  async function run(files: Record<string, string>, sources: IPostcssSource[], browsers = "safari >= 17.2, chrome >= 120"): Promise<(name: string) => string> {
     const srcRoot = path.join(work, "src");
     const outdir = path.join(work, "out");
     for (const [name, text] of Object.entries(files)) {
@@ -218,11 +218,27 @@ describe("postcss-driver, over the real plugin set", () => {
       fs.writeFileSync(dest, text);
     }
     const manifest = path.join(work, "postcss-manifest.json");
-    const options: IPostcssOptions = { sources, composable: [], srcRoot, outdir };
+    const options: IPostcssOptions = { sources, composable: [], srcRoot, outdir, browsers };
     fs.writeFileSync(manifest, JSON.stringify(options));
     await main([`--manifest=${manifest}`]);
     return name => fs.readFileSync(path.join(outdir, name), "utf8");
   }
+
+  it("prefixes every stylesheet, plain or module, for the browsers it is given", async () => {
+    const files = { "plain.css": ".a { appearance: none; }\n", "card.module.css": ".card { appearance: none; }\n" };
+    const sources: IPostcssSource[] = [
+      { path: "plain.css", css: "plain.css", scope: "p1", module: false },
+      { path: "card.module.css", css: "card.css", scope: "c1", module: true, shim: "card.css.ts" },
+    ];
+    const old = await run(files, sources, "safari >= 10");
+    assert.match(old("plain.css"), /-webkit-appearance: none;/);
+    assert.match(old("card.css"), /\.card_c1 \{[^}]*-webkit-appearance: none;/);
+    /* `appearance` is unprefixed in Safari 17.2 and Chrome 120. */
+    const recent = await run(files, sources, "safari >= 17.2, chrome >= 120");
+    assert.doesNotMatch(recent("plain.css"), /-webkit-appearance/);
+    /* No browsers, no prefixes. */
+    assert.doesNotMatch((await run(files, sources, ""))("plain.css"), /-webkit-/);
+  });
 
   /** A module entry with every output named, the way the rule names them. */
   function module(stem: string, scope: string): IPostcssSource {
@@ -375,7 +391,7 @@ describe("postcss-driver, over the real plugin set", () => {
     assert.equal(out("b/plain.css"), text);
   });
 
-  it("relocates and annotates the map carried beside a passthrough stylesheet", async () => {
+  it("chains a plain stylesheet's map through the one carried beside it", async () => {
     /* A lowered plain stylesheet with its map beside it. The published map
      * names its source the way a consumer resolves it — relative to the map —
      * so `w/theme.css.map` names the sibling `theme.scss`. */
@@ -384,7 +400,7 @@ describe("postcss-driver, over the real plugin set", () => {
         "w/theme.css": ".page { margin: 0; }\n",
         "w/theme.css.map": JSON.stringify({ version: 3, sources: ["../../src/w/theme.scss"], mappings: "AAAA" }),
       },
-      [{ path: "w/theme.css", css: "w/theme.css", map: "w/theme.css.map", scope: "sTheme", module: false }]
+      [{ path: "w/theme.css", css: "w/theme.css", prev: "w/theme.css.map", map: "w/theme.css.map", scope: "sTheme", module: false }]
     );
     assert.match(out("w/theme.css"), /sourceMappingURL=theme\.css\.map/);
     assert.deepEqual((JSON.parse(out("w/theme.css.map")) as { sources: string[] }).sources, ["theme.scss"]);
@@ -440,7 +456,7 @@ describe("postcss-driver, over the real plugin set", () => {
       sources: [{ ...module("w/card", "sW"), prev: "w/card.module.css.map", map: "w/card.css.map" }],
       composable: [],
       srcRoot: "src",
-      outdir: "out",
+      outdir: "out", browsers: "baseline 2023"
     };
     fs.writeFileSync(path.join(work, "postcss-manifest.json"), JSON.stringify(options));
     fs.writeFileSync(path.join(work, SOURCE_PATHS_FILE), JSON.stringify({}));

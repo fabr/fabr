@@ -87,6 +87,7 @@ describe("the postcss driver, composing from a dependency through fabr's table",
         .map(([name]) => name)
         .filter(name => name.endsWith(".css"))
         .map(name => ({ package: "ds", path: name, scope: "sDep" })),
+      browsers: "baseline 2023",
       srcRoot: "src",
       outdir: "out",
     };

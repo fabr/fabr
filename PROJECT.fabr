@@ -46,10 +46,12 @@ catalog @pkg {
          # version ESBUILD names, since what they check is what THAT esbuild
          # does with a package's export conditions.
          @npm:esbuild:0.28.1
-         # The postcss driver's tests drive the real scoper, pinned to the same
-         # versions POSTCSS/POSTCSS_MODULES name: the css-modules dialect is
-         # the plugin set's, so the one the tests pin must be the one fabr runs.
+         # The postcss driver's tests drive the real plugins, pinned to the same
+         # versions POSTCSS/POSTCSS_MODULES/AUTOPREFIXER name: what they check is
+         # what those plugins do, so the ones the tests pin must be the ones fabr runs.
          @npm:postcss:8.5.28 @npm:postcss-modules:9.0.1
+         @npm:autoprefixer:10.6.2 @npm:browserslist:4.29.5
+         @npm:caniuse-lite:1.0.30001820 @npm:baseline-browser-mapping:2.11.34
          # The coverage driver's libraries. ast-v8-to-istanbul's js-tokens sits
          # beside the one @types/jest's closure needs ('?' sanctions the
          # coexistence).

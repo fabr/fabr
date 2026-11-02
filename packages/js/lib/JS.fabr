@@ -42,7 +42,7 @@ default SASS = @npm:sass-embedded:1.100.0;
 default SASS_PNP_IMPORTER = @fabr-build/sass-pnp-importer;
 
 #
-# The PostCSS that processes css-modules.
+# The PostCSS that processes stylesheets.
 #
 
 default POSTCSS = @npm:postcss:8.5.28;
@@ -52,6 +52,28 @@ default POSTCSS = @npm:postcss:8.5.28;
 #
 
 default POSTCSS_MODULES = @npm:postcss-modules:9.0.1;
+
+#
+# The PostCSS plugin that adds the vendor prefixes `BROWSER_TARGET`'s browsers
+# need.
+#
+
+default AUTOPREFIXER = @npm:autoprefixer:10.6.2 @npm:browserslist:4.29.5;
+
+#
+# The browser data: Can I Use's browser releases, which `@browser` and
+# autoprefixer read, and Baseline's browser versions by year.
+#
+
+default BROWSER_DATA = @npm:caniuse-lite:1.0.30001820 @npm:baseline-browser-mapping:2.11.34;
+
+#
+# The browsers the build's output must run in: `@browser` references, each
+# the lowest version supported (`@browser:baseline:2023`,
+# `@browser:safari:16.4`). Stylesheets are prefixed for them.
+#
+
+default BROWSER_TARGET = @browser:baseline:2023;
 
 #
 # The test framework a project's tests are written for: `node` (Node.js's
@@ -390,6 +412,19 @@ targetdef node_distribution {
 }
 
 #
+# Web browsers, by their Can I Use names (`safari`, `ios_saf`, `chrome`,
+# `and_chr`, `firefox`, `edge`). `@browser:safari:17.2` is Safari 17.2 or
+# later; `@browser:baseline:2023` is every core browser at the version that
+# supports all of Baseline 2023. A browser has no files: a target requires one
+# to say its output must run there. fabr declares `@browser` for you.
+#
+targetdef browser_repository {
+    # The browser data packages: `caniuse-lite`'s browser releases and
+    # `baseline-browser-mapping`'s Baseline years.
+    data = REQUIRED FILES;
+}
+
+#
 # The target types below are normally created for you by the ones above, and
 # rarely need declaring.
 #
@@ -485,6 +520,13 @@ default node_distribution @node {
 }
 
 #
+# Web browsers, from the browser data `BROWSER_DATA` pins.
+#
+default browser_repository @browser {
+    data = BROWSER_DATA;
+}
+
+#
 # The node binary every JavaScript tool, test and `js_script` runs on: one
 # executable file, a release's `bin/node` (`NODE = @node:22.15.0:bin/node;`) or
 # a file in the project. Name an exact version; a range selects its lowest.
@@ -528,7 +570,7 @@ default js_script SASS_DRIVER {
 #
 default js_script POSTCSS_DRIVER {
     entry = @fabr-build/js-tools:fabr-postcss;
-    deps = ${POSTCSS} ${POSTCSS_MODULES};
+    deps = ${POSTCSS} ${POSTCSS_MODULES} AUTOPREFIXER BROWSER_DATA;
 }
 
 #
@@ -583,3 +625,4 @@ rule css_postcss c<BUILD_OPERATION=build> = @fabr-build/js:rules/BuildCSSPostcss
 
 repository npm_repository = @fabr-build/js:NPMRepository;
 repository node_distribution = @fabr-build/js:NodeDistribution;
+repository browser_repository = @fabr-build/js:BrowserRepository;
