@@ -369,6 +369,10 @@ export class ModelBuilder implements BuildModel {
     return this.plugins.get(name);
   }
 
+  public getPlugins(): PluginPackage[] {
+    return [...this.plugins.values()];
+  }
+
   /**
    * Add what the include of a plugin's optional libs `decl` resolved to: the
    * files it names, or the reason it names none, which is reported here.

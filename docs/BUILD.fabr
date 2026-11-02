@@ -10,11 +10,10 @@ js_script gendoc {
 }
 
 # The target reference is generated from the live build model: `list-all` emits
-# the whole vocabulary (types, config, flags) and gendoc writes one page per
-# source package (core -> standard-rules.md, JS plugin -> js-targets.md, Java
-# plugin -> java-targets.md). gendoc
-# writes them by bare name; docs_site places each in the content tree with a
-# rename projection.
+# the whole vocabulary (types, config, flags), the plugins' optional libs among
+# it, and gendoc writes a page per source package and per plugin's optional libs,
+# each at its place in the site under content/, with reference-pages.json, the
+# sidebar entry of each, which astro.config.mjs reads.
 # fabr with the Java plugin installed beside it, so the generated reference
 # covers both plugins.
 js_script docgen_fabr {
@@ -24,8 +23,8 @@ js_script docgen_fabr {
 
 generate reference_docs {
   srcs = ./DOCGEN.fabr -> PROJECT.fabr;
-  run = docgen_fabr list-all --json | gendoc;
-  output = *.md;
+  run = docgen_fabr list-all --include-optional --json | gendoc out;
+  output = out:**;
 }
 
 # The changelog and the version shown on the landing page are read from their
@@ -35,9 +34,8 @@ generate docs_site {
   srcs = ./src/** ./public/** ./astro.config.mjs
          ../CHANGELOG.md -> src/changelog.md
          release/@npm/@fabr-build/cli/*/package.json -> src/fabr-version.json
-         reference_docs:standard-rules.md -> src/content/docs/reference/standard-rules.md
-         reference_docs:js-targets.md -> src/content/docs/reference/js/targets.md
-         reference_docs:java-targets.md -> src/content/docs/reference/java/targets.md;
+         reference_docs:content/** -> src/content/docs/**
+         reference_docs:reference-pages.json;
   run = astro build;
   output = dist:**;
 }

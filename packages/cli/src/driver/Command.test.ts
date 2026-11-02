@@ -80,6 +80,7 @@ describe("Command", () => {
       longListing: false,
       json: false,
       all: false,
+      includeOptional: false,
       quiet: false,
       progress: true,
       force: false,
@@ -96,6 +97,7 @@ describe("Command", () => {
       longListing: false,
       json: false,
       all: false,
+      includeOptional: false,
       quiet: false,
       progress: true,
       force: false,
@@ -116,6 +118,7 @@ describe("Command", () => {
       longListing: false,
       json: false,
       all: false,
+      includeOptional: false,
       quiet: false,
       progress: true,
       force: false,
@@ -131,6 +134,7 @@ describe("Command", () => {
       longListing: true,
       json: false,
       all: false,
+      includeOptional: false,
       quiet: false,
       progress: true,
       force: false,
@@ -141,6 +145,13 @@ describe("Command", () => {
 
   it("treats ls after another command as a target", () => {
     expect(parseCommandLine(["node", "fabr", "build", "ls"]).targets).to.deep.equal(["ls"]);
+  });
+
+  it("parses --include-optional for list-all, and refuses it elsewhere", () => {
+    expect(parseCommandLine(["node", "fabr", "list-all", "--include-optional", "--json"]).includeOptional).to.equal(true);
+    const { exit, err } = capture(["list-targets", "--include-optional"]);
+    expect(exit).to.equal(1);
+    expect(err.join("\n")).to.match(/Option '--include-optional' is not valid for the 'list-targets' command/);
   });
 
   it("parses the --json flag for a query command", () => {

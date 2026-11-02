@@ -652,7 +652,14 @@ async function runWith(options: Options, operation: Operation, watch = false): P
     const sourceRoot = await getSourceRoot();
     /* The run itself lives in core; the driver hands it the paths its
      * environment policy chose. */
-    const fabr = new Fabr({ sourceRoot, cacheRoot: getBuildCacheRoot(), log, watch, host: Constraints.of(getHostProperties()) });
+    const fabr = new Fabr({
+      sourceRoot,
+      cacheRoot: getBuildCacheRoot(),
+      log,
+      watch,
+      host: Constraints.of(getHostProperties()),
+      includeOptionalLibs: options.includeOptional,
+    });
     const execution = fabr.execution;
     /* Where the user typed the command, in the source tree's own namespace: a
      * name given on the command line resolves its bare paths from here, as a
@@ -1325,6 +1332,7 @@ function providedTargetsJson(model: BuildModel): Record<string, unknown>[] {
       type: decl.type,
       properties: decl.properties.map(prop => ({ name: prop.name.toBaseString(), value: renderPropertyValue(prop) })),
       location: formatDeclLocation(decl),
+      ...contributionJson(model, decl),
       description: decl.docComment ?? null,
     }));
 }
@@ -1337,6 +1345,7 @@ function targetDefJson(model: BuildModel, def: ITargetDefDecl): Record<string, u
     name: def.name,
     operations: model.getOperations(def.name),
     location: formatDeclLocation(def),
+    ...contributionJson(model, def),
     description: def.docComment ?? null,
     properties: [...def.properties].map(([name, schema]) => ({
       name,
@@ -1351,10 +1360,33 @@ function targetDefJson(model: BuildModel, def: ITargetDefDecl): Record<string, u
 /** One entry of the config listing (a documented global property, or a flag
  * target — which has no value of its own); the same entries are also printed
  * as text. */
-interface IConfigEntry {
+interface IConfigEntry extends IContribution {
   name: string;
   location: string;
   description: string | null;
+}
+
+/** Where a declaration comes from, in `--json`: the plugin whose files hold it
+ * (absent for core's and the project's own), and for one of its optional libs,
+ * the include that reads that lib. */
+interface IContribution {
+  plugin?: string;
+  include?: string;
+}
+
+/** @return where `decl` comes from (see {@link IContribution}). */
+function contributionJson(model: BuildModel, decl: ITargetDecl | ITargetDefDecl | IPropertyDecl): IContribution {
+  const file = declPosn(decl).file;
+  for (const plugin of model.getPlugins()) {
+    if (plugin.files.includes(file)) {
+      return { plugin: plugin.name };
+    }
+    const lib = plugin.optionalLibs.find(optional => optional.file === file);
+    if (lib !== undefined) {
+      return { plugin: plugin.name, include: `${plugin.name}:${lib.name}` };
+    }
+  }
+  return {};
 }
 
 /** @return the documented global configuration properties (`BUILD_TYPE`,
@@ -1369,6 +1401,7 @@ function configPropertiesJson(model: BuildModel): Array<IConfigEntry & { value: 
       name,
       value: renderPropertyValue(decl),
       location: formatDeclLocation(decl),
+      ...contributionJson(model, decl),
       description: decl.docComment ?? null,
     }));
 }
@@ -1380,7 +1413,7 @@ function flagTargetsJson(model: BuildModel): IConfigEntry[] {
     .getTargets()
     .filter(({ decl }) => decl.type === "flag")
     .sort((a, b) => a.name.localeCompare(b.name))
-    .map(({ name, decl }) => ({ name, location: formatDeclLocation(decl), description: decl.docComment ?? null }));
+    .map(({ name, decl }) => ({ name, location: formatDeclLocation(decl), ...contributionJson(model, decl), description: decl.docComment ?? null }));
 }
 
 /** @return a property's written value as a display string (its name-valued

@@ -20,6 +20,18 @@
 // @ts-check
 import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
+import fs from "node:fs";
+
+// The generated reference pages, by sidebar section (see docs/BUILD.fabr's
+// `reference_docs`): absent where the site is built without them.
+const manifest = new URL("./reference-pages.json", import.meta.url);
+/** @type {{ section: string; label: string; link: string }[]} */
+const generatedPages = fs.existsSync(manifest) ? JSON.parse(fs.readFileSync(manifest, "utf8")) : [];
+
+/** The sidebar entries of the generated pages listed under `section`. */
+function generated(section) {
+  return generatedPages.filter(page => page.section === section).map(({ label, link }) => ({ label, link }));
+}
 
 // Fabr's own documentation site. Built by fabr itself (`fabr build docs`), not
 // yarn/npm: the astro CLI is wrapped as an opaque passthrough target — see
@@ -80,13 +92,13 @@ export default defineConfig({
           items: [
             { label: "Command line", link: "/reference/command-line/" },
             { label: "Language syntax", link: "/reference/syntax/" },
-            { label: "Core targets & configuration", link: "/reference/standard-rules/" },
+            ...generated("Reference"),
           ],
         },
         {
           label: "JavaScript reference",
           items: [
-            { label: "Targets & configuration", link: "/reference/js/targets/" },
+            ...generated("JavaScript reference"),
             { label: "Dependencies", link: "/reference/js/dependencies/" },
             { label: "Module resolution", link: "/reference/js/module-resolution/" },
             { label: "TypeScript compilation", link: "/reference/js/typescript/" },
@@ -99,7 +111,7 @@ export default defineConfig({
         {
           label: "Java reference",
           items: [
-            { label: "Targets & configuration", link: "/reference/java/targets/" },
+            ...generated("Java reference"),
             { label: "Dependencies", link: "/reference/java/dependencies/" },
             { label: "Compiling", link: "/reference/java/compiling/" },
             { label: "Testing", link: "/reference/java/testing/" },

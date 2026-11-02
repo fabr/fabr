@@ -25,6 +25,7 @@ import { ExecutionContext } from "./ExecutionContext";
 import { Name } from "../core/Name";
 import { RepositoryProvider, RuleDefinition, SelectableRule } from "../rules/Types";
 import { Computable } from "../core/Computable";
+import type { PluginPackage } from "./Plugin";
 
 /**
  * The model of a project: the declarations its build files and its plugins'
@@ -103,4 +104,7 @@ export interface BuildModel {
    * which marks what the command line named.
    */
   getReferencedTarget(name: string): ITargetDecl | undefined;
+
+  /** @return every plugin the project uses, in the order they were added. */
+  getPlugins(): PluginPackage[];
 }

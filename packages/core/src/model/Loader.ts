@@ -224,7 +224,8 @@ class ProjectLoader {
     private readonly execution: ExecutionContext,
     private readonly startFile: string,
     private readonly core: PluginContribution,
-    private readonly host: Constraints
+    private readonly host: Constraints,
+    private readonly options: ILoadOptions
   ) {}
 
   /**
@@ -265,7 +266,11 @@ class ProjectLoader {
         (...plugins: PluginResolution[]) => plugins
       ).then(plugins => {
         const added = [
-          ...plugins.flatMap(({ resolved }) => (resolved instanceof Error ? [] : resolved.files)),
+          ...plugins.flatMap(({ resolved }) =>
+            resolved instanceof Error
+              ? []
+              : [...resolved.files, ...(this.options.includeOptionalLibs ? resolved.optionalLibs.map(lib => lib.file) : [])]
+          ),
           ...optionalLibs.flatMap(({ resolved }) => (resolved instanceof Error ? [] : resolved)),
         ];
         return this.round([...previous, { files, fromPlugin, plugins, optionalLibs }], [...new Set(added)], true);
@@ -473,7 +478,15 @@ export function loadProject(
    * `includes` don't point at a real on-disk lib/ (unavailable under ts-jest,
    * where the package resolves to src/, not the built tree). */
   core: PluginContribution = coreContribution(),
-  host: Constraints = Constraints.of({})
+  host: Constraints = Constraints.of({}),
+  options: ILoadOptions = {}
 ): Computable<BuildModel> {
-  return new ProjectLoader(execution, startFile, core, host).load();
+  return new ProjectLoader(execution, startFile, core, host, options).load();
+}
+
+/** How {@link loadProject} reads a project. */
+export interface ILoadOptions {
+  /** Read every optional lib of each plugin the project uses, as though the
+   * project included it. */
+  includeOptionalLibs?: boolean;
 }

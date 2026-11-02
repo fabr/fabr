@@ -119,9 +119,9 @@ const COMMAND_SPECS: CommandSpec[] = [
   },
   {
     name: "list-all",
-    synopsis: "[--json]",
+    synopsis: "[--include-optional] [--json]",
     summary: "Emit the whole vocabulary (types, properties, flags) as JSON, for tooling",
-    accepts: ["--json"],
+    accepts: ["--include-optional", "--json"],
   },
 ];
 
@@ -139,6 +139,9 @@ export interface Options {
    * or a plugin's lib files) alongside the project's own, which are otherwise
    * the only ones listed. */
   all: boolean;
+  /** For `list-all`: read every optional lib of each plugin the project uses,
+   * as though the project included it. */
+  includeOptional: boolean;
   /** Suppress the live subcommand output that is otherwise streamed to stderr as
    * build steps run (`-q`/`--quiet`), as well as the live progress display.
    */
@@ -227,6 +230,8 @@ function printUsage(write: (message: string) => void = console.log): void {
       "  -l                Long listing: hash and size per file (ls), or source location (list-*)\n" +
       "  --json            Emit JSON (the list-* verbs)\n" +
       "  --all             Include system-contributed targets (list-targets)\n" +
+      "  --include-optional\n" +
+      "                    Read every optional lib of the plugins in use (list-all)\n" +
       "  -q, --quiet       Suppress live output: subcommand output and the progress display\n" +
       "  --no-progress     No progress display; subcommand output streams as it arrives\n" +
       "  --                End of options: following arguments are targets, even if they start with '-'\n" +
@@ -270,6 +275,9 @@ function applyOption(arg: string, options: Options, seenFlags: SeenFlag[]): void
   } else if (arg === "--all") {
     options.all = true;
     seenFlags.push({ raw: arg, flag: "--all" });
+  } else if (arg === "--include-optional") {
+    options.includeOptional = true;
+    seenFlags.push({ raw: arg, flag: arg });
   } else if (arg === "-u" || arg === "--update") {
     /* Sugar for the -D pathway: update mode IS a build input (a check run and
      * an update run are different builds and must not share a cache entry), so
@@ -328,6 +336,7 @@ export function parseCommandLine(args: string[]): Options {
     longListing: false,
     json: false,
     all: false,
+    includeOptional: false,
     quiet: false,
     progress: true,
     force: false,

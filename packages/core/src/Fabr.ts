@@ -32,7 +32,7 @@ import type { INameValue } from "./model/AST";
 import { BuildModel } from "./model/BuildModel";
 import { BuildCycle, ExecutionContext } from "./model/ExecutionContext";
 import { reportFailure } from "./model/ErrorFormatter";
-import { coreContribution, loadProject } from "./model/Loader";
+import { coreContribution, ILoadOptions, loadProject } from "./model/Loader";
 import { Constraints } from "./model/Constraints";
 import { SyncSource } from "./rules/BuildSync";
 import { Diagnostic, Log } from "./support/Log";
@@ -55,6 +55,9 @@ export interface IFabrOptions {
   watch?: boolean;
   /** The machine fabr runs on (`HOST`), which a plugin built in the project is built for. */
   host?: Constraints;
+  /** Read every optional lib of each plugin the project uses, as though the
+   * project included it (see {@link ILoadOptions}). */
+  includeOptionalLibs?: boolean;
 }
 
 /**
@@ -74,6 +77,8 @@ export class Fabr {
   public readonly sourceFileSource: SourceFileSource;
   /** The machine fabr runs on, as a configuration (see {@link IFabrOptions.host}). */
   private readonly host: Constraints;
+  /** How the project is read. */
+  private readonly loadOptions: ILoadOptions;
   /** Present when watching; the driver drives shutdown through {@link WatchController.close}. */
   public readonly controller?: WatchController;
   /** The run's cycle counter — what {@link maybeCollectGarbage}'s preemption
@@ -82,6 +87,7 @@ export class Fabr {
 
   constructor(options: IFabrOptions) {
     this.host = options.host ?? Constraints.of({});
+    this.loadOptions = { includeOptionalLibs: options.includeOptionalLibs };
     const cache = new BuildCache(options.cacheRoot, options.log);
     /* Shared: the controller advances it per applied batch; the execution
      * reads it and emits the cycle boundaries. */
@@ -126,7 +132,7 @@ export class Fabr {
    * {@link ExecutionContext.observeEvaluation}).
    */
   public evaluate<T>(operation: (model: BuildModel) => Computable<T>): Computable<T> {
-    const evaluation = loadProject(this.execution, PROJECT_FILENAME, coreContribution(), this.host).then(operation);
+    const evaluation = loadProject(this.execution, PROJECT_FILENAME, coreContribution(), this.host, this.loadOptions).then(operation);
     this.execution.observeEvaluation(evaluation);
     return evaluation.finally(() => this.sourceFileSource.persistIndex());
   }

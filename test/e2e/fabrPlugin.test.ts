@@ -111,6 +111,28 @@ describe("e2e: a plugin built in the project", () => {
     expect(result.stdout).to.equal("Goodbye\n");
   });
 
+  it("lists each type with the plugin it comes from, and an optional lib's with its include, where asked to read them", () => {
+    const files = project();
+    files["PROJECT.fabr"] = files["PROJECT.fabr"].replace(
+      "libs = plugin/lib/GREET.fabr;",
+      "libs = plugin/lib/GREET.fabr; optional_libs = plugin/lib/opt/*.fabr;"
+    );
+    files["plugin/lib/opt/farewell.fabr"] = "targetdef farewell {\n  text = STRING;\n}\n\nrule farewell f = greeter:rules/Greeting;\n";
+    const typesOf = (args: string[]): Map<string, { plugin?: string; include?: string }> => {
+      const result = runFabr(files, args);
+      expect(result.stderr).to.not.match(/^error/m);
+      const doc = JSON.parse(result.stdout) as { targetdefs: Array<{ name: string; plugin?: string; include?: string }> };
+      return new Map(doc.targetdefs.map(({ name, plugin, include }) => [name, { plugin, include }]));
+    };
+    const plain = typesOf(["list-all", "--json"]);
+    expect(plain.get("greeting")).to.deep.equal({ plugin: "greeter", include: undefined });
+    expect(plain.get("generate")).to.deep.equal({ plugin: undefined, include: undefined });
+    expect(plain.has("farewell")).to.equal(false);
+    const all = typesOf(["list-all", "--include-optional", "--json"]);
+    expect(all.get("farewell")).to.deep.equal({ plugin: "greeter", include: "greeter:plugin/lib/opt/farewell.fabr" });
+    expect(all.get("greeting")).to.deep.equal({ plugin: "greeter", include: undefined });
+  });
+
   it("uses an installed plugin by a name the project gives it, its rules naming it as itself", () => {
     const files = {
       ...STUB_TSC,

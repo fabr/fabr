@@ -347,6 +347,24 @@ describe("Loader", () => {
     expect(propertyValue(model, "from_b")).to.equal("yes");
   });
 
+  it("reads every optional lib of a plugin the project uses, as though included, where asked to", async () => {
+    const project = files({
+      "PROJECT.fabr": OPTIONAL_PLUGIN_DEF + "include p:extra/a.fabr;\ninclude ./p/BUILD.fabr;\nplugin p;\n",
+      "p/BUILD.fabr": "fabr_plugin p { libs = P.fabr; optional_libs = extra/*.fabr; }\n",
+      "p/P.fabr": "default from_p = yes;\n",
+      "p/extra/a.fabr": "default from_a = yes;\n",
+      "p/extra/b.fabr": "default from_b = yes;\n",
+    });
+    const errors: string[] = [];
+    const model = await loadProject(exec(project, new LogFormatter(LogLevel.Info, msg => errors.push(msg))), "PROJECT.fabr", NO_BASE, undefined, {
+      includeOptionalLibs: true,
+    });
+    expect(errors).to.deep.equal([]);
+    expect(propertyValue(model, "from_a")).to.equal("yes");
+    expect(propertyValue(model, "from_b")).to.equal("yes");
+    expect(model.getPlugins().map(plugin => plugin.name)).to.deep.equal(["p"]);
+  });
+
   it("refuses an include of a file a plugin does not list as an optional lib, naming the ones it does", async () => {
     const { error, logged } = await loadErr(
       files({

@@ -20,8 +20,10 @@
 /*
  * Docs generator: reads `fabr list-all --json` on stdin (the whole build
  * vocabulary — target types, config properties, flags) and writes the Markdown
- * reference pages into the given output directory — one per source package (core
- * -> standard-rules.md, JS plugin -> js-targets.md, Java plugin -> java-targets.md). Compiled and launched by fabr
+ * reference pages into the given output directory, each at its place in the site
+ * under `content/` — one per source package (core, the JS plugin, the Java
+ * plugin), and beside a plugin's page one for its optional libs — with
+ * `reference-pages.json`, the sidebar entry of each. Compiled and launched by fabr
  * as a TypeScript js_script (the `gendoc` target); the pages are `.md`, not
  * `.mdx`, because the doc-comment prose contains `{ ... }` which MDX would parse
  * as JSX. The `generate` target collects them with an `output` glob (no `>` redirect).
@@ -48,6 +50,10 @@ interface TargetDef {
   name: string;
   operations: string[];
   location?: string;
+  /** The plugin whose files declare it; absent for core's. */
+  plugin?: string;
+  /** For one in a plugin's optional lib, the include that reads the lib. */
+  include?: string;
   description?: string | null;
   properties: PropertyDef[];
 }
@@ -57,6 +63,10 @@ interface ConfigProp {
   name: string;
   value: string;
   location?: string;
+  /** The plugin whose files declare it; absent for core's. */
+  plugin?: string;
+  /** For one in a plugin's optional lib, the include that reads the lib. */
+  include?: string;
   description?: string | null;
 }
 
@@ -64,6 +74,10 @@ interface ConfigProp {
 interface FlagDef {
   name: string;
   location?: string;
+  /** The plugin whose files declare it; absent for core's. */
+  plugin?: string;
+  /** For one in a plugin's optional lib, the include that reads the lib. */
+  include?: string;
   description?: string | null;
 }
 
@@ -74,6 +88,10 @@ interface ProvidedTarget {
   type: string;
   properties: { name: string; value: string }[];
   location?: string;
+  /** The plugin whose files declare it; absent for core's. */
+  plugin?: string;
+  /** For one in a plugin's optional lib, the include that reads the lib. */
+  include?: string;
   description?: string | null;
 }
 
@@ -85,24 +103,37 @@ interface Doc {
   targets: ProvidedTarget[];
 }
 
-/** A rendered page: its output filename, which contributions it covers (by source
- * location), and its front-matter. A targetdef/property/flag belongs to `core`
- * iff its location is in core's `STD.fabr`, to the Java plugin iff it is in its
- * `JAVA.fabr`; everything else is the JS plugin. */
-interface Group {
-  file: string;
+/** A generated page: where the site places it, its entry in the site's
+ * sidebar (the section and the label it is listed under), and its
+ * front-matter. */
+interface Page {
+  link: string;
+  section: string;
+  label: string;
   title: string;
   description: string;
   intro: string[];
-  isMember: (location: string | undefined) => boolean;
 }
 
-const inCore = (location: string | undefined): boolean => (location ?? "").includes("STD.fabr");
-const inJava = (location: string | undefined): boolean => (location ?? "").includes("JAVA.fabr");
+/** A plugin's page (core's, where `plugin` is undefined): what every project
+ * using the plugin has. `optional` is the page beside it covering the plugin's
+ * optional libs, one section each. */
+interface Group extends Page {
+  plugin: string | undefined;
+  optional?: Page;
+}
+
+/** Anything `list-all` lists: where it comes from is what places it on a page. */
+interface Entry {
+  plugin?: string;
+  include?: string;
+}
 
 const GROUPS: Group[] = [
   {
-    file: "standard-rules.md",
+    link: "/reference/standard-rules/",
+    section: "Reference",
+    label: "Core targets & configuration",
     title: "Core targets and configuration",
     description: "The target types, configuration, and flags that fabr's core provides, independent of any plugin.",
     intro: [
@@ -113,10 +144,12 @@ const GROUPS: Group[] = [
       "",
       "This page is generated from `fabr list-all`, so it never drifts from the code.",
     ],
-    isMember: inCore,
+    plugin: undefined,
   },
   {
-    file: "js-targets.md",
+    link: "/reference/js/targets/",
+    section: "JavaScript reference",
+    label: "Targets & configuration",
     title: "JavaScript targets and configuration",
     description: "The JavaScript/TypeScript target types, configuration, and flags from the @fabr-build/js plugin.",
     intro: [
@@ -127,10 +160,12 @@ const GROUPS: Group[] = [
       "",
       "This page is generated from `fabr list-all`, so it never drifts from the code.",
     ],
-    isMember: location => !inCore(location) && !inJava(location),
+    plugin: "@fabr-build/js",
   },
   {
-    file: "java-targets.md",
+    link: "/reference/java/targets/",
+    section: "Java reference",
+    label: "Targets & configuration",
     title: "Java targets and configuration",
     description: "The Java target types, configuration, and flags from the @fabr-build/java plugin.",
     intro: [
@@ -141,7 +176,22 @@ const GROUPS: Group[] = [
       "",
       "This page is generated from `fabr list-all`, so it never drifts from the code.",
     ],
-    isMember: inJava,
+    plugin: "@fabr-build/java",
+    optional: {
+      link: "/reference/java/optional-libs/",
+      section: "Java reference",
+      label: "Optional libraries",
+      title: "Java optional libraries",
+      description: "The target types in the @fabr-build/java plugin's optional libraries, which a project includes to use.",
+      intro: [
+        "The `@fabr-build/java` plugin keeps some target types in optional libraries: `.fabr` files a",
+        "project reads only where it includes them, after `plugin @fabr-build/java;`. Each section below",
+        "is one library, with the line that includes it. Everything else the plugin provides is in",
+        "[Java targets and configuration](/reference/java/targets/).",
+        "",
+        "This page is generated from `fabr list-all`, so it never drifts from the code.",
+      ],
+    },
   },
 ];
 
@@ -207,32 +257,48 @@ function declBlock(target: ProvidedTarget): string {
   return "```\n" + lines.join("\n") + "\n```";
 }
 
-function render(group: Group, doc: Doc): string {
-  const out: string[] = ["---", `title: ${group.title}`, `description: ${group.description}`, "---", "", ...group.intro, ""];
+/** The entries of one page, or of one section of a page. */
+interface Entries {
+  properties: ConfigProp[];
+  flags: FlagDef[];
+  targetdefs: TargetDef[];
+  targets: ProvidedTarget[];
+}
 
-  const props = doc.properties.filter(prop => group.isMember(prop.location));
-  if (props.length > 0) {
-    out.push("## Global properties", "");
+/** @return the entries of `doc` that `keep` admits. */
+function entriesOf(doc: Doc, keep: (entry: Entry) => boolean): Entries {
+  return {
+    properties: doc.properties.filter(keep),
+    flags: doc.flags.filter(keep),
+    targetdefs: doc.targetdefs.filter(keep),
+    targets: (doc.targets ?? []).filter(keep),
+  };
+}
+
+/** Render `entries` as sections headed at `level` (`##` on a plugin's page,
+ * `###` within an optional lib's section), each item a level below. */
+function renderEntries(entries: Entries, level: number): string[] {
+  const section = "#".repeat(level);
+  const item = "#".repeat(level + 1);
+  const out: string[] = [];
+  if (entries.properties.length > 0) {
+    out.push(`${section} Global properties`, "");
     out.push(
       ...table(
         ["Property", "Default", "Description"],
-        props.map(prop => [`\`${prop.name}\``, `\`${cell(prop.value) || "(unset)"}\``, cell(prop.description)])
+        entries.properties.map(prop => [`\`${prop.name}\``, `\`${cell(prop.value) || "(unset)"}\``, cell(prop.description)])
       ),
       ""
     );
   }
-
-  const flags = doc.flags.filter(flag => group.isMember(flag.location));
-  if (flags.length > 0) {
-    out.push("## Flags", "", "List a flag in a target's `deps` to switch its behaviour for that target.", "");
-    out.push(...table(["Flag", "Description"], flags.map(flag => [`\`${flag.name}\``, cell(flag.description)])), "");
+  if (entries.flags.length > 0) {
+    out.push(`${section} Flags`, "", "List a flag in a target's `deps` to switch its behaviour for that target.", "");
+    out.push(...table(["Flag", "Description"], entries.flags.map(flag => [`\`${flag.name}\``, cell(flag.description)])), "");
   }
-
-  const defs = doc.targetdefs.filter(def => group.isMember(def.location));
-  if (defs.length > 0) {
-    out.push("## Targets", "");
-    for (const def of defs) {
-      out.push(`### \`${def.name}\``, "");
+  if (entries.targetdefs.length > 0) {
+    out.push(`${section} Targets`, "");
+    for (const def of entries.targetdefs) {
+      out.push(`${item} \`${def.name}\``, "");
       if (def.operations.length > 0) {
         out.push(`**Operations:** ${def.operations.map(op => "`" + op + "`").join(", ")}`, "");
       }
@@ -247,25 +313,59 @@ function render(group: Group, doc: Doc): string {
       }
     }
   }
-
-  const provided = (doc.targets ?? []).filter(target => group.isMember(target.location));
-  if (provided.length > 0) {
-    out.push("## Provided targets", "", "Ready-made targets declared by these libraries, usable by name in any project.", "");
-    for (const target of provided) {
-      out.push(`### \`${target.name}\``, "");
+  if (entries.targets.length > 0) {
+    out.push(`${section} Provided targets`, "", "Ready-made targets declared by these libraries, usable by name in any project.", "");
+    for (const target of entries.targets) {
+      out.push(`${item} \`${target.name}\``, "");
       out.push(declBlock(target), "");
       if (target.description) {
         out.push(target.description, "");
       }
     }
   }
+  return out;
+}
 
+/** Render a page's front-matter and introduction. */
+function header(page: Page): string[] {
+  return ["---", `title: ${page.title}`, `description: ${page.description}`, "---", "", ...page.intro, ""];
+}
+
+/** Render `group`'s page: what every project using its plugin has. */
+function render(group: Group, doc: Doc): string {
+  const out = header(group);
+  if (group.optional !== undefined) {
+    out.push(`More target types are in the plugin's optional libraries; see [${group.optional.title}](${group.optional.link}).`, "");
+  }
+  out.push(...renderEntries(entriesOf(doc, entry => entry.plugin === group.plugin && entry.include === undefined), 2));
   return out.join("\n");
 }
 
-/* Write the pages by their bare filename (into the given dir, default the cwd);
- * the `generate` target collects them with an `output` glob and the consumer places them
- * with a rename projection. */
+/** Render `group`'s optional libs page: a section per lib, by the include
+ * that reads it, in name order. */
+function renderOptional(group: Group, page: Page, doc: Doc): string {
+  const out = header(page);
+  const all = [...doc.properties, ...doc.flags, ...doc.targetdefs, ...(doc.targets ?? [])];
+  const includes = [...new Set(all.filter(entry => entry.plugin === group.plugin && entry.include !== undefined).map(entry => entry.include!))].sort();
+  for (const include of includes) {
+    out.push(`## \`${include.slice(include.indexOf(":") + 1)}\``, "");
+    out.push("```", `include ${include};`, "```", "");
+    out.push(...renderEntries(entriesOf(doc, entry => entry.plugin === group.plugin && entry.include === include), 3));
+  }
+  return out.join("\n");
+}
+
+/** The manifest of the pages written, which the site's sidebar lists. */
+const MANIFEST = "reference-pages.json";
+
+/** @return where a page is written: its link, as a Markdown file under `content/`. */
+function fileOf(page: Page): string {
+  return path.join("content", `${page.link.replace(/^\/|\/$/g, "")}.md`);
+}
+
+/* Write each page at its place in the site, under `content/` in the given dir
+ * (default the cwd), and the manifest of them beside it; the `generate`
+ * target collects them all, and the site takes `content/` as its pages. */
 const outDir = process.argv[2] ?? ".";
 
 let input = "";
@@ -273,8 +373,19 @@ process.stdin.setEncoding("utf8");
 process.stdin.on("data", chunk => (input += chunk));
 process.stdin.on("end", () => {
   const doc = JSON.parse(input) as Doc;
-  fs.mkdirSync(outDir, { recursive: true });
+  const written: Page[] = [];
+  const write = (page: Page, text: string): void => {
+    const file = path.join(outDir, fileOf(page));
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, text);
+    written.push(page);
+  };
   for (const group of GROUPS) {
-    fs.writeFileSync(path.join(outDir, group.file), render(group, doc));
+    write(group, render(group, doc));
+    if (group.optional !== undefined) {
+      write(group.optional, renderOptional(group, group.optional, doc));
+    }
   }
+  const manifest = written.map(({ section, label, link }) => ({ section, label, link }));
+  fs.writeFileSync(path.join(outDir, MANIFEST), JSON.stringify(manifest, undefined, 2) + "\n");
 });
