@@ -151,9 +151,10 @@ export function computeBundleEntries(entries: IBundleEntrySource[], rewrite: Rew
   });
 }
 
-/** The name a split bundle's chunks are written under, with esbuild's
- * placeholders in it, before the `output` rewrite renames it. */
+/** The names a split bundle's chunks and a bundle's assets are written under,
+ * with esbuild's placeholders in them, before the `output` rewrite renames them. */
 export const CHUNK_NAMES = "chunks/[name]-[hash].js";
+export const ASSET_NAMES = "[name]-[hash].[ext]";
 
 /**
  * Compute esbuild's `chunkNames` pattern: {@link CHUNK_NAMES} as `rewrite`
@@ -161,11 +162,22 @@ export const CHUNK_NAMES = "chunks/[name]-[hash].js";
  * placeholder whole, so `chunks/*-*.js -> js/$2.$1.js` gives `js/[hash].[name]`.
  */
 export function computeChunkNames(rewrite: RewriteFn): string {
-  const output = rewrite(CHUNK_NAMES) ?? CHUNK_NAMES;
-  if (!output.endsWith(".js")) {
-    throw new FabrError(`js_bundle output '${output}' (from the chunks' name '${CHUNK_NAMES}') must end in '.js'`);
+  return renamedPattern(rewrite, CHUNK_NAMES, ".js", "the chunks'");
+}
+
+/** Compute esbuild's `assetNames` pattern: {@link ASSET_NAMES} as `rewrite`
+ * renames it, without its extension (`*-*.* -> assets/$1-$2.$3` gives
+ * `assets/[name]-[hash]`). */
+export function computeAssetNames(rewrite: RewriteFn): string {
+  return renamedPattern(rewrite, ASSET_NAMES, ".[ext]", "the assets'");
+}
+
+function renamedPattern(rewrite: RewriteFn, pattern: string, extension: string, whose: string): string {
+  const output = rewrite(pattern) ?? pattern;
+  if (!output.endsWith(extension)) {
+    throw new FabrError(`js_bundle output '${output}' (from ${whose} name '${pattern}') must end in '${extension}'`);
   }
-  return output.slice(0, -".js".length);
+  return output.slice(0, -extension.length);
 }
 
 /** The forms a bundle is written in: JS_BUNDLE_FORMAT's values. */
@@ -193,7 +205,8 @@ export function buildBundleOptions(
   external: string[],
   defines: Record<string, string>,
   inject: string[] = [],
-  chunkNames = computeChunkNames(() => undefined)
+  chunkNames = computeChunkNames(() => undefined),
+  assetNames = computeAssetNames(() => undefined)
 ): IBundleOptions {
   const minify = buildType === "release" || buildType === "relwithdebinfo";
   const sourcemap: "linked" | false = buildType === "release" ? false : "linked";
@@ -204,6 +217,7 @@ export function buildBundleOptions(
     format: bundleFormat === "esm-split" ? "esm" : bundleFormat,
     splitting: bundleFormat === "esm-split",
     chunkNames,
+    assetNames,
     target: jsTarget.version,
     minify,
     sourcemap,

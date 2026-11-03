@@ -509,6 +509,7 @@ function toEsbuildOptions(options: IBundleOptions, unresolved: Set<string>): Rec
     format: options.format,
     splitting: options.splitting,
     ...(options.splitting ? { chunkNames: options.chunkNames } : {}),
+    assetNames: options.assetNames,
     metafile: true,
     target: options.target,
     minify: options.minify,

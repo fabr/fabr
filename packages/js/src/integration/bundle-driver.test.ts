@@ -309,6 +309,7 @@ describe("a bundle's metafile and chunks, over real esbuild", () => {
       format: "esm",
       splitting,
       chunkNames,
+      assetNames: "[name]-[hash]",
       target: "es2021",
       minify: false,
       sourcemap: false,

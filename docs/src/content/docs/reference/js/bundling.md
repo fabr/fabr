@@ -250,6 +250,10 @@ declare const url: string;
 export default url;
 ```
 
+To put assets elsewhere in the output, rename their pattern, `[name]-[hash].[ext]`, with `output`,
+as for [chunks](#splitting-into-chunks): `output = *-*.* -> assets/$1-$2.$3;` writes
+`assets/logo-OKA4D3M3.png`. The rename must keep the `.[ext]`.
+
 Asset URLs are relative to the bundle, so serve the output files from one directory. `.json`
 imports give the parsed value, and `.txt` imports the text.
 

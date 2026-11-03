@@ -331,8 +331,8 @@ targetdef js_bundle {
     # are left in the output and their code is not included.
     deps = PACKAGES;
     # Renames for the output files, otherwise each entry's name with a `.js`
-    # extension: `*.js -> *.min.js`. A split bundle's chunks are named
-    # `chunks/[name]-[hash].js`, its placeholders filled in by esbuild.
+    # extension: `*.js -> *.min.js`. Chunks are named `chunks/[name]-[hash].js`
+    # and assets `[name]-[hash].[ext]`, their placeholders filled in by esbuild.
     output = REWRITE;
     # Constants to substitute at compile time (esbuild's `define`). Each value
     # is JavaScript source text, so a string needs its own quotes:

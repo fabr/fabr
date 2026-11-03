@@ -62,6 +62,7 @@ import {
   buildBundleOptions,
   BUNDLE_OUTDIR,
   computeBundleEntries,
+  computeAssetNames,
   computeChunkNames,
   computeExternalNames,
   IBundleEntrySource,
@@ -177,7 +178,7 @@ function stageBundle(
   const entries = computeBundleEntries(entrySources, rewrite);
   const external = computeExternalNames(srcs, deps);
   const inject = nodeGlobals ? [NODE_GLOBALS_MODULE] : [];
-  const options = buildBundleOptions(jsTarget, bundleFormat, buildType, entries, external, defines, inject, computeChunkNames(rewrite));
+  const options = buildBundleOptions(jsTarget, bundleFormat, buildType, entries, external, defines, inject, computeChunkNames(rewrite), computeAssetNames(rewrite));
   const workspace = {
     [TOOL_DIR]: bundler,
     "bundle-options.json": MemoryFile.from(JSON.stringify(options)),

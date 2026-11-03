@@ -51,6 +51,9 @@ export interface IBundleOptions {
   /** esbuild's `chunkNames` for a split bundle: a pattern of esbuild's
    * placeholders (`[name]`, `[hash]`), its extension added by esbuild. */
   chunkNames: string;
+  /** esbuild's `assetNames`: a pattern of esbuild's placeholders, its extension
+   * added by esbuild. */
+  assetNames: string;
   /** esbuild target ES level (JS_TARGET's version component). */
   target: string;
   /** Minify per BUILD_TYPE. */

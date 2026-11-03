@@ -19,7 +19,7 @@
 
 import { expect } from "chai";
 import { IFile, makeRewrite, MemoryFile, PackageFileSet, parseName, RefSource, RepositoryRef, RewriteFn, dependenciesOn } from "@fabr-build/core";
-import { buildBundleOptions, compiledName, computeBundleEntries, computeChunkNames, computeExternalNames, IBundleEntrySource, toBundleFormat } from "./JSBundle";
+import { buildBundleOptions, compiledName, computeAssetNames, computeBundleEntries, computeChunkNames, computeExternalNames, IBundleEntrySource, toBundleFormat } from "./JSBundle";
 import { parseJSTarget } from "./JSPackage";
 
 /** A package with a single index.js and the given (already-built) deps. */
@@ -160,6 +160,13 @@ describe("computeChunkNames", () => {
 
   it("refuses a rename that leaves the chunks without a .js name", () => {
     expect(() => computeChunkNames(output("chunks/*-*.js -> $1.css"))).to.throw("must end in '.js'");
+  });
+
+  it("renames the assets' pattern the same way, keeping their own extension", () => {
+    expect(computeAssetNames(noRewrite)).to.equal("[name]-[hash]");
+    expect(computeAssetNames(output("*.js -> *.min.js", "chunks/*-*.js -> js/$1.js"))).to.equal("[name]-[hash]");
+    expect(computeAssetNames(output("*-*.* -> assets/$1-$2.$3"))).to.equal("assets/[name]-[hash]");
+    expect(() => computeAssetNames(output("*-*.* -> assets/$1.png"))).to.throw("must end in '.[ext]'");
   });
 });
 
