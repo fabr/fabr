@@ -24,6 +24,7 @@ import {
   BuildAction,
   BuildResult,
   Computable,
+  COVERAGE_REPORT_FILENAME,
   execute,
   ExecutionError,
   FileSet,
@@ -45,11 +46,12 @@ import {
 
 /**
  * The step that runs a Java test suite: stage the install, run the runner once
- * on every test class, and deliver its CTRF report. A red run fails the
+ * on every test class, and deliver its CTRF report, and the coverage report
+ * of a measured run beside it. A red run fails the
  * target with the failures the report names; a run that wrote no report
  * fails with the runner's own output.
  */
-const JAVA_TEST_STEP: IBuildActionDefinition = { id: "java:test-run", version: 1, run: runTests };
+const JAVA_TEST_STEP: IBuildActionDefinition = { id: "java:test-run", version: 2, run: runTests };
 
 function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
   const staged = fileSetInput(action, "staged");
@@ -71,7 +73,7 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
       if (failed > 0) {
         throw new TestsFailedError(formatTestFailures(run), failed, tests);
       }
-      return getResultFileSet(ctx.workDir, [TEST_REPORT_FILENAME]);
+      return getResultFileSet(ctx.workDir, stringListConfig(action, "outputs"));
     })
     .then(result => ({ result }));
 }
@@ -93,7 +95,8 @@ function judgeRun(workDir: string, invocation: string[], error: Error | undefine
   return report;
 }
 
-/** @return the action that runs `argv` (the runner's command line, less its report) in `staged`. */
-export function createTestRunAction(staged: FileSet, argv: string[]): BuildAction {
-  return new BuildAction(JAVA_TEST_STEP, { staged }, { argv });
+/** @return the action that runs `argv` (the runner's command line, less its report) in `staged`,
+ * collecting the coverage report too where the run is `measured`. */
+export function createTestRunAction(staged: FileSet, argv: string[], measured: boolean): BuildAction {
+  return new BuildAction(JAVA_TEST_STEP, { staged }, { argv, outputs: [TEST_REPORT_FILENAME, ...(measured ? [COVERAGE_REPORT_FILENAME] : [])] });
 }

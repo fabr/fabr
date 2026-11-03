@@ -35,5 +35,6 @@ plugin @fabr-build/java<STAGE=0>;
 jar_package fabr-junit-runner {
   srcs = runner:*.java;
   deps = java11;
-  compile_deps = @mvn:org.junit.platform:junit-platform-launcher:1.12.2;
+  compile_deps = @mvn:org.junit.platform:junit-platform-launcher:1.12.2
+                 @mvn:org.jacoco:org.jacoco.core:0.8.14;
 }

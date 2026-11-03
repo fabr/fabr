@@ -49,6 +49,21 @@ default JAVADOC = JDK:javadoc;
 
 default JAVA_TEST_RUNNER = @fabr-build/java:fabr-junit-runner.jar;
 
+#
+# The JaCoCo agent a test JVM runs with under `COVERAGE=on`: the
+# `org.jacoco.agent` package's `runtime` jar, of the same JaCoCo release as
+# `JACOCO`.
+#
+
+default JACOCO_AGENT = @mvn:org.jacoco:org.jacoco.agent/runtime:0.8.14;
+
+#
+# The JaCoCo analysis library that converts what the agent records into the
+# coverage report, of the same JaCoCo release as `JACOCO_AGENT`.
+#
+
+default JACOCO = @mvn:org.jacoco:org.jacoco.core:0.8.14;
+
 #################### Source version flags ##################
 
 # The sources are written for Java 8: using a later language feature or API

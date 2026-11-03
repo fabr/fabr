@@ -22,16 +22,37 @@
  * and run the test classes they compile to on the JUnit Platform with
  * `JAVA_TEST_RUNNER`, which finds them itself, with the jar and everything it
  * and the tests require on the classpath, the platform's launcher among them.
+ * Under `COVERAGE=on` the JVM runs with `JACOCO_AGENT`, and the runner writes
+ * the coverage of the package's own jar as lcov, beside the report.
  */
 
 import * as path from "path";
-import { BUILD_OVERRIDE, Computable, defineRule, EMPTY_FILESET, FabrError, FileSet, IFile, MemoryFile, RuleResult, TargetContext, TEST_NAME_PATTERN, TREE_MOUNT } from "@fabr-build/core";
+import {
+  BUILD_OVERRIDE,
+  Computable,
+  COVERAGE,
+  COVERAGE_ON,
+  COVERAGE_REPORT_FILENAME,
+  defineRule,
+  EMPTY_FILESET,
+  FabrError,
+  FileSet,
+  IFile,
+  MemoryFile,
+  PackageFileSet,
+  PERMISSIVE_RESOLUTION,
+  RuleResult,
+  TargetContext,
+  TEST_NAME_PATTERN,
+  TREE_MOUNT,
+} from "@fabr-build/core";
 import { classpathOf, compileOutputOf, COMPILED_CLASSES_DIR, packageOf, processorsOf } from "../JarPackage";
 import { describeJava } from "../Description";
 import { createTestRunAction } from "../TestRunAction";
 
 interface TestInputs {
   pkg: FileSet[];
+  srcs: FileSet[];
   tests: FileSet[];
   test_resources: FileSet[];
   provided: FileSet[];
@@ -47,6 +68,7 @@ export default defineRule({
     return {
       requirements: {
         pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE),
+        srcs: context.getFileProperty("srcs"),
         tests: context.getFileProperty("tests"),
         test_resources: context.getFileProperty("test_resources"),
         provided: context.getPackageProperty("provided_deps"),
@@ -86,6 +108,8 @@ const RUNNER_JAR = ".fabr-junit-runner.jar";
 const SOURCES_FILE = ".fabr-test-sources";
 /** The runner's main class. */
 const RUNNER_CLASS = "build.fabr.junit.Runner";
+/** Where a measured run's JaCoCo agent and analysis libraries are staged. */
+const COVERAGE_DIR = ".coverage";
 
 function testJar(context: TargetContext, inputs: TestInputs): Computable<RuleResult> {
   const tests = FileSet.unionAll(...inputs.tests);
@@ -101,18 +125,13 @@ function testJar(context: TargetContext, inputs: TestInputs): Computable<RuleRes
       { label: "Compiling tests for", constraints: BUILD_OVERRIDE }
     )
   );
-  const runner = context
-    .getGlobalFileProperty("JAVA_TEST_RUNNER", BUILD_OVERRIDE)
-    .then(found => context.materializeSources(found))
-    .then(found => {
-      const file = FileSet.unionAll(...found.filter((source): source is FileSet => source instanceof FileSet)).getSingleFile();
-      if (file === undefined) {
-        throw new FabrError("JAVA_TEST_RUNNER names no single jar");
-      }
-      return file;
-    });
+  const runner = singleJar(context, "JAVA_TEST_RUNNER");
   const namePattern = context.getGlobalString(TEST_NAME_PATTERN);
-  return Computable.forAll([classes, runner, sourcesTable(tests), context.getGlobalRunnable("JAVA"), namePattern], (output, runnerJar, sources, java, pattern) => {
+  const measuring = context.getGlobalString(COVERAGE).then(coverage => (coverage === COVERAGE_ON ? coverageTools(context) : undefined));
+  const sourceSets = [tests, ...inputs.srcs];
+  return Computable.forAll(
+    [classes, runner, sourcesTable(sourceSets), context.getGlobalRunnable("JAVA"), namePattern, measuring, measuredPackages(inputs.srcs)],
+    (output, runnerJar, sources, java, pattern, tools, packages) => {
     const compiled = compileOutputOf(output, COMPILED_CLASSES_DIR);
     const pool = context.execution.buildCache;
     return pool.ensureTree(java).then(() => {
@@ -130,30 +149,104 @@ function testJar(context: TargetContext, inputs: TestInputs): Computable<RuleRes
         )
       );
       const selection = pattern === "" ? [] : [`--name-pattern=${pattern}`];
-      const argv = java.toCommandLine(["-cp", classpath, RUNNER_CLASS, `--sources=${SOURCES_FILE}`, ...selection, `--scan=${TEST_CLASSES_DIR}`], {
-        base: path.posix.join(TREE_MOUNT, java.toManifestHash()),
-      });
-      return createTestRunAction(staged, argv);
+      const measured = tools && measuredRun(tools, ownJars(inputs.pkg), packages);
+      const argv = java.toCommandLine(
+        [...(measured?.jvm ?? []), "-cp", classpath, RUNNER_CLASS, `--sources=${SOURCES_FILE}`, ...selection, ...(measured?.runner ?? []), `--scan=${TEST_CLASSES_DIR}`],
+        { base: path.posix.join(TREE_MOUNT, java.toManifestHash()) }
+      );
+      return createTestRunAction(FileSet.unionAll(staged, measured?.staged ?? EMPTY_FILESET), argv, measured !== undefined);
     });
-  });
+    }
+  );
+}
+
+/** Materialize the global `name` names, under `build`, as the one jar it must be. */
+function singleJar(context: TargetContext, name: string): Computable<IFile> {
+  return context
+    .getGlobalFileProperty(name, BUILD_OVERRIDE)
+    .then(found => context.materializeSources(found))
+    .then(found => {
+      const file = FileSet.unionAll(...found.filter((source): source is FileSet => source instanceof FileSet)).getSingleFile();
+      if (file === undefined) {
+        throw new FabrError(`${name} names no single jar`);
+      }
+      return file;
+    });
+}
+
+/** What a measured run needs: JaCoCo's agent jar, and its analysis libraries' classpath. */
+interface ICoverageTools {
+  agent: IFile;
+  analysis: Array<[string, IFile]>;
+}
+
+/** Materialize `JACOCO_AGENT` and `JACOCO`, a tool's packages, resolved permissively. */
+function coverageTools(context: TargetContext): Computable<ICoverageTools> {
+  const analysis = context
+    .getGlobalFileProperty("JACOCO", BUILD_OVERRIDE)
+    .then(found => context.materializeSources(found, PERMISSIVE_RESOLUTION))
+    .then(found => classpathOf(found.filter((source): source is FileSet => source instanceof FileSet)));
+  return Computable.forAll([singleJar(context, "JACOCO_AGENT"), analysis], (agent, jars) => ({ agent, analysis: jars }));
 }
 
 /**
- * Make the table the runner names results by: a line per test source, the
- * class it declares (its package and file name) and its source path.
+ * Stage what a measured run adds, and make its JVM and runner options: the
+ * agent instruments the classes of the packages the sources declare, keeping
+ * what it records for the runner, which converts the coverage of `measured`
+ * (staged jar paths) to {@link COVERAGE_REPORT_FILENAME}.
  */
-function sourcesTable(tests: FileSet): Computable<string> {
-  const names = [...tests].map(([name]) => name).sort();
+function measuredRun(tools: ICoverageTools, measured: string[], packages: string[]): { staged: FileSet; jvm: string[]; runner: string[] } {
+  const agent = path.posix.join(COVERAGE_DIR, "jacocoagent.jar");
+  const analysis = tools.analysis.map(([name, file]): [string, IFile] => [path.posix.join(COVERAGE_DIR, name), file]);
+  const includes = packages.includes("") ? "*" : packages.map(name => `${name}.*`).join(":");
+  return {
+    staged: new FileSet(new Map<string, IFile>([[agent, tools.agent], ...analysis])),
+    jvm: [`-javaagent:${agent}=output=none,includes=${includes}`],
+    runner: [
+      `--coverage=${COVERAGE_REPORT_FILENAME}`,
+      `--coverage-classpath=${analysis.map(([name]) => name).join(path.delimiter)}`,
+      ...measured.map(jar => `--measure=${jar}`),
+    ],
+  };
+}
+
+/** @return the staged paths of the package under test's own jars, as {@link classpathOf} names them. */
+function ownJars(pkg: readonly FileSet[]): string[] {
+  return pkg
+    .filter((files): files is PackageFileSet => files instanceof PackageFileSet)
+    .flatMap(files => [...files].map(([name]) => name).filter(name => name.endsWith(".jar")).map(name => path.posix.join(CLASSPATH_DIR, files.packageName ?? "", name)));
+}
+
+/** @return the Java packages the sources declare, sorted, "" for the unnamed package. */
+function measuredPackages(srcs: readonly FileSet[]): Computable<string[]> {
+  const files = srcs.flatMap(set => [...set].filter(([name]) => name.endsWith(".java")).map(([, file]) => file));
   return Computable.forAll(
-    names.map(name => tests.getFile(name)!.readString()),
+    files.map(file => file.readString()),
+    (...texts) => [...new Set(texts.map(packageOf))].sort()
+  );
+}
+
+/**
+ * Make the table the runner names results and coverage by: a line per Java
+ * source, its path within its package tree (`com/x/Foo.java`, from its package
+ * declaration and file name) and its source path, sorted.
+ */
+function sourcesTable(sets: readonly FileSet[]): Computable<string> {
+  const sources = sets.flatMap(set => [...set].filter(([name]) => name.endsWith(".java")).map(([name, file]) => ({ set, name, file })));
+  return Computable.forAll(
+    sources.map(({ file }) => file.readString()),
     (...texts) =>
-      names
-        .map((name, index) => {
-          const declared = packageOf(texts[index]);
-          const className = path.posix.basename(name, ".java");
-          const sourcePath = (tests.sourcePathOf(name) ?? name).replace(/^\.\//, "");
-          return `${declared === "" ? className : `${declared}.${className}`}\t${sourcePath}\n`;
-        })
+      [
+        ...new Set(
+          sources.map(({ set, name }, index) => {
+            const declared = packageOf(texts[index]).replace(/\./g, "/");
+            const fileName = path.posix.basename(name);
+            const sourcePath = (set.sourcePathOf(name) ?? name).replace(/^\.\//, "");
+            return `${declared === "" ? fileName : `${declared}/${fileName}`}\t${sourcePath}\n`;
+          })
+        ),
+      ]
+        .sort()
         .join("")
   );
 }

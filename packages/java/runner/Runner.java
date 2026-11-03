@@ -22,6 +22,9 @@ package build.fabr.junit;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.lang.reflect.InvocationTargetException;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -56,11 +59,15 @@ import org.junit.platform.launcher.core.LauncherFactory;
  * what happened as a CTRF report, as fabr's test runners do:
  *
  *     Runner --report=<file> [--sources=<file>] [--name-pattern=<regex>]
+ *            [--coverage=<file> --coverage-classpath=<paths> --measure=<jar>...]
  *            --scan=<directory>...
  *
  * Each directory is searched for test classes, and must be on the classpath.
- * The sources file has a line per class, its name and its source path
- * separated by a tab; a result is named by the source path of its class. A
+ * The sources file has a line per source, its path within its package tree
+ * (`com/x/Foo.java`) and its source path separated by a tab; a result is named
+ * by the source path of its class. With `--coverage`, the JVM runs with
+ * JaCoCo's agent, and the measured jars' coverage is written to the file as
+ * lcov, converted by JaCoCo's analysis libraries from the coverage classpath. A
  * name pattern runs only the test methods whose qualified names
  * (`com.x.DateTest#parsesIso`) it matches any part of, and needs the JUnit
  * Platform 1.12 launcher or later. The exit status is 1 where a test failed,
@@ -74,6 +81,9 @@ public final class Runner {
         Map<String, String> sources = new HashMap<>();
         Set<Path> roots = new HashSet<>();
         String namePattern = null;
+        String coverage = null;
+        String coverageClasspath = null;
+        List<String> measured = new ArrayList<>();
         for (String arg : args) {
             if (arg.startsWith("--report=")) {
                 report = arg.substring("--report=".length());
@@ -92,6 +102,12 @@ public final class Runner {
                     System.err.println("fabr-junit-runner: the test name pattern is not a valid regular expression: " + invalid.getMessage());
                     System.exit(2);
                 }
+            } else if (arg.startsWith("--coverage=")) {
+                coverage = arg.substring("--coverage=".length());
+            } else if (arg.startsWith("--coverage-classpath=")) {
+                coverageClasspath = arg.substring("--coverage-classpath=".length());
+            } else if (arg.startsWith("--measure=")) {
+                measured.add(arg.substring("--measure=".length()));
             } else if (arg.startsWith("--scan=")) {
                 roots.add(Paths.get(arg.substring("--scan=".length())).toAbsolutePath());
             } else {
@@ -120,6 +136,9 @@ public final class Runner {
             System.exit(2);
         }
         long stop = System.currentTimeMillis();
+        if (coverage != null) {
+            writeCoverage(coverage, coverageClasspath, measured, sources);
+        }
         Files.write(Paths.get(report), results.toCtrf(start, stop).getBytes(StandardCharsets.UTF_8));
         if (results.tests.isEmpty() && namePattern == null) {
             /* The tests compiled, so finding none means no engine could run them. */
@@ -127,6 +146,42 @@ public final class Runner {
             System.exit(1);
         }
         System.exit(results.failed > 0 ? 1 : 0);
+    }
+
+    /**
+     * Write the measured jars' coverage to `output`: the agent's execution data,
+     * taken through its runtime API, converted by {@link Lcov} in a class loader
+     * holding only this runner and `classpath` (JaCoCo's analysis libraries).
+     */
+    private static void writeCoverage(String output, String classpath, List<String> measured, Map<String, String> sources) throws IOException {
+        if (classpath == null) {
+            System.err.println("fabr-junit-runner: --coverage needs --coverage-classpath");
+            System.exit(2);
+        }
+        try {
+            Class<?> agent = Class.forName("org.jacoco.agent.rt.IAgent");
+            Object running = Class.forName("org.jacoco.agent.rt.RT").getMethod("getAgent").invoke(null);
+            byte[] data = (byte[]) agent.getMethod("getExecutionData", boolean.class).invoke(running, false);
+            List<URL> urls = new ArrayList<>();
+            urls.add(Runner.class.getProtectionDomain().getCodeSource().getLocation());
+            for (String entry : classpath.split(java.io.File.pathSeparator)) {
+                urls.add(Paths.get(entry).toUri().toURL());
+            }
+            try (URLClassLoader loader = new URLClassLoader(urls.toArray(new URL[0]), ClassLoader.getPlatformClassLoader())) {
+                loader.loadClass("build.fabr.junit.Lcov")
+                    .getMethod("write", byte[].class, String[].class, Map.class, String.class)
+                    .invoke(null, data, measured.toArray(new String[0]), sources, output);
+            }
+        } catch (ClassNotFoundException missing) {
+            System.err.println("fabr-junit-runner: --coverage needs the JVM to run with JaCoCo's agent (" + missing.getMessage() + ")");
+            System.exit(2);
+        } catch (InvocationTargetException failed) {
+            System.err.println("fabr-junit-runner: coverage could not be converted: " + trace(failed.getCause()));
+            System.exit(2);
+        } catch (ReflectiveOperationException failed) {
+            System.err.println("fabr-junit-runner: coverage could not be converted: " + trace(failed));
+            System.exit(2);
+        }
     }
 
     /**
@@ -238,7 +293,8 @@ public final class Runner {
                 return null;
             }
             int nested = className.indexOf('$');
-            return sources.get(nested < 0 ? className : className.substring(0, nested));
+            String topLevel = nested < 0 ? className : className.substring(0, nested);
+            return sources.get(topLevel.replace('.', '/') + ".java");
         }
 
         String toCtrf(long start, long stop) {
