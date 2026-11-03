@@ -281,6 +281,77 @@ describe("a styled import written as a package subpath", () => {
   });
 });
 
+describe("a bundle's metafile and chunks, over real esbuild", () => {
+  let work: string;
+
+  beforeEach(() => {
+    work = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-split-"));
+    fs.writeFileSync(path.join(work, "shared.mjs"), 'export const shared = "SHARED_MARKER";\n');
+    fs.writeFileSync(path.join(work, "route.mjs"), 'export const route = "ROUTE_MARKER";\n');
+    fs.writeFileSync(path.join(work, "a.mjs"), 'import { shared } from "./shared.mjs";\nconsole.log(shared);\nimport("./route.mjs");\n');
+    fs.writeFileSync(path.join(work, "b.mjs"), 'import { shared } from "./shared.mjs";\nconsole.log(shared);\n');
+  });
+
+  afterEach(() => {
+    fs.rmSync(work, { recursive: true, force: true });
+    process.exitCode = undefined;
+  });
+
+  /** Bundle a.mjs and b.mjs as ES modules, split or not; return the files written. */
+  async function bundle(splitting: boolean, chunkNames = "chunks/[name]-[hash]"): Promise<string[]> {
+    const options = {
+      entries: [
+        { in: "a.mjs", out: "a" },
+        { in: "b.mjs", out: "b" },
+      ],
+      external: [],
+      platform: "browser",
+      format: "esm",
+      splitting,
+      chunkNames,
+      target: "es2021",
+      minify: false,
+      sourcemap: false,
+      outdir: "out",
+    };
+    fs.writeFileSync(path.join(work, "options.json"), JSON.stringify(options));
+    const cwd = process.cwd();
+    try {
+      process.chdir(work);
+      await main(["--options=options.json"]);
+    } finally {
+      process.chdir(cwd);
+    }
+    assert.equal(process.exitCode ?? 0, 0, "the bundle should have succeeded");
+    return Array.from(fs.readdirSync(path.join(work, "out"), { recursive: true }) as string[], name => name.split(path.sep).join("/")).sort();
+  }
+
+  it("puts shared code and a dynamic import's target in chunks the entries import", async () => {
+    const written = await bundle(true);
+    const chunks = written.filter(name => /^chunks\/.+\.js$/.test(name));
+    /* One chunk for the module both entries share, one for the dynamic import's target. */
+    assert.equal(chunks.length, 2);
+    assert.ok(!fs.readFileSync(path.join(work, "out/a.js"), "utf8").includes("SHARED_MARKER"));
+    const metafile = JSON.parse(fs.readFileSync(path.join(work, "out/metafile.json"), "utf8"));
+    assert.deepEqual(Object.keys(metafile.outputs).sort(), ["a.js", "b.js", ...chunks].sort());
+    assert.ok(metafile.outputs["a.js"].imports.some((imported: { path: string }) => chunks.includes(imported.path)));
+    /* With no source-paths table staged, an input keeps the path esbuild wrote. */
+    assert.deepEqual(Object.keys(metafile.inputs).sort(), ["a.mjs", "b.mjs", "route.mjs", "shared.mjs"]);
+  });
+
+  it("names the chunks by the pattern it is given", async () => {
+    const written = await bundle(true, "split/[hash].[name]");
+    assert.equal(written.filter(name => /^split\/[A-Z0-9]+\.(chunk|route)\.js$/.test(name)).length, 2);
+    assert.ok(fs.readFileSync(path.join(work, "out/a.js"), "utf8").includes('"./split/'));
+  });
+
+  it("writes each entry whole when not split, with its metafile beside it", async () => {
+    const written = await bundle(false);
+    assert.deepEqual(written, ["a.js", "b.js", "metafile.json"]);
+    assert.ok(fs.readFileSync(path.join(work, "out/b.js"), "utf8").includes("SHARED_MARKER"));
+  });
+});
+
 describe("one package wired two ways, bundled by real esbuild through its virtual locations", () => {
   /* `shared` is one content, depended on by `left` and `right`, whose two
    * wirings bind `dep` to different packages. The manifest gives each wiring a

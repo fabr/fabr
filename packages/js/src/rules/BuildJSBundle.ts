@@ -58,11 +58,14 @@ import { createNodeExecAction, PNP } from "../NodeExecAction";
 import { SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "@fabr-build/js-tools";
 import { pnpManifestOf } from "../PnPManifest";
 import {
+  BundleFormat,
   buildBundleOptions,
   BUNDLE_OUTDIR,
   computeBundleEntries,
+  computeChunkNames,
   computeExternalNames,
   IBundleEntrySource,
+  toBundleFormat,
 } from "../JSBundle";
 
 /** The `js_bundle` rule. */
@@ -126,9 +129,8 @@ const NODE_GLOBAL_DEFINES: Record<string, string> = { global: "globalThis" };
  * and shares the one compile by cache key. It equally answers `dual`, which no
  * single compile can emit.
  *
- * What it does NOT decide is the shipped format — that stays
- * {@link buildBundleOptions}'s reading of JS_TARGET, so a browser bundle still
- * lands as an iife.
+ * What it does NOT decide is the shipped format: that is JS_BUNDLE_FORMAT, read
+ * in the bundle's own configuration, so a browser bundle still lands as an iife.
  */
 function bundleInputTarget(jsTarget: JSTarget): Constraints {
   return Constraints.of({ JS_TARGET: formatJSTarget({ ...jsTarget, module: "esm" }) });
@@ -138,6 +140,8 @@ function bundleInputTarget(jsTarget: JSTarget): Constraints {
  * collected contents (srcs/deps) and the bundler runnable. */
 interface IBundleInputs {
   jsTarget: JSTarget;
+  /** The form the bundle is written in (JS_BUNDLE_FORMAT). */
+  bundleFormat: BundleFormat;
   buildType: string;
   rewrite: RewriteFn;
   /** Compile-time constant substitutions (the `defines` MAP): each value is
@@ -166,14 +170,14 @@ function stageBundle(
   css: FileSet,
   entrySources: IBundleEntrySource[]
 ): RuleResult {
-  const { jsTarget, buildType, rewrite, defines, nodeGlobals, srcs, deps, bundler } = inputs;
+  const { jsTarget, bundleFormat, buildType, rewrite, defines, nodeGlobals, srcs, deps, bundler } = inputs;
   if (entrySources.length === 0) {
     throw new FabrError("js_bundle 'entry' resolved to no files — name at least one source to bundle");
   }
   const entries = computeBundleEntries(entrySources, rewrite);
   const external = computeExternalNames(srcs, deps);
   const inject = nodeGlobals ? [NODE_GLOBALS_MODULE] : [];
-  const options = buildBundleOptions(jsTarget, buildType, entries, external, defines, inject);
+  const options = buildBundleOptions(jsTarget, bundleFormat, buildType, entries, external, defines, inject, computeChunkNames(rewrite));
   const workspace = {
     [TOOL_DIR]: bundler,
     "bundle-options.json": MemoryFile.from(JSON.stringify(options)),
@@ -305,12 +309,19 @@ interface IBundleContents {
 }
 
 function buildJsBundle(context: TargetContext, contents: IBundleContents): Computable<RuleResult> {
-  return Computable.forAll([context.getGlobalString("JS_TARGET"), context.getGlobalString("BUILD_TYPE")], (target, buildType) =>
-    buildWithInputs(context, parseJSTarget(target), buildType, contents)
+  return Computable.forAll(
+    [context.getGlobalString("JS_TARGET"), context.getGlobalString("JS_BUNDLE_FORMAT"), context.getGlobalString("BUILD_TYPE")],
+    (target, bundleFormat, buildType) => buildWithInputs(context, parseJSTarget(target), toBundleFormat(bundleFormat), buildType, contents)
   );
 }
 
-function buildWithInputs(context: TargetContext, jsTarget: JSTarget, buildType: string, { srcs, entry, deps }: IBundleContents): Computable<RuleResult> {
+function buildWithInputs(
+  context: TargetContext,
+  jsTarget: JSTarget,
+  bundleFormat: BundleFormat,
+  buildType: string,
+  { srcs, entry, deps }: IBundleContents
+): Computable<RuleResult> {
   /* The source-mode flags declared on this bundle, from either list they may
    * be written in: `srcs`, where a bundle's own code arrives, or `deps`, where
    * flags conventionally sit. A flag materializes to nothing in both. */
@@ -342,6 +353,7 @@ function buildWithInputs(context: TargetContext, jsTarget: JSTarget, buildType: 
       }
       return composeBundle(context, {
         jsTarget,
+        bundleFormat,
         buildType,
         rewrite,
         defines,

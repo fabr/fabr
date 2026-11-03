@@ -20,6 +20,10 @@
 /* The bundle driver's options document: what the js_bundle rule writes and the
  * driver reads. */
 
+/** The esbuild metafile every bundle writes beside its outputs, its paths naming
+ * each input by its source path and each output relative to the output directory. */
+export const BUNDLE_METAFILE = "metafile.json";
+
 export interface IBundleEntry {
   in: string;
   out: string;
@@ -39,8 +43,14 @@ export interface IBundleOptions {
   external: string[];
   /** esbuild platform, from JS_TARGET's environment component. */
   platform: "browser" | "node";
-  /** esbuild output format: esm, or (for non-esm) iife in the browser else cjs. */
+  /** esbuild output format (JS_BUNDLE_FORMAT, `esm-split` being `esm`). */
   format: "esm" | "cjs" | "iife";
+  /** true for `esm-split`: the code entries share goes into chunks they import.
+   * Only with the `esm` format. */
+  splitting: boolean;
+  /** esbuild's `chunkNames` for a split bundle: a pattern of esbuild's
+   * placeholders (`[name]`, `[hash]`), its extension added by esbuild. */
+  chunkNames: string;
   /** esbuild target ES level (JS_TARGET's version component). */
   target: string;
   /** Minify per BUILD_TYPE. */

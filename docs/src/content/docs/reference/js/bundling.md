@@ -4,7 +4,8 @@ description: How to bundle JavaScript and TypeScript for a browser or for Node.j
 ---
 
 A `js_bundle` target combines an entry file and everything it imports into one JavaScript file,
-using [esbuild](https://esbuild.github.io/). Use it for code that runs somewhere there are no
+or [split into chunks](#splitting-into-chunks) that the entry loads, using
+[esbuild](https://esbuild.github.io/). Use it for code that runs somewhere there are no
 packages to import from: a browser, a serverless function, a script you want to ship as a single
 file.
 
@@ -29,17 +30,19 @@ configuration file, and several things those tools do aren't available. Check
 
 | With a bundler | In fabr |
 |---|---|
-| Entry points | `entry`. Several entries give several independent bundles. |
+| Entry points | `entry`. Several entries give several bundles, independent unless [split](#splitting-into-chunks). |
 | Resolving imports from `node_modules` | A package must be listed in the bundle's `srcs` to be included. |
 | `external` | Packages listed in `deps` are left as imports. |
-| `--platform`, `--format`, `--target` | The [`JS_TARGET`](#format-and-platform) setting. |
+| `--platform`, `--target` | The [`JS_TARGET`](#format-and-platform) setting. |
+| `--format`, `--splitting` | The [`JS_BUNDLE_FORMAT`](#format-and-platform) setting. |
+| `--metafile` | Always written, as `metafile.json`; see [Output](#output). |
 | `--minify`, `--sourcemap` | The `BUILD_TYPE` setting: `debug`, `relwithdebinfo` or `release`. |
 | `define` | `defines`. |
 | TypeScript through a loader, without type checking | Sources are compiled by the TypeScript compiler first, so type errors fail the build. |
 | CSS, Sass and css-modules loaders | Built in; see [Stylesheets](/reference/js/stylesheets/#in-a-bundle). |
 | Images and fonts | Copied to the output with a content hash in the name. |
 | A dev server with hot module reload | A [`serve`](#serving-a-bundle-during-development) target, which replaces the files on each rebuild. There is no hot module reload. |
-| An HTML plugin, code splitting, plugins | Not supported. |
+| An HTML plugin, plugins | Not supported. |
 
 ## What goes into a bundle
 
@@ -97,12 +100,23 @@ Each entry produces a `.js` file named after it: `src:main.tsx` gives `main.js`.
 | `main.js.map` | In `debug` and `relwithdebinfo` builds. It maps back to your TypeScript, and includes the sources' text. |
 | `main.css`, `main.css.map` | When the entry imports stylesheets. All the CSS it reaches is in this one file. |
 | `logo-OKA4D3M3.png` | For each imported asset; see [Assets](#assets). |
+| `chunks/route-XS2Q5WTK.js` | In a [split bundle](#splitting-into-chunks), for code shared between entries and for each dynamic `import()`. |
+| `metafile.json` | Always. esbuild's [metafile](https://esbuild.github.io/api/#metafile), described below. |
 
 The source maps name each of your sources by its path from the project root, such as
 `fabr:./src/main.tsx`, and each file from a package by the package and the file within it, such
 as `fabr:@npm:react:19.1.0:cjs/react.development.js`. Without the `fabr:` prefix, each is a name
 you can pass to `fabr cat` from the project root. The
 [TypeScript page](/reference/js/typescript/#source-maps) explains the form.
+
+`metafile.json` is esbuild's description of the build: each output, the inputs that went into
+it, and the outputs it imports. It names inputs the way the source maps do, without the `fabr:`
+prefix (`./src/main.tsx`, `@npm:react:19.1.0:cjs/react.development.js`), and outputs by their
+names in the bundle (`main.js`, `chunks/route-XS2Q5WTK.js`). In a `release` build, which makes no
+source maps, your own sources are named by their compiled files instead (`main.js`). A
+deployment step that needs the
+chunk graph, to preload a page's chunks or to write a manifest of hashed names, reads it from
+here.
 
 `BUILD_TYPE` decides minification and source maps:
 
@@ -130,25 +144,67 @@ The name must end in `.js`.
 
 ### Format and platform
 
-The module format, the platform and the language level come from `JS_TARGET`, written
-`<ES version>-<module format>-<environment>`:
+The platform and the language level come from `JS_TARGET`, written
+`<ES version>-<module format>-<environment>`; the form the bundle is written in comes from
+`JS_BUNDLE_FORMAT`:
 
-| `JS_TARGET` | The bundle is |
+| `JS_BUNDLE_FORMAT` | The bundle is |
 |---|---|
-| `es2020-esm-browser` | An ES module for browsers: load it with `<script type="module">`. |
-| `es2020-commonjs-browser` | A script for browsers, wrapped in a function so that it adds no globals (esbuild's `iife` format). |
-| `es2022-esm-node` | An ES module for Node.js. |
-| `es2022-commonjs-node` | A CommonJS module for Node.js. |
+| `esm` | One ES module per entry: in a browser, load it with `<script type="module">`. |
+| `esm-split` | ES modules, with the code they share in chunks they import; see [below](#splitting-into-chunks). |
+| `iife` | A script, wrapped in a function so that it adds no globals. |
+| `cjs` | A CommonJS module. |
 
-The format defaults to `commonjs` and the environment to `node` when left out, so a browser bundle
-has to say `-browser`. A `dual` format is read as `esm`, since a bundle is one file.
+Unless you set it, `JS_BUNDLE_FORMAT` follows `JS_TARGET`: `esm` for an `esm` or `dual` module
+format, otherwise `iife` for the browser and `cjs` for Node.js. So `es2020-esm-browser` gives an
+ES module for browsers and `es2020-commonjs-browser` a script. The module format defaults to
+`commonjs` and the environment to `node` when left out, so a browser bundle has to say
+`-browser`.
 
-`JS_TARGET` is usually set once for the project. To build one bundle differently, declare the
-target the bundle should have where it is used, with a
-[constraint](/reference/syntax/#constraints): `web<JS_TARGET=es2015-commonjs-browser>`.
+`JS_TARGET` is usually set once for the project. To build one bundle differently, declare what
+the bundle should have where it is used, with a [constraint](/reference/syntax/#constraints):
+`web<JS_TARGET=es2015-commonjs-browser>`, or `web<JS_BUNDLE_FORMAT=esm-split>`.
 
 For Node.js, built-in modules such as `fs` and `node:path` are left as imports. For a browser they
 aren't available; see [Node.js APIs in a browser bundle](#nodejs-apis-in-a-browser-bundle).
+
+### Splitting into chunks
+
+With `JS_BUNDLE_FORMAT=esm-split`, esbuild's [code splitting](https://esbuild.github.io/api/#splitting)
+is on. Each dynamic `import()` of your own code becomes a file of its own, loaded when the import
+runs, and code that several entries or imported files share goes into a chunk they all import, so
+it is loaded once and a page that loads two entries has one copy of each module. Chunks are
+written as `chunks/<name>-<hash>.js`, the hash taken from their content; the entries keep their
+names.
+
+To name the chunks differently, rename their pattern, `chunks/[name]-[hash].js`, with `output`.
+Each wildcard captures one of esbuild's placeholders, which esbuild then fills in for each chunk:
+
+```
+output = chunks/*-*.js -> js/$2.$1.js;   # js/<hash>.<name>.js
+```
+
+The rename applies to every chunk alike, since it is made before the build; a rename for one
+chunk, such as `chunks/route-*.js -> …`, matches nothing. The entries import their chunks by
+these names, so only `output` can change them: renaming files after the build breaks the
+imports.
+
+```
+js_bundle app {
+  entry = src:main.tsx;
+  srcs = src:** @npm:react:19.1.0 @npm:react-dom:19.1.0;
+}
+
+site_files = app<JS_BUNDLE_FORMAT=esm-split>:** -> assets/**;
+```
+
+Serve every file of the bundle, not only the entry: the entry imports its chunks by relative
+URL, so they must sit beside it as the bundle lays them out. `metafile.json` lists which chunks
+each entry and each dynamic import needs.
+
+How esbuild divides the code follows from the imports alone: a split bundle has as many chunks
+as there are distinct sets of entries and dynamic imports that reach some module, and none for an
+entry that shares nothing.
 
 ## Constants
 
@@ -261,12 +317,10 @@ Reload the page to see the change: nothing tells the browser. See
 
 ## What isn't supported
 
-- **Code splitting.** Each entry is one file. A dynamic `import()` of your own code is included in
-  that file, not loaded on demand, and entries share no chunks.
 - **HTML.** There is no HTML entry point and nothing generates or rewrites an HTML page. Write the
   page by hand, as above.
-- **Hashed names for the bundle itself.** Assets get a content hash; `main.js` and `main.css`
-  don't, and no manifest of output names is written.
+- **Hashed names for the bundle's entries.** Assets and chunks get a content hash; `main.js` and
+  `main.css` don't.
 - **Hot module reload** and live reload.
 - **esbuild plugins and options.** Only what this page describes can be set. That rules out
   `alias` and tsconfig `paths`, `banner` and `footer`, a global name for a script bundle, `drop`,

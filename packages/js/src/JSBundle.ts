@@ -32,7 +32,7 @@
 
 import { dependencyName, FabrError, FileSet, PackageFileSet, RewriteFn } from "@fabr-build/core";
 import type { IBundleEntry, IBundleOptions } from "@fabr-build/js-tools";
-import { JSTarget, soleModuleFormat } from "./JSPackage";
+import { JSTarget } from "./JSPackage";
 
 /** Where esbuild writes and the rule collects the bundle output from. */
 export const BUNDLE_OUTDIR = "out";
@@ -151,30 +151,59 @@ export function computeBundleEntries(entries: IBundleEntrySource[], rewrite: Rew
   });
 }
 
+/** The name a split bundle's chunks are written under, with esbuild's
+ * placeholders in it, before the `output` rewrite renames it. */
+export const CHUNK_NAMES = "chunks/[name]-[hash].js";
+
 /**
- * Assemble the driver options from the target's JS_TARGET / BUILD_TYPE and the
- * computed entries + external set. Format follows the module/environment: esm
- * stays esm; a non-esm browser bundle is an IIFE (self-contained script), a
- * non-esm node bundle is CommonJS. Minify/sourcemap track BUILD_TYPE (cmake-style):
- * debug → sourcemap only, relwithdebinfo → both, release → minify only.
+ * Compute esbuild's `chunkNames` pattern: {@link CHUNK_NAMES} as `rewrite`
+ * renames it, without its extension. A wildcard in a rewrite captures a
+ * placeholder whole, so `chunks/*-*.js -> js/$2.$1.js` gives `js/[hash].[name]`.
+ */
+export function computeChunkNames(rewrite: RewriteFn): string {
+  const output = rewrite(CHUNK_NAMES) ?? CHUNK_NAMES;
+  if (!output.endsWith(".js")) {
+    throw new FabrError(`js_bundle output '${output}' (from the chunks' name '${CHUNK_NAMES}') must end in '.js'`);
+  }
+  return output.slice(0, -".js".length);
+}
+
+/** The forms a bundle is written in: JS_BUNDLE_FORMAT's values. */
+export type BundleFormat = "iife" | "cjs" | "esm" | "esm-split";
+
+/** Convert a JS_BUNDLE_FORMAT value, refusing one that is not a bundle format. */
+export function toBundleFormat(value: string): BundleFormat {
+  if (value === "iife" || value === "cjs" || value === "esm" || value === "esm-split") {
+    return value;
+  }
+  throw new FabrError(`JS_BUNDLE_FORMAT must be 'iife', 'cjs', 'esm' or 'esm-split', not '${value}'`);
+}
+
+/**
+ * Assemble the driver options from the target's JS_TARGET, bundle format and
+ * BUILD_TYPE and the computed entries + external set. Minify/sourcemap track
+ * BUILD_TYPE (cmake-style): debug → sourcemap only, relwithdebinfo → both,
+ * release → minify only.
  */
 export function buildBundleOptions(
   jsTarget: JSTarget,
+  bundleFormat: BundleFormat,
   buildType: string,
   entries: IBundleEntry[],
   external: string[],
   defines: Record<string, string>,
-  inject: string[] = []
+  inject: string[] = [],
+  chunkNames = computeChunkNames(() => undefined)
 ): IBundleOptions {
-  /* A bundle is a single artifact, so a `dual` target reads as its sole format. */
-  const format = soleModuleFormat(jsTarget.module) === "esm" ? "esm" : jsTarget.environment === "browser" ? "iife" : "cjs";
   const minify = buildType === "release" || buildType === "relwithdebinfo";
   const sourcemap: "linked" | false = buildType === "release" ? false : "linked";
   return {
     entries,
     external,
     platform: jsTarget.environment,
-    format,
+    format: bundleFormat === "esm-split" ? "esm" : bundleFormat,
+    splitting: bundleFormat === "esm-split",
+    chunkNames,
     target: jsTarget.version,
     minify,
     sourcemap,

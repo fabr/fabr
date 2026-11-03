@@ -3312,6 +3312,19 @@ describe("contributed-lib-relative FILES", () => {
       expect(await depNames(input)).to.deep.equal(["f.txt"]);
     });
 
+    it("selects among guarded defaults of a global, an ordinary declaration overriding them all", async () => {
+      const input =
+        "default T = es2022-esm-browser;\n" +
+        "default F<T=*-esm*> = esm;\n" +
+        "default F<T=*-commonjs-browser> = iife;\n" +
+        "default F<T=!(*-*)> = cjs;\n";
+      expect(await testGetProperty(input, "F")).to.deep.equal(["esm"]);
+      expect(await testGetProperty(input, "F", { T: "es2022-commonjs-browser" })).to.deep.equal(["iife"]);
+      expect(await testGetProperty(input, "F", { T: "es2022" })).to.deep.equal(["cjs"]);
+      expect(await testGetProperty(input + "F = esm-split;\n", "F", { T: "es2022" })).to.deep.equal(["esm-split"]);
+      expect(await testGetProperty(input, "F", { F: "esm-split" })).to.deep.equal(["esm-split"]);
+    });
+
     it("takes the single matching declaration of a STRING property", async () => {
       const input =
         GUARD_DEFS +

@@ -536,6 +536,17 @@ Global properties can be guarded in the same way. For those, a `default` declara
 applies when no guarded declaration matches; a property declared only under guards, none of which
 match, is an error.
 
+A `default` declaration can be guarded too, which gives a setting a default that depends on
+another. The JavaScript support declares `JS_BUNDLE_FORMAT` this way:
+
+```
+default JS_BUNDLE_FORMAT<JS_TARGET=*-esm*> = esm;
+default JS_BUNDLE_FORMAT<JS_TARGET=*-commonjs-browser> = iife;
+```
+
+Write a single-valued setting's guarded defaults so that exactly one matches each build. Any
+ordinary declaration of the setting replaces all of them.
+
 ## Target declarations
 
 A target is declared as `<type> <name> { <properties> }`:

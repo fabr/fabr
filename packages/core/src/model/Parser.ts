@@ -2152,8 +2152,10 @@ export class BuildParser {
       this.unexpectedTokenError("a property name or target type after 'default'");
     }
     const next = this.nextToken();
-    if (next.type === TokenType.EQUALS) {
-      return this.parsePropertyDecl(Name.fromLiteral(name.text), name.start, docComment);
+    if (next.type === TokenType.EQUALS || next.type === TokenType.LANGLE) {
+      /* `<` is the default's guard (`default F<TARGET=…> = …`), as on an ordinary
+       * global. */
+      return this.parsePropertyDecl(this.finishPropertyKey(Name.fromLiteral(name.text)), name.start, docComment);
     } else if (next.type === TokenType.IDENTIFIER || next.type === TokenType.SIMPLE_NAME) {
       /* Only properties and targets have a default slot: a targetdef is not
        * defaultable, so `default targetdef x { … }` is an error reported at the

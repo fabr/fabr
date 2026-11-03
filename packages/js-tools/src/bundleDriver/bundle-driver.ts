@@ -49,8 +49,9 @@ import * as path from "node:path";
 import { SourceMap } from "node:module";
 import { PNP_DATA_FILE, PnpResolver } from "../pnp/PnPResolver";
 import { resolveVirtual } from "../pnp/VirtualPath";
-import { stagedReferences, withReferencedSources } from "../support/SourceMap";
-import type { IBundleOptions } from "./BundleOptions";
+import { referenceOfEntry, stagedReferences, withReferencedSources } from "../support/SourceMap";
+import { BUNDLE_METAFILE, type IBundleOptions } from "./BundleOptions";
+import { type IMetafile, renameMetafilePaths } from "./Metafile";
 
 /* Minimal structural typing for the slice of esbuild's API we use — esbuild is
  * fetched at build time rather than depended on, so its own types are not
@@ -117,6 +118,8 @@ interface IPlugin {
 interface IBuildResult {
   errors: IMessage[];
   warnings: IMessage[];
+  /** Present because every build asks for it (`metafile: true`). */
+  metafile?: IMetafile;
 }
 interface IEsbuild {
   build(options: Record<string, unknown>): Promise<IBuildResult>;
@@ -504,6 +507,9 @@ function toEsbuildOptions(options: IBundleOptions, unresolved: Set<string>): Rec
     write: true,
     platform: options.platform,
     format: options.format,
+    splitting: options.splitting,
+    ...(options.splitting ? { chunkNames: options.chunkNames } : {}),
+    metafile: true,
     target: options.target,
     minify: options.minify,
     sourcemap: options.sourcemap,
@@ -572,8 +578,11 @@ export async function main(argv: string[]): Promise<void> {
    * (see the plugin's fallback), and only those get fabr's guidance. */
   const unresolved = new Set<string>();
   let errors: IMessage[];
+  let metafile: IMetafile | undefined;
   try {
-    errors = (await esbuild.build(toEsbuildOptions(options, unresolved))).errors;
+    const result = await esbuild.build(toEsbuildOptions(options, unresolved));
+    errors = result.errors;
+    metafile = result.metafile;
   } catch (err) {
     const failure = (err as { errors?: unknown }).errors;
     if (!Array.isArray(failure) || failure.length === 0) {
@@ -583,6 +592,9 @@ export async function main(argv: string[]): Promise<void> {
   }
   if (errors.length === 0) {
     nameMapSources(argv, options.outdir);
+    if (metafile !== undefined) {
+      writeMetafile(argv, options.outdir, metafile);
+    }
   }
   if (errors.length) {
     const resolver = usesManifest() ? PnpResolver.load(process.cwd(), []) : undefined;
@@ -611,6 +623,33 @@ function nameMapSources(argv: string[], outdir: string): void {
     named(path.relative(root, resolveVirtual(path.resolve(root, staged))).split(path.sep).join("/"));
   for (const file of mapFilesUnder(path.resolve(root, outdir))) {
     fs.writeFileSync(file, withReferencedSources(fs.readFileSync(file, "utf8"), file, root, referenceOf));
+  }
+}
+
+/**
+ * Write esbuild's metafile beside the outputs, each input named as a map entry
+ * is (see {@link nameMapSources}) and each output relative to `outdir`: by the
+ * reference its own map names as its sole source, which esbuild carries into the
+ * bundle's map, else by the table's row.
+ */
+function writeMetafile(argv: string[], outdir: string, metafile: IMetafile): void {
+  const root = process.cwd();
+  const named = stagedReferences(argv, root, { withinPackages: true });
+  const inputName = (staged: string): string => {
+    const file = resolveVirtual(path.resolve(root, staged));
+    return compiledFrom(file) ?? named?.(path.relative(root, file).split(path.sep).join("/")) ?? staged;
+  };
+  const renamed = renameMetafilePaths(metafile, outdir, inputName);
+  fs.writeFileSync(path.resolve(root, outdir, BUNDLE_METAFILE), JSON.stringify(renamed, null, 2) + "\n");
+}
+
+/** Get the reference a compiled file's own map names as its sole source, if it has one. */
+function compiledFrom(file: string): string | undefined {
+  try {
+    const sources = (JSON.parse(fs.readFileSync(`${file}.map`, "utf8")) as { sources?: unknown }).sources;
+    return Array.isArray(sources) && sources.length === 1 && typeof sources[0] === "string" ? referenceOfEntry(sources[0]) : undefined;
+  } catch {
+    return undefined;
   }
 }
 

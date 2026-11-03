@@ -16,6 +16,8 @@ number.
 - js_package now takes a compile_deps property for compile-only inputs.
 - Add sources operation.
 - Allow any version of a package with eg @npm:debug? (instead of specific versions)
+- Move bundling format out to a new property JS_BUNDLE_FORMAT (with target defaults)
+- Add bundle splitting + metafile support.
 
 @fabr-build/vscode-ext:
 - New VSCode extension.

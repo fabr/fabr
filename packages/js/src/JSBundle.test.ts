@@ -18,8 +18,8 @@
  */
 
 import { expect } from "chai";
-import { IFile, MemoryFile, PackageFileSet, RefSource, RepositoryRef, RewriteFn, dependenciesOn } from "@fabr-build/core";
-import { buildBundleOptions, compiledName, computeBundleEntries, computeExternalNames, IBundleEntrySource } from "./JSBundle";
+import { IFile, makeRewrite, MemoryFile, PackageFileSet, parseName, RefSource, RepositoryRef, RewriteFn, dependenciesOn } from "@fabr-build/core";
+import { buildBundleOptions, compiledName, computeBundleEntries, computeChunkNames, computeExternalNames, IBundleEntrySource, toBundleFormat } from "./JSBundle";
 import { parseJSTarget } from "./JSPackage";
 
 /** A package with a single index.js and the given (already-built) deps. */
@@ -144,9 +144,37 @@ describe("compiledName", () => {
   });
 });
 
+describe("computeChunkNames", () => {
+  /** The `output` rewrite a build file would write, as written there. */
+  const output = (...rules: string[]): RewriteFn => makeRewrite(rules.map(rule => parseName(rule)));
+
+  it("names chunks by the fixed pattern where no rewrite renames it", () => {
+    expect(computeChunkNames(noRewrite)).to.equal("chunks/[name]-[hash]");
+    expect(computeChunkNames(output("*.js -> *.min.js"))).to.equal("chunks/[name]-[hash]");
+  });
+
+  it("renames the pattern by the output rewrite, each wildcard capturing a placeholder whole", () => {
+    expect(computeChunkNames(output("chunks/*-*.js -> splits/$2-$1.js"))).to.equal("splits/[hash]-[name]");
+    expect(computeChunkNames(output("**/*.js -> **/*.min.js"))).to.equal("chunks/[name]-[hash].min");
+  });
+
+  it("refuses a rename that leaves the chunks without a .js name", () => {
+    expect(() => computeChunkNames(output("chunks/*-*.js -> $1.css"))).to.throw("must end in '.js'");
+  });
+});
+
+describe("toBundleFormat", () => {
+  it("takes the four bundle formats and refuses anything else", () => {
+    for (const format of ["iife", "cjs", "esm", "esm-split"]) {
+      expect(toBundleFormat(format)).to.equal(format);
+    }
+    expect(() => toBundleFormat("commonjs")).to.throw("JS_BUNDLE_FORMAT must be 'iife', 'cjs', 'esm' or 'esm-split', not 'commonjs'");
+  });
+});
+
 describe("buildBundleOptions", () => {
   it("maps an esm browser target to esm/browser and debug to a linked sourcemap", () => {
-    const options = buildBundleOptions(parseJSTarget("es2021-esm-browser"), "debug", [], [], {});
+    const options = buildBundleOptions(parseJSTarget("es2021-esm-browser"), "esm", "debug", [], [], {});
     expect(options.platform).to.equal("browser");
     expect(options.format).to.equal("esm");
     expect(options.target).to.equal("es2021");
@@ -154,36 +182,44 @@ describe("buildBundleOptions", () => {
     expect(options.sourcemap).to.equal("linked");
   });
 
+  it("writes the format it is given, splitting only for esm-split", () => {
+    expect(buildBundleOptions(parseJSTarget("es2021-esm-browser"), "esm", "debug", [], [], {}).splitting).to.equal(false);
+    const split = buildBundleOptions(parseJSTarget("es2021-esm-browser"), "esm-split", "debug", [], [], {});
+    expect([split.format, split.splitting]).to.deep.equal(["esm", true]);
+    /* The format is the bundle's own: a node target can still be written as a script. */
+    expect(buildBundleOptions(parseJSTarget("es2019-commonjs-node"), "iife", "debug", [], [], {}).format).to.equal("iife");
+  });
+
   it("uses iife for a non-esm browser bundle", () => {
-    expect(buildBundleOptions(parseJSTarget("es6-commonjs-browser"), "debug", [], [], {}).format).to.equal("iife");
+    expect(buildBundleOptions(parseJSTarget("es6-commonjs-browser"), "iife", "debug", [], [], {}).format).to.equal("iife");
   });
 
   it("uses cjs for a non-esm node bundle", () => {
-    expect(buildBundleOptions(parseJSTarget("es2019-commonjs-node"), "debug", [], [], {}).format).to.equal("cjs");
+    expect(buildBundleOptions(parseJSTarget("es2019-commonjs-node"), "cjs", "debug", [], [], {}).format).to.equal("cjs");
   });
 
   it("minifies and drops the sourcemap for a release build", () => {
-    const options = buildBundleOptions(parseJSTarget("es2021-esm"), "release", [], [], {});
+    const options = buildBundleOptions(parseJSTarget("es2021-esm"), "esm", "release", [], [], {});
     expect(options.minify).to.equal(true);
     expect(options.sourcemap).to.equal(false);
   });
 
   it("minifies and keeps the sourcemap for relwithdebinfo", () => {
-    const options = buildBundleOptions(parseJSTarget("es2021-esm"), "relwithdebinfo", [], [], {});
+    const options = buildBundleOptions(parseJSTarget("es2021-esm"), "esm", "relwithdebinfo", [], [], {});
     expect(options.minify).to.equal(true);
     expect(options.sourcemap).to.equal("linked");
   });
 
   it("passes defines through as esbuild `define`, omitting the key when empty", () => {
     const defines = { "process.env.NODE_ENV": '"production"', DEBUG: "false" };
-    expect(buildBundleOptions(parseJSTarget("es2021-esm"), "debug", [], [], defines).define).to.deep.equal(defines);
-    expect(buildBundleOptions(parseJSTarget("es2021-esm"), "debug", [], [], {})).to.not.have.property("define");
+    expect(buildBundleOptions(parseJSTarget("es2021-esm"), "esm", "debug", [], [], defines).define).to.deep.equal(defines);
+    expect(buildBundleOptions(parseJSTarget("es2021-esm"), "esm", "debug", [], [], {})).to.not.have.property("define");
   });
 
   it("passes inject through as esbuild `inject`, omitting the key when nothing is injected", () => {
     const inject = [".fabr-node-globals.js"];
-    expect(buildBundleOptions(parseJSTarget("es2021-esm"), "debug", [], [], {}, inject).inject).to.deep.equal(inject);
-    expect(buildBundleOptions(parseJSTarget("es2021-esm"), "debug", [], [], {}, [])).to.not.have.property("inject");
-    expect(buildBundleOptions(parseJSTarget("es2021-esm"), "debug", [], [], {})).to.not.have.property("inject");
+    expect(buildBundleOptions(parseJSTarget("es2021-esm"), "esm", "debug", [], [], {}, inject).inject).to.deep.equal(inject);
+    expect(buildBundleOptions(parseJSTarget("es2021-esm"), "esm", "debug", [], [], {}, [])).to.not.have.property("inject");
+    expect(buildBundleOptions(parseJSTarget("es2021-esm"), "esm", "debug", [], [], {})).to.not.have.property("inject");
   });
 });
