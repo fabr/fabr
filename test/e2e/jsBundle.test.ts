@@ -243,6 +243,33 @@ for (const entry of opts.entries) {
     expect(result.stdout).to.contain('external=["@scope/absent"]');
   });
 
+  it("bundles what the entry's package requires even where a dep requires it too", () => {
+    /* @scope/shared reaches the bundle through the entry's package and through
+     * the dep alike, so only the dep itself is left external. */
+    const project = {
+      ...STUB_TSC,
+      "PROJECT.fabr": [
+        "plugin @fabr-build/js;",
+        STUB_TSC_CONFIG,
+        "js_script my_bundler { entry = ./inspect-bundler.js; }",
+        "JS_BUNDLER = my_bundler;",
+        "js_package @scope/shared { version = 1.0.0; srcs = shared/src:**; }",
+        "js_package @scope/thing { version = 1.0.0; srcs = pkg/src:**; deps = @scope/shared; }",
+        "js_package @scope/absent { version = 3.0.0; srcs = absent/src:**; deps = @scope/shared; }",
+        "js_bundle app { entry = @scope/thing:index.js; deps = @scope/absent; }",
+        "",
+      ].join("\n"),
+      "inspect-bundler.js": inspectingBundler,
+      "shared/src/index.ts": "export const shared = 1;\n",
+      "pkg/src/index.ts": 'export const hello = "world";\n',
+      "absent/src/index.ts": "export const absent = 1;\n",
+    };
+    const result = runFabr(project, ["cat", "app:index.js"]);
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stdout).to.contain('external=["@scope/absent"]');
+    expect(result.stdout).to.contain("row=@scope/shared resolves=true");
+  });
+
   /* `js/node_globals` is a source fact the BUNDLE acts on: it reports what fabr
    * asked the bundler to do (inject + define) and what it staged for it. esbuild's
    * own half — filling free identifiers from an injected module's exports — is

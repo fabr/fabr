@@ -176,7 +176,8 @@ function stageBundle(
     throw new FabrError("js_bundle 'entry' resolved to no files — name at least one source to bundle");
   }
   const entries = computeBundleEntries(entrySources, rewrite);
-  const external = computeExternalNames(srcs, deps);
+  /* The entry's packages are bundled as srcs are, so they count as srcs here. */
+  const external = computeExternalNames([...srcs, ...srcPackages], deps);
   const inject = nodeGlobals ? [NODE_GLOBALS_MODULE] : [];
   const options = buildBundleOptions(jsTarget, bundleFormat, buildType, entries, external, defines, inject, computeChunkNames(rewrite), computeAssetNames(rewrite));
   const workspace = {
