@@ -20,6 +20,7 @@ number.
 - Add bundle splitting + metafile support.
 - Support renaming bundled chunks + assets.
 - dom dependency includes dom.iterator as well (for TS5.x, no effect on TS6.x)
+- Handle node: imports in browser bundling (strip off the node:)
 
 @fabr-build/vscode-ext:
 - New VSCode extension.

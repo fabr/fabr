@@ -353,6 +353,58 @@ describe("a bundle's metafile and chunks, over real esbuild", () => {
   });
 });
 
+describe("node built-ins in a browser bundle, over real esbuild", () => {
+  let work: string;
+
+  beforeEach(() => {
+    work = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-builtins-"));
+    const write = (name: string, text: string): void => {
+      fs.mkdirSync(path.dirname(path.join(work, name)), { recursive: true });
+      fs.writeFileSync(path.join(work, name), text);
+    };
+    /* A package that needs `fs` only on node, and says so in its `browser` field. */
+    write("node_modules/nodeish/package.json", JSON.stringify({ name: "nodeish", version: "1.0.0", main: "index.js", browser: { fs: false } }));
+    write("node_modules/nodeish/index.js", 'const fs = require("fs");\nmodule.exports = fs && fs.readFileSync ? "NODE" : "BROWSER";\n');
+    /* A substitute for `path`, bundled under the built-in's own name. */
+    write("node_modules/path/package.json", JSON.stringify({ name: "path", version: "1.0.0", main: "index.js" }));
+    write("node_modules/path/index.js", 'exports.join = () => "PATH_SHIM";\n');
+    write("entry.mjs", 'import nodeish from "nodeish";\nimport { join } from "node:path";\nconsole.log(nodeish, join());\n');
+  });
+
+  afterEach(() => {
+    fs.rmSync(work, { recursive: true, force: true });
+    process.exitCode = undefined;
+  });
+
+  it("leaves a module a package's browser field disables empty, and answers node:<module> as <module>", async () => {
+    const options = {
+      entries: [{ in: "entry.mjs", out: "bundle" }],
+      external: [],
+      platform: "browser",
+      format: "esm",
+      splitting: false,
+      chunkNames: "chunks/[name]-[hash]",
+      assetNames: "[name]-[hash]",
+      target: "es2021",
+      minify: false,
+      sourcemap: false,
+      outdir: "out",
+    };
+    fs.writeFileSync(path.join(work, "options.json"), JSON.stringify(options));
+    const cwd = process.cwd();
+    try {
+      process.chdir(work);
+      await main(["--options=options.json"]);
+    } finally {
+      process.chdir(cwd);
+    }
+    assert.equal(process.exitCode ?? 0, 0, "the bundle should have succeeded");
+    const bundle = fs.readFileSync(path.join(work, "out/bundle.js"), "utf8");
+    assert.ok(bundle.includes("PATH_SHIM"));
+    assert.ok(!bundle.includes('require("fs")'));
+  });
+});
+
 describe("one package wired two ways, bundled by real esbuild through its virtual locations", () => {
   /* `shared` is one content, depended on by `left` and `right`, whose two
    * wirings bind `dep` to different packages. The manifest gives each wiring a

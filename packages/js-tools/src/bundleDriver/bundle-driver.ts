@@ -298,6 +298,17 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
           return redirectStyledImport(build, args, rewritten);
         }
 
+        /* In a browser bundle `node:<module>` is `<module>`, as it is to Node: the
+         * name a substitute for the built-in is bundled under answers both. */
+        if (options.platform === "browser" && args.path.startsWith("node:")) {
+          const unprefixed = await build.resolve(args.path.slice("node:".length), {
+            kind: args.kind,
+            importer: args.importer,
+            resolveDir: args.resolveDir,
+          });
+          return unprefixed.errors.length ? null : { path: unprefixed.path, external: unprefixed.external, namespace: unprefixed.namespace };
+        }
+
         /* A declared dep is externalized by identity: its import survives. */
         if (external.has(packageOf(args.path))) {
           return { path: args.path, external: true };
@@ -322,6 +333,12 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
           (manifest !== undefined && specifier === args.path
             ? variantFromTable(manifest, specifier, args.importer || `${args.resolveDir}/`, [nativeKind, otherKind], options.platform)
             : undefined) ?? (await resolveSingleVariant(build, { ...args, path: specifier }, nativeKind, otherKind));
+        /* An answer that is no file (a module a package's `browser` field maps to
+         * false comes back as its bare name) is esbuild's own to give: it alone
+         * knows to make it an empty module. */
+        if (resolved && (!resolved.namespace || resolved.namespace === "file") && resolved.path !== undefined && !path.isAbsolute(resolved.path)) {
+          return null;
+        }
         if (resolved) {
           variantCache.set(variantKey, resolved);
           return resolved;
@@ -347,7 +364,8 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
        * asset: anything that resolved into srcs and isn't code becomes an
        * emitted, URL-rewritten file (fonts, images, …). */
       build.onLoad({ filter: /.*/ }, async (args): Promise<IOnLoadResult | null> => {
-        if (CODE_EXTENSIONS.has(path.extname(args.path).toLowerCase())) {
+        /* A module with no file (one a `browser` field disables) is esbuild's to load, as empty. */
+        if (CODE_EXTENSIONS.has(path.extname(args.path).toLowerCase()) || !path.isAbsolute(args.path)) {
           return null;
         }
         return { contents: new Uint8Array(await fs.promises.readFile(resolveVirtual(args.path))), loader: "file" };
@@ -636,9 +654,15 @@ function nameMapSources(argv: string[], outdir: string): void {
 function writeMetafile(argv: string[], outdir: string, metafile: IMetafile): void {
   const root = process.cwd();
   const named = stagedReferences(argv, root, { withinPackages: true });
-  const inputName = (staged: string): string => {
+  const fileName = (staged: string): string => {
     const file = resolveVirtual(path.resolve(root, staged));
     return compiledFrom(file) ?? named?.(path.relative(root, file).split(path.sep).join("/")) ?? staged;
+  };
+  /* esbuild writes an input outside its file namespace as `(<namespace>):<path>`
+   * (`(disabled):` for a module a `browser` field maps to false): the path is named, the prefix kept. */
+  const inputName = (staged: string): string => {
+    const namespaced = /^(\([^)]+\)):(.*)$/.exec(staged);
+    return namespaced === null ? fileName(staged) : `${namespaced[1]}:${fileName(namespaced[2])}`;
   };
   const renamed = renameMetafilePaths(metafile, outdir, inputName);
   fs.writeFileSync(path.resolve(root, outdir, BUNDLE_METAFILE), JSON.stringify(renamed, null, 2) + "\n");
