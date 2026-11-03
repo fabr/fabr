@@ -14,9 +14,14 @@
  * details.
  */
 
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import * as zlib from "zlib";
 import { expect } from "chai";
-import { packToZip } from "./PackZip";
+import { packToZip, writeZip } from "./PackZip";
+import { BuildCache } from "../core/BuildCache";
+import { LogFormatter, LogLevel } from "./Log";
 import { FileSet, IFile } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import { SymlinkFile } from "../core/SymlinkFile";
@@ -108,6 +113,16 @@ describe("packToZip", () => {
     ]);
   });
 
+  it("writes a stored entry's checksum and size before its data, as ZipInputStream requires", async () => {
+    const nested = await packToZip(fileSetOf({ "a.txt": "x" }));
+    const zip = await packToZip(new FileSet(new Map<string, IFile>([["a.jar", new MemoryFile(nested)], ["b.txt", MemoryFile.from("y")]])));
+    /* `a.jar` is written first, so its local header opens the archive. Bit 3 of its
+     * general-purpose flag says the checksum and sizes follow the data instead. */
+    expect(zip.toString("utf8", 30, 30 + zip.readUInt16LE(26))).to.equal("a.jar");
+    expect(zip.readUInt16LE(6) & 0x8).to.equal(0);
+    expect(zip.readUInt32LE(18)).to.equal(nested.length);
+  });
+
   it("refuses a symlink", async () => {
     const files = new FileSet(new Map<string, IFile>([["link", new SymlinkFile("target")]]));
     const refused = await packToZip(files).then(
@@ -116,5 +131,64 @@ describe("packToZip", () => {
     );
     expect(refused).to.match(/symlink/);
   });
-});
 
+  it("writes a symlink as a link entry when asked to", async () => {
+    const files = new FileSet(
+      new Map<string, IFile>([
+        ["node_modules/.fabr/a/index.js", MemoryFile.from("a")],
+        ["node_modules/a", new SymlinkFile(".fabr/a")],
+      ])
+    );
+    const entries = readZip(await packToZip(files, { symlinks: true }));
+    expect(entries.find(entry => entry.name === "node_modules/a")).to.deep.equal({ name: "node_modules/a", mode: 0o120777, method: 0, content: ".fabr/a" });
+  });
+
+  it("refuses a symlink that leaves the archive", async () => {
+    for (const target of ["../../outside", "/etc/passwd"]) {
+      const files = new FileSet(new Map<string, IFile>([["dir/link", new SymlinkFile(target)]]));
+      const refused = await packToZip(files, { symlinks: true }).then(
+        () => undefined,
+        (err: Error) => err.message
+      );
+      expect(refused, target).to.match(/outside the archive/);
+    }
+  });
+
+  describe("writeZip", () => {
+    let dir: string;
+    let cache: BuildCache;
+    beforeEach(() => {
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), "pack-zip-"));
+      cache = new BuildCache(path.join(dir, "cache"), new LogFormatter(LogLevel.Info, () => undefined));
+    });
+    afterEach(() => {
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    it("stores what it packs, reading a file's content from where it is", async () => {
+      const onDisk = path.join(dir, "content");
+      fs.writeFileSync(onDisk, "from disk");
+      const memory = MemoryFile.from("from disk");
+      const stored: IFile = Object.assign(Object.create(memory) as IFile, { getAbsPath: () => onDisk });
+      const files = new FileSet(new Map<string, IFile>([["a/disk.txt", stored], ["b.txt", MemoryFile.from("b")]]));
+      const zip = await writeZip(files, cache.getTemporaryWriteStream(), "out.zip");
+      const packed = await packToZip(new FileSet(new Map<string, IFile>([["a/disk.txt", memory], ["b.txt", MemoryFile.from("b")]])));
+      expect((await zip.getBuffer()).equals(packed)).to.equal(true);
+    });
+
+    it("reports a file it cannot read", async () => {
+      const missing: IFile = Object.assign(Object.create(MemoryFile.from("x")) as IFile, { getAbsPath: () => path.join(dir, "missing") });
+      const files = new FileSet(new Map<string, IFile>([["a.txt", missing]]));
+      const written = await writeZip(files, cache.getTemporaryWriteStream(), "out.zip").then(
+        () => undefined,
+        (err: Error) => err.message
+      );
+      expect(written).to.match(/ENOENT/);
+      const packed = await packToZip(files).then(
+        () => undefined,
+        (err: Error) => err.message
+      );
+      expect(packed).to.match(/ENOENT/);
+    });
+  });
+});

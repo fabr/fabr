@@ -79,8 +79,8 @@ entry = src:pages/*.entry.ts;        # one bundle for each matching file
 entry = @acme/app:index.js;          # the compiled index.js of a js_package
 ```
 
-Each entry is bundled on its own. Code that two entries both import is included in both; there is
-no shared chunk.
+Each entry is bundled on its own. Code that two entries both import is included in both, unless
+the bundle is [split into chunks](#splitting-into-chunks).
 
 ### TypeScript and JSX
 

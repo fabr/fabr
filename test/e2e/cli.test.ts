@@ -468,3 +468,24 @@ describe("e2e: markers and wildcards on a name", () => {
     expect(onAlias.stderr).to.contain("Unable to resolve '@c!'");
   });
 });
+
+describe("e2e: zip", () => {
+  const project = {
+    "PROJECT.fabr": "zip deploy/app { srcs = a.txt sub:b.txt; }\n",
+    "a.txt": "a\n",
+    "sub/b.txt": "b\n",
+  };
+
+  it("builds one archive named after the target, holding its srcs as they are named", () => {
+    const listed = runFabr(project, ["ls", "-q", "deploy/app"]);
+    expect(listed.status, listed.stderr).to.equal(0);
+    expect(listed.stdout).to.equal("app.zip\n");
+    const copied = runFabr(project, ["cp", "-q", "deploy/app", "out"], ["out/app/app.zip"]);
+    expect(copied.status, copied.stderr).to.equal(0);
+    const zip = copied.files!["out/app/app.zip"];
+    expect(zip.startsWith("PK\u0003\u0004")).to.equal(true);
+    expect(zip).to.contain("a.txt");
+    expect(zip).to.contain("b.txt");
+    expect(zip).to.not.contain("sub/");
+  });
+});

@@ -134,6 +134,15 @@ targetdef patched {
 }
 
 #
+# A zip archive of files, named after the target (`<name>.zip`). A symlink among
+# them is stored as a symlink, and must link to a place within the archive.
+#
+targetdef zip {
+    # The archive's contents, named as they are found.
+    srcs = REQUIRED FILES;
+}
+
+#
 # A shell script that can be run: with `fabr run`, as a command in a `generate`
 # target, or as the `tool` of a `serve` target.
 #
@@ -292,6 +301,7 @@ rule script s<BUILD_OPERATION=run> = @fabr-build/core:rules/RunScript;
 rule serve s<BUILD_OPERATION=run> = @fabr-build/core:rules/RunServe;
 rule generate g<BUILD_OPERATION=build> = @fabr-build/core:rules/BuildGenerate;
 rule patched p<BUILD_OPERATION=build> = @fabr-build/core:rules/BuildPatched;
+rule zip z<BUILD_OPERATION=build> = @fabr-build/core:rules/BuildZip;
 rule sync s<BUILD_OPERATION=build> = @fabr-build/core:rules/BuildSync;
 rule fabr_plugin p<BUILD_OPERATION=build> = @fabr-build/core:rules/BuildFabrPlugin;
 rule fabr_plugin p<BUILD_OPERATION=run> = @fabr-build/core:rules/RunFabrPlugin;

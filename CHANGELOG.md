@@ -8,6 +8,7 @@ number.
 - Introduce fabr_plugin target + move rule/repository decls out to spec.
 - Make the actual working dir a subdir, with the tree pool link (if present) outside - fixes excessive tree scanning.
 - Add TEST_NAME_PATTERN / -t support for running specific tests.
+- Add zip target.
 
 @fabr-build/java:
 - New Java support.

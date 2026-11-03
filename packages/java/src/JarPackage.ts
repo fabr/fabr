@@ -22,7 +22,6 @@
  * release a compile targets, jar manifests, and the step that writes a jar.
  */
 
-import * as fs from "fs";
 import * as path from "path";
 import {
   ActionContext,
@@ -35,7 +34,6 @@ import {
   FileSet,
   fileSetInput,
   Flag,
-  getResultFileSet,
   IBuildActionDefinition,
   IFile,
   ITaskReport,
@@ -45,6 +43,7 @@ import {
   PERMISSIVE_RESOLUTION,
   readZipMember,
   readZipMembers,
+  writeZip,
   ResolutionContext,
   ArgumentPart,
   RunnableArgument,
@@ -420,20 +419,15 @@ export function makeJarRunnable(
     });
 }
 
-/** Write the jar named by the action's `name` from its `files`, the manifest first. */
+/** Write the jar named by the action's `name` from its `files`, the manifest first, straight into the store. */
 function runJar(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
   const name = stringConfig(action, "name");
-  return packToZip(fileSetInput(action, "files"), { first: [MANIFEST_NAME] }).then(jar =>
-    ctx
-      .admit(report, () => {
-        fs.writeFileSync(path.join(ctx.workDir, name), jar);
-        return getResultFileSet(ctx.workDir, name);
-      })
-      .then(result => ({ result }))
-  );
+  return ctx
+    .admit(report, () => writeZip(fileSetInput(action, "files"), ctx.createOutput(), name, { first: [MANIFEST_NAME] }))
+    .then(jar => ({ result: new FileSet(new Map([[name, jar]])) }));
 }
 
-export const JAR_ACTION: IBuildActionDefinition = { id: "java:jar", version: 4, run: runJar };
+export const JAR_ACTION: IBuildActionDefinition = { id: "java:jar", version: 5, run: runJar };
 
 /** Make the action writing `files` as the jar `name`. */
 export function createJarAction(files: FileSet, name: string): BuildAction {
