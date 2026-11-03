@@ -271,7 +271,7 @@ targetdef js_package {
     # from. They are compiled even if `srcs` doesn't list them.
     exports = FILES;
     # Files to ship in the package as they are, without compiling or checking
-    # them.
+    # them. The tests find them where the package ships them.
     resources = FILES;
     # The test files. Every source file here is run as a test, so helpers and
     # the `setupTests` file go in `test_deps`, and snapshots in

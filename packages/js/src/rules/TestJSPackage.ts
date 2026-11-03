@@ -45,15 +45,17 @@ export default defineRule({
         context.getPackageProperty("compile_deps", BUILD_OVERRIDE),
         context.getPackageProperty("test_deps", BUILD_OVERRIDE),
         context.getFileProperty("test_resources", BUILD_OVERRIDE),
+        context.getFileProperty("resources", BUILD_OVERRIDE),
         context.getFileProperty("test_expectations", BUILD_OVERRIDE),
       ],
-      (srcs, tests, deps, provided, optional, compileOnly, test_deps, test_resources, expectations) =>
+      (srcs, tests, deps, provided, optional, compileOnly, test_deps, test_resources, resources, expectations) =>
         testRequirements({
           srcs,
           tests,
           deps: new PackageSources([...deps.sources, ...provided.sources, ...optional.sources, ...compileOnly.sources]),
           test_deps,
           test_resources,
+          resources,
           expectations,
         })
     );

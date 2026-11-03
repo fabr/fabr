@@ -10,6 +10,9 @@ number.
 - Add TEST_NAME_PATTERN / -t support for running specific tests.
 - Add zip target.
 
+@fabr-build/aws:
+- Add s3 download support.
+
 @fabr-build/java:
 - New Java support.
 
@@ -24,6 +27,7 @@ number.
 - Handle node: imports in browser bundling (strip off the node:)
 - Fix packages in both srcs + deps being left unbundled.
 - Fix bundling cjs files with __dirname/etc.
+- Fix resources not being mounted during package tests.
 
 @fabr-build/vscode-ext:
 - New VSCode extension.

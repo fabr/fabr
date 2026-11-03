@@ -165,6 +165,28 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
     expect(result.stderr).to.contain("1 test passed");
   });
 
+  it("stages the package's own resources where it ships them, for its tests to read", () => {
+    /* The tests run against the package as it ships: a file it ships as it is
+     * sits beside its compiled code, so a test reads it relative to itself. */
+    const result = runFabr(
+      {
+        ...STUB_TSC,
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\n\n" +
+          STUB_TSC_CONFIG +
+          "\njs_package thing { srcs = src:**/*.ts; tests = src:**/*.test.ts; resources = src:**/*.txt; }\n",
+        "src/sub/thing.test.ts":
+          'const assert = require("node:assert");\nconst fs = require("node:fs");\nconst path = require("node:path");\n' +
+          'describe("thing", () => { it("reads its shipped resource", () => { ' +
+          'assert.equal(fs.readFileSync(path.join(__dirname, "../notes/readme.txt"), "utf8"), "shipped\\n"); }); });',
+        "src/notes/readme.txt": "shipped\n",
+      },
+      ["-DJS_TARGET=es2020", "test", "thing"]
+    );
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stderr).to.contain("1 test passed");
+  });
+
   it("stubs stylesheet and binary imports under the node framework", () => {
     /* A stylesheet in the install is parsed as JavaScript by node's loader,
      * and one NOT in the install (the image) does not resolve at all; the

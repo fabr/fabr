@@ -228,6 +228,8 @@ export type TestRequirements = {
   test_deps: PackageSources;
   /** Files the tests need at runtime, staged verbatim. */
   test_resources: SourceRef[];
+  /** The files the package ships as they are (`resources`), staged where it ships them, beside its compiled code. */
+  resources: SourceRef[];
   /** Recorded expectations the tests compare against. */
   expectations: SourceRef[];
 };
@@ -255,7 +257,7 @@ export function testRequirements(written: TestRequirements): ResolutionSpec<Test
   return {
     requirements:
       written.tests.length === 0
-        ? { srcs: [], tests: [], deps: new PackageSources([]), test_deps: new PackageSources([]), test_resources: [], expectations: [] }
+        ? { srcs: [], tests: [], deps: new PackageSources([]), test_deps: new PackageSources([]), test_resources: [], resources: [], expectations: [] }
         : written,
   };
 }
@@ -278,7 +280,7 @@ export function compileAndRunTests(
   context: TargetContext,
   framework: ITestFramework,
   settings: ITestSettings,
-  { srcs, tests: testSets, deps, test_deps: testDeps, test_resources: testResources, expectations: expectationSets }: TestContents
+  { srcs, tests: testSets, deps, test_deps: testDeps, test_resources: testResources, resources: shipped, expectations: expectationSets }: TestContents
 ): Computable<RuleResult> {
   const tests = FileSet.unionAll(...testSets);
   if (tests.isEmpty()) {
@@ -349,7 +351,7 @@ export function compileAndRunTests(
            * library rendering in its tests) declares `dom` in test_deps and
            * gets both the lib and the environment. */
           needsDom: usesDom([...deps, ...testDeps].filter((dep): dep is Flag => dep instanceof Flag)),
-          testResources: FileSet.unionAll(...testResources),
+          testResources: FileSet.unionAll(...testResources, ...shipped),
           expectations: FileSet.unionAll(...expectationSets),
           env,
           packageName: settings.packageName,
