@@ -22,6 +22,7 @@ number.
 - dom dependency includes dom.iterator as well (for TS5.x, no effect on TS6.x)
 - Handle node: imports in browser bundling (strip off the node:)
 - Fix packages in both srcs + deps being left unbundled.
+- Fix bundling cjs files with __dirname/etc.
 
 @fabr-build/vscode-ext:
 - New VSCode extension.

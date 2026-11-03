@@ -118,6 +118,21 @@ const NODE_GLOBALS_GLUE = 'export { Buffer } from "buffer";\nexport { default as
  * An explicit `defines` entry wins — this is a default, not a policy. */
 const NODE_GLOBAL_DEFINES: Record<string, string> = { global: "globalThis" };
 
+/** The generated module behind `import.meta.url` in a CommonJS bundle for node,
+ * staged at the working root and named as esbuild's `inject`: a define can only
+ * name an identifier or a literal, so the URL is an injected module's export. */
+const IMPORT_META_MODULE = ".fabr-import-meta.js";
+const IMPORT_META_GLUE = 'export const import_meta_url = require("url").pathToFileURL(__filename).href;\n';
+
+/** `import.meta`'s members as a CommonJS module for node has them. A bundle's
+ * inputs are compiled as ES modules, and esbuild empties `import.meta` in a
+ * CommonJS bundle. An explicit `defines` entry wins — this is a default, not a policy. */
+const IMPORT_META_DEFINES: Record<string, string> = {
+  "import.meta.dirname": "__dirname",
+  "import.meta.filename": "__filename",
+  "import.meta.url": "import_meta_url",
+};
+
 /**
  * The target a bundle's inputs are built and compiled for: ESM, whatever the
  * bundle itself ships as. Only ESM carries the import graph a bundler needs —
@@ -152,6 +167,8 @@ interface IBundleInputs {
   /** Whether to bind node's runtime globals for this bundle: the `js/node_globals`
    * flag among srcs/deps, AND a browser target — a node bundle already has them. */
   nodeGlobals: boolean;
+  /** Whether to give `import.meta` its CommonJS equivalents: a `cjs` bundle for node. */
+  importMeta: boolean;
   /** The entry as delivered: a plain fileset is staged at the bundle root, while
    * a projection over a package stays pending — the package mounts and the entry
    * is located inside it (see composeBundle). */
@@ -171,19 +188,20 @@ function stageBundle(
   css: FileSet,
   entrySources: IBundleEntrySource[]
 ): RuleResult {
-  const { jsTarget, bundleFormat, buildType, rewrite, defines, nodeGlobals, srcs, deps, bundler } = inputs;
+  const { jsTarget, bundleFormat, buildType, rewrite, defines, nodeGlobals, importMeta, srcs, deps, bundler } = inputs;
   if (entrySources.length === 0) {
     throw new FabrError("js_bundle 'entry' resolved to no files — name at least one source to bundle");
   }
   const entries = computeBundleEntries(entrySources, rewrite);
   /* The entry's packages are bundled as srcs are, so they count as srcs here. */
   const external = computeExternalNames([...srcs, ...srcPackages], deps);
-  const inject = nodeGlobals ? [NODE_GLOBALS_MODULE] : [];
+  const inject = [...(nodeGlobals ? [NODE_GLOBALS_MODULE] : []), ...(importMeta ? [IMPORT_META_MODULE] : [])];
   const options = buildBundleOptions(jsTarget, bundleFormat, buildType, entries, external, defines, inject, computeChunkNames(rewrite), computeAssetNames(rewrite));
   const workspace = {
     [TOOL_DIR]: bundler,
     "bundle-options.json": MemoryFile.from(JSON.stringify(options)),
     ...(nodeGlobals ? { [NODE_GLOBALS_MODULE]: MemoryFile.from(NODE_GLOBALS_GLUE) } : {}),
+    ...(importMeta ? { [IMPORT_META_MODULE]: MemoryFile.from(IMPORT_META_GLUE) } : {}),
   };
   /* The bundler launches from its own mount (its deps resolve there); cwd is
    * the working root, so the options manifest and outdir resolve against it. */
@@ -336,6 +354,7 @@ function buildWithInputs(
        * so one tree bundling both ways declares it once and pays only where it
        * is needed. */
       const nodeGlobals = usesNodeGlobals(flags) && jsTarget.environment === "browser";
+      const importMeta = bundleFormat === "cjs" && jsTarget.environment === "node";
       /* esbuild `define` takes code text per identifier; a map value is that
        * text verbatim (esbuild's own contract — no probing). Sub-maps have no
        * meaning as code text, so defines is flat by contract. */
@@ -344,6 +363,9 @@ function buildWithInputs(
        * these wins rather than colliding. */
       if (nodeGlobals) {
         Object.assign(defines, NODE_GLOBAL_DEFINES);
+      }
+      if (importMeta) {
+        Object.assign(defines, IMPORT_META_DEFINES);
       }
       for (const [key, value] of defineMap) {
         /* A map scalar is a string list; a sub-map / list of sub-maps is not code text.
@@ -360,6 +382,7 @@ function buildWithInputs(
         rewrite,
         defines,
         nodeGlobals,
+        importMeta,
         entry,
         srcs,
         deps,

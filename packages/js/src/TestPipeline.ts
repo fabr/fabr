@@ -482,11 +482,13 @@ function selfMount(packageName: string | undefined): FileSet {
 /** Select the runnable test files: the JS entries of the *actual* compiled tree
  * whose stem is one of the declared tests' stems, sorted for determinism. No
  * source→output name is predicted — js_compile named these; we only select.
- * `.mjs`/`.cjs` are the outputs of a `.mts`/`.cts` test. */
+ * `.mjs`/`.cjs` are the outputs of a `.mts`/`.cts` test. The root setup script
+ * ({@link selectCompiledSetupFile}) is never one, though it may be declared
+ * among the tests to compile with them. */
 export function selectCompiledTestFiles(compiled: FileSet, testStems: Set<string>): string[] {
   return [...compiled]
     .map(([name]) => name)
-    .filter(name => /\.[cm]?js$/.test(name) && testStems.has(stripExtension(name)))
+    .filter(name => /\.[cm]?js$/.test(name) && testStems.has(stripExtension(name)) && stripExtension(name) !== SETUP_STEM)
     .sort();
 }
 

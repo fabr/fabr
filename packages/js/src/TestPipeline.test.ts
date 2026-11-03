@@ -48,6 +48,12 @@ describe("selectCompiledTestFiles", () => {
     expect(selectCompiledTestFiles(tree, new Set(["foo.test"]))).to.deep.equal([]);
   });
 
+  it("leaves out the root setup script declared among the tests", () => {
+    const tree = fileSetOf("setupTests.js", "a/foo.test.js", "helpers/setupTests.js");
+    const stems = new Set(["setupTests", "a/foo.test", "helpers/setupTests"]);
+    expect(selectCompiledTestFiles(tree, stems)).to.deep.equal(["a/foo.test.js", "helpers/setupTests.js"]);
+  });
+
   it("picks up a .mts/.cts test's compiled .mjs/.cjs output", () => {
     const tree = fileSetOf("a.test.mjs", "b.test.cjs", "a.test.d.mts");
     expect(selectCompiledTestFiles(tree, new Set(["a.test", "b.test"]))).to.deep.equal(["a.test.mjs", "b.test.cjs"]);

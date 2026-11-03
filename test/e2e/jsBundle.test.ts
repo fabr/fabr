@@ -281,6 +281,7 @@ const BREAK = String.fromCharCode(10);
 const report = [
   "inject=" + JSON.stringify(opts.inject || []),
   "global=" + ((opts.define || {}).global || "(unset)"),
+  "dirname=" + ((opts.define || {})["import.meta.dirname"] || "(unset)"),
 ];
 for (const name of opts.inject || []) {
   report.push("glue<<" + fs.readFileSync(name, "utf8").split(BREAK).join(" ") + ">>");
@@ -332,6 +333,23 @@ for (const entry of opts.entries) {
     const result = runFabr(nodeGlobals("es2021-esm-browser", declared), ["cat", "app:main.js"]);
     expect(result.status, result.stderr).to.equal(0);
     expect(result.stdout).to.contain("global=window");
+  });
+
+  it("gives import.meta its CommonJS equivalents in a cjs bundle for node", () => {
+    const bare = "js_bundle app { entry = ./main.js; }";
+    const result = runFabr(nodeGlobals("es2021-commonjs-node", bare), ["cat", "app:main.js"]);
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stdout).to.contain('inject=[".fabr-import-meta.js"]');
+    expect(result.stdout).to.contain('glue<<export const import_meta_url = require("url").pathToFileURL(__filename).href; >>');
+    expect(result.stdout).to.contain("dirname=__dirname");
+  });
+
+  it("leaves import.meta alone in an ES module bundle", () => {
+    const bare = "js_bundle app { entry = ./main.js; }";
+    const result = runFabr(nodeGlobals("es2021-esm-node", bare), ["cat", "app:main.js"]);
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stdout).to.contain("inject=[]");
+    expect(result.stdout).to.contain("dirname=(unset)");
   });
 
   it("injects nothing when the flag is absent", () => {
