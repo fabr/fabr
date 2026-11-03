@@ -371,7 +371,11 @@ function resolvePhase<V, C>(
          * requires the package ONLY floorlessly, where no version is
          * selectable deterministically; then the written alternate supplies
          * one (fired at quiescence, like the other convergence repairs).
-         * Recorded here; never an ordinary demand. */
+         * Recorded here; never an ordinary demand. One stating no version
+         * (`@npm:debug?`) has none to supply. */
+        if (req.versionConstraint === undefined) {
+          return;
+        }
         const version = domain.minimumOf(constraint);
         const current = alternateAnswers.get(requiredAs(req));
         if (current === undefined || domain.compare(version, current.version) > 0) {

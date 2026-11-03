@@ -73,6 +73,8 @@ export interface CheckedResolution<V = unknown, C = unknown> {
   readonly requested: readonly Requirement[];
   /** The versions written as sanctioned (`?`, or an exact pin), by package. */
   readonly written: ReadonlyMap<string, ReadonlySet<string>>;
+  /** The packages sanctioned at every version, by a `?` stating none. */
+  readonly everyVersion: ReadonlySet<string>;
   readonly refText: RefRenderer;
   /** Find the selection of this resolution that `pkg` is, if it is one. */
   selectionOf(pkg: Package): Selected<V> | undefined;
@@ -225,7 +227,9 @@ function checkDomain<V, C>(group: CheckedResolution<V, C>[], packages: ReadonlyA
       written.set(pkg, new Set([...(written.get(pkg) ?? []), ...versions]));
     }
   }
-  const sanctioned = (pkg: string): boolean => [...(shipped.get(pkg)?.keys() ?? [])].every(version => written.get(pkg)?.has(version) === true);
+  const everyVersion = new Set(group.flatMap(resolution => [...resolution.everyVersion]));
+  const sanctioned = (pkg: string): boolean =>
+    everyVersion.has(pkg) || [...(shipped.get(pkg)?.keys() ?? [])].every(version => written.get(pkg)?.has(version) === true);
   const shippedOf = (pkg: string): Selected<V>[] => [...(shipped.get(pkg)?.values() ?? [])].map(entry => entry.selection);
 
   /* Each resolution's recorded violations in its own scope — the roots the

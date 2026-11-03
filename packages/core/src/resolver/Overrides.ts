@@ -43,28 +43,42 @@ function canonicalExactVersion<V, C>(domain: VersionDomain<V, C>, text: string |
   return exact === undefined ? undefined : domain.versionToString(exact);
 }
 
+/** The `?` sanctions written in a batch. */
+export interface Sanctions {
+  /** pkg → the canonical exact versions whose forks a strict delivery may accept. */
+  readonly versions: Map<PackageName, Set<string>>;
+  /** The packages a `?` stating no version sanctions at every version. */
+  readonly everyVersion: Set<PackageName>;
+}
+
 /**
- * Collect the `?` sanctions written in a batch (pkg → the canonical exact
- * versions whose forks a strict delivery may accept), rejecting the
- * contradictory marker combinations — a package both forced and alternated,
- * or forced at two different versions — via `fail`, which the caller supplies
- * so the error is attributed to the written references (this module stays
- * reference-free).
+ * Collect the `?` sanctions written in a batch, rejecting the contradictory
+ * marker combinations — a package both forced and alternated, or forced at two
+ * different versions — via `fail`, which the caller supplies so the error is
+ * attributed to the written references (this module stays reference-free).
  */
 export function collectSanctions<V, C>(
   domain: VersionDomain<V, C>,
   requirements: readonly Requirement[],
   fail: (pkg: PackageName, message: string) => never
-): Map<PackageName, Set<string>> {
+): Sanctions {
   const alternates = new Map<PackageName, Set<string>>();
+  const everyVersion = new Set<PackageName>();
   for (const req of requirements) {
-    if (req.override === "alternate" && req.versionConstraint !== undefined) {
+    if (req.override !== "alternate") {
+      continue;
+    }
+    if (req.versionConstraint === undefined) {
+      everyVersion.add(requiredAs(req));
+    } else {
       const versions = alternates.get(requiredAs(req)) ?? new Set();
       /* Canonical form: the sanction judgment compares versionToString. */
       alternates.set(requiredAs(req), versions.add(canonicalExactVersion(domain, req.versionConstraint) ?? req.versionConstraint));
     }
   }
-  const contradicted = requirements.find(req => req.override === "force" && alternates.has(requiredAs(req)));
+  const contradicted = requirements.find(
+    req => req.override === "force" && (alternates.has(requiredAs(req)) || everyVersion.has(requiredAs(req)))
+  );
   if (contradicted) {
     fail(
       requiredAs(contradicted),
@@ -86,7 +100,7 @@ export function collectSanctions<V, C>(
     }
     forcedAt.set(name, req.versionConstraint);
   }
-  return alternates;
+  return { versions: alternates, everyVersion };
 }
 
 /**

@@ -15,6 +15,7 @@ number.
 @fabr-build/js:
 - js_package now takes a compile_deps property for compile-only inputs.
 - Add sources operation.
+- Allow any version of a package with eg @npm:debug? (instead of specific versions)
 
 @fabr-build/vscode-ext:
 - New VSCode extension.

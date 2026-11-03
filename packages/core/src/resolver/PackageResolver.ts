@@ -276,6 +276,9 @@ class DomainResolution<V, C> implements Resolution {
      * outcome does not depend on it, so neither does the memo key).
      */
     public readonly written: ReadonlyMap<string, ReadonlySet<string>>,
+    /** The packages sanctioned at every version, by a `?` stating none: judged
+     * as {@link written} is. */
+    public readonly everyVersion: ReadonlySet<string>,
     /** The packages built in the project that are candidates of the resolution. */
     public readonly builds: Builds,
     /** The reference of the collection each selection is the root binding of,
@@ -608,7 +611,7 @@ export function resolvePackages<V, C>(
      * ride the resolution to the strict gate. They are key material (below).
      * Contradictory markers are attributed to the written references that
      * carry them. */
-    const alternates = collectSanctions(domain, [...requirements, ...builds.roots], (pkg, message): never => {
+    const sanctions = collectSanctions(domain, [...requirements, ...builds.roots], (pkg, message): never => {
       const culpable = references.filter((_, index) => requiredAs(requirements[index]) === pkg);
       throw culpable.length > 0 ? new RequirementResolutionError(culpable, new FabrError(message)) : new FabrError(message);
     });
@@ -644,7 +647,7 @@ export function resolvePackages<V, C>(
      * them. */
     const written = writtenVersions(
       domain,
-      alternates,
+      sanctions.versions,
       requirements.filter((req, index) => requests[index].as === "package" && req.override !== "alternate")
     );
     return getJointResolution(context, registry, repositoryNameOf(references), rootReqs, rootKeys, builds)
@@ -657,7 +660,7 @@ export function resolvePackages<V, C>(
             rootReferences.set(graph.id(bound), references[index]);
           }
         });
-        return new DomainResolution(registry, roots, rootIndex, graph, written, builds, rootReferences, requested);
+        return new DomainResolution(registry, roots, rootIndex, graph, written, sanctions.everyVersion, builds, rootReferences, requested);
       })
       .catch(err => attributeResolutionFailure(err, references, requirements));
   });
@@ -675,12 +678,12 @@ export function resolveBuilds(
   const domain = BUILDS_ALONE;
   return Computable.resolve(undefined).then(() => {
     const builds = directBuilds(buildsOf(undefined, locals, own), []);
-    const alternates = collectSanctions(domain, builds.roots, (_, message): never => {
+    const sanctions = collectSanctions(domain, builds.roots, (_, message): never => {
       throw new FabrError(message);
     });
     const { roots, keys } = canonicalRequirements(builds.roots);
     /* A reference to a target sanctions nothing: only the `?` alternates are written. */
-    const written = writtenVersions(domain, alternates, []);
+    const written = writtenVersions(domain, sanctions.versions, []);
     return resolveMVS(roots, domain, withBuilds(undefined, builds)).then(result => {
       if (result.errors.length > 0) {
         throw new ResolutionWalkError(result.errors);
@@ -691,6 +694,7 @@ export function resolveBuilds(
         new Map(keys.map((key, index) => [key, index])),
         result,
         written,
+        sanctions.everyVersion,
         builds,
         new Map(),
         new Map()
@@ -774,7 +778,7 @@ export function bindBuild<V, C>(
 export function checkedResolution(context: ResolutionContext, batch: ResolvedBatch): CheckedResolution {
   const { registry, requests } = batch;
   const resolved = batch.resolution as DomainResolution<unknown, unknown>;
-  const { graph, written, builds } = resolved;
+  const { graph, written, everyVersion, builds } = resolved;
   const domain = (registry === undefined ? BUILDS_ALONE : allowingBuilds(registry.format)) as VersionDomain<unknown, unknown>;
   const references = requests.map(request => request.reference);
   let asked: Requirement[] = [];
@@ -793,6 +797,7 @@ export function checkedResolution(context: ResolutionContext, batch: ResolvedBat
     graph,
     requested: [...asked, ...(batch.builds ? builds.roots : [])],
     written,
+    everyVersion,
     refText: registry === undefined ? buildText : refTextFor(references, registry),
     selectionOf: pkg => built.get(contentOf(pkg).key) ?? (pkg.version === undefined ? undefined : graph.node(`${pkg.packageName}@${pkg.version}`)),
     buildOrigin: selection => builds.built.get(graph.id(selection))?.pkg.origin,

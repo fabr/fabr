@@ -192,13 +192,16 @@ There are three ways to resolve one, in order of preference:
 2. **Allow both versions with `?`.** `@npm:ansi-styles:5.2.0? @npm:ansi-styles:4.1.0?` in the
    target's `deps`, or in the catalog, permits exactly those two versions. Each package then gets
    the version its own range accepts, as it would under npm. The markers don't make
-   `ansi-styles` a dependency of your target.
+   `ansi-styles` a dependency of your target. Written without a version, `@npm:ansi-styles?`
+   permits any number of versions of the package, which suits a package that holds no state of
+   its own and is harmless to have twice.
 3. **Force one version with `!`.** `@npm:ansi-styles:5.2.0!` replaces every requirement on the
    package with that version, like npm's `overrides`. Use it when a dependency's range is wrong
    and you know the forced version works.
 
-The markers need exact versions. If a later change moves either side of the conflict, the build
-fails again and names the marker to update. The
+A `!`, and a `?` that names a version, need exact versions. If a later change moves either side
+of the conflict, the build fails again and names the marker to update; a `?` without a version
+goes on permitting whatever versions are required. The
 [language reference](/reference/syntax/#version-override-markers) has the full rules.
 
 Programs that fabr only runs, such as the TypeScript compiler, a bundler, or a `js_script`'s own

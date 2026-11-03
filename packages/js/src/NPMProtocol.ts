@@ -543,10 +543,13 @@ function npmIdentity(written: string): Requirement {
 /**
  * Check an npm reference identity: it must state a version, and a valid one.
  * An override marker (`?` permits a nested alternate, `!` forces the version)
- * needs an exact version: a ranged override would reintroduce registry-time
- * nondeterminism.
+ * needs an exact version, except that a `?` may state none, permitting every
+ * version of the package.
  */
 export function validateNpmRequirement({ name: pkg, versionConstraint: constraint, override }: Requirement): void {
+  if (constraint === undefined && override === "alternate") {
+    return;
+  }
   if (constraint === undefined) {
     throw new FabrError(`Missing version in package reference '${pkg}' (expected '<name>:<version-or-range>')`);
   }
@@ -556,7 +559,7 @@ export function validateNpmRequirement({ name: pkg, versionConstraint: constrain
       throw new FabrError(
         `'${constraint}${marker}' is not a valid override for '${pkg}': the '${marker}' marker needs an exact version`
       ).withHelp(
-        "markers sanction one concrete version: '@npm:pkg:1.4.2?' permits a nested alternate, '@npm:pkg:2.0.0!' forces the version"
+        "'@npm:pkg:1.4.2?' permits that version as a nested alternate, '@npm:pkg?' permits every version, '@npm:pkg:2.0.0!' forces the version"
       );
     }
     return;

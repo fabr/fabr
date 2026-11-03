@@ -79,7 +79,8 @@ file is named as it is written. With `--coverage`, the tests are measured for co
 summary is printed and an lcov report written to `coverage/lcov.info`, or to `<dir>/lcov.info`
 with `--coverage=<dir>`; the directory is relative to the current directory. With `-t <pattern>`,
 only the tests whose names match the regular expression are run, and the run fails if no
-test in any of the targets matches. For JavaScript, see [Testing](/reference/js/testing/).
+test in any of the targets matches. See testing for [JavaScript](/reference/js/testing/) and
+[Java](/reference/java/testing/).
 
 ### An operation's name
 

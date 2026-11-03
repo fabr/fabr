@@ -72,6 +72,8 @@ export interface Requirement {
    *   It IS a resolver root, handled by a dedicated attach-last branch
    *   (MVSResolver's enqueue): only when the converged tree requires the
    *   package solely floorlessly does the written version supply a selection.
+   *   Written with no version (`@npm:debug?`), it sanctions every version of
+   *   the package and supplies none.
    *   Included in the canonical roots and the resolution memo key (its
    *   `requirementKey` carries the marker); the sanction itself is
    *   judged by the consumer at delivery.

@@ -129,7 +129,8 @@ describe("CatalogRepository (through the model)", () => {
   const ran: string[] = [];
   /** The test ecosystem: a near-versionless grammar over semver — a written
    * name IS the package, implicitly at 1.0.0, with an optional `:version` tail
-   * for the tests that need two versions of one package. Read off the name's
+   * for the tests that need two versions of one package (an empty one states
+   * no version). Read off the name's
    * base form, since the facets (a `-> alias` rename) say what to do *about*
    * the reference and name no part of the package. */
   const CAT_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
@@ -142,7 +143,8 @@ describe("CatalogRepository (through the model)", () => {
       if (colon === -1) {
         return { name: written, versionConstraint: "1.0.0" };
       }
-      return { name: written.substring(0, colon), versionConstraint: written.substring(colon + 1) };
+      const version = written.substring(colon + 1);
+      return { name: written.substring(0, colon), versionConstraint: version === "" ? undefined : version };
     },
     validateRequirement: () => undefined,
     parsePublishCoordinate: () => {
@@ -695,6 +697,17 @@ describe("CatalogRepository (through the model)", () => {
       const model = build(
         "package_repo @backing { }\n" +
           "catalog @cat { deps = @backing:a @backing:b @backing:x:2.0.0 @backing:x:1.0.0?; }\n" +
+          "test_deps both { deps = @cat:a @cat:b; }\n"
+      );
+      graph();
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("both"));
+      expect([...backings.get("@backing")!.fetched].sort()).to.include.members(["x@1.0.0", "x@2.0.0"]);
+    });
+
+    it("counts the catalog's '?' stating no version as every version written", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "catalog @cat { deps = @backing:a @backing:b @backing:x:?; }\n" +
           "test_deps both { deps = @cat:a @cat:b; }\n"
       );
       graph();

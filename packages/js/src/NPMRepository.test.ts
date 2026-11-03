@@ -1476,6 +1476,25 @@ describe("override markers", () => {
     expect(delivered).to.have.lengthOf(3);
   });
 
+  it("a '?' stating no version sanctions every version of the package", async () => {
+    const repo = npmRepository(REG, fakeContext("build", served, []));
+    const delivered = await toPromise(drive(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "C?"])));
+    expect(delivered).to.have.lengthOf(2);
+    expect((delivered[0] as PackageFileSet).packages.map(dep => `${dep.packageName}@${dep.version}`)).to.contain("C@1.5.0");
+  });
+
+  it("a '?' stating no version contradicts a '!' on the package", async () => {
+    const repo = npmRepository(REG, fakeContext("build", served, []));
+    const err = await rejection(() => toPromise(collectLists(machineryContexts.get(repo)! as unknown as ResolutionContext, [refsFor(repo, ["A:1.1.0", "C?"]), refsFor(repo, ["C:2.5.0!"])])));
+    expect(err.message).to.contain("is both forced ('!') and permitted as an alternate ('?')");
+  });
+
+  it("a '!' must state a version", async () => {
+    const repo = npmRepository(REG, fakeContext("build", served, []));
+    const err = await rejection(() => toPromise(drive(repo, refsFor(repo, ["A:1.1.0", "C!"]))));
+    expect(err.message).to.contain("Missing version in package reference 'C'");
+  });
+
   it("a non-canonically written sanction ('v'-prefix) still matches the versions it names", async () => {
     /* Sanction sets store canonical versionToString forms — a written pin or
      * '?' recorded verbatim as 'v2.5.0' could never match the selection the
@@ -1606,6 +1625,13 @@ describe("override markers", () => {
     expect(helpText(err)).to.contain("@npm:T:24.2.0?");
     expect(helpText(err)).to.contain("@npm:U:3.1.0?");
     expect(helpText(err)).to.contain("none is a direct dependency");
+  });
+
+  it("a '?' stating no version supplies no version to a package required only without a lower bound", async () => {
+    const repo = npmRepository(REG, fakeContext("build", floorlessServed, []));
+    const err = await rejection(() => toPromise(drive(repo, refsFor(repo, ["P:1.0.0", "T?", "U:3.1.0?"]))));
+    expect(err.message).to.contain("'T' — required by Q@1.2.0, R@1.3.0");
+    expect(err.message).to.not.contain("'U' —");
   });
 
   it("the one-pass repair set folds in the divergences the completed resolution hits", async () => {

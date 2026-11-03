@@ -83,6 +83,22 @@ together. Display names (`@DisplayName`) are not matched. The summary ends `(fil
 test in any target matches, the run fails. Selecting by name needs the JUnit Platform launcher
 1.12 (JUnit 5.12) or later.
 
+## Code coverage
+
+```sh
+fabr test --coverage app
+```
+
+runs the tests with [JaCoCo](https://www.jacoco.org/jacoco/)'s agent and reports the coverage of
+the target's own jar: a summary is printed and an lcov report written to `coverage/lcov.info`,
+naming each source by its path in your project. **Maven / Gradle:** the `jacoco-maven-plugin` or
+`jacoco` plugin, configured with its own goals and report formats. **fabr:** nothing to declare;
+the JaCoCo release is `JACOCO_AGENT` and `JACOCO`, which must name the same version.
+
+JaCoCo records whether code ran, not how many times, so each line and method counts as 0 or 1.
+The classes measured are those of the packages the target's `srcs` declare; the tests' own classes
+and the jars the target depends on are not measured, including jars built in the project.
+
 ## Troubleshooting
 
 **`fabr-junit-runner: the JUnit Platform launcher is not on the classpath (…): add org.junit.platform:junit-platform-launcher, of the tests' JUnit release, to test_deps`**

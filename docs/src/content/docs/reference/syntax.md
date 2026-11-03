@@ -318,12 +318,14 @@ srcs = ./**/*.tgz/**/*.ts;     # the .ts files inside every .tgz in the tree
 ### Version override markers
 
 A package version in a reference can end in `?` or `!`, to resolve a conflict between the versions
-that different parts of a build require. Both need an exact version, and both can be written
-wherever dependencies are listed: in a target's `deps` or in a catalog.
+that different parts of a build require. Each takes an exact version, except that a `?` may name
+none, and both can be written wherever dependencies are listed: in a target's `deps` or in a
+catalog.
 
 ```
 deps = @npm:aws-param-store-sdkv3:4.0.0
        @npm:tslib:2.6.2? @npm:tslib:1.14.1?     # both versions of tslib are allowed
+       @npm:debug?                              # any versions of debug are allowed
        @npm:some-package:2.0.0!;                # every requirement on it becomes 2.0.0
 ```
 
@@ -336,8 +338,10 @@ each package gets the version its own requirement accepts, as it would under npm
 - An entry is not a dependency. It doesn't add the package to the target.
 - In a catalog, an ordinary exact entry counts as allowing that version:
   `deps = @npm:tslib:2.6.2 @npm:tslib:1.14.1?;`.
-- A `?` also supplies a version for a package that is only ever required as `*`, which otherwise
-  has no version to select.
+- Without a version, `@npm:debug?` allows every version of the package: as many as the build
+  requires, now or after later changes.
+- A `?` with a version also supplies it for a package that is only ever required as `*`, which
+  otherwise has no version to select.
 
 **`!` forces a version.** Every requirement on the package, from any dependency, is replaced by
 exactly this version, as npm's `overrides` does. Requirements it doesn't satisfy are overridden
