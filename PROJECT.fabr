@@ -42,6 +42,10 @@ catalog @pkg {
          @npm:diff:9.0.0
          # The Java plugin's XML reader (POMs, maven-metadata.xml).
          @npm:sax:1.6.1 @npm:@types/sax:1.2.7
+         # The AWS plugin's credential chain and request signing. Their
+         # closure needs a newer tslib than sass-embedded's (sanctioned below).
+         @npm:@aws-sdk/credential-provider-node:3.972.92
+         @npm:@smithy/signature-v4:5.7.5 @npm:@smithy/hash-node:4.5.2
 
          # The bundle driver's tests drive the real bundler; pinned to the same
          # version ESBUILD names, since what they check is what THAT esbuild
@@ -71,7 +75,7 @@ catalog @pkg {
          # sanctions the coexistence).
          @npm:sass-embedded:1.100.0
          @npm:supports-color:8.1.1? @npm:supports-color:7.1.0?
-         @npm:tslib:2.4.0? @npm:tslib:2.1.0?
+         @npm:tslib:2.6.2? @npm:tslib:2.4.0? @npm:tslib:2.1.0?
          # Pulled in transitively by @types/jest, and required only without a
          # lower bound ('*', the DefinitelyTyped house style), so nothing picks
          # a version for them; and two packages @types/jest's closure needs at a
@@ -130,7 +134,7 @@ sync release {
 # fabr as it is installed: the CLI and the plugins installed with it, each
 # with everything it requires, laid out as `node_modules`.
 js_installation fabr_install {
-  deps = @fabr-build/cli @fabr-build/js @fabr-build/js-tools @fabr-build/sass-pnp-importer @fabr-build/java;
+  deps = @fabr-build/cli @fabr-build/js @fabr-build/js-tools @fabr-build/sass-pnp-importer @fabr-build/java @fabr-build/aws;
 }
 
-all = @fabr-build/core @fabr-build/js-boot @fabr-build/js-tools @fabr-build/cli @fabr-build/sass-pnp-importer @fabr-build/java-boot vscode-ext;
+all = @fabr-build/core @fabr-build/js-boot @fabr-build/js-tools @fabr-build/cli @fabr-build/sass-pnp-importer @fabr-build/java-boot @fabr-build/aws-boot vscode-ext;

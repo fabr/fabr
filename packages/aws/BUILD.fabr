@@ -1,0 +1,21 @@
+# The AWS plugin. Fabr does not need it to build itself, so only fabr builds it.
+
+# The plugin's code.
+js_package @fabr-build/aws-boot {
+  srcs = src:**/*.ts ../../README.md -> README.md ../../COPYING -> LICENSE;
+  # The modules AWS.fabr's repository declaration names.
+  exports = src:AwsAccount.ts;
+  tests = src:**/*.test.ts;
+  deps = @pkg:@types/node @pkg:sax
+         @pkg:@aws-sdk/credential-provider-node @pkg:@smithy/signature-v4 @pkg:@smithy/hash-node;
+  compile_deps = @pkg:@types/sax;
+  provided_deps = @fabr-build/core;
+  test_deps = chai jest_types;
+  metadata = { FABR_METADATA; description = Fabr AWS support plugin }
+}
+
+# The plugin, built in the project: its code and AWS.fabr.
+fabr_plugin @fabr-build/aws {
+  srcs = @fabr-build/aws-boot;
+  libs = ./lib/AWS.fabr;
+}

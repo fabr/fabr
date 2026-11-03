@@ -111,6 +111,7 @@ export interface IArchiveRequest {
   readonly source: () => Computable<IDownloadSource>;
   /** Reshape the unpacked files before they are kept (strip the top directory). */
   readonly keep?: (files: FileSet) => FileSet;
+  readonly options?: FetchOptions;
 }
 
 /**
@@ -135,7 +136,8 @@ export function fetchArchive(context: CacheFetcher, request: IArchiveRequest): C
           });
         },
       })),
-    request.report
+    request.report,
+    request.options
   );
 }
 
@@ -160,8 +162,10 @@ export interface IFileRequest {
   readonly report: IFetchReport;
   /** The name the file is kept under. */
   readonly name: string;
-  /** Find where to download it from: asked only on a cache miss. */
+  /** Find where to download it from: asked only on a cache miss, or to
+   *  revalidate a held copy. */
   readonly source: () => Computable<IDownloadSource>;
+  readonly options?: FetchOptions;
 }
 
 /**
@@ -197,7 +201,8 @@ export function fetchFile(context: CacheFetcher, request: IFileRequest): Computa
             .then((file: IFile) => new FileSet(new Map([[name, file]])));
         },
       })),
-    request.report
+    request.report,
+    request.options
   );
 }
 

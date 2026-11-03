@@ -115,8 +115,10 @@ const DIAG_SERVING_STALE = Diagnostic.Warn<{ url: string; reason: string }>(
  * `immutable: false` the entry honors HTTP caching instead — origin-declared
  * freshness, then conditional GET.
  *
- * `immutable: false` is only for POINTER documents over immutable content (a
- * registry's version list); content itself replaced under one URL stays banned.
+ * `immutable: false` is for what its origin may replace under one URL: a
+ * POINTER document over immutable content (a registry's version list), or an
+ * object in a store whose keys are mutable (S3). Content a registry publishes
+ * under a version is immutable.
  */
 export interface FetchOptions {
   immutable?: boolean;

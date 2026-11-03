@@ -1,0 +1,39 @@
+#
+# Definitions for the AWS plugin.
+#
+
+#
+# An AWS account, as a given role and region: the credentials requests to its
+# services are signed with, and where they go. A name under it starts with the
+# service, so `@aws:s3:acme-models:v3/model.bin` is that object in the
+# `acme-models` bucket, named `v3/model.bin`. Credentials are found as the AWS
+# CLI finds them (environment, `~/.aws` profiles, SSO, web identity, instance
+# roles). fabr declares `@aws` for you; declaring it yourself chooses the
+# profile:
+#
+#     aws_account @aws { profile = build; }
+#
+targetdef aws_account {
+    # The `~/.aws/config` profile whose credentials are used. By default, the
+    # one the AWS CLI would use (`AWS_PROFILE`, else `default`).
+    profile = STRING;
+    # The region of the account's regional services. S3 finds each bucket's
+    # region for itself.
+    region = STRING;
+    # The URL every service of the account is reached at, in place of AWS's
+    # own: an S3-compatible store such as MinIO or LocalStack.
+    endpoint = STRING;
+}
+
+####################### Repository ##########################
+
+#
+# The AWS account the default credentials sign in to.
+#
+
+default aws_account @aws { }
+
+#
+# How the AWS repository type is made.
+#
+repository aws_account = @fabr-build/aws:AwsAccount;
