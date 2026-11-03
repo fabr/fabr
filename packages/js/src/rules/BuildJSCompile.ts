@@ -143,9 +143,11 @@ function selfReferencePaths(packageName: string): Record<string, string[]> {
   return { [packageName]: ["./src/index"], [`${packageName}/*`]: ["./src/*"] };
 }
 
-/** The `lib` list: the source level, plus the DOM when emitting for a browser. */
+/** The `lib` list: the source level, plus the DOM where the sources use it,
+ * its iterables included (TypeScript 6 merged `dom.iterable` into `dom`, leaving
+ * the name an empty stub; before 6 it is a lib of its own). */
 function libFor(level: string, hasDom: boolean): string[] {
-  return hasDom ? [level, "dom"] : [level];
+  return hasDom ? [level, "dom", "dom.iterable"] : [level];
 }
 
 /**

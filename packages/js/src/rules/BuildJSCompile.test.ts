@@ -175,7 +175,7 @@ describe("makeTsConfig", () => {
     expect(browserNoDom.compilerOptions.lib).to.deep.equal(["es2020"]);
 
     const nodeWithDom = makeTsConfig(parseJSTarget("es2020-commonjs-node"), undefined, {}, undefined, undefined, undefined, true) as unknown as TsConfig;
-    expect(nodeWithDom.compilerOptions.lib).to.deep.equal(["es2020", "dom"]);
+    expect(nodeWithDom.compilerOptions.lib).to.deep.equal(["es2020", "dom", "dom.iterable"]);
   });
 
   it("emits the real iteration protocol below es2015", () => {

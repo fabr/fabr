@@ -19,6 +19,7 @@ number.
 - Move bundling format out to a new property JS_BUNDLE_FORMAT (with target defaults)
 - Add bundle splitting + metafile support.
 - Support renaming bundled chunks + assets.
+- dom dependency includes dom.iterator as well (for TS5.x, no effect on TS6.x)
 
 @fabr-build/vscode-ext:
 - New VSCode extension.
