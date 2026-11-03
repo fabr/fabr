@@ -91,6 +91,15 @@ export const TEST_EXPECTATIONS = "TEST_EXPECTATIONS";
 export const UPDATE_EXPECTATIONS = "update";
 
 /**
+ * The regular expression selecting which tests a test run runs: a test runs
+ * where it matches part of the test's name as its runner names it (suite and
+ * test names joined by spaces for the js runners, `Class#method` for JUnit);
+ * empty (the default, declared in STD.fabr) runs them all. `fabr test
+ * -t` sets it. Named here because the driver and the test rules agree on it.
+ */
+export const TEST_NAME_PATTERN = "TEST_NAME_PATTERN";
+
+/**
  * Whether what is built and tested is measured for code coverage: `on` or
  * `off` (the default, declared in STD.fabr). `fabr test --coverage` sets it; a
  * tool is always resolved with it `off` (see TargetContext.runOverrides). Named

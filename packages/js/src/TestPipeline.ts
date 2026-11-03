@@ -30,7 +30,8 @@
  * standalone inside the test working directory. The runner contract:
  *
  *     <runner> --report=<file> --env=<node|jsdom> [--update-snapshots]
- *              [--setup=<module|./staged path>]… <test files…>
+ *              [--name-pattern=<regex>] [--setup=<module|./staged path>]…
+ *              <test files…>
  *
  * red exit status on failure, report written as CTRF. `--env` names the
  * environment the suite RUNS in, which follows the `dom` source flag rather than
@@ -38,6 +39,9 @@
  * `--update-snapshots` asks the runner
  * to rewrite recorded expectations instead of failing on them (see
  * TEST_EXPECTATIONS), which the pipeline then offers back to the source tree;
+ * `--name-pattern` runs only the tests whose full names (suite names and the
+ * test's own, joined by spaces) the JavaScript regular expression matches (see
+ * TEST_NAME_PATTERN);
  * each `--setup` names something every test process loads before any test file,
  * in the order given — fabr passes the target's conventional setup script (see
  * {@link SETUP_STEM}), and the contract stays plural because it is the runner's,
@@ -70,6 +74,7 @@ import {
   SymlinkFile,
   TargetContext,
   TEST_EXPECTATIONS,
+  TEST_NAME_PATTERN,
   TEST_REPORT_FILENAME,
   toEnvironment,
   TREE_MOUNT,
@@ -299,8 +304,9 @@ export function compileAndRunTests(
       context.getGlobalString("JS_TARGET", BUILD_OVERRIDE),
       context.getMap(settings.envProperty),
       context.getGlobalString(COVERAGE),
+      context.getGlobalString(TEST_NAME_PATTERN),
     ],
-    (runner, expectations, target, env, coverage): Computable<RuleResult> =>
+    (runner, expectations, target, env, coverage, namePattern): Computable<RuleResult> =>
       (coverage === COVERAGE_ON ? context.getGlobalRunnable("JS_COVERAGE_DRIVER") : Computable.resolve(undefined)).then(
         (coverageDriver): Computable<RuleResult> => {
       const jsTarget = parseJSTarget(target);
@@ -348,6 +354,7 @@ export function compileAndRunTests(
           env,
           packageName: settings.packageName,
           update: expectations === UPDATE_EXPECTATIONS,
+          namePattern: namePattern === "" ? undefined : namePattern,
           coverage: coverageDriver === undefined ? undefined : { driver: coverageDriver, packages },
         });
       });
@@ -531,6 +538,8 @@ interface ITestRun {
   /** The package the sources may import themselves by, if any — see selfMount. */
   packageName?: string;
   update: boolean;
+  /** The regular expression selecting the tests run by name, if any. */
+  namePattern?: string;
   /** Where the run is measured for coverage: the program converting what the
    * test processes record, and the packages installed for the run, of which
    * those built in the project are measured. */
@@ -603,6 +612,7 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
       [
         `--env=${run.needsDom ? "jsdom" : "node"}`,
         ...(run.update ? ["--update-snapshots"] : []),
+        ...(run.namePattern === undefined ? [] : [`--name-pattern=${run.namePattern}`]),
         /* `./`-prefixed: the runner contract distinguishes a path within the
          * installation from a bare module name by exactly that prefix. */
         ...(setupFile === undefined ? [] : [`--setup=./${setupFile}`]),

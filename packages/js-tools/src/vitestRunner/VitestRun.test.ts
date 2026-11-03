@@ -44,6 +44,11 @@ describe("vitestOptions", () => {
     expect(options({ update: true }).update).to.equal("all");
   });
 
+  it("selects tests by name only when given a pattern", () => {
+    expect(options()).not.to.have.property("testNamePattern");
+    expect(options({ namePattern: "dates parses" }).testNamePattern).to.equal("dates parses");
+  });
+
   it("passes the environment through", () => {
     expect(options({ env: "jsdom" }).environment).to.equal("jsdom");
   });

@@ -59,6 +59,9 @@ export interface IConfigOptions {
   env: string;
   /** Rewrite recorded snapshots rather than failing on a mismatch. */
   updateSnapshots: boolean;
+  /** The regular expression selecting the tests run by full name, if any —
+   * jest's `testNamePattern`, which circus matches case-insensitively. */
+  namePattern?: string;
   /** Per-test timeout in milliseconds. Circus enforces this itself, per test,
    * and honours a test's own override. */
   timeoutMs: number;
@@ -103,9 +106,14 @@ export async function makeJestConfig(options: IConfigOptions): Promise<IJestConf
     setupFilesAfterEnv: options.setup.map(entry => (entry.startsWith("./") ? path.resolve(options.root, entry) : entry)),
   };
   const config = await readConfig({ _: [], $0: "" }, initialOptions, false, options.root);
-  /* `updateSnapshot` lives on the GLOBAL config, where jest's CLI sets it. */
+  /* `updateSnapshot` and `testNamePattern` live on the GLOBAL config, where
+   * jest's CLI sets them. */
   return {
-    globalConfig: { ...config.globalConfig, updateSnapshot: options.updateSnapshots ? "all" : "none" },
+    globalConfig: {
+      ...config.globalConfig,
+      updateSnapshot: options.updateSnapshots ? "all" : "none",
+      ...(options.namePattern === undefined ? {} : { testNamePattern: options.namePattern }),
+    },
     projectConfig: config.projectConfig,
   };
 }

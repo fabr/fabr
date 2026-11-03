@@ -99,10 +99,19 @@ Under jest and vitest, a helper that is matched by `tests` fails with
 fabr test mylib        # compile and run mylib's tests
 fabr test -w mylib     # ...and again whenever a source changes
 fabr test -u mylib     # ...and record or update snapshots
+fabr test -t 'dates parse' mylib   # ...but only the tests whose names match
 fabr test --coverage mylib   # ...and measure code coverage
 ```
 
-A passing run prints one line per target, such as `mylib: 12 tests passed (1 skipped)`. A failing
+A passing run prints one line per target, such as `mylib: 12 tests passed (1 skipped)`.
+
+`-t` takes a JavaScript regular expression, matched against each test's full name: the names of
+the `describe` blocks it is in and its own, joined by spaces, as `dates parse iso` for
+`it("parse iso")` inside `describe("dates")`. Each framework does the matching, so its own rules
+apply: jest ignores case, and `node:test` also matches a test's own name alone. Under jest and
+vitest the tests not selected are counted as skipped. The summary ends `(filtered)`, and if no
+test in any target matches, the run fails. The pattern is part of what is cached, so a filtered
+run and a full one are cached separately. A failing
 run fails the target and prints a line for each failed test, naming the test file by its path in
 your project, as in `greets by name (src/greet.test.ts): 'Hello, x!' == 'Hello, world!'`. Under
 jest and vitest the line is followed by the detail the framework itself shows, such as a matcher's
@@ -113,9 +122,9 @@ Some things differ from running a test framework's own command:
 - **A passing run is cached.** If nothing the tests depend on has changed, `fabr test` reports the
   previous result without running them again. A failing run is never cached. The unit is the
   target: changing one test file runs all of that target's tests again.
-- **You select tests by target, not by file or name.** There is no equivalent of `jest -t` or of
-  passing a file path, and arguments aren't passed through to the framework. To run a subset
-  routinely, give it its own target.
+- **You select tests by target and by name, not by file.** `fabr test -t` selects by name, as
+  `jest -t` does; there is no equivalent of passing a file path, and arguments aren't passed
+  through to the framework. To run a subset routinely, give it its own target.
 - **Output from passing tests is not shown.** `console.log` output and anything else a test writes
   to stdout or stderr is discarded, unless a test file fails to load at all, in which case the
   end of its error output is included in the failure.
@@ -547,11 +556,13 @@ tests, in the module format the framework's row of [the table above](#the-three-
 and runs your program once for each test file, with the compiled tests as its working directory:
 
 ```
-<runner> --report=<file> --env=<node|jsdom> [--update-snapshots] [--setup=<file>]… <test file>
+<runner> --report=<file> --env=<node|jsdom> [--update-snapshots] [--name-pattern=<regex>]
+         [--setup=<file>]… <test file>
 ```
 
 - **`--env`** is `jsdom` for a target with the [`dom` flag](#dom-tests), and `node` otherwise.
 - **`--update-snapshots`** is passed by `fabr test -u`.
+- **`--name-pattern`** is passed by `fabr test -t`: run only the tests whose full names match.
 - **`--setup`** names a [`setupTests`](#a-setup-file) file to load before the test file.
 - **The report** must be written to the `--report` file as a [CTRF](https://ctrf.io/) document,
   `{"results": {"tool": …, "summary": …, "tests": […]}}`, with each of the summary's counts

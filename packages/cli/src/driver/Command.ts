@@ -18,7 +18,7 @@
  */
 
 import { readFileSync } from "fs";
-import { COVERAGE, COVERAGE_ON, preferredOperation, TEST_EXPECTATIONS, UPDATE_EXPECTATIONS } from "@fabr-build/core";
+import { COVERAGE, COVERAGE_ON, preferredOperation, TEST_EXPECTATIONS, TEST_NAME_PATTERN, UPDATE_EXPECTATIONS } from "@fabr-build/core";
 import { CommandLineSource } from "./CommandLineSource";
 import { dirname, join } from "path";
 
@@ -85,7 +85,7 @@ interface CommandSpec {
 
 const COMMAND_SPECS: CommandSpec[] = [
   { name: "build", synopsis: "[-w] <targets>", summary: "Build the given targets (the default command)", accepts: ["-w", "-q", "--no-progress", "-f"], requiresTarget: true },
-  { name: "test", synopsis: "[-w] [-u] [--coverage] <targets>", summary: "Build and run the given targets' tests", accepts: ["-w", "-u", "--coverage", "-q", "--no-progress", "-f"], requiresTarget: true },
+  { name: "test", synopsis: "[-w] [-u] [-t PATTERN] [--coverage] <targets>", summary: "Build and run the given targets' tests", accepts: ["-w", "-u", "-t", "--coverage", "-q", "--no-progress", "-f"], requiresTarget: true },
   { name: "run", synopsis: "[-w] <target> [args…]", summary: "Execute a target, forwarding trailing args to it", accepts: ["-w", "-q", "--no-progress", "-f"], requiresTarget: true },
   { name: "shell", synopsis: "<target>", summary: "Stage a target's build sandbox and open a shell in it (debugging)", accepts: ["-q", "--no-progress"], singleTarget: true, requiresTarget: true },
   { name: "ls", synopsis: "[-l] <names>", summary: "Build the given targets and list their contents", accepts: ["-l", "-q", "--no-progress"], requiresTarget: true },
@@ -227,6 +227,7 @@ function printUsage(write: (message: string) => void = console.log): void {
       "  -DPROP=VALUE      Force the given property PROP to VALUE (before the target for run)\n" +
       "  -w                Watch mode: rebuild / re-run as inputs change (build/test/run)\n" +
       "  -u, --update      Update recorded test expectations (snapshots) from the run (test)\n" +
+      "  -t PATTERN        Run only the tests whose names match the regular expression PATTERN (test)\n" +
       "  --coverage[=DIR]  Measure code coverage and write DIR/lcov.info, coverage/ by default (test)\n" +
       "  -l                Long listing: hash and size per file (ls), or source location (list-*)\n" +
       "  --json            Emit JSON (the list-* verbs)\n" +
@@ -261,10 +262,21 @@ const DEFAULT_COVERAGE_DIR = "coverage";
  * flags that are only meaningful to some commands for validation against the
  * command once it is known. Shared by the two parsing passes: the whole line
  * when a command was given, and (via {@link completeCommandLine}) the tail
- * deferred when one was not.
+ * deferred when one was not. `next` is the argument after `arg`, for an option
+ * taking a value of its own.
+ *
+ * @return the number of arguments after `arg` the option consumed.
  */
-function applyOption(arg: string, options: Options, seenFlags: SeenFlag[]): void {
-  if (arg === "-w") {
+function applyOption(arg: string, next: string | undefined, options: Options, seenFlags: SeenFlag[]): number {
+  if (arg === "-t") {
+    /* Sugar for the -D pathway, as -u is: which tests run is a build input. */
+    if (next === undefined) {
+      usageError(`Option '${arg}' requires a pattern`);
+    }
+    options.properties.set(TEST_NAME_PATTERN, next);
+    seenFlags.push({ raw: arg, flag: "-t" });
+    return 1;
+  } else if (arg === "-w") {
     options.mode = Mode.Watch;
     seenFlags.push({ raw: arg, flag: "-w" });
   } else if (arg === "-l") {
@@ -318,6 +330,7 @@ function applyOption(arg: string, options: Options, seenFlags: SeenFlag[]): void
   } else {
     usageError(`Unrecognized command-line option '${arg}'`);
   }
+  return 0;
 }
 
 /** Refuse `-f` combined with `-w`. `-f` forces a rebuild of what was named
@@ -355,10 +368,13 @@ export function parseCommandLine(args: string[]): Options {
 
   let commandGiven = false;
   let noMoreOptions = false;
+  let consumed = 0;
   for (const [index, arg] of opts.entries()) {
     /* For `run`, once the target is captured everything else — flags included —
      * is passed verbatim to the program (fabr's own options go before it). */
-    if (options.runArgs) {
+    if (consumed > 0) {
+      consumed--;
+    } else if (options.runArgs) {
       options.runArgs.push(arg);
     } else if (!noMoreOptions && arg === "--") {
       /* A bare `--` ends fabr's option parsing: every following argument is a
@@ -366,7 +382,7 @@ export function parseCommandLine(args: string[]): Options {
        * Only the first `--` is special — a later one is an ordinary positional. */
       noMoreOptions = true;
     } else if (!noMoreOptions && arg[0] === "-") {
-      applyOption(arg, options, seenFlags);
+      consumed = applyOption(arg, opts[index + 1], options, seenFlags);
     } else if (!noMoreOptions && !commandGiven && options.targets.length === 0 && COMMANDS.has(arg)) {
       /* The first positional argument may name the operation; a target with the
        * same name is reached with an explicit command first (`fabr build test`)
@@ -448,15 +464,18 @@ export function completeCommandLine(
   const plan: CommandPlan = { build: [], test: [] };
   const seenFlags: SeenFlag[] = [];
   let noMoreOptions = false;
+  let consumed = 0;
   /* An operation a rule declares is a command, as `build` is, over a target of the same name. */
   const operation = deferred.length > 0 && operations.has(deferred[0]) ? { name: deferred[0], targets: [] as string[] } : undefined;
   for (const [index, arg] of deferred.entries()) {
-    if (operation !== undefined && index === 0) {
+    if (consumed > 0) {
+      consumed--;
+    } else if (operation !== undefined && index === 0) {
       plan.operation = operation;
     } else if (!noMoreOptions && arg === "--") {
       noMoreOptions = true;
     } else if (!noMoreOptions && arg[0] === "-") {
-      applyOption(arg, options, seenFlags);
+      consumed = applyOption(arg, deferred[index + 1], options, seenFlags);
     } else if (operation !== undefined) {
       operation.targets.push(arg);
     } else {

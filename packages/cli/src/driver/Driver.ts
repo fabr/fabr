@@ -75,6 +75,7 @@ import {
   MemoryFile,
   mergeCoverage,
   parseLcov,
+  TEST_NAME_PATTERN,
 } from "@fabr-build/core";
 import { runInteractive, RunSupervisor } from "./RunHandler";
 import { shellInto } from "./ShellHandler";
@@ -341,7 +342,7 @@ function runTest(
   markForced(model, options, execution, names);
   const refs = names.map(name => options.commandLine.refFor(name, site));
   return testOperation(configFor(model, options, execution, "test"), refs).then(results =>
-    reportTestResults(execution.log, names, results)
+    reportTestResults(execution.log, names, results, options.properties.get(TEST_NAME_PATTERN) || undefined)
       .then(() => applyExpectationUpdates(execution, site, results))
       .then(() => (options.coverageDir === undefined ? undefined : reportCoverage(execution, site, options.coverageDir, results)))
   );
@@ -1492,15 +1493,21 @@ function renderListing(files: FileSet, longListing: boolean): Computable<string[
 /**
  * Report each target's test result summary — for a test run the interesting
  * outcome is the tests, not the build — from its test report artifact (whether freshly
- * run or cached-green).
+ * run or cached-green). A run given `-t` marks each summary filtered, and fails
+ * where its pattern ran no test in any of the targets.
  */
-function reportTestResults(log: Log, names: string[], results: SourceRef[][]): Computable<void> {
+function reportTestResults(log: Log, names: string[], results: SourceRef[][], namePattern: string | undefined): Computable<void> {
   return Computable.forAll(
     results.map(sources => getTestReport(sources)),
     (...reports) => {
+      const filtered = namePattern === undefined ? "" : " (filtered)";
       reports.forEach((report, i) => {
-        log.log(DIAG_TEST_RESULT, { name: names[i], summary: report ? formatTestSummary(report) : "no tests" });
+        log.log(DIAG_TEST_RESULT, { name: names[i], summary: (report ? formatTestSummary(report) : "no tests") + filtered });
       });
+      const ran = reports.reduce((count, report) => count + (report ? report.results.summary.passed + report.results.summary.failed : 0), 0);
+      if (namePattern !== undefined && ran === 0) {
+        throw new FabrError(`No test's name matches the pattern '${namePattern}'`);
+      }
     }
   );
 }

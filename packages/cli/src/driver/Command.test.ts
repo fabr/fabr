@@ -244,6 +244,15 @@ describe("Command", () => {
     expect(capture(["build", "--coverage", "foo"]).err.join("\n")).to.match(/'--coverage' is not valid for the 'build'/);
   });
 
+  it("selects tests by name with -t, its pattern the next argument and not a target", () => {
+    const parsed = parseCommandLine(["node", "fabr", "test", "-t", "dates parse", "foo"]);
+    expect(parsed.properties.get("TEST_NAME_PATTERN")).to.equal("dates parse");
+    expect(parsed.targets).to.deep.equal(["foo"]);
+    expect(parseCommandLine(["node", "fabr", "test", "foo", "-t", "-x"]).properties.get("TEST_NAME_PATTERN")).to.equal("-x");
+    expect(capture(["test", "foo", "-t"]).err.join("\n")).to.match(/'-t' requires a pattern/);
+    expect(capture(["build", "-t", "x", "foo"]).err.join("\n")).to.match(/'-t' is not valid for the 'build'/);
+  });
+
   it("parses the (undocumented) force flag in both spellings", () => {
     expect(parseCommandLine(["node", "fabr", "build", "-f", "foo"]).force).to.be.true;
     expect(parseCommandLine(["node", "fabr", "test", "--force", "foo"]).force).to.be.true;

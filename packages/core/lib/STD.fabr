@@ -17,6 +17,12 @@ default BUILD_OPERATION = build;
 # records back into the source tree. `fabr test -u` sets `update` for one run.
 default TEST_EXPECTATIONS = check;
 
+# The regular expression selecting the tests a test run runs: a test runs where
+# it matches part of the test's name as its runner names it, such as suite and
+# test names joined by spaces, or `Class#method`. Empty runs every test.
+# `fabr test -t PATTERN` sets it for one run.
+default TEST_NAME_PATTERN = "";
+
 # Whether what is built and tested is measured for code coverage: `on` or
 # `off`. `fabr test --coverage` sets `on` for one run. A tool is always built
 # with it `off`.

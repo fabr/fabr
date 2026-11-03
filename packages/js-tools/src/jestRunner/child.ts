@@ -49,6 +49,7 @@ export interface IChildRequest {
   root: string;
   env: string;
   updateSnapshots: boolean;
+  namePattern?: string;
   timeoutMs: number;
   setup: string[];
 }

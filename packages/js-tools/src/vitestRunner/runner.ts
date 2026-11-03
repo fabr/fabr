@@ -28,7 +28,7 @@
  *
  * Usage (the runner contract, same as every flavour):
  *   node runner.js --report=<path> --env=<node|jsdom> [--update-snapshots]
- *                  [--setup=<module|./staged path>]... <test-file>...
+ *                  [--name-pattern=<regex>] [--setup=<module|./staged path>]... <test-file>...
  */
 
 import * as fs from "node:fs";

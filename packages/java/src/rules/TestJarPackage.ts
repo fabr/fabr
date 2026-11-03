@@ -25,7 +25,7 @@
  */
 
 import * as path from "path";
-import { BUILD_OVERRIDE, Computable, defineRule, EMPTY_FILESET, FabrError, FileSet, IFile, MemoryFile, RuleResult, TargetContext, TREE_MOUNT } from "@fabr-build/core";
+import { BUILD_OVERRIDE, Computable, defineRule, EMPTY_FILESET, FabrError, FileSet, IFile, MemoryFile, RuleResult, TargetContext, TEST_NAME_PATTERN, TREE_MOUNT } from "@fabr-build/core";
 import { classpathOf, compileOutputOf, COMPILED_CLASSES_DIR, packageOf, processorsOf } from "../JarPackage";
 import { describeJava } from "../Description";
 import { createTestRunAction } from "../TestRunAction";
@@ -111,7 +111,8 @@ function testJar(context: TargetContext, inputs: TestInputs): Computable<RuleRes
       }
       return file;
     });
-  return Computable.forAll([classes, runner, sourcesTable(tests), context.getGlobalRunnable("JAVA")], (output, runnerJar, sources, java) => {
+  const namePattern = context.getGlobalString(TEST_NAME_PATTERN);
+  return Computable.forAll([classes, runner, sourcesTable(tests), context.getGlobalRunnable("JAVA"), namePattern], (output, runnerJar, sources, java, pattern) => {
     const compiled = compileOutputOf(output, COMPILED_CLASSES_DIR);
     const pool = context.execution.buildCache;
     return pool.ensureTree(java).then(() => {
@@ -128,7 +129,8 @@ function testJar(context: TargetContext, inputs: TestInputs): Computable<RuleRes
           ])
         )
       );
-      const argv = java.toCommandLine(["-cp", classpath, RUNNER_CLASS, `--sources=${SOURCES_FILE}`, `--scan=${TEST_CLASSES_DIR}`], {
+      const selection = pattern === "" ? [] : [`--name-pattern=${pattern}`];
+      const argv = java.toCommandLine(["-cp", classpath, RUNNER_CLASS, `--sources=${SOURCES_FILE}`, ...selection, `--scan=${TEST_CLASSES_DIR}`], {
         base: path.posix.join(TREE_MOUNT, java.toManifestHash()),
       });
       return createTestRunAction(staged, argv);

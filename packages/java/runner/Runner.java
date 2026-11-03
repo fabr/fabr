@@ -33,6 +33,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 import java.util.stream.Collectors;
 
 import org.junit.platform.engine.TestExecutionResult;
@@ -42,6 +44,7 @@ import org.junit.platform.engine.support.descriptor.ClassSource;
 import org.junit.platform.engine.support.descriptor.MethodSource;
 import org.junit.platform.launcher.Launcher;
 import org.junit.platform.launcher.LauncherDiscoveryRequest;
+import org.junit.platform.launcher.MethodFilter;
 import org.junit.platform.launcher.TestExecutionListener;
 import org.junit.platform.launcher.TestIdentifier;
 import org.junit.platform.launcher.TestPlan;
@@ -52,12 +55,16 @@ import org.junit.platform.launcher.core.LauncherFactory;
  * Run the tests in directories of classes on the JUnit Platform and write
  * what happened as a CTRF report, as fabr's test runners do:
  *
- *     Runner --report=<file> [--sources=<file>] --scan=<directory>...
+ *     Runner --report=<file> [--sources=<file>] [--name-pattern=<regex>]
+ *            --scan=<directory>...
  *
  * Each directory is searched for test classes, and must be on the classpath.
  * The sources file has a line per class, its name and its source path
- * separated by a tab; a result is named by the source path of its class. The
- * exit status is 1 where a test failed, or where no test was found.
+ * separated by a tab; a result is named by the source path of its class. A
+ * name pattern runs only the test methods whose qualified names
+ * (`com.x.DateTest#parsesIso`) it matches any part of, and needs the JUnit
+ * Platform 1.12 launcher or later. The exit status is 1 where a test failed,
+ * or where no test was found without a name pattern.
  */
 public final class Runner {
     private Runner() {}
@@ -66,6 +73,7 @@ public final class Runner {
         String report = null;
         Map<String, String> sources = new HashMap<>();
         Set<Path> roots = new HashSet<>();
+        String namePattern = null;
         for (String arg : args) {
             if (arg.startsWith("--report=")) {
                 report = arg.substring("--report=".length());
@@ -75,6 +83,14 @@ public final class Runner {
                     if (tab > 0) {
                         sources.put(line.substring(0, tab), line.substring(tab + 1));
                     }
+                }
+            } else if (arg.startsWith("--name-pattern=")) {
+                namePattern = arg.substring("--name-pattern=".length());
+                try {
+                    Pattern.compile(namePattern);
+                } catch (PatternSyntaxException invalid) {
+                    System.err.println("fabr-junit-runner: the test name pattern is not a valid regular expression: " + invalid.getMessage());
+                    System.exit(2);
                 }
             } else if (arg.startsWith("--scan=")) {
                 roots.add(Paths.get(arg.substring("--scan=".length())).toAbsolutePath());
@@ -91,7 +107,11 @@ public final class Runner {
         long start = System.currentTimeMillis();
         try {
             results = new Results(sources);
-            LauncherDiscoveryRequest request = LauncherDiscoveryRequestBuilder.request().selectors(DiscoverySelectors.selectClasspathRoots(roots)).build();
+            LauncherDiscoveryRequestBuilder builder = LauncherDiscoveryRequestBuilder.request().selectors(DiscoverySelectors.selectClasspathRoots(roots));
+            if (namePattern != null) {
+                selectByName(builder, namePattern);
+            }
+            LauncherDiscoveryRequest request = builder.build();
             Launcher launcher = LauncherFactory.create();
             launcher.execute(request, results);
         } catch (NoClassDefFoundError missing) {
@@ -101,12 +121,28 @@ public final class Runner {
         }
         long stop = System.currentTimeMillis();
         Files.write(Paths.get(report), results.toCtrf(start, stop).getBytes(StandardCharsets.UTF_8));
-        if (results.tests.isEmpty()) {
+        if (results.tests.isEmpty() && namePattern == null) {
             /* The tests compiled, so finding none means no engine could run them. */
             System.err.println("fabr-junit-runner: no tests were found: no test engine on the classpath found a test among the classes in " + roots);
             System.exit(1);
         }
         System.exit(results.failed > 0 ? 1 : 0);
+    }
+
+    /**
+     * Select the test methods whose qualified names `pattern` matches any part
+     * of. JUnit's filter matches a pattern against the whole name, so it is
+     * given the pattern between `.*`s; the pattern was compiled alone first, so
+     * its parentheses are balanced and cannot escape the group.
+     */
+    private static void selectByName(LauncherDiscoveryRequestBuilder builder, String pattern) {
+        try {
+            builder.filters(MethodFilter.includeMethodNamePatterns(".*(?:" + pattern + ").*"));
+        } catch (NoClassDefFoundError missing) {
+            System.err.println("fabr-junit-runner: selecting tests by name needs the JUnit Platform 1.12 launcher or later in test_deps ("
+                + missing.getMessage() + ")");
+            System.exit(2);
+        }
     }
 
     /** The outcome of each test the run reached, in the order they finished. */

@@ -61,12 +61,17 @@ interface ITestEvent {
 /**
  * The runner invocation fabr constructs (see TestPipeline): where to write the
  * report, which environment the tests run in (node or jsdom), whether recorded
- * expectations are to be rewritten rather than checked, and the test files.
+ * expectations are to be rewritten rather than checked, which tests to run by
+ * name, and the test files.
  */
 export interface IRunnerOptions {
   report: string;
   env: string;
   update: boolean;
+  /** The regular expression a test's full name (its suites' names and its own,
+   * joined by spaces) must match for the test to run; every test runs where
+   * there is none. */
+  namePattern?: string;
   /** What every test process loads before any test file, in the order given: a
    * bare module name, or a `./`-prefixed path within the installation. The
    * prefix is the whole distinction. */
@@ -83,6 +88,8 @@ export function parseRunnerArgs(argv: string[]): IRunnerOptions {
       options.env = arg.substring("--env=".length);
     } else if (arg === "--update-snapshots") {
       options.update = true;
+    } else if (arg.startsWith("--name-pattern=")) {
+      options.namePattern = arg.substring("--name-pattern=".length);
     } else if (arg.startsWith("--setup=")) {
       options.setup.push(arg.substring("--setup=".length));
     } else if (arg.startsWith("-")) {
@@ -136,6 +143,11 @@ function record(results: ITestResult[], event: ITestEvent, kind: "pass" | "fail"
      * whole-file crashes, which arrive as failed tests) are recorded */
     return;
   }
+  if (kind === "pass" && isFileFailure(event)) {
+    /* The file itself passing: it ran no test (none registered, or none its
+     * name pattern selected), so it contributes no result. */
+    return;
+  }
   let status: ITestResult["status"] = kind === "fail" ? "failed" : "passed";
   if (kind === "pass" && event.skip) {
     status = "skipped";
@@ -171,8 +183,8 @@ function fileFailureDetail(event: ITestEvent, stderr: CapturedStderr): string | 
   return isFileFailure(event) ? stderr.tail(event.file) : undefined;
 }
 
-/** @return true if this event is the FILE failing rather than a test in it,
- * otherwise false: node:test names such a failure after the file, there being
+/** @return true if this event is the FILE's outcome rather than a test's in it,
+ * otherwise false: node:test names such an event after the file, there being
  * no test to name. */
 function isFileFailure(event: ITestEvent): boolean {
   return event.file !== undefined && event.name === event.file;
@@ -260,6 +272,19 @@ function preloadOptions(preloads: string[], update: boolean): { execArgv?: strin
   return {};
 }
 
+/** Select the tests run by name: node:test matches a nested test's full name,
+ * its suites' names and its own joined by spaces, as jest and vitest do. Not
+ * available before node 22, where a pattern is refused rather than ignored. */
+function namePatternOption(pattern: string | undefined): { testNamePatterns?: string[] } {
+  if (pattern === undefined) {
+    return {};
+  }
+  if (!atLeastNode(22, 0)) {
+    throw new Error(`Selecting tests by name needs node 22 or later (running ${process.versions.node})`);
+  }
+  return { testNamePatterns: [pattern] };
+}
+
 /** Resolve a setup entry to a preload path. A local entry is relative to the
  * installation (the runner's own cwd); a bare module name is left to node's
  * resolution, which finds it in the installation's node_modules. */
@@ -285,6 +310,7 @@ export function runTestFiles(options: IRunnerOptions, preloads: string[]): void 
      * there. That is jest's `setupFilesAfterEnv` ordering, and here it is the
      * only one available — there is nothing to run before the globals. */
     ...preloadOptions([...preloads, ...options.setup.map(entry => resolveSetup(entry))], options.update),
+    ...namePatternOption(options.namePattern),
     ...forceExitOption(),
   });
   /* Before the outcome handlers, so a file's output is already captured by the

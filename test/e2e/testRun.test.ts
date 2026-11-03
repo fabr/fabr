@@ -84,6 +84,21 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
     expect(result.stderr).to.contain("1 test passed");
   });
 
+  it("runs only the tests whose full names match -t, and fails where none does", () => {
+    /* The unmatched test would fail, so a green run shows it was not run; the
+     * pattern spans the suite and test names, joined by a space. */
+    const files = project(
+      'describe("dates", () => { it("parse iso", () => {}); it("format", () => { assert.equal(1, 2); }); });\n' +
+        'describe("other", () => { it("parse", () => { assert.equal(1, 2); }); });'
+    );
+    const matched = runFabr(files, ["-DJS_TARGET=es2020", "test", "-t", "dates parse", "thing"]);
+    expect(matched.status, matched.stderr).to.equal(0);
+    expect(matched.stderr).to.contain("1 test passed (filtered)");
+    const none = runFabr(files, ["-DJS_TARGET=es2020", "test", "-t", "nothing like it", "thing"]);
+    expect(none.status).to.not.equal(0);
+    expect(none.stderr).to.contain("No test's name matches the pattern 'nothing like it'");
+  });
+
   it("runs the tests with the declared environment, and nothing else", () => {
     /* One fixture, both targetdefs: a js_package's `test_env` and a js_test's
      * `env`. Nothing of fabr's own environment arrives. */

@@ -69,6 +69,7 @@ for [`build`](#build).
 ```sh
 fabr test mylib
 fabr test -u mylib    # also record new and changed snapshots
+fabr test -t 'dates parse' mylib    # run only the tests whose names match
 fabr test --coverage mylib    # also measure code coverage
 ```
 
@@ -76,7 +77,9 @@ A passing run is cached and isn't repeated until something the tests depend on c
 new and changed snapshots are written back into your source tree after a passing run, and each
 file is named as it is written. With `--coverage`, the tests are measured for code coverage: a
 summary is printed and an lcov report written to `coverage/lcov.info`, or to `<dir>/lcov.info`
-with `--coverage=<dir>`; the directory is relative to the current directory. For JavaScript, see [Testing](/reference/js/testing/).
+with `--coverage=<dir>`; the directory is relative to the current directory. With `-t <pattern>`,
+only the tests whose names match the regular expression are run, and the run fails if no
+test in any of the targets matches. For JavaScript, see [Testing](/reference/js/testing/).
 
 ### An operation's name
 
@@ -365,6 +368,7 @@ generated from it.
 | `-DNAME=VALUE` | all | Set a configuration property for this run, overriding the build file and any default. |
 | `-w` | `build`, `test`, `run` | Keep running, and rebuild, retest or restart when sources change. See [Watch mode](/guides/watch/). |
 | `-u`, `--update` | `test` | Record new and changed snapshots, and write them into your source tree. |
+| `-t PATTERN` | `test` | Run only the tests whose names match the regular expression `PATTERN`: for [JavaScript](/reference/js/testing/#running-tests), suite and test names joined by spaces; for [Java](/reference/java/testing/#running-some-of-the-tests), `Class#method`. Sets `TEST_NAME_PATTERN`. |
 | `--coverage[=DIR]` | `test` | Measure code coverage, print a summary and write `DIR/lcov.info` (`coverage/` by default). |
 | `-q`, `--quiet` | all | Don't show the progress display or the output of build steps. A step that fails still shows its output in the error. |
 | `--no-progress` | all | Don't show the progress display. Output from build steps is then printed as it arrives, as it is when stderr isn't a terminal. |

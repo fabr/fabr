@@ -7,13 +7,17 @@ number.
 @fabr-build/core:
 - Introduce fabr_plugin target + move rule/repository decls out to spec.
 - Make the actual working dir a subdir, with the tree pool link (if present) outside - fixes excessive tree scanning.
+- Add TEST_NAME_PATTERN / -t support for running specific tests.
 
 @fabr-build/java:
-- New: Java support.
+- New Java support.
 
 @fabr-build/js:
 - js_package now takes a compile_deps property for compile-only inputs.
 - Add sources operation.
+
+@fabr-build/vscode-ext:
+- New VSCode extension.
 
 ## Fabr 0.3.1
 @fabr-build/core:

@@ -79,6 +79,7 @@ export function vitestOptions(options: IRunnerOptions, root: string, preloads: s
     environment: options.env,
     setupFiles: [...preloads, ...options.setup.map(entry => (entry.startsWith("./") ? path.resolve(root, entry) : entry))],
     update: options.update ? "all" : "none",
+    ...(options.namePattern === undefined ? {} : { testNamePattern: options.namePattern }),
     resolveSnapshotPath: (testPath: string) => snapshotPathOf(testPath),
     testTimeout: TEST_TIMEOUT_MS,
     reporters: [reporter],

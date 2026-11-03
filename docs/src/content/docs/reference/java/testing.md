@@ -64,6 +64,25 @@ your shell. JUnit's [configuration parameters](https://junit.org/junit5/docs/cur
 such as those for parallel execution, are read from a `junit-platform.properties` among the
 `test_resources`.
 
+## Running some of the tests
+
+```sh
+fabr test -t 'DateTest#parse' app
+```
+
+runs only the test methods whose names the regular expression matches. A method's name is its
+class's fully qualified name, `#` and the method's own name, with no parameters:
+`com.example.DateTest#parsesIso`, and `com.example.DateTest$Iso#parses` for a method of the nested
+class `Iso`. **Surefire / Gradle:** `-Dtest=DateTest#parse*` and `--tests` take a wildcard
+pattern. **fabr:** the pattern is a Java regular expression, and it need only match part of the
+name, so `DateTest#parse` selects `parsesIso` and `parseDate`, `#parsesIso$` exactly that method,
+and `^com\.example\.` every test in that package. Write `\$` for the `$` of a nested class.
+
+A parameterized test or a `@TestFactory` is selected by its method, so all of its cases run
+together. Display names (`@DisplayName`) are not matched. The summary ends `(filtered)`, and if no
+test in any target matches, the run fails. Selecting by name needs the JUnit Platform launcher
+1.12 (JUnit 5.12) or later.
+
 ## Troubleshooting
 
 **`fabr-junit-runner: the JUnit Platform launcher is not on the classpath (…): add org.junit.platform:junit-platform-launcher, of the tests' JUnit release, to test_deps`**
@@ -71,6 +90,11 @@ such as those for parallel execution, are read from a `junit-platform.properties
 The target's `test_deps` have no JUnit Platform launcher. Add
 `@mvn:org.junit.platform:junit-platform-launcher` beside the engine, with its version from the same
 JUnit BOM.
+
+**`fabr-junit-runner: selecting tests by name needs the JUnit Platform 1.12 launcher or later in test_deps (…)`**
+
+`fabr test -t` was given for a target whose JUnit release is older than 5.12. Raise the JUnit BOM's
+version to 5.12 or later.
 
 **`fabr-junit-runner: no tests were found: no test engine on the classpath found a test among the classes in […]`**
 
@@ -81,5 +105,4 @@ BOM.
 
 ## Not currently supported
 
-- A run can't be limited to some of the tests, as `-Dtest=` or `--tests` does.
 - All of a target's tests run in one JVM, which can't be given arguments of its own.

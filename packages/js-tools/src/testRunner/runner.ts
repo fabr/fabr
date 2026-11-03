@@ -25,7 +25,7 @@
  * target declares as ordinary dependencies.
  *
  * Usage: node runner.js [--report=<path>] [--env=node] [--update-snapshots]
- *                       [--setup=<module|./staged path>]... <test-file>...
+ *                       [--name-pattern=<regex>] [--setup=<module|./staged path>]... <test-file>...
  * Exit code 0 if everything passed; 1 if any test failed. The report document
  * (see Report.ts) is written to the given path in either case.
  *

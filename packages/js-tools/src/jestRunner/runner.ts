@@ -39,7 +39,7 @@
  *
  * Usage (the runner contract, same as every flavour):
  *   node runner.js --report=<path> --env=<node|jsdom> [--update-snapshots]
- *                  [--setup=<module|./staged path>]... <test-file>...
+ *                  [--name-pattern=<regex>] [--setup=<module|./staged path>]... <test-file>...
  */
 
 import { availableParallelism } from "node:os";
@@ -89,6 +89,7 @@ export function main(argv: string[]): void {
     root,
     env: options.env,
     updateSnapshots: options.update,
+    namePattern: options.namePattern,
     timeoutMs: TEST_TIMEOUT_MS,
     setup: options.setup,
   });
