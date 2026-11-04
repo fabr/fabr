@@ -19,6 +19,7 @@
 
 import { expect } from "chai";
 import * as fs from "node:fs";
+import { createRequire, Module } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { MockRegistry, NOT_MOCKED } from "./Registry";
@@ -68,6 +69,28 @@ describe("MockRegistry", () => {
       const mocks = registry();
       mocks.setMock("./nomock", caller);
       expect(mocks.serve("./nomock", caller)).to.equal(AUTOMOCK);
+    });
+
+    /* As jest does: a module the real one imports, which imports it back, would
+     * otherwise stay cached bound to the real module, and the code under test
+     * would get that copy rather than one bound to the mock. Only node's loader
+     * can evict a module: under the devchain's jest the registry loads through
+     * jest's, whose require.cache is a view. */
+    const nodeLoads = createRequire(__filename).cache === (Module as unknown as { _cache: unknown })._cache;
+    (nodeLoads ? it : it.skip)("loads the real module in isolation, so a module that imports it back is loaded again", () => {
+      fs.writeFileSync(path.join(dir, "build", "cycle.js"), `require("./back"); module.exports = { real: true };`);
+      fs.writeFileSync(
+        path.join(dir, "build", "back.js"),
+        `globalThis.backLoads = (globalThis.backLoads ?? 0) + 1; module.exports = { cycle: require("./cycle") };`
+      );
+      const loads = globalThis as { backLoads?: number };
+      delete loads.backLoads;
+      const mocks = registry();
+      mocks.setMock("./cycle", caller);
+
+      expect(mocks.serve("./cycle", caller)).to.equal(AUTOMOCK);
+      createRequire(caller.filename)("./back");
+      expect(loads.backLoads).to.equal(2);
     });
 
     it("prefers an explicit factory over the adjacent manual mock", () => {

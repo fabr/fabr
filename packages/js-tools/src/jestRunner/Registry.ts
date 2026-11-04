@@ -360,10 +360,26 @@ export class MockRegistry {
    * function, the shape otherwise preserved. This is the one algorithm not
    * worth reinventing — it is jest-mock's, driven off the real module's
    * metadata.
+   *
+   * The real module is loaded in isolation, as jest loads it: every module the
+   * load adds to the cache of the loader it is loaded through is evicted once
+   * the metadata is taken. A
+   * module that imports this one back (a cycle) is then evaluated afresh when
+   * the code under test requires it, bound to the mock rather than to the real
+   * module the mock was taken from.
    */
   private automockOf(key: string): unknown {
-    const actual = this.loadActual(key);
-    return this.moduleMocker.generateFromMetadata(this.moduleMocker.getMetadata(actual));
+    const cache = this.requireFrom(undefined).cache;
+    const cached = new Set(Object.keys(cache));
+    try {
+      return this.moduleMocker.generateFromMetadata(this.moduleMocker.getMetadata(this.loadActual(key)));
+    } finally {
+      for (const filename of Object.keys(cache)) {
+        if (!cached.has(filename)) {
+          delete cache[filename];
+        }
+      }
+    }
   }
 
 }
