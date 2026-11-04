@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { environmentFor, inheritedMethods } from "./Environment";
+import { answerWithGlobal, environmentFor, inheritedMethods } from "./Environment";
 
 /* installJsdom itself needs a real jsdom, which fabr's own tests do not carry
  * (it comes from the TARGET's test_deps); what is testable here is the part
@@ -65,6 +65,30 @@ describe("inheritedMethods", () => {
     const window = windowLike();
     window.matchMedia = () => undefined;
     expect(inheritedMethods(window as never)).to.not.contain("matchMedia");
+  });
+});
+
+describe("answerWithGlobal", () => {
+  const window = {};
+  const globals = {};
+  /** An event class whose `view` getter answers `value`, given answerWithGlobal. */
+  const eventAnswering = (value: unknown): { view: unknown } => {
+    class Event {
+      get view(): unknown {
+        return value;
+      }
+    }
+    answerWithGlobal(Event.prototype, "view", window, globals);
+    return new Event();
+  };
+
+  it("answers the global object where the getter would answer jsdom's window", () => {
+    expect(eventAnswering(window).view).to.equal(globals);
+  });
+
+  it("leaves any other answer as it is", () => {
+    const other = {};
+    expect(eventAnswering(other).view).to.equal(other);
   });
 });
 

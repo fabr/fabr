@@ -230,6 +230,12 @@ export function installJsdom(options: Record<string, unknown> = {}): void {
       define(globals, key, window, key);
     }
   }
+  /* jsdom's own symbol-keyed members (its implementation link among them), so
+   * that jsdom takes the global object for its window wherever it checks for a
+   * Window: an event's `view`, say. */
+  for (const key of Object.getOwnPropertySymbols(window)) {
+    Object.defineProperty(globals, key, { ...Object.getOwnPropertyDescriptor(window, key), configurable: true });
+  }
   for (const key of inheritedMethods(window)) {
     const method = window[key];
     if (typeof method === "function") {
@@ -247,7 +253,32 @@ export function installJsdom(options: Record<string, unknown> = {}): void {
    * true. jsdom's internals take their window from their own state, not from
    * this accessor, so nothing inside it is disturbed. */
   Object.defineProperty(window.document as object, "defaultView", { get: () => globals, configurable: true });
+  /* The other routes by which jsdom hands its window back: every UI event's
+   * (mouse, keyboard, focus) and every message event's. */
+  const prototypeOf = (name: string): object | undefined => (window[name] as { prototype?: object } | undefined)?.prototype;
+  answerWithGlobal(prototypeOf("UIEvent"), "view", window, globals);
+  answerWithGlobal(prototypeOf("MessageEvent"), "source", window, globals);
   patchLocation(window);
+}
+
+/**
+ * Make the getter `name` of `prototype` answer `globals` where it would answer
+ * jsdom's `window`, so that a value jsdom hands out is the same object as the
+ * test's `window`. Anything else it answers is left as it is.
+ */
+export function answerWithGlobal(prototype: object | undefined, name: string, window: object, globals: object): void {
+  const descriptor = prototype === undefined ? undefined : Object.getOwnPropertyDescriptor(prototype, name);
+  const getter = descriptor?.get;
+  if (prototype === undefined || descriptor === undefined || getter === undefined) {
+    return;
+  }
+  Object.defineProperty(prototype, name, {
+    ...descriptor,
+    get(this: unknown) {
+      const value: unknown = getter.call(this);
+      return value === window ? globals : value;
+    },
+  });
 }
 
 /** Copy one of the window's properties onto the global object, preserving
