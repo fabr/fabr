@@ -60,6 +60,9 @@ export interface IFabrOptions {
   /** Read every optional lib of each plugin the project uses, as though the
    * project included it (see {@link ILoadOptions}). */
   includeOptionalLibs?: boolean;
+  /** Revalidate every mutable fetched document once this run, whatever its
+   * freshness (`--refresh`; see {@link BuildCache}). */
+  refresh?: boolean;
 }
 
 /**
@@ -92,7 +95,7 @@ export class Fabr {
   constructor(options: IFabrOptions) {
     this.host = options.host ?? Constraints.of({});
     this.loadOptions = { includeOptionalLibs: options.includeOptionalLibs };
-    const cache = new BuildCache(options.cacheRoot, options.log);
+    const cache = new BuildCache(options.cacheRoot, options.log, undefined, options.refresh);
     /* Shared: the controller advances it per applied batch; the execution
      * reads it and emits the cycle boundaries. */
     const cycle = new BuildCycle();

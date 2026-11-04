@@ -108,3 +108,12 @@ export function normalizeEntryName(raw: string): string | undefined {
   }
   return normalized;
 }
+
+/** @return the directory entries above the archive entry `name`, outermost first (`a/`, `a/b/`). */
+export function ancestorsOf(name: string): string[] {
+  const ancestors: string[] = [];
+  for (let slash = name.indexOf("/"); slash !== -1; slash = name.indexOf("/", slash + 1)) {
+    ancestors.push(name.substring(0, slash + 1));
+  }
+  return ancestors;
+}

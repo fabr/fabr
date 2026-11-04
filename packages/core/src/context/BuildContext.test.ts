@@ -34,6 +34,7 @@ import {
   RepositoryRef,
   RepositoryWriter,
   PublishAttachment,
+  PendingFiles,
   RepositoryLookup,
   SourceRef,
   Resolved,
@@ -417,6 +418,29 @@ class TestRepo implements Repository, RepositoryLookup {
   }
 }
 registerRepositoryProvider("test_repo", context => Computable.resolve(new TestRepo(context.name)));
+
+/* A lookup that defers its fetch: it answers a reference with its files
+ * pending, and records the reference in batchCalls only when they are fetched. */
+class TestDeferringRepo implements Repository, RepositoryLookup {
+  private readonly files: TestRepo;
+
+  constructor(label: string) {
+    this.files = new TestRepo(label);
+  }
+
+  public getRepositoryRef(name: Name): RepositoryRef {
+    return RepositoryRef.written(this, name);
+  }
+
+  public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
+    return this.files.getRepositoryPublishRef(name);
+  }
+
+  public resolve(reference: RepositoryRef): Computable<PendingFiles> {
+    return Computable.resolve(new PendingFiles(() => this.files.resolve(reference)));
+  }
+}
+registerRepositoryProvider("test_deferring_repo", context => Computable.resolve(new TestDeferringRepo(context.name)));
 
 /* Delivers a runnable rather than plain files, so the launch-bound accessors
  * (getRunnableProperty / getGlobalRunnable / the run verb's materialize) can be
@@ -2366,6 +2390,30 @@ describe("BuildContext", () => {
     await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
     /* Both references delivered — the one reached through the property
      * expansion of 'x' as well as the direct one */
+    expect(batchCalls.map(call => call.name).sort()).to.deep.equal(["one", "two"]);
+    expect(lastDeps && [...lastDeps].map(([path]) => path).sort()).to.deep.equal(["one/data.txt", "two/data.txt"]);
+  });
+
+  it("Fetches a deferring lookup's reference only when its collection is given its content", async () => {
+    batchCalls.length = 0;
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_deferring_repo { }\n" +
+      "targetdef test_good { deps = PACKAGES; }\n" +
+      "test_deferring_repo repo { }\n" +
+      "x = repo:one;\n" +
+      "y = repo:two;\n" +
+      "test_good a { deps = x y:two/*.txt; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+    const config = model.getConfig(Constraints.of({}), execution);
+
+    const [pending] = (await config.resolve(writtenOnCommandLine("x"))).denoted;
+    expect(pending).to.be.instanceOf(PendingFiles);
+    expect(batchCalls).to.deep.equal([]);
+
+    await config.materialize(writtenOnCommandLine("a"));
     expect(batchCalls.map(call => call.name).sort()).to.deep.equal(["one", "two"]);
     expect(lastDeps && [...lastDeps].map(([path]) => path).sort()).to.deep.equal(["one/data.txt", "two/data.txt"]);
   });

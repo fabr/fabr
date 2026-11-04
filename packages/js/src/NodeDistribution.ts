@@ -178,6 +178,8 @@ export class NodeDistribution implements Repository, RepositoryReader<SemverVers
   private readonly shasums = new MemoryCache<string, Map<string, string> | undefined>();
   /** The published versions, as read this run. */
   private readonly versions = new MemoryCache<string, SemverVersion[]>();
+  /** The published versions, as re-read this run for a version the held list lacked. */
+  private readonly revalidatedVersions = new MemoryCache<string, SemverVersion[]>();
 
   constructor(
     private readonly context: TargetContext,
@@ -229,11 +231,14 @@ export class NodeDistribution implements Repository, RepositoryReader<SemverVers
     } catch {
       return Computable.resolve(undefined);
     }
-    return this.publishedVersions().then(versions => lowestSatisfying(versions, parsed));
+    return this.publishedVersions(false).then(versions => {
+      const found = lowestSatisfying(versions, parsed);
+      return found ? Computable.resolve<SemverVersion | undefined>(found) : this.publishedVersions(true).then(revalidated => lowestSatisfying(revalidated, parsed));
+    });
   }
 
   public availableVersions(): Computable<SemverVersion[] | undefined> {
-    return this.publishedVersions();
+    return this.publishedVersions(false);
   }
 
   public fetchFiles(reference: RepositoryRef): Computable<FileSet> {
@@ -316,17 +321,19 @@ export class NodeDistribution implements Repository, RepositoryReader<SemverVers
     );
   }
 
-  /** List the published versions, from nodejs.org's `index.json` (revalidated). */
-  private publishedVersions(): Computable<SemverVersion[]> {
+  /** List the published versions, from nodejs.org's `index.json`.
+   *  `forceRevalidate` re-reads a held list, for a caller asking about a
+   *  version it may lack. Read once per run either way. */
+  private publishedVersions(forceRevalidate: boolean): Computable<SemverVersion[]> {
     const url = `${this.url}/${INDEX_FILE}`;
-    return this.versions.getOrCreate(url, () =>
+    return (forceRevalidate ? this.revalidatedVersions : this.versions).getOrCreate(url, () =>
       fetchDocument(this.context, {
         url,
         file: INDEX_FILE,
         tag: "node:versions:1",
         report: { resource: "version list", role: "index" },
         convert: text => parseJson(text, `release list from ${this.url}`, toNodeVersions),
-        options: { immutable: false },
+        options: { immutable: false, forceRevalidate },
       }).then(listed =>
         (listed ?? []).flatMap(text => {
           try {

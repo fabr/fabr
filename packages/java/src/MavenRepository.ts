@@ -163,6 +163,7 @@ function lowestSatisfying(versions: readonly MavenVersion[], constraint: MavenCo
 export class MavenRepository implements Repository, RepositoryReader<MavenVersion, MavenConstraint>, RepositoryWriter {
   public readonly format = MAVEN_FORMAT;
   private readonly versions = new MemoryCache<string, MavenVersion[] | undefined>();
+  private readonly revalidatedVersions = new MemoryCache<string, MavenVersion[] | undefined>();
   private readonly poms = new MemoryCache<string, RawPom | undefined>();
   private readonly effectivePoms = new MemoryCache<string, EffectivePom>();
   private readonly modules = new MemoryCache<string, GradleModule | undefined>();
@@ -201,7 +202,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
         )
       );
     }
-    return versionChildren(this, this.format, name, this.publishedVersions(name));
+    return versionChildren(this, this.format, name, this.publishedVersions(name, true));
   }
 
   /**
@@ -391,11 +392,15 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     } catch {
       return Computable.resolve(undefined);
     }
-    return this.publishedVersions(name).then(versions => versions && lowestSatisfying(versions, parsed));
+    const pick = (versions: MavenVersion[] | undefined): MavenVersion | undefined => versions && lowestSatisfying(versions, parsed);
+    return this.publishedVersions(name, false).then(versions => {
+      const found = pick(versions);
+      return found || versions === undefined ? Computable.resolve<MavenVersion | undefined>(found) : this.publishedVersions(name, true).then(pick);
+    });
   }
 
   public availableVersions(name: string): Computable<MavenVersion[] | undefined> {
-    return this.publishedVersions(name);
+    return this.publishedVersions(name, false);
   }
 
   public fetchFiles(reference: RepositoryRef): Computable<FileSet> {
@@ -587,10 +592,12 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
   }
 
   /** List a package's published versions, from its `maven-metadata.xml`, or
-   *  undefined where the repository has no such package. */
-  private publishedVersions(name: string): Computable<MavenVersion[] | undefined> {
+   *  undefined where the repository has no such package. `forceRevalidate`
+   *  re-reads a held list, for a caller asking about a version it may lack.
+   *  Read once per run either way. */
+  private publishedVersions(name: string, forceRevalidate: boolean): Computable<MavenVersion[] | undefined> {
     const url = `${this.artifactUrl(splitMavenName(name))}/${METADATA_FILE}`;
-    return this.versions.getOrCreate(url, () =>
+    return (forceRevalidate ? this.revalidatedVersions : this.versions).getOrCreate(url, () =>
       fetchDocument(this.context, {
         url,
         file: METADATA_FILE,
@@ -598,7 +605,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
         report: { resource: "version list", role: "index" },
         convert: text => toMetadataVersions(text, url),
         headers: () => this.headers(),
-        options: { immutable: false },
+        options: { immutable: false, forceRevalidate },
       }).then(listed =>
         listed?.flatMap(text => {
           try {

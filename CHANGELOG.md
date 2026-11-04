@@ -10,6 +10,7 @@ number.
 - Add TEST_NAME_PATTERN / -t support for running specific tests.
 - Add zip target.
 - Add bash-style string edit patterns.
+- Re-check version lists and other mutable downloads at most once a day; add --refresh to re-check them now.
 - Add @host search-path as the 'authorised' hermetic escape route.
 
 @fabr-build/aws:

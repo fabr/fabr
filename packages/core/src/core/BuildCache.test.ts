@@ -24,7 +24,7 @@ import * as path from "path";
 import * as http from "node:http";
 import { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
-import { ActionContext, BuildCache, IBuildState, IFetchRequest } from "./BuildCache";
+import { ActionContext, BuildCache, IBuildState, IFetchRequest, MINIMUM_FRESHNESS_MS } from "./BuildCache";
 import { PackageFileSet, PackageGraphBuilder } from "./PackageFileSet";
 import { ActionFileInputs, BuildAction, BuildResult, IBuildActionDefinition, preciseActionKey } from "./BuildAction";
 import { narrowDeps } from "./BuildCache";
@@ -1690,6 +1690,7 @@ type Responder = (req: http.IncomingMessage, res: http.ServerResponse) => void;
 function startOrigin(): Promise<{
   url: string;
   requests: http.IncomingHttpHeaders[];
+  methods: string[];
   respond: (responder: Responder) => void;
   close: () => void;
 }> {
@@ -1699,8 +1700,10 @@ function startOrigin(): Promise<{
       res.end();
     };
     const requests: http.IncomingHttpHeaders[] = [];
+    const methods: string[] = [];
     const server = http.createServer((req, res) => {
       requests.push(req.headers);
+      methods.push(req.method ?? "");
       responder(req, res);
     });
     server.listen(0, "127.0.0.1", () => {
@@ -1708,6 +1711,7 @@ function startOrigin(): Promise<{
       resolve({
         url: `http://127.0.0.1:${port}/doc`,
         requests,
+        methods,
         respond: r => (responder = r),
         close: () => server.close(),
       });
@@ -1723,6 +1727,8 @@ const serve = (status: number, headers: http.OutgoingHttpHeaders, body?: string)
 };
 
 describe("BuildCache non-immutable fetches", () => {
+  /** A clock step past the freshness of an entry no origin declared longer than a day. */
+  const STALE = MINIMUM_FRESHNESS_MS + 1_000;
   let root: string;
   let clock: number;
   let cache: BuildCache;
@@ -1764,7 +1770,7 @@ describe("BuildCache non-immutable fetches", () => {
   it("revalidates a stale entry conditionally and refreshes it in place on 304", async () => {
     origin.respond(serve(200, { "cache-control": "max-age=300", etag: '"v1"' }, "one"));
     await fetchDoc({ immutable: false });
-    clock += 301_000; /* stale */
+    clock += STALE;
     origin.respond(serve(304, { "cache-control": "max-age=300", etag: '"v1"' }));
     expect(await fetchDoc({ immutable: false })).to.equal("one");
     expect(origin.requests).to.have.lengthOf(2);
@@ -1779,12 +1785,12 @@ describe("BuildCache non-immutable fetches", () => {
   it("replaces a stale entry when the origin serves new content", async () => {
     origin.respond(serve(200, { "cache-control": "max-age=300", etag: '"v1"' }, "one"));
     await fetchDoc({ immutable: false });
-    clock += 301_000;
+    clock += STALE;
     origin.respond(serve(200, { "cache-control": "max-age=300", etag: '"v2"' }, "two"));
     expect(await fetchDoc({ immutable: false })).to.equal("two");
     expect(processed).to.deep.equal(["one", "two"]);
     /* Next revalidation presents the new validator */
-    clock += 301_000;
+    clock += STALE;
     origin.respond(serve(304, {}));
     await fetchDoc({ immutable: false });
     expect(origin.requests[2]["if-none-match"]).to.equal('"v2"');
@@ -1803,7 +1809,7 @@ describe("BuildCache non-immutable fetches", () => {
     await fetchLogged();
     expect(warnings).to.have.lengthOf(0);
     origin.close();
-    clock += 301_000;
+    clock += STALE;
     expect(await fetchLogged()).to.equal("one");
     expect(warnings).to.have.lengthOf(1);
     expect(warnings[0].url).to.equal(origin.url);
@@ -1817,7 +1823,7 @@ describe("BuildCache non-immutable fetches", () => {
      * commit itself). */
     const second = new BuildCache(root, NULL_LOG, () => clock);
     origin.close();
-    clock += 301_000;
+    clock += STALE;
     expect(
       await toPromise(
         second.getOrFetch(origin.url, "test:1", requestOf(origin.url, store), () => UNTRACKED, { immutable: false }).then(f => f.readFile("doc.txt"))
@@ -1839,7 +1845,7 @@ describe("BuildCache non-immutable fetches", () => {
       );
     origin.respond(serve(200, { "cache-control": "max-age=300" }, "one"));
     await fetchLogged();
-    clock += 301_000; /* stale */
+    clock += STALE;
     origin.respond(serve(403, {})); /* expired token: a definite answer, not a blip */
     let failure: Error | undefined;
     try {
@@ -1862,7 +1868,7 @@ describe("BuildCache non-immutable fetches", () => {
       );
     origin.respond(serve(200, { "cache-control": "max-age=300" }, "one"));
     await fetchLogged();
-    clock += 301_000; /* stale */
+    clock += STALE;
     origin.respond(serve(429, {})); /* rate-limited: a transient try-later signal */
     expect(await fetchLogged()).to.equal("one");
     expect(warnings).to.have.lengthOf(1);
@@ -1894,7 +1900,7 @@ describe("BuildCache non-immutable fetches", () => {
   it("propagates a validation failure and keeps the previous entry standing", async () => {
     origin.respond(serve(200, { "cache-control": "max-age=300", etag: '"v1"' }, "one"));
     await fetchDoc({ immutable: false });
-    clock += 301_000;
+    clock += STALE;
     origin.respond(serve(200, { "cache-control": "max-age=300", etag: '"v2"' }, "two"));
     const reject = (content: Readable): Computable<FileSet> =>
       readStream(content).then(() => {
@@ -1921,33 +1927,113 @@ describe("BuildCache non-immutable fetches", () => {
     expect(origin.requests[1]["if-none-match"]).to.equal('"v1"');
   });
 
-  it("treats an origin declaring no freshness as stale immediately (revalidate every demand)", async () => {
-    /* No fabr-side TTL policy: the origin owns its staleness contract, and
-     * declaring none means every demand revalidates (cheap 304s with an ETag). */
+  it("keeps an entry whose origin declares no freshness fresh for the minimum, then revalidates it", async () => {
     origin.respond(serve(200, { etag: '"v1"' }, "one"));
     await fetchDoc({ immutable: false });
+    clock += MINIMUM_FRESHNESS_MS - 1_000;
+    expect(await fetchDoc({ immutable: false })).to.equal("one");
+    expect(origin.requests).to.have.lengthOf(1);
+    clock += 2_000;
     origin.respond(serve(304, { etag: '"v1"' }));
     expect(await fetchDoc({ immutable: false })).to.equal("one");
     expect(origin.requests).to.have.lengthOf(2);
     expect(origin.requests[1]["if-none-match"]).to.equal('"v1"');
   });
 
-  it("subtracts the response's Age from the declared lifetime (CDN edge-served copies)", async () => {
-    /* npmjs serves packuments via a CDN: max-age=300 with `age` routinely near
-     * it. Remaining freshness is max-age − Age, not a fresh max-age. */
-    origin.respond(serve(200, { "cache-control": "max-age=300", age: "290", etag: '"v1"' }, "one"));
+  it("keeps an entry for the minimum where its origin declares less", async () => {
+    origin.respond(serve(200, { "cache-control": "no-cache", etag: '"v1"' }, "one"));
     await fetchDoc({ immutable: false });
-    clock += 11_000; /* past the remaining 10s, well within a naive 300s */
-    origin.respond(serve(304, { "cache-control": "max-age=300" }));
+    clock += MINIMUM_FRESHNESS_MS - 1_000;
+    expect(await fetchDoc({ immutable: false })).to.equal("one");
+    expect(origin.requests).to.have.lengthOf(1);
+  });
+
+  it("subtracts the response's Age from the declared lifetime (CDN edge-served copies)", async () => {
+    /* Remaining freshness is max-age − Age, not a fresh max-age: 3 days less 1 day. */
+    origin.respond(serve(200, { "cache-control": "max-age=259200", age: "86400", etag: '"v1"' }, "one"));
+    await fetchDoc({ immutable: false });
+    clock += 2 * MINIMUM_FRESHNESS_MS + 1_000; /* past the remaining 2 days, within a naive 3 */
+    origin.respond(serve(304, { "cache-control": "max-age=259200" }));
     await fetchDoc({ immutable: false });
     expect(origin.requests).to.have.lengthOf(2);
   });
 
-  it("honors a long origin-declared lifetime as given (no fabr-side clamp)", async () => {
-    origin.respond(serve(200, { "cache-control": "max-age=86400" }, "one"));
+  it("honors an origin-declared lifetime longer than the minimum as given", async () => {
+    origin.respond(serve(200, { "cache-control": "max-age=259200" }, "one"));
     await fetchDoc({ immutable: false });
-    clock += 80_000_000; /* deep into the declared day */
+    clock += 2.5 * MINIMUM_FRESHNESS_MS; /* deep into the declared 3 days */
     expect(await fetchDoc({ immutable: false })).to.equal("one");
+    expect(origin.requests).to.have.lengthOf(1);
+  });
+
+  it("revalidates a fresh mutable entry once per run under refresh", async () => {
+    origin.respond(serve(200, { "cache-control": "max-age=300", etag: '"v1"' }, "one"));
+    await fetchDoc({ immutable: false });
+    const refreshing = new BuildCache(root, NULL_LOG, () => clock, true);
+    const fetchRefreshing = (): Promise<string> =>
+      toPromise(
+        refreshing
+          .getOrFetch(origin.url, "test:1", requestOf(origin.url, store), () => UNTRACKED, { immutable: false })
+          .then(files => files.readFile("doc.txt"))
+      );
+    origin.respond(serve(200, { "cache-control": "max-age=300", etag: '"v2"' }, "two"));
+    expect(await fetchRefreshing()).to.equal("two");
+    expect(origin.requests).to.have.lengthOf(2);
+    expect(origin.requests[1]["if-none-match"]).to.equal('"v1"');
+    /* Revalidated once: the next demand this run is served as it stands. */
+    expect(await fetchRefreshing()).to.equal("two");
+    expect(origin.requests).to.have.lengthOf(2);
+  });
+
+  it("revalidates a copy held with its digest by a HEAD, refreshing it where the digest is unchanged", async () => {
+    const byDigest = { immutable: false, digestHeader: "Docker-Content-Digest" };
+    origin.respond(serve(200, { "docker-content-digest": "sha256:aaa", etag: '"v1"' }, "one"));
+    await fetchDoc(byDigest);
+    clock += STALE;
+    origin.respond(serve(200, { "docker-content-digest": "sha256:aaa" }));
+    /* Read back from its manifest, so the digest is what was recorded. */
+    cache = new BuildCache(root, NULL_LOG, () => clock);
+    expect(await fetchDoc(byDigest)).to.equal("one");
+    expect(origin.methods).to.deep.equal(["GET", "HEAD"]);
+    expect(processed).to.deep.equal(["one"]);
+    /* The HEAD restarted the copy's lifetime. */
+    clock += MINIMUM_FRESHNESS_MS - 1_000;
+    await fetchDoc(byDigest);
+    expect(origin.methods).to.have.lengthOf(2);
+  });
+
+  it("fetches a copy held with its digest again where a HEAD states another", async () => {
+    const byDigest = { immutable: false, digestHeader: "Docker-Content-Digest" };
+    origin.respond(serve(200, { "docker-content-digest": "sha256:aaa" }, "one"));
+    await fetchDoc(byDigest);
+    clock += STALE;
+    origin.respond(serve(200, { "docker-content-digest": "sha256:bbb" }, "two"));
+    expect(await fetchDoc(byDigest)).to.equal("two");
+    expect(origin.methods).to.deep.equal(["GET", "HEAD", "GET"]);
+    /* The new copy carries the new digest. */
+    clock += STALE;
+    origin.respond(serve(200, { "docker-content-digest": "sha256:bbb" }));
+    expect(await fetchDoc(byDigest)).to.equal("two");
+    expect(origin.methods).to.deep.equal(["GET", "HEAD", "GET", "HEAD"]);
+  });
+
+  it("revalidates a copy whose response stated no digest with a conditional GET", async () => {
+    const byDigest = { immutable: false, digestHeader: "Docker-Content-Digest" };
+    origin.respond(serve(200, { etag: '"v1"' }, "one"));
+    await fetchDoc(byDigest);
+    clock += STALE;
+    origin.respond(serve(304, { etag: '"v1"' }));
+    expect(await fetchDoc(byDigest)).to.equal("one");
+    expect(origin.methods).to.deep.equal(["GET", "GET"]);
+    expect(origin.requests[1]["if-none-match"]).to.equal('"v1"');
+  });
+
+  it("leaves an immutable entry alone under refresh", async () => {
+    origin.respond(serve(200, {}, "one"));
+    await fetchDoc();
+    const refreshing = new BuildCache(root, NULL_LOG, () => clock, true);
+    const files = await toPromise(refreshing.getOrFetch(origin.url, "test:1", requestOf(origin.url, store), () => UNTRACKED));
+    expect(await toPromise(files.readFile("doc.txt"))).to.equal("one");
     expect(origin.requests).to.have.lengthOf(1);
   });
 

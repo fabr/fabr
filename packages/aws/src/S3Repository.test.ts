@@ -35,7 +35,6 @@ import {
   openUrlStream,
   parseName,
   PublishStatus,
-  RepositoryLookup,
   RepositoryRef,
   TargetContext,
   TaskProgress,
@@ -43,6 +42,7 @@ import {
 import { AwsAccount } from "./AwsAccount";
 import { S3PublishRef } from "./S3Publish";
 import { RequestSigner } from "./Signing";
+import { S3Repository } from "./S3Repository";
 
 /**
  * An S3-compatible store over the objects of the bucket `acme`: GETs, HEADs
@@ -198,7 +198,7 @@ function accountAt(store: IFakeStore, options: Array<FetchOptions | undefined> =
 function objectsOf(account: AwsAccount, name: string): Computable<FileSet> {
   const ref = account.getRepositoryRef(parseName(name));
   expect(ref).to.be.instanceOf(RepositoryRef);
-  return ((ref as RepositoryRef).source as RepositoryLookup).resolve(ref as RepositoryRef);
+  return ((ref as RepositoryRef).source as S3Repository).resolve(ref as RepositoryRef);
 }
 
 /** Publish `content` at `coordinate`, written after `@aws:`, as a `sync` would: packaged, then uploaded, recording into `progress` what it reports. */

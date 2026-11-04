@@ -208,6 +208,10 @@ export interface ICacheControl {
   /** HTTP validators for conditional revalidation, as the origin sent them. */
   etag?: string;
   lastModified?: string;
+  /** The document's digest as the origin states it in a header of the
+   *  caller's naming (a registry's `Docker-Content-Digest`), compared on a
+   *  `HEAD` to revalidate (see {@link headUrl}). */
+  digest?: string;
 }
 
 /**
@@ -277,7 +281,9 @@ export function openUrlStream(
   urlstring: string,
   headers?: Record<string, string>,
   now: () => number = Date.now,
-  role: FetchRole = "content"
+  role: FetchRole = "content",
+  /** The response header stating the document's digest, recorded as {@link ICacheControl.digest}. */
+  digestHeader?: string
 ): Computable<UrlStreamResponse> {
   const conditional =
     headers !== undefined && Object.keys(headers).some(name => /^if-(none-match|modified-since)$/i.test(name));
@@ -298,15 +304,54 @@ export function openUrlStream(
              * given up, however the consumer ends it. */
             response.body.once("close", release);
             resolve({
-              cacheControl: parseCacheControl(resHeaders, now()),
+              cacheControl: parseCacheControl(resHeaders, now(), digestHeader),
               stream: response.body,
               contentLength: parseContentLength(resHeaders["content-length"]),
             });
           } else if (response.statusCode === 304 && conditional) {
             void response.body.dump().finally(release); /* discard the (empty) body so the socket is released */
-            resolve({ cacheControl: parseCacheControl(resHeaders, now()) });
+            resolve({ cacheControl: parseCacheControl(resHeaders, now(), digestHeader) });
           } else {
             void response.body.dump().finally(release);
+            reject(new HttpStatusError(response.statusCode, urlstring));
+          }
+        },
+        err => {
+          release();
+          reject(err);
+        }
+      );
+    });
+  });
+}
+
+/**
+ * Send a `HEAD` for `urlstring` and return the response's cache-control facts,
+ * the digest the `digestHeader` response header states among them — for a
+ * caller revalidating a held copy by comparing digests, where the origin
+ * counts a `GET` against a quota and a `HEAD` not (Docker Hub). Any status but
+ * 200 rejects as an {@link HttpStatusError}.
+ */
+export function headUrl(
+  urlstring: string,
+  headers: Record<string, string> | undefined,
+  digestHeader: string,
+  now: () => number = Date.now,
+  role: FetchRole = "index"
+): Computable<ICacheControl> {
+  return Computable.from<ICacheControl>((resolve, reject) => {
+    const unsupported = unsupportedProtocol(urlstring);
+    if (unsupported) {
+      reject(unsupported);
+      return;
+    }
+    admitted(urlstring, role, release => {
+      httpRequest(urlstring, { method: "HEAD", headers, dispatcher }).then(
+        response => {
+          void response.body.dump().finally(release);
+          if (response.statusCode === 200) {
+            resolve(parseCacheControl(response.headers as http.IncomingHttpHeaders, now(), digestHeader));
+          } else {
             reject(new HttpStatusError(response.statusCode, urlstring));
           }
         },
@@ -330,11 +375,17 @@ export function openUrlStream(
  * revalidated on every demand (cheap 304s when it sends validators); the
  * origin owns its staleness contract.
  */
-function parseCacheControl(headers: http.IncomingHttpHeaders, now: number): ICacheControl {
+function parseCacheControl(headers: http.IncomingHttpHeaders, now: number, digestHeader?: string): ICacheControl {
   const declared = declaredLifetime(headers, now);
   const age = Number.isFinite(Number(headers.age)) ? Number(headers.age) * 1000 : 0;
   const lifetime = declared === undefined ? 0 : Math.max(0, declared - age);
-  return { expires: now + lifetime, etag: headers.etag, lastModified: headers["last-modified"] };
+  const digest = digestHeader === undefined ? undefined : headers[digestHeader.toLowerCase()];
+  return {
+    expires: now + lifetime,
+    etag: headers.etag,
+    lastModified: headers["last-modified"],
+    ...(typeof digest === "string" && digest !== "" ? { digest } : {}),
+  };
 }
 
 /**

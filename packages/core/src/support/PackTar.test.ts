@@ -21,7 +21,7 @@ import * as zlib from "zlib";
 import { Readable } from "stream";
 import * as tar from "tar-stream";
 import { expect } from "chai";
-import { packToTarball } from "./PackTar";
+import { packToTarball, writeTar } from "./PackTar";
 import { unpackStream } from "./Unpack";
 import { BuildCache } from "../core/BuildCache";
 import { LogFormatter, LogLevel } from "./Log";
@@ -103,21 +103,38 @@ describe("Pack", () => {
     expect((back as SymlinkFile).target).to.equal("real.txt");
   });
 
-  /** The raw entry headers of a packed tarball, in packed order. */
-  async function headersOf(tarball: Buffer): Promise<{ name: string; type: string }[]> {
-    const headers: { name: string; type: string }[] = [];
+  type Header = { name: string; type: string; mode: number; uid: number; gid: number; body: string };
+
+  /** The raw entry headers of a tarball, gzipped unless `plain`, in packed order. */
+  async function headersOf(tarball: Buffer, plain = false): Promise<Header[]> {
+    const headers: Header[] = [];
     const extract = tar.extract();
     await new Promise<void>((resolve, reject) => {
       extract.on("entry", (h, stream, next) => {
-        headers.push({ name: h.name, type: h.type as string });
-        stream.on("end", next);
-        stream.resume();
+        const chunks: Buffer[] = [];
+        stream.on("data", (chunk: Buffer) => chunks.push(chunk));
+        stream.on("end", () => {
+          headers.push({ name: h.name, type: h.type as string, mode: h.mode ?? 0, uid: h.uid ?? -1, gid: h.gid ?? -1, body: Buffer.concat(chunks).toString() });
+          next();
+        });
       });
       extract.on("finish", () => resolve());
       extract.on("error", reject);
-      Readable.from(zlib.gunzipSync(tarball)).pipe(extract);
+      Readable.from(plain ? tarball : zlib.gunzipSync(tarball)).pipe(extract);
     });
     return headers;
+  }
+
+  /** Write `files` with {@link writeTar} into a throwaway cache and read back the stored archive. */
+  async function writtenTar(files: FileSet, options?: Parameters<typeof writeTar>[3]): Promise<Buffer> {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-pack-cache-"));
+    const cache = new BuildCache(dir, new LogFormatter(LogLevel.Info, () => undefined));
+    try {
+      const written = await writeTar(files, cache.getTemporaryWriteStream(), "layer.tar", options);
+      return await written.getBuffer();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   }
 
   it("dedups identical content as a hardlink to the first entry", async () => {
@@ -175,6 +192,45 @@ describe("Pack", () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("writes an uncompressed archive into the store, streaming each file's content", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-pack-"));
+    try {
+      fs.writeFileSync(path.join(dir, "big.bin"), Buffer.alloc(200_000, 7));
+      const source = new FileSet(
+        new Map<string, IFile>([
+          ["usr/lib/big.bin", diskFile(path.join(dir, "big.bin"))],
+          ["etc/motd", MemoryFile.from("hi\n")],
+        ])
+      );
+      const headers = await headersOf(await writtenTar(source), true);
+      expect(headers.map(h => [h.name, h.type])).to.deep.equal([
+        ["etc/motd", "file"],
+        ["usr/lib/big.bin", "file"],
+      ]);
+      expect(headers[1].body.length).to.equal(200_000);
+      expect(headers.every(h => h.uid === 0 && h.gid === 0)).to.equal(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("gives every directory above a file an entry of its own, before its contents, when asked", async () => {
+    const headers = await headersOf(await writtenTar(fileSetOf({ "a/b/c.txt": "c", "a-z.txt": "z", "a/d.txt": "d" }), { directories: true }), true);
+    expect(headers.map(h => [h.name.replace(/\/$/, ""), h.type])).to.deep.equal([
+      ["a-z.txt", "file"],
+      ["a", "directory"],
+      ["a/b", "directory"],
+      ["a/b/c.txt", "file"],
+      ["a/d.txt", "file"],
+    ]);
+    expect(headers.filter(h => h.type === "directory").map(h => h.mode)).to.deep.equal([0o755, 0o755]);
+  });
+
+  it("writes the same bytes as it packs before compressing", async () => {
+    const source = fileSetOf({ "a.txt": "one", "b/c.txt": "two" });
+    expect((await writtenTar(source)).equals(zlib.gunzipSync(await packToTarball(source)))).to.equal(true);
   });
 
   it("is deterministic — identical content packs to identical bytes", async () => {

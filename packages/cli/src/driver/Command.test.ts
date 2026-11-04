@@ -83,6 +83,7 @@ describe("Command", () => {
       includeOptional: false,
       quiet: false,
       progress: true,
+      refresh: false,
       force: false,
       targets: [],
       deferred: ["foo"],
@@ -100,6 +101,7 @@ describe("Command", () => {
       includeOptional: false,
       quiet: false,
       progress: true,
+      refresh: false,
       force: false,
       targets: ["foo", "bar"],
       properties: new Map(),
@@ -121,6 +123,7 @@ describe("Command", () => {
       includeOptional: false,
       quiet: false,
       progress: true,
+      refresh: false,
       force: false,
       targets: ["foo"],
       properties: new Map([["x", "1"]]),
@@ -137,6 +140,7 @@ describe("Command", () => {
       includeOptional: false,
       quiet: false,
       progress: true,
+      refresh: false,
       force: false,
       targets: ["foo", "bar"],
       properties: new Map(),
@@ -285,6 +289,13 @@ describe("Command", () => {
     expect(parseCommandLine(["node", "fabr", "build", "--no-progress", "foo"]).progress).to.equal(false);
     expect(parseCommandLine(["node", "fabr", "cat", "--no-progress", "foo"]).progress).to.equal(false);
     expect(capture(["list-targets", "--no-progress"]).err.join("\n")).to.match(/Option '--no-progress' is not valid/);
+  });
+
+  it("asks for every mutable document to be re-checked with --refresh, for any command that fetches", () => {
+    expect(parseCommandLine(["node", "fabr", "build", "foo"]).refresh).to.equal(false);
+    expect(parseCommandLine(["node", "fabr", "deps", "--refresh", "foo"]).refresh).to.equal(true);
+    expect(parseCommandLine(["node", "fabr", "--refresh", "foo"]).refresh).to.equal(true);
+    expect(capture(["list-targets", "--refresh"]).err.join("\n")).to.match(/Option '--refresh' is not valid/);
   });
 
   it("treats arguments after -- as targets, even dash-prefixed ones", () => {

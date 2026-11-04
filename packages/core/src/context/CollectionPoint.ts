@@ -280,9 +280,17 @@ function resolveBatch(
             return pkg === undefined ? EMPTY_FILESET : operation === "run" ? runnableNode(pkg, held => source.format.makeRunnable(held, context)) : pkg;
           });
         }
-        return request.as === "files" && source.resolveFiles !== undefined
-          ? attributedTo(reference, () => source.resolveFiles!(reference).then(files => new FileSet(files, files.origin)))
-          : attributedTo(reference, () => source.resolve(reference));
+        /* A lookup's deferred fetch fails as the reference's, as a registry's does. */
+        const resolved = (): Computable<FileSet | PendingFiles> =>
+          attributedTo(reference, () => source.resolve(reference)).then(answer =>
+            answer instanceof PendingFiles ? new PendingFiles(() => attributedTo(reference, () => answer.fetch())) : answer
+          );
+        if (request.as === "files") {
+          return source.resolveFiles !== undefined
+            ? attributedTo(reference, () => source.resolveFiles!(reference).then(files => new FileSet(files, files.origin)))
+            : resolved().then(answer => (answer instanceof PendingFiles ? (answer.fetch() as Computable<FileSet>) : answer));
+        }
+        return resolved();
       }),
       (...resolved: Array<FileSet | ResolvedNode | PendingFiles>) => resolved
     );

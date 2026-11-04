@@ -386,6 +386,7 @@ generated from it.
 | `--coverage[=DIR]` | `test` | Measure code coverage, print a summary and write `DIR/lcov.info` (`coverage/` by default). |
 | `-q`, `--quiet` | all | Don't show the progress display or the output of build steps. A step that fails still shows its output in the error. |
 | `--no-progress` | all | Don't show the progress display. Output from build steps is then printed as it arrives, as it is when stderr isn't a terminal. |
+| `--refresh` | `build`, `test`, `run`, `shell`, `ls`, `cat`, `cp`, `deps`, `sync` | Check again for anything a server can change under the same address, such as a registry's version lists or an S3 object, however recently fabr last checked. Without it, fabr checks each at most once a day. |
 | `-l` | `ls`, `list-*` | Long listing: hash and size for `ls`, source location for the `list-` commands. |
 | `--json` | `list-*` | Output as JSON. |
 | `--all` | `list-targets` | Include the targets fabr and its plugins declare. |

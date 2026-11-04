@@ -29,7 +29,7 @@ import { contentStream } from "../core/FSWrapper";
 import { SymlinkFile } from "../core/SymlinkFile";
 import type { IOutputHandle } from "./Execute";
 import { MIME_ZIP } from "./Mime";
-import { normalizeEntryName } from "./Paths";
+import { ancestorsOf, normalizeEntryName } from "./Paths";
 
 export interface ZipOptions {
   /** Names to write before every other entry, in this order (a jar's
@@ -48,15 +48,6 @@ const ZIP_DATE = new Date(1980, 0, 1);
 const ZIP_DIRECTORY_MODE = 0o40755;
 const ZIP_FILE_TYPE = 0o100000;
 const ZIP_SYMLINK_MODE = 0o120777;
-
-/** @return the directory entries above `name`, outermost first (`a/`, `a/b/`). */
-function ancestorsOf(name: string): string[] {
-  const ancestors: string[] = [];
-  for (let slash = name.indexOf("/"); slash !== -1; slash = name.indexOf("/", slash + 1)) {
-    ancestors.push(name.substring(0, slash + 1));
-  }
-  return ancestors;
-}
 
 /**
  * Pack a FileSet into a zip archive (a jar) in memory; see {@link writeZip}.

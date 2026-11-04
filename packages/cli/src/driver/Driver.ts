@@ -713,6 +713,7 @@ async function runWith(options: Options, operation: Operation, watch = false, se
       watch,
       host: Constraints.of(getHostProperties()),
       includeOptionalLibs: options.includeOptional,
+      refresh: options.refresh,
     });
     const execution = fabr.execution;
     setup.execution?.(execution);

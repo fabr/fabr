@@ -25,7 +25,7 @@ import { Readable, Transform } from "stream";
 import { PROJECT_FILENAME } from "../Constants";
 import { Computable } from "./Computable";
 import { FabrError, HttpStatusError, toError } from "./Errors";
-import { FetchRole, ICacheControl, openUrlStream, reportingProgress } from "./Fetch";
+import { FetchRole, headUrl, ICacheControl, openUrlStream, reportingProgress } from "./Fetch";
 import { CANONICAL, DEFAULT_FILE_MODE, FileSet, IFile } from "./FileSet";
 
 import {
@@ -109,11 +109,16 @@ const DIAG_SERVING_STALE = Diagnostic.Warn<{ url: string; reason: string }>(
   "cannot refresh {url} ({reason}); serving the cached copy"
 );
 
+/** The shortest time a mutable entry is served without revalidation, whatever
+ * its origin declares: 24 hours. */
+export const MINIMUM_FRESHNESS_MS = 24 * 60 * 60 * 1000;
+
 /**
  * Options for {@link BuildCache.getOrFetch}. `immutable` (the default) asserts
  * the content can never change: cached forever, cache headers ignored. With
- * `immutable: false` the entry honors HTTP caching instead — origin-declared
- * freshness, then conditional GET.
+ * `immutable: false` the entry honors HTTP caching instead — fresh for the
+ * origin-declared lifetime but at least {@link MINIMUM_FRESHNESS_MS}, then
+ * revalidated by conditional GET.
  *
  * `immutable: false` is for what its origin may replace under one URL: a
  * POINTER document over immutable content (a registry's version list), or an
@@ -128,6 +133,11 @@ export interface FetchOptions {
   /** Revalidate now regardless of remaining freshness — for a caller holding
    * evidence the copy is stale (e.g. it lacks a version known to exist). */
   forceRevalidate?: boolean;
+  /** The response header in which the origin states the document's digest
+   * (`Docker-Content-Digest`). A held copy whose response stated one is
+   * revalidated with a `HEAD` comparing it, and fetched again only where it
+   * differs, rather than with a conditional `GET`. */
+  digestHeader?: string;
 }
 
 /**
@@ -399,8 +409,16 @@ export class BuildCache {
   /** The GC's own store: the `last` daily stamp and any live collection's
    * `running-<host>-<pid>` marker. */
   private readonly gcRoot: string;
+  /** Revalidate every mutable entry once this run, whatever its freshness. */
+  private readonly refresh: boolean;
+  /** The keys of the mutable entries revalidated this run under {@link refresh}. */
+  private readonly refreshed = new Set<string>();
 
-  constructor(cachePath: string, log: Log, now: () => number = Date.now) {
+  /**
+   * @param refresh revalidate every mutable fetched entry (`immutable: false`)
+   * once in this cache's life, whatever its freshness (`--refresh`).
+   */
+  constructor(cachePath: string, log: Log, now: () => number = Date.now, refresh = false) {
     this.root = cachePath;
     this.entryRoot = path.resolve(cachePath, "entries");
     this.blobRoot = path.resolve(cachePath, "blob");
@@ -413,6 +431,7 @@ export class BuildCache {
     this.gcRoot = path.resolve(cachePath, "gc");
     this.log = log;
     this.now = now;
+    this.refresh = refresh;
     /* Handshake order: register this process's work tree FIRST (the flag a
      * running collector re-checks), then wait out any live collection — each
      * side writes its own flag before reading the other's, so whichever way
@@ -731,7 +750,8 @@ export class BuildCache {
    * keeps error responses out of the cache.
    *
    * By default a cached download is never refreshed; with `immutable: false` the
-   * entry honors HTTP caching instead (see {@link FetchOptions}).
+   * entry honors HTTP caching instead (see {@link FetchOptions}), and under
+   * the cache's `refresh` is revalidated the first time it is asked for.
    */
   public getOrFetch(
     cacheKey: string,
@@ -745,20 +765,31 @@ export class BuildCache {
     const key = hashString(`fetch:${tag} ${cacheKey}`);
     return this.withLock(key, () =>
       this.cacheGet(key).then(entry => {
-        if (entry && isFresh(entry, this.now()) && !options?.forceRevalidate) {
+        if (entry && isFresh(entry, this.now()) && !options?.forceRevalidate && !this.mustRefresh(key, entry)) {
           this.noteEntryServed(key);
           return entry.files;
+        }
+        if (this.refresh) {
+          this.refreshed.add(key);
         }
         return request().then(made => this.fetch(key, made, track(made.url), entry, options));
       })
     );
   }
 
+  /** @return true if `entry`, a fetched entry under `key`, is mutable and not
+   * yet revalidated this run under {@link refresh}, otherwise false. */
+  private mustRefresh(key: string, entry: ICacheEntry): boolean {
+    return this.refresh && entry.meta !== undefined && !this.refreshed.has(key);
+  }
+
   /**
    * Fetch a missing-or-stale entry, conditionally where the held copy carries
    * validators: 304 refreshes its lifetime in place without re-running
    * `process`, fresh content replaces it, and a transient failure serves the
-   * held copy.
+   * held copy. A held copy with a digest, under `options.digestHeader`, is
+   * revalidated with a `HEAD` instead, and fetched again only where the
+   * digest has changed.
    */
   private fetch(
     key: string,
@@ -774,9 +805,10 @@ export class BuildCache {
     if (entry?.meta?.lastModified) {
       validators["if-modified-since"] = entry.meta.lastModified;
     }
-    const attempt = (): Computable<FileSet> =>
-      openUrlStream(url, { ...headers, ...validators }, this.now, options?.role).then(response => {
-        const meta = options?.immutable !== false ? undefined : response.cacheControl;
+    const digestHeader = options?.digestHeader;
+    const get = (): Computable<FileSet> =>
+      openUrlStream(url, { ...headers, ...validators }, this.now, options?.role, digestHeader).then(response => {
+        const meta = options?.immutable !== false ? undefined : withMinimumFreshness(response.cacheControl, this.now());
         const stream = response.stream;
         if (stream) {
           /* The transfer bracketed as the caller's task, the body counted past
@@ -803,6 +835,14 @@ export class BuildCache {
          * the validators came from; re-putting refreshes its lifetime in place. */
         return this.cachePut(key, entry!.files, meta, "fetch");
       });
+    /* A copy held with its digest is revalidated by comparing it on a HEAD. */
+    const held = entry?.meta?.digest;
+    const attempt = (): Computable<FileSet> =>
+      held !== undefined && digestHeader !== undefined
+        ? headUrl(url, headers, digestHeader, this.now, options?.role).then(control =>
+            control.digest === held ? this.cachePut(key, entry!.files, withMinimumFreshness(control, this.now()), "fetch") : get()
+          )
+        : get();
     /* A whole attempt is retried — request and body together — so a transfer
      * that failed part-way starts again from nothing, through the same commit. */
     const retrying = (retry: number): Computable<FileSet> =>
@@ -1844,13 +1884,13 @@ export class BuildCache {
     if (header.entries !== result.size) {
       throw new FabrError(`Malformed cache manifest: header claims ${String(header.entries)} entries, read ${result.size}`);
     }
-    const { expires, etag, lastModified } = header;
+    const { expires, etag, lastModified, digest } = header;
     /* A manifest is fabr's own memo of a canonical FileSet — its names were
      * canonicalized when the set was constructed and encoded when it was
      * written, so a read-back is trusted without rechecking. */
     return {
       files: new FileSet(result, undefined, CANONICAL),
-      meta: expires === undefined ? undefined : { expires, etag, lastModified },
+      meta: expires === undefined ? undefined : { expires, etag, lastModified, ...(digest === undefined ? {} : { digest }) },
     };
   }
 
@@ -2648,6 +2688,11 @@ class BuildFile implements IFile {
   public getAbsPath(): string {
     return path.resolve(this.root, this.hash);
   }
+}
+
+/** Extend `control`'s expiry to at least {@link MINIMUM_FRESHNESS_MS} from `now`. */
+function withMinimumFreshness(control: ICacheControl, now: number): ICacheControl {
+  return { ...control, expires: Math.max(control.expires, now + MINIMUM_FRESHNESS_MS) };
 }
 
 /** @return true if the entry may be served as it stands, otherwise false: the

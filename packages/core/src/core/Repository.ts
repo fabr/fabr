@@ -109,13 +109,16 @@ export function isFileSource(source: SourceRef): source is FileSource {
 export interface RepositoryLookup {
   /**
    * Resolve what ONE reference names: the package as the repository holds it,
-   * its files in hand. Single-item by design: joint version selection over a
-   * batch is the resolution layer's business (a resolving registry never
-   * implements this face), so what remains here is a repository that answers
-   * each reference on its own (`fabr_home`). Projections and provenance
-   * carried by the reference are applied by the caller.
+   * its files in hand, or files {@link PendingFiles pending}, fetched only
+   * when the collection that asked is given its content — so a reading that
+   * never materializes (`fabr deps`) downloads nothing. Single-item by design:
+   * joint version selection over a batch is the resolution layer's business
+   * (a resolving registry never implements this face), so what remains here
+   * is a repository that answers each reference on its own (`fabr_home`).
+   * Projections and provenance carried by the reference are applied by the
+   * caller.
    */
-  resolve(reference: RepositoryRef): Computable<FileSet>;
+  resolve(reference: RepositoryRef): Computable<FileSet | PendingFiles>;
 
   /**
    * Resolve the files of what ONE reference names, with no dependency closure
@@ -342,9 +345,11 @@ export class ProjectedPackage {
 }
 
 /**
- * The files a reference's projection selects, not yet fetched: what a
- * {@link fileRequests file request} resolves to. It names files, so it is no
- * part of any graph; the collection fetches it when it is given its content.
+ * Files a reference names, not yet fetched: what a {@link fileRequests file
+ * request} resolves to, a registry's reference under the `files` operation,
+ * and a {@link RepositoryLookup}'s answer where it defers its fetch. It names
+ * files, so it is no part of any graph; the collection fetches it when it is
+ * given its content.
  */
 export class PendingFiles {
   constructor(public readonly fetch: () => Computable<FileSet | FileSetRef>) {}

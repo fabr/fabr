@@ -247,7 +247,7 @@ export class JdkDistribution implements Repository, RepositoryLookup {
     });
   }
 
-  /** List the releases published for the target platform, newest first, page by page (revalidated). */
+  /** List the releases published for the target platform, newest first, page by page, revalidated once per run. */
   private publishedReleases(): Computable<string[]> {
     return this.platform().then(platform => {
       const query = this.platformQuery(platform);
@@ -266,7 +266,7 @@ export class JdkDistribution implements Repository, RepositoryLookup {
       tag: "jdk:releases:1",
       report: { resource: "version list", role: "index" },
       convert: text => parseJson(text, `JDK release list from ${this.url}`, toReleases),
-      options: { immutable: false },
+      options: { immutable: false, forceRevalidate: true },
     }).then(releases => {
       /* The listing ends where a page is missing or empty: the API caps a page below what is asked. */
       return releases === undefined || releases.length === 0 ? listed : this.releasePages(query, page + 1, [...listed, ...releases]);
