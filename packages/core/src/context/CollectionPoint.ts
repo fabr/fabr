@@ -42,7 +42,7 @@ import {
   reachableNodes,
   ResolvedNode,
 } from "../core/PackageFileSet";
-import { isRepositoryCollection, isRepositoryReader, Materialized, PendingFiles, ProjectedPackage, RefSource, RepositoryCollection, RepositoryReader, RepositoryRef, Resolved, SourceRef } from "../core/Repository";
+import { isRepositoryCollection, isRepositoryReader, Materialized, PendingFiles, ProjectedPackage, RefSource, RepositoryCollection, RepositoryLookup, RepositoryReader, RepositoryRef, Resolved, SourceRef } from "../core/Repository";
 import { PackageRequest, Resolution, ResolutionContext, ResolvedCollection } from "../resolver/Types";
 import { packageRequest } from "../resolver/PackageResolver";
 import { DOC_OPERATION, isFilesOperation, SOURCES_OPERATION } from "../model/Constraints";
@@ -280,21 +280,27 @@ function resolveBatch(
             return pkg === undefined ? EMPTY_FILESET : operation === "run" ? runnableNode(pkg, held => source.format.makeRunnable(held, context)) : pkg;
           });
         }
-        /* A lookup's deferred fetch fails as the reference's, as a registry's does. */
-        const resolved = (): Computable<FileSet | PendingFiles> =>
-          attributedTo(reference, () => source.resolve(reference)).then(answer =>
-            answer instanceof PendingFiles ? new PendingFiles(() => attributedTo(reference, () => answer.fetch())) : answer
-          );
         if (request.as === "files") {
           return source.resolveFiles !== undefined
             ? attributedTo(reference, () => source.resolveFiles!(reference).then(files => new FileSet(files, files.origin)))
-            : resolved().then(answer => (answer instanceof PendingFiles ? (answer.fetch() as Computable<FileSet>) : answer));
+            : resolveLookup(source, reference).then(answer => (answer instanceof ResolvedNode ? (answer.content.files() as Computable<FileSet>) : answer));
         }
-        return resolved();
+        return resolveLookup(source, reference);
       }),
       (...resolved: Array<FileSet | ResolvedNode | PendingFiles>) => resolved
     );
   }
+}
+
+/**
+ * Resolve `reference` through the lookup `source`: its files in hand, or a
+ * node whose content is fetched when materialized, a failure to fetch it the
+ * reference's, as a registry's is.
+ */
+function resolveLookup(source: RepositoryLookup, reference: RepositoryRef): Computable<FileSet | ResolvedNode> {
+  return attributedTo(reference, () => source.resolve(reference)).then(answer =>
+    answer instanceof ResolvedNode ? answer.withContent({ ...answer.content, files: () => attributedTo(reference, () => answer.content.files()) }) : answer
+  );
 }
 
 /**

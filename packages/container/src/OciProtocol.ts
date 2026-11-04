@@ -45,6 +45,9 @@ export const OCI_INDEX = "application/vnd.oci.image.index.v1+json";
 export const OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json";
 export const DOCKER_MANIFEST_LIST = "application/vnd.docker.distribution.manifest.list.v2+json";
 export const DOCKER_MANIFEST = "application/vnd.docker.distribution.manifest.v2+json";
+export const OCI_CONFIG = "application/vnd.oci.image.config.v1+json";
+/** An uncompressed layer, as fabr writes one. */
+export const OCI_LAYER = "application/vnd.oci.image.layer.v1.tar";
 /** What a manifest request accepts: an index or a manifest, OCI's or Docker's. */
 export const MANIFEST_ACCEPT = [OCI_INDEX, OCI_MANIFEST, DOCKER_MANIFEST_LIST, DOCKER_MANIFEST].join(", ");
 
@@ -52,7 +55,7 @@ export const MANIFEST_ACCEPT = [OCI_INDEX, OCI_MANIFEST, DOCKER_MANIFEST_LIST, D
 export type LayerCompression = "none" | "gzip" | "zstd";
 
 const LAYER_COMPRESSION = new Map<string, LayerCompression>([
-  ["application/vnd.oci.image.layer.v1.tar", "none"],
+  [OCI_LAYER, "none"],
   ["application/vnd.oci.image.layer.v1.tar+gzip", "gzip"],
   ["application/vnd.oci.image.layer.v1.tar+zstd", "zstd"],
   ["application/vnd.docker.image.rootfs.diff.tar.gzip", "gzip"],
@@ -205,16 +208,35 @@ const LAYER_TAG = "oci:layer:1";
 export const LAYER_TAR = "layer.tar";
 export const LAYER_INDEX = "index.json";
 
-/** A manifest as served: the document, and its digest (of the bytes as served). */
-export interface IServedManifest {
-  readonly document: ManifestDocument;
+/** A document as its bytes are, read or written, and their digest: what names it. */
+export interface IDigested<T> {
+  readonly document: T;
+  readonly bytes: Buffer;
   readonly digest: string;
+}
+
+/** @return the digest of `bytes`, as OCI writes one: `sha256:<hex>`. */
+export function digestOf(bytes: Buffer): string {
+  return `sha256:${createHash(HASH_ALGORITHM).update(bytes).digest("hex")}`;
+}
+
+/** Make `document`, written as JSON, digested. */
+export function digested<T>(document: T): IDigested<T> {
+  const bytes = Buffer.from(JSON.stringify(document), "utf8");
+  return { document, bytes, digest: digestOf(bytes) };
+}
+
+/** @return `served` where it is an image's manifest, otherwise undefined (an index). */
+export function imageManifestOf(served: IDigested<ManifestDocument>): IDigested<IImageManifest> | undefined {
+  const { document } = served;
+  return document.kind === "manifest" ? { ...served, document } : undefined;
 }
 
 /** A layer as stored: its uncompressed tar (a file in the blob pool) and its index. */
 export interface IStoredLayer {
   readonly tar: IFile;
   readonly index: ILayerIndex;
+  readonly indexFile: IFile;
 }
 
 /**
@@ -235,7 +257,7 @@ export class Registry {
   ) {}
 
   /** Fetch the manifest `version` (a tag or a digest) names in `repository`. A tag's is re-checked by its digest; a digest's is verified against it. */
-  public manifest(repository: string, version: string): Computable<IServedManifest | undefined> {
+  public manifest(repository: string, version: string): Computable<IDigested<ManifestDocument> | undefined> {
     const url = `${this.url}/v2/${repository}/manifests/${version}`;
     const byDigest = isDigest(version);
     return fetchDocument(this.context, {
@@ -244,11 +266,12 @@ export class Registry {
       tag: MANIFEST_TAG,
       report: { resource: byDigest ? "image manifest" : `tag ${repository}:${version}`, role: "index" },
       convert: text => {
-        const digest = `sha256:${createHash(HASH_ALGORITHM).update(text, "utf8").digest("hex")}`;
+        const bytes = Buffer.from(text, "utf8");
+        const digest = digestOf(bytes);
         if (byDigest && digest !== version) {
           throw new FabrError(`${url} served a manifest whose digest is ${digest}`);
         }
-        return { document: parseJson(text, `manifest from ${url}`, json => toManifestDocument(json)), digest };
+        return { document: parseJson(text, `manifest from ${url}`, json => toManifestDocument(json)), bytes, digest };
       },
       headers: () => this.headers(repository).then(headers => ({ ...headers, accept: MANIFEST_ACCEPT })),
       options: byDigest ? undefined : { immutable: false, digestHeader: DIGEST_HEADER },
@@ -265,7 +288,7 @@ export class Registry {
       tag: CONFIG_TAG,
       report: { resource: "image config", role: "index" },
       convert: text => {
-        const digest = `sha256:${createHash(HASH_ALGORITHM).update(text, "utf8").digest("hex")}`;
+        const digest = digestOf(Buffer.from(text, "utf8"));
         if (digest !== descriptor.digest) {
           throw new FabrError(`${url} served a config whose digest is ${digest}`);
         }
@@ -300,7 +323,11 @@ export class Registry {
         { resource: "image layer", role: "content" }
       )
       .then(files =>
-        files.readFile(LAYER_INDEX).then(text => ({ tar: files.getFile(LAYER_TAR)!, index: parseJson(text, `index of layer ${descriptor.digest}`, toLayerIndex) }))
+        files.readFile(LAYER_INDEX).then(text => ({
+          tar: files.getFile(LAYER_TAR)!,
+          index: parseJson(text, `index of layer ${descriptor.digest}`, toLayerIndex),
+          indexFile: files.getFile(LAYER_INDEX)!,
+        }))
       );
   }
 
@@ -372,7 +399,8 @@ function toToken(json: unknown): string {
   return token;
 }
 
-function toLayerIndex(json: unknown): ILayerIndex {
+/** Read a layer's index as fabr stores it. */
+export function toLayerIndex(json: unknown): ILayerIndex {
   const doc = json as ILayerIndex;
   if (typeof doc?.diffId !== "string" || !Array.isArray(doc.entries)) {
     throw new FabrError("a stored layer index is malformed");

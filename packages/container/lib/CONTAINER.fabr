@@ -20,6 +20,39 @@ targetdef oci_repository {
     default_namespace = STRING;
 }
 
+#
+# An OCI image: `base`'s layers, and one layer above them holding `files`, with
+# its settings applied to the base's config. `fabr ls`, `cat` and `cp` read the
+# image's filesystem.
+#
+targetdef container_image {
+    # The image to build on: a reference (`@docker:debian:12-slim`) or another
+    # `container_image`. None: an image of only this target's layer.
+    base = PACKAGES;
+    # Files placed in the image under their own names, from `/`. They are
+    # resolved for the image's platform and the base's C library.
+    files = FILES;
+    # The program the container runs: a path or command inside the image.
+    # Replaces the base's entrypoint and command.
+    entry = STRING;
+    # Arguments placed after `entry`, ahead of any given when the image is run.
+    args = STRING;
+    # The directory the container's process starts in.
+    workdir = STRING;
+    # The user the container's process runs as (`name`, `uid`, `uid:gid`).
+    user = STRING;
+    # Environment variables, set over the base's.
+    env = MAP;
+    # Ports the image exposes: `8080`, or with its protocol, `53/udp`.
+    ports = STRING;
+    # Facts about the image, written as its labels over the base's: OCI's keys
+    # (`description`, `licenses`, `source`, `url`, `title`, `documentation`,
+    # `vendor`, `authors`) as `org.opencontainers.image.<key>`, any other as written.
+    metadata = MAP;
+}
+
+rule container_image c<BUILD_OPERATION=build> = @fabr-build/container:rules/BuildContainerImage;
+
 ####################### Repository ##########################
 
 #

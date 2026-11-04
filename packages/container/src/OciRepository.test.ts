@@ -34,8 +34,8 @@ import {
   packToTarball,
   openUrlStream,
   parseName,
-  PendingFiles,
   RepositoryRef,
+  ResolvedNode,
   SymlinkFile,
   TargetContext,
 } from "@fabr-build/core";
@@ -157,10 +157,13 @@ describe("OciRepository", () => {
     const context = fetchingContext(triple, options);
     const repository = new OciRepository(context, new Registry(context, registry.url), "library");
     const reference = repository.getRepositoryRef(parseName(name)) as RepositoryRef;
-    return Promise.resolve(repository.resolve(reference)).then(pending => {
-      expect(pending).to.be.instanceOf(PendingFiles);
-      expect(registry.requests).to.deep.equal([]);
-      return Promise.resolve(pending.fetch());
+    return Promise.resolve(repository.resolve(reference)).then(node => {
+      expect(node).to.be.instanceOf(ResolvedNode);
+      expect(node.packageName).to.equal("demo");
+      expect(node.version).to.match(/^sha256:[0-9a-f]{64}$/);
+      /* Resolved from the tag's index and the platform's manifest, no blob fetched. */
+      expect(registry.requests.filter(request => request.includes("/blobs/"))).to.deep.equal([]);
+      return Promise.resolve(node.content.files());
     });
   };
 

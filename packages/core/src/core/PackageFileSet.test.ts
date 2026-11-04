@@ -35,7 +35,28 @@ describe("PackageFileSet metadata", () => {
   });
 });
 
+/** A package of its own class, carrying what it adds from the package it is made from. */
+class LabelledPackage extends PackageFileSet {
+  public readonly label: string;
+
+  constructor(...args: ConstructorParameters<typeof PackageFileSet>) {
+    super(...args);
+    this.label = args[0] instanceof LabelledPackage ? args[0].label : "fresh";
+  }
+}
+
 describe("PackageGraphBuilder", () => {
+  it("rebuilds a package as its own class, carrying what that class adds", () => {
+    const original = new LabelledPackage(new Map([["a.txt", MemoryFile.from("a")]]), "lib", "1.0.0");
+    (original as { label: string }).label = "kept";
+    const builder = new PackageGraphBuilder();
+    const node = builder.node(original, "lib", "1.0.0");
+    builder.seal();
+    expect(node).to.be.instanceOf(LabelledPackage);
+    expect((node as LabelledPackage).label).to.equal("kept");
+    expect(node.withOrigin({ kind: "test" })).to.be.instanceOf(LabelledPackage);
+  });
+
   function files(tag: string): Map<string, IFile> {
     return new Map([["index.js", MemoryFile.from(`// ${tag}`)]]);
   }

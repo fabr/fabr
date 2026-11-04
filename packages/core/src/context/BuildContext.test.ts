@@ -34,7 +34,6 @@ import {
   RepositoryRef,
   RepositoryWriter,
   PublishAttachment,
-  PendingFiles,
   RepositoryLookup,
   SourceRef,
   Resolved,
@@ -269,6 +268,19 @@ registerRule("test_fail", {}, () => Computable.reject(new Error("reasons")));
 registerRule("test_good", { [BUILD_OPERATION]: "run" }, context =>
   context.buildSelfWithOverrides(BUILD_OVERRIDE).then(() => EMPTY_FILESET)
 );
+/* Passes on its `base`, as an image passes on the image it is built on. */
+testRules.push(
+  defineRule({
+    type: "test_layered",
+    properties: {},
+    requirements: context => Computable.resolve({ requirements: { dependencies: context.getPackageProperty("base") }, builds: { package: context.name } }),
+    evaluateResolved: (context, requirements) =>
+      requirements.materializeAll().then(({ dependencies: base }) => {
+        lastDeps = FileSet.unionAll(...base);
+        return Computable.resolve(new PackageFileSet(new Map([[`${context.name}.txt`, MemoryFile.from("layer")]]), context.name));
+      }),
+  })
+);
 /* Resolves its dep under a caller-supplied constraint override, for testing
  * override precedence against a reference's own <k=v> requirement. */
 testRules.push(
@@ -419,25 +431,29 @@ class TestRepo implements Repository, RepositoryLookup {
 }
 registerRepositoryProvider("test_repo", context => Computable.resolve(new TestRepo(context.name)));
 
-/* A lookup that defers its fetch: it answers a reference with its files
- * pending, and records the reference in batchCalls only when they are fetched. */
+/* A lookup that defers its fetch: it answers each reference with the node of a
+ * package named for the repository and the reference, at the version `1`, and
+ * records the reference in batchCalls only when its files are fetched. */
 class TestDeferringRepo implements Repository, RepositoryLookup {
-  private readonly files: TestRepo;
-
-  constructor(label: string) {
-    this.files = new TestRepo(label);
-  }
+  constructor(private readonly label: string) {}
 
   public getRepositoryRef(name: Name): RepositoryRef {
     return RepositoryRef.written(this, name);
   }
 
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
-    return this.files.getRepositoryPublishRef(name);
+    throw new Error(`test_deferring_repo is not a publish destination ('${name.toString()}')`);
   }
 
-  public resolve(reference: RepositoryRef): Computable<PendingFiles> {
-    return Computable.resolve(new PendingFiles(() => this.files.resolve(reference)));
+  /* Each answer is one file, named for the repository and the reference. */
+  public resolve(reference: RepositoryRef): Computable<ResolvedNode> {
+    const name = reference.name.toString();
+    const pkg = `${this.label}/${name}`;
+    const files = (): Computable<FileSet> => {
+      batchCalls.push({ repo: this.label, name });
+      return Computable.resolve(new PackageFileSet(new Map([[`${pkg}.txt`, MemoryFile.from(name)]]), pkg, "1"));
+    };
+    return Computable.resolve(new ResolvedNode({ key: `deferred ${pkg}`, files }, pkg, "1"));
   }
 }
 registerRepositoryProvider("test_deferring_repo", context => Computable.resolve(new TestDeferringRepo(context.name)));
@@ -2402,20 +2418,47 @@ describe("BuildContext", () => {
       "targetdef test_deferring_repo { }\n" +
       "targetdef test_good { deps = PACKAGES; }\n" +
       "test_deferring_repo repo { }\n" +
+      "test_deferring_repo other { }\n" +
       "x = repo:one;\n" +
       "y = repo:two;\n" +
-      "test_good a { deps = x y:two/*.txt; }\n";
+      "test_good a { deps = x y:repo/*.txt other:three; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
     const config = model.getConfig(Constraints.of({}), execution);
 
-    const [pending] = (await config.resolve(writtenOnCommandLine("x"))).denoted;
-    expect(pending).to.be.instanceOf(PendingFiles);
+    const [node] = (await config.resolve(writtenOnCommandLine("x"))).denoted;
+    expect(node).to.be.instanceOf(ResolvedNode);
     expect(batchCalls).to.deep.equal([]);
 
     await config.materialize(writtenOnCommandLine("a"));
-    expect(batchCalls.map(call => call.name).sort()).to.deep.equal(["one", "two"]);
-    expect(lastDeps && [...lastDeps].map(([path]) => path).sort()).to.deep.equal(["one/data.txt", "two/data.txt"]);
+    expect(batchCalls.map(call => `${call.repo}:${call.name}`).sort()).to.deep.equal(["other:three", "repo:one", "repo:two"]);
+    expect(lastDeps && [...lastDeps].map(([path]) => path).sort()).to.deep.equal(["other/three.txt", "repo/one.txt", "repo/two.txt"]);
+  });
+
+  it("Chains what targets pass on through a deferring lookup's package, fetching it only when built", async () => {
+    batchCalls.length = 0;
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_deferring_repo { }\n" +
+      "targetdef test_layered { base = PACKAGES; }\n" +
+      "test_deferring_repo repo { }\n" +
+      "test_layered lower { base = repo:one; }\n" +
+      "test_layered upper { base = lower; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+    const config = model.getConfig(Constraints.of({}), execution);
+
+    const [lower] = requirementsOf(await config.resolve(writtenOnCommandLine("upper"))).get("dependencies")!;
+    expect(lower).to.be.instanceOf(ResolvedTarget);
+    const [image] = (lower as ResolvedTarget).packages;
+    expect(image).to.be.instanceOf(ResolvedNode);
+    expect((image as ResolvedNode).packageId).to.equal("repo/one@1");
+    expect(batchCalls).to.deep.equal([]);
+
+    await config.materialize(writtenOnCommandLine("upper"));
+    expect(lastDeps && [...lastDeps].map(([path]) => path)).to.deep.equal(["lower.txt"]);
+    expect([...new Set(batchCalls.map(call => `${call.repo}:${call.name}`))]).to.deep.equal(["repo:one"]);
   });
 
   it("Gathers external references through multiple levels of property indirection", async () => {

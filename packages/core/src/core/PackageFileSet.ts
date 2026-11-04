@@ -254,6 +254,13 @@ export function contentOf(pkg: Package): PackageContent {
  * Content derivations (find/remap/minus/...) deliberately return plain
  * FileSets: once you reach inside a package, the result is just files.
  */
+/**
+ * A class of package: {@link PackageFileSet} or a subclass, made with its
+ * constructor's arguments. A subclass carries what it adds from the package
+ * it is made from (`files`), as {@link PackageFileSet.metadata} is carried.
+ */
+export type PackageClass = new (...args: ConstructorParameters<typeof PackageFileSet>) => PackageFileSet;
+
 export class PackageFileSet extends FileSet {
   /** What the package says about itself for publishing: given, or else that
    *  of the package it is made from. */
@@ -315,8 +322,7 @@ export class PackageFileSet extends FileSet {
 
   /** @return a copy of this package, of its own class, under `packageName` and `origin`. */
   private remade(packageName: string, origin: IProvenanceStep | undefined): PackageFileSet {
-    const made = this.constructor as new (...args: ConstructorParameters<typeof PackageFileSet>) => PackageFileSet;
-    return new made(this, packageName, this.version, this.dependencies, origin, this.provided);
+    return new (this.constructor as PackageClass)(this, packageName, this.version, this.dependencies, origin, this.provided);
   }
 
   public getDependency(name: string): Dependency<PackageFileSet> | undefined {
@@ -598,9 +604,11 @@ export class PackageGraphBuilder {
      * the builder fill them in after construction. */
     const dependencies: Array<Dependency<PackageFileSet>> = [];
     const provided = new Map<string, Provided>();
+    /* A package is rebuilt as its own class, as {@link PackageFileSet.withOrigin} remakes it. */
+    const made = files instanceof PackageFileSet ? (files.constructor as PackageClass) : PackageFileSet;
     const pkg = described
       ? new DescribedPackage(files, packageName, version, dependencies, origin, provided)
-      : new PackageFileSet(files, packageName, version, dependencies, origin, provided);
+      : new made(files, packageName, version, dependencies, origin, provided);
     this.pending.set(pkg, { dependencies, provided });
     return pkg;
   }

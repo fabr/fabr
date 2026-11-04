@@ -21,9 +21,9 @@ import {
   Computable,
   FabrError,
   IProvenanceStep,
+  MemoryCache,
   Name,
   NamespaceRef,
-  PendingFiles,
   Property,
   registerProvenanceDescriber,
   registerProvenanceRenderer,
@@ -32,11 +32,12 @@ import {
   RepositoryPublishRef,
   RepositoryRef,
   RepositoryRegistration,
+  ResolvedNode,
   TargetContext,
 } from "@fabr-build/core";
 import { ImageFileSet, ILayerRecord } from "./ImageFileSet";
 import { splitImageReference } from "./ImageReference";
-import { IImageManifest, IOciPlatform, indexPlatforms, platformMatches, platformText, Registry, selectManifest } from "./OciProtocol";
+import { IDigested, IImageManifest, imageManifestOf, IOciPlatform, indexPlatforms, platformMatches, platformText, Registry, selectManifest } from "./OciProtocol";
 
 /** Provenance kind for an image fetched from a registry. */
 export const OCI_IMAGE_PROVENANCE = "oci-image";
@@ -89,15 +90,29 @@ export function ociPlatformOf(triple: string): IOciPlatform {
   return { os, ...found[1] };
 }
 
+/** What a reference asks the registry for. */
+interface IImageRequest {
+  /** The repository at the registry (`library/node`). */
+  readonly repository: string;
+  /** The reference as written, under the repository's declared name. */
+  readonly written: string;
+  /** The platform the image is for: `OCI_TARGET`'s. */
+  readonly wanted: IOciPlatform;
+}
+
 /**
  * A registry speaking the OCI distribution API (`@docker`). A name in it is an
  * image's name and its tag or digest (`node:22-bookworm-slim`,
  * `node:sha256:<hex>`), and what follows selects among the image's files
  * (`node:22:usr/local/bin/node`). An image's name alone is a namespace. Each
  * reference is looked up on its own, nothing selected among versions: the
- * image for `OCI_TARGET`'s platform, fetched only when its files are wanted.
+ * image for `OCI_TARGET`'s platform, its layers fetched only when its files
+ * are wanted.
  */
 export class OciRepository implements Repository, RepositoryLookup {
+  /** Each image fetched this run, by registry, repository and digest. */
+  private readonly images = new MemoryCache<string, ImageFileSet>();
+
   constructor(
     private readonly context: TargetContext,
     private readonly registry: Registry,
@@ -129,67 +144,83 @@ export class OciRepository implements Repository, RepositoryLookup {
     throw new FabrError(`${this.context.name} is not a publish destination yet (cannot sync to '${name.toString()}')`);
   }
 
-  /** Answer `reference` with its image's files pending: nothing is fetched until they are wanted. */
-  public resolve(reference: RepositoryRef): Computable<PendingFiles> {
-    return Computable.resolve(new PendingFiles(() => this.image(reference)));
+  /**
+   * Answer `reference` with the node of its image for `OCI_TARGET`'s platform:
+   * a package named as written, at the digest of the platform's manifest,
+   * which its tag resolves to here. Its config and layers are fetched only
+   * when its files are wanted, once a run.
+   */
+  public resolve(reference: RepositoryRef): Computable<ResolvedNode> {
+    return this.context.getGlobalString(OCI_TARGET).then(triple => {
+      const version = reference.versionConstraint!;
+      const request: IImageRequest = {
+        repository: this.repositoryOf(reference.name),
+        written: `${this.context.name}:${reference.name}:${version}`,
+        wanted: ociPlatformOf(triple),
+      };
+      return this.manifestFor(request, version).then(manifest => {
+        const origin: IImageOrigin = { kind: OCI_IMAGE_PROVENANCE, image: request.written, digest: manifest.digest, platform: platformText(request.wanted) };
+        const key = `${this.registry.url} ${request.repository}@${manifest.digest}`;
+        return new ResolvedNode(
+          { key, files: () => this.images.getOrCreate(key, () => this.image(request, manifest, reference.name, origin)) },
+          reference.name,
+          manifest.digest,
+          [],
+          origin
+        );
+      });
+    });
   }
 
-  /** Fetch the image `reference` names for `OCI_TARGET`'s platform. */
-  private image(reference: RepositoryRef): Computable<ImageFileSet> {
-    const repository = this.repositoryOf(reference.name);
-    const version = reference.versionConstraint!;
-    const written = `${this.context.name}:${reference.name}:${version}`;
-    return this.context.getGlobalString(OCI_TARGET).then(triple => {
-      const wanted = ociPlatformOf(triple);
-      return this.registry
-        .manifest(repository, version)
-        .then(served => {
-          if (served === undefined) {
-            throw new FabrError(`${this.registry.url} has no image ${reference.name}:${version}`);
-          }
-          if (served.document.kind === "manifest") {
-            return { manifest: served.document as IImageManifest, digest: served.digest };
-          }
-          const entry = selectManifest(served.document.manifests, wanted);
-          if (entry === undefined) {
-            const has = indexPlatforms(served.document.manifests).join(", ");
-            throw new FabrError(`${written} has no image for ${platformText(wanted)}`).withHelp(
-              has === "" ? "the image names no platform" : `it has images for ${has}; set ${OCI_TARGET} to one of them`
-            );
-          }
-          return this.registry.manifest(repository, entry.digest).then(chosen => {
-            if (chosen === undefined || chosen.document.kind !== "manifest") {
-              throw new FabrError(`${this.registry.url} has no image manifest ${entry.digest} for ${written}`);
-            }
-            return { manifest: chosen.document as IImageManifest, digest: chosen.digest };
-          });
-        })
-        .then(({ manifest, digest }) =>
-          this.registry.config(repository, manifest.config).then(config => {
-            if (!platformMatches(config.platform, wanted)) {
-              throw new FabrError(`${written} is an image for ${platformText(config.platform)}, not ${platformText(wanted)}`).withHelp(
-                `set ${OCI_TARGET} to its platform, or name an image for ${platformText(wanted)}`
-              );
-            }
-            if (config.diffIds.length !== manifest.layers.length) {
-              throw new FabrError(`${written}'s config names ${config.diffIds.length} layers, its manifest ${manifest.layers.length}`);
-            }
-            return Computable.forAll(
-              manifest.layers.map((layer, index) =>
-                this.registry.layer(repository, layer, config.diffIds[index]).then(
-                  (stored): ILayerRecord => ({
-                    ...stored,
-                    published: { digest: layer.digest, mediaType: layer.mediaType, size: layer.size, from: `${this.registry.url}/${repository}` },
-                  })
-                )
-              ),
-              (...layers: ILayerRecord[]) => {
-                const origin: IImageOrigin = { kind: OCI_IMAGE_PROVENANCE, image: written, digest, platform: platformText(wanted) };
-                return new ImageFileSet(config, layers, origin);
-              }
-            );
-          })
+  /** Find the manifest of the image `request` asks for: the one `version` names, or, where that is an index, the one in it for the platform. */
+  private manifestFor({ repository, written, wanted }: IImageRequest, version: string): Computable<IDigested<IImageManifest>> {
+    return this.registry.manifest(repository, version).then(served => {
+      if (served === undefined) {
+        throw new FabrError(`${this.registry.url} has no image ${written}`);
+      }
+      const { document } = served;
+      if (document.kind === "manifest") {
+        return { ...served, document };
+      }
+      const entry = selectManifest(document.manifests, wanted);
+      if (entry === undefined) {
+        const has = indexPlatforms(document.manifests).join(", ");
+        throw new FabrError(`${written} has no image for ${platformText(wanted)}`).withHelp(
+          has === "" ? "the image names no platform" : `it has images for ${has}; set ${OCI_TARGET} to one of them`
         );
+      }
+      return this.registry.manifest(repository, entry.digest).then(chosen => {
+        const found = chosen === undefined ? undefined : imageManifestOf(chosen);
+        if (found === undefined) {
+          throw new FabrError(`${this.registry.url} has no image manifest ${entry.digest} for ${written}`);
+        }
+        return found;
+      });
+    });
+  }
+
+  /** Fetch the config and layers of the image `manifest` is, as `request` asked for it. */
+  private image({ repository, written, wanted }: IImageRequest, { document: manifest, digest }: IDigested<IImageManifest>, name: string, origin: IImageOrigin): Computable<ImageFileSet> {
+    return this.registry.config(repository, manifest.config).then(config => {
+      if (!platformMatches(config.platform, wanted)) {
+        throw new FabrError(`${written} is an image for ${platformText(config.platform)}, not ${platformText(wanted)}`).withHelp(
+          `set ${OCI_TARGET} to its platform, or name an image for ${platformText(wanted)}`
+        );
+      }
+      if (config.diffIds.length !== manifest.layers.length) {
+        throw new FabrError(`${written}'s config names ${config.diffIds.length} layers, its manifest ${manifest.layers.length}`);
+      }
+      return Computable.forAll(
+        manifest.layers.map((layer, index) =>
+          this.registry.layer(repository, layer, config.diffIds[index]).then(
+            (stored): ILayerRecord => ({
+              ...stored,
+              published: { digest: layer.digest, mediaType: layer.mediaType, size: layer.size, from: `${this.registry.url}/${repository}` },
+            })
+          )
+        ),
+        (...layers: ILayerRecord[]) => ImageFileSet.of(config, layers, name, digest, origin)
+      );
     });
   }
 

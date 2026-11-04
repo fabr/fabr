@@ -18,9 +18,22 @@
  */
 
 import * as fs from "fs";
-import { Computable, FileSet, IFile, IProvenanceStep, SymlinkFile } from "@fabr-build/core";
+import {
+  Computable,
+  Dependency,
+  FabrError,
+  FileSet,
+  IFile,
+  IProvenanceStep,
+  MemoryFile,
+  MetadataMap,
+  PackageFileSet,
+  parseJson,
+  Provided,
+  SymlinkFile,
+} from "@fabr-build/core";
 import { ILayerEntry, ILayerIndex } from "./LayerIndex";
-import { IImageConfig } from "./OciProtocol";
+import { IImageConfig, toImageConfig, toLayerIndex } from "./OciProtocol";
 
 /** The name of a whiteout's file: `.wh.<name>` hides `<name>` below it, and `.wh..wh..opq` everything else in its directory. */
 const WHITEOUT_PREFIX = ".wh.";
@@ -34,25 +47,134 @@ const OPAQUE_WHITEOUT = ".wh..wh..opq";
 export interface ILayerRecord {
   readonly tar: IFile;
   readonly index: ILayerIndex;
+  /** The index as it is stored, beside the tar. */
+  readonly indexFile: IFile;
   readonly published?: { readonly digest: string; readonly mediaType: string; readonly size: number; readonly from: string };
 }
 
 /**
- * An image, presented as the FileSet of its filesystem: the layers' entries
- * merged top-down, a whiteout removing what is below it, each regular file
- * read from its layer when its content is wanted. Directories, device nodes,
- * fifos and sockets are not presented, and every file is presented
+ * An image, a package presented as the FileSet of its filesystem: the layers'
+ * entries merged top-down, a whiteout removing what is below it, each regular
+ * file read from its layer when its content is wanted. Directories, device
+ * nodes, fifos and sockets are not presented, and every file is presented
  * root-owned. Beside its files it carries what an image built on it needs:
- * its config and its layers.
+ * its config and its layers. Its dependency is the image it is built on,
+ * where it was built here.
  */
-export class ImageFileSet extends FileSet {
+export class ImageFileSet extends PackageFileSet {
+  public readonly config: IImageConfig;
+  public readonly layers: readonly ILayerRecord[];
+
+  /**
+   * Make an image of `files` under the package fields given; its config and
+   * layers are `image`'s, or else those of `files`, which must then be an
+   * image (as {@link PackageGraphBuilder} and a copy remake one).
+   */
   constructor(
-    public readonly config: IImageConfig,
-    public readonly layers: readonly ILayerRecord[],
-    origin?: IProvenanceStep
+    files: Iterable<[string, IFile]>,
+    packageName: string,
+    version?: string,
+    dependencies?: ReadonlyArray<Dependency<PackageFileSet>>,
+    origin?: IProvenanceStep,
+    provided?: ReadonlyMap<string, Provided>,
+    metadata?: MetadataMap,
+    image?: { readonly config: IImageConfig; readonly layers: readonly ILayerRecord[] }
   ) {
-    super(filesystemOf(layers), origin);
+    super(files, packageName, version, dependencies, origin, provided, metadata);
+    const from = image ?? (files instanceof ImageFileSet ? files : undefined);
+    if (from === undefined) {
+      throw new FabrError(`'${packageName}' is made as an image from files that are no image`);
+    }
+    this.config = from.config;
+    this.layers = from.layers;
   }
+
+  /** Make the image named `packageName` whose config is `config` and whose layers, lowest first, are `layers`. */
+  public static of(
+    config: IImageConfig,
+    layers: readonly ILayerRecord[],
+    packageName: string,
+    version?: string,
+    origin?: IProvenanceStep
+  ): ImageFileSet {
+    return new ImageFileSet(filesystemOf(layers), packageName, version, [], origin, undefined, undefined, { config, layers });
+  }
+
+  /**
+   * @return the image's records as files, for a build step to take as input
+   * and hand on: `config.json`, and per layer, numbered from the lowest,
+   * `layers/<n>/layer.tar`, `index.json` and, where it was fetched,
+   * `published.json`. {@link imageOfRecords} reads them back.
+   */
+  public toRecords(): FileSet {
+    const records = new Map<string, IFile>([[RECORD_CONFIG, MemoryFile.from(JSON.stringify(this.config.document))]]);
+    this.layers.forEach((layer, index) => {
+      const dir = layerRecordDir(index);
+      records.set(`${dir}/${RECORD_TAR}`, layer.tar);
+      records.set(`${dir}/${RECORD_INDEX}`, layer.indexFile);
+      if (layer.published !== undefined) {
+        records.set(`${dir}/${RECORD_PUBLISHED}`, MemoryFile.from(JSON.stringify(layer.published)));
+      }
+    });
+    return new FileSet(records);
+  }
+}
+
+/* The names of an image's records (see {@link ImageFileSet.toRecords}). */
+export const RECORD_CONFIG = "config.json";
+const RECORD_TAR = "layer.tar";
+const RECORD_INDEX = "index.json";
+const RECORD_PUBLISHED = "published.json";
+
+/** @return the directory of the records of the layer numbered `index`: zero-padded, so they sort in order. */
+export function layerRecordDir(index: number): string {
+  return `layers/${String(index).padStart(3, "0")}`;
+}
+
+/** Read the image named `packageName` back from its records (see {@link ImageFileSet.toRecords}). */
+export function imageOfRecords(records: FileSet, packageName: string, origin?: IProvenanceStep): Computable<ImageFileSet> {
+  const dirs = [...new Set([...records].map(([name]) => name).filter(name => name.startsWith("layers/")).map(name => name.split("/").slice(0, 2).join("/")))].sort();
+  const read = (name: string): Computable<string> => {
+    const file = records.getFile(name);
+    return file === undefined ? Computable.reject<string>(new FabrError(`an image's records lack '${name}'`)) : file.readString();
+  };
+  return Computable.forAll(
+    [
+      read(RECORD_CONFIG),
+      Computable.forAll(
+        dirs.map(dir =>
+          Computable.forAll(
+            [read(`${dir}/${RECORD_INDEX}`), records.getFile(`${dir}/${RECORD_PUBLISHED}`)?.readString() ?? Computable.resolve(undefined)] as const,
+            (index: string, published: string | undefined): ILayerRecord => ({
+              tar: records.getFile(`${dir}/${RECORD_TAR}`)!,
+              index: parseJson(index, `${dir}/${RECORD_INDEX}`, toLayerIndex),
+              indexFile: records.getFile(`${dir}/${RECORD_INDEX}`)!,
+              ...(published === undefined ? {} : { published: JSON.parse(published) as ILayerRecord["published"] }),
+            })
+          )
+        ),
+        (...layers: ILayerRecord[]) => layers
+      ),
+    ] as const,
+    (config: string, layers: ILayerRecord[]) => ImageFileSet.of(parseJson(config, RECORD_CONFIG, toImageConfig), layers, packageName, undefined, origin)
+  );
+}
+
+/** The C library an image's programs are linked against, as a target triple's environment names it. */
+export type ImageLibc = "gnu" | "musl";
+
+/**
+ * Find the C library an image has, from its dynamic loader: musl's
+ * `lib/ld-musl-<arch>.so.1` (even beside a glibc-named shim), else glibc's
+ * `ld-linux*.so.<n>` under `lib`, `lib64` or `usr/lib`. Undefined where it has
+ * neither (`scratch`, a static distroless image).
+ */
+export function libcOf(image: FileSet): ImageLibc | undefined {
+  const names = [...image].map(([name]) => name);
+  if (names.some(name => /^(usr\/)?lib\/ld-musl-[^/]+\.so\.1$/.test(name))) {
+    return "musl";
+  }
+  return names.some(name => /^(usr\/)?lib(64)?(\/[^/]+-linux-gnu[^/]*)?\/ld-linux[^/]*\.so\.\d+$/.test(name)) ? "gnu" : undefined;
 }
 
 /** Merge `layers`' entries, lowest first, into the files of the filesystem they make. */
