@@ -1,0 +1,19 @@
+# The container plugin. Fabr does not need it to build itself, so only fabr builds it.
+
+# The plugin's code.
+js_package @fabr-build/container-boot {
+  srcs = src:**/*.ts ../../README.md -> README.md ../../COPYING -> LICENSE;
+  # The modules CONTAINER.fabr's repository declaration names.
+  exports = src:OciRepository.ts;
+  tests = src:**/*.test.ts;
+  deps = @pkg:@types/node;
+  provided_deps = @fabr-build/core;
+  test_deps = chai jest_types;
+  metadata = { FABR_METADATA; description = Fabr container image plugin }
+}
+
+# The plugin, built in the project: its code and CONTAINER.fabr.
+fabr_plugin @fabr-build/container {
+  srcs = @fabr-build/container-boot;
+  libs = ./lib/CONTAINER.fabr;
+}

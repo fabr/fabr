@@ -1,0 +1,37 @@
+#
+# Definitions for the container plugin.
+#
+
+#
+# The platform images are looked up at and built for: a target triple whose OS
+# is `linux`. Only its CPU chooses among an image's platforms.
+#
+default OCI_TARGET = ${TARGET/-*/-unknown-linux};
+
+#
+# A registry speaking the OCI distribution API. A name in it is an image's name
+# and a tag or digest, so `@docker:node:22-bookworm-slim:etc/os-release` is that
+# file of the image the tag names for `OCI_TARGET`.
+#
+targetdef oci_repository {
+    # The registry's URL, as in `https://ghcr.io`.
+    url = REQUIRED STRING;
+    # The namespace an image named by one segment is in (`library` on Docker Hub).
+    default_namespace = STRING;
+}
+
+####################### Repository ##########################
+
+#
+# Docker Hub.
+#
+
+default oci_repository @docker {
+  url = https://registry-1.docker.io;
+  default_namespace = library;
+}
+
+#
+# How the OCI repository type is made.
+#
+repository oci_repository = @fabr-build/container:OciRepository;
