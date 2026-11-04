@@ -136,12 +136,12 @@ interface Install {
   served: FileSet;
   /** The writes into the dir so far, each queued behind the last, so a sync or
    * a restage into it never interleaves with one still landing. A gate, not a
-   * history: once the newest sync has landed it is collapsed to a settled node
-   * (see {@link RunSupervisor.updateContent}). */
+   * history: once the newest write has landed it is collapsed to a settled node
+   * (see {@link RunSupervisor.update} and {@link RunSupervisor.updateContent}). */
   writes: Computable<void>;
-  /** The number of the most recently queued sync; only that one may collapse
-   * `writes`, since an earlier sync finishing behind a newer one must leave it
-   * in place. */
+  /** The number of the most recently queued sync; only the newest write (that
+   * sync, or the staging write where none is queued) may collapse `writes`, since
+   * an earlier one finishing behind a newer one must leave it in place. */
   writeSeq: number;
   /** Absent until launched — and again once the child has exited. */
   child?: ChildProcess;
@@ -249,11 +249,22 @@ export class RunSupervisor {
      * what they left: `held` is read once they are done. */
     const staged = (spare?.writes ?? Computable.resolve(undefined)).then(() => stageInstall(this.cache, install.dir, runnable, spare?.held));
     /* Syncs into this install queue behind its staging write — the dir does not
-     * hold the program until it lands. */
-    install.writes = staged.then(
-      () => undefined,
-      () => undefined
-    );
+     * hold the program until it lands. Once it has, the gate collapses to a settled
+     * node as a sync's does, or the install would hold the spare it was staged from,
+     * and that one its own, back through every install of the session. */
+    const seq = install.writeSeq;
+    let collapsed = false;
+    const landed = (): undefined => {
+      if (seq === install.writeSeq) {
+        install.writes = Computable.resolve(undefined);
+        collapsed = true;
+      }
+      return undefined;
+    };
+    const gate = staged.then(landed, landed);
+    if (!collapsed) {
+      install.writes = gate;
+    }
     return staged.then(
       () => this.swap(install, argv, runnable, generation, wasRunning),
       err => {

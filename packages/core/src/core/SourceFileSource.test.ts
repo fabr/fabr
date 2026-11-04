@@ -335,6 +335,17 @@ describe("SourceFileSource index trust", () => {
     return hashes;
   }
 
+  /* Every ingest would otherwise stay reachable as a dependant of the load, with the file it read,
+   * for as long as the source lives: one per file per enumeration under watch. */
+  it("keeps no load node for later ingests to depend on once the index is loaded", async () => {
+    writeAged("a.ts", "export const a = 1;\n");
+    const source = newSource();
+    await toPromise(source.ingest("a.ts"));
+
+    expect(source["indexLoad"]).to.equal(undefined);
+    expect(source["loadIndex"]().isSettled()).to.equal(true);
+  });
+
   it("serves a stat-matching VERIFIED row without re-reading (proven by poisoning)", async () => {
     writeAged("src/a.ts", "export const a = 1;\n");
     /* Two runs: the first records the row unverified, the second's agreeing

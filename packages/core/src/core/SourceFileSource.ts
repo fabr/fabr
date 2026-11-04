@@ -251,13 +251,21 @@ export class SourceFileSource extends FSFileSource {
   private indexWrite?: Computable<void>;
   private lastIndexWrite = 0;
 
+  /**
+   * Load this project's rows, once. Once they are loaded they are handed out as a settled
+   * constant and the load is dropped: an ingest, made per file per enumeration, must hold
+   * no edge to a node that lives as long as this source, or every ingest stays reachable
+   * as its dependant.
+   */
   private loadIndex(): Computable<Map<string, ISourceIndexRow>> {
-    if (this.indexLoad === undefined) {
-      this.indexLoad = this.cache.readSourceIndex(this.root).then(rows => {
-        this.indexRows = rows ?? new Map();
-        return this.indexRows;
-      });
+    if (this.indexRows !== undefined) {
+      return Computable.resolve(this.indexRows);
     }
+    this.indexLoad ??= this.cache.readSourceIndex(this.root).then(rows => {
+      this.indexRows = rows ?? new Map();
+      this.indexLoad = undefined;
+      return this.indexRows;
+    });
     return this.indexLoad;
   }
 
