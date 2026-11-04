@@ -451,9 +451,6 @@ No jest configuration is read: not `jest.config.js`, and not the `jest` key of a
 
 - **`setImmediate` and `process.nextTick` aren't faked by default.** `jest.useFakeTimers()` leaves
   them real. To fake them as jest does, pass `jest.useFakeTimers({ doNotFake: [] })`.
-- **`jest.resetModules()` and `jest.isolateModules()` reset only your own modules.** Packages
-  loaded from dependencies stay loaded, where jest reloads them too. A test that depends on a
-  package being re-initialised needs to mock it.
 - **A module you mock must be one the test can resolve.** `jest.mock("x")` finds `x` from the
   test file, as an import there would, and a test resolves only the packages its target declares.
   Mocking a package your code reaches only through another one, such as the SDK a configuration

@@ -178,6 +178,29 @@ describe("MockRegistry", () => {
       expect(load("./nomock") === before).to.equal(true);
     });
 
+    (nodeLoads ? it : it.skip)("loads an installed package afresh inside it too, as jest does", () => {
+      write("node_modules/pkg/index.js", "{ instance: {} }");
+      const load = createRequire(caller.filename);
+      const before = load("pkg");
+      const mocks = registry();
+      const inside = mocks.isolateModules(() => load("pkg"));
+
+      expect(inside === before).to.equal(false);
+      expect(load("pkg") === before).to.equal(true);
+    });
+  });
+
+  describe("resetModules", () => {
+    (nodeLoads ? it : it.skip)("loads the code under test and installed packages afresh", () => {
+      write("node_modules/pkg/index.js", "{ instance: {} }");
+      const load = createRequire(caller.filename);
+      const before = { own: load("./nomock"), installed: load("pkg") };
+      registry().resetModules();
+
+      expect(load("./nomock") === before.own).to.equal(false);
+      expect(load("pkg") === before.installed).to.equal(false);
+    });
+
     it("refuses to be nested, as jest does", () => {
       const mocks = registry();
       expect(() => mocks.isolateModules(() => mocks.isolateModules(() => undefined))).to.throw(/cannot be nested/);

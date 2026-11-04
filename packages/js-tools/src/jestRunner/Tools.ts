@@ -155,14 +155,43 @@ export const RUNNER_ROOT = path.dirname(__dirname);
 
 /**
  * @return true if a file is the code under test, as opposed to the runner's
- * own machinery or an installed dependency, otherwise false. Defined once because the hoist and
- * `resetModules` must agree on the boundary: the hoist transforms exactly the
- * code under test, and a reset evicts exactly the code under test.
+ * own machinery or an installed dependency, otherwise false: what the load-time
+ * hoist transforms.
  */
 export function isCodeUnderTest(root: string, filename: string): boolean {
   return (
     filename.startsWith(root + path.sep) &&
     !filename.includes(`${path.sep}node_modules${path.sep}`) &&
     !filename.startsWith(RUNNER_ROOT + path.sep)
+  );
+}
+
+/**
+ * @return the install the tests at `root` run in: the nearest directory at or
+ * above `root` holding a `node_modules`, else `root` itself.
+ */
+export function installRootOf(root: string): string {
+  for (let dir = root; ; dir = path.dirname(dir)) {
+    if (fs.existsSync(path.join(dir, "node_modules"))) {
+      return dir;
+    }
+    if (path.dirname(dir) === dir) {
+      return root;
+    }
+  }
+}
+
+/**
+ * @return true if a file is in the tests' module registry, otherwise false:
+ * anything the install at `installRoot` holds — the code under test and its
+ * installed dependencies — bar the runner's own machinery and native addons,
+ * which node cannot load a second time. These are what `resetModules` and
+ * `isolateModules` load afresh, as jest's registry does.
+ */
+export function isRegistryModule(installRoot: string, filename: string): boolean {
+  return (
+    filename.startsWith(installRoot + path.sep) &&
+    !filename.startsWith(RUNNER_ROOT + path.sep) &&
+    path.extname(filename) !== ".node"
   );
 }

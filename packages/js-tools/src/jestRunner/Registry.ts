@@ -45,7 +45,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire, isBuiltin, Module } from "node:module";
 import { assetStubFor } from "../testRunner/Assets";
-import { isCodeUnderTest, RUNNER_ROOT } from "./Tools";
+import { installRootOf, isRegistryModule, RUNNER_ROOT } from "./Tools";
 
 /** What a caller module is, for resolution purposes: node's CJS Module. */
 export interface ILoaderModule {
@@ -93,7 +93,7 @@ export class MockRegistry {
   /** Bumped by `resetModules`: a mock instance and a module registry entry are
    * only valid within one generation. */
   private generation = 0;
-  /** What a running `isolateModules` set aside: the code under test's modules,
+  /** What a running `isolateModules` set aside: the registry's modules,
    * restored when it ends, and the mock instances that predate it, which it
    * keeps while dropping those made inside. */
   private isolation: { readonly modules: Map<string, NodeModule>; readonly instances: Set<string> } | undefined;
@@ -111,8 +111,12 @@ export class MockRegistry {
    * by the child (runTestFile) once the jest object can be made. */
   public jestGlobalsFor: (caller: ILoaderModule | undefined) => unknown = () => ({});
 
+  /** The install the tests run in, whose modules are the registry's. */
+  private readonly installRoot: string;
+
   constructor(private readonly root: string, private readonly moduleMocker: IModuleMocker) {
     this.rootMocks = listRootMocks(root);
+    this.installRoot = installRootOf(root);
   }
 
   /* ---- registration (the jest object's module operations) ---- */
@@ -136,24 +140,24 @@ export class MockRegistry {
     this.mockSerial++;
   }
 
-  /** Start a new generation: memoized mock instances and the code under test
-   * are both reloaded on next require. The runner's own machinery and everything in the
-   * sealed tool mount stay cached — evicting those would tear the layer out
+  /** Start a new generation: memoized mock instances and the registry's
+   * modules (see {@link isRegistryModule}) are both reloaded on next require. The
+   * runner's own machinery stays cached — evicting it would tear the layer out
    * from under the very test that asked for a reset. */
   public resetModules(): void {
     this.generation++;
     this.instances.clear();
     this.isolation?.modules.clear();
     this.isolation?.instances.clear();
-    this.evictCodeUnderTest();
+    this.evictRegistryModules();
   }
 
   /**
-   * Run `fn` with the code under test loaded afresh, as jest's isolated module
-   * registry does: a module it requires is a new instance, while a mock made
-   * before it is the same instance inside. When `fn` returns, the modules it
-   * loaded and the mocks it made are dropped and the code under test's earlier
-   * instances are restored. A promise `fn` returns is not waited for.
+   * Run `fn` with the registry's modules loaded afresh, as jest's isolated module
+   * registry does: a module it requires, installed dependencies included, is a
+   * new instance, while a mock made before it is the same instance inside. When
+   * `fn` returns, the modules it loaded and the mocks it made are dropped and the
+   * earlier instances are restored. A promise `fn` returns is not waited for.
    */
   public isolateModules<T>(fn: () => T): T {
     this.beginIsolation("isolateModules");
@@ -181,18 +185,18 @@ export class MockRegistry {
     const cache = this.moduleCache;
     const modules = new Map<string, NodeModule>();
     for (const [filename, module] of Object.entries(cache)) {
-      if (module !== undefined && isCodeUnderTest(this.root, filename)) {
+      if (module !== undefined && isRegistryModule(this.installRoot, filename)) {
         modules.set(filename, module);
       }
     }
-    this.evictCodeUnderTest();
+    this.evictRegistryModules();
     this.isolation = { modules, instances: new Set(this.instances.keys()) };
   }
 
   private endIsolation(): void {
     const { modules, instances } = this.isolation!;
     this.isolation = undefined;
-    this.evictCodeUnderTest();
+    this.evictRegistryModules();
     const cache = this.moduleCache;
     for (const [filename, module] of modules) {
       cache[filename] = module;
@@ -204,10 +208,10 @@ export class MockRegistry {
     }
   }
 
-  private evictCodeUnderTest(): void {
+  private evictRegistryModules(): void {
     const cache = this.moduleCache;
     for (const filename of Object.keys(cache)) {
-      if (isCodeUnderTest(this.root, filename)) {
+      if (isRegistryModule(this.installRoot, filename)) {
         delete cache[filename];
       }
     }
