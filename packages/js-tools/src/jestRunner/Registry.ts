@@ -90,9 +90,13 @@ export class MockRegistry {
   private readonly entries = new Map<string, IMockEntry>();
   /** Memoized factory results, cleared wholesale on a generation bump. */
   private readonly instances = new Map<string, unknown>();
-  /** Bumped by `resetModules`/`isolateModules`: a mock instance and a module
-   * registry entry are only valid within one generation. */
+  /** Bumped by `resetModules`: a mock instance and a module registry entry are
+   * only valid within one generation. */
   private generation = 0;
+  /** What a running `isolateModules` set aside: the code under test's modules,
+   * restored when it ends, and the mock instances that predate it, which it
+   * keeps while dropping those made inside. */
+  private isolation: { readonly modules: Map<string, NodeModule>; readonly instances: Set<string> } | undefined;
   /** Bumped by every registration change, for {@link mockStamp}. */
   private mockSerial = 0;
   private automockAll = false;
@@ -139,20 +143,79 @@ export class MockRegistry {
   public resetModules(): void {
     this.generation++;
     this.instances.clear();
-    for (const filename of Object.keys(require.cache)) {
-      if (isCodeUnderTest(this.root, filename)) {
-        delete require.cache[filename];
+    this.isolation?.modules.clear();
+    this.isolation?.instances.clear();
+    this.evictCodeUnderTest();
+  }
+
+  /**
+   * Run `fn` with the code under test loaded afresh, as jest's isolated module
+   * registry does: a module it requires is a new instance, while a mock made
+   * before it is the same instance inside. When `fn` returns, the modules it
+   * loaded and the mocks it made are dropped and the code under test's earlier
+   * instances are restored. A promise `fn` returns is not waited for.
+   */
+  public isolateModules<T>(fn: () => T): T {
+    this.beginIsolation("isolateModules");
+    try {
+      return fn();
+    } finally {
+      this.endIsolation();
+    }
+  }
+
+  /** Run `fn` as {@link isolateModules} does, ending the isolation once its promise settles. */
+  public async isolateModulesAsync(fn: () => Promise<void>): Promise<void> {
+    this.beginIsolation("isolateModulesAsync");
+    try {
+      await fn();
+    } finally {
+      this.endIsolation();
+    }
+  }
+
+  private beginIsolation(name: string): void {
+    if (this.isolation !== undefined) {
+      throw new Error(`${name} cannot be nested inside another isolateModules or isolateModulesAsync.`);
+    }
+    const cache = this.moduleCache;
+    const modules = new Map<string, NodeModule>();
+    for (const [filename, module] of Object.entries(cache)) {
+      if (module !== undefined && isCodeUnderTest(this.root, filename)) {
+        modules.set(filename, module);
+      }
+    }
+    this.evictCodeUnderTest();
+    this.isolation = { modules, instances: new Set(this.instances.keys()) };
+  }
+
+  private endIsolation(): void {
+    const { modules, instances } = this.isolation!;
+    this.isolation = undefined;
+    this.evictCodeUnderTest();
+    const cache = this.moduleCache;
+    for (const [filename, module] of modules) {
+      cache[filename] = module;
+    }
+    for (const key of [...this.instances.keys()]) {
+      if (!instances.has(key)) {
+        this.instances.delete(key);
       }
     }
   }
 
-  public isolateModules<T>(fn: () => T): T {
-    this.resetModules();
-    try {
-      return fn();
-    } finally {
-      this.resetModules();
+  private evictCodeUnderTest(): void {
+    const cache = this.moduleCache;
+    for (const filename of Object.keys(cache)) {
+      if (isCodeUnderTest(this.root, filename)) {
+        delete cache[filename];
+      }
     }
+  }
+
+  /** The module cache of the loader the registry loads through: node's, in a test process. */
+  private get moduleCache(): NodeJS.Dict<NodeModule> {
+    return this.requireFrom(undefined).cache;
   }
 
   /* ---- serving (both seams) ---- */
@@ -369,7 +432,7 @@ export class MockRegistry {
    * module the mock was taken from.
    */
   private automockOf(key: string): unknown {
-    const cache = this.requireFrom(undefined).cache;
+    const cache = this.moduleCache;
     const cached = new Set(Object.keys(cache));
     try {
       return this.moduleMocker.generateFromMetadata(this.moduleMocker.getMetadata(this.loadActual(key)));

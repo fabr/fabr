@@ -151,14 +151,7 @@ export function makeJestObject(env: IJestEnvironment, caller: ILoaderModule | un
     genMockFromModule: (moduleName: string) => registry.requireMock(moduleName, caller),
     resetModules: () => (registry.resetModules(), chain()),
     isolateModules: (fn: () => void) => (registry.isolateModules(fn), chain()),
-    isolateModulesAsync: async (fn: () => Promise<void>) => {
-      registry.resetModules();
-      try {
-        await fn();
-      } finally {
-        registry.resetModules();
-      }
-    },
+    isolateModulesAsync: (fn: () => Promise<void>) => registry.isolateModulesAsync(fn),
 
     /* Overrides the adopted one: see withTimerDefaults for the one deliberate
      * divergence from jest's defaults. */

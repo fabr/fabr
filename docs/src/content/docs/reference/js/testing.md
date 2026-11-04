@@ -454,6 +454,13 @@ No jest configuration is read: not `jest.config.js`, and not the `jest` key of a
 - **`jest.resetModules()` and `jest.isolateModules()` reset only your own modules.** Packages
   loaded from dependencies stay loaded, where jest reloads them too. A test that depends on a
   package being re-initialised needs to mock it.
+- **A module you mock must be one the test can resolve.** `jest.mock("x")` finds `x` from the
+  test file, as an import there would, and a test resolves only the packages its target declares.
+  Mocking a package your code reaches only through another one, such as the SDK a configuration
+  library loads, fails with `Cannot find module 'x'`, where under npm or pnpm it resolved because
+  the package was hoisted into the root `node_modules`. Add the package to `test_deps`: the mock
+  then also applies where the other package imports it, as long as both resolve to the same
+  version.
 - **Variables used in a `jest.mock` factory needn't be named `mock…`.** Jest's Babel plugin
   rejects a factory that refers to other outer variables; fabr doesn't apply that rule, so code
   that jest rejects for this reason runs.
@@ -579,6 +586,7 @@ the runner starts are measured as long as that variable is passed on.
 |---|---|---|
 | `Cannot test 'x': no rule matches target type 'js_package'` | `test_framework` or `JS_TEST_FRAMEWORK` isn't `node`, `jest` or `vitest` | Correct the value; the message lists the accepted ones. |
 | `This test file registered no tests` | Under jest or vitest: a helper or setup file matched by `tests`, or a test file that takes `describe`/`it` from `node:test` | Narrow the `tests` pattern (see [Every file in `tests` is run as a test](#every-file-in-tests-is-run-as-a-test)), or use the framework's own API. |
+| `Cannot find module 'x' from '…/x.test.js'`, at a `jest.mock` | The test mocks a package its target doesn't declare, one your code reaches only through another package | Add the package to `test_deps`; see [What differs from jest](#what-differs-from-jest). |
 | `the following packages are required only without a version lower bound ('*')` | A test dependency's own dependencies name a package without a minimum version | Add the `@npm:…?` lines the message prints to `test_deps` or your catalog. |
 | `Cannot find name 'describe'` or `'expect'` when compiling | jest: `@types/jest` isn't in `test_deps`. vitest: the API isn't imported. `node`: `@types/node` isn't in `deps`, or `expect` is used without an assertion library | Add the package or the import. |
 | `Cannot find name 'document'` when compiling | The target doesn't have the `dom` flag | Add `dom` to `deps` or `test_deps`; see [DOM tests](#dom-tests). |

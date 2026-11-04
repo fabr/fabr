@@ -45,7 +45,8 @@ describe("MockRegistry", () => {
   };
 
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-registry-"));
+    /* Real, as node keys its module cache by real path (macOS's tmpdir is under a symlink). */
+    dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-registry-")));
     write("build/real.js", "{ real: true }");
     write("build/nomock.js", "{ real: true }");
     write("build/__mocks__/real.js", "{ manual: true }");
@@ -57,6 +58,9 @@ describe("MockRegistry", () => {
   afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
   const registry = (): MockRegistry => new MockRegistry(dir, mocker);
+  /* Only node's loader can evict a module: under the devchain's jest the
+   * registry loads through jest's, whose require.cache is a view. */
+  const nodeLoads = createRequire(__filename).cache === (Module as unknown as { _cache: unknown })._cache;
 
   describe("a factory-less jest.mock", () => {
     it("serves the adjacent __mocks__ file rather than automocking", () => {
@@ -73,10 +77,7 @@ describe("MockRegistry", () => {
 
     /* As jest does: a module the real one imports, which imports it back, would
      * otherwise stay cached bound to the real module, and the code under test
-     * would get that copy rather than one bound to the mock. Only node's loader
-     * can evict a module: under the devchain's jest the registry loads through
-     * jest's, whose require.cache is a view. */
-    const nodeLoads = createRequire(__filename).cache === (Module as unknown as { _cache: unknown })._cache;
+     * would get that copy rather than one bound to the mock. */
     (nodeLoads ? it : it.skip)("loads the real module in isolation, so a module that imports it back is loaded again", () => {
       fs.writeFileSync(path.join(dir, "build", "cycle.js"), `require("./back"); module.exports = { real: true };`);
       fs.writeFileSync(
@@ -139,6 +140,53 @@ describe("MockRegistry", () => {
       const mocks = registry();
       mocks.setMock("./missing.css", caller, () => ({ stub: true }));
       expect(mocks.serve("./missing.css", caller)).to.deep.equal({ stub: true });
+    });
+  });
+
+  describe("isolateModules", () => {
+    it("serves a mock made before it as the same instance inside it", () => {
+      const mocks = registry();
+      mocks.setMock("./nomock", caller, () => ({ instance: {} }));
+      const outside = mocks.serve("./nomock", caller);
+
+      expect(mocks.isolateModules(() => mocks.serve("./nomock", caller))).to.equal(outside);
+    });
+
+    it("drops a mock made inside it when it ends", () => {
+      const mocks = registry();
+      mocks.setMock("./nomock", caller, () => ({ instance: {} }));
+      const inside = mocks.isolateModules(() => mocks.serve("./nomock", caller));
+
+      expect(mocks.serve("./nomock", caller) === inside).to.equal(false);
+    });
+
+    (nodeLoads ? it : it.skip)("loads the code under test afresh inside it, and restores it after", () => {
+      const load = createRequire(caller.filename);
+      const before = load("./nomock");
+      const mocks = registry();
+      const inside = mocks.isolateModules(() => load("./nomock"));
+
+      expect(inside === before).to.equal(false);
+      expect(load("./nomock") === before).to.equal(true);
+    });
+
+    it("refuses to be nested, as jest does", () => {
+      const mocks = registry();
+      expect(() => mocks.isolateModules(() => mocks.isolateModules(() => undefined))).to.throw(/cannot be nested/);
+    });
+
+    it("ends an async isolation once its promise settles", async () => {
+      const mocks = registry();
+      mocks.setMock("./nomock", caller, () => ({ instance: {} }));
+      const outside = mocks.serve("./nomock", caller);
+      let inside: unknown;
+      await mocks.isolateModulesAsync(async () => {
+        await Promise.resolve();
+        inside = mocks.serve("./nomock", caller);
+      });
+
+      expect(inside).to.equal(outside);
+      expect(() => mocks.isolateModules(() => undefined)).to.not.throw();
     });
   });
 
