@@ -2837,6 +2837,35 @@ describe("BuildContext", () => {
     expect(lastString).to.equal("caller");
   });
 
+  it("edits a substituted value as one text, as bash does", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "default TRIPLE = aarch64-apple-darwin;\n" +
+      "IMAGE = ${TRIPLE/-*/-unknown-linux};\n" +
+      "FILES = a.tar.gz dir/b.tar.gz;\n" +
+      "LISTED = ${FILES// /,};\n" +
+      "STEM = ${FILES%%.*};\n" +
+      "OTHER = ${TRIPLE<TRIPLE=x86_64-unknown-linux-gnu>%%-*};\n" +
+      "default FLAVOR = plain;\n" +
+      "default MODE = ref-fast;\n" +
+      "PICK<FLAVOR=ref> = picked;\n" +
+      "PICK<FLAVOR=plain> = ambient;\n" +
+      "PICKED = ${PICK<FLAVOR=${MODE%%-*}>};\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+    const context = internal(model.getConfig(Constraints.of({}), execution));
+
+    expect((await context.getProperty("IMAGE")).toString()).to.equal("aarch64-unknown-linux");
+    /* The words are one text, joined by spaces, before the edit. */
+    expect((await context.getProperty("LISTED")).getValues()).to.deep.equal(["a.tar.gz,dir/b.tar.gz"]);
+    expect((await context.getProperty("STEM")).getValues()).to.deep.equal(["a"]);
+    /* The edit applies to the value read under the requirement. */
+    expect((await context.getProperty("OTHER")).toString()).to.equal("x86_64");
+    /* An edit in a requirement's value is applied before the requirement is. */
+    expect((await context.getProperty("PICKED")).toString()).to.equal("picked");
+  });
+
   describe("a default target beside other declarations of its name", () => {
     const load = (body: string): { model: ReturnType<typeof toBuildModel>; errors: string[] } => {
       const errors: string[] = [];

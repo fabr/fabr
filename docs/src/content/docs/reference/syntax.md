@@ -190,6 +190,40 @@ RELEASE_OPT = ${OPT<BUILD_TYPE=release>};    # -O2, whatever BUILD_TYPE this bui
 The `<` follows the name directly. Each value is an exact setting rather than a pattern, and may
 itself contain a substitution (`${OPT<BUILD_TYPE=${MODE}>}`).
 
+To change the value as it is substituted, write an edit after the name, as in bash:
+
+| Form | Result |
+|---|---|
+| `${NAME#pattern}` | the value with the shortest prefix matching `pattern` removed |
+| `${NAME##pattern}` | the value with the longest matching prefix removed |
+| `${NAME%pattern}` | the value with the shortest matching suffix removed |
+| `${NAME%%pattern}` | the value with the longest matching suffix removed |
+| `${NAME/pattern/text}` | the first match replaced with `text` |
+| `${NAME//pattern/text}` | every match replaced with `text` |
+| `${NAME/#pattern/text}` | a match at the start replaced with `text` |
+| `${NAME/%pattern/text}` | a match at the end replaced with `text` |
+
+```
+TRIPLE = aarch64-apple-darwin;
+CPU = ${TRIPLE%%-*};                     # aarch64
+LINUX = ${TRIPLE/-*/-unknown-linux};     # aarch64-unknown-linux
+ARCHIVES = a.tar.gz b.tar.gz;
+LIST = ${ARCHIVES// /,};                 # a.tar.gz,b.tar.gz
+```
+
+A replacement match is the longest one starting at the leftmost place any match starts. Leaving
+out `/text` removes the match. A value of several words is edited as the one text it is
+substituted as, its words separated by spaces.
+
+In a pattern, `*` matches any characters, `/` included, `?` matches one character, and `[…]`
+matches one of a set, as in bash. Unlike in a file pattern, `*` is not stopped by a `/`, since an
+edit changes text rather than paths. A backslash takes the next character literally: write `\/`
+for a `/` in the pattern, and `\}` for a `}`. A pattern or replacement can't contain a `${…}` or a
+backtick substitution, and `&` in a replacement is a plain `&` rather than the matched text.
+
+An edit can follow a constraint, and applies to the value read under it:
+`${OPT<BUILD_TYPE=release>#-}` is `O2`.
+
 ### Command substitution
 
 Backticks run a command and are replaced by what it prints, for information that comes from a

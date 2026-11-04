@@ -351,13 +351,42 @@ describe("Parser Tests", () => {
     expect(nameOf(parseValid('A = "${B<K=v>}";').properties[0].values[0]).toString()).to.equal("${B<K=v>}");
   });
 
+  it("reads an edit on a braced substitution", () => {
+    const editOf = (text: string): unknown => {
+      const name = nameOf(parseValid(text).properties[0].values[0]);
+      return (name as unknown as { parts: NamePart[] }).parts.find(part => part.edit !== undefined)?.edit;
+    };
+    expect(editOf("A = ${B#x*};")).to.deep.equal({ operator: "#", pattern: "x*" });
+    expect(editOf("A = ${B##x*};")).to.deep.equal({ operator: "##", pattern: "x*" });
+    expect(editOf("A = ${B%-*};")).to.deep.equal({ operator: "%", pattern: "-*" });
+    expect(editOf("A = ${B%%-*};")).to.deep.equal({ operator: "%%", pattern: "-*" });
+    expect(editOf("A = ${TARGET/-*/-unknown-linux};")).to.deep.equal({ operator: "/", pattern: "-*", replacement: "-unknown-linux" });
+    expect(editOf("A = ${B//a/b};")).to.deep.equal({ operator: "//", pattern: "a", replacement: "b" });
+    expect(editOf("A = ${B/#a/b};")).to.deep.equal({ operator: "/#", pattern: "a", replacement: "b" });
+    expect(editOf("A = ${B/%a/b};")).to.deep.equal({ operator: "/%", pattern: "a", replacement: "b" });
+    /* No replacement is an empty one; an escaped `/` or `}` is part of the text. */
+    expect(editOf("A = ${b/c};")).to.deep.equal({ operator: "/", pattern: "c", replacement: "" });
+    expect(editOf("A = ${B/a\\/b/c\\}};")).to.deep.equal({ operator: "/", pattern: "a\\/b", replacement: "c\\}" });
+    /* A `#` is the operator, not a comment, and spaces are part of the pattern. */
+    expect(editOf('A = "${B/ /_}";')).to.deep.equal({ operator: "/", pattern: " ", replacement: "_" });
+    expect(editOf("A = ${B<K=v>%%-*};")).to.deep.equal({ operator: "%%", pattern: "-*" });
+  });
+
+  it("renders an edited substitution as written", () => {
+    for (const text of ["x${B%%-*}y", "${TARGET/-*/-unknown-linux}", "${B<K=v>/a/}", "${B#a\\}b}"]) {
+      expect(nameOf(parseValid(`A = ${text};`).properties[0].values[0]).toString()).to.equal(text);
+    }
+  });
+
   it("rejects a malformed braced substitution", () => {
     const cases: Array<[string, number, string]> = [
       ["A = ${};", 7, "Read '}' but expected a property name"],
-      ["A = ${b/c};", 7, "Read Name but expected a property name"],
+      ["A = ${a.b.c};", 7, "Read Name but expected a property name"],
       ["A = ${B<>};", 9, "Read '>' but expected a constraint key"],
-      ["A = ${B <K=v>};", 9, "Read '<' but expected '}'"],
+      ["A = ${B <K=v>};", 9, "Read '<' but expected '}' or an edit ('#', '%' or '/')"],
       ["A = ${B<K=v>", 13, "Read EOF but expected '}'"],
+      ["A = ${B/a", 10, "Read EOF but expected '}'"],
+      ["A = ${B/$C/d};", 9, "Invalid substitution: a substitution inside a pattern or replacement is not supported"],
     ];
     for (const [text, column, message] of cases) {
       expect(parseInvalid(text)).to.deep.equal([diagnosticBlock(1, column, message, text)]);

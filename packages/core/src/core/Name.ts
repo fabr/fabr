@@ -19,6 +19,7 @@
 
 import * as path from "path";
 import { globCaptureRegex, globMatcher, globPrefixRegex } from "../support/Glob";
+import { PatternEdit, renderPatternEdit } from "../support/PatternEdit";
 import type { CommandPipeline } from "../model/AST";
 import { FabrError } from "./Errors";
 
@@ -61,6 +62,11 @@ export interface NamePart {
    * turn, which the resolver does before reading the variable.
    */
   constraints?: readonly NameConstraint[];
+  /**
+   * A variable substitution's edit of the value it reads (`${FOO%%-*}`,
+   * `${FOO/a/b}`), applied to the value's text as a whole.
+   */
+  edit?: PatternEdit;
 }
 
 /**
@@ -764,10 +770,11 @@ export class Name {
         return escape ? escapeGlob(part.value) : part.value;
       case NamePartKind.Glob:
         return part.value;
-      case NamePartKind.VarSubst:
-        return part.constraints === undefined
-          ? "${" + part.value + "}"
-          : "${" + part.value + "<" + part.constraints.map(([key, value]) => `${key}=${value.toString()}`).join(", ") + ">}";
+      case NamePartKind.VarSubst: {
+        const constraints =
+          part.constraints === undefined ? "" : "<" + part.constraints.map(([key, value]) => `${key}=${value.toString()}`).join(", ") + ">";
+        return "${" + part.value + constraints + (part.edit === undefined ? "" : renderPatternEdit(part.edit)) + "}";
+      }
       case NamePartKind.Backref:
         return "$" + part.value;
       case NamePartKind.CommandSubst:
@@ -932,12 +939,15 @@ export class NameBuilder {
 
   /**
    * Add a substitution variable by name, with the `<k=v>` requirement it is
-   * read under, if one was written.
+   * read under and the edit of its value, where they were written.
    */
-  public appendSubstVar(str: string, constraints?: readonly NameConstraint[]): this {
+  public appendSubstVar(str: string, constraints?: readonly NameConstraint[], edit?: PatternEdit): this {
     this.append(NamePartKind.VarSubst, str);
     if (constraints !== undefined) {
       this.last!.constraints = constraints;
+    }
+    if (edit !== undefined) {
+      this.last!.edit = edit;
     }
     return this;
   }

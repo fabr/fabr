@@ -18,6 +18,7 @@
  */
 
 import { StringReader } from "../support/StringReader";
+import { isReplacing, PatternEdit, PatternOperator } from "../support/PatternEdit";
 import { isWhiteSpace as isWhiteSpaceChar, isAlphabetic, isDigit } from "unicode-properties";
 import {
   DeclKind,
@@ -131,6 +132,7 @@ const CHAR_LPAREN = "(".codePointAt(0);
 const CHAR_RPAREN = ")".codePointAt(0);
 const CHAR_BANG = "!".codePointAt(0);
 const CHAR_PLUS = "+".codePointAt(0);
+const CHAR_PERCENT = "%".codePointAt(0);
 
 interface TokenBase {
   start: number;
@@ -449,6 +451,10 @@ const DIAG_GUARD_CONFLICT = new Diagnostic<{ key: string; site: string; loc: ISo
   LogLevel.Error,
   "Constraint '{key}' is guarded on twice — by an enclosing block and by {site}"
 );
+const DIAG_INVALID_SUBSTITUTION = new Diagnostic<{ detail: string; loc: ISourcePosition }>(
+  LogLevel.Error,
+  "Invalid substitution: {detail}"
+);
 const DIAG_INVALID_COMMAND = new Diagnostic<{ detail: string; loc: ISourcePosition }>(
   LogLevel.Error,
   "Invalid command: {detail}"
@@ -686,38 +692,122 @@ export class BuildParser {
     }
   }
 
-  /* Reads the `{NAME}` or `{NAME<k=v>}` of a braced substitution, the reader at
-   * its `{`; on return the reader is just past the closing `}`. The interior is
-   * read as tokens, a property name and an abutting requirement, the same
-   * grammar as a reference's `<k=v>`; whitespace around them is ignored. The token state belongs to the token whose
-   * scan this is part of, so it is restored. */
+  /* Reads the `{NAME}`, `{NAME<k=v>}` or `{NAME…edit}` of a braced
+   * substitution, the reader at its `{`; on return the reader is just past the
+   * closing `}`. The name and the edit after it are read by character, since a
+   * name token would take an operator in (`/`, `*`) and a `#` would start a
+   * comment; the requirement between them is read as tokens, the same grammar as
+   * a reference's `<k=v>`. Whitespace around the name is ignored. The token state
+   * belongs to the token whose scan this is part of, so it is restored. */
   private readBracedSubstVar(builder?: NameBuilder): void {
     const outer = { token: this.token, abuts: this.tokenAbutsPrev, prevEnd: this.prevTokenEnd };
     this.reader.next(); /* the '{' */
     try {
-      this.nextToken();
-      const name = this.token;
+      this.reader.skipUntil(ch => !isWhitespace(ch));
+      const nameStart = this.reader.currentOffset();
+      this.reader.skipUntil(ch => !isIdentChar(ch) && ch !== CHAR_DOT);
+      const name = this.reader.substring(nameStart);
       /* A property name, or a property of one (`pkg.version`, a rule's parameter's). */
-      const parts = name.type === TokenType.SIMPLE_NAME ? name.text.split(".") : [];
-      if (name.type !== TokenType.IDENTIFIER && !(name.type === TokenType.SIMPLE_NAME && parts.length === 2 && parts.every(isIdentifier))) {
-        this.unexpectedTokenError("a property name");
+      const parts = name.split(".");
+      if (!isIdentifier(name) && !(parts.length === 2 && parts.every(isIdentifier))) {
+        this.unexpectedCharacterError("a property name", nameStart, name === "" ? undefined : "Name");
       }
-      this.nextToken();
       let constraints: NameConstraint[] | undefined;
-      if (this.token.type === TokenType.LANGLE && this.tokenAbutsPrev) {
-        this.nextToken(); /* consume '<' */
-        constraints = this.parseConstraintList();
+      if (this.reader.current() === CHAR_LANGLE) {
+        this.nextToken(); /* the '<' */
+        this.nextToken();
+        constraints = this.parseConstraintList(undefined, "requirement", false);
       }
-      /* Not consumed: lexing past the `}` would read beyond this substitution. */
-      if (this.token.type !== TokenType.RBRACE) {
-        this.unexpectedTokenError(TOKEN_NAME_MAP[TokenType.RBRACE]);
+      this.reader.skipUntil(ch => !isWhitespace(ch));
+      const edit = this.reader.current() === CHAR_RBRACE || this.reader.eof() ? undefined : this.readPatternEdit();
+      if (this.reader.current() !== CHAR_RBRACE) {
+        this.unexpectedCharacterError("'}'", this.reader.currentOffset());
       }
-      builder?.appendSubstVar(name.text, constraints);
+      this.reader.next(); /* the '}' */
+      builder?.appendSubstVar(name, constraints, edit);
     } finally {
       this.token = outer.token;
       this.tokenAbutsPrev = outer.abuts;
       this.prevTokenEnd = outer.prevEnd;
     }
+  }
+
+  /* Reads the edit after a substitution's name — bash's `#pattern`, `##pattern`,
+   * `%pattern`, `%%pattern`, and `/pattern/replacement` with `/`, `//`, `/#` or
+   * `/%` — leaving the reader at the closing `}`. A pattern or replacement runs
+   * to the `}` (a replacing edit's pattern to the `/` before its replacement
+   * too), a backslash quoting the next character, as in bash. A `$` or backtick
+   * in either is refused: a substitution inside an edit is not supported. */
+  private readPatternEdit(): PatternEdit {
+    const start = this.reader.currentOffset();
+    const first = this.reader.current();
+    let operator: PatternOperator;
+    if (first === CHAR_HASH || first === CHAR_PERCENT) {
+      const single = first === CHAR_HASH ? "#" : "%";
+      const doubled = this.reader.next() === first;
+      if (doubled) {
+        this.reader.next();
+      }
+      operator = (doubled ? single + single : single) as PatternOperator;
+    } else if (first === CHAR_SLASH) {
+      const next = this.reader.next();
+      operator = next === CHAR_SLASH ? "//" : next === CHAR_HASH ? "/#" : next === CHAR_PERCENT ? "/%" : "/";
+      if (operator !== "/") {
+        this.reader.next();
+      }
+    } else {
+      this.unexpectedCharacterError("'}' or an edit ('#', '%' or '/')", start);
+    }
+    const replacing = isReplacing(operator);
+    const pattern = this.readEditText(replacing ? [CHAR_SLASH, CHAR_RBRACE] : [CHAR_RBRACE]);
+    if (!replacing) {
+      return { operator, pattern };
+    }
+    if (this.reader.current() !== CHAR_SLASH) {
+      return { operator, pattern, replacement: "" };
+    }
+    this.reader.next();
+    return { operator, pattern, replacement: this.readEditText([CHAR_RBRACE]) };
+  }
+
+  /* Reads an edit's pattern or replacement as written, to the first of `ends`
+   * not quoted by a backslash; the reader is left at that character. */
+  private readEditText(ends: ReadonlyArray<number | undefined>): string {
+    const start = this.reader.currentOffset();
+    let quoted = false;
+    const end = this.reader.skipUntil(ch => {
+      if (quoted) {
+        quoted = false;
+        return false;
+      }
+      if (ch === CHAR_DOLLAR || ch === CHAR_BACKTICK) {
+        this.invalidSubstitution("a substitution inside a pattern or replacement is not supported", this.reader.currentOffset());
+      }
+      quoted = ch === CHAR_BACKSLASH;
+      return ends.includes(ch);
+    });
+    if (end === undefined) {
+      this.unexpectedCharacterError("'}'", this.reader.currentOffset());
+    }
+    return this.reader.substring(start);
+  }
+
+  private invalidSubstitution(detail: string, offset: number): never {
+    this.log.log(DIAG_INVALID_SUBSTITUTION, { detail, loc: { ...this.source, offset } });
+    throw new FabrError(PARSE_ERROR);
+  }
+
+  /* Reports what was read by character where `expected` should be, as
+   * {@link unexpectedTokenError} does for a token: the character at the reader
+   * (or EOF), unless `actual` names what was read instead. */
+  private unexpectedCharacterError(expected: string, at: number, actual?: string): never {
+    const ch = this.reader.current();
+    this.log.log(DIAG_PARSE_ERROR, {
+      loc: { ...this.source, offset: at },
+      actual: actual ?? (ch === undefined ? TOKEN_NAME_MAP[TokenType.EOF] : `'${String.fromCodePoint(ch)}'`),
+      expected,
+    });
+    throw new FabrError(PARSE_ERROR);
   }
 
   private readCharClass(builder?: NameBuilder): void {
@@ -1690,8 +1780,10 @@ export class BuildParser {
    * spaced-`<` path, where the value loop reads the shared `<`+IDENTIFIER prefix
    * before the `=` discriminator decides constraint vs redirect); otherwise the
    * first key is read here (the ordinary abutting `ref<k=v>` path).
+   * With `readOn` false the closing `>` is the current token on return and the
+   * reader is just past it, for a caller that reads what follows by character.
    */
-  private parseConstraintList(firstKey?: { text: string; start: number }, kind: ConstraintKind = "requirement"): NameConstraint[] {
+  private parseConstraintList(firstKey?: { text: string; start: number }, kind: ConstraintKind = "requirement", readOn = true): NameConstraint[] {
     const constraints: NameConstraint[] = [];
     const seen = new Set<string>();
     /* Inside the `<...>`, a `>` closes the constraint — never a redirect (see
@@ -1745,7 +1837,11 @@ export class BuildParser {
     } finally {
       this.suppressRedirect = false;
     }
-    this.consumeToken(TokenType.RANGLE);
+    if (readOn) {
+      this.consumeToken(TokenType.RANGLE);
+    } else if (this.token.type !== TokenType.RANGLE) {
+      this.unexpectedTokenError(TOKEN_NAME_MAP[TokenType.RANGLE]);
+    }
     return constraints;
   }
 

@@ -94,6 +94,7 @@ import { createPipelineAction, stagePipeline } from "../rules/PipelineAction";
 import { closestMatch } from "../support/Suggest";
 import { Name, NameConstraint, NamePart, NamePartKind } from "../core/Name";
 import { globMatcher } from "../support/Glob";
+import { applyPatternEdit } from "../support/PatternEdit";
 import { parseName } from "../model/Parser";
 import { IPrefixMatch, IPropertyEntry, writtenSeparator } from "../model/Namespace";
 import { Property } from "../model/Property";
@@ -1170,11 +1171,12 @@ export class BuildContextImpl implements InternalBuildContext {
     if (part.kind === NamePartKind.CommandSubst) {
       return this.runCommandSubst(part, stack).then(text => ({ text }));
     }
+    const edit = part.edit;
     const read = (context: BuildContextImpl): Computable<{ text: string; substitution?: ISubstitution }> =>
-      context.getProperty(part.value, stack, part.constraints === undefined ? undefined : callerOverrides).then(prop => ({
-        text: prop.toString(),
-        substitution: { name: part.value, value: prop.toString(), origin: prop.origin },
-      }));
+      context.getProperty(part.value, stack, part.constraints === undefined ? undefined : callerOverrides).then(prop => {
+        const text = edit === undefined ? prop.toString() : applyPatternEdit(prop.toString(), edit);
+        return { text, substitution: { name: part.value, value: text, origin: prop.origin } };
+      });
     if (part.constraints === undefined) {
       return read(this);
     }
