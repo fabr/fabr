@@ -23,8 +23,7 @@ import { FabrError } from "../core/Errors";
 import { FileSet } from "../core/FileSet";
 import { FileSetRef } from "../core/FileSetRef";
 import { Materialized, RepositoryRef, SourceRef } from "../core/Repository";
-import { TargetRef } from "../core/TargetRef";
-import { checked, materializeLists, packageIn, resolveLists } from "./CollectionPoint";
+import { checked, materializeLists, resolveLists } from "./CollectionPoint";
 import type { Conflicts } from "../resolver/StrictCollection";
 import { Builds, PackageFileSet, ResolvedNode, Dependency } from "../core/PackageFileSet";
 import { Resolved } from "../core/Repository";
@@ -52,19 +51,6 @@ export class ContainedSources {
 export class PackageSources {
   /** Tells this from the other readings by type. */
   public readonly read = "packages";
-  constructor(public readonly sources: SourceRef[]) {}
-}
-
-/**
- * A property's sources, read for the loose files among them: what is no
- * package's. A repository's reference is left out unresolved, a target whose
- * rule declares it builds a package is left out unbuilt, any other target is
- * built and left out where it builds a package, and so is a package or a
- * selection from one; nothing among them joins the target's resolution.
- */
-export class LooseSources {
-  /** Tells this from the other readings by type. */
-  public readonly read = "loose";
   constructor(public readonly sources: SourceRef[]) {}
 }
 
@@ -113,7 +99,7 @@ export type MaterializedRequirements<P> = {
 
 /** One requirement's sources as its reader returned them: bare, they are read
  * for their files alone. */
-export type Read = SourceRef[] | PackageSources | ContainedSources | LooseSources | SyncSources;
+export type Read = SourceRef[] | PackageSources | ContainedSources | SyncSources;
 
 /** One requirement as a rule states it: the sources a FILES or PACKAGES
  * property names, as its reader returned them. */
@@ -138,9 +124,8 @@ export interface ResolutionSpec<P extends Requirements = Requirements> {
 }
 
 /** How a requirement's sources are read: for their files alone, as packages,
- * as packages kept in their containers, for the loose files among them, or for
- * publishing. */
-type Reading = "files" | "packages" | "contained" | "loose" | "sync";
+ * as packages kept in their containers, or for publishing. */
+type Reading = "files" | "packages" | "contained" | "sync";
 
 /** One resolved requirement: its sources as the target's collection resolved
  * them, and how they are finished. */
@@ -255,10 +240,7 @@ function finish(
   references: ReadonlyArray<Reference | undefined>,
   reading: Reading
 ): Computable<Collected> {
-  /* Read for loose files, a package and a selection from one are left out
-   * before a projection makes either plain files. */
-  const entries = list.map((source, at) => ({ source, reference: references[at] }));
-  const kept = reading === "loose" ? entries.filter(({ source }) => packageIn(source) === undefined) : entries;
+  const kept = list.map((source, at) => ({ source, reference: references[at] }));
   const settled: Computable<ReadonlyArray<unknown>> =
     reading === "contained" ? Computable.resolve(kept.map(({ source }) => source)) : config.applyProjections(kept.map(({ source }) => source));
   return settled.then(sources => {
@@ -322,15 +304,12 @@ export function resolveRequirements(target: TargetContext, spec: ResolutionSpec)
           "what a target passes on is packages: read it with getPackageProperty"
         );
       }
-      return Computable.forAll(
-        lists.map((list, index) => (readings[index] === "loose" ? looseSources(list) : Computable.resolve(list))),
-        (...read: SourceRef[][]) => read
-      ).then(read => resolveLists(
+      return resolveLists(
         target,
-        read,
+        lists,
         readings.map(reading => reading !== "contained"),
         names.map(name => requirementName(name) === EXTENDS_KEY),
-        readings.map(reading => (reading === "files" || reading === "loose" || reading === "sync" ? "files" : undefined))
+        readings.map(reading => (reading === "files" || reading === "sync" ? "files" : undefined))
       ).then(
         ({ lists: resolved, references, conflicts, conflictsAmong }) =>
           new ResolvedRequirements(
@@ -349,32 +328,9 @@ export function resolveRequirements(target: TargetContext, spec: ResolutionSpec)
             conflictsAmong,
             spec.builds
           )
-      ));
+      );
     }
   );
-}
-
-/**
- * Leave out of `list`, read for loose files, what is known to be a package
- * without building it: a repository's reference, unresolved, and a target
- * whose rule declares it builds a package.
- */
-function looseSources(list: SourceRef[]): Computable<SourceRef[]> {
-  return Computable.forAll(
-    list.map(source =>
-      source instanceof RepositoryRef
-        ? Computable.resolve(undefined)
-        : source instanceof TargetRef
-          ? source.resolveTarget().then(target => (isDeclaredPackage(target.content.declared) ? undefined : source))
-          : Computable.resolve(source)
-    ),
-    (...kept: Array<SourceRef | undefined>) => kept.filter((source): source is SourceRef => source !== undefined)
-  );
-}
-
-/** @return true if `declared`, what a rule declares its target builds, is a package, otherwise false. */
-function isDeclaredPackage(declared: Builds | undefined): boolean {
-  return declared !== undefined && declared !== "files";
 }
 
 /**

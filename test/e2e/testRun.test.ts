@@ -187,6 +187,29 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
     expect(result.stderr).to.contain("1 test passed");
   });
 
+  it("runs tests against a test-support package that depends on the package it supports", () => {
+    /* The build reads test_deps only for the source files it names, so the
+     * support package's dependency on `thing` is an edge of the test alone. */
+    const files = {
+      ...STUB_TSC,
+      "PROJECT.fabr":
+        "plugin @fabr-build/js;\n\n" +
+        STUB_TSC_CONFIG +
+        "\njs_package thing { srcs = ./thing/src:**/*.ts; tests = ./thing/src:**/*.test.ts; test_deps = thing_support; }\n" +
+        "js_package thing_support { srcs = ./support/src:**/*.ts; deps = thing; }\n",
+      "thing/src/index.ts": "exports.value = 1;\n",
+      "support/src/index.ts": 'const { value } = require("thing");\nexports.helper = () => value + 1;\n',
+      "thing/src/thing.test.ts":
+        'const assert = require("node:assert");\nconst { helper } = require("thing_support");\n' +
+        'describe("thing", () => { it("is helped", () => { assert.equal(helper(), 2); }); });',
+    };
+    const built = runFabr(files, ["-DJS_TARGET=es2020", "build", "thing"]);
+    expect(built.status, built.stderr).to.equal(0);
+    const tested = runFabr(files, ["-DJS_TARGET=es2020", "test", "thing"]);
+    expect(tested.status, tested.stderr).to.equal(0);
+    expect(tested.stderr).to.contain("1 test passed");
+  });
+
   it("stubs stylesheet and binary imports under the node framework", () => {
     /* A stylesheet in the install is parsed as JavaScript by node's loader,
      * and one NOT in the install (the image) does not resolve at all; the

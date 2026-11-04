@@ -43,7 +43,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createRequire, Module } from "node:module";
+import { createRequire, isBuiltin, Module } from "node:module";
 import { assetStubFor } from "../testRunner/Assets";
 import { isCodeUnderTest, RUNNER_ROOT } from "./Tools";
 
@@ -373,7 +373,7 @@ export class MockRegistry {
   public resolve(request: string, caller: ILoaderModule | undefined): string | undefined {
     return withoutHooks(() => {
       try {
-        return this.requireFrom(caller).resolve(request);
+        return coreModuleKey(this.requireFrom(caller).resolve(request));
       } catch {
         return undefined;
       }
@@ -519,6 +519,17 @@ function adjacentMock(key: string): string | undefined {
   return fs.existsSync(candidate) ? candidate : undefined;
 }
 
+/**
+ * @return the key a resolved module is registered under: a core module by its
+ * name without `node:`, as jest identifies one, so that a mock of `fs` is also
+ * what `node:fs` loads; anything else as it resolved. A builtin that exists only
+ * with the prefix (`node:test`) keeps it.
+ */
+function coreModuleKey(resolved: string): string {
+  const name = resolved.startsWith("node:") ? resolved.slice("node:".length) : resolved;
+  return isBuiltin(name) && !path.isAbsolute(name) ? name : resolved;
+}
+
 /** node's CJS loader internals, as far as we reach into them. */
 interface ILoaderModuleClass {
   _load(request: string, parent: ILoaderModule | undefined, isMain: boolean): unknown;
@@ -587,7 +598,11 @@ function installEsmSeam(registry: MockRegistry): void {
       } catch (err) {
         failure = err;
       }
-      const key = resolved?.url.startsWith("file:") ? fileURLToPath(resolved.url) : specifier;
+      const key = resolved?.url.startsWith("file:")
+        ? fileURLToPath(resolved.url)
+        : resolved?.url.startsWith("node:")
+          ? coreModuleKey(resolved.url)
+          : specifier;
       /* The URL carries whichever name the registry actually knows the mock
        * under: the resolved path normally, the bare specifier for a root
        * `__mocks__` entry or a virtual mock (both registered by name, which the

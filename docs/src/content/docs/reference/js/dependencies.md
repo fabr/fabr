@@ -258,8 +258,8 @@ Keep one, or mark the other with `?`, which allows it without asking for it. A `
 it: `core! @npm:core:1.0.0` still names `core` twice. Across lists the resolution decides: with
 `deps = core<MODE=a>; test_deps = core<MODE=b>;` the tests ship two builds of `core`, a conflict,
 unless the test's is marked `core<MODE=b>!` (tests run against that build throughout) or
-`core<MODE=b>?` (each package gets the build it asked for). Under `fabr build`, `test_deps` is
-read for its loose files only, so the build itself is unaffected.
+`core<MODE=b>?` (each package gets the build it asked for). Under `fabr build`, only the source files
+`test_deps` names are read, so the build itself is unaffected.
 
 To use the files of several builds side by side, rather than a package, list them in a property
 that takes files, such as `resources`.

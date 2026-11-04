@@ -400,18 +400,6 @@ describe("CatalogRepository (through the model)", () => {
         return EMPTY_FILESET;
       }),
   });
-  /* Reads `extra` for its loose files alone. */
-  const looseRule: RuleDefinition = defineRule({
-    type: "test_loose",
-    properties: {},
-    requirements: context => Computable.resolve({ requirements: { deps: context.getPackageProperty("deps"), extra: context.getLooseFileProperty("extra") } }),
-    evaluateResolved: (_context, requirements) =>
-      requirements.materializeAll().then(({ deps, extra }) => {
-        lastDepSets = deps;
-        lastFiles = extra;
-        return EMPTY_FILESET;
-      }),
-  });
   /* Yields a package and a set of files beside it. */
   const bothRule: RuleDefinition = {
     type: "test_both",
@@ -512,7 +500,7 @@ describe("CatalogRepository (through the model)", () => {
   });
   const contributions: PluginContribution[] = [
     {
-      rules: [depsRule, runRule, toolRule, globalToolRule, sealedRule, packageRule, patchRule, modeRule, mixedRule, misreadRule, wrongTypeRule, filesOfRule, bothRule, looseRule, { type: "patched", properties: { [BUILD_OPERATION]: "build" }, ...patched }, passRule, subRule, builtRule, statedRule, driftRule],
+      rules: [depsRule, runRule, toolRule, globalToolRule, sealedRule, packageRule, patchRule, modeRule, mixedRule, misreadRule, wrongTypeRule, filesOfRule, bothRule, { type: "patched", properties: { [BUILD_OPERATION]: "build" }, ...patched }, passRule, subRule, builtRule, statedRule, driftRule],
       repositories: [
         { type: "package_repo", provider: (context: TargetContext) => Computable.resolve(backing(context.name)) },
         catalogRepositoryRegistration,
@@ -545,7 +533,6 @@ describe("CatalogRepository (through the model)", () => {
     "targetdef test_misread { deps = PACKAGES; }\n" +
     "targetdef test_wrongtype { srcs = FILES; }\n" +
     "targetdef test_both { }\n" +
-    "targetdef test_loose { deps = PACKAGES; extra = PACKAGES; }\n" +
     "targetdef test_filesof { pkgs = PACKAGES; }\n" +
     "targetdef test_pass { deps = PACKAGES; }\n" +
     "targetdef test_sub { deps = PACKAGES; }\n" +
@@ -1892,22 +1879,6 @@ describe("CatalogRepository (through the model)", () => {
         "package_repo @backing { }\n" + "test_patch notes { }\n" + "test_stated lib { deps = @backing:notes:1.0.0; }\n" + "test_deps a { deps = lib notes; }\n"
       );
       expect(await refusal(model)).to.equal("'@backing:notes:1.0.0' is provided by the target 'notes', but 'notes' is not a package");
-    });
-
-    describe("read for its loose files", () => {
-      it("keeps what a target builds where that is files, and leaves out a package", async () => {
-        const model = build("test_patch notes { }\n" + "test_built lib { }\n" + "test_loose a { extra = notes lib; }\n");
-        expect(await refusal(model)).to.equal(undefined);
-        expect(lastFiles.map(set => [...set].map(([name]) => name))).to.deep.equal([["notes.patch"]]);
-      });
-
-      it("leaves a registry's package out unresolved, so it constrains nothing", async () => {
-        const model = build("package_repo @backing { }\n" + "test_loose a { deps = @backing:bar:^1.0.0; extra = @backing:bar:1.2.0; }\n");
-        expect(await refusal(model)).to.equal(undefined);
-        expect(lastFiles).to.deep.equal([]);
-        expect(entries()).to.deep.equal(["bar@1.0.0"]);
-        expect(backings.get("@backing")!.fetched).to.deep.equal(["bar@1.0.0"]);
-      });
     });
 
     describe("read for its files", () => {

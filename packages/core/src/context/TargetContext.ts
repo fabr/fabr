@@ -65,7 +65,7 @@ import {
   MaterializedCommandPipeline,
   MaterializedCommandStage,
 } from "./Commands";
-import { ContainedSources, LooseSources, PackageSources } from "./Collection";
+import { ContainedSources, PackageSources } from "./Collection";
 import type { InternalBuildContext } from "./BuildContext";
 import type { ResolvedTarget } from "./ResolvedTarget";
 import type { PropertyMap } from "./PropertyMap";
@@ -174,12 +174,16 @@ export abstract class TargetContext {
   }
 
   /**
-   * Read a property for the loose files it names (see {@link LooseSources}):
-   * what is no package's, with nothing resolved for the packages it also
-   * names.
+   * Read a property for the loose files it names: the files in hand, with a
+   * target, a package and a repository's reference left out, unbuilt. Read
+   * from `evaluate`: nothing it names is then a requirement of the target, so
+   * a target it names may depend on this one. (Among a rule's requirements,
+   * the targets a property names are resolved where it is read.)
    */
-  public getLooseFileProperty(name: string, overrides?: Constraints): Computable<LooseSources> {
-    return this.getFileProperty(name, overrides).then(sources => new LooseSources(sources));
+  public getLooseFileProperty(name: string, overrides?: Constraints): Computable<FileSet[]> {
+    return this.getFileProperty(name, overrides).then(sources =>
+      sources.filter((source): source is FileSet => source instanceof FileSet && !(source instanceof PackageFileSet))
+    );
   }
 
   /**

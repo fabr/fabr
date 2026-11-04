@@ -143,6 +143,14 @@ describe("MockRegistry", () => {
     });
   });
 
+  describe("a core module", () => {
+    it("is mocked for its node: name too, as jest does", () => {
+      const mocks = registry();
+      mocks.setMock("fs", caller, () => ({ mocked: true }));
+      expect(mocks.serve("node:fs", caller)).to.deep.equal({ mocked: true });
+    });
+  });
+
   describe("isolateModules", () => {
     it("serves a mock made before it as the same instance inside it", () => {
       const mocks = registry();

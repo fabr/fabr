@@ -253,29 +253,11 @@ testRules.push(
       }),
   })
 );
-/* Reads its `deps` for the loose files among them. */
-testRules.push(
-  defineRule({
-    type: "test_loose_files",
-    properties: {},
-    requirements: context => ({ requirements: { deps: context.getLooseFileProperty("deps") } }),
-    evaluateMaterialized: (_context, { deps }) => {
-      lastDepSets = deps;
-      return EMPTY_FILESET;
-    },
-  })
-);
-/* Declares and builds a package named as the target, counting its builds. */
-let countedBuilds = 0;
-testRules.push(
-  defineRule({
-    type: "test_counted",
-    properties: {},
-    requirements: context => ({ requirements: {}, builds: { package: context.name } }),
-    evaluateResolved: context => {
-      countedBuilds += 1;
-      return Computable.resolve(new PackageFileSet(EMPTY_FILESET, context.name));
-    },
+/* Reads `deps` from its evaluate, for the files in hand alone. */
+registerRule("test_loose_files", {}, context =>
+  context.getLooseFileProperty("deps").then(files => {
+    lastDepSets = files;
+    return EMPTY_FILESET;
   })
 );
 registerRule("test_fail", {}, () => Computable.reject(new Error("reasons")));
@@ -927,18 +909,15 @@ describe("BuildContext", () => {
     }
   });
 
-  it("Leaves a target out of a reading for loose files, unbuilt, where its rule declares it builds a package", async () => {
-    const errors: string[] = [];
-    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+  it("Reads only the files in hand for loose files, so a target named there may depend on the reader", async () => {
+    const source = new FileSet(new Map([["notes.txt", MemoryFile.from("notes")]]));
     const input =
-      "targetdef test_loose_files { deps = PACKAGES; }\ntargetdef test_counted { }\ntargetdef test_plain { }\n" +
-      "test_counted lib { }\ntest_plain notes { }\ntest_loose_files app { deps = lib notes; }\n";
-    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
-    expect(errors).to.deep.equal([]);
-    countedBuilds = 0;
+      "targetdef test_loose_files { deps = PACKAGES; }\ntargetdef test_good { deps = PACKAGES; }\n" +
+      "test_good support { deps = app; }\ntest_loose_files app { deps = support ./notes.txt; }\n";
+    const model = toBuildModel([parseBuildString(source, "TEST.fabr", input, testLog)], testLog, testContributions);
+
     await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("app"));
-    expect(countedBuilds).to.equal(0);
-    expect(lastDepSets.flatMap(set => [...set].map(([name]) => name))).to.deep.equal(["plain.txt"]);
+    expect(lastDepSets.flatMap(set => [...set].map(([name]) => name))).to.deep.equal(["notes.txt"]);
   });
 
   it("Renames a built package a reference delivers ('mylib -> other')", async () => {

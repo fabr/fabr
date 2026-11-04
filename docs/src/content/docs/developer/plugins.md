@@ -312,7 +312,12 @@ How a property is read says what its sources are for:
 |---|---|---|
 | `getFileProperty(name)` | Built, and its files used | That package's own files, nothing it requires |
 | `getPackageProperty(name)` | The package it builds | A requirement, resolved with the target's others: one version of each package |
-| `getLooseFileProperty(name)` | Built, and its files used, unless it builds a package | Left out |
+| `getLooseFileProperty(name)`, from `evaluate` | Left out, unbuilt | Left out |
+
+`getLooseFileProperty` gives only the files in hand, and is for `evaluate`: what a rule reads
+there is no requirement of its target, so a target the property names may itself depend on this
+one. `js_package` reads `test_deps` this way, which lets a test-support package depend on the
+package it supports.
 
 A `targetdef` declares each property `FILES` or `PACKAGES`. `getPackageProperty` reads only a
 `PACKAGES` property; `getFileProperty` reads either.

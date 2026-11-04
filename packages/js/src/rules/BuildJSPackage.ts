@@ -34,7 +34,6 @@ import {
   FileSource,
   Flag,
   IFile,
-  LooseSources,
   PackageFileSet,
   PackageSources,
   Provided,
@@ -84,7 +83,6 @@ export default defineRule({
     provided: Computable<PackageSources>;
     optional_provided: Computable<PackageSources>;
     compile_deps: Computable<PackageSources>;
-    test_deps: Computable<LooseSources>;
     test_resources: Computable<SourceRef[]>;
     test_expectations: Computable<SourceRef[]>;
   }>> {
@@ -103,9 +101,6 @@ export default defineRule({
           optional_provided: context.getPackageProperty("optional_provided_deps"),
           /* Compiled against, and private to the build: not passed on. */
           compile_deps: context.getPackageProperty("compile_deps"),
-          /* Only the loose files of `test_deps`, which are subtracted from `srcs`:
-           * a build resolves and fetches nothing the tests alone need. */
-          test_deps: context.getLooseFileProperty("test_deps"),
           test_resources: context.getFileProperty("test_resources"),
           test_expectations: context.getFileProperty("test_expectations"),
         },
@@ -115,7 +110,9 @@ export default defineRule({
   },
   /* Describe the package as an editor is told of it: its build unit, and its manifest. */
   describe(context, requirements) {
-    return requirements.describeAll().then(gathered => describePackage(context, gathered, requirements.resolved));
+    return Computable.forAll([requirements.describeAll(), context.getLooseFileProperty("test_deps")], (gathered, testDeps) =>
+      describePackage(context, gathered, testDeps, requirements.resolved)
+    );
   },
   evaluateResolved(context, requirements) {
     return Computable.forAll(
@@ -124,9 +121,14 @@ export default defineRule({
         requirements.packages("dependencies"),
         requirements.packages("provided"),
         requirements.packages("optional_provided"),
+        /* The files `test_deps` names, subtracted from `srcs`: test support that
+         * compiles with the tests and does not ship. Read here rather than among
+         * the requirements, so the packages and targets it names are the tests'
+         * alone, and a test-support package may depend on this one. */
+        context.getLooseFileProperty("test_deps"),
       ],
-      (gathered, dependencies, provided, optional_provided) =>
-        buildJsPackage(context, gathered, { dependencies, provided, optional_provided })
+      (gathered, dependencies, provided, optional_provided, testDeps) =>
+        buildJsPackage(context, { ...gathered, test_deps: testDeps }, { dependencies, provided, optional_provided })
     );
   },
 });
@@ -141,6 +143,7 @@ export default defineRule({
 function describePackage(
   context: TargetContext,
   gathered: MaterializedRequirements<Record<string, RequiredSources>>,
+  testDeps: FileSet[],
   resolved: ResolvedRequirements
 ): Computable<RuleResult> {
   const sets = gathered as unknown as Record<string, FileSet[]>;
@@ -149,7 +152,7 @@ function describePackage(
     tests: sets.tests,
     exports: sets.exports,
     deps: [...sets.dependencies, ...sets.provided, ...sets.optional_provided, ...sets.compile_deps],
-    testOnly: [...sets.test_deps, ...sets.test_resources, ...sets.test_expectations],
+    testOnly: [...testDeps, ...sets.test_resources, ...sets.test_expectations],
   });
   return Computable.forAll(
     [context.getGlobalString("JS_TARGET"), context.getProperty("version"), context.getMap("metadata")],
