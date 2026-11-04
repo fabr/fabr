@@ -14,11 +14,11 @@ js_script gendoc {
 # it, and gendoc writes a page per source package and per plugin's optional libs,
 # each at its place in the site under content/, with reference-pages.json, the
 # sidebar entry of each, which astro.config.mjs reads.
-# fabr with the Java plugin installed beside it, so the generated reference
-# covers both plugins.
+# fabr with the Java and AWS plugins installed beside it, so the generated
+# reference covers every plugin.
 js_script docgen_fabr {
   entry = @fabr-build/cli;
-  deps = @fabr-build/java;
+  deps = @fabr-build/java @fabr-build/aws;
 }
 
 generate reference_docs {

@@ -122,6 +122,14 @@ export default defineConfig({
           ],
         },
         {
+          label: "AWS reference",
+          items: [
+            ...generated("AWS reference"),
+            { label: "Accounts and credentials", link: "/reference/aws/accounts/" },
+            { label: "Amazon S3", link: "/reference/aws/s3/" },
+          ],
+        },
+        {
           label: "Developer docs",
           items: [
             { label: "Writing a plugin", link: "/developer/writing-a-plugin/" },

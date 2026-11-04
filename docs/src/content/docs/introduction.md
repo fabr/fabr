@@ -153,7 +153,7 @@ on your machine and aren't part of that guarantee. See
 | **rule** | How to carry out an operation on targets of one type. The most specific rule for the target's type and the current configuration is used. |
 | **operation** | What is being done with a target: `build`, `test` or `run`. |
 | **file set** | A set of named files. Source patterns, built targets and downloaded packages are all file sets, and are referred to the same way. |
-| **plugin** | A package that adds target types and rules for an ecosystem, such as `@fabr-build/js` or `@fabr-build/java`. |
+| **plugin** | A package that adds target types and rules for an ecosystem or service, such as `@fabr-build/js`, `@fabr-build/java` or `@fabr-build/aws`. |
 
 [The conceptual model](/guides/concepts/) explains how these fit together.
 
@@ -182,3 +182,6 @@ on your machine and aren't part of that guarantee. See
   [dependencies](/reference/java/dependencies/),
   [compiling](/reference/java/compiling/), [testing](/reference/java/testing/),
   [running programs](/reference/java/running/) and [packaging](/reference/java/packaging/).
+- **AWS reference**: [targets and configuration](/reference/aws/targets/),
+  [accounts and credentials](/reference/aws/accounts/) and [Amazon S3](/reference/aws/s3/): build
+  inputs from S3 buckets, and publishing files to them.

@@ -65,12 +65,15 @@ export class S3PublishRef extends RepositoryPublishRef {
   }
 }
 
-/** Check `key` is a key or prefix a member may be published at, naming `written` where it is not. */
-export function checkedPublishKey(key: string, written: string): string {
+/** Make the help for a coordinate that is no S3 address to publish to, in `account`. */
+export function publishHelp(account: string): string {
+  return `write a key, as in '${account}:s3:<bucket>:<key>', or a prefix ending in '/', as in '${account}:s3:<bucket>:<prefix>/'`;
+}
+
+/** Check `key` is a key or prefix a member may be published at in `account`, naming `written` where it is not. */
+export function checkedPublishKey(key: string, written: string, account: string): string {
   const fail = (reason: string): never => {
-    throw new FabrError(`'${written}' is not an S3 address to publish to: ${reason}`).withHelp(
-      "write a key, as in 's3:<bucket>:<key>', or a prefix ending in '/', as in 's3:<bucket>:<prefix>/'"
-    );
+    throw new FabrError(`'${written}' is not an S3 address to publish to: ${reason}`).withHelp(publishHelp(account));
   };
   if (key === "" || key === "/") {
     fail("it names no key");

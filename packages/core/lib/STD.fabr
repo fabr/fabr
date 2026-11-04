@@ -181,9 +181,9 @@ targetdef serve {
 }
 
 #
-# Publish built packages to a registry. Each entry names where a package goes
-# and which target supplies it; for an npm registry that is
-# `<registry>:<name>:<version> = <target>;`:
+# Publish built packages to a registry, or files to a store such as S3. Each
+# entry names where its content goes and which target supplies it; for an npm
+# registry that is `<registry>:<name>:<version> = <target>;`:
 #
 #     sync release {
 #         @npm:@acme/core:1.2.0 = @acme/core<BUILD_TYPE=release>;
@@ -193,9 +193,9 @@ targetdef serve {
 # An entry publishes the build type it is given, so `<BUILD_TYPE=release>` on
 # the target is what makes the published package a release build.
 #
-# `fabr build release` produces the packages as they would be published, without
-# uploading anything. `fabr sync release` uploads them, each after the packages
-# it depends on. Where one entry depends on another, the published package
+# `fabr build release` produces the content as it would be published, without
+# uploading anything. `fabr sync release` uploads it, each package after the
+# packages it depends on. Where one entry depends on another, the published package
 # requires the version assigned to it here.
 #
 targetdef sync {

@@ -65,6 +65,7 @@ import {
 } from "./S3Protocol";
 import {
   checkedPublishKey,
+  publishHelp,
   checksumOf,
   contentTypeOf,
   etagOf,
@@ -153,14 +154,14 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
 
   /** Vend the coordinate `name` publishes at: an object's key, or a prefix ending in `/` (see {@link S3PublishRef}). */
   public getRepositoryPublishRef(name: Name): S3PublishRef {
-    const written = name.toString();
+    const written = `${this.account.name}:${name.toString()}`;
     if (!name.isSimpleName() || name.getMarker() !== undefined || name.getRenameTo() !== undefined) {
       throw new FabrError(`'${written}' is not an S3 address to publish to: it is written as a pattern, a rename or with a marker`).withHelp(
-        "write a key, as in 's3:<bucket>:<key>', or a prefix ending in '/', as in 's3:<bucket>:<prefix>/'"
+        publishHelp(this.account.name)
       );
     }
     const { bucket, separator, at } = this.splitBucket(name);
-    const key = checkedPublishKey(separator === undefined ? "" : name.getLiteralPrefix().substring(at), written);
+    const key = checkedPublishKey(separator === undefined ? "" : name.getLiteralPrefix().substring(at), written, this.account.name);
     return new S3PublishRef(this, bucket!, key);
   }
 
@@ -288,12 +289,14 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
   /** Split the bucket off `name`: undefined where the name is the service alone, with the separator after it and where the rest begins where there is a rest. */
   private splitBucket(name: Name): { bucket?: string; separator?: ":" | "/"; at: number } {
     const literal = name.getLiteralPrefix();
-    const written = name.toString();
+    const written = `${this.account.name}:${name.toString()}`;
     if (name.isSimpleName() && literal === S3_SERVICE) {
       return { at: literal.length };
     }
     if (!literal.startsWith(`${S3_SERVICE}:`)) {
-      throw new FabrError(`'${written}' does not name a bucket`).withHelp(`write the bucket after '${S3_SERVICE}:', as in '${S3_SERVICE}:<bucket>:<key>'`);
+      throw new FabrError(`'${written}' does not name a bucket`).withHelp(
+        `write the bucket after '${S3_SERVICE}:', as in '${this.account.name}:${S3_SERVICE}:<bucket>:<key>'`
+      );
     }
     const start = S3_SERVICE.length + 1;
     const end = literal.slice(start).search(/[:/]/);

@@ -23,7 +23,7 @@ can be piped or redirected on its own.
 | [`ls`](#ls), [`cat`](#cat), [`cp`](#cp) | List, print or copy the files a target produces. |
 | [`deps`](#deps) | Print the dependency tree of targets or packages. |
 | [`shell`](#shell) | Open a shell in the directory a build step runs in, for debugging. |
-| [`sync`](#sync) | Publish packages. |
+| [`sync`](#sync) | Publish packages and files. |
 | [`build-server`](#build-server) | Serve the project's targets to an editor. |
 | [`list-targets`](#list-targets), [`list-targetdefs`](#list-targetdefs), [`list-operations`](#list-operations), [`list-properties`](#list-properties), [`list-all`](#list-all) | Describe the project and what a build file can contain. |
 
@@ -283,13 +283,13 @@ fabr shell docs_site
 
 ### `sync`
 
-Builds the packages a [`sync`](/reference/standard-rules/#sync) target lists and publishes them,
-each after the packages it depends on. `fabr build` on the same target produces the packages
-without uploading them, which is a way to check a release first.
+Builds what a [`sync`](/reference/standard-rules/#sync) target lists and publishes each entry to its
+destination, each package after the packages it depends on. `fabr build` on the same target
+produces the content without uploading it, which is a way to check a release first.
 
 ```sh
-fabr build release    # produce the packages to be published
-fabr sync release     # publish them
+fabr build release    # produce what would be published
+fabr sync release     # publish it
 ```
 
 ### `build-server`

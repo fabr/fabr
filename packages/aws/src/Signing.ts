@@ -78,7 +78,13 @@ export class RequestSigner {
         })
         .then(
           signed => resolve(signed.headers),
-          err => reject(new FabrError(`cannot sign a request to ${service} (${toError(err).message})`))
+          err =>
+            reject(
+              new FabrError(`cannot sign a request to ${service} (${toError(err).message})`).withHelp(
+                "fabr finds AWS credentials as the AWS CLI does: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, a profile in ~/.aws " +
+                  "(AWS_PROFILE, or the account's `profile`), an SSO session (`aws sso login`), web identity, or the machine's role"
+              )
+            )
         );
     });
   }

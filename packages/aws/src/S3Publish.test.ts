@@ -34,7 +34,7 @@ function namesOf(set: FileSet): string[] {
 
 describe("an S3 publish coordinate", () => {
   it("takes a key, or a prefix ending in '/'", () => {
-    expect(checkedPublishKey("tools/tool.tgz", "x")).to.equal("tools/tool.tgz");
+    expect(checkedPublishKey("tools/tool.tgz", "x", "@aws")).to.equal("tools/tool.tgz");
     expect(new S3PublishRef(WRITER, "acme", "site/v3/").isPrefix).to.equal(true);
     expect(new S3PublishRef(WRITER, "acme", "tools/tool.tgz").isPrefix).to.equal(false);
   });
@@ -47,7 +47,7 @@ describe("an S3 publish coordinate", () => {
       ["a/../b", "no empty, '.' or '..' part"],
       ["a:b", "written with '/' between its parts"],
     ]) {
-      expect(() => checkedPublishKey(key, "s3:acme:x"), key).to.throw(reason);
+      expect(() => checkedPublishKey(key, "@aws:s3:acme:x", "@aws"), key).to.throw(reason);
     }
   });
 
