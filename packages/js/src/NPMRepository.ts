@@ -43,6 +43,9 @@ import {
   RepositoryReader,
   Repository,
   TargetContext,
+  PackagePublishRef,
+  packageCoordinateOf,
+  packageCoordinates,
   RepositoryPublishRef,
   RepositoryRef,
   RepositoryRegistration,
@@ -110,7 +113,7 @@ function uniqueAssignments(assignments: readonly NpmPublishIdentity[]): Map<stri
 function uniqueTargets(targets: ReadonlyMap<string, readonly RepositoryPublishRef[]>): Map<string, NpmPublishIdentity> {
   return new Map(
     select([...targets], ([target, coordinates]) => {
-      const npm = coordinates.filter(coordinate => isRepositoryReader(coordinate.source) && coordinate.source.format === NPM_FORMAT);
+      const npm = packageCoordinates(coordinates).filter(coordinate => isRepositoryReader(coordinate.source) && coordinate.source.format === NPM_FORMAT);
       const distinct = new Map(npm.map(({ name, version }) => [`${name}@${version}`, { name, version }]));
       return distinct.size === 1 ? ([target, [...distinct.values()][0]] as const) : undefined;
     })
@@ -188,7 +191,7 @@ export class NPMRepository
   }
 
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
-    return new RepositoryPublishRef(this, this.format.parsePublishCoordinate(name));
+    return new PackagePublishRef(this, this.format.parsePublishCoordinate(name));
   }
 
   /* Get the run's registry-auth authority (the combined project + user
@@ -246,8 +249,9 @@ export class NPMRepository
      * makes answer for every coordinate in the repository, whichever registry
      * a group routes it to. An address in some other ecosystem's namespace (a
      * file path, say) has no name/version and is ignored. */
-    const npmRelease = release
-      .filter(coordinate => isRepositoryReader(coordinate.source) && coordinate.source.format === NPM_FORMAT);
+    const npmRelease = packageCoordinates(release).filter(
+      coordinate => isRepositoryReader(coordinate.source) && coordinate.source.format === NPM_FORMAT
+    );
     /* Later entries win the merge: a name published by the release over a
      * target's name, and own-batch assignments over release-wide. (A name can't
      * be batch-unique but release-ambiguous *and missing* from the batch map —
@@ -256,7 +260,7 @@ export class NPMRepository
     const coMembers = new Map([
       ...published,
       ...uniqueAssignments(npmRelease),
-      ...uniqueAssignments(members.map(member => member.destination)),
+      ...uniqueAssignments(members.map(member => packageCoordinateOf(member.destination))),
     ]);
     /* For upload order, every name a dependency may name a member by: the
      * release's names, whatever versions they are published at, and its targets'. */
@@ -275,7 +279,7 @@ export class NPMRepository
     coMembers: ReadonlyMap<string, NpmPublishIdentity>,
     memberNames: ReadonlyMap<string, string>
   ): Computable<PublishableFileSet> {
-    const identity = member.destination;
+    const identity = packageCoordinateOf(member.destination);
     const { content } = member;
     return content.get("package.json").then(manifestFile => {
       if (!manifestFile) {
@@ -327,7 +331,7 @@ export class NPMRepository
    * per-registry `.npmrc` (with `${VAR}` substitution).
    */
   public publish(artifact: PublishableFileSet): Computable<PublishStatus> {
-    const { name, version } = artifact.destination;
+    const { name, version } = packageCoordinateOf(artifact.destination);
     const tgzFile = artifact.get(tarballBasename(name, version));
     const manifestFile = artifact.get("package.json");
     return Computable.forAll([tgzFile, manifestFile, this.npmAuth()], (tgz, manifest, auth) => {

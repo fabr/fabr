@@ -203,8 +203,17 @@ export interface ICommandSubstTask {
 }
 
 /**
- * What a task *is*: a build action, a repository resolution, a download, or a
- * command substitution.
+ * A `sync` member being published to its destination (`fabr sync`).
  */
-export type TaskDescription = ITargetBuildTask | IRepositoryResolveTask | IFetchTask | ICommandSubstTask;
+export interface IPublishTask {
+  kind: "publish";
+  /** The member's coordinate, as written (`@aws:s3:acme-site:v3/`). */
+  destination: string;
+}
+
+/**
+ * What a task *is*: a build action, a repository resolution, a download, a
+ * command substitution, or a publish.
+ */
+export type TaskDescription = ITargetBuildTask | IRepositoryResolveTask | IFetchTask | ICommandSubstTask | IPublishTask;
 

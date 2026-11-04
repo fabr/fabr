@@ -324,9 +324,11 @@ export class SyncSource implements FileSource {
 }
 
 /** Spell a coordinate as a name in the release namespace: the alias separator
- *  is a path separator, so `@npm:x:1.0.0` is addressed as `@npm/x/1.0.0`. */
+ *  is a path separator, so `@npm:x:1.0.0` is addressed as `@npm/x/1.0.0`, and a
+ *  directory's coordinate names the directory (`@aws:s3:site:v3/` is
+ *  `@aws/s3/site/v3`). */
 function memberPath(coordinate: string): string {
-  return coordinate.replaceAll(NAME_LEVEL_SEPARATOR, NAME_COMPONENT_SEPARATOR);
+  return coordinate.replaceAll(NAME_LEVEL_SEPARATOR, NAME_COMPONENT_SEPARATOR).replace(/\/+$/, "");
 }
 
 /**

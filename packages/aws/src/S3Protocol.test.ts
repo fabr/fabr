@@ -19,7 +19,7 @@
 
 import { expect } from "chai";
 import { parseName } from "@fabr-build/core";
-import { bucketsRequest, listRequest, objectRequest, parseBuckets, parseListing, regionProbeUrl, selectObjects } from "./S3Protocol";
+import { bucketsRequest, listRequest, objectRequest, parseBuckets, parseListing, putRequest, regionProbeUrl, selectObjects } from "./S3Protocol";
 import { requestUrl } from "./Signing";
 
 describe("selecting objects for a name", () => {
@@ -64,6 +64,15 @@ describe("S3 requests", () => {
     );
   });
 
+  it("stores an object with the headers it is signed with", () => {
+    const request = putRequest(aws, "v3/x", new Map([["content-type", "text/plain"]]));
+    expect([request.method, requestUrl(request), [...request.headers!]]).to.deep.equal([
+      "PUT",
+      "https://acme-models.s3.eu-west-2.amazonaws.com/v3/x",
+      [["content-type", "text/plain"]],
+    ]);
+  });
+
   it("lists a bucket from its root", () => {
     expect(requestUrl(listRequest(aws, ""))).to.equal("https://acme-models.s3.eu-west-2.amazonaws.com/?list-type=2&prefix=");
   });
@@ -87,9 +96,16 @@ describe("reading a bucket listing", () => {
 
   it("reads the keys exactly, a space at either end kept", () => {
     expect(parseListing(listing("<Contents><Key> a&amp;b </Key><Size>3</Size></Contents><IsTruncated>false</IsTruncated>"), "x")).to.deep.equal({
-      keys: [" a&b "],
+      objects: [{ key: " a&b " }],
       prefixes: [],
     });
+  });
+
+  it("reads each object's ETag", () => {
+    expect(parseListing(listing('<Contents><Key>a</Key><ETag>"abc"</ETag></Contents><Contents><Key>b</Key></Contents>'), "x").objects).to.deep.equal([
+      { key: "a", etag: '"abc"' },
+      { key: "b" },
+    ]);
   });
 
   it("reads the prefixes and the continuation token", () => {
@@ -100,7 +116,7 @@ describe("reading a bucket listing", () => {
         ),
         "x"
       )
-    ).to.deep.equal({ keys: ["a"], prefixes: ["d/"], next: "tok" });
+    ).to.deep.equal({ objects: [{ key: "a" }], prefixes: ["d/"], next: "tok" });
   });
 
   it("refuses a document that is not a listing", () => {

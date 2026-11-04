@@ -28,7 +28,7 @@ import { PackageFileSet, PackageGraphBuilder } from "./PackageFileSet";
 import { NamespaceRef } from "./NamespaceRef";
 import type { Reference } from "./Reference";
 import { RequirementResolutionError } from "./Errors";
-import { dependenciesOn, renamedAs, Repository, RepositoryLookup, RepositoryPublishRef, RepositoryRef, RepositoryWriter } from "./Repository";
+import { dependenciesOn, PackagePublishRef, renamedAs, Repository, RepositoryLookup, RepositoryPublishRef, RepositoryRef, RepositoryWriter } from "./Repository";
 import { ResolutionContext } from "../resolver/Types";
 import { bindProvided, collectLists } from "../context/CollectionPoint";
 import { parseName } from "../model/Parser";
@@ -133,7 +133,7 @@ describe("NamespaceRef", () => {
 
     public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
       const [coordinate, version] = name.toString().split(":");
-      return new RepositoryPublishRef({} as RepositoryWriter, { name: coordinate, version });
+      return new PackagePublishRef({} as RepositoryWriter, { name: coordinate, version });
     }
 
     public resolve(): Computable<FileSet> {

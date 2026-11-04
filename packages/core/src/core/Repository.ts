@@ -27,6 +27,7 @@ import { Dependency, isPackage, Package, PackageFileSet, ResolvedNode } from "./
 import { chainSteps } from "./Provenance";
 import { Name } from "./Name";
 import type { PublishableFileSet } from "./PublishableFileSet";
+import type { ITaskReport } from "../support/Execute";
 import type { Requirement, RequirementSource, ResolvedMember, Selected } from "../resolver/Types";
 import type { PackageFormat } from "../resolver/PackageFormat";
 
@@ -308,9 +309,10 @@ export interface RepositoryWriter {
    * side effect: pure upload mechanics (envelope, credential, what counts as
    * already-published), nothing about the rest of the release. Authentication is
    * the repository's own business — it knows its registry and its ecosystem's
-   * credential conventions — so no token is threaded in.
+   * credential conventions — so no token is threaded in. `report` is the
+   * upload's task, which may measure its progress.
    */
-  publish(artifact: PublishableFileSet): Computable<PublishStatus>;
+  publish(artifact: PublishableFileSet, report: ITaskReport): Computable<PublishStatus>;
 }
 
 /** A member a repository publishes beside one a sync declares ({@link RepositoryWriter.attachments}). */
@@ -380,18 +382,17 @@ export type PublishStatus = "published" | "already-synced";
  * proves the name is a well-formed, writable address. The write dual of
  * {@link RepositoryRef} (a name in a repository's namespace plus the provider
  * its operations need), minus projections (you cannot project into an address
- * you are creating) and provenance; it is never resolved — the destination
- * re-parses `name` in `package`/`publish`.
+ * you are creating) and provenance; it is never resolved. A destination's
+ * address is its `name` (a file destination's path); a package destination's
+ * coordinate adds the version it assigns ({@link PackagePublishRef}).
  */
 export class RepositoryPublishRef {
-  /** The package the address assigns, within {@link source}. */
+  /** The address, within {@link source}. */
   public readonly name: string;
-  /** The exact version it assigns. */
-  public readonly version: string;
 
   constructor(
     public readonly source: RepositoryWriter,
-    coordinate: { readonly name: string; readonly version: string },
+    coordinate: { readonly name: string },
     /** The declared name of the destination repository in the build's
      *  namespace (`@npm`) — the destination cannot know what it was declared
      *  as, so lookup attaches it at vend time. Display-only: completes
@@ -399,7 +400,6 @@ export class RepositoryPublishRef {
     public readonly repositoryName?: string
   ) {
     this.name = coordinate.name;
-    this.version = coordinate.version;
   }
 
   public withRepositoryName(repositoryName: string): RepositoryPublishRef {
@@ -409,9 +409,45 @@ export class RepositoryPublishRef {
   /** The display form for messages — the full written coordinate when the
    *  repository name is known. */
   public toString(): string {
-    const coordinate = `${this.name}:${this.version}`;
-    return this.repositoryName === undefined ? coordinate : `${this.repositoryName}:${coordinate}`;
+    return this.repositoryName === undefined ? this.coordinate() : `${this.repositoryName}:${this.coordinate()}`;
   }
+
+  /** Render the coordinate as written within the repository. */
+  protected coordinate(): string {
+    return this.name;
+  }
+}
+
+/** A package destination's publish coordinate: a package and the exact version it assigns. */
+export class PackagePublishRef extends RepositoryPublishRef {
+  /** The exact version it assigns. */
+  public readonly version: string;
+
+  constructor(source: RepositoryWriter, coordinate: { readonly name: string; readonly version: string }, repositoryName?: string) {
+    super(source, coordinate, repositoryName);
+    this.version = coordinate.version;
+  }
+
+  public override withRepositoryName(repositoryName: string): PackagePublishRef {
+    return new PackagePublishRef(this.source, this, repositoryName);
+  }
+
+  protected override coordinate(): string {
+    return `${this.name}:${this.version}`;
+  }
+}
+
+/** @return the package coordinates among `refs`: those a package destination assigns. */
+export function packageCoordinates(refs: ReadonlyArray<RepositoryPublishRef>): PackagePublishRef[] {
+  return refs.filter((ref): ref is PackagePublishRef => ref instanceof PackagePublishRef);
+}
+
+/** Get `ref` as the package coordinate a package destination vended it as. Throws where it is no package coordinate. */
+export function packageCoordinateOf(ref: RepositoryPublishRef): PackagePublishRef {
+  if (!(ref instanceof PackagePublishRef)) {
+    throw new FabrError(`internal: '${ref.toString()}' is not a package coordinate`);
+  }
+  return ref;
 }
 
 /**

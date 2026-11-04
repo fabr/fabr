@@ -19,7 +19,7 @@
 
 import { expect } from "chai";
 import { PublishableFileSet } from "../core/PublishableFileSet";
-import { RepositoryPublishRef, RepositoryWriter } from "../core/Repository";
+import { PackagePublishRef, RepositoryWriter } from "../core/Repository";
 import { publishOrder } from "./BuildSync";
 
 /* The sort reads only the provides/dependsOn tokens; the destination is inert
@@ -27,7 +27,7 @@ import { publishOrder } from "./BuildSync";
 const DEST = {} as RepositoryWriter;
 
 function carrier(name: string, version: string, dependsOn: string[] = [], destination = DEST): PublishableFileSet {
-  const coordinate = new RepositoryPublishRef(destination, { name, version });
+  const coordinate = new PackagePublishRef(destination, { name, version });
   return new PublishableFileSet(new Map(), coordinate, name, dependsOn);
 }
 

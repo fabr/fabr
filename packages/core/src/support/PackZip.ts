@@ -17,7 +17,6 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import * as fs from "fs";
 import * as path from "path";
 import { Readable } from "stream";
 import * as yazl from "yazl";
@@ -26,6 +25,7 @@ import { FabrError } from "../core/Errors";
 import { readStream } from "../core/Fetch";
 import { mapComputable } from "./Functional";
 import { FileSet, IFile } from "../core/FileSet";
+import { contentStream } from "../core/FSWrapper";
 import { SymlinkFile } from "../core/SymlinkFile";
 import type { IOutputHandle } from "./Execute";
 import { MIME_ZIP } from "./Mime";
@@ -128,7 +128,7 @@ function archiveOf(files: FileSet, options: ZipOptions): Computable<{ zip: yazl.
         const { file } = entry;
         /* Opened only when yazl reaches the entry, so an archive of many files holds one open at a time. */
         zip.addReadStreamLazy(entry.name, { mtime: ZIP_DATE, mode: ZIP_FILE_TYPE | (file.mode & 0o7777), forceDosTimestamp: true }, done => {
-          contentOf(file).then(
+          contentStream(file).then(
             stream => done(null, stream.on("error", fail)),
             (err: Error) => done(err, undefined as unknown as Readable)
           );
@@ -173,8 +173,3 @@ function linkTarget(name: string, file: SymlinkFile, options: ZipOptions): strin
   return file.target;
 }
 
-/** @return a stream of `file`'s content: read from the pool where it is there, else from memory. */
-function contentOf(file: IFile): Computable<Readable> {
-  const where = file.getAbsPath();
-  return where !== undefined ? Computable.resolve(fs.createReadStream(where)) : file.getBuffer().then(buffer => Readable.from([buffer]));
-}

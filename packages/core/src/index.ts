@@ -36,7 +36,7 @@ export * from "./core/PackageFileSet";
 export * from "./core/Reference";
 export * from "./core/NamespaceRef";
 export * from "./core/TargetRef";
-export { deleteTree, HASH_ALGORITHM, hashString } from "./core/FSWrapper";
+export { contentStream, deleteTree, HASH_ALGORITHM, hashString } from "./core/FSWrapper";
 export * from "./core/FileSetRef";
 export * from "./core/RunnableFileSet";
 export * from "./core/PublishableFileSet";

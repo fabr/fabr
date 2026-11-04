@@ -86,6 +86,16 @@ export function objectRequest(location: IBucketLocation, key: string): IServiceR
   return { ...base, method: "GET", path: `${base.path}/${key.split("/").map(uriEncode).join("/")}`, query: new Map() };
 }
 
+/** Make the request that stores `key` (`PutObject`), sent with `headers` and signed with them. */
+export function putRequest(location: IBucketLocation, key: string, headers: ReadonlyMap<string, string>): IServiceRequest {
+  return { ...objectRequest(location, key), method: "PUT", headers };
+}
+
+/** Make the request whose answer gives the object `key`'s ETag and stored checksum (`HeadObject`). */
+export function headRequest(location: IBucketLocation, key: string): IServiceRequest {
+  return { ...objectRequest(location, key), method: "HEAD", headers: new Map([["x-amz-checksum-mode", "ENABLED"]]) };
+}
+
 /** Make the request whose answer says whether a bucket exists (`HeadBucket`). */
 export function bucketRequest(location: IBucketLocation): IServiceRequest {
   const base = bucketBase(location);
@@ -162,10 +172,17 @@ function isVirtualHostable(bucket: string): boolean {
   return /^[a-z0-9][a-z0-9-]*$/.test(bucket);
 }
 
+/** An object a listing names. */
+export interface IListedObject {
+  readonly key: string;
+  /** Its ETag, as S3 gives it (quoted). */
+  readonly etag?: string;
+}
+
 /** One page of a bucket's keys. */
 export interface IListing {
-  /** The keys of the objects listed. */
-  readonly keys: readonly string[];
+  /** The objects listed. */
+  readonly objects: readonly IListedObject[];
   /** The prefixes the keys were grouped into, where a delimiter was given. */
   readonly prefixes: readonly string[];
   /** The token for the next page, where there is one. */
@@ -208,14 +225,26 @@ function readDocument(text: string, what: string, kind: string, root: string, vi
 
 /** Read a `ListObjectsV2` response. Throws, naming `what`, where it is not one. */
 export function parseListing(text: string, what: string): IListing {
-  const keys: string[] = [];
+  const objects: IListedObject[] = [];
   const prefixes: string[] = [];
   let next: string | undefined;
   let truncated = false;
+  let key: string | undefined;
+  let etag: string | undefined;
   readDocument(text, what, "a bucket listing", "ListBucketResult", (path, value) => {
     switch (path) {
       case "ListBucketResult/Contents/Key":
-        keys.push(value);
+        key = value;
+        break;
+      case "ListBucketResult/Contents/ETag":
+        etag = value;
+        break;
+      case "ListBucketResult/Contents":
+        if (key !== undefined) {
+          objects.push(etag === undefined ? { key } : { key, etag });
+        }
+        key = undefined;
+        etag = undefined;
         break;
       case "ListBucketResult/CommonPrefixes/Prefix":
         prefixes.push(value);
@@ -231,7 +260,7 @@ export function parseListing(text: string, what: string): IListing {
   if (truncated && next === undefined) {
     throw new FabrError(`${what} is not a bucket listing: it is truncated but gives no continuation token`);
   }
-  return { keys, prefixes, ...(truncated ? { next } : {}) };
+  return { objects, prefixes, ...(truncated ? { next } : {}) };
 }
 
 /** One page of an account's buckets. */

@@ -19,7 +19,6 @@
 
 import { Computable, Diagnostic, ExecutionContext, FabrError, PublishableFileSet, toError } from "@fabr-build/core";
 
-const DIAG_PUBLISHED = Diagnostic.Info<{ destination: string }>("Published {destination}");
 const DIAG_ALREADY_SYNCED = Diagnostic.Info<{ destination: string }>("{destination} is already synced");
 const DIAG_PUBLISH_FAILED = Diagnostic.Error<{ destination: string; reason: string }>("Failed to publish {destination}: {reason}");
 const DIAG_PUBLISH_SKIPPED = Diagnostic.Warn<{ destination: string; blockedBy: string }>(
@@ -30,7 +29,7 @@ const DIAG_PUBLISH_SKIPPED = Diagnostic.Warn<{ destination: string; blockedBy: s
  * Publish a release's members — a plain walk, in the given order: the sync rule
  * already yields its carriers deps-first (BuildSync's publishOrder), so each
  * member uploads (`destination.source.publish`, the destination's own
- * mechanics) only after every member it depends on. Best-effort: a member whose
+ * mechanics, reported as its own task) only after every member it depends on. Best-effort: a member whose
  * upload fails does not abort the rest, but its dependants are skipped rather
  * than published dangling (matched via the carriers' `provides`/`dependsOn`
  * tokens), and any member that didn't land makes the overall sync a failure so
@@ -54,15 +53,16 @@ export function publishSync(execution: ExecutionContext, members: ReadonlyArray<
         execution.log.log(DIAG_PUBLISH_SKIPPED, { destination: member.destination.toString(), blockedBy: blocked });
         return;
       }
-      return member.destination.source.publish(member).then(
+      const destination = member.destination.toString();
+      return execution.runTask({ kind: "publish", destination }, report => member.destination.source.publish(member, report)).then(
         status => {
-          execution.log.log(status === "published" ? DIAG_PUBLISHED : DIAG_ALREADY_SYNCED, {
-            destination: member.destination.toString(),
-          });
+          if (status === "already-synced") {
+            execution.log.log(DIAG_ALREADY_SYNCED, { destination });
+          }
         },
         err => {
           markUnavailable(member);
-          execution.log.log(DIAG_PUBLISH_FAILED, { destination: member.destination.toString(), reason: toError(err).message });
+          execution.log.log(DIAG_PUBLISH_FAILED, { destination, reason: toError(err).message });
         }
       );
     });

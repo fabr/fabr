@@ -29,6 +29,7 @@ import {
   PublishMember,
   PublishStatus,
   Repository,
+  PackagePublishRef,
   RepositoryPublishRef,
   RepositoryRef,
   RepositoryWriter,
@@ -580,14 +581,18 @@ const packagedContent: FileSet[] = [];
 /* The targets each packaging was told the release publishes, by name. */
 const packagedTargets: Array<ReadonlyMap<string, readonly RepositoryPublishRef[]>> = [];
 
-/* Publish-capable repository double: vends publish refs, and packages each
+/* Publish-capable repository double: vends publish refs — a package's
+ * `name:version`, or a directory's path ending in `/` — and packages each
  * member's content verbatim plus a `manifest.txt` naming its address — for
  * exercising the sync rules. */
 class TestPubRepo extends TestRepo implements RepositoryWriter {
   public override getRepositoryPublishRef(name: Name): RepositoryPublishRef {
     const written = name.toBaseString();
+    if (written.endsWith("/")) {
+      return new RepositoryPublishRef(this, { name: written });
+    }
     const colon = written.lastIndexOf(":");
-    return new RepositoryPublishRef(this, { name: written.substring(0, colon), version: written.substring(colon + 1) });
+    return new PackagePublishRef(this, { name: written.substring(0, colon), version: written.substring(colon + 1) });
   }
 
   public package(
@@ -618,7 +623,7 @@ class TestPubRepo extends TestRepo implements RepositoryWriter {
     return destination.name.startsWith("attached") && !destination.name.endsWith("-doc")
       ? [
           {
-            destination: new RepositoryPublishRef(this, { name: `${destination.name}-doc`, version: destination.version }, destination.repositoryName),
+            destination: new PackagePublishRef(this, { name: `${destination.name}-doc`, version: (destination as PackagePublishRef).version }, destination.repositoryName),
             operation: "doc",
           },
         ]
@@ -1703,11 +1708,11 @@ describe("BuildContext", () => {
     "test_file c2 { content = two; }\n" +
     "sync release { pub:alpha:1.0.0 = c1; pub:beta:2.0.0 = c2; }\n";
 
-  /** The release above, as the given operation sees it. */
-  function releaseConfig(operation: string): BuildContext {
+  /** The release above, or the one `input` declares, as the given operation sees it. */
+  function releaseConfig(operation: string, input = RELEASE_INPUT): BuildContext {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", RELEASE_INPUT, logger)], logger, testContributions);
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
     return model.getConfig(Constraints.of({ [BUILD_OPERATION]: operation }), execution);
   }
@@ -1732,6 +1737,14 @@ describe("BuildContext", () => {
       const file = await (colon[0] as FileSet).get("manifest.txt");
       expect(await file!.readString(), operation).to.equal("pub:alpha:1.0.0");
     }
+  });
+
+  it("Addresses a member published to a directory by the directory, without its coordinate's trailing '/'", async () => {
+    const config = releaseConfig("build", RELEASE_INPUT.replace("pub:alpha:1.0.0 = c1;", "pub:site/ = c1;"));
+    const files = await config.materialize(writtenOnCommandLine("release/pub/site/manifest.txt"));
+    expect(namesOf(files)).to.deep.equal(["release/pub/site/manifest.txt"]);
+    const file = await (files[0] as FileSet).get("release/pub/site/manifest.txt");
+    expect(await file!.readString()).to.equal("pub:site/");
   });
 
   it("Yields the carrier itself for a member named in full, and its files for a glob", async () => {

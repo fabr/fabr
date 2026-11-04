@@ -42,6 +42,9 @@ import {
   PublishableFileSet,
   PublishMember,
   packToZip,
+  PackagePublishRef,
+  packageCoordinateOf,
+  packageCoordinates,
   RepositoryPublishRef,
   RepositoryRef,
   RepositoryWriter,
@@ -269,8 +272,8 @@ export function mergedMetadata(existing: string | undefined, groupId: string, ar
  * `targets`; undefined where it publishes the target nowhere, or at more than
  * one coordinate.
  */
-function coordinateOfTarget(targets: ReadonlyMap<string, readonly RepositoryPublishRef[]>, name: string): RepositoryPublishRef | undefined {
-  const found = (targets.get(name) ?? []).filter(
+function coordinateOfTarget(targets: ReadonlyMap<string, readonly RepositoryPublishRef[]>, name: string): PackagePublishRef | undefined {
+  const found = packageCoordinates(targets.get(name) ?? []).filter(
     each => isRepositoryReader(each.source) && each.source.format === MAVEN_FORMAT && variantOf(each) === undefined
   );
   const distinct = new Map(found.map(each => [`${each.name}:${each.version}`, each]));
@@ -356,7 +359,8 @@ export function packageMavenMember(
   coMembers: ReadonlySet<string>,
   release: readonly RepositoryPublishRef[]
 ): Computable<PublishableFileSet> {
-  const { destination, content } = member;
+  const { content } = member;
+  const destination = packageCoordinateOf(member.destination);
   const { groupId, artifactId } = splitMavenName(destination.name);
   const { version } = destination;
   const { file, extension } = artifactOf(destination, content);
@@ -383,7 +387,7 @@ export function packageMavenMember(
       ];
       const dependsOn = [
         ...dependencies.map(dep => `${dep.groupId}/${dep.artifactId}`).filter(name => coMembers.has(name)),
-        ...release
+        ...packageCoordinates(release)
           .filter(each => each.name === destination.name && each.version === version && variantOf(each) !== undefined)
           .map(each => variantToken(each)),
       ];
@@ -405,7 +409,7 @@ function variantFields(variant: string | undefined): { classifier?: string; type
  * A Maven publish coordinate: a version of a package, or, with a variant, a
  * file published beside the version's artifact (`-sources.jar`, `-bin.zip`).
  */
-export class MavenPublishRef extends RepositoryPublishRef {
+export class MavenPublishRef extends PackagePublishRef {
   /** The variant of a file published beside the artifact (`sources`, `bin@zip`), or undefined for the artifact itself. */
   public readonly variant?: string;
 
@@ -422,9 +426,8 @@ export class MavenPublishRef extends RepositoryPublishRef {
     return new MavenPublishRef(this.source, this, repositoryName);
   }
 
-  public override toString(): string {
-    const coordinate = this.variant === undefined ? `${this.name}:${this.version}` : `${this.name}/${this.variant}:${this.version}`;
-    return this.repositoryName === undefined ? coordinate : `${this.repositoryName}:${coordinate}`;
+  protected override coordinate(): string {
+    return this.variant === undefined ? super.coordinate() : `${this.name}/${this.variant}:${this.version}`;
   }
 }
 
@@ -439,7 +442,7 @@ function variantToken(destination: RepositoryPublishRef): string {
 }
 
 /** @return the path of the file a variant's member `destination` publishes, or of a version's artifact with `extension`. */
-export function publishedFilePath(destination: RepositoryPublishRef, extension = "jar"): string {
+export function publishedFilePath(destination: PackagePublishRef, extension = "jar"): string {
   const { groupId, artifactId } = splitMavenName(destination.name);
   const variant = variantOf(destination);
   const { classifier, extension: published } = variant === undefined ? { classifier: undefined, extension } : mavenVariantOf(variant);
@@ -455,8 +458,9 @@ export function publishedFilePath(destination: RepositoryPublishRef, extension =
  * be published by the same release, which uploads it after this.
  */
 export function packageClassifiedMember(member: PublishMember, release: readonly RepositoryPublishRef[]): Computable<PublishableFileSet> {
-  const { destination, content } = member;
-  if (!release.some(each => each.name === destination.name && each.version === destination.version && variantOf(each) === undefined)) {
+  const { content } = member;
+  const destination = packageCoordinateOf(member.destination);
+  if (!packageCoordinates(release).some(each => each.name === destination.name && each.version === destination.version && variantOf(each) === undefined)) {
     const { groupId, artifactId } = splitMavenName(destination.name);
     return Computable.reject(
       new FabrError(`cannot publish ${destination.toString()}: the release publishes no ${groupId}:${artifactId}:${destination.version} for it to be beside`).withHelp(

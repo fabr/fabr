@@ -46,6 +46,7 @@ catalog @pkg {
          # closure needs a newer tslib than sass-embedded's (sanctioned below).
          @npm:@aws-sdk/credential-provider-node:3.972.92
          @npm:@smithy/signature-v4:5.7.5 @npm:@smithy/hash-node:4.5.2
+         @npm:mime-types:3.0.2 @npm:@types/mime-types:3.0.1
 
          # The bundle driver's tests drive the real bundler; pinned to the same
          # version ESBUILD names, since what they check is what THAT esbuild

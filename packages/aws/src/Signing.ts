@@ -29,7 +29,7 @@ import { Computable, FabrError, toError } from "@fabr-build/core";
 
 /** A request to a service, before it is signed. */
 export interface IServiceRequest {
-  readonly method: "GET" | "HEAD";
+  readonly method: "GET" | "HEAD" | "PUT";
   /** `https:`, or `http:` for an endpoint that says so. */
   readonly protocol: string;
   readonly hostname: string;
@@ -38,6 +38,8 @@ export interface IServiceRequest {
   readonly path: string;
   /** The query parameters, unencoded. */
   readonly query: ReadonlyMap<string, string>;
+  /** Headers sent with the request and signed with it, by lowercase name. */
+  readonly headers?: ReadonlyMap<string, string>;
 }
 
 /** A credential provider, as AWS's credential chain makes one. */
@@ -52,7 +54,7 @@ export class RequestSigner {
     this.credentials = defaultProvider(profile === undefined ? {} : { profile });
   }
 
-  /** Sign `request` for `service` in `region`, giving the headers it is sent with. */
+  /** Sign `request` for `service` in `region`, giving the headers it is sent with: its own, and the signature's. */
   public sign(request: IServiceRequest, service: string, region: string): Computable<Record<string, string>> {
     const signer = new SignatureV4({
       credentials: this.credentials,
@@ -72,7 +74,7 @@ export class RequestSigner {
           port: request.port,
           path: request.path,
           query: Object.fromEntries(request.query),
-          headers: { host },
+          headers: { ...Object.fromEntries(request.headers ?? []), host },
         })
         .then(
           signed => resolve(signed.headers),

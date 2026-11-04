@@ -50,6 +50,7 @@ import {
   PublishStatus,
   Reference,
   Repository,
+  packageCoordinateOf,
   RepositoryPublishRef,
   RepositoryReader,
   RepositoryRef,
@@ -221,7 +222,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
       return [];
     }
     return this.autoAttach.map(classifier => ({
-      destination: new MavenPublishRef(this, { name: destination.name, version: destination.version, variant: classifier }, destination.repositoryName),
+      destination: new MavenPublishRef(this, { name: destination.name, version: packageCoordinateOf(destination).version, variant: classifier }, destination.repositoryName),
       operation: OPERATIONS.get(classifier)!,
     }));
   }
@@ -253,11 +254,12 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
    * whose POM is already there is already synced.
    */
   public publish(artifact: PublishableFileSet): Computable<PublishStatus> {
-    const { name, version } = artifact.destination;
+    const destination = packageCoordinateOf(artifact.destination);
+    const { name, version } = destination;
     const { groupId, artifactId } = splitMavenName(name);
-    const classified = variantOf(artifact.destination) !== undefined;
+    const classified = variantOf(destination) !== undefined;
     /* What marks the member published: a version's POM, or a classified jar itself. */
-    const marker = classified ? publishedFilePath(artifact.destination) : repositoryPath(groupId, artifactId, version, `${artifactId}-${version}.pom`);
+    const marker = classified ? publishedFilePath(destination) : repositoryPath(groupId, artifactId, version, `${artifactId}-${version}.pom`);
     return this.request(marker, { method: "GET" }).then(existing => {
       if (existing.statusCode === 200) {
         return Computable.resolve<PublishStatus>("already-synced");

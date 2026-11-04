@@ -398,6 +398,8 @@ function describe(task: TaskDescription): string {
       /* A substitution belongs to no target, so it names itself by the command
        * as written. */
       return `Running \`${task.command}\``;
+    case "publish":
+      return `Publishing ${task.destination}`;
   }
 }
 
@@ -437,6 +439,8 @@ function attribution(task: TaskDescription): string {
       return task.url;
     case "command-subst":
       return `\`${task.command}\``;
+    case "publish":
+      return task.destination;
   }
 }
 

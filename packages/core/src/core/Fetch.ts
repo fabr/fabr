@@ -147,8 +147,10 @@ export function fetchUrl(urlstring: string): Computable<Buffer> {
 export interface HttpRequest {
   method: string;
   headers?: Record<string, string>;
-  /** Request body, sent verbatim; Content-Length is derived when not supplied. */
-  body?: Buffer | string;
+  /** Request body, sent verbatim: bytes, whose Content-Length is derived when not
+   *  supplied, or a stream, sent as it is read, whose length the caller states
+   *  where the server needs it. */
+  body?: Buffer | string | Readable;
 }
 
 export interface HttpResponse {

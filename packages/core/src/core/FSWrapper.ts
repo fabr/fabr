@@ -22,7 +22,9 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
+import { Readable } from "stream";
 import { Computable } from "./Computable";
+import type { IFile } from "./FileSet";
 import { mapComputable } from "../support/Functional";
 import { sniffMime } from "../support/Mime";
 
@@ -312,4 +314,10 @@ export function hashFile(filepath: string): Computable<HashedContent> {
 
 export function hashString(data: string | Buffer): string {
   return crypto.createHash(HASH_ALGORITHM).update(data).digest("hex");
+}
+
+/** @return a stream of `file`'s content: read from the pool where it is there, else from memory. */
+export function contentStream(file: IFile): Computable<Readable> {
+  const where = file.getAbsPath();
+  return where !== undefined ? Computable.resolve(fs.createReadStream(where)) : file.getBuffer().then(buffer => Readable.from([buffer]));
 }
