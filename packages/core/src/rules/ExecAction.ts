@@ -28,6 +28,7 @@ import {
   configFiles,
   fileSetInput,
   IBuildActionDefinition,
+  IStagedStep,
   stringConfig,
   stringListConfig,
 } from "../core/BuildAction";
@@ -69,7 +70,16 @@ function runExec(action: BuildAction, ctx: ActionContext, report: ITaskReport): 
 /* The version tracks what the step DOES; a change to the action-key text's
  * shape (see BuildAction.actionKey) already invalidates mechanically and needs
  * no bump here. */
-export const EXEC_ACTION: IBuildActionDefinition = { id: "core:exec", version: 3, run: runExec };
+export const EXEC_ACTION: IBuildActionDefinition = { id: "core:exec", version: 3, run: runExec, stage: stageExec };
+
+function stageExec(action: BuildAction, dir: string): Computable<IStagedStep> {
+  const argv = stringListConfig(action, "argv");
+  return writeFileSet(dir, FileSet.unionAll(fileSetInput(action, "files"), configFiles(action))).then(() => ({
+    cwd: ".",
+    commands: [[[findExecutable(argv[0], dir), ...argv.slice(1)]]],
+    env: new Map(),
+  }));
+}
 
 /**
  * @return an action that stages `files`, runs `argv` in the work directory,

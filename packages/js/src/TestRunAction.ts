@@ -41,6 +41,7 @@ import {
   getResultFileSet,
   ITaskReport,
   IBuildActionDefinition,
+  IStagedStep,
   ITestReport,
   mergeTestReports,
   MultiError,
@@ -66,7 +67,34 @@ import {
  * The same holds for updates: a run red for any *other* reason yields nothing,
  * so nothing is offered back to the tree.
  */
-const JS_TEST_STEP: IBuildActionDefinition = { id: "js:test-run", version: 6, run: runTests };
+const JS_TEST_STEP: IBuildActionDefinition = { id: "js:test-run", version: 6, run: runTests, stage: stageTests };
+
+/** Read the `env` config member, the variables the test processes run with: each written `NAME=value`, a name holding no `=`. */
+function declaredEnv(action: BuildAction): Record<string, string> {
+  return Object.fromEntries(
+    (Array.isArray(action.config.env) ? action.config.env : []).map((entry): [string, string] => {
+      const at = entry.indexOf("=");
+      return [entry.slice(0, at), entry.slice(at + 1)];
+    })
+  );
+}
+
+/** Stage the installation as {@link runTests} does, and describe its per-file invocations of the runner. */
+function stageTests(action: BuildAction, dir: string): Computable<IStagedStep> {
+  const staged = fileSetInput(action, "staged");
+  const writable = fileSetInput(action, "writable");
+  const argv = stringListConfig(action, "argv");
+  const testFiles = stringListConfig(action, "test_files");
+  return writeFileSet(dir, staged.minus(writable))
+    .then(() => writeFileSet(dir, writable, { copy: true }))
+    .then(() => ({
+      cwd: COMPILE_OUT_DIR,
+      commands: testFiles.map((file, index) => [
+        [findExecutable(argv[0], join(dir, COMPILE_OUT_DIR)), ...argv.slice(1), `--report=${invocationReport(index)}`, file],
+      ]),
+      env: new Map(Object.entries(declaredEnv(action))),
+    }));
+}
 
 function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
   const workDir = ctx.workDir;
@@ -75,13 +103,7 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
   const argv = stringListConfig(action, "argv");
   const testFiles = stringListConfig(action, "test_files");
   const outputs = stringListConfig(action, "outputs");
-  /* Each variable as `NAME=value`: a name holds no `=`, so the first one splits it. */
-  const declared = Object.fromEntries(
-    (Array.isArray(action.config.env) ? action.config.env : []).map((entry): [string, string] => {
-      const at = entry.indexOf("=");
-      return [entry.slice(0, at), entry.slice(at + 1)];
-    })
-  );
+  const declared = declaredEnv(action);
   /* A measured run: every test process, and every process it starts, writes
    * its V8 coverage into one directory, which the coverage driver converts
    * once the run is green. */

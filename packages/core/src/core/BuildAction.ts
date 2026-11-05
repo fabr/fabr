@@ -88,6 +88,22 @@ export interface IBuildActionDefinition {
    * (the test runner's report).
    */
   run(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult>;
+  /**
+   * Stage the step's working directory into `dir` as {@link run} would, without running
+   * anything, and describe what it would run there: what `fabr shell` opens. Absent
+   * where the step runs nothing that can be reproduced by hand.
+   */
+  stage?(action: BuildAction, dir: string): Computable<IStagedStep>;
+}
+
+/** What a step would run in the directory it was staged into (see {@link IBuildActionDefinition.stage}). */
+export interface IStagedStep {
+  /** Where the commands run, relative to the staged directory. */
+  cwd: string;
+  /** The commands, each a pipeline of one or more stages' argvs, the executable first. */
+  commands: string[][][];
+  /** The environment the commands run with: their whole environment. */
+  env: ReadonlyMap<string, string>;
 }
 
 /**

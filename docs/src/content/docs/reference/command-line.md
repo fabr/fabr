@@ -274,12 +274,25 @@ Two things are still computed, because the dependencies cannot be known without 
 
 Sets up the directory that a target's build step runs in, with its inputs and tools in place,
 prints the command the step would run, and opens a shell there. Use it to reproduce a failing step
-by hand. The shell has the same empty environment the step has, and the directory is removed when
-you exit.
+by hand. The shell has the environment the step has (empty, apart from what the target sets, such
+as a test's `test_env`), and the directory is removed when you exit.
 
 ```sh
 fabr shell docs_site
 ```
+
+A test run is a build step too: name the target under the `test` operation to get its compiled
+tests and test runner, with the shell opened in the compiled tree. The step runs the runner once
+per test file, so the first few commands are printed; run one of them to repeat a single file's
+run.
+
+```sh
+fabr shell 'app<BUILD_OPERATION=test>'
+```
+
+The staged files are read-only links into fabr's cache. To try a change, copy the file to a new
+name and edit the copy; don't make the original writable, because that would change the cached
+copy too.
 
 ### `sync`
 

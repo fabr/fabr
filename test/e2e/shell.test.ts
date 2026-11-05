@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { runFabr } from "./harness";
+import { runFabr, STUB_TSC, STUB_TSC_CONFIG } from "./harness";
 
 /* `fabr shell <target>` stages a build step's sandbox and drops into a shell.
  * The harness spawns fabr with a closed stdin, so the inherited shell (/bin/sh —
@@ -42,6 +42,23 @@ describe("e2e: fabr shell", () => {
      * work tree, like the step's would be — and the reproducible command. */
     expect(result.stderr).to.match(/Sandbox for 'g' staged at .*[/\\]work[/\\][^/\\]+[/\\]shell-/);
     expect(result.stderr).to.contain("node gen.js");
+  });
+
+  it("stages a test run in its compiled tree, with the runner's command for each test file and its environment", () => {
+    const tested = {
+      ...STUB_TSC,
+      "PROJECT.fabr":
+        "plugin @fabr-build/js;\n" +
+        STUB_TSC_CONFIG +
+        "\njs_package thing { srcs = src:**/*.ts; tests = src:**/*.test.ts; test_env = { MARKER = here; } }\n",
+      "src/a.ts": "export const a = 1;\n",
+      "src/a.test.ts": 'describe("a", () => { it("is one", () => {}); });\n',
+    };
+    const result = runFabr(tested, ["shell", "thing<BUILD_OPERATION=test>"]);
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stderr).to.match(/Sandbox for 'thing<BUILD_OPERATION=test>' staged at .*[/\\]shell-[^/\\]+[/\\]work[/\\]build\b/);
+    expect(result.stderr).to.match(/--report=\S+ a\.test\.js/);
+    expect(result.stderr).to.contain("with MARKER=here");
   });
 
   it("errors on a target that yields content, not a build command", () => {

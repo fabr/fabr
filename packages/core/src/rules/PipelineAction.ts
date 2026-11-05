@@ -20,9 +20,9 @@ import { ConflictError, FabrError } from "../core/Errors";
 import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import { Name } from "../core/Name";
-import { executePipeline, ITaskReport, StageSpec, StageStreams } from "../support/Execute";
+import { executePipeline, findExecutable, ITaskReport, StageSpec, StageStreams } from "../support/Execute";
 import { RunnableFileSet } from "../core/RunnableFileSet";
-import { BuildAction, BuildResult, configFiles, fileSetInput, stringConfig } from "../core/BuildAction";
+import { BuildAction, BuildResult, configFiles, fileSetInput, IBuildActionDefinition, IStagedStep, stringConfig } from "../core/BuildAction";
 import { ActionContext, IChangedFiles, toChangesDocument } from "../core/BuildCache";
 
 /**
@@ -45,13 +45,7 @@ function runPipeline(action: BuildAction, ctx: ActionContext, report: ITaskRepor
    * absent for a pure-redirect genrule that collects only its captures. */
   const output = action.config.output instanceof Name ? action.config.output : undefined;
   const stdin = action.inputs.stdin instanceof FileSet ? action.inputs.stdin : undefined;
-  /* Each variable as `NAME=value`: a name holds no `=`, so the first one splits it. */
-  const env = new Map(
-    (Array.isArray(action.config.env) ? action.config.env : []).map((entry): [string, string] => {
-      const at = entry.indexOf("=");
-      return [entry.slice(0, at), entry.slice(at + 1)];
-    })
-  );
+  const env = envConfig(action);
 
   const incremental = action.config.incremental instanceof Name ? action.config.incremental : undefined;
   const changes = typeof action.config.changes === "string" ? action.config.changes : undefined;
@@ -151,7 +145,26 @@ function stdinBytes(stdin: FileSet | undefined): Computable<Buffer | undefined> 
 
 /* The version tracks what the step does and what its serialized stage spec
  * means; either changing is a bump. */
-export const PIPELINE_ACTION = { id: "core:command-pipeline", version: 4, run: runPipeline };
+export const PIPELINE_ACTION: IBuildActionDefinition = { id: "core:command-pipeline", version: 4, run: runPipeline, stage: stagePipelineStep };
+
+/** Read the `env` config member: each variable written `NAME=value`, a name holding no `=`. */
+function envConfig(action: BuildAction): Map<string, string> {
+  return new Map(
+    (Array.isArray(action.config.env) ? action.config.env : []).map((entry): [string, string] => {
+      const at = entry.indexOf("=");
+      return [entry.slice(0, at), entry.slice(at + 1)];
+    })
+  );
+}
+
+function stagePipelineStep(action: BuildAction, dir: string): Computable<IStagedStep> {
+  const specs: StageSpec[] = JSON.parse(stringConfig(action, "spec"));
+  return writeFileSet(dir, FileSet.unionAll(fileSetInput(action, "files"), configFiles(action))).then(() => ({
+    cwd: ".",
+    commands: [specs.map(({ argv }) => [findExecutable(argv[0], dir), ...argv.slice(1)])],
+    env: envConfig(action),
+  }));
+}
 
 /** One stage as {@link stagePipeline} needs it: the runnable to launch plus its
  * argv and stream destinations. Structurally the build context's
