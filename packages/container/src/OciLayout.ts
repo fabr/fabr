@@ -17,9 +17,8 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import * as fs from "fs";
 import { Computable, FileSet, IFile, MemoryFile } from "@fabr-build/core";
-import { ImageFileSet } from "./ImageFileSet";
+import { ImageFileSet, sizeOf } from "./ImageFileSet";
 import { digested, IDigested, OCI_CONFIG, OCI_INDEX, OCI_LAYER, OCI_MANIFEST } from "./OciProtocol";
 
 /**
@@ -83,12 +82,4 @@ export function manifestOf(image: ImageFileSet): Computable<{ manifest: IDigeste
 
 function blobPath(digest: string): string {
   return `blobs/sha256/${digest.substring("sha256:".length)}`;
-}
-
-/** @return the size of `file`'s content: from the store where it is there, else from its bytes. */
-function sizeOf(file: IFile): Computable<number> {
-  const where = file.getAbsPath();
-  return where === undefined
-    ? file.getBuffer().then(buffer => buffer.length)
-    : Computable.from<number>((resolve, reject) => fs.stat(where, (err, stats) => (err ? reject(err) : resolve(stats.size))));
 }

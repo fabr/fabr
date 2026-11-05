@@ -26,10 +26,13 @@ import {
   fetchDocument,
   FileSet,
   HASH_ALGORITHM,
+  HttpRequest,
+  HttpResponse,
   IFetchContext,
   IFile,
   isJsonObject,
   MemoryFile,
+  openUrlStream,
   parseJson,
   sendRequest,
   TargetContext,
@@ -39,6 +42,7 @@ import {
 } from "@fabr-build/core";
 import { isDigest } from "./ImageReference";
 import { ILayerIndex, indexLayer } from "./LayerIndex";
+import { IRegistryCredential } from "./RegistryAuth";
 
 /* The media types of the documents a registry serves for an image: OCI's and Docker's. */
 export const OCI_INDEX = "application/vnd.oci.image.index.v1+json";
@@ -241,19 +245,23 @@ export interface IStoredLayer {
 
 /**
  * A registry speaking the OCI distribution API, at `url`: manifests by tag or
- * digest, blobs by digest, each through the build cache. Requests carry a
- * bearer token where the registry asks for one (`WWW-Authenticate: Bearer`),
- * fetched anonymously.
+ * digest, blobs by digest, each read through the build cache, and pushed.
+ * Requests are authenticated as the registry asks (`WWW-Authenticate`): with a
+ * bearer token for the scopes they need, fetched with the registry's
+ * credential where there is one or else anonymously, or with that credential
+ * itself (`Basic`).
  */
 export class Registry {
   /** How requests to the registry are authenticated, found once per run. */
   private challenge?: Computable<IChallenge | undefined>;
-  /** Each repository's pull token, fetched once per run. */
+  /** The headers for each set of scopes, made once per run. */
   private readonly tokens = new Map<string, Computable<Record<string, string>>>();
 
   constructor(
     private readonly context: TargetContext,
-    public readonly url: string
+    public readonly url: string,
+    /** Get the registry's credential, where it may need one: asked for only when it does. */
+    private readonly credentialOf?: () => Computable<IRegistryCredential | undefined>
   ) {}
 
   /** Fetch the manifest `version` (a tag or a digest) names in `repository`. A tag's is re-checked by its digest; a digest's is verified against it. */
@@ -273,7 +281,7 @@ export class Registry {
         }
         return { document: parseJson(text, `manifest from ${url}`, json => toManifestDocument(json)), bytes, digest };
       },
-      headers: () => this.headers(repository).then(headers => ({ ...headers, accept: MANIFEST_ACCEPT })),
+      headers: () => this.headers(pullScopes(repository)).then(headers => ({ ...headers, accept: MANIFEST_ACCEPT })),
       options: byDigest ? undefined : { immutable: false, digestHeader: DIGEST_HEADER },
     });
   }
@@ -294,7 +302,7 @@ export class Registry {
         }
         return parseJson(text, `image config from ${url}`, toImageConfig);
       },
-      headers: () => this.headers(repository),
+      headers: () => this.headers(pullScopes(repository)),
     }).then(config => {
       if (config === undefined) {
         throw new FabrError(`${this.url} has no config ${descriptor.digest} for ${repository}`);
@@ -315,7 +323,7 @@ export class Registry {
         `${this.url} ${descriptor.digest}`,
         LAYER_TAG,
         () =>
-          this.headers(repository).then(headers => ({
+          this.headers(pullScopes(repository)).then(headers => ({
             url,
             headers,
             process: (content: Readable, { createOutput }: IFetchContext) => storeLayer(content, descriptor, diffId, url, createOutput),
@@ -331,14 +339,106 @@ export class Registry {
       );
   }
 
-  /** Make the headers a request for `repository` carries: a bearer token where the registry asks for one. */
-  private headers(repository: string): Computable<Record<string, string>> {
-    let token = this.tokens.get(repository);
+  /** Open a stream of the blob `digest` in `repository`, as published, to push it to another registry. */
+  public blobStream(repository: string, digest: string): Computable<Readable> {
+    return this.headers(pullScopes(repository))
+      .then(headers => openUrlStream(`${this.url}/v2/${repository}/blobs/${digest}`, headers))
+      .then(response => response.stream!);
+  }
+
+  /** @return the digest `tag` names in `repository`, or undefined where it names nothing. */
+  public taggedDigest(repository: string, tag: string, scopes: readonly string[]): Computable<string | undefined> {
+    return this.send(`/v2/${repository}/manifests/${tag}`, { method: "HEAD", headers: { accept: MANIFEST_ACCEPT } }, scopes).then(response => {
+      if (response.statusCode === 404) {
+        return undefined;
+      }
+      this.expect(response, [200], `reading the tag ${repository}:${tag}`);
+      const digest = response.headers[DIGEST_HEADER.toLowerCase()];
+      return typeof digest === "string" ? digest : undefined;
+    });
+  }
+
+  /** @return true if `repository` holds the blob `digest`, otherwise false. */
+  public hasBlob(repository: string, digest: string, scopes: readonly string[]): Computable<boolean> {
+    return this.send(`/v2/${repository}/blobs/${digest}`, { method: "HEAD" }, scopes).then(response => {
+      if (response.statusCode === 404) {
+        return false;
+      }
+      this.expect(response, [200], `reading the blob ${digest} of ${repository}`);
+      return true;
+    });
+  }
+
+  /** Mount the blob `digest` of `from`, on this registry, into `repository`: true where mounted, false where the registry declined. */
+  public mountBlob(repository: string, digest: string, from: string, scopes: readonly string[]): Computable<boolean> {
+    const query = new URLSearchParams({ mount: digest, from });
+    return this.send(`/v2/${repository}/blobs/uploads/?${query.toString()}`, { method: "POST", headers: { "content-length": "0" } }, scopes).then(response => {
+      this.expect(response, [201, 202], `mounting the blob ${digest} into ${repository}`);
+      return response.statusCode === 201;
+    });
+  }
+
+  /** Upload the blob `digest`, `size` bytes, into `repository`, in one request. */
+  public uploadBlob(repository: string, digest: string, size: number, body: () => Readable | Buffer, scopes: readonly string[]): Computable<void> {
+    return this.send(`/v2/${repository}/blobs/uploads/`, { method: "POST", headers: { "content-length": "0" } }, scopes).then(started => {
+      this.expect(started, [202], `starting an upload to ${repository}`);
+      const location = started.headers.location;
+      if (typeof location !== "string") {
+        throw new FabrError(`${this.url} started an upload to ${repository} without saying where`);
+      }
+      const url = new URL(location, this.url);
+      url.searchParams.set("digest", digest);
+      return this.send(
+        url.toString(),
+        { method: "PUT", headers: { "content-type": "application/octet-stream", "content-length": String(size) }, body: body() },
+        scopes
+      ).then(response => this.expect(response, [201], `uploading the blob ${digest} to ${repository}`));
+    });
+  }
+
+  /** Put `manifest` into `repository` under `tag`. */
+  public putManifest(repository: string, tag: string, manifest: Buffer, mediaType: string, scopes: readonly string[]): Computable<void> {
+    return this.send(`/v2/${repository}/manifests/${tag}`, { method: "PUT", headers: { "content-type": mediaType }, body: manifest }, scopes).then(response =>
+      this.expect(response, [201], `putting the manifest ${repository}:${tag}`)
+    );
+  }
+
+  /** Send a request to `path` (or a whole URL) on the registry, authenticated for `scopes`. */
+  private send(path: string, request: HttpRequest, scopes: readonly string[]): Computable<HttpResponse> {
+    const url = path.startsWith("/") ? `${this.url}${path}` : path;
+    return this.headers(scopes).then(headers => sendRequest(url, { ...request, headers: { ...headers, ...request.headers } }));
+  }
+
+  /** Throw, with what the registry said, where `response`'s status is not among `statuses`. */
+  private expect(response: HttpResponse, statuses: readonly number[], doing: string): void {
+    if (!statuses.includes(response.statusCode)) {
+      const said = response.body.toString("utf8").trim();
+      throw new FabrError(`${this.url} refused ${doing} (${response.statusCode}${said === "" ? "" : `: ${said.substring(0, 300)}`})`);
+    }
+  }
+
+  /** Make the headers a request needing `scopes` carries, as the registry asks for them. */
+  private headers(scopes: readonly string[]): Computable<Record<string, string>> {
+    const key = scopes.join(" ");
+    let token = this.tokens.get(key);
     if (token === undefined) {
-      token = this.getChallenge().then(challenge => (challenge === undefined ? {} : this.pullToken(challenge, repository)));
-      this.tokens.set(repository, token);
+      token = Computable.forAll([this.getChallenge(), this.credential()] as const, (challenge, credential): Record<string, string> | Computable<Record<string, string>> =>
+        challenge === undefined
+          ? {}
+          : challenge.scheme === "basic"
+          ? credential === undefined
+            ? {}
+            : { authorization: basicAuthorization(credential) }
+          : this.token(challenge, scopes, credential)
+      );
+      this.tokens.set(key, token);
     }
     return token;
+  }
+
+  /** Get the registry's credential, where there is one. */
+  private credential(): Computable<IRegistryCredential | undefined> {
+    return this.credentialOf === undefined ? Computable.resolve(undefined) : this.credentialOf();
   }
 
   /** Find how the registry authenticates, from its answer to `GET /v2/`. */
@@ -357,12 +457,15 @@ export class Registry {
     return this.challenge;
   }
 
-  private pullToken(challenge: IChallenge, repository: string): Computable<Record<string, string>> {
-    const query = new URLSearchParams({ ...(challenge.service === undefined ? {} : { service: challenge.service }), scope: `repository:${repository}:pull` });
+  private token(challenge: IBearerChallenge, scopes: readonly string[], credential: IRegistryCredential | undefined): Computable<Record<string, string>> {
+    const query = new URLSearchParams(challenge.service === undefined ? [] : [["service", challenge.service]]);
+    scopes.forEach(scope => query.append("scope", scope));
     const url = `${challenge.realm}?${query.toString()}`;
-    return sendRequest(url, { method: "GET" }).then(response => {
+    return sendRequest(url, { method: "GET", headers: credential === undefined ? {} : { authorization: basicAuthorization(credential) } }).then(response => {
       if (response.statusCode !== 200) {
-        throw new FabrError(`${challenge.realm} refused a token to pull ${repository} (${response.statusCode})`);
+        throw new FabrError(`${challenge.realm} refused a token for ${scopes.join(", ")} (${response.statusCode})`).withHelp(
+          credential === undefined ? `log in to ${new URL(this.url).host} with \`podman login\`` : "check the credential is for this registry and allowed this access"
+        );
       }
       const answer = parseJson(response.body, `token from ${challenge.realm}`, toToken);
       return { authorization: `Bearer ${answer}` };
@@ -370,14 +473,35 @@ export class Registry {
   }
 }
 
-/** A registry's `Bearer` challenge. */
-interface IChallenge {
+/** @return the scopes reading `repository` needs. */
+export function pullScopes(repository: string): string[] {
+  return [`repository:${repository}:pull`];
+}
+
+/** @return the scopes pushing to `repository` needs, reading each of `from` to mount its blobs. */
+export function pushScopes(repository: string, from: readonly string[]): string[] {
+  return [`repository:${repository}:pull,push`, ...from.filter(source => source !== repository).map(source => `repository:${source}:pull`)];
+}
+
+function basicAuthorization({ username, password }: IRegistryCredential): string {
+  return `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
+}
+
+/** How a registry asks requests to be authenticated. */
+type IChallenge = IBearerChallenge | { readonly scheme: "basic" };
+
+/** A registry's `Bearer` challenge: where to get a token. */
+interface IBearerChallenge {
+  readonly scheme: "bearer";
   readonly realm: string;
   readonly service?: string;
 }
 
-/** Read a `WWW-Authenticate: Bearer realm="…",service="…"` challenge; undefined for any other scheme. */
+/** Read a `WWW-Authenticate` challenge: `Bearer realm="…",service="…"`, or `Basic`; undefined for any other scheme. */
 export function parseChallenge(header: string | undefined): IChallenge | undefined {
+  if (/^\s*Basic\b/i.test(header ?? "")) {
+    return { scheme: "basic" };
+  }
   const match = /^\s*Bearer\s+(.*)$/i.exec(header ?? "");
   if (match === null) {
     return undefined;
@@ -387,7 +511,7 @@ export function parseChallenge(header: string | undefined): IChallenge | undefin
     params.set(param[1].toLowerCase(), param[2] ?? param[3]);
   }
   const realm = params.get("realm");
-  return realm === undefined ? undefined : { realm, ...(params.has("service") ? { service: params.get("service") } : {}) };
+  return realm === undefined ? undefined : { scheme: "bearer", realm, ...(params.has("service") ? { service: params.get("service") } : {}) };
 }
 
 function toToken(json: unknown): string {

@@ -91,24 +91,78 @@ async function startRegistry(): Promise<IFakeRegistry> {
   const manifests = new Map<string, string>([["1.0", index], [sha256(index), index], [sha256(manifest), manifest]]);
   const requests: string[] = [];
   let origin = "";
+  /* What each repository holds: its manifests by tag and digest, and the digests of its blobs. */
+  const repositories = new Map<string, { manifests: Map<string, string>; blobs: Set<string> }>([
+    ["library/demo", { manifests, blobs: new Set(blobs.keys()) }],
+  ]);
+  const repositoryOf = (name: string): { manifests: Map<string, string>; blobs: Set<string> } => {
+    if (!repositories.has(name)) {
+      repositories.set(name, { manifests: new Map(), blobs: new Set() });
+    }
+    return repositories.get(name)!;
+  };
   const server = http.createServer((req, res) => {
     requests.push(`${req.method} ${req.url}`);
     const url = new URL(req.url!, origin);
     if (url.pathname === "/token") {
-      res.writeHead(200).end(JSON.stringify({ token: url.searchParams.get("scope") === "repository:library/demo:pull" ? "t" : "wrong" }));
+      const scopes = url.searchParams.getAll("scope");
+      res.writeHead(200).end(JSON.stringify({ token: scopes.length > 0 && scopes.every(scope => scope.startsWith("repository:")) ? "t" : "wrong" }));
       return;
     }
     if (url.pathname === "/v2/" || req.headers.authorization !== "Bearer t") {
       res.writeHead(401, { "www-authenticate": `Bearer realm="${origin}/token",service="test"` }).end();
       return;
     }
-    const found = /^\/v2\/library\/demo\/(manifests|blobs)\/(.+)$/.exec(url.pathname);
-    const body = found === null ? undefined : found[1] === "manifests" ? manifests.get(found[2]) : blobs.get(found[2]);
-    if (body === undefined) {
-      res.writeHead(404).end();
-      return;
-    }
-    res.writeHead(200, found![1] === "manifests" ? { "docker-content-digest": sha256(body) } : {}).end(req.method === "HEAD" ? undefined : body);
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => {
+      const received = Buffer.concat(chunks);
+      const upload = /^\/v2\/(.+)\/blobs\/uploads\/(.*)$/.exec(url.pathname);
+      if (upload !== null && req.method === "POST") {
+        const mount = url.searchParams.get("mount");
+        const from = url.searchParams.get("from");
+        if (mount !== null && from !== null && repositoryOf(from).blobs.has(mount)) {
+          repositoryOf(upload[1]).blobs.add(mount);
+          res.writeHead(201).end();
+        } else {
+          res.writeHead(202, { location: `/v2/${upload[1]}/blobs/uploads/session` }).end();
+        }
+        return;
+      }
+      if (upload !== null && req.method === "PUT") {
+        const digest = url.searchParams.get("digest")!;
+        if (sha256(received) !== digest) {
+          res.writeHead(400).end("digest mismatch");
+          return;
+        }
+        blobs.set(digest, received);
+        repositoryOf(upload[1]).blobs.add(digest);
+        res.writeHead(201).end();
+        return;
+      }
+      const found = /^\/v2\/(.+)\/(manifests|blobs)\/([^/]+)$/.exec(url.pathname);
+      if (found !== null && found[2] === "manifests" && req.method === "PUT") {
+        const text = received.toString("utf8");
+        repositoryOf(found[1]).manifests.set(found[3], text);
+        repositoryOf(found[1]).manifests.set(sha256(text), text);
+        res.writeHead(201).end();
+        return;
+      }
+      const held = found === null ? undefined : repositoryOf(found[1]);
+      const body =
+        found === null || held === undefined
+          ? undefined
+          : found[2] === "manifests"
+          ? held.manifests.get(found[3])
+          : held.blobs.has(found[3])
+          ? blobs.get(found[3])
+          : undefined;
+      if (body === undefined) {
+        res.writeHead(404).end();
+        return;
+      }
+      res.writeHead(200, found![2] === "manifests" ? { "docker-content-digest": sha256(body) } : {}).end(req.method === "HEAD" ? undefined : body);
+    });
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -189,6 +243,32 @@ describe("OciRepository", () => {
     expect(ociPlatformOf("aarch64-unknown-linux-gnu")).to.deep.equal({ os: "linux", architecture: "arm64" });
     expect(ociPlatformOf("armv7-unknown-linux-gnueabihf")).to.deep.equal({ os: "linux", architecture: "arm", variant: "v7" });
     expect(() => ociPlatformOf("aarch64-apple-darwin")).to.throw(/not a Linux platform/);
+  });
+
+  it("publishes an image under a tag, mounting the layers its registry already holds, then finds it synced", async () => {
+    const context = fetchingContext("x86_64-unknown-linux");
+    const repository = new OciRepository(context, new Registry(context, registry.url), "library");
+    const node = await Promise.resolve(repository.resolve(repository.getRepositoryRef(parseName("demo:1.0")) as RepositoryRef));
+    const image = (await Promise.resolve(node.content.files())) as ImageFileSet;
+    const destination = repository.getRepositoryPublishRef(parseName("myorg/copy:2"));
+    const [carrier] = await Promise.resolve(repository.package([{ destination, content: image }]));
+    registry.requests.length = 0;
+    expect(await Promise.resolve(repository.publish(carrier))).to.equal("published");
+    const mounts = registry.requests.filter(request => request.startsWith("POST /v2/myorg/copy/blobs/uploads/?mount="));
+    expect(mounts).to.have.lengthOf(2);
+    expect(registry.requests).to.include("PUT /v2/myorg/copy/manifests/2");
+
+    const copied = await Promise.resolve(repository.resolve(repository.getRepositoryRef(parseName("myorg/copy:2")) as RepositoryRef));
+    const pulled = (await Promise.resolve(copied.content.files())) as ImageFileSet;
+    expect(await pulled.readFile("app/server")).to.equal("srv");
+    expect(await Promise.resolve(repository.publish(carrier))).to.equal("already-synced");
+  });
+
+  it("refuses a digest, or a name with no tag, as a coordinate to publish to", () => {
+    const context = fetchingContext("x86_64-unknown-linux");
+    const repository = new OciRepository(context, new Registry(context, registry.url), "library");
+    expect(() => repository.getRepositoryPublishRef(parseName(`myorg/app:sha256:${"a".repeat(64)}`))).to.throw(/no image and tag to publish to/);
+    expect(() => repository.getRepositoryPublishRef(parseName("myorg/app"))).to.throw(/no image and tag to publish to/);
   });
 
   it("names the platforms an image has where none is the one asked for", async () => {

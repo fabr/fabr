@@ -29,14 +29,21 @@ import {
   registerProvenanceRenderer,
   Repository,
   RepositoryLookup,
+  PackagePublishRef,
+  PublishableFileSet,
+  PublishMember,
+  PublishStatus,
   RepositoryPublishRef,
   RepositoryRef,
+  RepositoryWriter,
   RepositoryRegistration,
   ResolvedNode,
   TargetContext,
 } from "@fabr-build/core";
 import { ImageFileSet, ILayerRecord } from "./ImageFileSet";
-import { splitImageReference } from "./ImageReference";
+import { isDigest, splitImageReference } from "./ImageReference";
+import { packageImage, pushImage } from "./ImagePublish";
+import { containerPluginContext, IRegistryCredential } from "./RegistryAuth";
 import { IDigested, IImageManifest, imageManifestOf, IOciPlatform, indexPlatforms, platformMatches, platformText, Registry, selectManifest } from "./OciProtocol";
 
 /** Provenance kind for an image fetched from a registry. */
@@ -109,7 +116,7 @@ interface IImageRequest {
  * image for `OCI_TARGET`'s platform, its layers fetched only when its files
  * are wanted.
  */
-export class OciRepository implements Repository, RepositoryLookup {
+export class OciRepository implements Repository, RepositoryLookup, RepositoryWriter {
   /** Each image fetched this run, by registry, repository and digest. */
   private readonly images = new MemoryCache<string, ImageFileSet>();
 
@@ -140,8 +147,27 @@ export class OciRepository implements Repository, RepositoryLookup {
     return rest === undefined ? reference : reference.find(name.substring(rest.at), rest.separator === "/" ? `${version}/` : "");
   }
 
+  /** Vend the publish coordinate `name` names: an image's name and the tag it is published under. */
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
-    throw new FabrError(`${this.context.name} is not a publish destination yet (cannot sync to '${name.toString()}')`);
+    const written = name.toString();
+    const { name: image, version, rest } = splitImageReference(name.getLiteralPrefix(), written);
+    if (!name.isSimpleName() || version === undefined || isDigest(version) || rest !== undefined) {
+      throw new FabrError(`'${written}' is no image and tag to publish to`).withHelp("name the image and the tag it is published under, as in 'myorg/app:1.4'");
+    }
+    return new PackagePublishRef(this, { name: image, version });
+  }
+
+  /** Package each member's image for this registry (see {@link packageImage}). */
+  public package(members: PublishMember[]): Computable<PublishableFileSet[]> {
+    return Computable.forAll(
+      members.map(member => packageImage(this.context, member)),
+      (...carriers: PublishableFileSet[]) => carriers
+    );
+  }
+
+  /** Push a packaged image under its tag (see {@link pushImage}). */
+  public publish(artifact: PublishableFileSet): Computable<PublishStatus> {
+    return pushImage(this.context, this.registry, artifact, this.repositoryOf(artifact.destination.name));
   }
 
   /**
@@ -215,7 +241,7 @@ export class OciRepository implements Repository, RepositoryLookup {
           this.registry.layer(repository, layer, config.diffIds[index]).then(
             (stored): ILayerRecord => ({
               ...stored,
-              published: { digest: layer.digest, mediaType: layer.mediaType, size: layer.size, from: `${this.registry.url}/${repository}` },
+              published: { digest: layer.digest, mediaType: layer.mediaType, size: layer.size, registry: this.registry.url, repository },
             })
           )
         ),
@@ -233,9 +259,16 @@ export class OciRepository implements Repository, RepositoryLookup {
 /** Make the repository an `oci_repository` declaration declares. */
 function createRepository(context: TargetContext): Computable<Repository> {
   return Computable.forAll(
-    [context.getRequiredString("url"), context.getProperty("default_namespace")],
-    (url: string, defaultNamespace: Property | undefined) =>
-      new OciRepository(context, new Registry(context, url.replace(/\/+$/, "")), defaultNamespace?.toString())
+    [context.getRequiredString("url"), context.getProperty("default_namespace"), context.getProperty("login_url")],
+    (url: string, defaultNamespace: Property | undefined, loginUrl: Property | undefined) => {
+      const base = url.replace(/\/+$/, "");
+      const server = loginUrl?.toString() ?? new URL(base).host;
+      const credential = (): Computable<IRegistryCredential | undefined> =>
+        containerPluginContext(context.execution)
+          .registryAuth()
+          .then(auth => auth.credentialFor(server));
+      return new OciRepository(context, new Registry(context, base, credential), defaultNamespace?.toString());
+    }
   );
 }
 

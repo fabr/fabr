@@ -18,6 +18,7 @@
  */
 
 import * as fs from "fs";
+import { Readable } from "stream";
 import {
   Computable,
   Dependency,
@@ -49,7 +50,8 @@ export interface ILayerRecord {
   readonly index: ILayerIndex;
   /** The index as it is stored, beside the tar. */
   readonly indexFile: IFile;
-  readonly published?: { readonly digest: string; readonly mediaType: string; readonly size: number; readonly from: string };
+  /** How it was published, and the registry and repository it was fetched from. */
+  readonly published?: { readonly digest: string; readonly mediaType: string; readonly size: number; readonly registry: string; readonly repository: string };
 }
 
 /**
@@ -294,4 +296,18 @@ export class LayerEntryFile implements IFile {
   public getAbsPath(): undefined {
     return undefined;
   }
+}
+
+/** @return a stream of `file`'s content: from the store where it is there, else from its bytes. */
+export function contentOf(file: IFile): Computable<Readable> {
+  const where = file.getAbsPath();
+  return where !== undefined ? Computable.resolve<Readable>(fs.createReadStream(where)) : file.getBuffer().then(buffer => Readable.from([buffer]));
+}
+
+/** @return the size of `file`'s content: from the store where it is there, else from its bytes. */
+export function sizeOf(file: IFile): Computable<number> {
+  const where = file.getAbsPath();
+  return where === undefined
+    ? file.getBuffer().then(buffer => buffer.length)
+    : Computable.from<number>((resolve, reject) => fs.stat(where, (err, stats) => (err ? reject(err) : resolve(stats.size))));
 }

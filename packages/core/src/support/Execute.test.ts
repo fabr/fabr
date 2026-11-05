@@ -29,6 +29,7 @@ import { MemoryFile } from "../core/MemoryFS";
 import { TaskState } from "../model/BuildEvents";
 import {
   activityCounter,
+  executeInternalCapture,
   execute,
   executeInteractive,
   executePipeline,
@@ -566,6 +567,19 @@ describe("executePipeline", () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("executeInternalCapture", () => {
+  it("feeds a program its input and returns what it wrote and how it exited, failing or not", async () => {
+    const script = "process.stdin.on('data', d => { process.stdout.write(String(d).toUpperCase()); process.stderr.write('note'); process.exit(3); })";
+    const result = await new Promise((resolve, reject) => executeInternalCapture(new Semaphore(1), process.execPath, ["-e", script], "server", {}).then(resolve, reject));
+    expect(result).to.deep.equal({ status: 3, stdout: "SERVER", stderr: "note" });
+  });
+
+  it("rejects where the program cannot be started", async () => {
+    const failure = await new Promise((resolve, reject) => executeInternalCapture(new Semaphore(1), "/nonexistent/program", [], "", {}).then(resolve, reject)).catch((err: Error) => err);
+    expect((failure as Error).message).to.match(/unable to execute/);
   });
 });
 

@@ -18,6 +18,9 @@ targetdef oci_repository {
     url = REQUIRED STRING;
     # The namespace an image named by one segment is in (`library` on Docker Hub).
     default_namespace = STRING;
+    # The address a login to the registry is filed under, as given to
+    # `docker login` or `podman login`: by default the host of `url`.
+    login_url = STRING;
 }
 
 #
@@ -62,6 +65,7 @@ rule container_image c<BUILD_OPERATION=build> = @fabr-build/container:rules/Buil
 default oci_repository @docker {
   url = https://registry-1.docker.io;
   default_namespace = library;
+  login_url = https://index.docker.io/v1/;
 }
 
 #

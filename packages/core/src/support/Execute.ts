@@ -530,6 +530,41 @@ function executeUnbounded(cmd: string, args: string[], cwd: string, env: Record<
   });
 }
 
+/** What a program run by {@link executeInternalCapture} wrote, and how it exited. */
+export interface CapturedOutput {
+  /** Its exit code; null where it was ended by a signal. */
+  readonly status: number | null;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+/**
+ * Run `cmd` through the given execution funnel for fabr's own use, with
+ * `input` on its stdin, and return what it wrote and how it exited, whatever
+ * that was: for a short host program whose answer fabr reads (a credential
+ * helper's), never a build step's output, so kept nowhere — not in the
+ * cache, not on screen. Its environment is `env` alone.
+ * 
+ * Note: this is not hermetic by design - it's intended for eg auth helpers
+ * where we specifically don't want to cache the result (and its allowed to change)
+ */
+export function executeInternalCapture(limit: Semaphore, cmd: string, args: string[], input: string, env: Record<string, string>): Computable<CapturedOutput> {
+  return limit.run(() =>
+    Computable.fromOnce<CapturedOutput>((resolve, reject) => {
+      const proc = spawn(cmd, args, { env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+      const stdout: Buffer[] = [];
+      const stderr: Buffer[] = [];
+      proc.stdout?.on("data", (data: Buffer) => stdout.push(data));
+      proc.stderr?.on("data", (data: Buffer) => stderr.push(data));
+      proc.on("error", err => reject(new ExecutionError(`${commandLine(cmd, args)}\nunable to execute: ${systemErrorText(err)}`)));
+      proc.on("close", code => resolve({ status: code, stdout: Buffer.concat(stdout).toString("utf8"), stderr: Buffer.concat(stderr).toString("utf8") }));
+      /* A program that exits without reading its input closes the pipe under the write. */
+      proc.stdin?.on("error", () => undefined);
+      proc.stdin?.end(input);
+    })
+  );
+}
+
 /**
  * Where a pipeline stage's output streams go. A name being present is the signal
  * to capture that stream as content under it (capturing stdout is only valid on

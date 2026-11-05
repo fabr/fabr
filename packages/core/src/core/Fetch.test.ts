@@ -69,6 +69,18 @@ describe("sendRequest", () => {
     }
   });
 
+  it("sends a stream as the body as it is read", async () => {
+    const server = await withServer(201, "");
+    try {
+      const body = Readable.from([Buffer.from("one "), Buffer.from("two")]);
+      const res = await sendRequest(server.url, { method: "PUT", headers: { "content-length": "7" }, body });
+      expect((await server.received).body).to.equal("one two");
+      expect(res.statusCode).to.equal(201);
+    } finally {
+      server.close();
+    }
+  });
+
   it("returns non-2xx responses (does not reject) so the caller can read the error body", async () => {
     const server = await withServer(409, '{"error":"cannot publish over existing version"}');
     try {
