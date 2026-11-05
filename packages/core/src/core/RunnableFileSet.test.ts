@@ -18,6 +18,8 @@
  */
 
 import { expect } from "chai";
+import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { FileSet, IFile } from "./FileSet";
 import { SymlinkFile } from "./SymlinkFile";
@@ -26,9 +28,9 @@ import { IProjection } from "./Reference";
 import { MemoryFile } from "./MemoryFS";
 import { Name, NameBuilder } from "./Name";
 import { parseName } from "../model/Parser";
-import { RunnableFileSet, toRunnable } from "./RunnableFileSet";
+import { RunnableFileSet, startLaunch, toRunnable } from "./RunnableFileSet";
 import { Computable } from "./Computable";
-import { TREE_MOUNT } from "./BuildCache";
+import { ownerName, TREE_MOUNT } from "./BuildCache";
 
 describe("RunnableFileSet", () => {
   it("carries its launch descriptor and is a FileSet", () => {
@@ -241,5 +243,31 @@ describe("RunnableFileSet.select", () => {
     );
     const manyToOne = [{ pattern: parseName("*.js -> out.js"), prefix: "" }];
     expect(() => runnable.select(manyToOne)).to.throw(/Conflicting renamed files for out.js/);
+  });
+});
+
+describe("startLaunch", () => {
+  it("gives a launch with a teardown an identifier, and runs the teardown once when it ends", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-launch-"));
+    try {
+      const out = path.join(dir, "ended");
+      const runnable = RunnableFileSet.forEntry(new Map([["run.sh", MemoryFile.from("")]]), "run.sh").withTeardown([
+        process.execPath,
+        "-e",
+        "require('fs').appendFileSync(process.env.OUT, process.env.FABR_LAUNCH + '\\n')",
+      ]);
+      const launch = startLaunch(runnable, dir, { OUT: out });
+      expect(launch.env?.FABR_LAUNCH).to.match(new RegExp(`^${ownerName()}-\\d+$`));
+      launch.end();
+      launch.end();
+      expect(fs.readFileSync(out, "utf8")).to.equal(`${launch.env!.FABR_LAUNCH}\n`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves a launch with no teardown as it is", () => {
+    const launch = startLaunch(RunnableFileSet.forEntry(new Map([["run.sh", MemoryFile.from("")]]), "run.sh"), "/nowhere", undefined);
+    expect(launch.env).to.equal(undefined);
   });
 });

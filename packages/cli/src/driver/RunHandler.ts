@@ -25,10 +25,12 @@ import {
   executeInteractive,
   FileSet,
   findExecutable,
+  ILaunch,
   killProcessGroup,
   Log,
   RunnableFileSet,
   spawnInteractive,
+  startLaunch,
   syncFileSet,
   writeFileSet,
 } from "@fabr-build/core";
@@ -58,10 +60,14 @@ export function runInteractive(cache: BuildCache, key: string, runnable: Runnabl
   const argv = launchArgv(runnable, callerArgs, dir);
   return stageInstall(cache, dir, runnable)
     /* The program owns the terminal while it runs (it inherits fabr's stdio),
-     * so fabr's own display steps aside for the duration. */
-    .then(() =>
-      withTerminalSuspended(() => executeInteractive(findExecutable(argv[0], launchDir(runnable, dir)), argv.slice(1), launchDir(runnable, dir), launchEnv(runnable)))
-    )
+     * so fabr's own display steps aside for the duration. Its teardown runs
+     * once it has ended, however it ended. */
+    .then(() => {
+      const launch = startLaunch(runnable, dir, launchEnv(runnable));
+      return withTerminalSuspended(() =>
+        executeInteractive(findExecutable(argv[0], launchDir(runnable, dir)), argv.slice(1), launchDir(runnable, dir), launch.env)
+      ).finally(() => launch.end());
+    })
     .finally(() => cache.releaseKeptWorkDir(dir));
 }
 
@@ -145,6 +151,8 @@ interface Install {
   writeSeq: number;
   /** Absent until launched — and again once the child has exited. */
   child?: ChildProcess;
+  /** The child's launch, ended (its teardown run) once the child has exited. */
+  launch?: ILaunch;
 }
 
 /**
@@ -330,7 +338,9 @@ export class RunSupervisor {
       if (wasRunning) {
         this.log.log(DIAG_RESTART, { name: this.name });
       }
-      const child = spawnInteractive(findExecutable(argv[0], launchDir(runnable, install.dir)), argv.slice(1), launchDir(runnable, install.dir), launchEnv(runnable));
+      const launch = startLaunch(runnable, install.dir, launchEnv(runnable));
+      install.launch = launch;
+      const child = spawnInteractive(findExecutable(argv[0], launchDir(runnable, install.dir)), argv.slice(1), launchDir(runnable, install.dir), launch.env);
       /* The supervised program owns the terminal from here until it exits —
        * which outlives the build that launched it, so the hand-over is bracketed
        * by the child's own lifetime rather than by a chain. Rebuild diagnostics
@@ -468,8 +478,11 @@ export class RunSupervisor {
     if (err) {
       this.log.log(DIAG_RUN_ERROR, { name: this.name, message: err.message });
     }
-    /* The terminal is fabr's again (a restart's new child suspends it afresh). */
+    /* The terminal is fabr's again (a restart's new child suspends it afresh).
+     * What the child started is undone before anything relaunches. */
     resumeActiveTerminal();
+    install.launch?.end();
+    install.launch = undefined;
     install.child = undefined;
     if (this.current === install) {
       this.current = undefined;
@@ -490,6 +503,7 @@ export class RunSupervisor {
       if (install.child) {
         killProcessGroup(install.child, "SIGKILL");
       }
+      install.launch?.end();
       this.cache.releaseKeptWorkDir(install.dir);
     }
     if (this.spare !== undefined) {

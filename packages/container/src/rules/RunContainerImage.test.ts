@@ -54,15 +54,24 @@ describe("the launcher of a runnable image", () => {
       .split("\n")
       .map(call => call.replace(/fabr-myhost-\d+-run/, "fabr-myhost-PID-run"));
 
-  it("loads the layout, streamed, where the engine lacks the image, then runs it with the caller's arguments", () => {
-    execFileSync("/bin/sh", [path.join(dir, "launch.sh"), "myhost", "localhost/fabr/app:abc", "one", "two words"], { stdio: ["ignore", "pipe", "pipe"] });
-    expect(calls()).to.deep.equal(["image inspect localhost/fabr/app:abc", "load -q", "run --rm -i --name fabr-myhost-PID-run localhost/fabr/app:abc one two words"]);
+  it("loads the layout, streamed, where the engine lacks the image, then runs it with its ports published and the caller's arguments", () => {
+    execFileSync("/bin/sh", [path.join(dir, "launch.sh"), "myhost", "localhost/fabr/app:abc", "53/udp 8080/tcp", "one", "two words"], { stdio: ["ignore", "pipe", "pipe"] });
+    expect(calls()).to.deep.equal(["image inspect localhost/fabr/app:abc", "load -q", "run --rm --init -i --name fabr-myhost-PID-run -p 53:53/udp -p 8080:8080/tcp localhost/fabr/app:abc one two words"]);
     expect(fs.readFileSync(path.join(dir, "loaded"), "utf8").trim().split("\n")).to.deep.equal(["./", "./index.json"]);
+  });
+
+  it("names the container for the launch fabr gave it, where there is one", () => {
+    fs.writeFileSync(path.join(dir, "loaded"), "");
+    execFileSync("/bin/sh", [path.join(dir, "launch.sh"), "myhost", "localhost/fabr/app:abc", ""], {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, FABR_LAUNCH: "myhost-42-7" },
+    });
+    expect(calls()).to.deep.equal(["image inspect localhost/fabr/app:abc", "run --rm --init -i --name fabr-myhost-42-7 localhost/fabr/app:abc"]);
   });
 
   it("runs an image the engine holds without loading it again", () => {
     fs.writeFileSync(path.join(dir, "loaded"), "");
-    execFileSync("/bin/sh", [path.join(dir, "launch.sh"), "myhost", "localhost/fabr/app:abc"], { stdio: ["ignore", "pipe", "pipe"] });
-    expect(calls()).to.deep.equal(["image inspect localhost/fabr/app:abc", "run --rm -i --name fabr-myhost-PID-run localhost/fabr/app:abc"]);
+    execFileSync("/bin/sh", [path.join(dir, "launch.sh"), "myhost", "localhost/fabr/app:abc", ""], { stdio: ["ignore", "pipe", "pipe"] });
+    expect(calls()).to.deep.equal(["image inspect localhost/fabr/app:abc", "run --rm --init -i --name fabr-myhost-PID-run localhost/fabr/app:abc"]);
   });
 });

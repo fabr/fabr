@@ -62,7 +62,8 @@ export default defineRule({
           code.launchCwd,
           code.env,
           code.origin,
-          code.interpreterArgs
+          code.interpreterArgs,
+          code.teardown
         );
       });
     });

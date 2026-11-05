@@ -17,6 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import { spawnSync } from "child_process";
 import * as path from "path";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "./FileSet";
 import { FileSetRef } from "./FileSetRef";
@@ -26,7 +27,8 @@ import type { Repository } from "./Repository";
 import { SymlinkFile } from "./SymlinkFile";
 import { FabrError } from "./Errors";
 import { Computable } from "./Computable";
-import { TREE_MOUNT } from "./BuildCache";
+import { ownerName, TREE_MOUNT } from "./BuildCache";
+import { registerExitTeardown } from "../support/Execute";
 
 const NO_ENV: ReadonlyMap<string, string> = new Map();
 
@@ -103,7 +105,12 @@ export class RunnableFileSet extends FileSet {
     origin?: IProvenanceStep,
     /** Arguments given the interpreter before the entry (`--module-path …`), a
      *  part of one naming a file of this runnable's own install. */
-    public readonly interpreterArgs: readonly RunnableArgument[] = []
+    public readonly interpreterArgs: readonly RunnableArgument[] = [],
+    /** A command line undoing what the program starts outside fabr's process
+     *  tree (a container an engine runs), run when a launch of it ends however
+     *  it ended (see {@link startLaunch}); a part may name a file of this
+     *  runnable's install. Empty where there is nothing to undo. */
+    public readonly teardown: readonly RunnableArgument[] = []
   ) {
     super(files instanceof FileSet ? files : new Map(files), origin ?? (files instanceof FileSet ? files.origin : undefined));
   }
@@ -120,7 +127,7 @@ export class RunnableFileSet extends FileSet {
   }
 
   public withOrigin(origin: IProvenanceStep): RunnableFileSet {
-    return new RunnableFileSet(this, this.args, this.interpreter, this.root, this.surface, this.served, this.launchCwd, this.env, origin, this.interpreterArgs);
+    return new RunnableFileSet(this, this.args, this.interpreter, this.root, this.surface, this.served, this.launchCwd, this.env, origin, this.interpreterArgs, this.teardown);
   }
 
   /**
@@ -149,7 +156,8 @@ export class RunnableFileSet extends FileSet {
           this.launchCwd,
           this.env,
           this.origin,
-          [...this.interpreterArgs, ...interpreterArgs]
+          [...this.interpreterArgs, ...interpreterArgs],
+          this.teardown
         )
     );
   }
@@ -157,7 +165,7 @@ export class RunnableFileSet extends FileSet {
   /** Get this runnable offering a different launch surface — how a projection is
    * applied ({@link selectEntry}), the install and everything else unchanged. */
   public withSurface(surface: FileSet): RunnableFileSet {
-    return new RunnableFileSet(this, this.args, this.interpreter, this.root, surface, this.served, this.launchCwd, this.env, this.origin, this.interpreterArgs);
+    return new RunnableFileSet(this, this.args, this.interpreter, this.root, surface, this.served, this.launchCwd, this.env, this.origin, this.interpreterArgs, this.teardown);
   }
 
   /**
@@ -184,8 +192,14 @@ export class RunnableFileSet extends FileSet {
       "install",
       new Map([...this.env, ...env]),
       undefined,
-      this.interpreterArgs
+      this.interpreterArgs,
+      this.teardown
     );
+  }
+
+  /** Get this runnable with `teardown` as its teardown (see {@link teardown}). */
+  public withTeardown(teardown: readonly RunnableArgument[]): RunnableFileSet {
+    return new RunnableFileSet(this, this.args, this.interpreter, this.root, this.surface, this.served, this.launchCwd, this.env, this.origin, this.interpreterArgs, teardown);
   }
 
   /**
@@ -406,4 +420,48 @@ export function toRunnable(source: FileSource | Repository | FileSetRef): Runnab
     return source.source.selectEntry(source.projections);
   }
   return undefined;
+}
+
+/** A launch of a runnable, as {@link startLaunch} begins it. */
+export interface ILaunch {
+  /** The environment the program is launched with: `env`'s, with the launch's
+   *  identifier as `FABR_LAUNCH` where the runnable has a teardown. */
+  readonly env: Record<string, string> | undefined;
+  /** End the launch: run the runnable's teardown, once, whatever happened. */
+  end(): void;
+}
+
+let launches = 0;
+
+/**
+ * Begin a launch of `runnable`, staged at `installDir`, with `env` (undefined:
+ * fabr's own): where the runnable has a teardown, give the launch an
+ * identifier, `<owner>-<n>` ({@link ownerName}), in the environment as
+ * `FABR_LAUNCH` for the program and its teardown to name what it starts by,
+ * and arrange for the teardown to run when fabr exits, should the launch not
+ * have ended first. Whoever ends the launch calls `end`. The teardown runs
+ * synchronously, and a failure of it is ignored: it never outranks the
+ * program's own outcome.
+ */
+export function startLaunch(runnable: RunnableFileSet, installDir: string, env: Record<string, string> | undefined): ILaunch {
+  if (runnable.teardown.length === 0) {
+    return { env, end: () => undefined };
+  }
+  const launchEnv = { ...(env ?? hostEnvironment()), FABR_LAUNCH: `${ownerName()}-${++launches}` };
+  const [command, ...args] = resolveArguments(runnable.teardown, installDir);
+  let ended = false;
+  const end = (): void => {
+    if (!ended) {
+      ended = true;
+      release();
+      spawnSync(command, args, { env: launchEnv, stdio: "ignore", timeout: 30_000 });
+    }
+  };
+  const release = registerExitTeardown(end);
+  return { env: launchEnv, end };
+}
+
+/** @return fabr's own environment. */
+function hostEnvironment(): Record<string, string> {
+  return Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
 }
