@@ -33,7 +33,7 @@ describe("e2e: js_bundle driver", () => {
 const optsArg = process.argv.find(a => a.startsWith("--options="));
 const opts = JSON.parse(fs.readFileSync(optsArg.slice("--options=".length), "utf8"));
 for (const entry of opts.entries) {
-  const out = path.join(opts.outdir, entry.out + ".js");
+  const out = path.join(opts.outdir, opts.entryNames.replace("[dir]/", "").replace("[name]", entry.out).replace("[hash]", "HASH") + ".js");
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.writeFileSync(out, "// stub-bundled\\n" + fs.readFileSync(entry.in, "utf8"));
 }
@@ -83,7 +83,7 @@ for (const name of fs.readdirSync(rootDir)) {
   const echoUtil = `const fs = require("fs"), path = require("path");
 const opts = JSON.parse(fs.readFileSync(process.argv.find(a => a.startsWith("--options=")).slice(10), "utf8"));
 for (const entry of opts.entries) {
-  const out = path.join(opts.outdir, entry.out + ".js");
+  const out = path.join(opts.outdir, opts.entryNames.replace("[dir]/", "").replace("[name]", entry.out).replace("[hash]", "HASH") + ".js");
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.writeFileSync(out, fs.readFileSync("util.js", "utf8"));
 }
@@ -108,7 +108,7 @@ for (const entry of opts.entries) {
       "main.ts": 'require("./util.js");\n',
       "util.js": 'console.log("util");\n',
     };
-    const result = runFabr(mixed, ["cat", "app:main.js"]);
+    const result = runFabr(mixed, ["cat", "app:main-HASH.js"]);
     expect(result.status).to.equal(0);
     expect(result.stdout).to.equal('console.log("util");\n');
   });
@@ -121,7 +121,7 @@ for (const entry of opts.entries) {
   const echoEntry = `const fs = require("fs"), path = require("path");
 const opts = JSON.parse(fs.readFileSync(process.argv.find(a => a.startsWith("--options=")).slice(10), "utf8"));
 for (const entry of opts.entries) {
-  const out = path.join(opts.outdir, entry.out + ".js");
+  const out = path.join(opts.outdir, opts.entryNames.replace("[dir]/", "").replace("[name]", entry.out).replace("[hash]", "HASH") + ".js");
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.writeFileSync(out, "ENTRY=" + entry.in + "\\n" + fs.readFileSync(entry.in, "utf8"));
 }
@@ -142,7 +142,7 @@ for (const entry of opts.entries) {
       "echo-entry.js": echoEntry,
       "pkg/src/index.ts": 'const hello = "world";\n',
     };
-    const result = runFabr(project, ["cat", "app:index.js"]);
+    const result = runFabr(project, ["cat", "app:index-HASH.js"]);
     expect(result.status).to.equal(0);
     /* `in` is the path where the package's files are staged — not a copy
      * restaged at the bundle root. Under the default (manifest) resolution that
@@ -169,13 +169,13 @@ for (const entry of opts.entries) {
       "echo-entry.js": echoEntry,
       "pkg/src/index.ts": 'const hello = "world";\n',
     };
-    const result = runFabr(project, ["cat", "app:index.js"]);
+    const result = runFabr(project, ["cat", "app:index-HASH.js"]);
     expect(result.status).to.not.equal(0);
     expect(result.stderr).to.contain("Unable to resolve '@scope/thing:nope.js'");
   });
 
   it("runs the JS_BUNDLER runnable over the staged options manifest", () => {
-    const result = runFabr(project, ["cat", "app:main.js"]);
+    const result = runFabr(project, ["cat", "app:main-HASH.js"]);
     expect(result.stderr).to.match(/Building app/);
     expect(result.status).to.equal(0);
     expect(result.stdout).to.equal('// stub-bundled\nconsole.log("hello");\n');
@@ -201,7 +201,7 @@ if (fs.existsSync(".pnp.data.json")) {
 }
 report.push("external=" + JSON.stringify(opts.external));
 for (const entry of opts.entries) {
-  const out = path.join(opts.outdir, entry.out + ".js");
+  const out = path.join(opts.outdir, opts.entryNames.replace("[dir]/", "").replace("[name]", entry.out).replace("[hash]", "HASH") + ".js");
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.writeFileSync(out, report.join(BREAK) + BREAK);
 }
@@ -228,7 +228,7 @@ for (const entry of opts.entries) {
   };
 
   it("stages a resolvable manifest and the tree-pool mount, and no node_modules at all", () => {
-    const result = runFabr(staging, ["cat", "app:main.js"]);
+    const result = runFabr(staging, ["cat", "app:main-HASH.js"]);
     expect(result.status, result.stderr).to.equal(0);
     /* The table replaces the tree: every package the bundle inlines has a row,
      * and every row's location resolves — through the one pool link staged
@@ -264,7 +264,7 @@ for (const entry of opts.entries) {
       "pkg/src/index.ts": 'export const hello = "world";\n',
       "absent/src/index.ts": "export const absent = 1;\n",
     };
-    const result = runFabr(project, ["cat", "app:index.js"]);
+    const result = runFabr(project, ["cat", "app:index-HASH.js"]);
     expect(result.status, result.stderr).to.equal(0);
     expect(result.stdout).to.contain('external=["@scope/absent"]');
     expect(result.stdout).to.contain("row=@scope/shared resolves=true");
@@ -287,7 +287,7 @@ for (const name of opts.inject || []) {
   report.push("glue<<" + fs.readFileSync(name, "utf8").split(BREAK).join(" ") + ">>");
 }
 for (const entry of opts.entries) {
-  const out = path.join(opts.outdir, entry.out + ".js");
+  const out = path.join(opts.outdir, opts.entryNames.replace("[dir]/", "").replace("[name]", entry.out).replace("[hash]", "HASH") + ".js");
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.writeFileSync(out, report.join(BREAK) + BREAK);
 }
@@ -309,7 +309,7 @@ for (const entry of opts.entries) {
   const FLAGGED = "js_bundle app { entry = ./main.js; srcs = js/node_globals; }";
 
   it("stages the node-globals glue and asks for it, for a browser bundle", () => {
-    const result = runFabr(nodeGlobals("es2021-esm-browser", FLAGGED), ["cat", "app:main.js"]);
+    const result = runFabr(nodeGlobals("es2021-esm-browser", FLAGGED), ["cat", "app:main-HASH.js"]);
     expect(result.status, result.stderr).to.equal(0);
     expect(result.stdout).to.contain('inject=[".fabr-node-globals.js"]');
     /* The glue must EXPORT the names: an injected module that only imports its
@@ -322,7 +322,7 @@ for (const entry of opts.entries) {
   });
 
   it("does nothing for a node bundle, which is already given them", () => {
-    const result = runFabr(nodeGlobals("es2021-esm-node", FLAGGED), ["cat", "app:main.js"]);
+    const result = runFabr(nodeGlobals("es2021-esm-node", FLAGGED), ["cat", "app:main-HASH.js"]);
     expect(result.status, result.stderr).to.equal(0);
     expect(result.stdout).to.contain("inject=[]");
     expect(result.stdout).to.contain("global=(unset)");
@@ -330,14 +330,14 @@ for (const entry of opts.entries) {
 
   it("leaves an explicitly declared `global` define alone", () => {
     const declared = "js_bundle app { entry = ./main.js; srcs = js/node_globals; defines = { global = window; } }";
-    const result = runFabr(nodeGlobals("es2021-esm-browser", declared), ["cat", "app:main.js"]);
+    const result = runFabr(nodeGlobals("es2021-esm-browser", declared), ["cat", "app:main-HASH.js"]);
     expect(result.status, result.stderr).to.equal(0);
     expect(result.stdout).to.contain("global=window");
   });
 
   it("gives import.meta its CommonJS equivalents in a cjs bundle for node", () => {
     const bare = "js_bundle app { entry = ./main.js; }";
-    const result = runFabr(nodeGlobals("es2021-commonjs-node", bare), ["cat", "app:main.js"]);
+    const result = runFabr(nodeGlobals("es2021-commonjs-node", bare), ["cat", "app:main-HASH.js"]);
     expect(result.status, result.stderr).to.equal(0);
     expect(result.stdout).to.contain('inject=[".fabr-import-meta.js"]');
     expect(result.stdout).to.contain('glue<<export const import_meta_url = require("url").pathToFileURL(__filename).href; >>');
@@ -346,7 +346,7 @@ for (const entry of opts.entries) {
 
   it("leaves import.meta alone in an ES module bundle", () => {
     const bare = "js_bundle app { entry = ./main.js; }";
-    const result = runFabr(nodeGlobals("es2021-esm-node", bare), ["cat", "app:main.js"]);
+    const result = runFabr(nodeGlobals("es2021-esm-node", bare), ["cat", "app:main-HASH.js"]);
     expect(result.status, result.stderr).to.equal(0);
     expect(result.stdout).to.contain("inject=[]");
     expect(result.stdout).to.contain("dirname=(unset)");
@@ -354,7 +354,7 @@ for (const entry of opts.entries) {
 
   it("injects nothing when the flag is absent", () => {
     const bare = "js_bundle app { entry = ./main.js; }";
-    const result = runFabr(nodeGlobals("es2021-esm-browser", bare), ["cat", "app:main.js"]);
+    const result = runFabr(nodeGlobals("es2021-esm-browser", bare), ["cat", "app:main-HASH.js"]);
     expect(result.status, result.stderr).to.equal(0);
     expect(result.stdout).to.contain("inject=[]");
     expect(result.stdout).to.contain("global=(unset)");

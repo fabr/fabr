@@ -35,6 +35,7 @@ configuration file, and several things those tools do aren't available. Check
 | `external` | Packages listed in `deps` are left as imports. |
 | `--platform`, `--target` | The [`JS_TARGET`](#format-and-platform) setting. |
 | `--format`, `--splitting` | The [`JS_BUNDLE_FORMAT`](#format-and-platform) setting. |
+| `--entry-names`, `--chunk-names`, `--asset-names` | `output`, a rename of each kind's default name. Entries, chunks and assets are all named with a content hash by default; see [Renaming the output](#renaming-the-output). |
 | `--metafile` | Always written, as `metafile.json`; see [Output](#output). |
 | `--minify`, `--sourcemap` | The `BUILD_TYPE` setting: `debug`, `relwithdebinfo` or `release`. |
 | `define` | `defines`. |
@@ -93,12 +94,14 @@ Plain JavaScript sources aren't type-checked, and go to esbuild as they are.
 
 ## Output
 
-Each entry produces a `.js` file named after it: `src:main.tsx` gives `main.js`. With it come:
+Each entry produces a `.js` file named after it and a hash of its contents: `src:main.tsx` gives
+`main-JYX2JBNH.js`. The hash changes whenever the file does, so a browser or CDN can cache it for
+good; to name it without one, [rename it](#renaming-the-output). With it come:
 
 | File | When |
 |---|---|
-| `main.js.map` | In `debug` and `relwithdebinfo` builds. It maps back to your TypeScript, and includes the sources' text. |
-| `main.css`, `main.css.map` | When the entry imports stylesheets. All the CSS it reaches is in this one file. |
+| `main-JYX2JBNH.js.map` | In `debug` and `relwithdebinfo` builds. It maps back to your TypeScript, and includes the sources' text. |
+| `main-5LDD4WYL.css`, `main-5LDD4WYL.css.map` | When the entry imports stylesheets. All the CSS it reaches is in this one file, named by its own hash. |
 | `logo-OKA4D3M3.png` | For each imported asset; see [Assets](#assets). |
 | `chunks/route-XS2Q5WTK.js` | In a [split bundle](#splitting-into-chunks), for code shared between entries and for each dynamic `import()`. |
 | `metafile.json` | Always. esbuild's [metafile](https://esbuild.github.io/api/#metafile), described below. |
@@ -112,7 +115,7 @@ you can pass to `fabr cat` from the project root. The
 `metafile.json` is esbuild's description of the build: each output, the inputs that went into
 it, and the outputs it imports. It names inputs the way the source maps do, without the `fabr:`
 prefix (`./src/main.tsx`, `@npm:react:19.1.0:cjs/react.development.js`), and outputs by their
-names in the bundle (`main.js`, `chunks/route-XS2Q5WTK.js`). In a `release` build, which makes no
+names in the bundle (`main-JYX2JBNH.js`, `chunks/route-XS2Q5WTK.js`). In a `release` build, which makes no
 source maps, your own sources are named by their compiled files instead (`main.js`). A
 deployment step that needs the
 chunk graph, to preload a page's chunks or to write a manifest of hashed names, reads it from
@@ -130,17 +133,30 @@ here.
 fabr build -DBUILD_TYPE=release web
 ```
 
+### Renaming the output
+
 To rename the output, set `output` to a [rename](/reference/syntax/#projection-and-renaming) from
-the default name. The stylesheet and source map follow the new name:
+the default name, `main-[hash].js`, in which `[hash]` stands for the hash esbuild writes. A rename
+keeps the hash by replaying it, or drops it. The stylesheet and source map follow the new name:
 
 ```
 js_bundle web {
   entry = src:main.tsx;
-  output = main.js -> app.min.js;     # also app.min.css, app.min.js.map
+  output = main-*.js -> app.$1.min.js;    # app.JYX2JBNH.min.js, app.5LDD4WYL.min.css, …
 }
 ```
 
-The name must end in `.js`.
+```
+js_bundle web {
+  entry = src:main.tsx;
+  output = main-*.js -> app.min.js;       # app.min.js, app.min.css, app.min.js.map
+}
+```
+
+The name must end in `.js`. A bundle's entries are named by one pattern, so with several entries
+the rename must keep the hash in every name, with the same text after it, or drop it from all:
+`*-*.js -> $1.$2.min.js` for each entry's `<name>.<hash>.min.js`, or `*-*.js -> $1.js` for its
+plain name. Renames that would need two patterns are an error.
 
 ### Format and platform
 
@@ -286,7 +302,8 @@ with `sync` or run with `fabr run`. Other targets use its files by reference.
 - **Copy it out**, to deploy it: `fabr cp -DBUILD_TYPE=release web ./dist` writes the files to
   `./dist/web/`.
 - **Run a Node.js bundle** by making it a `js_script`'s entry:
-  `js_script worker { entry = worker_bundle:main.js; }`. It runs on the Node.js release that the
+  `js_script worker { entry = worker_bundle:main.js; }`, the bundle renamed to drop the hash
+  (`output = *-*.js -> $1.js;`). It runs on the Node.js release that the
   [`NODE` setting](/reference/js/dependencies/#the-nodejs-version) names.
 - **Put it in a larger set of files**, such as a site, by selecting and renaming:
   `web:** -> assets/**`.

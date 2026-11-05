@@ -36,8 +36,11 @@ export interface IBundleEntry {
  * it stays content-addressed with no host paths.
  */
 export interface IBundleOptions {
-  /** Entry points to bundle, each with its output name. */
+  /** Entry points to bundle, each with its output name: `[name]` in `entryNames`. */
   entries: IBundleEntry[];
+  /** esbuild's `entryNames`: a pattern of esbuild's placeholders (`[dir]`, `[name]`, `[hash]`),
+   * its extension added by esbuild. */
+  entryNames: string;
   /** Package names (dependency closure) to externalize — their imports survive
    * verbatim; a bundled source importing one of these is left as-is. */
   external: string[];

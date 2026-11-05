@@ -330,9 +330,10 @@ targetdef js_bundle {
     # Packages the environment the bundle runs in already has. Imports of them
     # are left in the output and their code is not included.
     deps = PACKAGES;
-    # Renames for the output files, otherwise each entry's name with a `.js`
-    # extension: `*.js -> *.min.js`. Chunks are named `chunks/[name]-[hash].js`
-    # and assets `[name]-[hash].[ext]`, their placeholders filled in by esbuild.
+    # Renames for the output files. An entry is named `<name>-[hash].js`, chunks
+    # `chunks/[name]-[hash].js` and assets `[name]-[hash].[ext]`, their
+    # placeholders filled in by esbuild: `*-*.js -> $1.$2.min.js`, or
+    # `*-*.js -> $1.js` to drop the hash. All entries share one pattern.
     output = REWRITE;
     # Constants to substitute at compile time (esbuild's `define`). Each value
     # is JavaScript source text, so a string needs its own quotes:

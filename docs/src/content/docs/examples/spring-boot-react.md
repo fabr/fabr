@@ -59,11 +59,13 @@ js_bundle web {
   srcs = src:** dom
          @npm:react:19.3.1 @npm:react-dom:19.3.1
          @npm:@types/react:19.3.0 @npm:@types/react-dom:19.3.0;
+  output = main-*.js -> main.js;
 }
 ```
 
 `srcs` lists what may go into the bundle: your sources, the `dom` flag, which gives TypeScript the
-browser's types, and the packages to build in. The sources are type-checked by the TypeScript
+browser's types, and the packages to build in. `output` names the bundle `main.js`, without the
+content hash it is otherwise named with, because the page below loads it by that name. The sources are type-checked by the TypeScript
 compiler before esbuild bundles them, so a type error fails the build.
 
 `frontend/src/main.tsx` mounts the application:

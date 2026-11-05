@@ -514,6 +514,7 @@ function usesManifest(): boolean {
 function toEsbuildOptions(options: IBundleOptions, unresolved: Set<string>): Record<string, unknown> {
   return {
     entryPoints: options.entries,
+    entryNames: options.entryNames,
     outdir: options.outdir,
     /* Stated rather than inherited: esbuild's service captures a working
      * directory when it STARTS, which for a driver invoked as its own process

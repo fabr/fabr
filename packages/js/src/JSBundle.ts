@@ -127,28 +127,57 @@ function srcLevel(name: string, direct: Set<string>, all: Set<string>): number {
   return all.has(name) ? 1 : 0;
 }
 
+/** A bundle's entries, and the esbuild `entryNames` pattern their output names are written by. */
+export interface IBundleEntryNames {
+  entries: IBundleEntry[];
+  entryNames: string;
+}
+
+/** The placeholder esbuild writes an output's content hash for. */
+const HASH = "[hash]";
+
 /**
- * Map each entry to its bundle entry pair. `path` is where the file is staged —
- * for a loose source its compiled name at the bundle root, for one located
- * inside a mounted container the path under that mount. `name` is what the
- * reference CALLS it, and the output is derived from that: any compiled/linked
- * spelling becomes `.js` ({@link compiledName}), then the `output` REWRITE
- * renames it (first matching value; unmatched → unchanged). The final name
- * must end in `.js` — the
- * driver hands esbuild the extensionless stem, which it re-appends.
- * @throws if an output name doesn't end in `.js`.
+ * Map each entry to its bundle entry pair, and make the pattern their outputs are
+ * written by. `path` is where the file is staged — for a loose source its compiled
+ * name at the bundle root, for one located inside a mounted container the path
+ * under that mount. `name` is what the reference CALLS it, and the output is
+ * derived from that: any compiled/linked spelling becomes `.js`
+ * ({@link compiledName}), named by its content as `<name>-[hash].js`, then the
+ * `output` REWRITE renames it (first matching value; unmatched → unchanged). The
+ * final name must end in `.js`, and may keep `[hash]` once or drop it. esbuild
+ * writes the hash, so the outputs share one pattern: every entry keeps the hash,
+ * with the same text after it, or every entry drops it.
+ * @throws if an output name doesn't end in `.js`, holds `[hash]` twice, or the
+ * outputs need more than one pattern.
  */
-export function computeBundleEntries(entries: IBundleEntrySource[], rewrite: RewriteFn): IBundleEntry[] {
-  return entries.map(({ path, name }) => {
+export function computeBundleEntries(entries: IBundleEntrySource[], rewrite: RewriteFn): IBundleEntryNames {
+  const named = entries.map(({ path, name }) => {
     const compiled = compiledName(name);
-    const output = rewrite(compiled) ?? compiled;
+    const pattern = compiled.endsWith(".js") ? `${compiled.slice(0, -".js".length)}-${HASH}.js` : compiled;
+    const output = rewrite(pattern) ?? pattern;
     if (!output.endsWith(".js")) {
       throw new FabrError(
         `js_bundle output '${output}' (from entry '${name}') must end in '.js' — rename it with an 'output' rewrite (output = <selector> -> <name>.js;)`
       );
     }
-    return { in: path, out: output.slice(0, -".js".length) };
+    const stem = output.slice(0, -".js".length);
+    const at = stem.indexOf(HASH);
+    if (at !== stem.lastIndexOf(HASH)) {
+      throw new FabrError(`js_bundle output '${output}' (from entry '${name}') names its hash twice`);
+    }
+    return { path, output, out: at < 0 ? stem : stem.slice(0, at), tail: at < 0 ? undefined : stem.slice(at + HASH.length) };
   });
+  const differing = named.find(entry => entry.tail !== named[0].tail);
+  if (differing !== undefined) {
+    throw new FabrError(
+      `js_bundle names its entries by one pattern, so they must all keep the hash, with the same text after it, or all drop it: '${named[0].output}' and '${differing.output}' differ`
+    );
+  }
+  const tail = named[0]?.tail;
+  return {
+    entries: named.map(({ path, out }) => ({ in: path, out })),
+    entryNames: tail === undefined ? "[dir]/[name]" : `[dir]/[name]${HASH}${tail}`,
+  };
 }
 
 /** The names a split bundle's chunks and a bundle's assets are written under,
@@ -201,7 +230,7 @@ export function buildBundleOptions(
   jsTarget: JSTarget,
   bundleFormat: BundleFormat,
   buildType: string,
-  entries: IBundleEntry[],
+  { entries, entryNames }: IBundleEntryNames,
   external: string[],
   defines: Record<string, string>,
   inject: string[] = [],
@@ -212,6 +241,7 @@ export function buildBundleOptions(
   const sourcemap: "linked" | false = buildType === "release" ? false : "linked";
   return {
     entries,
+    entryNames,
     external,
     platform: jsTarget.environment,
     format: bundleFormat === "esm-split" ? "esm" : bundleFormat,

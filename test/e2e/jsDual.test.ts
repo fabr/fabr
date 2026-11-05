@@ -127,7 +127,7 @@ describe("e2e: dual js_package", () => {
 const optsArg = process.argv.find(a => a.startsWith("--options="));
 const opts = JSON.parse(fs.readFileSync(optsArg.slice("--options=".length), "utf8"));
 for (const entry of opts.entries) {
-  const out = path.join(opts.outdir, entry.out + ".js");
+  const out = path.join(opts.outdir, opts.entryNames.replace("[dir]/", "").replace("[name]", entry.out).replace("[hash]", "HASH") + ".js");
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.writeFileSync(out, "// bundled\\n" + fs.readFileSync(entry.in, "utf8"));
 }
@@ -143,7 +143,7 @@ for (const entry of opts.entries) {
         "JS_BUNDLER = my_bundler;\n" +
         "js_bundle app { entry = src:main.ts; }\n",
     };
-    const result = runFabr(project, ["-DJS_TARGET=es2020-dual", "cat", "app:main.js"]);
+    const result = runFabr(project, ["-DJS_TARGET=es2020-dual", "cat", "app:main-HASH.js"]);
     expect(result.status, result.stderr).to.equal(0);
     expect(result.stdout).to.contain("// bundled");
   });
