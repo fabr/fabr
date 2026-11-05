@@ -48,6 +48,10 @@ targetdef container_image {
     env = MAP;
     # Ports the image exposes: `8080`, or with its protocol, `53/udp`.
     ports = STRING;
+    # A shell command run in `base` (`/bin/sh -c`), its changes a layer below
+    # `files`'s: `apt-get install -y …`. Its result is kept, not rebuilt from
+    # its inputs: a command reading the network may give another layer if run again.
+    build = STRING;
     # Facts about the image, written as its labels over the base's: OCI's keys
     # (`description`, `licenses`, `source`, `url`, `title`, `documentation`,
     # `vendor`, `authors`) as `org.opencontainers.image.<key>`, any other as written.

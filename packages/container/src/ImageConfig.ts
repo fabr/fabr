@@ -35,6 +35,8 @@ export interface IImageSettings {
   readonly ports: readonly string[];
   /** Facts about the image, by key, written as labels over the base's (see {@link labelKey}). */
   readonly metadata: ReadonlyArray<readonly [string, string]>;
+  /** A shell command run in the base, whose changes are a layer of their own. */
+  readonly build?: string;
 }
 
 /** The keys of `metadata` OCI defines a label for, each written as `org.opencontainers.image.<key>`. */

@@ -20,6 +20,7 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import { Computable, executeInternalCapture, ExecutionContext, FabrError, findExecutable, isJsonObject, parseJson, PluginKey, Semaphore } from "@fabr-build/core";
+import { hostEnvironment } from "./HostEnvironment";
 
 /** A registry's credential, as an auth file holds one. */
 export interface IRegistryCredential {
@@ -188,9 +189,4 @@ const CONTAINER_PLUGIN_KEY = new PluginKey<ContainerPluginContext>("@fabr-build/
 /** Get the run's shared container plugin context, creating it on first access. */
 export function containerPluginContext(execution: ExecutionContext): ContainerPluginContext {
   return execution.getOrCreatePluginContext(CONTAINER_PLUGIN_KEY, () => new ContainerPluginContext(execution));
-}
-
-/** @return fabr's own environment, for a host program run as the user would run it. */
-function hostEnvironment(): Record<string, string> {
-  return Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
 }

@@ -6,7 +6,8 @@ js_package @fabr-build/container-boot {
   # The modules CONTAINER.fabr's rule and repository declarations name.
   exports = src:rules/!(*.test).ts src:OciRepository.ts;
   tests = src:**/*.test.ts;
-  deps = @pkg:@types/node;
+  deps = @pkg:@types/node @pkg:tar-stream;
+  compile_deps = @pkg:@types/tar-stream;
   provided_deps = @fabr-build/core;
   test_deps = chai jest_types;
   metadata = { FABR_METADATA; description = Fabr container image plugin }

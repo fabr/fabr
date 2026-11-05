@@ -18,8 +18,8 @@
  */
 
 import { createHash, Hash } from "crypto";
-import { Writable } from "stream";
-import { FabrError, HASH_ALGORITHM, normalizeEntryName, sniffMime, SNIFF_LENGTH } from "@fabr-build/core";
+import { PassThrough, Writable } from "stream";
+import { Computable, FabrError, HASH_ALGORITHM, IOutputHandle, normalizeEntryName, sniffMime, SNIFF_LENGTH } from "@fabr-build/core";
 
 /** What an entry of a layer is. Device nodes, fifos and sockets are `other`: recorded, never presented. */
 export type LayerEntryType = "file" | "directory" | "symlink" | "hardlink" | "other";
@@ -324,4 +324,29 @@ function paxFields(data: Buffer): IPending {
     at += length;
   }
   return fields;
+}
+
+/** Make an output whose bytes also go to `sink`, which has finished before the output is finalized. */
+export function teeOutput(output: IOutputHandle, sink: Writable): IOutputHandle {
+  const stream = new PassThrough();
+  stream.pipe(output.stream, { end: false });
+  stream.pipe(sink);
+  const finished = (): Computable<void> =>
+    Computable.fromOnce<void>((resolve, reject) => {
+      sink.on("error", reject);
+      if (sink.writableFinished) {
+        resolve();
+      } else {
+        sink.on("finish", () => resolve());
+      }
+      stream.end();
+    });
+  return {
+    stream,
+    finalize: (name, mode) => finished().then(() => output.finalize(name, mode)),
+    discard: () => {
+      sink.destroy();
+      return output.discard();
+    },
+  };
 }

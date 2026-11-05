@@ -17,7 +17,6 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { PassThrough, Writable } from "stream";
 import {
   ActionContext,
   BuildAction,
@@ -30,6 +29,7 @@ import {
   fileSetInput,
   FileSet,
   FileSource,
+  HostLink,
   IBuildActionDefinition,
   IFile,
   IOutputHandle,
@@ -41,6 +41,7 @@ import {
   PropertyMap,
   Repository,
   RepositoryLookup,
+  RunnableFileSet,
   RepositoryRef,
   ResolvedNode,
   SourceRef,
@@ -53,7 +54,8 @@ import {
 } from "@fabr-build/core";
 import { IImageSettings, imageConfig } from "../ImageConfig";
 import { ImageFileSet, ImageLibc, imageOfRecords, layerRecordDir, libcOf, RECORD_CONFIG } from "../ImageFileSet";
-import { indexLayer } from "../LayerIndex";
+import { runBuildCommand } from "../BuildCommand";
+import { indexLayer, teeOutput } from "../LayerIndex";
 import { IOciPlatform } from "../OciProtocol";
 import { OCI_TARGET, ociPlatformOf } from "../OciRepository";
 
@@ -81,15 +83,34 @@ export default defineRule({
     );
   },
   evaluateMaterialized(context, { dependencies: base, files }) {
-    return Computable.forAll(
-      [context.getGlobalString(OCI_TARGET), settingsOf(context)] as const,
-      (target: string, settings: IImageSettings) =>
+    return Computable.forAll([context.getGlobalString(OCI_TARGET), settingsOf(context), context.getMap("env")] as const, (target: string, settings: IImageSettings, env: PropertyMap) => {
+      const image = soleImage(context.name, base);
+      const contents = FileSet.unionAll(...files);
+      const platform = ociPlatformOf(target);
+      const action = (on: ImageFileSet | undefined, made: IImageSettings, engine?: FileSet): BuildAction =>
         new BuildAction(
           IMAGE_ACTION,
-          { base: soleImage(context.name, base)?.toRecords() ?? EMPTY_FILESET, files: FileSet.unionAll(...files) },
-          { settings: JSON.stringify(settings), platform: JSON.stringify(ociPlatformOf(target)), created_by: `fabr container_image ${context.name}` }
-        ).withReshape(output => imageOfRecords(output, context.name))
-    );
+          { base: on?.toRecords() ?? EMPTY_FILESET, files: contents, ...(engine === undefined ? {} : { engine }) },
+          {
+            settings: JSON.stringify(made),
+            platform: JSON.stringify(platform),
+            created_by: made.build === undefined ? `fabr container_image ${context.name}` : `/bin/sh -c ${made.build}`,
+          }
+        ).withReshape(output => imageOfRecords(output, context.name));
+      if (settings.build === undefined) {
+        return action(image, settings);
+      }
+      if (image === undefined) {
+        throw new FabrError(`${context.name}'s build command has no image to run in`).withHelp("set 'base' to the image it runs in");
+      }
+      if (contents.size > 0 || setsMoreThanBuild(settings)) {
+        /* The command's layer is a step of its own, so what is set beside it does not run it again. */
+        return context
+          .subTarget("container_image", { base: [image], build: settings.build, env }, { label: "Running build" })
+          .then(built => action(built as ImageFileSet, { ...settings, build: undefined }));
+      }
+      return context.getGlobalRunnable("CONTAINER_ENGINE").then(engine => action(image, settings, engineProgram(context.name, engine)));
+    });
   },
 });
 
@@ -97,8 +118,8 @@ export default defineRule({
 function settingsOf(context: TargetContext): Computable<IImageSettings> {
   const value = (name: string): Computable<Property | undefined> => context.getProperty(name);
   return Computable.forAll(
-    [value("entry"), value("args"), value("workdir"), value("user"), value("ports"), context.getMap("env"), context.getMap("metadata")] as const,
-    (entry, args, workdir, user, ports, env: PropertyMap, metadata: PropertyMap): IImageSettings => ({
+    [value("entry"), value("args"), value("workdir"), value("user"), value("ports"), context.getMap("env"), context.getMap("metadata"), value("build")] as const,
+    (entry, args, workdir, user, ports, env: PropertyMap, metadata: PropertyMap, build): IImageSettings => ({
       ...(entry === undefined ? {} : { entry: entry.toString() }),
       args: args?.getValues() ?? [],
       ...(workdir === undefined ? {} : { workdir: workdir.toString() }),
@@ -106,8 +127,14 @@ function settingsOf(context: TargetContext): Computable<IImageSettings> {
       env: stringEntries(context.name, "env", env),
       metadata: stringEntries(context.name, "metadata", metadata),
       ports: ports?.getValues() ?? [],
+      ...(build === undefined ? {} : { build: build.toString() }),
     })
   );
+}
+
+/** @return true if `settings` set anything but the build command and its environment, otherwise false. */
+function setsMoreThanBuild(settings: IImageSettings): boolean {
+  return settings.entry !== undefined || settings.args.length > 0 || settings.workdir !== undefined || settings.user !== undefined || settings.ports.length > 0 || settings.metadata.length > 0;
 }
 
 /** Read a MAP property whose every entry is a string, in the order written. */
@@ -118,6 +145,15 @@ function stringEntries(target: string, property: string, map: PropertyMap): Arra
     }
     return [key, (setting as string[]).join(" ")];
   });
+}
+
+/** @return the container engine `engine` is as the one file named `engine`. */
+function engineProgram(target: string, engine: RunnableFileSet): FileSet {
+  const files = [...engine].map(([, file]) => file);
+  if (files.length !== 1 || !(files[0] instanceof HostLink)) {
+    throw new FabrError(`CONTAINER_ENGINE, for ${target}'s build command, is no program of this host`).withHelp("name the program, as in '@host:docker' or '@host:podman'");
+  }
+  return new FileSet(new Map<string, IFile>([["engine", files[0]]]));
 }
 
 /** @return the image `bases` holds, or undefined where it holds none; anything else is an error. */
@@ -191,7 +227,24 @@ function runImage(action: BuildAction, ctx: ActionContext, report: ITaskReport):
   const platform = JSON.parse(stringConfig(action, "platform")) as IOciPlatform;
   const layers = new Set([...base].map(([name]) => name.split("/").slice(0, 2).join("/")).filter(dir => dir.startsWith("layers/"))).size;
   const layer: Computable<IWrittenLayer | undefined> =
-    files.size === 0 ? Computable.resolve(undefined) : ctx.admit(report, () => writeLayer(files, ctx.createOutput(), layerRecordDir(layers)));
+    settings.build !== undefined
+      ? imageOfRecords(base, "base").then(image =>
+          runBuildCommand(
+            ctx,
+            report,
+            image,
+            {
+              engine: (fileSetInput(action, "engine").getFile("engine") as HostLink).location,
+              platform,
+              command: settings.build!,
+              env: settings.env,
+            },
+            layerRecordDir(layers)
+          )
+        )
+      : files.size === 0
+      ? Computable.resolve(undefined)
+      : ctx.admit(report, () => writeLayer(files, ctx.createOutput(), layerRecordDir(layers)));
   const configText = base.getFile(RECORD_CONFIG)?.readString() ?? Computable.resolve(undefined);
   return Computable.forAll([layer, configText] as const, (written: IWrittenLayer | undefined, text: string | undefined) => {
     const config = imageConfig(
@@ -229,31 +282,6 @@ function writeLayer(files: FileSet, output: IOutputHandle, dir: string): Computa
       diffId: index.diffId,
     };
   });
-}
-
-/** Make an output whose bytes also go to `sink`, which has finished before the output is finalized. */
-function teeOutput(output: IOutputHandle, sink: Writable): IOutputHandle {
-  const stream = new PassThrough();
-  stream.pipe(output.stream, { end: false });
-  stream.pipe(sink);
-  const finished = (): Computable<void> =>
-    Computable.fromOnce<void>((resolve, reject) => {
-      sink.on("error", reject);
-      if (sink.writableFinished) {
-        resolve();
-      } else {
-        sink.on("finish", () => resolve());
-      }
-      stream.end();
-    });
-  return {
-    stream,
-    finalize: (name, mode) => finished().then(() => output.finalize(name, mode)),
-    discard: () => {
-      sink.destroy();
-      return output.discard();
-    },
-  };
 }
 
 export const IMAGE_ACTION: IBuildActionDefinition = { id: "container:image", version: 1, run: runImage };

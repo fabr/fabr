@@ -196,7 +196,7 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
         const files = (): Computable<FileSet> =>
           this.context.operation === "run"
             ? Computable.forAll([image(), this.context.getGlobalRunnable("CONTAINER_ENGINE")] as const, (pulled: ImageFileSet, engine: RunnableFileSet) =>
-                imageRunnable(pulled, reference.name, engine)
+                imageRunnable(pulled, reference.name, engine, this.context.execution.processLimit)
               )
             : image();
         return new ResolvedNode(

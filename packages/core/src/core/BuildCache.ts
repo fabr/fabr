@@ -424,7 +424,7 @@ export class BuildCache {
     this.blobRoot = path.resolve(cachePath, "blob");
     this.treeRoot = path.resolve(cachePath, "tree");
     this.workRoot = path.resolve(cachePath, "work");
-    this.ownWorkRoot = path.resolve(this.workRoot, `${hostTag()}-${process.pid}`);
+    this.ownWorkRoot = path.resolve(this.workRoot, ownerName());
     this.depsRoot = path.resolve(cachePath, "deps");
     this.projectsRoot = path.resolve(cachePath, "projects");
     this.incrementalRoot = path.resolve(cachePath, "incremental");
@@ -2702,6 +2702,12 @@ function isFresh(entry: ICacheEntry, now: number): boolean {
   return entry.meta === undefined || entry.meta.expires > now;
 }
 
+/** @return this process's owner name, `<host>-<pid>`, as its work tree is named: what
+ * names anything else it leaves behind that a later run may reap (see {@link isReapable}). */
+export function ownerName(): string {
+  return `${hostTag()}-${process.pid}`;
+}
+
 /** Make this machine's identity within a work-tree owner name (`<host>-<pid>`),
  * reduced to one path segment with no `-` so the pid splits off unambiguously.
  * Only ever compared against names this same function produced. */
@@ -2722,10 +2728,10 @@ function thisHostPid(owner: string): number | undefined {
   return Number.isInteger(pid) && pid > 0 ? pid : undefined;
 }
 
-/** @return true if a `work/` subdirectory belongs to a process of THIS host
- * that is gone — the only foreign trees safe to remove — otherwise false. A name we can't read as one of
- * our own is left alone, as is any tree owned by another host. */
-function isReapable(owner: string): boolean {
+/** @return true if the owner name `owner` ({@link ownerName}) is of a process of THIS host
+ * that is gone — the only foreign leftovers safe to remove — otherwise false. A name we can't read as one of
+ * our own is left alone, as is anything owned by another host. */
+export function isReapable(owner: string): boolean {
   const pid = thisHostPid(owner);
   return pid !== undefined && !isProcessAlive(pid);
 }

@@ -17,7 +17,9 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { Computable, FabrError, FileSet, IFile, MemoryFile, RunnableFileSet } from "@fabr-build/core";
+import { Computable, FabrError, FileSet, HostLink, IFile, MemoryFile, RunnableFileSet, Semaphore } from "@fabr-build/core";
+import { ownerHost, reapContainers } from "./Containers";
+import { hostEnvironment } from "./HostEnvironment";
 import { ImageFileSet } from "./ImageFileSet";
 import { imageLayout, manifestOf } from "./OciLayout";
 
@@ -27,24 +29,27 @@ const LAUNCHER = "launch.sh";
 const ENGINE_COMMAND = "engine";
 
 /**
- * Load the image `$1` from the layout beside this script, streamed as an
+ * Load the image `$2` from the layout beside this script, streamed as an
  * archive with no extended attributes (macOS's tar would otherwise add its
- * own, which Docker refuses), where the container engine does not hold it; then run it, removed when it ends,
- * its stdin attached and a terminal given it where stdin is one, the rest of
- * the arguments its own.
+ * own, which Docker refuses), where the container engine does not hold it;
+ * then run it, removed when it ends, its stdin attached and a terminal given it
+ * where stdin is one, the rest of the arguments its own. The container is
+ * named for host `$1` and this script's pid, which `exec` makes the engine
+ * client's, so a run killed before removing it is reaped by a later one.
  */
 export const LAUNCH_SCRIPT = `#!/bin/sh
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
-image="$1"
-shift
+name="fabr-$1-$$-run"
+image="$2"
+shift 2
 if ! "$here/${ENGINE_COMMAND}" image inspect "$image" >/dev/null 2>&1; then
   (cd "$here/${LAYOUT_DIR}" && COPYFILE_DISABLE=1 tar --no-xattrs -cf - .) | "$here/${ENGINE_COMMAND}" load -q >/dev/null
 fi
 if [ -t 0 ]; then
-  exec "$here/${ENGINE_COMMAND}" run --rm -i -t "$image" "$@"
+  exec "$here/${ENGINE_COMMAND}" run --rm -i -t --name "$name" "$image" "$@"
 fi
-exec "$here/${ENGINE_COMMAND}" run --rm -i "$image" "$@"
+exec "$here/${ENGINE_COMMAND}" run --rm -i --name "$name" "$image" "$@"
 `;
 
 /**
@@ -54,8 +59,10 @@ exec "$here/${ENGINE_COMMAND}" run --rm -i "$image" "$@"
  * engine, and a launcher that loads the layout only where the engine lacks the
  * tag, then runs it with the caller's arguments after the image's entrypoint.
  */
-export function imageRunnable(image: ImageFileSet, name: string, engine: RunnableFileSet): Computable<RunnableFileSet> {
-  return manifestOf(image).then(({ config }) => {
+export function imageRunnable(image: ImageFileSet, name: string, engine: RunnableFileSet, limit: Semaphore): Computable<RunnableFileSet> {
+  return reapEngine(limit, engine)
+    .then(() => manifestOf(image))
+    .then(({ config }) => {
     const tag = `localhost/fabr/${imageName(name)}:${config.digest.substring("sha256:".length, "sha256:".length + 12)}`;
     return imageLayout(image, tag).then(layout => {
       const install = FileSet.unionAll(
@@ -63,9 +70,15 @@ export function imageRunnable(image: ImageFileSet, name: string, engine: Runnabl
         engineProgram(name, engine),
         new FileSet(new Map<string, IFile>([[LAUNCHER, new MemoryFile(Buffer.from(LAUNCH_SCRIPT), 0o755)]]))
       );
-      return RunnableFileSet.forEntry(install, LAUNCHER, [tag], "sh");
+      return RunnableFileSet.forEntry(install, LAUNCHER, [ownerHost(), tag], "sh");
     });
   });
+}
+
+/** Reap what dead runs left in the engine `engine` is, where it is a program of this host. */
+function reapEngine(limit: Semaphore, engine: RunnableFileSet): Computable<void> {
+  const [program] = [...engine].map(([, file]) => file);
+  return program instanceof HostLink ? reapContainers(limit, program.location, hostEnvironment()) : Computable.resolve(undefined);
 }
 
 /** @return the container engine `engine` is as the one file of the install named `engine`. */

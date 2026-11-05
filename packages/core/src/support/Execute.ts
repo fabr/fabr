@@ -530,6 +530,35 @@ function executeUnbounded(cmd: string, args: string[], cwd: string, env: Record<
   });
 }
 
+/** The teardowns run when fabr exits, for what the process-group sweep cannot reach. */
+const exitTeardowns = new Set<() => void>();
+let teardownHookInstalled = false;
+
+/**
+ * Register `teardown` to run when fabr exits, for something it started that
+ * the process-group sweep cannot reach (a container an engine runs), and
+ * return the function that releases it, called on the normal path once the
+ * thing is gone. It must be synchronous: `process.exit` runs no Computable
+ * continuation, so an exit hook is the only place left. A throw is ignored.
+ */
+export function registerExitTeardown(teardown: () => void): () => void {
+  if (!teardownHookInstalled) {
+    teardownHookInstalled = true;
+    process.on("exit", () => {
+      for (const each of exitTeardowns) {
+        try {
+          each();
+        } catch {
+          /* Cleanup never outranks exiting. */
+        }
+      }
+      exitTeardowns.clear();
+    });
+  }
+  exitTeardowns.add(teardown);
+  return () => exitTeardowns.delete(teardown);
+}
+
 /** What a program run by {@link executeInternalCapture} wrote, and how it exited. */
 export interface CapturedOutput {
   /** Its exit code; null where it was ended by a signal. */

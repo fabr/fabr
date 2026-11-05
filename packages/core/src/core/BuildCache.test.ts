@@ -24,7 +24,7 @@ import * as path from "path";
 import * as http from "node:http";
 import { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
-import { ActionContext, BuildCache, IBuildState, IFetchRequest, MINIMUM_FRESHNESS_MS } from "./BuildCache";
+import { ActionContext, BuildCache, IBuildState, IFetchRequest, isReapable, MINIMUM_FRESHNESS_MS, ownerName } from "./BuildCache";
 import { PackageFileSet, PackageGraphBuilder } from "./PackageFileSet";
 import { ActionFileInputs, BuildAction, BuildResult, IBuildActionDefinition, preciseActionKey } from "./BuildAction";
 import { narrowDeps } from "./BuildCache";
@@ -2118,6 +2118,22 @@ describe("BuildCache non-immutable fetches", () => {
  * nothing rebuilds is never cleaned — and what keeps two fabr processes sharing
  * a cache out of each other's way.
  */
+describe("owner names", () => {
+  it("names this process by host and pid, which is not reapable while it lives", () => {
+    const owner = ownerName();
+    expect(owner).to.match(new RegExp(`-${process.pid}$`));
+    expect(isReapable(owner)).to.equal(false);
+  });
+
+  it("reaps a gone process of this host, never another host's", () => {
+    const host = ownerName().replace(/-\d+$/, "");
+    /* Pids are far below this on every platform fabr runs on. */
+    expect(isReapable(`${host}-999999999`)).to.equal(true);
+    expect(isReapable(`another_host-999999999`)).to.equal(false);
+    expect(isReapable("not-an-owner")).to.equal(false);
+  });
+});
+
 describe("BuildCache work tree", () => {
   let root: string;
 
