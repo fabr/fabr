@@ -37,7 +37,7 @@ import { FileSet, IFile } from "./FileSet";
 import { FSFile } from "./FSFileSource";
 import { copyFile, deleteFile, hardlink, hashFile, mkdir, readOnlyPermissions, rename, symlink, walkTree, writeFile } from "./FSWrapper";
 import { Name } from "./Name";
-import { SymlinkFile } from "./SymlinkFile";
+import { HostLink, SymlinkFile } from "./SymlinkFile";
 import { describeSystemError, killLiveChildren } from "../support/Execute";
 import { globMatcher } from "../support/Glob";
 
@@ -153,6 +153,14 @@ export function writeFileSet(targetDir: string, files: FileSet, options?: { copy
   function writeStaged(entries: typeof staged): Computable<void> {
     return mapComputable(entries, ({ name, file, targetName, dirname }) => {
       const filepath = file.getAbsPath();
+      if (file instanceof HostLink) {
+        /* The one licensed escape from the staged tree, and it is per-CLASS, not
+         * a widening of the guard below: being a host link is not something
+         * content can claim (fabr constructs every one, and nothing parses one
+         * back), and it names a program fabr found on this host and identified
+         * by its content. */
+        return stage(symlink(file.location, targetName), name);
+      }
       if (file instanceof SymlinkFile) {
         /* Security: a symlink whose target escapes the staged tree (via `..`, an
          * absolute path, or a symlinked parent component) could point at — or,
@@ -255,7 +263,7 @@ export function syncFileSet(targetDir: string, before: FileSet, after: FileSet):
     /* Same containment guard as writeFileSet: a symlink whose target escapes
      * the staged tree is silently not staged. */
     const written = changed.filter(({ file, dirname }) => {
-      if (!(file instanceof SymlinkFile)) {
+      if (!(file instanceof SymlinkFile) || file instanceof HostLink) {
         return true;
       }
       realRoot ??= fs.realpathSync(root);
@@ -265,6 +273,9 @@ export function syncFileSet(targetDir: string, before: FileSet, after: FileSet):
     const writes = mapComputable(written, ({ file, targetName }) => {
       const temp = `${targetName}.fabr-sync-${process.pid}-${tempCounter++}`;
       const filepath = file.getAbsPath();
+      if (file instanceof HostLink) {
+        return stageWrite(temp, targetName, symlink(file.location, temp));
+      }
       if (file instanceof SymlinkFile) {
         return stageWrite(temp, targetName, symlink(file.target, temp));
       }

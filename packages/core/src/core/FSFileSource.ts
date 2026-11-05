@@ -137,6 +137,13 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
    * directory walks it once (see startRescan). */
   private readonly rescanning = new Set<string>();
 
+  /** Get the directory, relative to the source's root, that holds everything this
+   *  query can match: its static path where it has a pattern, and the directory
+   *  that path is in where it names one path. */
+  public get directory(): string {
+    return this.name.hasGlob() ? this.base : path.posix.dirname(this.base).replace(/^\.$/, "");
+  }
+
   constructor(
     private readonly owner: FSFileSource,
     private readonly root: string,
@@ -422,12 +429,13 @@ export class FSFileSource implements FileSource {
    */
   protected readonly watchController?: WatchController;
   /**
-   * The one filesystem subscription for the whole tree (created lazily on the
-   * first watched `find`) and the per-glob registrations it dispatches to. One
-   * subscription — not one per `find` — so watching scales and a single edit is
-   * not multiplied across overlapping globs.
+   * The filesystem subscriptions, one per directory {@link watchedDirectoryOf}
+   * names (relative to the root, `""` for the root itself), each made on the
+   * first watched query that needs it. For an ordinary source that is one
+   * subscription for the whole tree — not one per `find` — so watching scales
+   * and a single edit is not multiplied across overlapping globs.
    */
-  private subscription?: Promise<parcelWatcher.AsyncSubscription>;
+  private readonly subscriptions = new Map<string, Promise<parcelWatcher.AsyncSubscription>>();
   /** The live queries the single subscription dispatches to — one per watched
    * `find`/`get`. Each adds itself here when it attaches and removes itself when
    * it detaches (see {@link TreeQuery}); one subscription, not one per query. */
@@ -469,8 +477,19 @@ export class FSFileSource implements FileSource {
     const controller = this.watchController;
     if (controller) {
       this.registrations.add(query);
-      this.ensureSubscription(controller);
+      this.ensureSubscription(controller, this.watchedDirectoryOf(query));
     }
+  }
+
+  /**
+   * Get the directory, relative to the root, whose subscription reports the
+   * changes `query` needs to see: the root itself, so that one subscription
+   * serves every query. A source whose root holds far more than it reads (the
+   * host's whole filesystem) overrides it to watch only what a query covers.
+   */
+  protected watchedDirectoryOf(query: TreeQuery): string {
+    void query;
+    return "";
   }
 
   /**
@@ -511,27 +530,28 @@ export class FSFileSource implements FileSource {
   }
 
   /**
-   * Ensure the single source-tree subscription exists, then hand each filesystem change
-   * to every registered query ({@link TreeQuery.applyEvent}), scheduling a (debounced)
-   * re-settle for each that claims it. Requires @parcel/watcher 2.5.0 or later:
-   * earlier versions can deadlock natively when the kqueue fallback races a failing
-   * FSEvents start.
+   * Ensure the subscription to `dir` (relative to the root) exists, then hand each
+   * filesystem change to every registered query ({@link TreeQuery.applyEvent}),
+   * scheduling a (debounced) re-settle for each that claims it. Requires
+   * @parcel/watcher 2.5.0 or later: earlier versions can deadlock natively when the
+   * kqueue fallback races a failing FSEvents start.
    */
-  private ensureSubscription(controller: WatchController): void {
-    if (this.subscription) {
+  private ensureSubscription(controller: WatchController, dir: string): void {
+    if (this.subscriptions.has(dir)) {
       return;
     }
-    /* @parcel/watcher reports canonical realpaths, but this.root may be a
-     * symlinked form (macOS /var -> /private/var), so relativise against the
-     * real root or nothing matches. */
-    const realRoot = fs.realpathSync(this.root);
+    /* @parcel/watcher reports canonical realpaths, but the directory may be named
+     * through a symlink (macOS /var -> /private/var), so relativise against its
+     * real path and rebase onto its name here, or nothing matches. */
+    const realDir = fs.realpathSync(path.resolve(this.root, dir));
     const handler: parcelWatcher.SubscribeCallback = (err, events) => {
       if (err) {
         controller.reportError(err);
         return;
       }
       for (const event of events) {
-        const rel = toPosix(path.relative(realRoot, event.path));
+        const inner = path.relative(realDir, event.path);
+        const rel = toPosix(dir === "" ? inner : inner === "" ? dir : path.join(dir, inner));
         /* A change fabr itself just made is recorded but not armed — see
          * notifyChanged's `defer`. Judged on the PATH here because this dispatch
          * is synchronous; the content is confirmed later, when the ingest that
@@ -546,21 +566,21 @@ export class FSFileSource implements FileSource {
         }
       }
     };
-    this.subscription = subscribeWithFallback(realRoot, handler, backend =>
+    const subscription = subscribeWithFallback(realDir, handler, backend =>
       controller.reportWarning(
         `Filesystem watching fell back to the ${backend} backend (the default backend failed to start); ` +
           `watching very large trees may be slower.`
       )
     );
-    this.subscription.catch(err => controller.reportError(err));
+    this.subscriptions.set(dir, subscription);
+    subscription.catch(err => controller.reportError(err));
     controller.track(() => {
-      const pending = this.subscription;
-      this.subscription = undefined;
+      this.subscriptions.delete(dir);
       this.registrations.clear();
       /* Returned (not fire-and-forget) so the controller awaits the native
        * unsubscribe before the process exits — an abrupt exit while the kqueue
        * watcher thread is live crashes with SIGABRT. */
-      return pending?.then(
+      return subscription.then(
         sub => sub.unsubscribe(),
         () => undefined
       );

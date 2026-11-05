@@ -26,7 +26,7 @@ import { Readable } from "stream";
 import { Computable } from "./Computable";
 import type { IFile } from "./FileSet";
 import { mapComputable } from "../support/Functional";
-import { sniffMime } from "../support/Mime";
+import { SNIFF_LENGTH, sniffMime } from "../support/Mime";
 
 export const HASH_ALGORITHM = "sha256";
 
@@ -309,6 +309,26 @@ export function hashFile(filepath: string): Computable<HashedContent> {
         resolve({ hash: hashString(data), mime: sniffMime(data) });
       }
     });
+  });
+}
+
+/** Hash the file at `filepath` as it streams, holding none of it beyond the
+ *  leading bytes its mime is sniffed from — for a file too large to read whole
+ *  (a host program). */
+export function hashFileStreamed(filepath: string): Computable<HashedContent> {
+  return Computable.from<HashedContent>((resolve, reject) => {
+    const hash = crypto.createHash(HASH_ALGORITHM);
+    let head = Buffer.alloc(0);
+    fs.createReadStream(filepath)
+      .on("data", (data: string | Buffer) => {
+        const chunk = typeof data === "string" ? Buffer.from(data) : data;
+        if (head.length < SNIFF_LENGTH) {
+          head = Buffer.concat([head, chunk.subarray(0, SNIFF_LENGTH - head.length)]);
+        }
+        hash.update(chunk);
+      })
+      .on("error", reject)
+      .on("end", () => resolve({ hash: hash.digest("hex"), mime: sniffMime(head) }));
   });
 }
 

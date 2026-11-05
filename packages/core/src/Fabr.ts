@@ -21,6 +21,7 @@ import { PROJECT_FILENAME } from "./Constants";
 import { BuildCache } from "./core/BuildCache";
 import { Computable } from "./core/Computable";
 import { FSFileSource } from "./core/FSFileSource";
+import { IndexedFileSource } from "./core/IndexedFileSource";
 import { FabrError } from "./core/Errors";
 import { refuseNamespaces } from "./core/NamespaceRef";
 import { ProjectedPackage, Resolved, SourceRef } from "./core/Repository";
@@ -30,7 +31,7 @@ import { WatchController } from "./core/WatchController";
 import { BuildContext } from "./context/index";
 import type { INameValue } from "./model/AST";
 import { BuildModel } from "./model/BuildModel";
-import { BuildCycle, ExecutionContext } from "./model/ExecutionContext";
+import { BuildCycle, ExecutionContext, hostFiles } from "./model/ExecutionContext";
 import { reportFailure } from "./model/ErrorFormatter";
 import { coreContribution, ILoadOptions, loadProject } from "./model/Loader";
 import { Constraints } from "./model/Constraints";
@@ -76,6 +77,8 @@ export class Fabr {
   /** The project source tree, concretely — the write-back face the driver's
    *  invocation site needs (the execution holds it as a plain FileSource). */
   public readonly sourceFileSource: SourceFileSource;
+  /** The host's files read in place, whose index this run keeps (see {@link ExecutionContext.hostFileSource}). */
+  private readonly hostFileSource: IndexedFileSource;
   /** The machine fabr runs on, as a configuration (see {@link IFabrOptions.host}). */
   private readonly host: Constraints;
   /** How the project is read. */
@@ -106,7 +109,15 @@ export class Fabr {
         )
       : undefined;
     this.sourceFileSource = getSourceFileSource(options.sourceRoot, cache, this.controller);
-    this.execution = new ExecutionContext(cache, options.log, this.sourceFileSource, new FSFileSource("/", undefined, cache), cycle);
+    this.hostFileSource = hostFiles(cache, this.controller);
+    this.execution = new ExecutionContext(
+      cache,
+      options.log,
+      this.sourceFileSource,
+      new FSFileSource("/", undefined, cache),
+      cycle,
+      this.hostFileSource
+    );
     /* The source index persists per settled cycle — cycle-end fires even when
      * every recomputed value was identical (a touch without an edit), which is
      * exactly when rows changed but no result did — and drains ungated when
@@ -116,6 +127,7 @@ export class Fabr {
      * alone can hold the process exit for it. */
     this.execution.onBuildEvent(event => {
       if (event.kind === "cycle-end") {
+        this.hostFileSource.persistIndex();
         const persisted = this.sourceFileSource.persistIndex();
         if (this.controller) {
           persisted.then(() => this.maybeCollectGarbage());
@@ -123,7 +135,13 @@ export class Fabr {
       }
     });
     this.controller?.track(
-      () => new Promise<void>(resolve => this.sourceFileSource.persistIndex(true).then(() => resolve(), () => resolve()))
+      () =>
+        new Promise<void>(resolve =>
+          Computable.forAll([this.sourceFileSource.persistIndex(true), this.hostFileSource.persistIndex(true)], () => undefined).then(
+            () => resolve(),
+            () => resolve()
+          )
+        )
     );
   }
 
@@ -135,7 +153,7 @@ export class Fabr {
   public evaluate<T>(operation: (model: BuildModel) => Computable<T>): Computable<T> {
     const evaluation = loadProject(this.execution, PROJECT_FILENAME, coreContribution(), this.host, this.loadOptions).then(operation);
     this.execution.observeEvaluation(evaluation);
-    return evaluation.finally(() => this.sourceFileSource.persistIndex());
+    return evaluation.finally(() => Computable.forAll([this.sourceFileSource.persistIndex(), this.hostFileSource.persistIndex()], () => undefined));
   }
 
   /**

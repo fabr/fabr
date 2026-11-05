@@ -79,7 +79,7 @@ import {
 import { PackageFileSet } from "./PackageFileSet";
 import { mapComputable, mapObject } from "../support/Functional";
 import { registerTempTree, removeTempTree, writeFileSet } from "./Staging";
-import { SymlinkFile } from "./SymlinkFile";
+import { HostLink, SymlinkFile } from "./SymlinkFile";
 import { computableFind } from "./WorkList";
 import { admitted, IOutputHandle, ITaskReport, type TaskTracker } from "../support/Execute";
 import { Semaphore } from "../support/Semaphore";
@@ -1739,6 +1739,11 @@ export class BuildCache {
    */
   private assertNothingOwnedElsewhere(entry: string, files: FileSet): void {
     for (const [name, file] of files) {
+      if (file instanceof HostLink) {
+        /* A tree is named by content, and where a host program lies is not
+         * content: a tree linking to one would go stale when it moved. */
+        throw new FabrError(`Internal error: cannot materialize the tree '${entry}' with '${name}', a program of the host`);
+      }
       const abspath = file.getAbsPath();
       if (abspath !== undefined && !(file instanceof SymlinkFile) && abspath !== path.resolve(this.blobRoot, file.hash)) {
         throw new FabrError(

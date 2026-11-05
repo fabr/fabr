@@ -20,40 +20,30 @@
 import * as fs from "fs";
 import * as path from "path";
 import { Computable, ComputableSource } from "./Computable";
-import { hashString, isDirectoryError, isNotFound, readFileBuffer, stat } from "./FSWrapper";
+import { hashString } from "./FSWrapper";
 import { BuildCache } from "./BuildCache";
-import { FSFile, FSFileSource, staticPath } from "./FSFileSource";
+import { staticPath } from "./FSFileSource";
 import { FileSet, FileSource, IFile } from "./FileSet";
-import { ISourceIndexRow } from "./Manifest";
+import { IndexedFileSource } from "./IndexedFileSource";
 import { Name } from "./Name";
 import { WatchController } from "./WatchController";
 import { IResolvedWriteBack, IWriteBackObserver, writeBackFile } from "./WriteBack";
-import { sniffMime } from "../support/Mime";
 import { mapComputable } from "../support/Functional";
 import { FabrError } from "./Errors";
-
-/** Minimum gap between index writes under watch — an edit-heavy session
- * rewrites the record at most this often; the tail is best-effort (a dropped
- * row just re-hashes next start). One-shot runs write once, ungated. */
-const INDEX_WRITE_INTERVAL_MS = 30_000;
 
 /** What a project file's path from the root is prefixed with to make its
  *  source path, a reference to it from the project root. */
 const SOURCE_PATH_PREFIX = "./";
 
 /**
- * FileSource for the local (mutable) source tree. Every source file it hands
- * back is **snapshotted** into the content-addressed blob store at the moment
- * it is hashed: the single read that computes the hash also supplies the bytes,
- * so the hash and the compiled content can never diverge (the manifest key
- * always names exactly what a build step stages). The returned FSFile is
- * blob-backed — its content path is the immutable snapshot — while its
- * name/root still identify the source for diagnostics.
+ * FileSource for the local (mutable) source tree: an {@link IndexedFileSource}
+ * whose files are read as snapshots and whose whole tree is watched. Beside
+ * reading, it names its files' source paths and writes back into the tree,
+ * recognizing the watch events its own writes cause.
  *
  * TODO: Locking
  */
-export class SourceFileSource extends FSFileSource {
-  private readonly cache: BuildCache;
+export class SourceFileSource extends IndexedFileSource {
   /**
    * What fabr itself last wrote into the tree: name → content hash. A watch
    * event naming one of these is fabr's own echo, and must not arm a rebuild
@@ -73,8 +63,7 @@ export class SourceFileSource extends FSFileSource {
   private readonly expected = new Map<string, string | undefined>();
 
   constructor(sourceRoot: string, cache: BuildCache, watchController?: WatchController) {
-    super(sourceRoot, watchController);
-    this.cache = cache;
+    super(sourceRoot, cache, { read: "snapshot", watch: "root" }, watchController);
   }
 
   public override get sourcePathPrefix(): string {
@@ -184,159 +173,6 @@ export class SourceFileSource extends FSFileSource {
   }
 
   /**
-   * Ingest the file as a blob-backed FSFile, whose source path is its name here as a
-   * reference (`./<name>`). A
-   * file whose stat matches its source-index row (and whose blob the pool still
-   * holds) is served from the row — no read, no hash; anything else takes the
-   * full path: read the file once, hash those exact bytes, ingest them into the
-   * blob store, and refresh the row.
-   */
-  public override ingest(filename: string): Computable<FSFile | undefined> {
-    const filepath = path.resolve(this.root, filename);
-    return this.loadIndex()
-      .then(rows =>
-        stat(filepath).then(fileStat => {
-          const fsStat = { size: fileStat.size, mtime: fileStat.mtime, mode: fileStat.mode };
-          const held = rows.get(filename);
-          /* Only a VERIFIED row is served on a stat match: an unverified one
-           * re-hashes here, which is the second capture that verifies it (see
-           * recordIndexRow) — or catches a write that landed in the same
-           * filesystem-timestamp tick as the recorded one. */
-          if (held !== undefined && held.verified && held.size === fileStat.size && held.mtimeMs === fileStat.mtimeMs) {
-            const blobPath = this.cache.presentBlob(held.hash);
-            if (blobPath !== undefined) {
-              /* Confirmation is unconditional in ingest — which branch served
-               * the hash must not decide whether an echo is judged. */
-              this.confirmExpected(filename, held.hash);
-              return Computable.resolve(new FSFile(this.root, filename, fsStat, held.hash, held.mime, blobPath));
-            }
-          }
-          return readFileBuffer(filepath).then(bytes => {
-            const hash = hashString(bytes);
-            this.confirmExpected(filename, hash);
-            const mime = sniffMime(bytes);
-            this.recordIndexRow(rows, filename, fileStat.size, fileStat.mtimeMs, hash, mime);
-            return this.cache
-              .ensureBlob(hash, bytes, fileStat.mode)
-              .then(blobPath => new FSFile(this.root, filename, fsStat, hash, mime, blobPath));
-          });
-        })
-      )
-      .catch(err => {
-        /* Gone since the event fired, or the path is a directory (a watch event
-         * on a directory the tree gained — e.g. a served tool's own cache/output
-         * dirs): either way it is not a file, so treat it as absent, not an error.
-         * Mirrors the base FSFileSource.ingest. */
-        if (isNotFound(err) || isDirectoryError(err)) {
-          this.dropIndexRow(filename);
-          return undefined;
-        }
-        throw err;
-      });
-  }
-
-  /*
-   * ── Source index ─────────────────────────────────────────────
-   * The project's stat cache: rows pair a file's hash
-   * with the stat it was captured under, maintained here — where the hashes are
-   * computed — and persisted through the cache's projects registry. Advisory
-   * end to end: identical builds with the index present, absent, or damaged.
-   */
-
-  /** This project's rows, shared by every ingest: loaded once, mutated in
-   * place, persisted change-gated (see {@link persistIndex}). */
-  private indexRows?: Map<string, ISourceIndexRow>;
-  private indexLoad?: Computable<Map<string, ISourceIndexRow>>;
-  private indexDirty = false;
-  private indexWrite?: Computable<void>;
-  private lastIndexWrite = 0;
-
-  /**
-   * Load this project's rows, once. Once they are loaded they are handed out as a settled
-   * constant and the load is dropped: an ingest, made per file per enumeration, must hold
-   * no edge to a node that lives as long as this source, or every ingest stays reachable
-   * as its dependant.
-   */
-  private loadIndex(): Computable<Map<string, ISourceIndexRow>> {
-    if (this.indexRows !== undefined) {
-      return Computable.resolve(this.indexRows);
-    }
-    this.indexLoad ??= this.cache.readSourceIndex(this.root).then(rows => {
-      this.indexRows = rows ?? new Map();
-      this.indexLoad = undefined;
-      return this.indexRows;
-    });
-    return this.indexLoad;
-  }
-
-  /**
-   * Refresh a row from a full-path capture. A fresh or disagreeing capture
-   * records **unverified**: a write landing in the same filesystem-timestamp
-   * tick as this one is invisible to the stat, so a single capture may not be
-   * trusted. A capture that AGREES with the held row is the second observation
-   * that **verifies** it — from then on a stat match serves the row without
-   * reading (see ingest). No clock takes part: the poison tick is over by the
-   * time any later capture compares against the row.
-   */
-  private recordIndexRow(
-    rows: Map<string, ISourceIndexRow>,
-    filename: string,
-    size: number,
-    mtimeMs: number,
-    hash: string,
-    mime: string
-  ): void {
-    const held = rows.get(filename);
-    if (held !== undefined && held.hash === hash && held.size === size && held.mtimeMs === mtimeMs && held.mime === mime) {
-      if (!held.verified) {
-        rows.set(filename, { ...held, verified: true });
-        this.indexDirty = true;
-      }
-      return;
-    }
-    rows.set(filename, { name: filename, hash, size, mtimeMs, mime, verified: false });
-    this.indexDirty = true;
-  }
-
-  /** Drop a row whose file is gone. Consulted rows only — unconsulted rows are
-   * carried forward (a partial build must not shed the rest of the tree). */
-  private dropIndexRow(filename: string): void {
-    if (this.indexRows?.delete(filename)) {
-      this.indexDirty = true;
-    }
-  }
-
-  /**
-   * Persist the index if it changed — a run where every consulted file trusted
-   * its row writes nothing. Under watch, gated to at most one write per
-   * {@link INDEX_WRITE_INTERVAL_MS} unless `flush` (the close-time drain); a
-   * skipped write stays dirty for the next opportunity. Writes serialize
-   * behind any still-running one, and a failed write re-marks dirty. Never
-   * rejects: the record is an accelerator, not an outcome.
-   */
-  public persistIndex(flush = false): Computable<void> {
-    if (!this.indexDirty || this.indexRows === undefined) {
-      return this.indexWrite ?? Computable.resolve(undefined);
-    }
-    if (!flush && this.watchController !== undefined && Date.now() - this.lastIndexWrite < INDEX_WRITE_INTERVAL_MS) {
-      return Computable.resolve(undefined);
-    }
-    this.indexDirty = false;
-    this.lastIndexWrite = Date.now();
-    const rows = this.indexRows;
-    const previous = this.indexWrite !== undefined && !this.indexWrite.isSettled() ? this.indexWrite : undefined;
-    const write = (previous ?? Computable.resolve(undefined))
-      .then(() => this.cache.writeSourceIndex(this.root, rows))
-      .then(wrote => {
-        if (!wrote) {
-          this.indexDirty = true;
-        }
-      });
-    this.indexWrite = write;
-    return write;
-  }
-
-  /**
    * Confirm — or refute — an expected self-write, now that the file's real
    * content is known.
    *
@@ -349,7 +185,7 @@ export class SourceFileSource extends FSFileSource {
    * already recorded as dirty by the deferred notify, it only needed a reason
    * to be applied.
    */
-  private confirmExpected(filename: string, hash: string): void {
+  protected override confirmIngested(filename: string, hash: string): void {
     const expected = this.expected.get(filename);
     /* `has` before comparing: a stored `undefined` is a path with no content to
      * confirm (see `expected`), not a mismatch. */

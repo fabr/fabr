@@ -17,9 +17,11 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import * as path from "path";
 import { Computable } from "./Computable";
 import { hashString } from "./FSWrapper";
 import { IFile } from "./FileSet";
+import { FabrError } from "./Errors";
 
 /**
  * A symbolic link within a FileSet: an IFile that names another path (its
@@ -68,5 +70,44 @@ export class SymlinkFile implements IFile {
   /** A symlink has no source path on disk — it names its target, which staging (Staging.writeFileSet) writes as a real link. */
   public getAbsPath(): undefined {
     return undefined;
+  }
+}
+
+/** The scheme a {@link HostLink}'s symbolic target carries. It is not there to
+ * be read back — nothing parses it — but to make the degraded form inert: should
+ * a link ever be written to a manifest and re-read, it comes back as a plain
+ * symlink whose target is not a path to anything, which the staging containment
+ * guard drops. */
+export const HOST_LINK_SCHEME = "fabr-host:";
+
+/**
+ * A link to a program of the host, used where it lies (`@host:clang`).
+ *
+ * Its identity — hash, `target`, hence every action key it rides in — is the
+ * program's content hash, never its location on this machine: a different
+ * build of the program is a different key, and the same program found at
+ * another path is the same one. `location` is where it resolves when STAGED,
+ * and is no part of that identity.
+ *
+ * **In-memory only, and that is a security property.** Staging lets this class
+ * out of the tree being written, so being one must not be something content can
+ * claim: a host link exists only where fabr constructs one, and nothing parses
+ * one back.
+ */
+export class HostLink extends SymlinkFile {
+  constructor(
+    /** The content hash of the program `location` names. */
+    public readonly contentHash: string,
+    /** The program's real path on this machine. */
+    public readonly location: string
+  ) {
+    super(`${HOST_LINK_SCHEME}${contentHash}`);
+    if (!path.isAbsolute(location)) {
+      throw new FabrError(`Internal error: a host link must name an absolute path, not '${location}'`);
+    }
+  }
+
+  public override getDisplayName(): string {
+    return `-> ${this.location}`;
   }
 }

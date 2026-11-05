@@ -23,7 +23,7 @@ import * as os from "os";
 import * as path from "path";
 import { FileSet } from "./FileSet";
 import { MemoryFile } from "./MemoryFS";
-import { SymlinkFile } from "./SymlinkFile";
+import { HostLink, SymlinkFile } from "./SymlinkFile";
 import { writeFileSet } from "./Staging";
 
 describe("SymlinkFile", () => {
@@ -92,6 +92,34 @@ describe("SymlinkFile", () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
       fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("HostLink", () => {
+  it("is identified by the program's content, not where it lies", () => {
+    const here = new HostLink("abc123", "/usr/bin/cc");
+    const there = new HostLink("abc123", "/opt/tools/bin/cc");
+    expect(here.hash).to.equal(there.hash);
+    expect(here.isSameFile(there)).to.equal(true);
+    expect(here.isSameFile(new HostLink("def456", "/usr/bin/cc"))).to.equal(false);
+    expect(here.target).to.not.contain("/usr/bin");
+    expect(() => new HostLink("abc123", "bin/cc")).to.throw(/absolute path/);
+  });
+
+  it("stages as a link to the program, outside the staged tree", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-hostlink-"));
+    const program = path.join(dir, "program");
+    try {
+      fs.writeFileSync(program, "#!/bin/sh\n");
+      const files = new FileSet(new Map<string, import("./FileSet").IFile>([["cc", new HostLink("abc123", program)]]));
+      await writeFileSet(path.join(dir, "staged"), files);
+      expect(fs.readlinkSync(path.join(dir, "staged/cc"))).to.equal(program);
+      /* A plain symlink spelling the same target text is not one, and stays inside. */
+      await writeFileSet(path.join(dir, "plain"), new FileSet(new Map([["cc", new SymlinkFile(new HostLink("abc123", program).target)]])));
+      expect(fs.existsSync(path.join(dir, "plain/cc"))).to.equal(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });

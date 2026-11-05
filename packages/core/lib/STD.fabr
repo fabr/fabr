@@ -254,6 +254,17 @@ fabr_home @fabr-home { }
 default @fabr-build = @fabr-home:@fabr-build;
 
 #
+# The programs on the search path of the machine fabr runs on, used where they
+# lie: `@host:clang` is the `clang` a shell would run, and `@host:/usr/bin/cc`
+# the program at that path. Each is identified by its content: a different
+# build of it is a different input.
+#
+targetdef host_searchpath {
+}
+
+host_searchpath @host { }
+
+#
 # A named switch. A target turns a flag on by listing it in its `deps`, and the
 # rules that build the target decide what it means (`dom`, `ts/no_strict`).
 # Declare your own to give a set of flags one name:
@@ -310,3 +321,4 @@ repository catalog = @fabr-build/core:rules/CatalogRepository;
 repository fetch = @fabr-build/core:rules/FetchSource;
 repository repository_group = @fabr-build/core:rules/RepositoryGroup;
 repository fabr_home = @fabr-build/core:rules/FabrHome;
+repository host_searchpath = @fabr-build/core:rules/HostSearchPath;

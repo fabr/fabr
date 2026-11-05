@@ -22,6 +22,8 @@ import { BuildCache } from "../core/BuildCache";
 import { Computable, ComputableHandle, ComputableSource, ComputableState } from "../core/Computable";
 import { toError } from "../core/Errors";
 import { FileSource } from "../core/FileSet";
+import { IndexedFileSource } from "../core/IndexedFileSource";
+import type { WatchController } from "../core/WatchController";
 import { activityCounter, ITaskReport } from "../support/Execute";
 import { Log } from "../support/Log";
 import { Semaphore } from "../support/Semaphore";
@@ -119,6 +121,12 @@ export class ExecutionContext {
    * repository consults (e.g. a user `~/.npmrc`). Not watched.
    */
   public readonly absFileSource: FileSource;
+  /**
+   * A FileSource for the host's files by absolute path, read where they lie and
+   * identified by content — the programs `@host` names. Watched where the run
+   * watches, a directory at a time.
+   */
+  public readonly hostFileSource: FileSource;
   /** The build-cycle counter, shared with the watch controller (which advances it). */
   private readonly cycle: BuildCycle;
   /** The build-event subscribers (the driver's renderer, and the execution's
@@ -187,13 +195,15 @@ export class ExecutionContext {
     absFileSource: FileSource,
     /* Shared with the watch controller (which advances it); defaulted so a
      * non-watch construction — including tests — gets its own. */
-    cycle: BuildCycle = new BuildCycle()
+    cycle: BuildCycle = new BuildCycle(),
+    hostFileSource: FileSource = hostFiles(buildCache)
   ) {
     this.buildCache = buildCache;
     this.log = log;
     this.sourceFileSource = sourceFileSource;
     this.absFileSource = absFileSource;
     this.cycle = cycle;
+    this.hostFileSource = hostFileSource;
     /* Subscribed first, so the built-target record is current by the time any
      * later listener sees the same event. */
     this.onBuildEvent(event => this.recordBuiltTarget(event));
@@ -320,4 +330,10 @@ export class ExecutionContext {
       this.builtTargets.add(declName(requiredBy.length > 0 ? requiredBy[requiredBy.length - 1] : target));
     }
   }
+}
+
+/** Make the FileSource of the host's files: `/`, read in place and watched a
+ *  directory at a time (see {@link ExecutionContext.hostFileSource}). */
+export function hostFiles(cache: BuildCache, watchController?: WatchController): IndexedFileSource {
+  return new IndexedFileSource("/", cache, { read: "in-place", watch: "queried" }, watchController);
 }

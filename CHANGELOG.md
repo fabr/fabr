@@ -9,6 +9,7 @@ number.
 - Make the actual working dir a subdir, with the tree pool link (if present) outside - fixes excessive tree scanning.
 - Add TEST_NAME_PATTERN / -t support for running specific tests.
 - Add zip target.
+- Add @host search-path as the 'authorised' hermetic escape route.
 
 @fabr-build/aws:
 - Add s3 download support.
