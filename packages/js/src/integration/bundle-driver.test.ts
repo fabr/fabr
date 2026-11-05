@@ -33,6 +33,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
+import { SourceMap } from "node:module";
 import { FileSet, IFile, MemoryFile, PackageFileSet, TREE_MOUNT, dependenciesOn } from "@fabr-build/core";
 import { PNP_DATA_FILE, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "@fabr-build/js-tools";
 import { pnpManifestOf, treeMountOf } from "../PnPManifest";
@@ -590,6 +591,68 @@ describe("one package wired two ways, bundled by real esbuild through its virtua
     assert.equal(process.exitCode ?? 0, 0, "the bundle should have succeeded");
     const sources = (JSON.parse(fs.readFileSync(path.join(work, "out", "bundle.css.map"), "utf8")) as { sources: string[] }).sources;
     assert.deepEqual(sources, ["fabr:./app/card.module.scss"]);
+  });
+
+  it("heads each module in the outputs with the name the metafile gives it, not where it was staged", async () => {
+    stage();
+    fs.writeFileSync(path.join(work, "card.css"), ".card {\n  color: red;\n}\n/*# sourceMappingURL=card.css.map */\n");
+    fs.writeFileSync(
+      path.join(work, "card.css.map"),
+      JSON.stringify({ version: 3, sources: ["fabr:./app/card.module.scss"], names: [], mappings: "AAAA;EACE" })
+    );
+    fs.writeFileSync(path.join(work, "entry.js"), 'require("./card.css");\nconsole.log("ENTRY");\n');
+    fs.writeFileSync(path.join(work, SOURCE_PATHS_FILE), JSON.stringify({ "entry.js": "./app/entry.js", "card.css": "app:card.css" }));
+    fs.writeFileSync(
+      path.join(work, "options.json"),
+      JSON.stringify({ entries: [{ in: "entry.js", out: "bundle" }], external: [], platform: "browser", format: "esm", target: "es2021", minify: false, sourcemap: "linked", outdir: "out" })
+    );
+    const cwd = process.cwd();
+    try {
+      process.chdir(work);
+      await main(["--options=options.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE]);
+    } finally {
+      process.chdir(cwd);
+    }
+    assert.equal(process.exitCode ?? 0, 0, "the bundle should have succeeded");
+    const inputs = Object.keys((JSON.parse(fs.readFileSync(path.join(work, "out", "metafile.json"), "utf8")) as { inputs: object }).inputs);
+    const css = fs.readFileSync(path.join(work, "out", "bundle.css"), "utf8");
+    const js = fs.readFileSync(path.join(work, "out", "bundle.js"), "utf8");
+    const stylesheet = inputs.find(name => name.includes("card"));
+    const entry = inputs.find(name => name.includes("entry"));
+    assert.ok(stylesheet !== undefined && stylesheet !== "card.css" && css.includes(`/* ${stylesheet} */`), css);
+    assert.ok(entry !== undefined && entry !== "entry.js" && js.includes(`// ${entry}`), js);
+    assert.ok(!/^\s*\/\* card\.css \*\/$/m.test(css) && !/^\s*\/\/ entry\.js$/m.test(js), "no staged spelling is left");
+  });
+
+  it("keys a wrapped module by its name, padded to the staged path's length so its map still holds", async () => {
+    stage();
+    const staged = "a-staging-directory-longer-than-the-name/lib.cjs";
+    fs.mkdirSync(path.join(work, path.dirname(staged)), { recursive: true });
+    fs.writeFileSync(path.join(work, staged), 'module.exports = { lib: "LIB_MARKER" };\n');
+    fs.writeFileSync(path.join(work, "entry.mjs"), `import lib from "./${staged}";\nconsole.log(lib);\n`);
+    fs.writeFileSync(path.join(work, SOURCE_PATHS_FILE), JSON.stringify({ "entry.mjs": "./app/entry.mjs", [staged]: "./app/lib.cjs" }));
+    fs.writeFileSync(
+      path.join(work, "options.json"),
+      JSON.stringify({ entries: [{ in: "entry.mjs", out: "bundle" }], external: [], platform: "browser", format: "esm", target: "es2021", minify: false, sourcemap: "linked", outdir: "out" })
+    );
+    const cwd = process.cwd();
+    try {
+      process.chdir(work);
+      await main(["--options=options.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE]);
+    } finally {
+      process.chdir(cwd);
+    }
+    assert.equal(process.exitCode ?? 0, 0, "the bundle should have succeeded");
+    const js = fs.readFileSync(path.join(work, "out", "bundle.js"), "utf8");
+    const key = /"(\.\/app\/lib\.cjs)"( *)\(/.exec(js);
+    assert.ok(key !== null && !js.includes(`"${staged}"`), js);
+    assert.equal(key[0].length - 1, JSON.stringify(staged).length, "the key keeps the staged key's length");
+    /* The module's code still maps to its source. */
+    const map = new SourceMap(JSON.parse(fs.readFileSync(path.join(work, "out", "bundle.js.map"), "utf8")));
+    const lines = js.split("\n");
+    const line = lines.findIndex(text => text.includes("LIB_MARKER"));
+    const entry = map.findEntry(line, lines[line].indexOf("LIB_MARKER"));
+    assert.ok("originalSource" in entry && entry.originalSource.endsWith("lib.cjs") && entry.originalLine === 0, JSON.stringify(entry));
   });
 
   it("takes an entry point at a virtual location as that wiring", async () => {

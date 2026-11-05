@@ -612,7 +612,9 @@ export async function main(argv: string[]): Promise<void> {
   if (errors.length === 0) {
     nameMapSources(argv, options.outdir);
     if (metafile !== undefined) {
-      writeMetafile(argv, options.outdir, metafile);
+      const inputName = metafileInputNamer(argv);
+      writeMetafile(options.outdir, metafile, inputName);
+      nameModules(metafile, inputName);
     }
   }
   if (errors.length) {
@@ -646,27 +648,86 @@ function nameMapSources(argv: string[], outdir: string): void {
 }
 
 /**
- * Write esbuild's metafile beside the outputs, each input named as a map entry
- * is (see {@link nameMapSources}) and each output relative to `outdir`: by the
- * reference its own map names as its sole source, which esbuild carries into the
- * bundle's map, else by the table's row.
+ * Make the namer of the bundle's inputs, as esbuild spells them (relative to the
+ * working directory), each named as a map entry is (see {@link nameMapSources}):
+ * by the reference its own map names as its sole source, which esbuild carries
+ * into the bundle's map, else by the table's row. Each input is named once.
  */
-function writeMetafile(argv: string[], outdir: string, metafile: IMetafile): void {
+function metafileInputNamer(argv: string[]): (staged: string) => string {
   const root = process.cwd();
   const named = stagedReferences(argv, root, { withinPackages: true });
   const fileName = (staged: string): string => {
     const file = resolveVirtual(path.resolve(root, staged));
     return compiledFrom(file) ?? named?.(path.relative(root, file).split(path.sep).join("/")) ?? staged;
   };
+  const names = new Map<string, string>();
   /* esbuild writes an input outside its file namespace as `(<namespace>):<path>`
    * (`(disabled):` for a module a `browser` field maps to false): the path is named, the prefix kept. */
-  const inputName = (staged: string): string => {
-    const namespaced = /^(\([^)]+\)):(.*)$/.exec(staged);
-    return namespaced === null ? fileName(staged) : `${namespaced[1]}:${fileName(namespaced[2])}`;
+  return staged => {
+    let name = names.get(staged);
+    if (name === undefined) {
+      const namespaced = /^(\([^)]+\)):(.*)$/.exec(staged);
+      name = namespaced === null ? fileName(staged) : `${namespaced[1]}:${fileName(namespaced[2])}`;
+      names.set(staged, name);
+    }
+    return name;
   };
-  const renamed = renameMetafilePaths(metafile, outdir, inputName);
-  fs.writeFileSync(path.resolve(root, outdir, BUNDLE_METAFILE), JSON.stringify(renamed, null, 2) + "\n");
 }
+
+/** Write esbuild's metafile beside the outputs, each input named by `inputName` and each output relative to `outdir`. */
+function writeMetafile(outdir: string, metafile: IMetafile, inputName: (staged: string) => string): void {
+  const renamed = renameMetafilePaths(metafile, outdir, inputName);
+  fs.writeFileSync(path.resolve(process.cwd(), outdir, BUNDLE_METAFILE), JSON.stringify(renamed, null, 2) + "\n");
+}
+
+/**
+ * Name each module in the bundle's outputs as the metafile and the maps name it,
+ * where esbuild would otherwise write the step's staging location: the comment
+ * line heading a module (`// <path>` in JavaScript, `/* <path> *\/` in a
+ * stylesheet), and the key a wrapped module is held under (`"<path>"(exports,
+ * module) {`). Only a path that is one of the output's own inputs is renamed. A
+ * comment line carries no mappings, so it takes the name as it is; a key is
+ * padded with spaces before its `(` to the length it had, so no mapped column
+ * moves and the output's map still holds, and keeps its path where the name is
+ * longer.
+ */
+function nameModules(metafile: IMetafile, inputName: (staged: string) => string): void {
+  const root = process.cwd();
+  for (const [output, { inputs }] of Object.entries(metafile.outputs)) {
+    if (inputs === undefined || !MODULE_PATH_OUTPUT.test(output)) {
+      continue;
+    }
+    const isInput = (staged: string): boolean => Object.prototype.hasOwnProperty.call(inputs, staged);
+    const file = path.resolve(root, output);
+    const text = fs.readFileSync(file, "utf8");
+    const commented = text.replace(MODULE_COMMENT, (line, indent: string, js?: string, css?: string) => {
+      const staged = js ?? css;
+      if (staged === undefined || !isInput(staged)) {
+        return line;
+      }
+      return js !== undefined ? `${indent}// ${inputName(staged)}` : `${indent}/* ${inputName(staged)} */`;
+    });
+    const renamed = output.endsWith(".css")
+      ? commented
+      : commented.replace(MODULE_KEY, (key, staged: string) => {
+          if (!isInput(staged)) {
+            return key;
+          }
+          const named = JSON.stringify(inputName(staged));
+          return named.length <= key.length ? named.padEnd(key.length) : key;
+        });
+    if (renamed !== text) {
+      fs.writeFileSync(file, renamed);
+    }
+  }
+}
+
+/** The outputs esbuild names modules in by their paths. */
+const MODULE_PATH_OUTPUT = /\.(?:[cm]?js|css)$/;
+/** A line holding only a module's path comment: `// <path>` or `/* <path> *\/`. */
+const MODULE_COMMENT = /^([ \t]*)(?:\/\/ (.+)|\/\* (.+) \*\/)$/gm;
+/** A string a wrapped module's function is keyed by: `"<path>"` directly before its `(`. */
+const MODULE_KEY = /"([^"\\\n]+)"(?=\()/g;
 
 /** Get the reference a compiled file's own map names as its sole source, if it has one. */
 function compiledFrom(file: string): string | undefined {
