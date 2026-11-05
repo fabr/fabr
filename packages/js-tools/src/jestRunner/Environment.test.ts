@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { answerWithGlobal, environmentFor, hideNodeSchedulers, inheritedMethods } from "./Environment";
+import { answerWithGlobal, environmentFor, hideNodeSchedulers, inheritedMethods, withNodeSchedulers } from "./Environment";
 
 /* installJsdom itself needs a real jsdom, which fabr's own tests do not carry
  * (it comes from the TARGET's test_deps); what is testable here is the part
@@ -150,5 +150,41 @@ describe("hideNodeSchedulers", () => {
     const globals: Record<string, unknown> = { MessageChannel: own, setImmediate() {} };
     hideNodeSchedulers(globals, { MessageChannel: own });
     expect(globals).to.deep.equal({ MessageChannel: own });
+  });
+});
+
+describe("withNodeSchedulers", () => {
+  const key = Symbol.for("fabr.jest.nodeSchedulers");
+  const scheduled = (): void => {};
+  const cleared = (): void => {};
+
+  function load(source: string): Record<string, unknown> {
+    const exports: Record<string, unknown> = {};
+    Object.defineProperty(globalThis, key, { value: [scheduled, cleared], configurable: true });
+    try {
+      new Function("exports", withNodeSchedulers(source)).call(exports, exports);
+    } finally {
+      delete (globalThis as Record<symbol, unknown>)[key];
+    }
+    return exports;
+  }
+
+  it("binds the module's setImmediate and clearImmediate to the functions kept for it", () => {
+    const exports = load("exports.set = setImmediate; exports.clear = clearImmediate;");
+    expect(exports.set).to.equal(scheduled);
+    expect(exports.clear).to.equal(cleared);
+  });
+
+  it("keeps the module strict, its `this`, and its line numbers", () => {
+    const source = '"use strict";\nexports.strict = (function () { return this; })() === undefined;\nexports.self = this;\n';
+    const exports = load(source);
+    expect(exports.strict).to.equal(true);
+    expect(exports.self).to.equal(exports);
+    expect(withNodeSchedulers(source).split("\n").length).to.equal(source.split("\n").length + 1);
+    expect(withNodeSchedulers(source).split("\n")[1]).to.equal(source.split("\n")[1]);
+  });
+
+  it("turns a leading hashbang into a comment of the same line", () => {
+    expect(withNodeSchedulers("#!/usr/bin/env node\nexports.x = 1;").split("\n")[0]).to.contain("///usr/bin/env node");
   });
 });

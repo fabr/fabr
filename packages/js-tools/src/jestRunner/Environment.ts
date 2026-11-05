@@ -31,7 +31,9 @@
  * other dependency.
  */
 
-import { userModule } from "./Tools";
+import { Module } from "node:module";
+import * as path from "node:path";
+import { userModule, userModuleFile } from "./Tools";
 
 interface IJsdomWindow {
   document: unknown;
@@ -214,6 +216,7 @@ export function inheritedMethods(window: IJsdomWindow): string[] {
  * over the defaults.
  */
 export function installJsdom(options: Record<string, unknown> = {}): void {
+  compileEnvironmentWithNodeSchedulers(userModuleFile("jsdom"));
   /* The runner has already checked that jsdom is installed (see
    * requireEnvironment), where the failure can be reported properly. */
   const jsdom = userModule("jsdom") as IJsdomModule | undefined;
@@ -267,6 +270,52 @@ export function installJsdom(options: Record<string, unknown> = {}): void {
   answerWithGlobal(prototypeOf("UIEvent"), "view", window, globals);
   answerWithGlobal(prototypeOf("MessageEvent"), "source", window, globals);
   patchLocation(window);
+}
+
+/** Where node's scheduling functions are kept for the environment's own modules. */
+const NODE_SCHEDULERS = "fabr.jest.nodeSchedulers";
+
+interface ICompilingModule {
+  parent?: { filename?: string } | null;
+  _compile(content: string, filename: string): unknown;
+}
+
+/**
+ * Compile jsdom's modules, and every module one of them is the first to load,
+ * with node's `setImmediate` and `clearImmediate` as bindings of their own.
+ * Under jest these modules run outside the test's sandbox, where node's globals
+ * are; here they share the test's global object, which has neither (see
+ * {@link hideNodeSchedulers}). Must be installed before jsdom is loaded.
+ */
+function compileEnvironmentWithNodeSchedulers(jsdomMain: string | undefined): void {
+  const marker = `${path.sep}node_modules${path.sep}jsdom${path.sep}`;
+  const at = jsdomMain?.lastIndexOf(marker) ?? -1;
+  if (jsdomMain === undefined || at === -1) {
+    return;
+  }
+  const jsdomRoot = jsdomMain.slice(0, at + marker.length);
+  Object.defineProperty(globalThis, Symbol.for(NODE_SCHEDULERS), { value: [setImmediate, clearImmediate] });
+  const environment = new Set<string>();
+  const compiling = Module as unknown as { prototype: ICompilingModule };
+  const original = compiling.prototype._compile;
+  compiling.prototype._compile = function (this: ICompilingModule, content: string, filename: string): unknown {
+    const requirer = this.parent?.filename;
+    if (filename.startsWith(jsdomRoot) || (requirer !== undefined && environment.has(requirer))) {
+      environment.add(filename);
+      content = withNodeSchedulers(content);
+    }
+    return original.call(this, content, filename);
+  };
+}
+
+/**
+ * Wrap a CommonJS module's source so that `setImmediate` and `clearImmediate`
+ * inside it name node's functions, whatever the global object holds. Line
+ * numbers are unchanged, and a leading `"use strict"` still applies.
+ */
+export function withNodeSchedulers(content: string): string {
+  const body = content.startsWith("#!") ? "//" + content.slice(2) : content;
+  return `(function (setImmediate, clearImmediate) {${body}\n}).apply(this, globalThis[Symbol.for(${JSON.stringify(NODE_SCHEDULERS)})]);`;
 }
 
 /**

@@ -33,7 +33,7 @@
 
 import * as fs from "node:fs";
 import { inspect } from "node:util";
-import { sourcePathOf } from "../testRunner/Report";
+import { endAfterReport, sourcePathOf } from "../testRunner/Report";
 import { DocblockPragmas, environmentFor, IFileEnvironment, installJsdom } from "./Environment";
 import { installHoist } from "./Hoist";
 import { IFakeTimers, IMocker, makeJestObject } from "./JestObject";
@@ -228,7 +228,7 @@ if (require.main === module) {
         if (process.send === undefined) {
           process.exit(1);
         }
-        process.send(result, undefined, undefined, () => process.exit(0));
+        process.send(result, undefined, undefined, () => endAfterReport(0));
       });
   });
 }

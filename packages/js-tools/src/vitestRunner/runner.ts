@@ -36,7 +36,7 @@ import { createRequire } from "node:module";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ITestResult } from "@fabr-build/core";
-import { buildReport, formatTestFailures, formatTestSummary } from "../testRunner/Report";
+import { buildReport, endAfterReport, formatTestFailures, formatTestSummary } from "../testRunner/Report";
 import { IRunnerOptions, parseRunnerArgs } from "../testRunner/RunTests";
 import { IReportedError, IReportedModule, toRunFailure, toTestResults, vitestOptions } from "./VitestRun";
 
@@ -101,7 +101,7 @@ export function main(argv: string[]): void {
       console.log(failed > 0 ? formatTestFailures(report) : formatTestSummary(report));
       /* Vitest's server and workers are closed; whatever a test leaked must not
        * keep this process alive. */
-      process.exit(failed > 0 ? 1 : 0);
+      endAfterReport(failed > 0 ? 1 : 0);
     })
     .catch((err: Error) => {
       console.error(err.stack ?? err.message);

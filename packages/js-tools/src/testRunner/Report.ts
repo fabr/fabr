@@ -312,3 +312,24 @@ function firstLine(text: string): string {
   const newline = text.indexOf("\n");
   return newline === -1 ? text : text.substring(0, newline);
 }
+
+/**
+ * End this process once its report is written. The report is the run's
+ * result, so nothing the tests leave behind may hold the process: where a
+ * request is still in flight (a DNS lookup on libuv's threadpool, which
+ * `process.exit` must wait for), the process ends at once by signal instead of
+ * with `status`, and output not yet written to a pipe may be lost. The end is
+ * immediate, never on a later turn of the event loop, which work the tests
+ * left running may never yield.
+ */
+export function endAfterReport(status: number): never {
+  if (pendingRequests().length > 0) {
+    process.kill(process.pid, "SIGKILL");
+  }
+  process.exit(status);
+}
+
+/** @return the libuv requests this process still has in flight. */
+function pendingRequests(): string[] {
+  return process.getActiveResourcesInfo().filter(name => /Req(Wrap|Callback|Promise)$/.test(name));
+}

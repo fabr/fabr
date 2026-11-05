@@ -215,11 +215,11 @@ function runOneFile(
 }
 
 /**
- * Judge one invocation from its exit and its report: a red exit the report
- * explains (failed tests) is a test outcome; a red exit with no usable report
- * is the mechanical failure it was; a GREEN exit without a usable report is a
- * broken contract — left unchecked it would cache as a passing file that ran
- * no tests, and stay cached.
+ * Judge one invocation from its report, which is the run's result whatever
+ * the process did after writing it (a runner may end by signal once it has
+ * reported). With no usable report, a failed invocation is the mechanical
+ * failure it was, and a successful one is a broken contract — left unchecked
+ * it would cache as a passing file that ran no tests, and stay cached.
  */
 function judgeRun(workDir: string, invocation: string[], reportName: string, file: string, error: Error | undefined): IFileRun {
   let report: ITestReport;
@@ -235,11 +235,6 @@ function judgeRun(workDir: string, invocation: string[], reportName: string, fil
       ? `the test runner exited successfully but wrote no ${reportName} for ${file}`
       : `the test runner's report for ${file} is unusable: ${toError(readErr).message}`;
     return { file, error: new ExecutionError(`$ ${invocation.join(" ")}\n${detail}`) };
-  }
-  if (error !== undefined && report.results.summary.failed === 0) {
-    /* A non-zero exit the report does not explain — the run broke after (or
-     * despite) reporting green, and no report can improve on that. */
-    return { file, error };
   }
   return { file, report };
 }

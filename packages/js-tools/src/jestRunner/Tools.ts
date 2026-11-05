@@ -87,6 +87,15 @@ export function userModule(name: string): unknown {
   }
 }
 
+/** @return the file {@link userModule} loads for `name`, or undefined if it isn't installed. */
+export function userModuleFile(name: string): string | undefined {
+  try {
+    return createRequire(path.join(process.cwd(), "index.js")).resolve(name);
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Fail loudly, at startup, on a host or a jest release this layer does not
  * claim to support — rather than somewhere deep inside a mocked require, where
@@ -133,7 +142,7 @@ export function requireEnvironment(env: string, fromDocblock = false): void {
   if (env !== "jsdom") {
     throw new Error(`Unknown test environment '${env}' — this runner provides 'node' and 'jsdom'.`);
   }
-  if (userModule("jsdom") === undefined) {
+  if (userModuleFile("jsdom") === undefined) {
     throw new Error(
       fromDocblock
         ? "This test file asks for a DOM environment (its @jest-environment docblock), but 'jsdom' is not among the target's dependencies.\n" +

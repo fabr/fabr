@@ -571,7 +571,10 @@ and runs your program once for each test file, with the compiled tests as its wo
 - **The report** must be written to the `--report` file as a [CTRF](https://ctrf.io/) document,
   `{"results": {"tool": …, "summary": …, "tests": […]}}`, with each of the summary's counts
   (`tests`, `passed`, `failed`, `pending`, `skipped`, `other`, `start`, `stop`) a number.
-- **The exit status** must be non-zero when a test fails.
+- **The report is the result.** Once it's written, how the runner exits doesn't matter, so it may
+  end at once rather than wait for work the tests left running. The exit status counts only when
+  there's no report: a non-zero exit is reported as the runner failing, and a zero exit without a
+  report is an error.
 
 The runner starts with the same [empty environment](#environment-variables) as the tests. Under
 `--coverage` its environment also carries `NODE_V8_COVERAGE`, so tests run by any Node.js process

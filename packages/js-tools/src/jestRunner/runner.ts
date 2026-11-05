@@ -47,7 +47,7 @@ import { fork } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ITestResult, TestStatus } from "@fabr-build/core";
-import { buildReport, formatTestFailures, formatTestSummary, reportPathOf } from "../testRunner/Report";
+import { buildReport, endAfterReport, formatTestFailures, formatTestSummary, reportPathOf } from "../testRunner/Report";
 import { parseRunnerArgs, TEST_TIMEOUT_MS } from "../testRunner/RunTests";
 import { assertSupportedHost, requireEnvironment } from "./Tools";
 import { describeThrown, runTestFile } from "./child";
@@ -101,7 +101,7 @@ export function main(argv: string[]): void {
       fs.writeFileSync(options.report, JSON.stringify(report, undefined, 2));
       const failed = report.results.summary.failed;
       console.log(failed > 0 ? formatTestFailures(report) : formatTestSummary(report));
-      process.exit(failed > 0 ? 1 : 0);
+      endAfterReport(failed > 0 ? 1 : 0);
     })
     .catch((err: Error) => {
       console.error(err.stack ?? err.message);
