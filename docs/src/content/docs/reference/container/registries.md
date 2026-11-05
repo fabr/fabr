@@ -91,6 +91,14 @@ by digest to build from exactly the same image wherever and whenever the build r
 An image's layers are downloaded only when something needs its files, and each is kept by its
 digest, so images that share layers download them once.
 
+`fabr ls` of an image's name, with no tag, lists its tags, as the registry holds them now:
+
+```sh
+fabr ls @docker:alpine
+```
+
+A registry's whole list of images can't be listed, so `fabr ls @docker` is an error.
+
 ## Declaring a registry
 
 An `oci_repository` declares a registry by its URL:

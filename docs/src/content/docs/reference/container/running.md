@@ -152,8 +152,13 @@ press Ctrl-C, and when fabr exits. A container left behind because fabr was kill
 crash) is removed by the next fabr run on the same machine that runs a container or a build
 command.
 
-The images fabr loads stay in the engine, as `docker run` leaves the images it pulls. To list and
-remove them:
+The images fabr loads stay in the engine, so running one again starts at once. fabr keeps at most
+two of each name, `localhost/fabr/<name>`: when it loads an image, it removes the others of that
+name but the one it loaded last before it, and any a container is still using. The name is the
+target's or image's, so worktrees of one project, or projects with a target of the same name, keep
+their images under one name, each running its own; an image one of them removed is loaded again on
+its next run. A name you no longer run keeps its images until you remove them. To list and remove
+them:
 
 ```sh
 docker image ls 'localhost/fabr/*'
@@ -185,7 +190,3 @@ thing, or something that is not an image. Name one `container_image`, or one ima
   a test suite connects to.
 - A container run in a [build](#images-in-a-build) can't be given the build's files except on
   its standard input.
-
-## Known issues
-
-- The images `fabr run` loads into the engine are not removed; see [Cleaning up](#cleaning-up).

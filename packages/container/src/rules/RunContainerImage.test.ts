@@ -27,7 +27,8 @@ import { LAUNCH_SCRIPT } from "../ImageRunnable";
 describe("the launcher of a runnable image", () => {
   let dir: string;
 
-  /* An engine that records each call, and holds the image once it is loaded. */
+  /* An engine that records each call, holds the image once it is loaded, and
+   * lists the tags in `tags` (each line a tag and when it was set). */
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-launch-"));
     fs.writeFileSync(path.join(dir, "launch.sh"), LAUNCH_SCRIPT, { mode: 0o755 });
@@ -36,6 +37,9 @@ describe("the launcher of a runnable image", () => {
     fs.writeFileSync(
       path.join(dir, "engine"),
       '#!/bin/sh\necho "$*" >> "$(dirname "$0")/calls"\nprintf "%s\\n" "$@" > "$(dirname "$0")/arguments"\n' +
+        'tags="$(dirname "$0")/tags"\n' +
+        'if [ "$1 $2" = "image ls" ]; then [ ! -f "$tags" ] || cut -d" " -f1 "$tags"; exit 0; fi\n' +
+        'if [ "$1 $3" = "image -f" ]; then grep "^$5 " "$tags" | cut -d" " -f2-; exit 0; fi\n' +
         'if [ "$1" = image ]; then [ -f "$(dirname "$0")/loaded" ]; exit $?; fi\n' +
         'if [ "$1" = load ]; then tar -tf - | sort > "$(dirname "$0")/loaded"; fi\n',
       { mode: 0o755 }
@@ -56,8 +60,22 @@ describe("the launcher of a runnable image", () => {
 
   it("loads the layout, streamed, where the engine lacks the image, then runs it with its options and the caller's arguments", () => {
     execFileSync("/bin/sh", [path.join(dir, "launch.sh"), "myhost", "localhost/fabr/app:abc", "4", "-p", "53:53/udp", "-p", "8080:8080/tcp", "one", "two words"], { stdio: ["ignore", "pipe", "pipe"] });
-    expect(calls()).to.deep.equal(["image inspect localhost/fabr/app:abc", "load -q", "run --rm --init -i --name fabr-myhost-PID-run -p 53:53/udp -p 8080:8080/tcp localhost/fabr/app:abc one two words"]);
+    expect(calls()).to.deep.equal(["image inspect localhost/fabr/app:abc", "load -q", "image ls localhost/fabr/app --format {{.Repository}}:{{.Tag}}", "run --rm --init -i --name fabr-myhost-PID-run -p 53:53/udp -p 8080:8080/tcp localhost/fabr/app:abc one two words"]);
     expect(fs.readFileSync(path.join(dir, "loaded"), "utf8").trim().split("\n")).to.deep.equal(["./", "./index.json"]);
+  });
+
+  it("removes the program's earlier images once it loads one, keeping the one loaded most recently before it", () => {
+    fs.writeFileSync(
+      path.join(dir, "tags"),
+      [
+        "localhost/fabr/app:abc 2026-11-05 10:00:03 +0000 UTC",
+        "localhost/fabr/app:old 2026-11-05 10:00:00 +0000 UTC",
+        "localhost/fabr/app:prev 2026-11-05 10:00:02 +0000 UTC",
+        "localhost/fabr/app:older 2026-11-05 10:00:01 +0000 UTC",
+      ].join("\n") + "\n"
+    );
+    execFileSync("/bin/sh", [path.join(dir, "launch.sh"), "myhost", "localhost/fabr/app:abc", "0"], { stdio: ["ignore", "pipe", "pipe"] });
+    expect(calls().filter(call => call.startsWith("rmi")).sort()).to.deep.equal(["rmi localhost/fabr/app:old", "rmi localhost/fabr/app:older"]);
   });
 
   it("names the container for the launch fabr gave it, where there is one", () => {

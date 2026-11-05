@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { IIndexEntry, indexPlatforms, selectManifest } from "./OciProtocol";
+import { IIndexEntry, indexPlatforms, nextPage, selectManifest } from "./OciProtocol";
 
 const entry = (os: string, architecture: string, variant?: string): IIndexEntry => ({
   mediaType: "application/vnd.oci.image.manifest.v1+json",
@@ -34,5 +34,11 @@ describe("OCI protocol", () => {
     expect(selectManifest(index, { os: "linux", architecture: "arm", variant: "v7" })?.platform?.architecture).to.equal("arm");
     expect(selectManifest(index, { os: "linux", architecture: "s390x" })).to.equal(undefined);
     expect(indexPlatforms(index)).to.deep.equal(["linux/amd64", "linux/arm64/v8", "linux/arm/v7"]);
+  });
+
+  it("reads the next page a Link header names", () => {
+    expect(nextPage('</v2/library/node/tags/list?last=22&n=100>; rel="next"')).to.equal("/v2/library/node/tags/list?last=22&n=100");
+    expect(nextPage(undefined)).to.equal(undefined);
+    expect(nextPage('<https://x/a>; rel="prev"')).to.equal(undefined);
   });
 });

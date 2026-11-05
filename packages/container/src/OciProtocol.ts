@@ -332,6 +332,24 @@ export class Registry {
       );
   }
 
+  /**
+   * List the tags of `repository`, page by page as the registry's `Link`
+   * header leads; undefined where the registry has no such repository.
+   */
+  public tags(repository: string): Computable<string[] | undefined> {
+    const page = (path: string, listed: string[]): Computable<string[] | undefined> =>
+      this.send(path, { method: "GET" }).then(response => {
+        if (response.statusCode === 404) {
+          return undefined;
+        }
+        this.expect(response, [200], `listing the tags of ${repository}`);
+        const tags = parseJson(response.body, `tags of ${repository} from ${this.url}`, toTags);
+        const next = nextPage(response.headers.link);
+        return next === undefined ? [...listed, ...tags] : page(new URL(next, this.url).toString(), [...listed, ...tags]);
+      });
+    return page(`/v2/${repository}/tags/list`, []);
+  }
+
   /** Open a stream of the blob `digest` in `repository`, as published, to push it to another registry. */
   public blobStream(repository: string, digest: string): Computable<Readable> {
     return openUrlStream(`${this.url}/v2/${repository}/blobs/${digest}`, {}, Date.now, "content", undefined, this.credential).then(
@@ -408,6 +426,24 @@ export class Registry {
       throw new FabrError(`${this.url} refused ${doing} (${response.statusCode}${said === "" ? "" : `: ${said.substring(0, 300)}`})`);
     }
   }
+}
+
+/** Read a tag list's `tags` (null where a repository has none). */
+function toTags(json: unknown): string[] {
+  const tags = toJsonObject(json).tags;
+  if (tags === null || tags === undefined) {
+    return [];
+  }
+  if (!Array.isArray(tags) || !tags.every(tag => typeof tag === "string")) {
+    throw new FabrError("its 'tags' is not a list of names");
+  }
+  return tags as string[];
+}
+
+/** @return where a `Link` header's `rel="next"` page is (`</v2/…/tags/list?last=x&n=100>; rel="next"`), or undefined where it names none. */
+export function nextPage(link: string | string[] | undefined): string | undefined {
+  const text = Array.isArray(link) ? link.join(", ") : link ?? "";
+  return /<([^>]+)>\s*;\s*rel="?next"?/.exec(text)?.[1];
 }
 
 /** Read a layer's index as fabr stores it. */

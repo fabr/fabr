@@ -31,6 +31,7 @@ import {
   FileSet,
   IFile,
   MemoryFile,
+  NamespaceRef,
   packToTarball,
   openUrlStream,
   parseName,
@@ -118,6 +119,21 @@ async function startRegistry(): Promise<IFakeRegistry> {
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
     req.on("end", () => {
       const received = Buffer.concat(chunks);
+      /* Each repository's tags, two a page, the next linked from the last. */
+      const tagList = /^\/v2\/(.+)\/tags\/list$/.exec(url.pathname);
+      if (tagList !== null) {
+        const tags = [...(repositories.get(tagList[1])?.manifests.keys() ?? [])].filter(tag => !tag.startsWith("sha256:")).sort();
+        if (!repositories.has(tagList[1])) {
+          res.writeHead(404).end();
+          return;
+        }
+        const last = url.searchParams.get("last");
+        const rest = last === null ? tags : tags.filter(tag => tag > last);
+        const page = rest.slice(0, 2);
+        const more = rest.length > 2 ? { link: `</v2/${tagList[1]}/tags/list?n=2&last=${page[page.length - 1]}>; rel="next"` } : {};
+        res.writeHead(200, more).end(JSON.stringify({ name: tagList[1], tags: page }));
+        return;
+      }
       const upload = /^\/v2\/(.+)\/blobs\/uploads\/(.*)$/.exec(url.pathname);
       if (upload !== null && req.method === "POST") {
         const mount = url.searchParams.get("mount");
@@ -263,6 +279,24 @@ describe("OciRepository", () => {
     const pulled = (await Promise.resolve(copied.content.files())) as ImageFileSet;
     expect(await pulled.readFile("app/server")).to.equal("srv");
     expect(await Promise.resolve(repository.publish(carrier))).to.equal("already-synced");
+  });
+
+  it("lists an image's tags, page by page, each as the reference to its image", async () => {
+    const context = fetchingContext("x86_64-unknown-linux");
+    const repository = new OciRepository(context, new Registry(context, registry.url), "library");
+    for (const tag of ["2.0", "1.1", "0.9"]) {
+      const node = await Promise.resolve(repository.resolve(repository.getRepositoryRef(parseName("demo:1.0")) as RepositoryRef));
+      const image = (await Promise.resolve(node.content.files())) as ImageFileSet;
+      const [carrier] = await Promise.resolve(repository.package([{ destination: repository.getRepositoryPublishRef(parseName(`demo:${tag}`)), content: image }]));
+      await Promise.resolve(repository.publish(carrier));
+    }
+    const listed = await Promise.resolve(repository.children(repository.getRepositoryRef(parseName("demo")) as NamespaceRef));
+    expect([...listed.keys()]).to.deep.equal(["0.9", "1.0", "1.1", "2.0"]);
+    const ref = listed.get("1.1") as RepositoryRef;
+    expect([ref.name, ref.versionConstraint]).to.deep.equal(["demo", "1.1"]);
+    expect(registry.requests.filter(request => request.startsWith("GET /v2/library/demo/tags/list"))).to.have.lengthOf(2);
+    const missing = await Promise.resolve(repository.children(repository.getRepositoryRef(parseName("absent")) as NamespaceRef)).catch((err: Error) => err);
+    expect((missing as Error).message).to.match(/has no image absent/);
   });
 
   it("refuses a digest, or a name with no tag, as a coordinate to publish to", () => {

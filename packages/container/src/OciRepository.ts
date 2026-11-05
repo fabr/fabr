@@ -18,6 +18,7 @@
  */
 
 import {
+  compareText,
   Computable,
   Credential,
   FabrError,
@@ -35,6 +36,7 @@ import {
   PublishableFileSet,
   PublishMember,
   PublishStatus,
+  Reference,
   RepositoryPublishRef,
   RepositoryRef,
   RepositoryWriter,
@@ -149,6 +151,21 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
     }
     const reference = new RepositoryRef(this, { name: image, versionConstraint: version });
     return rest === undefined ? reference : reference.find(name.substring(rest.at), rest.separator === "/" ? `${version}/` : "");
+  }
+
+  /** List the tags of the image a namespace names, each as the reference to its image; the registry's every image cannot be listed. */
+  public children({ name }: NamespaceRef): Computable<Map<string, Reference>> {
+    if (name === "") {
+      return Computable.reject(
+        new FabrError(`${this.context.name} cannot list every image it holds`).withHelp(`name an image to list its tags, as in '${this.context.name}:node'`)
+      );
+    }
+    return this.registry.tags(this.repositoryOf(name)).then(tags => {
+      if (tags === undefined) {
+        throw new FabrError(`${this.registry.url} has no image ${name}`);
+      }
+      return new Map([...tags].sort(compareText).map((tag): [string, Reference] => [tag, new RepositoryRef(this, { name, versionConstraint: tag })]));
+    });
   }
 
   /** Vend the publish coordinate `name` names: an image's name and the tag it is published under. */

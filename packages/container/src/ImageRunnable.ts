@@ -31,7 +31,9 @@ const ENGINE_COMMAND = "engine";
 /**
  * Load the image `$2` from the layout beside this script, streamed as an
  * archive with no extended attributes (macOS's tar would otherwise add its
- * own, which Docker refuses), where the container engine does not hold it;
+ * own, which Docker refuses), where the container engine does not hold it,
+ * removing the other tags of its repository (the program's earlier images) but
+ * the one loaded most recently before it, and any a container still uses;
  * then run it under a minimal init, which passes signals on to the program
  * (the kernel ignores those sent to a PID 1 that does not handle them), removed
  * when it ends, its stdin attached and a terminal given it where stdin is one.
@@ -61,6 +63,11 @@ done
 if [ "$options" -eq "$total" ]; then set -- "$@" "$image"; fi
 if ! "$here/${ENGINE_COMMAND}" image inspect "$image" >/dev/null 2>&1; then
   (cd "$here/${LAYOUT_DIR}" && COPYFILE_DISABLE=1 tar --no-xattrs -cf - .) | "$here/${ENGINE_COMMAND}" load -q >/dev/null
+  "$here/${ENGINE_COMMAND}" image ls "\${image%:*}" --format '{{.Repository}}:{{.Tag}}' | grep -vxF "$image" | while read -r old; do
+    echo "$("$here/${ENGINE_COMMAND}" image inspect -f '{{.Metadata.LastTagTime}}' "$old" 2>/dev/null) $old"
+  done | sort -r | tail -n +2 | while read -r line; do
+    "$here/${ENGINE_COMMAND}" rmi "\${line##* }" >/dev/null 2>&1 || true
+  done
 fi
 if [ -t 0 ]; then
   exec "$here/${ENGINE_COMMAND}" run --rm --init -i -t --name "$name" "$@"
