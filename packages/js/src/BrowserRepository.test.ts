@@ -30,6 +30,7 @@ const DATA = {
     ["safari", ["16.4", "17.2", "18.0"]],
     ["ios_saf", ["17.2", "18.5-18.7"]],
     ["chrome", ["119", "120", "121"]],
+    ["op_mini", ["all"]],
   ]),
   baseline: new Map([["2023", new Map([["safari", "17.2"], ["ios_saf", "17.2"], ["chrome", "120"]])]]),
 };
@@ -52,12 +53,16 @@ describe("BROWSER_FORMAT", () => {
     expect(BROWSER_FORMAT.versionToString(BROWSER_FORMAT.parseVersion("17.2"))).to.equal("17.2");
     /* A range of Can I Use's is its lower end. */
     expect(SEMVER.versionToString(BROWSER_FORMAT.parseVersion("18.5-18.7"))).to.equal("18.5.0");
+    /* Opera Mini's one version, `all`, is the lowest there is. */
+    expect(BROWSER_FORMAT.versionToString(BROWSER_FORMAT.parseVersion("all"))).to.equal("all");
+    expect(BROWSER_FORMAT.compare(BROWSER_FORMAT.parseVersion("all"), BROWSER_FORMAT.parseVersion("1"))).to.be.greaterThan(0);
   });
 
   it("splits a reference into the browser and its lowest version, and refuses one without a version", () => {
     expect(BROWSER_FORMAT.splitReference(parseName("safari:17.2"))).to.deep.include({ name: "safari", versionConstraint: "17.2" });
     expect(() => BROWSER_FORMAT.validateRequirement({ name: "safari", versionConstraint: undefined })).to.throw(/Missing version/);
     expect(() => BROWSER_FORMAT.validateRequirement({ name: "safari", versionConstraint: ">=15.4" })).to.throw(/not a browser version/);
+    expect(() => BROWSER_FORMAT.validateRequirement({ name: "op_mini", versionConstraint: "all" })).to.not.throw();
     expect(() => BROWSER_FORMAT.splitReference(parseName("safari:17.2:lib/x.js"))).to.throw(/a browser has none/);
   });
 });
@@ -71,6 +76,7 @@ describe("BrowserRepository", () => {
     /* First in the domain's order: the newest version the requirement admits. */
     expect(BROWSER_FORMAT.versionToString((await settle(repository.lowestAvailable("ios_saf", "18")))!)).to.equal("17.2");
     expect(BROWSER_FORMAT.versionToString((await settle(repository.lowestAvailable("safari", "17.2")))!)).to.equal("17.2");
+    expect(BROWSER_FORMAT.versionToString((await settle(repository.lowestAvailable("op_mini", "all")))!)).to.equal("all");
   });
 
   it("gives a browser no requirements, and a Baseline year each core browser's version or later", async () => {
@@ -96,6 +102,11 @@ describe("browserQueryOf", () => {
     const baseline = new PackageFileSet(new Map(), "baseline", "2023", dependenciesOn(safari, chrome));
     expect(browserQueryOf([baseline, new PackageFileSet(new Map(), "safari", "16.4")])).to.equal("chrome >= 120, safari >= 16.4");
     expect(browserQueryOf([])).to.equal("");
+  });
+
+  it("names a browser whose one version is Can I Use's `all` as browserslist does", () => {
+    const opMini = new PackageFileSet(new Map(), "op_mini", "0.0.0");
+    expect(browserQueryOf([opMini, new PackageFileSet(new Map(), "chrome", "109")])).to.equal("chrome >= 109, op_mini all");
   });
 });
 
@@ -126,6 +137,11 @@ describe("browserDataOf", () => {
       ["safari", "17.2"],
       ["ios_saf", "17.2"],
     ]);
+  });
+
+  it("lists a browser whose one version is `all`", () => {
+    const data = browserDataOf({ op_mini: { release_date: { all: 1426464000 } } }, () => []);
+    expect(data.browsers.get("op_mini")).to.deep.equal(["all"]);
   });
 
   it("has no Baseline year the data gives no versions for", () => {

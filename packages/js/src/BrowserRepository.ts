@@ -133,13 +133,22 @@ export function browserDataOf(agents: ICaniuseAgents, baselineVersions: IBaselin
   return { browsers, baseline };
 }
 
-/** @return true if `text` is a version as Can I Use writes one (`17`, `17.2`, `4.4.3`), otherwise false. */
+/**
+ * The one version Can I Use lists for a browser it does not number (Opera Mini): a browser's
+ * only version, so the lowest, held as version 0. No numbered browser has a version 0.
+ */
+const ALL = "all";
+
+/** @return true if `text` is a version as Can I Use writes one (`17`, `17.2`, `4.4.3`, `all`), otherwise false. */
 function isBareVersion(text: string): boolean {
-  return /^\d+(\.\d+){0,2}$/.test(text);
+  return text === ALL || /^\d+(\.\d+){0,2}$/.test(text);
 }
 
-/** Write a Can I Use version (`17.2`, or a range's lower end, `18.5-18.7`) as semver (`17.2.0`). */
+/** Write a Can I Use version (`17.2`, a range's lower end, `18.5-18.7`, or `all`) as semver (`17.2.0`, `0.0.0`). */
 function semverOf(text: string): string {
+  if (text === ALL) {
+    return "0.0.0";
+  }
   const parts = text.split("-")[0].split(".");
   while (parts.length < 3) {
     parts.push("0");
@@ -147,9 +156,10 @@ function semverOf(text: string): string {
   return parts.join(".");
 }
 
-/** Write a semver version as Can I Use does, its zero minor and patch dropped (`17.2.0` → `17.2`, `120.0.0` → `120`). */
+/** Write a semver version as Can I Use does, its zero minor and patch dropped (`17.2.0` → `17.2`, `120.0.0` → `120`, `0.0.0` → `all`). */
 function caniuseOf(text: string): string {
-  return text.replace(/(\.0)+$/, "") || "0";
+  const written = text.replace(/(\.0)+$/, "");
+  return written === "" || written === "0" ? ALL : written;
 }
 
 /** The newest version a semver constraint admits, or undefined where it admits ever newer ones. */
@@ -229,7 +239,8 @@ function validateBrowserRequirement({ name, versionConstraint }: Requirement): v
 
 /**
  * Write the browsers `packages` reach as a browserslist query, each by the
- * lowest version selected for it (`safari >= 17.2, chrome >= 120`); `baseline`
+ * lowest version selected for it (`safari >= 17.2, chrome >= 120`), or as `op_mini all` where
+ * that version is Can I Use's `all`; `baseline`
  * names no browser and is left out, as are the browsers of nothing. Sorted.
  */
 export function browserQueryOf(packages: ReadonlyArray<PackageFileSet>): string {
@@ -252,7 +263,7 @@ export function browserQueryOf(packages: ReadonlyArray<PackageFileSet>): string 
   packages.forEach(visit);
   return [...lowest]
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([browser, version]) => `${browser} >= ${version}`)
+    .map(([browser, version]) => (version === ALL ? `${browser} ${ALL}` : `${browser} >= ${version}`))
     .join(", ");
 }
 
@@ -359,9 +370,9 @@ export class BrowserRepository implements Repository, RepositoryReader<SemverVer
   }
 }
 
-/** @return true if Can I Use's `text` is a numbered version or range (not `TP`, `all`), otherwise false. */
+/** @return true if Can I Use's `text` is a version: numbered, a range, or `all` (not `TP`), otherwise false. */
 function isVersionOrRange(text: string): boolean {
-  return /^\d+(\.\d+){0,2}(-\d+(\.\d+){0,2})?$/.test(text);
+  return text === ALL || /^\d+(\.\d+){0,2}(-\d+(\.\d+){0,2})?$/.test(text);
 }
 
 /**
