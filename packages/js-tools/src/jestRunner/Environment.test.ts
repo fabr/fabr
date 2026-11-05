@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { answerWithGlobal, environmentFor, inheritedMethods } from "./Environment";
+import { answerWithGlobal, environmentFor, hideNodeSchedulers, inheritedMethods } from "./Environment";
 
 /* installJsdom itself needs a real jsdom, which fabr's own tests do not carry
  * (it comes from the TARGET's test_deps); what is testable here is the part
@@ -135,5 +135,20 @@ describe("environmentFor", () => {
   it("ignores environment options written twice, and fails on ones that are not JSON", () => {
     expect(environmentFor({ "jest-environment-options": ["{}", "{}"] }, "node").options).to.deep.equal({});
     expect(() => environmentFor({ "jest-environment-options": "{url:" }, "node")).to.throw(SyntaxError);
+  });
+});
+
+describe("hideNodeSchedulers", () => {
+  it("removes node's scheduling globals that the window lacks, as jest's jsdom environment has none", () => {
+    const globals: Record<string, unknown> = { setImmediate() {}, clearImmediate() {}, MessageChannel() {}, MessagePort() {}, setTimeout() {} };
+    hideNodeSchedulers(globals, {});
+    expect(Object.keys(globals)).to.deep.equal(["setTimeout"]);
+  });
+
+  it("keeps one the window provides", () => {
+    const own = (): void => {};
+    const globals: Record<string, unknown> = { MessageChannel: own, setImmediate() {} };
+    hideNodeSchedulers(globals, { MessageChannel: own });
+    expect(globals).to.deep.equal({ MessageChannel: own });
   });
 });

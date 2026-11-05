@@ -148,11 +148,18 @@ const KEEP_NODE = new Set([
   "__dirname",
   "__filename",
   "Buffer",
-  "setImmediate",
-  "clearImmediate",
   "queueMicrotask",
   "structuredClone",
 ]);
+
+/**
+ * Scheduling globals node provides and jsdom does not, which jest's jsdom
+ * environment therefore lacks. Code that picks its scheduler by what exists
+ * (React's picks `setImmediate`, then `MessageChannel`, then `setTimeout`) must
+ * find what it finds under jest: on a node-only queue its work is ordered
+ * against a test's timers differently from run to run.
+ */
+const NODE_ONLY_SCHEDULERS = ["setImmediate", "clearImmediate", "MessageChannel", "MessagePort"];
 
 /**
  * `window`'s self-references. In a top-level browsing context every one of them
@@ -230,6 +237,7 @@ export function installJsdom(options: Record<string, unknown> = {}): void {
       define(globals, key, window, key);
     }
   }
+  hideNodeSchedulers(globals, window);
   /* jsdom's own symbol-keyed members (its implementation link among them), so
    * that jsdom takes the global object for its window wherever it checks for a
    * Window: an event's `view`, say. */
@@ -259,6 +267,18 @@ export function installJsdom(options: Record<string, unknown> = {}): void {
   answerWithGlobal(prototypeOf("UIEvent"), "view", window, globals);
   answerWithGlobal(prototypeOf("MessageEvent"), "source", window, globals);
   patchLocation(window);
+}
+
+/**
+ * Remove from `globals` each of node's scheduling globals that `window` does not
+ * provide itself.
+ */
+export function hideNodeSchedulers(globals: Record<string, unknown>, window: object): void {
+  for (const key of NODE_ONLY_SCHEDULERS) {
+    if (!(key in window)) {
+      delete globals[key];
+    }
+  }
 }
 
 /**
