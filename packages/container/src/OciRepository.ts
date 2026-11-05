@@ -20,6 +20,7 @@
 import {
   Computable,
   FabrError,
+  FileSet,
   IProvenanceStep,
   MemoryCache,
   Name,
@@ -38,9 +39,11 @@ import {
   RepositoryWriter,
   RepositoryRegistration,
   ResolvedNode,
+  RunnableFileSet,
   TargetContext,
 } from "@fabr-build/core";
 import { ImageFileSet, ILayerRecord } from "./ImageFileSet";
+import { imageRunnable } from "./ImageRunnable";
 import { isDigest, splitImageReference } from "./ImageReference";
 import { packageImage, pushImage } from "./ImagePublish";
 import { containerPluginContext, IRegistryCredential } from "./RegistryAuth";
@@ -174,7 +177,8 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
    * Answer `reference` with the node of its image for `OCI_TARGET`'s platform:
    * a package named as written, at the digest of the platform's manifest,
    * which its tag resolves to here. Its config and layers are fetched only
-   * when its files are wanted, once a run.
+   * when its files are wanted, once a run. Under `run` its files are the
+   * image as a program the container engine runs (see {@link imageRunnable}).
    */
   public resolve(reference: RepositoryRef): Computable<ResolvedNode> {
     return this.context.getGlobalString(OCI_TARGET).then(triple => {
@@ -187,8 +191,16 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
       return this.manifestFor(request, version).then(manifest => {
         const origin: IImageOrigin = { kind: OCI_IMAGE_PROVENANCE, image: request.written, digest: manifest.digest, platform: platformText(request.wanted) };
         const key = `${this.registry.url} ${request.repository}@${manifest.digest}`;
+        const image = (): Computable<ImageFileSet> => this.images.getOrCreate(key, () => this.image(request, manifest, reference.name, origin));
+        /* Under `run`, the image is a program the container engine runs. */
+        const files = (): Computable<FileSet> =>
+          this.context.operation === "run"
+            ? Computable.forAll([image(), this.context.getGlobalRunnable("CONTAINER_ENGINE")] as const, (pulled: ImageFileSet, engine: RunnableFileSet) =>
+                imageRunnable(pulled, reference.name, engine)
+              )
+            : image();
         return new ResolvedNode(
-          { key, files: () => this.images.getOrCreate(key, () => this.image(request, manifest, reference.name, origin)) },
+          { key: this.context.operation === "run" ? `runnable ${key}` : key, files },
           reference.name,
           manifest.digest,
           [],

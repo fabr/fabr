@@ -55,6 +55,13 @@ targetdef container_image {
 }
 
 rule container_image c<BUILD_OPERATION=build> = @fabr-build/container:rules/BuildContainerImage;
+rule container_image c<BUILD_OPERATION=run> = @fabr-build/container:rules/RunContainerImage;
+
+#
+# The container engine `fabr run` of an image runs it with: Docker, or podman
+# (`@host:podman`), whose commands are the same.
+#
+default CONTAINER_ENGINE = @host:docker;
 
 ####################### Repository ##########################
 
