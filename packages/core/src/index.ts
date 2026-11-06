@@ -25,6 +25,7 @@
  * `activate()`. */
 
 export * from "./Constants";
+export * from "./Audit";
 export * from "./Fabr";
 export * from "./core/BuildCache";
 export * from "./core/Computable";
@@ -93,6 +94,7 @@ export * from "./support/Mime";
 export * from "./support/Platform";
 export { StringReader } from "./support/StringReader";
 export * from "./support/Coverage";
+export * from "./support/Sarif";
 export * from "./support/TestResult";
 export * from "./support/Unpack";
 export * from "./support/UnpackTar";

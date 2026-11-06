@@ -18,8 +18,24 @@
  */
 
 import { expect } from "chai";
-import { Computable, Conflicts, Dependency, EMPTY_FILESET, PackageFileSet, PackageGraphBuilder, RefSource, RepositoryRef, ResolvedNode, TargetRef, TargetSource } from "@fabr-build/core";
-import { renderDependencyTrees } from "./DepsTree";
+import {
+  Advisory,
+  AuditedPackage,
+  AuditReport,
+  Computable,
+  Conflicts,
+  Dependency,
+  EMPTY_FILESET,
+  PackageFileSet,
+  PackageFormat,
+  PackageGraphBuilder,
+  RefSource,
+  RepositoryRef,
+  ResolvedNode,
+  TargetRef,
+  TargetSource,
+} from "@fabr-build/core";
+import { renderAudit, renderDependencyTrees } from "./DepsTree";
 
 /** A reference as a registry would vend it; nothing here resolves one. */
 function reference(name: string, versionConstraint?: string): RepositoryRef {
@@ -49,7 +65,12 @@ function node(name: string, configuration: string, dependencies: Dependency[] = 
 
 /** A package delivered for `name:constraint`, at `version`, as the edge that
  * reference makes. */
-function delivered(name: string, version: string, constraint: string, dependencies: Array<Dependency<PackageFileSet>> = []): Dependency<PackageFileSet> {
+function delivered(
+  name: string,
+  version: string,
+  constraint: string,
+  dependencies: Array<Dependency<PackageFileSet>> = []
+): Dependency<PackageFileSet> {
   return { reference: reference(name, constraint), package: new PackageFileSet([], name, version, dependencies) };
 }
 
@@ -61,7 +82,13 @@ describe("renderDependencyTrees", () => {
   it("draws a section per part, with requested and selected versions", () => {
     const leaf = delivered("leaf", "1.2.0", "^1.0.0");
     const lines = rendered([
-      ["deps", [delivered("exact", "2.0.0", "2.0.0", [leaf]), { reference: target("local"), package: new PackageFileSet([], "local", undefined, []) }]],
+      [
+        "deps",
+        [
+          delivered("exact", "2.0.0", "2.0.0", [leaf]),
+          { reference: target("local"), package: new PackageFileSet([], "local", undefined, []) },
+        ],
+      ],
       ["test_deps", [delivered("chai", "4.5.0", "^4.0.0")]],
     ]);
     expect(lines).to.deep.equal([
@@ -79,7 +106,12 @@ describe("renderDependencyTrees", () => {
     const lines = renderDependencyTrees([
       {
         title: "app",
-        parts: new Map([["deps", [delivered("left", "1.0.0", "1.0.0", [delivered("react", "17.0.2", "^17.0.0")]), delivered("react", "18.3.1", "^18.0.0")]]]),
+        parts: new Map([
+          [
+            "deps",
+            [delivered("left", "1.0.0", "1.0.0", [delivered("react", "17.0.2", "^17.0.0")]), delivered("react", "18.3.1", "^18.0.0")],
+          ],
+        ]),
         conflicts: new Conflicts(
           new Map([["react", new Set(["17.0.2", "18.3.1"])]]),
           pkg => pkg.packageName === "react",
@@ -138,7 +170,10 @@ describe("renderDependencyTrees", () => {
   });
 
   it("omits the heading of an unnamed part", () => {
-    expect(rendered([["", [delivered("glob", "10.0.0", "10.0.0")]]], "@npm:glob:10.0.0")).to.deep.equal(["@npm:glob:10.0.0", "└── glob:10.0.0"]);
+    expect(rendered([["", [delivered("glob", "10.0.0", "10.0.0")]]], "@npm:glob:10.0.0")).to.deep.equal([
+      "@npm:glob:10.0.0",
+      "└── glob:10.0.0",
+    ]);
   });
 
   it("expands a repeated subtree once, across parts, and terminates on a cycle", () => {
@@ -150,7 +185,12 @@ describe("renderDependencyTrees", () => {
     builder.wire(a, [toB]);
     builder.wire(b, [toA]);
     builder.seal();
-    expect(rendered([["deps", [toA]], ["test_deps", [toB]]])).to.deep.equal([
+    expect(
+      rendered([
+        ["deps", [toA]],
+        ["test_deps", [toB]],
+      ])
+    ).to.deep.equal([
       "app",
       "deps",
       "└── a:1.0.0",
@@ -188,7 +228,10 @@ describe("renderDependencyTrees", () => {
   it("paints packages built in the project, and explains the colour", () => {
     /* Only a package a target produced is painted. One a registry or the fabr
      * installation delivered is not the project's. */
-    const registry = { reference: reference("chai", "^4.0.0"), package: new PackageFileSet([], "chai", "4.5.0", [], { kind: "package-resolution" }) };
+    const registry = {
+      reference: reference("chai", "^4.0.0"),
+      package: new PackageFileSet([], "chai", "4.5.0", [], { kind: "package-resolution" }),
+    };
     const local = { reference: target("local"), package: new PackageFileSet([], "local", undefined, [], { kind: "target" }) };
     const lines = renderDependencyTrees(
       [{ title: "app", parts: new Map([["deps", [local, registry]]]) }],
@@ -210,5 +253,80 @@ describe("renderDependencyTrees", () => {
       { title: "two", parts: new Map() },
     ]);
     expect(lines).to.deep.equal(["one", "deps", "└── x:1.0.0", "", "two", "No dependencies"]);
+  });
+});
+
+/** A format whose versions are dotted numbers; nothing here resolves with it. */
+const TEST_FORMAT = {
+  parseVersion: (text: string) => text.split(".").map(Number),
+  compare: (a: number[], b: number[]) => {
+    for (let at = 0; at < Math.max(a.length, b.length); at++) {
+      const difference = (a[at] ?? 0) - (b[at] ?? 0);
+      if (difference !== 0) {
+        return difference;
+      }
+    }
+    return 0;
+  },
+} as unknown as PackageFormat<unknown, unknown>;
+
+/** The package `name` at `version`, reached by `paths`. */
+function audited(name: string, version: string, ...paths: Array<[string[], number]>): AuditedPackage {
+  return {
+    purl: `pkg:test/${name}@${version}`,
+    packageName: name,
+    version,
+    format: TEST_FORMAT,
+    paths: paths.map(([path, others]) => ({ path, others })),
+  };
+}
+
+const LODASH: Advisory = {
+  id: "GHSA-35jh-r3h4-6jhm",
+  aliases: ["CVE-2021-23337"],
+  summary: "Command Injection in lodash",
+  severity: "HIGH",
+  url: "https://github.com/advisories/GHSA-35jh-r3h4-6jhm",
+  affected: [{ purl: "pkg:test/lodash", fixed: ["4.17.21"] }],
+};
+
+const MINIMIST: Advisory = {
+  id: "GHSA-xvch-5gv4-984h",
+  aliases: [],
+  summary: "Prototype Pollution in minimist",
+  severity: "CRITICAL",
+  affected: [{ purl: "pkg:test/minimist", fixed: ["0.2.4", "1.2.6"] }],
+};
+
+describe("renderAudit", () => {
+  it("renders a block per advisory with the packages it affects, their fixes highest first and a path with its other edges counted", () => {
+    const lodash = audited("lodash", "4.17.15", [["app", "express@4.17.1", "lodash@4.17.15"], 2]);
+    const minimist = audited("minimist", "0.0.8", [["app", "minimist@0.0.8"], 0]);
+    const report: AuditReport = {
+      packages: [audited("express", "4.17.1"), lodash, minimist],
+      findings: [
+        { advisory: MINIMIST, packages: [minimist] },
+        { advisory: LODASH, packages: [lodash] },
+      ],
+    };
+    expect(renderAudit(report)).to.deep.equal([
+      "GHSA-xvch-5gv4-984h  CRITICAL  Prototype Pollution in minimist",
+      "  minimist@0.0.8, fixed in 1.2.6, 0.2.4",
+      "    app > minimist@0.0.8",
+      "",
+      "GHSA-35jh-r3h4-6jhm (CVE-2021-23337)  HIGH  Command Injection in lodash",
+      "  lodash@4.17.15, fixed in 4.17.21",
+      "    app > express@4.17.1 > lodash@4.17.15 (+2)",
+      "  https://github.com/advisories/GHSA-35jh-r3h4-6jhm",
+      "",
+      "2 advisories affect 2 of the 3 packages checked",
+    ]);
+  });
+
+  it("says when there was nothing to audit, and counts a clean run's packages", () => {
+    expect(renderAudit({ packages: [], findings: [] })).to.deep.equal(["No packages to audit"]);
+    expect(renderAudit({ packages: [audited("chai", "4.3.6")], findings: [] })).to.deep.equal([
+      "No known advisories affect the 1 package checked",
+    ]);
   });
 });

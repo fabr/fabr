@@ -110,10 +110,16 @@ export interface BuildContext {
   /**
    * Get a constraint's value as this configuration was given it, or undefined.
    * Declarations are not consulted, so a `default` property is not seen: use
-   * {@link InternalBuildContext.getProperty} for a value that a declaration
-   * may supply.
+   * {@link getProperty} for a value that a declaration may supply.
    */
   getConstraint(name: string): string | undefined;
+
+  /**
+   * Get the value of the global `name` in this configuration, as a rule reads
+   * it: the declarations that apply here, or the value the configuration was
+   * given. Rejects where nothing declares it or no declaration applies.
+   */
+  getProperty(name: string): Computable<Property>;
 
   /** Get the constraints this configuration was given. */
   getConstraints(): Constraints;

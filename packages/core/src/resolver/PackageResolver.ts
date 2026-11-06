@@ -1161,7 +1161,10 @@ class ResolutionGraph<V, C> {
    * its steps. */
   private rootOrigin(reference: RepositoryRef): IProvenanceStep | undefined {
     const format = allowingBuilds(this.registry.format);
-    return chainSteps(reference.steps, resolutionOrigin(format, { name: reference.name, versionConstraint: reference.versionConstraint }, this.resolution.graph.selections));
+    return chainSteps(
+      reference.steps,
+      resolutionOrigin(format, this.registry.format, { name: reference.name, versionConstraint: reference.versionConstraint }, this.resolution.graph.selections)
+    );
   }
 
   /** Get the provenance of `selection`: the reference its `reachedVia` chain
@@ -1177,12 +1180,12 @@ class ResolutionGraph<V, C> {
         const root =
           roots.find(each => each.name === at.name && each.reference.versionConstraint === edge!.versionConstraint) ??
           roots.find(each => each.name === at.name);
-        return root === undefined ? resolutionOrigin(format, requirement, graph.selections) : this.rootOrigin(root.reference);
+        return root === undefined ? resolutionOrigin(format, this.registry.format, requirement, graph.selections) : this.rootOrigin(root.reference);
       }
       const from = edge.requiredBy;
       if (builds.built.has(from)) {
         const carried = builds.carriedFrom.get(from)?.get(at.name);
-        return chainSteps(carried?.steps ?? [], resolutionOrigin(format, requirement, graph.selections));
+        return chainSteps(carried?.steps ?? [], resolutionOrigin(format, this.registry.format, requirement, graph.selections));
       }
       seen.add(from);
       const up = graph.node(from);
@@ -1191,16 +1194,18 @@ class ResolutionGraph<V, C> {
       }
       at = up;
     }
-    return resolutionOrigin(format, { name: at.name, versionConstraint: at.selectedBy?.versionConstraint }, graph.selections);
+    return resolutionOrigin(format, this.registry.format, { name: at.name, versionConstraint: at.selectedBy?.versionConstraint }, graph.selections);
   }
 }
 
 /** Make the provenance origin of a resolved closure: the root requirement and
- * the selections that answer "why is this package here / why this version". It
- * carries no registry identity — "who provided this" is answered by following
- * the chain to the written reference and the declaration it names. */
+ * the selections that answer "why is this package here / why this version",
+ * and the registry's `format`. It carries no registry identity — "who provided
+ * this" is answered by following the chain to the written reference and the
+ * declaration it names. */
 function resolutionOrigin<V, C>(
-  format: VersionDomain<V, C>,
+  domain: VersionDomain<V, C>,
+  format: PackageFormat<unknown, unknown>,
   req: Requirement,
   selections: Selected<V>[]
 ): IResolutionOrigin<V> {
@@ -1208,7 +1213,8 @@ function resolutionOrigin<V, C>(
     kind: PACKAGE_RESOLUTION_PROVENANCE,
     root: req,
     selections,
-    versionToString: format.versionToString,
+    versionToString: domain.versionToString,
+    format,
   };
 }
 
@@ -1364,7 +1370,7 @@ function lowerBound<V, C>(
     reachedVia: edge,
     reachableFrom: [0],
   };
-  const origin = resolutionOrigin(format, req, [selection]);
+  const origin = resolutionOrigin(format, format, req, [selection]);
   /* The written minimum was never published. The joint (build/test) path
    * would floor-raise here; the standalone path stays exact by design, but
    * the error should name the raise the build would take. */
@@ -1410,7 +1416,7 @@ export function fetchPinnedPackage<V, C>(
   if (isBuildVersion(version)) {
     throw new FabrError(`${requirementKey(req)} is a package built in this project, which its repository does not hold`);
   }
-  const origin = resolutionOrigin(allowingBuilds(format), req, graph.selections);
+  const origin = resolutionOrigin(allowingBuilds(format), format, req, graph.selections);
   if (operation !== undefined) {
     return req.variant === undefined
       ? publishedFor(registry, bound.publishedName ?? bound.name, version, operation, origin)

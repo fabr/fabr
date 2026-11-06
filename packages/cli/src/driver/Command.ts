@@ -92,6 +92,7 @@ const COMMAND_SPECS: CommandSpec[] = [
   { name: "cat", synopsis: "<names>", summary: "Build a target and write its matching files to stdout", accepts: ["-q", "--no-progress", "--refresh"], requiresTarget: true },
   { name: "cp", synopsis: "<sources…> <dest>", summary: "Build targets and copy their files to a destination directory", accepts: ["-q", "--no-progress", "--refresh"], requiresTarget: true },
   { name: "deps", synopsis: "<names>", summary: "Print the dependency tree of the given targets or packages", accepts: ["-q", "--no-progress", "--refresh"], requiresTarget: true },
+  { name: "audit", synopsis: "[--format sarif] <names>", summary: "Check the dependencies of the given targets or packages for known security advisories", accepts: ["--format", "-q", "--no-progress", "--refresh"], requiresTarget: true },
   { name: "sync", synopsis: "<target>", summary: "Build and publish a sync target to its destination coordinates", accepts: ["-q", "--no-progress", "--refresh"], requiresTarget: true },
   { name: "build-server", synopsis: "", summary: "Serve the project's described targets to an editor over the Build Server Protocol (stdio)", accepts: ["-q"] },
   {
@@ -175,6 +176,8 @@ export interface Options {
   /** For `cp`: the destination directory (the final positional), a plain
    * filesystem path resolved against the invocation cwd — not a model name. */
   dest?: string;
+  /** For `audit --format`: the form the report takes instead of text. */
+  format?: AuditFormat;
   /** For `test --coverage[=<dir>]`: the directory the coverage report is written
    * to, a plain filesystem path resolved against the invocation cwd. */
   coverageDir?: string;
@@ -238,6 +241,7 @@ function printUsage(write: (message: string) => void = console.log): void {
       "  --retry-failed    Run again the tests whose last run failed, rather than report it from the cache (test)\n" +
       "  -l                Long listing: hash and size per file (ls), or source location (list-*)\n" +
       "  --json            Emit JSON (the list-* verbs)\n" +
+      "  --format sarif    Write the report as SARIF instead of text (audit)\n" +
       "  --all             Include system-contributed targets (list-targets)\n" +
       "  --include-optional\n" +
       "                    Read every optional lib of the plugins in use (list-all)\n" +
@@ -260,6 +264,10 @@ function usageError(message: string): never {
 
 /** One option flag as written, with the canonical form it is validated as. */
 type SeenFlag = { raw: string; flag: string };
+
+/** The forms `audit --format` writes its report in besides text. */
+export type AuditFormat = "sarif";
+const AUDIT_FORMATS: ReadonlyArray<AuditFormat> = ["sarif"];
 
 /** Where `--coverage` writes its report when not given a directory: jest's and
  * c8's convention. */
@@ -306,6 +314,18 @@ function applyOption(arg: string, next: string | undefined, options: Options, se
      * it rides the ordinary constraint. */
     options.properties.set(TEST_EXPECTATIONS, UPDATE_EXPECTATIONS);
     seenFlags.push({ raw: arg, flag: "-u" });
+  } else if (arg === "--format" || arg.startsWith("--format=")) {
+    const given = arg === "--format" ? next : arg.slice("--format=".length);
+    if (given === undefined) {
+      usageError(`Option '--format' requires a format: ${AUDIT_FORMATS.join(" or ")}`);
+    }
+    const format = AUDIT_FORMATS.find(each => each === given);
+    if (format === undefined) {
+      usageError(`Option '--format' takes ${AUDIT_FORMATS.join(" or ")}, not '${given}'`);
+    }
+    options.format = format;
+    seenFlags.push({ raw: arg, flag: "--format" });
+    return arg === "--format" ? 1 : 0;
   } else if (arg === "--coverage" || arg.startsWith("--coverage=")) {
     /* Sugar for the -D pathway, as -u is: a measured build is a build input. */
     options.properties.set(COVERAGE, COVERAGE_ON);

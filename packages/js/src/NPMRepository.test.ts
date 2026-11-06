@@ -106,6 +106,7 @@ function origin(root: Requirement, selections: Selected<SemverVersion>[]): IReso
     root,
     selections,
     versionToString,
+    format: NPM_FORMAT,
   };
 }
 

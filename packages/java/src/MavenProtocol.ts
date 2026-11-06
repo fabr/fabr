@@ -182,6 +182,10 @@ export const MAVEN_FORMAT: PackageFormat<MavenVersion, MavenConstraint> = {
   splitReference: splitMavenReference,
   validateRequirement: validateMavenRequirement,
   parsePublishCoordinate: parseMavenPublishCoordinate,
+  purl: (name, version) => {
+    const { groupId, artifactId } = splitMavenName(name);
+    return `pkg:maven/${encodeURIComponent(groupId)}/${encodeURIComponent(artifactId)}@${encodeURIComponent(version)}`;
+  },
   readContentPackage: () => Computable.reject(new FabrError("content cannot be read as a Maven package yet")),
   makeRunnable: (pkg, context) =>
     jarMainClass(pkg).then(mainClass => {

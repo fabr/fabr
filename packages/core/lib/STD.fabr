@@ -35,6 +35,11 @@ default COVERAGE = off;
 # packages are selected by it.
 default TARGET = ${HOST};
 
+# The advisory database `fabr audit` checks packages against: the base URL of
+# a server answering OSV's API (https://google.github.io/osv.dev/api/), such
+# as osv.dev or a mirror of it.
+default ADVISORIES = https://api.osv.dev;
+
 
 #
 # A named set of dependencies whose versions are chosen once, together. Refer to

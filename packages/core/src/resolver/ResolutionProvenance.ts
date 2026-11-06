@@ -19,6 +19,7 @@
 
 import { IProvenanceStep, registerProvenanceRenderer } from "../core/Provenance";
 import { resolutionExplainer } from "./MVSResolution";
+import type { PackageFormat } from "./PackageFormat";
 import { Requirement, ROOT_REQUIRER, Selected } from "./Types";
 
 /** Render a root requirement as it was written: the package, and the version
@@ -36,15 +37,50 @@ export const PACKAGE_RESOLUTION_PROVENANCE = "package-resolution";
  * already-loaded resolution document — retained, not copied, and only
  * consulted if an explanation is actually needed.
  *
- * The one ecosystem-specific concern is parameterized: how versions print.
- * Everything else — including which package owns a path within the resolved
- * output — is answerable from the selections themselves.
+ * The ecosystem-specific concerns are parameterized: how versions print, and
+ * the format the package was resolved in. Everything else — including which
+ * package owns a path within the resolved output — is answerable from the
+ * selections themselves.
  */
 export interface IResolutionOrigin<V> extends IProvenanceStep {
   kind: typeof PACKAGE_RESOLUTION_PROVENANCE;
   root: Requirement;
   selections: Selected<V>[];
   versionToString(version: V): string;
+  /** The format of the registry the package was resolved from. */
+  format: PackageFormat<unknown, unknown>;
+}
+
+/**
+ * Get the format a package was resolved in, from its provenance `origin`, or
+ * undefined where no resolution is among its steps (a target's build, a
+ * package installed with fabr).
+ */
+export function formatOf(origin: IProvenanceStep | undefined): PackageFormat<unknown, unknown> | undefined {
+  for (let step = origin; step !== undefined; step = step.parent) {
+    if (step.kind === PACKAGE_RESOLUTION_PROVENANCE) {
+      return (step as IResolutionOrigin<unknown>).format;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Get the package URL (purl) of the package `name` at `version`, resolved with
+ * the provenance `origin`: the format's purl of the name the registry
+ * publishes the package under (a renamed package's `publishedName`), or
+ * undefined where no resolution is among its steps (a target's build, a
+ * package installed with fabr) or its format has no purl type.
+ */
+export function purlOf(origin: IProvenanceStep | undefined, name: string, version: string): string | undefined {
+  for (let step = origin; step !== undefined; step = step.parent) {
+    if (step.kind === PACKAGE_RESOLUTION_PROVENANCE) {
+      const resolution = step as IResolutionOrigin<unknown>;
+      const selected = resolution.selections.find(each => each.name === name && resolution.versionToString(each.version) === version);
+      return resolution.format.purl?.(selected?.publishedName ?? name, version);
+    }
+  }
+  return undefined;
 }
 
 /**

@@ -43,6 +43,10 @@ import {
   MODEL_PROVENANCE,
   TARGET_PROVENANCE,
   TargetRef,
+  Advisory,
+  AuditReport,
+  fixedVersions,
+  severityRank,
 } from "@fabr-build/core";
 
 /** What a line of the tree may be marked with, and what each mark means. */
@@ -123,7 +127,9 @@ function requiredAsWritten(target: ResolvedTarget): Map<string, Dependency[]> {
   const seenText = new Set<string>();
   const first = (source: Resolved): boolean => {
     if (source instanceof TargetRef) {
-      const text = [source.toString(), ...source.projections.map(({ pattern, prefix }) => `${prefix} ${pattern.toString()}`)].join(":");
+      const text = [source.toString(), ...source.projections.map(({ pattern, prefix }) => `${prefix} ${pattern.toString()}`)].join(
+        ":"
+      );
       if (seenText.has(text)) {
         return false;
       }
@@ -166,7 +172,8 @@ function declOf(origin: IProvenanceStep | undefined): ITargetDecl | undefined {
 
 /** Get the property of `decl` that `source` was read from, if it was read from one: the declaration on its first model step written in `decl`. */
 function propertyOf(source: unknown, decl: ITargetDecl): IPropertyDecl | undefined {
-  const inTarget = (step: IProvenanceStep): step is IModelStep => step.kind === MODEL_PROVENANCE && (step as IModelStep).target === decl;
+  const inTarget = (step: IProvenanceStep): step is IModelStep =>
+    step.kind === MODEL_PROVENANCE && (step as IModelStep).target === decl;
   if (source instanceof Reference) {
     return source.steps.find(inTarget)?.property;
   }
@@ -222,8 +229,12 @@ export function renderDependencyTrees(blocks: ReadonlyArray<DependencyTree>, sty
     return [text, ...present.map(mark => style(mark === "n" ? YELLOW : mark === "!" ? RED : DIM, `(${mark})`))].join(" ");
   };
   blocks.forEach(({ title, parts, conflicts = NO_CONFLICTS }, index) => {
-    const sections = [...parts].map(([name, roots]): [string, ReadonlyArray<Dependency>] => [name, roots]).filter(([, roots]) => roots.length > 0);
-    const nodeOf = nodeNaming(sections.flatMap(([, roots]) => roots.flatMap(root => (root.package === undefined ? [] : [root.package]))));
+    const sections = [...parts]
+      .map(([name, roots]): [string, ReadonlyArray<Dependency>] => [name, roots])
+      .filter(([, roots]) => roots.length > 0);
+    const nodeOf = nodeNaming(
+      sections.flatMap(([, roots]) => roots.flatMap(root => (root.package === undefined ? [] : [root.package])))
+    );
     const shown = new Set<string>();
     const walk = (requirer: Package | undefined, deps: ReadonlyArray<Dependency>, indent: string): void => {
       deps.forEach((dep, at) => {
@@ -265,6 +276,52 @@ export function renderDependencyTrees(blocks: ReadonlyArray<DependencyTree>, sty
   ];
   if (legend.length > 0) {
     lines.push("", ...legend.map(line => style(DIM, line)));
+  }
+  return lines;
+}
+
+/** @return `n` with the form of a word for that many. */
+function plural(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/** Paint a severity for a terminal: the worst two red, the rest yellow. */
+function severityStyle(advisory: Advisory, style: Style): string {
+  const severity = advisory.severity ?? "";
+  return style(severityRank(advisory) < 2 ? RED : YELLOW, severity);
+}
+
+/**
+ * Render an audit report: a block per advisory — its id and aliases, the
+ * database's rating and its summary, then each affected package with the
+ * versions that fix it and a path the tree reaches it by — and the count.
+ * `style` paints the output for a terminal.
+ */
+export function renderAudit(report: AuditReport, style: Style = (_code, text) => text): string[] {
+  const lines: string[] = [];
+  for (const { advisory, packages } of report.findings) {
+    const title = [advisory.id, ...(advisory.aliases.length > 0 ? [style(DIM, `(${advisory.aliases.join(", ")})`)] : [])].join(" ");
+    lines.push(
+      [style(BOLD, title), ...(advisory.severity === undefined ? [] : [severityStyle(advisory, style)]), advisory.summary]
+        .filter(part => part !== "")
+        .join("  ")
+    );
+    for (const pkg of packages) {
+      const fixed = fixedVersions(advisory, pkg);
+      lines.push(`  ${pkg.packageName}@${pkg.version}${fixed.length === 0 ? "" : style(DIM, `, fixed in ${fixed.join(", ")}`)}`);
+      pkg.paths.forEach(({ path, others }) => lines.push(style(DIM, `    ${path.join(" > ")}${others === 0 ? "" : ` (+${others})`}`)));
+    }
+    if (advisory.url !== undefined) {
+      lines.push(`  ${style(DIM, advisory.url)}`);
+    }
+    lines.push("");
+  }
+  const packages = plural(report.packages.length, "package", "packages");
+  if (report.findings.length === 0) {
+    lines.push(report.packages.length === 0 ? "No packages to audit" : `No known advisories affect the ${packages} checked`);
+  } else {
+    const affected = new Set(report.findings.flatMap(finding => finding.packages.map(pkg => pkg.purl))).size;
+    lines.push(`${plural(report.findings.length, "advisory affects", "advisories affect")} ${affected} of the ${packages} checked`);
   }
   return lines;
 }

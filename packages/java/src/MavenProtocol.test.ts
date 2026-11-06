@@ -34,6 +34,12 @@ function refOf(written: string): RepositoryRef {
 const projectionsOf = (ref: RepositoryRef): string[][] => ref.projections.map(p => [p.pattern.toBaseString(), p.prefix]);
 
 describe("MAVEN_FORMAT", () => {
+  it("names a package by its purl, the group and artifact as its namespace and name", () => {
+    expect(MAVEN_FORMAT.purl!("com.fasterxml.jackson.core/jackson-databind", "2.9.10")).to.equal(
+      "pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.9.10"
+    );
+  });
+
   it("reads a coordinate written with a slash or with colons as one reference", () => {
     for (const written of ["org.slf4j/slf4j-api:1.7.36", "org.slf4j:slf4j-api:1.7.36"]) {
       const ref = refOf(written);

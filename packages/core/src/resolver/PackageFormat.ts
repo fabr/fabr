@@ -97,4 +97,11 @@ export interface PackageFormat<V, C> extends VersionDomain<V, C> {
    * launch needs (npm: `NODE`).
    */
   makeRunnable(pkg: PackageFileSet, context: ResolutionContext): Computable<RunnableFileSet>;
+  /**
+   * Get the package URL (purl) of the package `name` at `version`, as
+   * advisory databases name it (`pkg:npm/%40scope/name@1.2.3`,
+   * `pkg:maven/group/artifact@1.2.3`). Absent where the ecosystem has no
+   * purl type.
+   */
+  purl?(name: string, version: string): string;
 }

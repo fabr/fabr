@@ -21,9 +21,17 @@ import {
   BUILD_OPERATION,
   FabrError,
   FILES_OPERATION,
+  audit,
+  auditSarif,
   BuildContext,
   INameValue,
+  ISarifLocation,
+  ISourceSpan,
+  osvServer,
+  Property,
   requireWhole,
+  ResolvedName,
+  sarifLocation,
   BuildModel,
   buildOperation,
   describeOperation,
@@ -80,12 +88,12 @@ import {
 } from "@fabr-build/core";
 import { runInteractive, RunSupervisor } from "./RunHandler";
 import { shellInto } from "./ShellHandler";
-import { DependencyTree, renderDependencyTrees, sectionsOf } from "./DepsTree";
+import { DependencyTree, renderAudit, renderDependencyTrees, sectionsOf } from "./DepsTree";
 import { publishSync } from "./SyncHandler";
 import { BspServer } from "./BspServer";
 import { JsonRpcConnection } from "./JsonRpc";
 import { LanguageServer } from "./LanguageServer";
-import { completeCommandLine, Mode, Options } from "./Command";
+import { completeCommandLine, Mode, Options, getVersion } from "./Command";
 import { getSourceRoot, getBuildCacheRoot, getHostProperties } from "./Environment";
 import { IInvocationSite } from "./CommandLineSource";
 import { TerminalInteraction } from "./Interaction";
@@ -183,10 +191,11 @@ function flushAndExit(code: number): void {
  * given on the command line is written in (see {@link CommandLineSource}). */
 export type Operation = (model: BuildModel, execution: ExecutionContext, site: IInvocationSite) => Computable<void | Takeover>;
 
-/** What a process-takeover verb's evaluation resolves to: the launch to
- *  perform once the evaluation has settled and its cycle closed (`fabr run`'s
- *  interactive program). Resolves the program's own exit status; the harness
- *  exits with it once the post-run housekeeping (the cache trim) has run. */
+/** What a verb's evaluation resolves to where its work is no evaluation: what
+ *  to do once the evaluation has settled and its cycle closed — launch `fabr
+ *  run`'s interactive program, ask `fabr audit`'s advisory database. Resolves
+ *  the run's exit status; the harness exits with it once the post-run
+ *  housekeeping (the cache trim) has run. */
 export type Takeover = () => Computable<number>;
 
 /**
@@ -203,8 +212,7 @@ export function runFabr(options: Options): Promise<void> {
    * program on change — a dev server over built artifacts); ls/cat are one-shot
    * queries and sync is a one-shot publish. */
   const watch =
-    options.mode === Mode.Watch &&
-    (options.command === "build" || options.command === "test" || options.command === "run");
+    options.mode === Mode.Watch && (options.command === "build" || options.command === "test" || options.command === "run");
   switch (options.command) {
     case "ls":
       return runWith(options, (model, execution, site) =>
@@ -220,6 +228,8 @@ export function runFabr(options: Options): Promise<void> {
       );
     case "deps":
       return runWith(options, (model, execution, site) => printDependencies(model, options, execution, site));
+    case "audit":
+      return runWith(options, (model, execution, site) => auditDependencies(model, options, execution, site));
     case "test":
       return runWith(options, (model, execution, site) => runTest(model, options, execution, site, options.targets), watch);
     case "run": {
@@ -282,7 +292,8 @@ export function runFabr(options: Options): Promise<void> {
       return runWith(options, model => listProperties(model, options));
     case "list-all":
       return runWith(options, model => listAll(model));
-    default: /* build, or no command at all */
+    default:
+      /* build, or no command at all */
       if (options.deferred) {
         const supervisors = new Supervisors();
         return runWith(
@@ -364,46 +375,49 @@ function coverageText({ covered, total }: ICoverageTotal): string {
  * update is, so a watching run recognises the write as its own.
  */
 function reportCoverage(execution: ExecutionContext, site: IInvocationSite, dir: string, results: SourceRef[][]): Computable<void> {
-  return Computable.forAll(results.map(sources => getCoverageReport(sources)), (...documents): Computable<void> | void => {
-    const measured = documents.filter((document): document is string => document !== undefined);
-    if (measured.length === 0) {
-      execution.log.log(DIAG_COVERAGE_NONE, {});
-      return;
-    }
-    const sources = site.sourceFileSource;
-    const placed = [];
-    const unplaced = [];
-    for (const record of mergeCoverage(measured.map(parseLcov)).values()) {
-      const located = sources.locate(record.source);
-      if (located === undefined) {
-        unplaced.push(record.source);
-      } else {
-        placed.push({ ...record, source: path.relative(sources.root, located).split(path.sep).join("/") });
+  return Computable.forAll(
+    results.map(sources => getCoverageReport(sources)),
+    (...documents): Computable<void> | void => {
+      const measured = documents.filter((document): document is string => document !== undefined);
+      if (measured.length === 0) {
+        execution.log.log(DIAG_COVERAGE_NONE, {});
+        return;
       }
+      const sources = site.sourceFileSource;
+      const placed = [];
+      const unplaced = [];
+      for (const record of mergeCoverage(measured.map(parseLcov)).values()) {
+        const located = sources.locate(record.source);
+        if (located === undefined) {
+          unplaced.push(record.source);
+        } else {
+          placed.push({ ...record, source: path.relative(sources.root, located).split(path.sep).join("/") });
+        }
+      }
+      if (unplaced.length > 0) {
+        execution.log.log(DIAG_COVERAGE_UNPLACEABLE, { count: unplaced.length, examples: unplaced.slice(0, 3).join(", ") });
+      }
+      const destination = path.resolve(dir, COVERAGE_REPORT_FILENAME);
+      const totals = coverageTotals(placed);
+      execution.log.log(DIAG_COVERAGE, {
+        lines: coverageText(totals.lines),
+        functions: coverageText(totals.functions),
+        branches: coverageText(totals.branches),
+      });
+      const report = (): void => execution.log.log(DIAG_COVERAGE_WRITTEN, { file: path.join(dir, COVERAGE_REPORT_FILENAME) });
+      const file = MemoryFile.from(lcovOf(placed));
+      const root = fs.realpathSync(sources.root);
+      const inTree = !path.relative(root, path.resolve(fs.existsSync(dir) ? fs.realpathSync(dir) : dir)).startsWith("..");
+      if (inTree) {
+        return sources.applyWriteBack([{ file, destination }]).then(report);
+      }
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      return file.getBuffer().then(buffer => {
+        fs.writeFileSync(destination, buffer);
+        report();
+      });
     }
-    if (unplaced.length > 0) {
-      execution.log.log(DIAG_COVERAGE_UNPLACEABLE, { count: unplaced.length, examples: unplaced.slice(0, 3).join(", ") });
-    }
-    const destination = path.resolve(dir, COVERAGE_REPORT_FILENAME);
-    const totals = coverageTotals(placed);
-    execution.log.log(DIAG_COVERAGE, {
-      lines: coverageText(totals.lines),
-      functions: coverageText(totals.functions),
-      branches: coverageText(totals.branches),
-    });
-    const report = (): void => execution.log.log(DIAG_COVERAGE_WRITTEN, { file: path.join(dir, COVERAGE_REPORT_FILENAME) });
-    const file = MemoryFile.from(lcovOf(placed));
-    const root = fs.realpathSync(sources.root);
-    const inTree = !path.relative(root, path.resolve(fs.existsSync(dir) ? fs.realpathSync(dir) : dir)).startsWith("..");
-    if (inTree) {
-      return sources.applyWriteBack([{ file, destination }]).then(report);
-    }
-    fs.mkdirSync(path.dirname(destination), { recursive: true });
-    return file.getBuffer().then(buffer => {
-      fs.writeFileSync(destination, buffer);
-      report();
-    });
-  });
+  );
 }
 
 /**
@@ -851,10 +865,12 @@ function runWatched(operation: Operation, fabr: Fabr, site: IInvocationSite, log
    * still fires, once per applied batch. The execution observes it first (the
    * cycle-end and its marker); this second handle renders what the stream
    * doesn't carry: the failure tree, and the watching announcements. */
-  const outcome = fabr.evaluate(model => operation(model, fabr.execution, site)).then(
-    () => undefined,
-    (err: Error) => err
-  );
+  const outcome = fabr
+    .evaluate(model => operation(model, fabr.execution, site))
+    .then(
+      () => undefined,
+      (err: Error) => err
+    );
   let lastFailure: Error | undefined;
   let announced = false;
   const observer = new ComputableHandle<Error | undefined>(source => {
@@ -879,7 +895,10 @@ function runWatched(operation: Operation, fabr: Fabr, site: IInvocationSite, log
 }
 
 function configFor(model: BuildModel, options: Options, execution: ExecutionContext, operation: string): BuildContext {
-  return model.getConfig(Constraints.of({ ...getHostProperties(), [BUILD_OPERATION]: operation, ...Object.fromEntries(options.properties) }), execution);
+  return model.getConfig(
+    Constraints.of({ ...getHostProperties(), [BUILD_OPERATION]: operation, ...Object.fromEntries(options.properties) }),
+    execution
+  );
 }
 
 /** Apply `-f`'s force marks for `names` (see core's {@link forceTargets}). */
@@ -903,9 +922,7 @@ function resolveNames(
 ): Computable<SourceRef[]>[] {
   const config = configFor(model, options, execution, FILES_OPERATION);
   return options.targets.map(name =>
-    config
-      .materialize(options.commandLine.refFor(name, site))
-      .then(sources => openedAll(refuseNamespaces(sources)))
+    config.materialize(options.commandLine.refFor(name, site)).then(sources => openedAll(refuseNamespaces(sources)))
   );
 }
 
@@ -1013,7 +1030,7 @@ function writeStdout(bytes: Uint8Array): Computable<void> {
  * before a byte is written.
  */
 function copyTarget(options: Options, execution: ExecutionContext, results: SourceRef[][]): Computable<void> {
-  const sets: FileSet[] = results.flatMap( (sources,i) => {
+  const sets: FileSet[] = results.flatMap((sources, i) => {
     const name = options.targets[i];
     const fileSets = sources.filter((source): source is FileSet => source instanceof FileSet);
     if (fileSets.every(set => set.isEmpty())) {
@@ -1021,7 +1038,7 @@ function copyTarget(options: Options, execution: ExecutionContext, results: Sour
     }
     const rename = remapCopyTargetName(name, fileSets);
     return fileSets.map(set => set.rename(rename));
-});
+  });
   const merged = FileSet.unionAll(...sets);
   const dest = path.resolve(options.dest!);
   return writeFileSet(dest, merged, { copy: true }).then(() =>
@@ -1058,7 +1075,7 @@ function copyTarget(options: Options, execution: ExecutionContext, results: Sour
  * name). "Directly names a file" wraps unless the source is a **lone delivered
  * file whose basename is that leaf** (`files:a.txt` → `a.txt`, flat).
  */
-function remapCopyTargetName(name: string, sets: FileSet[]): ((fileName: string) => string) {
+function remapCopyTargetName(name: string, sets: FileSet[]): (fileName: string) => string {
   /* Parse then drop the constraint facet, so what we inspect is the resolvable name alone. */
   const parsed = parseName(name).withConstraints([]);
   /* An explicit `-> tmpl` IS the naming: the resolved files already carry the names it
@@ -1126,7 +1143,9 @@ function listTargets(options: Options, results: Array<Map<string, Reference> | S
       sources instanceof Map
         ? Computable.resolve(renderChildren(sources))
         : Computable.forAll(
-            sources.filter((source): source is FileSet => source instanceof FileSet).map(set => renderListing(set, options.longListing)),
+            sources
+              .filter((source): source is FileSet => source instanceof FileSet)
+              .map(set => renderListing(set, options.longListing)),
             (...perSource: string[][]) => perSource.flatMap((lines, i) => (i > 0 ? ["", ...lines] : lines))
           )
     ),
@@ -1141,11 +1160,11 @@ function listTargets(options: Options, results: Array<Map<string, Reference> | S
   );
 }
 
-/** Resolve `ref` under `config` to the tree `fabr deps` prints for it, titled `title`. */
-function resolvedTree(config: BuildContext, ref: INameValue, title: string): Computable<DependencyTree> {
+/** Resolve `ref` under `config` to what it names, titled `title`, refusing a reference that selects files. */
+function resolvedName(config: BuildContext, ref: INameValue, title: string): Computable<ResolvedName> {
   return config.resolve(ref).then(resolved => {
     requireWhole(ref, resolved.denoted);
-    return sectionsOf(title, resolved);
+    return { title, resolved };
   });
 }
 
@@ -1157,8 +1176,24 @@ function resolvedTree(config: BuildContext, ref: INameValue, title: string): Com
  * (`pkg<BUILD_OPERATION=test>`).
  */
 function printDependencies(model: BuildModel, options: Options, execution: ExecutionContext, site: IInvocationSite): Computable<void> {
-  /* A type with no build rule and one operation of its own (a `js_script`
-   * runs, a `js_test` tests) is asked under that one. */
+  return resolvedNames(model, options, execution, site).then(names => {
+    const blocks: DependencyTree[] = names.map(({ title, resolved }) => sectionsOf(title, resolved));
+    renderDependencyTrees(blocks, stdoutStyle()).forEach(line => console.log(line));
+  });
+}
+
+/**
+ * Resolve the names on the command line, as `fabr deps` and `fabr audit` read
+ * them, each under the operation its name is asked under: a type with no build
+ * rule and one operation of its own (a `js_script` runs, a `js_test` tests) is
+ * asked under that one, anything else under `build`.
+ */
+function resolvedNames(
+  model: BuildModel,
+  options: Options,
+  execution: ExecutionContext,
+  site: IInvocationSite
+): Computable<ResolvedName[]> {
   const operationFor = (name: string): string => {
     const target = model.getReferencedTarget(name);
     const operations = target === undefined ? [] : model.getOperations(target.type);
@@ -1166,14 +1201,53 @@ function printDependencies(model: BuildModel, options: Options, execution: Execu
   };
   return Computable.forAll(
     options.targets.map(name =>
-      resolvedTree(configFor(model, options, execution, operationFor(name)), options.commandLine.refFor(name, site), name)
+      resolvedName(configFor(model, options, execution, operationFor(name)), options.commandLine.refFor(name, site), name)
     ),
-    (...blocks: DependencyTree[]) => {
-      /* Painted for a terminal only, like every other colour decision here
-       * (NO_COLOR is any non-empty value). */
-      const color = process.stdout.isTTY === true && !process.env.NO_COLOR;
-      renderDependencyTrees(blocks, color ? (code, text) => `\x1b[${code}m${text}\x1b[0m` : undefined).forEach(line => console.log(line));
-    }
+    (...names: ResolvedName[]) => names
+  );
+}
+
+/** @return the painter for stdout: SGR codes on a terminal, like every other
+ * colour decision here (NO_COLOR is any non-empty value), and none otherwise. */
+function stdoutStyle(): ((code: string, text: string) => string) | undefined {
+  const color = process.stdout.isTTY === true && !process.env.NO_COLOR;
+  return color ? (code, text) => `\x1b[${code}m${text}\x1b[0m` : undefined;
+}
+
+/**
+ * Check the dependencies of each name (`fabr audit`) against the advisory
+ * database `ADVISORIES` names: what `fabr deps` prints, resolved and not
+ * built, each registry package among them asked about at its exact version
+ * (core's {@link audit}).
+ * The report goes to stdout, as text or with `--format sarif` as SARIF, and the run
+ * exits 1 where any advisory affects a package. The database is asked after
+ * the evaluation settles, as a program is launched: it is no part of the
+ * build.
+ */
+function auditDependencies(
+  model: BuildModel,
+  options: Options,
+  execution: ExecutionContext,
+  site: IInvocationSite
+): Computable<Takeover> {
+  const config = configFor(model, options, execution, "build");
+  return Computable.forAll(
+    [resolvedNames(model, options, execution, site), config.getProperty("ADVISORIES")],
+    (names: ResolvedName[], advisories: Property): Takeover =>
+      () =>
+        audit(names, osvServer(advisories.toString())).then(report => {
+          if (options.format === "sarif") {
+            /* A reference is located only where it was written in the project's
+             * own tree: a plugin's file and the command line have no place
+             * under the tree's root. */
+            const locate = (site: ISourceSpan): ISarifLocation | undefined =>
+              site.fs === execution.sourceFileSource ? sarifLocation(site) : undefined;
+            console.log(JSON.stringify(auditSarif(report, { version: getVersion() }, locate), undefined, 2));
+          } else {
+            renderAudit(report, stdoutStyle()).forEach(line => console.log(line));
+          }
+          return report.findings.length > 0 ? 1 : 0;
+        })
   );
 }
 
@@ -1389,7 +1463,7 @@ function targetDefJson(model: BuildModel, def: ITargetDefDecl): Record<string, u
     properties: [...def.properties].map(([name, schema]) => ({
       name,
       type: propertyTypeName(schema),
-      required: schema.required === true, 
+      required: schema.required === true,
       default: schema.default ? renderPropertyValue(schema.default) : null,
       description: schema.docComment ?? null,
     })),
@@ -1452,7 +1526,12 @@ function flagTargetsJson(model: BuildModel): IConfigEntry[] {
     .getTargets()
     .filter(({ decl }) => decl.type === "flag")
     .sort((a, b) => a.name.localeCompare(b.name))
-    .map(({ name, decl }) => ({ name, location: formatDeclLocation(decl), ...contributionJson(model, decl), description: decl.docComment ?? null }));
+    .map(({ name, decl }) => ({
+      name,
+      location: formatDeclLocation(decl),
+      ...contributionJson(model, decl),
+      description: decl.docComment ?? null,
+    }));
 }
 
 /** @return a property's written value as a display string (its name-valued
@@ -1509,7 +1588,10 @@ function reportTestResults(log: Log, names: string[], results: SourceRef[][], na
       reports.forEach((report, i) => {
         log.log(DIAG_TEST_RESULT, { name: names[i], summary: (report ? formatTestSummary(report) : "no tests") + filtered });
       });
-      const ran = reports.reduce((count, report) => count + (report ? report.results.summary.passed + report.results.summary.failed : 0), 0);
+      const ran = reports.reduce(
+        (count, report) => count + (report ? report.results.summary.passed + report.results.summary.failed : 0),
+        0
+      );
       if (namePattern !== undefined && ran === 0) {
         throw new FabrError(`No test's name matches the pattern '${namePattern}'`);
       }

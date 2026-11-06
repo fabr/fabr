@@ -350,6 +350,14 @@ describe("publishToRegistry second factor", () => {
   });
 });
 
+describe("NPM_FORMAT.purl", () => {
+  it("names a package as the purl spec spells npm's, the scope's @ encoded", () => {
+    expect(NPM_FORMAT.purl!("lodash", "4.17.21")).to.equal("pkg:npm/lodash@4.17.21");
+    expect(NPM_FORMAT.purl!("@babel/core", "7.24.0")).to.equal("pkg:npm/%40babel/core@7.24.0");
+    expect(NPM_FORMAT.purl!("pkg", "1.0.0+build.5")).to.equal("pkg:npm/pkg@1.0.0%2Bbuild.5");
+  });
+});
+
 describe("NPM_FORMAT.readContentPackage", () => {
   /* The format reads with the installation's list, which a source tree lacks. */
   beforeEach(() => useInstalledPackageExtensions(NO_PACKAGE_EXTENSIONS));

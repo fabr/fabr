@@ -22,6 +22,7 @@ can be piped or redirected on its own.
 | [`run`](#run) | Build a program and run it. |
 | [`ls`](#ls), [`cat`](#cat), [`cp`](#cp) | List, print or copy the files a target produces. |
 | [`deps`](#deps) | Print the dependency tree of targets or packages. |
+| [`audit`](#audit) | Check the dependencies of targets or packages for known security advisories. |
 | [`shell`](#shell) | Open a shell in the directory a build step runs in, for debugging. |
 | [`sync`](#sync) | Publish packages and files. |
 | [`build-server`](#build-server) | Serve the project's targets to an editor. |
@@ -273,6 +274,55 @@ Two things are still computed, because the dependencies cannot be known without 
   This happens only when something in the tree requires that package.
 - A command substitution (`` `…` ``) in a value that names a dependency is run.
 
+### `audit`
+
+Checks the packages each reference depends on against a database of known security advisories,
+and prints each advisory found with the packages it affects.
+
+```sh
+fabr audit myapp
+```
+
+```
+GHSA-35jh-r3h4-6jhm (CVE-2021-23337)  HIGH  Command Injection in lodash
+  lodash@4.17.15, fixed in 4.17.21
+    myapp > express@4.17.1 > lodash@4.17.15
+  https://github.com/advisories/GHSA-35jh-r3h4-6jhm
+
+1 advisory affects 1 of the 57 packages checked
+```
+
+The packages checked are the ones `deps` prints for the same references, read the same way: the
+tree a target's build resolves, under `build` unless the reference requires another operation
+(`'myapp<BUILD_OPERATION=test>'` checks its `test_deps` too), with nothing built and nothing
+downloaded from a registry. Every package a registry publishes is checked at the exact version the
+tree selects. A package built in your project has no published version, so it is not checked
+itself, though what it depends on is. Each advisory lists the affected package with the versions
+the advisory says fix it and one path by which each reference reaches it; the remedy is to require
+a fixed version at the root, for instance `@npm:lodash:4.17.21!` or a catalog entry, since a root
+requirement decides the version for the whole tree.
+
+The command exits with status 1 when any advisory affects a package, and 0 otherwise. `--format
+sarif` writes the report as [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/) instead
+of text, the format code-scanning services such as GitHub code scanning take and most analysers
+emit. Each advisory is a rule and each affected package a result, with the fixed versions and the
+paths among its properties, located at the line of your build file whose reference brings the
+package in, so the service shows it there; the run records how many packages it checked.
+
+The database is the one the `ADVISORIES` property names: the URL of a server answering the
+[OSV API](https://google.github.io/osv.dev/api/), `https://api.osv.dev` by default. Packages are
+named to it by their [package URL](https://github.com/package-url/purl-spec) (`pkg:npm/lodash@4.17.15`,
+`pkg:maven/org.slf4j/slf4j-api@1.7.36`); a package in an ecosystem with no package URL type, such
+as a Node.js release, is not checked. To use a mirror, or an internal database speaking the same
+API, set the property in your project or for one run:
+
+```sh
+fabr -DADVISORIES=https://osv.example.com audit myapp
+```
+
+Advisories are read as they stand each time: nothing about them is cached, and the result is no
+part of any build.
+
 ### `shell`
 
 Sets up the directory that a target's build step runs in, with its inputs and tools in place,
@@ -390,9 +440,10 @@ generated from it.
 | `--coverage[=DIR]` | `test` | Measure code coverage, print a summary and write `DIR/lcov.info` (`coverage/` by default). |
 | `-q`, `--quiet` | all | Don't show the progress display or the output of build steps. A step that fails still shows its output in the error. |
 | `--no-progress` | all | Don't show the progress display. Output from build steps is then printed as it arrives, as it is when stderr isn't a terminal. |
-| `--refresh` | `build`, `test`, `run`, `shell`, `ls`, `cat`, `cp`, `deps`, `sync` | Check again for anything a server can change under the same address, such as a registry's version lists or an S3 object, however recently fabr last checked. Without it, fabr checks each at most once a day. |
+| `--refresh` | `build`, `test`, `run`, `shell`, `ls`, `cat`, `cp`, `deps`, `audit`, `sync` | Check again for anything a server can change under the same address, such as a registry's version lists or an S3 object, however recently fabr last checked. Without it, fabr checks each at most once a day. |
 | `-l` | `ls`, `list-*` | Long listing: hash and size for `ls`, source location for the `list-` commands. |
 | `--json` | `list-*` | Output as JSON. |
+| `--format sarif` | `audit` | Write the report as SARIF instead of text. |
 | `--all` | `list-targets` | Include the targets fabr and its plugins declare. |
 | `--` | all | End of options. What follows is a target, even if it starts with `-` or is the name of a command. |
 | `-v`, `--version` | | Print fabr's version. |

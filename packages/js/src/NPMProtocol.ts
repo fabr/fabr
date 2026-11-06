@@ -651,4 +651,5 @@ export const NPM_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
   parsePublishCoordinate: parseNpmPublishCoordinate,
   readContentPackage: readNpmContentPackage,
   makeRunnable: (pkg, context) => makeNpmRunnable(context, pkg),
+  purl: (name, version) => `pkg:npm/${name.split("/").map(encodeURIComponent).join("/")}@${encodeURIComponent(version)}`,
 };

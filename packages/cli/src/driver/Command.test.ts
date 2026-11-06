@@ -302,6 +302,19 @@ describe("Command", () => {
     expect(capture(["list-targets", "--no-progress"]).err.join("\n")).to.match(/Option '--no-progress' is not valid/);
   });
 
+  it("parses audit as a query over names, with --format for its output", () => {
+    const options = parseCommandLine(["node", "fabr", "audit", "--format", "sarif", "app", "@npm:glob:10.0.0"]);
+    expect(options.command).to.equal("audit");
+    expect(options.format).to.equal("sarif");
+    expect(options.targets).to.deep.equal(["app", "@npm:glob:10.0.0"]);
+    expect(parseCommandLine(["node", "fabr", "audit", "--format=sarif", "app"]).format).to.equal("sarif");
+    expect(parseCommandLine(["node", "fabr", "audit", "app"]).format).to.equal(undefined);
+    expect(capture(["audit", "--format", "json", "app"]).err.join("\n")).to.match(/takes sarif/);
+    expect(capture(["audit", "--format"]).err.join("\n")).to.match(/requires a format/);
+    expect(capture(["deps", "--format", "sarif", "app"]).err.join("\n")).to.match(/not valid/);
+    expect(capture(["audit"]).err.join("\n")).to.match(/requires/);
+  });
+
   it("asks for every mutable document to be re-checked with --refresh, for any command that fetches", () => {
     expect(parseCommandLine(["node", "fabr", "build", "foo"]).refresh).to.equal(false);
     expect(parseCommandLine(["node", "fabr", "deps", "--refresh", "foo"]).refresh).to.equal(true);
