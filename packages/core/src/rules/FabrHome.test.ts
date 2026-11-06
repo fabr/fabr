@@ -24,7 +24,7 @@ import * as path from "node:path";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { Name } from "../core/Name";
-import { NamespaceRef } from "../core/NamespaceRef";
+import { PartialRepositoryRef } from "../core/PartialRepositoryRef";
 import { PackageFileSet, reachablePackages } from "../core/PackageFileSet";
 import { FSFileSource } from "../core/FSFileSource";
 import { RepositoryRef } from "../core/Repository";
@@ -149,20 +149,20 @@ describe("FabrHomeRepository", () => {
 
   it("names a bare scope as the namespace of it, which a package name goes on from", () => {
     const scope = repository().getRepositoryRef(Name.fromLiteral("@fabr-build"));
-    expect(scope).to.be.instanceOf(NamespaceRef);
-    expect((scope as NamespaceRef).name).to.equal("@fabr-build");
+    expect(scope).to.be.instanceOf(PartialRepositoryRef);
+    expect((scope as PartialRepositoryRef).name).to.equal("@fabr-build");
   });
 
   it("lists the packages installed in a scope, and refuses to list the whole installation", async () => {
     install(path.join(root, "node_modules", "@fabr-build", "core", "node_modules", "@fabr-build", "inner"), { name: "@fabr-build/inner" });
     install(path.join(root, "node_modules", "@other", "x"), { name: "@other/x" });
     const repo = repository();
-    const children = await toPromise(new NamespaceRef(repo, "@fabr-build").children());
+    const children = await toPromise(new PartialRepositoryRef(repo, "@fabr-build").children());
     /* Every node_modules node's search from fabr's code looks in is listed, nearest or not; another
      * scope is not. */
     expect([...children.keys()]).to.deep.equal(["core", "inner", "tool"]);
     expect((children.get("tool") as RepositoryRef).name).to.equal("@fabr-build/tool");
-    const whole = await toPromise(new NamespaceRef(repo).children()).then(
+    const whole = await toPromise(new PartialRepositoryRef(repo).children()).then(
       () => undefined,
       (err: Error) => err.message
     );

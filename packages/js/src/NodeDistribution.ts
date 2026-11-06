@@ -60,7 +60,7 @@ import {
   vendPackageRef,
   VersionNotFoundError,
   versionToString,
-  NamespaceRef,
+  PartialRepositoryRef,
   stripArchiveRoot,
 } from "@fabr-build/core";
 
@@ -199,7 +199,7 @@ export class NodeDistribution implements Repository, RepositoryReader<SemverVers
     return this.context.operation;
   }
 
-  public getRepositoryRef(name: Name): RepositoryRef | NamespaceRef {
+  public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
     return vendPackageRef(this, this.format, name);
   }
 

@@ -84,6 +84,7 @@ import { computableFind } from "./WorkList";
 import { admitted, IOutputHandle, ITaskReport, type TaskTracker } from "../support/Execute";
 import { Semaphore } from "../support/Semaphore";
 import { Diagnostic, Log } from "../support/Log";
+import type { Credential } from "./Credential";
 import { SNIFF_LENGTH, sniffMime } from "../support/Mime";
 
 /** What a download asks for, made only where the cache holds no answer. */
@@ -91,6 +92,8 @@ export interface IFetchRequest {
   url: string;
   /** Authenticate the request only; never part of the key. */
   headers?: Record<string, string>;
+  /** What signs the request in, asked again where the server answers 401; never part of the key. */
+  credential?: Credential;
   /** What is done to the response before it is recorded (see {@link BuildCache.getOrFetch}). */
   process: (content: Readable, ctx: IFetchContext) => Computable<FileSet>;
 }
@@ -809,7 +812,7 @@ export class BuildCache {
    */
   private fetch(
     key: string,
-    { url, headers, process }: IFetchRequest,
+    { url, headers, credential, process }: IFetchRequest,
     track: TaskTracker<FileSet>,
     entry: ICacheEntry | undefined,
     options: FetchOptions | undefined
@@ -823,7 +826,7 @@ export class BuildCache {
     }
     const digestHeader = options?.digestHeader;
     const get = (): Computable<FileSet> =>
-      openUrlStream(url, { ...headers, ...validators }, this.now, options?.role, digestHeader).then(response => {
+      openUrlStream(url, { ...headers, ...validators }, this.now, options?.role, digestHeader, credential).then(response => {
         const meta = options?.immutable !== false ? undefined : withMinimumFreshness(response.cacheControl, this.now());
         const stream = response.stream;
         if (stream) {
@@ -855,7 +858,7 @@ export class BuildCache {
     const held = entry?.meta?.digest;
     const attempt = (): Computable<FileSet> =>
       held !== undefined && digestHeader !== undefined
-        ? headUrl(url, headers, digestHeader, this.now, options?.role).then(control =>
+        ? headUrl(url, headers, digestHeader, this.now, options?.role, credential).then(control =>
             control.digest === held ? this.cachePut(key, entry!.files, withMinimumFreshness(control, this.now()), "fetch") : get()
           )
         : get();

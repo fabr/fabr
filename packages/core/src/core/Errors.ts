@@ -152,7 +152,9 @@ export class MultiError extends FabrError {
 export class HttpStatusError extends FabrError {
   constructor(
     public readonly statusCode: number,
-    public readonly url: string
+    public readonly url: string,
+    /** A 401's `WWW-Authenticate` challenges, as sent; empty for any other status. */
+    public readonly challenges: readonly string[] = []
   ) {
     super(`${statusCode}${STATUS_CODES[statusCode] ? " " + STATUS_CODES[statusCode] : ""}: ${url}`);
   }

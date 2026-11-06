@@ -203,14 +203,14 @@ function isBuildFailure(err: unknown): err is Error {
  */
 function declaredProvider(decl: IRepositoryDecl, load: LoadImplementation): RepositoryProvider {
   let provider: Computable<RepositoryProvider> | undefined;
-  return context => {
+  return (context, url, credential) => {
     provider ??= loadedImplementation(load, decl.implementation, "repository").then(implementation => {
       if (typeof implementation !== "function") {
         throw new FabrError(`'${decl.implementation.value.toString()}' is not a repository implementation (not a function)`);
       }
       return implementation as RepositoryProvider;
     });
-    return provider.then(made => made(context));
+    return provider.then(made => made(context, url, credential));
   };
 }
 

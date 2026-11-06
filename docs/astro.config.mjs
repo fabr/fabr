@@ -127,6 +127,8 @@ export default defineConfig({
             ...generated("AWS reference"),
             { label: "Accounts and credentials", link: "/reference/aws/accounts/" },
             { label: "Amazon S3", link: "/reference/aws/s3/" },
+            { label: "Amazon ECR", link: "/reference/aws/ecr/" },
+            { label: "AWS CodeArtifact", link: "/reference/aws/codeartifact/" },
           ],
         },
         {

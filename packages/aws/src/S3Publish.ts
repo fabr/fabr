@@ -40,9 +40,9 @@ import {
 } from "@fabr-build/core";
 
 /**
- * Where a `sync` member is stored in S3: an object (`s3:acme:tools/tool.tgz`),
+ * Where a `sync` member is stored in S3: an object (`acme:tools/tool.tgz`),
  * or, with a key ending in `/`, a prefix every file of the member's content is
- * stored under by its name (`s3:acme:site/v3/`).
+ * stored under by its name (`acme:site/v3/`).
  */
 export class S3PublishRef extends RepositoryPublishRef {
   constructor(
@@ -52,7 +52,7 @@ export class S3PublishRef extends RepositoryPublishRef {
     public readonly key: string,
     repositoryName?: string
   ) {
-    super(source, { name: `s3:${bucket}:${key}` }, repositoryName);
+    super(source, { name: `${bucket}:${key}` }, repositoryName);
   }
 
   /** @return true if the coordinate is a prefix, otherwise false. */

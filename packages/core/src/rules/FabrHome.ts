@@ -34,7 +34,7 @@ import { Computable } from "../core/Computable";
 import { FabrError, toError } from "../core/Errors";
 import { FileSet, FileSource, IFile } from "../core/FileSet";
 import { Name, NamePartKind } from "../core/Name";
-import { NamespaceRef } from "../core/NamespaceRef";
+import { PartialRepositoryRef } from "../core/PartialRepositoryRef";
 import { PackageFileSet, PackageGraphBuilder } from "../core/PackageFileSet";
 import { chainSteps, IProvenanceStep, registerProvenanceDescriber, registerProvenanceRenderer } from "../core/Provenance";
 import { RefSource, Repository, RepositoryLookup, RepositoryPublishRef, RepositoryRef } from "../core/Repository";
@@ -240,7 +240,7 @@ export class FabrHomeRepository implements Repository, RepositoryLookup {
 
   /** Vend the reference to the installed package `name` names, or the
    *  namespace of a bare scope. */
-  public getRepositoryRef(name: Name): RepositoryRef | NamespaceRef {
+  public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
     if (name.getMarker() !== undefined) {
       throw new FabrError(`'${name.toString()}' is installed with fabr, not resolved, so an override marker means nothing on it`).withHelp(
         "write the reference without the marker"
@@ -249,7 +249,7 @@ export class FabrHomeRepository implements Repository, RepositoryLookup {
     const literal = name.getLiteralPrefix();
     const colon = literal.indexOf(":");
     if (colon === -1 && !name.hasGlob() && /^@[^/]+$/.test(literal)) {
-      return new NamespaceRef(this, literal);
+      return new PartialRepositoryRef(this, literal);
     }
     return colon === -1
       ? new RepositoryRef(this, { name: name.toBaseString(), versionConstraint: undefined, renameTo: name.getRenameTo()?.toString() })
@@ -259,7 +259,7 @@ export class FabrHomeRepository implements Repository, RepositoryLookup {
   /** List the packages installed in a scope, found as {@link locate} finds
    *  each: by name, in code-unit order. Fabr's whole installation cannot be
    *  listed. */
-  public children({ name: namespace }: NamespaceRef): Computable<Map<string, Reference>> {
+  public children({ name: namespace }: PartialRepositoryRef): Computable<Map<string, Reference>> {
     if (namespace === "") {
       return Computable.reject(
         new FabrError("fabr's whole installation cannot be listed").withHelp("name a scope to list its packages, as in '@fabr-home:@fabr-build'")

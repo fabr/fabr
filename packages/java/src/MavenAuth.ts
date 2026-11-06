@@ -26,7 +26,13 @@
 
 import * as os from "node:os";
 import * as path from "node:path";
-import { Computable, ExecutionContext, FabrError, PluginKey } from "@fabr-build/core";
+import {
+  Computable,
+  Credential,
+  ExecutionContext,
+  FabrError,
+  PluginKey,
+} from "@fabr-build/core";
 import { parseXml, xmlChild, xmlChildren, xmlText, XmlElement } from "./Xml";
 
 /** A server's credentials, as `settings.xml` states them. */
@@ -97,6 +103,11 @@ export class MavenAuth {
       .get(settings)
       .then(file => file?.readString())
       .then(text => new MavenAuth(text === undefined ? new Map() : parseMavenSettings(text, settings)));
+  }
+
+  /** Make the credential signing a request in with the headers {@link headersFor} gives the server `id`. */
+  public static credential(load: () => Computable<MavenAuth>, id: string): Credential {
+    return { authorize: () => load().then(auth => new Map(Object.entries(auth.headersFor(id)))) };
   }
 
   /**

@@ -31,10 +31,13 @@ import {
   IFile,
   ITaskReport,
   MemoryFile,
+  Name,
   NamespaceRef,
+  PartialRepositoryRef,
   openUrlStream,
   parseName,
   PublishStatus,
+  RepositoryPublishRef,
   RepositoryRef,
   TargetContext,
   TaskProgress,
@@ -191,23 +194,58 @@ function fetchingContext(options: Array<FetchOptions | undefined>): TargetContex
 }
 
 function accountAt(store: IFakeStore, options: Array<FetchOptions | undefined> = []): AwsAccount {
-  return new AwsAccount({ name: "@aws", context: fetchingContext(options), signer: new RequestSigner(undefined), endpoint: new URL(store.url) });
+  return new AwsAccount({ name: "@aws", context: fetchingContext(options), signer: new RequestSigner(undefined), region: "us-east-1", endpoint: new URL(store.url), repositoryTypes: new Map() });
+}
+
+/** Vend the reference `name`, written after `separator`, makes in `source`, following a namespace's members as looking it up does. */
+function refIn(source: unknown, name: Name, separator: ":" | "/"): Computable<unknown> {
+  if (source instanceof NamespaceRef) {
+    const literal = name.getLiteralPrefix();
+    const end = literal.search(/[:/]/);
+    const first = end === -1 ? literal : literal.substring(0, end);
+    return source.get(first, separator).then(member => (end === -1 ? member : refIn(member, name.substring(end + 1), literal[end] as ":" | "/")));
+  }
+  const ref = (source as PartialRepositoryRef).getRepositoryRef(name, separator);
+  return Computable.resolve(ref);
+}
+
+/** Vend the reference `name`, written after `@aws:`, makes, as looking it up does. */
+function refOf(account: AwsAccount, name: string): Computable<RepositoryRef | PartialRepositoryRef> {
+  return refIn(new NamespaceRef(account, "@aws"), parseName(name), ":") as Computable<RepositoryRef | PartialRepositoryRef>;
+}
+
+/** Vend the publish ref `coordinate`, written after `@aws:`, makes, as a `sync` member's does. */
+function publishRefOf(account: AwsAccount, coordinate: string): Computable<RepositoryPublishRef> {
+  const name = parseName(coordinate);
+  const literal = name.getLiteralPrefix();
+  const end = literal.indexOf(":");
+  return new NamespaceRef(account, "@aws").get(literal.substring(0, end), ":").then(member => (member as PartialRepositoryRef).getRepositoryPublishRef(name.substring(end + 1), ":"));
+}
+
+/** @return the error `outcome` rejects with, or undefined where it resolves. */
+function failureOf(outcome: Computable<unknown>): Promise<Error | undefined> {
+  return Promise.resolve(
+    outcome.then(
+      () => undefined,
+      e => e as Error
+    )
+  );
 }
 
 /** Resolve `name`, written after `@aws:`, to the objects it reaches, before its projections select among them. */
 function objectsOf(account: AwsAccount, name: string): Computable<FileSet> {
-  const ref = account.getRepositoryRef(parseName(name));
-  expect(ref).to.be.instanceOf(RepositoryRef);
-  return ((ref as RepositoryRef).source as S3Repository).resolve(ref as RepositoryRef);
+  return refOf(account, name).then(ref => {
+    expect(ref).to.be.instanceOf(RepositoryRef);
+    return ((ref as RepositoryRef).source as S3Repository).resolve(ref as RepositoryRef);
+  });
 }
 
 /** Publish `content` at `coordinate`, written after `@aws:`, as a `sync` would: packaged, then uploaded, recording into `progress` what it reports. */
 function publishTo(account: AwsAccount, coordinate: string, content: FileSet, progress: TaskProgress[] = []): Computable<PublishStatus> {
-  const destination = account.getRepositoryPublishRef(parseName(coordinate));
   const report: ITaskReport = { activity: () => undefined, progress: measured => progress.push(measured), fail: () => undefined };
-  return destination.source
-    .package([{ destination, content }], [destination], new Map())
-    .then(([carrier]) => destination.source.publish(carrier, report));
+  return publishRefOf(account, coordinate).then(destination =>
+    destination.source.package([{ destination, content }], [destination], new Map()).then(([carrier]) => destination.source.publish(carrier, report))
+  );
 }
 
 function namesOf(files: FileSet): string[] {
@@ -256,11 +294,12 @@ describe("the S3 service of an AWS account", () => {
     expect(options).to.deep.equal([{ immutable: false }]);
   });
 
-  it("projects the key from a ':', keeping the bucket in the name after a '/'", () => {
+  it("projects the key from a ':', keeping the bucket in the name after a '/'", async () => {
     const account = accountAt(store);
-    const colon = account.getRepositoryRef(parseName("s3:acme:v3/model.bin")) as RepositoryRef;
-    const slash = account.getRepositoryRef(parseName("s3:acme/v3/model.bin")) as RepositoryRef;
-    expect(colon.name).to.equal("s3:acme");
+    const colon = (await refOf(account, "s3:acme:v3/model.bin")) as RepositoryRef;
+    const slash = (await refOf(account, "s3:acme/v3/model.bin")) as RepositoryRef;
+    expect(colon.name).to.equal("acme");
+    expect(colon.repositoryName).to.equal("@aws:s3");
     expect(colon.projections.map(({ pattern, prefix }) => [pattern.toString(), prefix])).to.deep.equal([["v3/model.bin", ""]]);
     expect(slash.projections.map(({ pattern, prefix }) => [pattern.toString(), prefix])).to.deep.equal([["v3/model.bin", "acme/"]]);
   });
@@ -290,38 +329,38 @@ describe("the S3 service of an AWS account", () => {
     expect(err?.message).to.match(/private\/x was not found, or is not readable with @aws's credentials/);
   });
 
-  it("names the service and the bucket as namespaces", () => {
+  it("names the service and the bucket as namespaces", async () => {
     const account = accountAt(store);
-    const service = account.getRepositoryRef(parseName("s3"));
-    const bucket = account.getRepositoryRef(parseName("s3:acme"));
-    expect(service).to.be.instanceOf(NamespaceRef);
-    expect((service as NamespaceRef).name).to.equal("s3");
-    expect((bucket as NamespaceRef).name).to.equal("s3:acme");
+    const service = await refOf(account, "s3");
+    const bucket = await refOf(account, "s3:acme");
+    expect(service).to.be.instanceOf(PartialRepositoryRef);
+    expect((service as PartialRepositoryRef).toString()).to.equal("@aws:s3");
+    expect((bucket as PartialRepositoryRef).toString()).to.equal("@aws:s3:acme");
   });
 
   it("lists a bucket one level at a time", async () => {
     const account = accountAt(store);
-    const bucket = account.getRepositoryRef(parseName("s3:acme")) as NamespaceRef;
+    const bucket = (await refOf(account, "s3:acme")) as PartialRepositoryRef;
     const children = await bucket.children();
     expect([...children.keys()]).to.deep.equal(["assets", "v3"]);
-    const assets = children.get("assets") as NamespaceRef;
+    const assets = children.get("assets") as PartialRepositoryRef;
     expect([...(await assets.children()).keys()]).to.deep.equal(["a.png", "b.png", "notes.txt"]);
   });
 
   it("lists the account's buckets, a page at a time", async () => {
     await store.close();
     store = await startStore({ ...OBJECTS }, [], ["zeta", "acme", "beta"]);
-    const service = accountAt(store).getRepositoryRef(parseName("s3")) as NamespaceRef;
+    const service = (await refOf(accountAt(store), "s3")) as PartialRepositoryRef;
     const children = await service.children();
     expect([...children.keys()]).to.deep.equal(["acme", "beta", "zeta"]);
-    expect((children.get("acme") as NamespaceRef).name).to.equal("s3:acme");
+    expect((children.get("acme") as PartialRepositoryRef).name).to.equal("acme");
     expect(store.requests.map(({ path }) => path)).to.deep.equal(["/?max-buckets=10000", "/?continuation-token=1&max-buckets=10000", "/?continuation-token=2&max-buckets=10000"]);
   });
 
   it("says what listing the buckets needs where the credentials may not", async () => {
     await store.close();
     store = await startStore({ ...OBJECTS }, [], "refused");
-    const service = accountAt(store).getRepositoryRef(parseName("s3")) as NamespaceRef;
+    const service = (await refOf(accountAt(store), "s3")) as PartialRepositoryRef;
     const err = await service.children().then(
       () => undefined,
       e => e as Error
@@ -337,25 +376,27 @@ describe("the S3 service of an AWS account", () => {
     expect(err?.message).to.equal(`${store.url} has no bucket 'other'`);
   });
 
-  it("refuses a name that is not a bucket's", () => {
-    expect(() => accountAt(store).getRepositoryRef(parseName("s3:Acme:x"))).to.throw("which is not an S3 bucket name");
+  it("refuses a name that is not a bucket's", async () => {
+    expect((await failureOf(refOf(accountAt(store), "s3:Acme:x")))?.message).to.include("which is not an S3 bucket name");
   });
 
-  it("refuses a service it does not have, naming the ones it does", () => {
-    expect(() => accountAt(store).getRepositoryRef(parseName("ec2:x"))).to.throw("@aws has no service 'ec2:x'");
+  it("refuses a service it does not have, naming the ones it does", async () => {
+    const err = await failureOf(refOf(accountAt(store), "ec2:x"));
+    expect(err?.message).to.equal("@aws has no service 'ec2'");
   });
 
-  it("publishes to a key, or a prefix ending in '/'", () => {
+  it("publishes to a key, or a prefix ending in '/'", async () => {
     const account = accountAt(store);
-    const prefix = account.getRepositoryPublishRef(parseName("s3:acme:site/v3/")) as S3PublishRef;
+    const prefix = (await publishRefOf(account, "s3:acme:site/v3/")) as S3PublishRef;
     expect([prefix.bucket, prefix.key, prefix.isPrefix]).to.deep.equal(["acme", "site/v3/", true]);
-    expect((account.getRepositoryPublishRef(parseName("s3:acme/tools/tool.tgz")) as S3PublishRef).key).to.equal("tools/tool.tgz");
+    expect(prefix.toString()).to.equal("@aws:s3:acme:site/v3/");
+    expect(((await publishRefOf(account, "s3:acme/tools/tool.tgz")) as S3PublishRef).key).to.equal("tools/tool.tgz");
   });
 
-  it("refuses to publish to a bucket, or to a pattern", () => {
+  it("refuses to publish to a bucket, or to a pattern", async () => {
     const account = accountAt(store);
-    expect(() => account.getRepositoryPublishRef(parseName("s3:acme"))).to.throw("it names no key");
-    expect(() => account.getRepositoryPublishRef(parseName("s3:acme:site/*.html"))).to.throw("it is written as a pattern");
+    expect((await failureOf(publishRefOf(account, "s3:acme")))?.message).to.include("it names no key");
+    expect((await failureOf(publishRefOf(account, "s3:acme:site/*.html")))?.message).to.include("it is written as a pattern");
   });
 
   it("stores what a prefix's content changed, streamed, signed and typed by extension, and nothing the second time", async () => {
@@ -456,6 +497,8 @@ describe("the S3 service of an AWS account", () => {
   });
 
   it("lists its services", async () => {
-    expect([...(await accountAt(store).children()).keys()]).to.deep.equal(["s3"]);
+    const children = await new NamespaceRef(accountAt(store), "@aws").children();
+    expect([...children.keys()]).to.deep.equal(["s3", "ecr", "codeartifact"]);
+    expect(children.get("ecr")?.toString()).to.equal("@aws:ecr");
   });
 });

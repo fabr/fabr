@@ -31,7 +31,7 @@ import {
   IProvenanceStep,
   mapComputable,
   Name,
-  NamespaceRef,
+  PartialRepositoryRef,
   PublishableFileSet,
   PublishMember,
   PublishStatus,
@@ -44,7 +44,6 @@ import {
   RepositoryRef,
   RepositoryWriter,
   sendRequest,
-  TargetContext,
   toError,
 } from "@fabr-build/core";
 import {
@@ -77,20 +76,11 @@ import {
   sizeOf,
   storedObjects,
 } from "./S3Publish";
-import { IServiceRequest, RequestSigner, requestUrl } from "./Signing";
+import { IServiceRequest, requestUrl } from "./Signing";
+import { IAccountSettings } from "./Types";
 
 /** The name of the S3 service under an account: the first part of every name in it. */
 export const S3_SERVICE = "s3";
-
-/** What an account gives the services under it. */
-export interface IAccountSettings {
-  /** The account's declared name (`@aws`), for messages. */
-  readonly name: string;
-  readonly context: TargetContext;
-  readonly signer: RequestSigner;
-  readonly region?: string;
-  readonly endpoint?: URL;
-}
 
 /** Provenance kind for an object fetched from S3. */
 export const S3_PROVENANCE = "s3-object";
@@ -117,9 +107,9 @@ const BUCKETS_TAG = "aws:s3:buckets:1";
 type Fetched = { readonly files: FileSet } | { readonly absent: HttpStatusError };
 
 /**
- * The S3 service of an account (`@aws:s3`). A name in it is `s3:<bucket>`,
+ * The S3 service of an account (`@aws:s3`). A name in it is a bucket,
  * followed by the name of what it selects in the bucket: after a `:` the
- * object's key names it (`s3:acme:v3/model.bin` is `v3/model.bin`), after a
+ * object's key names it (`acme:v3/model.bin` is `v3/model.bin`), after a
  * `/` the bucket does too (`acme/v3/model.bin`). A bucket named alone is a
  * namespace, listed by its keys, and the service alone is listed by the
  * account's buckets. Objects are fetched with the account's credentials and
@@ -130,23 +120,25 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
   /** The region of each bucket, found once per run. */
   private readonly regions = new Map<string, Computable<string>>();
 
-  constructor(private readonly account: IAccountSettings) {}
+  /** The name the service is written as (`@aws:s3`), for messages. */
+  private readonly written: string;
 
-  /** Vend the reference for `name` (see the class comment): an object or objects of a bucket, or the namespace of a bucket or of the service. */
-  public getRepositoryRef(name: Name): RepositoryRef | NamespaceRef {
+  constructor(private readonly account: IAccountSettings) {
+    this.written = `${account.name}:${S3_SERVICE}`;
+  }
+
+  /** Vend the reference for `name` (see the class comment): an object or objects of a bucket, or the namespace of a bucket. */
+  public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
     if (name.getMarker() !== undefined) {
       throw new FabrError(`'${name.toString()}' is an S3 object, not resolved, so an override marker means nothing on it`).withHelp(
         "write the reference without the marker"
       );
     }
     const { bucket, separator, at } = this.splitBucket(name);
-    if (bucket === undefined) {
-      return new NamespaceRef(this, S3_SERVICE);
-    }
     if (separator === undefined) {
-      return new NamespaceRef(this, `${S3_SERVICE}:${bucket}`);
+      return new PartialRepositoryRef(this, bucket);
     }
-    return new RepositoryRef(this, { name: `${S3_SERVICE}:${bucket}`, versionConstraint: undefined }).find(
+    return new RepositoryRef(this, { name: bucket, versionConstraint: undefined }).find(
       name.substring(at),
       separator === "/" ? `${bucket}/` : ""
     );
@@ -154,7 +146,7 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
 
   /** Vend the coordinate `name` publishes at: an object's key, or a prefix ending in `/` (see {@link S3PublishRef}). */
   public getRepositoryPublishRef(name: Name): S3PublishRef {
-    const written = `${this.account.name}:${name.toString()}`;
+    const written = `${this.written}:${name.toString()}`;
     if (!name.isSimpleName() || name.getMarker() !== undefined || name.getRenameTo() !== undefined) {
       throw new FabrError(`'${written}' is not an S3 address to publish to: it is written as a pattern, a rename or with a marker`).withHelp(
         publishHelp(this.account.name)
@@ -162,7 +154,7 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
     }
     const { bucket, separator, at } = this.splitBucket(name);
     const key = checkedPublishKey(separator === undefined ? "" : name.getLiteralPrefix().substring(at), written, this.account.name);
-    return new S3PublishRef(this, bucket!, key);
+    return new S3PublishRef(this, bucket, key);
   }
 
   /** Package each member as the objects it is stored as (see {@link packageS3Member}). */
@@ -206,16 +198,13 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
   }
 
   /** List the account's buckets, or what is directly in a bucket or a directory of one: each object by its name there, each bucket and prefix as a namespace. */
-  public children({ name }: NamespaceRef): Computable<Map<string, Reference>> {
-    if (name === S3_SERVICE) {
+  public children({ name }: PartialRepositoryRef): Computable<Map<string, Reference>> {
+    if (name === "") {
       return this.listBuckets().then(
-        buckets =>
-          new Map(
-            [...buckets].sort(compareText).map((bucket): [string, Reference] => [bucket, new NamespaceRef(this, `${S3_SERVICE}:${bucket}`)])
-          )
+        buckets => new Map([...buckets].sort(compareText).map((bucket): [string, Reference] => [bucket, new PartialRepositoryRef(this, bucket)]))
       );
     }
-    const within = name.substring(S3_SERVICE.length + 1);
+    const within = name;
     const slash = within.indexOf("/");
     const bucket = slash === -1 ? within : within.substring(0, slash);
     const prefix = slash === -1 ? "" : `${within.substring(slash + 1)}/`;
@@ -228,11 +217,11 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
             .filter(key => isFileKey(key) && key.length > prefix.length)
             .map((key): [string, Reference] => [
               key.substring(prefix.length),
-              new RepositoryRef(this, { name: `${S3_SERVICE}:${bucket}`, versionConstraint: undefined }).find(Name.fromLiteral(key)),
+              new RepositoryRef(this, { name: bucket, versionConstraint: undefined }).find(Name.fromLiteral(key)),
             ]),
           ...prefixes.map((listed): [string, Reference] => {
             const directory = listed.replace(/\/$/, "");
-            return [directory.substring(prefix.length), new NamespaceRef(this, `${S3_SERVICE}:${bucket}/${directory}`)];
+            return [directory.substring(prefix.length), new PartialRepositoryRef(this, `${bucket}/${directory}`)];
           }),
         ];
         return new Map(children.sort(([a], [b]) => compareText(a, b)));
@@ -246,12 +235,12 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
    * them, as from any repository's files.
    */
   public resolve(reference: RepositoryRef): Computable<FileSet> {
-    const bucket = reference.name.substring(S3_SERVICE.length + 1);
+    const bucket = reference.name;
     const projection = reference.projections[0];
     if (projection === undefined) {
       return Computable.reject(
-        new FabrError(`'${this.account.name}:${reference.name}' names a bucket, not objects`).withHelp(
-          `name the objects, as in '${this.account.name}:${reference.name}:<key>'`
+        new FabrError(`'${this.written}:${reference.name}' names a bucket, not objects`).withHelp(
+          `name the objects, as in '${this.written}:${reference.name}:<key>'`
         )
       );
     }
@@ -286,28 +275,19 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
     );
   }
 
-  /** Split the bucket off `name`: undefined where the name is the service alone, with the separator after it and where the rest begins where there is a rest. */
-  private splitBucket(name: Name): { bucket?: string; separator?: ":" | "/"; at: number } {
+  /** Split the bucket off `name`, with the separator after it and where the rest begins where there is a rest. */
+  private splitBucket(name: Name): { bucket: string; separator?: ":" | "/"; at: number } {
     const literal = name.getLiteralPrefix();
-    const written = `${this.account.name}:${name.toString()}`;
-    if (name.isSimpleName() && literal === S3_SERVICE) {
-      return { at: literal.length };
-    }
-    if (!literal.startsWith(`${S3_SERVICE}:`)) {
-      throw new FabrError(`'${written}' does not name a bucket`).withHelp(
-        `write the bucket after '${S3_SERVICE}:', as in '${this.account.name}:${S3_SERVICE}:<bucket>:<key>'`
-      );
-    }
-    const start = S3_SERVICE.length + 1;
-    const end = literal.slice(start).search(/[:/]/);
+    const written = `${this.written}:${name.toString()}`;
+    const end = literal.search(/[:/]/);
     if (end === -1) {
       if (!name.isSimpleName()) {
         throw new FabrError(`'${written}' does not name its bucket literally`).withHelp("a bucket is named as it is, without a pattern");
       }
-      return { bucket: checkedBucket(literal.substring(start), written), at: literal.length };
+      return { bucket: checkedBucket(literal, written), at: literal.length };
     }
-    const bucket = checkedBucket(literal.substring(start, start + end), written);
-    return { bucket, separator: literal[start + end] as ":" | "/", at: start + end + 1 };
+    const bucket = checkedBucket(literal.substring(0, end), written);
+    return { bucket, separator: literal[end] as ":" | "/", at: end + 1 };
   }
 
   /**
@@ -475,7 +455,7 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
   /** List every bucket of the account, a page at a time. */
   private listBuckets(): Computable<string[]> {
     const { endpoint } = this.account;
-    const region = this.account.region ?? "us-east-1";
+    const region = this.account.region;
     const page = (token: string | undefined, buckets: string[]): Computable<string[]> => {
       const request = bucketsRequest(region, endpoint, token);
       const url = requestUrl(request);

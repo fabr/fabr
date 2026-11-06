@@ -39,6 +39,7 @@ import * as path from "node:path";
 
 import {
   Computable,
+  Credential,
   ExecutionContext,
   FabrError,
   HttpResponse,
@@ -153,6 +154,11 @@ export class NPMAuth {
       .filter((source): source is string => source !== undefined)
       .flatMap(source => [...parseNpmrc(source)]);
     return new NPMAuth(new Map(entries));
+  }
+
+  /** Make the credential signing a request in with what {@link getHeadersFor} gives for its url. */
+  public static credential(load: () => Computable<NPMAuth>): Credential {
+    return { authorize: request => load().then(auth => new Map(Object.entries(auth.getHeadersFor(request.url)))) };
   }
 
   /**

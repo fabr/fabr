@@ -18,10 +18,10 @@
  */
 
 import { expect } from "chai";
-import { FabrError, NamespaceRef, parseName, RefSource, Repository, RepositoryRef, vendPackageRef } from "@fabr-build/core";
+import { FabrError, PartialRepositoryRef, parseName, RefSource, Repository, RepositoryRef, vendPackageRef } from "@fabr-build/core";
 import { MAVEN_FORMAT, mavenVariantOf, splitMavenName } from "./MavenProtocol";
 
-const vend = (written: string): RepositoryRef | NamespaceRef => vendPackageRef({} as RefSource & Repository, MAVEN_FORMAT, parseName(written));
+const vend = (written: string): RepositoryRef | PartialRepositoryRef => vendPackageRef({} as RefSource & Repository, MAVEN_FORMAT, parseName(written));
 
 function refOf(written: string): RepositoryRef {
   const ref = vend(written);
@@ -89,7 +89,7 @@ describe("MAVEN_FORMAT", () => {
       expect(ref).to.be.instanceOf(RepositoryRef);
       expect([(ref as RepositoryRef).name, (ref as RepositoryRef).versionConstraint]).to.deep.equal(["org.slf4j/slf4j-api", undefined]);
     }
-    expect(vend("org.slf4j")).to.be.instanceOf(NamespaceRef);
+    expect(vend("org.slf4j")).to.be.instanceOf(PartialRepositoryRef);
     expect(() => MAVEN_FORMAT.validateRequirement({ name: "org.slf4j/slf4j-api", versionConstraint: undefined, override: "force" })).to.throw(/states no version/);
   });
 

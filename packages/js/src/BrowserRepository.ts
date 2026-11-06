@@ -33,7 +33,7 @@ import {
   FileSet,
   IProjection,
   Name,
-  NamespaceRef,
+  PartialRepositoryRef,
   PackageFileSet,
   PackageFormat,
   Repository,
@@ -310,7 +310,7 @@ export class BrowserRepository implements Repository, RepositoryReader<SemverVer
     return this.context.operation;
   }
 
-  public getRepositoryRef(name: Name): RepositoryRef | NamespaceRef {
+  public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
     return vendPackageRef(this, this.format, name);
   }
 

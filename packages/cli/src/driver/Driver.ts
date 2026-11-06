@@ -40,7 +40,6 @@ import {
   IFile,
   getTestReport,
   Name,
-  NamespaceRef,
   parseName,
   Log,
   LogFormatter,
@@ -53,6 +52,7 @@ import {
   propertyTypeName,
   PublishableFileSet,
   Reference,
+  isIncompleteRef,
   refuseNamespaces,
   reportFailure,
   SyncSource,
@@ -928,7 +928,7 @@ function listedNames(
       .materialize(options.commandLine.refFor(name, site))
       .then((sources): Computable<Map<string, Reference> | SourceRef[]> => {
         const [only] = sources;
-        return sources.length === 1 && only instanceof NamespaceRef ? only.children() : openedAll(refuseNamespaces(sources));
+        return sources.length === 1 && isIncompleteRef(only) ? only.children() : openedAll(refuseNamespaces(sources));
       })
   );
 }
@@ -1474,7 +1474,7 @@ function renderTargetDefHeader(def: ITargetDefDecl, operations: string[]): strin
  * child is a name, not content, so the long form shows the same.
  */
 function renderChildren(children: Map<string, Reference>): string[] {
-  return [...children].map(([name, child]) => (child instanceof NamespaceRef ? `${name}/` : name));
+  return [...children].map(([name, child]) => (isIncompleteRef(child) ? `${name}/` : name));
 }
 
 /**

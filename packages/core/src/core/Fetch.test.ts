@@ -18,7 +18,10 @@ import * as http from "node:http";
 import { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
 import { expect } from "chai";
-import { fetchUrl, openUrlStream, reportingProgress, sendRequest } from "./Fetch";
+import { Computable } from "./Computable";
+import type { Credential, IAuthChallenge } from "./Credential";
+import { HttpStatusError } from "./Errors";
+import { fetchUrl, openUrlStream, readStream, reportingProgress, sendRequest } from "./Fetch";
 
 interface Received {
   method?: string;
@@ -174,6 +177,111 @@ describe("openUrlStream redirects", () => {
     } finally {
       await src.close();
       await dest.close();
+    }
+  });
+});
+
+/**
+ * Start a server that answers 200 to a request carrying `accepted` as its
+ * authorization, and 401 with `challenge` to any other, recording each
+ * authorization it is sent.
+ */
+function withChallengingServer(accepted: string, challenge: string): Promise<{ url: string; sent: Array<string | undefined>; close: () => void }> {
+  const sent: Array<string | undefined> = [];
+  return new Promise(resolve => {
+    const server = http.createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        sent.push(req.headers.authorization);
+        if (req.headers.authorization === accepted) {
+          res.writeHead(200).end("let in");
+        } else {
+          res.writeHead(401, { "www-authenticate": challenge }).end();
+        }
+      });
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const port = (server.address() as AddressInfo).port;
+      resolve({ url: `http://127.0.0.1:${port}/v2/`, sent, close: () => server.close() });
+    });
+  });
+}
+
+/** A credential that sends `first`, and answers a challenge with `renewed` (or gives up, where it is undefined), recording the challenges it is asked. */
+function renewingCredential(first: string, renewed: string | undefined, asked: IAuthChallenge[] = []): Credential {
+  return {
+    authorize: (_request, challenge) => {
+      if (challenge !== undefined) {
+        asked.push(challenge);
+      }
+      const value = challenge === undefined ? first : renewed;
+      return Computable.resolve(value === undefined ? undefined : new Map([["authorization", value]]));
+    },
+  };
+}
+
+describe("a request's credential", () => {
+  it("signs a request in, and answers a 401's challenge with what it renews to", async () => {
+    const server = await withChallengingServer("Basic new", 'Basic realm="registry"');
+    const asked: IAuthChallenge[] = [];
+    try {
+      const response = await sendRequest(server.url, { method: "GET", credential: renewingCredential("Basic old", "Basic new", asked) });
+      expect(response.statusCode).to.equal(200);
+      expect(server.sent).to.deep.equal(["Basic old", "Basic new"]);
+      expect(asked).to.deep.equal([{ challenges: ['Basic realm="registry"'] }]);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("answers a streamed GET's 401 the same way", async () => {
+    const server = await withChallengingServer("Bearer fresh", 'Bearer realm="https://auth.example/token"');
+    try {
+      const response = await openUrlStream(server.url, {}, Date.now, "content", undefined, renewingCredential("Bearer stale", "Bearer fresh"));
+      expect((await readStream(response.stream!)).toString()).to.equal("let in");
+      expect(server.sent).to.deep.equal(["Bearer stale", "Bearer fresh"]);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("leaves the 401 standing, with its challenges, where the credential gives up", async () => {
+    const server = await withChallengingServer("Basic right", 'Basic realm="registry"');
+    try {
+      const err = await openUrlStream(server.url, {}, Date.now, "content", undefined, renewingCredential("Basic wrong", undefined)).then(
+        () => undefined,
+        e => e as HttpStatusError
+      );
+      expect([err?.statusCode, err?.challenges]).to.deep.equal([401, ['Basic realm="registry"']]);
+      expect(server.sent).to.deep.equal(["Basic wrong"]);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("sends a request at most twice", async () => {
+    const server = await withChallengingServer("never", 'Basic realm="registry"');
+    try {
+      const response = await sendRequest(server.url, { method: "GET", credential: renewingCredential("Basic a", "Basic b") });
+      expect(response.statusCode).to.equal(401);
+      expect(server.sent).to.deep.equal(["Basic a", "Basic b"]);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("does not send a streamed body twice", async () => {
+    const server = await withChallengingServer("Basic new", 'Basic realm="registry"');
+    try {
+      const response = await sendRequest(server.url, {
+        method: "PUT",
+        body: Readable.from([Buffer.from("once")]),
+        credential: renewingCredential("Basic old", "Basic new"),
+      });
+      expect(response.statusCode).to.equal(401);
+      expect(server.sent).to.deep.equal(["Basic old"]);
+    } finally {
+      server.close();
     }
   });
 });

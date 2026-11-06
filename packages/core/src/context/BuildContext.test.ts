@@ -53,6 +53,8 @@ import { cycleErrorOf } from "../model/ErrorFormatter";
 import { LogFormatter, LogLevel } from "../support/Log";
 import { BuildAction, IBuildActionDefinition } from "../core/BuildAction";
 import { DiscoveredDeps } from "../core/Manifest";
+import type { Credential } from "../core/Credential";
+import type { TargetContext } from "./TargetContext";
 import { defineRule, PluginContribution, RepositoryProvider, RepositoryRegistration, RuleDefinition, RuleImplementation } from "../rules/Types";
 import { FSFileSource } from "../core/FSFileSource";
 import script from "../rules/RunScript";
@@ -66,7 +68,8 @@ import { PackageFormat } from "../resolver/PackageFormat";
 import { Requirement } from "../resolver/Types";
 import { publishesNothingFor, resolveBarePackage, vendPackageRef } from "../resolver/PackageResolver";
 import { RepositoryReader } from "../core/Repository";
-import { NamespaceRef, refuseNamespaces } from "../core/NamespaceRef";
+import { PartialRepositoryRef } from "../core/PartialRepositoryRef";
+import { IncompleteRef, Namespace, NamespaceRef, refuseNamespaces } from "../core/NamespaceRef";
 import {
   CircularDependencyError,
   DependencyFailedError,
@@ -505,7 +508,7 @@ class TestRegistry implements Repository, RepositoryReader<SemverVersion, Semver
     public readonly name: string
   ) {}
 
-  public getRepositoryRef(name: Name): RepositoryRef | NamespaceRef {
+  public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
     return vendPackageRef(this, REGISTRY_FORMAT, name);
   }
 
@@ -568,7 +571,7 @@ const VERSIONED_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
 class TestVersionedRegistry extends TestRegistry {
   public override readonly format = VERSIONED_FORMAT;
 
-  public override getRepositoryRef(name: Name): RepositoryRef | NamespaceRef {
+  public override getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
     return vendPackageRef(this, VERSIONED_FORMAT, name);
   }
 }
@@ -580,9 +583,9 @@ registerRepositoryProvider("test_versioned_registry", context =>
  * its answer, and a bare scope with the namespace of it — a stand-in for
  * `fabr_home`. */
 class TestNamespaceRepo implements Repository, RepositoryLookup {
-  public getRepositoryRef(name: Name): RepositoryRef | NamespaceRef {
+  public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
     const literal = name.toString();
-    return /^@[^/:]+$/.test(literal) ? new NamespaceRef(this, literal) : RepositoryRef.written(this, name);
+    return /^@[^/:]+$/.test(literal) ? new PartialRepositoryRef(this, literal) : RepositoryRef.written(this, name);
   }
 
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
@@ -653,6 +656,37 @@ class TestPubRepo extends TestRepo implements RepositoryWriter {
   }
 }
 registerRepositoryProvider("test_pub", () => Computable.resolve(new TestPubRepo()));
+
+/* What each member repository was made with, as its provider saw it. */
+const madeMembers: Array<{ name: string; url?: string; credential?: Credential; flavour?: string }> = [];
+/* A credential that signs nothing, compared by identity. */
+const MEMBER_CREDENTIAL: Credential = { authorize: () => Computable.resolve(new Map()) };
+registerRepositoryProvider("test_member", (context, url, credential) =>
+  context.getProperty("flavour").then(flavour => {
+    madeMembers.push({ name: context.name, url, credential, flavour: flavour?.toString() });
+    return new TestRepo("member");
+  })
+);
+/* A namespace holding a repository of the type `memberType` as `m`, made as the namespace is made, and as `n` a namespace like this one. */
+class TestAccountRepo extends Namespace {
+  constructor(public readonly member: Computable<Repository>) {
+    super();
+  }
+
+  public get(name: string): Computable<Repository | Namespace> {
+    return name === "n" ? Computable.resolve<Namespace>(new TestAccountRepo(this.member)) : this.member;
+  }
+}
+const accountProvider =
+  (memberType: string): RepositoryProvider =>
+  context =>
+    Computable.resolve<Namespace>(
+      new TestAccountRepo(
+        context.makeRepository(memberType, { name: "m", properties: { flavour: "blue" }, url: "https://m.example", credential: MEMBER_CREDENTIAL })
+      )
+    );
+registerRepositoryProvider("test_account", accountProvider("test_member"));
+registerRepositoryProvider("test_account_of_nothing", accountProvider("no_such_type"));
 /* The real sync rule, exercised against the double — with the generic files
  * rule, which is what serves a sync under `files` (it has none of its own). */
 testRules.push(syncRule, defaultFilesRule);
@@ -3577,7 +3611,7 @@ describe("an incomplete reference", () => {
     "A = @reg:foo;\n" +
     "T = @reg:@scope;\n";
 
-  function materialize(name: string): Computable<Array<FileSource | NamespaceRef>> {
+  function materialize(name: string): Computable<Array<FileSource | IncompleteRef>> {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
@@ -3663,7 +3697,7 @@ describe("a namespace's fallback property", () => {
     const { model } = load("default @ns = @root:@ns;\ntest_package @ns/tool { }\n");
     const sources = await Promise.resolve(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("@ns")));
     expect(sources).to.have.lengthOf(1);
-    expect(sources[0]).to.be.instanceOf(NamespaceRef);
+    expect(sources[0]).to.be.instanceOf(PartialRepositoryRef);
     expect(() => refuseNamespaces(sources)).to.throw("'@root:@ns' is not a complete reference, so it names no package or files");
   });
 
@@ -4565,6 +4599,17 @@ describe("declared rules and repositories", () => {
     expect(await built(model, "@r")).to.equal("repo");
     expect(loaded).to.deep.equal(["@p/q:Repo"]);
   });
+
+  it("hands a declared repository type's implementation the url and credential it is made with", async () => {
+    const given: unknown[] = [];
+    const provider: RepositoryProvider = (_context, url, credential) => {
+      given.push(url, credential);
+      return Computable.resolve(new FileSet(new Map()));
+    };
+    const model = declaredModel("targetdef dr { }\nrepository dr = @p/q:Repo;\n", new Map([["@p/q:Repo", provider]]), []);
+    await model.getRepositoryProvider("dr")!({} as TargetContext, "https://made.example", MEMBER_CREDENTIAL);
+    expect(given).to.deep.equal(["https://made.example", MEMBER_CREDENTIAL]);
+  });
 });
 
 describe("rules written in .fabr", () => {
@@ -5009,5 +5054,104 @@ describe("rules written in .fabr", () => {
       testContributions
     );
     expect(errors.join("\n")).to.contain("'pkg.whom' reads a property 'lintable' does not declare");
+  });
+});
+
+describe("a global MAP property", () => {
+  /* Writes out the global TYPES as its rule reads it: each key and its words. */
+  registerRule("test_global_map", {}, context =>
+    context
+      .getGlobalMap("TYPES")
+      .then(map => new FileSet(new Map([["out.txt", MemoryFile.from([...map].map(([key, value]) => `${key}=${String(value)}`).join(" "))]])))
+  );
+
+  async function typesOf(input: string): Promise<string> {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", "targetdef test_global_map { }\ntest_global_map t { }\n" + input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+    const [files] = await Promise.resolve(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("t:out.txt"))).catch(
+      (err: Error & { cause?: Error }) => {
+        throw err.cause ?? err;
+      }
+    );
+    return (files as FileSet).readFile("out.txt");
+  }
+
+  it("is read by a rule as its default declares it", async () => {
+    expect(await typesOf("default TYPES = { ecr = oci_repository; npm = npm_repository; };\n")).to.equal("ecr=oci_repository npm=npm_repository");
+  });
+
+  it("is read as a project's declaration in place of a default", async () => {
+    expect(await typesOf("default TYPES = { ecr = oci_repository; };\nTYPES = { npm = mine; };\n")).to.equal("npm=mine");
+  });
+
+  it("is refused where nothing declares it", async () => {
+    const err = await typesOf("").then(
+      () => undefined,
+      e => e as Error
+    );
+    expect(err?.message).to.equal("'TYPES' does not name a map property");
+  });
+});
+
+describe("a repository a namespace makes", () => {
+  const ACCOUNT_INPUT =
+    "targetdef test_account { }\n" +
+    "targetdef test_account_of_nothing { }\n" +
+    "targetdef test_member { flavour = STRING; }\n" +
+    "test_account @acct { }\n" +
+    "test_account_of_nothing @empty { }\n";
+
+  /** Make the member the namespace `name` makes. */
+  async function memberOf(name: string): Promise<Repository> {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", ACCOUNT_INPUT, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+    const [namespace] = await Promise.resolve(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine(name)));
+    return await ((namespace as NamespaceRef).namespace as TestAccountRepo).member;
+  }
+
+  it("is made by its type's provider, with the properties, url and credential it is made with, and named under the namespace", async () => {
+    madeMembers.length = 0;
+    expect(await memberOf("@acct")).to.be.instanceOf(TestRepo);
+    expect(madeMembers).to.deep.equal([{ name: "@acct:m", url: "https://m.example", credential: MEMBER_CREDENTIAL, flavour: "blue" }]);
+  });
+
+  it("vends the references a name into it makes, named under the namespace", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", ACCOUNT_INPUT, logger)], logger, testContributions);
+    const config = model.getConfig(Constraints.of({}), execution);
+    const [files] = await Promise.resolve(config.materialize(writtenOnCommandLine("@acct:m:thing")));
+    expect(await (files as FileSet).readFile("thing/data.txt")).to.equal("thing");
+    const [namespace] = await Promise.resolve(config.materialize(writtenOnCommandLine("@acct:m")));
+    expect((namespace as PartialRepositoryRef).toString()).to.equal("@acct:m");
+    expect((namespace as PartialRepositoryRef).repository).to.be.instanceOf(TestRepo);
+    const [account] = await Promise.resolve(config.materialize(writtenOnCommandLine("@acct")));
+    expect(account).to.be.instanceOf(NamespaceRef);
+    expect(() => refuseNamespaces([account])).to.throw("'@acct' names a namespace, not a package or files");
+  });
+
+  it("follows a name through each namespace it names in turn, written with the separators it was written with", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", ACCOUNT_INPUT, logger)], logger, testContributions);
+    const config = model.getConfig(Constraints.of({}), execution);
+    const [files] = await Promise.resolve(config.materialize(writtenOnCommandLine("@acct:n:m:deep")));
+    expect(await (files as FileSet).readFile("deep/data.txt")).to.equal("deep");
+    const [namespace] = await Promise.resolve(config.materialize(writtenOnCommandLine("@acct:n:m")));
+    expect((namespace as PartialRepositoryRef).toString()).to.equal("@acct:n:m");
+    const [slashed] = await Promise.resolve(config.materialize(writtenOnCommandLine("@acct:n/m")));
+    expect((slashed as PartialRepositoryRef).toString()).to.equal("@acct:n/m");
+  });
+
+  it("is refused where no plugin in use defines its type", async () => {
+    const err = await memberOf("@empty").then(
+      () => undefined,
+      e => e as Error
+    );
+    expect(err?.message).to.equal("'@empty:m' is a no_such_type, which no plugin in use defines");
   });
 });

@@ -1,0 +1,78 @@
+/*
+ * Copyright (c) 2026 Nathan Keynes <nkeynes@deadcoderemoval.net>
+ *
+ * This file is part of Fabr.
+ *
+ * Fabr is free software: you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
+ *
+ * Fabr is distributed in the hope that it will be useful, but WITHOUT ANY
+ * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+ * details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * Fabr. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+/**
+ * STS, as far as finding which account the credentials sign in to:
+ * `GetCallerIdentity`, which any credentials may call.
+ */
+
+import * as sax from "sax";
+import { FabrError } from "@fabr-build/core";
+import { IServiceRequest } from "./Signing";
+
+/** The name STS's requests are signed for. */
+export const STS_SERVICE = "sts";
+
+/** Make the `GetCallerIdentity` request: to `endpoint` where there is one, else to STS in `region`. */
+export function identityRequest(region: string, endpoint?: URL): IServiceRequest & { readonly body: string } {
+  const base =
+    endpoint === undefined
+      ? { protocol: "https:", hostname: `sts.${region}.amazonaws.com`, path: "/" }
+      : {
+          protocol: endpoint.protocol,
+          hostname: endpoint.hostname,
+          ...(endpoint.port === "" ? {} : { port: Number(endpoint.port) }),
+          path: `${endpoint.pathname.replace(/\/+$/, "")}/`,
+        };
+  return {
+    ...base,
+    method: "POST",
+    query: new Map(),
+    headers: new Map([["content-type", "application/x-www-form-urlencoded; charset=utf-8"]]),
+    body: "Action=GetCallerIdentity&Version=2011-06-15",
+  };
+}
+
+/** Read the account ID a `GetCallerIdentity` answer gives. Throws, naming `what`, where it gives none. */
+export function parseCallerAccount(text: string, what: string): string {
+  const parser = sax.parser(true);
+  const open: string[] = [];
+  let content: string[] = [];
+  let account: string | undefined;
+  parser.onerror = err => {
+    throw new FabrError(`${what} is not well-formed XML: ${err.message.split("\n")[0]}`);
+  };
+  parser.onopentag = tag => {
+    open.push(tag.name.substring(tag.name.indexOf(":") + 1));
+    content = [];
+  };
+  parser.ontext = data => content.push(data);
+  parser.onclosetag = () => {
+    if (open.join("/") === "GetCallerIdentityResponse/GetCallerIdentityResult/Account") {
+      account = content.join("").trim();
+    }
+    open.pop();
+    content = [];
+  };
+  parser.write(text).close();
+  if (account === undefined || !/^\d{12}$/.test(account)) {
+    throw new FabrError(`${what} gives no account ID`);
+  }
+  return account;
+}

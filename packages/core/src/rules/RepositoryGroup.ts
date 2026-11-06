@@ -35,6 +35,7 @@ import { Requirement, Selected } from "../resolver/Types";
 import { PackageFormat } from "../resolver/PackageFormat";
 import { publishesNothingFor, vendPackageRef, versionChildren } from "../resolver/PackageResolver";
 import { contentPackageMember } from "./ContentPackage";
+import { PartialRepositoryRef } from "../core/PartialRepositoryRef";
 import { NamespaceRef } from "../core/NamespaceRef";
 import type { Reference } from "../core/Reference";
 import { RepositoryRegistration } from "./Types";
@@ -184,7 +185,7 @@ export class RepositoryGroup<V, C>
     return this.context.name;
   }
 
-  public getRepositoryRef(name: Name): RepositoryRef | NamespaceRef {
+  public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
     /* The ref's source is the GROUP, so every reference written against it
      * lands in one joint batch at the consumer's collection point. */
     return vendPackageRef(this, this.format, name);
@@ -192,7 +193,7 @@ export class RepositoryGroup<V, C>
 
   /** List a package's versions as the member it routes to lists them, each
    *  version's reference addressed to the group. */
-  public children({ name: namespace }: NamespaceRef): Computable<Map<string, Reference>> {
+  public children({ name: namespace }: PartialRepositoryRef): Computable<Map<string, Reference>> {
     if (namespace === "") {
       return Computable.reject(
         new FabrError(`${this.groupName} cannot list every package it serves`).withHelp(
@@ -208,7 +209,7 @@ export class RepositoryGroup<V, C>
     if (listing === undefined) {
       return versionChildren(this, this.format, namespace, member.availableVersions?.(namespace) ?? Computable.resolve(undefined));
     }
-    return listing.call(member, new NamespaceRef(member as Repository & typeof member, namespace)).then(
+    return listing.call(member, new PartialRepositoryRef(member as Repository & typeof member, namespace)).then(
       children =>
         new Map(
           [...children].map(([name, child]): [string, Reference] => [
@@ -480,11 +481,17 @@ interface ContentRoute {
  * joint resolution exactly as a registry-served package does.
  */
 function routeValue(groupName: string, routeName: string, sources: readonly SourceRef[]): RegistryRoute | ContentRoute {
-  const named = sources.filter((source): source is NamespaceRef => source instanceof NamespaceRef);
+  const named = sources.filter((source): source is PartialRepositoryRef => source instanceof PartialRepositoryRef);
   const within = named.find(source => source.name !== "");
   if (within !== undefined) {
     throw new FabrError(`route '${routeName}' in ${groupName} names a namespace of a repository ('${within.toString()}'), not a repository`).withHelp(
       "a route's value is a reference to a declared registry, e.g. `@fortawesome/* = @fa;`: the key selects the package names"
+    );
+  }
+  const holding = sources.find((source): source is NamespaceRef => source instanceof NamespaceRef);
+  if (holding !== undefined) {
+    throw new FabrError(`route '${routeName}' in ${groupName} names a namespace ('${holding.toString()}'), not a repository`).withHelp(
+      `name one of its repositories, as in '${holding.toString()}:<name>'`
     );
   }
   const repositories = named.map(source => source.repository);

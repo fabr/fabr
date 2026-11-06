@@ -19,12 +19,13 @@
 
 import {
   Computable,
+  Credential,
   FabrError,
   FileSet,
   IProvenanceStep,
   MemoryCache,
   Name,
-  NamespaceRef,
+  PartialRepositoryRef,
   Property,
   registerProvenanceDescriber,
   registerProvenanceRenderer,
@@ -46,7 +47,7 @@ import { ImageFileSet, ILayerRecord } from "./ImageFileSet";
 import { imageRunnable } from "./ImageRunnable";
 import { isDigest, splitImageReference } from "./ImageReference";
 import { packageImage, pushImage } from "./ImagePublish";
-import { containerPluginContext, IRegistryCredential } from "./RegistryAuth";
+import { authFileSignIn } from "./RegistrySignIn";
 import { IDigested, IImageManifest, imageManifestOf, IOciPlatform, indexPlatforms, platformMatches, platformText, Registry, selectManifest } from "./OciProtocol";
 
 /** Provenance kind for an image fetched from a registry. */
@@ -130,21 +131,21 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
     private readonly defaultNamespace?: string
   ) {}
 
-  public getRepositoryRef(name: Name): RepositoryRef | NamespaceRef {
+  public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
     const written = name.toString();
     if (name.getMarker() !== undefined) {
       throw new FabrError(`'${written}' is an image, not resolved, so an override marker means nothing on it`).withHelp("write the reference without the marker");
     }
     const literal = name.getLiteralPrefix();
     if (literal === "" && name.isSimpleName()) {
-      return new NamespaceRef(this, "");
+      return new PartialRepositoryRef(this, "");
     }
     const { name: image, version, rest } = splitImageReference(literal, written);
     if (version === undefined) {
       if (!name.isSimpleName()) {
         throw new FabrError(`'${written}' does not name its image literally`).withHelp("an image is named as it is, without a pattern");
       }
-      return new NamespaceRef(this, image);
+      return new PartialRepositoryRef(this, image);
     }
     const reference = new RepositoryRef(this, { name: image, versionConstraint: version });
     return rest === undefined ? reference : reference.find(name.substring(rest.at), rest.separator === "/" ? `${version}/` : "");
@@ -269,17 +270,22 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
 }
 
 /** Make the repository an `oci_repository` declaration declares. */
-function createRepository(context: TargetContext): Computable<Repository> {
+/**
+ * Make the repository an `oci_repository` declaration declares, or a namespace
+ * makes with `url` and `credential`: its own `url` first, and a `credential` in
+ * place of signing in with the auth files' (see RegistrySignIn).
+ */
+function createRepository(context: TargetContext, url?: string, credential?: Credential): Computable<Repository> {
   return Computable.forAll(
-    [context.getRequiredString("url"), context.getProperty("default_namespace"), context.getProperty("login_url")],
-    (url: string, defaultNamespace: Property | undefined, loginUrl: Property | undefined) => {
-      const base = url.replace(/\/+$/, "");
-      const server = loginUrl?.toString() ?? new URL(base).host;
-      const credential = (): Computable<IRegistryCredential | undefined> =>
-        containerPluginContext(context.execution)
-          .registryAuth()
-          .then(auth => auth.credentialFor(server));
-      return new OciRepository(context, new Registry(context, base, credential), defaultNamespace?.toString());
+    [context.getProperty("url"), context.getProperty("default_namespace"), context.getProperty("login_url")],
+    (declared: Property | undefined, defaultNamespace: Property | undefined, loginUrl: Property | undefined) => {
+      const written = declared?.toString() ?? url;
+      if (written === undefined) {
+        throw new FabrError("Missing required property url");
+      }
+      const base = written.replace(/\/+$/, "");
+      const signIn = credential ?? authFileSignIn(context, base, loginUrl?.toString());
+      return new OciRepository(context, new Registry(context, base, signIn), defaultNamespace?.toString());
     }
   );
 }

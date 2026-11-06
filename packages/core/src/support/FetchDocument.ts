@@ -20,6 +20,7 @@
 import { Readable } from "stream";
 import { Computable } from "../core/Computable";
 import { FetchOptions, IFetchContext, IFetchRequest } from "../core/BuildCache";
+import type { Credential } from "../core/Credential";
 import { HttpStatusError, toError } from "../core/Errors";
 import { readStream } from "../core/Fetch";
 import { FileSet, IFile } from "../core/FileSet";
@@ -51,6 +52,8 @@ export interface IDocumentRequest<T> {
   readonly keep?: (value: T) => string;
   /** The headers the request is made with (credentials): never part of the key. */
   readonly headers?: () => Computable<Record<string, string>>;
+  /** What signs the request in, asked again where the server answers 401: never part of the key. */
+  readonly credential?: Credential;
   readonly options?: FetchOptions;
 }
 
@@ -69,6 +72,7 @@ export function fetchDocument<T>(context: CacheFetcher, request: IDocumentReques
         (request.headers ? request.headers() : Computable.resolve(undefined)).then(headers => ({
           url,
           ...(headers ? { headers } : {}),
+          ...(request.credential ? { credential: request.credential } : {}),
           process: (content: Readable) =>
             readStream(content).then(data => {
               const text = data.toString("utf8");
@@ -98,6 +102,8 @@ export interface IDownloadSource {
   readonly expected: ExpectedDigest | undefined;
   /** The headers the request is made with (credentials): never part of the key. */
   readonly headers?: Record<string, string>;
+  /** What signs the request in, asked again where the server answers 401: never part of the key. */
+  readonly credential?: Credential;
 }
 
 /** An archive to fetch with {@link fetchArchive}. */
@@ -125,9 +131,10 @@ export function fetchArchive(context: CacheFetcher, request: IArchiveRequest): C
     request.key,
     request.tag,
     () =>
-      request.source().then(({ url, expected, headers }) => ({
+      request.source().then(({ url, expected, headers, credential }) => ({
         url,
         ...(headers ? { headers } : {}),
+        ...(credential ? { credential } : {}),
         process: (content: Readable, { createOutput }: IFetchContext) => {
           const { stream, verify } = verifiedStream(content, expected, url);
           return unpackStream(stream, createOutput).then(files => {
@@ -178,9 +185,10 @@ export function fetchFile(context: CacheFetcher, request: IFileRequest): Computa
     request.key,
     request.tag,
     () =>
-      request.source().then(({ url, expected, headers }) => ({
+      request.source().then(({ url, expected, headers, credential }) => ({
         url,
         ...(headers ? { headers } : {}),
+        ...(credential ? { credential } : {}),
         process: (content: Readable, { createOutput }: IFetchContext) => {
           const { stream, verify } = verifiedStream(content, expected, url);
           const output = createOutput();

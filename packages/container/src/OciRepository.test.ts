@@ -42,6 +42,7 @@ import {
 import { ImageFileSet } from "./ImageFileSet";
 import { OciRepository, ociPlatformOf } from "./OciRepository";
 import { Registry } from "./OciProtocol";
+import { RegistrySignIn } from "./RegistrySignIn";
 
 /** Pack `files` as an uncompressed tar, as a layer's is once decompressed. */
 function layerTar(files: Record<string, string | SymlinkFile>): Promise<Buffer> {
@@ -176,8 +177,8 @@ function fetchingContext(triple: string, options: Array<FetchOptions | undefined
     getGlobalString: () => Computable.resolve(triple),
     fetch: (_key: string, _tag: string, request: () => Computable<IFetchRequest>, _report: unknown, fetchOptions?: FetchOptions) => {
       options.push(fetchOptions);
-      return request().then(({ url, headers, process }) =>
-        openUrlStream(url, headers).then(response => {
+      return request().then(({ url, headers, credential, process }) =>
+        openUrlStream(url, headers, Date.now, "content", undefined, credential).then(response => {
           const chunks: Buffer[] = [];
           const output = {
             stream: new Writable({
@@ -209,7 +210,7 @@ describe("OciRepository", () => {
 
   const imageOf = (name: string, triple = "x86_64-unknown-linux", options?: Array<FetchOptions | undefined>): Promise<unknown> => {
     const context = fetchingContext(triple, options);
-    const repository = new OciRepository(context, new Registry(context, registry.url), "library");
+    const repository = new OciRepository(context, new Registry(context, registry.url, new RegistrySignIn(registry.url, () => Computable.resolve(undefined))), "library");
     const reference = repository.getRepositoryRef(parseName(name)) as RepositoryRef;
     return Promise.resolve(repository.resolve(reference)).then(node => {
       expect(node).to.be.instanceOf(ResolvedNode);
@@ -247,7 +248,7 @@ describe("OciRepository", () => {
 
   it("publishes an image under a tag, mounting the layers its registry already holds, then finds it synced", async () => {
     const context = fetchingContext("x86_64-unknown-linux");
-    const repository = new OciRepository(context, new Registry(context, registry.url), "library");
+    const repository = new OciRepository(context, new Registry(context, registry.url, new RegistrySignIn(registry.url, () => Computable.resolve(undefined))), "library");
     const node = await Promise.resolve(repository.resolve(repository.getRepositoryRef(parseName("demo:1.0")) as RepositoryRef));
     const image = (await Promise.resolve(node.content.files())) as ImageFileSet;
     const destination = repository.getRepositoryPublishRef(parseName("myorg/copy:2"));
@@ -266,7 +267,7 @@ describe("OciRepository", () => {
 
   it("refuses a digest, or a name with no tag, as a coordinate to publish to", () => {
     const context = fetchingContext("x86_64-unknown-linux");
-    const repository = new OciRepository(context, new Registry(context, registry.url), "library");
+    const repository = new OciRepository(context, new Registry(context, registry.url, new RegistrySignIn(registry.url, () => Computable.resolve(undefined))), "library");
     expect(() => repository.getRepositoryPublishRef(parseName(`myorg/app:sha256:${"a".repeat(64)}`))).to.throw(/no image and tag to publish to/);
     expect(() => repository.getRepositoryPublishRef(parseName("myorg/app"))).to.throw(/no image and tag to publish to/);
   });
@@ -278,8 +279,8 @@ describe("OciRepository", () => {
 
   it("vends a namespace for an image named without a version, and a projection after one", () => {
     const context = fetchingContext("x86_64-unknown-linux");
-    const repository = new OciRepository(context, new Registry(context, registry.url), "library");
-    expect(repository.getRepositoryRef(parseName("demo")).constructor.name).to.equal("NamespaceRef");
+    const repository = new OciRepository(context, new Registry(context, registry.url, new RegistrySignIn(registry.url, () => Computable.resolve(undefined))), "library");
+    expect(repository.getRepositoryRef(parseName("demo")).constructor.name).to.equal("PartialRepositoryRef");
     const projected = repository.getRepositoryRef(parseName("demo:1.0:etc/*")) as RepositoryRef;
     expect(projected.name).to.equal("demo");
     expect(projected.versionConstraint).to.equal("1.0");

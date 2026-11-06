@@ -33,7 +33,7 @@ import { MemoryFile } from "../core/MemoryFS";
 import { Name } from "../core/Name";
 import { contentOf, Dependency, dependencyName, isPackage, Package, PackageFileSet, PackageGraphBuilder, ResolvedNode, Provided } from "../core/PackageFileSet";
 import { isRepositoryReader, RefSource, Repository, RepositoryReader, RepositoryRef, SourceRef } from "../core/Repository";
-import { NamespaceRef } from "../core/NamespaceRef";
+import { PartialRepositoryRef } from "../core/PartialRepositoryRef";
 import { TargetRef } from "../core/TargetRef";
 import { PackageRequest, ResolutionContext, Resolution, ResolvedRoot } from "./Types";
 import { chainSteps, IProvenanceStep, ISourcePathStep, SOURCE_PATH_PROVENANCE } from "../core/Provenance";
@@ -77,9 +77,9 @@ const RESOLUTION_FILE = "resolution.json";
  * references group by that source, so everything written against one
  * repository resolves in one joint batch. A name that is not yet a complete
  * reference (`glob`, where the format's references must state a version) is
- * vended as a {@link NamespaceRef}, for the rest of the name to complete.
+ * vended as a {@link PartialRepositoryRef}, for the rest of the name to complete.
  */
-export function vendPackageRef<V, C>(source: RefSource & Repository, format: PackageFormat<V, C>, name: Name): RepositoryRef | NamespaceRef {
+export function vendPackageRef<V, C>(source: RefSource & Repository, format: PackageFormat<V, C>, name: Name): RepositoryRef | PartialRepositoryRef {
   /* A `?` or `!` ending the reference is a marker only where the identity runs
    * to its end; after a projection it is the last character of the pattern. A
    * rename written on the identity is the package's; one written after a
@@ -90,7 +90,7 @@ export function vendPackageRef<V, C>(source: RefSource & Repository, format: Pac
   }
   const override = name.getMarker();
   if (override === undefined && name.getRenameTo() === undefined && !name.hasGlob() && isIncomplete(format, written)) {
-    return new NamespaceRef(source, written.name);
+    return new PartialRepositoryRef(source, written.name);
   }
   const split = override === undefined ? written : format.splitReference(name.withoutMarker());
   const identity = override === undefined ? split : { ...split, override };

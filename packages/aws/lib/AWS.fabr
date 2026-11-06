@@ -17,12 +17,27 @@ targetdef aws_account {
     # The `~/.aws/config` profile whose credentials are used. By default, the
     # one the AWS CLI would use (`AWS_PROFILE`, else `default`).
     profile = STRING;
-    # The region of the account's regional services. S3 finds each bucket's
-    # region for itself.
+    # The region of the account's regional services, `us-east-1` where it is
+    # not set. S3 finds each bucket's region for itself.
     region = STRING;
+    # The account's 12-digit ID. Where it is set, the account's ECR registry is
+    # found without asking AWS, so images already cached need no network.
+    account_id = STRING;
     # The URL every service of the account is reached at, in place of AWS's
     # own: an S3-compatible store such as MinIO or LocalStack.
     endpoint = STRING;
+}
+
+#
+# The repository type each AWS service or CodeArtifact format is read and
+# published as, by AWS's name for it: a type the plugin for that kind of
+# package defines. `@aws:ecr:…` is an `oci_repository`, and
+# `@aws:codeartifact:<domain>:<repository>:npm:…` an `npm_repository`.
+#
+default AWS_REPOSITORY_TYPES = {
+    ecr = oci_repository;
+    npm = npm_repository;
+    maven = maven_repository;
 }
 
 ####################### Repository ##########################

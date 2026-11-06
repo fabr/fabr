@@ -36,7 +36,8 @@ import {
   toJsonObject,
 } from "@fabr-build/core";
 import { contentOf, ImageFileSet, ILayerRecord, sizeOf } from "./ImageFileSet";
-import { digested, digestOf, IDescriptor, OCI_CONFIG, OCI_MANIFEST, pushScopes, Registry } from "./OciProtocol";
+import { digested, digestOf, IDescriptor, OCI_CONFIG, OCI_MANIFEST, Registry } from "./OciProtocol";
+import { authFileSignIn } from "./RegistrySignIn";
 
 /** A layer as published: gzip-compressed. */
 const OCI_LAYER_GZIP = "application/vnd.oci.image.layer.v1.tar+gzip";
@@ -153,19 +154,17 @@ export function pushImage(context: TargetContext, registry: Registry, carrier: P
       const manifest = Buffer.from(manifestText, "utf8");
       const layers = (toJsonObject(JSON.parse(manifestText)).layers as IDescriptor[]) ?? [];
       const sources = new Map(parseJson(sourcesText, CARRIER_SOURCES, json => json as ILayerSource[]).map(source => [source.digest, source]));
-      const mounts = [...sources.values()].filter(source => source.registry === registry.url).map(source => source.repository);
-      const scopes = pushScopes(repository, mounts);
-      return registry.taggedDigest(repository, tag, scopes).then(existing => {
+      return registry.taggedDigest(repository, tag).then(existing => {
         if (existing === digestOf(manifest)) {
           return Computable.resolve<PublishStatus>("already-synced");
         }
         const config = Buffer.from(configText, "utf8");
         const blobs = [
-          ...layers.map(layer => pushBlob(context, registry, repository, scopes, layer, carrier.getFile(blobName(layer.digest)), sources.get(layer.digest))),
-          pushBlob(context, registry, repository, scopes, { mediaType: OCI_CONFIG, digest: digestOf(config), size: config.length }, new MemoryFile(config)),
+          ...layers.map(layer => pushBlob(context, registry, repository, layer, carrier.getFile(blobName(layer.digest)), sources.get(layer.digest))),
+          pushBlob(context, registry, repository, { mediaType: OCI_CONFIG, digest: digestOf(config), size: config.length }, new MemoryFile(config)),
         ];
         return Computable.forAll(blobs, () => undefined)
-          .then(() => registry.putManifest(repository, tag, manifest, OCI_MANIFEST, scopes))
+          .then(() => registry.putManifest(repository, tag, manifest, OCI_MANIFEST))
           .then((): PublishStatus => "published");
       });
     }
@@ -177,25 +176,24 @@ function pushBlob(
   context: TargetContext,
   registry: Registry,
   repository: string,
-  scopes: readonly string[],
   blob: IDescriptor,
   file: IFile | undefined,
   source?: ILayerSource
 ): Computable<void> {
-  return registry.hasBlob(repository, blob.digest, scopes).then(held => {
+  return registry.hasBlob(repository, blob.digest).then(held => {
     if (held) {
       return Computable.resolve(undefined);
     }
     const upload = (): Computable<void> =>
       file !== undefined
-        ? contentOf(file).then(stream => registry.uploadBlob(repository, blob.digest, blob.size, () => stream, scopes))
+        ? contentOf(file).then(stream => registry.uploadBlob(repository, blob.digest, blob.size, () => stream))
         : source !== undefined
-        ? new Registry(context, source.registry)
+        ? new Registry(context, source.registry, authFileSignIn(context, source.registry))
             .blobStream(source.repository, blob.digest)
-            .then(stream => registry.uploadBlob(repository, blob.digest, blob.size, () => stream, scopes))
+            .then(stream => registry.uploadBlob(repository, blob.digest, blob.size, () => stream))
         : Computable.reject<void>(new FabrError(`nothing holds the blob ${blob.digest} to push`));
     if (source !== undefined && source.registry === registry.url) {
-      return registry.mountBlob(repository, blob.digest, source.repository, scopes).then(mounted => (mounted ? Computable.resolve(undefined) : upload()));
+      return registry.mountBlob(repository, blob.digest, source.repository).then(mounted => (mounted ? Computable.resolve(undefined) : upload()));
     }
     return upload();
   });

@@ -26,7 +26,7 @@ import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { materializeTargets, TargetRef, Unbuilt } from "../core/TargetRef";
 import type { Reference } from "../core/Reference";
-import { NamespaceRef } from "../core/NamespaceRef";
+import { isIncompleteRef } from "../core/NamespaceRef";
 import {
   contentOf,
   Dependency,
@@ -580,7 +580,7 @@ export function resolveSources(
       const roots = sources.map((source): Resolved[] => {
         if (source instanceof RepositoryRef) {
           return resolvedAs(finished.get(source)!);
-        } else if (source instanceof NamespaceRef) {
+        } else if (isIncompleteRef(source)) {
           throw source.refused();
         }
         return [source as Resolved];
@@ -827,7 +827,7 @@ export function materializeShallow(
 ): Computable<Materialized[]> {
   return materializeTargets(sources).then(built => {
     const held = (built as Array<Exclude<SourceRef, TargetRef>>).map(source => {
-      if (source instanceof NamespaceRef) {
+      if (isIncompleteRef(source)) {
         throw source.refused();
       }
       return source;

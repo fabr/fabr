@@ -25,7 +25,7 @@ import { FileSetRef } from "./FileSetRef";
 import { MemoryFile } from "./MemoryFS";
 import { Name } from "./Name";
 import { PackageFileSet, PackageGraphBuilder } from "./PackageFileSet";
-import { NamespaceRef } from "./NamespaceRef";
+import { PartialRepositoryRef } from "./PartialRepositoryRef";
 import type { Reference } from "./Reference";
 import { RequirementResolutionError } from "./Errors";
 import { dependenciesOn, PackagePublishRef, renamedAs, Repository, RepositoryLookup, RepositoryPublishRef, RepositoryRef, RepositoryWriter } from "./Repository";
@@ -123,7 +123,7 @@ class StubRepository implements Repository {
   }
 }
 
-describe("NamespaceRef", () => {
+describe("PartialRepositoryRef", () => {
   /** A repository vending every reference and publish ref it is asked for, as
    *  asked. */
   class VendingRepository implements Repository, RepositoryLookup {
@@ -143,34 +143,34 @@ describe("NamespaceRef", () => {
   const vending = new VendingRepository();
 
   it("vends a reference within its namespace, stamped with the repository's written name", () => {
-    const scope = new NamespaceRef(vending, "@acme", undefined, "@registry");
+    const scope = new PartialRepositoryRef(vending, "@acme", undefined, "@registry");
     const ref = scope.getRepositoryRef(Name.fromLiteral("widget"), "/") as RepositoryRef;
     expect(ref.name).to.equal("@acme/widget");
     expect(ref.repositoryName).to.equal("@registry");
-    expect((new NamespaceRef(vending).getRepositoryRef(Name.fromLiteral("widget"), ":") as RepositoryRef).name).to.equal("widget");
+    expect((new PartialRepositoryRef(vending).getRepositoryRef(Name.fromLiteral("widget"), ":") as RepositoryRef).name).to.equal("widget");
   });
 
   it("is completed by the rest of the name, after the separator it was written with", () => {
-    const pkg = new NamespaceRef(vending, "widget");
+    const pkg = new PartialRepositoryRef(vending, "widget");
     expect((pkg.getRepositoryRef(Name.fromLiteral("1.0.0"), ":") as RepositoryRef).name).to.equal("widget:1.0.0");
     expect((pkg.getRepositoryRef(Name.fromLiteral("core"), "/") as RepositoryRef).name).to.equal("widget/core");
     expect(pkg.refused().message).to.equal("'widget' is not a complete reference, so it names no package or files");
   });
 
   it("lists its children as the repository lists them, handed the reference", async () => {
-    const asked: NamespaceRef[] = [];
+    const asked: PartialRepositoryRef[] = [];
     class ListingRepository extends VendingRepository {
-      public children(ref: NamespaceRef): Computable<Map<string, Reference>> {
+      public children(ref: PartialRepositoryRef): Computable<Map<string, Reference>> {
         asked.push(ref);
         return Computable.resolve(
           new Map<string, Reference>([
             ["widget", new RepositoryRef(this, { name: `${ref.name}/widget`, versionConstraint: undefined })],
-            ["@inner", new NamespaceRef(this, `${ref.name}/@inner`)],
+            ["@inner", new PartialRepositoryRef(this, `${ref.name}/@inner`)],
           ])
         );
       }
     }
-    const scope = new NamespaceRef(new ListingRepository(), "@acme", undefined, "@registry");
+    const scope = new PartialRepositoryRef(new ListingRepository(), "@acme", undefined, "@registry");
     const children = await toPromise(scope.children());
     expect(asked).to.deep.equal([scope]);
     expect([...children.keys()]).to.deep.equal(["widget", "@inner"]);
@@ -178,7 +178,7 @@ describe("NamespaceRef", () => {
   });
 
   it("refuses to list a repository that lists nothing, attributed to itself", async () => {
-    const scope = new NamespaceRef(vending, "@acme", undefined, "@registry");
+    const scope = new PartialRepositoryRef(vending, "@acme", undefined, "@registry");
     const err = await toPromise(scope.children()).then(
       () => undefined,
       (rejected: Error) => rejected
@@ -189,7 +189,7 @@ describe("NamespaceRef", () => {
   });
 
   it("vends a publish ref within its namespace, as it does a reference", () => {
-    const scope = new NamespaceRef(vending, "@acme", undefined, "@registry");
+    const scope = new PartialRepositoryRef(vending, "@acme", undefined, "@registry");
     expect(scope.getRepositoryPublishRef(Name.fromLiteral("widget:1.0.0"), "/", "@acme").toString()).to.equal("@acme:@acme/widget:1.0.0");
     expect(scope.getRepositoryPublishRef(Name.fromLiteral("widget:1.0.0"), "/").toString()).to.equal("@registry:@acme/widget:1.0.0");
   });

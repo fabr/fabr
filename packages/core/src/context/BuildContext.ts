@@ -22,9 +22,10 @@ import type { ActionContext, ICreateOptions } from "../core/BuildCache";
 import type { Computable } from "../core/Computable";
 import type { FileSet, FileSource } from "../core/FileSet";
 import type { IProjection, Miss } from "../core/Reference";
-import type { NamespaceRef } from "../core/NamespaceRef";
+import type { IncompleteRef, NamespaceRef } from "../core/NamespaceRef";
 import type { Name } from "../core/Name";
-import type { Materialized, SourceRef } from "../core/Repository";
+import type { Materialized, Repository, SourceRef } from "../core/Repository";
+import type { Credential } from "../core/Credential";
 import type { Unbuilt } from "../core/TargetRef";
 import type { ResolvedTarget } from "./ResolvedTarget";
 import type { ResolvedRequirements } from "./Collection";
@@ -67,14 +68,14 @@ export interface BuildContext {
   /**
    * Materialize what `ref` names: build every target it reaches and fetch
    * every external reference, and return the content. A delivered package comes back as that
-   * package's own files, without its dependency closure. A namespace (a
-   * repository named on its own, or a namespace of one such as `@npm:glob`)
-   * has no content and comes back as it stands: a caller wanting content
-   * refuses it ({@link refuseNamespaces}), and one listing names lists its
-   * children. Under `BUILD_OPERATION=run` the name is a program to launch,
+   * package's own files, without its dependency closure. An {@link IncompleteRef} (a
+   * repository named on its own, a name in one such as `@npm:glob`, or a
+   * namespace) has no content and comes back as it stands: a caller wanting
+   * content refuses it ({@link refuseNamespaces}), and one listing names lists
+   * its children. Under `BUILD_OPERATION=run` the name is a program to launch,
    * and what it requires is resolved permissively.
    */
-  materialize(ref: INameValue): Computable<Array<FileSource | NamespaceRef>>;
+  materialize(ref: INameValue): Computable<Array<FileSource | IncompleteRef>>;
 
   /**
    * @return true if `ref` is a name the project declares — a target, a global
@@ -213,6 +214,9 @@ export interface InternalBuildContext extends BuildContext {
     callerOverrides?: Constraints
   ): Computable<PropertyMap>;
 
+  /** Look up the global MAP property `name`, which must be declared. */
+  lookupGlobalMap(name: string, stack?: IDependencyStack, callerOverrides?: Constraints): Computable<PropertyMap>;
+
   /**
    * Look up a projection property's one selector, substituted. Undefined
    * where the property is unwritten. More than one value is an error.
@@ -294,8 +298,9 @@ export interface InternalBuildContext extends BuildContext {
    *   to that value.
    * - A **property** resolves to the sources its value names, the targets
    *   among them resolved in the same way.
-   * - A **repository** resolves to a {@link NamespaceRef} over it, and a
-   *   plain FileSource a provider makes (`fetch`) to that source.
+   * - A **repository** resolves to a {@link PartialRepositoryRef} over it, a
+   *   namespace to a {@link NamespaceRef}, and a plain FileSource a provider
+   *   makes (`fetch`) to that source.
    *
    * `name` is a whole declared name, with no projection and no `<k=v>`. One
    * that nothing declares and no constraint supplies throws. The result is
@@ -317,6 +322,12 @@ export interface InternalBuildContext extends BuildContext {
     inputs: SubTargetInputs,
     options?: { label?: string; constraints?: Constraints }
   ): Computable<SourceRef[]>;
+
+  /** Make the repository of `type` that `owner`, a repository's context, holds as a member (see {@link TargetContext.makeRepository}). */
+  makeRepository(owner: TargetContext, type: string, member: IRepositoryMember): Computable<Repository>;
+
+  /** @return true if a plugin in use (or core) defines the repository type `type`, otherwise false. */
+  hasRepositoryType(type: string): boolean;
 
   /** Describe a sub-target as {@link buildSubTarget} would build it, or
    * undefined where its rule describes nothing. */
@@ -358,4 +369,16 @@ export interface InternalBuildContext extends BuildContext {
     create: (ctx: ActionContext) => Computable<BuildResult>,
     options?: ICreateOptions
   ): Computable<FileSet>;
+}
+
+/** A repository a namespace holds as a member: what it is named there, and what it is made with. */
+export interface IRepositoryMember {
+  /** Its name in the namespace (`ecr` of `@aws`). */
+  readonly name: string;
+  /** Values it is made with, read as if its declaration wrote them. */
+  readonly properties?: SubTargetInputs;
+  /** The url it is made with, where its properties write none. */
+  readonly url?: string;
+  /** What signs its requests in. */
+  readonly credential?: Credential;
 }

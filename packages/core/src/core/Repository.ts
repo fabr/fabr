@@ -22,6 +22,7 @@ import { FabrError } from "./Errors";
 import { FileSetRef } from "./FileSetRef";
 import { FileSet, FileSource } from "./FileSet";
 import type { TargetRef } from "./TargetRef";
+import type { PartialRepositoryRef } from "./PartialRepositoryRef";
 import type { NamespaceRef } from "./NamespaceRef";
 import { Dependency, isPackage, Package, PackageFileSet, ResolvedNode } from "./PackageFileSet";
 import { chainSteps } from "./Provenance";
@@ -55,11 +56,11 @@ export interface Repository {
    * written-name rule rides on it) — so the caller holds one deferred ref, with
    * nothing of the name left to interpret. Where the name is a namespace of
    * the repository's names rather than one (a scope, `@fabr-build`), vend the
-   * {@link NamespaceRef} naming it instead, for the name to go on from.
+   * {@link PartialRepositoryRef} naming it instead, for the name to go on from.
    * Throws if this repository cannot be read from, or the name is no valid
    * identity.
    */
-  getRepositoryRef(name: Name): RepositoryRef | NamespaceRef;
+  getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef;
 
   /**
    * Vend a publish ref: validate `name` as an address in this repository's
@@ -74,14 +75,14 @@ export interface Repository {
 
   /**
    * List the children of the name `ref` names in this repository ({@link
-   * NamespaceRef.name}, empty for the whole repository): each child's name
+   * PartialRepositoryRef.name}, empty for the whole repository): each child's name
    * within it, in the order the repository lists them, mapped to the
    * reference that names the child. Names only — nothing is fetched or
    * resolved to list them. Rejects where it cannot be listed (a registry
    * cannot enumerate every package it holds). OPTIONAL: absent, nothing in the
    * repository can be listed.
    */
-  children?(ref: NamespaceRef): Computable<Map<string, Reference>>;
+  children?(ref: PartialRepositoryRef): Computable<Map<string, Reference>>;
 }
 
 export function isRepository(source: unknown): source is Repository {
@@ -660,11 +661,11 @@ export function renamedAs(source: SourceRef | ResolvedNode, renameTo: string, wr
 }
 
 /**
- * A FileSource, a NamespaceRef (a repository named on its own), a deferred
+ * A FileSource, a PartialRepositoryRef (a repository named on its own), a deferred
  * RepositoryRef, a projection-pending FileSetRef, or an unbuilt TargetRef: the
  * currency of looking up properties and targets.
  */
-export type SourceRef = FileSource | NamespaceRef | RepositoryRef | FileSetRef | TargetRef;
+export type SourceRef = FileSource | PartialRepositoryRef | NamespaceRef | RepositoryRef | FileSetRef | TargetRef;
 
 /** A collection's source, materialized: content, or, where its reference
  * carries projections, a {@link FileSetRef}

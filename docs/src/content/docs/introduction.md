@@ -183,5 +183,6 @@ on your machine and aren't part of that guarantee. See
   [compiling](/reference/java/compiling/), [testing](/reference/java/testing/),
   [running programs](/reference/java/running/) and [packaging](/reference/java/packaging/).
 - **AWS reference**: [targets and configuration](/reference/aws/targets/),
-  [accounts and credentials](/reference/aws/accounts/) and [Amazon S3](/reference/aws/s3/): build
-  inputs from S3 buckets, and publishing files to them.
+  [accounts and credentials](/reference/aws/accounts/), [Amazon S3](/reference/aws/s3/),
+  [Amazon ECR](/reference/aws/ecr/) and [AWS CodeArtifact](/reference/aws/codeartifact/): build
+  inputs from S3, ECR and CodeArtifact, and publishing to them.

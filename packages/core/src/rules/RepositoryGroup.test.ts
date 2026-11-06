@@ -26,7 +26,7 @@ import { Computable } from "../core/Computable";
 import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import { Name } from "../core/Name";
-import { NamespaceRef } from "../core/NamespaceRef";
+import { PartialRepositoryRef } from "../core/PartialRepositoryRef";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { PublishableFileSet } from "../core/PublishableFileSet";
@@ -241,9 +241,9 @@ class FakeRegistry implements Repository, RepositoryReader<SemverVersion, Semver
   ) {}
 
   /** A bare scope names the namespace of it, as npm's naming allows. */
-  public getRepositoryRef(name: Name): RepositoryRef | NamespaceRef {
+  public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
     const literal = name.toString();
-    return /^@[^/:]+$/.test(literal) ? new NamespaceRef(this, literal) : vendPackageRef(this, this.format, name);
+    return /^@[^/:]+$/.test(literal) ? new PartialRepositoryRef(this, literal) : vendPackageRef(this, this.format, name);
   }
 
   public getRepositoryPublishRef(name: Name): never {

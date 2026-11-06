@@ -25,11 +25,11 @@
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import { Hash } from "@smithy/hash-node";
 import { SignatureV4 } from "@smithy/signature-v4";
-import { Computable, FabrError, toError } from "@fabr-build/core";
+import { Computable, Credential, FabrError, toError } from "@fabr-build/core";
 
 /** A request to a service, before it is signed. */
 export interface IServiceRequest {
-  readonly method: "GET" | "HEAD" | "PUT";
+  readonly method: "GET" | "HEAD" | "PUT" | "POST";
   /** `https:`, or `http:` for an endpoint that says so. */
   readonly protocol: string;
   readonly hostname: string;
@@ -40,6 +40,8 @@ export interface IServiceRequest {
   readonly query: ReadonlyMap<string, string>;
   /** Headers sent with the request and signed with it, by lowercase name. */
   readonly headers?: ReadonlyMap<string, string>;
+  /** The body sent, signed with its hash; absent, the body is empty or its hash is among `headers`. */
+  readonly body?: string;
 }
 
 /** A credential provider, as AWS's credential chain makes one. */
@@ -75,6 +77,7 @@ export class RequestSigner {
           path: request.path,
           query: Object.fromEntries(request.query),
           headers: { ...Object.fromEntries(request.headers ?? []), host },
+          ...(request.body === undefined ? {} : { body: request.body }),
         })
         .then(
           signed => resolve(signed.headers),
@@ -103,4 +106,12 @@ export function requestUrl(request: IServiceRequest): string {
     .map(([key, value]) => `${uriEncode(key)}=${uriEncode(value)}`)
     .join("&");
   return `${request.protocol}//${host}${request.path}${query === "" ? "" : `?${query}`}`;
+}
+
+/** Make the credential signing in, as `credential` does, the requests to `origin` alone: any other request carries nothing of it. */
+export function onlyTo(origin: string, credential: Credential): Credential {
+  return {
+    authorize: (request, challenge) =>
+      new URL(request.url).origin === origin ? credential.authorize(request, challenge) : Computable.resolve(challenge === undefined ? new Map() : undefined),
+  };
 }

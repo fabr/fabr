@@ -21,6 +21,7 @@
  * context a rule runs in. Modules of this directory not exported here are
  * the framework's own. */
 export { BuildContext } from "./BuildContext";
+export type { IRepositoryMember } from "./BuildContext";
 export { ResolvedTarget } from "./ResolvedTarget";
 export { mapEntryError, mapEntryOrigin, PropertyMap, PropertyMapValue, toEnvironment } from "./PropertyMap";
 export { TargetContext } from "./TargetContext";

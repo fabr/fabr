@@ -44,7 +44,7 @@ import {
   LogLevel,
   MemoryFile,
   Name,
-  NamespaceRef,
+  PartialRepositoryRef,
   PackageFileSet,
   PackageIdentity,
   parseName,
@@ -84,7 +84,7 @@ import {
 } from "./NPMProtocol";
 
 /** `ref` as the package reference a test vends it as. */
-function refOf(ref: RepositoryRef | NamespaceRef): RepositoryRef {
+function refOf(ref: RepositoryRef | PartialRepositoryRef): RepositoryRef {
   if (!(ref instanceof RepositoryRef)) {
     throw new Error(`'${ref.toString()}' names a namespace`);
   }
@@ -843,10 +843,10 @@ describe("NPMRepository children", () => {
   it("vends a name stating no version as an incomplete reference, for the rest of the name to complete", () => {
     const repo = npmRepository(REG, fakeContext("build", {}, []));
     const namespace = repo.getRepositoryRef(parseName("left-pad"));
-    expect(namespace).to.be.instanceOf(NamespaceRef);
-    expect((namespace as NamespaceRef).name).to.equal("left-pad");
+    expect(namespace).to.be.instanceOf(PartialRepositoryRef);
+    expect((namespace as PartialRepositoryRef).name).to.equal("left-pad");
     /* The rest of the name completes it. */
-    expect(refOf((namespace as NamespaceRef).getRepositoryRef(parseName("1.6.0"), ":")).toString()).to.equal("left-pad:1.6.0");
+    expect(refOf((namespace as PartialRepositoryRef).getRepositoryRef(parseName("1.6.0"), ":") as RepositoryRef).toString()).to.equal("left-pad:1.6.0");
     /* A marker or a rename still asks for a package, which needs a version. */
     expect(repo.getRepositoryRef(parseName("left-pad!"))).to.be.instanceOf(RepositoryRef);
     expect(repo.getRepositoryRef(parseName("left-pad -> pad"))).to.be.instanceOf(RepositoryRef);
@@ -857,7 +857,7 @@ describe("NPMRepository children", () => {
     const served = { [`${REG}/left-pad`]: packumentOf("left-pad", ["1.0.0", "2.0.0", "1.6.0"]) };
     const repo = npmRepository(REG, fakeContext("build", served, fetched));
 
-    const children = await toPromise(new NamespaceRef(repo, "left-pad", undefined, "@npm").children());
+    const children = await toPromise(new PartialRepositoryRef(repo, "left-pad", undefined, "@npm").children());
 
     expect([...children.keys()]).to.deep.equal(["2.0.0", "1.6.0", "1.0.0"]);
     const pinned = children.get("1.6.0") as RepositoryRef;
@@ -869,12 +869,12 @@ describe("NPMRepository children", () => {
     const url = `${REG}/no-such-package-xyzzy`;
     const repo = npmRepository(REG, fakeContext("build", { [url]: new HttpStatusError(404, url) }, []));
 
-    const missing = await rejection(() => toPromise(new NamespaceRef(repo, "no-such-package-xyzzy").children()));
+    const missing = await rejection(() => toPromise(new PartialRepositoryRef(repo, "no-such-package-xyzzy").children()));
     expect(missing).to.be.instanceOf(RequirementResolutionError);
     expect(missing.message).to.equal("no package 'no-such-package-xyzzy' is published");
-    const whole = await rejection(() => toPromise(new NamespaceRef(repo).children()));
+    const whole = await rejection(() => toPromise(new PartialRepositoryRef(repo).children()));
     expect(whole.message).to.equal(`the registry at ${REG} cannot list every package it holds`);
-    const scope = await rejection(() => toPromise(new NamespaceRef(repo, "@types").children()));
+    const scope = await rejection(() => toPromise(new PartialRepositoryRef(repo, "@types").children()));
     expect(scope.message).to.equal(`the registry at ${REG} cannot list every package in @types`);
   });
 });
@@ -1354,9 +1354,14 @@ function authCapturingContext(
     getGlobalString: (name: string) =>
       name in globals ? Computable.resolve(globals[name]) : Computable.reject(new Error(`unexpected property: ${name}`)),
     fetch: (_cacheKey: string, _tag: string, request: () => Computable<IFetchRequest>) =>
-      request().then(({ url, headers }): Computable<FileSet> => {
-        captured[url] = headers;
-        return url in served ? Computable.resolve(served[url]) : Computable.reject(new Error(`unexpected fetch: ${url}`));
+      request().then(({ url, headers, credential }): Computable<FileSet> => {
+        const head = { method: "GET", url, headers: new Map(Object.entries(headers ?? {})) };
+        return (credential === undefined ? Computable.resolve(undefined) : credential.authorize(head)).then(added => {
+          const sent = { ...headers, ...Object.fromEntries(added ?? []) };
+          delete sent.accept;
+          captured[url] = sent;
+          return url in served ? Computable.resolve(served[url]) : Computable.reject(new Error(`unexpected fetch: ${url}`));
+        });
       }),
     execution: fakeExecution(npmrc),
   } as unknown as TargetContext;
@@ -1986,8 +1991,8 @@ describe("multi-route domains (repository groups)", () => {
      * publish machinery at all. */
     const context = npmrcContext();
     const repo = groupDomain(context, [["@scope/*", PRIV], ["*", REG]]);
-    const scoped = repo.getRepositoryPublishRef(Name.fromLiteral("@scope/x:1.0.0"));
-    const pub = repo.getRepositoryPublishRef(Name.fromLiteral("demo:1.2.3"));
+    const scoped = repo.getRepositoryPublishRef(Name.fromLiteral("@scope/x:1.0.0")) as RepositoryPublishRef;
+    const pub = repo.getRepositoryPublishRef(Name.fromLiteral("demo:1.2.3")) as RepositoryPublishRef;
     expect(scoped.source).to.be.instanceOf(NPMRepository);
     expect(pub.source).to.be.instanceOf(NPMRepository);
     expect(scoped.source).to.not.equal(pub.source);

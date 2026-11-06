@@ -19,67 +19,63 @@
 
 import { Computable } from "./Computable";
 import { FabrError, RequirementResolutionError, toError } from "./Errors";
+import type { FileSource } from "./FileSet";
+import { PartialRepositoryRef } from "./PartialRepositoryRef";
 import { NO_REFERENCE_FIELDS, Reference, ReferenceFields } from "./Reference";
-import type { Name } from "./Name";
-import type { Repository, RepositoryPublishRef, RepositoryRef } from "./Repository";
+import { isRepository } from "./Repository";
+import type { Repository } from "./Repository";
 
 /**
- * A reference to a repository named on its own (`@npm`, `@fabr-home`), or a
- * name in it that is not yet a complete reference (`@fabr-home:@fabr-build`, a
- * scope; `@npm:glob`, a package with no version): what a name declared as a
- * repository finds, or what a repository vends for such a name. It names no
- * package and no files, so a collection point refuses it. Where a name goes on
- * from it, the repository vends the reference for the whole name, completed
- * as written (`A:4.17.21` with `A = @npm:lodash;` is `@npm:lodash:4.17.21`), a
- * publish ref likewise, and a route takes the repository from it. Where the
- * repository can list it, its {@link children} are what `fabr ls` shows of it.
+ * A namespace (an AWS account's services): each of its names is made the
+ * first time it is asked for, and is what a declaration's value could be — a
+ * repository, a further namespace, or files. It answers no name itself: a
+ * name goes on from the member its first part names.
+ */
+export abstract class Namespace {
+  /** Get what `name` names here, made the first time it is asked for. Rejects where it names nothing. */
+  public abstract get(name: string): Computable<Repository | Namespace | FileSource>;
+
+  /** List the names here, each mapped to the reference naming it (see {@link Repository.children}). Absent, nothing here can be listed. */
+  public children?(ref: NamespaceRef): Computable<Map<string, Reference>>;
+}
+
+/**
+ * A reference to a {@link Namespace}: what a name declared as one finds, or a
+ * namespace's member that is one. It names no package and no files, so a
+ * collection point refuses it. A name goes on from it through the member its
+ * first part names ({@link get}).
  */
 export class NamespaceRef extends Reference {
-  /** A repository answers no requirement on a package. */
+  /** A namespace answers no requirement on a package. */
   public readonly requiresPackage = false;
 
   constructor(
-    /** The repository named. */
-    public readonly repository: Repository,
-    /** The repository's name this narrows to, which a name projected into it
-     * goes on from; empty for the whole repository. */
-    public readonly name: string = "",
-    fields: ReferenceFields = NO_REFERENCE_FIELDS,
-    /** The repository's name as written, as on a {@link RepositoryRef}:
-     *  display only. */
-    public readonly repositoryName?: string
+    public readonly namespace: Namespace,
+    /** The namespace's name as written (`@aws`, `@aws:111122223333`). */
+    public readonly name: string,
+    fields: ReferenceFields = NO_REFERENCE_FIELDS
   ) {
     super(fields);
   }
 
-  /** Vend the read reference for this name completed by `name`, written after
-   *  `separator` (`:` or `/`; see {@link Repository.getRepositoryRef}),
-   *  carrying the repository's written name. */
-  public getRepositoryRef(name: Name, separator: string, repositoryName = this.repositoryName): RepositoryRef | NamespaceRef {
-    const ref = this.repository.getRepositoryRef(this.completedBy(name, separator));
-    return repositoryName === undefined ? ref : ref.withRepositoryName(repositoryName);
-  }
-
-  /** Vend the publish ref for this name completed by `name`, written after
-   *  `separator` (see {@link Repository.getRepositoryPublishRef}), carrying
-   *  the repository's written name. */
-  public getRepositoryPublishRef(name: Name, separator: string, repositoryName = this.repositoryName): RepositoryPublishRef {
-    const ref = this.repository.getRepositoryPublishRef(this.completedBy(name, separator));
-    return repositoryName === undefined ? ref : ref.withRepositoryName(repositoryName);
-  }
-
-  /** @return a copy carrying the written repository name (see repositoryName). */
-  public withRepositoryName(repositoryName: string): NamespaceRef {
-    return new NamespaceRef(this.repository, this.name, this.fields, repositoryName);
-  }
-
   /**
-   * List this name's children, as the repository lists them (see {@link
-   * Repository.children}). Rejects, attributed to this reference, where the
-   * repository cannot list it.
+   * Get the source `name`, written after `separator`, names in the namespace,
+   * once it is made, written `<this><separator><name>` (see
+   * {@link sourceOf}).
    */
+  public get(name: string, separator: string): Computable<PartialRepositoryRef | NamespaceRef | FileSource> {
+    const written = `${this.name}${separator}${name}`;
+    return this.namespace.get(name).then(
+      member => sourceOf(member, written),
+      err => {
+        throw this.attributed(toError(err));
+      }
+    );
+  }
+
+  /** List the names in the namespace. Rejects, attributed to this reference, where it cannot be listed. */
   public children(): Computable<Map<string, Reference>> {
-    const listed = this.repository.children?.(this);
+    const listed = this.namespace.children?.(this);
     if (listed === undefined) {
       return Computable.reject(this.attributed(new FabrError(`'${this.toString()}' cannot be listed`)));
     }
@@ -89,34 +85,22 @@ export class NamespaceRef extends Reference {
   }
 
   public toString(): string {
-    return [this.repositoryName, this.name].filter(part => part !== undefined && part !== "").join(":");
+    return this.name;
   }
 
-  /** A repository has no name a `-> name` could be about, nor has an
-   * incomplete reference into one. */
+  /** A namespace has no name a `-> name` could be about. */
   public override withRenameTo(renameTo: string): this {
     const written = this.toString();
     throw this.attributed(
-      this.name === ""
-        ? new FabrError(`'${written}' names a repository, which cannot be renamed`).withHelp(
-            `rename a package of it instead, as in '${written}:<name> -> ${renameTo}'`
-          )
-        : new FabrError(`'${written}' is not a complete reference, so it names no package to rename`).withHelp(
-            `write the rest of the name before the rename, as in '${written}:<rest> -> ${renameTo}'`
-          )
+      new FabrError(`'${written}' names a namespace, which cannot be renamed`).withHelp(`rename something in it instead, as in '${written}:<name> -> ${renameTo}'`)
     );
   }
 
-  /** Make the error for asking this reference for a package or files,
-   * attributed to where it was written. */
+  /** Make the error for asking this reference for a package or files, attributed to where it was written. */
   public refused(): Error {
     const written = this.toString();
     return this.attributed(
-      this.name === ""
-        ? new FabrError(`'${written}' names a repository, not a package or files`).withHelp(`name what you want from it, as in '${written}:<name>'`)
-        : new FabrError(`'${written}' is not a complete reference, so it names no package or files`).withHelp(
-            "write the rest of the name after it"
-          )
+      new FabrError(`'${written}' names a namespace, not a package or files`).withHelp(`name what you want in it, as in '${written}:<name>:…'`)
     );
   }
 
@@ -125,22 +109,37 @@ export class NamespaceRef extends Reference {
     return err instanceof RequirementResolutionError ? err : new RequirementResolutionError([this], err);
   }
 
-  /** Complete this repository name by `name`, written after `separator`. */
-  private completedBy(name: Name, separator: string): Name {
-    return this.name === "" ? name : name.withPrefix(`${this.name}${separator}`);
-  }
-
   protected withFields(fields: ReferenceFields): this {
-    return new NamespaceRef(this.repository, this.name, fields, this.repositoryName) as this;
+    return new NamespaceRef(this.namespace, this.name, fields) as this;
   }
 }
 
-/** Take `sources` as content, refusing a namespace among them (see
- *  {@link NamespaceRef.refused}). */
-export function refuseNamespaces<T>(sources: ReadonlyArray<T | NamespaceRef>): T[] {
-  const namespace = sources.find((source): source is NamespaceRef => source instanceof NamespaceRef);
-  if (namespace !== undefined) {
-    throw namespace.refused();
+/**
+ * Make the source `made` is, written `written`: a reference to a repository
+ * ({@link PartialRepositoryRef}) or to a namespace, or the files as they
+ * stand. What a declaration's value and a namespace's member are both made
+ * into.
+ */
+export function sourceOf(made: Repository | Namespace | FileSource, written: string): PartialRepositoryRef | NamespaceRef | FileSource {
+  if (made instanceof Namespace) {
+    return new NamespaceRef(made, written);
+  }
+  return isRepository(made) ? new PartialRepositoryRef(made, "", NO_REFERENCE_FIELDS, written) : made;
+}
+
+/** A reference that names no package and no files: a repository or a name in one that is not yet a complete reference, or a namespace. A consumer of content refuses it; a listing lists its children. */
+export type IncompleteRef = PartialRepositoryRef | NamespaceRef;
+
+/** @return true if `source` is an {@link IncompleteRef}, otherwise false. */
+export function isIncompleteRef(source: unknown): source is IncompleteRef {
+  return source instanceof PartialRepositoryRef || source instanceof NamespaceRef;
+}
+
+/** Take `sources` as content, refusing an {@link IncompleteRef} among them. */
+export function refuseNamespaces<T>(sources: ReadonlyArray<T | IncompleteRef>): T[] {
+  const refused = sources.find(isIncompleteRef);
+  if (refused !== undefined) {
+    throw refused.refused();
   }
   return sources as T[];
 }

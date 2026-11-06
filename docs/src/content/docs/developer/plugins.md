@@ -484,7 +484,7 @@ interface that answers it:
 | `RepositoryCollection` | A set the repository resolved itself (`member`). | `catalog` |
 
 A repository named on its own, or with a scope of its names (`@fabr-home:@fabr-build`), is
-not a package: `getRepositoryRef` may return a `NamespaceRef` for a scope, from which a name
+not a package: `getRepositoryRef` may return a `PartialRepositoryRef` for a scope, from which a name
 projected into it (`@fabr-build/js-tools`) goes on. This is what lets a property of a group's name
 answer every name in the group; see
 [Properties that stand in for a group of names](/reference/syntax/#properties-that-stand-in-for-a-group-of-names).

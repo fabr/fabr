@@ -30,7 +30,7 @@ import { ConflictError, FabrError, IConflictSource, RequirementResolutionError }
 import { Name } from "../core/Name";
 import { compareText } from "../support/Functional";
 import type { Reference } from "../core/Reference";
-import type { NamespaceRef } from "../core/NamespaceRef";
+import type { PartialRepositoryRef } from "../core/PartialRepositoryRef";
 /* A catalog is a collection point of its own, the one outside context/, so it
  * takes these from the module rather than the package's API. */
 import { consumeMarker, Markers, resolveCollection } from "../context/CollectionPoint";
@@ -169,7 +169,7 @@ export class CatalogRepository implements Repository, RepositoryCollection {
   /** List the catalog's members by the address each is pinned under, in
    *  code-unit order. Nothing is fetched or built: the catalog's resolution is
    *  all it reads. */
-  public children({ name: namespace }: NamespaceRef): Computable<Map<string, Reference>> {
+  public children({ name: namespace }: PartialRepositoryRef): Computable<Map<string, Reference>> {
     if (namespace !== "") {
       return Computable.reject(new FabrError(`Catalog ${this.catalogName} has no namespace '${namespace}'`));
     }

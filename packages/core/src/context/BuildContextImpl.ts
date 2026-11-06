@@ -21,14 +21,14 @@ import { ActionContext, ICreateOptions } from "../core/BuildCache";
 import { Computable, ComputableSource } from "../core/Computable";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
 import { FSFileSource } from "../core/FSFileSource";
-import { isRepository, isRepositoryReader, Materialized, ProjectedPackage, renamedAs, RepositoryRef, Resolved, SourceRef } from "../core/Repository";
+import { isRepository, isRepositoryReader, Materialized, ProjectedPackage, renamedAs, Repository, RepositoryRef, Resolved, SourceRef } from "../core/Repository";
 import { ResolutionContext } from "../resolver/Types";
 import { PERMISSIVE_RESOLUTION } from "./CollectionPoint";
 import { materializeShallow, resolveLists } from "./CollectionPoint";
 import { FileSetRef, FileSourceRef } from "../core/FileSetRef";
 import { TargetNode, TargetRef, TargetSource, Unbuilt } from "../core/TargetRef";
 import { ResolvedTarget } from "./ResolvedTarget";
-import { NamespaceRef } from "../core/NamespaceRef";
+import { PartialRepositoryRef } from "../core/PartialRepositoryRef";
 import { IProjection, jointMiss, Miss, Reference } from "../core/Reference";
 import { registerReferenceStep } from "../core/Provenance";
 import {
@@ -99,10 +99,11 @@ import { parseName } from "../model/Parser";
 import { IPrefixMatch, IPropertyEntry, writtenSeparator } from "../model/Namespace";
 import { Property } from "../model/Property";
 import { IModelStep, ISubstitution, MODEL_PROVENANCE } from "../model/ModelProvenance";
-import { BuildContext, InternalBuildContext } from "./BuildContext";
+import { BuildContext, InternalBuildContext, IRepositoryMember } from "./BuildContext";
 import { mergeMapInto, PropertyMap, PropertyMapValue, recordMapOrigin } from "./PropertyMap";
 import { IDependencyStack, IUseFrame, useFrameOf, useSiteOf } from "./Stack";
 import { NameLabel, ReferenceLabel } from "../model/Errors";
+import { IncompleteRef, isIncompleteRef, NamespaceRef, sourceOf } from "../core/NamespaceRef";
 import { IRuleSelection, selectRule } from "./RuleSelection";
 import { DeclaredResolvedTarget, BlockTargetNode, passedOn } from "./ResolvedTarget";
 import {
@@ -115,7 +116,7 @@ import {
   SUBST_CAPTURE,
 } from "./Commands";
 import { ResolvedRequirements } from "./Collection";
-import { AnonymousTargetContext, DeclaredTargetContext, enclosingRules, ScopedTargetContext, TargetContext } from "./TargetContext";
+import { AnonymousTargetContext, DeclaredTargetContext, enclosingRules, MemberTargetContext, ScopedTargetContext, TargetContext } from "./TargetContext";
 
 /** Attach a name's remedies to its error as the `help:` line, if there are any. */
 function withHints<T extends FabrError>(err: T, hints: string[]): T {
@@ -292,7 +293,8 @@ export class BuildContextImpl implements InternalBuildContext {
     repositoryName?: string
   ): Array<SourceRef | Unbuilt> | Computable<Array<SourceRef | Unbuilt>> {
     const { pattern, prefix } = projection;
-    const references: Array<SourceRef | Unbuilt> = [];
+    /* A name through a namespace is had once its member is made. */
+    const references: Array<SourceRef | Unbuilt | Computable<Array<SourceRef | Unbuilt>>> = [];
     const containers: FileSource[] = [];
     const participant: () => Miss | undefined = miss === undefined ? () => undefined : jointMiss(miss);
     for (const source of sources) {
@@ -308,6 +310,11 @@ export class BuildContextImpl implements InternalBuildContext {
       } else if (source instanceof RepositoryRef || source instanceof FileSetRef) {
         references.push(source.find(pattern, prefix));
       } else if (source instanceof NamespaceRef) {
+        /* The name's first part names a member of the namespace, made when first asked for; the
+         * rest goes on from the member as from any source a declaration's value is, its own
+         * written separator deciding how (see writtenSeparator). */
+        references.push(this.projectThrough(source, projection, participant()));
+      } else if (source instanceof PartialRepositoryRef) {
         /* The rest completes the name, after the separator it was written with, into a requirement
          * identifier followed by an optional projection into the delivered content — the repository
          * vends the ref for the whole name: its identity portion
@@ -332,7 +339,7 @@ export class BuildContextImpl implements InternalBuildContext {
       }
     }
     if (containers.length === 0) {
-      return references;
+      return references.some(reference => reference instanceof Computable) ? had(references) : (references as Array<SourceRef | Unbuilt>);
     }
     /* Each container projects separately and stays a separate source: only a consumer that merges
      * content unions it. Each projection is applied now through applyProjection, with no miss of
@@ -349,7 +356,30 @@ export class BuildContextImpl implements InternalBuildContext {
       if (err !== undefined) {
         throw err;
       }
-      return [...references, ...(matched.length > 0 ? matched : [EMPTY_FILESET])];
+      return had(references).then(held => [...held, ...(matched.length > 0 ? matched : [EMPTY_FILESET])]);
+    });
+  }
+
+  /**
+   * Project `projection` through the namespace `namespace` names: its
+   * pattern's first part, up to its first `:` or `/`, names the member, and
+   * the rest is projected on the member once it is made, after the separator
+   * it was written with. A pattern naming the member alone is the member.
+   */
+  private projectThrough(namespace: NamespaceRef, projection: IProjection, miss: Miss | undefined): Computable<Array<SourceRef | Unbuilt>> {
+    const { pattern, prefix } = projection;
+    const literal = pattern.getLiteralPrefix();
+    const end = literal.search(/[:/]/);
+    const first = end === -1 ? literal : literal.substring(0, end);
+    if (first === "" || (end === -1 && literal !== pattern.toString())) {
+      return Computable.reject(namespace.refused());
+    }
+    return namespace.get(first, writtenSeparator(prefix)).then(member => {
+      if (end === -1) {
+        return [member];
+      }
+      const rest = { pattern: pattern.substring(end + 1), prefix: literal[end] === "/" ? `${prefix}${first}/` : "" };
+      return this.projectSources([member], rest, miss);
     });
   }
 
@@ -756,6 +786,10 @@ export class BuildContextImpl implements InternalBuildContext {
     return this.lookupMapDecl(prop, target, stack, new Set(), callerOverrides);
   }
 
+  public lookupGlobalMap(name: string, stack?: IDependencyStack, callerOverrides?: Constraints): Computable<PropertyMap> {
+    return this.lookupMapReference(Name.fromLiteral(name), stack, stack, new Set(), callerOverrides);
+  }
+
   private lookupMapDecl(
     prop: IPropertyDecl,
     target: ITargetDecl | undefined,
@@ -997,19 +1031,19 @@ export class BuildContextImpl implements InternalBuildContext {
     return source;
   }
 
-  public materialize(ref: INameValue, stack?: IDependencyStack): Computable<Array<FileSource | NamespaceRef>> {
+  public materialize(ref: INameValue, stack?: IDependencyStack): Computable<Array<FileSource | IncompleteRef>> {
     /* Under `run` the name IS the program, so its closure is a sealed install. */
     const options = this.constraints.get(BUILD_OPERATION) === "run" ? PERMISSIVE_RESOLUTION : undefined;
     return this.lookupFileValue(ref.value, stack, { relativeTo: ref }).then(found => {
       const sources = found.map(versionsOf);
-      const namespaces = sources.filter((source): source is NamespaceRef => source instanceof NamespaceRef);
+      const incomplete = sources.filter(isIncompleteRef);
       return materializeShallow(
         this.resolutionContext(),
-        sources.filter(source => !(source instanceof NamespaceRef)),
+        sources.filter(source => !isIncompleteRef(source)),
         options
       )
         .then(delivered => this.applyProjections(delivered))
-        .then((content): Array<FileSource | NamespaceRef> => [...content, ...namespaces]);
+        .then((content): Array<FileSource | IncompleteRef> => [...content, ...incomplete]);
     });
   }
 
@@ -1420,7 +1454,7 @@ export class BuildContextImpl implements InternalBuildContext {
     if (provider) {
       const context = this.targetContextFor(target, stack);
       return provider(context).then(
-        (provided): SourceRef[] => [isRepository(provided) ? new NamespaceRef(provided, "", undefined, context.name) : provided],
+        (provided): SourceRef[] => [sourceOf(provided, context.name)],
         err => {
           throw new DependencyFailedError(target, err);
         }
@@ -1655,6 +1689,26 @@ export class BuildContextImpl implements InternalBuildContext {
       .then(rule => buildContext.evaluateTarget(context, rule));
   }
 
+  public hasRepositoryType(type: string): boolean {
+    return this.model.getRepositoryProvider(type) !== undefined && this.model.getTargetDef(type) !== undefined;
+  }
+
+  public makeRepository(owner: TargetContext, type: string, { name, properties = {}, url, credential }: IRepositoryMember): Computable<Repository> {
+    const provider = this.model.getRepositoryProvider(type);
+    const targetDef = this.model.getTargetDef(type);
+    const written = `${owner.name}:${name}`;
+    if (provider === undefined || targetDef === undefined) {
+      return Computable.reject(new FabrError(`'${written}' is a ${type}, which no plugin in use defines`));
+    }
+    const context = new MemberTargetContext(this, targetDef, properties, owner.getDeclaredContext(), name, owner.stack, owner);
+    return provider(context, url, credential).then(made => {
+      if (!isRepository(made)) {
+        throw new FabrError(`internal: '${written}' is a ${type}, which makes no repository`);
+      }
+      return made;
+    });
+  }
+
   public describeSubTarget(
     owner: TargetContext,
     type: string,
@@ -1808,7 +1862,7 @@ function versionsOf(source: SourceRef): SourceRef {
     isRepositoryReader(source.source) &&
     isRepository(source.source) &&
     source.source.children !== undefined
-    ? new NamespaceRef(source.source, source.name, undefined, source.repositoryName)
+    ? new PartialRepositoryRef(source.source, source.name, undefined, source.repositoryName)
     : source;
 }
 
@@ -2436,4 +2490,12 @@ class ScopedBuildContext extends BuildContextImpl {
       .referencedProperty(ref, info)
       .then(found => (found.prop !== undefined && !this.scope.rule.declaresProperty(found.prop) ? { ...found, context: this.parent } : found));
   }
+}
+
+/** Wait for each of `references` that is still to be had, in order. */
+function had(references: ReadonlyArray<SourceRef | Unbuilt | Computable<Array<SourceRef | Unbuilt>>>): Computable<Array<SourceRef | Unbuilt>> {
+  return Computable.forAll(
+    references.map(reference => (reference instanceof Computable ? reference : Computable.resolve<Array<SourceRef | Unbuilt>>([reference]))),
+    (...held: Array<Array<SourceRef | Unbuilt>>) => held.flat()
+  );
 }

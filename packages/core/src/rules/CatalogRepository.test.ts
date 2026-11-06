@@ -26,7 +26,7 @@ import { RunnableFileSet } from "../core/RunnableFileSet";
 import { CatalogRepository, catalogRepositoryRegistration } from "./CatalogRepository";
 import patched from "./BuildPatched";
 import { Repository, RepositoryRef } from "../core/Repository";
-import { NamespaceRef } from "../core/NamespaceRef";
+import { PartialRepositoryRef } from "../core/PartialRepositoryRef";
 import { Requirement } from "../resolver/Types";
 import { ConflictError, CycleError, FabrError, RequirementResolutionError } from "../core/Errors";
 import { cycleErrorOf } from "../model/ErrorFormatter";
@@ -191,7 +191,7 @@ describe("CatalogRepository (through the model)", () => {
 
     constructor(public readonly identity: string) {}
 
-    public getRepositoryRef(name: Name): RepositoryRef | NamespaceRef {
+    public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
       return vendPackageRef(this, CAT_FORMAT, name);
     }
 
@@ -577,8 +577,8 @@ describe("CatalogRepository (through the model)", () => {
   it("lists its members by address, fetching none", async () => {
     const model = build("package_repo @backing { }\ncatalog @cat { deps = @backing:foo @backing:bar -> baz; }\n");
     const [namespace] = await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("@cat"));
-    expect(namespace).to.be.instanceOf(NamespaceRef);
-    const children = await (namespace as NamespaceRef).children();
+    expect(namespace).to.be.instanceOf(PartialRepositoryRef);
+    const children = await (namespace as PartialRepositoryRef).children();
     expect([...children.keys()]).to.deep.equal(["baz", "foo"]);
     expect((children.get("baz") as RepositoryRef).toString()).to.equal("baz");
     expect(backings.get("@backing")!.materialized).to.deep.equal([]);

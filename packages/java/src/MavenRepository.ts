@@ -30,6 +30,7 @@
 import {
   compareText,
   Computable,
+  Credential,
   DOC_OPERATION,
   FabrError,
   fetchArchive,
@@ -42,15 +43,16 @@ import {
   MemoryCache,
   MemoryFile,
   Name,
-  NamespaceRef,
+  PartialRepositoryRef,
+  packageCoordinateOf,
   PackageFileSet,
+  Property,
   PublishableFileSet,
   PublishAttachment,
   PublishMember,
   PublishStatus,
   Reference,
   Repository,
-  packageCoordinateOf,
   RepositoryPublishRef,
   RepositoryReader,
   RepositoryRef,
@@ -66,7 +68,7 @@ import {
   VersionNotFoundError,
 } from "@fabr-build/core";
 import { MAVEN_FORMAT, mavenName, mavenVariantOf, parseMavenPublishCoordinate, splitMavenName } from "./MavenProtocol";
-import { javaPluginContext } from "./MavenAuth";
+import { javaPluginContext, MavenAuth } from "./MavenAuth";
 import {
   checksumFiles,
   variantOf,
@@ -174,8 +176,14 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     /** The id of the `settings.xml` server whose credentials it uses. */
     private readonly serverId: string,
     /** The classifiers of the jars published beside each artifact a sync publishes here: `sources`, `javadoc`. */
-    private readonly autoAttach: readonly string[] = []
-  ) {}
+    private readonly autoAttach: readonly string[] = [],
+    /** What signs the repository's requests in: the one it is made with, else its server's from `settings.xml`. */
+    credential?: Credential
+  ) {
+    this.credential = credential ?? MavenAuth.credential(() => javaPluginContext(this.context.execution).mavenAuth(), serverId);
+  }
+
+  private readonly credential: Credential;
 
   public get identity(): string {
     return this.url;
@@ -189,12 +197,12 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     return this.context.operation;
   }
 
-  public getRepositoryRef(name: Name): RepositoryRef | NamespaceRef {
+  public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
     return vendPackageRef(this, this.format, name);
   }
 
   /** List a package's published versions. A group, or the whole repository, cannot be listed. */
-  public children({ name }: NamespaceRef): Computable<Map<string, Reference>> {
+  public children({ name }: PartialRepositoryRef): Computable<Map<string, Reference>> {
     if (!name.includes("/")) {
       return Computable.reject(
         new FabrError(`the repository at ${this.url} cannot list ${name === "" ? "every package it holds" : `the packages in ${name}`}`).withHelp(
@@ -305,16 +313,9 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     });
   }
 
-  /** Make a request to `path` in the repository, with its credentials. */
+  /** Make a request to `path` in the repository, signed in. */
   private request(path: string, request: HttpRequest): Computable<HttpResponse> {
-    return this.headers().then(headers => sendRequest(`${this.url}/${path}`, { ...request, headers: { ...headers, ...request.headers } }));
-  }
-
-  /** Get the headers each request to this repository is sent with: its server's credentials from `settings.xml`. */
-  private headers(): Computable<Record<string, string>> {
-    return javaPluginContext(this.context.execution)
-      .mavenAuth()
-      .then(auth => auth.headersFor(this.serverId));
+    return sendRequest(`${this.url}/${path}`, { ...request, credential: this.credential });
   }
 
   private failure(doing: string, path: string, response: HttpResponse): FabrError {
@@ -352,7 +353,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
           tag: "maven:module:1",
           report: { resource: "module metadata", role: "index" },
           convert: text => parseGradleModule(text, url),
-          headers: () => this.headers(),
+          credential: this.credential,
         })
       );
       return Computable.forAll([module, this.release()], (found, release) =>
@@ -437,10 +438,10 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
           report: { resource: file.name, role: "content" },
           name: file.name,
           source: () =>
-            Computable.forAll([this.sha1Of(url), this.headers()], (sha1, headers) => ({
+            this.sha1Of(url).then(sha1 => ({
               url,
               expected: sha1 === undefined ? undefined : { algorithm: "sha1", encoding: "hex" as const, value: sha1 },
-              headers,
+              credential: this.credential,
             })),
         });
       }),
@@ -461,10 +462,10 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
           report: { resource: "artifact", role: "content" },
           name: file,
           source: () =>
-            Computable.forAll([sha1(), this.headers()], (expected, headers) => ({
+            sha1().then(expected => ({
               url: artifactUrl,
               expected: expected === undefined ? undefined : { algorithm: "sha1", encoding: "hex" as const, value: expected },
-              headers,
+              credential: this.credential,
             })),
         }).then(files => new PackageFileSet(files, name, version.text));
       if (pom.packaging !== "pom") {
@@ -498,7 +499,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
         key: `${this.identity} ${coordinateText(coordinate)} ${classifier}`,
         tag: "maven:classified:1",
         report: { resource: `${classifier} jar`, role: "content" },
-        source: () => this.headers().then(headers => ({ url, expected: { algorithm: "sha1", encoding: "hex" as const, value: sha1 }, headers })),
+        source: () => Computable.resolve({ url, expected: { algorithm: "sha1", encoding: "hex" as const, value: sha1 }, credential: this.credential }),
         keep: files => files.remap(entry => (entry === CLASSIFIED_MANIFEST ? undefined : entry)),
       });
     });
@@ -525,7 +526,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
         tag: "maven:variant:1",
         report: { resource: file, role: "content" },
         name: file,
-        source: () => this.headers().then(headers => ({ url, expected: { algorithm: "sha1", encoding: "hex" as const, value: sha1 }, headers })),
+        source: () => Computable.resolve({ url, expected: { algorithm: "sha1", encoding: "hex" as const, value: sha1 }, credential: this.credential }),
       });
     });
   }
@@ -573,7 +574,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
         tag: "maven:pom:1",
         report: { resource: "POM", role: "index" },
         convert: text => parsePom(text, url),
-        headers: () => this.headers(),
+        credential: this.credential,
       })
     );
   }
@@ -587,7 +588,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
       tag: "maven:sha1:1",
       report: { resource: "checksum", role: "index" },
       convert: text => toSha1(text, url),
-      headers: () => this.headers(),
+      credential: this.credential,
     });
   }
 
@@ -604,7 +605,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
         tag: "maven:metadata:1",
         report: { resource: "version list", role: "index" },
         convert: text => toMetadataVersions(text, url),
-        headers: () => this.headers(),
+        credential: this.credential,
         options: { immutable: false, forceRevalidate },
       }).then(listed =>
         listed?.flatMap(text => {
@@ -619,10 +620,17 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
   }
 }
 
-function createRepository(context: TargetContext): Computable<Repository> {
+/** Make the repository a `maven_repository` declaration declares, or a namespace makes with `url` and `credential`: its own `url` first, and a `credential` in place of `settings.xml`'s. */
+function createRepository(context: TargetContext, url?: string, credential?: Credential): Computable<Repository> {
   return Computable.forAll(
-    [context.getRequiredString("url"), context.getProperty("id"), context.getProperty("auto_attach")],
-    (url, id, autoAttach) => new MavenRepository(context, url.replace(/\/+$/, ""), id?.toString() ?? context.name, autoAttachOf(context.name, autoAttach))
+    [context.getProperty("url"), context.getProperty("id"), context.getProperty("auto_attach")],
+    (declared: Property | undefined, id: Property | undefined, autoAttach: Property | undefined) => {
+      const at = declared?.toString() ?? url;
+      if (at === undefined) {
+        throw new FabrError("Missing required property url");
+      }
+      return new MavenRepository(context, at.replace(/\/+$/, ""), id?.toString() ?? context.name, autoAttachOf(context.name, autoAttach), credential);
+    }
   );
 }
 

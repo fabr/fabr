@@ -41,7 +41,7 @@ import {
   markerOnProjection,
   MemoryCache,
   Name,
-  NamespaceRef,
+  PartialRepositoryRef,
   parseJson,
   Reference,
   Repository,
@@ -150,7 +150,7 @@ export class JdkDistribution implements Repository, RepositoryLookup {
 
   /** Vend the reference to the release `name` names (`17.0.12+7`), with any
    *  projection after it, or the namespace of every release. */
-  public getRepositoryRef(name: Name): RepositoryRef | NamespaceRef {
+  public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
     if (name.getMarker() !== undefined) {
       throw new FabrError(`'${name.toString()}' names a JDK release, which is looked up, not resolved, so an override marker means nothing on it`).withHelp(
         "write the reference without the marker"
@@ -158,7 +158,7 @@ export class JdkDistribution implements Repository, RepositoryLookup {
     }
     const written = name.toBaseString();
     if (written === "") {
-      return new NamespaceRef(this, "");
+      return new PartialRepositoryRef(this, "");
     }
     const colon = written.indexOf(":");
     const slash = written.indexOf("/");

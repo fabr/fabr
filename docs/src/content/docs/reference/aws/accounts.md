@@ -1,6 +1,6 @@
 ---
 title: Accounts and credentials
-description: How a fabr project names an AWS account, finds its credentials, and points it at an S3-compatible store.
+description: How a fabr project names an AWS account, finds its credentials, reaches another account's resources, and points it at an S3-compatible store.
 ---
 
 The `@fabr-build/aws` plugin lets a build read from and publish to AWS services. Everything it
@@ -16,8 +16,21 @@ plugin @fabr-build/aws;
 ```
 
 That alone gives you `@aws`, an account whose credentials are found the way the AWS CLI finds
-them. Most projects need nothing more. S3 is the one service the plugin supports; see
-[Amazon S3](/reference/aws/s3/).
+them. The plugin supports three services:
+
+| Service | Named as | Read and written by |
+|---|---|---|
+| [Amazon S3](/reference/aws/s3/) | `@aws:s3:<bucket>:<key>` | the AWS plugin |
+| [Amazon ECR](/reference/aws/ecr/) | `@aws:ecr:<repository>:<tag>` | the container plugin |
+| [AWS CodeArtifact](/reference/aws/codeartifact/) | `@aws:codeartifact:<domain>:<repository>:<format>:…` | the plugin for the format's packages |
+
+`fabr ls @aws` lists them. ECR's registry and CodeArtifact's endpoints are ordinary repositories of
+the container, JavaScript and Java plugins, made and signed in by the account: see [Repository
+types](#repository-types).
+
+Each service's page lists the permissions the account's credentials need for it, and gives them as
+an IAM policy to start from: [S3](/reference/aws/s3/#permissions),
+[ECR](/reference/aws/ecr/#permissions), [CodeArtifact](/reference/aws/codeartifact/#permissions).
 
 ## Coming from the AWS CLI or SDKs
 
@@ -28,6 +41,7 @@ them. Most projects need nothing more. S3 is the one service the plugin supports
 | Two profiles in one script | Two `aws_account` declarations, each named in its own references. |
 | `aws s3 cp s3://bucket/key .` | A reference to the object, `@aws:s3:bucket:key`; see [Amazon S3](/reference/aws/s3/). |
 | `--region` | The account's `region`, for regional services. S3 finds each bucket's region for itself. |
+| `docker login` to ECR, `aws codeartifact login` | Nothing: the account signs in to ECR and CodeArtifact when it first needs to. |
 
 ## Declaring an account
 
@@ -64,8 +78,51 @@ account signed in as two different roles.
 | `profile` | The profile in `~/.aws/config` whose credentials are used. By default, `AWS_PROFILE`, else `default`. |
 | `region` | The region of the account's regional services, `us-east-1` where it isn't set. S3 finds each bucket's region for itself, so an S3-only project rarely needs it. |
 | `endpoint` | A URL every request goes to in place of AWS's own endpoints: an S3-compatible store such as LocalStack, ministack or MinIO. |
+| `account_id` | The account's 12-digit ID. Optional: where it is set, the account's ECR registry and CodeArtifact endpoints are found without asking AWS, so a build whose images or packages are already cached needs no network. |
 
-`fabr ls @aws` lists the services an account offers.
+## Another account's resources
+
+ECR registries and CodeArtifact domains belong to one account each, and are often shared from one
+account to others. Name the owning account's ID after the account to reach its resources, signed in
+with your own account's credentials:
+
+```
+@aws:111122223333:ecr:base-images/node:22
+@aws:111122223333:codeartifact:acme:shared:npm:lodash:4.17.21
+```
+
+The owner's resources are in your account's `region`. S3 bucket names are the same in every
+account, so a bucket another account owns is named as any other, `@aws:s3:<bucket>:<key>`.
+
+## Repository types
+
+ECR's registry and CodeArtifact's npm and Maven endpoints are repositories of other plugins' types,
+which the account makes when they are first named. Which type each is comes from the global map
+`AWS_REPOSITORY_TYPES`, keyed by AWS's name for the service or CodeArtifact format:
+
+```
+default AWS_REPOSITORY_TYPES = {
+    ecr = oci_repository;
+    npm = npm_repository;
+    maven = maven_repository;
+}
+```
+
+The plugin that defines a type must be in use: `@aws:ecr` needs `plugin @fabr-build/container;`,
+and a CodeArtifact npm repository `plugin @fabr-build/js;`. To read a format fabr has no entry for,
+declare the map yourself with an entry naming a repository type a plugin of yours defines:
+
+```
+AWS_REPOSITORY_TYPES = {
+    ecr = oci_repository;
+    npm = npm_repository;
+    maven = maven_repository;
+    pypi = pypi_repository;
+}
+```
+
+Your declaration replaces fabr's, so it lists every entry you use. The account gives a repository it
+makes the address and the sign-in; everything else about the repository is its type's.
 
 ## Credentials
 
@@ -133,5 +190,9 @@ name in `profile` or `AWS_PROFILE` against `~/.aws/config` (`[profile build]`) a
 `~/.aws/credentials` (`[build]`). Otherwise sign in (`aws sso login --profile <profile>`) or set
 the access-key variables.
 
-**`@aws has no service 'ec2'`**: a name under an account starts with the service, and S3 is the
-only service the plugin supports. Write `@aws:s3:<bucket>:<key>`.
+**`@aws has no service 'ec2'`**: a name under an account starts with the service: `s3`, `ecr` or
+`codeartifact`, or another account's ID.
+
+**`'@aws:ecr' needs the repository type oci_repository, which no plugin in use defines`**: add the
+plugin that defines the type, here `plugin @fabr-build/container;`. See [Repository
+types](#repository-types).

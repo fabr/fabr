@@ -18,54 +18,55 @@
  */
 
 import {
+  Computable,
+  constraintOf,
+  Credential,
   FabrError,
   fetchArchive,
   fetchDocument,
-  resolveBarePackage,
-  Computable,
   FileSet,
   IFile,
+  isRepositoryReader,
   lowestSatisfying,
+  MemoryCache,
   MemoryFile,
   Name,
-  NamespaceRef,
-  isRepositoryReader,
+  PartialRepositoryRef,
   NpmPlatform,
+  packageCoordinateOf,
+  packageCoordinates,
   PackageFileSet,
+  PackagePublishRef,
   packToTarball,
   parseJson,
   parseVersion,
-  readJsonFile,
   PublishableFileSet,
   PublishMember,
   PublishStatus,
+  readJsonFile,
   Reference,
-  RepositoryReader,
   Repository,
-  TargetContext,
-  PackagePublishRef,
-  packageCoordinateOf,
-  packageCoordinates,
   RepositoryPublishRef,
+  RepositoryReader,
   RepositoryRef,
   RepositoryRegistration,
   RepositoryWriter,
-  MemoryCache,
   Requirement,
-  Selected,
+  resolveBarePackage,
   select,
+  Selected,
   SEMVER,
   SemverConstraint,
   SemverVersion,
+  stripArchiveRoot,
   TARGET,
+  TargetContext,
   toJsonObject,
   tripleToNpm,
   vendPackageRef,
   versionChildren,
   VersionNotFoundError,
   versionToString,
-  constraintOf,
-  stripArchiveRoot,
 } from "@fabr-build/core";
 import {
   expectedTarballDigest,
@@ -157,11 +158,15 @@ export class NPMRepository
    * list unless a caller supplies one. */
   private readonly extensions: () => PackageExtensions;
 
-  constructor(url: string, context: TargetContext, access: PublishAccess = null, extensions?: PackageExtensions) {
+  /** What signs the registry's requests in: the one it is made with, else `.npmrc`'s for each request's url. */
+  private readonly credential: Credential;
+
+  constructor(url: string, context: TargetContext, access: PublishAccess = null, extensions?: PackageExtensions, credential?: Credential) {
     this.url = url.replace(/\/+$/, "");
     this.context = context;
     this.access = access;
     this.extensions = extensions === undefined ? installedPackageExtensions : () => extensions;
+    this.credential = credential ?? NPMAuth.credential(() => this.npmAuth());
   }
 
   /** The registry's stable identity — its url — for the resolution memo key. */
@@ -173,13 +178,13 @@ export class NPMRepository
     return this.context.name;
   }
 
-  public getRepositoryRef(name: Name): RepositoryRef | NamespaceRef {
+  public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
     return vendPackageRef(this, this.format, name);
   }
 
   /** List a package's published versions, read afresh from its packument.
    *  Neither the registry's every package nor a scope's can be listed. */
-  public children({ name: namespace }: NamespaceRef): Computable<Map<string, Reference>> {
+  public children({ name: namespace }: PartialRepositoryRef): Computable<Map<string, Reference>> {
     if (namespace === "" || /^@[^/]*$/.test(namespace)) {
       return Computable.reject(
         new FabrError(`the registry at ${this.url} cannot list every package ${namespace === "" ? "it holds" : `in ${namespace}`}`).withHelp(
@@ -204,17 +209,6 @@ export class NPMRepository
     return jsPluginContext(this.context.execution).npmAuth();
   }
 
-  /**
-   * Get the `Authorization` header for a request to `url`, from the combined
-   * `.npmrc` — used for both reads (private packages / a private registry) and
-   * the publish write. Auth is keyed per registry (longest-prefix match), so a
-   * request to a host with no configured credential — a public registry, or a
-   * tarball CDN whose url came from registry metadata — is anonymous, with no
-   * risk of leaking a credential off-registry.
-   */
-  private authHeadersFor(url: string): Computable<Record<string, string>> {
-    return this.npmAuth().then(auth => auth.getHeadersFor(url));
-  }
 
   /**
    * Package this registry's members into the npm wire form (pure — the dry-run
@@ -334,18 +328,19 @@ export class NPMRepository
     const { name, version } = packageCoordinateOf(artifact.destination);
     const tgzFile = artifact.get(tarballBasename(name, version));
     const manifestFile = artifact.get("package.json");
-    return Computable.forAll([tgzFile, manifestFile, this.npmAuth()], (tgz, manifest, auth) => {
+    const signedIn = this.credential.authorize({ method: "PUT", url: this.url, headers: new Map() });
+    return Computable.forAll([tgzFile, manifestFile, this.npmAuth(), signedIn], (tgz, manifest, auth, headers) => {
       if (!tgz || !manifest) {
         throw new FabrError(`internal error: publish artifact for ${name}@${version} is missing its tarball or manifest`);
       }
-      return Computable.forAll([tgz.getBuffer(), manifest.readString()], (data, manifestJson) => ({ data, manifestJson, auth }));
-    }).then(({ data, manifestJson, auth }) =>
+      return Computable.forAll([tgz.getBuffer(), manifest.readString()], (data, manifestJson) => ({ data, manifestJson, auth, headers }));
+    }).then(({ data, manifestJson, auth, headers }) =>
       publishToRegistry(
         this.url,
         { name, version },
         data,
         JSON.parse(manifestJson),
-        auth.getHeadersFor(this.url),
+        Object.fromEntries(headers ?? []),
         this.access,
         auth.otpProvider(this.url, this.context.execution.interaction)
       )
@@ -536,7 +531,8 @@ export class NPMRepository
         convert: text => parseJson(text, what, toPackumentVersions),
         /* What is kept is only what fabr reads. */
         keep: versions => JSON.stringify({ versions: Object.fromEntries(versions) }),
-        headers: () => this.authHeadersFor(url).then(headers => ({ ...headers, accept: ABBREVIATED_PACKUMENT })),
+        headers: () => Computable.resolve({ accept: ABBREVIATED_PACKUMENT }),
+        credential: this.credential,
         options: forceRevalidate ? { forceRevalidate: true } : undefined,
       });
     });
@@ -628,7 +624,7 @@ export class NPMRepository
         report: { resource: "metadata", role: "index" },
         convert: text => parseMetadataResponse(text, key),
         keep: meta => JSON.stringify(meta),
-        headers: () => this.authHeadersFor(metadataUrl),
+        credential: this.credential,
       }).then(meta => {
         /* The registry's 404, typed, so the resolver can tell an unpublished
          * version (raisable) from an unreachable registry. */
@@ -651,22 +647,26 @@ export class NPMRepository
       report: { resource: "package", role: "content" },
       source: () =>
         this.getVersionMetadata(pkg, exact).then(meta =>
-          this.authHeadersFor(meta.dist.tarball).then(headers => ({
+          Computable.resolve({
             url: meta.dist.tarball,
             expected: expectedTarballDigest(meta.dist),
-            headers,
-          }))
+            credential: this.credential,
+          })
         ),
       keep: stripArchiveRoot,
     }).then(files => new PackageFileSet(files, pkg, exact));
   }
 }
 
-function createRepository(context: TargetContext): Computable<Repository> {
-  return Computable.forAll(
-    [context.getRequiredString("url"), context.getString("access")],
-    (url, access) => new NPMRepository(url, context, toPublishAccess(access))
-  );
+/** Make the repository an `npm_repository` declaration declares, or a namespace makes with `url` and `credential`: its own `url` first, and a `credential` in place of `.npmrc`'s. */
+function createRepository(context: TargetContext, url?: string, credential?: Credential): Computable<Repository> {
+  return Computable.forAll([context.getProperty("url"), context.getString("access")], (declared, access) => {
+    const at = declared?.toString() ?? url;
+    if (at === undefined) {
+      throw new FabrError("Missing required property url");
+    }
+    return new NPMRepository(at, context, toPublishAccess(access), undefined, credential);
+  });
 }
 
 export const npmRepositoryRegistration: RepositoryRegistration = { type: "npm_repository", provider: createRepository };

@@ -34,7 +34,7 @@ import { Computable } from "../core/Computable";
 import { FabrError, toError } from "../core/Errors";
 import { FileSet, FileSource, IFile } from "../core/FileSet";
 import { Name } from "../core/Name";
-import { NamespaceRef } from "../core/NamespaceRef";
+import { PartialRepositoryRef } from "../core/PartialRepositoryRef";
 import { IProvenanceStep, registerProvenanceDescriber, registerProvenanceRenderer } from "../core/Provenance";
 import { Repository, RepositoryLookup, RepositoryPublishRef, RepositoryRef } from "../core/Repository";
 import { RunnableFileSet } from "../core/RunnableFileSet";
@@ -71,7 +71,7 @@ export class HostSearchPathRepository implements Repository, RepositoryLookup {
   ) {}
 
   /** Vend the reference to the program `name` names: a command name, or an absolute path. */
-  public getRepositoryRef(name: Name): RepositoryRef | NamespaceRef {
+  public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
     const command = name.toBaseString();
     if (name.getMarker() !== undefined) {
       throw new FabrError(`'${name.toString()}' names a program of this host, so an override marker means nothing on it`).withHelp(

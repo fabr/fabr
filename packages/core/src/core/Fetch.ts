@@ -21,6 +21,7 @@ import * as http from "http";
 import { availableParallelism } from "os";
 import { URL } from "url";
 import { Readable, Transform } from "stream";
+import type { Credential, IRequestHead } from "./Credential";
 import { EnvHttpProxyAgent, interceptors, request as httpRequest } from "undici";
 import { Computable } from "./Computable";
 import { FabrError, HttpStatusError, toError } from "./Errors";
@@ -147,6 +148,8 @@ export function fetchUrl(urlstring: string): Computable<Buffer> {
 export interface HttpRequest {
   method: string;
   headers?: Record<string, string>;
+  /** What signs the request in, asked again with the challenge where the server answers 401 (see {@link withCredential}): not where `body` is a stream, which cannot be sent twice. */
+  credential?: Credential;
   /** Request body, sent verbatim: bytes, whose Content-Length is derived when not
    *  supplied, or a stream, sent as it is read, whose length the caller states
    *  where the server needs it. */
@@ -168,6 +171,19 @@ export interface HttpResponse {
  * for control-plane calls (publish, dist-tag), not bulk downloads.
  */
 export function sendRequest(urlstring: string, request: HttpRequest): Computable<HttpResponse> {
+  const { credential, method, headers, body } = request;
+  return withCredential(
+    credential,
+    method,
+    urlstring,
+    headers,
+    signed => send(urlstring, method, signed, body),
+    response => (body instanceof Readable ? undefined : challengesOf(response.statusCode, response.headers))
+  );
+}
+
+/** Send {@link sendRequest}'s request with `headers`, as they stand. */
+function send(urlstring: string, method: string, headers: Record<string, string> | undefined, body: HttpRequest["body"]): Computable<HttpResponse> {
   return Computable.from<HttpResponse>((resolve, reject) => {
     const unsupported = unsupportedProtocol(urlstring);
     if (unsupported) {
@@ -180,7 +196,7 @@ export function sendRequest(urlstring: string, request: HttpRequest): Computable
         reject(toError(err));
       };
       /* undici derives Content-Length from the body and follows redirects itself. */
-      httpRequest(urlstring, { method: request.method, headers: request.headers, body: request.body, dispatcher }).then(
+      httpRequest(urlstring, { method, headers, body, dispatcher }).then(
         response =>
           response.body.arrayBuffer().then(buffer => {
             release();
@@ -283,7 +299,20 @@ export function openUrlStream(
   now: () => number = Date.now,
   role: FetchRole = "content",
   /** The response header stating the document's digest, recorded as {@link ICacheControl.digest}. */
-  digestHeader?: string
+  digestHeader?: string,
+  /** What signs the request in, asked again with the challenge where the server answers 401 (see {@link withCredential}). */
+  credential?: Credential
+): Computable<UrlStreamResponse> {
+  return withCredential(credential, "GET", urlstring, headers, signed => streamUrl(urlstring, signed, now, role, digestHeader), () => undefined);
+}
+
+/** Send {@link openUrlStream}'s GET with `headers`, as they stand. */
+function streamUrl(
+  urlstring: string,
+  headers: Record<string, string> | undefined,
+  now: () => number,
+  role: FetchRole,
+  digestHeader: string | undefined
 ): Computable<UrlStreamResponse> {
   const conditional =
     headers !== undefined && Object.keys(headers).some(name => /^if-(none-match|modified-since)$/i.test(name));
@@ -313,7 +342,7 @@ export function openUrlStream(
             resolve({ cacheControl: parseCacheControl(resHeaders, now(), digestHeader) });
           } else {
             void response.body.dump().finally(release);
-            reject(new HttpStatusError(response.statusCode, urlstring));
+            reject(new HttpStatusError(response.statusCode, urlstring, challengesOf(response.statusCode, resHeaders)));
           }
         },
         err => {
@@ -323,6 +352,55 @@ export function openUrlStream(
       );
     });
   });
+}
+
+/**
+ * Send a request with the headers `credential` gives it, added to `headers`.
+ * Where the server answers 401, ask the credential again, with the server's
+ * challenges, for the headers to answer them with (a renewed token, or one
+ * for what the challenge asks), and send the request once more with those;
+ * where it gives none, the 401 stands. A 401 is seen either as an {@link HttpStatusError}
+ * `send` rejects with, or as a result `challengeOf` reads challenges from.
+ * Without a credential, `headers` are sent as they stand.
+ */
+function withCredential<T>(
+  credential: Credential | undefined,
+  method: string,
+  url: string,
+  headers: Record<string, string> | undefined,
+  send: (headers: Record<string, string> | undefined) => Computable<T>,
+  challengeOf: (result: T) => readonly string[] | undefined
+): Computable<T> {
+  if (credential === undefined) {
+    return send(headers);
+  }
+  const head: IRequestHead = { method, url, headers: new Map(Object.entries(headers ?? {})) };
+  const withAdded = (added: ReadonlyMap<string, string> | undefined): Record<string, string> => ({ ...headers, ...Object.fromEntries(added ?? []) });
+  const answer = (challenges: readonly string[], standing: () => Computable<T>): Computable<T> =>
+    credential.authorize(head, { challenges }).then(added => (added === undefined ? standing() : send(withAdded(added))));
+  return credential.authorize(head).then(added =>
+    send(withAdded(added)).then(
+      result => {
+        const challenges = challengeOf(result);
+        return challenges === undefined ? result : answer(challenges, () => Computable.resolve(result));
+      },
+      err => {
+        if (err instanceof HttpStatusError && err.statusCode === 401) {
+          return answer(err.challenges, () => Computable.reject<T>(err));
+        }
+        throw err;
+      }
+    )
+  );
+}
+
+/** @return a 401's `WWW-Authenticate` challenges, or undefined for any other status. */
+function challengesOf(statusCode: number, headers: http.IncomingHttpHeaders): readonly string[] | undefined {
+  if (statusCode !== 401) {
+    return undefined;
+  }
+  const header = headers["www-authenticate"];
+  return header === undefined ? [] : Array.isArray(header) ? header : [header];
 }
 
 /**
@@ -337,7 +415,20 @@ export function headUrl(
   headers: Record<string, string> | undefined,
   digestHeader: string,
   now: () => number = Date.now,
-  role: FetchRole = "index"
+  role: FetchRole = "index",
+  /** What signs the request in, asked again with the challenge where the server answers 401 (see {@link withCredential}). */
+  credential?: Credential
+): Computable<ICacheControl> {
+  return withCredential(credential, "HEAD", urlstring, headers, signed => headOf(urlstring, signed, digestHeader, now, role), () => undefined);
+}
+
+/** Send {@link headUrl}'s HEAD with `headers`, as they stand. */
+function headOf(
+  urlstring: string,
+  headers: Record<string, string> | undefined,
+  digestHeader: string,
+  now: () => number,
+  role: FetchRole
 ): Computable<ICacheControl> {
   return Computable.from<ICacheControl>((resolve, reject) => {
     const unsupported = unsupportedProtocol(urlstring);
@@ -349,10 +440,11 @@ export function headUrl(
       httpRequest(urlstring, { method: "HEAD", headers, dispatcher }).then(
         response => {
           void response.body.dump().finally(release);
+          const resHeaders = response.headers as http.IncomingHttpHeaders;
           if (response.statusCode === 200) {
-            resolve(parseCacheControl(response.headers as http.IncomingHttpHeaders, now(), digestHeader));
+            resolve(parseCacheControl(resHeaders, now(), digestHeader));
           } else {
-            reject(new HttpStatusError(response.statusCode, urlstring));
+            reject(new HttpStatusError(response.statusCode, urlstring, challengesOf(response.statusCode, resHeaders)));
           }
         },
         err => {

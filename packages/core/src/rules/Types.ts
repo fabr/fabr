@@ -17,11 +17,13 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import type { Credential } from "../core/Credential";
 import { Computable } from "../core/Computable";
 import type { BuildAction } from "../core/BuildAction";
 import { FileSource } from "../core/FileSet";
 import { Name } from "../core/Name";
 import { Repository } from "../core/Repository";
+import type { Namespace } from "../core/NamespaceRef";
 import type { IPropertyDecl, IRuleBlock, IRuleDecl, ITargetDecl } from "../model/AST";
 import type { IPropertyEntry } from "../model/Namespace";
 import {
@@ -77,14 +79,24 @@ export type SubTargetInputs = Record<string, SubTargetInput>;
 export type RuleResult = FileSource | FileSource[] | BuildAction;
 
 /**
- * Repositories are not rule-built targets: a provider lazily constructs the
- * instance for a declaration, per BuildContext (its configuration resolves
- * under that context's constraints). What it constructs is the declaration's
- * value as a source: a {@link Repository} (vending references the resolution
- * layer batches), or a plain {@link FileSource} for a declared namespace with
- * nothing to resolve (a `fetch` table).
+ * Make the repository a declaration of the provider's type declares, from its
+ * `context`. Repositories are not rule-built targets: a provider lazily
+ * constructs the instance for a declaration, per BuildContext (its
+ * configuration resolves under that context's constraints). What it
+ * constructs is the declaration's value as a source: a {@link Repository}
+ * (vending references the resolution layer batches), a
+ * {@link Namespace} (an AWS account), or a plain {@link FileSource}
+ * for a declared namespace with nothing to resolve (a `fetch` table). A
+ * repository a namespace makes (see TargetContext.makeRepository) is also
+ * given the namespace's `url` and `credential`, each where it has one: a
+ * property the declaration writes comes first, and the credential ahead of
+ * any the repository's ecosystem would find for itself.
  */
-export type RepositoryProvider = (context: TargetContext) => Computable<Repository | FileSource>;
+export type RepositoryProvider = (
+  context: TargetContext,
+  url?: string,
+  credential?: Credential
+) => Computable<Repository | Namespace | FileSource>;
 
 /**
  * A rule: the knowledge of how to build targets of a `type` where its guards

@@ -24,6 +24,7 @@ import { FileSet, FileSource } from "../core/FileSet";
 import { RepositoryPublishRef, Repository, SourceRef } from "../core/Repository";
 import { collectLists, ResolutionOptions } from "./CollectionPoint";
 import { FileSetRef } from "../core/FileSetRef";
+import { PartialRepositoryRef } from "../core/PartialRepositoryRef";
 import { NamespaceRef } from "../core/NamespaceRef";
 import { IProjection, Miss } from "../core/Reference";
 import { materializeTargets } from "../core/TargetRef";
@@ -66,7 +67,7 @@ import {
   MaterializedCommandStage,
 } from "./Commands";
 import { ContainedSources, PackageSources } from "./Collection";
-import type { InternalBuildContext } from "./BuildContext";
+import type { InternalBuildContext, IRepositoryMember } from "./BuildContext";
 import type { ResolvedTarget } from "./ResolvedTarget";
 import type { PropertyMap } from "./PropertyMap";
 
@@ -359,13 +360,7 @@ export abstract class TargetContext {
     if (!match) {
       return Computable.reject(new FabrError(`'${name.toString()}' does not name a repository`));
     }
-    return match.target.then(sources => {
-      const namespace = sources.find((source): source is NamespaceRef => source instanceof NamespaceRef);
-      if (!namespace) {
-        throw new FabrError(`'${name.toString()}' does not name a repository`);
-      }
-      return namespace.getRepositoryPublishRef(match.rest, writtenSeparator(match.retainedPrefix), match.name);
-    });
+    return match.target.then(sources => publishRefIn(sources, match.rest, writtenSeparator(match.retainedPrefix), match.name, name));
   }
 
   public getRequiredProperty(name: string, overrides?: Constraints): Computable<Property> {
@@ -505,6 +500,24 @@ export abstract class TargetContext {
     return this.context.describeSubTarget(this, type, inputs, options);
   }
 
+  /**
+   * Make a repository of `type`, a repository type any plugin in use defines,
+   * that this repository's namespace holds as `member.name`: how a namespace
+   * (an AWS account's `@aws:ecr`) offers another plugin's repository without
+   * importing it. The repository is made as a declaration of its type would
+   * be, its properties `member.properties`, and is given `member.url` and
+   * `member.credential`. Named `<this>:<member>` in messages. Rejects where no
+   * plugin in use defines `type`.
+   */
+  public makeRepository(type: string, member: IRepositoryMember): Computable<Repository> {
+    return this.context.makeRepository(this, type, member);
+  }
+
+  /** @return true if a plugin in use (or core) defines the repository type `type`, otherwise false: whether {@link makeRepository} can make one. */
+  public hasRepositoryType(type: string): boolean {
+    return this.context.hasRepositoryType(type);
+  }
+
   /** Perform `run` as one tracked task on behalf of this target — see
    *  {@link ExecutionContext.runTask}. */
   public runTask<T>(task: TaskDescription, run: (report: ITaskReport) => Computable<T>): Computable<T> {
@@ -573,6 +586,11 @@ export abstract class TargetContext {
    * jointly with the target's other requirements. Overrides ride as callerOverrides (caller
    * precedence over a requirement on the global's value).
    */
+  /** Get the global MAP property `name`'s value. Rejects where nothing declares `name`. */
+  public getGlobalMap(name: string, overrides?: Constraints): Computable<PropertyMap> {
+    return this.context.lookupGlobalMap(name, this.stack, overrides);
+  }
+
   public getGlobalFileProperty(name: string, overrides?: Constraints): Computable<SourceRef[]> {
     return this.context.resolveTarget(name, this.stack, overrides);
   }
@@ -1034,4 +1052,56 @@ export function enclosingRules(context: TargetContext): RuleBlockDefinition[] {
     }
   }
   return rules;
+}
+
+/** The context of a repository a namespace holds as a member (see {@link TargetContext.makeRepository}): an anonymous target's, named under the namespace. */
+export class MemberTargetContext extends AnonymousTargetContext {
+  constructor(
+    context: InternalBuildContext,
+    targetDef: ITargetDefDecl,
+    inputs: SubTargetInputs,
+    declared: DeclaredTargetContext,
+    private readonly member: string,
+    stack?: IDependencyStack,
+    creator?: TargetContext
+  ) {
+    super(context, targetDef, inputs, declared, undefined, stack, creator);
+  }
+
+  public override get name(): string {
+    return `${super.name}:${this.member}`;
+  }
+}
+
+/**
+ * Vend the publish ref `rest`, written after `separator`, names in the
+ * repository among `sources`, written `written`; through the member of a
+ * namespace among them its first part names, once made. `name` is the whole
+ * coordinate, for messages.
+ */
+function publishRefIn(
+  sources: SourceRef[],
+  rest: Name,
+  separator: ":" | "/",
+  written: string,
+  name: Name
+): RepositoryPublishRef | Computable<RepositoryPublishRef> {
+  const repository = sources.find((source): source is PartialRepositoryRef => source instanceof PartialRepositoryRef);
+  if (repository !== undefined) {
+    return repository.getRepositoryPublishRef(rest, separator, written);
+  }
+  const namespace = sources.find((source): source is NamespaceRef => source instanceof NamespaceRef);
+  if (namespace === undefined) {
+    throw new FabrError(`'${name.toString()}' does not name a repository`);
+  }
+  const literal = rest.getLiteralPrefix();
+  const end = literal.search(/[:/]/);
+  if (end <= 0) {
+    throw new FabrError(`'${name.toString()}' names a namespace, not an address in a repository to publish to`);
+  }
+  const first = literal.substring(0, end);
+  const next = literal[end] as ":" | "/";
+  return namespace
+    .get(first, separator)
+    .then(member => publishRefIn([member], rest.substring(end + 1), next, `${namespace.name}${separator}${first}`, name));
 }

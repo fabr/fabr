@@ -52,8 +52,8 @@ describe("an S3 publish coordinate", () => {
   });
 
   it("is written as the account names it", () => {
-    expect(new S3PublishRef(WRITER, "acme", "site/v3/", "@aws").toString()).to.equal("@aws:s3:acme:site/v3/");
-    expect(new S3PublishRef(WRITER, "acme", "x").withRepositoryName("@prod").toString()).to.equal("@prod:s3:acme:x");
+    expect(new S3PublishRef(WRITER, "acme", "site/v3/", "@aws:s3").toString()).to.equal("@aws:s3:acme:site/v3/");
+    expect(new S3PublishRef(WRITER, "acme", "x").withRepositoryName("@prod:s3").toString()).to.equal("@prod:s3:acme:x");
   });
 });
 
@@ -73,7 +73,7 @@ describe("packaging a member for S3", () => {
   });
 
   it("refuses an object whose content is not one file", () => {
-    const destination = new S3PublishRef(WRITER, "acme", "tools/tool.tgz", "@aws");
+    const destination = new S3PublishRef(WRITER, "acme", "tools/tool.tgz", "@aws:s3");
     expect(() => packageS3Member({ destination, content: files({ a: "a", b: "b" }) })).to.throw(
       "cannot publish @aws:s3:acme:tools/tool.tgz: an object's content must be one file, and it holds 2"
     );
