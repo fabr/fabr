@@ -35,10 +35,18 @@ import { PreparedUpdate, WatchController, WatchEntry } from "./WatchController";
 export interface FSFileStats {
   size: number;
   mtime: Date;
-  /** POSIX permission bits (low 12). Optional because some producers supply a
-   * partial stat; absent ⇒ {@link DEFAULT_FILE_MODE}. `fs.Stats.mode` carries
-   * the high type bits too, so it is masked to 0o7777 on read. */
+  /** POSIX mode bits as `fs.Stats` reports them. Optional because some
+   * producers supply a partial stat; absent ⇒ {@link DEFAULT_FILE_MODE}. */
   mode?: number;
+}
+
+/**
+ * @return the mode a file with `stat` has, as git records one: 0o755 where its
+ * owner may execute it, else {@link DEFAULT_FILE_MODE}. The mode is key
+ * material, and its other bits vary with the umask of whatever wrote the file.
+ */
+function fileModeOf(stat: FSFileStats): number {
+  return stat.mode !== undefined && (stat.mode & 0o100) !== 0 ? 0o755 : DEFAULT_FILE_MODE;
 }
 
 export class FSFile implements IFile {
@@ -64,7 +72,7 @@ export class FSFile implements IFile {
   }
 
   public get mode(): number {
-    return this.stat.mode === undefined ? DEFAULT_FILE_MODE : this.stat.mode & 0o7777;
+    return fileModeOf(this.stat);
   }
 
   public readString(encoding?: BufferEncoding): Computable<string> {
@@ -600,7 +608,7 @@ export class FSFileSource implements FileSource {
             stat(filepath).then(stats => {
               const hash = hashString(bytes);
               return pool
-                .ensureBlob(hash, bytes, stats.mode)
+                .ensureBlob(hash, bytes, fileModeOf(stats))
                 .then(blobPath => new FSFile(this.root, filename, stats, hash, sniffMime(bytes), blobPath));
             })
           );

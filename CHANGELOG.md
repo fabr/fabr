@@ -15,6 +15,7 @@ number.
 - Add targetdef inheritance: derived targets inherit their base's rules but can extend and override.
 - Add support for map splices in target properties.
 - Breaking: Cache failed test runs like passing ones; add --retry-failed to run failed tests again.
+- Add vulnerability audit via osv.
 
 @fabr-build/aws:
 - Add s3 download support.
