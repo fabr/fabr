@@ -22,7 +22,7 @@ import type { ActionContext, ICreateOptions } from "../core/BuildCache";
 import type { Computable } from "../core/Computable";
 import type { FileSet, FileSource } from "../core/FileSet";
 import type { IProjection, Miss } from "../core/Reference";
-import type { IncompleteRef, NamespaceRef } from "../core/NamespaceRef";
+import type { IncompleteRef } from "../core/NamespaceRef";
 import type { Name } from "../core/Name";
 import type { Materialized, Repository, SourceRef } from "../core/Repository";
 import type { Credential } from "../core/Credential";
