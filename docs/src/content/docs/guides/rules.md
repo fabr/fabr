@@ -21,6 +21,8 @@ built from that target's properties.
 | chain several steps | [A rule of several steps](#a-rule-of-several-steps) |
 | add an operation, such as `lint` | [A rule for another operation](#a-rule-for-another-operation) |
 | read the target's own properties | [Reading the target's properties](#reading-the-targets-properties) |
+| pass all of them to a step | [Splicing the target's properties](#splicing-the-targets-properties) |
+| declare a type that builds on an existing one | [A type built on another](#a-type-built-on-another) |
 | choose what the target is | [What the target is](#what-the-target-is) |
 | build a step under another operation or configuration | [Configuration](#configuration) |
 | replace a plugin's rule | [Choosing between rules](#choosing-between-rules) |
@@ -186,6 +188,87 @@ A name in the block that starts with the parameter and a `.` always reads the pa
 so a file named that way is written with a `./` (`./pkg.json`). Where the rule has a type, every
 property read this way must be one the type declares, and fabr reports one that isn't when it reads
 your files.
+
+### Splicing the target's properties
+
+To give a target of the block every property of the target being built, write the parameter alone
+in its body, as a statement. The parameter stands for the target as a map of its properties, and
+[splicing a map](/reference/syntax/#splicing-a-map-into-a-target) into a target takes its entries
+as the target's properties:
+
+```
+rule js_package pkg<BUILD_OPERATION=release> = released<BUILD_OPERATION=build> {
+  js_package released { pkg; version = 1.0.0; }
+}
+```
+
+`fabr release app` then builds `app` as a `js_package` at version `1.0.0`: `released` has each
+property as `app` has it, as though you had written `srcs = pkg.srcs; deps = pkg.deps;` and so on
+yourself. (`released` is built under `build`, by `js_package`'s own rule; under `release` it would
+be this rule again.)
+
+- The order matters, as in a map: `version = 1.0.0;` comes after `pkg;`, so it replaces `app`'s
+  `version`. Written before `pkg;`, it would be used only where `app` has no `version` of its own.
+- A property `app` has a value for is taken, whether `app` sets it or gets it from its type's
+  default. One `app` has no value for at all is left to the block target's own default.
+- A property of `app` that the block target's type doesn't have is left out.
+
+## A type built on another
+
+A new target type can [extend](/reference/syntax/#extending-a-type) an existing one: it has all
+of that type's properties, adds its own, and is built by that type's rules wherever it has no rule
+of its own. A rule for the new type then only needs to cover what is different, and it can splice
+the target into a target of the existing type to have that part built as before.
+
+For example, a `documented_package` is a `js_package` that ships its documentation in its
+package, under `docs/`:
+
+```
+plugin @fabr-build/js;
+
+# A package that ships its documentation beside its code.
+targetdef documented_package extends js_package {
+    # Documentation files, shipped under docs/ in the package.
+    docs = FILES;
+}
+
+rule documented_package pkg<BUILD_OPERATION=build> = code {
+    js_package code {
+        pkg;
+        resources = pkg.resources pkg.docs:** -> docs/**;
+    }
+}
+
+documented_package greeter {
+    srcs = src:**/*.ts;
+    exports = src:index.ts;
+    tests = src:**/*.test.ts;
+    test_deps = @npm:@types/node:22.10.0;
+    docs = docs:*.md;
+}
+```
+
+- `greeter` is written like any `js_package`, with one more property, `docs`.
+- Its own rule is for `build` only. `code` is a `js_package` with all of `greeter`'s properties,
+  except `resources`, which it sets to `greeter`'s resources plus its documentation, renamed under
+  `docs/`. `code` is the rule's result, so the package it builds is `greeter`.
+- For every other operation, `greeter` is a `js_package`: `fabr test greeter` runs its tests with
+  `js_package`'s test rule, and `fabr run` and `fabr deps` work as they do for any package.
+
+```sh
+$ fabr ls greeter
+docs/guide.md
+index.d.ts
+index.js
+index.js.map
+package.json
+$ fabr test greeter
+✓ Testing greeter (727ms)
+greeter: 1 test passed
+```
+
+`fabr list-operations` lists `documented_package` under each operation it has a rule for, its own
+and `js_package`'s.
 
 ## What the target is
 

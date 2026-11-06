@@ -44,12 +44,18 @@
       "match": "#.*$"
     },
     "targetdef": {
-      "match": "\\b(targetdef)\\s+([A-Za-z_][\\w-]*)",
+      "match": "\\b(targetdef)\\s+([A-Za-z_][\\w-]*)(?:\\s+(extends)\\s+([A-Za-z_][\\w-]*))?",
       "captures": {
         "1": {
           "name": "keyword.control.fabr"
         },
         "2": {
+          "name": "entity.name.type.fabr"
+        },
+        "3": {
+          "name": "keyword.control.fabr"
+        },
+        "4": {
           "name": "entity.name.type.fabr"
         }
       }

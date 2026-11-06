@@ -25,7 +25,7 @@ import { Name } from "../core/Name";
 import { Diagnostic, ErrorTrackingLog, IDiagnosticNote, ISourceSpan, LogLevel } from "../support/Log";
 import { StringReader } from "../support/StringReader";
 import { parseBuildFile } from "./Parser";
-import { DeclKind, declPosn, IBuildFileContents, IIncludeDecl, INameValue, ITargetDecl, optionalLibOf } from "./AST";
+import { DeclKind, declPosn, IBuildFileContents, IIncludeDecl, INameValue, isPropertyDecl, ISpliceDecl, ITargetDecl, optionalLibOf } from "./AST";
 import { BuildModel } from "./BuildModel";
 import { ModelBuilder } from "./ModelBuilder";
 import { ExecutionContext } from "./ExecutionContext";
@@ -58,6 +58,10 @@ const DIAG_INCLUDE_OUTSIDE = new Diagnostic<{ filename: string; loc: ISourceSpan
 );
 
 /** A `fabr_plugin` target's `libs` value that is not a path or pattern beside it. */
+const DIAG_PLUGIN_SPLICE = Diagnostic.Error<{ name: string; loc: ISourceSpan }>(
+  "A plugin's body is read as written, before anything is built, so it cannot splice '{name}'"
+);
+
 const DIAG_PLUGIN_LIBS = new Diagnostic<{ loc: ISourceSpan }>(
   LogLevel.Error,
   "A plugin's libs are paths or patterns relative to the file declaring it, as an include's are"
@@ -428,23 +432,32 @@ class ProjectLoader {
   /** Resolve the `libs` or `optional_libs`, `property`, of the `fabr_plugin` target `target`, as includes of the file declaring it. */
   private libsOf(target: ITargetDecl, property: string): ComputableSource<IncludedFiles> {
     let byProperty = this.libs.get(target);
+    let spliced = 0;
     if (byProperty === undefined) {
       byProperty = new Map();
       this.libs.set(target, byProperty);
+      /* Read as written, before anything is built: a splice has nothing yet to stand for. */
+      const splices = target.properties.filter((item): item is ISpliceDecl => !isPropertyDecl(item));
+      splices.forEach(splice => this.execution.log.log(DIAG_PLUGIN_SPLICE, { name: splice.ref.toString(), loc: declPosn(splice) }));
+      spliced = splices.length;
     }
     let resolved = byProperty.get(property);
     if (resolved === undefined) {
       const values = target.properties
+        .filter(isPropertyDecl)
         .filter(prop => prop.name.toBaseString() === property)
         .flatMap(prop => prop.values.filter((value): value is INameValue => value.kind === DeclKind.NameValue));
       resolved = Computable.forAll(
-        values.map(value => {
-          if (value.value.hasVarSubst() || value.value.hasLevelSeparator()) {
-            this.execution.log.log(DIAG_PLUGIN_LIBS, { loc: declPosn(value) });
-            return Computable.resolve({ files: [], errors: 1 });
-          }
-          return this.includedFiles(target.source.fs, target.source.file, { ...value, kind: DeclKind.Include, name: value.value });
-        }),
+        [
+          Computable.resolve({ files: [], errors: spliced }),
+          ...values.map(value => {
+            if (value.value.hasVarSubst() || value.value.hasLevelSeparator()) {
+              this.execution.log.log(DIAG_PLUGIN_LIBS, { loc: declPosn(value) });
+              return Computable.resolve({ files: [], errors: 1 });
+            }
+            return this.includedFiles(target.source.fs, target.source.file, { ...value, kind: DeclKind.Include, name: value.value });
+          }),
+        ],
         (...each: IncludedFiles[]) => ({
           files: each.flatMap(one => one.files),
           errors: each.reduce((total, one) => total + one.errors, 0),

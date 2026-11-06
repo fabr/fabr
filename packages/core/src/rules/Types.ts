@@ -154,6 +154,13 @@ export interface SelectableRule {
   targetProperties?: Record<string, string>;
 }
 
+/** The rules of one target type, which selection tries together, ranked
+ * against each other: `type` names them in an ambiguity error. */
+export interface TargetRules<R extends SelectableRule = SelectableRule> {
+  type: string;
+  rules: R[];
+}
+
 /**
  * How a rule builds a target. A package entry a `rule` declaration names
  * exports one as its default export, its type and guards being the

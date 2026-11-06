@@ -45,6 +45,7 @@ import { ExecutionContext } from "./ExecutionContext";
 import { Name } from "../core/Name";
 import { parseName } from "./Parser";
 import {
+  TargetRules,
   RuleBlockDefinition,
   RuleDefinition,
   PluginContribution,
@@ -493,9 +494,11 @@ export class ModelBuilder implements BuildModel {
     }
   }
 
-  public getTargetRules(type: string): SelectableRule[] {
-    return this.targetRules.get(type) ?? [];
+  public getTargetRules(type: string): TargetRules[] {
+    const chain = this.root.getTargetDefChain(type).map(def => def.name);
+    return (chain.length === 0 ? [type] : chain).map(name => ({ type: name, rules: this.targetRules.get(name) ?? [] }));
   }
+
 
   public getDefaultRules(): SelectableRule[] {
     return this.defaultRules;
@@ -526,7 +529,8 @@ export class ModelBuilder implements BuildModel {
   }
 
   public getOperations(type: string): string[] {
-    return [...new Set(this.getTargetRules(type).map(rule => rule.properties[BUILD_OPERATION] ?? "*"))].sort();
+    const rules = this.getTargetRules(type).flatMap(({ rules }) => rules);
+    return [...new Set(rules.map(rule => rule.properties[BUILD_OPERATION] ?? "*"))].sort();
   }
 
   public getConfig(constraints: Constraints, execution: ExecutionContext): BuildContext {

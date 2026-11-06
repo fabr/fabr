@@ -12,6 +12,7 @@ language. It has four kinds of statement:
 | Set a property | `JS_TARGET = es2022-esm;` | [Properties](#properties) |
 | Declare a target | `js_package mylib { srcs = src:**/*.ts; }` | [Target declarations](#target-declarations) |
 | Define a target type | `targetdef mytype { srcs = FILES; }` | [Targetdef declarations](#targetdef-declarations) |
+| Define a type from another | `targetdef mytype extends js_package { docs = FILES; }` | [Extending a type](#extending-a-type) |
 
 Most of what you write inside them is [references](#references): the patterns that name files,
 targets and packages.
@@ -607,6 +608,34 @@ A default target is used only if no other declaration has its name. A plugin dec
 supplies this way, so that a project can replace one by declaring a target with the same name. Two
 default declarations of one name are still an error.
 
+### Splicing a map into a target
+
+Naming a [map property](#map-properties) alone in a target's body, as a statement, takes the map's
+entries as the target's properties:
+
+```
+JS_DEFAULTS = { test_deps = chai jest_types; test_framework = jest; };
+
+js_package core { JS_DEFAULTS; srcs = src:**/*.ts; }
+js_package cli  { JS_DEFAULTS; srcs = src:**/*.ts; test_framework = node; }
+```
+
+- **Later wins.** For each property, the last item in the body that supplies it is what the target
+  has, as in a map: `cli`'s `test_framework` is `node`, and in `{ test_framework = node; JS_DEFAULTS; }`
+  it would be `jest`. A guarded declaration after a splice is chosen as usual, and the splice
+  supplies the property where none of them applies.
+- **Entries are read as the target's properties.** Each entry is read with the kind its property
+  has in the target's type, so `test_deps = chai jest_types;` names packages. An entry for a property
+  the type doesn't have is left out, so one map can be shared by targets of different types. An
+  entry whose value doesn't fit its property (a `{ … }` block for a `FILES` property) is an error
+  when the target is built, as is a `REQUIRED` property that the body as spliced doesn't set.
+- **Only a map can be spliced.** A target's name isn't a map: it stands for what the target builds.
+  A splice can't be guarded.
+
+Inside a [rule's block](#rule-and-repository-declarations), the rule's parameter is the target
+being built as a map of its properties, so `pkg;` splices all of them (see
+[Splicing the target's properties](/guides/rules/#splicing-the-targets-properties)).
+
 ## Targetdef declarations
 
 `targetdef` defines a target type: the properties its targets take. Fabr's core and its plugins
@@ -685,6 +714,32 @@ targetdef script {
   a default can follow `${BUILD_TYPE}`.
 - `REQUIRED` and `default` can't be combined, and a `*` entry can't have a default.
 
+### Extending a type
+
+A targetdef can extend another: `extends` and the other type's name come after its own name. The
+new type has every property of the type it extends, plus those it declares:
+
+```
+targetdef documented_package extends js_package {
+  docs = FILES;
+}
+```
+
+- **Properties.** A type can declare again a property of the type it extends, to give it a
+  different default, to make it `REQUIRED`, or to document it again. It can't change the
+  property's kind, or make a `REQUIRED` property optional.
+- **Rules.** A target of the new type is built by a rule of its own type where one applies, else
+  by a rule of the type it extends, then of the type that one extends, and so on, before any
+  `default rule`. A rule of its own type is chosen over one of the type it extends however
+  specific the other is, so a type with only a `build` rule of its own is still tested and run by
+  the rules of the type it extends.
+- The type extended can be declared in any `.fabr` file the project reads, a plugin's included.
+
+[A type built on another](/guides/rules/#a-type-built-on-another) works through an example, with
+a rule written in `.fabr` that builds on the extended type's rule. A rule written in code can do
+the same by calling the extended type's implementation
+([Which rule builds a target](/developer/plugins/#which-rule-builds-a-target)).
+
 ## Rule and repository declarations
 
 `rule` says how targets of a type are built: under which configuration, for which targets, and by
@@ -730,6 +785,9 @@ rule version_module v<BUILD_OPERATION=build> = generate gen { run = stamp ${v.ve
   properties, as a value or as `${pkg.<property>}`, `pkg` alone is a reference to the target, and
   `${pkg}` is its name.
   A bare name starting `<parameter>.` always means the parameter's property.
+- **`pkg;`** alone in the body of a target of the block [splices](#splicing-a-map-into-a-target)
+  the parameter, as a map of the target being built's properties (see
+  [Splicing the target's properties](/guides/rules/#splicing-the-targets-properties)).
 - What follows the `=` is told apart by what comes after the first name: `;` for a package entry,
   a second name for the short form, and `{` after a reference for a block.
 

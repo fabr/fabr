@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { DeclKind, INamedDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl } from "./AST";
+import { DeclKind, INamedDecl, IPropertyDecl, IPropertySchema, ITargetDecl, ITargetDefDecl } from "./AST";
 import { NAME_COMPONENT_SEPARATOR, Name } from "../core/Name";
 
 /**
@@ -47,6 +47,9 @@ export interface NamespaceNode {
    * under it declares. */
   fallback?: IPropertyEntry;
   targetDefs: Map<string, ITargetDefDecl>;
+  /** Each targetdef read here with the properties it inherits, made as it is
+   * first read and cleared when a targetdef is added. */
+  inheritedTargetDefs?: Map<string, ITargetDefDecl>;
   content: Map<string, NamespaceEntry>;
   /** `default` TARGETS, kept apart: one answers for its name where nothing in
    * `content` does, and is a property's `fallbackTarget` where a property
@@ -120,16 +123,66 @@ export class Namespace {
     return keys.map((key): [string, ContentType] => [key, this.entry(key)!]);
   }
 
+  /**
+   * Look up the targetdef `name`, with every property of the targetdef it
+   * extends: the inherited properties in the base's order, a redeclared one as
+   * `name` declares it, then `name`'s own further properties. A base that is not
+   * declared, or a chain of bases leading back to `name`, adds nothing (each
+   * reported by {@link NamespaceBuilder.validate}).
+   */
   public getTargetDef(name: string): ITargetDefDecl | undefined {
-    const parts = name.split(NAME_COMPONENT_SEPARATOR);
-    const targetName = parts.pop()!; /* Array must contain at least 1 element */
-    return this.getNamespacePrefix(parts)?.node.targetDefs.get(targetName);
+    return this.inheritedTargetDef(name, new Set());
   }
 
-  /** @return this namespace's own targetdefs, in declaration order (does not
+  private inheritedTargetDef(name: string, visiting: Set<string>): ITargetDefDecl | undefined {
+    const parts = name.split(NAME_COMPONENT_SEPARATOR);
+    const targetName = parts.pop()!; /* Array must contain at least 1 element */
+    const node = this.getNamespacePrefix(parts)?.node;
+    const own = node?.targetDefs.get(targetName);
+    if (own?.extends === undefined || visiting.has(name)) {
+      return own;
+    }
+    const known = node!.inheritedTargetDefs?.get(targetName);
+    if (known !== undefined) {
+      return known;
+    }
+    visiting.add(name);
+    const base = this.inheritedTargetDef(own.extends.name, visiting);
+    visiting.delete(name);
+    const inherited: ITargetDefDecl =
+      base === undefined || base === own
+        ? own
+        : {
+            ...own,
+            properties: new Map([
+              ...[...base.properties].map(([key, schema]): [string, IPropertySchema] => {
+                const mine = own.properties.get(key);
+                return [key, mine === undefined ? schema : { ...mine, docComment: mine.docComment ?? schema.docComment }];
+              }),
+              ...[...own.properties].filter(([key]) => !base.properties.has(key)),
+            ]),
+          };
+    if (visiting.size === 0) {
+      node!.inheritedTargetDefs = (node!.inheritedTargetDefs ?? new Map()).set(targetName, inherited);
+    }
+    return inherited;
+  }
+
+  /** @return the chain of targetdefs `name` extends, nearest first, beginning
+   * with `name`'s own; ends where a base is not declared or one repeats. */
+  public getTargetDefChain(name: string): ITargetDefDecl[] {
+    const chain: ITargetDefDecl[] = [];
+    for (let def = this.getTargetDef(name); def !== undefined && !chain.includes(def); ) {
+      chain.push(def);
+      def = def.extends === undefined ? undefined : this.getTargetDef(def.extends.name);
+    }
+    return chain;
+  }
+
+  /** @return this namespace's own targetdefs with what they inherit, in declaration order (does not
    * recurse into sub-namespaces — targetdefs are conventionally top-level). */
   public getTargetDefs(): ITargetDefDecl[] {
-    return [...this.node.targetDefs.values()];
+    return [...this.node.targetDefs.keys()].map(name => this.getTargetDef(name)!);
   }
 
   /** @return every target declared in this namespace and, recursively, its

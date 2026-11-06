@@ -28,6 +28,7 @@ import {
   isCommandValue,
   isMapValue,
   isNameValue,
+  isPropertyDecl,
   IValue,
   IRuleBlock,
   IRuleDecl,
@@ -87,6 +88,10 @@ const DIAG_INVALID_COMMAND = new Diagnostic<{ detail: string; loc: ISourcePositi
  *   b) do not have duplicates, and
  *   c) are not missing any required properties.
  *
+ * What a splice supplies is checked when it is looked up, so a key written
+ * again after a splice is no duplicate of one before it, and a target that
+ * splices may leave a required property to what it splices.
+ *
  * Potentially value-range checks (if we have any) can also be done here iff the value is constant.
  *
  * @return true if validation succeeds, otherwise false (and errors are written to the log);
@@ -103,7 +108,14 @@ export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log
    * (including a reference key) is an error. */
   const wildcard = targetDef.properties.get("*");
 
-  decl.properties.forEach(prop => {
+  let spliced = false;
+  decl.properties.forEach(item => {
+    if (!isPropertyDecl(item)) {
+      spliced = true;
+      seen.clear();
+      return;
+    }
+    const prop = item;
     if (!targetDef.properties.has(prop.name.toBaseString()) && !wildcard) {
       isValid = false;
       log.log(DIAG_UNEXPECTED_PROPERTY, {
@@ -131,7 +143,7 @@ export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log
     }
   });
   targetDef.properties.forEach((value, key) => {
-    if (key !== "*" && value.required && !declared.has(key)) {
+    if (key !== "*" && value.required && !declared.has(key) && !spliced) {
       isValid = false;
       log.log(DIAG_MISSING_PROPERTY, {
         loc: declPosn(decl),
@@ -144,7 +156,7 @@ export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log
 
   /* Per-value shape rules, checked here where the schema is known (a wildcard
    * member is typed by the `*` entry). */
-  decl.properties.forEach(prop => {
+  decl.properties.filter(isPropertyDecl).forEach(prop => {
     const type = (targetDef.properties.get(prop.name.toBaseString()) ?? wildcard)?.type;
     if (type === undefined) {
       return; /* already reported as unrecognized */
@@ -164,7 +176,7 @@ export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log
  * placement, then either the MAP entry rules or the REWRITE rules
  * ({@link validateRenameValue}).
  */
-function validatePropertyShape(prop: IPropertyDecl, type: PropertyType, log: Log): boolean {
+export function validatePropertyShape(prop: IPropertyDecl, type: PropertyType, log: Log): boolean {
   let isValid = true;
   if (prop.values.some(value => isCommandValue(value))) {
     /* A pipeline (`a | b > c`) parses to a command value (well-formedness
@@ -275,7 +287,7 @@ function validateBlock(entries: IMapItemDecl[], log: Log): boolean {
   let isValid = true;
   const keys = new Set<string>();
   entries.forEach(entry => {
-    if (entry.kind === DeclKind.MapSplice) {
+    if (entry.kind === DeclKind.Splice) {
       if (entry.ref.hasLevelSeparator() || entry.ref.hasConstraints() || entry.ref.getRenameTo() || entry.ref.hasGlob()) {
         isValid = fail(`a map reference is a plain property name ('${entry.ref.toString()}')`, entry);
       }
@@ -393,7 +405,8 @@ export function validateRuleBlock(
   }
   const schema = rule.type === undefined ? undefined : targetDefOf(rule.type);
   if (schema !== undefined) {
-    const values = [block.result, ...[...block.properties, ...block.targets.flatMap(target => target.properties)].flatMap(writtenNames)];
+    /* A splice reads only what the matched target has, so writes no name of its own to check. */
+    const values = [block.result, ...[...block.properties, ...block.targets.flatMap(target => target.properties.filter(isPropertyDecl))].flatMap(writtenNames)];
     for (const value of values) {
       /* The value read whole (`pkg.x`), and each `${pkg.x}` within it. */
       const read = [

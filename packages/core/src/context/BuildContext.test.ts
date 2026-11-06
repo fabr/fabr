@@ -3975,6 +3975,105 @@ describe("Rule selection", () => {
       expect(() => modelOf(DEFS, keyed("srcs"))).to.throw(/'srcs'/);
     });
   });
+
+  describe("on a targetdef that extends another", () => {
+    /** The files a rule built, each named by the rule and holding what it read. */
+    const made = (file: string, text: string): FileSet => new FileSet(new Map([[file, new MemoryFile(Buffer.from(text))]]));
+    const baseRule: RuleDefinition = {
+      type: "base",
+      properties: {},
+      evaluate: context => context.getString("flavour").then(flavour => made("base.txt", `${context.name} ${flavour ?? "-"}`)),
+    };
+    const baseTestRule: RuleDefinition = {
+      type: "base",
+      properties: { BUILD_OPERATION: "test" },
+      evaluate: context => Computable.resolve(made("tested.txt", context.name)),
+    };
+    /* Builds what the base type's rule builds for it, beside a file of its own. */
+    const derivedRule: RuleDefinition = {
+      type: "derived",
+      properties: { BUILD_OPERATION: "build" },
+      evaluate: (context, requirements) =>
+        Computable.forAll([baseRule.evaluate(context, requirements), context.getString("extra")], (base, extra) =>
+          FileSet.unionAll(base as FileSet, made("derived.txt", extra ?? "-"))
+        ),
+    };
+    const DEFS =
+      "targetdef base { flavour = STRING default vanilla; srcs = FILES; }\n" +
+      "targetdef derived extends base { extra = STRING; flavour = STRING default chocolate; }\n" +
+      "targetdef grandchild extends derived { }\n";
+
+    async function build(input: string, name: string, config: Record<string, string> = { BUILD_OPERATION: "build" }): Promise<Map<string, string>> {
+      const files = (await modelOf(DEFS + input, [baseRule, baseTestRule, derivedRule], ["grandchild"])
+        .getConfig(Constraints.of(config), execution)
+        .materialize(writtenOnCommandLine(name))) as FileSet[];
+      return new Map(
+        await Promise.all(
+          [...FileSet.unionAll(...files)].map(async ([file, content]): Promise<[string, string]> => [file, await content.readString()])
+        )
+      );
+    }
+
+    /** The errors loading `input` reports. */
+    function errorsOf(input: string): string[] {
+      const errors: string[] = [];
+      const log = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+      try {
+        toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, log)], log, [{ rules: [] }]);
+      } catch {
+        /* Reported through the log. */
+      }
+      return errors;
+    }
+
+    it("has every property of its base, a redeclared one as it declares it", async () => {
+      const def = modelOf(DEFS, []).getTargetDefs().find(target => target.name === "derived")!;
+      expect([...def.properties.keys()]).to.deep.equal(["flavour", "srcs", "extra"]);
+      expect(modelOf(DEFS, []).getTargetDefs().find(target => target.name === "grandchild")!.properties.has("extra")).to.equal(true);
+    });
+
+    it("selects its own rule before its base's, and its base's where none of its own applies", async () => {
+      expect(await build("derived d { extra = more; }\n", "d")).to.deep.equal(
+        new Map([
+          ["base.txt", "d chocolate"],
+          ["derived.txt", "more"],
+        ])
+      );
+      expect(await build("derived d { }\n", "d", { BUILD_OPERATION: "test" })).to.deep.equal(new Map([["tested.txt", "d"]]));
+    });
+
+    it("selects the rules of the nearest type it extends that has any", async () => {
+      /* `grandchild` has no rule: `derived`'s builds it. */
+      expect(await build("grandchild g { flavour = mint; }\n", "g")).to.deep.equal(
+        new Map([
+          ["base.txt", "g mint"],
+          ["derived.txt", "-"],
+        ])
+      );
+    });
+
+    it("reports the operations of its own rules and its bases'", () => {
+      expect(modelOf(DEFS, [baseRule, baseTestRule, derivedRule], ["grandchild"]).getOperations("grandchild")).to.deep.equal(["*", "build", "test"]);
+    });
+
+    it("refuses a base that is not a targetdef, or a chain of bases leading back to it", () => {
+      expect(errorsOf("targetdef d extends nothing { }\n").join("\n")).to.match(/Targetdef 'd' extends 'nothing', which is not a targetdef/);
+      expect(errorsOf("targetdef a extends b { }\ntargetdef b extends a { }\n").join("\n")).to.match(/Targetdef 'a' extends itself/);
+      expect(errorsOf("targetdef a extends a { }\n").join("\n")).to.match(/Targetdef 'a' extends itself/);
+      expect(errorsOf("targetdef a extends { }\n")).to.not.deep.equal([]);
+    });
+
+    it("allows a redeclared property its base's type, a new default, and REQUIRED, and nothing else", () => {
+      const base = "targetdef base { srcs = FILES; name = REQUIRED STRING; mode = STRING default x; }\n";
+      expect(errorsOf(base + "targetdef d extends base { srcs = REQUIRED FILES; name = REQUIRED STRING; mode = STRING default y; }\n")).to.deep.equal([]);
+      expect(errorsOf(base + "targetdef d extends base { srcs = PACKAGES; }\n").join("\n")).to.match(
+        /Targetdef 'd' redeclares the property 'srcs' incompatibly: it declares it PACKAGES, where 'base' declares it FILES/
+      );
+      expect(errorsOf(base + "targetdef d extends base { name = STRING; }\n").join("\n")).to.match(
+        /redeclares the property 'name' incompatibly: it does not declare it REQUIRED, where 'base' does/
+      );
+    });
+  });
 });
 
 describe("inspecting a target's collection", () => {
@@ -5007,6 +5106,93 @@ describe("rules written in .fabr", () => {
     );
     await filesOf(model, "a", { FLAVOR: "lint" });
     expect(await heldDeps[0].getFile("f.txt")!.readString()).to.equal("1");
+  });
+
+  describe("splicing a map into a target's body", () => {
+    /* Writes its `content`, which it defaults to `inner`. */
+    registerRule("test_defaulted", {}, context =>
+      context.getRequiredString("content").then(content => new FileSet(new Map([["f.txt", MemoryFile.from(content)]])))
+    );
+    registerRule("test_needs", {}, context =>
+      context.getRequiredString("content").then(content => new FileSet(new Map([["f.txt", MemoryFile.from(content)]])))
+    );
+    const SPLICE_DEFS =
+      "targetdef test_defaulted { content = STRING default inner; }\n" +
+      "targetdef flavoured { content = STRING default outer; }\n" +
+      "targetdef test_needs { content = REQUIRED STRING; }\n";
+
+    /** Make the model of `input`, with the splice tests' targetdefs too. */
+    function splicing(input: string): BuildModel {
+      return modelOf(SPLICE_DEFS + input);
+    }
+
+    /** The errors loading `input` reports. */
+    function errorsOf(input: string): string[] {
+      const errors: string[] = [];
+      const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+      try {
+        toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", DEFS + SPLICE_DEFS + input, logger)], logger, testContributions);
+      } catch {
+        /* Reported through the log. */
+      }
+      return errors;
+    }
+
+    it("takes the matched target's properties through the rule's parameter", async () => {
+      const model = splicing("rule lintable pkg = test_file report { pkg; }\nlintable a { content = hello; }\n");
+      expect(await textOf(model, "a")).to.equal("hello");
+    });
+
+    it("takes a property as the last item of the body supplying it has it", async () => {
+      const rules = "rule lintable pkg = test_file report { content = mine; pkg; }\nrule flavoured f = test_file report { f; content = mine; }\n";
+      const model = splicing(rules + "lintable a { content = hello; }\nlintable b { }\nflavoured c { }\n");
+      expect(await textOf(model, "a")).to.equal("hello");
+      expect(await textOf(model, "b")).to.equal("mine");
+      expect(await textOf(model, "c")).to.equal("mine");
+    });
+
+    it("takes what is spliced where no guarded declaration after it applies", async () => {
+      const model = splicing("rule lintable pkg = test_file report { pkg; content<FLAVOR=sour> = guarded; }\nlintable a { content = hello; }\n");
+      expect(await textOf(model, "a")).to.equal("hello");
+      expect(await textOf(model, "a", "f.txt", { FLAVOR: "sour" })).to.equal("guarded");
+    });
+
+    it("takes the matched target's default, and the target's own where the matched target has no value", async () => {
+      const outer = splicing("rule flavoured f = test_defaulted report { f; }\nflavoured a { }\n");
+      expect(await textOf(outer, "a")).to.equal("outer");
+      const inner = splicing("rule lintable pkg = test_defaulted report { pkg; }\nlintable a { }\n");
+      expect(await textOf(inner, "a")).to.equal("inner");
+    });
+
+    it("takes a map property's entries as properties, read as the property's type", async () => {
+      const shared = splicing("BASE = { content = base; };\nCOMMON = { BASE; };\ntest_file a { COMMON; }\ntest_file b { COMMON; content = own; }\n");
+      expect(await textOf(shared, "a")).to.equal("base");
+      expect(await textOf(shared, "b")).to.equal("own");
+      const held = splicing("COMMON = { deps = one; };\ntest_file one { content = 1; }\ntest_holds h { COMMON; }\n");
+      await filesOf(held, "h");
+      expect(await Promise.all(heldDeps.map(files => files.getFile("f.txt")!.readString()))).to.deep.equal(["1"]);
+      const param = splicing("rule lintable pkg = test_file report { pkg.defs; }\nlintable a { defs = { content = from-defs; }; }\n");
+      expect(await textOf(param, "a")).to.equal("from-defs");
+    });
+
+    it("leaves out an entry its type has no property for, and checks one it has", async () => {
+      expect(await textOf(splicing("COMMON = { content = kept; nope = dropped; };\ntest_file a { COMMON; }\n"), "a")).to.equal("kept");
+      const shaped = splicing("COMMON = { content = { x = y; }; };\ntest_file a { COMMON; }\n");
+      expect(messagesOf(await failureOf(shaped, "a")).join("\n")).to.contain("'content', spliced into test_file target 'a'");
+    });
+
+    it("requires a required property of the body as spliced", async () => {
+      expect(await textOf(splicing("COMMON = { content = given; };\ntest_needs a { COMMON; }\n"), "a")).to.equal("given");
+      const missing = splicing("COMMON = { other = x; };\ntest_needs a { COMMON; }\n");
+      expect(messagesOf(await failureOf(missing, "a")).join("\n")).to.contain("Missing required property 'content' in test_needs target 'a'");
+    });
+
+    it("refuses a splice of what is no map, and a guard on a splice", async () => {
+      const target = splicing("test_file one { content = 1; }\ntest_file two { one; }\n");
+      expect(messagesOf(await failureOf(target, "two")).join("\n")).to.contain("'one' does not name a map property, so it cannot be spliced");
+      expect(errorsOf("rule lintable pkg = test_file r { <FLAVOR=x> { pkg; } }\n").join("\n")).to.match(/A splice of a target's properties takes no guard/);
+      expect(errorsOf("rule lintable pkg = test_file r { pkg<FLAVOR=x>; }\n").join("\n")).to.match(/A splice of a target's properties takes no guard/);
+    });
   });
 
   it("applies a rule to a target a rule's code made, reading the property it was given", async () => {

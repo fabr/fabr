@@ -288,6 +288,14 @@ describe("Loader", () => {
     expect(model.getTargetDecl("t")?.type).to.equal("thing");
   });
 
+  it("refuses a splice in a plugin's target, whose body is read as written", async () => {
+    const { error, logged } = await loadErr(
+      files({ "PROJECT.fabr": FABR_PLUGIN_DEF + "COMMON = { libs = P.fabr; };\nfabr_plugin p { COMMON; libs = P.fabr; }\nplugin p;\n", "P.fabr": "" })
+    );
+    expect(error).to.be.an.instanceOf(BuildFilesInvalidError);
+    expect(logged.join("\n")).to.match(/A plugin's body is read as written, before anything is built, so it cannot splice 'COMMON'/);
+  });
+
   it("refuses a fabr_plugin in a plugin's files", async () => {
     const { error, logged } = await loadErr(
       files({

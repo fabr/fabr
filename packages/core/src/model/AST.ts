@@ -32,7 +32,7 @@ export enum DeclKind {
   TargetDef,
   Include,
   Plugin,
-  MapSplice,
+  Splice,
   Rule,
   Repository,
 }
@@ -50,7 +50,10 @@ export interface ITargetDecl extends IBaseDecl {
   type: string;
   typeOffset: number;
   name: Name;
-  properties: IPropertyDecl[];
+  /** The body, in written order: its property declarations, and in a target of
+   * a rule's block, splices of the rule's parameter (`pkg;`). For each property,
+   * the last item that supplies it is what the target has. */
+  properties: IMapItemDecl[];
   /** The doc-comment prose written above this target, marker-stripped, or
    * undefined if none. Runtime-only documentation metadata (read for docs of
    * config targets like the `flag` instances `ts/no_strict`). */
@@ -90,6 +93,10 @@ export interface IPropertySchema {
 export interface ITargetDefDecl extends IBaseDecl {
   kind: DeclKind.TargetDef;
   name: string;
+  /** The targetdef this one extends (`targetdef derived extends base { … }`),
+   * with where its name is written; undefined if it extends none. A targetdef
+   * has every property of the one it extends, and its rules after its own. */
+  extends?: { name: string; offset: number };
   /** The declared property schema, keyed by property name (plus `*` for the
    * wildcard) */
   properties: Map<string, IPropertySchema>;
@@ -113,7 +120,7 @@ export interface INameValue extends IBaseValue {
  * A `{ key = value; ... }` map block value — a value kind (so an entry can hold a
  * list of blocks: an array of maps). Each item is an ordinary property decl (its
  * `name` the possibly-dotted foreign map key, values names or nested blocks) or a
- * `NAME;` splice ({@link IMapSpliceDecl}). Parsing is schema-blind (a `{` in value
+ * `NAME;` splice ({@link ISpliceDecl}). Parsing is schema-blind (a `{` in value
  * position always parses as a block); Validate enforces where blocks may appear
  * (MAP properties only, no mixing with names in one value list).
  */
@@ -187,15 +194,23 @@ export interface IPropertyDecl extends IBaseDecl {
   docComment?: string;
 }
 
-export interface IMapSpliceDecl extends IBaseDecl {
-  kind: DeclKind.MapSplice;
+/** A `NAME;` splice: in a `{ … }` block, the entries of the map `NAME` names;
+ * in the body of a target of a rule's block, the properties of the rule's
+ * parameter. */
+export interface ISpliceDecl extends IBaseDecl {
+  kind: DeclKind.Splice;
   ref: Name;
   /** End offset (exclusive) of the written reference, for span underlines */
   endOffset: number;
 }
 
-/** One item of a `{ ... }` block: a `key = value;` entry or a `NAME;` splice. */
-export type IMapItemDecl = IPropertyDecl | IMapSpliceDecl;
+/** One item of a `{ ... }` block or a target's body: a `key = value;` entry or a `NAME;` splice. */
+export type IMapItemDecl = IPropertyDecl | ISpliceDecl;
+
+/** @return true if `item` is a property declaration rather than a splice, otherwise false. */
+export function isPropertyDecl(item: IMapItemDecl): item is IPropertyDecl {
+  return item.kind === DeclKind.Property;
+}
 
 /** @return true if any of the property's values is a `{ ... }` map block, otherwise false. */
 export function hasMapValue(prop: IPropertyDecl): boolean {
@@ -374,7 +389,7 @@ export function getDeclKindName(kind: DeclKind): string {
       return "command";
     case DeclKind.Plugin:
       return "plugin";
-    case DeclKind.MapSplice:
+    case DeclKind.Splice:
       return "splice";
     case DeclKind.Rule:
       return "rule";

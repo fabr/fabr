@@ -141,6 +141,6 @@ js_installation fabr_install {
   deps = @fabr-build/cli @fabr-build/js @fabr-build/js-tools @fabr-build/sass-pnp-importer @fabr-build/java @fabr-build/aws @fabr-build/container;
 }
 
-all = @fabr-build/core @fabr-build/js-boot @fabr-build/js-tools @fabr-build/cli 
-      @fabr-build/sass-pnp-importer @fabr-build/java-boot @fabr-build/aws-boot 
-      @fabr-build/container-boot vscode-ext;
+all = @fabr-build/core @fabr-build/js @fabr-build/js-tools @fabr-build/cli 
+      @fabr-build/sass-pnp-importer @fabr-build/java @fabr-build/aws 
+      @fabr-build/container vscode-ext;

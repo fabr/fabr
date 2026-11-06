@@ -29,6 +29,7 @@ import {
   IPropertyDecl,
   ITargetDecl,
   ITargetDefDecl,
+  propertyTypeName,
 } from "./AST";
 import { NAME_COMPONENT_SEPARATOR } from "../core/Name";
 import { IPropertyEntry, isNamespaceNode, Namespace, NamespaceEntry, NamespaceNode, newNamespaceNode } from "./Namespace";
@@ -43,6 +44,13 @@ const DIAG_CONFLICT_DECL = Diagnostic.Error<{ kind: string; name: string; loc: I
 
 const DIAG_IMPLICIT_NAMESPACE_CONFLICT = Diagnostic.Error<{ kind: string; name: string; other: string; loc: ISourcePosition }>(
   "Declaration of {kind} '{name}' conflicts with implicit namespace containing '{other}'"
+);
+const DIAG_UNKNOWN_BASE = Diagnostic.Error<{ name: string; base: string; loc: ISourcePosition }>(
+  "Targetdef '{name}' extends '{base}', which is not a targetdef"
+);
+const DIAG_INHERITANCE_CYCLE = Diagnostic.Error<{ name: string; loc: ISourcePosition }>("Targetdef '{name}' extends itself");
+const DIAG_INCOMPATIBLE_PROPERTY = Diagnostic.Error<{ name: string; key: string; problem: string; loc: ISourcePosition }>(
+  "Targetdef '{name}' redeclares the property '{key}' incompatibly: it {problem}"
 );
 const DIAG_UNKNOWN_TARGET_TYPE = Diagnostic.Error<{ type: string; loc: ISourcePosition }>("Unknown target type '{type}'");
 
@@ -78,6 +86,8 @@ export class NamespaceBuilder {
           this.conflictError(existing, decl);
         } else {
           parent.targetDefs.set(simpleName, decl);
+          parent.inheritedTargetDefs = undefined;
+          this.root.inheritedTargetDefs = undefined;
           return true;
         }
       } else {
@@ -227,11 +237,51 @@ export class NamespaceBuilder {
   }
 
   private resolveTargetDef(name: string): ITargetDefDecl | undefined {
-    return this.root.targetDefs.get(name);
+    return Namespace.of(this.root).getTargetDef(name);
+  }
+
+  /**
+   * Check that each targetdef extending another can: its base is declared, the
+   * chain of bases does not lead back to it, and each property it redeclares
+   * keeps the base's type and does not make a required property optional.
+   */
+  private validateInheritance(): void {
+    const namespace = Namespace.of(this.root);
+    for (const def of this.root.targetDefs.values()) {
+      if (def.extends === undefined) {
+        continue;
+      }
+      const loc = { ...def.source, offset: def.extends.offset };
+      const base = namespace.getTargetDef(def.extends.name);
+      if (base === undefined) {
+        this.log.log(DIAG_UNKNOWN_BASE, { name: def.name, base: def.extends.name, loc });
+        continue;
+      }
+      if (namespace.getTargetDefChain(def.extends.name).some(ancestor => ancestor.name === def.name)) {
+        this.log.log(DIAG_INHERITANCE_CYCLE, { name: def.name, loc });
+        continue;
+      }
+      def.properties.forEach((own, key) => {
+        const inherited = base.properties.get(key);
+        if (inherited === undefined) {
+          return;
+        }
+        const problem =
+          own.type !== inherited.type
+            ? `declares it ${propertyTypeName(own)}, where '${base.name}' declares it ${propertyTypeName(inherited)}`
+            : inherited.required && !own.required
+              ? `does not declare it REQUIRED, where '${base.name}' does`
+              : undefined;
+        if (problem !== undefined) {
+          this.log.log(DIAG_INCOMPATIBLE_PROPERTY, { name: def.name, key, problem, loc: { ...def.source, offset: def.offset } });
+        }
+      });
+    }
   }
 
   /** Validate every declaration added so far against the targetdefs added so far. */
   public validate(): void {
+    this.validateInheritance();
     this.resolve(this.root);
     this.superseded.forEach(decl => this.validateDecl(decl));
   }

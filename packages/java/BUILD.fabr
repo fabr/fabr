@@ -1,7 +1,10 @@
 # The Java plugin. Fabr does not need it to build itself, so only fabr builds it.
 
-# The plugin's code.
-js_package @fabr-build/java-boot {
+# The plugin, built in the project: its code, JAVA.fabr and the test runner.
+# The runner is built with the plugin's own rules, so the plugin is used at a
+# stage that carries no runner (`STAGE=0`), and the plugin built at the next
+# stage, the one published, does.
+fabr_plugin @fabr-build/java {
   srcs = src:**/*.ts ../../README.md -> README.md ../../COPYING -> LICENSE;
   # The entry point, and the modules JAVA.fabr's rule and repository declarations name.
   exports = src:rules/!(*.test).ts src:MavenRepository.ts src:JdkDistribution.ts;
@@ -11,14 +14,6 @@ js_package @fabr-build/java-boot {
   provided_deps = @fabr-build/core;
   test_deps = chai jest_types;
   metadata = { FABR_METADATA; description = Fabr Java support plugin }
-}
-
-# The plugin, built in the project: its code, JAVA.fabr and the test runner.
-# The runner is built with the plugin's own rules, so the plugin is used at a
-# stage that carries no runner (`STAGE=0`), and the plugin built at the next
-# stage, the one published, does.
-fabr_plugin @fabr-build/java {
-  srcs = @fabr-build/java-boot;
   libs = ./lib/JAVA.fabr;
   optional_libs = ./lib/spring-boot.fabr;
   resources<STAGE=1> = fabr-junit-runner;

@@ -112,7 +112,7 @@ describe("e2e: build-server", () => {
       STUB_TSC_CONFIG +
       "\njs_package lib { srcs = ./lib/src:**/*.ts; exports = ./lib/src:index.ts; resources = ./lib/styles:*.scss; }\n" +
       "js_package app { srcs = ./app/src:**/*.ts; tests = ./app/src:**/*.test.ts; deps = lib; }\n" +
-      "fabr_plugin greeter { srcs = lib; libs = ./plugin/GREET.fabr; }\n" +
+      "fabr_plugin greeter { srcs = ./plugin/src:**/*.ts; exports = ./plugin/src:index.ts; libs = ./plugin/GREET.fabr; }\n" +
       "js_package multi { srcs = ./multi/src:**/*.ts ./multi:extra.d.ts ./multi:README.md; exports = ./multi/src:index.ts; }\n" +
       "script gen_tool { entry = ./gen.sh; }\n" +
       "generate gen { run = gen_tool > index.ts; }\n" +
@@ -120,6 +120,7 @@ describe("e2e: build-server", () => {
       "js_package user { srcs = ./user/src:**/*.ts; deps = made; }\n" +
       "js_package alias { srcs = ./alias/src:**/*.ts; deps = lib -> lib2; }\n",
     "plugin/GREET.fabr": "targetdef greeting {\n  text = STRING;\n}\n",
+    "plugin/src/index.ts": "export const greeterValue = 1;\n",
     "gen.sh": "echo 'export const madeValue = 1;'\n",
     "user/src/main.ts": 'import { madeValue } from "made";\nexport const used = madeValue;\n',
     "alias/src/main.ts": 'import { libValue } from "lib2";\nexport const aliased = libValue;\n',
@@ -214,12 +215,12 @@ describe("e2e: build-server", () => {
     expect(session.stderr).to.not.match(/Compiling (app|lib)\b/);
   });
 
-  it("describes a plugin as its own target over the package it is made from", async () => {
+  it("describes a plugin as its own target over the package it is built as", async () => {
     const greeter = targets.get("fabr:greeter")!;
-    expect(greeter.dependencies).to.deep.equal([{ uri: "fabr:lib" }]);
+    expect(greeter.dependencies).to.deep.equal([]);
     const { items } = (await client.request("buildTarget/sources", { targets: [{ uri: "fabr:greeter" }] })) as { items: Array<{ sources: Array<{ uri: string }> }> };
     expect(items[0].sources.map(source => source.uri.replace(/^.*\//, ""))).to.deep.equal(["GREET.fabr"]);
-    expect(read("fabr:greeter", "extends/units/build/unit.json")).to.deep.equal({ root: "./lib/src/", package: "lib", generated: [], rewrites: [], resources: [] });
+    expect(read("fabr:greeter", "extends/units/build/unit.json")).to.deep.equal({ root: "./plugin/src/", package: "greeter", generated: [], rewrites: [], resources: [] });
   });
 
   it("describes a unit whose sources come from two directories at the directory holding both, as one tree", () => {
@@ -269,16 +270,15 @@ describe("e2e: build-server", () => {
     await client.drain("buildTarget/didChange");
     session.write("lib/src/extra.ts", "export const extra = 1;\n");
     const changes: Array<{ target: { uri: string }; kind: number }> = [];
-    while (new Set(changes.map(change => change.target.uri)).size < 5) {
+    while (new Set(changes.map(change => change.target.uri)).size < 4) {
       changes.push(...((await client.notification("buildTarget/didChange")) as { changes: typeof changes }).changes);
     }
     /* `lib`'s sources changed, and so did its package, which `app`'s and `alias`'s
-     * units' tables name and `greeter` is made from. */
+     * units' tables name. */
     expect([...new Set(changes.map(change => change.target.uri))].sort()).to.deep.equal([
       "fabr:alias",
       "fabr:app",
       "fabr:app?operation=test",
-      "fabr:greeter",
       "fabr:lib",
     ]);
     expect(changes.every(change => change.kind === 2)).to.equal(true);

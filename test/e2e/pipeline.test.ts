@@ -374,7 +374,7 @@ describe("e2e: a rule written in .fabr", () => {
   it("lists the operation with the operations of the plugin's types", () => {
     const result = runFabr(FILES, ["list-operations"]);
     expect(result.status, result.stderr).to.equal(0);
-    expect(result.stdout).to.match(/^lint +js_package$/m);
+    expect(result.stdout).to.match(/^lint +js_package, fabr_plugin$/m);
     expect(result.stdout).to.match(/^build +.*js_package/m);
   });
 

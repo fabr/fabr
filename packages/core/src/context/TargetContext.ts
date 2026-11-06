@@ -43,6 +43,9 @@ import {
   declPosn,
   IPropertyDecl,
   isNameValue,
+  IMapItemDecl,
+  isPropertyDecl,
+  ISpliceDecl,
   ITargetDecl,
   ITargetDefDecl,
   IValue,
@@ -67,7 +70,8 @@ import {
   MaterializedCommandStage,
 } from "./Commands";
 import { ContainedSources, PackageSources } from "./Collection";
-import type { InternalBuildContext, IRepositoryMember } from "./BuildContext";
+import type { InternalBuildContext, IRepositoryMember, ISplicedEntry } from "./BuildContext";
+import { validatePropertyShape } from "../model/Validate";
 import type { ResolvedTarget } from "./ResolvedTarget";
 import type { PropertyMap } from "./PropertyMap";
 
@@ -204,6 +208,9 @@ export abstract class TargetContext {
   /** Look up a MAP property's value (see {@link InternalBuildContext.lookupMap}).
    * An unwritten property yields an empty map. */
   public abstract getMap(name: string, overrides?: Constraints): Computable<PropertyMap>;
+
+  /** Get the names of the properties of its type this target has a value for: those it is given, and those its type gives a default. */
+  public abstract getPropertyNames(): Computable<string[]>;
 
   /**
    * Describe an action of this target as a task: the declared target under this
@@ -608,38 +615,91 @@ export abstract class TargetContext {
  */
 export class DeclaredTargetContext extends TargetContext {
   public readonly target: ITargetDecl;
-  private readonly props: Map<string, IPropertyDecl[]>;
+  /** The body as spliced, collated by name; made when first read. */
+  private body?: Computable<ITargetBody>;
 
   constructor(target: ITargetDecl, targetDef: ITargetDefDecl, context: InternalBuildContext, stack?: IDependencyStack) {
     super(context, targetDef, stack);
     this.target = target;
-    /* Collate the body's declarations by name: a property may be written more
-     * than once, its declarations told apart by their guards (Validate rejects
-     * any other repeat), and which of them apply is decided per read. */
-    this.props = new Map();
-    for (const prop of target.properties) {
-      const existing = this.props.get(prop.name.toBaseString());
-      if (existing) {
-        existing.push(prop);
-      } else {
-        this.props.set(prop.name.toBaseString(), [prop]);
-      }
-    }
   }
 
   /**
-   * Get the declarations of `name` that apply here: those in this target's body
-   * that this configuration admits, else the schema's declared default (see
-   * {@link InternalBuildContext.getAvailableDecls}). Empty where neither applies,
+   * Get the body as spliced: each splice's entries looked up, then the body
+   * collated by name in written order, a later item of a name replacing what
+   * came before it (see {@link collateBody}), and the entries spliced checked
+   * against the targetdef.
+   */
+  private getBody(): Computable<ITargetBody> {
+    if (this.body === undefined) {
+      const splices = this.target.properties.filter((item): item is ISpliceDecl => !isPropertyDecl(item));
+      this.body =
+        splices.length === 0
+          ? Computable.resolve(collateBody(this.target.properties, []))
+          : Computable.forAll(
+              splices.map(splice => this.context.lookupSplice(splice, this.stack)),
+              (...supplied: ISplicedEntry[][]) => this.checkedBody(collateBody(this.target.properties, supplied))
+            );
+    }
+    return this.body;
+  }
+
+  /**
+   * Check the entries `body` holds from splices against the targetdef, as a
+   * written property is checked: one the targetdef does not declare (and no
+   * `*` entry admits) is left out, one it declares must have its type's
+   * shape; then every required property must have a declaration.
+   */
+  private checkedBody(body: ITargetBody): ITargetBody {
+    const wildcard = this.targetDef.properties.get("*");
+    const spliced = new Map<string, ISplicedEntry>();
+    for (const [name, entry] of body.spliced) {
+      const schema = this.targetDef.properties.get(name) ?? wildcard;
+      if (schema === undefined) {
+        continue;
+      }
+      const problems: string[] = [];
+      validatePropertyShape(entry.decl, schema.type, { log: (diagnostic, params) => problems.push(diagnostic.message(params)) });
+      if (problems.length > 0) {
+        throw new FabrError(`'${name}', spliced into ${this.target.type} target '${this.name}': ${problems.join("; ")}`);
+      }
+      spliced.set(name, entry);
+    }
+    for (const [name, schema] of this.targetDef.properties) {
+      if (name !== "*" && schema.required && !body.written.has(name) && !spliced.has(name)) {
+        throw new FabrError(`Missing required property '${name}' in ${this.target.type} target '${this.name}'`);
+      }
+    }
+    return { written: body.written, spliced };
+  }
+
+  /**
+   * Get the declarations of `name` that apply here, with the configuration
+   * their values are looked up in: those in this target's body that this
+   * configuration admits, else what a splice in the body supplies for it, else
+   * the schema's declared default (see
+   * {@link InternalBuildContext.getAvailableDecls}). Empty where none applies,
    * as for a property never written. Each accessor says what it makes of more
    * than one. The configuration judged includes the caller's `overrides`.
    */
-  private availableFor(name: string, overrides?: Constraints): Computable<IPropertyDecl[]> {
-    const declared = this.declaredDefault(name);
-    return this.context.getContextWithOverrides(overrides).getAvailableDecls(
-      { kind: DeclKind.Property, decls: this.props.get(name) ?? [], defaults: declared ? [declared] : [] },
-      this.stack,
-      this.target
+  private availableFor(name: string, overrides?: Constraints): Computable<{ decls: IPropertyDecl[]; context: InternalBuildContext }> {
+    return this.getBody().then(body =>
+      this.context
+        .getContextWithOverrides(overrides)
+        .getAvailableDecls({ kind: DeclKind.Property, decls: body.written.get(name) ?? [], defaults: [] }, this.stack, this.target)
+        .then(applicable => {
+          const spliced = body.spliced.get(name);
+          if (applicable.length > 0 || spliced === undefined) {
+            const declared = this.declaredDefault(name);
+            return { decls: applicable.length > 0 || declared === undefined ? applicable : [declared], context: this.context };
+          }
+          return { decls: [spliced.decl], context: spliced.context };
+        })
+    );
+  }
+
+  public getPropertyNames(): Computable<string[]> {
+    return this.getBody().then(body =>
+      withDefaults([...body.written.keys(), ...body.spliced.keys()].filter(name => name !== "*" && this.targetDef.properties.has(name)), this.targetDef)
     );
   }
 
@@ -665,37 +725,37 @@ export class DeclaredTargetContext extends TargetContext {
    * a value (ambient < requirement < caller). Guards are judged under the
    * overrides (see availableFor). */
   public getProperty(name: string, overrides?: Constraints): Computable<Property | undefined> {
-    return this.availableFor(name, overrides).then(applicable => {
-      const prop = soleDecl(applicable);
-      return prop ? this.context.lookupStringProperty(prop, this.target, this.stack, overrides) : undefined;
+    return this.availableFor(name, overrides).then(({ decls, context }) => {
+      const prop = soleDecl(decls);
+      return prop ? context.lookupStringProperty(prop, this.target, this.stack, overrides) : undefined;
     });
   }
 
   public getFileProperty(name: string, overrides?: Constraints): Computable<SourceRef[]> {
-    return this.availableFor(name, overrides).then(applicable => {
-      const prop = mergedDecls(applicable);
-      return prop ? this.context.lookupFileProperty(prop, this.target, this.stack, overrides) : [];
+    return this.availableFor(name, overrides).then(({ decls, context }) => {
+      const prop = mergedDecls(decls);
+      return prop ? context.lookupFileProperty(prop, this.target, this.stack, overrides) : [];
     });
   }
 
   public getRewriteRules(name: string, overrides?: Constraints): Computable<Name[]> {
-    return this.availableFor(name, overrides).then(applicable => {
-      const prop = mergedDecls(applicable);
-      return prop ? this.context.lookupNameProperty(prop, this.target, this.stack, overrides) : [];
+    return this.availableFor(name, overrides).then(({ decls, context }) => {
+      const prop = mergedDecls(decls);
+      return prop ? context.lookupNameProperty(prop, this.target, this.stack, overrides) : [];
     });
   }
 
   public getProjection(name: string, overrides?: Constraints): Computable<Name | undefined> {
-    return this.availableFor(name, overrides).then(applicable => {
-      const prop = soleDecl(applicable);
-      return prop ? this.context.lookupProjection(prop, this.target, this.stack, overrides) : undefined;
+    return this.availableFor(name, overrides).then(({ decls, context }) => {
+      const prop = soleDecl(decls);
+      return prop ? context.lookupProjection(prop, this.target, this.stack, overrides) : undefined;
     });
   }
 
   public getMap(name: string, overrides?: Constraints): Computable<PropertyMap> {
-    return this.availableFor(name, overrides).then(applicable => {
-      const prop = soleDecl(applicable);
-      return prop ? this.context.lookupMap(prop, this.target, this.stack, overrides) : new Map();
+    return this.availableFor(name, overrides).then(({ decls, context }) => {
+      const prop = soleDecl(decls);
+      return prop ? context.lookupMap(prop, this.target, this.stack, overrides) : new Map();
     });
   }
 
@@ -713,13 +773,13 @@ export class DeclaredTargetContext extends TargetContext {
    * properties through the readers.
    */
   public aliasedFiles(name: string, reader: Constraints, alias: Constraints | undefined, stack?: IDependencyStack): Computable<SourceRef[]> {
-    const at = this.context.inConfiguration(reader.with(alias));
-    return this.aliasedDecls(name, alias, stack).then(decls =>
-      Computable.forAll(
+    return this.aliasedDecls(name, alias, stack).then(({ decls, context }) => {
+      const at = context.inConfiguration(reader.with(alias));
+      return Computable.forAll(
         decls.map(decl => at.lookupFileProperty(decl, this.target, stack)),
         (...lists: SourceRef[][]) => lists.flat()
-      )
-    );
+      );
+    });
   }
 
   /**
@@ -734,8 +794,7 @@ export class DeclaredTargetContext extends TargetContext {
     alias: Constraints | undefined,
     stack?: IDependencyStack
   ): Computable<{ prop?: IPropertyDecl; context: InternalBuildContext }> {
-    const context = this.context.inConfiguration(reader.with(alias));
-    return this.aliasedDecls(name, alias, stack).then(decls => ({ prop: soleDecl(decls), context }));
+    return this.aliasedDecls(name, alias, stack).then(({ decls, context }) => ({ prop: soleDecl(decls), context: context.inConfiguration(reader.with(alias)) }));
   }
 
   /** Resolve this target in the configuration of `constraints`, as a reference to it written in a rule's block does. */
@@ -753,11 +812,11 @@ export class DeclaredTargetContext extends TargetContext {
     return this.context.resolveTarget(this.declaredName, this.stack).then(() => this.context.resolvedTarget(this.declaredName));
   }
 
-  /** Get the declarations of `name` that apply under `alias`, their values substituted there. */
-  private aliasedDecls(name: string, alias: Constraints | undefined, stack?: IDependencyStack): Computable<IPropertyDecl[]> {
-    const at = this.context.getContextWithOverrides(alias);
-    return this.availableFor(name, alias).then(decls =>
-      Computable.forAll(
+  /** Get the declarations of `name` that apply under `alias`, their values substituted there, with the configuration they are looked up in. */
+  private aliasedDecls(name: string, alias: Constraints | undefined, stack?: IDependencyStack): Computable<{ decls: IPropertyDecl[]; context: InternalBuildContext }> {
+    return this.availableFor(name, alias).then(({ decls, context }) => {
+      const at = context.getContextWithOverrides(alias);
+      return Computable.forAll(
         decls.map(decl =>
           Computable.forAll(
             decl.values.map(value =>
@@ -766,9 +825,9 @@ export class DeclaredTargetContext extends TargetContext {
             (...values: IValue[]): IPropertyDecl => ({ ...decl, values })
           )
         ),
-        (...substituted: IPropertyDecl[]) => substituted
-      )
-    );
+        (...substituted: IPropertyDecl[]) => ({ decls: substituted, context })
+      );
+    });
   }
 
   public getWildcardProperties(overrides?: Constraints): Computable<{ key: Name; decl: IPropertyDecl }[]> {
@@ -777,16 +836,24 @@ export class DeclaredTargetContext extends TargetContext {
      * each read back as the member's substituted `key`. The schema's `*` entry
      * is the wildcard TYPE declaration, not a property named `*`, so a literal
      * `*` member (a group's catch-all route) is a member like any other. */
-    const declared = this.target.properties.filter(
-      prop => prop.name.toBaseString() === "*" || !this.targetDef.properties.has(prop.name.toBaseString())
+    const member = (key: string): boolean => key === "*" || !this.targetDef.properties.has(key);
+    return this.getBody().then(body =>
+      Computable.forAll(
+        [
+          this.context.lookupWildcardProperties([...body.written].filter(([key]) => member(key)).flatMap(([, decls]) => decls), this.stack, overrides),
+          ...[...body.spliced]
+            .filter(([key]) => member(key))
+            .map(([, entry]) => entry.context.lookupWildcardProperties([entry.decl], this.stack, overrides)),
+        ],
+        (...lists: { key: Name; decl: IPropertyDecl }[][]) => lists.flat()
+      )
     );
-    return this.context.lookupWildcardProperties(declared, this.stack, overrides);
   }
 
   protected getCommandStages(name: string): Computable<ICommandStageLookup[]> {
-    return this.availableFor(name).then(applicable => {
-      const prop = soleDecl(applicable);
-      return prop ? this.context.lookupCommand(prop, this.target, this.stack) : [];
+    return this.availableFor(name).then(({ decls, context }) => {
+      const prop = soleDecl(decls);
+      return prop ? context.lookupCommand(prop, this.target, this.stack) : [];
     });
   }
 
@@ -852,6 +919,10 @@ export class AnonymousTargetContext extends TargetContext {
 
   public get name(): string {
     return this.declared.name;
+  }
+
+  public getPropertyNames(): Computable<string[]> {
+    return Computable.resolve(withDefaults(Object.keys(this.inputs), this.targetDef));
   }
 
   /** Get no wildcard properties: an anonymous sub-target has no declaration body. */
@@ -1104,4 +1175,42 @@ function publishRefIn(
   return namespace
     .get(first, separator)
     .then(member => publishRefIn([member], rest.substring(end + 1), next, `${namespace.name}${separator}${first}`, name));
+}
+
+/** @return `names`, with those of the properties `targetDef` gives a default added. */
+function withDefaults(names: string[], targetDef: ITargetDefDecl): string[] {
+  return [...new Set([...names, ...[...targetDef.properties].filter(([, schema]) => schema.default !== undefined).map(([name]) => name)])];
+}
+
+/** A target's body as spliced, by property name. */
+interface ITargetBody {
+  /** The declarations written after the last item supplying the name, guards and all. */
+  readonly written: ReadonlyMap<string, IPropertyDecl[]>;
+  /** The entry the last splice supplying the name supplied, where nothing is written after it. */
+  readonly spliced: ReadonlyMap<string, ISplicedEntry>;
+}
+
+/**
+ * Collate `items`, a target's body, by property name in written order, the
+ * splices among it having supplied `supplied` (one list for each, in order): a
+ * declaration is added to its name's, and a splice's entry replaces whatever
+ * came before it of its name.
+ */
+function collateBody(items: IMapItemDecl[], supplied: ISplicedEntry[][]): ITargetBody {
+  const written = new Map<string, IPropertyDecl[]>();
+  const spliced = new Map<string, ISplicedEntry>();
+  let next = 0;
+  for (const item of items) {
+    if (isPropertyDecl(item)) {
+      const name = item.name.toBaseString();
+      written.set(name, [...(written.get(name) ?? []), item]);
+      continue;
+    }
+    for (const entry of supplied[next++]) {
+      const name = entry.decl.name.toBaseString();
+      written.delete(name);
+      spliced.set(name, entry);
+    }
+  }
+  return { written, spliced };
 }

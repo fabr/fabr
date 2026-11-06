@@ -23,7 +23,7 @@ import { Name, NameConstraint } from "../core/Name";
 import { IJudgedKey } from "../model/Errors";
 import { parseName } from "../model/Parser";
 import { Property } from "../model/Property";
-import { SelectableRule } from "../rules/Types";
+import { TargetRules, SelectableRule } from "../rules/Types";
 import type { IDependencyStack } from "./Stack";
 import type { TargetContext } from "./TargetContext";
 
@@ -90,21 +90,21 @@ export interface IRuleGuards {
 }
 
 /**
- * Select the rule that builds `target`, a target of `type`, or undefined if
- * none applies. A rule applies where both its guards admit: its `properties`
- * judged against the configuration, its `targetProperties` against the
- * target's own. The most specific applicable rule is selected (see
- * {@link mostSpecificRule}), and `defaults` (the all-types rules) are consulted
- * only where none of `own` applies.
+ * Select the rule that builds `target`, or undefined if none applies. A rule
+ * applies where both its guards admit: its `properties` judged against the
+ * configuration, its `targetProperties` against the target's own. Each type's
+ * rules in `targetRules` are tried in order (the target's own type, then each
+ * type it extends), and the most specific applicable rule of the first type
+ * with any is selected (see {@link mostSpecificRule}); `defaults` (the
+ * all-types rules) are consulted only where none of them applies.
  *
  * A key with no value makes the rule inapplicable. A selection that fails is
- * the target's failure. How each of `own` was judged comes back with it, for
- * saying why none applied.
+ * the target's failure. How each rule tried was judged comes back with it,
+ * for saying why none applied.
  */
 export function selectRule<R extends SelectableRule>(
-  own: R[],
+  targetRules: TargetRules<R>[],
   defaults: R[],
-  type: string,
   target: TargetContext,
   guards: IRuleGuards
 ): Computable<IRuleSelection<R>> {
@@ -118,15 +118,20 @@ export function selectRule<R extends SelectableRule>(
       rules.filter((_, i) => judged[i].every(key => key.matched)),
       ruleSet
     );
+  const fromType = (index: number, candidates: IJudgedKey[][]): Computable<IRuleSelection<R>> => {
+    if (index === targetRules.length) {
+      return judge(defaults).then(judged => ({ rule: pick(defaults, judged, "default"), candidates }));
+    }
+    const { type, rules } = targetRules[index];
+    return judge(rules).then(judged => {
+      const rule = pick(rules, judged, `'${type}'`);
+      return rule ? { rule, candidates: [...candidates, ...judged] } : fromType(index + 1, [...candidates, ...judged]);
+    });
+  };
   try {
-    return judge(own)
-      .then(candidates => {
-        const rule = pick(own, candidates, `'${type}'`);
-        return rule ? { rule, candidates } : judge(defaults).then(judged => ({ rule: pick(defaults, judged, "default"), candidates }));
-      })
-      .catch(err => {
-        throw target.failure(err);
-      });
+    return fromType(0, []).catch(err => {
+      throw target.failure(err);
+    });
   } catch (err) {
     /* A read that throws as it is made rather than rejecting (an unknown
      * property). */

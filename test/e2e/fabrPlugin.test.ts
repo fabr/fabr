@@ -20,8 +20,8 @@
 import { expect } from "chai";
 import { runFabr, STUB_TSC, STUB_TSC_CONFIG } from "./harness";
 
-/* A plugin a project builds itself: a `fabr_plugin` over a `js_package` of its
- * code. The stub compiler copies sources verbatim, so the rule module is
+/* A plugin a project builds itself: a `fabr_plugin` of its code, the
+ * `js_package` it extends. The stub compiler copies sources verbatim, so the rule module is
  * written as the CommonJS it is built as. */
 const GREETING_RULE = `const core = require("@fabr-build/core");
 exports.default = {
@@ -38,8 +38,7 @@ function project(extra = ""): Record<string, string> {
       "plugin @fabr-build/js;\nplugin greeter;\n\n" +
       STUB_TSC_CONFIG +
       "JS_TARGET = es2020;\n" +
-      "js_package greeter_code { srcs = plugin/src:**/*.ts; exports = plugin/src:rules/*.ts; }\n" +
-      "fabr_plugin greeter { srcs = greeter_code; libs = plugin/lib/GREET.fabr; }\n" +
+      "fabr_plugin greeter { srcs = plugin/src:**/*.ts; exports = plugin/src:rules/*.ts; libs = plugin/lib/GREET.fabr; }\n" +
       "greeting hello { text = Hello; }\n" +
       "notes = notes.txt;\n" +
       extra,
@@ -80,7 +79,7 @@ describe("e2e: a plugin built in the project", () => {
     const result = runFabr(project(), ["cat", "notes"]);
     expect(result.status).to.equal(0);
     expect(result.stdout).to.equal("notes\n");
-    expect(result.stderr).to.not.contain("greeter_code");
+    expect(result.stderr).to.not.match(/(Building|Compiling) greeter/);
   });
 
   it("packages the plugin as its code with its .fabr files, its package.json naming it a plugin", () => {
@@ -173,7 +172,7 @@ describe("e2e: a plugin built in the project", () => {
 
   it("reports why a plugin's code failed to build where its rule is used", () => {
     const files = project();
-    files["PROJECT.fabr"] = files["PROJECT.fabr"].replace("js_package greeter_code {", "js_package greeter_code { deps = no_such_dep;");
+    files["PROJECT.fabr"] = files["PROJECT.fabr"].replace("fabr_plugin greeter {", "fabr_plugin greeter { deps = no_such_dep;");
     const result = runFabr(files, ["cat", "hello:greeting.txt"]);
     expect(result.status).to.not.equal(0);
     expect(result.stderr).to.match(/no_such_dep/);

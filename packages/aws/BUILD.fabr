@@ -1,7 +1,7 @@
 # The AWS plugin. Fabr does not need it to build itself, so only fabr builds it.
 
-# The plugin's code.
-js_package @fabr-build/aws-boot {
+# The plugin, built in the project: its code and AWS.fabr.
+fabr_plugin @fabr-build/aws {
   srcs = src:**/*.ts ../../README.md -> README.md ../../COPYING -> LICENSE;
   # The module AWS.fabr's repository declaration names.
   exports = src:AwsAccount.ts;
@@ -13,10 +13,6 @@ js_package @fabr-build/aws-boot {
   provided_deps = @fabr-build/core;
   test_deps = chai jest_types;
   metadata = { FABR_METADATA; description = Fabr AWS support plugin }
-}
-
-# The plugin, built in the project: its code and AWS.fabr.
-fabr_plugin @fabr-build/aws {
-  srcs = @fabr-build/aws-boot;
   libs = ./lib/AWS.fabr;
 }
+

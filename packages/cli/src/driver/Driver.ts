@@ -47,6 +47,7 @@ import {
   IPropertyDecl,
   isFileSource,
   isNameValue,
+  isPropertyDecl,
   ITargetDecl,
   ITargetDefDecl,
   propertyTypeName,
@@ -1366,7 +1367,9 @@ function providedTargetsJson(model: BuildModel): Record<string, unknown>[] {
     .map(({ name, decl }) => ({
       name,
       type: decl.type,
-      properties: decl.properties.map(prop => ({ name: prop.name.toBaseString(), value: renderPropertyValue(prop) })),
+      properties: decl.properties.map(item =>
+        isPropertyDecl(item) ? { name: item.name.toBaseString(), value: renderPropertyValue(item) } : { splice: item.ref.toString() }
+      ),
       location: formatDeclLocation(decl),
       ...contributionJson(model, decl),
       description: decl.docComment ?? null,

@@ -308,6 +308,34 @@ targetdef js_package {
 }
 
 #
+# A plugin built in the project: a `js_package` of its code, with its `.fabr`
+# files. `plugin <name>;` uses it as it would an installed plugin, reading
+# `libs` before anything is built; its code is built, for the machine fabr runs
+# on, only when a rule it implements is first used. It is tested and run as the
+# `js_package` it is.
+#
+#     fabr_plugin @example/text-lint {
+#       srcs = src:**/*.ts;
+#       exports = src:rules/*.ts;
+#       provided_deps = @fabr-build/core;
+#       libs = lib/LINT.fabr;
+#     }
+#
+# Files the plugin's own rules build, among its `resources`, need a stage the
+# plugin is used at without them (`resources<STAGE=1> = …;` with
+# `plugin X<STAGE=0>;`).
+#
+targetdef fabr_plugin extends js_package {
+    # The plugin's `.fabr` files: literal paths or patterns, relative to this
+    # file, read as written (no substitution, and every guard's together).
+    libs = FILES;
+    # The plugin's `.fabr` files a project reads only where it includes one,
+    # by its path within the plugin's package (`include <package>:<path>;`):
+    # literal paths or patterns, relative to this file, as `libs` are.
+    optional_libs = FILES;
+}
+
+#
 # A js_package's sources: its `srcs` and `resources`, with what they name
 # built under `build`.
 #
@@ -644,6 +672,7 @@ default js_script JS_VITEST_RUNNER {
 rule js_package pkg<BUILD_OPERATION=build> = @fabr-build/js:rules/BuildJSPackage;
 rule js_package pkg<BUILD_OPERATION=run> = @fabr-build/js:rules/RunJSPackage;
 rule js_package pkg<BUILD_OPERATION=test> = @fabr-build/js:rules/TestJSPackage;
+rule fabr_plugin p<BUILD_OPERATION=build> = @fabr-build/js:rules/BuildFabrPlugin;
 rule js_test t<BUILD_OPERATION=test> = @fabr-build/js:rules/TestJSTest;
 rule js_script s<BUILD_OPERATION=run> = @fabr-build/js:rules/RunJSScript;
 rule js_compile c<BUILD_OPERATION=build> = @fabr-build/js:rules/BuildJSCompile;

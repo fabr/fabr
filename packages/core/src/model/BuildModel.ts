@@ -23,7 +23,7 @@ import { BuildContext } from "../context/index";
 import { Constraints } from "./Constraints";
 import { ExecutionContext } from "./ExecutionContext";
 import { Name } from "../core/Name";
-import { RepositoryProvider, RuleDefinition, SelectableRule } from "../rules/Types";
+import { TargetRules, RepositoryProvider, RuleDefinition, SelectableRule } from "../rules/Types";
 import { Computable } from "../core/Computable";
 import type { PluginPackage } from "./Plugin";
 
@@ -32,8 +32,9 @@ import type { PluginPackage } from "./Plugin";
  * make, read-only. It keeps the configurations made of it ({@link getConfig}).
  */
 export interface BuildModel {
-  /** Get the rules registered for `type` — the candidates selection tries first. */
-  getTargetRules(type: string): SelectableRule[];
+  /** Get the rules a target of `type` is selected from, by type: `type`'s
+   * own, then those of each type it extends, nearest first. */
+  getTargetRules(type: string): TargetRules[];
 
   /** Get the default (all-types) rules, consulted where no rule of the target's
    * own type applies. */
@@ -67,7 +68,7 @@ export interface BuildModel {
   getProperties(): { name: string; decl: IPropertyDecl }[];
 
   /** @return the BUILD_OPERATION values for which a type-specific rule is
-   * registered for `type` — the operations that type supports (`build`,
+   * registered for `type` or a type it extends — the operations that type supports (`build`,
    * `test`, `run`, …). A rule that constrains no operation is a wildcard,
    * reported as `"*"` (it applies to any operation). Default (all-types)
    * rules are excluded: they apply everywhere and so say nothing about a

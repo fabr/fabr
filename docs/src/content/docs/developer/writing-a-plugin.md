@@ -34,19 +34,16 @@ text-lint/
   test/lint.test.ts   added in step 2
 ```
 
-`PROJECT.fabr` declares the plugin's code as a `js_package`, and the plugin as a `fabr_plugin`:
+`PROJECT.fabr` declares the plugin as a `fabr_plugin`. A `fabr_plugin` is a `js_package` with
+`.fabr` files added, so its code is written as any package's:
 
 ```
 plugin @fabr-build/js;
 
-js_package text_lint_code {
+fabr_plugin @example/text-lint {
   srcs = src:**/*.ts;
   exports = src:rules/*.ts;
   provided_deps = @npm:@fabr-build/core:^0.3.1;
-}
-
-fabr_plugin @example/text-lint {
-  srcs = text_lint_code;
   libs = lib/LINT.fabr;
 }
 ```
@@ -55,9 +52,9 @@ fabr_plugin @example/text-lint {
 under `rules/` importable, which is how fabr reaches a rule's implementation. `@fabr-build/core` is
 the interface a plugin is written against. It is a `provided_deps` dependency, npm's peer
 dependency: the plugin compiles against it, but when it runs it uses the copy of core that fabr
-itself loads. The `fabr_plugin` is the plugin as it is published: the code with its `.fabr` files
-added, and a `package.json` that marks it a plugin and lists them. There is no `package.json` to
-write; fabr generates it.
+itself loads. `libs` lists the plugin's `.fabr` files. Built, the `fabr_plugin` is the plugin as
+it is published: the compiled code with its `.fabr` files added, and a `package.json` that marks
+it a plugin and lists them. There is no `package.json` to write; fabr generates it.
 
 A target type is declared in a `.fabr` file shipped with the plugin. Create `lib/LINT.fabr`:
 
@@ -109,7 +106,7 @@ Build the package and look at what it contains:
 
 ```sh
 $ fabr build @example/text-lint
-✓ Compiling text_lint_code (0.8s)
+✓ Compiling @example/text-lint (0.8s)
 Built @example/text-lint
 $ fabr ls @example/text-lint
 lib/LINT.fabr

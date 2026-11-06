@@ -361,10 +361,11 @@ Lists every operation the project's rules declare, the standard ones included, w
 types that have a rule for each, in the order they are declared. `--json` gives the output as JSON.
 
 ```
-build  generate, patched, sync, fabr_plugin, js_package, js_bundle, js_compile, sass_compile, css_postcss
-lint   js_package
-run    script, serve, fabr_plugin, js_package, js_script
-test   js_package, js_test
+build    generate, patched, zip, sync, js_package, fabr_plugin, js_bundle, js_compile, js_installation, sass_compile, css_postcss
+lint     js_package, fabr_plugin
+run      script, serve, js_package, fabr_plugin, js_script
+sources  js_package, fabr_plugin
+test     js_package, fabr_plugin, js_test
 ```
 
 ### `list-properties`

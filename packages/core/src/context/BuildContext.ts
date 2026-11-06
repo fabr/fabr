@@ -29,7 +29,7 @@ import type { Credential } from "../core/Credential";
 import type { Unbuilt } from "../core/TargetRef";
 import type { ResolvedTarget } from "./ResolvedTarget";
 import type { ResolvedRequirements } from "./Collection";
-import type { IDecl, INameValue, IPropertyDecl, ITargetDecl } from "../model/AST";
+import type { IDecl, INameValue, IPropertyDecl, ISpliceDecl, ITargetDecl } from "../model/AST";
 import type { IPropertyEntry } from "../model/Namespace";
 import type { Constraints } from "../model/Constraints";
 import type { ExecutionContext } from "../model/ExecutionContext";
@@ -39,6 +39,12 @@ import type { ICommandStageLookup } from "./Commands";
 import type { PropertyMap } from "./PropertyMap";
 import type { IDependencyStack } from "./Stack";
 import type { TargetContext } from "./TargetContext";
+
+/** An entry a splice in a target's body supplies: its declaration, and the configuration its values are looked up in. */
+export interface ISplicedEntry {
+  readonly decl: IPropertyDecl;
+  readonly context: InternalBuildContext;
+}
 
 /**
  * A configuration of the build model: the model under one set of constraints,
@@ -216,6 +222,15 @@ export interface InternalBuildContext extends BuildContext {
 
   /** Look up the global MAP property `name`, which must be declared. */
   lookupGlobalMap(name: string, stack?: IDependencyStack, callerOverrides?: Constraints): Computable<PropertyMap>;
+
+  /**
+   * Look up the entries `splice`, written in a target's body, supplies: those of
+   * the map it names, in written order, a later entry of a name replacing an
+   * earlier one. Each is a declaration with the configuration its values are
+   * looked up in. A map property nothing sets here supplies none; a name that
+   * is no map property is an error.
+   */
+  lookupSplice(splice: ISpliceDecl, stack?: IDependencyStack): Computable<ISplicedEntry[]>;
 
   /**
    * Look up a projection property's one selector, substituted. Undefined

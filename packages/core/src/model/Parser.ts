@@ -39,6 +39,7 @@ import {
   INameValue,
   IPropertySchema,
   isMapValue,
+  isPropertyDecl,
   isNameValue,
   ITargetDecl,
   ITargetDefDecl,
@@ -443,6 +444,8 @@ const DIAG_GLOB_CONSTRAINT = new Diagnostic<{ key: string; loc: ISourcePosition;
   LogLevel.Error,
   "Constraint '{key}' is required as a pattern, but a requirement names an exact configuration"
 );
+const DIAG_GUARDED_SPLICE = new Diagnostic<{ loc: ISourcePosition }>(LogLevel.Error, "A splice of a target's properties takes no guard");
+
 const DIAG_SPACED_GUARD = new Diagnostic<{ loc: ISourcePosition; help: string[] }>(
   LogLevel.Error,
   "A constraint guard must abut the property name"
@@ -2025,8 +2028,8 @@ export class BuildParser {
 
   /**
    * MapBlock  ::= '{' MapItem* '}'
-   * MapItem   ::= MapKey '=' Value* ';' | MapSplice
-   * MapSplice ::= Ref ';'
+   * MapItem   ::= MapKey '=' Value* ';' | Splice
+   * Splice    ::= Ref ';'
    * MapKey    ::= IDENTIFIER | SIMPLE_NAME | NAME
    *
    * A MAP property's value: a block of `key = value;` sub-properties and
@@ -2079,7 +2082,7 @@ export class BuildParser {
     this.blockDepth++;
     try {
       this.consumeToken(TokenType.LBRACE);
-      const list = this.parsePropertyList();
+      const list = this.parsePropertyList(false).filter(isPropertyDecl);
       this.consumeToken(TokenType.RBRACE);
       return list;
     } finally {
@@ -2108,7 +2111,7 @@ export class BuildParser {
           /* A splice: the reference's Name is kept intact (it may carry `${...}`
            * substitutions), resolved at read time. */
           entries.push({
-            kind: DeclKind.MapSplice,
+            kind: DeclKind.Splice,
             source: this.source,
             offset,
             endOffset: this.prevTokenEnd,
@@ -2132,8 +2135,15 @@ export class BuildParser {
     return entries;
   }
 
-  private parsePropertyList(): IPropertyDecl[] {
-    const list: IPropertyDecl[] = [];
+  /**
+   * PropertyList ::= ( PropertyDecl | GuardBlock | Splice )*
+   * Splice       ::= Ref ';'
+   *
+   * A splice is accepted where `splices` is true (a target's own body, not a
+   * guard block within it).
+   */
+  private parsePropertyList(splices: boolean): IMapItemDecl[] {
+    const list: IMapItemDecl[] = [];
     while (this.token.type !== TokenType.RBRACE && this.token.type !== TokenType.EOF) {
       try {
         const token = this.token;
@@ -2153,6 +2163,15 @@ export class BuildParser {
           const start = token.start;
           const key = this.parsePropertyKey();
           const keyEnd = this.prevTokenEnd;
+          if (this.token.type === TokenType.SEMI) {
+            if (!splices || key.getConstraints().length > 0) {
+              this.log.log(DIAG_GUARDED_SPLICE, { loc: { ...this.source, offset: start } });
+              throw new FabrError(PARSE_ERROR);
+            }
+            this.nextToken();
+            list.push({ kind: DeclKind.Splice, source: this.source, offset: start, endOffset: keyEnd, ref: key });
+            continue;
+          }
           const decl = this.parsePropertyDecl(key, start);
           /* Span the key (not the whole `key = value`), so a per-member error
            * underlines the offending reference. */
@@ -2216,7 +2235,7 @@ export class BuildParser {
       this.nextToken();
       const nameEnd = this.prevTokenEnd;
       this.consumeToken(TokenType.LBRACE);
-      const properties = this.parsePropertyList();
+      const properties = this.parsePropertyList(true);
       this.consumeToken(TokenType.RBRACE);
       return {
         kind: DeclKind.Target,
@@ -2412,7 +2431,7 @@ export class BuildParser {
   }
 
   /**
-   * TargetDefDecl ::= 'targetdef' NAME '{' PropertyTypeList '}'
+   * TargetDefDecl ::= 'targetdef' NAME ( 'extends' NAME )? '{' PropertyTypeList '}'
    *                     ^
    */
   private parseTargetDefDecl(docComment: string | undefined): ITargetDefDecl {
@@ -2422,6 +2441,15 @@ export class BuildParser {
       const nameToken = this.token;
       this.nextToken();
       const nameEnd = this.prevTokenEnd;
+      let base: { name: string; offset: number } | undefined;
+      if (this.token.type === TokenType.IDENTIFIER && this.token.text === "extends") {
+        this.nextToken();
+        if (this.token.type !== TokenType.IDENTIFIER) {
+          this.unexpectedTokenError("Identifier");
+        }
+        base = { name: this.token.text, offset: this.token.start };
+        this.nextToken();
+      }
       this.consumeToken(TokenType.LBRACE);
       const properties = this.parsePropertyTypeList();
       this.consumeToken(TokenType.RBRACE);
@@ -2431,6 +2459,7 @@ export class BuildParser {
         name: nameToken.text,
         offset: nameToken.start,
         endOffset: nameEnd,
+        ...(base === undefined ? {} : { extends: base }),
         properties,
         docComment,
       };
@@ -2597,7 +2626,7 @@ export class BuildParser {
    * TargetDecl ::= NAME NAME '{' PropertyList '}'
    * IncludeDecl ::= 'include' NAME ';'
    * PluginDecl ::= 'plugin' Reference ';'
-   * TargetDefDecl ::= 'targetdef' NAME '{' PropertyTypeList '}'
+   * TargetDefDecl ::= 'targetdef' NAME ( 'extends' NAME )? '{' PropertyTypeList '}'
    * DefaultDecl ::= 'default' ( PropertyDecl | TargetDecl | 'rule' RuleBody )
    * RuleDecl ::= 'rule' NAME RuleBody
    * RuleBody ::= NAME RuleGuard? '=' RuleImplementation

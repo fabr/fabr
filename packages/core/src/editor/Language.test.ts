@@ -114,6 +114,28 @@ describe("build file language", () => {
     expect(srcs).to.deep.include({ label: "srcs", kind: "property", detail: "FILES", comment: "What it holds." });
   });
 
+  it("finds the type a targetdef extends, and offers what a target's body can splice", () => {
+    const text = [
+      "targetdef holder { srcs = FILES; }",
+      "# A holder with more.",
+      "targetdef bigger extends holder { more = FILES; }",
+      "# Shared settings.",
+      "COMMON = { srcs = a.txt; };",
+      "",
+    ].join("\n");
+    const extended = parseBuildString(EMPTY_FILESET, "EXT.fabr", text, log);
+    const extendedModel = toBuildModel([extended], log, []);
+    const base = text.indexOf("holder {", text.indexOf("extends")) + 1;
+    const written = writtenAt(extended, base)!;
+    expect(written.kind).to.equal("targetdef-base");
+    const named = namedAt(extendedModel, written, base)!;
+    expect(named.declarations.map(span => text.slice(span.offset, span.endOffset ?? span.offset))).to.deep.equal(["holder"]);
+    const offered = (typed: string): string[] => completionsAt(extendedModel, typed, typed.length).map(completion => completion.label);
+    expect(offered("bigger x {\n  ")).to.deep.equal(["srcs", "more", "COMMON"]);
+    expect(offered("rule bigger b = holder inner {\n  ")).to.deep.equal(["srcs", "COMMON", "b"]);
+    expect(offered("rule bigger b<BUILD_OPERATION=x> = r {\n  holder r {\n    ")).to.deep.equal(["srcs", "COMMON", "b"]);
+  });
+
   it("names a reference's parts apart: a repository, then the entry of its own that names the rest", () => {
     const parts = (needle: string, delta = 1): [string, string[]] | undefined => {
       const offset = TEXT.indexOf(needle) + delta;

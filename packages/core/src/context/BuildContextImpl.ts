@@ -49,6 +49,7 @@ import { RunnableFileSet, toRunnable } from "../core/RunnableFileSet";
 import { Builds, Dependency, isPackage, PackageFileSet, ResolvedNode } from "../core/PackageFileSet";
 import { BuildAction, BuildResult } from "../core/BuildAction";
 import {
+  TargetRules,
   RuleBlockDefinition,
   RuleDefinition,
   RuleResult,
@@ -68,6 +69,7 @@ import {
   ICommandStage,
   IDecl,
   IMapItemDecl,
+  ISpliceDecl,
   ICommandValue,
   IMapValue,
   INameValue,
@@ -99,7 +101,7 @@ import { parseName } from "../model/Parser";
 import { IPrefixMatch, IPropertyEntry, writtenSeparator } from "../model/Namespace";
 import { Property } from "../model/Property";
 import { IModelStep, ISubstitution, MODEL_PROVENANCE } from "../model/ModelProvenance";
-import { BuildContext, InternalBuildContext, IRepositoryMember } from "./BuildContext";
+import { BuildContext, InternalBuildContext, IRepositoryMember, ISplicedEntry } from "./BuildContext";
 import { mergeMapInto, PropertyMap, PropertyMapValue, recordMapOrigin } from "./PropertyMap";
 import { IDependencyStack, IUseFrame, useFrameOf, useSiteOf } from "./Stack";
 import { NameLabel, ReferenceLabel } from "../model/Errors";
@@ -133,7 +135,7 @@ interface IBuildModel {
   getProperties(): { name: string; decl: IPropertyDecl }[];
   /** The rule tables and repository providers, built per load from the contributions of core
    * and the active plugins. */
-  getTargetRules(type: string): SelectableRule[];
+  getTargetRules(type: string): TargetRules[];
   getDefaultRules(): SelectableRule[];
   /** Get the operations `type` has rules of its own for, `*` for a rule of any operation. */
   getOperations(type: string): string[];
@@ -464,7 +466,7 @@ export class BuildContextImpl implements InternalBuildContext {
   /** Select the rule that builds `target`, a target of `type`, in this
    * configuration: see {@link selectRule}. */
   private selectRule(type: string, target: TargetContext): Computable<IRuleSelection> {
-    return selectRule(this.model.getTargetRules(type), this.model.getDefaultRules(), type, target, {
+    return selectRule(this.model.getTargetRules(type), this.model.getDefaultRules(), target, {
       read: (key, stack) => this.getOptionalProperty(key, stack),
       admits: (pattern, value, stack) => this.patternAdmits(pattern, value, stack),
     });
@@ -874,7 +876,7 @@ export class BuildContextImpl implements InternalBuildContext {
   ): Computable<PropertyMap> {
     return Computable.forAll(
       entries.map((item): Computable<PropertyMapValue | PropertyMap> => {
-        if (item.kind === DeclKind.MapSplice) {
+        if (item.kind === DeclKind.Splice) {
           return this.lookupMapReference(item.ref, stack, stack, seen, callerOverrides);
         }
         const blocks = item.values.filter(isMapValue);
@@ -894,7 +896,7 @@ export class BuildContextImpl implements InternalBuildContext {
       (...resolved: (PropertyMapValue | PropertyMap)[]) => {
         const map: PropertyMap = new Map();
         entries.forEach((item, i) => {
-          if (item.kind === DeclKind.MapSplice) {
+          if (item.kind === DeclKind.Splice) {
             mergeMapInto(map, resolved[i] as PropertyMap, item);
           } else {
             map.set(item.name.toBaseString(), resolved[i] as PropertyMapValue);
@@ -903,6 +905,49 @@ export class BuildContextImpl implements InternalBuildContext {
         });
         return map;
       }
+    );
+  }
+
+  public lookupSplice(splice: ISpliceDecl, stack?: IDependencyStack): Computable<ISplicedEntry[]> {
+    return this.splicedEntries(splice.ref, stack, new Set());
+  }
+
+  /** Look up the entries of the map property `name` names, as declarations, chasing references to other maps `seen`-guarded. */
+  private splicedEntries(name: Name, stack: IDependencyStack | undefined, seen: Set<IPropertyDecl>): Computable<ISplicedEntry[]> {
+    return this.referencedProperty(name, stack).then(({ prop, property, name: substituted, context }) => {
+      if (!prop) {
+        /* A property nothing sets here supplies nothing. */
+        if (property) {
+          return [];
+        }
+        throw new FabrError(`'${substituted.toString()}' does not name a map property, so it cannot be spliced`);
+      }
+      return context.mapEntries(prop, stack, seen);
+    });
+  }
+
+  /** Look up the entries of the MAP property `prop` as declarations, in written order (see {@link lookupMapDecl}). */
+  private mapEntries(prop: IPropertyDecl, stack: IDependencyStack | undefined, seen: Set<IPropertyDecl>): Computable<ISplicedEntry[]> {
+    if (seen.has(prop)) {
+      return Computable.reject(new FabrError(`Circular map reference at '${prop.name}'`));
+    }
+    const nextSeen = new Set(seen).add(prop);
+    const flat = (lists: ISplicedEntry[][]): ISplicedEntry[] => lists.flat();
+    if (hasMapValue(prop)) {
+      if (prop.values.length > 1) {
+        return Computable.reject(new FabrError(`'${prop.name}' must be a single \`{ ... }\` block or bare reference(s), not a mix`));
+      }
+      const block = prop.values[0];
+      return Computable.forAll(
+        (isMapValue(block) ? block.entries : []).map(item =>
+          item.kind === DeclKind.Splice ? this.splicedEntries(item.ref, stack, nextSeen) : Computable.resolve([{ decl: item, context: this }])
+        ),
+        (...lists: ISplicedEntry[][]) => flat(lists)
+      );
+    }
+    return Computable.forAll(
+      prop.values.filter(isNameValue).map(value => this.splicedEntries(value.value, { property: prop, value, next: stack }, nextSeen)),
+      (...lists: ISplicedEntry[][]) => flat(lists)
     );
   }
 
@@ -2476,6 +2521,22 @@ class ScopedBuildContext extends BuildContextImpl {
               .then(found => (found?.getValues() ?? []).map(text => Name.fromLiteral(text)));
       }),
       (...lists: Name[][]) => lists.flat()
+    );
+  }
+
+  /** Look up what `splice` supplies, the rule's parameter being the matched target as a map of its properties, each read as `<param>.name`. */
+  public lookupSplice(splice: ISpliceDecl, stack?: IDependencyStack): Computable<ISplicedEntry[]> {
+    if (splice.ref.toString() !== this.scope.param) {
+      return super.lookupSplice(splice, stack);
+    }
+    const site = { source: splice.source, offset: splice.offset, endOffset: splice.endOffset };
+    return this.scope.matched.getPropertyNames().then(names =>
+      names.map(
+        (name): ISplicedEntry => ({
+          decl: { kind: DeclKind.Property, ...site, name: Name.fromLiteral(name), values: [{ kind: DeclKind.NameValue, ...site, value: Name.fromLiteral(`${this.scope.param}.${name}`) }] },
+          context: this,
+        })
+      )
     );
   }
 

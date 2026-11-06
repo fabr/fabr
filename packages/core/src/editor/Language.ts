@@ -29,7 +29,7 @@ import { posix } from "path";
 import type { Name } from "../core/Name";
 import { StringReader } from "../support/StringReader";
 import type { ISourceSpan } from "../support/Log";
-import { DeclKind, IBuildFile, IBuildFileContents, IIncludeDecl, IPluginDecl, INameValue, IPropertyDecl, ITargetDecl, ITargetDefDecl, IValue, propertyTypeName } from "../model/AST";
+import { DeclKind, hasMapValue, IBuildFile, IBuildFileContents, IIncludeDecl, IPluginDecl, INameValue, IPropertyDecl, isPropertyDecl, ISpliceDecl, ITargetDecl, ITargetDefDecl, IValue, propertyTypeName } from "../model/AST";
 import { BuildModel } from "../model/BuildModel";
 import { IPropertyEntry } from "../model/Namespace";
 
@@ -60,9 +60,11 @@ export type Written =
   | { kind: "target-name"; target: ITargetDecl }
   | { kind: "property-name"; property: IPropertyDecl; target?: ITargetDecl }
   | { kind: "value"; value: INameValue; property: IPropertyDecl; target?: ITargetDecl }
+  | { kind: "splice"; splice: ISpliceDecl; target: ITargetDecl }
   | { kind: "include"; include: IIncludeDecl }
   | { kind: "plugin"; plugin: IPluginDecl }
-  | { kind: "targetdef-name"; targetdef: ITargetDefDecl };
+  | { kind: "targetdef-name"; targetdef: ITargetDefDecl }
+  | { kind: "targetdef-base"; targetdef: ITargetDefDecl };
 
 /** @return the declarations `contents` holds, in written order. */
 export function symbolsOf(contents: IBuildFileContents): IBuildFileSymbol[] {
@@ -101,8 +103,14 @@ export function writtenAt(contents: IBuildFileContents, offset: number): Written
     if (within(target.offset, nameRange(target).endOffset)) {
       return { kind: "target-name", target };
     }
-    for (const property of target.properties) {
-      const found = inProperty(property, target);
+    for (const item of target.properties) {
+      if (!isPropertyDecl(item)) {
+        if (within(item.offset, item.endOffset)) {
+          return { kind: "splice", splice: item, target };
+        }
+        continue;
+      }
+      const found = inProperty(item, target);
       if (found !== undefined) {
         return found;
       }
@@ -121,6 +129,10 @@ export function writtenAt(contents: IBuildFileContents, offset: number): Written
   const include = contents.includes.find(decl => within(decl.offset, decl.endOffset ?? decl.offset + decl.name.toString().length));
   if (include !== undefined) {
     return { kind: "include", include };
+  }
+  const extending = contents.targetdefs.find(decl => decl.extends !== undefined && within(decl.extends.offset, decl.extends.offset + decl.extends.name.length));
+  if (extending !== undefined) {
+    return { kind: "targetdef-base", targetdef: extending };
   }
   const targetdef = contents.targetdefs.find(decl => within(decl.offset, decl.offset + decl.name.length));
   return targetdef === undefined ? undefined : { kind: "targetdef-name", targetdef };
@@ -158,6 +170,8 @@ export function namedAt(model: BuildModel, written: Written, offset: number): IN
   switch (written.kind) {
     case "value":
       return referenceAt(model, written.value.source, written.value.offset, written.value.endOffset, written.value.value, offset);
+    case "splice":
+      return referenceAt(model, written.splice.source, written.splice.offset, written.splice.endOffset, written.splice.ref, offset);
     case "plugin": {
       const end = written.plugin.endOffset ?? written.plugin.offset + written.plugin.name.toString().length;
       return referenceAt(model, written.plugin.source, written.plugin.offset, end, written.plugin.name, offset);
@@ -186,6 +200,17 @@ export function namedAt(model: BuildModel, written: Written, offset: number): IN
                 ...(schema.docComment === undefined ? {} : { comment: schema.docComment }),
               },
             }),
+      };
+    }
+    case "targetdef-base": {
+      const base = written.targetdef.extends!;
+      const targetdef = model.getTargetDef(base.name);
+      return {
+        origin: { source: written.targetdef.source, offset: base.offset, endOffset: base.offset + base.name.length },
+        declarations: targetdef === undefined ? [] : [spanOf(targetdef)],
+        ...(targetdef === undefined
+          ? {}
+          : { documentation: { title: `targetdef ${targetdef.name}`, ...(targetdef.docComment === undefined ? {} : { comment: targetdef.docComment }) } }),
       };
     }
     case "target-type": {
@@ -273,7 +298,10 @@ function entriesNaming(decl: ITargetDecl, member: string): INameValue[] {
     const named = value.value.toString().replace(/^[^:]*:/, "");
     return named === member || named.startsWith(`${member}:`);
   };
-  return decl.properties.flatMap(property => valuesOf(property.values).filter((value): value is INameValue => value.kind === DeclKind.NameValue && names(value)));
+  /* A splice writes no value of its own. */
+  return decl.properties
+    .filter(isPropertyDecl)
+    .flatMap(property => valuesOf(property.values).filter((value): value is INameValue => value.kind === DeclKind.NameValue && names(value)));
 }
 
 /** @return what the global or target `name` is, as named at `origin`. */
@@ -350,7 +378,7 @@ function nameRange(decl: ITargetDecl | IPropertyDecl): ISourceRange {
 
 /** @return the span of a target's declaration, from its type to its last value. */
 function targetRange(target: ITargetDecl): ISourceRange {
-  const ends = target.properties.map(property => propertyRange(property).endOffset);
+  const ends = target.properties.map(item => (isPropertyDecl(item) ? propertyRange(item).endOffset : item.endOffset));
   return { source: target.source, offset: target.typeOffset, endOffset: Math.max(nameRange(target).endOffset, ...ends) };
 }
 
@@ -382,7 +410,9 @@ const KEYWORDS = ["targetdef", "rule", "repository", "plugin", "include", "defau
 /**
  * @return what may complete what is typed at `offset` in `text`, a build file
  * as the editor holds it: inside `${`, the project's globals; a property's name
- * in a target's body, the properties its type declares; after `=`, the
+ * in a target's body, the properties its type declares and what it can
+ * splice (the project's map properties, and in a rule's block the rule's
+ * parameter); after `=`, the
  * project's targets and globals; at the top level, the target types and the
  * keywords. What is typed so far is the editor's to match.
  */
@@ -399,14 +429,20 @@ export function completionsAt(model: BuildModel, text: string, offset: number): 
       return [...targets(), ...globals()];
     case "property-name": {
       const targetdef = model.getTargetDef(context.type);
-      return [...(targetdef?.properties ?? new Map())]
+      const properties = [...(targetdef?.properties ?? new Map())]
         .filter(([name]) => name !== "*")
-        .map(([name, schema]) => ({
+        .map(([name, schema]): ICompletion => ({
           label: name,
           kind: "property",
           detail: `${schema.required ? "REQUIRED " : ""}${propertyTypeName(schema)}`,
           ...(schema.docComment === undefined ? {} : { comment: schema.docComment }),
         }));
+      const maps = model
+        .getProperties()
+        .filter(({ decl }) => hasMapValue(decl))
+        .map(({ name, decl }): ICompletion => ({ label: name, kind: "property", detail: "MAP", ...(decl.docComment === undefined ? {} : { comment: decl.docComment }) }));
+      const parameter: ICompletion[] = context.parameter === undefined ? [] : [{ label: context.parameter, kind: "target", detail: "the target being built" }];
+      return [...properties, ...maps, ...parameter];
     }
     case "top-level":
       return [
@@ -419,7 +455,12 @@ export function completionsAt(model: BuildModel, text: string, offset: number): 
 }
 
 /** Where in a build file's grammar a place is, as far as the text before it says. */
-type TypingContext = { kind: "substitution" } | { kind: "value" } | { kind: "property-name"; type: string } | { kind: "top-level" } | { kind: "other" };
+type TypingContext =
+  | { kind: "substitution" }
+  | { kind: "value" }
+  | { kind: "property-name"; type: string; parameter?: string }
+  | { kind: "top-level" }
+  | { kind: "other" };
 
 /** @return where in the grammar `offset` in `text` lies, read from the text before it, comments and strings skipped. */
 function typingContext(text: string, offset: number): TypingContext {
@@ -477,7 +518,15 @@ function typingContext(text: string, offset: number): TypingContext {
   if (header === undefined) {
     return { kind: "top-level" };
   }
-  /* A target's body: `<type> <name>`, perhaps guarded. */
-  const target = /^(?:default\s+)?([A-Za-z_][\w-]*)\s+[^\s=]+$/.exec(header.replace(/<[^>]*>/g, ""));
-  return target !== null && !KEYWORDS.includes(target[1]) ? { kind: "property-name", type: target[1] } : { kind: "other" };
+  /* A target's body: `<type> <name>`, perhaps guarded, or the short form of a
+   * rule's block, `rule … = <type> <name>`; within a rule's block, its
+   * parameter (`rule <type> <param>`, `default rule <param>`) is named too. */
+  const unguarded = (text: string): string => text.replace(/<[^>]*>/g, "");
+  const parameter = headers
+    .map(written => /^(?:rule\s+[A-Za-z_][\w-]*|default\s+rule)\s+([A-Za-z_][\w-]*)/.exec(unguarded(written))?.[1])
+    .find(name => name !== undefined);
+  const target = /^(?:default\s+)?([A-Za-z_][\w-]*)\s+[^\s=]+$/.exec(unguarded(header)) ?? /=\s*([A-Za-z_][\w-]*)\s+[^\s=]+$/.exec(unguarded(header));
+  return target !== null && !KEYWORDS.includes(target[1])
+    ? { kind: "property-name", type: target[1], ...(parameter === undefined ? {} : { parameter }) }
+    : { kind: "other" };
 }

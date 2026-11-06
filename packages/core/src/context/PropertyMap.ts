@@ -19,7 +19,7 @@
 
 import { FabrError } from "../core/Errors";
 import { Name } from "../core/Name";
-import { declPosn, IMapSpliceDecl, INameValue, IPropertyDecl } from "../model/AST";
+import { declPosn, ISpliceDecl, INameValue, IPropertyDecl } from "../model/AST";
 import { NameResolutionError } from "../model/Errors";
 
 /**
@@ -41,7 +41,7 @@ export type PropertyMap = Map<string, PropertyMapValue>;
  */
 export interface MapEntryOrigin {
   entry: IPropertyDecl;
-  via: (IMapSpliceDecl | INameValue)[];
+  via: (ISpliceDecl | INameValue)[];
 }
 
 const MAP_ORIGINS = new WeakMap<PropertyMap, Map<string, MapEntryOrigin>>();
@@ -99,7 +99,7 @@ export function recordMapOrigin(map: PropertyMap, key: string, origin: MapEntryO
 
 /** Merge `source`'s entries into `target` (later wins), threading each entry's
  * origin with the written reference `hop` prepended to its via-chain. */
-export function mergeMapInto(target: PropertyMap, source: PropertyMap, hop: IMapSpliceDecl | INameValue): void {
+export function mergeMapInto(target: PropertyMap, source: PropertyMap, hop: ISpliceDecl | INameValue): void {
   for (const [key, value] of source) {
     target.set(key, value);
     const origin = mapEntryOrigin(source, key);

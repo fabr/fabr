@@ -60,20 +60,17 @@ two names is an error.
 ### A plugin built in the project
 
 A project can build a plugin it uses, so a plugin can be developed beside the projects that test
-it without being installed after each change. A `fabr_plugin` target declares it: the package that
-is its code, and its `.fabr` files.
+it without being installed after each change. A `fabr_plugin` target declares it. The type
+[extends](/reference/syntax/#extending-a-type) `js_package`, so you write the plugin's code as you
+would any package's, and list its `.fabr` files as `libs`.
 
 ```
 plugin @fabr-build/js;
 plugin @example/text-lint;
 
-js_package text_lint_code {
+fabr_plugin @example/text-lint {
   srcs = src:**/*.ts;
   exports = src:rules/*.ts;
-}
-
-fabr_plugin @example/text-lint {
-  srcs = text_lint_code;
   libs = lib/LINT.fabr;
 }
 
@@ -81,15 +78,17 @@ text_lint docs { srcs = docs/**/*.md; }
 ```
 
 Where a `plugin` declaration names a `fabr_plugin` target, fabr reads the target's `libs` with the
-project's own files, before anything is built, and loads no installed copy. The plugin's code is
+project's own files, before anything is built, and loads no installed copy. So `libs` and
+`optional_libs` must be literal paths or patterns, relative to the file declaring the target. The plugin's code is
 built, for the machine fabr runs on, the first time a rule or repository it implements is used; a
 run that uses none of them builds none of it.
 
-Built (`fabr build @example/text-lint`), the target is the plugin as a package: its code with its
-`libs`, any [`optional_libs`](#optional-fabr-files) and any `resources` added, and a `package.json`
-naming it as the plugin and listing its `.fabr` files, which is what an installed copy is read
-from. A project including one of the target's `optional_libs` reads it from the project, as it
-does `libs`.
+Built (`fabr build @example/text-lint`), the target is the plugin as a package: the package its
+`js_package` properties build, with its `libs` and any [`optional_libs`](#optional-fabr-files)
+added, and a `package.json` naming it as the plugin and listing its `.fabr` files, which is what an
+installed copy is read from. A project including one of the target's `optional_libs` reads it from
+the project, as it does `libs`. Every other operation is `js_package`'s: `fabr test
+@example/text-lint` runs the plugin's tests.
 
 ## The plugin package
 
@@ -149,20 +148,16 @@ defaults, and its rules name the plugin's implementations as they do. Its own `i
 are relative to it, within the package.
 
 Fabr builds such a package from a [`fabr_plugin`](#a-plugin-built-in-the-project) target, which
-writes the `package.json` for it: the plugin's code is a `js_package`, and the `fabr_plugin` adds
-its `.fabr` files.
+writes the `package.json` for it: the target is a `js_package` of the plugin's code, with its
+`.fabr` files added.
 
 ```
 plugin @fabr-build/js;
 
-js_package text_lint_code {
+fabr_plugin @example/text-lint {
   srcs = src:**/*.ts;
   exports = src:rules/*.ts;
   provided_deps = @npm:@fabr-build/core:^0.3.1;
-}
-
-fabr_plugin @example/text-lint {
-  srcs = text_lint_code;
   libs = lib/LINT.fabr;
   optional_libs = lib/markdown.fabr;
   resources = lib/linter.sh;
@@ -284,8 +279,38 @@ A guard is matched as a declaration's guard is: the configuration's properties a
 `default`, a declared global and a `-D` option on the command line all count, and the patterns are
 globs. A key with no value makes the rule not apply. Of the rules that apply, the one naming the
 most keys across its two guards is chosen, and two equally specific rules are an error. A type's
-own rules are preferred to default rules. A rule is chosen from its declaration alone: nothing is
-loaded to choose it.
+own rules are preferred to the rules of a type it [extends](/reference/syntax/#extending-a-type),
+those to the rules of the type that one extends, and all of them to default rules. A rule is chosen
+from its declaration alone: nothing is loaded to choose it.
+
+**Building on the extended type's rule.** A target of a type that
+[extends](/reference/syntax/#extending-a-type) another has every property the extended type's
+rules read, so a rule for the new type can call the extended type's implementation with its own
+context and add to what it builds. `fabr_plugin[build]` builds the
+plugin's code with `js_package[build]`'s implementation, its requirements with two of its own
+beside them:
+
+```ts
+import jsPackage from "./BuildJSPackage";
+
+export default defineRule({
+  requirements(context) {
+    const stated = jsPackage.requirements!(context);
+    return (stated instanceof Computable ? stated : Computable.resolve(stated)).then(spec => ({
+      ...spec,
+      requirements: { ...spec.requirements, libs: context.getFileProperty("libs") },
+    }));
+  },
+  evaluateResolved(context, requirements) {
+    return jsPackage.evaluate(context, requirements).then(built => /* add the .fabr files */);
+  },
+});
+```
+
+Both sets of requirements are the target's own, so they are resolved together, as one rule's
+are. A rule written in `.fabr` builds on the extended type's rule by
+[splicing the target](/guides/rules/#splicing-the-targets-properties) into a target of the
+extended type in its block.
 
 The build verb is the `BUILD_OPERATION` property: `fabr test x` builds `x` with
 `BUILD_OPERATION=test`, so `<BUILD_OPERATION=test>` makes a rule that runs under `fabr test`
