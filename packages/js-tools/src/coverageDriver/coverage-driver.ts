@@ -37,7 +37,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { parseManifestPath } from "../cssDriver/Support";
+import { parseManifestPath } from "../support/Main";
 import type { ICoverageOptions } from "./Options";
 import { ICoverageRecord, IFileCoverageData, lcovOf, mergeRecord, recordOf, sourceOf } from "./Lcov";
 
@@ -167,6 +167,9 @@ export async function main(argv: string[]): Promise<void> {
   const records = new Map<string, ICoverageRecord>();
   for (const measured of options.measured) {
     const file = fs.realpathSync(path.resolve(measured));
+    if (options.loaded === true && !byFile.has(file)) {
+      continue;
+    }
     const code = fs.readFileSync(file, "utf8");
     const sourceMap = sourceMapOf(file, code);
     if (sourceMap === undefined) {

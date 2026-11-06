@@ -143,8 +143,8 @@ fabr test mylib
 ```
 
 A summary such as `mylib: 1 test passed` is printed for each target, and a failing test fails the
-build. A passing run is cached, so running `fabr test` again without changes reports the result
-without re-running the tests. `fabr test --coverage mylib` also measures code coverage, printing a
+build. A run is cached, so running `fabr test` again without changes reports the result without
+re-running the tests; `fabr test --retry-failed mylib` runs failed tests again. `fabr test --coverage mylib` also measures code coverage, printing a
 summary and writing an lcov report to `coverage/lcov.info`.
 
 To run an existing jest or vitest suite, or for snapshots, DOM tests and coverage, see

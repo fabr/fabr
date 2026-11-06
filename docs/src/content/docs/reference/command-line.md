@@ -71,9 +71,12 @@ fabr test mylib
 fabr test -u mylib    # also record new and changed snapshots
 fabr test -t 'dates parse' mylib    # run only the tests whose names match
 fabr test --coverage mylib    # also measure code coverage
+fabr test --retry-failed mylib    # run failed tests again rather than report the cached failure
 ```
 
-A passing run is cached and isn't repeated until something the tests depend on changes. With `-u`,
+A run is cached, passing or failing, and isn't repeated until something the tests depend on
+changes: a failing run's failures are reported again, and the command fails again. With
+`--retry-failed`, a target whose cached run failed runs its tests again. With `-u`,
 new and changed snapshots are written back into your source tree after a passing run, and each
 file is named as it is written. With `--coverage`, the tests are measured for code coverage: a
 summary is printed and an lcov report written to `coverage/lcov.info`, or to `<dir>/lcov.info`

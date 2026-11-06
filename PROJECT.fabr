@@ -129,6 +129,9 @@ sync release {
   @npm:@fabr-build/core:${FABR_VERSION} = @fabr-build/core;
   @npm:@fabr-build/js:${FABR_VERSION} = @fabr-build/js;
   @npm:@fabr-build/js-tools:${FABR_VERSION} = @fabr-build/js-tools;
+  @npm:@fabr-build/java:${FABR_VERSION} = @fabr-build/java;
+  @npm:@fabr-build/container:${FABR_VERSION} = @fabr-build/container;
+  @npm:@fabr-build/aws:${FABR_VERSION} = @fabr-build/aws;
   @npm:@fabr-build/sass-pnp-importer:${FABR_VERSION} = @fabr-build/sass-pnp-importer;
 }
 

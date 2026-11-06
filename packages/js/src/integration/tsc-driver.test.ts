@@ -2466,6 +2466,69 @@ describe("the tsc driver's wave", () => {
     stage(work.root, [], [], [], undefined, module);
   }
 
+  describe("with sources another compile declared", () => {
+    const DECLARATIONS = ".fabr-declarations";
+    const flag = ["--source-declarations", DECLARATIONS];
+
+    function declarations(files: Record<string, string>): void {
+      for (const [name, content] of Object.entries(files)) {
+        const file = path.join(work.root, DECLARATIONS, name);
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, content);
+      }
+    }
+
+    beforeEach(() => {
+      stageProject();
+      sources({
+        "util.ts": "export function pad(text: string): string {\n  return text;\n}\n",
+        "util.test.ts": 'import { pad } from "./util";\nexport const padded: string = pad("x");\n',
+      });
+      declarations({ "util.d.ts": "export declare function pad(text: string): string;\n" });
+    });
+
+    it("checks and emits only the others", () => {
+      /* An error in a declared source is the other compile's to report. */
+      sources({ "util.ts": 'export function pad(text: string): string {\n  const unused: number = "x";\n  return text;\n}\n' });
+      const base = baseline(flag);
+      expect(base.status, base.output).to.equal(0);
+      expect(base.compile.emitted).to.deep.equal(["build/util.test.d.ts", "build/util.test.js"]);
+    });
+
+    it("waves nothing past a source whose declaration did not move, and its importers where it did", () => {
+      const base = baseline(flag);
+      expect(base.status, base.output).to.equal(0);
+
+      sources({ "util.ts": "export function pad(text: string): string {\n  return text + text;\n}\n" });
+      const body = wave(base.memo, ["src/util.ts"], [], flag);
+      expect(body.status, body.output).to.equal(0);
+      expect(body.compile.wave).to.deep.equal(["src/util.ts"]);
+      expect(body.compile.emitted).to.deep.equal([]);
+
+      sources({ "util.ts": "export function pad(text: string): number {\n  return text.length;\n}\n" });
+      declarations({ "util.d.ts": "export declare function pad(text: string): number;\n" });
+      const moved = wave(base.memo, ["src/util.ts", `${DECLARATIONS}/util.d.ts`], [], flag);
+      expect(moved.status, "the test's own error, found by checking it").to.not.equal(0);
+      expect([...moved.compile.wave].sort()).to.deep.equal(["src/util.test.ts", "src/util.ts"]);
+    });
+
+    it("reaches a test through a declaration that re-exports one that moved", () => {
+      sources({
+        "index.ts": 'export * from "./util";\n',
+        "util.test.ts": 'import { pad } from "./index";\nexport const padded: string = pad("x");\n',
+      });
+      declarations({ "index.d.ts": 'export * from "./util";\n' });
+      const base = baseline(flag);
+      expect(base.status, base.output).to.equal(0);
+
+      sources({ "util.ts": "export function pad(text: string): number {\n  return text.length;\n}\n" });
+      declarations({ "util.d.ts": "export declare function pad(text: string): number;\n" });
+      const moved = wave(base.memo, ["src/util.ts", `${DECLARATIONS}/util.d.ts`], [], flag);
+      expect(moved.compile.wave).to.include("src/util.test.ts");
+      expect(moved.status, "the test's own error, found by checking it").to.not.equal(0);
+    });
+  });
+
   it("emits one file for a body edit, and leaves the rest of the output alone", () => {
     stageProject();
     sources({

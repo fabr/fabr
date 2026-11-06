@@ -20,7 +20,8 @@ steps:
       path: ~/.cache/fabr
       key: fabr-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
       restore-keys: fabr-${{ runner.os }}-${{ runner.arch }}-
-  - run: fabr test ALL
+  - run: fabr test @acme/core @acme/app
+  - run: fabr build release
 ```
 
 ## Install
@@ -35,19 +36,30 @@ build file has no way to require a fabr version. `fabr --version` prints what is
 
 ## Choose what to run
 
-Name the targets: `fabr build` and `fabr test` have no "everything" form. For a project with
-several targets, declare a property listing them and use it in CI:
+Run the same commands you would locally, naming what the repository produces and what you want
+tested; fabr builds everything those depend on. There is no "everything" form, and there doesn't
+need to be: a package nothing you name depends on isn't needed for this commit's result.
+
+- **`fabr test` the targets whose tests should pass.** It builds what the tests need, so these
+  targets need no separate `fabr build` step. It runs only the named targets' tests, not those of
+  the packages they depend on, so name each package whose tests you want run.
+- **`fabr build` what you ship that has no tests**: the application you deploy, or the
+  [`sync` target](/reference/js/publishing/#publishing-with-sync) that publishes your packages.
+  Building a `sync` target produces exactly what would be uploaded, without uploading it.
+
+When the list of tested targets is long, or shared with your team, declare it once as a property
+and name that:
 
 ```
-ALL = @acme/core @acme/app @acme/cli;
+TESTED = @acme/core @acme/app @acme/cli;
 ```
 
 ```sh
-fabr test ALL
+fabr test TESTED
 ```
 
-`fabr test` builds what the tests need, so a separate `fabr build` step is only needed for targets
-that have no tests.
+The list is kept by hand, so add each new package to it. See
+[Projects with several packages](/guides/multi-package/#build-what-you-ship).
 
 A command given no targets fails with `The 'build' command requires a target`, so a step whose
 target list comes out empty, for example from an unset variable, fails and doesn't pass by doing
@@ -95,7 +107,7 @@ separate from the log.
 
 ## Cache
 
-Fabr's cache holds downloaded packages and the result of every build step and passing test run.
+Fabr's cache holds downloaded packages and the result of every build step and test run.
 Keeping it between CI runs is what makes them fast: an unchanged project downloads and rebuilds
 nothing, and a change rebuilds only what depends on it.
 
@@ -166,8 +178,8 @@ fabr test @acme/core
 fabr cp '@acme/core<BUILD_OPERATION=test>:ctrf-report.json' reports/core
 ```
 
-The report exists only for a passing run. When tests fail, the failures are in the log and there
-is no report to collect.
+When tests fail, the target fails, and so does a `fabr cp` of its report: the failures are in the
+log.
 
 ## Coverage
 
@@ -175,7 +187,7 @@ is no report to collect.
 report, which Codecov, Coveralls, SonarQube and most CI coverage tools read:
 
 ```sh
-fabr test --coverage=reports/coverage ALL
+fabr test --coverage=reports/coverage TESTED
 ```
 
 This writes `reports/coverage/lcov.info`, with each source named by its path in your project;

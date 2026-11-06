@@ -55,7 +55,10 @@ js_package mylib {
 ```
 
 Test files are compiled together with the package's sources, so a test imports the code it tests
-by relative path, or by the package's own name. The tests can use everything in `deps` as well as
+by relative path, or by the package's own name. The tests run against the package as `fabr build`
+builds it, so the sources are compiled once for both. Where the package is built in a different
+module format from the one the test framework loads, fabr builds it a second time in that format
+for its tests. The tests can use everything in `deps` as well as
 `test_deps`. Nothing listed under `tests` or `test_deps` becomes part of the built package, and
 `test_deps` are not added to its `package.json`.
 
@@ -84,9 +87,9 @@ Fabr has no naming rule like jest's `testMatch`: each source file that `tests` m
 test file, whatever it's called. Keep helpers, fixtures written in TypeScript, and mocks out of
 that pattern, and supply them another way:
 
-- In a `js_package`, a helper that lives among `srcs` is already compiled with the tests. To keep
-  it out of the built package, list it in `test_deps` instead: a source file there is compiled
-  with the tests, never run as a test, and never shipped.
+- In a `js_package`, a helper that lives among `srcs` is part of the package, so the tests can
+  import it. To keep it out of the built package, list it in `test_deps` instead: a source file
+  there is compiled with the tests, never run as a test, and never shipped.
 - In a `js_test`, list helpers in `deps`, as the example above does with `test:**/*.ts`. A file
   matched by both `deps` and `tests` is still a test.
 
@@ -119,9 +122,15 @@ diff and the stack trace, with stack frames naming your TypeScript sources.
 
 Some things differ from running a test framework's own command:
 
-- **A passing run is cached.** If nothing the tests depend on has changed, `fabr test` reports the
-  previous result without running them again. A failing run is never cached. The unit is the
-  target: changing one test file runs all of that target's tests again.
+- **A run is cached, passing or failing.** If nothing the tests depend on has changed, `fabr test`
+  reports the previous result without running them again; a failing run's failures are reported
+  again, and the command fails again. To run failing tests again anyway, as for a flaky test, use
+  `fabr test --retry-failed`.
+- **Only the test files a change can reach run again.** Each test file's run records what it
+  loaded and read; after a change, a file runs again if it read something that changed, or failed
+  last time, and the rest keep their previous results, their coverage included under `--coverage`.
+  Adding or deleting a file runs every test file of the target again. A test file that starts a process or a worker
+  thread runs again on every change, since what those read can't be recorded.
 - **You select tests by target and by name, not by file.** `fabr test -t` selects by name, as
   `jest -t` does; there is no equivalent of passing a file path, and arguments aren't passed
   through to the framework. To run a subset routinely, give it its own target.
@@ -197,6 +206,31 @@ these imports work without configuration:
 
 The file need not be in the test's tree: an import of a stylesheet or image that isn't declared
 yields the same stub. Under jest, a `jest.mock` of the same path takes precedence.
+
+### How tests find their packages
+
+By default the test processes find the packages they load in a `node_modules` directory that fabr
+writes into the test install, laid out as pnpm lays one out. With the `layout/pnp` flag in a
+target's `deps` or `test_deps`, they resolve them instead through a [Yarn
+PnP](https://yarnpkg.com/features/pnp)-style table over fabr's cache, and no `node_modules` is
+written, which makes a large install much quicker to set up:
+
+```
+js_package app {
+  srcs = src:**/*.ts;
+  tests = src:**/*.test.ts;
+  test_deps = layout/pnp @npm:jsdom:26.1.0;
+}
+```
+
+Under `layout/pnp`, a package is only found by being imported or required. Code that finds a
+file by looking in `node_modules` itself (reading `node_modules/x/package.json` directly, or
+walking up from its own directory to a sibling package) finds nothing, as does a program a test
+starts. A package with peer dependencies is loaded from a path of its own for each set of peers it
+is given, which exists only for imports, so the package reading one of its own files through `fs`
+(`fs.readFileSync(path.join(__dirname, "template.html"))`) finds nothing there either.
+`layout/node_modules` asks for the tree explicitly. `--coverage` needs the tree, so a
+target with `layout/pnp` can't be measured.
 
 ### DOM tests
 
@@ -561,13 +595,20 @@ and runs your program once for each test file, with the compiled tests as its wo
 
 ```
 <runner> --report=<file> --env=<node|jsdom> [--update-snapshots] [--name-pattern=<regex>]
-         [--setup=<file>]… <test file>
+         [--setup=<file>]… [--pnp=<file>] [--reads=<file>] <test file>
 ```
 
 - **`--env`** is `jsdom` for a target with the [`dom` flag](#dom-tests), and `node` otherwise.
 - **`--update-snapshots`** is passed by `fabr test -u`.
 - **`--name-pattern`** is passed by `fabr test -t`: run only the tests whose full names match.
 - **`--setup`** names a [`setupTests`](#a-setup-file) file to load before the test file.
+- **`--pnp`** names the PnP table the test processes resolve packages through, where the
+  install has one in place of `node_modules` (see [How tests find their
+  packages](#how-tests-find-their-packages)).
+- **`--reads`** asks the runner to write, as a JSON array, the files the test process loaded or
+  read, by their paths relative to the working directory. A runner that can't say what was read,
+  as when a test started another process, or that doesn't support the option, writes no file, and
+  its test files run again on every change.
 - **The report** must be written to the `--report` file as a [CTRF](https://ctrf.io/) document,
   `{"results": {"tool": …, "summary": …, "tests": […]}}`, with each of the summary's counts
   (`tests`, `passed`, `failed`, `pending`, `skipped`, `other`, `start`, `stop`) a number.

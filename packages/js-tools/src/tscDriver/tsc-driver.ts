@@ -45,6 +45,7 @@ import { isVirtual, realpathKeepingVirtual, resolveVirtual } from "../pnp/Virtua
 import { CHANGES_FLAG, DEPS_REPORT_FLAG, IChangeLists, parseChangesDocument, serializeRunReport, STATE_DIR_FLAG } from "../pnp/ReadSet";
 import { stagedReferences, withReferencedSources } from "../support/SourceMap";
 import {
+  DECLARATION_EXTENSION,
   DriverMemo,
   ICompilePlan,
   ICompileTelemetry,
@@ -52,9 +53,12 @@ import {
   IMemoEdge,
   membershipTarget,
   mergeMemo,
+  normalizeName,
   parseDriverMemo,
   planCompile,
   serializeDriverMemo,
+  SOURCE_DECLARATIONS_FLAG,
+  sourceStem,
 } from "./Planning";
 import { IWaveResult, runWave } from "./Wave";
 
@@ -263,6 +267,7 @@ interface IProgram {
   getOptionsDiagnostics(): readonly Diagnostic[];
   getGlobalDiagnostics(): readonly Diagnostic[];
   getTypeChecker(): ITypeChecker;
+  getSourceFile(fileName: string): SourceFile | undefined;
 }
 type WriteFile = (fileName: string, text: string, writeByteOrderMark: boolean) => void;
 
@@ -306,6 +311,8 @@ export interface ICompilerHost {
 }
 export interface ITypeScript {
   version: string;
+  /** The module specifiers a file's text names, read without a program. */
+  preProcessFile(text: string, readImportFiles?: boolean, detectJavaScriptImports?: boolean): { importedFiles: ReadonlyArray<{ fileName: string }> };
   /** Every compiler option this release knows, for asking whether it has one
    * rather than whether its version implies it. Optional: a compiler that does
    * not expose the table answers "no" to every such question. */
@@ -2250,17 +2257,29 @@ export function main(argv: string[]): number {
   }
   const namer = nodeNamer(root, resolver);
   const emitDirectory = emitDirectoryOf(parsed.options, root);
+  const declarationDirectory = argOf(argv, SOURCE_DECLARATIONS_FLAG);
+  const declared = declarationDirectory === undefined ? new Map<string, string>() : sourceDeclarationsOf(root, declarationDirectory, parsed, namer);
+  const projectNames = new Set(parsed.fileNames.map(namer).filter((name): name is string => name !== undefined));
+  const handedOver =
+    handover?.changes === undefined || declarationDirectory === undefined
+      ? { changes: handover?.changes, moved: new Set<string>() }
+      : withDeclarationChanges(handover.changes, declarationDirectory, projectNames, sourceRootOf(parsed.options, root));
   const plan =
     handover === undefined
       ? undefined
-      : planCompile(
-          handover.changes,
-          handover.memo,
-          new Set(parsed.fileNames.map(namer).filter((name): name is string => name !== undefined)),
-          sourceRootOf(parsed.options, root)
-        );
+      : planCompile(handedOver.changes, handover.memo, projectNames, sourceRootOf(parsed.options, root));
   if (plan !== undefined) {
     prepareEmitTree(root, emitDirectory, plan);
+  }
+  if (plan !== undefined && reportPath !== undefined && !reachesCheckedFiles(plan, declared, handedOver.moved)) {
+    /* Nothing this compile checks can see the change, so there is no program
+     * to build: the base was green, its output stands, and its memo with it. */
+    const compile: ICompileTelemetry = { wave: [...(plan.seeds ?? [])].sort(), emitted: [], diagnostics: [] };
+    fs.writeFileSync(path.resolve(root, reportPath), serializeRunReport([], [], { compile }));
+    if (stateDirectory !== undefined) {
+      writeDriverState(path.resolve(root, stateDirectory), serializeDriverMemo(plan.memo));
+    }
+    return EXIT_OK;
   }
   /**
    * Whether the program currently built is rooted at a SUBSET of the project.
@@ -2275,7 +2294,10 @@ export function main(argv: string[]): number {
   const graph =
     plan === undefined
       ? undefined
-      : createWaveRun(ts, plan, root, resolver, resolve, () => boundRooted, parsed.fileNames, emitDirectory);
+      : createWaveRun(ts, plan, root, resolver, resolve, () => boundRooted, parsed.fileNames, emitDirectory, {
+          declared,
+          moved: handedOver.moved,
+        });
   const resolveLiterals = host.resolveModuleNameLiterals;
   if (graph !== undefined && resolveLiterals !== undefined) {
     /* Every specifier the program resolves, recorded where the answer is
@@ -2397,7 +2419,15 @@ export function main(argv: string[]): number {
     built = graph.run(program, transformers, writeEmitted, true);
     fellBack = true;
   }
-  const emitted = built ?? program.emit(undefined, writeEmitted, undefined, false, transformers);
+  /* Without a wave, the whole project at once — less the sources another
+   * compile checked and emitted, which are in the program only to be compiled
+   * against. */
+  const checked = declared.size === 0 ? undefined : checkedFiles(program, parsed, namer, declared);
+  const emitted =
+    built ??
+    (checked === undefined
+      ? program.emit(undefined, writeEmitted, undefined, false, transformers)
+      : emitEach(program, checked, writeEmitted, transformers));
   /* After emit, so the declaration rewriter's own resolution work counts as the
    * reading it is. Both written whether or not the compilation succeeded — a
    * failed run is not cached, so neither is ever asked for. */
@@ -2421,7 +2451,15 @@ export function main(argv: string[]): number {
    * seen every meta-property it disposed of (the emit above ran the transform). */
   const collected = [
     ...parsed.errors,
-    ...(graph === undefined ? ts.getPreEmitDiagnostics(program) : graph.diagnostics(program)),
+    ...(graph !== undefined
+      ? graph.diagnostics(program)
+      : checked === undefined
+        ? ts.getPreEmitDiagnostics(program)
+        : [
+            ...program.getOptionsDiagnostics(),
+            ...program.getGlobalDiagnostics(),
+            ...checked.flatMap(file => [...program.getSyntacticDiagnostics(file), ...program.getSemanticDiagnostics(file)]),
+          ]),
     ...emitted.diagnostics,
   ];
   const bridged = crossFormat === undefined ? collected : crossFormat.finishDiagnostics(collected);
@@ -2591,7 +2629,11 @@ function createWaveRun(
   projectFiles: readonly string[],
   /** The output directory as a node-name prefix, so an attributed output is
    * named as the caller's entry names it. */
-  emitDirectory: string
+  emitDirectory: string,
+  /** The sources another compile checked and emitted (by node name, with the
+   * declaration it emitted for each — see {@link sourceDeclarationsOf}), and
+   * those whose declaration changed since the base build. */
+  sourceDeclarations: { declared: ReadonlyMap<string, string>; moved: ReadonlySet<string> }
 ): IWaveRun {
   const nodeNameOf = nodeNamer(root, resolver);
   /** The project's files by node name — what EXISTS, as against what this
@@ -2700,6 +2742,11 @@ function createWaveRun(
   };
   const edgeList = (from: Map<string, Map<string, IMemoEdge>>, name: string): IMemoEdge[] =>
     [...(from.get(name)?.values() ?? [])].sort((left, right) => (left.specifier < right.specifier ? -1 : 1));
+  const forwards = (containingFile: string, specifier: string): void => {
+    const known = resolutions.get(containingFile);
+    const target = known?.has(specifier) === true ? known.get(specifier) : resolve(specifier, containingFile);
+    record(forwardEdges, containingFile, specifier, target);
+  };
 
   return {
     resolved: (containingFile, specifier, target) => {
@@ -2711,11 +2758,7 @@ function createWaveRun(
        * cross-package wave walks. */
       record(DECLARATION_FILE.test(containingFile) ? forwardEdges : useEdges, containingFile, specifier, target);
     },
-    forwards: (containingFile, specifier) => {
-      const known = resolutions.get(containingFile);
-      const target = known?.has(specifier) === true ? known.get(specifier) : resolve(specifier, containingFile);
-      record(forwardEdges, containingFile, specifier, target);
-    },
+    forwards,
     emitted: (written, isDeclaration, text, byteOrderMark) => {
       const name = nodeNameOf(written);
       if (name !== undefined) {
@@ -2829,6 +2872,19 @@ function createWaveRun(
           }
           if (!isProject(name)) {
             return undefined;
+          }
+          const declaration = sourceDeclarations.declared.get(name);
+          if (declaration !== undefined) {
+            /* Checked and emitted by another compile: what it republishes is
+             * what its declaration imports, and whether its interface moved is
+             * whether that declaration did. One the base never held counts as
+             * moved, there being no artifact to have matched. */
+            return () => {
+              for (const imported of ts.preProcessFile(fs.readFileSync(declaration, "utf8"), true, false).importedFiles) {
+                forwards(file.fileName, imported.fileName);
+              }
+              return sourceDeclarations.moved.has(name) || !plan.memo.has(name);
+            };
           }
           return () => {
             emitting = name;
@@ -3040,6 +3096,105 @@ function readSetOf(program: IProgram, opened: string[], missed: ReadonlySet<stri
   /* Probed-and-absent files are recorded as the absences they were: a row is a
    * path either way, present and absent spelling identically. */
   return resolver.readSetOf([...program.getSourceFiles().map(file => file.fileName), ...opened, ...missed]);
+}
+
+/**
+ * @return each project source another compile emitted a declaration for, by
+ * node name, with that declaration's path: `<directory>/a/x.d.ts` declares the
+ * source at `<rootDir>/a/x.ts` (or `.tsx`, `.js`, `.jsx`), a `.d.mts` an `.mts`
+ * or `.mjs`, a `.d.cts` a `.cts` or `.cjs`.
+ */
+function sourceDeclarationsOf(
+  root: string,
+  directory: string,
+  parsed: IParsedCommandLine,
+  namer: (file: string) => string | undefined
+): Map<string, string> {
+  const declared = new Map<string, string>();
+  const rootDir = parsed.options.rootDir;
+  if (typeof rootDir !== "string") {
+    return declared;
+  }
+  for (const file of parsed.fileNames) {
+    const extension = path.extname(file);
+    const declarationExtension = DECLARATION_EXTENSION.get(extension);
+    const name = namer(file);
+    if (declarationExtension === undefined || DECLARATION_FILE.test(file) || name === undefined) {
+      continue;
+    }
+    const relative = path.relative(path.resolve(root, rootDir), file);
+    const declaration = path.resolve(root, directory, relative.slice(0, -extension.length) + declarationExtension);
+    if (fs.existsSync(declaration)) {
+      declared.set(name, declaration);
+    }
+  }
+  return declared;
+}
+
+/**
+ * Fold the changes to the declarations under `directory` into the changes to
+ * the sources they declare: a declaration's own name is no file of this
+ * compile's graph, while the source it declares is, and whether its interface
+ * moved is whether the declaration did. `moved` is every project source a
+ * changed or deleted declaration declares; each is seeded as changed.
+ */
+function withDeclarationChanges(
+  changes: IChangeLists,
+  directory: string,
+  projectFiles: ReadonlySet<string>,
+  sourceRoot: string | undefined
+): { changes: IChangeLists; moved: Set<string> } {
+  const prefix = `${normalizeName(directory)}/`;
+  const isDeclaration = (name: string): boolean => name.startsWith(prefix);
+  const declaredBy = (name: string): string[] => {
+    const stem = sourceStem(name.slice(prefix.length));
+    return [...DECLARATION_EXTENSION]
+      .filter(([, declarationExtension]) => name.endsWith(declarationExtension))
+      .map(([extension]) => `${sourceRoot}/${stem}${extension}`)
+      .filter(source => projectFiles.has(source));
+  };
+  const moved = new Set(sourceRoot === undefined ? [] : [...changes.changed, ...changes.deleted].filter(isDeclaration).flatMap(declaredBy));
+  const changed = changes.changed.filter(name => !isDeclaration(name));
+  const deleted = changes.deleted.filter(name => !isDeclaration(name));
+  return { changes: { changed: [...new Set([...changed, ...moved])].sort(), deleted }, moved };
+}
+
+/**
+ * @return true if the changes `plan` starts from can reach a file this compile
+ * checks, otherwise false. A declared source passes a change on only where its
+ * declaration moved, so they can wherever there is no bound, a deletion, or a
+ * seed that is no declared source, whose declaration moved, that the memo does
+ * not know, or that affects global scope.
+ */
+function reachesCheckedFiles(plan: ICompilePlan, declared: ReadonlyMap<string, string>, moved: ReadonlySet<string>): boolean {
+  return (
+    plan.seeds === undefined ||
+    plan.deleted.size > 0 ||
+    [...plan.seeds].some(name => !declared.has(name) || moved.has(name) || !plan.memo.has(name) || plan.memo.get(name)?.global === true)
+  );
+}
+
+/** @return the project's files that are this compile's to check and emit:
+ * every root but the sources another compile emitted a declaration for. */
+function checkedFiles(
+  program: IProgram,
+  parsed: IParsedCommandLine,
+  namer: (file: string) => string | undefined,
+  declared: ReadonlyMap<string, string>
+): SourceFile[] {
+  return parsed.fileNames
+    .filter(file => {
+      const name = namer(file);
+      return name === undefined || !declared.has(name);
+    })
+    .map(file => program.getSourceFile(file))
+    .filter((file): file is SourceFile => file !== undefined);
+}
+
+/** Emit each of `files`, as one result. */
+function emitEach(program: IProgram, files: readonly SourceFile[], write: WriteFile, transformers: ICustomTransformers | undefined): IEmitResult {
+  const results = files.map(file => program.emit(file, write, undefined, false, transformers));
+  return { emitSkipped: results.some(result => result.emitSkipped), diagnostics: results.flatMap(result => [...result.diagnostics]) };
 }
 
 /**

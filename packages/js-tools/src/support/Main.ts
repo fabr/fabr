@@ -17,6 +17,18 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+/** How a driver is told its options document: `--manifest=<path>`. */
+export const MANIFEST_FLAG = "--manifest=";
+
+/** Read the `--manifest=<path>` argument naming the options document. */
+export function parseManifestPath(argv: string[], driver: string): string {
+  const flag = argv.find(arg => arg.startsWith(MANIFEST_FLAG));
+  if (!flag) {
+    throw new Error(`${driver}: missing ${MANIFEST_FLAG}<path>`);
+  }
+  return flag.substring(MANIFEST_FLAG.length);
+}
+
 /**
  * Run a tool's `main` as this process's entry point. A `main` that returns (or
  * resolves to) a number sets the exit status to it; one that fails reports its

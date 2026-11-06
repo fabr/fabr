@@ -224,6 +224,15 @@ default flag esnext { }
 default flag dom { }
 
 #
+# How the packages the target's tests load are laid out. `layout/pnp` runs them
+# through a PnP table over fabr's cache, with no `node_modules` tree staged;
+# `layout/node_modules`, the default, stages the tree. Code that finds files by
+# walking `node_modules` rather than by importing needs the tree.
+#
+default flag layout/pnp { }
+default flag layout/node_modules { }
+
+#
 # The sources use the globals Node.js gives every module: `process`, `Buffer`
 # and `global`. In a `js_bundle` for a browser, the flag binds `process` and
 # `Buffer` to the `process` and `buffer` packages, which the bundle must list in
@@ -467,6 +476,10 @@ targetdef js_compile {
     # Files that aren't compiled but that the sources import, such as
     # stylesheets, so that those imports resolve.
     resources = FILES;
+    # Declarations another compile emitted for some of the sources, named as the
+    # sources are: those sources are compiled against, and neither checked nor
+    # emitted.
+    declarations = FILES;
 }
 
 #

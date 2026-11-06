@@ -207,7 +207,7 @@ class Compile {
           processLimit: new Semaphore(UNBOUNDED),
           ...options,
         }
-      )
+      ).then(({ files }) => files)
     );
   }
 

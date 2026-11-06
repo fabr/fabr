@@ -21,7 +21,7 @@ import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import type { SourceRef } from "../core/Repository";
 import { isJsonObject, readJsonFile } from "./Json";
-import { FabrError } from "../core/Errors";
+import { FabrError, TestsFailedError } from "../core/Errors";
 
 /**
  * The structured test report: the contract between a test rule and its
@@ -208,6 +208,32 @@ function isCtrfReport(document: unknown): document is ITestReport {
     Array.isArray(tests) &&
     tests.every(isJsonObject)
   );
+}
+
+/** @return the failure a test report states, or undefined where every test passed. */
+export function testFailureOf(report: ITestReport): TestsFailedError | undefined {
+  const { summary } = report.results;
+  return summary.failed > 0 ? new TestsFailedError(formatTestFailures(report), summary.failed, summary.tests, report) : undefined;
+}
+
+/**
+ * Check the test report among a test run's `output`: answer the output where
+ * no test failed, else fail with the failure the report states. A run whose
+ * tests failed is a cached result like a green one, and this is where it fails
+ * its target, on a cache hit as on a miss.
+ */
+export function checkTestReport(output: FileSet): Computable<FileSet> {
+  const file = output.getFile(TEST_REPORT_FILENAME);
+  if (file === undefined) {
+    return Computable.resolve(output);
+  }
+  return readJsonFile(file, toTestReport).then(report => {
+    const failure = testFailureOf(report);
+    if (failure !== undefined) {
+      throw failure;
+    }
+    return output;
+  });
 }
 
 /**

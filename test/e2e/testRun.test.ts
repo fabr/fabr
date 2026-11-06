@@ -19,6 +19,8 @@
 
 import { expect } from "chai";
 import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { runFabr, STUB_TSC, STUB_TSC_CONFIG } from "./harness";
 
 /* `fabr test` end to end: compile a package's tests and run them under fabr's
@@ -32,6 +34,21 @@ import { runFabr, STUB_TSC, STUB_TSC_CONFIG } from "./harness";
  * MODULE scope and is not on globalThis. `@types/jest` rides the e2e target's
  * deps, so the bare name type-checks under the fabr compile too. */
 jest.setTimeout(90000);
+
+/** Make a file outside the project for each test to record that it ran in,
+ * which the runs share, and how to read it: the names recorded since the last
+ * read, sorted. */
+function runMarker(): { marker: string; ran(): string[] } {
+  const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-e2e-marker-")), "ran");
+  return {
+    marker,
+    ran: () => {
+      const lines = fs.existsSync(marker) ? fs.readFileSync(marker, "utf8").split("\n").filter(Boolean).sort() : [];
+      fs.rmSync(marker, { force: true });
+      return lines;
+    },
+  };
+}
 
 describe("e2e: fabr test (runner from @fabr-build/js)", () => {
   const project = (body: string): Record<string, string> => ({
@@ -52,6 +69,164 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
     /* rendered as a test outcome (name + message), not a build failure */
     expect(result.stderr).to.contain("test failed");
     expect(result.stderr).to.contain("fails on purpose");
+  });
+
+  it("keeps a red run as its result, reported from the cache until --retry-failed runs its failed files again", () => {
+    /* Unique to this run, so the first run is a miss whatever the shared cache holds. */
+    const { marker, ran } = runMarker();
+    const files = {
+      ...STUB_TSC,
+      "PROJECT.fabr":
+        "plugin @fabr-build/js;\n\n" +
+        STUB_TSC_CONFIG +
+        `\njs_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  test_env = { MARKER = "${marker}"; }\n}\n`,
+      "src/red.test.ts":
+        'const assert = require("node:assert");\nrequire("fs").appendFileSync(process.env.MARKER, "red\\n");\n' +
+        `describe("red", () => { it("fails on purpose ${process.pid}-${Date.now()}", () => { assert.equal(1, 2); }); });\n`,
+      "src/green.test.ts": 'require("fs").appendFileSync(process.env.MARKER, "green\\n");\ndescribe("green", () => { it("holds", () => {}); });\n',
+    };
+    const first = runFabr(files, ["-DJS_TARGET=es2020", "test", "thing"]);
+    expect(first.status).to.not.equal(0);
+    expect(first.stderr).to.contain("fails on purpose");
+    expect(first.stderr, "the run is announced").to.match(/Testing thing/);
+    expect(ran()).to.deep.equal(["green", "red"]);
+
+    const cached = runFabr(files, ["-DJS_TARGET=es2020", "test", "thing"]);
+    expect(cached.status, "the cached failure still fails the command").to.not.equal(0);
+    expect(cached.stderr).to.contain("fails on purpose");
+    expect(cached.stderr, "nothing is run").to.not.match(/^.*Testing thing.*\(\d/m);
+    expect(ran()).to.deep.equal([]);
+
+    const retried = runFabr(files, ["-DJS_TARGET=es2020", "test", "--retry-failed", "thing"]);
+    expect(retried.status).to.not.equal(0);
+    expect(retried.stderr, "the run is performed again, and marked as failed").to.match(/✗ Testing thing.*\(\d/);
+    expect(ran(), "only the file that failed").to.deep.equal(["red"]);
+  });
+
+  it("runs again only the test files a change reaches", () => {
+    /* Each test records that it ran in a file outside the project, which the
+     * runs share; the sources are unique to this run, so the first is a miss. */
+    const { marker, ran } = runMarker();
+    const unique = `${process.pid}-${Date.now()}`;
+    const files = (a: string): Record<string, string> => ({
+      ...STUB_TSC,
+      "PROJECT.fabr":
+        "plugin @fabr-build/js;\n\n" +
+        STUB_TSC_CONFIG +
+        `\njs_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  test_env = { MARKER = "${marker}"; }\n}\n`,
+      "src/a.ts": `exports.a = "${a}";\n`,
+      "src/b.ts": `exports.b = "${unique}";\n`,
+      "src/a.test.ts": 'const { a } = require("./a");\nrequire("fs").appendFileSync(process.env.MARKER, "a\\n");\ndescribe("a", () => { it("is", () => {}); });\n',
+      "src/b.test.ts": 'const { b } = require("./b");\nrequire("fs").appendFileSync(process.env.MARKER, "b\\n");\ndescribe("b", () => { it("is", () => {}); });\n',
+      /* What a process it starts reads is beyond any record, so it runs on every change. */
+      "src/c.test.ts":
+        'require("child_process").execFileSync(process.execPath, ["-e", ""]);\nrequire("fs").appendFileSync(process.env.MARKER, "c\\n");\ndescribe("c", () => { it("is", () => {}); });\n',
+    });
+
+    const first = runFabr(files(unique), ["-DJS_TARGET=es2020", "test", "thing"]);
+    expect(first.status, first.stderr).to.equal(0);
+    expect(ran()).to.deep.equal(["a", "b", "c"]);
+
+    const edited = runFabr(files(`${unique}-edited`), ["-DJS_TARGET=es2020", "test", "thing"]);
+    expect(edited.status, edited.stderr).to.equal(0);
+    expect(edited.stderr, "the report covers every file").to.contain("3 tests passed");
+    expect(ran(), "the test that loads the edited source, and the one whose reads are unknown").to.deep.equal(["a", "c"]);
+
+    const again = runFabr(files(`${unique}-edited`), ["-DJS_TARGET=es2020", "test", "thing"]);
+    expect(again.status).to.equal(0);
+    expect(ran(), "an unchanged run runs nothing").to.deep.equal([]);
+  });
+
+  it("resolves the tests' packages through a PnP table under layout/pnp", () => {
+    const result = runFabr(
+      {
+        ...STUB_TSC,
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\n\n" +
+          STUB_TSC_CONFIG +
+          "\njs_package lib { srcs = libsrc:**/*.ts; }\n" +
+          "js_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  deps = lib;\n  test_deps = layout/pnp;\n}\n",
+        "libsrc/index.ts": 'exports.greeting = "hello";\n',
+        "src/a.ts": 'exports.a = require("lib").greeting;\n',
+        "src/a.test.ts":
+          'const assert = require("node:assert");\n' +
+          'describe("a", () => { it("loads its dependency and its own package by name", () => {\n' +
+          '  assert.equal(require("./a").a, "hello");\n' +
+          '  assert.equal(require("thing/a").a, "hello");\n' +
+          '  assert.equal(require("lib"), require("lib/index.js"), "one file is one module, however it is named");\n' +
+          "}); });\n",
+      },
+      ["-DJS_TARGET=es2020", "test", "thing"]
+    );
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stderr).to.contain("1 test passed");
+  });
+
+  it("runs every test file again under layout/pnp when a package changes the table", () => {
+    const { marker, ran } = runMarker();
+    const unique = `${process.pid}-${Date.now()}`;
+    const files = (greeting: string): Record<string, string> => ({
+      ...STUB_TSC,
+      "PROJECT.fabr":
+        "plugin @fabr-build/js;\n\n" +
+        STUB_TSC_CONFIG +
+        "\njs_package lib { srcs = libsrc:**/*.ts; }\n" +
+        `js_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  deps = lib;\n  test_deps = layout/pnp;\n  test_env = { MARKER = "${marker}"; }\n}\n`,
+      "libsrc/index.ts": `exports.greeting = "${greeting}";\n`,
+      "src/a.test.ts": 'require("lib");\nrequire("fs").appendFileSync(process.env.MARKER, "a\\n");\ndescribe("a", () => { it("is", () => {}); });\n',
+      "src/b.test.ts": 'require("fs").appendFileSync(process.env.MARKER, "b\\n");\ndescribe("b", () => { it("is", () => {}); });\n',
+    });
+    expect(runFabr(files(unique), ["-DJS_TARGET=es2020", "test", "thing"]).status).to.equal(0);
+    expect(ran()).to.deep.equal(["a", "b"]);
+    const changed = runFabr(files(`${unique}-changed`), ["-DJS_TARGET=es2020", "test", "thing"]);
+    expect(changed.status, changed.stderr).to.equal(0);
+    expect(ran(), "the table every file resolved through changed").to.deep.equal(["a", "b"]);
+  });
+
+  it("runs again under layout/pnp a test whose own file changed, where a package has a file of its name", () => {
+    /* `lib` ships a `build/index.js` and a `package.json`, names the install
+     * of the package under test holds too: neither may stand in for the
+     * other's in what changed. */
+    const { marker, ran } = runMarker();
+    const unique = `${process.pid}-${Date.now()}`;
+    const files = (own: string): Record<string, string> => ({
+      ...STUB_TSC,
+      "PROJECT.fabr":
+        "plugin @fabr-build/js;\n\n" +
+        STUB_TSC_CONFIG +
+        "\njs_package lib { srcs = libsrc:**/*.ts; }\n" +
+        `js_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  deps = lib;\n  test_deps = layout/pnp;\n  test_env = { MARKER = "${marker}"; }\n}\n`,
+      "libsrc/build/index.ts": `exports.lib = "${unique}";\n`,
+      "src/index.ts": `exports.own = "${own}";\n`,
+      "src/a.test.ts": 'require("./index");\nrequire("fs").appendFileSync(process.env.MARKER, "a\\n");\ndescribe("a", () => { it("is", () => {}); });\n',
+    });
+    expect(runFabr(files(unique), ["-DJS_TARGET=es2020", "test", "thing"]).status).to.equal(0);
+    expect(ran()).to.deep.equal(["a"]);
+    const edited = runFabr(files(`${unique}-edited`), ["-DJS_TARGET=es2020", "test", "thing"]);
+    expect(edited.status, edited.stderr).to.equal(0);
+    expect(ran(), "the test that loads the edited file").to.deep.equal(["a"]);
+  });
+
+  it("runs again a test that loads a dependency whose package.json alone changed", () => {
+    /* `lib` stops exporting `./a`, a file it still ships: node reads the
+     * `exports` of a `package.json` through no `fs` function. */
+    const unique = `${process.pid}-${Date.now()}`;
+    const files = (exported: string): Record<string, string> => ({
+      ...STUB_TSC,
+      "PROJECT.fabr":
+        "plugin @fabr-build/js;\n\n" +
+        STUB_TSC_CONFIG +
+        `\njs_package lib { srcs = libsrc:**/*.ts; exports = libsrc:${exported}.ts; }\n` +
+        "js_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  deps = lib;\n}\n",
+      "libsrc/a.ts": `exports.v = "${unique}";\n`,
+      "libsrc/b.ts": "exports.v = 2;\n",
+      "src/a.test.ts": `const assert = require("node:assert");\ndescribe("a", () => { it("loads lib/a", () => { assert.equal(require("lib/a").v, "${unique}"); }); });\n`,
+    });
+    const first = runFabr(files("a"), ["-DJS_TARGET=es2020", "test", "thing"]);
+    expect(first.status, first.stderr).to.equal(0);
+    const unexported = runFabr(files("b"), ["-DJS_TARGET=es2020", "test", "thing"]);
+    expect(unexported.status, "lib/a is no longer exported").to.not.equal(0);
+    expect(unexported.stderr).to.contain("loads lib/a");
   });
 
   it("reports WHY a test file could not be loaded, not just that it failed", () => {

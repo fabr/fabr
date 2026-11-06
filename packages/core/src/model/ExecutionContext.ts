@@ -159,6 +159,15 @@ export class ExecutionContext {
   public isForced(target: ITargetDecl): boolean {
     return this.forcedTargets.has(target);
   }
+
+  /**
+   * Whether a red test run served from the cache is performed again rather
+   * than served (the driver's `--retry-failed`): once, from its own last run,
+   * so a step that keeps per-test-file state reruns only what failed or
+   * changed; its outcome is committed like any other. What succeeds stays a
+   * cache hit.
+   */
+  public retryFailed = false;
   /** The interactive terminal, when there is one — see {@link UserInteraction}.
    * Set by the driver only when attached to a tty; its absence is the
    * "non-interactive run" signal. */
@@ -260,6 +269,7 @@ export class ExecutionContext {
      * status event is the task's whole condition. */
     let state: TaskState = "running";
     let latest: TaskProgress | undefined;
+    let failure: Error | undefined;
     const status = (): void => this.emit({ kind: "task-progress", id, task, state, progress: latest });
     const report: ITaskReport = {
       output: this.wantsOutput ? { line: (line, stream) => this.emit({ kind: "task-output", id, task, line, stream }) } : undefined,
@@ -270,6 +280,9 @@ export class ExecutionContext {
       progress: measured => {
         latest = measured;
         status();
+      },
+      fail: error => {
+        failure = error;
       },
     };
     this.emit({ kind: "task-start", id, task, state });
@@ -286,7 +299,7 @@ export class ExecutionContext {
     }
     return chain.then(
       result => {
-        end(false);
+        end(failure !== undefined, failure);
         return result;
       },
       err => {

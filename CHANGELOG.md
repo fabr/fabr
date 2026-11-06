@@ -12,6 +12,9 @@ number.
 - Add bash-style string edit patterns.
 - Re-check version lists and other mutable downloads at most once a day; add --refresh to re-check them now.
 - Add @host search-path as the 'authorised' hermetic escape route.
+- Add targetdef inheritance: derived targets inherit their base's rules but can extend and override.
+- Add support for map splices in target properties.
+- Breaking: Cache failed test runs like passing ones; add --retry-failed to run failed tests again.
 
 @fabr-build/aws:
 - Add s3 download support.
@@ -31,6 +34,13 @@ number.
 - Fix packages in both srcs + deps being left unbundled.
 - Fix bundling cjs files with __dirname/etc.
 - Fix resources not being mounted during package tests.
+- js_package tests compile against the package's own build, checking and emitting only the tests.
+- Run again only the test files a change can reach, coverage included.
+- Add layout/pnp flag to run tests through a PnP table instead of node_modules.
+- Fix setImmediate/MessageChannel being visible to jsdom tests (as under jest).
+- Test processes end once their report is written, rather than waiting on what the tests left running.
+- Incremental test compilation and execution.
+- Support pnp for test execution.
 
 @fabr-build/vscode-ext:
 - New VSCode extension.

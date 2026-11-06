@@ -113,15 +113,6 @@ export function writeDepsReport(argv: string[], reads: Iterable<string>, edges: 
   fs.writeFileSync(path.resolve(file), serializeRunReport(reads, edges));
 }
 
-/** Read the `--manifest=<path>` argument naming the options document. */
-export function parseManifestPath(argv: string[], driver: string): string {
-  const flag = argv.find(arg => arg.startsWith("--manifest="));
-  if (!flag) {
-    throw new Error(`${driver}: missing --manifest=<path>`);
-  }
-  return flag.substring("--manifest=".length);
-}
-
 export interface ISourceMapLocation {
   /** The step's working directory, which every path is made relative to. */
   root: string;

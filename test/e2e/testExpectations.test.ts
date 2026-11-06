@@ -216,6 +216,16 @@ function reportOf(failed) {
       expect(result.stderr).to.contain('+   "value": "two"');
     });
 
+    snapshots("runs a passing test again when its record is edited", () => {
+      /* Unique to this run, so the first run is a miss whatever the shared cache holds. */
+      const value = `${process.pid}-${Date.now()}`;
+      const first = runFabr(native(value, { [SNAP]: recorded(value) }), ["-DJS_TARGET=es2020", "test", "thing"]);
+      expect(first.status, first.stderr).to.equal(0);
+      const edited = runFabr(native(value, { [SNAP]: recorded(`${value}-edited`) }), ["-DJS_TARGET=es2020", "test", "thing"]);
+      expect(edited.status, "the edited record no longer matches").to.not.equal(0);
+      expect(edited.stderr).to.contain("does not match its recorded snapshot");
+    });
+
     snapshots("names fabr's flag, not node's, when nothing is recorded", () => {
       const result = runFabr(native("one"), ["-DJS_TARGET=es2020", "test", "thing"]);
       expect(result.status).to.not.equal(0);

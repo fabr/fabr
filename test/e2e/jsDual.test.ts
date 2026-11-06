@@ -43,7 +43,7 @@ describe("e2e: dual js_package", () => {
 
   it("ships both formats in one tree, assets once", () => {
     const listed = dual("resources = styles.css; exports = src:index.ts src:server.ts;", "ls", "thing");
-    expect(listed.status).to.equal(0);
+    expect(listed.status, listed.stderr).to.equal(0);
     const files = listed.stdout.split("\n").filter(Boolean);
     for (const both of ["index.js", "index.d.ts", "index.mjs", "index.d.mts", "server.js", "server.mjs"]) {
       expect(files, both).to.contain(both);

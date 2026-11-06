@@ -62,7 +62,8 @@ export interface IReportedModule {
 /**
  * Make the options one invocation runs vitest with, for the test files of
  * `options` in the installation whose working directory is `root`, each worker
- * loading the runner's own `preloads` before the target's setup entries. Nothing is
+ * loading the runner's own `preloads` before the target's setup entries, and
+ * `workerPreloads` before anything at all. Nothing is
  * read from a config file: what a suite needs is what the target declares.
  *
  * Modules load through node's own loader (`viteModuleRunner: false`), which is
@@ -70,7 +71,13 @@ export interface IReportedModule {
  * strictly unless they are being updated — vitest would otherwise record a
  * missing one and pass.
  */
-export function vitestOptions(options: IRunnerOptions, root: string, preloads: string[], reporter: object): Record<string, unknown> {
+export function vitestOptions(
+  options: IRunnerOptions,
+  root: string,
+  preloads: string[],
+  reporter: object,
+  workerPreloads: string[] = []
+): Record<string, unknown> {
   return {
     config: false,
     root,
@@ -84,6 +91,8 @@ export function vitestOptions(options: IRunnerOptions, root: string, preloads: s
     testTimeout: TEST_TIMEOUT_MS,
     reporters: [reporter],
     pool: "forks",
+    /* Before anything a worker loads, vitest's own code included. */
+    execArgv: workerPreloads.flatMap(preload => ["--require", preload]),
     cache: false,
     experimental: { viteModuleRunner: false },
   };

@@ -145,8 +145,7 @@ export function describeUnit(setup: ICompileSetup): RuleResult {
     DESCRIBE_UNIT_ACTION,
     { deps: setup.deps.filter(dep => dep instanceof PackageFileSet), files },
     { root: root ?? "", self: setup.packageName ?? "" },
-    undefined,
-    "describe"
+    { label: "describe" }
   );
 }
 

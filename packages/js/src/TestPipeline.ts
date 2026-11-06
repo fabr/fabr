@@ -19,8 +19,10 @@
 
 /**
  * The shared test pipeline behind both js test rules (js_test and
- * js_package[test]): compile the source tree (tests included), assemble the
- * runnable installation, and run the runner over the compiled test files,
+ * js_package[test]): compile the tests with the sources (a js_package's
+ * sources checked and emitted by the package's build, which the install then
+ * holds), assemble the runnable installation, and run the runner over the
+ * compiled test files,
  * reporting through the test report contract defined by @fabr-build/core.
  *
  * What differs between test frameworks is an {@link ITestFramework}: which
@@ -31,7 +33,7 @@
  *
  *     <runner> --report=<file> --env=<node|jsdom> [--update-snapshots]
  *              [--name-pattern=<regex>] [--setup=<module|./staged path>]…
- *              <test files…>
+ *              [--pnp=<file>] [--reads=<file>] <test files…>
  *
  * red exit status on failure, report written as CTRF. `--env` names the
  * environment the suite RUNS in, which follows the `dom` source flag rather than
@@ -42,6 +44,12 @@
  * `--name-pattern` runs only the tests whose full names (suite names and the
  * test's own, joined by spaces) the JavaScript regular expression matches (see
  * TEST_NAME_PATTERN);
+ * `--pnp` names the PnP table the test processes resolve packages through,
+ * where the install has one in place of `node_modules` (the `layout/pnp`
+ * flag; js-tools' `pnp/Runtime.ts`);
+ * `--reads` asks for what the test processes loaded or read (js-tools'
+ * `testRunner/Reads.ts`), from which the test step decides what a change
+ * reaches;
  * each `--setup` names something every test process loads before any test file,
  * in the order given — fabr passes the target's conventional setup script (see
  * {@link SETUP_STEM}), and the contract stays plural because it is the runner's,
@@ -76,6 +84,7 @@ import {
   TEST_EXPECTATIONS,
   TEST_NAME_PATTERN,
   TEST_REPORT_FILENAME,
+  checkTestReport,
   toEnvironment,
   TREE_MOUNT,
   UPDATE_EXPECTATIONS,
@@ -85,18 +94,21 @@ import {
   type Unmaterialized,
 } from "@fabr-build/core";
 import { type ITypeScriptPayload, layOutUnits, TSSERVER_PLUGIN, TYPESCRIPT_DATA_KIND } from "./Description";
-import { type ICoverageOptions, SOURCE_LOCATIONS_FILE } from "@fabr-build/js-tools";
+import { PNP_DATA_FILE, SOURCE_LOCATIONS_FILE } from "@fabr-build/js-tools";
 import { createTestRunAction } from "./TestRunAction";
+import { pnpManifestOf } from "./PnPManifest";
 import { posix } from "path";
 import { COMPILE_OUT_DIR, COMPILE_SRC_DIR } from "./rules/BuildJSCompile";
 import { assembleNodeModules, packageDirectories } from "./NodeModules";
 import {
   compileContents,
+  DECLARATION_FILE,
   type ICompiledContents,
   formatJSTarget,
   PinnedJSTarget,
   moduleTypeFile,
   parseJSTarget,
+  layoutOf,
   resourceFiles,
   stripExtension,
   stripPackageJson,
@@ -113,11 +125,8 @@ const GLOBALS_TYPES_MOUNT = "@types/fabr-test-globals/index.d.ts";
  * dropped when it tests itself so it doesn't collide with the synthetic mount. */
 const RUNNER_GLOBALS_TYPES = "testRunner/test-globals.d.ts";
 
-/** Where a measured run stages the coverage driver's install, the document it
- * reads, and the directory the test processes write their V8 coverage into. */
+/** Where a measured run stages the coverage driver's install. */
 const COVERAGE_STAGE_DIR = ".fabr-coverage";
-const COVERAGE_OPTIONS_FILE = ".fabr-coverage.json";
-const COVERAGE_RAW_DIR = ".fabr-coverage-raw";
 
 /** A compiled JavaScript file, which a measured run measures. */
 const COMPILED_SCRIPT = /\.[cm]?js$/;
@@ -177,8 +186,8 @@ function sourceLocations(sources: FileSet): MemoryFile {
 export interface ITestFramework {
   /** The global naming the runner (a runnable honouring the runner contract). */
   runner: string;
-  /** The module format the runner loads test files as, which the tests are
-   * therefore compiled to — whatever the package itself is built as. */
+  /** The module format the runner loads test files as, which the tests, and
+   * the package a js_package's tests test, are built in. */
   module: PinnedJSTarget["module"];
   /** Whether the runner supplies the types of the test globals it installs
    * (its install's `test-globals.d.ts`); otherwise an ordinary `@types`
@@ -217,6 +226,9 @@ export function testFramework(context: TargetContext, property: string): Computa
 /** What a test target requires, as written (unmaterialized): everything the
  * evaluation consumes from the build graph, so it all resolves jointly. */
 export type TestRequirements = {
+  /** The package a js_package's tests test, as its build makes it in the
+   * module format their framework loads; nothing for a js_test. */
+  package: PackageSources;
   srcs: SourceRef[];
   tests: SourceRef[];
   /** A js_package[test] folds its `provided_deps` in here — a test install is
@@ -257,16 +269,35 @@ export function testRequirements(written: TestRequirements): ResolutionSpec<Test
   return {
     requirements:
       written.tests.length === 0
-        ? { srcs: [], tests: [], deps: new PackageSources([]), test_deps: new PackageSources([]), test_resources: [], resources: [], expectations: [] }
+        ? { package: new PackageSources([]), srcs: [], tests: [], deps: new PackageSources([]), test_deps: new PackageSources([]), test_resources: [], resources: [], expectations: [] }
         : written,
   };
 }
 
 /**
- * Run the shared test pipeline: compile the whole source tree (tests included,
- * so their relative imports resolve against the code under test), lay it out as
- * a runnable installation together with the deps, the test-only deps and the
- * runner, and execute the runner over the compiled test files. The output
+ * Make the overrides a js_package's tests require the package under: built,
+ * with `JS_TARGET`'s module format set to the one the framework the target's
+ * STRING property `property` names loads, where the package is not already
+ * built in it. A package already in that format is the build `fabr build`
+ * makes.
+ */
+export function packageBuildOverrides(context: TargetContext, property: string): Computable<Constraints> {
+  return Computable.forAll([testFramework(context, property), context.getGlobalString("JS_TARGET", BUILD_OVERRIDE)], (framework, target) => {
+    const jsTarget = parseJSTarget(target);
+    return jsTarget.module === framework.module
+      ? BUILD_OVERRIDE
+      : BUILD_OVERRIDE.with(Constraints.of({ JS_TARGET: formatJSTarget(testTargetOf(jsTarget, framework)) }));
+  });
+}
+
+/**
+ * Run the shared test pipeline: compile the tests in one program with the
+ * sources, so their relative imports resolve against the code under test — a
+ * js_package's sources checked and emitted not here but by the package's build,
+ * the `package` requirement, whose declarations the compile is given — lay the
+ * result out as a runnable installation, beside the package, together with the
+ * deps, the test-only deps and the runner, and execute the runner over the
+ * compiled test files. The output
  * artifact is the test report; a red run fails the target with the report's
  * failure summary.
  *
@@ -280,7 +311,7 @@ export function compileAndRunTests(
   context: TargetContext,
   framework: ITestFramework,
   settings: ITestSettings,
-  { srcs, tests: testSets, deps, test_deps: testDeps, test_resources: testResources, resources: shipped, expectations: expectationSets }: TestContents
+  { package: testedSets, srcs, tests: testSets, deps, test_deps: testDeps, test_resources: testResources, resources: shipped, expectations: expectationSets }: TestContents
 ): Computable<RuleResult> {
   const tests = FileSet.unionAll(...testSets);
   if (tests.isEmpty()) {
@@ -288,10 +319,15 @@ export function compileAndRunTests(
      * test that yields no runnable output is NOT this case — it errors below. */
     return Computable.resolve(EMPTY_FILESET);
   }
-  /* Compile srcs and tests together (tests are normally within srcs); the
-   * globals declarations come in via the synthetic @types mount, so a copy
-   * among the sources (the runner testing itself) is dropped */
+  /* Compile srcs and tests together (tests are normally within srcs), so the
+   * tests are checked in the program the sources make. A js_package's own
+   * sources were checked and emitted by its build: its declarations go with
+   * them, and the compile checks and emits only the rest. The globals
+   * declarations come in via the synthetic @types mount, so a copy among the
+   * sources (the runner testing itself) is dropped. */
+  const tested = testedSets.find((set): set is PackageFileSet => set instanceof PackageFileSet);
   const sources = FileSet.unionAll(...srcs, tests).remap(name => (name === RUNNER_GLOBALS_TYPES ? undefined : name));
+  const declarations = tested === undefined ? undefined : stripPackageJson(tested).remap(name => (DECLARATION_FILE.test(name) ? name : undefined));
   /* The declared test sources' stems (path minus extension). Their compiled `.js`
    * are picked out of the *actual* compiled tree by stem in planTestRun, so the
    * source→output naming is never re-derived here — js_compile owns it. */
@@ -325,16 +361,22 @@ export function compileAndRunTests(
       const resources = resourceFiles(allDeps.filter(dep => !(dep instanceof PackageFileSet)));
 
       const testTarget = testTargetOf(jsTarget, framework);
-      return testCompile(context, framework, settings, { sources, deps, testDeps, runner, testTarget }).then(built => {
+      return testCompile(context, framework, settings, { sources, declarations, deps, testDeps, runner, testTarget }).then(built => {
         if (built.sources.ts.isEmpty() && built.sources.js.isEmpty() && built.sources.jsx.isEmpty()) {
           /* Tests are declared but none is a compilable source (.ts/.tsx/.js/.jsx),
            * so there is nothing to run — a loud failure, not a silent green. */
           throw new FabrError("Test target declares test files but none is a compilable source");
         }
         return planTestRun(context, {
-          compiled: Computable.resolve(built.compiled),
+          /* The tests' output beside the package's own, as one tree, where what
+           * the package ships is the package's: a JSON source both import is
+           * emitted by the package's compile and passed through, as written,
+           * by the tests'. */
+          compiled: Computable.resolve(
+            tested === undefined ? built.compiled : FileSet.unionAll(stripPackageJson(tested), built.compiled.minus(tested))
+          ),
           /* The lowered CSS is a sibling of the compiled code that imports it. */
-          copied: FileSet.unionAll(built.passthrough, built.css),
+          copied: FileSet.unionAll(built.passthrough, built.css).minus(tested ?? EMPTY_FILESET),
           compileSrcs: built.compileSrcs,
           nodeModules: runtimeModules,
           resources,
@@ -351,6 +393,8 @@ export function compileAndRunTests(
            * library rendering in its tests) declares `dom` in test_deps and
            * gets both the lib and the environment. */
           needsDom: usesDom([...deps, ...testDeps].filter((dep): dep is Flag => dep instanceof Flag)),
+          layout: layoutOf([...deps, ...testDeps].filter((dep): dep is Flag => dep instanceof Flag)),
+          packages,
           testResources: FileSet.unionAll(...testResources, ...shipped),
           expectations: FileSet.unionAll(...expectationSets),
           env,
@@ -368,6 +412,9 @@ export function compileAndRunTests(
 /** The compile a test run makes: what it compiles, against what, and for which target. */
 interface ITestCompile {
   sources: FileSet;
+  /** The declarations the package's build emitted for its sources, which the
+   * compile then neither checks nor emits. */
+  declarations?: FileSet;
   deps: FileSet[];
   testDeps: FileSet[];
   runner: FileSet;
@@ -393,19 +440,17 @@ function testCompile(
   context: TargetContext,
   framework: ITestFramework,
   settings: ITestSettings,
-  { sources, deps, testDeps, runner, testTarget }: ITestCompile,
+  { sources, declarations, deps, testDeps, runner, testTarget }: ITestCompile,
   describe = false
 ): Computable<ICompiledContents> {
   /* The target is set unconditionally, including when the package already
    * emits that format: the override is then a different SPELLING of the same
    * target (`es2020` formats back as `es2020-commonjs-node`), which parses
-   * identically, yields an identical tsconfig, and so shares the one compile
-   * by cache key.
-   *
-   * Built as the package would build it, stylesheets included — a test
-   * importing one gets the CSS the package ships, not raw Sass. */
+   * identically and yields an identical tsconfig. Stylesheets among the
+   * sources are built as a package would build them. */
   return compileContents(context, sources, [...deps, ...testDeps, framework.globalsTypes ? runnerGlobalsTypes(runner) : EMPTY_FILESET], {
     packageName: settings.packageName,
+    declarations,
     constraints: Constraints.of({ JS_TARGET: formatJSTarget(testTarget) }),
     /* A distinct label: the test compile is its own work item (its tree
      * includes the tests), with its own incremental base. */
@@ -417,7 +462,11 @@ function testCompile(
 /**
  * Describe a test target as its run would compile it: its BSP target, tagged
  * a test, and its test unit — the run's compile of its sources and tests,
- * resolved as the run resolves them.
+ * resolved as the run resolves them. The unit is the run's whole program;
+ * that the run checks and emits only the tests, its sources having been by
+ * the package's build, is not part of a description (describing builds
+ * nothing, so there are no declarations to name), and an editor checks the
+ * whole program in any case.
  */
 export function describeTests(
   context: TargetContext,
@@ -532,6 +581,11 @@ interface ITestRun {
   /** Whether the suite needs a DOM (the `dom` source flag), named to the runner
    * as its `--env`. */
   needsDom: boolean;
+  /** How the packages the test processes load are laid out (the `layout/*`
+   * flags): as `nodeModules`, or as a PnP table over `packages`. */
+  layout: "pnp" | "node_modules";
+  /** The packages the install holds. */
+  packages: PackageFileSet[];
   /** Verbatim runtime files for the tests, mounted with the compiled output. */
   testResources: FileSet;
   /** The declared recorded expectations — staged beside the compiled tests, and
@@ -558,7 +612,8 @@ interface ITestRun {
  * in as a concrete input to the test-run action.
  *
  * The run is yielded as the test-run action with a reshape
- * ({@link reshapeTestResult}): the report is the target's content, and any
+ * ({@link reshapeTestResult}), which fails the target where the report says
+ * tests failed: otherwise the report is the target's content, and any
  * refreshed snapshot files become write-back candidates paired with their
  * source locations. The reshape is applied every evaluation, so the candidates
  * reconstruct on the CACHE-HIT path too (a warm replay of an update run whose
@@ -589,8 +644,23 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
      * `./x` from cwd or `__dirname`-relative alike — then mean what they mean in
      * the source tree, since the compiled tree mirrors it. */
     const coverage = run.coverage && measuredRun(run.coverage, compiledTree, new Set([...testFiles, ...(setupFile ? [setupFile] : [])]));
+    const pnp = run.layout === "pnp";
+    if (pnp && coverage !== undefined) {
+      throw new FabrError("Measuring coverage needs the tests' packages in a node_modules tree; drop layout/pnp for --coverage");
+    }
+    /* Under PnP the packages are rows of a table over the cache's trees, the
+     * package under test one at its compiled tree; any change to them is a
+     * change to the table, which every test process reads. */
+    const manifest = pnp
+      ? pnpManifestOf(
+          run.packages,
+          run.packageName === undefined ? undefined : { name: run.packageName, location: `./${COMPILE_OUT_DIR}/` },
+          /* The runner's own install is a node_modules tree, and no package of the table. */
+          `^${RUNNER_STAGE_DIR.replace(/\./g, "\\.")}(/|$)`
+        )
+      : undefined;
     const staged = FileSet.layout({
-      node_modules: [run.nodeModules, selfMount(run.packageName)],
+      ...(manifest === undefined ? { node_modules: [run.nodeModules, selfMount(run.packageName)] } : { [PNP_DATA_FILE]: manifest.toFile() }),
       [RUNNER_STAGE_DIR]: [run.runner],
       ...(coverage?.staged ?? {}),
       "package.json": packageJson,
@@ -620,6 +690,7 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
         /* `./`-prefixed: the runner contract distinguishes a path within the
          * installation from a bare module name by exactly that prefix. */
         ...(setupFile === undefined ? [] : [`--setup=./${setupFile}`]),
+        ...(manifest === undefined ? [] : [`--pnp=../${PNP_DATA_FILE}`]),
       ],
       /* The runner stays at the install root while the working directory is the
        * compiled tree, so its entry, and the pool its node is in, are reached one
@@ -653,30 +724,29 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
      * offers back to the tree — every evaluation, so refreshed records reach
      * the driver on a cache hit as well as on a miss. */
     return createTestRunAction({
+      trees: manifest?.packages,
       staged,
       writable,
       argv,
       testFiles,
       outputs,
       env: toEnvironment(run.env),
-      coverage: coverage && { argv: coverage.argv, raw: COVERAGE_RAW_DIR },
-    }).withReshape(result =>
-      reshapeTestResult(result, run.tests, records)
-    );
+      coverage: coverage && { argv: coverage.argv, measured: coverage.measured },
+    }).withReshape(result => checkTestReport(result).then(checked => reshapeTestResult(checked, run.tests, records)));
   });
 }
 
 /**
  * Stage what a measured run adds to the install, and make the coverage driver's
- * command line, run from the install root. Measured is every compiled script of
- * the compile but the tests and the setup script, and of every package built in
- * the project, by where the install lays it out.
+ * command line, run from the install root, and the files it measures: every
+ * compiled script of the compile but the tests and the setup script, and of
+ * every package built in the project, by where the install lays it out.
  */
 function measuredRun(
   { driver, packages }: { driver: RunnableFileSet; packages: PackageFileSet[] },
   compiled: FileSet,
   testInfrastructure: ReadonlySet<string>
-): { staged: Record<string, FileSet[] | IFile>; argv: string[] } {
+): { staged: Record<string, FileSet[]>; argv: string[]; measured: string[] } {
   const own = [...compiled]
     .map(([name]) => name)
     .filter(name => COMPILED_SCRIPT.test(name) && !testInfrastructure.has(name))
@@ -686,10 +756,10 @@ function measuredRun(
     .flatMap(([pkg, directory]) =>
       [...pkg].map(([name]) => name).filter(name => COMPILED_SCRIPT.test(name)).map(name => `node_modules/${directory}/${name}`)
     );
-  const options: ICoverageOptions = { raw: COVERAGE_RAW_DIR, measured: [...new Set([...own, ...installed])].sort(), output: COVERAGE_REPORT_FILENAME };
   return {
-    staged: { [COVERAGE_STAGE_DIR]: [driver], [COVERAGE_OPTIONS_FILE]: MemoryFile.from(JSON.stringify(options)) },
-    argv: driver.toCommandLine([`--manifest=${COVERAGE_OPTIONS_FILE}`], { base: COVERAGE_STAGE_DIR }),
+    staged: { [COVERAGE_STAGE_DIR]: [driver] },
+    argv: driver.toCommandLine([], { base: COVERAGE_STAGE_DIR }),
+    measured: [...new Set([...own, ...installed])].sort(),
   };
 }
 

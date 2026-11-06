@@ -68,7 +68,6 @@ import {
   annotationName,
   carriedReferences,
   IRawSourceMap,
-  parseManifestPath,
   referencedCssSources,
   relativeToMap,
   relocateCssSources,
@@ -77,6 +76,7 @@ import {
   writeDepsReport,
   writeOut,
 } from "./Support";
+import { parseManifestPath } from "../support/Main";
 
 /* Minimal structural typing for the slice of postcss and postcss-modules this
  * driver uses — they are not fabr dependencies (fetched at build time), so

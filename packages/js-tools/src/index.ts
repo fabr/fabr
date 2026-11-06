@@ -35,6 +35,7 @@ export * from "./pnp/PnPResolver";
 export * from "./pnp/PnPState";
 export * from "./pnp/ReadSet";
 export * from "./pnp/VirtualPath";
+export { MANIFEST_FLAG } from "./support/Main";
 export * from "./support/SourceMap";
 export * from "./tscDriver/Planning";
 export type { ITypeScriptUnit } from "./tsserverPlugin/TsserverPlugin";

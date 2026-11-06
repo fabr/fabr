@@ -79,6 +79,14 @@ export function toJsonObject(json: unknown): Record<string, unknown> {
   return json;
 }
 
+/** Convert a JSON list of strings. */
+export function toStringList(json: unknown): string[] {
+  if (!Array.isArray(json) || json.some(item => typeof item !== "string")) {
+    throw new FabrError("expected a list of strings");
+  }
+  return json as string[];
+}
+
 /** @return true if `value` is a JSON object — the shape a value must have before
  * any field can be read off it — otherwise false. Excludes `null` and arrays,
  * both of which are `typeof === "object"`. */

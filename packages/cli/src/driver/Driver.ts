@@ -340,6 +340,7 @@ function runTest(
   names: string[]
 ): Computable<void> {
   markForced(model, options, execution, names);
+  execution.retryFailed = options.retryFailed;
   const refs = names.map(name => options.commandLine.refFor(name, site));
   return testOperation(configFor(model, options, execution, "test"), refs).then(results =>
     reportTestResults(execution.log, names, results, options.properties.get(TEST_NAME_PATTERN) || undefined)

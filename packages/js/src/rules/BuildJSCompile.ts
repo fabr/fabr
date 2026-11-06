@@ -71,6 +71,7 @@ import {
   CHANGES_FLAG,
   DEPS_REPORT_FILE,
   DEPS_REPORT_FLAG,
+  SOURCE_DECLARATIONS_FLAG,
   SOURCE_PATHS_FILE,
   SOURCE_PATHS_FLAG,
   STATE_DIR,
@@ -85,6 +86,7 @@ export default defineRule({
         srcs: context.getFileProperty("srcs"),
         deps: context.getPackageProperty("deps"),
         resources: context.getFileProperty("resources"),
+        declarations: context.getFileProperty("declarations"),
       },
       builds: "files",
     };
@@ -320,6 +322,9 @@ const REWRITES_FLAG = "--rewrite-imports";
 const RESOURCES_FILE = "resources.json";
 const RESOURCES_FLAG = "--resources";
 
+/** Where the `declarations` property's files are staged. */
+const DECLARATIONS_DIR = ".fabr-declarations";
+
 /**
  * The compile's `rewrite_imports` rules, compiled for a driver holding no fabr
  * vocabulary: an ordered list of pattern/replacement pairs, first match wins.
@@ -356,6 +361,7 @@ export interface CompileInputs {
   srcs: FileSet[];
   deps: FileSet[];
   resources: FileSet[];
+  declarations: FileSet[];
 }
 
 /** What a compile is made of, worked out from its requirements and its configuration. */
@@ -372,6 +378,8 @@ export interface ICompileSetup {
   rewrites?: Array<{ pattern: string; replacement: string }>;
   /** The files the target ships that no step compiles. */
   resources: FileSet;
+  /** The declarations another compile emitted for some of `srcs`. */
+  declarations: FileSet;
 }
 
 /** @return the names of `resources`, sorted, as the compile's driver is told them. */
@@ -380,7 +388,7 @@ function resourceNamesOf(resources: FileSet): string[] {
 }
 
 /** Work out the compile `inputs` make in `context`'s configuration, or undefined if they make none. */
-export function compileSetup(context: TargetContext, { srcs: srcSets, deps, resources }: CompileInputs): Computable<ICompileSetup | undefined> {
+export function compileSetup(context: TargetContext, { srcs: srcSets, deps, resources, declarations }: CompileInputs): Computable<ICompileSetup | undefined> {
   if (srcSets.every(srcs => srcs.isEmpty())) {
     return Computable.resolve(undefined);
   }
@@ -444,7 +452,7 @@ export function compileSetup(context: TargetContext, { srcs: srcSets, deps, reso
           automaticTypes(deps),
           emitsSourceMap(buildType) || coverage === COVERAGE_ON
         );
-        return { tsconfig, srcs, deps, packageName, moduleExtension, rewrites, resources: resourceSet };
+        return { tsconfig, srcs, deps, packageName, moduleExtension, rewrites, resources: resourceSet, declarations: FileSet.unionAll(...declarations) };
       };
       return hasJsx ? resolveJsxImportSource(deps).then(setup) : setup("");
     }
@@ -458,10 +466,16 @@ function compileTypescript(context: TargetContext, inputs: CompileInputs): Compu
 }
 
 /** Make the compile action for `setup`, run by `driver`. */
-function compileAction({ tsconfig, srcs, deps, packageName, moduleExtension, rewrites, resources }: ICompileSetup, driver: RunnableFileSet): RuleResult {
+function compileAction(
+  { tsconfig, srcs, deps, packageName, moduleExtension, rewrites, resources, declarations }: ICompileSetup,
+  driver: RunnableFileSet
+): RuleResult {
   const resourceNames = resourceNamesOf(resources);
   const workspace = {
     [COMPILE_SRC_DIR]: srcs,
+    /* Content, not configuration: which of them changed is what tells the
+     * driver which of those sources' interfaces moved. */
+    ...(declarations.isEmpty() ? {} : { [DECLARATIONS_DIR]: declarations }),
     /* The driver's own install, compiler included: `typescript` is one of
      * its declared dependencies, so it sits in the install's node_modules
      * and the driver requires it from there. One mount, one pin
@@ -491,6 +505,7 @@ function compileAction({ tsconfig, srcs, deps, packageName, moduleExtension, rew
   const emitExtension = moduleExtension ? ["--emit-extension", moduleExtension] : [];
   const rewriteFlag = rewrites ? [REWRITES_FLAG, REWRITES_FILE] : [];
   const resourcesFlag = resourceNames.length === 0 ? [] : [RESOURCES_FLAG, RESOURCES_FILE];
+  const declarationsFlag = declarations.isEmpty() ? [] : [SOURCE_DECLARATIONS_FLAG, DECLARATIONS_DIR];
   return createNodeExecAction(
     FileSet.layout(workspace),
     deps,
@@ -499,6 +514,7 @@ function compileAction({ tsconfig, srcs, deps, packageName, moduleExtension, rew
         ...emitExtension,
         ...rewriteFlag,
         ...resourcesFlag,
+        ...declarationsFlag,
         DEPS_REPORT_FLAG,
         DEPS_REPORT_FILE,
         STATE_DIR_FLAG,

@@ -66,7 +66,7 @@ interface ActionParts {
 }
 
 function action(parts: ActionParts, step = STEP): BuildAction {
-  return new BuildAction(step, parts.inputs ?? {}, parts.config ?? {}, parts.discoverable, "compile", false, undefined, parts.sourcePathInputs);
+  return new BuildAction(step, parts.inputs ?? {}, parts.config ?? {}, { discoverable: parts.discoverable, label: "compile", sourcePathInputs: parts.sourcePathInputs });
 }
 
 describe("target-key identity", () => {
@@ -143,7 +143,7 @@ describe("target-key identity", () => {
      * the coordinate, separating same-stepped sub-targets of one owner whose
      * configs coincide (the CJS test compile beside the CJS package compile). */
     const inputs: ActionFileInputs = { srcs: sources("one") };
-    const labelled = new BuildAction(STEP, inputs, {}, undefined, "compiling for the browser");
+    const labelled = new BuildAction(STEP, inputs, {}, { label: "compiling for the browser" });
     expect(labelled.targetKey(owner), "the action label").to.equal(new BuildAction(STEP, inputs, {}).targetKey(owner));
     expect(labelled.targetKey(owner, "Compiling"), "a labelled sub-target").to.not.equal(labelled.targetKey(owner));
     expect(labelled.targetKey(owner, "Compiling tests for"), "two labels").to.not.equal(labelled.targetKey(owner, "Compiling"));

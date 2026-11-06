@@ -112,6 +112,13 @@ describe("PnpResolver", () => {
     expect(resolver.locationOf("three", issuer)).to.equal(path.join(ROOT, ".fabr-tree/ref-three"));
   });
 
+  it("locates no package for a path its ignore pattern names, as Yarn's runtime does", () => {
+    const state = { ...manifest([["three", "ref-three", { three: "ref-three" }]], {}, { three: "ref-three" }), ignorePatternData: "^\\.tools(/|$)" };
+    const resolver = new PnpResolver(state, ROOT, []);
+    expect(resolver.findPackageLocator(path.join(ROOT, ".tools/node_modules/x/index.js"))).to.equal(null);
+    expect(resolver.findPackageLocator(path.join(ROOT, "build/index.js"))).to.deep.equal({ name: null, reference: null });
+  });
+
   it("falls back to the declared surface for a name the issuer never declared", () => {
     /* The postprocessing/three case: a package's typings import a peer it did
      * not declare, whose types the CONSUMER declared. A tree forgave this

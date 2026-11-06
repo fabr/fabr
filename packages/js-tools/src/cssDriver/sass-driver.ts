@@ -49,7 +49,6 @@ import { PnpResolver } from "../pnp/PnPResolver";
 import { stagedReferences } from "../support/SourceMap";
 import {
   IRawSourceMap,
-  parseManifestPath,
   referencedCssSources,
   relativeToMap,
   relocateCssSources,
@@ -57,6 +56,7 @@ import {
   writeDepsReport,
   writeOut,
 } from "./Support";
+import { parseManifestPath } from "../support/Main";
 
 /* Minimal structural typing for the slice of sass-embedded's API we use — it is
  * not a fabr dependency (it is fetched at build time), so its own types are not

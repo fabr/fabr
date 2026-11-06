@@ -423,7 +423,7 @@ for (const name of ${JSON.stringify(kept)}) {
       cache.getOrCreateAction(action, ctx => NODE_EXEC_ACTION.run(action, ctx, SILENT_REPORT), {
         targetKey: RECORD_KEY,
         processLimit: new Semaphore(UNBOUNDED),
-      })
+      }).then(({ files }) => files)
     );
     const record = await toPromise(cache.readBuildState(RECORD_KEY));
     return { seen: JSON.parse(await toPromise(built.readFile("seen.json"))) as ISeen, state: record?.incrementalState };

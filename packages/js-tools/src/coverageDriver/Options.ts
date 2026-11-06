@@ -32,4 +32,8 @@ export interface ICoverageOptions {
   measured: string[];
   /** Where the lcov document is written. */
   output: string;
+  /** Whether to convert only the measured files the raw coverage saw, leaving
+   * out the rest rather than reporting them as not run: one test file's share
+   * of a run, merged with the others' afterwards. */
+  loaded?: boolean;
 }

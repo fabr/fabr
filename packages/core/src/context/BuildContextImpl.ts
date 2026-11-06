@@ -89,7 +89,7 @@ import {
   NoRuleFoundError,
   ReferenceFailedError,
 } from "../model/Errors";
-import { ConflictError, FabrError, IConflictSide, IConflictSource, toError } from "../core/Errors";
+import { ConflictError, FabrError, IConflictSide, IConflictSource, TestsFailedError, toError } from "../core/Errors";
 import { createPipelineAction, stagePipeline } from "../rules/PipelineAction";
 import { closestMatch } from "../support/Suggest";
 import { Name, NameConstraint, NamePart, NamePartKind } from "../core/Name";
@@ -1683,7 +1683,7 @@ export class BuildContextImpl implements InternalBuildContext {
      * own label — see {@link BuildAction.targetKey} for what the coordinate
      * includes and excludes. */
     const task = context.taskDescription();
-    return this.performAction(action, task, this.forcedBuild(context), action.targetKey(context.getDeclaredContext().target, task.label));
+    return this.performAction(action, task, { force: this.forcedBuild(context), targetKey: action.targetKey(context.getDeclaredContext().target, task.label) });
   }
 
   /**
@@ -1692,24 +1692,39 @@ export class BuildContextImpl implements InternalBuildContext {
    * since `-f` marks targets.
    */
   private runOwnAction(action: BuildAction, task: TaskDescription): Computable<FileSet> {
-    return this.performAction(action, task, false);
+    return this.performAction(action, task, {});
   }
 
   /** Perform `action` through the cache, reporting a miss as `task`: the core of
    * {@link runAction} and {@link runOwnAction}. A caller with no target passes
    * no `targetKey`. */
-  private performAction(action: BuildAction, task: TaskDescription, force: boolean, targetKey?: string): Computable<FileSet> {
+  private performAction(action: BuildAction, task: TaskDescription, options: { force?: boolean; retry?: boolean; targetKey?: string }): Computable<FileSet> {
     const execution = this.execution;
     /* The action IS the task reported: this callback runs only on a miss, so a
      * task exists exactly when something is performed, bracketing the step's
      * own chain. A target with several actions reports each. */
-    const create = (ctx: ActionContext): Computable<BuildResult> =>
-      execution.runTask(task, report => action.step.run(action, ctx, report));
+    const create = (ctx: ActionContext): Computable<BuildResult> => execution.runTask(task, report => action.step.run(action, ctx, report));
     /* The cache derives the key (anchor or complete, by the action's shape),
      * the discoverable deps and the change tracking from the action itself. */
-    const output = execution.buildCache.getOrCreateAction(action, create, { force, targetKey, processLimit: execution.processLimit });
+    const outcome = execution.buildCache.getOrCreateAction(action, create, { ...options, processLimit: execution.processLimit });
     const reshape = action.reshape;
-    return reshape === undefined ? output : output.then(result => reshape(result));
+    if (reshape === undefined) {
+      return outcome.then(({ files }) => files);
+    }
+    /* A red test run served from the cache rather than performed here is
+     * performed again, once, where the run asks for that (`--retry-failed`),
+     * from its own last run: what it reruns is the step's to decide. */
+    return outcome.then(({ files, created }) => {
+      const delivered = Computable.resolve(files).then(reshape);
+      return execution.retryFailed && !created && !options.retry
+        ? delivered.catch(err => {
+            if (!(err instanceof TestsFailedError)) {
+              throw err;
+            }
+            return this.performAction(action, task, { ...options, retry: true });
+          })
+        : delivered;
+    });
   }
 
   /**

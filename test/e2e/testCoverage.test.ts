@@ -52,6 +52,7 @@ const out = [];
 for (const measured of options.measured) {
   const map = JSON.parse(fs.readFileSync(measured + ".map", "utf8"));
   const ran = raw.includes(JSON.stringify(pathToFileURL(fs.realpathSync(measured)).href)) ? 1 : 0;
+  if (options.loaded && !ran) continue;
   out.push("TN:", "SF:" + map.sources[0].slice("fabr:".length), "DA:1," + ran, "end_of_record");
 }
 fs.writeFileSync(options.output, out.join("\\n") + "\\n");

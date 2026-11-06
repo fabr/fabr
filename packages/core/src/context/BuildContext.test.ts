@@ -692,14 +692,14 @@ const TEST_LEAF_STEP: IBuildActionDefinition = {
   },
 };
 registerRule("test_parent", {}, context =>
-  context.getRequiredString("content").then(content => new BuildAction(TEST_LEAF_STEP, {}, { data: content }, undefined, "leaf"))
+  context.getRequiredString("content").then(content => new BuildAction(TEST_LEAF_STEP, {}, { data: content }, { label: "leaf" }))
 );
 
 /* An internal type built only as a sub-target: it reads its input through the
  * same context accessors as any target (unaware it is anonymous) and yields
  * the leaf action. */
 registerRule("test_sub", {}, context =>
-  context.getRequiredString("data").then(data => new BuildAction(TEST_LEAF_STEP, {}, { data }, undefined, "sub"))
+  context.getRequiredString("data").then(data => new BuildAction(TEST_LEAF_STEP, {}, { data }, { label: "sub" }))
 );
 /* A rule that composes the sub-target: builds it, then wraps its output —
  * the wrap runs in resolution (every evaluation), reconstructing shape on the
@@ -756,7 +756,7 @@ registerRule("test_cmd_composer", {}, context =>
 /* A composer that builds a sub-target whose type has a rule but NO targetdef —
  * used to assert subTarget rejects a type missing from the build vocabulary. */
 registerRule("test_orphan_sub", {}, context =>
-  context.getRequiredString("data").then(data => new BuildAction(TEST_LEAF_STEP, {}, { data }, undefined, "orphan"))
+  context.getRequiredString("data").then(data => new BuildAction(TEST_LEAF_STEP, {}, { data }, { label: "orphan" }))
 );
 registerRule("test_orphan_composer", {}, context =>
   context.getRequiredString("content").then(content => context.subTarget("test_orphan_sub", { data: content }, { label: "sub" }))
@@ -797,7 +797,7 @@ const TEST_COMPILE_STEP: IBuildActionDefinition = {
 registerRule("test_compile", {}, context =>
   context
     .getRequiredString("includes")
-    .then(includes => new BuildAction(TEST_COMPILE_STEP, {}, { includes }, { headers: [testHeaders] }))
+    .then(includes => new BuildAction(TEST_COMPILE_STEP, {}, { includes }, { discoverable: { headers: [testHeaders] } }))
 );
 
 /* Reports the wildcard members (keys the schema never named) its target

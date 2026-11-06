@@ -48,7 +48,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ITestResult, TestStatus } from "@fabr-build/core";
 import { buildReport, endAfterReport, formatTestFailures, formatTestSummary, reportPathOf } from "../testRunner/Report";
-import { parseRunnerArgs, TEST_TIMEOUT_MS } from "../testRunner/RunTests";
+import { recordReads, withPnpTable, writeReads } from "../testRunner/Reads";
+import { installPnpRuntime } from "../pnp/Runtime";
+import { childPreloads, parseRunnerArgs, TEST_TIMEOUT_MS } from "../testRunner/RunTests";
 import { assertSupportedHost, requireEnvironment } from "./Tools";
 import { describeThrown, runTestFile } from "./child";
 import type { IChildRequest, IChildResult, IChildTestResult } from "./child";
@@ -73,6 +75,11 @@ export function main(argv: string[]): void {
   const options = parseRunnerArgs(argv);
   /* Fail here, once, rather than identically in every child. */
   assertSupportedHost();
+  /* Before anything resolves from the test install: the environment's jsdom
+   * is among its packages. */
+  if (options.pnp !== undefined) {
+    installPnpRuntime(options.pnp);
+  }
   requireEnvironment(options.env);
   /* Stack frames resolve through tsc's `.js.map` files and the hoist's inline
    * maps, so a failure names the `.ts` line. The forked children get this via
@@ -95,8 +102,16 @@ export function main(argv: string[]): void {
   });
 
   const requests = options.files.map(request);
-  (requests.length === 1 ? runHere(requests[0]) : runAll(requests, child))
+  /* A single file runs here, so what it reads is this process's own; several
+   * run in children that load what childPreloads makes of the options. */
+  const readHere = options.reads !== undefined && requests.length === 1 ? recordReads() : undefined;
+  const children = requests.length === 1 ? undefined : childPreloads(options);
+  (children === undefined ? runHere(requests[0]) : runAll(requests, child, children.preloads))
     .then(results => {
+      if (options.reads !== undefined && readHere !== undefined) {
+        writeReads(options.reads, withPnpTable(readHere(), options.pnp));
+      }
+      children?.finish();
       const report = buildReport(results.flatMap(toTestResults), start, Date.now());
       fs.writeFileSync(options.report, JSON.stringify(report, undefined, 2));
       const failed = report.results.summary.failed;
@@ -125,13 +140,13 @@ interface ICompletedFile {
  * and the cap keeps a large suite from spawning hundreds of node processes at
  * once.
  */
-async function runAll(requests: IChildRequest[], childModule: string): Promise<ICompletedFile[]> {
+async function runAll(requests: IChildRequest[], childModule: string, preloads: string[]): Promise<ICompletedFile[]> {
   const limit = Math.max(1, Math.min(availableParallelism(), requests.length));
   const queue = [...requests];
   const done: ICompletedFile[] = [];
   const workers = Array.from({ length: limit }, async () => {
     for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
-      done.push(await runOne(next, childModule));
+      done.push(await runOne(next, childModule, preloads));
     }
   });
   await Promise.all(workers);
@@ -185,7 +200,7 @@ function runHere(request: IChildRequest): Promise<ICompletedFile[]> {
   });
 }
 
-function runOne(request: IChildRequest, childModule: string): Promise<ICompletedFile> {
+function runOne(request: IChildRequest, childModule: string, preloads: string[]): Promise<ICompletedFile> {
   return new Promise<ICompletedFile>(resolve => {
     /* stdio piped, not inherited: a file that dies before reporting leaves its
      * reason ONLY on stderr, and that is what makes the difference between a
@@ -197,7 +212,7 @@ function runOne(request: IChildRequest, childModule: string): Promise<ICompleted
     const child = fork(childModule, [], {
       cwd: request.root,
       stdio: ["ignore", "pipe", "pipe", "ipc"],
-      execArgv: [...process.execArgv, "--enable-source-maps"],
+      execArgv: [...process.execArgv, "--enable-source-maps", ...preloads.flatMap(preload => ["--require", preload])],
     });
     let stderr = "";
     let result: IChildResult | undefined;

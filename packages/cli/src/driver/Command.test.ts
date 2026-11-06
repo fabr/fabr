@@ -85,6 +85,7 @@ describe("Command", () => {
       progress: true,
       refresh: false,
       force: false,
+      retryFailed: false,
       targets: [],
       deferred: ["foo"],
       properties: new Map(),
@@ -103,6 +104,7 @@ describe("Command", () => {
       progress: true,
       refresh: false,
       force: false,
+      retryFailed: false,
       targets: ["foo", "bar"],
       properties: new Map(),
     });
@@ -125,6 +127,7 @@ describe("Command", () => {
       progress: true,
       refresh: false,
       force: false,
+      retryFailed: false,
       targets: ["foo"],
       properties: new Map([["x", "1"]]),
     });
@@ -142,6 +145,7 @@ describe("Command", () => {
       progress: true,
       refresh: false,
       force: false,
+      retryFailed: false,
       targets: ["foo", "bar"],
       properties: new Map(),
     });
@@ -277,6 +281,13 @@ describe("Command", () => {
      * target on every rebuild, so the pair is a mistake rather than a request. */
     expect(capture(["build", "-f", "-w", "foo"]).err.join("\n")).to.match(/'-f' and '-w' cannot be combined/);
     expect(capture(["-w", "build", "--force", "foo"]).err.join("\n")).to.match(/'-f' and '-w' cannot be combined/);
+  });
+
+  it("parses --retry-failed for test only, and refuses it with -w", () => {
+    expect(parseCommandLine(["node", "fabr", "test", "--retry-failed", "foo"]).retryFailed).to.be.true;
+    expect(parseCommandLine(["node", "fabr", "test", "foo"]).retryFailed).to.be.false;
+    expect(capture(["build", "--retry-failed", "foo"]).err.join("\n")).to.match(/'--retry-failed' is not valid for the 'build'/);
+    expect(capture(["test", "--retry-failed", "-w", "foo"]).err.join("\n")).to.match(/'--retry-failed' and '-w' cannot be combined/);
   });
 
   it("reports the flag as the user typed it (--quiet vs -q)", () => {

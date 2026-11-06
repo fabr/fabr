@@ -130,6 +130,9 @@ export class PnpResolver implements IPnpApi {
   private readonly registry = new Map<string | null, Map<string | null, IPackageInformation>>();
   private readonly dependencyTreeRoots: IPhysicalPackageLocator[];
   private readonly topLevelFallback: boolean;
+  /** The paths, relative to the root, that belong to no package of the table:
+   * a file there is resolved as node would resolve it (Yarn's `ignorePattern`). */
+  private readonly ignored: RegExp | undefined;
   private readonly fallbackPool = new Map<string, PnpDependencyTarget>();
   private readonly fallbackExclusions = new Map<string, Set<string>>();
   /** Rows by locator. */
@@ -198,9 +201,7 @@ export class PnpResolver implements IPnpApi {
    * be given.
    */
   constructor(state: IPnpSerializedState, root: string, conditions: Iterable<string>, options: IPnpResolverOptions = {}) {
-    if (state.ignorePatternData !== null && state.ignorePatternData !== undefined) {
-      throw pnpError("UNSUPPORTED", "pnp: a manifest with an ignore pattern is not supported");
-    }
+    this.ignored = state.ignorePatternData === null || state.ignorePatternData === undefined ? undefined : new RegExp(state.ignorePatternData);
     this.conditions = new Set(conditions);
     this.validate = options.validateExports ?? true;
     this.root = root;
@@ -867,6 +868,9 @@ export class PnpResolver implements IPnpApi {
    * realpath spelling. */
   public findPackageLocator(location: string): PackageLocator | null {
     const target = path.resolve(location);
+    if (this.ignored !== undefined && this.ignored.test(path.relative(this.root, target).split(path.sep).join("/"))) {
+      return null;
+    }
     const entry = this.owning(target, this.innermostAt(target, () => true));
     if (entry === undefined) {
       return null;
@@ -997,7 +1001,7 @@ export class PnpResolver implements IPnpApi {
       throw pnpError("INTERNAL", `pnp: no package holds '${unqualified}'`);
     }
     const location = this.informationOf(owner).packageLocation;
-    const exports = readManifest(location).exports;
+    const exports = this.manifestAt(location).exports;
     if (exports === undefined || exports === null) {
       return unqualified;
     }
@@ -1023,7 +1027,7 @@ export class PnpResolver implements IPnpApi {
   /** Resolve a `#name` request through the issuing package's `imports` map. */
   private resolvePrivateRequest(request: string, issuer: string, conditions: ReadonlySet<string>, opts: ResolveRequestOptions): string | null {
     const location = this.scopeOf(issuer);
-    const imports = location === undefined ? undefined : readManifest(location).imports;
+    const imports = location === undefined ? undefined : this.manifestAt(location).imports;
     const target = imports === undefined || imports === null ? undefined : resolveImports(imports, request, conditions, this.validate);
     if (target === undefined || location === undefined) {
       throw Object.assign(new Error(`pnp: '${request}' is not defined by the imports of the package holding '${issuer}'`), {

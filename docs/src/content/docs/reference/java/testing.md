@@ -56,8 +56,9 @@ fabr test app
 ```
 
 prints `app: 12 tests passed` for each target, or the tests that failed with their messages. A
-passing run is cached: running `fabr test` again with nothing changed reports the result without
-running the tests. A target with no `tests` passes without running anything.
+run is cached, passing or failing: running `fabr test` again with nothing changed reports the
+result without running the tests, and `fabr test --retry-failed` runs a failed target's tests
+again. A target with no `tests` passes without running anything.
 
 The tests run with no environment variables of their own, so a test can't depend on what is set in
 your shell. JUnit's [configuration parameters](https://junit.org/junit5/docs/current/user-guide/#running-tests-config-params),

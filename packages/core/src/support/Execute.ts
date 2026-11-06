@@ -122,10 +122,14 @@ export interface ITaskReport {
   /** Where the work says how far along it is. Callable as often as it likes:
    *  a listener keeps the latest and displays it on its own schedule. */
   progress: (progress: TaskProgress) => void;
+  /** Record that the work ended in a failure of what it produced, though the
+   *  step itself succeeded and its result stands (a red test run): the task
+   *  then ends as failed, with `error` saying why. */
+  fail: (error: Error) => void;
 }
 
 /** The report for work nobody observes — a unit test's stand-in. */
-export const SILENT_REPORT: ITaskReport = { activity: () => undefined, progress: () => undefined };
+export const SILENT_REPORT: ITaskReport = { activity: () => undefined, progress: () => undefined, fail: () => undefined };
 
 /** Brackets a unit of work as a reported task — the shape of a partially
  *  applied ExecutionContext.runTask, for a layer that must apply the caller's

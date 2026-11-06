@@ -45,7 +45,7 @@ import {
 } from "@fabr-build/core";
 import { buildSassOptions, CSS_OUTDIR, CSS_SRC_ROOT, CSS_TOOL_DIR } from "../CSSCompile";
 import { emitsSourceMap } from "../JSPackage";
-import { DEPS_REPORT_FILE, DEPS_REPORT_FLAG, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "@fabr-build/js-tools";
+import { DEPS_REPORT_FILE, DEPS_REPORT_FLAG, MANIFEST_FLAG, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "@fabr-build/js-tools";
 import { createNodeExecAction, PNP } from "../NodeExecAction";
 
 /** The `sass_compile` rule. */
@@ -79,7 +79,7 @@ function buildSassCompile(context: TargetContext, collected: { srcs: FileSet[]; 
       /* Its maps name each source by the reference resolving to it, from the
        * table the step stages: the stylesheets and the packages they reach. */
       const argv = compiler.toCommandLine(
-        ["--manifest=sass-manifest.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE, DEPS_REPORT_FLAG, DEPS_REPORT_FILE],
+        [`${MANIFEST_FLAG}sass-manifest.json`, SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE, DEPS_REPORT_FLAG, DEPS_REPORT_FILE],
         { base: CSS_TOOL_DIR }
       );
       /* Nothing is mounted: the stylesheets' dependency closure is a table the

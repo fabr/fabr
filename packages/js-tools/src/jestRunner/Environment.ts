@@ -31,6 +31,7 @@
  * other dependency.
  */
 
+import * as fs from "node:fs";
 import { Module } from "node:module";
 import * as path from "node:path";
 import { userModule, userModuleFile } from "./Tools";
@@ -288,12 +289,11 @@ interface ICompilingModule {
  * {@link hideNodeSchedulers}). Must be installed before jsdom is loaded.
  */
 function compileEnvironmentWithNodeSchedulers(jsdomMain: string | undefined): void {
-  const marker = `${path.sep}node_modules${path.sep}jsdom${path.sep}`;
-  const at = jsdomMain?.lastIndexOf(marker) ?? -1;
-  if (jsdomMain === undefined || at === -1) {
+  const root = jsdomMain === undefined ? undefined : packageRootOf(jsdomMain, "jsdom");
+  if (root === undefined) {
     return;
   }
-  const jsdomRoot = jsdomMain.slice(0, at + marker.length);
+  const jsdomRoot = root + path.sep;
   Object.defineProperty(globalThis, Symbol.for(NODE_SCHEDULERS), { value: [setImmediate, clearImmediate] });
   const environment = new Set<string>();
   const compiling = Module as unknown as { prototype: ICompilingModule };
@@ -306,6 +306,23 @@ function compileEnvironmentWithNodeSchedulers(jsdomMain: string | undefined): vo
     }
     return original.call(this, content, filename);
   };
+}
+
+/** @return the directory of the package `name` that `file` belongs to: the
+ * nearest above it whose `package.json` names it. */
+function packageRootOf(file: string, name: string): string | undefined {
+  for (let directory = path.dirname(file); ; directory = path.dirname(directory)) {
+    try {
+      if ((JSON.parse(fs.readFileSync(path.join(directory, "package.json"), "utf8")) as { name?: unknown }).name === name) {
+        return directory;
+      }
+    } catch {
+      /* No manifest here, or not one that names anything: keep looking. */
+    }
+    if (path.dirname(directory) === directory) {
+      return undefined;
+    }
+  }
 }
 
 /**

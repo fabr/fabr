@@ -311,15 +311,16 @@ export function createNodeExecAction(
      * opened then invalidates nothing; the mount and layout options stay in
      * the anchor and keep a table install apart from a tree one. Keying
      * needs no tree, so every closure keys alike, a version cycle included. */
-    reported ? { deps } : undefined,
-    options.label,
-    /* A tool told where to keep state, or where to find what moved, is one that
-     * diffs — so the cache is asked to record what this build was made from.
-     * Nothing else pays for a record nothing reads. */
-    options.stateDir !== undefined || options.changes !== undefined,
-    undefined,
-    /* The table names `files` always, and the packages where the rule asks. */
-    options.sourcePaths === undefined ? [] : options.packageSourcePaths ? ["files", "deps"] : ["files"]
+    {
+      ...(reported ? { discoverable: { deps } } : {}),
+      label: options.label,
+      /* A tool told where to keep state, or where to find what moved, is one that
+       * diffs — so the cache is asked to record what this build was made from.
+       * Nothing else pays for a record nothing reads. */
+      trackChangedFiles: options.stateDir !== undefined || options.changes !== undefined,
+      /* The table names `files` always, and the packages where the rule asks. */
+      sourcePathInputs: options.sourcePaths === undefined ? [] : options.packageSourcePaths ? ["files", "deps"] : ["files"],
+    }
   );
 }
 

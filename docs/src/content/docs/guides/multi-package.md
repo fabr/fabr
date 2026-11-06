@@ -158,25 +158,52 @@ js_package @acme/core {
 A package that needs something different sets the property on its own target (`test_framework`)
 or asks for it with a constraint where it is used.
 
-## Build everything
+## Build what you ship
 
-`fabr` builds the targets you name, and there is no wildcard for "all of them". Declare a property
-that lists them, and build that:
+You don't need to build every package in the repository. Name the things the repository actually
+produces, such as the application you deploy, the command-line tool you install or the `sync`
+target that [publishes your packages](/reference/js/publishing/#publishing-with-sync), and fabr
+builds whatever they depend on, in order:
+
+```sh
+fabr build @acme/app      # builds @acme/core too, because @acme/app depends on it
+fabr build release        # every package the sync target publishes, uploading nothing
+```
+
+A package that nothing you ship depends on, such as a test helper or an internal tool, is built
+when you ask for it or when something that uses it is built. Because results are cached, building
+the same thing again costs nothing until its sources change.
+
+### Testing
+
+`fabr test` runs the tests of the targets you name, not of the packages they depend on.
+`fabr test @acme/app` builds `@acme/core` but doesn't run `@acme/core`'s tests. To test a
+package and the siblings it uses, name each:
+
+```sh
+fabr test @acme/app @acme/core
+```
+
+Each target gets its own line in the test summary. A test run is cached, passing or failing, so a
+target whose tests and dependencies haven't changed reports its earlier result without running
+again.
+
+### Listing targets in a property
+
+When the same set of targets is named often, in CI or by everyone on the team, list them in a
+property and name that instead:
 
 ```
-ALL = @acme/core @acme/app @acme/cli;
+TESTED = @acme/core @acme/app @acme/cli;
 ```
 
 ```sh
-fabr build ALL
-fabr test ALL
+fabr test TESTED
 ```
 
-Naming the targets on the command line works equally well (`fabr test @acme/core @acme/app`), and
-gives each target its own line in the test summary.
-
-`fabr list-targets` prints every target in the project, and `fabr list-targets -l` says which file
-declares each.
+There is no wildcard for "every target", and a list like this is maintained by hand: a new
+package isn't in it until you add it. `fabr list-targets` prints every target in the project, and
+`fabr list-targets -l` says which file declares each, which helps keep the list complete.
 
 ## Work in one package
 

@@ -57,7 +57,7 @@ describe("e2e: fabr shell", () => {
     const result = runFabr(tested, ["shell", "thing<BUILD_OPERATION=test>"]);
     expect(result.status, result.stderr).to.equal(0);
     expect(result.stderr).to.match(/Sandbox for 'thing<BUILD_OPERATION=test>' staged at .*[/\\]shell-[^/\\]+[/\\]work[/\\]build\b/);
-    expect(result.stderr).to.match(/--report=\S+ a\.test\.js/);
+    expect(result.stderr).to.match(/--report=\S+ --reads=\S+ a\.test\.js/);
     expect(result.stderr).to.contain("with MARKER=here");
   });
 

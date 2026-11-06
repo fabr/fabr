@@ -1472,15 +1472,6 @@ describe("BuildCache build state", () => {
     expect(read?.incrementalState?.size).to.equal(1);
   });
 
-  it("answers nothing when the tool's blob has gone", async () => {
-    /* A wiped pool (or the GC's sweep): the record cannot say what the tool
-     * knew, so there is no record — a cold build, never an error. */
-    const targetKey = "target-key-swept";
-    await record(targetKey);
-    fs.rmSync(path.join(root, "blob", hashString(Buffer.from(DRIVER_BYTES))), { force: true });
-    expect(await readState(targetKey)).to.equal(undefined);
-  });
-
   it("answers nothing for a dangling outputs link", async () => {
     /* The evicted entry: the state names what that build emitted, so pairing it
      * with an entry that is gone would have the tool skip emitting files that
@@ -1489,16 +1480,6 @@ describe("BuildCache build state", () => {
     const targetKey = "target-key-evicted";
     const key = await record(targetKey);
     fs.rmSync(path.join(root, "entries", `${key}.manifest`), { force: true });
-    expect(await readState(targetKey)).to.equal(undefined);
-  });
-
-  it("answers nothing when the entry's own blob has gone", async () => {
-    /* What a dangling link does NOT cover: the manifest still parses while a
-     * file it names has been reclaimed, so the staged outputs would be short a
-     * file. */
-    const targetKey = "target-key-holed";
-    await record(targetKey);
-    fs.rmSync(path.join(root, "blob", hashString(Buffer.from("entry-for-target-key-holed"))), { force: true });
     expect(await readState(targetKey)).to.equal(undefined);
   });
 

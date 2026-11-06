@@ -85,7 +85,7 @@ interface CommandSpec {
 
 const COMMAND_SPECS: CommandSpec[] = [
   { name: "build", synopsis: "[-w] <targets>", summary: "Build the given targets (the default command)", accepts: ["-w", "-q", "--no-progress", "--refresh", "-f"], requiresTarget: true },
-  { name: "test", synopsis: "[-w] [-u] [-t PATTERN] [--coverage] <targets>", summary: "Build and run the given targets' tests", accepts: ["-w", "-u", "-t", "--coverage", "-q", "--no-progress", "--refresh", "-f"], requiresTarget: true },
+  { name: "test", synopsis: "[-w] [-u] [-t PATTERN] [--coverage] [--retry-failed] <targets>", summary: "Build and run the given targets' tests", accepts: ["-w", "-u", "-t", "--coverage", "--retry-failed", "-q", "--no-progress", "--refresh", "-f"], requiresTarget: true },
   { name: "run", synopsis: "[-w] <target> [args…]", summary: "Execute a target, forwarding trailing args to it", accepts: ["-w", "-q", "--no-progress", "--refresh", "-f"], requiresTarget: true },
   { name: "shell", synopsis: "<target>", summary: "Stage a target's build sandbox and open a shell in it (debugging)", accepts: ["-q", "--no-progress", "--refresh"], singleTarget: true, requiresTarget: true },
   { name: "ls", synopsis: "[-l] <names>", summary: "Build the given targets and list their contents", accepts: ["-l", "-q", "--no-progress", "--refresh"], requiresTarget: true },
@@ -163,6 +163,9 @@ export interface Options {
    * `-w`: a watch cycle would force the same target on every rebuild.
    */
   force: boolean;
+  /** Run again the tests whose cached result failed (`--retry-failed`), rather
+   * than report the cached failure. Exclusive with `-w`, as `-f` is. */
+  retryFailed: boolean;
   /** Target names, or (for `ls`/`cat`/`cp`) whole name references — `pkg:build/*.js`
    * — resolved by the model, not split here. For `cp` the trailing destination
    * path has already been split off into `dest`. */
@@ -232,6 +235,7 @@ function printUsage(write: (message: string) => void = console.log): void {
       "  -u, --update      Update recorded test expectations (snapshots) from the run (test)\n" +
       "  -t PATTERN        Run only the tests whose names match the regular expression PATTERN (test)\n" +
       "  --coverage[=DIR]  Measure code coverage and write DIR/lcov.info, coverage/ by default (test)\n" +
+      "  --retry-failed    Run again the tests whose last run failed, rather than report it from the cache (test)\n" +
       "  -l                Long listing: hash and size per file (ls), or source location (list-*)\n" +
       "  --json            Emit JSON (the list-* verbs)\n" +
       "  --all             Include system-contributed targets (list-targets)\n" +
@@ -316,6 +320,9 @@ function applyOption(arg: string, next: string | undefined, options: Options, se
   } else if (arg === "--refresh") {
     options.refresh = true;
     seenFlags.push({ raw: arg, flag: arg });
+  } else if (arg === "--retry-failed") {
+    options.retryFailed = true;
+    seenFlags.push({ raw: arg, flag: arg });
   } else if (arg === "-f" || arg === "--force") {
     options.force = true;
     seenFlags.push({ raw: arg, flag: "-f" });
@@ -349,6 +356,9 @@ function checkFlagsCoherent(options: Options): void {
   if (options.force && options.mode === Mode.Watch) {
     usageError("Options '-f' and '-w' cannot be combined");
   }
+  if (options.retryFailed && options.mode === Mode.Watch) {
+    usageError("Options '--retry-failed' and '-w' cannot be combined");
+  }
 }
 
 export function parseCommandLine(args: string[]): Options {
@@ -363,6 +373,7 @@ export function parseCommandLine(args: string[]): Options {
     progress: true,
     refresh: false,
     force: false,
+    retryFailed: false,
     targets: [],
     properties: new Map(),
     commandLine: new CommandLineSource(args.slice(2)),

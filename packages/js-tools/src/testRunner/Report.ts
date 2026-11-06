@@ -28,6 +28,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { takeCoverage } from "node:v8";
 import type { ITestReport, ITestResult, ITestSummary } from "@fabr-build/core";
 import { referenceOfEntry, SOURCE_LOCATIONS_FILE } from "../support/SourceMap";
 
@@ -317,13 +318,19 @@ function firstLine(text: string): string {
  * End this process once its report is written. The report is the run's
  * result, so nothing the tests leave behind may hold the process: where a
  * request is still in flight (a DNS lookup on libuv's threadpool, which
- * `process.exit` must wait for), the process ends at once by signal instead of
- * with `status`, and output not yet written to a pipe may be lost. The end is
- * immediate, never on a later turn of the event loop, which work the tests
- * left running may never yield.
+ * `process.exit` must wait for), the process runs its `exit` listeners, writes
+ * its V8 coverage where it is measured (`NODE_V8_COVERAGE`), and ends at once
+ * by signal instead of with `status`, and output not yet written to a pipe may
+ * be lost. The end is immediate, never on a later turn of the event loop,
+ * which work the tests left running may never yield.
  */
 export function endAfterReport(status: number): never {
   if (pendingRequests().length > 0) {
+    process.emit("exit", status);
+    process.removeAllListeners("exit");
+    if (process.env.NODE_V8_COVERAGE !== undefined) {
+      takeCoverage();
+    }
     process.kill(process.pid, "SIGKILL");
   }
   process.exit(status);

@@ -204,7 +204,7 @@ function objectsOf(account: AwsAccount, name: string): Computable<FileSet> {
 /** Publish `content` at `coordinate`, written after `@aws:`, as a `sync` would: packaged, then uploaded, recording into `progress` what it reports. */
 function publishTo(account: AwsAccount, coordinate: string, content: FileSet, progress: TaskProgress[] = []): Computable<PublishStatus> {
   const destination = account.getRepositoryPublishRef(parseName(coordinate));
-  const report: ITaskReport = { activity: () => undefined, progress: measured => progress.push(measured) };
+  const report: ITaskReport = { activity: () => undefined, progress: measured => progress.push(measured), fail: () => undefined };
   return destination.source
     .package([{ destination, content }], [destination], new Map())
     .then(([carrier]) => destination.source.publish(carrier, report));

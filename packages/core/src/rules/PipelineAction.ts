@@ -235,8 +235,6 @@ export function createPipelineAction(
       ...(kept.incremental ? { incremental: kept.incremental } : {}),
       ...(kept.changes !== undefined ? { changes: kept.changes } : {}),
     },
-    undefined,
-    label,
-    kept.incremental !== undefined || kept.changes !== undefined
+    { label, trackChangedFiles: kept.incremental !== undefined || kept.changes !== undefined }
   );
 }

@@ -28,7 +28,9 @@
 
 import { run } from "node:test";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
+import { readsRecordedIn, withPnpTable, writeReads } from "./Reads";
 import type { ITestResult } from "@fabr-build/core";
 import {
   buildReport,
@@ -76,6 +78,11 @@ export interface IRunnerOptions {
    * bare module name, or a `./`-prefixed path within the installation. The
    * prefix is the whole distinction. */
   setup: string[];
+  /** Where to write what the test processes read (see Reads.ts), if asked. */
+  reads?: string;
+  /** The PnP table the test processes resolve modules through, where the
+   * installation has one in place of a `node_modules` tree (see pnp/Runtime.ts). */
+  pnp?: string;
   files: string[];
 }
 
@@ -92,6 +99,10 @@ export function parseRunnerArgs(argv: string[]): IRunnerOptions {
       options.namePattern = arg.substring("--name-pattern=".length);
     } else if (arg.startsWith("--setup=")) {
       options.setup.push(arg.substring("--setup=".length));
+    } else if (arg.startsWith("--reads=")) {
+      options.reads = arg.substring("--reads=".length);
+    } else if (arg.startsWith("--pnp=")) {
+      options.pnp = path.resolve(arg.substring("--pnp=".length));
     } else if (arg.startsWith("-")) {
       /* The contract is fabr's, and fabr passes exactly what is documented: an
        * unknown option means the two sides disagree, which must not degrade
@@ -293,12 +304,48 @@ function resolveSetup(entry: string): string {
 }
 
 /**
+ * Make the modules a runner's test processes load first, for what the runner
+ * was asked of them: recording what they read (`--reads`), and resolving
+ * through a PnP table (`--pnp`). They are generated into a directory of their
+ * own, which is also where each process leaves its reads; `finish` writes the
+ * reads document from them and removes the directory.
+ */
+export function childPreloads(options: IRunnerOptions): { preloads: string[]; finish(): void } {
+  if (options.reads === undefined && options.pnp === undefined) {
+    return { preloads: [], finish: () => undefined };
+  }
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-children-"));
+  const preloads: string[] = [];
+  const generate = (name: string, text: string): void => {
+    preloads.push(path.join(directory, name));
+    fs.writeFileSync(path.join(directory, name), text);
+  };
+  /* Resolution first: the recorder is a module like any other. */
+  if (options.pnp !== undefined) {
+    generate("pnp.cjs", `require(${JSON.stringify(path.join(__dirname, "..", "pnp", "Runtime.js"))}).installPnpRuntime(${JSON.stringify(options.pnp)});\n`);
+  }
+  if (options.reads !== undefined) {
+    generate("record.cjs", `require(${JSON.stringify(path.join(__dirname, "Reads.js"))}).recordReadsInto(${JSON.stringify(directory)});\n`);
+  }
+  return {
+    preloads,
+    finish: () => {
+      if (options.reads !== undefined) {
+        writeReads(options.reads, withPnpTable(readsRecordedIn(directory), options.pnp));
+      }
+      fs.rmSync(directory, { recursive: true, force: true });
+    },
+  };
+}
+
+/**
  * Run the given test files under node:test — each in its own child process,
  * with `preloads` (absolute paths) required into every one — collecting the
  * results and writing the report. Sets `process.exitCode`: 0 if everything
  * passed, 1 if any test failed.
  */
 export function runTestFiles(options: IRunnerOptions, preloads: string[]): void {
+  const children = childPreloads(options);
   const results: ITestResult[] = [];
   const stderr = new CapturedStderr();
   const start = Date.now();
@@ -309,7 +356,7 @@ export function runTestFiles(options: IRunnerOptions, preloads: string[]): void 
      * (describe/it, and whatever else a flavour installs) must already be
      * there. That is jest's `setupFilesAfterEnv` ordering, and here it is the
      * only one available — there is nothing to run before the globals. */
-    ...preloadOptions([...preloads, ...options.setup.map(entry => resolveSetup(entry))], options.update),
+    ...preloadOptions([...children.preloads, ...preloads, ...options.setup.map(entry => resolveSetup(entry))], options.update),
     ...namePatternOption(options.namePattern),
     ...forceExitOption(),
   });
@@ -321,7 +368,10 @@ export function runTestFiles(options: IRunnerOptions, preloads: string[]): void 
   });
   stream.on("test:pass", data => record(results, data as unknown as ITestEvent, "pass", stderr));
   stream.on("test:fail", data => record(results, data as unknown as ITestEvent, "fail", stderr));
-  stream.once("end", () => finish(results, options.report, start));
+  stream.once("end", () => {
+    children.finish();
+    finish(results, options.report, start);
+  });
   /* The event stream only flows (and thus only ends) if it is consumed */
   stream.resume();
 }

@@ -91,9 +91,11 @@ export interface IBuildActionDefinition {
   /**
    * Stage the step's working directory into `dir` as {@link run} would, without running
    * anything, and describe what it would run there: what `fabr shell` opens. Absent
-   * where the step runs nothing that can be reproduced by hand.
+   * where the step runs nothing that can be reproduced by hand. `ensureTree` puts a
+   * file set in the cache's tree pool, as {@link ActionContext.ensureTree} does for
+   * {@link run}.
    */
-  stage?(action: BuildAction, dir: string): Computable<IStagedStep>;
+  stage?(action: BuildAction, dir: string, ensureTree: (files: FileSet) => Computable<string>): Computable<IStagedStep>;
 }
 
 /** What a step would run in the directory it was staged into (see {@link IBuildActionDefinition.stage}). */
@@ -116,7 +118,54 @@ export interface IStagedStep {
  * key is a function of exactly those fields. The per-field bags are
  * developer-authored fixed-key records, never user-controlled names.
  */
+export interface IBuildActionOptions {
+  /**
+   * Input files the step's tool may or may not read; the step reports those it
+   * did, and the entry is keyed on them.
+   */
+  discoverable?: ActionFileInputs;
+  label?: string;
+  /**
+   * Ask the cache to track what moved between builds of this target key: it
+   * records what this build was made from and serves the next build the
+   * difference, as {@link ActionContext.changedFiles}.
+   */
+  trackChangedFiles?: boolean;
+  /**
+   * Gives the step's output the shape the target delivers: what the files
+   * ARE — a package, with its identity — or how they divide, which a cached
+   * step cannot carry. Applied to the output every evaluation, whether the
+   * step ran or its entry was served.
+   *
+   * It is no part of the action's key, so it must add nothing the output's
+   * content depends on: the files it is given are all it may draw content
+   * from.
+   */
+  reshape?: (output: FileSet) => FileSet | Computable<FileSet>;
+  /**
+   * The inputs (of {@link BuildAction.inputs} or {@link discoverable}) whose
+   * files' source paths the step hands its tool. Only these carry source paths
+   * into the key and the recorded base: another input's source paths reach
+   * nothing the step produces.
+   */
+  sourcePathInputs?: ReadonlyArray<string>;
+  /**
+   * File sets the step needs in the tree pool ({@link ActionContext.ensureTree}),
+   * which its inputs name by content (a PnP table naming each by its manifest
+   * hash). No part of the key or of the recorded base: the inputs that name
+   * them are.
+   */
+  trees?: ReadonlyArray<FileSet>;
+}
+
 export class BuildAction {
+  public readonly discoverable?: ActionFileInputs;
+  public readonly label?: string;
+  public readonly trackChangedFiles: boolean;
+  public readonly reshape?: (output: FileSet) => FileSet | Computable<FileSet>;
+  public readonly sourcePathInputs: ReadonlyArray<string>;
+  public readonly trees: ReadonlyArray<FileSet>;
+
   constructor(
     public readonly step: IBuildActionDefinition,
     /** Per-file material, manifested into the action key file by file, or as
@@ -125,47 +174,36 @@ export class BuildAction {
     /** The step's configuration: all of it is target-key identity
      * ({@link configDigest}); file-shaped members are staged with the inputs. */
     public readonly config: ActionConfig,
-    /**
-     * If present, input files that may or may not be used by the runner; the runner
-     * may return a list of files from these inputs that it actually used, to provide
-     * more precise dependencies for subsequent reruns.
-     */
-    public readonly discoverable?: ActionFileInputs,
-    public readonly label?: string,
-    /**
-     * Ask the cache to track what moved between builds of this target key: it
-     * records what this build was made from and serves the next build the
-     * difference, as {@link ActionContext.changedFiles}.
-     */
-    public readonly trackChangedFiles: boolean = false,
-    /**
-     * Gives the step's output the shape the target delivers: what the files
-     * ARE — a package, with its identity — or how they divide, which a cached
-     * step cannot carry. Applied to the output every evaluation, whether the
-     * step ran or its entry was served.
-     *
-     * It is no part of the action's key, so it must add nothing the output's
-     * content depends on: the files it is given are all it may draw content
-     * from.
-     */
-    public readonly reshape?: (output: FileSet) => FileSet | Computable<FileSet>,
-    /**
-     * The inputs (of {@link inputs} or {@link discoverable}) whose files' source
-     * paths the step hands its tool. Only these carry source paths into the key
-     * and the recorded base: another input's source paths reach nothing the
-     * step produces.
-     */
-    public readonly sourcePathInputs: ReadonlyArray<string> = []
-  ) {}
+    options: IBuildActionOptions = {}
+  ) {
+    this.discoverable = options.discoverable;
+    this.label = options.label;
+    this.trackChangedFiles = options.trackChangedFiles ?? false;
+    this.reshape = options.reshape;
+    this.sourcePathInputs = options.sourcePathInputs ?? [];
+    this.trees = options.trees ?? [];
+  }
+
+  /** @return the options this action was made with. */
+  private options(): IBuildActionOptions {
+    return {
+      discoverable: this.discoverable,
+      label: this.label,
+      trackChangedFiles: this.trackChangedFiles,
+      reshape: this.reshape,
+      sourcePathInputs: this.sourcePathInputs,
+      trees: this.trees,
+    };
+  }
 
   /** @return a copy carrying the given display label */
   public withLabel(label: string): BuildAction {
-    return new BuildAction(this.step, this.inputs, this.config, this.discoverable, label, this.trackChangedFiles, this.reshape, this.sourcePathInputs);
+    return new BuildAction(this.step, this.inputs, this.config, { ...this.options(), label });
   }
 
   /** @return a copy whose output is given its delivered shape by `reshape`. */
   public withReshape(reshape: (output: FileSet) => FileSet | Computable<FileSet>): BuildAction {
-    return new BuildAction(this.step, this.inputs, this.config, this.discoverable, this.label, this.trackChangedFiles, reshape, this.sourcePathInputs);
+    return new BuildAction(this.step, this.inputs, this.config, { ...this.options(), reshape });
   }
 
   /**

@@ -35,6 +35,10 @@ import * as path from "node:path";
 /** The path segment marking a virtual path. */
 export const VIRTUAL_SEGMENT = "__virtual__";
 
+/** The tree pool's link, relative to the working directory of a staged step;
+ * must equal core's TREE_MOUNT. */
+export const TREE_LINK = "../.fabr-tree";
+
 /** Yarn's own pattern (VirtualFS): the base up to the first virtual segment,
  * then an optional hash (hex, optionally `<name>-` prefixed) and depth, then the
  * rest. */

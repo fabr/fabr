@@ -53,7 +53,7 @@ export function shellInto(cache: BuildCache, name: string, action: BuildAction |
   /* Laid out as the step's own directory, so a printed command, which names
    * the tree pool from the working directory, runs there as written. */
   const dir = cache.makeStepDir(sandbox);
-  return stage(action, dir)
+  return stage(action, dir, files => cache.ensureTree(files))
     .then(staged => {
       const cwd = join(dir, staged.cwd);
       log.log(DIAG_SHELL, { name, dir: cwd, commands: describeCommands(staged) });

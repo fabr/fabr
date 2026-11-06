@@ -30,7 +30,6 @@ import {
   FileSet,
   fileSetInput,
   findExecutable,
-  formatTestFailures,
   getResultFileSet,
   IBuildActionDefinition,
   ITaskReport,
@@ -38,7 +37,8 @@ import {
   parseJson,
   stringListConfig,
   TEST_REPORT_FILENAME,
-  TestsFailedError,
+  testFailureOf,
+  checkTestReport,
   toError,
   toTestReport,
   writeFileSet,
@@ -47,11 +47,12 @@ import {
 /**
  * The step that runs a Java test suite: stage the install, run the runner once
  * on every test class, and deliver its CTRF report, and the coverage report
- * of a measured run beside it. A red run fails the
- * target with the failures the report names; a run that wrote no report
- * fails with the runner's own output.
+ * of a measured run beside it. A run whose tests failed is a result like a
+ * green one, and enters the cache: its task ends as failed, and the target
+ * fails where the report is read (core's `checkTestReport`). A run that wrote
+ * no report fails with the runner's own output.
  */
-const JAVA_TEST_STEP: IBuildActionDefinition = { id: "java:test-run", version: 2, run: runTests };
+const JAVA_TEST_STEP: IBuildActionDefinition = { id: "java:test-run", version: 3, run: runTests };
 
 function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
   const staged = fileSetInput(action, "staged");
@@ -68,10 +69,9 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
       )
     )
     .then(error => {
-      const run = judgeRun(ctx.workDir, [argv[0], ...invocation], error);
-      const { failed, tests } = run.results.summary;
-      if (failed > 0) {
-        throw new TestsFailedError(formatTestFailures(run), failed, tests);
+      const failure = testFailureOf(judgeRun(ctx.workDir, [argv[0], ...invocation], error));
+      if (failure !== undefined) {
+        report.fail(failure);
       }
       return getResultFileSet(ctx.workDir, stringListConfig(action, "outputs"));
     })
@@ -98,5 +98,7 @@ function judgeRun(workDir: string, invocation: string[], error: Error | undefine
 /** @return the action that runs `argv` (the runner's command line, less its report) in `staged`,
  * collecting the coverage report too where the run is `measured`. */
 export function createTestRunAction(staged: FileSet, argv: string[], measured: boolean): BuildAction {
-  return new BuildAction(JAVA_TEST_STEP, { staged }, { argv, outputs: [TEST_REPORT_FILENAME, ...(measured ? [COVERAGE_REPORT_FILENAME] : [])] });
+  return new BuildAction(JAVA_TEST_STEP, { staged }, { argv, outputs: [TEST_REPORT_FILENAME, ...(measured ? [COVERAGE_REPORT_FILENAME] : [])] }).withReshape(
+    checkTestReport
+  );
 }

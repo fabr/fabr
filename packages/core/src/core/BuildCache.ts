@@ -214,12 +214,23 @@ interface ICacheEntry {
   meta?: ICacheControl;
 }
 
+/** What demanding an action's entry came to (see {@link BuildCache.getOrCreateAction}). */
+export interface IActionOutcome {
+  files: FileSet;
+  /** True where this demand built the entry, false where it was served or joined. */
+  created: boolean;
+}
+
 /** How an entry is demanded (see {@link BuildCache.getOrCreate}). */
 export interface ICreateOptions {
   /** Rebuild without consulting what is stored, then commit as usual. Defeats
    * the lookup only — an attempt already in flight for the key is still
    * joined. */
   force?: boolean;
+  /** Rebuild without consulting what is stored, as {@link force} does, but
+   * from the target key's last build as an ordinary miss is: the step is
+   * handed its base. */
+  retry?: boolean;
   /** This action's target key — the coordinate its build-state record hangs
    * off. Present for an action belonging to a declared target. */
   targetKey?: string;
@@ -634,8 +645,13 @@ export class BuildCache {
     action: BuildAction,
     create: (ctx: ActionContext) => Computable<BuildResult>,
     options?: ICreateOptions
-  ): Computable<FileSet> {
-    return this.demand(action.actionKey(), action, create, options);
+  ): Computable<IActionOutcome> {
+    let created = false;
+    const creating = (ctx: ActionContext): Computable<BuildResult> => {
+      created = true;
+      return create(ctx);
+    };
+    return this.demand(action.actionKey(), action, creating, options).then(files => ({ files, created }));
   }
 
   private demand(
@@ -669,7 +685,7 @@ export class BuildCache {
      * cycle). In-process only, so it needs any key that tells those apart and
      * has no obligation to match the entry key's format. */
     return this.withLock(discoverable === undefined ? anchorKey : hashString(anchorKey + manifestFileInputs(discoverable)), () => {
-      if (options?.force) {
+      if (options?.force || options?.retry) {
         return this.createEntry(anchorKey, inContext, options, undefined, action, discoverable, cls);
       }
       if (discoverable !== undefined) {
@@ -994,10 +1010,11 @@ export class BuildCache {
    */
   private materializeBlob(hash: string, mode: number, materialise: (blobPath: string) => Computable<void>): Computable<string> {
     const blobPath = path.resolve(this.blobRoot, hash);
-    if (fs.existsSync(blobPath)) {
+    const held = fs.statSync(blobPath, { throwIfNoEntry: false });
+    if (held !== undefined) {
       /* Only ever ADD the exec bit: byte-identical files with different modes
        * share this blob, and a hardlink cannot be chmod'd apart from it. */
-      if (readOnlyPermissions(mode) & 0o111) {
+      if (readOnlyPermissions(mode) & 0o111 && (held.mode & 0o111) === 0) {
         fs.chmodSync(blobPath, 0o555);
       }
       return Computable.resolve(blobPath);
@@ -1385,15 +1402,14 @@ export class BuildCache {
   /**
    * Read the build state recorded for `targetKey`, or undefined where there is
    * nothing usable to build on. Damage of any kind — no directory, a file in
-   * its place, an unparseable manifest, a dangling `outputs` link, an
-   * entry or a state file whose blob has been reclaimed — costs the caller a
-   * cold build, never an error.
+   * its place, an unparseable manifest, a dangling `outputs` link — costs the
+   * caller a cold build, never an error.
    *
    * A record's parts are only meaningful together: a tool's state names what
    * that build emitted, so an evicted entry makes the state a source of wrong
    * output rather than a slow build. The link is what invalidates an evicted
-   * manifest; {@link isWholeEntry} covers a manifest that still parses over a
-   * blob that is gone.
+   * manifest. The blobs the entry and the state name are trusted as an entry's
+   * are.
    *
    * Only `outputs` is required. Every other manifest reads as **absent**
    * wherever there is no usable file — never recorded, or recorded and damaged
@@ -1425,13 +1441,7 @@ export class BuildCache {
         discoveredText: string | undefined,
         incrementalState: FileSet | undefined
       ): IBuildState | undefined => {
-        /* The entry's files and the tool's kept files must both still be backed;
-         * the diff rows are never pool claims, so they are not checked. */
-        if (
-          outputs === undefined ||
-          !this.isWholeEntry(outputs) ||
-          (incrementalState !== undefined && !this.isWholeEntry(incrementalState))
-        ) {
+        if (outputs === undefined) {
           return undefined;
         }
         /* The base is BOTH parts or neither: a diff over one half would report
@@ -1665,17 +1675,6 @@ export class BuildCache {
    * store (see {@link manifestPath}), naming the blobs that hold the bytes. Immutable once
    * committed, so a read takes no lock; only creation is serialized.
    */
-
-  /** @return true if every file of an entry is still backed by the pool,
-   * otherwise false — see {@link readBuildState}. */
-  private isWholeEntry(files: FileSet): boolean {
-    for (const [, file] of files) {
-      if (!(file instanceof SymlinkFile) && !fs.existsSync(path.resolve(this.blobRoot, file.hash))) {
-        return false;
-      }
-    }
-    return true;
-  }
 
   /** Read the entry stored under the (hashed) key, if any: its blob-backed files
    * plus the cache-control metadata of a non-immutable entry. A missing entry is

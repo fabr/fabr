@@ -116,8 +116,12 @@ export function assertOnePackagePerName(directDeps: ReadonlyArray<FileSet>): voi
  *
  * The sources being compiled do not get the fallback (see PnpResolver): a
  * phantom import in first-party code is a bug whose author can fix it.
+ *
+ * `ignored`, a regular expression over paths relative to the table's root, is
+ * Yarn's `ignorePattern`: the files it names belong to no package of the table
+ * (a tree laid out for node's own resolution beside it).
  */
-export function pnpManifestOf(directDeps: FileSet[], self?: ISelfPackage): IPnpManifest {
+export function pnpManifestOf(directDeps: FileSet[], self?: ISelfPackage, ignored?: string): IPnpManifest {
   assertOnePackagePerName(directDeps);
   const roots = directDeps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
   const referenceIn = referencesOf(roots);
@@ -168,7 +172,7 @@ export function pnpManifestOf(directDeps: FileSet[], self?: ISelfPackage): IPnpM
      * top level's dependencies. */
     dependencyTreeRoots: [],
     enableTopLevelFallback: true,
-    ignorePatternData: null,
+    ignorePatternData: ignored ?? null,
     fallbackExclusionList: exclusionList(excluded, referenceIn),
     fallbackPool: pool,
     packageRegistryData: [

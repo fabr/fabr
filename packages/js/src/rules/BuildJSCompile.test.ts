@@ -59,6 +59,7 @@ const collected = (
     srcs,
     deps: flags,
     resources: [],
+    declarations: [],
   };
   return {
     materializeAll: () => Computable.resolve(parts),

@@ -18,8 +18,9 @@
  */
 
 import { expect } from "chai";
-import { EMPTY_FILESET, FileSet, IFile, MemoryFile } from "@fabr-build/core";
+import { EMPTY_FILESET, FileSet, IChangedFiles, IFile, ITestReport, MemoryFile } from "@fabr-build/core";
 import { selectCompiledSetupFile, selectCompiledTestFiles, snapshotWriteBacks } from "./TestPipeline";
+import { filesToRun } from "./TestRunAction";
 
 /** A FileSet with the given names (contents irrelevant to selection). */
 function fileSetOf(...names: string[]): FileSet {
@@ -179,5 +180,43 @@ describe("selectCompiledSetupFile", () => {
   it("rejects two at the root rather than picking one", () => {
     /* Silently choosing would leave the other's polyfills mysteriously absent. */
     expect(() => selectCompiledSetupFile(fileSetOf("setupTests.js", "setupTests.cjs"))).to.throw("more than one");
+  });
+});
+
+describe("filesToRun", () => {
+  const report = (failed: number): ITestReport => ({
+    results: { tool: { name: "fixture" }, summary: { tests: 1, passed: 1 - failed, failed, pending: 0, skipped: 0, other: 0, start: 0, stop: 1 }, tests: [] },
+  });
+  const kept = new Map([
+    ["a.test.js", { report: report(0), reads: new Set(["build/a.test.js", "build/a.js"]) }],
+    ["b.test.js", { report: report(0), reads: new Set(["build/b.test.js", "build/b.js"]) }],
+  ]);
+  const files = ["a.test.js", "b.test.js"];
+  const changes = (changed: string[], added: string[] = [], deleted: string[] = []): IChangedFiles => ({ changed, added, deleted });
+
+  it("runs the files whose reads changed, and no others", () => {
+    expect(filesToRun(files, changes(["build/a.js"]), kept, false).rerun).to.deep.equal(["a.test.js"]);
+    expect(filesToRun(files, changes(["node_modules/x/index.js"]), kept, false).rerun).to.deep.equal([]);
+  });
+
+  it("runs every file where nothing is kept to compare with, or a file was added or deleted", () => {
+    expect(filesToRun(files, undefined, kept, false).rerun).to.deep.equal(files);
+    expect(filesToRun(files, changes([]), undefined, false).rerun).to.deep.equal(files);
+    expect(filesToRun(files, changes([], ["build/c.js"]), kept, false).rerun).to.deep.equal(files);
+    expect(filesToRun(files, changes([], [], ["build/c.js"]), kept, false).rerun).to.deep.equal(files);
+  });
+
+  it("runs again, in a measured run, a file whose coverage is not kept", () => {
+    expect(filesToRun(files, changes([]), kept, true).rerun).to.deep.equal(files);
+    const measured = new Map([...kept].map(([file, run]) => [file, { ...run, coverage: MemoryFile.from("TN:\n") }]));
+    expect(filesToRun(files, changes(["build/a.js"]), measured, true).rerun).to.deep.equal(["a.test.js"]);
+  });
+
+  it("runs again a file that failed, one with no record, and one whose runner did not say what it read", () => {
+    const partial = new Map([
+      ["a.test.js", { report: report(1), reads: new Set(["build/a.test.js"]) }],
+      ["c.test.js", { report: report(0) }],
+    ]);
+    expect(filesToRun([...files, "c.test.js"], changes([]), partial, false).rerun).to.deep.equal(["a.test.js", "b.test.js", "c.test.js"]);
   });
 });

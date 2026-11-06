@@ -46,10 +46,27 @@ import { IChangeLists } from "../pnp/ReadSet";
  * the source root is content the compiler never opens. */
 export const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json"];
 
+/** Where the caller stages the declarations another compile emitted for some
+ * of this compile's sources, laid out as the source root is: those sources are
+ * in the program to be compiled against, and neither checked nor emitted here. */
+export const SOURCE_DECLARATIONS_FLAG = "--source-declarations";
+
+/** The declaration extension a source's declaration has, by the source's own. */
+export const DECLARATION_EXTENSION: ReadonlyMap<string, string> = new Map([
+  [".ts", ".d.ts"],
+  [".tsx", ".d.ts"],
+  [".js", ".d.ts"],
+  [".jsx", ".d.ts"],
+  [".mts", ".d.mts"],
+  [".mjs", ".d.mts"],
+  [".cts", ".d.cts"],
+  [".cjs", ".d.cts"],
+]);
+
 /** The extensions of a declaration file, which end in `.ts`/`.mts`/`.cts` and
  * so must be recognized whole: stripping one segment of `util.d.ts` leaves
  * `util.d`, a base no import ever probes. */
-const DECLARATION_EXTENSIONS = [".d.ts", ".d.mts", ".d.cts"];
+const DECLARATION_EXTENSIONS = [...new Set(DECLARATION_EXTENSION.values())];
 
 /** @return a source name with its extension removed — including the emitted
  * spellings, which is how an ES-module source names a TypeScript file, and the

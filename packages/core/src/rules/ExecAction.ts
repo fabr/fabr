@@ -87,5 +87,5 @@ function stageExec(action: BuildAction, dir: string): Computable<IStagedStep> {
  * file named by the first that selects it.
  */
 export function createExecAction(files: FileSet, argv: string[], outputs: string | string[] = "**", label?: string): BuildAction {
-  return new BuildAction(EXEC_ACTION, { files }, { argv, outputs }, undefined, label);
+  return new BuildAction(EXEC_ACTION, { files }, { argv, outputs }, { label });
 }

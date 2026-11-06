@@ -363,6 +363,19 @@ export function usesDom(flags: Flag[]): boolean {
 }
 
 /**
+ * @return how the packages the target's tests load are laid out: as a PnP
+ * table where its flags say `layout/pnp`, else as a `node_modules` tree. Both
+ * is an error.
+ */
+export function layoutOf(flags: Flag[]): "pnp" | "node_modules" {
+  const names = new Set(flagClosure(flags).map(flag => flag.name));
+  if (names.has("layout/pnp") && names.has("layout/node_modules")) {
+    throw new FabrError("A target can't be both layout/pnp and layout/node_modules");
+  }
+  return names.has("layout/pnp") ? "pnp" : "node_modules";
+}
+
+/**
  * @return true if the sources use node's runtime globals (`js/node_globals`),
  * otherwise false — the same kind of source fact as {@link usesDom}, and read
  * the same way. What it means is decided by the consumer: a browser bundle
@@ -696,6 +709,12 @@ export interface ICompileOptions {
    */
   resources?: FileSet;
   /**
+   * Declarations another compile emitted for some of the sources — js_compile's
+   * `declarations`: the package's own, for its tests' compile. Those sources
+   * are compiled against, and neither checked nor emitted.
+   */
+  declarations?: FileSet;
+  /**
    * The compile sub-target's display label (default "Compiling"). Also part of
    * the sub-target's identity — see {@link BuildAction.targetKey} — so the test
    * pipeline's distinct label keeps its incremental base apart from the package
@@ -856,6 +875,7 @@ export function compileJsSources(
     ...(options.moduleExtension ? { module_extension: options.moduleExtension } : {}),
     ...(options.rewriteImports?.length ? { rewrite_imports: options.rewriteImports } : {}),
     ...(options.resources !== undefined && !options.resources.isEmpty() ? { resources: options.resources } : {}),
+    ...(options.declarations !== undefined && !options.declarations.isEmpty() ? { declarations: options.declarations } : {}),
   };
   const subTargetOptions = { label: options.label ?? (options.describe ? "Describing" : "Compiling"), constraints: BUILD_OVERRIDE.with(options.constraints) };
   return options.describe

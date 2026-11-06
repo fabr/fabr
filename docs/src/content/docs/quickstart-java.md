@@ -137,8 +137,9 @@ class GreeterTest {
 fabr test greeter
 ```
 
-prints `greeter: 1 test passed`, and a failing test fails the build. A passing run is cached, so
-running `fabr test` again without changes reports the result without running the tests again.
+prints `greeter: 1 test passed`, and a failing test fails the build. A run is cached, so running
+`fabr test` again without changes reports the result without running the tests again;
+`fabr test --retry-failed greeter` runs failed tests again.
 [Testing](/reference/java/testing/) covers other engines and what each failure means.
 
 ## The commands you'll use

@@ -18,13 +18,13 @@
  */
 
 /**
- * The js_package[test] rule: in-package test sugar — the tests property is
- * compiled together with the package's own source tree (so relative imports
- * resolve) and run against the package's deps.
+ * The js_package[test] rule: the package's tests, compiled against the package
+ * as its build makes it (in the module format the test framework loads) and
+ * run beside it, against the package's deps.
  */
 
 import { BUILD_OVERRIDE, Computable, defineRule, PackageSources, ResolutionSpec, TargetContext } from "@fabr-build/core";
-import { compileAndRunTests, describeTests, TestRequirements, testFramework, testRequirements } from "../TestPipeline";
+import { compileAndRunTests, describeTests, packageBuildOverrides, TestRequirements, testFramework, testRequirements } from "../TestPipeline";
 
 /** The `js_package` rule, under `test`: the package's tests, run under the test framework its `test_framework` names. */
 export default defineRule({
@@ -32,11 +32,13 @@ export default defineRule({
    * State the package's test requirements. Its `provided_deps`,
    * `optional_provided_deps` and `compile_deps` are more `deps` here, compiled
    * and installed identically: a test install is self-contained, with no host to
-   * supply them and no manifest to distinguish them.
+   * supply them and no manifest to distinguish them. The package itself is
+   * required as its build makes it, in the module format the framework loads.
    */
   requirements(context: TargetContext): Computable<ResolutionSpec<TestRequirements>> {
     return Computable.forAll(
       [
+        packageBuildOverrides(context, "test_framework").then(overrides => context.resolveSelfWithOverrides(overrides)),
         context.getFileProperty("srcs", BUILD_OVERRIDE),
         context.getFileProperty("tests", BUILD_OVERRIDE),
         context.getPackageProperty("deps", BUILD_OVERRIDE),
@@ -48,8 +50,9 @@ export default defineRule({
         context.getFileProperty("resources", BUILD_OVERRIDE),
         context.getFileProperty("test_expectations", BUILD_OVERRIDE),
       ],
-      (srcs, tests, deps, provided, optional, compileOnly, test_deps, test_resources, resources, expectations) =>
+      (built, srcs, tests, deps, provided, optional, compileOnly, test_deps, test_resources, resources, expectations) =>
         testRequirements({
+          package: built,
           srcs,
           tests,
           deps: new PackageSources([...deps.sources, ...provided.sources, ...optional.sources, ...compileOnly.sources]),
