@@ -2290,10 +2290,10 @@ export class BuildParser {
    * RuleGuard ::= '<' RuleGuardKey '=' NAME ( ',' RuleGuardKey '=' NAME )* '>'
    * RuleGuardKey ::= NAME | <param> '.' NAME
    *
-   * The rule of `type`, or of every type where undefined; `offset` is where the
-   * declaration starts.
+   * The rule of `type`, written at `typeOffset`, or of every type where
+   * undefined; `offset` is where the declaration starts.
    */
-  private parseRuleDecl(type: string | undefined, offset: number): IRuleDecl {
+  private parseRuleDecl(type: string | undefined, typeOffset: number | undefined, offset: number): IRuleDecl {
     const param = this.token;
     if (param.type !== TokenType.IDENTIFIER) {
       this.unexpectedTokenError("the rule's target parameter");
@@ -2316,7 +2316,18 @@ export class BuildParser {
     }
     this.consumeToken(TokenType.EQUALS);
     const implementation = this.parseRuleImplementation();
-    return { kind: DeclKind.Rule, source: this.source, offset, type, param: param.text, properties, targetProperties, implementation };
+    return {
+      kind: DeclKind.Rule,
+      source: this.source,
+      offset,
+      type,
+      ...(typeOffset === undefined ? {} : { typeOffset }),
+      param: param.text,
+      paramOffset: param.start,
+      properties,
+      targetProperties,
+      implementation,
+    };
   }
 
   /**
@@ -2646,13 +2657,13 @@ export class BuildParser {
         this.result.plugins.push(this.parsePluginDecl());
       } else if (token.text === "default" && next.type === TokenType.IDENTIFIER && next.text === "rule") {
         this.nextToken();
-        this.result.rules.push(this.parseRuleDecl(undefined, token.start));
+        this.result.rules.push(this.parseRuleDecl(undefined, undefined, token.start));
       } else if (token.text === "default") {
         this.result.defaults.push(this.parseDefaultDecl(doc));
       } else if (token.text === "rule" && next.type === TokenType.IDENTIFIER) {
         const type = next.text;
         this.nextToken();
-        this.result.rules.push(this.parseRuleDecl(type, token.start));
+        this.result.rules.push(this.parseRuleDecl(type, next.start, token.start));
       } else if (token.text === "repository" && next.type === TokenType.IDENTIFIER) {
         this.result.repositories.push(this.parseRepositoryDecl(token.start));
       } else if (next.type === TokenType.EQUALS || next.type === TokenType.LANGLE) {

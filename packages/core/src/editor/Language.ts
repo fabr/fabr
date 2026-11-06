@@ -26,10 +26,29 @@
  */
 
 import { posix } from "path";
-import type { Name } from "../core/Name";
+import type { Name, NameConstraint } from "../core/Name";
 import { StringReader } from "../support/StringReader";
 import type { ISourceSpan } from "../support/Log";
-import { DeclKind, hasMapValue, IBuildFile, IBuildFileContents, IIncludeDecl, IPluginDecl, INameValue, IPropertyDecl, isPropertyDecl, ISpliceDecl, ITargetDecl, ITargetDefDecl, IValue, propertyTypeName } from "../model/AST";
+import {
+  declName,
+  DeclKind,
+  hasMapValue,
+  IBuildFile,
+  IBuildFileContents,
+  IIncludeDecl,
+  IPluginDecl,
+  INameValue,
+  IPropertyDecl,
+  IRuleDecl,
+  isPropertyDecl,
+  isRuleBlock,
+  ISpliceDecl,
+  ITargetDecl,
+  ITargetDefDecl,
+  IValue,
+  parameterProperty,
+  propertyTypeName,
+} from "../model/AST";
 import { BuildModel } from "../model/BuildModel";
 import { IPropertyEntry } from "../model/Namespace";
 
@@ -45,22 +64,27 @@ export interface IBuildFileSymbol {
   /** The name it declares. */
   name: string;
   /** What it declares. */
-  kind: "target" | "property" | "targetdef";
-  /** A target's type. */
+  kind: "target" | "property" | "targetdef" | "rule";
+  /** A target's type; a rule's guards. */
   detail?: string;
   /** The whole declaration. */
   range: ISourceRange;
   /** Its name. */
   selection: ISourceRange;
+  /** What a rule's block declares, in written order. */
+  children?: IBuildFileSymbol[];
 }
 
 /** What is written at a place in a build file. */
 export type Written =
-  | { kind: "target-type"; target: ITargetDecl }
-  | { kind: "target-name"; target: ITargetDecl }
-  | { kind: "property-name"; property: IPropertyDecl; target?: ITargetDecl }
-  | { kind: "value"; value: INameValue; property: IPropertyDecl; target?: ITargetDecl }
-  | { kind: "splice"; splice: ISpliceDecl; target: ITargetDecl }
+  | { kind: "target-type"; target: ITargetDecl; rule?: IRuleDecl }
+  | { kind: "target-name"; target: ITargetDecl; rule?: IRuleDecl }
+  | { kind: "property-name"; property: IPropertyDecl; target?: ITargetDecl; rule?: IRuleDecl }
+  /* A value of a property, or a rule's implementation (`property` undefined). */
+  | { kind: "value"; value: INameValue; property?: IPropertyDecl; target?: ITargetDecl; rule?: IRuleDecl }
+  | { kind: "splice"; splice: ISpliceDecl; target: ITargetDecl; rule?: IRuleDecl }
+  | { kind: "rule-type"; rule: IRuleDecl }
+  | { kind: "rule-parameter"; rule: IRuleDecl }
   | { kind: "include"; include: IIncludeDecl }
   | { kind: "plugin"; plugin: IPluginDecl }
   | { kind: "targetdef-name"; targetdef: ITargetDefDecl }
@@ -69,51 +93,112 @@ export type Written =
 /** @return the declarations `contents` holds, in written order. */
 export function symbolsOf(contents: IBuildFileContents): IBuildFileSymbol[] {
   const symbols: IBuildFileSymbol[] = [
-    ...contents.targets.map(
-      (target): IBuildFileSymbol => ({ name: target.name.toString(), kind: "target", detail: target.type, range: targetRange(target), selection: nameRange(target) })
-    ),
-    ...[...contents.properties, ...contents.defaults.filter((decl): decl is IPropertyDecl => decl.kind === DeclKind.Property)].map(
-      (property): IBuildFileSymbol => ({ name: property.name.toString(), kind: "property", range: propertyRange(property), selection: nameRange(property) })
-    ),
+    ...contents.targets.map(targetSymbol),
+    ...[...contents.properties, ...contents.defaults.filter((decl): decl is IPropertyDecl => decl.kind === DeclKind.Property)].map(propertySymbol),
     ...contents.targetdefs.map(
       (targetdef): IBuildFileSymbol => ({ name: targetdef.name, kind: "targetdef", range: span(targetdef, targetdef.offset + targetdef.name.length), selection: span(targetdef, targetdef.offset + targetdef.name.length) })
     ),
+    ...contents.rules.map(ruleSymbol),
   ];
   return symbols.sort((a, b) => a.range.offset - b.range.offset);
+}
+
+/** @return a rule's symbol: named by its type, or `default rule`, its guards the detail, and what its block declares beneath it. */
+function ruleSymbol(rule: IRuleDecl): IBuildFileSymbol {
+  const guards = [...rule.properties, ...rule.targetProperties.map(([key, pattern]): NameConstraint => [`${rule.param}.${key}`, pattern])];
+  const block = isRuleBlock(rule.implementation) ? rule.implementation : undefined;
+  const children = block === undefined ? [] : [...block.targets.map(targetSymbol), ...block.properties.map(propertySymbol)].sort((a, b) => a.range.offset - b.range.offset);
+  const selection =
+    rule.type === undefined || rule.typeOffset === undefined
+      ? { source: rule.source, offset: rule.paramOffset, endOffset: rule.paramOffset + rule.param.length }
+      : { source: rule.source, offset: rule.typeOffset, endOffset: rule.typeOffset + rule.type.length };
+  return {
+    name: rule.type ?? "default rule",
+    kind: "rule",
+    ...(guards.length === 0 ? {} : { detail: guards.map(([key, pattern]) => `${key}=${pattern.toString()}`).join(", ") }),
+    range: { source: rule.source, offset: rule.offset, endOffset: Math.max(selection.endOffset, ...children.map(child => child.range.endOffset), ruleImplementationEnd(rule)) },
+    selection,
+    ...(children.length === 0 ? {} : { children }),
+  };
+}
+
+/** @return a target's symbol. */
+function targetSymbol(target: ITargetDecl): IBuildFileSymbol {
+  return { name: target.name.toString(), kind: "target", detail: target.type, range: targetRange(target), selection: nameRange(target) };
+}
+
+/** @return a property's symbol. */
+function propertySymbol(property: IPropertyDecl): IBuildFileSymbol {
+  return { name: property.name.toString(), kind: "property", range: propertyRange(property), selection: nameRange(property) };
+}
+
+/** @return where a rule's implementation, or its block's result, ends. */
+function ruleImplementationEnd(rule: IRuleDecl): number {
+  return isRuleBlock(rule.implementation) ? rule.implementation.result.endOffset : rule.implementation.endOffset;
 }
 
 /** @return what is written at `offset` in `contents`, or undefined where it is nothing an editor asks about. */
 export function writtenAt(contents: IBuildFileContents, offset: number): Written | undefined {
   const within = (start: number, end: number): boolean => offset >= start && offset <= end;
-  const inProperty = (property: IPropertyDecl, target?: ITargetDecl): Written | undefined => {
+  const inProperty = (property: IPropertyDecl, target?: ITargetDecl, rule?: IRuleDecl): Written | undefined => {
+    const where = { ...(target === undefined ? {} : { target }), ...(rule === undefined ? {} : { rule }) };
     if (within(property.offset, nameRange(property).endOffset)) {
-      return { kind: "property-name", property, ...(target === undefined ? {} : { target }) };
+      return { kind: "property-name", property, ...where };
     }
     for (const value of valuesOf(property.values)) {
       if (value.kind === DeclKind.NameValue && within(value.offset, value.endOffset)) {
-        return { kind: "value", value, property, ...(target === undefined ? {} : { target }) };
+        return { kind: "value", value, property, ...where };
+      }
+    }
+    return undefined;
+  };
+  const inTarget = (target: ITargetDecl, rule?: IRuleDecl): Written | undefined => {
+    const where = rule === undefined ? {} : { rule };
+    if (within(target.typeOffset, target.typeOffset + target.type.length)) {
+      return { kind: "target-type", target, ...where };
+    }
+    if (within(target.offset, nameRange(target).endOffset)) {
+      return { kind: "target-name", target, ...where };
+    }
+    for (const item of target.properties) {
+      const found = isPropertyDecl(item)
+        ? inProperty(item, target, rule)
+        : within(item.offset, item.endOffset)
+          ? ({ kind: "splice", splice: item, target, ...where } as const)
+          : undefined;
+      if (found !== undefined) {
+        return found;
       }
     }
     return undefined;
   };
   for (const target of [...contents.targets, ...contents.defaults.filter((decl): decl is ITargetDecl => decl.kind === DeclKind.Target)]) {
-    if (within(target.typeOffset, target.typeOffset + target.type.length)) {
-      return { kind: "target-type", target };
+    const found = inTarget(target);
+    if (found !== undefined) {
+      return found;
     }
-    if (within(target.offset, nameRange(target).endOffset)) {
-      return { kind: "target-name", target };
+  }
+  for (const rule of contents.rules) {
+    if (rule.type !== undefined && rule.typeOffset !== undefined && within(rule.typeOffset, rule.typeOffset + rule.type.length)) {
+      return { kind: "rule-type", rule };
     }
-    for (const item of target.properties) {
-      if (!isPropertyDecl(item)) {
-        if (within(item.offset, item.endOffset)) {
-          return { kind: "splice", splice: item, target };
-        }
-        continue;
+    if (within(rule.paramOffset, rule.paramOffset + rule.param.length)) {
+      return { kind: "rule-parameter", rule };
+    }
+    const { implementation } = rule;
+    if (!isRuleBlock(implementation)) {
+      if (within(implementation.offset, implementation.endOffset)) {
+        return { kind: "value", value: implementation, rule };
       }
-      const found = inProperty(item, target);
+      continue;
+    }
+    for (const found of [...implementation.targets.map(target => inTarget(target, rule)), ...implementation.properties.map(property => inProperty(property, undefined, rule))]) {
       if (found !== undefined) {
         return found;
       }
+    }
+    if (within(implementation.result.offset, implementation.result.endOffset)) {
+      return { kind: "value", value: implementation.result, rule };
     }
   }
   for (const property of [...contents.properties, ...contents.defaults.filter((decl): decl is IPropertyDecl => decl.kind === DeclKind.Property)]) {
@@ -169,9 +254,19 @@ export interface INamed {
 export function namedAt(model: BuildModel, written: Written, offset: number): INamed | undefined {
   switch (written.kind) {
     case "value":
-      return referenceAt(model, written.value.source, written.value.offset, written.value.endOffset, written.value.value, offset);
+      return written.rule === undefined
+        ? referenceAt(model, written.value.source, written.value.offset, written.value.endOffset, written.value.value, offset)
+        : scopedReferenceAt(model, written.rule, written.value.source, written.value.offset, written.value.endOffset, written.value.value, offset);
     case "splice":
-      return referenceAt(model, written.splice.source, written.splice.offset, written.splice.endOffset, written.splice.ref, offset);
+      return written.rule === undefined
+        ? referenceAt(model, written.splice.source, written.splice.offset, written.splice.endOffset, written.splice.ref, offset)
+        : scopedReferenceAt(model, written.rule, written.splice.source, written.splice.offset, written.splice.endOffset, written.splice.ref, offset);
+    case "rule-type": {
+      const { rule } = written;
+      return typeNamed(model, rule.type!, { source: rule.source, offset: rule.typeOffset!, endOffset: rule.typeOffset! + rule.type!.length });
+    }
+    case "rule-parameter":
+      return parameterNamed(model, written.rule, { source: written.rule.source, offset: written.rule.paramOffset, endOffset: written.rule.paramOffset + written.rule.param.length });
     case "plugin": {
       const end = written.plugin.endOffset ?? written.plugin.offset + written.plugin.name.toString().length;
       return referenceAt(model, written.plugin.source, written.plugin.offset, end, written.plugin.name, offset);
@@ -182,47 +277,25 @@ export function namedAt(model: BuildModel, written: Written, offset: number): IN
       if (substituted !== undefined) {
         return propertyNamed(model, substituted.name, substituted.origin);
       }
+      if (written.target === undefined && written.rule !== undefined) {
+        /* A property of a rule's block is declared where it is. */
+        return { origin: range, declarations: [spanOf(written.property)], documentation: describeProperty(written.property.name.toBaseString(), { kind: DeclKind.Property, decls: [written.property], defaults: [] }) };
+      }
       if (written.target === undefined) {
         return propertyNamed(model, written.property.name.toBaseString(), range);
       }
-      const targetdef = model.getTargetDef(written.target.type);
-      const name = written.property.name.toBaseString();
-      const schema = targetdef?.properties.get(name) ?? targetdef?.properties.get("*");
-      return {
-        origin: range,
-        declarations: targetdef === undefined ? [] : [spanOf(targetdef)],
-        ...(schema === undefined
-          ? {}
-          : {
-              documentation: {
-                title: `${name}: ${schema.required ? "REQUIRED " : ""}${propertyTypeName(schema)}`,
-                within: written.target.type,
-                ...(schema.docComment === undefined ? {} : { comment: schema.docComment }),
-              },
-            }),
-      };
+      return schemaNamed(model, written.target.type, written.property.name.toBaseString(), range);
     }
     case "targetdef-base": {
       const base = written.targetdef.extends!;
-      const targetdef = model.getTargetDef(base.name);
-      return {
-        origin: { source: written.targetdef.source, offset: base.offset, endOffset: base.offset + base.name.length },
-        declarations: targetdef === undefined ? [] : [spanOf(targetdef)],
-        ...(targetdef === undefined
-          ? {}
-          : { documentation: { title: `targetdef ${targetdef.name}`, ...(targetdef.docComment === undefined ? {} : { comment: targetdef.docComment }) } }),
-      };
+      return typeNamed(model, base.name, { source: written.targetdef.source, offset: base.offset, endOffset: base.offset + base.name.length });
     }
-    case "target-type": {
-      const targetdef = model.getTargetDef(written.target.type);
-      return {
-        origin: { source: written.target.source, offset: written.target.typeOffset, endOffset: written.target.typeOffset + written.target.type.length },
-        declarations: targetdef === undefined ? [] : [spanOf(targetdef)],
-        ...(targetdef === undefined
-          ? {}
-          : { documentation: { title: `targetdef ${targetdef.name}`, ...(targetdef.docComment === undefined ? {} : { comment: targetdef.docComment }) } }),
-      };
-    }
+    case "target-type":
+      return typeNamed(model, written.target.type, {
+        source: written.target.source,
+        offset: written.target.typeOffset,
+        endOffset: written.target.typeOffset + written.target.type.length,
+      });
     case "target-name":
       return { origin: nameRange(written.target), declarations: [spanOf(written.target)], documentation: describeTarget(written.target) };
     case "include": {
@@ -281,6 +354,80 @@ function referenceAt(model: BuildModel, source: IBuildFile, start: number, end: 
       within: `${(match.decl as ITargetDecl).type} ${match.name}`,
       source: entries.map(entry => entry.source.reader.substring(entry.offset, entry.endOffset)).join("\n"),
     },
+  };
+}
+
+/**
+ * @return what the part of the reference `name`, written in a rule's
+ * declaration `rule` from `start` to `end`, at `offset` names, as the rule's
+ * block looks it up: the rule's parameter its type, a property read through it
+ * (`pkg.srcs`) that property of its type, a name the block declares that
+ * declaration; anything else as the file's names do (see {@link referenceAt}).
+ */
+function scopedReferenceAt(model: BuildModel, rule: IRuleDecl, source: IBuildFile, start: number, end: number, name: Name, offset: number): INamed | undefined {
+  const block = isRuleBlock(rule.implementation) ? rule.implementation : undefined;
+  const substituted = substitutionAt(source, start, end, offset);
+  const local = (head: string, origin: ISourceRange): INamed | undefined => {
+    if (head === rule.param) {
+      return parameterNamed(model, rule, origin);
+    }
+    const property = parameterProperty(head, rule.param);
+    if (property !== undefined) {
+      return rule.type === undefined ? { origin, declarations: [] } : schemaNamed(model, rule.type, property, origin);
+    }
+    const target = block?.targets.find(decl => declName(decl) === head);
+    if (target !== undefined) {
+      return { origin, declarations: [spanOf(target)], documentation: describeTarget(target) };
+    }
+    const properties = block?.properties.filter(decl => decl.name.toBaseString() === head) ?? [];
+    return properties.length === 0
+      ? undefined
+      : { origin, declarations: properties.map(spanOf), documentation: describeProperty(head, { kind: DeclKind.Property, decls: properties, defaults: [] }) };
+  };
+  if (substituted !== undefined) {
+    return local(substituted.name, substituted.origin) ?? propertyNamed(model, substituted.name, substituted.origin);
+  }
+  const text = source.reader.substring(start, end);
+  const head = /^[^:/<]*/.exec(text)![0];
+  return local(head, { source, offset: start, endOffset: start + head.length }) ?? referenceAt(model, source, start, end, name, offset);
+}
+
+/** @return the target type `type`, as named at `origin`. */
+function typeNamed(model: BuildModel, type: string, origin: ISourceRange): INamed {
+  const targetdef = model.getTargetDef(type);
+  return {
+    origin,
+    declarations: targetdef === undefined ? [] : [spanOf(targetdef)],
+    ...(targetdef === undefined ? {} : { documentation: { title: `targetdef ${targetdef.name}`, ...(targetdef.docComment === undefined ? {} : { comment: targetdef.docComment }) } }),
+  };
+}
+
+/** @return a rule's parameter, as named at `origin`: the target the rule builds, a target of its type. */
+function parameterNamed(model: BuildModel, rule: IRuleDecl, origin: ISourceRange): INamed {
+  const of = rule.type === undefined ? undefined : model.getTargetDef(rule.type);
+  return {
+    origin,
+    declarations: [{ ...rule.source, offset: rule.paramOffset, endOffset: rule.paramOffset + rule.param.length }],
+    documentation: { title: `${rule.param}: the ${rule.type ?? "target"} the rule builds`, ...(of?.docComment === undefined ? {} : { comment: of.docComment }) },
+  };
+}
+
+/** @return the property `name` of the target type `type`, as named at `origin`: its schema, where the type is declared. */
+function schemaNamed(model: BuildModel, type: string, name: string, origin: ISourceRange): INamed {
+  const targetdef = model.getTargetDef(type);
+  const schema = targetdef?.properties.get(name) ?? targetdef?.properties.get("*");
+  return {
+    origin,
+    declarations: targetdef === undefined ? [] : [spanOf(targetdef)],
+    ...(schema === undefined
+      ? {}
+      : {
+          documentation: {
+            title: `${name}: ${schema.required ? "REQUIRED " : ""}${propertyTypeName(schema)}`,
+            within: type,
+            ...(schema.docComment === undefined ? {} : { comment: schema.docComment }),
+          },
+        }),
   };
 }
 
@@ -404,6 +551,22 @@ export interface ICompletion {
   comment?: string;
 }
 
+/** @return a rule's parameter, the target being built, and each property of its type read through it (`pkg.srcs`). */
+function parameterCompletions(model: BuildModel, rule: RuleScope): ICompletion[] {
+  const targetdef = rule.type === undefined ? undefined : model.getTargetDef(rule.type);
+  return [
+    { label: rule.parameter, kind: "target", detail: "the target being built" },
+    ...[...(targetdef?.properties ?? new Map())]
+      .filter(([name]) => name !== "*")
+      .map(([name, schema]): ICompletion => ({
+        label: `${rule.parameter}.${name}`,
+        kind: "property",
+        detail: propertyTypeName(schema),
+        ...(schema.docComment === undefined ? {} : { comment: schema.docComment }),
+      })),
+  ];
+}
+
 /** The words that open a declaration that is not a target's. */
 const KEYWORDS = ["targetdef", "rule", "repository", "plugin", "include", "default"];
 
@@ -426,7 +589,7 @@ export function completionsAt(model: BuildModel, text: string, offset: number): 
     case "substitution":
       return globals();
     case "value":
-      return [...targets(), ...globals()];
+      return [...targets(), ...globals(), ...(context.rule === undefined ? [] : parameterCompletions(model, context.rule))];
     case "property-name": {
       const targetdef = model.getTargetDef(context.type);
       const properties = [...(targetdef?.properties ?? new Map())]
@@ -441,7 +604,7 @@ export function completionsAt(model: BuildModel, text: string, offset: number): 
         .getProperties()
         .filter(({ decl }) => hasMapValue(decl))
         .map(({ name, decl }): ICompletion => ({ label: name, kind: "property", detail: "MAP", ...(decl.docComment === undefined ? {} : { comment: decl.docComment }) }));
-      const parameter: ICompletion[] = context.parameter === undefined ? [] : [{ label: context.parameter, kind: "target", detail: "the target being built" }];
+      const parameter: ICompletion[] = context.rule === undefined ? [] : [{ label: context.rule.parameter, kind: "target", detail: "the target being built" }];
       return [...properties, ...maps, ...parameter];
     }
     case "top-level":
@@ -455,10 +618,13 @@ export function completionsAt(model: BuildModel, text: string, offset: number): 
 }
 
 /** Where in a build file's grammar a place is, as far as the text before it says. */
+/** The rule whose block a place is in: its parameter, and the type it is for, if it is for one. */
+type RuleScope = { parameter: string; type?: string };
+
 type TypingContext =
   | { kind: "substitution" }
-  | { kind: "value" }
-  | { kind: "property-name"; type: string; parameter?: string }
+  | { kind: "value"; rule?: RuleScope }
+  | { kind: "property-name"; type: string; rule?: RuleScope }
   | { kind: "top-level" }
   | { kind: "other" };
 
@@ -511,22 +677,25 @@ function typingContext(text: string, offset: number): TypingContext {
   if (substitution) {
     return { kind: "substitution" };
   }
+  /* Within a rule's block, its parameter (`rule <type> <param>`, `default rule <param>`). */
+  const unguarded = (text: string): string => text.replace(/<[^>]*>/g, "");
+  const rule = headers
+    .map((written): RuleScope | undefined => {
+      const typed = /^rule\s+([A-Za-z_][\w-]*)\s+([A-Za-z_][\w-]*)/.exec(unguarded(written));
+      const every = /^default\s+rule\s+([A-Za-z_][\w-]*)/.exec(unguarded(written));
+      return typed !== null ? { parameter: typed[2], type: typed[1] } : every !== null ? { parameter: every[1] } : undefined;
+    })
+    .find(scope => scope !== undefined);
+  const inRule = rule === undefined ? {} : { rule };
   if (/=/.test(statement)) {
-    return { kind: "value" };
+    return { kind: "value", ...inRule };
   }
   const header = headers[headers.length - 1];
   if (header === undefined) {
     return { kind: "top-level" };
   }
   /* A target's body: `<type> <name>`, perhaps guarded, or the short form of a
-   * rule's block, `rule … = <type> <name>`; within a rule's block, its
-   * parameter (`rule <type> <param>`, `default rule <param>`) is named too. */
-  const unguarded = (text: string): string => text.replace(/<[^>]*>/g, "");
-  const parameter = headers
-    .map(written => /^(?:rule\s+[A-Za-z_][\w-]*|default\s+rule)\s+([A-Za-z_][\w-]*)/.exec(unguarded(written))?.[1])
-    .find(name => name !== undefined);
+   * rule's block, `rule … = <type> <name>`. */
   const target = /^(?:default\s+)?([A-Za-z_][\w-]*)\s+[^\s=]+$/.exec(unguarded(header)) ?? /=\s*([A-Za-z_][\w-]*)\s+[^\s=]+$/.exec(unguarded(header));
-  return target !== null && !KEYWORDS.includes(target[1])
-    ? { kind: "property-name", type: target[1], ...(parameter === undefined ? {} : { parameter }) }
-    : { kind: "other" };
+  return target !== null && !KEYWORDS.includes(target[1]) ? { kind: "property-name", type: target[1], ...inRule } : { kind: "other" };
 }

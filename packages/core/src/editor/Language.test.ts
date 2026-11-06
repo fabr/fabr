@@ -136,6 +136,71 @@ describe("build file language", () => {
     expect(offered("rule bigger b<BUILD_OPERATION=x> = r {\n  holder r {\n    ")).to.deep.equal(["srcs", "COMMON", "b"]);
   });
 
+  describe("a rule's declaration", () => {
+    const text = [
+      "# A thing that holds files.",
+      "targetdef holder {",
+      "  # What it holds.",
+      "  srcs = FILES;",
+      "  more = FILES;",
+      "}",
+      "extra = x.txt;",
+      "rule holder pkg<BUILD_OPERATION=lint> = held {",
+      "  both = pkg.srcs extra;",
+      "  holder held { srcs = both ${pkg.more}; more = pkg; }",
+      "  holder spliced { pkg; }",
+      "}",
+      "",
+    ].join("\n");
+    const ruled = parseBuildString(EMPTY_FILESET, "RULE.fabr", text, log);
+    const ruledModel = toBuildModel([ruled], log, []);
+    const find = (needle: string, nth = 0): number => {
+      let found = -1;
+      for (let i = 0; i <= nth; i++) {
+        found = text.indexOf(needle, found + 1);
+      }
+      return found + 1;
+    };
+    const declared = (offset: number): string[] =>
+      (namedAt(ruledModel, writtenAt(ruled, offset)!, offset)?.declarations ?? []).map(span => text.slice(span.offset, span.endOffset ?? span.offset));
+
+    it("finds what is written in it: its type, its parameter, the block's targets and values", () => {
+      expect(writtenAt(ruled, find("holder pkg"))?.kind).to.equal("rule-type");
+      expect(writtenAt(ruled, find("pkg<"))?.kind).to.equal("rule-parameter");
+      expect(writtenAt(ruled, find("holder held"))?.kind).to.equal("target-type");
+      expect(writtenAt(ruled, find("held {", 1))?.kind).to.equal("target-name");
+      expect(writtenAt(ruled, find("pkg; }", 1))?.kind).to.equal("splice");
+      /* The block's result. */
+      expect(writtenAt(ruled, find("held {"))?.kind).to.equal("value");
+    });
+
+    it("looks a name up in the block first: the parameter, its properties, the block's own names, then the file's", () => {
+      expect(declared(find("holder pkg"))).to.deep.equal(["holder"]);
+      expect(declared(find("pkg.srcs"))).to.deep.equal(["holder"]);
+      expect(namedAt(ruledModel, writtenAt(ruled, find("pkg.srcs"))!, find("pkg.srcs"))?.documentation).to.deep.equal({ title: "srcs: FILES", within: "holder", comment: "What it holds." });
+      expect(declared(find("both ${"))).to.deep.equal(["both"]);
+      expect(declared(find("pkg.more}"))).to.deep.equal(["holder"]);
+      expect(declared(find("pkg; }", 0))).to.deep.equal(["pkg"]);
+      expect(declared(find("extra;"))).to.deep.equal(["extra"]);
+    });
+
+    it("offers the parameter and its properties as values in the block", () => {
+      const typed = "rule holder pkg = r {\n  holder r { srcs = ";
+      const offered = completionsAt(ruledModel, typed, typed.length).map(completion => completion.label);
+      expect(offered).to.include.members(["pkg", "pkg.srcs", "pkg.more"]);
+    });
+
+    it("lists the rule in the outline, with what its block declares beneath it", () => {
+      const rule = symbolsOf(ruled).find(symbol => symbol.kind === "rule")!;
+      expect([rule.name, rule.detail]).to.deep.equal(["holder", "BUILD_OPERATION=lint"]);
+      expect(rule.children?.map(child => [child.name, child.kind])).to.deep.equal([
+        ["both", "property"],
+        ["held", "target"],
+        ["spliced", "target"],
+      ]);
+    });
+  });
+
   it("names a reference's parts apart: a repository, then the entry of its own that names the rest", () => {
     const parts = (needle: string, delta = 1): [string, string[]] | undefined => {
       const offset = TEXT.indexOf(needle) + delta;

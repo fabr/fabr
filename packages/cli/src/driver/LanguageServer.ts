@@ -56,7 +56,7 @@ import { type IPosition, toChangedParams, toDocumentParams, toOpenedParams, toPo
 const FULL_SYNC = 1;
 
 /** LSP's `SymbolKind`s, for each kind of declaration a build file holds. */
-const SYMBOL_KINDS: Record<IBuildFileSymbol["kind"], number> = { target: 19, property: 13, targetdef: 23 };
+const SYMBOL_KINDS: Record<IBuildFileSymbol["kind"], number> = { target: 19, property: 13, targetdef: 23, rule: 12 };
 
 /** The requests answered from the model, which wait for the first to be loaded. */
 const FROM_THE_MODEL = new Set(["textDocument/definition", "textDocument/hover", "textDocument/completion", "textDocument/codeLens"]);
@@ -214,13 +214,7 @@ export class LanguageServer {
         this.typedText(toDocumentParams(params).uri, undefined);
         return null;
       case "textDocument/documentSymbol":
-        return symbolsOf(this.parse(toDocumentParams(params).uri).contents).map(symbol => ({
-          name: symbol.name,
-          ...(symbol.detail === undefined ? {} : { detail: symbol.detail }),
-          kind: SYMBOL_KINDS[symbol.kind],
-          range: rangeOf({ ...symbol.range.source, offset: symbol.range.offset, endOffset: symbol.range.endOffset }),
-          selectionRange: rangeOf({ ...symbol.selection.source, offset: symbol.selection.offset, endOffset: symbol.selection.endOffset }),
-        }));
+        return symbolsOf(this.parse(toDocumentParams(params).uri).contents).map(documentSymbol);
       case "textDocument/definition": {
         const named = this.named(toPositionParams(params));
         const origin = named === undefined ? undefined : rangeOf({ ...named.origin.source, offset: named.origin.offset, endOffset: named.origin.endOffset });
@@ -311,4 +305,16 @@ function offsetOf(text: string, position: IPosition): number {
     offset = next + 1;
   }
   return Math.min(offset + position.character, text.length);
+}
+
+/** Make the LSP `DocumentSymbol` for `symbol`, what it holds beneath it. */
+function documentSymbol(symbol: IBuildFileSymbol): Record<string, unknown> {
+  return {
+    name: symbol.name,
+    ...(symbol.detail === undefined ? {} : { detail: symbol.detail }),
+    kind: SYMBOL_KINDS[symbol.kind],
+    range: rangeOf({ ...symbol.range.source, offset: symbol.range.offset, endOffset: symbol.range.endOffset }),
+    selectionRange: rangeOf({ ...symbol.selection.source, offset: symbol.selection.offset, endOffset: symbol.selection.endOffset }),
+    ...(symbol.children === undefined ? {} : { children: symbol.children.map(documentSymbol) }),
+  };
 }
