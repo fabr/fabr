@@ -284,4 +284,4 @@ function writeLayer(files: FileSet, output: IOutputHandle, dir: string): Computa
   });
 }
 
-export const IMAGE_ACTION: IBuildActionDefinition = { id: "container:image", version: 1, run: runImage };
+export const IMAGE_ACTION: IBuildActionDefinition = { id: "container:image", version: 2, run: runImage };

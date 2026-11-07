@@ -18,13 +18,13 @@
  */
 
 import { Writable } from "stream";
-import * as tar from "tar-stream";
 import type { IOutputHandle } from "./Execute";
 import { Computable } from "../core/Computable";
 import { mapComputable } from "./Functional";
 import { FileSet, IFile } from "../core/FileSet";
 import { SymlinkFile } from "../core/SymlinkFile";
 import { normalizeEntryName } from "./Paths";
+import { TarExtract } from "./TarExtract";
 
 /**
  * Read a tar archive as it streams in: each regular file is written to its
@@ -36,11 +36,11 @@ import { normalizeEntryName } from "./Paths";
 export function extractTar(createOutput: () => IOutputHandle): { sink: Writable; result: Computable<FileSet> } {
   let resolve!: (files: Computable<FileSet>) => void;
   let reject!: (err: Error) => void;
-  const result = Computable.fromOnce<FileSet>((onResolve, onReject) => {
+  const result = Computable.from<FileSet>((onResolve, onReject) => {
     resolve = onResolve;
     reject = onReject;
   });
-  const extract = tar.extract();
+  const extract = new TarExtract();
   /* A failure of the stream feeding it (a dropped connection) destroys the sink. */
   extract.on("error", err => reject(err));
   const files: Computable<[string, IFile]>[] = [];
@@ -63,7 +63,7 @@ export function extractTar(createOutput: () => IOutputHandle): { sink: Writable;
        * directory) and has no body — emit a SymlinkFile carrying the target
        * and drain the (empty) entry. The target may escape the tree; that
        * is guarded when the set is staged (writeFileSet), not here. */
-      emit(name, Computable.resolve([name, new SymlinkFile(headers.linkname ?? "")]));
+      emit(name, Computable.resolve([name, new SymlinkFile(headers.linkname)]));
       entry.resume();
     } else if (headers.type === "link") {
       /* A hardlink has no body — its `linkname` names an earlier entry
@@ -71,7 +71,7 @@ export function extractTar(createOutput: () => IOutputHandle): { sink: Writable;
        * pure dedup: reuse the target's file (same hash → one blob, two
        * names). An unknown target (dropped for escaping, or malformed)
        * drops the link too. */
-      const target = byName.get(normalizeEntryName(headers.linkname ?? "") ?? "");
+      const target = byName.get(normalizeEntryName(headers.linkname) ?? "");
       if (target) {
         emit(name, target.then(f => [name, f]));
       }
@@ -83,7 +83,7 @@ export function extractTar(createOutput: () => IOutputHandle): { sink: Writable;
        * native binary in @esbuild/<platform> — lands runnable. `finalize`
        * places the blob under its content hash and yields the file;
        * `{ end: false }` leaves the sink for finalize to end, not the pipe. */
-      const mode = (headers.mode ?? 0o644) & 0o7777;
+      const mode = headers.mode & 0o7777;
       const output = createOutput();
       emit(
         name,

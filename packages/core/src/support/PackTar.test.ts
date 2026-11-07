@@ -19,9 +19,9 @@ import * as os from "os";
 import * as path from "path";
 import * as zlib from "zlib";
 import { Readable } from "stream";
-import * as tar from "tar-stream";
 import { expect } from "chai";
 import { packToTarball, writeTar } from "./PackTar";
+import { TarExtract } from "./TarExtract";
 import { unpackStream } from "./Unpack";
 import { BuildCache } from "../core/BuildCache";
 import { LogFormatter, LogLevel } from "./Log";
@@ -103,18 +103,35 @@ describe("Pack", () => {
     expect((back as SymlinkFile).target).to.equal("real.txt");
   });
 
+  it("round-trips names and symlink targets too long for a ustar header", async () => {
+    const longName = `lib/${"a".repeat(120)}/${"b".repeat(120)}.js`;
+    const longTarget = `../${"c".repeat(150)}.js`;
+    const source = new FileSet(
+      new Map<string, IFile>([
+        [longName, MemoryFile.from("long\n")],
+        ["link.js", new SymlinkFile(longTarget)],
+        ["café.txt", MemoryFile.from("unicode\n")],
+      ])
+    );
+
+    const unpacked = await unpackInTemp(await packToTarball(source));
+    expect([...unpacked].map(([name]) => name).sort()).to.deep.equal(["café.txt", longName, "link.js"].sort());
+    expect((await unpacked.get(longName))?.hash).to.equal(MemoryFile.from("long\n").hash);
+    expect(((await unpacked.get("link.js")) as SymlinkFile).target).to.equal(longTarget);
+  });
+
   type Header = { name: string; type: string; mode: number; uid: number; gid: number; body: string };
 
   /** The raw entry headers of a tarball, gzipped unless `plain`, in packed order. */
   async function headersOf(tarball: Buffer, plain = false): Promise<Header[]> {
     const headers: Header[] = [];
-    const extract = tar.extract();
+    const extract = new TarExtract();
     await new Promise<void>((resolve, reject) => {
       extract.on("entry", (h, stream, next) => {
         const chunks: Buffer[] = [];
         stream.on("data", (chunk: Buffer) => chunks.push(chunk));
         stream.on("end", () => {
-          headers.push({ name: h.name, type: h.type as string, mode: h.mode ?? 0, uid: h.uid ?? -1, gid: h.gid ?? -1, body: Buffer.concat(chunks).toString() });
+          headers.push({ name: h.name, type: h.type ?? "unknown", mode: h.mode, uid: h.uid, gid: h.gid, body: Buffer.concat(chunks).toString() });
           next();
         });
       });

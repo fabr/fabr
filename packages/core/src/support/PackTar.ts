@@ -20,13 +20,13 @@
 import * as fs from "fs";
 import { Readable } from "stream";
 import { createGzip } from "zlib";
-import * as tar from "tar-stream";
 import { Computable } from "../core/Computable";
 import { stat } from "../core/FSWrapper";
 import { FileSet, IFile } from "../core/FileSet";
 import { SymlinkFile } from "../core/SymlinkFile";
 import type { IOutputHandle } from "./Execute";
 import { ancestorsOf } from "./Paths";
+import { TarPack } from "./TarPack";
 
 /**
  * A fixed mtime stamped on every entry: the tarball must be a pure function of
@@ -82,8 +82,8 @@ export interface PackOptions {
  * inverse of {@link unpackStream}; see {@link writeTar} for the entries.
  */
 export function packToTarball(files: FileSet, options: PackOptions = {}): Computable<Buffer> {
-  return Computable.fromOnce<Buffer>((resolve, reject) => {
-    const pack = tar.pack();
+  return Computable.from<Buffer>((resolve, reject) => {
+    const pack = new TarPack();
     const gzip = createGzip();
     const chunks: Buffer[] = [];
     gzip.on("data", chunk => chunks.push(chunk));
@@ -106,8 +106,8 @@ export function packToTarball(files: FileSet, options: PackOptions = {}): Comput
  * prefix, say) is the caller's to impose on the FileSet first.
  */
 export function writeTar(files: FileSet, output: IOutputHandle, name: string, options: PackOptions = {}): Computable<IFile> {
-  return Computable.fromOnce<void>((resolve, reject) => {
-    const pack = tar.pack();
+  return Computable.from<void>((resolve, reject) => {
+    const pack = new TarPack();
     pack.on("error", reject);
     pack.on("end", () => resolve());
     output.stream.on("error", reject);
@@ -153,7 +153,7 @@ function entriesOf(files: FileSet, options: PackOptions): PackEntry[] {
 }
 
 /** Write `entries` into `pack` one at a time and finalize it, or call `fail` with the first error. */
-function writeEntries(pack: tar.Pack, entries: readonly PackEntry[], fail: (err: Error) => void): void {
+function writeEntries(pack: TarPack, entries: readonly PackEntry[], fail: (err: Error) => void): void {
   let index = 0;
   const next = (err?: Error | null): void => {
     if (err) {
@@ -167,7 +167,7 @@ function writeEntries(pack: tar.Pack, entries: readonly PackEntry[], fail: (err:
   next();
 }
 
-function writeEntry(pack: tar.Pack, entry: PackEntry, done: (err?: Error | null) => void): void {
+function writeEntry(pack: TarPack, entry: PackEntry, done: (err?: Error | null) => void): void {
   const header = { name: entry.name, mtime: FIXED_MTIME, uid: 0, gid: 0 };
   if (entry.kind === "directory") {
     pack.entry({ ...header, type: "directory", mode: DIRECTORY_MODE }, done);

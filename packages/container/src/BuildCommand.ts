@@ -19,7 +19,6 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import * as tar from "tar-stream";
 import {
   ActionContext,
   Computable,
@@ -31,6 +30,8 @@ import {
   ITaskReport,
   MemoryFile,
   normalizeEntryName,
+  TarExtract,
+  TarPack,
   writeFileSet,
 } from "@fabr-build/core";
 import { ImageFileSet } from "./ImageFileSet";
@@ -42,6 +43,9 @@ import { IOciPlatform, platformText } from "./OciProtocol";
 
 /** The time stamped on every entry of a layer a build command makes. */
 const FIXED_MTIME = new Date(0);
+
+/** The pax records of times other than the mtime, left out of a layer a build command makes. */
+const TIME_RECORDS = new Set(["atime", "ctime"]);
 
 /** What a build command changed, as `diff` reports it, reduced to what a layer needs. */
 export interface IChangedPaths {
@@ -196,7 +200,7 @@ function copyOut(
 }
 
 /** Write the layer: a whiteout per deletion, then each copied archive's entries at their paths, times fixed; indexed as it is written. */
-function writeChanges(
+export function writeChanges(
   output: IOutputHandle,
   deletions: readonly string[],
   copies: ReadonlyArray<{ path: string; archive: string }>,
@@ -204,8 +208,8 @@ function writeChanges(
 ): Computable<{ records: ReadonlyMap<string, IFile>; diffId: string }> {
   const indexer = indexLayer();
   const sink = teeOutput(output, indexer.sink);
-  const pack = tar.pack();
-  return Computable.fromOnce<void>((resolve, reject) => {
+  const pack = new TarPack();
+  return Computable.from<void>((resolve, reject) => {
     pack.on("error", reject);
     pack.on("end", () => resolve());
     sink.stream.on("error", reject);
@@ -221,15 +225,19 @@ function writeChanges(
       }
       const { path: copied, archive } = copies[index];
       const within = path.posix.dirname(copied);
-      const extract = tar.extract();
+      const extract = new TarExtract();
       extract.on("entry", (entry, body, done) => {
         const at = (relative: string): string => entryName(path.posix.join(within, relative));
+        /* Everything the entry carries goes into the layer (its pax records
+         * and extended attributes among it, a file capability byte for byte),
+         * bar its times. */
         const written = pack.entry(
           {
             ...entry,
             name: at(entry.name),
-            ...(entry.type === "link" && entry.linkname !== undefined && entry.linkname !== null ? { linkname: at(entry.linkname) } : {}),
+            linkname: entry.type === "link" ? at(entry.linkname) : entry.linkname,
             mtime: FIXED_MTIME,
+            pax: new Map([...entry.pax].filter(([key]) => !TIME_RECORDS.has(key))),
           },
           err => (err ? reject(err) : done())
         );
