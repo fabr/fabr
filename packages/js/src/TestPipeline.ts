@@ -235,6 +235,10 @@ export type TestRequirements = {
    * self-contained, so a peer is just another dep with no host to supply it
    * and no manifest to distinguish it. */
   deps: PackageSources;
+  /** Packages compiled against and installed like `deps`, whose flags say
+   * nothing of the test run (`dom` here is the DOM's types, with no DOM to run
+   * in). */
+  compile_deps: PackageSources;
   /** Test-only packages (assertion libraries and their @types), available to
    * both the test compile and the test run but never to the package build */
   test_deps: PackageSources;
@@ -269,7 +273,17 @@ export function testRequirements(written: TestRequirements): ResolutionSpec<Test
   return {
     requirements:
       written.tests.length === 0
-        ? { package: new PackageSources([]), srcs: [], tests: [], deps: new PackageSources([]), test_deps: new PackageSources([]), test_resources: [], resources: [], expectations: [] }
+        ? {
+            package: new PackageSources([]),
+            srcs: [],
+            tests: [],
+            deps: new PackageSources([]),
+            compile_deps: new PackageSources([]),
+            test_deps: new PackageSources([]),
+            test_resources: [],
+            resources: [],
+            expectations: [],
+          }
         : written,
   };
 }
@@ -311,8 +325,19 @@ export function compileAndRunTests(
   context: TargetContext,
   framework: ITestFramework,
   settings: ITestSettings,
-  { package: testedSets, srcs, tests: testSets, deps, test_deps: testDeps, test_resources: testResources, resources: shipped, expectations: expectationSets }: TestContents
+  {
+    package: testedSets,
+    srcs,
+    tests: testSets,
+    deps: runtimeDeps,
+    compile_deps: compileDeps,
+    test_deps: testDeps,
+    test_resources: testResources,
+    resources: shipped,
+    expectations: expectationSets,
+  }: TestContents
 ): Computable<RuleResult> {
+  const deps = [...runtimeDeps, ...compileDeps];
   const tests = FileSet.unionAll(...testSets);
   if (tests.isEmpty()) {
     /* No tests declared: trivially green (and no runner is needed). A declared
@@ -392,8 +417,8 @@ export function compileAndRunTests(
            * a suite whose TESTS need a DOM its sources do not (a component
            * library rendering in its tests) declares `dom` in test_deps and
            * gets both the lib and the environment. */
-          needsDom: usesDom([...deps, ...testDeps].filter((dep): dep is Flag => dep instanceof Flag)),
-          layout: layoutOf([...deps, ...testDeps].filter((dep): dep is Flag => dep instanceof Flag)),
+          needsDom: usesDom([...runtimeDeps, ...testDeps].filter((dep): dep is Flag => dep instanceof Flag)),
+          layout: layoutOf([...runtimeDeps, ...testDeps].filter((dep): dep is Flag => dep instanceof Flag)),
           packages,
           testResources: FileSet.unionAll(...testResources, ...shipped),
           expectations: FileSet.unionAll(...expectationSets),
@@ -478,7 +503,8 @@ export function describeTests(
   if ((requirements.resolved.sources.get("tests") ?? []).length === 0) {
     return Computable.resolve(EMPTY_FILESET);
   }
-  return requirements.describeAll().then(({ srcs, tests: testSets, deps, test_deps: testDeps }) => {
+  return requirements.describeAll().then(({ srcs, tests: testSets, deps: runtimeDeps, compile_deps: compileDeps, test_deps: testDeps }) => {
+    const deps = [...runtimeDeps, ...compileDeps];
     const tests = FileSet.unionAll(...testSets);
     if (tests.isEmpty()) {
       return Computable.resolve(EMPTY_FILESET);

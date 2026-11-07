@@ -388,7 +388,7 @@ export function parseMetadataResponse(data: string | Buffer, key: string): INPMP
 }
 
 /** The fields of a version's metadata fabr reads — what a packument entry is
- *  kept as. */
+ *  kept as (of `dist`, only {@link READ_DIST_FIELDS}). */
 const READ_FIELDS = [
   "name",
   "version",
@@ -401,6 +401,19 @@ const READ_FIELDS = [
   "cpu",
   "libc",
 ] as const;
+
+/** The fields of a version's `dist` fabr reads: where its tarball is, and the
+ * digests it must match. */
+const READ_DIST_FIELDS = ["tarball", "integrity", "shasum"] as const;
+
+/** @return `meta` with only the fields fabr reads. */
+function readFieldsOf(meta: INPMPackageMetadata): INPMPackageMetadata {
+  const fields = meta as unknown as Record<string, unknown>;
+  const dist = meta.dist as unknown as Record<string, unknown>;
+  const kept = Object.fromEntries(READ_FIELDS.filter(field => fields[field] !== undefined).map(field => [field, fields[field]]));
+  kept.dist = Object.fromEntries(READ_DIST_FIELDS.filter(field => dist[field] !== undefined).map(field => [field, dist[field]]));
+  return kept as unknown as INPMPackageMetadata;
+}
 
 /**
  * Convert a packument to its published versions, each as the metadata fabr
@@ -416,8 +429,7 @@ export function toPackumentVersions(json: unknown): Map<string, INPMPackageMetad
   const versions = new Map<string, INPMPackageMetadata>();
   for (const [version, entry] of Object.entries(json.versions)) {
     try {
-      const meta = toVersionMetadata(entry) as unknown as Record<string, unknown>;
-      versions.set(version, Object.fromEntries(READ_FIELDS.filter(field => meta[field] !== undefined).map(field => [field, meta[field]])) as unknown as INPMPackageMetadata);
+      versions.set(version, readFieldsOf(toVersionMetadata(entry)));
     } catch {
       /* Looked up from its own document when asked for. */
     }

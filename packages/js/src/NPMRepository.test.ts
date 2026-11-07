@@ -20,7 +20,6 @@
 import * as http from "node:http";
 import * as zlib from "node:zlib";
 import { Readable } from "node:stream";
-import * as tar from "tar-stream";
 import { AddressInfo } from "node:net";
 import { expect } from "chai";
 import {
@@ -66,6 +65,7 @@ import {
   SemverVersion,
   SymlinkFile,
   TARGET,
+  TarExtract,
   TargetContext,
   vendPackageRef,
   versionToString,
@@ -1086,10 +1086,10 @@ describe("NPMRepository publish", () => {
 
     const tgz = await (await carrier.get("demo-1.2.3.tgz"))!.getBuffer();
     const types: string[] = [];
-    const extract = tar.extract();
+    const extract = new TarExtract();
     await new Promise<void>((resolve, reject) => {
       extract.on("entry", (header, stream, next) => {
-        types.push(header.type as string);
+        types.push(header.type ?? "unknown");
         stream.on("end", next);
         stream.resume();
       });

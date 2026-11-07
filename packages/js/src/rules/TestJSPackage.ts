@@ -29,10 +29,11 @@ import { compileAndRunTests, describeTests, packageBuildOverrides, TestRequireme
 /** The `js_package` rule, under `test`: the package's tests, run under the test framework its `test_framework` names. */
 export default defineRule({
   /**
-   * State the package's test requirements. Its `provided_deps`,
-   * `optional_provided_deps` and `compile_deps` are more `deps` here, compiled
-   * and installed identically: a test install is self-contained, with no host to
-   * supply them and no manifest to distinguish them. The package itself is
+   * State the package's test requirements. Its `provided_deps` and
+   * `optional_provided_deps` are more `deps` here, compiled and installed
+   * identically: a test install is self-contained, with no host to supply them
+   * and no manifest to distinguish them. Its `compile_deps` are compiled and
+   * installed too, but say nothing of the test run. The package itself is
    * required as its build makes it, in the module format the framework loads.
    */
   requirements(context: TargetContext): Computable<ResolutionSpec<TestRequirements>> {
@@ -55,7 +56,8 @@ export default defineRule({
           package: built,
           srcs,
           tests,
-          deps: new PackageSources([...deps.sources, ...provided.sources, ...optional.sources, ...compileOnly.sources]),
+          deps: new PackageSources([...deps.sources, ...provided.sources, ...optional.sources]),
+          compile_deps: compileOnly,
           test_deps,
           test_resources,
           resources,

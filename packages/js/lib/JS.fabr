@@ -397,6 +397,9 @@ targetdef js_test {
     # Packages the tests import, and source files to compile with them that
     # aren't themselves tests.
     deps = PACKAGES;
+    # Packages the tests are compiled against whose flags say nothing of the
+    # test run: `dom` here is the DOM's types alone.
+    compile_deps = PACKAGES;
     # The test framework the tests are written for: `node`, `jest` or `vitest`.
     framework = STRING default ${JS_TEST_FRAMEWORK};
     # Files the tests read when they run.

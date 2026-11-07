@@ -252,6 +252,19 @@ under jsdom. Put it in `deps` when the package's own sources use DOM APIs, and i
 only the tests do. The `node` framework has no DOM environment; a target with the `dom` flag needs
 `jest` or `vitest`.
 
+Code that runs under node but contains code for a browser, such as the callbacks a Puppeteer or
+Playwright script passes to `page.evaluate`, needs the DOM types without a DOM to run in. Put the
+flag in `compile_deps` instead: the tests are compiled against the DOM and run under node.
+
+```
+js_test recorder_tests {
+  tests = src:**/*.test.ts;
+  deps = src:**/!(*.test).ts @npm:puppeteer:24.10.0 @npm:@types/jest:30.0.0;
+  compile_deps = dom;
+  framework = jest;
+}
+```
+
 Both jest and vitest also accept their usual per-file comment, `@jest-environment jsdom` or
 `// @vitest-environment jsdom`, which overrides the environment for that file. The comment
 doesn't add the DOM types, so a file that names `document` or `window` directly still needs the
@@ -598,7 +611,8 @@ and runs your program once for each test file, with the compiled tests as its wo
          [--setup=<file>]… [--pnp=<file>] [--reads=<file>] <test file>
 ```
 
-- **`--env`** is `jsdom` for a target with the [`dom` flag](#dom-tests), and `node` otherwise.
+- **`--env`** is `jsdom` for a target with the [`dom` flag](#dom-tests) in its `deps` or
+  `test_deps`, and `node` otherwise.
 - **`--update-snapshots`** is passed by `fabr test -u`.
 - **`--name-pattern`** is passed by `fabr test -t`: run only the tests whose full names match.
 - **`--setup`** names a [`setupTests`](#a-setup-file) file to load before the test file.

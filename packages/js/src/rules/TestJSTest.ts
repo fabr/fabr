@@ -35,11 +35,22 @@ export default defineRule({
       [
         context.getFileProperty("tests", BUILD_OVERRIDE),
         context.getPackageProperty("deps", BUILD_OVERRIDE),
+        context.getPackageProperty("compile_deps", BUILD_OVERRIDE),
         context.getFileProperty("resources", BUILD_OVERRIDE),
         context.getFileProperty("expectations", BUILD_OVERRIDE),
       ],
-      (tests, deps, test_resources, expectations) =>
-        testRequirements({ package: new PackageSources([]), srcs: [], tests, deps, test_deps: new PackageSources([]), test_resources, resources: [], expectations })
+      (tests, deps, compile_deps, test_resources, expectations) =>
+        testRequirements({
+          package: new PackageSources([]),
+          srcs: [],
+          tests,
+          deps,
+          compile_deps,
+          test_deps: new PackageSources([]),
+          test_resources,
+          resources: [],
+          expectations,
+        })
     );
   },
   /* Describe the tests as an editor is told of them: the unit the run compiles. */
