@@ -136,6 +136,13 @@ describe("MockRegistry", () => {
       expect(mocks.serve("no-such-module-xyz", caller)).to.deep.equal({ virtual: true });
     });
 
+    it("keys a virtual mock of a path by the file it names, so a require of that file by its absolute path finds it", () => {
+      const mocks = registry();
+      mocks.setMock("../config/test.json", caller, () => ({ token: "fixture" }), true);
+      const elsewhere = { filename: path.join(dir, "build", "lib", "stack.js") };
+      expect(mocks.serve(path.join(dir, "config", "test.json"), elsewhere)).to.deep.equal({ token: "fixture" });
+    });
+
     it("registers an ASSET request by text — an unstaged stylesheet is still mockable", () => {
       const mocks = registry();
       mocks.setMock("./missing.css", caller, () => ({ stub: true }));

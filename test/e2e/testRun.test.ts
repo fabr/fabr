@@ -229,6 +229,27 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
     expect(unexported.stderr).to.contain("loads lib/a");
   });
 
+  it("runs the tests under node where dom is only among the compile_deps", () => {
+    for (const type of ["js_package", "js_test"]) {
+      const result = runFabr(
+        {
+          ...STUB_TSC,
+          "PROJECT.fabr":
+            "plugin @fabr-build/js;\n\n" +
+            STUB_TSC_CONFIG +
+            (type === "js_package"
+              ? "\njs_package thing { srcs = src:**/*.ts; tests = src:**/*.test.ts; compile_deps = dom; }\n"
+              : "\njs_test thing { tests = src:**/*.test.ts; compile_deps = dom; }\n"),
+          "src/thing.test.ts":
+            'const assert = require("node:assert");\ndescribe("thing", () => { it("has no DOM", () => { assert.equal(typeof document, "undefined"); }); });\n',
+        },
+        ["-DJS_TARGET=es2020", "test", "thing"]
+      );
+      expect(result.status, `${type}: ${result.stderr}`).to.equal(0);
+      expect(result.stderr).to.contain("1 test passed");
+    }
+  });
+
   it("reports WHY a test file could not be loaded, not just that it failed", () => {
     /* A file that throws while loading registers no tests, so node:test reports
      * it with no diagnosis of its own — its `cause` is the bare string "test

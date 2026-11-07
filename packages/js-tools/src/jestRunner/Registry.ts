@@ -241,7 +241,7 @@ export class MockRegistry {
     if (isRunnerInternal(caller?.filename)) {
       return NOT_MOCKED;
     }
-    const key = this.resolve(request, caller) ?? request;
+    const key = this.resolve(request, caller) ?? this.unresolvedKey(request, caller);
     if (this.loadingActual.has(key)) {
       return NOT_MOCKED;
     }
@@ -367,7 +367,7 @@ export class MockRegistry {
     if (served !== NOT_MOCKED) {
       return served;
     }
-    const key = this.resolve(request, caller) ?? request;
+    const key = this.resolve(request, caller) ?? this.unresolvedKey(request, caller);
     return this.instance(key, () => this.automockOf(key));
   }
 
@@ -400,9 +400,18 @@ export class MockRegistry {
       return resolved;
     }
     if (allowUnresolved || assetStubFor(specifier) !== undefined || this.rootMocks.has(specifier)) {
-      return specifier;
+      return this.unresolvedKey(specifier, caller);
     }
     throw new Error(`Cannot find module '${specifier}' from '${caller?.filename ?? this.root}'`);
+  }
+
+  /** Make the key of a specifier that names nothing on disk: a path names the
+   * same file from wherever it is asked for, as jest keys it — so a `{virtual:
+   * true}` mock of `../config/test.json` answers a `require` of that file by
+   * its absolute path — and a bare name is its text. */
+  private unresolvedKey(specifier: string, caller: ILoaderModule | undefined): string {
+    const isPath = specifier.startsWith("./") || specifier.startsWith("../") || path.isAbsolute(specifier);
+    return isPath ? path.resolve(path.dirname(caller?.filename ?? path.join(this.root, "index.js")), specifier) : specifier;
   }
 
   private load(request: string, caller?: ILoaderModule): unknown {
