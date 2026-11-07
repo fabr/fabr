@@ -21,11 +21,11 @@ import { Readable } from "stream";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import * as tar from "tar-stream";
 import * as xz from "@napi-rs/lzma/xz";
 import { unpackStream } from "./Unpack";
 import { readZipMember } from "./UnpackZip";
 import { packToZip } from "./PackZip";
+import { TarPack } from "./TarPack";
 import * as zlib from "zlib";
 import * as crypto from "crypto";
 import { FileSet } from "../core/FileSet";
@@ -97,7 +97,7 @@ describe("Unpack", () => {
     /* Built here rather than pasted as a fixture, so the test exercises a real
      * xz container (the shape most native toolchains publish) rather than a
      * blob whose provenance nobody can check. */
-    const pack = tar.pack();
+    const pack = new TarPack();
     pack.entry({ name: "payload/greeting.txt" }, "hello from xz\n");
     pack.entry({ name: "payload/other.txt" }, "second\n");
     pack.finalize();
@@ -113,7 +113,7 @@ describe("Unpack", () => {
   });
 
   it("preserves the executable bit from tar entry modes", async () => {
-    const pack = tar.pack();
+    const pack = new TarPack();
     pack.entry({ name: "package/bin/tool", mode: 0o755 }, "#!/bin/sh\n");
     pack.entry({ name: "package/lib/plain.js", mode: 0o644 }, "module.exports = 1;\n");
     pack.finalize();
@@ -131,7 +131,7 @@ describe("Unpack", () => {
   });
 
   it("translates a symlink to a SymlinkFile and resolves a hardlink to shared content", async () => {
-    const pack = tar.pack();
+    const pack = new TarPack();
     pack.entry({ name: "package/real.js", mode: 0o644 }, "module.exports = 1;\n");
     pack.entry({ name: "package/link.js", type: "symlink", linkname: "real.js" });
     /* A hardlink shares the earlier entry's content — content-addressed
@@ -151,6 +151,54 @@ describe("Unpack", () => {
     expect(hard).to.not.equal(undefined);
     expect(hard?.hash).to.equal(real?.hash);
     expect(await result.get("package/dangling.js")).to.equal(undefined);
+  });
+
+  it("reads GNU long names and link targets (L and K headers)", async () => {
+    /** A GNU-format header block (`ustar  ` magic), as GNU tar writes one. */
+    const gnuBlock = (typeflag: string, name: string, size: number, linkname = ""): Buffer => {
+      const block = Buffer.alloc(512);
+      block.write(name, 0, 100, "utf8");
+      block.write("0000644\0", 100, "latin1");
+      block.write("0000000\0", 108, "latin1");
+      block.write("0000000\0", 116, "latin1");
+      block.write(size.toString(8).padStart(11, "0") + "\0", 124, "latin1");
+      block.write("00000000000\0", 136, "latin1");
+      block.write(typeflag, 156, "latin1");
+      block.write(linkname, 157, 100, "utf8");
+      block.write("ustar  \0", 257, "latin1");
+      block.fill(0x20, 148, 156);
+      const sum = block.reduce((total, byte) => total + byte, 0);
+      block.write(sum.toString(8).padStart(6, "0") + "\0 ", 148, "latin1");
+      return block;
+    };
+    /** A long name record's content: the name, NUL-terminated, padded to a block. */
+    const longRecord = (text: string): Buffer => {
+      const content = Buffer.from(text + "\0");
+      return Buffer.concat([content, Buffer.alloc((512 - (content.length % 512)) % 512)]);
+    };
+    const longName = `package/${"n".repeat(140)}/file.txt`;
+    const longLink = `package/${"t".repeat(140)}/target.txt`;
+    const archive = Buffer.concat([
+      gnuBlock("0", "package/real.txt", 5),
+      longRecord("hello").subarray(0, 512),
+      gnuBlock("L", "././@LongLink", Buffer.byteLength(longName) + 1),
+      longRecord(longName),
+      gnuBlock("0", longName.slice(0, 100), 3),
+      longRecord("abc").subarray(0, 512),
+      gnuBlock("L", "././@LongLink", Buffer.byteLength(`${longName}.link`) + 1),
+      longRecord(`${longName}.link`),
+      gnuBlock("K", "././@LongLink", Buffer.byteLength(longLink) + 1),
+      longRecord(longLink),
+      gnuBlock("2", "truncated", 0, longLink.slice(0, 100)),
+      Buffer.alloc(1024),
+    ]);
+
+    const result = await withTimeout(unpackStream(Readable.from(archive), createOutput));
+    expect([...result].map(([name]) => name).sort()).to.deep.equal([longName, `${longName}.link`, "package/real.txt"]);
+    expect(await result.readFile(longName)).to.equal("abc");
+    const link = await result.get(`${longName}.link`);
+    expect(link).to.be.instanceOf(SymlinkFile);
+    expect((link as SymlinkFile).target).to.equal(longLink);
   });
 
   it("rejects (rather than hanging) when the stream errors before a full header", async () => {
@@ -192,7 +240,7 @@ describe("Unpack", () => {
   });
 
   it("strips a leading '/' (absolute → relative) and drops a '../' escape", async () => {
-    const pack = tar.pack();
+    const pack = new TarPack();
     pack.entry({ name: "package/ok.txt" }, "safe");
     /* A `../` traversal escapes the tree → dropped. An absolute name has its
      * leading `/` stripped → a relative key, kept (it stages under the install

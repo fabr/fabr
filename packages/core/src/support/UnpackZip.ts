@@ -54,9 +54,9 @@ function openZip(archive: IFile): Computable<yauzl.ZipFile> {
     err ? reject(zipError(err)) : resolve(zip);
   const path = archive.getAbsPath();
   if (path !== undefined) {
-    return Computable.fromOnce<yauzl.ZipFile>((resolve, reject) => yauzl.open(path, ZIP_OPTIONS, opened(resolve, reject)));
+    return Computable.from<yauzl.ZipFile>((resolve, reject) => yauzl.open(path, ZIP_OPTIONS, opened(resolve, reject)));
   }
-  return archive.getBuffer().then(buffer => Computable.fromOnce<yauzl.ZipFile>((resolve, reject) => yauzl.fromBuffer(buffer, ZIP_OPTIONS, opened(resolve, reject))));
+  return archive.getBuffer().then(buffer => Computable.from<yauzl.ZipFile>((resolve, reject) => yauzl.fromBuffer(buffer, ZIP_OPTIONS, opened(resolve, reject))));
 }
 
 /**
@@ -69,7 +69,7 @@ function readEntries<T>(
   select: (name: string) => boolean,
   read: (entry: yauzl.Entry, name: string, stream: Readable) => Computable<T>
 ): Computable<T[]> {
-  return Computable.fromOnce<T[]>((resolve, reject) => {
+  return Computable.from<T[]>((resolve, reject) => {
     const results: Computable<T>[] = [];
     const fail = (err: Error): void => {
       zip.close();
@@ -123,7 +123,7 @@ function writeEntry(entry: yauzl.Entry, name: string, stream: Readable, createOu
     });
   }
   const output = createOutput();
-  return Computable.fromOnce<[string, IFile]>((resolve, reject) => {
+  return Computable.from<[string, IFile]>((resolve, reject) => {
     let crc = 0;
     /* Reported once the output is gone, so nothing of the entry is left behind. */
     const fail = (err: Error): void => {
@@ -162,7 +162,7 @@ export function unzipFile(archive: IFile, createOutput: () => IOutputHandle): Co
 export function extractZip(createOutput: () => IOutputHandle): { sink: Writable; result: Computable<FileSet> } {
   const spool = createOutput();
   let settle!: { resolve: (files: Computable<FileSet>) => void; reject: (err: Error) => void };
-  const result = Computable.fromOnce<FileSet>((resolve, reject) => {
+  const result = Computable.from<FileSet>((resolve, reject) => {
     settle = { resolve, reject };
   });
   const sink = new Writable({

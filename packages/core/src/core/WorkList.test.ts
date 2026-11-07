@@ -23,35 +23,33 @@ import { expect } from "chai";
 
 type Item = WorkListItem<string, string>;
 
-/** A controllable step universe: each key's step is a re-resolvable node, so a
- * later `set`/`fail` for the same key models a watch-mode re-settlement. */
+/** A controllable step universe: each key's step is a raw source, so a later
+ * `set`/`fail` for the same key models a watch-mode re-settlement. */
 class TestGraph {
   public readonly calls: string[] = [];
-  private readonly resolvers = new Map<string, (item: Item) => void>();
-  private readonly rejectors = new Map<string, (err: Error) => void>();
+  private readonly sources = new Map<string, StepSource>();
 
   public readonly step = (key: string): Computable<Item> => {
     this.calls.push(key);
-    return Computable.from<Item>((resolve, reject) => {
-      this.resolvers.set(key, resolve);
-      this.rejectors.set(key, reject);
-    });
+    const source = new StepSource();
+    this.sources.set(key, source);
+    return source.then(item => item);
   };
 
   public set(key: string, next: string[], value: string): void {
-    const resolve = this.resolvers.get(key);
-    if (!resolve) {
-      throw new Error(`step for '${key}' was never demanded`);
-    }
-    resolve({ value, next });
+    this.sourceOf(key).set({ value, next });
   }
 
   public fail(key: string, message: string): void {
-    const reject = this.rejectors.get(key);
-    if (!reject) {
+    this.sourceOf(key).fail(new Error(message));
+  }
+
+  private sourceOf(key: string): StepSource {
+    const source = this.sources.get(key);
+    if (!source) {
       throw new Error(`step for '${key}' was never demanded`);
     }
-    reject(new Error(message));
+    return source;
   }
 }
 
@@ -60,7 +58,7 @@ class TestGraph {
 class StepSource extends ComputableSource<Item> {
   public attaches = 0;
   public detaches = 0;
-  private current: Item | undefined;
+  private current: Item | Error | undefined;
 
   public set(item: Item): void {
     this.current = item;
@@ -69,11 +67,18 @@ class StepSource extends ComputableSource<Item> {
     }
   }
 
+  public fail(err: Error): void {
+    this.current = err;
+    if (this.state !== ComputableState.Detached) {
+      this.settle(ComputableState.Error, err);
+    }
+  }
+
   protected override attach(): void {
     super.attach();
     this.attaches++;
     if (this.current !== undefined) {
-      this.settle(ComputableState.Valid, this.current);
+      this.settle(this.current instanceof Error ? ComputableState.Error : ComputableState.Valid, this.current);
     }
   }
 

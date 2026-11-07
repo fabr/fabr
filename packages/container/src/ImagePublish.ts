@@ -118,7 +118,7 @@ function publishedLayer(context: TargetContext, layer: ILayerRecord): Computable
 function compressLayer(tar: IFile, out: string): Computable<void> {
   return contentOf(tar).then(
     source =>
-      Computable.fromOnce<void>((resolve, reject) => {
+      Computable.from<void>((resolve, reject) => {
         let seen = 0;
         const fixOs = new Transform({
           transform(chunk: Buffer, _encoding, done): void {

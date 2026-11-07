@@ -23,7 +23,7 @@ import * as os from "os";
 import * as path from "path";
 import { Readable, Transform } from "stream";
 import { PROJECT_FILENAME } from "../Constants";
-import { Computable } from "./Computable";
+import { Computable, ComputableHandle } from "./Computable";
 import { FabrError, HttpStatusError, toError } from "./Errors";
 import { FetchRole, headUrl, ICacheControl, openUrlStream, reportingProgress } from "./Fetch";
 import { CANONICAL, DEFAULT_FILE_MODE, FileSet, IFile } from "./FileSet";
@@ -751,7 +751,7 @@ export class BuildCache {
     if (running) {
       return running;
     }
-    const result = operation();
+    const result = settledFrom(operation());
     this.inflight.set(key, result);
     result.finally(() => this.inflight.delete(key));
     return result;
@@ -965,7 +965,7 @@ export class BuildCache {
     return {
       stream: sink,
       finalize: (name: string, mode: number = DEFAULT_FILE_MODE): Computable<IFile> =>
-        Computable.fromOnce<IFile>((resolve, reject) => {
+        Computable.from<IFile>((resolve, reject) => {
           /* Report a failure only once the spool is torn down, so a rejection carries the
            * guarantee that nothing of this output is left behind — no temp file, no fd
            * still closing — rather than leaving the caller to race it. */
@@ -989,7 +989,7 @@ export class BuildCache {
           });
           sink.end();
         }),
-      discard: (): Computable<void> => Computable.fromOnce<void>(resolve => teardown(() => resolve(undefined))),
+      discard: (): Computable<void> => Computable.from<void>(resolve => teardown(() => resolve(undefined))),
     };
   }
 
@@ -1099,7 +1099,7 @@ export class BuildCache {
     if (running) {
       return running;
     }
-    const result = this.materializeTree(entry, files);
+    const result = settledFrom(this.materializeTree(entry, files));
     this.inflightTrees.set(key, result);
     result.finally(() => this.inflightTrees.delete(key));
     return result;
@@ -3028,4 +3028,31 @@ function resolvePackagePath(
           );
   const file = holder instanceof FileSet ? holder.getFile(leaf) : undefined;
   return file === undefined ? undefined : { file, holder: holder as FileSet };
+}
+
+/**
+ * Take an attempt's outcome as a value of its own: a cell settled from the
+ * attempt's chain once, which lets go of the chain where it succeeded — an
+ * entry is immutable, so what the attempt read to make it (a credential from
+ * the source tree) is no input of the entry — and is bound to the chain where
+ * it failed, so that a change to what it read runs the attempt again. The
+ * chain is bound before the consuming tail lets go of it, or it would detach
+ * and run again as it is bound.
+ */
+function settledFrom<T>(attempt: Computable<T>): Computable<T> {
+  return Computable.from<T>(resolve => {
+    const hold = new ComputableHandle<void>();
+    const consume = (outcome: T | Computable<T>): void => {
+      resolve(outcome);
+      hold.release();
+    };
+    const tail = attempt.then(
+      value => consume(value),
+      () => consume(attempt)
+    );
+    hold.seat(tail);
+    if (tail.isSettled()) {
+      hold.release();
+    }
+  });
 }

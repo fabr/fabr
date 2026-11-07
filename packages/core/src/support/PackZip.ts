@@ -76,7 +76,7 @@ export function writeZip(files: FileSet, output: IOutputHandle, name: string, op
   return archiveOf(files, options)
     .then(
       archive =>
-        Computable.fromOnce<void>((resolve, reject) => {
+        Computable.from<void>((resolve, reject) => {
           archive.output.on("error", reject);
           archive.output.on("end", () => resolve());
           output.stream.on("error", reject);

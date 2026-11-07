@@ -46,9 +46,9 @@ const MAX_COMPRESSION_LAYERS = 4;
 export function unpackStream(ins: Readable, createOutput: () => IOutputHandle): Computable<FileSet> {
   /* This is fed the live network response, so any hop can fail (a header
    * truncated below SNIFF_LENGTH, a mid-stream connection drop, a write
-   * error) via several independent listeners: Computable.fromOnce keeps the first
+   * error) via several independent listeners: Computable.from keeps the first
    * outcome so a later terminal event can't re-settle. */
-  return Computable.fromOnce((resolve, reject) => {
+  return Computable.from((resolve, reject) => {
     let depth = 0;
     function handleHeader(data: Buffer): Writable | null {
       switch (sniffMime(data)) {

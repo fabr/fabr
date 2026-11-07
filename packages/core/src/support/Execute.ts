@@ -390,7 +390,7 @@ function sweepGroup(pid: number | undefined): Computable<void> {
    * KILL). The timers are NOT unref'd: the step's outcome waits on this, so it must
    * hold the loop open. The group stays registered throughout, so a
    * concurrent fabr exit still KILLs it via the exit hook. */
-  return Computable.fromOnce<void>(resolve => {
+  return Computable.from<void>(resolve => {
     const deadline = Date.now() + SWEEP_KILL_GRACE_MS;
     const done = (): void => {
       liveGroups.delete(pid);
@@ -470,9 +470,9 @@ export function admitted<T>(limit: Semaphore, report: ITaskReport, work: () => C
 }
 
 function executeUnbounded(cmd: string, args: string[], cwd: string, env: Record<string, string>, sink?: IOutputSink): Computable<void> {
-  /* A failed spawn emits 'error' then a spurious 'close' (code -2): Computable.fromOnce
+  /* A failed spawn emits 'error' then a spurious 'close' (code -2): Computable.from
    * keeps the first (informative ENOENT) rejection and drops the useless "-2". */
-  return Computable.fromOnce((resolve, reject) => {
+  return Computable.from((resolve, reject) => {
     const line = commandLine(cmd, args);
     /* stdin from /dev/null ("ignore"), not the default open pipe: a build step is
      * non-interactive, so a tool that reads stdin must get EOF at once rather than
@@ -583,7 +583,7 @@ export interface CapturedOutput {
  */
 export function executeInternalCapture(limit: Semaphore, cmd: string, args: string[], input: string, env: Record<string, string>): Computable<CapturedOutput> {
   return limit.run(() =>
-    Computable.fromOnce<CapturedOutput>((resolve, reject) => {
+    Computable.from<CapturedOutput>((resolve, reject) => {
       const proc = spawn(cmd, args, { env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
       const stdout: Buffer[] = [];
       const stderr: Buffer[] = [];
@@ -676,7 +676,7 @@ function pipelineUnbounded(
   env: ReadonlyMap<string, string>
 ): Computable<FileSet> {
   const captures: Capture[] = [];
-  return Computable.fromOnce<void>((resolve, reject) => {
+  return Computable.from<void>((resolve, reject) => {
     /* Resolve every command to an executable up front, so a bad one rejects
      * before any process is spawned (rather than leaving a half-built pipeline).
      * The failure is framed like a spawn 'error' below ("unable to execute"). */
@@ -1004,9 +1004,9 @@ export function executeInteractive(
   cwd?: string,
   env?: Record<string, string>
 ): Computable<number> {
-  /* A failed spawn emits 'error' then 'close': Computable.fromOnce keeps the informative
+  /* A failed spawn emits 'error' then 'close': Computable.from keeps the informative
    * rejection and stops 'close' flipping a settled failure into a success. */
-  return Computable.fromOnce((resolve, reject) => {
+  return Computable.from((resolve, reject) => {
     const line = commandLine(cmd, args);
     const proc = spawn(cmd, args, { stdio: "inherit", windowsHide: true, cwd, env });
     trackInteractive(proc);

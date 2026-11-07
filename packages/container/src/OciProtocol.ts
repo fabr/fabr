@@ -433,7 +433,7 @@ function storeLayer(
   stream.on("error", err => decompressed.destroy(toError(err)));
   const output = createOutput();
   const indexer = indexLayer();
-  return Computable.fromOnce<void>((resolve, reject) => {
+  return Computable.from<void>((resolve, reject) => {
     let open = 2;
     const done = (): void => {
       if (--open === 0) {

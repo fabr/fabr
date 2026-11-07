@@ -332,7 +332,7 @@ export function teeOutput(output: IOutputHandle, sink: Writable): IOutputHandle 
   stream.pipe(output.stream, { end: false });
   stream.pipe(sink);
   const finished = (): Computable<void> =>
-    Computable.fromOnce<void>((resolve, reject) => {
+    Computable.from<void>((resolve, reject) => {
       sink.on("error", reject);
       if (sink.writableFinished) {
         resolve();

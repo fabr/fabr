@@ -71,7 +71,7 @@ type CatchHandler<U> = (err: Error) => U | ComputableSource<U>;
  * **Attachment.** A raw source is born {@link ComputableState.Detached} and attaches on
  * its first dependant, and so is the one derived node made to wait for demand,
  * {@link Computable.detached}; every other node enters the graph at birth — a derived node
- * attaches eagerly on creation (so fire-and-forget tails run), a `from`/`fromOnce` cell
+ * attaches eagerly on creation (so fire-and-forget tails run), a `from` cell
  * attaches in its factory (its executor runs eagerly there — it is producer-driven,
  * never demand-deferred), and `resolve`/`reject` are born already settled. On losing its
  * last dependant a node detaches — unregisters from its dependencies, cascading up,
@@ -112,6 +112,11 @@ export abstract class ComputableSource<T> {
   /** What this node stands for, to a reader of a cycle it is found in. */
   public label?: Label;
 
+  /** Whether a dependant has read this node's error since it settled, so the
+   * error was observed even where nothing depends on this node now (a final
+   * dependant lets go of its inputs). */
+  private errorObserved = false;
+
   /**
    * Global event listener for otherwise unhandled rejections.
    */
@@ -127,6 +132,20 @@ export abstract class ComputableSource<T> {
 
   public isSettled(): boolean {
     return this.currentState === ComputableState.Valid || this.currentState === ComputableState.Error;
+  }
+
+  /**
+   * @return true if this node's outcome can never change, otherwise false. A
+   * raw source never is: it settles itself again whenever what it reads
+   * changes.
+   */
+  public isFinal(): boolean {
+    return false;
+  }
+
+  /** Record that a dependant has read `node`'s error (see {@link isUnhandledError}). */
+  protected static observeError(node: ComputableSource<unknown>): void {
+    node.errorObserved = true;
   }
 
   /**
@@ -311,13 +330,21 @@ export abstract class ComputableSource<T> {
       return;
     }
     this.currentState = state;
-    if (value !== this.currentValue) {
-      this.currentValue = value;
+    this.errorObserved = false;
+    const changed = value !== this.currentValue;
+    this.currentValue = value;
+    this.becomeFinalIfDone();
+    if (changed) {
       this.eachDependant(dep => dep.invalidate());
     }
     this.notifyDependants();
     this.checkUnhandledError();
   }
+
+  /** Become final where this node, just settled, can never change: called
+   * before its dependants are told, so each can become final in turn. A raw
+   * source never does. */
+  protected becomeFinalIfDone(): void {}
 
   /**
    * Restore the previous settled state after a dependency re-settled without
@@ -401,15 +428,15 @@ export abstract class ComputableSource<T> {
 
   /**
    * @return true if this node's settled error would go unobserved, otherwise
-   * false: it is settled Error and in the graph with no dependant that would
-   * *read* it. {@link Computable} narrows it
+   * false: it is settled Error, no dependant has read the error, and it is in
+   * the graph with no dependant that would *read* it. {@link Computable} narrows it
    * to also exclude a binding node (which forwards to its `outer`). The
    * `dependants` check already excludes a detached node: a derived node that loses
    * its last dependant *detaches* (Detached, not Error), so only an eager,
    * still-live terminal tail reaches here.
    */
   protected isUnhandledError(): boolean {
-    return this.currentState === ComputableState.Error && !this.dependants.some(dep => dep.observesErrors());
+    return this.currentState === ComputableState.Error && !this.errorObserved && !this.dependants.some(dep => dep.observesErrors());
   }
 
   /**
@@ -548,6 +575,12 @@ export class Computable<T> extends ComputableSource<T> {
     return result;
   }
 
+  /**
+   * Create a cell settled by `fn`'s executor: its first resolve or reject, a
+   * synchronous throw rejecting, and any later call ignored — a callback API
+   * that reports again after its outcome (a stream's `error` after its `end`,
+   * a failed spawn's `close` after its `error`) cannot settle it twice.
+   */
   public static from<T>(fn: (resolve: (value: T | Computable<T>) => void, reject: (err: Error) => void) => void): Computable<T> {
     const result = new Computable<T>();
     /* In the graph from birth: the executor runs eagerly (right here), so this
@@ -556,31 +589,7 @@ export class Computable<T> extends ComputableSource<T> {
      * guard. Fn-less, so it never detaches; attach here is just the
      * Detached -> Unresolved (pending) transition. */
     result.attach();
-    /* A synchronous throw in the executor becomes a rejection, mirroring native
-     * `new Promise(exec)` and run()'s own discipline — the error flows through the
-     * graph rather than escaping sideways at the call site. Guarded on isSettled so
-     * an executor that resolves and *then* throws stays resolved (the throw is dropped). */
-    try {
-      fn(result.resolveTo.bind(result), err => result.rejectWith(err));
-    } catch (err) {
-      if (!result.isSettled()) {
-        result.rejectWith(toError(err));
-      }
-    }
-    return result;
-  }
-
-  /**
-   * Create a cell like {@link from} that settles at most once, typically for
-   * non-repeatable processes that need to avoid settling multiple times.
-   */
-  public static fromOnce<T>(fn: (resolve: (value: T | Computable<T>) => void, reject: (err: Error) => void) => void): Computable<T> {
-    const result = new Computable<T>();
-    result.attach(); // in the graph from birth — see from()
     let settled = false;
-
-    /* As from(), a synchronous executor throw rejects — but only if nothing has
-     * settled yet, upholding the settle-exactly-once contract. */
     try {
       fn(
         value => {
@@ -659,6 +668,7 @@ export class Computable<T> extends ComputableSource<T> {
     const errors: Error[] = [];
     for (const dep of this.dependsOn) {
       if (dep.state === ComputableState.Error) {
+        ComputableSource.observeError(dep);
         errors.push(dep.value as Error);
       }
     }
@@ -687,21 +697,12 @@ export class Computable<T> extends ComputableSource<T> {
      * across the boundary (a batch invalidation must reach us and our dependants);
      * forwarding the settle rather than recomputing us is what stops a
      * fresh-per-call factory (`x.then(v => build(v))`) from thrashing. Superseding
-     * on re-run is handled in run(); a stray re-resolve (from() may fire more than
-     * once) is superseded here — on BOTH branches: a plain-value re-resolve must
-     * also detach a prior still-pending binding, or its inner would later forward
-     * and clobber this value with the superseded result. */
+     * on re-run is handled in run(). */
     this.unbind();
     if (!(value instanceof ComputableSource)) {
       this.settle(ComputableState.Valid, value);
       this.askClosers();
       return;
-    }
-    /* A cell with no `fn` is resolved by its executor, so this is its run:
-     * resolving consumes the inputs as run() does, and the node awaits the
-     * inner's delivery (which acceptFromBinding holds off an Invalid node). */
-    if (!this.fn && this.currentState === ComputableState.Invalid) {
-      this.currentState = ComputableState.Unresolved;
     }
     const binding = new Computable<T>();
     /* Wired before entering the graph: an already-settled inner settles the
@@ -829,6 +830,42 @@ export class Computable<T> extends ComputableSource<T> {
     this.unbind();
     this.settle(ComputableState.Error, err);
     this.askClosers();
+  }
+
+  /**
+   * @return true if this node's outcome can never change, otherwise false: it
+   * is settled, with no `fn` to run again and no binding to deliver again — a
+   * constant, a settled {@link from} cell, or a derived node that has become
+   * final (see {@link becomeFinalIfDone}).
+   */
+  public override isFinal(): boolean {
+    return this.fn === undefined && this.binding === undefined && this.isSettled();
+  }
+
+  /**
+   * Become final where this node is settled Valid and its inputs and its
+   * binding are final: it then holds its value alone, letting go of its
+   * inputs, its `fn` and its binding. They are final already, so letting go of
+   * them detaches nothing. An error is not held this way: the node keeps its
+   * `fn`, so it detaches when its last dependant leaves and computes again when
+   * next demanded, a failure being retried where a value is kept.
+   */
+  protected override becomeFinalIfDone(): void {
+    const binding = this.binding;
+    if (
+      this.isFinal() ||
+      this.currentState !== ComputableState.Valid ||
+      !this.dependsOn.every(dep => dep.isFinal()) ||
+      (binding !== undefined && !binding.isFinal())
+    ) {
+      return;
+    }
+    this.dropFrom(this.dependsOn);
+    this.dependsOn = [];
+    this.binding = undefined;
+    this.fn = undefined;
+    this.errfn = undefined;
+    this.releaseHolds();
   }
 
   protected override isUnhandledError(): boolean {
