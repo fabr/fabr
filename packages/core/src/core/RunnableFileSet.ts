@@ -197,6 +197,14 @@ export class RunnableFileSet extends FileSet {
     );
   }
 
+  /** Get this runnable with `env` set over the variables it is launched with. */
+  public withEnvironment(env: ReadonlyMap<string, string>): RunnableFileSet {
+    if (env.size === 0) {
+      return this;
+    }
+    return new RunnableFileSet(this, this.args, this.interpreter, this.root, this.surface, this.served, this.launchCwd, new Map([...this.env, ...env]), this.origin, this.interpreterArgs, this.teardown);
+  }
+
   /** Get this runnable with `teardown` as its teardown (see {@link teardown}). */
   public withTeardown(teardown: readonly RunnableArgument[]): RunnableFileSet {
     return new RunnableFileSet(this, this.args, this.interpreter, this.root, this.surface, this.served, this.launchCwd, this.env, this.origin, this.interpreterArgs, teardown);

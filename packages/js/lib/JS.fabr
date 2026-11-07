@@ -432,6 +432,8 @@ targetdef js_script {
     entry = REQUIRED FILES;
     # Arguments passed to the program ahead of any given when it is run.
     args = STRING;
+    # Environment variables the program is launched with.
+    env = MAP;
 }
 
 #

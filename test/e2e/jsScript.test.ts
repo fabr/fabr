@@ -74,6 +74,18 @@ describe("e2e: js_script (runnable) + generate", () => {
     expect(result.stdout).to.equal("Ada Lovelace");
   });
 
+  it("launches the program with the target's env", () => {
+    const result = runFabr(
+      {
+        "PROJECT.fabr": "plugin @fabr-build/js;\n\n" + 'js_script greet { entry = src:greet.js; env = { GREETING = "hello there"; } }\n',
+        "src/greet.js": "process.stdout.write(process.env.GREETING);\n",
+      },
+      ["run", "greet"]
+    );
+    expect(result.status).to.equal(0);
+    expect(result.stdout).to.equal("hello there");
+  });
+
   it("runs a built package as the entry via its declared bin (relative imports resolve)", () => {
     /* Package-mode entry: the package joins the install and its (generated,
      * by-convention) package.json bin is the entry — launched from its

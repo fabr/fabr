@@ -48,6 +48,7 @@ import {
   ContainedSources,
   PackageSources,
   ResolutionSpec,
+  toEnvironment,
 } from "@fabr-build/core";
 import { assembleNodeModules } from "../NodeModules";
 import {
@@ -87,7 +88,10 @@ export default defineRule({
     };
   },
   evaluateMaterialized(context, inputs) {
-    return defineJsRunnable(context, inputs);
+    return Computable.forAll(
+      [defineJsRunnable(context, inputs), context.getMap("env").then(toEnvironment)] as const,
+      (runnable: RuleResult, env: ReadonlyMap<string, string>): RuleResult => (runnable instanceof RunnableFileSet ? runnable.withEnvironment(env) : runnable)
+    );
   },
 });
 
