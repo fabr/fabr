@@ -67,6 +67,7 @@ import {
   versionChildren,
   VersionNotFoundError,
   versionToString,
+  IVersionMetadata,
 } from "@fabr-build/core";
 import {
   expectedTarballDigest,
@@ -82,6 +83,7 @@ import {
   toPublishAccess,
   tarballBasename,
   unsupportedPlatformReason,
+  versionMetadataOf,
 } from "./NPMProtocol";
 import { declaredDependencies, memberDependencies, rewriteManifest, unresolvableDependencies } from "./PackageJson";
 import { installedPackageExtensions, PackageExtensions } from "./PackageExtensions";
@@ -401,7 +403,7 @@ export class NPMRepository
    * recorded as data, never repaired by a private copy.
    */
   public getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
-    return this.getVersionMetadata(pkg, versionToString(version)).then(meta => {
+    return this.getVersionEntry(pkg, versionToString(version)).then(meta => {
       /* Read with this registry's package extensions applied. */
       const { required, optional } = declaredDependencies(this.extensions().extend(pkg, version, meta));
       if (optional.length === 0) {
@@ -568,9 +570,19 @@ export class NPMRepository
       .catch(() => undefined);
   }
 
+  /**
+   * Get what the registry publishes about one exact version besides its files
+   * (RepositoryReader implementation): its licence and the tarball's digest,
+   * from the version's own document, which the abbreviated packument leaves
+   * the licence out of.
+   */
+  public getVersionMetadata(pkg: string, version: SemverVersion): Computable<IVersionMetadata> {
+    return this.versionDocument(pkg, versionToString(version)).then(versionMetadataOf);
+  }
+
   /** Get an exact package version's metadata: its packument entry, or for a
    *  version that entry cannot fully answer, the version's own document. */
-  private getVersionMetadata(pkg: string, version: string): Computable<INPMPackageMetadata> {
+  private getVersionEntry(pkg: string, version: string): Computable<INPMPackageMetadata> {
     const entry = (versions: ReadonlyMap<string, INPMPackageMetadata> | undefined): INPMPackageMetadata | undefined => versions?.get(version);
     return this.packument(pkg, false)
       .then(versions => (entry(versions) !== undefined ? entry(versions) : this.packument(pkg, true).then(entry)))
@@ -589,7 +601,7 @@ export class NPMRepository
    * by `libc`.
    */
   private gatedMetadata(pkg: string, version: string, target: NpmPlatform): Computable<INPMPackageMetadata> {
-    return this.getVersionMetadata(pkg, version).then(meta =>
+    return this.getVersionEntry(pkg, version).then(meta =>
       meta.libc === undefined &&
       target.libc !== undefined &&
       (meta.os !== undefined || meta.cpu !== undefined) &&
@@ -646,7 +658,7 @@ export class NPMRepository
       tag: "npm:package:1",
       report: { resource: "package", role: "content" },
       source: () =>
-        this.getVersionMetadata(pkg, exact).then(meta =>
+        this.getVersionEntry(pkg, exact).then(meta =>
           Computable.resolve({
             url: meta.dist.tarball,
             expected: expectedTarballDigest(meta.dist),

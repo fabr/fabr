@@ -50,6 +50,8 @@ import {
   markerOnProjection,
   sendRequest,
   toJsonObject,
+  ILicense,
+  IVersionMetadata,
 } from "@fabr-build/core";
 import { otpChallengeOf, OtpProvider } from "./NPMAuth";
 import { makeNpmRunnable } from "./JSPackage";
@@ -116,6 +118,11 @@ export interface INPMPackageMetadata {
   };
   name: string;
   version: string;
+  /** The licence declared, an SPDX expression where the manifest follows npm's
+   * docs; read by {@link versionMetadataOf}. Absent from an abbreviated packument. */
+  license?: unknown;
+  /** The legacy spelling: a list of `{ type, url }`. */
+  licenses?: unknown;
   /* and potentially lots of other stuff that we don't need */
 }
 
@@ -224,6 +231,27 @@ export function tarballBasename(name: string, version: string): string {
  * strongest SRI in `dist.integrity` (base64), else the legacy sha1
  * `dist.shasum` (hex). Undefined when `dist` carries neither — nothing to
  * verify against. */
+/**
+ * Read what a version's own document publishes besides its files
+ * ({@link IVersionMetadata}): its licence — `license` as a string or, in
+ * older manifests, an object or a `licenses` list of `{ type, url }` — and the
+ * strongest digest `dist` carries.
+ */
+export function versionMetadataOf(meta: INPMPackageMetadata): IVersionMetadata {
+  const licenses: ILicense[] = [];
+  const declared = (value: unknown): void => {
+    if (typeof value === "string" && value.trim() !== "") {
+      licenses.push({ text: value.trim() });
+    } else if (isJsonObject(value) && typeof value.type === "string") {
+      licenses.push({ text: value.type, ...(typeof value.url === "string" ? { url: value.url } : {}) });
+    }
+  };
+  declared(meta.license);
+  (Array.isArray(meta.licenses) ? meta.licenses : [meta.licenses]).forEach(declared);
+  const digest = expectedTarballDigest(meta.dist);
+  return { licenses, hashes: digest === undefined ? [] : [digest] };
+}
+
 export function expectedTarballDigest(dist: {
   integrity?: string;
   shasum?: string;

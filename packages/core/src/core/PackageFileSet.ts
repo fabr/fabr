@@ -25,7 +25,7 @@ import { IProvenanceStep, rootedAt } from "./Provenance";
 /* Type-only: RepositoryRef values are only ever constructed/inspected on the
  * Repository side; carrying the type here must not create a module cycle. */
 import type { Reference } from "./Reference";
-import type { RepositoryRef, SourceRef } from "./Repository";
+import type { RepositoryRef, SourceRef, IVersionMetadata } from "./Repository";
 import type { Requirement } from "../resolver/Types";
 import type { PackageFormat } from "../resolver/PackageFormat";
 
@@ -119,6 +119,12 @@ export interface PackageContent {
    * its files.
    */
   describe?(): Computable<FileSet>;
+  /**
+   * Get what the registry publishes about the version besides its files (its
+   * licence and digests), where the package is a registry's and the registry
+   * states them: read for a bill of materials, fetching none of the package.
+   */
+  metadata?(): Computable<IVersionMetadata>;
 }
 
 /** What a {@link ResolvedNode} is made of. */

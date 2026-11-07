@@ -47,6 +47,12 @@ export interface PomDependency {
   readonly exclusions?: readonly string[];
 }
 
+/** A licence as a POM's `<licenses>` declares it. */
+export interface PomLicense {
+  readonly name?: string;
+  readonly url?: string;
+}
+
 /** A POM as written: nothing inherited, interpolated or managed. */
 export interface RawPom {
   readonly groupId?: string;
@@ -54,6 +60,8 @@ export interface RawPom {
   readonly version?: string;
   readonly packaging?: string;
   readonly parent?: PomCoordinate;
+  /** Its own `<licenses>`, where it declares any. */
+  readonly licenses: readonly PomLicense[];
   readonly properties: ReadonlyMap<string, string>;
   readonly dependencies: readonly PomDependency[];
   readonly dependencyManagement: readonly PomDependency[];
@@ -63,6 +71,8 @@ export interface RawPom {
 
 export interface EffectivePom extends PomCoordinate {
   readonly packaging: string;
+  /** The licences declared: its own, else the nearest ancestor's, as Maven inherits them. */
+  readonly licenses: readonly PomLicense[];
   /** The declared dependencies, own and inherited, interpolated and managed. */
   readonly dependencies: readonly PomDependency[];
   /** The managed dependencies, own, inherited and imported, interpolated. */
@@ -134,12 +144,18 @@ export function parsePom(text: string, what: string): RawPom {
   const groupId = xmlText(project, "groupId");
   const version = xmlText(project, "version");
   const packaging = xmlText(project, "packaging");
+  const licenses = xmlChildren(xmlChild(project, "licenses"), "license").map((license): PomLicense => {
+    const name = xmlText(license, "name");
+    const url = xmlText(license, "url");
+    return { ...(name === undefined ? {} : { name }), ...(url === undefined ? {} : { url }) };
+  });
   return {
     ...(groupId === undefined ? {} : { groupId }),
     artifactId,
     ...(version === undefined ? {} : { version }),
     ...(packaging === undefined ? {} : { packaging }),
     ...(parent === undefined ? {} : { parent }),
+    licenses,
     properties,
     dependencies,
     dependencyManagement: managed,
@@ -239,6 +255,7 @@ export function effectivePom(pom: RawPom, load: PomLoader, what: string, depth =
     };
     const groupId = nearest(link => link.groupId ?? link.parent?.groupId);
     const version = nearest(link => link.version ?? link.parent?.version);
+    const licenses = nearest(link => (link.licenses.length === 0 ? undefined : link.licenses)) ?? [];
     if (groupId === undefined || version === undefined) {
       throw new FabrError(`${what} states no groupId or version, and inherits none`);
     }
@@ -302,6 +319,7 @@ export function effectivePom(pom: RawPom, load: PomLoader, what: string, depth =
           version,
           /* Packaging is not inherited: a POM that states none is a jar. */
           packaging: pom.packaging ?? "jar",
+          licenses,
           dependencies,
           dependencyManagement,
         };

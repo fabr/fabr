@@ -1048,13 +1048,12 @@ class ResolutionGraph<V, C> {
       /* Delivered under the name it is installed as, which for a renamed
        * package is not the name its content is fetched under. */
       const reference = this.resolution.rootReferences.get(id);
+      const published = selected.publishedName ?? selected.name;
       node = builder.resolved(
         {
           key: `${registry.identity} ${id}`,
-          files: () =>
-            registry
-              .fetch(selected.publishedName ?? selected.name, version)
-              .then(pkg => (pkg.packageName === selected.name ? pkg : pkg.withPackageName(selected.name))),
+          files: () => registry.fetch(published, version).then(pkg => (pkg.packageName === selected.name ? pkg : pkg.withPackageName(selected.name))),
+          ...(registry.getVersionMetadata === undefined ? {} : { metadata: () => registry.getVersionMetadata!(published, version) }),
         },
         selected.name,
         registry.format.versionToString(version),

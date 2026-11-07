@@ -30,6 +30,7 @@ import {
   publishToRegistry,
   toPackumentVersions,
   toPublishAccess,
+  versionMetadataOf,
 } from "./NPMProtocol";
 import { OtpChallenge } from "./NPMAuth";
 import { NO_PACKAGE_EXTENSIONS, useInstalledPackageExtensions } from "./PackageExtensions";
@@ -347,6 +348,27 @@ describe("publishToRegistry second factor", () => {
     } finally {
       server.close();
     }
+  });
+});
+
+describe("versionMetadataOf", () => {
+  const dist = { tarball: "https://registry.npmjs.org/x/-/x-1.0.0.tgz", integrity: "sha512-AAAA", shasum: "abc" };
+  it("reads the licence as a string, as an object, or as the legacy list, and the strongest digest", () => {
+    expect(versionMetadataOf({ name: "x", version: "1.0.0", dist, license: "MIT OR Apache-2.0" })).to.deep.equal({
+      licenses: [{ text: "MIT OR Apache-2.0" }],
+      hashes: [{ algorithm: "sha512", encoding: "base64", value: "AAAA" }],
+    });
+    expect(versionMetadataOf({ name: "x", version: "1.0.0", dist: { tarball: dist.tarball, shasum: "ABC" }, license: { type: "BSD-3-Clause", url: "https://x/LICENSE" } }).licenses).to.deep.equal([
+      { text: "BSD-3-Clause", url: "https://x/LICENSE" },
+    ]);
+    expect(versionMetadataOf({ name: "x", version: "1.0.0", dist, licenses: [{ type: "MIT" }, { type: "GPL-2.0", url: "https://x/GPL" }] }).licenses).to.deep.equal([
+      { text: "MIT" },
+      { text: "GPL-2.0", url: "https://x/GPL" },
+    ]);
+  });
+
+  it("states nothing where the manifest declares no licence and the registry no digest", () => {
+    expect(versionMetadataOf({ name: "x", version: "1.0.0", dist: { tarball: dist.tarball } })).to.deep.equal({ licenses: [], hashes: [] });
   });
 });
 

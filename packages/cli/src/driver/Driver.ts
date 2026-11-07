@@ -34,6 +34,7 @@ import {
   requireWhole,
   ResolvedName,
   sarifLocation,
+  sbom,
   BuildModel,
   buildOperation,
   describeOperation,
@@ -233,6 +234,8 @@ export function runFabr(options: Options): Promise<void> {
       return runWith(options, (model, execution, site) => printDependencies(model, options, execution, site));
     case "audit":
       return runWith(options, (model, execution, site) => auditDependencies(model, options, execution, site));
+    case "sbom":
+      return runWith(options, (model, execution, site) => writeSbom(model, options, execution, site));
     case "test":
       return runWith(options, (model, execution, site) => runTest(model, options, execution, site, options.targets), watch);
     case "run": {
@@ -1239,6 +1242,19 @@ function resolvedNames(
 function stdoutStyle(): ((code: string, text: string) => string) | undefined {
   const color = process.stdout.isTTY === true && !process.env.NO_COLOR;
   return color ? (code, text) => `\x1b[${code}m${text}\x1b[0m` : undefined;
+}
+
+/**
+ * Write the bill of materials of the one name (`fabr sbom`) to stdout, as
+ * CycloneDX (core's {@link sbom}): what `fabr deps` prints, resolved and not
+ * built, with each registry package's licence and digests from its metadata.
+ */
+function writeSbom(model: BuildModel, options: Options, execution: ExecutionContext, site: IInvocationSite): Computable<void> {
+  return resolvedNames(model, options, execution, site)
+    .then(([name]) => sbom(name, { version: getVersion() }))
+    .then(bom => {
+      console.log(JSON.stringify(bom, undefined, 2));
+    });
 }
 
 /**

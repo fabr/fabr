@@ -66,6 +66,7 @@ import {
   vendPackageRef,
   versionChildren,
   VersionNotFoundError,
+  IVersionMetadata,
 } from "@fabr-build/core";
 import { MAVEN_FORMAT, mavenName, mavenVariantOf, parseMavenPublishCoordinate, splitMavenName } from "./MavenProtocol";
 import { javaPluginContext, MavenAuth } from "./MavenAuth";
@@ -449,11 +450,32 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     );
   }
 
+  /**
+   * Get what the repository publishes about one exact version besides its
+   * files (RepositoryReader implementation): the licences its effective POM
+   * declares, and the checksum published beside the artifact its packaging
+   * names.
+   */
+  public getVersionMetadata(name: string, version: MavenVersion): Computable<IVersionMetadata> {
+    const coordinate = this.coordinateOf(name, version.text);
+    return this.effectivePomOf(name, version.text).then(pom =>
+      this.sha1Of(`${this.versionUrl(coordinate)}/${this.artifactFileOf(coordinate, pom)}`).then(sha1 => ({
+        licenses: pom.licenses.flatMap(({ name: text, url }) => (text === undefined ? [] : [{ text, ...(url === undefined ? {} : { url }) }])),
+        hashes: sha1 === undefined ? [] : [{ algorithm: "sha1", encoding: "hex" as const, value: sha1 }],
+      }))
+    );
+  }
+
+  /** @return the file name of `coordinate`'s artifact as `pom`'s packaging names it. */
+  private artifactFileOf(coordinate: PomCoordinate, pom: EffectivePom): string {
+    return `${coordinate.artifactId}-${coordinate.version}.${PACKAGING_EXTENSIONS.get(pom.packaging) ?? "jar"}`;
+  }
+
   /** Fetch a package's artifact as its POM's packaging names it (see {@link fetch}). */
   private fetchPomArtifact(name: string, version: MavenVersion): Computable<PackageFileSet> {
     const coordinate = this.coordinateOf(name, version.text);
     return this.effectivePomOf(name, version.text).then(pom => {
-      const file = `${coordinate.artifactId}-${coordinate.version}.${PACKAGING_EXTENSIONS.get(pom.packaging) ?? "jar"}`;
+      const file = this.artifactFileOf(coordinate, pom);
       const artifactUrl = `${this.versionUrl(coordinate)}/${file}`;
       const fetchArtifact = (sha1: () => Computable<string | undefined>): Computable<PackageFileSet> =>
         fetchFile(this.context, {

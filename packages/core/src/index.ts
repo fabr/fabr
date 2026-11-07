@@ -27,6 +27,7 @@
 export * from "./Constants";
 export * from "./Audit";
 export * from "./Fabr";
+export * from "./Sbom";
 export * from "./core/BuildCache";
 export * from "./core/Computable";
 export * from "./core/Credential";

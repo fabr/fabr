@@ -92,6 +92,7 @@ const COMMAND_SPECS: CommandSpec[] = [
   { name: "cat", synopsis: "<names>", summary: "Build a target and write its matching files to stdout", accepts: ["-q", "--no-progress", "--refresh"], requiresTarget: true },
   { name: "cp", synopsis: "<sources…> <dest>", summary: "Build targets and copy their files to a destination directory", accepts: ["-q", "--no-progress", "--refresh"], requiresTarget: true },
   { name: "deps", synopsis: "<names>", summary: "Print the dependency tree of the given targets or packages", accepts: ["-q", "--no-progress", "--refresh"], requiresTarget: true },
+  { name: "sbom", synopsis: "<target>", summary: "Write the software bill of materials (CycloneDX) of a target or package", accepts: ["-q", "--no-progress", "--refresh"], singleTarget: true, requiresTarget: true },
   { name: "audit", synopsis: "[--format sarif] <names>", summary: "Check the dependencies of the given targets or packages for known security advisories", accepts: ["--format", "-q", "--no-progress", "--refresh"], requiresTarget: true },
   { name: "sync", synopsis: "<target>", summary: "Build and publish a sync target to its destination coordinates", accepts: ["-q", "--no-progress", "--refresh"], requiresTarget: true },
   { name: "build-server", synopsis: "", summary: "Serve the project's described targets to an editor over the Build Server Protocol (stdio)", accepts: ["-q"] },

@@ -18,6 +18,7 @@
  */
 
 import { Computable } from "./Computable";
+import type { ExpectedDigest } from "../support/Integrity";
 import { FabrError } from "./Errors";
 import { FileSetRef } from "./FileSetRef";
 import { FileSet, FileSource } from "./FileSet";
@@ -185,6 +186,22 @@ export function isRepositoryCollection(source: unknown): source is RepositoryCol
  * coordinate routes; the coordinate's *shape* is written-form knowledge,
  * parsed by {@link PackageFormat.parsePublishCoordinate}.
  */
+/** What a registry publishes about one exact package version besides its
+ * files: the licence it declares, as the registry states it (an SPDX
+ * expression, a licence's name), and the digests of its content. Read for a
+ * bill of materials, never for a build. */
+export interface IVersionMetadata {
+  readonly licenses: ReadonlyArray<ILicense>;
+  readonly hashes: ReadonlyArray<ExpectedDigest>;
+}
+
+/** A licence as a package declares it: its text (an SPDX id or expression, or a
+ * name) and where it is published, where the package says. */
+export interface ILicense {
+  readonly text: string;
+  readonly url?: string;
+}
+
 export interface RepositoryReader<V, C> extends RequirementSource<V> {
   /** The shared per-ecosystem format (see {@link PackageFormat}): object
    * identity across registries is what admits them to one domain. */
@@ -241,6 +258,13 @@ export interface RepositoryReader<V, C> extends RequirementSource<V> {
    * policy.
    */
   validateSelections?(selections: Selected<V>[]): Computable<void>;
+  /**
+   * Get what the registry publishes about one exact package version besides
+   * its files (see {@link IVersionMetadata}), from its metadata alone: nothing
+   * of the package is fetched. Optional: a registry without it states no
+   * licences or digests.
+   */
+  getVersionMetadata?(name: string, version: V): Computable<IVersionMetadata>;
 }
 
 /**

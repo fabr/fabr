@@ -97,7 +97,7 @@ function edgesOf(sources: ReadonlyArray<Resolved>, references: ReadonlyArray<Ref
  * target's own name is part of the target, not something it requires); for
  * anything else, the packages among what the name denotes.
  */
-function rootEdges(resolved: ResolvedRequirements): Dependency[] {
+export function rootEdges(resolved: ResolvedRequirements): Dependency[] {
   const [only] = resolved.denoted;
   if (resolved.denoted.length === 1 && only instanceof ResolvedTarget) {
     return [...only.resolved.sources].flatMap(([name, sources]) => {

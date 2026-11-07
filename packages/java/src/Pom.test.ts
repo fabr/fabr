@@ -228,3 +228,47 @@ describe("parseXml", () => {
     expect(() => parseXml("", "pom.xml")).to.throw(/no root element/);
   });
 });
+
+describe("licenses", () => {
+  const POM = (body: string): string =>
+    `<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion>${body}</project>`;
+  const PARENT = POM(
+    "<groupId>com.example</groupId><artifactId>parent</artifactId><version>1.0</version><packaging>pom</packaging>" +
+      "<licenses><license><name>Apache License, Version 2.0</name><url>https://www.apache.org/licenses/LICENSE-2.0</url></license></licenses>"
+  );
+  const load = (coordinate: PomCoordinate): Computable<ReturnType<typeof parsePom>> => {
+    if (coordinateText(coordinate) !== "com.example:parent:1.0") {
+      throw new Error(`no ${coordinateText(coordinate)}`);
+    }
+    return Computable.resolve(parsePom(PARENT, "parent"));
+  };
+
+  it("reads a POM's own licences, with their urls where given", () => {
+    const raw = parsePom(
+      POM(
+        "<groupId>g</groupId><artifactId>a</artifactId><version>1</version><licenses><license><name>MIT</name></license><license><name>X</name><url>https://x</url></license></licenses>"
+      ),
+      "a"
+    );
+    expect(raw.licenses).to.deep.equal([{ name: "MIT" }, { name: "X", url: "https://x" }]);
+  });
+
+  it("inherits the nearest ancestor's licences where a POM declares none, and keeps its own where it does", async () => {
+    const child = parsePom(
+      POM(
+        "<parent><groupId>com.example</groupId><artifactId>parent</artifactId><version>1.0</version></parent><artifactId>child</artifactId>"
+      ),
+      "child"
+    );
+    expect((await effectivePom(child, load, "child")).licenses).to.deep.equal([
+      { name: "Apache License, Version 2.0", url: "https://www.apache.org/licenses/LICENSE-2.0" },
+    ]);
+    const own = parsePom(
+      POM(
+        "<parent><groupId>com.example</groupId><artifactId>parent</artifactId><version>1.0</version></parent><artifactId>own</artifactId><licenses><license><name>MIT</name></license></licenses>"
+      ),
+      "own"
+    );
+    expect((await effectivePom(own, load, "own")).licenses).to.deep.equal([{ name: "MIT" }]);
+  });
+});

@@ -23,6 +23,7 @@ can be piped or redirected on its own.
 | [`ls`](#ls), [`cat`](#cat), [`cp`](#cp) | List, print or copy the files a target produces. |
 | [`deps`](#deps) | Print the dependency tree of targets or packages. |
 | [`audit`](#audit) | Check the dependencies of targets or packages for known security advisories. |
+| [`sbom`](#sbom) | Write the software bill of materials of a target or package. |
 | [`shell`](#shell) | Open a shell in the directory a build step runs in, for debugging. |
 | [`sync`](#sync) | Publish packages and files. |
 | [`build-server`](#build-server) | Serve the project's targets to an editor. |
@@ -331,6 +332,29 @@ fabr -DADVISORIES=https://osv.example.com audit myapp
 
 Advisories are read as they stand each time: nothing about them is cached, and the result is no
 part of any build.
+
+### `sbom`
+
+Writes the software bill of materials of one target or package to stdout, as
+[CycloneDX](https://cyclonedx.org) 1.6 JSON: the target as the component described, every package
+among what its build requires as a component, and the dependency graph between them.
+
+```sh
+fabr sbom myapp > myapp.cdx.json
+fabr sbom @npm:express:4.19.2
+```
+
+The packages are the ones `deps` prints, resolved the same way and with nothing built. Each package
+a registry publishes is named by its [package URL](https://github.com/package-url/purl-spec) and
+carries the licence its registry metadata declares, as an SPDX id, an expression or a name, and the
+digest of its content the registry publishes: npm's `dist.integrity` and Maven's `.sha1` beside the
+artifact. Those are read from each registry's metadata for the exact version, one small document
+per package the first time, and cached forever, since a published version's metadata never changes.
+No package is downloaded. A package built in your project is a component by name, and by version
+where its target declares one.
+
+The document is a function of the resolution alone: it carries no timestamp or serial number, so
+two runs over the same sources write the same bytes.
 
 ### `shell`
 
