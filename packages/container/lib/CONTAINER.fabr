@@ -61,6 +61,27 @@ targetdef container_image {
 rule container_image c<BUILD_OPERATION=build> = @fabr-build/container:rules/BuildContainerImage;
 rule container_image c<BUILD_OPERATION=run> = @fabr-build/container:rules/RunContainerImage;
 
+targetdef container_program {
+    # The image the program runs: a `container_image`, or a reference
+    # (`@docker:redis:7-alpine`).
+    image = REQUIRED PACKAGES;
+    # Arguments given the image's entry, after its own `args` and before any
+    # its caller gives.
+    args = STRING;
+    # Environment variables, set over the image's.
+    env = MAP;
+    # Ports published on the host: `8080:80`, `5353:53/udp`. None: each port
+    # the image exposes, on the same port of the host.
+    ports = STRING;
+    # The network the container joins: `host`, or a named network.
+    network = STRING;
+    # Names added to the container's hosts file, each an address, or
+    # `host-gateway` for the host.
+    hosts = MAP;
+}
+
+rule container_program c<BUILD_OPERATION=run> = @fabr-build/container:rules/RunContainerProgram;
+
 #
 # The container engine `fabr run` of an image runs it with: Docker, or podman
 # (`@host:podman`), whose commands are the same.

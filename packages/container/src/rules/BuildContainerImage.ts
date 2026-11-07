@@ -52,7 +52,7 @@ import {
   TargetContext,
   writeTar,
 } from "@fabr-build/core";
-import { IImageSettings, imageConfig } from "../ImageConfig";
+import { IImageSettings, imageConfig, stringEntries } from "../ImageConfig";
 import { ImageFileSet, ImageLibc, imageOfRecords, layerRecordDir, libcOf, RECORD_CONFIG } from "../ImageFileSet";
 import { runBuildCommand } from "../BuildCommand";
 import { indexLayer, teeOutput } from "../LayerIndex";
@@ -135,16 +135,6 @@ function settingsOf(context: TargetContext): Computable<IImageSettings> {
 /** @return true if `settings` set anything but the build command and its environment, otherwise false. */
 function setsMoreThanBuild(settings: IImageSettings): boolean {
   return settings.entry !== undefined || settings.args.length > 0 || settings.workdir !== undefined || settings.user !== undefined || settings.ports.length > 0 || settings.metadata.length > 0;
-}
-
-/** Read a MAP property whose every entry is a string, in the order written. */
-function stringEntries(target: string, property: string, map: PropertyMap): Array<[string, string]> {
-  return [...map].map(([key, setting]): [string, string] => {
-    if (!Array.isArray(setting) || !setting.every(item => typeof item === "string")) {
-      throw new FabrError(`${target}'s ${property} '${key}' is not a string`);
-    }
-    return [key, (setting as string[]).join(" ")];
-  });
 }
 
 /** @return the container engine `engine` is as the one file named `engine`. */

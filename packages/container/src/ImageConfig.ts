@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { FabrError, isJsonObject } from "@fabr-build/core";
+import { FabrError, isJsonObject, PropertyMap } from "@fabr-build/core";
 import { IOciPlatform } from "./OciProtocol";
 
 /** The time stamped on everything fabr writes into an image's config: the epoch, so an image is a function of its inputs. */
@@ -114,4 +114,14 @@ function portKey(port: string): string {
 
 function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+/** Read a MAP property whose every entry is a string, in the order written. */
+export function stringEntries(target: string, property: string, map: PropertyMap): Array<[string, string]> {
+  return [...map].map(([key, setting]): [string, string] => {
+    if (!Array.isArray(setting) || !setting.every(item => typeof item === "string")) {
+      throw new FabrError(`${target}'s ${property} '${key}' is not a string`);
+    }
+    return [key, (setting as string[]).join(" ")];
+  });
 }

@@ -34,45 +34,69 @@ const ENGINE_COMMAND = "engine";
  * own, which Docker refuses), where the container engine does not hold it;
  * then run it under a minimal init, which passes signals on to the program
  * (the kernel ignores those sent to a PID 1 that does not handle them), removed
- * when it ends, its stdin attached and a terminal given it
- * where stdin is one, each port of `$3` (`8080/tcp 53/udp`) published on the
- * same port of the host, the rest of the arguments its own. The container is
- * named for the launch fabr gave it (`FABR_LAUNCH`), so the runnable's
- * teardown removes it; launched otherwise, for host `$1` and this script's
- * pid, which `exec` makes the engine client's. Either way a run killed before
- * removing it is reaped by a later one.
+ * when it ends, its stdin attached and a terminal given it where stdin is one.
+ * The `$3` arguments after it are the engine's options for the run (`-p
+ * 8080:8080/tcp`, `-e NAME=value`), and the rest are the program's own. The
+ * container is named for the launch fabr gave it (`FABR_LAUNCH`), so the
+ * runnable's teardown removes it; launched otherwise, for host `$1` and this
+ * script's pid, which `exec` makes the engine client's. Either way a run
+ * killed before removing it is reaped by a later one.
  */
 export const LAUNCH_SCRIPT = `#!/bin/sh
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
 name="fabr-\${FABR_LAUNCH:-$1-$$-run}"
 image="$2"
-publish=""
-for port in $3; do
-  publish="$publish -p \${port%/*}:$port"
-done
+options="$3"
 shift 3
+# Rotate the arguments, putting the image between the options and the rest.
+total=$#
+at=0
+while [ "$at" -lt "$total" ]; do
+  if [ "$at" -eq "$options" ]; then set -- "$@" "$image"; fi
+  set -- "$@" "$1"
+  shift
+  at=$((at + 1))
+done
+if [ "$options" -eq "$total" ]; then set -- "$@" "$image"; fi
 if ! "$here/${ENGINE_COMMAND}" image inspect "$image" >/dev/null 2>&1; then
   (cd "$here/${LAYOUT_DIR}" && COPYFILE_DISABLE=1 tar --no-xattrs -cf - .) | "$here/${ENGINE_COMMAND}" load -q >/dev/null
 fi
 if [ -t 0 ]; then
-  exec "$here/${ENGINE_COMMAND}" run --rm --init -i -t --name "$name" $publish "$image" "$@"
+  exec "$here/${ENGINE_COMMAND}" run --rm --init -i -t --name "$name" "$@"
 fi
-exec "$here/${ENGINE_COMMAND}" run --rm --init -i --name "$name" $publish "$image" "$@"
+exec "$here/${ENGINE_COMMAND}" run --rm --init -i --name "$name" "$@"
 `;
 
 /** Remove the launch's container, whether or not it is still running: what the runnable's teardown runs. */
 const TEARDOWN: readonly RunnableArgument[] = ["/bin/sh", "-c", 'exec "$0" rm -f "fabr-$FABR_LAUNCH" >/dev/null 2>&1', [{ installPath: ENGINE_COMMAND }]];
+
+/** How a program runs its image: the engine's options for the run, and its arguments. */
+export interface IContainerRun {
+  /** Ports published on the host (`8080:80`, `5353:53/udp`); none, each the image exposes on the same port. */
+  readonly ports?: readonly string[];
+  /** Environment variables, set over the image's. */
+  readonly env: ReadonlyArray<readonly [string, string]>;
+  /** The network the container joins. */
+  readonly network?: string;
+  /** Names added to the container's hosts file, each with its address. */
+  readonly hosts: ReadonlyArray<readonly [string, string]>;
+  /** Arguments given the image's entry, before any its caller gives. */
+  readonly args: readonly string[];
+}
+
+/** The run of an image named on its own: its exposed ports published, nothing else set. */
+const IMAGE_RUN: IContainerRun = { env: [], hosts: [], args: [] };
 
 /**
  * Make `image` a program the container engine `engine` runs (Docker or
  * podman): its install the image's OCI layout (its layers the stored files,
  * so staged by hardlink), tagged `localhost/fabr/<name>:<config digest>`, the
  * engine, and a launcher that loads the layout only where the engine lacks the
- * tag, then runs it with the caller's arguments after the image's entrypoint,
- * each port its config exposes published on the same port of the host.
+ * tag, then runs it as `run` says, with the caller's arguments after the
+ * image's entrypoint and `run`'s own.
  */
-export function imageRunnable(image: ImageFileSet, name: string, engine: RunnableFileSet, limit: Semaphore): Computable<RunnableFileSet> {
+export function imageRunnable(image: ImageFileSet, name: string, engine: RunnableFileSet, limit: Semaphore, run: IContainerRun = IMAGE_RUN): Computable<RunnableFileSet> {
   return reapEngine(limit, engine)
     .then(() => manifestOf(image))
     .then(({ config }) => {
@@ -83,9 +107,21 @@ export function imageRunnable(image: ImageFileSet, name: string, engine: Runnabl
         engineProgram(name, engine),
         new FileSet(new Map<string, IFile>([[LAUNCHER, new MemoryFile(Buffer.from(LAUNCH_SCRIPT), 0o755)]]))
       );
-      return RunnableFileSet.forEntry(install, LAUNCHER, [ownerHost(), tag, exposedPorts(image).join(" ")], "sh").withTeardown(TEARDOWN);
+      const options = runOptions(image, run);
+      return RunnableFileSet.forEntry(install, LAUNCHER, [ownerHost(), tag, String(options.length), ...options, ...run.args], "sh").withTeardown(TEARDOWN);
     });
   });
+}
+
+/** @return the engine's options for running `image` as `run` says. */
+function runOptions(image: ImageFileSet, run: IContainerRun): string[] {
+  const published = run.ports ?? exposedPorts(image).map(port => `${port.substring(0, port.indexOf("/"))}:${port}`);
+  return [
+    ...published.flatMap(port => ["-p", port]),
+    ...run.env.flatMap(([variable, value]) => ["-e", `${variable}=${value}`]),
+    ...(run.network === undefined ? [] : ["--network", run.network]),
+    ...run.hosts.flatMap(([host, address]) => ["--add-host", `${host}:${address}`]),
+  ];
 }
 
 /** @return the ports `image`'s config exposes (`8080/tcp`), sorted. */
