@@ -137,6 +137,35 @@ describe("ProgressReporter", () => {
     ]);
   });
 
+  it("times a task by how long it ran, and reports a long wait for a slot beside it", () => {
+    const { lines, reporter, tick } = report();
+    const task = building("//pkg");
+    send(reporter, { kind: "task-start", id: 1, task, state: "running" });
+    tick(100);
+    send(reporter, { kind: "task-progress", id: 1, task, state: "waiting" });
+    tick(59000);
+    send(reporter, { kind: "task-progress", id: 1, task, state: "running" });
+    tick(2000);
+    send(reporter, { kind: "task-progress", id: 1, task, state: "waiting" });
+    tick(500);
+    send(reporter, { kind: "task-progress", id: 1, task, state: "running" });
+    tick(300);
+    send(reporter, { kind: "task-end", id: 1, task, failed: false });
+    expect(lines[1]).to.equal("info:✓ Building //pkg (2.4s, 59.5s waiting)");
+  });
+
+  it("leaves a short wait for a slot out of the completion line", () => {
+    const { lines, reporter, tick } = report();
+    const task = building("//pkg");
+    send(reporter, { kind: "task-start", id: 1, task, state: "running" });
+    send(reporter, { kind: "task-progress", id: 1, task, state: "waiting" });
+    tick(999);
+    send(reporter, { kind: "task-progress", id: 1, task, state: "running" });
+    tick(40);
+    send(reporter, { kind: "task-end", id: 1, task, failed: false });
+    expect(lines[1]).to.equal("info:✓ Building //pkg (40ms)");
+  });
+
   it("ignores an end with no start (nothing to time — the duration is ours to measure)", () => {
     const { lines, reporter } = report();
     send(reporter, { kind: "task-end", id: 99, task: building("//pkg"), failed: false });
@@ -381,6 +410,17 @@ describe("ProgressReporter", () => {
       send(reporter, { kind: "task-progress", id: 2, task: b, state: "waiting" });
       send(reporter, { kind: "task-progress", id: 3, task: c, state: "waiting" });
       expect(rows()).to.deep.equal(["  Building //a|0ms", "  … 2 waiting|"]);
+    });
+
+    it("shows a task's running time, not the time it spent waiting for a slot", () => {
+      const { reporter, rows, tick } = paned();
+      const task = building("//pkg");
+      send(reporter, { kind: "task-start", id: 1, task, state: "running" });
+      send(reporter, { kind: "task-progress", id: 1, task, state: "waiting" });
+      tick(61000);
+      send(reporter, { kind: "task-progress", id: 1, task, state: "running" });
+      tick(1500);
+      expect(rows()).to.deep.equal(["  Building //pkg|1.5s"]);
     });
 
     it("keeps task that holds no slot on screen — a download is running too", () => {

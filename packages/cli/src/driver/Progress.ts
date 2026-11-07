@@ -57,6 +57,10 @@ const OPERATION_VERBS = new Map([
 const MARK_OK = "✓";
 const MARK_FAILED = "✗";
 
+/** The shortest wait for a slot a completion line reports: below it, the wait
+ *  is the funnel's ordinary hand-off, not the machine being busy. */
+const SHOWN_WAIT_MS = 1000;
+
 /** The pane's heading, above the rows. */
 const PANE_HEADING = "Running:";
 
@@ -101,12 +105,15 @@ interface IOutputLine {
 }
 
 /** A task in flight: what it is, when we first heard of it, what it is
- *  doing, how far along it has last said it is, and — with a pane — the output
- *  it is holding until it ends. */
+ *  doing and since when, how long it has spent waiting before that, how far
+ *  along it has last said it is, and — with a pane — the output it is holding
+ *  until it ends. */
 interface IRunningTask {
   task: TaskDescription;
   started: number;
   state: TaskState;
+  since: number;
+  waited: number;
   progress?: TaskProgress;
   held: IOutputLine[];
 }
@@ -172,12 +179,14 @@ export class ProgressReporter {
 
   private onBuildEvent(event: BuildEvent): void {
     switch (event.kind) {
-      case "task-start":
-        this.running.set(event.id, { task: event.task, started: this.now(), state: event.state, held: [] });
+      case "task-start": {
+        const now = this.now();
+        this.running.set(event.id, { task: event.task, started: now, state: event.state, since: now, waited: 0, held: [] });
         if (this.announceStart && !incidental(event.task)) {
           this.log.log(DIAG_TASK_START, { what: describe(event.task), chain: context(event.task) });
         }
         break;
+      }
 
       case "task-progress": {
         const running = this.running.get(event.id);
@@ -185,6 +194,11 @@ export class ProgressReporter {
           return;
         }
         const stateChanged = running.state !== event.state;
+        if (stateChanged) {
+          const now = this.now();
+          running.waited = this.waitedBy(running, now);
+          running.since = now;
+        }
         running.state = event.state;
         running.progress = event.progress;
         /* A state change re-rows the pane now; a measure-only update waits for
@@ -242,7 +256,7 @@ export class ProgressReporter {
             /* Whichever line introduces the item carries its context: with a
              * pane there was no start line to have carried it. */
             chain: this.announceStart ? "" : context(event.task),
-            duration: this.style(SGR_DIM, `(${formatDuration(this.now() - started.started)})`),
+            duration: this.style(SGR_DIM, `(${this.formatTimes(started)})`),
             reason: failureReason(event.error),
           });
         }
@@ -317,9 +331,28 @@ export class ProgressReporter {
    *  measure where it has one (a download's bytes, a test run's files and
    *  outcomes), and always the elapsed time. */
   private row(item: IRunningTask): IPaneRow {
-    const elapsed = formatDuration(this.now() - item.started);
+    const elapsed = formatDuration(this.ranBy(item, this.now()));
     const progress = item.progress ? formatProgress(item.progress) + "  " : "";
     return { left: "  " + describe(item.task), right: this.style(SGR_DIM, progress + elapsed) };
+  }
+
+  /** @return how long the task has spent waiting for a slot, up to `now`. */
+  private waitedBy(item: IRunningTask, now: number): number {
+    return item.waited + (item.state === "waiting" ? now - item.since : 0);
+  }
+
+  /** @return how long the task has spent running, up to `now`. */
+  private ranBy(item: IRunningTask, now: number): number {
+    return now - item.started - this.waitedBy(item, now);
+  }
+
+  /** Format a finished task's times: how long it ran, and how long it waited
+   *  for a slot where that was long enough to account for. */
+  private formatTimes(item: IRunningTask): string {
+    const now = this.now();
+    const waited = this.waitedBy(item, now);
+    const ran = formatDuration(this.ranBy(item, now));
+    return waited >= SHOWN_WAIT_MS ? `${ran}, ${formatDuration(waited)} waiting` : ran;
   }
 }
 
