@@ -156,7 +156,7 @@ export abstract class ComputableSource<T> {
    * to a later tick; if you need that, defer explicitly.
    */
   public then<U>(fn: (value: T) => U | ComputableSource<U>, onError?: CatchHandler<U>): Computable<U> {
-    return Computable.deriving([this], (value: T) => fn(value), onError);
+    return Computable.deriving([this], fn, onError, true);
   }
 
   public catch<U>(onError: CatchHandler<U>): Computable<T | U> {
@@ -334,10 +334,13 @@ export abstract class ComputableSource<T> {
     const changed = value !== this.currentValue;
     this.currentValue = value;
     this.becomeFinalIfDone();
+    const dependants = this.dependants.length === 0 ? NO_DEPENDANTS : this.dependants.slice();
     if (changed) {
-      this.eachDependant(dep => dep.invalidate());
+      for (const dep of dependants) {
+        dep.invalidate();
+      }
     }
-    this.notifyDependants();
+    this.notifyDependants(dependants);
     this.checkUnhandledError();
   }
 
@@ -393,10 +396,14 @@ export abstract class ComputableSource<T> {
     return this.dependants.slice();
   }
 
-  private notifyDependants(): void {
+  /** Notify the dependants — those in `dependants`, a snapshot taken for the
+   *  caller, else a snapshot taken now — that this node has settled or revalidated. */
+  private notifyDependants(dependants: ReadonlyArray<ComputableSource<unknown>> = this.dependants.length === 0 ? NO_DEPENDANTS : this.dependants.slice()): void {
     cascadeDepth++;
     try {
-      this.eachDependant(dep => dep.maybeRecompute());
+      for (const dep of dependants) {
+        dep.maybeRecompute();
+      }
     } finally {
       if (--cascadeDepth === 0) {
         for (const closer of deferredClosers) {
@@ -510,7 +517,7 @@ export class Computable<T> extends ComputableSource<T> {
    * {@link recheckCycle}): the pending region behind its binding, as a wave
    * crossing the binding or a node asking finds it. Released when the binding
    * delivers, and when this node re-runs or detaches. */
-  private holding = new Set<Computable<unknown>>();
+  private holding: Set<Computable<unknown>> | undefined;
 
   /** Label this node, and return it. */
   public labelled(label: Label | undefined): Computable<T> {
@@ -518,15 +525,17 @@ export class Computable<T> extends ComputableSource<T> {
     return this;
   }
 
-  /** Derive a node computing `fn` over `deps` (or `errfn` on failure). */
+  /** Derive a node computing `fn` over `deps` (or `errfn` on failure); `owned`
+   *  where `deps` is the node's to keep, made for it and held by no one else. */
   public static deriving<U>(
     deps: ComputableSource<any>[],
     fn: (...args: any[]) => U | ComputableSource<U>,
-    errfn?: CatchHandler<U>
+    errfn?: CatchHandler<U>,
+    owned = false
   ): Computable<U> {
     const result = new Computable<U>();
     result.errfn = errfn;
-    result.setDerivation(deps, fn);
+    result.setDerivation(owned ? deps : deps.slice(), fn);
     return result;
   }
 
@@ -545,7 +554,7 @@ export class Computable<T> extends ComputableSource<T> {
   /** Initialise a derived node's inputs + fn and enter the graph — the shared tail
    * of {@link deriving} and {@link resolveTo}'s binding construction. */
   private setDerivation(deps: ComputableSource<any>[], fn: (...args: any[]) => any): void {
-    this.dependsOn = deps.slice();
+    this.dependsOn = deps;
     this.fn = fn;
     this.attach();
   }
@@ -665,21 +674,23 @@ export class Computable<T> extends ComputableSource<T> {
     if (this.currentState === ComputableState.Invalid) {
       this.currentState = ComputableState.Unresolved;
     }
-    const errors: Error[] = [];
+    let errors: Error[] | undefined;
     for (const dep of this.dependsOn) {
       if (dep.state === ComputableState.Error) {
         ComputableSource.observeError(dep);
-        errors.push(dep.value as Error);
+        (errors ??= []).push(dep.value as Error);
       }
     }
     try {
-      if (errors.length > 0) {
+      if (errors !== undefined) {
         const error = MultiError.of(errors);
         if (this.errfn) {
           this.resolveTo(this.errfn(error));
         } else {
           this.rejectWith(error);
         }
+      } else if (this.dependsOn.length === 1) {
+        this.resolveTo(this.fn && this.fn(this.dependsOn[0].value));
       } else {
         const inputs = this.dependsOn.map(dep => dep.value);
         this.resolveTo(this.fn && this.fn(...inputs));
@@ -701,6 +712,18 @@ export class Computable<T> extends ComputableSource<T> {
     this.unbind();
     if (!(value instanceof ComputableSource)) {
       this.settle(ComputableState.Valid, value);
+      this.askClosers();
+      return;
+    }
+    if (value.isFinal()) {
+      /* A final inner delivers nothing again, so its outcome is this node's
+       * outright, with no binding to forward one. */
+      if (value.state === ComputableState.Error) {
+        ComputableSource.observeError(value);
+        this.settle(ComputableState.Error, value.value as Error);
+      } else {
+        this.settle(ComputableState.Valid, value.value as T);
+      }
       this.askClosers();
       return;
     }
@@ -958,9 +981,9 @@ export class Computable<T> extends ComputableSource<T> {
    * whenever it moves (see {@link recheckCycle}). */
   private holdOn(region: ReadonlyArray<ComputableSource<unknown>>): void {
     for (const node of region) {
-      if (node instanceof Computable && !this.holding.has(node)) {
+      if (node instanceof Computable && this.holding?.has(node) !== true) {
         (node.closedBy ??= new Set()).add(this);
-        this.holding.add(node);
+        (this.holding ??= new Set()).add(node);
       }
     }
   }
@@ -978,10 +1001,13 @@ export class Computable<T> extends ComputableSource<T> {
 
   /** Stop holding on every node this one holds on. */
   private releaseHolds(): void {
+    if (this.holding === undefined) {
+      return;
+    }
     for (const node of this.holding) {
       node.closedBy?.delete(this);
     }
-    this.holding.clear();
+    this.holding = undefined;
   }
 
   /** @return true if this node can move on its own — a derived node owed a
@@ -1147,6 +1173,9 @@ export class Computable<T> extends ComputableSource<T> {
 /** A binding is a pure identity over its inner — shared, since it captures
  * nothing (its forwarding rides the `outer` link, not the fn). */
 const IDENTITY = (value: unknown): unknown => value;
+
+/** The snapshot of a node with no dependants: shared, there being nothing in it. */
+const NO_DEPENDANTS: ReadonlyArray<ComputableSource<unknown>> = [];
 
 /**
  * Report an error that reached a {@link ComputableSource.once} tail with no `onError`:

@@ -259,8 +259,17 @@ function resolveBatch(
     /* One joint resolution of the batch, which runs only when a request
      * among it is answered. */
     const closures = isRepositoryReader(source) && joint.length > 0 ? assembleClosures(context, source, joint, resolution) : undefined;
+    /* The joint answers, made from the batch's closure once for every request
+     * among it, under `run` each the node of the program it is. */
+    const answered =
+      closures === undefined || !isRepositoryReader(source)
+        ? Computable.resolve<Array<FileSet | ResolvedNode>>([])
+        : closures().then(assembled =>
+            assembled.map((pkg): FileSet | ResolvedNode => (pkg === undefined ? EMPTY_FILESET : operation === "run" ? runnableNode(pkg, held => source.format.makeRunnable(held, context)) : pkg))
+          );
+    const apart = requests.filter(request => !position.has(request));
     return Computable.forAll(
-      requests.map((request): Computable<FileSet | ResolvedNode | PendingFiles> => {
+      [answered, ...apart.map((request): Computable<FileSet | ResolvedNode | PendingFiles> => {
         const { reference } = request;
         if (request.as === "instance") {
           return attributedTo(reference, () => resolveInstance(source, request));
@@ -275,10 +284,7 @@ function resolveBatch(
           if (isFilesOperation(operation)) {
             return Computable.resolve(new PendingFiles(() => attributedTo(reference, () => fetchFilesFor(source, reference, operation))));
           }
-          return closures!().then(assembled => {
-            const pkg = assembled[position.get(request)!];
-            return pkg === undefined ? EMPTY_FILESET : operation === "run" ? runnableNode(pkg, held => source.format.makeRunnable(held, context)) : pkg;
-          });
+          throw new FabrError(`internal: '${reference.toString()}' is among the batch's joint requests`);
         }
         if (request.as === "files") {
           return source.resolveFiles !== undefined
@@ -286,8 +292,11 @@ function resolveBatch(
             : resolveLookup(source, reference).then(answer => (answer instanceof ResolvedNode ? (answer.content.files() as Computable<FileSet>) : answer));
         }
         return resolveLookup(source, reference);
-      }),
-      (...resolved: Array<FileSet | ResolvedNode | PendingFiles>) => resolved
+      })] as const,
+      (joint, ...resolved) => {
+        const rest = resolved[Symbol.iterator]();
+        return requests.map(request => (position.has(request) ? joint[position.get(request)!] : rest.next().value!));
+      }
     );
   }
 }

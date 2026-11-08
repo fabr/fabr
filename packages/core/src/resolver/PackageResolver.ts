@@ -259,6 +259,8 @@ export function runnableFrom(context: ResolutionContext, source: RefSource, pkg:
 class DomainResolution<V, C> implements Resolution {
   private madeNodes: ResolutionGraph<V, C> | undefined;
   private madeBuildSelections: ReadonlyMap<string, Selected<V | string>> | undefined;
+  /** Each closure answered so far, by the requests it answered (see {@link packageClosure}). */
+  public readonly closures = new Map<string, Computable<(Package | undefined)[]>>();
 
   constructor(
     /** The registry resolved against; none for builds resolved alone. */
@@ -848,6 +850,16 @@ export function packageClosure<V, C>(
   } catch (err) {
     return Computable.reject(toError(err));
   }
+  /* The answer is a function of the resolution and the requirements asked, as
+   * asked, so one asked again — a built package's carried references, asked by
+   * each of its consumers — is answered from the first time. The failure's
+   * attribution to the written references is each asker's own. */
+  const key = requirements.map((req, index) => `${requests[index].as}\0${requirementKey(req)}`).join("\n");
+  const answered = resolved.closures.get(key) ?? closureOf();
+  resolved.closures.set(key, answered);
+  return answered.catch(err => attributeResolutionFailure(err, references, requirements));
+
+  function closureOf(): Computable<(Package | undefined)[]> {
   /* An alternate (`?`) reference demands nothing and delivers nothing of its
    * own — the sanctioned fork arrives nested inside the canonical closure. */
   const rooted = requirements.filter((req, index) => edgeOf(index) === undefined && req.override !== "alternate");
@@ -929,8 +941,8 @@ export function packageClosure<V, C>(
          * right, or the registry's. */
         return built.get(graph.id(bound))?.pkg ?? (req.variant === undefined ? resolved.nodes.node(bound) : resolved.nodes.variantNode(bound, req.variant));
       });
-    })
-    .catch(err => attributeResolutionFailure(err, references, requirements));
+    });
+  }
 }
 
 /** Make the renderer of the written form of a reference into this domain,

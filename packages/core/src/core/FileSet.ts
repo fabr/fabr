@@ -643,6 +643,8 @@ interface IMergeOrigin extends IProvenanceStep {
   readonly sources: ReadonlyArray<IMergeSource>;
   /** The sources by the prefix each is mounted under (see {@link holdersOf}). */
   readonly byPrefix: ReadonlyMap<string, ReadonlyArray<IMergeSource>>;
+  /** The number of distinct names the merge holds, counted once asked. */
+  readonly size: number;
 }
 
 /** Make a merge-provenance step over `sources`, or undefined when none carries an
@@ -660,7 +662,15 @@ function mergeOrigin(sources: IMergeSource[]): IMergeOrigin | undefined {
       mounted.push(source);
     }
   }
-  return { kind: FILESET_MERGE_PROVENANCE, sources, byPrefix };
+  let size: number | undefined;
+  return {
+    kind: FILESET_MERGE_PROVENANCE,
+    sources,
+    byPrefix,
+    get size(): number {
+      return (size ??= new Set(sources.flatMap(source => [...source.fileset].map(([name]) => source.prefix + name))).size);
+    },
+  };
 }
 
 /**
@@ -725,12 +735,17 @@ registerProvenanceNaming(FILESET_MERGE_PROVENANCE, {
    * them answers for a name depends on the names each holds, so those are
    * recorded too. */
   digest: (step, names) => {
-    /* Each contributor holding one of the names, with the names it holds. */
     const merge = step as IMergeOrigin;
-    const holding = new Map<IMergeSource, string[]>(
-      names === undefined ? merge.sources.map(source => [source, [...source.fileset].map(([name]) => name)]) : []
-    );
-    for (const name of names ?? []) {
+    if (names === undefined || names.length === merge.size) {
+      return wholeMergeDigest(merge);
+    }
+    /* Each contributor holding one of the names, with the names it holds. */
+    const holding = new Map<IMergeSource, string[]>();
+    /* A contributor's digest over the names it holds: where those are all of
+     * its names, its whole set's, which it memoizes — so a merge's digest is
+     * made from its contributors' once each, however many merges share them. */
+    const digestOf = (fileset: FileSet, rels: string[]): string => (rels.length === fileset.size ? fileset.sourcePathsDigest : fileset.sourcePathsDigestOf(rels));
+    for (const name of names) {
       for (let end = 0; end !== -1; end = name.indexOf("/", end) + 1 || -1) {
         const prefix = name.slice(0, end);
         for (const source of merge.byPrefix.get(prefix) ?? []) {
@@ -756,7 +771,7 @@ registerProvenanceNaming(FILESET_MERGE_PROVENANCE, {
     const overlaps = (prefix: string): boolean =>
       held.filter(other => other.prefix.startsWith(prefix) || prefix.startsWith(other.prefix)).length > 1;
     const sources = held
-      .map(({ prefix, fileset, names: holding }) => ({ prefix, holding, digest: fileset.sourcePathsDigestOf(holding) }))
+      .map(({ prefix, fileset, names: holding }) => ({ prefix, holding, digest: digestOf(fileset, holding) }))
       .filter(({ digest }) => digest !== "")
       .map(({ prefix, holding, digest }) => {
         const listed = overlaps(prefix) ? ` ${hashString([...holding].sort().join("\n"))}` : "";
@@ -766,6 +781,31 @@ registerProvenanceNaming(FILESET_MERGE_PROVENANCE, {
     return sources.length === 0 ? "" : namingDigest(FILESET_MERGE_PROVENANCE, sources.join(" "), "");
   },
 });
+
+/**
+ * Digest a merge over every name it holds: each contributor that holds any, by
+ * its mount and its own whole-set digest (memoized on it), the names it holds
+ * recorded where another contributor's mount overlaps its own. The same text
+ * the per-name walk gives for all of the merge's names.
+ */
+function wholeMergeDigest(merge: IMergeOrigin): string {
+  const held = merge.sources.filter(source => source.fileset.size > 0);
+  const namesOf = (fileset: FileSet): string[] => [...fileset].map(([name]) => name);
+  /* One contributor, at the root, names its files as it would alone. */
+  if (held.length === 1 && held[0].prefix === "") {
+    return sourcePathsDigestOf(held[0].fileset.origin, namesOf(held[0].fileset));
+  }
+  const overlaps = (prefix: string): boolean => held.filter(other => other.prefix.startsWith(prefix) || prefix.startsWith(other.prefix)).length > 1;
+  const sources = held
+    .map(({ prefix, fileset }) => ({ prefix, fileset, digest: fileset.sourcePathsDigest }))
+    .filter(({ digest }) => digest !== "")
+    .map(({ prefix, fileset, digest }) => {
+      const listed = overlaps(prefix) ? ` ${hashString(namesOf(fileset).sort().join("\n"))}` : "";
+      return `${JSON.stringify(prefix)}${listed} ${digest}`;
+    })
+    .sort();
+  return sources.length === 0 ? "" : namingDigest(FILESET_MERGE_PROVENANCE, sources.join(" "), "");
+}
 
 /** Get the origin of a set renamed from one with `origin`, each new name to its
  * old one in `from`: a rename step over it where any name changed. */
