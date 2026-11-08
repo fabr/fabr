@@ -68,13 +68,13 @@ export default defineRule({
     return {
       requirements: {
         pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE),
-        srcs: context.getFileProperty("srcs"),
-        tests: context.getFileProperty("tests"),
-        test_resources: context.getFileProperty("test_resources"),
-        provided: context.getPackageProperty("provided_deps"),
-        optional_provided: context.getPackageProperty("optional_provided_deps"),
-        compile_deps: context.getPackageProperty("compile_deps"),
-        test_deps: context.getPackageProperty("test_deps"),
+        srcs: context.getFileProperty("srcs", BUILD_OVERRIDE),
+        tests: context.getFileProperty("tests", BUILD_OVERRIDE),
+        test_resources: context.getFileProperty("test_resources", BUILD_OVERRIDE),
+        provided: context.getPackageProperty("provided_deps", BUILD_OVERRIDE),
+        optional_provided: context.getPackageProperty("optional_provided_deps", BUILD_OVERRIDE),
+        compile_deps: context.getPackageProperty("compile_deps", BUILD_OVERRIDE),
+        test_deps: context.getPackageProperty("test_deps", BUILD_OVERRIDE),
       },
     };
   },

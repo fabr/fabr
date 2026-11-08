@@ -56,6 +56,15 @@ describe("getTestReport", () => {
     expect(value?.results.summary.passed).to.equal(1);
   });
 
+  it("sums the reports of a name delivering several test targets", () => {
+    const out: { value?: ITestReport } = {};
+    getTestReport([reportSet(VALID), new FileSet(new Map()), reportSet(VALID)]).then(report => {
+      out.value = report;
+    });
+    expect(out.value?.results.summary.passed).to.equal(2);
+    expect(out.value?.results.tests).to.have.length(2);
+  });
+
   it("treats a genuinely absent report artifact as 'no tests' (undefined)", () => {
     const out: { value?: ITestReport; settled?: boolean } = {};
     /* A FileSet with no report file at all. */

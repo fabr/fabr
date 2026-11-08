@@ -18,10 +18,31 @@
  */
 
 import { expect } from "chai";
-import { FileSet, Flag, MemoryFile, PackageFileSet, packToZip, RefSource, RepositoryRef } from "@fabr-build/core";
+import { BUILD_OVERRIDE, FileSet, Flag, MemoryFile, PackageFileSet, packToZip, RefSource, RepositoryRef, TargetContext } from "@fabr-build/core";
+import TestJarPackage from "./rules/TestJarPackage";
 import { checkMainClass, classFileOf, classpathOf, installationOf, isModularJar, jarMainClass, javaRelease, MANIFEST_NAME, manifestAttributes, manifestFile, packageOf } from "./JarPackage";
 
 const files = (...names: string[]): FileSet => new FileSet(new Map(names.map(name => [name, MemoryFile.from(name)])));
+
+describe("jar_package[test]", () => {
+  it("reads every requirement under build, so a target among them is read as a package, not tested", () => {
+    /* Each read the rule makes, by the TargetContext member and the overrides it was given. */
+    const reads: Array<[string, unknown]> = [];
+    const context = new Proxy(
+      {},
+      {
+        get: (_target, member) =>
+          (...args: unknown[]) => {
+            reads.push(member === "resolveSelfWithOverrides" ? [String(member), args[0]] : [`${String(member)} ${String(args[0])}`, args[1]]);
+            return {};
+          },
+      }
+    ) as unknown as TargetContext;
+    TestJarPackage.requirements!(context);
+    expect(reads.length).to.be.greaterThan(1);
+    expect(reads.filter(([, overrides]) => overrides !== BUILD_OVERRIDE).map(([read]) => read)).to.deep.equal([]);
+  });
+});
 
 describe("javaRelease", () => {
   it("compiles for JVM_TARGET, or for the highest source flag at or below it", () => {

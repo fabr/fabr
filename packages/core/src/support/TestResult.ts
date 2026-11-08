@@ -18,7 +18,7 @@
  */
 
 import { Computable } from "../core/Computable";
-import { FileSet } from "../core/FileSet";
+import { FileSet, IFile } from "../core/FileSet";
 import type { SourceRef } from "../core/Repository";
 import { isJsonObject, readJsonFile } from "./Json";
 import { FabrError, TestsFailedError } from "../core/Errors";
@@ -237,20 +237,27 @@ export function checkTestReport(output: FileSet): Computable<FileSet> {
 }
 
 /**
- * @return the parsed test report a test target delivered, or `undefined` if the
- * target produced no report artifact at all (rendered as "no tests"). A report
- * that IS present but cannot be parsed — malformed JSON, or valid JSON that
- * isn't a recognizable CTRF report — is a genuine failure and rejects, rather
- * than being silently swallowed as "no tests": a corrupt report is a real
- * problem worth surfacing.
+ * @return the test report of what a name delivered: one source's report as it
+ * is, several sources' (a name listing several test targets) merged, or
+ * `undefined` if none produced a report artifact at all (rendered as "no
+ * tests"). A report that IS present but cannot be parsed — malformed JSON, or
+ * valid JSON that isn't a recognizable CTRF report — is a genuine failure and
+ * rejects, rather than being silently swallowed as "no tests": a corrupt report
+ * is a real problem worth surfacing.
  */
 export function getTestReport(sources: SourceRef[]): Computable<ITestReport | undefined> {
   const sets = sources.filter((source): source is FileSet => source instanceof FileSet);
   return Computable.forAll(
     sets.map(set => set.get(TEST_REPORT_FILENAME)),
     (...files): Computable<ITestReport | undefined> | undefined => {
-      const file = files.find(f => f !== undefined);
-      return file && readJsonFile(file, toTestReport);
+      const present = files.filter((file): file is IFile => file !== undefined);
+      if (present.length === 0) {
+        return undefined;
+      }
+      return Computable.forAll(
+        present.map(file => readJsonFile(file, toTestReport)),
+        (...reports: ITestReport[]) => (reports.length === 1 ? reports[0] : mergeTestReports(reports))
+      );
     }
   );
 }
