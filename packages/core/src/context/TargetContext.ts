@@ -358,8 +358,13 @@ export abstract class TargetContext {
    */
   /** @return true if the target declared as `name` has a rule for `operation`, otherwise false. */
   public hasTargetRule(name: string, operation: string): boolean {
-    const operations = this.context.getTargetOperations(name);
+    const operations = this.getTargetOperations(name);
     return operations.includes(operation) || operations.includes("*");
+  }
+
+  /** @return the operations the target declared as `name` has rules for, as their guards write them (`*` for any). */
+  public getTargetOperations(name: string): string[] {
+    return this.context.getTargetOperations(name);
   }
 
   public lookupPublishRef(name: Name): Computable<RepositoryPublishRef> {

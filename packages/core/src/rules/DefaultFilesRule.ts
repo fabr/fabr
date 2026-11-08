@@ -18,10 +18,11 @@
  */
 
 import { TargetContext } from "../context/index";
-import { BUILD_OVERRIDE } from "../model/Constraints";
+import { BUILD_OPERATION, BUILD_OVERRIDE, Constraints, FILES_OPERATION } from "../model/Constraints";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { PackageFileSet } from "../core/PackageFileSet";
+import { RunnableFileSet } from "../core/RunnableFileSet";
 import { isFileSource } from "../core/Repository";
 import { defineRule, RuleResult } from "./Types";
 import { FabrError } from "../core/Errors";
@@ -52,13 +53,27 @@ export default defineRule({
  * release namespace, packaging members on demand) passes through as itself
  * rather than being flattened. Only the deferred kinds drop out. A package is
  * delivered as its files: it has no identity here and requires nothing.
+ *
+ * A target whose type has no rule for `build` but one other operation is read
+ * under that one, as plain files: a `serve` or another program definer as its
+ * program's install (what it would run, not started), a test as its results
+ * (the report, coverage).
  */
 function deliverFiles(context: TargetContext): Computable<RuleResult> {
-  return context.buildSelfWithOverrides(BUILD_OVERRIDE).then(sources => {
+  return context.buildSelfWithOverrides(filesOperation(context)).then(sources => {
     const files = sources.filter(isFileSource);
     if (files.length === 0) {
       throw new FabrError(`internal: building '${context.name}' under files did not yield file content`);
     }
-    return files.map(source => (source instanceof PackageFileSet ? new FileSet(source, source.origin) : source));
+    return files.map(source => (source instanceof PackageFileSet || source instanceof RunnableFileSet ? new FileSet(source, source.origin) : source));
   });
+}
+
+/** @return the operation a target's files are read under: `build`, or the one other operation its type has a rule for. */
+function filesOperation(context: TargetContext): Constraints {
+  if (context.hasTargetRule(context.name, "build")) {
+    return BUILD_OVERRIDE;
+  }
+  const others = context.getTargetOperations(context.name).filter(operation => operation !== FILES_OPERATION);
+  return others.length === 1 ? Constraints.of({ [BUILD_OPERATION]: others[0] }) : BUILD_OVERRIDE;
 }

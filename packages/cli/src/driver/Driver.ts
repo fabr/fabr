@@ -337,8 +337,25 @@ function runBuild(
   operation = "build"
 ): Computable<void> {
   markForced(model, options, execution, names);
-  const refs = names.map(name => options.commandLine.refFor(name, site));
-  return buildOperation(configFor(model, options, execution, operation), refs).then(() => undefined);
+  /* `build` of a target whose type only runs builds its program, not starting it. */
+  const operationFor = (name: string): string => (operation === "build" && runsOnly(model, name) ? "run" : operation);
+  const operations = [...new Set(names.map(operationFor))];
+  return Computable.forAll(
+    operations.map(each =>
+      buildOperation(
+        configFor(model, options, execution, each),
+        names.filter(name => operationFor(name) === each).map(name => options.commandLine.refFor(name, site))
+      )
+    ),
+    () => undefined
+  );
+}
+
+/** @return true if `name` names a target whose type has a rule for `run` and none for `build`, otherwise false. */
+function runsOnly(model: BuildModel, name: string): boolean {
+  const target = model.getReferencedTarget(name);
+  const operations = target === undefined ? [] : model.getOperations(target.type);
+  return operations.includes("run") && !operations.some(operation => operation === "build" || operation === "*");
 }
 
 /** Run `fabr test <targets>`: the core operation, with the summaries and

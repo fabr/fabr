@@ -59,6 +59,10 @@ Each name must be one the project declares, such as a target, optionally with a
 error: to get at particular files, use `ls`, `cat` or `cp`. fabr checks every name before it starts,
 so if any of them is wrong, nothing is built.
 
+A target that can only be run, such as a `serve` target, builds everything its program needs
+without starting it, so a later `fabr run` starts at once. A target that can only be tested is an
+error that points at `fabr test`.
+
 When nothing has changed since the last build, fabr prints `Already up to date`.
 
 ### `test`
@@ -158,6 +162,11 @@ Builds what the references name and lists the files. `-l` adds each file's conte
 fabr ls mylib
 fabr ls -l 'mylib:*.js'
 ```
+
+A target's files are what it builds. A target that can only be run, such as a `serve` target, has
+its program's installation as its files, and a target that can only be tested has its results:
+`fabr cat my_test:ctrf-report.json` runs the tests and prints the report. The same goes for `cat`
+and `cp`.
 
 A reference to a package with no version, or to a repository, lists what it contains: an npm
 package's published versions, newest first; a catalog's members; or the packages installed in a

@@ -50,9 +50,15 @@ describe("e2e: the command inferred from what a target supports", () => {
   });
 
   it("suggests the command that would work when one is written explicitly", () => {
-    const result = runFabr(SCRIPT_PROJECT, ["build", "prog"]);
+    const result = runFabr(SCRIPT_PROJECT, ["test", "prog"]);
     expect(result.status).to.not.equal(0);
     expect(result.stderr).to.match(/no rule matches target type 'js_script'/);
     expect(result.stderr).to.match(/'js_script' targets support 'run' — try 'fabr run prog'/);
+  });
+
+  it("builds a run-only target's program under build, without running it", () => {
+    const result = runFabr(SCRIPT_PROJECT, ["build", "prog"]);
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stdout).to.equal("");
   });
 });

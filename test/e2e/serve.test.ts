@@ -15,7 +15,7 @@
  */
 
 import { expect } from "chai";
-import { startFabrWatch } from "./harness";
+import { runFabr, startFabrWatch } from "./harness";
 
 /* Watch mode over a `serve` target: the server (a shell script polling its
  * cwd-relative content file — which also proves the install-anchored launch
@@ -175,5 +175,28 @@ describe("e2e: serve target under fabr run -w", () => {
       const code = await session.stop();
       expect(code).to.equal(0);
     }
+  });
+});
+
+describe("e2e: a serve target without fabr run", () => {
+  const files = {
+    "PROJECT.fabr": PROJECT,
+    "src/server.sh": 'echo "SERVER STARTED" >&2\n',
+    "content/data.txt": "served\n",
+  };
+
+  it("builds the program it would run, without starting it", () => {
+    const result = runFabr(files, ["build", "site"]);
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stderr).not.to.contain("SERVER STARTED");
+  });
+
+  it("reads as its program's install under ls and cat", () => {
+    const listed = runFabr(files, ["ls", "site"]);
+    expect(listed.status, listed.stderr).to.equal(0);
+    expect(listed.stdout.split("\n")).to.include.members(["data.txt", "server.sh"]);
+    const read = runFabr(files, ["cat", "site:data.txt"]);
+    expect(read.stdout).to.equal("served\n");
+    expect(read.stderr).not.to.contain("SERVER STARTED");
   });
 });
