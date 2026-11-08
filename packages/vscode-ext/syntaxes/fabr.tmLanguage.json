@@ -199,6 +199,11 @@
     "value": {
       "patterns": [
         {
+          "name": "string.quoted.single.fabr",
+          "begin": "'",
+          "end": "'"
+        },
+        {
           "name": "string.quoted.double.fabr",
           "begin": "\"",
           "end": "\"",
@@ -234,7 +239,7 @@
         },
         {
           "name": "string.unquoted.reference.fabr",
-          "match": "(?:[^\\s;{}\"#`$<|>]|\\$(?!\\{))+"
+          "match": "(?:[^\\s;{}\"'#`$<|>]|\\$(?!\\{))+"
         }
       ]
     },

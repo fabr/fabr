@@ -431,6 +431,12 @@ describe("Parser Tests", () => {
     );
   });
 
+  it("keeps the line breaks and indentation of a quoted value that spans lines", () => {
+    expect(summarize(parseValid('A = "one &&\n    two";\nB = \'x\n  y\';\nC = "p${A}\n  q";'))).to.deep.equal(
+      summary({ properties: { A: ["one &&\n    two"], B: ["x\n  y"], C: ["p+var(A)+\n  q"] } })
+    );
+  });
+
   it("positions an unterminated-quote error at the opening quote", () => {
     expect(parseInvalid("A = 'oops;")).to.deep.equal([
       diagnosticBlock(1, 5, "Unexpected end of file, expected '", "A = 'oops;"),

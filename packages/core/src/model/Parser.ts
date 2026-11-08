@@ -652,7 +652,8 @@ export class BuildParser {
   }
 
   /* Single quotes consume everything until the next single quote (which is
-   * consumed too). Note: currently this will allow new-lines inside the quote.
+   * consumed too); a newline inside them is part of the text, as in double
+   * quotes.
    * @param builder NameBuilder to receive the quoted content
    */
   private readSingleQuotedString(builder?: NameBuilder): void {

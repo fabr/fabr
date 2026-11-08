@@ -172,6 +172,15 @@ Quote a value that contains spaces or any other character:
 - **Single quotes** `'…'` take the text as it is.
 - **Double quotes** `"…"` allow `${…}` substitution and backslash escapes.
 
+A quoted value may span lines. Each line break, and the indentation of the line after it, is
+part of the text, so a shell script written in one reads as the script would in a file:
+
+```
+build = "apk add --no-cache curl git &&
+         git clone --depth 1 https://example.com/tool.git /usr/src/tool &&
+         cd /usr/src/tool && make install";
+```
+
 ### Variable substitution
 
 `$NAME` or `${NAME}` is replaced by the value of a property, in unquoted and double-quoted values:
