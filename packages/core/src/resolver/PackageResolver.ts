@@ -68,6 +68,18 @@ import { IRequirementEdge, PackageIdentity, Requirement, RequirementSource, ROOT
 const RESOLUTION_FILE = "resolution.json";
 
 /**
+ * Make a content's `files` that fetches on first demand and holds the one set
+ * after it ({@link PackageContent.files}): the node is made once per
+ * resolution and asked by every collection that reaches it, so the fetch is
+ * made once and every asker holds the same files. A failed fetch is made
+ * again when next demanded, as a memo's node is.
+ */
+function fetchedOnce<T>(fetch: () => Computable<T>): () => Computable<T> {
+  const held = Computable.detached(fetch);
+  return () => held;
+}
+
+/**
  * Vend the read reference for a written package name: the format claims the
  * identity portion and anything left over rides the ref as a projection into
  * the resolved content — so the caller holds one deferred ref with nothing of
@@ -1064,7 +1076,7 @@ class ResolutionGraph<V, C> {
       node = builder.resolved(
         {
           key: `${registry.identity} ${id}`,
-          files: () => registry.fetch(published, version).then(pkg => (pkg.packageName === selected.name ? pkg : pkg.withPackageName(selected.name))),
+          files: fetchedOnce(() => registry.fetch(published, version).then(pkg => (pkg.packageName === selected.name ? pkg : pkg.withPackageName(selected.name)))),
           ...(registry.getVersionMetadata === undefined ? {} : { metadata: () => registry.getVersionMetadata!(published, version) }),
         },
         selected.name,
@@ -1109,7 +1121,7 @@ class ResolutionGraph<V, C> {
       node = builder.resolved(
         {
           key: `${registry.identity} ${key}`,
-          files: () => fetchVariantOf(registry, selected.publishedName ?? selected.name, version, variant).then(files => new PackageFileSet(files, name, versionText)),
+          files: fetchedOnce(() => fetchVariantOf(registry, selected.publishedName ?? selected.name, version, variant).then(files => new PackageFileSet(files, name, versionText))),
         },
         name,
         versionText,
@@ -1315,7 +1327,7 @@ export function instantiatePackage<V, C>(registry: RepositoryReader<V, C>, refer
       );
       const shown = format.versionToString(version);
       return new ResolvedNode(
-        { key: `${registry.identity} ${req.name}@${shown}`, files: () => registry.fetch(req.name, version).catch(unpublished) },
+        { key: `${registry.identity} ${req.name}@${shown}`, files: fetchedOnce(() => registry.fetch(req.name, version).catch(unpublished)) },
         req.name,
         shown,
         dependencies,

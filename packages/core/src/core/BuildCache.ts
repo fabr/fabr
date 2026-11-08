@@ -389,6 +389,10 @@ export class BuildCache {
    * first rather than starting its own build. This process only — two runs
    * sharing a cache duplicate the effort, each in its own work tree. */
   private readonly inflight = new Map<string, Computable<FileSet>>();
+  /** The entries read so far, by key: an entry is immutable once written, so one read
+   *  serves every demand of the run, and every demand holds the one FileSet. A
+   *  write under the key ({@link cachePut}) drops the held entry, so the next read is of it. */
+  private readonly held = new Map<string, ICacheEntry>();
 
   /** Trees currently being written, by name — the dedup {@link inflight}
    * gives entries. */
@@ -1684,7 +1688,16 @@ export class BuildCache {
    * read as an ENOENT rather than tested for first — this is the hottest lookup
    * in the cache. */
   private cacheGet(key: string): Computable<ICacheEntry | undefined> {
-    return this.readManifest(this.manifestPath(key));
+    const held = this.held.get(key);
+    if (held !== undefined) {
+      return Computable.resolve(held);
+    }
+    return this.readManifest(this.manifestPath(key)).then(entry => {
+      if (entry !== undefined) {
+        this.held.set(key, entry);
+      }
+      return entry;
+    });
   }
 
   /**
@@ -1730,8 +1743,9 @@ export class BuildCache {
    */
   private cachePut(key: string, files: FileSet, meta?: ICacheControl, cls?: string): Computable<FileSet> {
     /* A commit joins the session-served set; its manifest is freshly written,
-     * so no touch rides with it. */
+     * so no touch rides with it. The entry read next is the one written. */
     this.servedManifests.add(key);
+    this.held.delete(key);
     return this.storeContent(files).then(stored => this.storeManifest(this.manifestPath(key), stored, meta, cls));
   }
 
