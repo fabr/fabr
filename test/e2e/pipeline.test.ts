@@ -387,3 +387,31 @@ describe("e2e: a rule written in .fabr", () => {
     expect(runFabr(failing, ["build", "app"]).status).to.equal(0);
   });
 });
+
+/* `patched` with a command: a js_script tool changing the files in place, in a
+ * directory that holds only them. */
+describe("e2e: patched with a command", () => {
+  const FILES = {
+    "PROJECT.fabr":
+      "plugin @fabr-build/js;\n" +
+      "js_script edit { entry = src:edit.js; }\n" +
+      "patched changed { srcs = data:**; run = edit > seen.txt; }\n",
+    "src/edit.js":
+      "const fs = require('fs');\n" +
+      "fs.writeFileSync('a.txt', fs.readFileSync('a.txt', 'utf8').toUpperCase());\n" +
+      "fs.rmSync('b.txt');\n" +
+      "fs.writeFileSync('c.txt', 'made\\n');\n" +
+      "process.stdout.write(fs.readdirSync('.').sort().join(' '));\n",
+    "data/a.txt": "hello\n",
+    "data/b.txt": "gone\n",
+  };
+
+  it("collects the files as the command leaves them, and what it captured", () => {
+    const listed = runFabr(FILES, ["ls", "-q", "changed"]);
+    expect(listed.status, listed.stderr).to.equal(0);
+    expect(listed.stdout.split("\n").filter(line => line !== "")).to.deep.equal(["a.txt", "c.txt", "seen.txt"]);
+    expect(runFabr(FILES, ["cat", "changed:a.txt"]).stdout).to.equal("HELLO\n");
+    /* The directory it ran in held the files alone, not its own install. */
+    expect(runFabr(FILES, ["cat", "changed:seen.txt"]).stdout).to.equal("a.txt c.txt");
+  });
+});

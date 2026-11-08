@@ -18,12 +18,12 @@
  */
 
 /**
- * The generic `patched` target: `srcs` with `patches` applied. What it
- * yields has the shape of what it was given — one package in is a package
- * out, named as this target is, at the same version and with the same
- * requirements, its files patched; anything else is the patched union of the
- * files. Named after the package it patches, it is that package to everything
- * built with it.
+ * The generic `patched` target: `srcs` with `patches` applied, then the `run`
+ * command run over the files, which it changes in place. What it yields has
+ * the shape of what it was given — one package in is a package out, named as
+ * this target is, at the same version and with the same requirements, its
+ * files changed; anything else is the changed union of the files. Named after
+ * the package it patches, it is that package to everything built with it.
  *
  * `srcs` is the target's `extends` requirement: the package it is made from,
  * resolved on its own as material, so a package named in a repository carries
@@ -38,13 +38,14 @@ import { ActionContext } from "../core/BuildCache";
 import { BuildAction, BuildResult, fileSetInput, IBuildActionDefinition, stringConfig, stringListConfig } from "../core/BuildAction";
 import { Computable } from "../core/Computable";
 import { FabrError, MultiError, toError } from "../core/Errors";
-import { FileSet } from "../core/FileSet";
+import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { getResultFileSet, writeFileSet } from "../core/Staging";
 import { SymlinkFile } from "../core/SymlinkFile";
-import { TargetContext } from "../context/index";
-import { ITaskReport } from "../support/Execute";
+import { MaterializedCommandPipeline, TargetContext, toEnvironment } from "../context/index";
+import { executePipeline, ITaskReport, StageSpec } from "../support/Execute";
 import { FilePatch, parsePatchFile } from "../support/Patch";
+import { envConfig, envEntries, stagePipeline, stdinBytes } from "./PipelineAction";
 import { defineRule, RuleResult } from "./Types";
 
 /** The `patched` rule. */
@@ -62,21 +63,46 @@ export default defineRule({
 /** The path components a patch's names lose: the `a/`…`b/` git writes. */
 const STRIP = 1;
 
+/** The directory of the step's work directory the files are changed in. */
+const FILES_DIR = "files";
+
 function patched(context: TargetContext, { srcs, patches }: { srcs: FileSet[]; patches: FileSet[] }): Computable<RuleResult> {
-  if (patches.length === 0) {
-    throw new FabrError("a 'patched' target requires 'patches'");
-  }
-  /* Written order: each patch applies to what the ones before it left. */
-  const order = patches.flatMap(set => [...set].map(([name]) => name).sort());
-  const action = new BuildAction(PATCH_ACTION, { files: FileSet.unionAll(...srcs), patches: FileSet.unionAll(...patches) }, { order, strip: String(STRIP) });
-  /* One package in is a package out: named as this target is, at that
-   * package's version and with its requirements, which are not the patch's to
-   * change. The reference to the target that asks for it is given it there. */
-  const [only] = srcs;
-  return Computable.resolve(
-    srcs.length === 1 && only instanceof PackageFileSet
-      ? action.withReshape(files => new PackageFileSet(files, context.name, only.version, only.dependencies, only.origin, only.provided))
-      : action
+  const files = FileSet.unionAll(...srcs);
+  return Computable.forAll(
+    [context.getCommandProperty("run", files), context.getMap("env").then(toEnvironment)],
+    (stages: MaterializedCommandPipeline, env: ReadonlyMap<string, string>) => {
+      if (patches.length === 0 && stages.length === 0) {
+        throw new FabrError("a 'patched' target requires 'patches' or 'run'");
+      }
+      /* Written order: each patch applies to what the ones before it left. */
+      const order = patches.flatMap(set => [...set].map(([name]) => name).sort());
+      /* The command's tools are mounted beside the directory holding the files
+       * it changes, so it sees none of them there. */
+      const command = stages.length === 0 ? undefined : stagePipeline(stages, EMPTY_FILESET, { apart: true, cwd: FILES_DIR });
+      const stdin = stages[0]?.stdin;
+      const action = new BuildAction(
+        PATCH_ACTION,
+        {
+          files,
+          patches: FileSet.unionAll(...patches),
+          ...(command === undefined ? {} : { tools: command.files }),
+          ...(stdin === undefined ? {} : { stdin }),
+        },
+        {
+          order,
+          strip: String(STRIP),
+          ...(command === undefined ? {} : { spec: JSON.stringify(command.specs) }),
+          ...(env.size > 0 ? { env: envEntries(env) } : {}),
+        }
+      );
+      /* One package in is a package out: named as this target is, at that
+       * package's version and with its requirements, which are not the change's
+       * to make. The reference to the target that asks for it is given it there. */
+      const [only] = srcs;
+      return srcs.length === 1 && only instanceof PackageFileSet
+        ? action.withReshape(changed => new PackageFileSet(changed, context.name, only.version, only.dependencies, only.origin, only.provided))
+        : action;
+    }
   );
 }
 
@@ -87,8 +113,12 @@ function runPatch(action: BuildAction, ctx: ActionContext, report: ITaskReport):
   const links = new FileSet(new Map([...files].filter(([, file]) => file instanceof SymlinkFile)));
   const regular = new FileSet(new Map([...files].filter(([, file]) => !(file instanceof SymlinkFile))));
   const texts = stringListConfig(action, "order").map(name => patches.getFile(name)!.readString().then(text => ({ name, text })));
+  const dir = path.join(ctx.workDir, FILES_DIR);
   return ctx
-    .admit(report, () => writeFileSet(ctx.workDir, regular, { copy: true }))
+    .admit(report, () => {
+      fs.mkdirSync(dir, { recursive: true });
+      return writeFileSet(dir, regular, { copy: true });
+    })
     .then(() => Computable.forAll(texts, (...read) => read))
     .then(read => {
       const failures: Error[] = [];
@@ -96,7 +126,7 @@ function runPatch(action: BuildAction, ctx: ActionContext, report: ITaskReport):
         try {
           for (const change of parsePatchFile(text, `patch '${name}'`, strip)) {
             try {
-              applyChange(ctx.workDir, links, change, name);
+              applyChange(dir, links, change, name);
             } catch (err) {
               failures.push(toError(err));
             }
@@ -109,8 +139,25 @@ function runPatch(action: BuildAction, ctx: ActionContext, report: ITaskReport):
         throw MultiError.of(failures);
       }
     })
-    .then(() => ctx.admit(report, () => getResultFileSet(ctx.workDir, "**")))
-    .then(result => ({ result: FileSet.unionAll(result, links) }));
+    .then(() => runCommand(action, ctx, dir, report))
+    .then(captured => ctx.admit(report, () => getResultFileSet(dir, "**")).then(result => ({ result: FileSet.unionAll(result, links, captured) })));
+}
+
+/**
+ * Run the action's command, if it has one, in `dir`, which holds the files, its
+ * tools staged beside it under `.fabr-cmd-<n>/`.
+ * @return what its redirections captured.
+ */
+function runCommand(action: BuildAction, ctx: ActionContext, dir: string, report: ITaskReport): Computable<FileSet> {
+  if (typeof action.config.spec !== "string") {
+    return Computable.resolve(EMPTY_FILESET);
+  }
+  const specs: StageSpec[] = JSON.parse(action.config.spec);
+  const stdin = action.inputs.stdin instanceof FileSet ? action.inputs.stdin : undefined;
+  return ctx
+    .admit(report, () => writeFileSet(ctx.workDir, fileSetInput(action, "tools")))
+    .then(() => stdinBytes(stdin))
+    .then(bytes => executePipeline(ctx.processLimit, specs, dir, () => ctx.createOutput(), bytes, report, envConfig(action)));
 }
 
 /** Apply one file's change to the tree staged at `root`. */
@@ -155,4 +202,4 @@ function applyChange(root: string, links: FileSet, change: FilePatch, patch: str
   }
 }
 
-export const PATCH_ACTION: IBuildActionDefinition = { id: "core:patch", version: 1, run: runPatch };
+export const PATCH_ACTION: IBuildActionDefinition = { id: "core:patch", version: 2, run: runPatch };

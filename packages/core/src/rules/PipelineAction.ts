@@ -14,6 +14,7 @@
  * details.
  */
 
+import * as path from "path";
 import { getResultFileSets, writeFileSet } from "../core/Staging";
 import { Computable } from "../core/Computable";
 import { ConflictError, FabrError } from "../core/Errors";
@@ -23,7 +24,7 @@ import { Name } from "../core/Name";
 import { executePipeline, findExecutable, ITaskReport, StageSpec, StageStreams } from "../support/Execute";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { BuildAction, BuildResult, configFiles, fileSetInput, IBuildActionDefinition, IStagedStep, stringConfig } from "../core/BuildAction";
-import { ActionContext, IChangedFiles, toChangesDocument } from "../core/BuildCache";
+import { ActionContext, IChangedFiles, toChangesDocument, TREE_MOUNT } from "../core/BuildCache";
 
 /**
  * Run the `command-pipeline` build action: stage the combined install (see
@@ -135,7 +136,7 @@ function selectedCaptures(captured: FileSet, written: FileSet, output: Name): Fi
 
 /** @return the first (only) file's bytes of a single-file stdin fileset, or
  * undefined if no stdin was supplied. */
-function stdinBytes(stdin: FileSet | undefined): Computable<Buffer | undefined> {
+export function stdinBytes(stdin: FileSet | undefined): Computable<Buffer | undefined> {
   if (!stdin) {
     return Computable.resolve(undefined);
   }
@@ -147,8 +148,13 @@ function stdinBytes(stdin: FileSet | undefined): Computable<Buffer | undefined> 
  * means; either changing is a bump. */
 export const PIPELINE_ACTION: IBuildActionDefinition = { id: "core:command-pipeline", version: 4, run: runPipeline, stage: stagePipelineStep };
 
+/** @return the variables a command runs with, as the `env` config member holds them. */
+export function envEntries(env: ReadonlyMap<string, string>): string[] {
+  return [...env].map(([name, value]) => `${name}=${value}`);
+}
+
 /** Read the `env` config member: each variable written `NAME=value`, a name holding no `=`. */
-function envConfig(action: BuildAction): Map<string, string> {
+export function envConfig(action: BuildAction): Map<string, string> {
   return new Map(
     (Array.isArray(action.config.env) ? action.config.env : []).map((entry): [string, string] => {
       const at = entry.indexOf("=");
@@ -185,16 +191,26 @@ export interface RunnableStage extends StageStreams {
  * modules.
  *
  * Shared by `generate` and by command substitution, which differ only in what
- * they collect afterwards — the mounting rule is the same either way.
+ * they collect afterwards — the mounting rule is the same either way. `apart`
+ * mounts a single stage under `.fabr-cmd-0/` too, for a command over files that
+ * import nothing of its tools (`patched`'s); `cwd` is where the commands run,
+ * relative to where the stages are mounted.
  */
-export function stagePipeline(stages: ReadonlyArray<RunnableStage>, srcs: FileSet): { files: FileSet; specs: StageSpec[] } {
-  const single = stages.length === 1;
+export function stagePipeline(
+  stages: ReadonlyArray<RunnableStage>,
+  srcs: FileSet,
+  options: { apart?: boolean; cwd?: string } = {}
+): { files: FileSet; specs: StageSpec[] } {
+  const single = stages.length === 1 && options.apart !== true;
+  const cwd = options.cwd ?? ".";
+  /* The tree pool, which a runnable interpreter is launched from, as a path from where the commands run. */
+  const pool = path.posix.join(path.posix.relative(cwd, "."), TREE_MOUNT);
   const mounts: FileSet[] = [];
   const specs: StageSpec[] = stages.map((stage, i) => {
     const dir = single ? undefined : `.fabr-cmd-${i}`;
     mounts.push(dir === undefined ? stage.runnable : FileSet.layout({ [dir]: stage.runnable }));
     return {
-      argv: stage.runnable.toCommandLine(stage.args, dir === undefined ? undefined : { base: dir }),
+      argv: stage.runnable.toCommandLine(stage.args, dir === undefined ? { pool } : { base: path.posix.relative(cwd, dir), pool }),
       stdout: stage.stdout,
       stderr: stage.stderr,
       mergedTo: stage.mergedTo,
@@ -231,7 +247,7 @@ export function createPipelineAction(
     {
       spec: JSON.stringify(specs),
       ...(output ? { output } : {}),
-      ...(env.size > 0 ? { env: [...env].map(([name, value]) => `${name}=${value}`) } : {}),
+      ...(env.size > 0 ? { env: envEntries(env) } : {}),
       ...(kept.incremental ? { incremental: kept.incremental } : {}),
       ...(kept.changes !== undefined ? { changes: kept.changes } : {}),
     },

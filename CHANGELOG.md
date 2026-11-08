@@ -20,6 +20,8 @@ number.
 - Allow 'fabr build' of run-only targets, and cat/ls of run and test only targets.
 - list-targets shows each target's operations, takes globs over target names, and lists only one operation's targets with --operation.
 - Add `private` declarations: a target or global property only its own build file sees.
+- `patched` now takes an optional `run` command to modify files in place (after any `patches`).
+- Negative extglobs can now match multiple paths eg !(foo/bar)/**
 
 @fabr-build/aws:
 - Add s3 download support.

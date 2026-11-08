@@ -121,21 +121,26 @@ targetdef generate {
 }
 
 #
-# Apply patches to a package, or to plain files:
+# Change a package, or plain files, with patches or a command:
 #
 #     patched glob-promise { srcs = @npm:glob-promise:1.33.0; patches = patches/glob.patch; }
 #
 # When `srcs` is one package, the result is a package with this target's name
 # and the original's version and dependencies. Naming the target after the
 # package therefore replaces that package wherever it is used. For anything
-# else, the result is the patched files.
+# else, the result is the changed files.
 #
 targetdef patched {
-    # What to patch.
+    # What to change.
     srcs = REQUIRED PACKAGES;
     # Unified diffs, applied in the order written, with paths as git writes
     # them (`a/lib/x.js`).
-    patches = REQUIRED FILES;
+    patches = FILES;
+    # A command run after the patches, in the directory holding the files, which
+    # it changes in place: a pipeline of runnables as `generate`'s `run` is.
+    run = COMMAND;
+    # Environment variables for the command, which runs with no others.
+    env = MAP;
 }
 
 #

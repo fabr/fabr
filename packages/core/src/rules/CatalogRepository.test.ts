@@ -377,6 +377,21 @@ describe("CatalogRepository (through the model)", () => {
     evaluate: (context: TargetContext) =>
       Computable.resolve(new FileSet(new Map([[`${context.name}.patch`, MemoryFile.from(patchTexts.get(context.name) ?? "")]]))),
   };
+  /* A shell script, as a runnable: its text is what the test set for its name. */
+  const scriptTexts = new Map<string, string>();
+  const shRule: RuleDefinition = {
+    type: "test_sh",
+    properties: {},
+    evaluate: (context: TargetContext) =>
+      Computable.resolve(
+        RunnableFileSet.forEntry(
+          new FileSet(new Map([[`${context.name}.sh`, MemoryFile.from(scriptTexts.get(context.name) ?? "")]])),
+          `${context.name}.sh`,
+          [],
+          "/bin/sh"
+        )
+      ),
+  };
   /* Files that differ by configuration: one named for the `MODE` it is built in. */
   const modeRule: RuleDefinition = {
     type: "test_mode",
@@ -500,7 +515,7 @@ describe("CatalogRepository (through the model)", () => {
   });
   const contributions: PluginContribution[] = [
     {
-      rules: [depsRule, runRule, toolRule, globalToolRule, sealedRule, packageRule, patchRule, modeRule, mixedRule, misreadRule, wrongTypeRule, filesOfRule, bothRule, { type: "patched", properties: { [BUILD_OPERATION]: "build" }, ...patched }, passRule, subRule, builtRule, statedRule, driftRule],
+      rules: [depsRule, runRule, toolRule, globalToolRule, sealedRule, packageRule, patchRule, shRule, modeRule, mixedRule, misreadRule, wrongTypeRule, filesOfRule, bothRule, { type: "patched", properties: { [BUILD_OPERATION]: "build" }, ...patched }, passRule, subRule, builtRule, statedRule, driftRule],
       repositories: [
         { type: "package_repo", provider: (context: TargetContext) => Computable.resolve(backing(context.name)) },
         catalogRepositoryRegistration,
@@ -528,6 +543,7 @@ describe("CatalogRepository (through the model)", () => {
     "targetdef test_sealed { deps = PACKAGES; }\n" +
     "targetdef test_pkg { deps = PACKAGES; provided = PACKAGES; optional = PACKAGES; }\n" +
     "targetdef test_patch { }\n" +
+    "targetdef test_sh { }\n" +
     "targetdef test_mode { }\n" +
     "targetdef test_mixed { srcs = FILES; deps = PACKAGES; }\n" +
     "targetdef test_misread { deps = PACKAGES; }\n" +
@@ -539,12 +555,13 @@ describe("CatalogRepository (through the model)", () => {
     "targetdef test_built { deps = PACKAGES; version = STRING; }\n" +
     "targetdef test_stated { deps = PACKAGES; }\n" +
     "targetdef test_drift { deps = PACKAGES; }\n" +
-    "targetdef patched { srcs = REQUIRED PACKAGES; patches = REQUIRED FILES; }\n";
+    "targetdef patched { srcs = REQUIRED PACKAGES; patches = FILES; run = COMMAND; env = MAP; }\n";
 
   function build(source: string): BuildModel {
     backings.clear();
     requirementTable.clear();
     patchTexts.clear();
+    scriptTexts.clear();
     ran.length = 0;
     statedBuilt.length = 0;
     statedFailing.clear();
@@ -2226,6 +2243,52 @@ describe("CatalogRepository (through the model)", () => {
       expect([...foo.provided.keys()].map(name => foo.getDependency(name)).map(dep => dep?.package?.packageId ?? "unbound")).to.deep.equal([
         "host@1.3.0",
       ]);
+    });
+
+    it("is the package it patches, with its files as a command leaves them", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_sh edit { }\n" +
+          "patched foo { srcs = @backing:foo; run = edit > log.txt; }\n" +
+          "test_deps a { deps = foo @backing:bar:1.2.0; }\n"
+      );
+      scriptTexts.set("edit", "read line < foo/data.txt\nprintf '%s, edited' \"$line\" > foo/new.txt\n/bin/rm foo/data.txt\n/bin/ls -A\n");
+      requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "^1.0.0" }]);
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
+      const foo = lastDepSets[0] as PackageFileSet;
+      expect(foo.packageId).to.equal("foo@1.0.0");
+      expect(edges(foo)).to.deep.equal(["bar@1.2.0"]);
+      /* What it created and captured, without what it deleted or its own tools,
+       * which it does not see among the files. */
+      expect([...foo].map(([name]) => name).sort()).to.deep.equal(["foo/new.txt", "log.txt"]);
+      expect(await text(foo, "foo/new.txt")).to.equal("foo, edited");
+      expect(await text(foo, "log.txt")).to.equal("foo\n");
+    });
+
+    it("runs its command over the files its patches leave", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_patch fix { }\n" +
+          "test_sh edit { }\n" +
+          "patched foo { srcs = @backing:foo; patches = fix; run = edit; }\n" +
+          "test_deps a { deps = foo; }\n"
+      );
+      patchTexts.set("fix", rewrite("foo", "foo, patched"));
+      scriptTexts.set("edit", "read line < foo/data.txt\nprintf '%s, then edited' \"$line\" > foo/data.txt\n");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
+      expect(await text(lastDepSets[0], "foo/data.txt")).to.equal("foo, patched, then edited");
+    });
+
+    it("is refused with neither patches nor a command", async () => {
+      const model = build("package_repo @backing { }\npatched foo { srcs = @backing:foo; }\ntest_deps a { deps = foo; }\n");
+      const err = await model
+        .getConfig(Constraints.of({}), execution)
+        .materialize(writtenOnCommandLine("a"))
+        .then(
+          () => undefined,
+          (error: unknown) => error
+        );
+      expect(messagesOf(err).join("\n")).to.contain("a 'patched' target requires 'patches' or 'run'");
     });
 
     it("patches a package built in the project, leaving its requirements for the consumer to resolve", async () => {

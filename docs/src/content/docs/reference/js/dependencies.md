@@ -330,6 +330,36 @@ A patch is a unified diff with paths relative to the package root, as `git diff`
   dependencies fabr resolves for it.
 - `srcs` must name the package in its registry (`@npm:…`), not through a catalog.
 
+### Changing a package with a command
+
+A `patched` target can also run a command over the package's files, which it changes in place.
+This suits a change a tool makes rather than one you write as a diff, such as injecting Sentry's
+debug IDs into compiled code:
+
+```
+js_script sentry_cli { entry = @npm:@sentry/cli:3.8.2; }
+
+patched api_injected {
+  srcs = api;
+  run = sentry_cli sourcemaps inject .;
+}
+
+js_installation server {
+  deps = site api_injected -> api;
+}
+```
+
+`run` is a command written as for [`generate`](/reference/syntax/#command-property): a pipeline of
+runnables with their arguments, with `|`, `<` and `>` as in a shell. It runs in the directory that
+holds the package's files, as writable copies, after any `patches` are applied. The result is that
+directory as the command leaves it: the files it changed, created or deleted, and any output a
+`>` captures. The command's own tools are installed apart from the files and are not part of the
+result. `env` sets the command's environment variables; it runs with no others.
+
+As with a patch, the result keeps the original's version and dependencies. Here it is named
+`api_injected`, so `-> api` gives it the original's name where it is installed: `server` requires
+it directly, so it takes the place of `api` for `site` too.
+
 ## Platform-specific and optional dependencies
 
 Packages that ship native code usually publish one package per platform and list them all as
