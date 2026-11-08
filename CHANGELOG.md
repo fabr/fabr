@@ -18,6 +18,7 @@ number.
 - Add vulnerability audit via osv.
 - Add --trace[=FILE] to build, test and run: a trace of the run's work for Perfetto or chrome://tracing.
 - Allow 'fabr build' of run-only targets, and cat/ls of run and test only targets.
+- list-targets shows each target's operations, takes globs over target names, and lists only one operation's targets with --operation.
 
 @fabr-build/aws:
 - Add s3 download support.

@@ -18,7 +18,7 @@
  */
 
 import * as path from "path";
-import { globCaptureRegex, globMatcher, globPrefixRegex } from "../support/Glob";
+import { GLOB_METACHAR, globCaptureRegex, globMatcher, globPrefixRegex, isGlob } from "../support/Glob";
 import { PatternEdit, renderPatternEdit } from "../support/PatternEdit";
 import type { CommandPipeline } from "../model/AST";
 import { FabrError } from "./Errors";
@@ -75,11 +75,6 @@ export interface NamePart {
 export const NAME_COMPONENT_SEPARATOR = "/";
 export const NAME_LEVEL_SEPARATOR = ":";
 
-/** The glob metacharacters — the boundary past which lexical path
- * normalization must not reach (`normalize` would fold a `..` *through* a `*`
- * segment, silently changing what it names). */
-const GLOB_METACHAR = /[*?[]/;
-
 /** Either separator, for splitting into path components: `/` and the `:` alias
  * boundary are both path separators on disk (see makeProjector). */
 const SEPARATOR = /[/:]/;
@@ -95,6 +90,8 @@ const SEPARATOR = /[/:]/;
  * which is the honest outcome for a query naming outside its namespace.
  */
 function normalizeHead(pathForm: string): string {
+  /* Lexical normalization stops at the first glob metacharacter: `normalize`
+   * would fold a `..` through a `*` segment, changing what it names. */
   const meta = pathForm.search(GLOB_METACHAR);
   const cut = meta === -1 ? pathForm.length : pathForm.lastIndexOf(NAME_COMPONENT_SEPARATOR, meta) + 1;
   if (cut === 0) {
@@ -311,7 +308,7 @@ export class Name {
     return {
       pattern: globCaptureRegex(normalizeHead(selector.replaceAll(NAME_LEVEL_SEPARATOR, NAME_COMPONENT_SEPARATOR))).source,
       replacement: renameTo.toReplacement(),
-      ...(aliasPath !== undefined && !GLOB_METACHAR.test(aliasPath) ? { excludes: aliasPath } : {}),
+      ...(aliasPath !== undefined && !isGlob(aliasPath) ? { excludes: aliasPath } : {}),
     };
   }
 
@@ -384,7 +381,7 @@ export class Name {
     if (aliasPath === undefined) {
       return input => (matcher(input) ? prefix + input : undefined);
     }
-    if (!GLOB_METACHAR.test(aliasPath)) {
+    if (!isGlob(aliasPath)) {
       /* Literal alias: name each result relative to the alias dir (relative()
        * normalizes its operands itself). A remainder that climbs out of the
        * alias (`lib:../tools/*.js`) names as its climbed path (`../tools/y.js`),

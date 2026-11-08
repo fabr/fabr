@@ -21,7 +21,8 @@ import { expect } from "chai";
 import { runFabr } from "./harness";
 
 /* `fabr list-targets`: the model-query verb that prints the targets declared in
- * the project (name + type), recursively across namespaces, without building. */
+ * the project (name, type and the operations its type has rules for),
+ * recursively across namespaces, without building. */
 describe("e2e: list-targets", () => {
   /* A `/`-qualified name (`tools/inner`) puts a target in a sub-namespace —
    * there is no `namespace` keyword; the namespace tree is formed from names. */
@@ -30,17 +31,19 @@ describe("e2e: list-targets", () => {
       "flag hello { provides = wibble; }",
       "flag world { provides = wobble; }",
       "flag tools/inner { provides = deep; }",
+      "script tools/run { entry = ./run.sh; }",
       "",
     ].join("\n"),
   };
 
-  it("lists declared targets with their types, sub-namespaces qualified", () => {
+  it("lists declared targets with their types and operations, sub-namespaces qualified", () => {
     const result = runFabr(project, ["list-targets"]);
     expect(result.status).to.equal(0);
-    expect(result.stdout).to.match(/^hello\s+flag$/m);
-    expect(result.stdout).to.match(/^world\s+flag$/m);
+    expect(result.stdout).to.match(/^hello\s+flag\s+\[\*\]$/m);
+    expect(result.stdout).to.match(/^world\s+flag\s+\[\*\]$/m);
     /* A target in a sub-namespace carries its namespace path. */
-    expect(result.stdout).to.match(/^tools\/inner\s+flag$/m);
+    expect(result.stdout).to.match(/^tools\/inner\s+flag\s+\[\*\]$/m);
+    expect(result.stdout).to.match(/^tools\/run\s+script\s+\[run\]$/m);
     /* Nothing was built. */
     expect(result.stderr).not.to.match(/Building/);
   });
@@ -54,7 +57,7 @@ describe("e2e: list-targets", () => {
     };
     const result = runFabr(withPlugin, ["list-targets"]);
     expect(result.status).to.equal(0);
-    expect(result.stdout).to.match(/^only\s+flag$/m);
+    expect(result.stdout).to.match(/^only\s+flag\s+\[\*\]$/m);
     expect(result.stdout).not.to.match(/@npm/);
   });
 
@@ -63,11 +66,11 @@ describe("e2e: list-targets", () => {
     expect(result.status).to.equal(0);
     /* The filter narrows to the one named target, with its file:line:column
      * (the name `tools/inner` begins at column 6, after `flag `). */
-    expect(result.stdout).to.match(/^tools\/inner\s+flag\s+PROJECT\.fabr:3:6$/m);
+    expect(result.stdout).to.match(/^tools\/inner\s+flag\s+\[\*\]\s+PROJECT\.fabr:3:6$/m);
     expect(result.stdout).not.to.match(/^hello/m);
   });
 
-  it("--json emits structured data (name, type, location)", () => {
+  it("--json emits structured data (name, type, operations, location)", () => {
     const result = runFabr(project, ["list-targets", "--json"]);
     expect(result.status).to.equal(0);
     const parsed = JSON.parse(result.stdout);
@@ -76,6 +79,34 @@ describe("e2e: list-targets", () => {
     const hello = parsed.targets.find((t: { name: string }) => t.name === "hello");
     expect(hello.type).to.equal("flag");
     expect(hello.location).to.match(/PROJECT\.fabr:\d+:\d+/);
+    const run = parsed.targets.find((t: { name: string }) => t.name === "tools/run");
+    expect(run.operations).to.deep.equal(["run"]);
+  });
+
+  it("filters by a glob over target names, '*' within one namespace level", () => {
+    const result = runFabr(project, ["list-targets", "tools/*"]);
+    expect(result.status).to.equal(0);
+    expect(result.stdout.trim().split("\n").map(line => line.split(/\s+/)[0])).to.deep.equal(["tools/inner", "tools/run"]);
+    const top = runFabr(project, ["list-targets", "*"]);
+    expect(top.stdout).to.match(/^hello\s/m);
+    expect(top.stdout).not.to.match(/^tools\//m);
+  });
+
+  it("lists nothing, without error, for a pattern matching no target", () => {
+    const result = runFabr(project, ["list-targets", "nonesuch*"]);
+    expect(result.status).to.equal(0);
+    expect(result.stdout).to.equal("");
+  });
+
+  it("--operation keeps the targets whose type has a rule for the operation", () => {
+    const result = runFabr(project, ["list-targets", "--operation", "run"]);
+    expect(result.status).to.equal(0);
+    expect(result.stdout).to.match(/^tools\/run\s+script\s+\[run\]$/m);
+    /* A flag's rule names no operation: it is no target of any one. */
+    expect(result.stdout).not.to.match(/flag/);
+    const none = runFabr(project, ["list-targets", "--operation=test"]);
+    expect(none.status).to.equal(0);
+    expect(none.stdout).to.equal("");
   });
 
   /* System-contributed targets (declared in core's / a plugin's lib files —
@@ -90,19 +121,27 @@ describe("e2e: list-targets", () => {
   it("hides system-contributed targets by default and shows them under --all", () => {
     const hidden = runFabr(withPlugin, ["list-targets"]);
     expect(hidden.status).to.equal(0);
-    expect(hidden.stdout).to.match(/^only\s+flag$/m);
+    expect(hidden.stdout).to.match(/^only\s+flag\s+\[\*\]$/m);
     expect(hidden.stdout).not.to.match(/POSTCSS_DRIVER|ts\/nostrict/);
     const all = runFabr(withPlugin, ["list-targets", "--all"]);
     expect(all.status).to.equal(0);
-    expect(all.stdout).to.match(/^only\s+flag$/m);
-    expect(all.stdout).to.match(/^JS_BUNDLER\s+js_script$/m);
-    expect(all.stdout).to.match(/^POSTCSS_DRIVER\s+js_script$/m);
+    expect(all.stdout).to.match(/^only\s+flag\s+\[\*\]$/m);
+    expect(all.stdout).to.match(/^JS_BUNDLER\s+js_script\s+\[run\]$/m);
+    expect(all.stdout).to.match(/^POSTCSS_DRIVER\s+js_script\s+\[run\]$/m);
+  });
+
+  it("matches system targets by a pattern only under --all", () => {
+    const hidden = runFabr(withPlugin, ["list-targets", "POSTCSS_*"]);
+    expect(hidden.status).to.equal(0);
+    expect(hidden.stdout).to.equal("");
+    const all = runFabr(withPlugin, ["list-targets", "--all", "POSTCSS_*"]);
+    expect(all.stdout).to.match(/^POSTCSS_DRIVER\s+js_script\s+\[run\]$/m);
   });
 
   it("shows an explicitly-named system target without --all", () => {
     const result = runFabr(withPlugin, ["list-targets", "POSTCSS_DRIVER"]);
     expect(result.status).to.equal(0);
-    expect(result.stdout).to.match(/^POSTCSS_DRIVER\s+js_script$/m);
+    expect(result.stdout).to.match(/^POSTCSS_DRIVER\s+js_script\s+\[run\]$/m);
     expect(result.stdout).not.to.match(/^only/m);
   });
 

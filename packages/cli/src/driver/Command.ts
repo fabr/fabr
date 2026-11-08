@@ -97,9 +97,9 @@ const COMMAND_SPECS: CommandSpec[] = [
   { name: "build-server", synopsis: "", summary: "Serve the project's described targets to an editor over the Build Server Protocol (stdio)", accepts: ["-q"] },
   {
     name: "list-targets",
-    synopsis: "[-l] [--all] [--json] [names]",
-    summary: "List the targets declared in the project",
-    accepts: ["-l", "--all", "--json"],
+    synopsis: "[-l] [--all] [--operation <op>] [--json] [names or patterns]",
+    summary: "List the targets declared in the project, with the operations each supports",
+    accepts: ["-l", "--all", "--operation", "--json"],
   },
   {
     name: "list-targetdefs",
@@ -178,6 +178,9 @@ export interface Options {
   dest?: string;
   /** For `audit --format`: the form the report takes instead of text. */
   format?: AuditFormat;
+  /** For `list-targets --operation`: the operations a listed target's type must
+   *  have a rule for, any one of them. */
+  operations?: string[];
   /** For `test --coverage[=<dir>]`: the directory the coverage report is written
    * to, a plain filesystem path resolved against the invocation cwd. */
   coverageDir?: string;
@@ -246,6 +249,7 @@ function printUsage(write: (message: string) => void = console.log): void {
       "  --json            Emit JSON (the list-* verbs)\n" +
       "  --format sarif    Write the report as SARIF instead of text (audit)\n" +
       "  --all             Include system-contributed targets (list-targets)\n" +
+      "  --operation OP    List only targets whose type has a rule for OP; repeatable (list-targets)\n" +
       "  --include-optional\n" +
       "                    Read every optional lib of the plugins in use (list-all)\n" +
       "  -q, --quiet       Suppress live output: subcommand output and the progress display\n" +
@@ -333,6 +337,14 @@ function applyOption(arg: string, next: string | undefined, options: Options, se
     options.format = format;
     seenFlags.push({ raw: arg, flag: "--format" });
     return arg === "--format" ? 1 : 0;
+  } else if (arg === "--operation" || arg.startsWith("--operation=")) {
+    const operation = arg === "--operation" ? next : arg.slice("--operation=".length);
+    if (!operation) {
+      usageError("Option '--operation' requires an operation");
+    }
+    options.operations = [...(options.operations ?? []), operation];
+    seenFlags.push({ raw: arg, flag: "--operation" });
+    return arg === "--operation" ? 1 : 0;
   } else if (arg === "--coverage" || arg.startsWith("--coverage=")) {
     /* Sugar for the -D pathway, as -u is: a measured build is a build input. */
     options.properties.set(COVERAGE, COVERAGE_ON);

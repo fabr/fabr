@@ -85,6 +85,7 @@ export * from "./support/Execute";
 export * from "./support/Semaphore";
 export * from "./support/Expand";
 export * from "./support/Functional";
+export { globMatcher, isGlob } from "./support/Glob";
 export * from "./support/FetchDocument";
 export * from "./support/Integrity";
 export * from "./support/MemoryCache";

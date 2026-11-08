@@ -315,6 +315,15 @@ describe("Command", () => {
     expect(capture(["audit"]).err.join("\n")).to.match(/requires/);
   });
 
+  it("parses list-targets --operation, repeatable, with names and patterns after it", () => {
+    const options = parseCommandLine(["node", "fabr", "list-targets", "--operation", "run", "--operation=test", "tools/*"]);
+    expect(options.operations).to.deep.equal(["run", "test"]);
+    expect(options.targets).to.deep.equal(["tools/*"]);
+    expect(parseCommandLine(["node", "fabr", "list-targets"]).operations).to.equal(undefined);
+    expect(capture(["list-targets", "--operation"]).err.join("\n")).to.match(/requires an operation/);
+    expect(capture(["list-targetdefs", "--operation", "run"]).err.join("\n")).to.match(/not valid/);
+  });
+
   it("asks for every mutable document to be re-checked with --refresh, for any command that fetches", () => {
     expect(parseCommandLine(["node", "fabr", "build", "foo"]).refresh).to.equal(false);
     expect(parseCommandLine(["node", "fabr", "deps", "--refresh", "foo"]).refresh).to.equal(true);

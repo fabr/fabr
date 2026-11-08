@@ -394,13 +394,34 @@ Diagnostics go to standard error.
 
 ### `list-targets`
 
-Lists the targets the project declares. Names given as arguments limit the listing to those
-targets.
+Lists the targets the project declares, with each one's type and the operations its type has
+rules for.
 
-| Option | Adds |
+```
+$ fabr list-targets
+app        js_package  [build, run, sources, test]
+docs       serve       [run]
+e2e_tests  js_test     [test]
+```
+
+The operations are those of the target's type. A rule that applies only to some targets of a type,
+such as one for a particular `test_framework`, counts for all of them.
+
+Arguments limit the listing. Each is a target's name, or a glob over target names, in which `*`
+matches within one level of a `/`-separated name and `**` across levels. Quote a glob so the shell
+doesn't expand it.
+
+```sh
+fabr list-targets 'packages/**'
+```
+
+A name that no target has is an error, but a glob that matches none lists nothing.
+
+| Option | Effect |
 |---|---|
-| `-l` | Where each target is declared. |
-| `--all` | The targets fabr and its plugins declare themselves, which are normally hidden. |
+| `-l` | Adds where each target is declared. |
+| `--all` | Adds the targets fabr and its plugins declare themselves, which are normally hidden. A target you name is listed without it, but a glob matches these targets only with `--all`. |
+| `--operation OP` | Lists only the targets whose type has a rule for `OP`. Give it more than once to list the targets of any of them. |
 | `--json` | Output as JSON. |
 
 ### `list-targetdefs`
@@ -455,6 +476,7 @@ generated from it.
 | `--json` | `list-*` | Output as JSON. |
 | `--format sarif` | `audit` | Write the report as SARIF instead of text. |
 | `--all` | `list-targets` | Include the targets fabr and its plugins declare. |
+| `--operation OP` | `list-targets` | List only the targets whose type has a rule for the operation `OP`. |
 | `--` | all | End of options. What follows is a target, even if it starts with `-` or is the name of a command. |
 | `-v`, `--version` | | Print fabr's version. |
 | `-h`, `--help` | | Print a summary of the commands and options. |

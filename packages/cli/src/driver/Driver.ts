@@ -20,6 +20,8 @@
 import {
   BUILD_OPERATION,
   FabrError,
+  globMatcher,
+  isGlob,
   FILES_OPERATION,
   audit,
   auditSarif,
@@ -1277,15 +1279,21 @@ function auditDependencies(
 }
 
 /**
- * `fabr list-targets`: print the targets declared in the project (name + type),
- * recursively across namespaces. A model query — it builds nothing. Repository
- * instances are excluded (they are not buildable targets), and by default so
- * are system-contributed targets (declared in core's or a plugin's lib files —
- * e.g. fabr's own driver tools): the listing is *your* targets. `--all` lifts
- * that, and an explicitly-named target always shows (naming it is explicit
- * interest). `-l` adds each target's source location; `--json` emits the
- * structured form, each target carrying its `origin` (`system` or `project`).
- * Output is the command's data, so it goes to stdout.
+ * `fabr list-targets`: print the targets declared in the project (name, type and
+ * the operations its type has rules for), recursively across namespaces. A model
+ * query — it builds nothing. Repository instances are excluded (they are not
+ * buildable targets), and by default so are system-contributed targets (declared
+ * in core's or a plugin's lib files — e.g. fabr's own driver tools): the listing
+ * is *your* targets. `--all` lifts that. Each name given is a target's name or a
+ * glob over target names: a name always shows its target (naming it is explicit
+ * interest) and is an error where nothing has it, while a pattern matches under
+ * the same `--all` rule as no name at all, and may match nothing.
+ * `--operation` keeps the targets whose type has a rule for one of the given
+ * operations. The operations are the type's, so a rule guarded on a target's own
+ * properties counts for every target of its type. `-l` adds each target's source
+ * location; `--json` emits the structured form, each target carrying its
+ * `operations` and `origin` (`system` or `project`). Output is the command's
+ * data, so it goes to stdout.
  */
 function listDeclaredTargets(model: BuildModel, options: Options, execution: ExecutionContext): Computable<void> {
   /* A system decl is one whose build file was loaded from outside the project
@@ -1293,19 +1301,27 @@ function listDeclaredTargets(model: BuildModel, options: Options, execution: Exe
    * through the absFileSource (project files read through the source tree), so
    * the identity of the decl's fs is the whole test. */
   const isSystem = (decl: ITargetDecl): boolean => decl.source.fs === execution.absFileSource;
-  const wanted = new Set(options.targets);
+  const named = new Set(options.targets.filter(name => !isGlob(name)));
+  const patterns = options.targets.filter(isGlob).map(globMatcher);
+  const listed = (name: string, decl: ITargetDecl): boolean =>
+    named.has(name) ||
+    ((options.all || !isSystem(decl)) && (options.targets.length === 0 || patterns.some(matches => matches(name))));
+  const wanted = options.operations;
   const targets = model
     .getTargets()
-    .filter(target => (wanted.size > 0 ? wanted.has(target.name) : options.all || !isSystem(target.decl)))
+    .filter(({ name, decl }) => listed(name, decl))
+    .map(({ name, decl }) => ({ name, decl, operations: model.getOperations(decl.type) }))
+    .filter(({ operations }) => !wanted || operations.some(operation => wanted.includes(operation)))
     .sort((a, b) => a.name.localeCompare(b.name));
-  const missing = [...wanted].filter(name => !targets.some(target => target.name === name));
+  const missing = [...named].filter(name => !model.getTargets().some(target => target.name === name));
   if (missing.length > 0) {
     throw new FabrError(`No such target: ${missing.join(", ")}`);
   }
   if (options.json) {
-    const json = targets.map(({ name, decl }) => ({
+    const json = targets.map(({ name, decl, operations }) => ({
       name,
       type: decl.type,
+      operations,
       origin: isSystem(decl) ? "system" : "project",
       location: formatDeclLocation(decl),
     }));
@@ -1313,13 +1329,15 @@ function listDeclaredTargets(model: BuildModel, options: Options, execution: Exe
     return Computable.resolve(undefined);
   }
   const nameWidth = Math.max(0, ...targets.map(target => target.name.length));
-  /* In long mode a source location trails the type, so pad the type column too
-   * for the locations to line up; without it (plain listing) the type ends the
-   * line and needs no padding. */
-  const typeWidth = options.longListing ? Math.max(0, ...targets.map(target => target.decl.type.length)) : 0;
-  for (const { name, decl } of targets) {
+  const typeWidth = Math.max(0, ...targets.map(target => target.decl.type.length));
+  /* In long mode a source location trails the operations, so pad that column
+   * too for the locations to line up; without it the operations end the line. */
+  const operationsOf = (operations: string[]): string => (operations.length > 0 ? `[${operations.join(", ")}]` : "");
+  const operationsWidth = options.longListing ? Math.max(0, ...targets.map(target => operationsOf(target.operations).length)) : 0;
+  for (const { name, decl, operations } of targets) {
     const location = options.longListing ? "  " + formatDeclLocation(decl) : "";
-    console.log(`${name.padEnd(nameWidth)}  ${decl.type.padEnd(typeWidth)}${location}`);
+    const line = `${name.padEnd(nameWidth)}  ${decl.type.padEnd(typeWidth)}  ${operationsOf(operations).padEnd(operationsWidth)}${location}`;
+    console.log(line.trimEnd());
   }
   return Computable.resolve(undefined);
 }

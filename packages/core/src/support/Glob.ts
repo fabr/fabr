@@ -19,6 +19,14 @@
 
 import picomatch from "picomatch";
 
+/** The glob metacharacters: a name holding none is a literal. */
+export const GLOB_METACHAR = /[*?[]/;
+
+/** @return true if `text` holds a glob metacharacter, otherwise false. */
+export function isGlob(text: string): boolean {
+  return GLOB_METACHAR.test(text);
+}
+
 /** A compiled glob: true iff the given (forward-slash) path matches. */
 export type GlobMatcher = (path: string) => boolean;
 
