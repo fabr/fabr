@@ -47,7 +47,7 @@ import { fork } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ITestResult, TestStatus } from "@fabr-build/core";
-import { buildReport, endAfterReport, formatTestFailures, formatTestSummary, reportPathOf } from "../testRunner/Report";
+import { buildReport, endAfterReport, reportPathOf } from "../testRunner/Report";
 import { recordReads, withPnpTable, writeReads } from "../testRunner/Reads";
 import { installPnpRuntime } from "../pnp/Runtime";
 import { childPreloads, parseRunnerArgs, TEST_TIMEOUT_MS } from "../testRunner/RunTests";
@@ -115,7 +115,6 @@ export function main(argv: string[]): void {
       const report = buildReport(results.flatMap(toTestResults), start, Date.now());
       fs.writeFileSync(options.report, JSON.stringify(report, undefined, 2));
       const failed = report.results.summary.failed;
-      console.log(failed > 0 ? formatTestFailures(report) : formatTestSummary(report));
       endAfterReport(failed > 0 ? 1 : 0);
     })
     .catch((err: Error) => {
@@ -125,7 +124,7 @@ export function main(argv: string[]): void {
 }
 
 /** One child's outcome as the parent sees it: what it reported, or why it did not. */
-interface ICompletedFile {
+export interface ICompletedFile {
   testFile: string;
   result?: IChildResult;
   /** The child's stderr, kept for a file that died without reporting — see
@@ -286,26 +285,19 @@ const STATUS: Record<string, TestStatus> = {
 };
 
 /**
- * Convert one file's results to CTRF entries. A file that never reported becomes a
- * single failure named for the file, carrying its stderr as the trace — the
- * same treatment the node:test flavour gives a file that dies while loading,
- * and for the same reason: without it the user is told only that something
- * failed.
+ * Convert one file's results to CTRF entries: one per test it ran, plus one
+ * named for the file where the file itself failed — it never reported (a crash,
+ * an OOM, a broken preload: the captured stderr is the trace, since nothing else
+ * can say why), circus could not load it, or an error was raised outside any
+ * test (an unhandled rejection, a failed `afterAll`), which jest reports beside
+ * the tests that ran. Exported for its tests.
  */
-function toTestResults(file: ICompletedFile): ITestResult[] {
+export function toTestResults(file: ICompletedFile): ITestResult[] {
   /* Named as the TARGET names it — see reportPathOf. */
   const relative = reportPathOf(file.testFile);
-  if (!file.result || file.result.execError !== undefined) {
-    /* Circus reports a file that failed to LOAD as an execError carrying the
-     * real cause, so that is the message; the stack below it becomes the trace.
-     * The captured stderr is the fallback for the other shape — a child that
-     * died without reporting at all (a crash, an OOM, a broken preload), where
-     * nothing else can say why. */
-    const [reason, ...rest] = (file.result?.execError ?? file.crash ?? "the test process failed").split("\n");
-    const detail = rest.join("\n").trim() || file.stderr.trim();
-    return [{ name: relative, filePath: relative, status: "failed", duration: 0, message: reason, trace: detail || undefined }];
-  }
-  if (file.result.results.length === 0) {
+  const results = file.result?.results ?? [];
+  const execError = file.result === undefined ? (file.crash ?? "the test process failed") : file.result.execError;
+  if (execError === undefined && results.length === 0) {
     /* A file that registered nothing is a MISTAKE, not a pass. The way to get
      * here is a test file that imports describe/it from `node:test` directly:
      * those registrations go to node:test, which this flavour never runs, so
@@ -325,7 +317,7 @@ function toTestResults(file: ICompletedFile): ITestResult[] {
       },
     ];
   }
-  return file.result.results.map((test: IChildTestResult) => {
+  const tests = results.map((test: IChildTestResult) => {
     /* Circus hands back jest's FULLY formatted failures — one per failure, and
      * a test can carry several (its body AND a failing hook, each with the
      * matcher diff, the code frame, the stack), so every one is kept, blank-line
@@ -342,4 +334,12 @@ function toTestResults(file: ICompletedFile): ITestResult[] {
       trace: detail.join("\n").trim() || undefined,
     };
   });
+  if (execError === undefined) {
+    return tests;
+  }
+  /* The first line is the message; the rest becomes the trace, the captured
+   * stderr standing in where the error carries no detail of its own. */
+  const [reason, ...rest] = execError.split("\n");
+  const detail = rest.join("\n").trim() || file.stderr.trim();
+  return [...tests, { name: relative, filePath: relative, status: "failed", duration: 0, message: reason, trace: detail || undefined }];
 }

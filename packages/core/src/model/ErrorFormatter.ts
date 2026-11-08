@@ -255,8 +255,13 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
     }
     if (owner && cause instanceof TestsFailedError) {
       /* Tests failed: the target built fine, so report the (pre-rendered)
-       * test summary rather than a build failure */
-      return { message: `${failedName(owner)}: ${cause.message}`, loc: declPosn(owner.target) };
+       * test summary rather than a build failure — the summary line first, the
+       * failed tests, then the summary line again where there were any, so a
+       * long list ends with what it added up to. */
+      const name = failedName(owner);
+      const [summary, ...failures] = cause.message.split("\n");
+      const lines = failures.length === 0 ? [`${name}: ${summary}`] : [`${name}: ${summary}`, ...failures, `${name}: ${summary}`];
+      return { message: lines.join("\n"), loc: declPosn(owner.target) };
     }
     if (owner) {
       return { message: `Failed to build ${failedName(owner)}: ${cause.message}`, loc: declPosn(owner.target), help: helpOf(cause) };

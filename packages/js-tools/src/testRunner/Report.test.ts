@@ -31,8 +31,6 @@ import { SOURCE_LOCATIONS_FILE } from "../support/SourceMap";
 import {
   buildReport,
   describeSnapshotFailure,
-  formatTestFailures,
-  formatTestSummary,
   reportPathOf,
   snapshotPathOf,
   sourcePathOf,
@@ -157,44 +155,6 @@ describe("reportPathOf", () => {
         "    at g (fabr:gen:d.test.ts:1:1)",
       ]);
     });
-  });
-});
-
-describe("formatTestSummary", () => {
-  it("reports an all-green run", () => {
-    assert.equal(formatTestSummary(buildReport([test("a", "passed"), test("b", "passed")], 0, 0)), "2 tests passed");
-  });
-
-  it("mentions skipped tests", () => {
-    assert.equal(
-      formatTestSummary(buildReport([test("a", "passed"), test("b", "skipped")], 0, 0)),
-      "1 test passed (1 skipped)"
-    );
-  });
-
-  it("reports failures", () => {
-    assert.equal(formatTestSummary(buildReport([test("a", "failed"), test("b", "passed")], 0, 0)), "1 of 2 tests failed");
-  });
-});
-
-describe("formatTestFailures", () => {
-  it("lists each failed test with its location and first message line", () => {
-    const text = formatTestFailures(
-      buildReport(
-        [
-          test("works", "passed"),
-          test("breaks", "failed", { filePath: "core/Thing.test.js", message: "expected 1 to equal 2\nlong stack" }),
-          test("also breaks", "failed"),
-        ],
-        0,
-        0
-      )
-    );
-    assert.deepEqual(text.split("\n"), [
-      "2 of 3 tests failed",
-      "  breaks (core/Thing.test.js): expected 1 to equal 2",
-      "  also breaks",
-    ]);
   });
 });
 

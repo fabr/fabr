@@ -35,8 +35,6 @@ import type { ITestResult } from "@fabr-build/core";
 import {
   buildReport,
   describeSnapshotFailure,
-  formatTestFailures,
-  formatTestSummary,
   IFailureDescription,
   reportPathOf,
   TEST_REPORT_FILENAME,
@@ -230,7 +228,6 @@ function finish(results: ITestResult[], reportPath: string, start: number): void
   const report = buildReport(results, start, Date.now());
   fs.writeFileSync(reportPath, JSON.stringify(report, undefined, 2));
   const failed = report.results.summary.failed;
-  console.log(failed > 0 ? formatTestFailures(report) : formatTestSummary(report));
   process.exitCode = failed > 0 ? 1 : 0;
 }
 

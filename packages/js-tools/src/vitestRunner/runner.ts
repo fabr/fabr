@@ -36,7 +36,7 @@ import { createRequire } from "node:module";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ITestResult } from "@fabr-build/core";
-import { buildReport, endAfterReport, formatTestFailures, formatTestSummary } from "../testRunner/Report";
+import { buildReport, endAfterReport } from "../testRunner/Report";
 import { childPreloads, IRunnerOptions, parseRunnerArgs } from "../testRunner/RunTests";
 import { installPnpRuntime } from "../pnp/Runtime";
 import { IReportedError, IReportedModule, toRunFailure, toTestResults, vitestOptions } from "./VitestRun";
@@ -104,7 +104,6 @@ export function main(argv: string[]): void {
       const report = buildReport(results, start, Date.now());
       fs.writeFileSync(options.report, JSON.stringify(report, undefined, 2));
       const failed = report.results.summary.failed;
-      console.log(failed > 0 ? formatTestFailures(report) : formatTestSummary(report));
       /* Vitest's server and workers are closed; whatever a test leaked must not
        * keep this process alive. */
       endAfterReport(failed > 0 ? 1 : 0);

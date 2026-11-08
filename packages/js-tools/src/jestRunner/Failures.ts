@@ -49,8 +49,17 @@ export interface IFormattableResult {
   failureDetails?: unknown[];
 }
 
+/** An error circus reports against the FILE rather than a test in it (jest's
+ * `SerializableError`): an unhandled rejection, a failed `afterAll`. Circus
+ * leaves `message` empty and puts the errors' text in `stack`. */
+export interface IExecError {
+  message: string;
+  stack?: string;
+}
+
 interface IMessageUtil {
   formatResultsErrors(results: unknown[], config: unknown, options: unknown, testPath?: string): string | null;
+  formatExecError(error: unknown, config: unknown, options: unknown, testPath?: string): string;
 }
 
 /**
@@ -73,6 +82,23 @@ export function formatFailures(test: IFormattableResult, projectConfig: unknown,
       return raw;
     }
   });
+}
+
+/**
+ * Format an error raised outside any test as presentable text, as jest prints a
+ * suite's execution error: the errors' text, then the stack with jest's own
+ * frames removed. A document the formatter declines to render is reported by
+ * its text as it arrived.
+ */
+export function formatExecError(error: IExecError, projectConfig: unknown, globalConfig: unknown, testPath: string): string {
+  const util = jestLibrary("jest-message-util") as IMessageUtil;
+  const fallback = error.stack || error.message || "Test suite failed to run";
+  try {
+    const staged = { ...error, stack: error.stack === undefined ? undefined : withStagedSources(error.stack) };
+    return presentable(util.formatExecError(staged, projectConfig, globalConfig, testPath)) || fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 /**

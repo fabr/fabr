@@ -41,7 +41,7 @@ import { ILoaderModule, installSeams, MockRegistry } from "./Registry";
 import { IMockerControls, makeEnvironmentFacade, makeRuntimeFacade } from "./RuntimeFacade";
 import { jestLibrary, requireEnvironment } from "./Tools";
 import { makeJestConfig } from "./Config";
-import { formatFailures, IFormattableResult } from "./Failures";
+import { formatExecError, formatFailures, IExecError, IFormattableResult } from "./Failures";
 
 /** What the parent tells a child to do. */
 export interface IChildRequest {
@@ -68,8 +68,10 @@ export interface IChildTestResult {
 export interface IChildResult {
   testFile: string;
   results: IChildTestResult[];
-  /** A failure of the FILE rather than of a test in it (circus could not even
-   * get as far as running). */
+  /** A failure of the FILE rather than of a test in it, formatted: circus could
+   * not get as far as running it, or an error was raised outside any test (an
+   * unhandled rejection, a failed `afterAll`), in which case `results` holds
+   * the tests that did run. */
   execError?: string;
 }
 
@@ -87,7 +89,7 @@ type TestFramework = (
   runtime: unknown,
   testPath: string,
   sendMessageToJest?: unknown
-) => Promise<{ testResults: CircusResult[]; testExecError?: { message?: string } }>;
+) => Promise<{ testResults: CircusResult[]; testExecError?: IExecError }>;
 
 export async function runTestFile(request: IChildRequest): Promise<IChildResult> {
   const environment = fileEnvironment(request);
@@ -145,7 +147,8 @@ export async function runTestFile(request: IChildRequest): Promise<IChildResult>
       ...test,
       failureMessages: test.failureMessages.length === 0 ? [] : formatFailures(test, projectConfig, globalConfig, request.testFile),
     })),
-    execError: result.testExecError?.message,
+    execError:
+      result.testExecError === undefined ? undefined : formatExecError(result.testExecError, projectConfig, globalConfig, request.testFile),
   };
 }
 

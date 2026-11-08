@@ -273,7 +273,7 @@ class TestCoverage {
       [...this.argv.slice(1), `${MANIFEST_FLAG}${document}`],
       this.ctx.workDir,
       this.env,
-      { ...this.report, output: undefined }
+      this.report
     ).then(() => MemoryFile.from(fs.readFileSync(join(this.ctx.workDir, output), "utf8")));
   }
 }
@@ -538,13 +538,9 @@ function runOneFile(
 ): Computable<IFileRun> {
   const reportName = invocationReport(index);
   const invocation = invocationOf(argv, file, index);
-  /* Always captured (never streamed): the report carries the outcomes, the capture backs the no-report failure
-   * path, and a per-file fan-out must not chatter a summary per process. The
-   * activity half of the report is still passed through — these invocations
-   * take slots of the machine's funnel like any others, and a run waiting for
-   * one must not look like a run in progress. */
-  const report = { ...taskReport, output: undefined };
-  return execute(ctx.processLimit, findExecutable(argv[0], join(ctx.workDir, COMPILE_OUT_DIR)), invocation, join(ctx.workDir, COMPILE_OUT_DIR), env, report)
+  /* The invocation's output is the step's, shown as any step's is; the
+   * report carries the outcomes, and the capture backs the no-report failure. */
+  return execute(ctx.processLimit, findExecutable(argv[0], join(ctx.workDir, COMPILE_OUT_DIR)), invocation, join(ctx.workDir, COMPILE_OUT_DIR), env, taskReport)
     .then(
       () => undefined,
       (err: Error) => err

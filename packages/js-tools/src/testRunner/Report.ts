@@ -256,7 +256,6 @@ function lineDiff(before: string[], after: string[]): string[] {
   return lines;
 }
 
-
 /** The report filename, relative to the test working directory (= core's TEST_REPORT_FILENAME) */
 export const TEST_REPORT_FILENAME = "ctrf-report.json";
 
@@ -266,52 +265,6 @@ export function buildReport(tests: ITestResult[], start: number, stop: number): 
     summary[test.status]++;
   }
   return { results: { tool: { name: "fabr" }, summary, tests } };
-}
-
-/**
- * @return a one-line description of the run ("12 tests passed", "2 of 14
- * tests failed", ...).
- */
-export function formatTestSummary(report: ITestReport): string {
-  const { tests, passed, failed, pending, skipped, other } = report.results.summary;
-  const notRun = skipped + pending + other;
-  if (failed > 0) {
-    return `${failed} of ${testCount(tests)} failed`;
-  } else if (notRun > 0) {
-    return `${testCount(passed)} passed (${notRun} skipped)`;
-  } else {
-    return `${testCount(passed)} passed`;
-  }
-}
-
-/**
- * @return a multi-line failure report: the summary line followed by one
- * indented line per failed test, plus any trace indented beneath it. (Keep in
- * sync with core's copy.)
- */
-export function formatTestFailures(report: ITestReport): string {
-  const lines = [formatTestSummary(report)];
-  for (const test of report.results.tests) {
-    if (test.status === "failed") {
-      /* …unless the test IS the file (a load failure), where it would repeat. */
-      const where = test.filePath && test.filePath !== test.name ? ` (${test.filePath})` : "";
-      const detail = test.message ? `: ${firstLine(test.message)}` : "";
-      lines.push(`  ${test.name}${where}${detail}`);
-      if (test.trace) {
-        lines.push(...test.trace.split("\n").map(line => `    ${line}`));
-      }
-    }
-  }
-  return lines.join("\n");
-}
-
-function testCount(n: number): string {
-  return `${n} test${n === 1 ? "" : "s"}`;
-}
-
-function firstLine(text: string): string {
-  const newline = text.indexOf("\n");
-  return newline === -1 ? text : text.substring(0, newline);
 }
 
 /**

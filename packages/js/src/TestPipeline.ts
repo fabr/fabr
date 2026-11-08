@@ -374,9 +374,8 @@ export function compileAndRunTests(
       /* The test compile may import the package's deps, the test_deps, and the
        * runner globals directly (all passed to compileJsSources). The runtime
        * install splits them like RunJSScript: packages mount as node_modules,
-       * while a loose *resource* dep (.json, a template — tsc never emits it)
-       * stages at the install root next to the compiled tests, so a `./x.json`
-       * import resolves. Compilable loose deps (.ts/.js) are excluded here — their
+       * while a loose *resource* dep (.json, a template) stages at the install
+       * root next to the compiled tests, so a `./x.json` import resolves. Compilable loose deps (.ts/.js) are excluded here — their
        * output already rides the compiled tree (and a raw .js would collide). */
       const allDeps = [...deps, ...testDeps];
       const packages = allDeps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
@@ -627,8 +626,10 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
     }
     const packageJson = moduleTypeFile(run.testTarget.module, { name: "fabr-test", private: true });
     /* Everything the compiled code sees as a sibling: its own output, the
-     * sources tsc passed through (a `./x.json` import), and loose resource deps. */
-    const runtime = FileSet.unionAll(compiledTree, stripPackageJson(run.copied), run.resources);
+     * sources tsc passed through (a `./x.json` import), and loose resource deps,
+     * where the compile emitted none of that name (tsc writes an imported JSON
+     * file out again, reformatted). */
+    const runtime = FileSet.unionAll(compiledTree, stripPackageJson(run.copied), run.resources.minus(compiledTree));
     /* Laid out AS THE COMPILE LAID IT OUT — output under `build/`, sources under
      * `src/` — so a map entry naming its source relatively still resolves, and
      * {@link SOURCE_LOCATIONS_FILE} records where each source with a source path

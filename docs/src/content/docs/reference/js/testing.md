@@ -134,9 +134,6 @@ Some things differ from running a test framework's own command:
 - **You select tests by target and by name, not by file.** `fabr test -t` selects by name, as
   `jest -t` does; there is no equivalent of passing a file path, and arguments aren't passed
   through to the framework. To run a subset routinely, give it its own target.
-- **Output from passing tests is not shown.** `console.log` output and anything else a test writes
-  to stdout or stderr is discarded, unless a test file fails to load at all, in which case the
-  end of its error output is included in the failure.
 - **Each test file runs in its own process,** in parallel up to the number of processors, so test
   files share no state. Framework options that control workers or isolation don't apply.
 - **A test times out after 120 seconds** under every framework, where jest and vitest default to
@@ -634,7 +631,8 @@ and runs your program once for each test file, with the compiled tests as its wo
   `{"results": {"tool": …, "summary": …, "tests": […]}}`, with each of the summary's counts
   (`tests`, `passed`, `failed`, `pending`, `skipped`, `other`, `start`, `stop`) a number.
 - **The report is the result.** Once it's written, how the runner exits doesn't matter, so it may
-  end at once rather than wait for work the tests left running. The exit status counts only when
+  end at once rather than wait for work the tests left running. A runner prints no summary of
+  its own: whatever it writes to stdout or stderr is shown as the tests' output. The exit status counts only when
   there's no report: a non-zero exit is reported as the runner failing, and a zero exit without a
   report is an error.
 
