@@ -49,7 +49,7 @@ import {
   JSTarget,
   TYPE_EXTENSION,
 } from "./JSPackage";
-import { NpmPublishIdentity } from "./NPMProtocol";
+import { isSemverConstraint, NpmPublishIdentity } from "./NPMProtocol";
 import { encodeTargetPath } from "@fabr-build/js-tools";
 
 /** Fields fabr computes from the target itself — a `metadata` key naming one is
@@ -129,12 +129,15 @@ export function dependencyBlock(block: unknown): Map<string, string> {
  *
  * An alias with no version (`npm:wrap-ansi`) is unconstrained, exactly as a
  * bare `*` would be — the resolver reports it as such if nothing else pins the
- * package. Spec forms fabr doesn't understand (`file:`, `git+`, `workspace:`)
- * are left alone, to be rejected as the unparseable constraints they are.
+ * package — and so is a dist-tag (`latest`, `next`): the version it names is
+ * the registry's choice at install time, so the project's own requirement on
+ * the package selects it. Spec forms fabr doesn't understand (`file:`, `git+`,
+ * `workspace:`) are left alone, to be rejected as the unparseable constraints
+ * they are.
  */
 export function dependencyRequirement(name: string, spec: string): Requirement {
   if (!spec.startsWith(ALIAS_PREFIX)) {
-    return { name: name, versionConstraint: spec };
+    return { name: name, versionConstraint: constraintOfSpec(spec) };
   }
   const target = spec.substring(ALIAS_PREFIX.length);
   /* Scoped names start with their own `@`, so the version separator is the
@@ -144,11 +147,19 @@ export function dependencyRequirement(name: string, spec: string): Requirement {
   const constraint = separator > 0 ? target.substring(separator + 1) : "";
   return {
     name: pkg,
-    versionConstraint: constraint === "" ? "*" : constraint,
+    versionConstraint: constraint === "" ? "*" : constraintOfSpec(constraint),
     /* An alias to the package's own name renames nothing */
     ...(pkg === name ? {} : { renameTo: name }),
   };
 }
+
+/** @return the constraint a dependency's version spec states: `*` for a dist-tag, otherwise the spec. */
+function constraintOfSpec(spec: string): string {
+  return DIST_TAG.test(spec) && !isSemverConstraint(spec) ? "*" : spec;
+}
+
+/** A dist-tag's spelling: a name, which a version range never is. */
+const DIST_TAG = /^[A-Za-z][A-Za-z0-9._-]*$/;
 
 /**
  * Write one dependency-block entry stating `requirement` — the inverse of

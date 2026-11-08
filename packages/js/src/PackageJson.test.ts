@@ -484,6 +484,16 @@ describe("dependencyRequirement", () => {
      * mistaken for something fabr can resolve. */
     expect(dependencyRequirement("local", "file:../local")).to.deep.equal({ name: "local", versionConstraint: "file:../local" });
   });
+
+  it("reads a dist-tag as unconstrained, a range still as itself", () => {
+    expect(dependencyRequirement("third-party-web", "latest")).to.deep.equal({ name: "third-party-web", versionConstraint: "*" });
+    expect(dependencyRequirement("types", "npm:@types/node@next")).to.deep.equal({
+      name: "@types/node",
+      versionConstraint: "*",
+      renameTo: "types",
+    });
+    expect(dependencyRequirement("any", "x")).to.deep.equal({ name: "any", versionConstraint: "x" });
+  });
 });
 
 describe("requirementSpec", () => {

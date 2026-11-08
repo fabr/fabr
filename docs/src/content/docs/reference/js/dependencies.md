@@ -267,8 +267,10 @@ that takes files, such as `resources`.
 ### Packages required without a minimum version
 
 Some packages require another with the range `*`, which names no minimum. DefinitelyTyped's
-`@types` packages do this to each other routinely. If nothing else in the build asks for that
-package with a minimum, there is no version to select:
+`@types` packages do this to each other routinely. A package that requires another by a dist-tag,
+as in `"third-party-web": "latest"`, is read the same way: the version a tag names is the
+registry's choice on the day you install, so the build's own requirement decides it instead. If
+nothing else in the build asks for that package with a minimum, there is no version to select:
 
 ```
 error: the following packages are required only without a version lower bound ('*'), so no version is selectable — name one explicitly:
