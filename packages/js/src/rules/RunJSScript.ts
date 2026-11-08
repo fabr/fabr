@@ -47,6 +47,7 @@ import {
   defineRule,
   ContainedSources,
   PackageSources,
+  NoRequirements,
   ResolutionSpec,
   toEnvironment,
 } from "@fabr-build/core";
@@ -78,9 +79,9 @@ export default defineRule({
    */
   requirements(
     context: TargetContext
-  ): ResolutionSpec<{ deps: Computable<PackageSources>; entry: Computable<ContainedSources> }> {
+  ): ResolutionSpec<NoRequirements, { deps: Computable<PackageSources>; entry: Computable<ContainedSources> }> {
     return {
-      requirements: {
+      run: {
         deps: context.getPackageProperty("deps", BUILD_OVERRIDE),
         entry: context.getContainedFileProperty("entry", BUILD_OVERRIDE),
       },

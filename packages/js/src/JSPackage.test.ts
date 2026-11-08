@@ -64,6 +64,7 @@ const POOL = { ensureTree: () => Computable.resolve("unused") };
 /** A consumer whose `NODE` names {@link NODE}. */
 const NODE_CONTEXT: ResolutionContext = {
   name: "test",
+  operation: "build",
   getGlobalString: () => Computable.resolve("build"),
   launchedBy: (runnable, interpreter) => (interpreter === "NODE" ? runnable.launchedBy(NODE, POOL) : Computable.reject(new Error(interpreter))),
   memoize: (_tag, _key, create) => create("unused"),

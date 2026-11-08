@@ -199,6 +199,7 @@ describe("PartialRepositoryRef", () => {
  * whose repositories deliver per reference (nothing joint to memoize). */
 const RESOLUTION_CONTEXT: ResolutionContext = {
   name: "test",
+  operation: "build",
   getGlobalString: () => Computable.resolve("build"),
   launchedBy: (_runnable, name) => Computable.reject(new Error(`no global '${name}' in this test`)),
   memoize: (_tag, _key, create) => create("unused"),

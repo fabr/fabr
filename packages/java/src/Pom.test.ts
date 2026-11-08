@@ -155,7 +155,9 @@ describe("effectivePom", () => {
         <dependency><groupId>x</groupId><artifactId>z</artifactId><version>3</version></dependency>
       </dependencies></project>`;
     const effectivePom = await effective("g:a:1", pom);
-    expect(passedOnDependencies(effectivePom).map(dependency => [dependency.artifactId, dependency.exclusions])).to.deep.equal([
+    expect(
+      passedOnDependencies(effectivePom, "java-runtime").map(dependency => [dependency.artifactId, dependency.exclusions])
+    ).to.deep.equal([
       ["y", ["commons-logging/commons-logging", "org.slf4j/*", "m/managed"]],
       ["z", undefined],
     ]);
@@ -163,13 +165,23 @@ describe("effectivePom", () => {
 
   it("passes on compile and runtime jars, classified ones included, and not optional, provided, test-scoped or other types", async () => {
     const pom = await effective("com.example:databind:1.5");
-    expect(passedOnDependencies(pom).map(dependency => [dependency.artifactId, dependency.classifier])).to.deep.equal([
+    expect(passedOnDependencies(pom, "java-runtime").map(dependency => [dependency.artifactId, dependency.classifier])).to.deep.equal([
       ["annotations", undefined],
       ["core", undefined],
       ["runtime-only", undefined],
       ["natives", "linux-x86_64"],
       /* A test-jar is its tests jar. */
       ["harness", "tests"],
+    ]);
+  });
+
+  it("passes on only compile-scoped jars to compile against", async () => {
+    const pom = await effective("com.example:databind:1.5");
+    expect(passedOnDependencies(pom, "java-api").map(dependency => dependency.artifactId)).to.deep.equal([
+      "annotations",
+      "core",
+      "natives",
+      "harness",
     ]);
   });
 

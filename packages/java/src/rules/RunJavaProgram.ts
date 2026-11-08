@@ -40,19 +40,24 @@ import { checkMainClass, compileOutputOf, COMPILED_CLASSES_DIR, jarMainClass, ma
 interface ProgramInputs {
   srcs: FileSet[];
   deps: FileSet[];
+  classpath: FileSet[];
   agents: FileSet[];
 }
 
 /** The `java_program` rule, under `run`. */
 export default defineRule({
-  /* Read under build rather than the run operation the rule is selected by. The
-   * program is run and never compiled against, so its packages are collected
-   * permissively, as a tool's are. */
+  /* Read under build rather than the run operation the rule is selected by:
+   * `deps` once to compile the sources against, and once as what the program
+   * runs with (`classpath`). The program is run and never compiled against,
+   * so its packages are collected permissively, as a tool's are. */
   requirements(context) {
     return {
-      requirements: {
+      build: {
         srcs: context.getFileProperty("srcs", BUILD_OVERRIDE),
         deps: context.getPackageProperty("deps", BUILD_OVERRIDE),
+      },
+      run: {
+        classpath: context.getPackageProperty("deps", BUILD_OVERRIDE),
         agents: context.getPackageProperty("agents", BUILD_OVERRIDE),
       },
       permissive: true,
@@ -69,7 +74,7 @@ export default defineRule({
 
 function runnableProgram(
   context: TargetContext,
-  { srcs, deps, agents }: ProgramInputs,
+  { srcs, deps, classpath, agents }: ProgramInputs,
   stated: string | undefined,
   options: { args: string[]; jvmArgs: string[] }
 ): Computable<RunnableFileSet> {
@@ -84,7 +89,7 @@ function runnableProgram(
         )
       );
   return classes.then(output => compileOutputOf(output, COMPILED_CLASSES_DIR)).then(compiled =>
-    mainClassOf(context, stated, sources, compiled, deps).then(mainClass => makeJarRunnable(context, deps, mainClass, { classes: compiled, agents, ...options }))
+    mainClassOf(context, stated, sources, compiled, classpath).then(mainClass => makeJarRunnable(context, classpath, mainClass, { classes: compiled, agents, ...options }))
   );
 }
 

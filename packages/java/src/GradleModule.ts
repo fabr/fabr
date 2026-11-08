@@ -182,47 +182,59 @@ function stringOf(json: unknown, what: string): string {
   return json;
 }
 
-/** The attributes a Java program asks of a library's variant, beside the JVM release it runs on. */
-const RUNTIME_ATTRIBUTES = new Map([
-  ["org.gradle.usage", "java-runtime"],
+/** The usages a Java consumer asks of a library's variant (`org.gradle.usage`): to compile against it, or to run it. */
+export type JavaUsage = "java-api" | "java-runtime";
+
+/** The attributes a Java consumer asks of a library's variant, beside its usage and the JVM release it runs on. */
+const JVM_ATTRIBUTES = new Map([
   ["org.gradle.libraryelements", "jar"],
   ["org.gradle.dependency.bundling", "external"],
   ["org.gradle.jvm.environment", "standard-jvm"],
   ["org.jetbrains.kotlin.platform.type", "jvm"],
 ]);
 
+/** @return the usage a variant states, its pre-5.6 Gradle spelling read as the usage it is; undefined where it states none. */
+function usageOf(variant: GradleVariant): string | undefined {
+  const usage = variant.attributes.get("org.gradle.usage");
+  return usage === "java-api-jars" ? "java-api" : usage === "java-runtime-jars" ? "java-runtime" : usage;
+}
+
 /**
- * Select the variant of `module` a Java program on Java `release` runs with,
- * as Gradle matches a runtime classpath's attributes: a library's, or where
+ * Select the variant of `module` a Java consumer on Java `release` asks for
+ * `usage`, as Gradle matches a classpath's attributes: a library's, or where
  * the module has none, a platform's; providing the module's own capability,
- * not another such as its test fixtures; whose other attributes, where it
- * states them, are what a Java program asks for, and whose JVM version it can
- * run.
- * Of several, the one for the highest JVM version. `what` names the module in
- * a message.
+ * not another such as its test fixtures; of the usage, or for `java-api`, of
+ * `java-runtime` where the module publishes no `java-api` one; whose other
+ * attributes, where it states them, are what a Java consumer asks for, and
+ * whose JVM version it can run. Of several, the one for the highest JVM
+ * version. `what` names the module in a message.
  */
-export function runtimeVariant(module: GradleModule, release: number, what: string): GradleVariant {
+export function javaVariant(module: GradleModule, release: number, usage: JavaUsage, what: string): GradleVariant {
   const compatible = module.variants.filter(variant => {
     const runsOn = variant.attributes.get("org.gradle.jvm.version");
     const own = variant.capabilities.length === 0 || module.component === undefined || variant.capabilities.includes(module.component);
+    const stated = usageOf(variant);
     return (
       own &&
-      [...RUNTIME_ATTRIBUTES].every(([key, value]) => (variant.attributes.get(key) ?? value) === value) &&
+      (stated === undefined || stated === usage || (usage === "java-api" && stated === "java-runtime")) &&
+      [...JVM_ATTRIBUTES].every(([key, value]) => (variant.attributes.get(key) ?? value) === value) &&
       (runsOn === undefined || Number(runsOn) <= release)
     );
   });
+  const exact = compatible.filter(variant => (usageOf(variant) ?? usage) === usage);
+  const preferred = exact.length > 0 ? exact : compatible;
   for (const category of ["library", "platform"]) {
-    const of = compatible.filter(variant => (variant.attributes.get("org.gradle.category") ?? "library") === category);
+    const of = preferred.filter(variant => (variant.attributes.get("org.gradle.category") ?? "library") === category);
     const highest = Math.max(...of.map(variant => Number(variant.attributes.get("org.gradle.jvm.version") ?? 0)));
     const best = of.filter(variant => Number(variant.attributes.get("org.gradle.jvm.version") ?? 0) === highest);
     if (best.length === 1) {
       return best[0];
     }
     if (best.length > 1) {
-      throw new FabrError(`${what} has several variants a Java program on Java ${release} could run with: ${best.map(variant => variant.name).join(", ")}`);
+      throw new FabrError(`${what} has several ${usage} variants for Java ${release}: ${best.map(variant => variant.name).join(", ")}`);
     }
   }
-  throw new FabrError(`${what} has no variant a Java program on Java ${release} can run with`).withHelp(
+  throw new FabrError(`${what} has no ${usage} variant for Java ${release}`).withHelp(
     `its variants are ${module.variants.map(variant => variant.name).join(", ")}; its .module may need a later JVM_TARGET`
   );
 }

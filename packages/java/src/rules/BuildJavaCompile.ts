@@ -57,7 +57,7 @@ import {
 /** The `java_compile` rule. */
 export default defineRule({
   requirements(context) {
-    return { requirements: { srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps") }, builds: "files" };
+    return { build: { srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps") }, result: "files" };
   },
   evaluateMaterialized(context, inputs) {
     return compileJava(context, inputs);

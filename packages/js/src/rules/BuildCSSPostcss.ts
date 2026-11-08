@@ -57,12 +57,12 @@ import { createNodeExecAction } from "../NodeExecAction";
 export default defineRule({
   requirements(context) {
     return {
-      requirements: {
+      build: {
         srcs: context.getFileProperty("srcs"),
         deps: context.getPackageProperty("deps"),
         browsers: context.getGlobalFileProperty("BROWSER_TARGET").then(sources => new PackageSources(sources)),
       },
-      builds: "files",
+      result: "files",
     };
   },
   evaluateMaterialized(context, collected) {

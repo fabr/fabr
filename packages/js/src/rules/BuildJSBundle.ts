@@ -83,12 +83,12 @@ export default defineRule({
     return context.getGlobalString("JS_TARGET").then(target => {
       const inputTarget = bundleInputTarget(parseJSTarget(target));
       return {
-        requirements: {
+        build: {
           srcs: context.getPackageProperty("srcs", inputTarget),
           entry: context.getContainedFileProperty("entry", inputTarget),
           deps: context.getPackageProperty("deps", inputTarget),
         },
-        builds: "files" as const,
+        result: "files" as const,
       };
     });
   },

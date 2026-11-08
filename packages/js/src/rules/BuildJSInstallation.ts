@@ -29,7 +29,7 @@ import { assembleNodeModules } from "../NodeModules";
 /** The `js_installation` rule. */
 export default defineRule({
   requirements(context) {
-    return { requirements: { deps: context.getPackageProperty("deps") }, builds: "files" };
+    return { run: { deps: context.getPackageProperty("deps") }, result: "files" };
   },
   evaluateMaterialized(_context, { deps }: { deps: FileSet[] }) {
     const packages = deps.filter(dep => dep instanceof PackageFileSet);

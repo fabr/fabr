@@ -47,7 +47,7 @@ export default defineRule({
    * execute on this machine, and built alongside them rather than after. */
   requirements(context) {
     return {
-      requirements: {
+      run: {
         deps: context.getFileProperty("deps", BUILD_OVERRIDE),
         files: context.getFileProperty("files", BUILD_OVERRIDE),
       },

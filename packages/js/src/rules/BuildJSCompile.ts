@@ -83,13 +83,13 @@ import {
 export default defineRule({
   requirements(context) {
     return {
-      requirements: {
+      build: {
         srcs: context.getFileProperty("srcs"),
         deps: context.getPackageProperty("deps"),
         resources: context.getFileProperty("resources"),
         declarations: context.getFileProperty("declarations"),
       },
-      builds: "files",
+      result: "files",
     };
   },
   evaluateMaterialized(context, inputs) {

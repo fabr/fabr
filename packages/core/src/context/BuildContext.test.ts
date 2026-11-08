@@ -150,7 +150,7 @@ testRules.push(
   defineRule({
     type: "test_good",
     properties: {},
-    requirements: context => Computable.resolve({ requirements: { deps: context.getPackageProperty("deps") } }),
+    requirements: context => Computable.resolve({ build: { deps: context.getPackageProperty("deps") } }),
     evaluateResolved: (_context, requirements) =>
       requirements.materializeAll().then(({ deps }) => {
         lastDepSets = deps;
@@ -166,7 +166,7 @@ testRules.push(
     type: "test_slow",
     properties: {},
     requirements: context =>
-      Computable.from<void>(resolve => setTimeout(resolve, 5)).then(() => ({ requirements: { deps: context.getPackageProperty("deps") } })),
+      Computable.from<void>(resolve => setTimeout(resolve, 5)).then(() => ({ build: { deps: context.getPackageProperty("deps") } })),
     evaluateResolved: (_context, requirements) => requirements.materializeAll().then(() => EMPTY_FILESET),
   })
 );
@@ -183,7 +183,7 @@ testRules.push(
   defineRule({
     type: "test_carrier",
     properties: { [BUILD_OPERATION]: "build" },
-    requirements: context => Computable.resolve({ requirements: { dependencies: context.getPackageProperty("deps") } }),
+    requirements: context => Computable.resolve({ build: { dependencies: context.getPackageProperty("deps") } }),
     evaluateResolved: (context, requirements) =>
       Computable.forAll([requirements.packages("dependencies"), context.getGlobalString("MODE")], (dependencies, mode) =>
         new PackageFileSet(new Map([["mode.txt", MemoryFile.from(mode)]]), context.name, undefined, dependencies)
@@ -204,7 +204,7 @@ testRules.push(
   defineRule({
     type: "test_holds",
     properties: {},
-    requirements: context => Computable.resolve({ requirements: { deps: context.getPackageProperty("deps") } }),
+    requirements: context => Computable.resolve({ build: { deps: context.getPackageProperty("deps") } }),
     evaluateResolved: (_context, requirements) =>
       requirements.materializeAll().then(({ deps }) => {
         heldDeps = deps;
@@ -218,7 +218,7 @@ testRules.push(
   defineRule({
     type: "test_made",
     properties: {},
-    requirements: context => Computable.resolve({ requirements: { extends: context.getPackageProperty("srcs") } }),
+    requirements: context => Computable.resolve({ build: { extends: context.getPackageProperty("srcs") } }),
     evaluateMaterialized: (context, { extends: made }) => {
       const base = made.find((pkg): pkg is PackageFileSet => pkg instanceof PackageFileSet);
       return new PackageFileSet(new Map([["made.txt", MemoryFile.from(context.name)]]), context.name, base?.version);
@@ -230,7 +230,7 @@ testRules.push(
   defineRule({
     type: "test_plain",
     properties: {},
-    requirements: () => ({ requirements: {}, builds: "files" }),
+    requirements: () => ({ build: {}, result: "files" }),
     evaluateResolved: context => Computable.resolve(new FileSet(new Map([["plain.txt", MemoryFile.from(context.name)]]))),
   })
 );
@@ -239,7 +239,42 @@ testRules.push(
   defineRule({
     type: "test_misdeclared",
     properties: {},
-    requirements: context => ({ requirements: {}, builds: { package: context.name } }),
+    requirements: context => ({ build: {}, result: { package: context.name } }),
+    evaluateResolved: () => Computable.resolve(EMPTY_FILESET),
+  })
+);
+/** The names of the packages each of test_split's collections materialized to, closure included. */
+let lastSplit: { compile: string[]; install: string[] } | undefined;
+/** @return the names of `sets`' packages and every package they reach, sorted. */
+function closureNames(sets: FileSet[]): string[] {
+  const seen = new Set<string>();
+  const visit = (pkg: PackageFileSet): void => {
+    if (!seen.has(pkg.packageName)) {
+      seen.add(pkg.packageName);
+      pkg.packages.forEach(dep => visit(dep as PackageFileSet));
+    }
+  };
+  sets.filter((set): set is PackageFileSet => set instanceof PackageFileSet).forEach(visit);
+  return [...seen].sort();
+}
+/* Reads `deps` twice: to build with, and to run with. */
+testRules.push(
+  defineRule({
+    type: "test_split",
+    properties: {},
+    requirements: context => ({ build: { compile: context.getPackageProperty("deps") }, run: { install: context.getPackageProperty("deps") } }),
+    evaluateMaterialized: (_context, { compile, install }) => {
+      lastSplit = { compile: closureNames(compile), install: closureNames(install) };
+      return EMPTY_FILESET;
+    },
+  })
+);
+/* States one requirement in both collections. */
+testRules.push(
+  defineRule({
+    type: "test_split_twice",
+    properties: {},
+    requirements: context => ({ build: { deps: context.getPackageProperty("deps") }, run: { deps: context.getPackageProperty("deps") } }),
     evaluateResolved: () => Computable.resolve(EMPTY_FILESET),
   })
 );
@@ -248,7 +283,7 @@ testRules.push(
   defineRule({
     type: "test_loose",
     properties: {},
-    requirements: context => Computable.resolve({ requirements: { deps: context.getPackageProperty("deps") }, permissive: true }),
+    requirements: context => Computable.resolve({ build: { deps: context.getPackageProperty("deps") }, permissive: true }),
     evaluateResolved: (_context, requirements) =>
       requirements.materializeAll().then(({ deps }) => {
         lastDepSets = deps;
@@ -276,7 +311,7 @@ testRules.push(
   defineRule({
     type: "test_layered",
     properties: {},
-    requirements: context => Computable.resolve({ requirements: { dependencies: context.getPackageProperty("base") }, builds: { package: context.name } }),
+    requirements: context => Computable.resolve({ build: { dependencies: context.getPackageProperty("base") }, result: { package: context.name } }),
     evaluateResolved: (context, requirements) =>
       requirements.materializeAll().then(({ dependencies: base }) => {
         lastDeps = FileSet.unionAll(...base);
@@ -290,7 +325,7 @@ testRules.push(
   defineRule({
     type: "test_override",
     properties: {},
-    requirements: context => Computable.resolve({ requirements: { dep: context.getPackageProperty("dep", Constraints.of({ FLAVOR: "caller" })) } }),
+    requirements: context => Computable.resolve({ build: { dep: context.getPackageProperty("dep", Constraints.of({ FLAVOR: "caller" })) } }),
     evaluateResolved: (_context, requirements) =>
       requirements.materializeAll().then(({ dep }) => {
         lastDeps = FileSet.unionAll(...dep);
@@ -306,7 +341,7 @@ testRules.push(
     type: "test_globaltool",
     properties: {},
     requirements: context =>
-      Computable.resolve({ requirements: { tool: context.getGlobalFileProperty("GLOBALTOOL", Constraints.of({ FLAVOR: "caller" })) } }),
+      Computable.resolve({ build: { tool: context.getGlobalFileProperty("GLOBALTOOL", Constraints.of({ FLAVOR: "caller" })) } }),
     evaluateResolved: (_context, requirements) =>
       requirements.materializeAll().then(({ tool }) => {
         lastDeps = FileSet.unionAll(...tool);
@@ -516,16 +551,18 @@ class TestRegistry implements Repository, RepositoryReader<SemverVersion, Semver
     throw new Error(`test_registry is not a publish destination ('${name.toString()}')`);
   }
 
-  public environmentKey(): Computable<string> {
-    return Computable.resolve("test-env");
+  public environmentKey(operation?: string): Computable<string> {
+    return Computable.resolve(`test-env ${operation ?? ""}`);
   }
 
   public fetchFiles(reference: RepositoryRef): Computable<FileSet> {
     return resolveBarePackage(this, reference);
   }
 
-  public getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
-    return Computable.resolve(registryRequirements.get(`${pkg}@${versionToString(version)}`) ?? []);
+  /** Answer what `registryRequirements` holds for the package under `operation` (`<pkg>@<version> <operation>`), else for any. */
+  public getRequirements(pkg: string, version: SemverVersion, operation?: string): Computable<Requirement[]> {
+    const key = `${pkg}@${versionToString(version)}`;
+    return Computable.resolve(registryRequirements.get(`${key} ${operation}`) ?? registryRequirements.get(key) ?? []);
   }
 
   public fetch(pkg: string, version: SemverVersion): Computable<PackageFileSet> {
@@ -699,7 +736,7 @@ testRules.push(
     properties: {},
     requirements: context =>
       Computable.resolve({
-        requirements: {
+        build: {
           adeps: context.getPackageProperty("adeps"),
           bdeps: context.getPackageProperty("bdeps"),
           globalSrc: context.getGlobalFileProperty("JOINT_GLOBAL"),
@@ -2658,6 +2695,62 @@ describe("BuildContext", () => {
     expect(lastDeps && [...lastDeps].map(([path]) => path).sort()).to.deep.equal(["one/data.txt", "three/data.txt", "two/data.txt"]);
   });
 
+  describe("A requirement read to build with and to run with", () => {
+    /* lib requires x to compile against, and x and y to run. */
+    let root: string;
+    let splitExecution: ExecutionContext;
+    beforeEach(() => {
+      root = fs.mkdtempSync(nodePath.join(os.tmpdir(), "fabr-split-test-"));
+      splitExecution = new ExecutionContext(new BuildCache(root, testLog), testLog, EMPTY_FILESET, EMPTY_FILESET);
+      registryRequirements.clear();
+      registryRequirements.set("lib@1.0.0", [{ name: "x", versionConstraint: "^1.0.0" }]);
+      registryRequirements.set("lib@1.0.0 run", [
+        { name: "x", versionConstraint: "^1.0.0" },
+        { name: "y", versionConstraint: "^1.0.0" },
+      ]);
+      lastSplit = undefined;
+    });
+    afterEach(() => {
+      registryRequirements.clear();
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    const input =
+      "targetdef test_registry { }\n" +
+      "targetdef test_split { deps = PACKAGES; }\n" +
+      "targetdef test_split_twice { deps = PACKAGES; }\n" +
+      "test_registry @reg { }\n" +
+      "test_split app { deps = @reg:lib; }\n" +
+      "test_split_twice twice { deps = @reg:lib; }\n";
+
+    function configOf(): BuildContext {
+      const errors: string[] = [];
+      const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+      const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+      expect(errors).to.deep.equal([]);
+      return model.getConfig(Constraints.of({ [BUILD_OPERATION]: "build" }), splitExecution);
+    }
+
+    it("resolves each collection for its operation, as a separate graph", async () => {
+      await configOf().materialize(writtenOnCommandLine("app"));
+      expect(lastSplit).to.deep.equal({ compile: ["lib", "x"], install: ["lib", "x", "y"] });
+    });
+
+    it("refuses a requirement stated for both", async () => {
+      const refused = await Promise.resolve(configOf().materialize(writtenOnCommandLine("twice"))).then(
+        () => undefined,
+        (err: unknown) => {
+          let cause = err;
+          while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError) {
+            cause = cause.cause;
+          }
+          return (cause as Error).message;
+        }
+      );
+      expect(refused).to.contain("the requirement 'deps' is stated for both build and run");
+    });
+  });
+
   describe("A package whose closure needs two versions of one package", () => {
     /* tool needs a and b, which need x at ^2.0.0 and (through y) at ^1.0.0:
      * no one version of x is both. A target linked against it is refused for
@@ -3880,7 +3973,7 @@ describe("Rule selection", () => {
         type: "mid",
         properties: {},
         requirements: context =>
-          Computable.from<void>(resolve => setTimeout(resolve, 5)).then(() => ({ requirements: { deps: context.getPackageProperty("deps") } })),
+          Computable.from<void>(resolve => setTimeout(resolve, 5)).then(() => ({ build: { deps: context.getPackageProperty("deps") } })),
         evaluate: () => Computable.resolve(EMPTY_FILESET),
       },
     ]);
@@ -4086,7 +4179,7 @@ describe("inspecting a target's collection", () => {
       const deps = context.getPackageProperty("deps", BUILD_OVERRIDE);
       /* The package's own requirements under `build`; under `test`, a
        * requirement of the test run alone. */
-      return Computable.resolve({ requirements: { srcs: context.getFileProperty("srcs"), [part === "deps" ? "dependencies" : part]: deps } });
+      return Computable.resolve({ build: { srcs: context.getFileProperty("srcs"), [part === "deps" ? "dependencies" : part]: deps } });
     },
     evaluate: (context, requirements) =>
       Computable.forAll([requirements.materializeAll(), requirements.packages(part === "deps" ? "dependencies" : part)], (_collected, deps) => {
@@ -4098,7 +4191,7 @@ describe("inspecting a target's collection", () => {
   const filesRule: RuleDefinition = {
     type: "files",
     properties: {},
-    requirements: context => Computable.resolve({ requirements: { srcs: context.getFileProperty("srcs") } }),
+    requirements: context => Computable.resolve({ build: { srcs: context.getFileProperty("srcs") } }),
     evaluate: context => {
       proceeded.push(context.name);
       return Computable.resolve(new FileSet(new Map([["out.txt", new MemoryFile(Buffer.from(context.name))]])));
@@ -4108,7 +4201,7 @@ describe("inspecting a target's collection", () => {
   const runRule: RuleDefinition = {
     type: "lib",
     properties: { BUILD_OPERATION: "run" },
-    requirements: context => Computable.resolve({ requirements: { pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE) } }),
+    requirements: context => Computable.resolve({ build: { pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE) } }),
     evaluate: (context, requirements) =>
       requirements.materializeAll().then(({ pkg }) => {
         proceeded.push(`${context.name}[run]`);
@@ -4241,7 +4334,7 @@ describe("a reference to a target", () => {
   const libRule: RuleDefinition = {
     type: "lib",
     properties: {},
-    requirements: context => Computable.resolve({ requirements: { dependencies: context.getPackageProperty("deps") } }),
+    requirements: context => Computable.resolve({ build: { dependencies: context.getPackageProperty("deps") } }),
     evaluate: (context, requirements) =>
       Computable.forAll([requirements.materializeAll(), requirements.packages("dependencies")], (_collected, packages) => {
         evaluated.push(context.name);
@@ -4252,7 +4345,7 @@ describe("a reference to a target", () => {
   const genRule: RuleDefinition = {
     type: "gen",
     properties: {},
-    requirements: () => Computable.resolve({ requirements: {} }),
+    requirements: () => Computable.resolve({ build: {} }),
     evaluate: context => {
       evaluated.push(context.name);
       return Computable.resolve(new FileSet(new Map([["out.txt", new MemoryFile(Buffer.from(context.name))]])));
@@ -4279,7 +4372,7 @@ describe("a reference to a target", () => {
   const brokenRule: RuleDefinition = {
     type: "broken",
     properties: {},
-    requirements: () => Computable.resolve({ requirements: {} }),
+    requirements: () => Computable.resolve({ build: {} }),
     evaluate: () => Computable.reject(new FabrError("it broke")),
   };
   /* Records what each of its `deps` delivered: `package <name>` for a package,
@@ -4287,7 +4380,7 @@ describe("a reference to a target", () => {
   const userRule: RuleDefinition = {
     type: "user",
     properties: {},
-    requirements: context => Computable.resolve({ requirements: { deps: context.getPackageProperty("deps") } }),
+    requirements: context => Computable.resolve({ build: { deps: context.getPackageProperty("deps") } }),
     evaluate: (context, requirements) =>
       requirements.materializeAll().then(({ deps }) => {
         evaluated.push(context.name);
@@ -4302,14 +4395,14 @@ describe("a reference to a target", () => {
   const readerRule: RuleDefinition = {
     type: "reader",
     properties: {},
-    requirements: () => Computable.resolve({ requirements: {} }),
+    requirements: () => Computable.resolve({ build: {} }),
     evaluate: context => context.getPackageProperty("extra").then(() => EMPTY_FILESET),
   };
   /* A package naming each of its `deps` as a provided requirement. */
   const peerLibRule: RuleDefinition = {
     type: "peerlib",
     properties: {},
-    requirements: context => Computable.resolve({ requirements: { dependencies: context.getPackageProperty("deps") } }),
+    requirements: context => Computable.resolve({ build: { dependencies: context.getPackageProperty("deps") } }),
     evaluate: (context, requirements) =>
       Computable.forAll([requirements.materializeAll(), requirements.packages("dependencies")], (_collected, packages) => {
         const provided = new Map(packages.map(edge => [dependencyName(edge), "expected" as const]));
@@ -4322,7 +4415,7 @@ describe("a reference to a target", () => {
   const outerRule: RuleDefinition = {
     type: "outer",
     properties: {},
-    requirements: context => Computable.resolve({ requirements: { deps: context.getPackageProperty("deps") } }),
+    requirements: context => Computable.resolve({ build: { deps: context.getPackageProperty("deps") } }),
     evaluate: (context, requirements) =>
       requirements.materializeAll().then(({ deps }) => {
         handed = deps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
@@ -4333,7 +4426,7 @@ describe("a reference to a target", () => {
   const innerRule: RuleDefinition = {
     type: "inner",
     properties: {},
-    requirements: context => Computable.resolve({ requirements: { deps: context.getPackageProperty("deps") } }),
+    requirements: context => Computable.resolve({ build: { deps: context.getPackageProperty("deps") } }),
     evaluate: (_context, requirements) =>
       requirements.materializeAll().then(({ deps }) => {
         const names = deps.map(dep => (dep instanceof PackageFileSet ? `${dep.packageName}:${handed.includes(dep)}` : "files"));

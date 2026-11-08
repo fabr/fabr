@@ -380,9 +380,12 @@ export interface RequirementSource<V> {
    * @return the requirements declared by name@version (e.g. the dependencies
    * from its package.json). Rejects with a VersionNotFoundError (core/Errors)
    * when name@version was never published — the signal for the floor-raise
-   * repair, distinguished from transport failures.
+   * repair, distinguished from transport failures. `operation` is the
+   * `BUILD_OPERATION` the requirements are resolved for, where a format
+   * distinguishes them (Maven: a compile under `build`, a program or test
+   * under `run` and `test`); undefined asks for every requirement.
    */
-  getRequirements(name: string, version: V): Computable<Requirement[]>;
+  getRequirements(name: string, version: V, operation?: string): Computable<Requirement[]>;
 
   /**
    * Floor-raise hook: the lowest *published* version of `name` satisfying
@@ -459,6 +462,9 @@ export interface ResolutionContext {
    * from, with requirements this context does not hold.
    */
   readonly given?: ReadonlySet<PackageFileSet>;
+  /** The `BUILD_OPERATION` this collection's requirements are resolved for:
+   *  the operation of the consumer's configuration. */
+  readonly operation: string;
   getGlobalString(name: string): Computable<string>;
   /** Get `runnable` launched through the runnable the global `interpreter`
    *  names, given `interpreterArgs` before the entry (see {@link RunnableFileSet.launchedBy}). */

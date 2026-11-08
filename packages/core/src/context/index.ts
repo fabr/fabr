@@ -31,6 +31,7 @@ export {
   ContainedSources,
   DEPENDENCIES_KEY,
   MaterializedRequirements,
+  NoRequirements,
   OPTIONAL_PROVIDED_KEY,
   PackageSources,
   ResolutionSpec,

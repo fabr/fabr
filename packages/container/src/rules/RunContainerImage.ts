@@ -27,7 +27,7 @@ import { imageRunnable } from "../ImageRunnable";
  */
 export default defineRule({
   requirements(context) {
-    return { requirements: { image: context.resolveSelfWithOverrides(BUILD_OVERRIDE) } };
+    return { run: { image: context.resolveSelfWithOverrides(BUILD_OVERRIDE) } };
   },
   evaluateMaterialized(context, { image }) {
     const built = image.find((source): source is ImageFileSet => source instanceof ImageFileSet);

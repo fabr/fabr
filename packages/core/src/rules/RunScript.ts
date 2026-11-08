@@ -43,7 +43,7 @@ export default defineRule({
    * is resolved together. */
   requirements(context) {
     return {
-      requirements: {
+      run: {
         deps: context.getFileProperty("deps", BUILD_OVERRIDE),
         entry: context.getFileProperty("entry", BUILD_OVERRIDE),
       },

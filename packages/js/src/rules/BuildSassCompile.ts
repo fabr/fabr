@@ -52,7 +52,7 @@ import { createNodeExecAction } from "../NodeExecAction";
 /** The `sass_compile` rule. */
 export default defineRule({
   requirements(context) {
-    return { requirements: { srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps") }, builds: "files" };
+    return { build: { srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps") }, result: "files" };
   },
   evaluateMaterialized(context, collected) {
     return buildSassCompile(context, collected);

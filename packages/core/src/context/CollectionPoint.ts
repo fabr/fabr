@@ -497,7 +497,7 @@ export function resolveCollection(
     let started: Computable<Map<RefSource, Computable<Resolution>>> | undefined;
     const byEnvironment = (): Computable<Map<RefSource, Computable<Resolution>>> =>
       (started ??= Computable.forAll(
-        group.map(([source]) => source.environmentKey()),
+        group.map(([source]) => source.environmentKey(context.operation)),
         (...environments: string[]) => {
           const shared = new Map<string, Array<[RepositoryReader<unknown, unknown>, PackageRequest[]]>>();
           group.forEach((member, index) => shared.set(environments[index], [...(shared.get(environments[index]) ?? []), member]));

@@ -49,7 +49,7 @@ import { FabrError } from "../core/Errors";
 /** The `generate` rule. */
 export default defineRule({
   requirements(context) {
-    return { requirements: { srcs: context.getFileProperty("srcs") }, builds: "files" };
+    return { build: { srcs: context.getFileProperty("srcs") }, result: "files" };
   },
   evaluateMaterialized(context, { srcs }) {
     return generate(context, srcs);

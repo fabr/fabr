@@ -81,7 +81,7 @@ import { defineRule, FileSet, MemoryFile } from "@fabr-build/core";
 
 export default defineRule({
   requirements(context) {
-    return { requirements: { srcs: context.getFileProperty("srcs") } };
+    return { build: { srcs: context.getFileProperty("srcs") } };
   },
   evaluateMaterialized(_context, { srcs }) {
     const names = [...FileSet.unionAll(...srcs)].map(([name]) => name).sort();
@@ -227,7 +227,7 @@ import { createExecAction, defineRule, FileSet } from "@fabr-build/core";
 
 export default defineRule({
   requirements(context) {
-    return { requirements: { srcs: context.getFileProperty("srcs") } };
+    return { build: { srcs: context.getFileProperty("srcs") } };
   },
   evaluateMaterialized(context, { srcs }) {
     return context.getGlobalRunnable("TEXT_LINTER").then(linter => {

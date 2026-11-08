@@ -26,7 +26,7 @@
 
 import { Computable, FabrError } from "@fabr-build/core";
 import { parseXml, XmlElement, xmlChild, xmlChildren, xmlText } from "./Xml";
-import { hasGradleMetadata } from "./GradleModule";
+import { hasGradleMetadata, JavaUsage } from "./GradleModule";
 
 /** An artifact's address in a Maven repository. */
 export interface PomCoordinate {
@@ -328,21 +328,24 @@ export function effectivePom(pom: RawPom, load: PomLoader, what: string, depth =
   });
 }
 
-/** The scopes a consumer's classpath takes from a dependency, at compile and at run time. */
-const CLASSPATH_SCOPES = new Set(["compile", "runtime"]);
+/** The scopes a consumer's classpath takes from a dependency: at compile time, and at run time. */
+const COMPILE_SCOPES: ReadonlySet<string> = new Set(["compile"]);
+const RUNTIME_SCOPES: ReadonlySet<string> = new Set(["compile", "runtime"]);
 
 /** The classifier of the jar each dependency type other than `jar` names, as Maven's artifact handlers give it. */
 const TYPE_CLASSIFIERS = new Map([["test-jar", "tests"]]);
 
 /**
- * @return the dependencies an artifact passes on to whatever uses it, as Maven
- * and Gradle read them: its jars, classified or not, in compile or runtime
- * scope, except the ones it marks optional. A `test-jar` is its `tests` jar.
+ * @return the dependencies an artifact passes on to whatever uses it for
+ * `usage`, as Maven and Gradle read them: its jars, classified or not, in
+ * compile scope, and for `java-runtime` in runtime scope too, except the ones
+ * it marks optional. A `test-jar` is its `tests` jar.
  */
-export function passedOnDependencies(pom: EffectivePom): PomDependency[] {
+export function passedOnDependencies(pom: EffectivePom, usage: JavaUsage): PomDependency[] {
+  const scopes = usage === "java-api" ? COMPILE_SCOPES : RUNTIME_SCOPES;
   return pom.dependencies.flatMap(dependency => {
     const type = dependency.type ?? "jar";
-    if ((type !== "jar" && !TYPE_CLASSIFIERS.has(type)) || !CLASSPATH_SCOPES.has(dependency.scope ?? "compile") || dependency.optional) {
+    if ((type !== "jar" && !TYPE_CLASSIFIERS.has(type)) || !scopes.has(dependency.scope ?? "compile") || dependency.optional) {
       return [];
     }
     const classifier = dependency.classifier ?? TYPE_CLASSIFIERS.get(type);

@@ -29,6 +29,7 @@ import type { IPropertyEntry } from "../model/Namespace";
 import {
   CommandValue,
   MaterializedRequirements,
+  NoRequirements,
   ResolutionSpec,
   PropertyMap,
   RequiredSources,
@@ -187,11 +188,13 @@ export interface RuleImplementation {
    * (`classes.extends`) is read as its last part is (here, as material), but
    * only a plain name is passed on.
    *
-   * It returns them as a {@link ResolutionSpec}: the requirements, whether
-   * they are collected permissively, and what the target builds (`builds`: a
-   * package of a name, format and version, or files), which its node is made
-   * from and its build is checked against. Undeclared, what the target builds
-   * is known when it is built.
+   * It returns them as a {@link ResolutionSpec}: the requirements, as the
+   * collection it builds with (`build`: what it compiles against, what it
+   * passes on) and the one it installs or runs (`run`), each resolved for that
+   * operation; whether they are collected permissively; and what the target
+   * builds (`result`: a package of a name, format and version, or files),
+   * which its node is made from and its build is checked against. Undeclared,
+   * what the target builds is known when it is built.
    *
    * Optional: a rule without it requires nothing. What a rule reads for
    * itself in `evaluate` is outside the resolved graph, so a cycle through it
@@ -232,17 +235,25 @@ export interface RuleImplementation {
   describe?: (context: TargetContext, requirements: Unmaterialized<Record<string, RequiredSources>>) => Computable<RuleResult>;
 }
 
-/** The `evaluate` a rule given to {@link defineRule} states: one of the two. */
-type RuleEvaluation<P> =
+/** A collection as {@link defineRule} infers it: one it cannot infer, inferred
+ * as `any`, states nothing. */
+type Stated<T> = 0 extends 1 & T ? NoRequirements : T;
+
+/** The `evaluate` a rule given to {@link defineRule} states: one of the two,
+ * given the requirements of both of its {@link ResolutionSpec}'s collections. */
+type RuleEvaluation<B, R> =
   | {
       /** Build the target from its requirements as {@link RuleDefinition.evaluate}
        * receives them: resolved, materialized when the rule asks. */
-      evaluateResolved: (context: TargetContext, requirements: Unmaterialized<P>) => Computable<RuleResult>;
+      evaluateResolved: (context: TargetContext, requirements: Unmaterialized<Stated<B> & Stated<R>>) => Computable<RuleResult>;
       evaluateMaterialized?: never;
     }
   | {
       /** Build the target from its requirements, every one materialized first. */
-      evaluateMaterialized: (context: TargetContext, materialized: MaterializedRequirements<P>) => RuleResult | Computable<RuleResult>;
+      evaluateMaterialized: (
+        context: TargetContext,
+        materialized: MaterializedRequirements<Stated<B>> & MaterializedRequirements<Stated<R>>
+      ) => RuleResult | Computable<RuleResult>;
       evaluateResolved?: never;
     };
 
@@ -251,31 +262,38 @@ type RuleEvaluation<P> =
  * with a type and guards, a rule a contribution lists; without, the
  * implementation a `rule` declaration names, which may require nothing.
  */
-export function defineRule<P extends Record<string, RequiredSources>>(
+export function defineRule<
+  B extends Record<string, RequiredSources> = NoRequirements,
+  R extends Record<string, RequiredSources> = NoRequirements
+>(
   rule: SelectableRule &
     Omit<RuleImplementation, "requirements" | "evaluate" | "describe"> & {
-      requirements: (context: TargetContext) => ResolutionSpec<P> | Computable<ResolutionSpec<P>>;
-      describe?: (context: TargetContext, requirements: Unmaterialized<P>) => Computable<RuleResult>;
-    } & RuleEvaluation<P>
+      requirements: (context: TargetContext) => ResolutionSpec<B, R> | Computable<ResolutionSpec<B, R>>;
+      describe?: (context: TargetContext, requirements: Unmaterialized<Stated<B> & Stated<R>>) => Computable<RuleResult>;
+    } & RuleEvaluation<B, R>
 ): RuleDefinition;
-export function defineRule<P extends Record<string, RequiredSources> = Record<string, never>>(
+export function defineRule<
+  B extends Record<string, RequiredSources> = NoRequirements,
+  R extends Record<string, RequiredSources> = NoRequirements
+>(
   rule: Omit<RuleImplementation, "requirements" | "evaluate" | "describe"> & {
-    requirements?: (context: TargetContext) => ResolutionSpec<P> | Computable<ResolutionSpec<P>>;
-    describe?: (context: TargetContext, requirements: Unmaterialized<P>) => Computable<RuleResult>;
-  } & RuleEvaluation<P>
+    requirements?: (context: TargetContext) => ResolutionSpec<B, R> | Computable<ResolutionSpec<B, R>>;
+    describe?: (context: TargetContext, requirements: Unmaterialized<Stated<B> & Stated<R>>) => Computable<RuleResult>;
+  } & RuleEvaluation<B, R>
 ): RuleImplementation;
-export function defineRule<P extends Record<string, RequiredSources>>(
+export function defineRule<B extends Record<string, RequiredSources>, R extends Record<string, RequiredSources>>(
   rule: Partial<SelectableRule> &
     Omit<RuleImplementation, "requirements" | "evaluate" | "describe"> & {
-      requirements?: (context: TargetContext) => ResolutionSpec<P> | Computable<ResolutionSpec<P>>;
-      describe?: (context: TargetContext, requirements: Unmaterialized<P>) => Computable<RuleResult>;
-    } & RuleEvaluation<P>
+      requirements?: (context: TargetContext) => ResolutionSpec<B, R> | Computable<ResolutionSpec<B, R>>;
+      describe?: (context: TargetContext, requirements: Unmaterialized<Stated<B> & Stated<R>>) => Computable<RuleResult>;
+    } & RuleEvaluation<B, R>
 ): RuleImplementation {
   const { evaluateResolved, evaluateMaterialized, describe, ...definition } = rule;
-  const evaluate: (context: TargetContext, requirements: Unmaterialized<P>) => Computable<RuleResult> =
+  const evaluate: (context: TargetContext, requirements: Unmaterialized<Stated<B> & Stated<R>>) => Computable<RuleResult> =
     evaluateMaterialized === undefined
       ? evaluateResolved
-      : (context, requirements) => requirements.materializeAll().then(materialized => evaluateMaterialized(context, materialized));
+      : (context, requirements) =>
+          requirements.materializeAll().then(materialized => evaluateMaterialized(context, materialized as MaterializedRequirements<Stated<B>> & MaterializedRequirements<Stated<R>>));
   return {
     ...definition,
     evaluate: evaluate as RuleImplementation["evaluate"],

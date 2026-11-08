@@ -68,7 +68,7 @@ export default defineRule({
    * passes on; `compile_deps` is compiled against and private to the build. */
   requirements(context) {
     return {
-      requirements: {
+      build: {
         srcs: context.getFileProperty("srcs"),
         resources: context.getFileProperty("resources"),
         dependencies: context.getPackageProperty("deps"),
@@ -76,7 +76,7 @@ export default defineRule({
         optional_provided: context.getPackageProperty("optional_provided_deps"),
         compile_deps: context.getPackageProperty("compile_deps"),
       },
-      builds: { package: context.name, format: MAVEN_FORMAT },
+      result: { package: context.name, format: MAVEN_FORMAT },
     };
   },
   evaluateResolved(context, requirements) {

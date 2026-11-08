@@ -40,7 +40,7 @@ import {
   PROVIDED_KEY,
   Read,
   RequiredSources,
-  requirementEntries,
+  specEntries,
   resolveRequirements,
   unmaterialized,
   Unmaterialized,
@@ -57,7 +57,7 @@ import {
   SelectableRule,
   SubTargetInputs,
 } from "../rules/Types";
-import { BUILD_OPERATION, Constraints, COVERAGE, HOST, RUN_OVERRIDE, TARGET } from "../model/Constraints";
+import { BUILD_OPERATION, Constraints, COVERAGE, HOST, operationOf, RUN_OVERRIDE, TARGET } from "../model/Constraints";
 import { TaskDescription } from "../model/BuildEvents";
 import { ExecutionContext } from "../model/ExecutionContext";
 import {
@@ -237,6 +237,7 @@ export class BuildContextImpl implements InternalBuildContext {
   private resolutionContext(name = "<command line>"): ResolutionContext {
     const context: ResolutionContext = {
       name,
+      operation: operationOf(this.getConstraints()),
       getGlobalString: name => this.getProperty(name).then(prop => prop.toString()),
       launchedBy: (runnable, interpreter, interpreterArgs) =>
         this.resolveTarget(interpreter, undefined, this.runOverrides())
@@ -1883,7 +1884,7 @@ export class BuildContextImpl implements InternalBuildContext {
 /** State what `rule` requires of the target `context` builds: nothing, for a
  * rule without `requirements`. */
 function statedRequirements(context: TargetContext, rule: RuleDefinition): Computable<ResolutionSpec> {
-  const stated = rule.requirements?.(context) ?? { requirements: {} };
+  const stated = rule.requirements?.(context) ?? {};
   return stated instanceof Computable ? stated : Computable.resolve(stated);
 }
 
@@ -2000,14 +2001,16 @@ function requirementOf(name: Name): Constraints | undefined {
 
 /** What the result of a rule's block and the block's targets it reaches require ({@link RuleScope.lookupBlockRequirements}). */
 interface BlockRequirements {
-  /** What the result reference names, under {@link RESULT_KEY}, and each requirement of each target reached, named `<target>.<requirement>`. */
-  readonly requirements: ReadonlyMap<string, RequiredSources>;
+  /** What the result reference names, under {@link RESULT_KEY}, and each requirement of each target reached that its rule states for `build`, named `<target>.<requirement>`. */
+  readonly build: ReadonlyMap<string, RequiredSources>;
+  /** Each requirement of each target reached that its rule states for `run`, named as in `build`. */
+  readonly run: ReadonlyMap<string, RequiredSources>;
   /** What the result reference names. */
   readonly result: ReadonlyArray<SourceRef>;
   /** The requirement each key of `requirements` stands for. */
   readonly names: ReadonlyMap<string, string>;
   /** Each target reached, by name, with whether its rule collects permissively and what it declares it builds. */
-  readonly reachedTargets: ReadonlyMap<string, { readonly permissive: boolean; readonly builds?: Builds }>;
+  readonly reachedTargets: ReadonlyMap<string, { readonly permissive: boolean; readonly result?: Builds }>;
 }
 
 /** The name of what a block's result reference names among the requirements of a rule written in `.fabr`: no `<target>.<requirement>`. */
@@ -2115,16 +2118,17 @@ class RuleScope {
    * target, so the target passes on what the result passes on.
    */
   public requirements(stack?: IDependencyStack): Computable<ResolutionSpec> {
-    return this.lookupBlockRequirements(stack).then(({ requirements, result }) => {
+    return this.lookupBlockRequirements(stack).then(({ build, run, result }) => {
       const whole = soleWholeTarget([...result]);
       if (whole === undefined) {
-        return { requirements: new Map(requirements), permissive: true, builds: "files" as const };
+        return { build: new Map(build), run: new Map(run), permissive: true, result: "files" as const };
       }
-      const rest = [...requirements].filter(([key]) => key !== RESULT_KEY);
+      const rest = [...build].filter(([key]) => key !== RESULT_KEY);
       return whole.nodes().then(([node]): ResolutionSpec => ({
-        requirements: new Map<string, RequiredSources>([[EXTENDS_KEY, new PackageSources([whole])], ...rest]),
+        build: new Map<string, RequiredSources>([[EXTENDS_KEY, new PackageSources([whole])], ...rest]),
+        run: new Map(run),
         permissive: true,
-        builds: builtBy(node),
+        result: builtBy(node),
       }));
     });
   }
@@ -2154,8 +2158,8 @@ class RuleScope {
   }
 
   /** Get the requirements of the block's target `name`, reached by the result: its part of the matched target's, collected and building as its rule declares (`reached`). */
-  public requirementsOf(name: string, reached: { readonly permissive: boolean; readonly builds?: Builds }): Computable<ResolvedRequirements> {
-    return this.collection().then(collected => collected.ofTarget(name, reached.permissive, reached.builds));
+  public requirementsOf(name: string, reached: { readonly permissive: boolean; readonly result?: Builds }): Computable<ResolvedRequirements> {
+    return this.collection().then(collected => collected.ofTarget(name, reached.permissive, reached.result));
   }
 
   /** Get the state `rule` keeps for the block's target `name` in the configuration of `constraints`, made by `make` on first use: one in each configuration, however the target is looked up there. */
@@ -2197,8 +2201,9 @@ class RuleScope {
   private lookupReached(stack?: IDependencyStack): Computable<BlockRequirements> {
     interface Requires {
       readonly permissive: boolean;
-      readonly builds?: Builds;
-      readonly entries: ReadonlyArray<[string, Read]>;
+      readonly result?: Builds;
+      /** Each requirement, with the operation its collection is resolved for. */
+      readonly entries: ReadonlyArray<[string, Read, string]>;
     }
     return this.resultConfiguration().then(constraints => {
       const at = this.config(constraints, true);
@@ -2217,13 +2222,13 @@ class RuleScope {
             return Computable.resolve(undefined);
           }
           return statedRequirements(context, rule).then(stated => {
-            const entries = requirementEntries(stated.requirements);
+            const entries = specEntries(stated);
             return Computable.forAll(
               entries.map(([, required]) => (required instanceof Computable ? required : Computable.resolve(required))),
               (...values: Read[]): Requires => ({
                 permissive: stated.permissive === true,
-                builds: stated.builds,
-                entries: entries.map(([name], index): [string, Read] => [name, values[index]]),
+                result: stated.result,
+                entries: entries.map(([name, , operation], index): [string, Read, string] => [name, values[index], operation]),
               })
             );
           });
@@ -2247,21 +2252,22 @@ class RuleScope {
       const { targets } = this.rule.decl.implementation;
       return this.result(constraints, stack, true).then(sources =>
         reach(named(sources), new Map()).then(reached => {
-          const requirements = new Map<string, RequiredSources>([[RESULT_KEY, sources]]);
+          const build = new Map<string, RequiredSources>([[RESULT_KEY, sources]]);
+          const run = new Map<string, RequiredSources>();
           const names = new Map<string, string>([[RESULT_KEY, RESULT_KEY]]);
-          const reachedTargets = new Map<string, { permissive: boolean; builds?: Builds }>();
+          const reachedTargets = new Map<string, { permissive: boolean; result?: Builds }>();
           for (const target of targets) {
             const found = reached.get(target);
             if (found !== undefined) {
               const local = declName(target);
-              reachedTargets.set(local, { permissive: found.permissive, builds: found.builds });
-              for (const [name, value] of found.entries) {
-                requirements.set(`${local}.${name}`, value);
+              reachedTargets.set(local, { permissive: found.permissive, result: found.result });
+              for (const [name, value, operation] of found.entries) {
+                (operation === "run" ? run : build).set(`${local}.${name}`, value);
                 names.set(`${local}.${name}`, name);
               }
             }
           }
-          return { requirements, result: sources, names, reachedTargets };
+          return { build, run, result: sources, names, reachedTargets };
         })
       );
     });
@@ -2294,27 +2300,27 @@ class RuleScope {
       );
     return statedRequirements(context, rule)
       .then(stated => {
-        const entries = requirementEntries(stated.requirements);
+        const entries = specEntries(stated);
         return Computable.forAll(
           entries.map(([, required]) => (required instanceof Computable ? required : Computable.resolve(required))),
-          (...values: Read[]) => ({ builds: stated.builds, lists: new Map(entries.map(([key], index) => [key, values[index]])) })
+          (...values: Read[]) => ({ result: stated.result, lists: new Map(entries.map(([key], index) => [key, values[index]])) })
         );
       })
-      .then(({ builds, lists }) => {
+      .then(({ result, lists }) => {
         /* What the target is made from is read as material, as any target's
          * is, which joins no resolution. */
         const made = lists.get(EXTENDS_KEY);
         const material =
           made === undefined || sourcesOf(made).length === 0
             ? Computable.resolve<ReadonlyArray<Resolved>>([])
-            : resolveRequirements(context, { requirements: new Map([[EXTENDS_KEY, made]]) }).then(resolved => resolved.sources.get(EXTENDS_KEY) ?? []);
+            : resolveRequirements(context, { build: new Map([[EXTENDS_KEY, made]]) }).then(resolved => resolved.sources.get(EXTENDS_KEY) ?? []);
         const transitive = [DEPENDENCIES_KEY, PROVIDED_KEY, OPTIONAL_PROVIDED_KEY];
         const edges = Computable.forAll(
           transitive.map(key => edgesOf(sourcesOf(lists.get(key) ?? []))),
           (...each: Dependency[][]) => new Map(transitive.map((key, index) => [key, each[index]]))
         );
         return Computable.forAll([material, edges] as const, (madeFrom, byName) =>
-          BlockTargetNode.of(context, passedOn(madeFrom, key => byName.get(key) ?? []), target, builds)
+          BlockTargetNode.of(context, passedOn(madeFrom, key => byName.get(key) ?? []), target, result)
         );
       })
       .catch(err => {

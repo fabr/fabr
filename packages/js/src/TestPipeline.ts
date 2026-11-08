@@ -269,7 +269,7 @@ export interface ITestSettings {
  */
 export function testRequirements(written: TestRequirements): ResolutionSpec<TestRequirements> {
   return {
-    requirements:
+    build:
       written.tests.length === 0
         ? {
             package: new PackageSources([]),

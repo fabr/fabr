@@ -266,9 +266,9 @@ export class RepositoryGroup<V, C>
     );
   }
 
-  public getRequirements(pkg: string, version: V): Computable<Requirement[]> {
+  public getRequirements(pkg: string, version: V, operation?: string): Computable<Requirement[]> {
     const member = this.routed(pkg);
-    return member instanceof Error ? Computable.reject(member) : member.getRequirements(pkg, version);
+    return member instanceof Error ? Computable.reject(member) : member.getRequirements(pkg, version, operation);
   }
 
   public lowestAvailable(pkg: string, constraint: string): Computable<V | undefined> {
@@ -294,9 +294,9 @@ export class RepositoryGroup<V, C>
 
   /** Join the members' environment keys, deduplicated — with a shared format
    * they answer alike, but the memo key must be right even if they differ. */
-  public environmentKey(): Computable<string> {
+  public environmentKey(operation?: string): Computable<string> {
     return Computable.forAll(
-      this.routes.map(route => route.member.environmentKey()),
+      this.routes.map(route => route.member.environmentKey(operation)),
       (...keys: string[]) => [...new Set(keys)].join(",")
     );
   }

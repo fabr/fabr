@@ -148,7 +148,7 @@ class TargetBuild {
 
   /** Check that what the target built, the package `pkg` or files where there is none, is what its rule declares it builds. */
   private checkDeclared(pkg: PackageFileSet | undefined): void {
-    const declared = this.resolved.builds;
+    const declared = this.resolved.result;
     const name = this.context.name;
     const refuse = (message: string): never => {
       throw this.context.failure(
@@ -228,9 +228,9 @@ export class DeclaredResolvedTarget extends ResolvedTarget {
     const build = new TargetBuild(context, resolved, evaluate);
     const stated = build.stated();
     return new DeclaredResolvedTarget(build, {
-      content: targetContent(context, plain => build.built(plain), resolved.builds, describe),
-      packageName: declaredName(context, resolved.builds),
-      version: stated.version ?? declaredVersion(resolved.builds),
+      content: targetContent(context, plain => build.built(plain), resolved.result, describe),
+      packageName: declaredName(context, resolved.result),
+      version: stated.version ?? declaredVersion(resolved.result),
       dependencies: stated.dependencies,
       origin: targetOrigin(context),
       provided: stated.provided ?? new Map(),

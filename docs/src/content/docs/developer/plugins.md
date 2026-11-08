@@ -254,7 +254,7 @@ the evaluation receives from what `requirements` returns:
 ```ts
 export default defineRule({
   requirements(context) {
-    return { requirements: { srcs: context.getFileProperty("srcs") } };
+    return { build: { srcs: context.getFileProperty("srcs") } };
   },
   evaluateMaterialized(context, { srcs }) {
     /* … */
@@ -298,7 +298,7 @@ export default defineRule({
     const stated = jsPackage.requirements!(context);
     return (stated instanceof Computable ? stated : Computable.resolve(stated)).then(spec => ({
       ...spec,
-      requirements: { ...spec.requirements, libs: context.getFileProperty("libs") },
+      build: { ...spec.build, libs: context.getFileProperty("libs") },
     }));
   },
   evaluateResolved(context, requirements) {
@@ -321,10 +321,31 @@ reads its dependencies under `build` explicitly (`context.getFileProperty("deps"
 
 `requirements(context)` reads the properties and globals that name the target's file
 dependencies (files, packages and other targets), and returns a `ResolutionSpec`, or a
-`Computable` of one where it depends on a value read first: `{ requirements, permissive?, builds?
-}`, where `requirements` is a map from a name of the rule's choosing to the sources read. Nothing is
+`Computable` of one where it depends on a value read first: `{ build?, run?, permissive?, result?
+}`, where `build` and `run` each map a name of the rule's choosing to the sources read. Nothing is
 fetched or built here: fabr resolves the requirements, and they are given content for the rule's
 evaluation. Use a `Map` where the names come from the user.
+
+**Building with and running with.** `build` holds what the target is built with: what it compiles
+against, and what it passes on. `run` holds what it installs or runs. Each is resolved as a
+collection of its own, for that operation, because an ecosystem may answer them differently: a
+Maven package requires its `compile`-scoped dependencies to compile against, and its `runtime`
+scope as well to run (Gradle's `java-api` and `java-runtime` variants). A rule that does both
+reads the property once for each, under two names, since a name is one requirement whichever
+collection holds it:
+
+```ts
+requirements(context) {
+  return {
+    build: { srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps") },
+    run: { classpath: context.getPackageProperty("deps") },
+  };
+},
+```
+
+The evaluation receives both collections' requirements by name. The two are resolved apart, so
+where a dependency only one of them reaches raises a version, the other may select a different one,
+as Gradle's compile and runtime classpaths may.
 
 Only `FILES` and `PACKAGES` properties are requirements. A string, map or command property has
 nothing to resolve: it has one form, its value, which the evaluation reads directly from `context`
@@ -382,24 +403,24 @@ sets `permissive`, and is not refused for them:
 
 ```ts
 requirements(context) {
-  return { requirements: { deps: context.getPackageProperty("deps") }, permissive: true };
+  return { run: { deps: context.getPackageProperty("deps") }, permissive: true };
 },
 ```
 
 **What the target builds.** Resolution places a target among what requires it before it is built,
 so it needs to know what the target will be: a package, and under what name, or plain files. A
-rule that knows says so with `builds`, beside its requirements:
+rule that knows says so with `result`, beside its requirements:
 
 ```ts
 requirements(context) {
   return {
-    requirements: { dependencies: context.getPackageProperty("deps"), srcs: context.getFileProperty("srcs") },
-    builds: { package: context.name, format: NPM_FORMAT },
+    build: { dependencies: context.getPackageProperty("deps"), srcs: context.getFileProperty("srcs") },
+    result: { package: context.name, format: NPM_FORMAT },
   };
 },
 ```
 
-`builds` is `{ package, format?, version? }` for a package (the format being the package format
+`result` is `{ package, format?, version? }` for a package (the format being the package format
 of the registry the package belongs with, such as `NPM_FORMAT`), or `"files"`. A target declared to
 build files claims no name among packages, so several can be required together; a package's
 node takes the declared name and version. What the rule builds is checked against it, and a rule

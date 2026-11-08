@@ -83,7 +83,7 @@ import {
 } from "./MavenPublish";
 import { MavenConstraint, MavenVersion, MAVEN_VERSIONS } from "./MavenVersion";
 import { coordinateText, EffectivePom, effectivePom, parsePom, passedOnDependencies, PomCoordinate, RawPom } from "./Pom";
-import { GradleModule, GradleVariant, parseGradleModule, runtimeVariant, variantRequirements } from "./GradleModule";
+import { GradleModule, GradleVariant, javaVariant, JavaUsage, parseGradleModule, variantRequirements } from "./GradleModule";
 import { javaRelease } from "./JarPackage";
 import { parseXml, xmlChild, xmlChildren } from "./Xml";
 
@@ -324,10 +324,11 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     return new FabrError(`${doing} ${this.url}/${path} failed (${response.statusCode})${detail === "" ? "" : `: ${detail}`}`);
   }
 
-  /** Name the environment a resolution depends on: none, as no artifact is chosen by platform. */
-  /** Name the environment a resolution depends on: the Java release, by which a `.module`'s variant is selected. */
-  public environmentKey(): Computable<string> {
-    return this.release().then(release => `java${release}`);
+  /** Name the environment a resolution for `operation` depends on: the Java
+   * release and the usage, by which a package's requirements are selected. */
+  public environmentKey(operation?: string): Computable<string> {
+    const usage = usageFor(operation);
+    return this.release().then(release => (usage === undefined ? `java${release}` : `java${release} ${usage}`));
   }
 
   /** Get the Java release programs run on, which `JVM_TARGET` names. */
@@ -336,11 +337,11 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
   }
 
   /**
-   * Get the variant of a package version's `.module` a Java program runs
-   * with, where its POM says Gradle published one beside it, or undefined
+   * Get the variant of a package version's `.module` a Java consumer asks for
+   * `usage`, where its POM says Gradle published one beside it, or undefined
    * where the POM describes it.
    */
-  private runtimeVariantOf(name: string, version: string): Computable<GradleVariant | undefined> {
+  private variantOf(name: string, version: string, usage: JavaUsage): Computable<GradleVariant | undefined> {
     const coordinate = this.coordinateOf(name, version);
     return this.requiredPom(coordinate).then(raw => {
       if (!raw.gradleMetadata) {
@@ -358,26 +359,37 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
         })
       );
       return Computable.forAll([module, this.release()], (found, release) =>
-        found === undefined ? undefined : runtimeVariant(found, release, coordinateText(coordinate))
+        found === undefined ? undefined : javaVariant(found, release, usage, coordinateText(coordinate))
       );
     });
   }
 
   /**
-   * Get the requirements of a package: what its effective POM passes on; and,
-   * for a BOM (a `pom`-packaged package), the jars its `dependencyManagement`
-   * manages, as its BOM dependencies.
+   * Get the requirements of a package for `operation`: what the variant of its
+   * `.module` of that usage states, or what its effective POM passes on for
+   * it; and, for a BOM (a `pom`-packaged package), the jars its
+   * `dependencyManagement` manages, as its BOM dependencies. With no
+   * operation, what it requires for either usage.
    */
-  public getRequirements(name: string, version: MavenVersion): Computable<Requirement[]> {
-    return this.runtimeVariantOf(name, version.text).then(variant =>
-      variant !== undefined ? variantRequirements(variant) : this.pomRequirements(name, version)
-    );
+  public getRequirements(name: string, version: MavenVersion, operation?: string): Computable<Requirement[]> {
+    const usage = usageFor(operation);
+    return this.variantOf(name, version.text, usage ?? "java-runtime").then(runtime => {
+      if (runtime === undefined) {
+        return this.pomRequirements(name, version, usage ?? "java-runtime");
+      }
+      if (usage !== undefined) {
+        return variantRequirements(runtime);
+      }
+      return this.variantOf(name, version.text, "java-api").then(api =>
+        unitedRequirements(variantRequirements(runtime), api === undefined ? [] : variantRequirements(api))
+      );
+    });
   }
 
-  /** Get the requirements a package's effective POM states (see {@link getRequirements}). */
-  private pomRequirements(name: string, version: MavenVersion): Computable<Requirement[]> {
+  /** Get the requirements a package's effective POM states for `usage` (see {@link getRequirements}). */
+  private pomRequirements(name: string, version: MavenVersion, usage: JavaUsage): Computable<Requirement[]> {
     return this.effectivePomOf(name, version.text).then(pom => [
-      ...passedOnDependencies(pom).map(dependency => ({
+      ...passedOnDependencies(pom, usage).map(dependency => ({
         name: mavenName(dependency.groupId, dependency.artifactId),
         versionConstraint: dependency.version,
         ...(dependency.classifier === undefined ? {} : { variant: dependency.classifier }),
@@ -416,7 +428,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
    * otherwise (a BOM, an aggregator) it has none.
    */
   public fetch(name: string, version: MavenVersion): Computable<PackageFileSet> {
-    return this.runtimeVariantOf(name, version.text).then(variant =>
+    return this.variantOf(name, version.text, "java-runtime").then(variant =>
       variant !== undefined ? this.fetchVariantFiles(name, version, variant) : this.fetchPomArtifact(name, version)
     );
   }
@@ -660,3 +672,19 @@ export const mavenRepositoryRegistration: RepositoryRegistration = { type: "mave
 
 /** The implementation JAVA.fabr's `repository` declaration names. */
 export default createRepository;
+
+/** @return the usage a resolution for `operation` asks of a package: its
+ * API to compile against under `build`, its runtime otherwise, and either
+ * where no operation is given. */
+function usageFor(operation: string | undefined): JavaUsage | undefined {
+  return operation === undefined ? undefined : operation === "build" ? "java-api" : "java-runtime";
+}
+
+/** @return `runtime`'s requirements, and each of `api`'s that names a package
+ * (and variant) none of `runtime`'s does. */
+function unitedRequirements(runtime: Requirement[], api: Requirement[]): Requirement[] {
+  const key = (requirement: Requirement): string =>
+    `${requirement.name}/${requirement.variant ?? ""}/${requirement.bom === true ? "bom" : ""}`;
+  const held = new Set(runtime.map(key));
+  return [...runtime, ...api.filter(requirement => !held.has(key(requirement)))];
+}

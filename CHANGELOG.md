@@ -25,6 +25,7 @@ number.
 - `fabr test` of a name listing several test targets summarises all of their tests, not only the first target's.
 - Fix: A test whose sources import a JSON file listed among its deps no longer fails on the compiled copy conflicting with it.
 - Negative extglobs can now match multiple paths eg !(foo/bar)/**
+- Add support for separate build + runtime resolution.
 
 @fabr-build/aws:
 - Add s3 download support.

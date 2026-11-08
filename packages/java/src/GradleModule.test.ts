@@ -20,7 +20,7 @@
 
 import { expect } from "chai";
 import { Requirement } from "@fabr-build/core";
-import { hasGradleMetadata, parseGradleModule, runtimeVariant, toGradleModule, variantRequirements } from "./GradleModule";
+import { hasGradleMetadata, javaVariant, parseGradleModule, toGradleModule, variantRequirements } from "./GradleModule";
 
 /* Guava's shape: a jre and an android flavour of each usage, and documentation. */
 const GUAVA = toGradleModule({
@@ -54,7 +54,7 @@ describe("Gradle Module Metadata", () => {
   });
 
   it("selects the runtime library variant for the standard JVM, and its files", () => {
-    const variant = runtimeVariant(GUAVA, 21, "guava");
+    const variant = javaVariant(GUAVA, 21, "java-runtime", "guava");
     expect(variant.name).to.equal("jreRuntimeElements");
     expect(variant.files).to.deep.equal([{ name: "guava-33.3.1-jre.jar", url: "guava-33.3.1-jre.jar" }]);
     expect(variantRequirements(variant)).to.deep.equal([{ name: "com.google.guava/failureaccess", versionConstraint: "1.0.2" }]);
@@ -69,10 +69,10 @@ describe("Gradle Module Metadata", () => {
         { name: "java25", attributes: { "org.gradle.usage": "java-runtime", "org.gradle.jvm.version": 25 } },
       ],
     });
-    expect(runtimeVariant(module, 21, "m").name).to.equal("java17");
-    expect(runtimeVariant(module, 11, "m").name).to.equal("java8");
+    expect(javaVariant(module, 21, "java-runtime", "m").name).to.equal("java17");
+    expect(javaVariant(module, 11, "java-runtime", "m").name).to.equal("java8");
     const late = toGradleModule({ formatVersion: "1.1", variants: [{ name: "java25", attributes: { "org.gradle.usage": "java-runtime", "org.gradle.jvm.version": 25 } }] });
-    expect(() => runtimeVariant(late, 21, "m")).to.throw(/m has no variant a Java program on Java 21 can run with/);
+    expect(() => javaVariant(late, 21, "java-runtime", "m")).to.throw(/m has no java-runtime variant for Java 21/);
   });
 
   it("selects the variant of the module's own capability, not its test fixtures'", () => {
@@ -88,7 +88,35 @@ describe("Gradle Module Metadata", () => {
         },
       ],
     });
-    expect(runtimeVariant(module, 21, "lib").name).to.equal("runtimeElements");
+    expect(javaVariant(module, 21, "java-runtime", "lib").name).to.equal("runtimeElements");
+  });
+
+  it("selects the variant of the usage asked for, the runtime one for the API where the module publishes no API variant", () => {
+    const module = toGradleModule({
+      formatVersion: "1.1",
+      variants: [
+        {
+          name: "apiElements",
+          attributes: { "org.gradle.usage": "java-api" },
+          dependencies: [{ group: "org.apiguardian", module: "apiguardian-api", version: { requires: "1.1.2" } }],
+        },
+        { name: "runtimeElements", attributes: { "org.gradle.usage": "java-runtime" } },
+      ],
+    });
+    expect(variantRequirements(javaVariant(module, 21, "java-api", "commons"))).to.deep.equal([
+      { name: "org.apiguardian/apiguardian-api", versionConstraint: "1.1.2" },
+    ]);
+    expect(variantRequirements(javaVariant(module, 21, "java-runtime", "commons"))).to.deep.equal([]);
+    const runtimeOnly = toGradleModule({
+      formatVersion: "1.1",
+      variants: [{ name: "runtimeElements", attributes: { "org.gradle.usage": "java-runtime-jars" } }],
+    });
+    expect(javaVariant(runtimeOnly, 21, "java-api", "m").name).to.equal("runtimeElements");
+    const apiOnly = toGradleModule({
+      formatVersion: "1.1",
+      variants: [{ name: "apiElements", attributes: { "org.gradle.usage": "java-api" } }],
+    });
+    expect(() => javaVariant(apiOnly, 21, "java-runtime", "m")).to.throw(/m has no java-runtime variant for Java 21/);
   });
 
   it("selects a platform's variant where the module is no library, and refuses an ambiguous choice", () => {
@@ -103,14 +131,14 @@ describe("Gradle Module Metadata", () => {
         },
       ],
     });
-    const variant = runtimeVariant(platform, 21, "bom");
+    const variant = javaVariant(platform, 21, "java-runtime", "bom");
     expect(variantRequirements(variant)).to.deep.equal([{ name: "com.example/core", versionConstraint: "2.0", bom: true }]);
     const twice = toGradleModule({ formatVersion: "1.1", variants: [{ name: "a" }, { name: "b" }] });
-    expect(() => runtimeVariant(twice, 21, "m")).to.throw(/several variants .*: a, b/);
+    expect(() => javaVariant(twice, 21, "java-runtime", "m")).to.throw(/several java-runtime variants for Java 21: a, b/);
   });
 
   it("reads strictly as a range or an exact version, prefers where nothing else is stated, and an artifact selector as a variant", () => {
-    const variant = runtimeVariant(
+    const variant = javaVariant(
       toGradleModule({
         formatVersion: "1.1",
         variants: [
@@ -130,6 +158,7 @@ describe("Gradle Module Metadata", () => {
         ],
       }),
       21,
+      "java-runtime",
       "m"
     );
     expect(variantRequirements(variant)).to.deep.equal([
@@ -145,12 +174,13 @@ describe("Gradle Module Metadata", () => {
   it("cuts the versions a dependency rejects out of what it requires", () => {
     const requirementsOf = (version: Record<string, unknown>): Requirement[] =>
       variantRequirements(
-        runtimeVariant(
+        javaVariant(
           toGradleModule({
             formatVersion: "1.1",
             variants: [{ name: "runtime", attributes: { "org.gradle.usage": "java-runtime" }, dependencies: [{ group: "g", module: "m", version }] }],
           }),
           21,
+          "java-runtime",
           "x"
         )
       );
@@ -161,7 +191,7 @@ describe("Gradle Module Metadata", () => {
   });
 
   it("reads a dependency's excludes", () => {
-    const variant = runtimeVariant(
+    const variant = javaVariant(
       toGradleModule({
         formatVersion: "1.1",
         variants: [
@@ -173,13 +203,14 @@ describe("Gradle Module Metadata", () => {
         ],
       }),
       21,
+      "java-runtime",
       "x"
     );
     expect(variantRequirements(variant)).to.deep.equal([{ name: "g/m", versionConstraint: "1", excludes: ["org.slf4j/*"] }]);
   });
 
   it("reads a variant another module holds as a requirement of that module", () => {
-    const variant = runtimeVariant(
+    const variant = javaVariant(
       toGradleModule({
         formatVersion: "1.1",
         variants: [
@@ -192,6 +223,7 @@ describe("Gradle Module Metadata", () => {
         ],
       }),
       21,
+      "java-runtime",
       "core"
     );
     expect(variantRequirements(variant)).to.deep.equal([{ name: "org.example/core-jvm", versionConstraint: "1.9.0" }]);

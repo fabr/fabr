@@ -34,7 +34,7 @@ import { defineRule } from "./Types";
 /** The `zip` rule. */
 export default defineRule({
   requirements(context) {
-    return { requirements: { srcs: context.getFileProperty("srcs") } };
+    return { build: { srcs: context.getFileProperty("srcs") } };
   },
   evaluateMaterialized(context, { srcs }) {
     return Computable.resolve(new BuildAction(ZIP_ACTION, { files: FileSet.unionAll(...srcs) }, { name: zipName(context.name) }));

@@ -47,7 +47,7 @@ export default {
    * a name reaches. */
   requirements(context) {
     return members(context).then(table => ({
-      requirements: new Map(
+      build: new Map(
         [...table.values()].map((member): [string, Computable<SyncSources>] => [
           member.content,
           context

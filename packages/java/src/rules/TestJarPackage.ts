@@ -59,14 +59,19 @@ interface TestInputs {
   optional_provided: FileSet[];
   compile_deps: FileSet[];
   test_deps: FileSet[];
+  run_pkg: FileSet[];
+  run_provided: FileSet[];
+  run_optional_provided: FileSet[];
+  run_test_deps: FileSet[];
 }
 
 /** The `jar_package` rule, under `test`. */
 export default defineRule({
-  /* The package under test is its own build. */
+  /* The package under test is its own build. The tests are compiled against
+   * the packages as `build` resolves them, and run with them as `run` does. */
   requirements(context) {
     return {
-      requirements: {
+      build: {
         pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE),
         srcs: context.getFileProperty("srcs", BUILD_OVERRIDE),
         tests: context.getFileProperty("tests", BUILD_OVERRIDE),
@@ -75,6 +80,12 @@ export default defineRule({
         optional_provided: context.getPackageProperty("optional_provided_deps", BUILD_OVERRIDE),
         compile_deps: context.getPackageProperty("compile_deps", BUILD_OVERRIDE),
         test_deps: context.getPackageProperty("test_deps", BUILD_OVERRIDE),
+      },
+      run: {
+        run_pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE),
+        run_provided: context.getPackageProperty("provided_deps", BUILD_OVERRIDE),
+        run_optional_provided: context.getPackageProperty("optional_provided_deps", BUILD_OVERRIDE),
+        run_test_deps: context.getPackageProperty("test_deps", BUILD_OVERRIDE),
       },
     };
   },
@@ -117,11 +128,12 @@ function testJar(context: TargetContext, inputs: TestInputs): Computable<RuleRes
     /* No tests declared: trivially green, with nothing to run. */
     return Computable.resolve(EMPTY_FILESET);
   }
-  const runtime = [...inputs.pkg, ...inputs.provided, ...inputs.optional_provided, ...inputs.test_deps];
+  const runtime = [...inputs.run_pkg, ...inputs.run_provided, ...inputs.run_optional_provided, ...inputs.run_test_deps];
+  const compile = [...inputs.pkg, ...inputs.provided, ...inputs.optional_provided, ...inputs.test_deps, ...inputs.compile_deps];
   const classes = processorsOf(context).then(processors =>
     context.subTarget(
       "java_compile",
-      { srcs: tests, deps: [...runtime, ...inputs.compile_deps], ...(processors.length === 0 ? {} : { processors }) },
+      { srcs: tests, deps: compile, ...(processors.length === 0 ? {} : { processors }) },
       { label: "Compiling tests for", constraints: BUILD_OVERRIDE }
     )
   );
@@ -149,7 +161,7 @@ function testJar(context: TargetContext, inputs: TestInputs): Computable<RuleRes
         )
       );
       const selection = pattern === "" ? [] : [`--name-pattern=${pattern}`];
-      const measured = tools && measuredRun(tools, ownJars(inputs.pkg), packages);
+      const measured = tools && measuredRun(tools, ownJars(inputs.run_pkg), packages);
       const argv = java.toCommandLine(
         [...(measured?.jvm ?? []), "-cp", classpath, RUNNER_CLASS, `--sources=${SOURCES_FILE}`, ...selection, ...(measured?.runner ?? []), `--scan=${TEST_CLASSES_DIR}`],
         { base: path.posix.join(TREE_MOUNT, java.toManifestHash()) }

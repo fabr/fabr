@@ -217,10 +217,12 @@ export interface RepositoryReader<V, C> extends RequirementSource<V> {
   /**
    * An opaque discriminator of what a resolution is computed *for* — anything
    * beyond the roots that shapes the graph (npm: the target platform, which
-   * gates optional deps; a content member: its manifest's claims). Folded into
-   * the resolution memo key.
+   * gates optional deps; a content member: its manifest's claims; Maven: the
+   * JVM release, and the usage `operation` selects). Folded into the
+   * resolution memo key. `operation` is the `BUILD_OPERATION` the resolution
+   * is for (see {@link RequirementSource.getRequirements}).
    */
-  environmentKey(): Computable<string>;
+  environmentKey(operation?: string): Computable<string>;
   /** The operation of the configuration this instance was made in
    * (`BUILD_OPERATION`): a reference is answered with the package, with its
    * files alone under `files`, and with the program it is under `run`. */

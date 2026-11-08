@@ -485,8 +485,13 @@ export function isPlainNode(pkg: Package): boolean {
   return pkg instanceof ResolvedNode && pkg.content.plain === true;
 }
 
-/** Make `registry` a requirement source in which the builds answer for themselves. */
-function withBuilds<V, C>(registry: RepositoryReader<V, C> | undefined, builds: Builds): RequirementSource<V | string> {
+/** Make `registry` a requirement source in which the builds answer for
+ * themselves, and every other package with what it requires for `operation`. */
+function withBuilds<V, C>(
+  registry: RepositoryReader<V, C> | undefined,
+  builds: Builds,
+  operation?: string
+): RequirementSource<V | string> {
   const lowestAvailable = registry?.lowestAvailable?.bind(registry);
   return {
     getRequirements: (name, version) => {
@@ -496,7 +501,7 @@ function withBuilds<V, C>(registry: RepositoryReader<V, C> | undefined, builds: 
           ? Computable.reject(new FabrError(`internal: ${name} ${version} is no build of this collection`))
           : Computable.resolve(node.requirements);
       }
-      return registry!.getRequirements(name, version);
+      return registry!.getRequirements(name, version, operation);
     },
     ...(lowestAvailable === undefined ? {} : { lowestAvailable }),
   };
@@ -1517,7 +1522,7 @@ function getJointResolution<V, C>(
   const builtKeys = [...builds.built]
     .map(([id, node]) => `built ${id}: ${node.requirements.map(requirementKey).sort().join(", ")}`)
     .sort();
-  return registry.environmentKey().then(environment => {
+  return registry.environmentKey(context.operation).then(environment => {
     return context
       /* Newline-join the roots: a version constraint may contain spaces (a
        * quoted hyphen range, `1.2.3 - 2.3.4`), so a space delimiter isn't
@@ -1530,7 +1535,7 @@ function getJointResolution<V, C>(
         context.runTask(
           { kind: "repository-resolve", repository: repositoryName ?? registry.identity, consumer: context.name, requirements: rootKeys },
           () =>
-            resolveMVS(roots, domain, withBuilds(registry, builds)).then(result => {
+            resolveMVS(roots, domain, withBuilds(registry, builds, context.operation)).then(result => {
               /* Hard errors (unparseable constraints, floorless-only
                * requirements) are not repairable in any mode. Grouped and
                * enriched with pin suggestions before throwing — typed + per-error

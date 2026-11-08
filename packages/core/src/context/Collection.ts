@@ -19,12 +19,13 @@
 
 import { Reference } from "../core/Reference";
 import { Computable } from "../core/Computable";
-import { FabrError } from "../core/Errors";
+import { FabrError, toError } from "../core/Errors";
 import { FileSet } from "../core/FileSet";
 import { FileSetRef } from "../core/FileSetRef";
 import { Materialized, RepositoryRef, SourceRef } from "../core/Repository";
-import { checked, materializeLists, resolveLists } from "./CollectionPoint";
-import type { Conflicts } from "../resolver/StrictCollection";
+import { checked, materializeLists, ResolvedLists, resolveLists } from "./CollectionPoint";
+import { Conflicts } from "../resolver/StrictCollection";
+import type { ResolutionContext } from "../resolver/Types";
 import { Builds, PackageFileSet, ResolvedNode, Dependency } from "../core/PackageFileSet";
 import { Resolved } from "../core/Repository";
 import type { InternalBuildContext } from "./BuildContext";
@@ -111,16 +112,48 @@ export type Requirements = Record<string, RequiredSources> | ReadonlyMap<string,
 
 /**
  * What resolution needs to know of a target, as its rule's `requirements`
- * returns it: the sources it requires, by name (`requirements`); whether they
- * are collected permissively, so that a target built with them is not refused
- * for versions that conflict, as a sealed program install is not
+ * returns it: the sources it requires, by name, as two collections — those it
+ * compiles against or otherwise builds with (`build`), and those it installs
+ * or runs (`run`), each resolved for that operation (a Maven package requires
+ * its compile scope for the first and its runtime scope for the second);
+ * whether they are collected permissively, so that a target built with them is
+ * not refused for versions that conflict, as a sealed program install is not
  * (`permissive`); and what the target builds, where the rule knows
- * (`builds`).
+ * (`result`). A name is one requirement whichever collection holds it, so the
+ * two hold different names.
  */
-export interface ResolutionSpec<P extends Requirements = Requirements> {
-  readonly requirements: P;
+export interface ResolutionSpec<B extends Requirements = Requirements, R extends Requirements = NoRequirements> {
+  readonly build?: B;
+  readonly run?: R;
   readonly permissive?: boolean;
-  readonly builds?: Builds;
+  readonly result?: Builds;
+}
+
+/** A collection of a {@link ResolutionSpec} that states nothing. */
+export type NoRequirements = Record<never, never>;
+
+/** The operations a {@link ResolutionSpec}'s collections are resolved for, by the field holding each. */
+const SIDES = ["build", "run"] as const;
+
+/** @return each requirement `spec` states, by name, with the operation its
+ * collection is resolved for. Rejects a name stated in both collections. */
+export function specEntries(spec: ResolutionSpec): Array<[string, RequiredSources, string]> {
+  const entries = SIDES.flatMap(side => {
+    const requirements = spec[side];
+    return requirements === undefined
+      ? []
+      : requirementEntries(requirements).map(([name, value]): [string, RequiredSources, string] => [name, value, side]);
+  });
+  const names = new Set<string>();
+  for (const [name] of entries) {
+    if (names.has(name)) {
+      throw new FabrError(`internal: the requirement '${name}' is stated for both build and run`).withHelp(
+        "name the two requirements apart: a name is one requirement whichever collection holds it"
+      );
+    }
+    names.add(name);
+  }
+  return entries;
 }
 
 /** How a requirement's sources are read: for their files alone, as packages,
@@ -135,6 +168,18 @@ interface ResolvedRequirement {
    * `sources`: none for content in hand. */
   readonly references: Array<Reference | undefined>;
   readonly reading: Reading;
+  /** The collection that resolved it: its index among the requirements'
+   * {@link ResolvedCollectionPart parts}. */
+  readonly part: number;
+}
+
+/** One collection of a target's requirements, as it was resolved. */
+interface ResolvedCollectionPart {
+  /** The versions that conflict in the collection, found as it was resolved. */
+  readonly conflicts: Conflicts;
+  /** Find what conflicts among some of what the collection resolved, used
+   * together without the rest. */
+  readonly conflictsAmong: (shipped: ReadonlyArray<Resolved>) => Computable<Conflicts>;
 }
 
 /** A target's requirements, resolved, by name in the order stated. */
@@ -144,27 +189,32 @@ export class ResolvedRequirements {
   /** The written reference each of a requirement's sources was resolved for,
    * aligned with {@link sources}: none for content in hand. */
   public readonly references: ReadonlyMap<string, ReadonlyArray<Reference | undefined>>;
+  /** The versions that conflict in the collections the requirements were
+   * resolved in. */
+  public readonly conflicts: Conflicts;
 
   constructor(
     private readonly entries: ReadonlyMap<string, ResolvedRequirement>,
-    /** The versions that conflict in the collection, found as it was resolved. */
-    public readonly conflicts: Conflicts,
+    /** The collections the requirements were resolved in. */
+    private readonly parts: ReadonlyArray<ResolvedCollectionPart>,
     /** Whether the requirements are collected {@link ResolutionSpec.permissive permissively}. */
     public readonly permissive: boolean,
-    /** Find what conflicts among some of what the collection resolved, used
-     * together without the rest. */
-    private readonly conflictsAmong: (shipped: ReadonlyArray<Resolved>) => Computable<Conflicts> = () => Computable.resolve(conflicts),
     /** What the target builds, as its rule declares it, where it does. */
-    public readonly builds?: Builds
+    public readonly result?: Builds
   ) {
     this.sources = new Map([...entries].map(([name, entry]) => [name, entry.sources]));
     this.references = new Map([...entries].map(([name, entry]) => [name, entry.references]));
+    this.conflicts = Conflicts.union(parts.map(part => part.conflicts));
   }
 
   /** Make the requirements of one unnamed list: what a name denotes, resolved
    * as one collection. */
   public static of(sources: Resolved[], references: Array<Reference | undefined>, conflicts: Conflicts): ResolvedRequirements {
-    return new ResolvedRequirements(new Map([["", { sources, references, reading: "packages" }]]), conflicts, false);
+    return new ResolvedRequirements(
+      new Map([["", { sources, references, reading: "packages", part: 0 }]]),
+      [{ conflicts, conflictsAmong: () => Computable.resolve(conflicts) }],
+      false
+    );
   }
 
   /** The sources of the one unnamed requirement, where the requirements are
@@ -188,21 +238,29 @@ export class ResolvedRequirements {
       }
       return [name, entry];
     });
-    return new ResolvedRequirements(new Map(kept), this.conflicts, this.permissive, this.conflictsAmong, this.builds);
+    return new ResolvedRequirements(new Map(kept), this.parts, this.permissive, this.result);
   }
 
   /**
    * Get the requirements of the target `target` among these, each named
    * `<target>.<name>`, as requirements named `<name>`, collected strictly
-   * unless `permissive`, of a target that builds what `builds` says, with
-   * what conflicts among their sources alone.
+   * unless `permissive`, of a target that builds what `result` says, with
+   * what conflicts among their sources alone, in each collection that
+   * resolved them.
    */
-  public ofTarget(target: string, permissive: boolean, builds?: Builds): Computable<ResolvedRequirements> {
+  public ofTarget(target: string, permissive: boolean, result?: Builds): Computable<ResolvedRequirements> {
     const kept = [...this.entries]
       .filter(([name]) => name.startsWith(`${target}.`))
       .map(([name, entry]): [string, ResolvedRequirement] => [name.substring(target.length + 1), entry]);
-    return this.conflictsAmong(kept.flatMap(([, { sources }]) => sources)).then(
-      conflicts => new ResolvedRequirements(new Map(kept), conflicts, permissive, this.conflictsAmong, builds)
+    return Computable.forAll(
+      this.parts.map((part, index) => part.conflictsAmong(kept.flatMap(([, entry]) => (entry.part === index ? entry.sources : [])))),
+      (...conflicts: Conflicts[]) =>
+        new ResolvedRequirements(
+          new Map(kept),
+          this.parts.map((part, index) => ({ conflicts: conflicts[index], conflictsAmong: part.conflictsAmong })),
+          permissive,
+          result
+        )
     );
   }
 
@@ -283,14 +341,20 @@ function asMaterial(source: Resolved): Resolved {
 }
 
 /**
- * Run the resolve half of `target`'s collection point: every requirement read
- * and the lot resolved as ONE collection — every reference answered from its
- * repository's joint resolution, the graph wired — with nothing fetched and
- * nothing built. The strict check is left for when the requirements are
- * materialized ({@link ResolvedRequirements.check}).
+ * Run the resolve half of `target`'s collection point: every requirement read,
+ * and each of the spec's collections resolved as ONE collection, for its
+ * operation — every reference answered from its repository's joint
+ * resolution, the graph wired — with nothing fetched and nothing built. The
+ * strict check is left for when the requirements are materialized
+ * ({@link ResolvedRequirements.check}).
  */
 export function resolveRequirements(target: TargetContext, spec: ResolutionSpec): Computable<ResolvedRequirements> {
-  const entries = requirementEntries(spec.requirements);
+  let entries: Array<[string, RequiredSources, string]>;
+  try {
+    entries = specEntries(spec);
+  } catch (err) {
+    return Computable.reject(toError(err));
+  }
   return Computable.forAll(
     entries.map(([, value]) => (value instanceof Computable ? value : Computable.resolve(value))),
     (...values: Read[]) => {
@@ -304,33 +368,57 @@ export function resolveRequirements(target: TargetContext, spec: ResolutionSpec)
           "what a target passes on is packages: read it with getPackageProperty"
         );
       }
-      return resolveLists(
-        target,
-        lists,
-        readings.map(reading => reading !== "contained"),
-        names.map(name => requirementName(name) === EXTENDS_KEY),
-        readings.map(reading => (reading === "files" || reading === "sync" ? "files" : undefined))
-      ).then(
-        ({ lists: resolved, references, conflicts, conflictsAmong }) =>
-          new ResolvedRequirements(
-            new Map(
-              names.map((name, index) => [
-                name,
-                {
-                  sources: requirementName(name) === EXTENDS_KEY ? resolved[index].map(asMaterial) : resolved[index],
-                  references: references[index],
-                  reading: readings[index],
-                },
-              ])
-            ),
-            conflicts,
+      const operations = [...new Set(entries.map(([, , operation]) => operation))];
+      return Computable.forAll(
+        operations.map(operation => {
+          const at = names.flatMap((_, index) => (entries[index][2] === operation ? [index] : []));
+          return resolveLists(
+            resolutionContextFor(target, operation),
+            at.map(index => lists[index]),
+            at.map(index => readings[index] !== "contained"),
+            at.map(index => requirementName(names[index]) === EXTENDS_KEY),
+            at.map(index => (readings[index] === "files" || readings[index] === "sync" ? "files" : undefined))
+          ).then(resolved => ({ at, resolved }));
+        }),
+        (...parts: Array<{ at: number[]; resolved: ResolvedLists }>) => {
+          const resolvedEntries = new Map<number, ResolvedRequirement>();
+          parts.forEach(({ at, resolved }, part) =>
+            at.forEach((index, position) =>
+              resolvedEntries.set(index, {
+                sources:
+                  requirementName(names[index]) === EXTENDS_KEY ? resolved.lists[position].map(asMaterial) : resolved.lists[position],
+                references: resolved.references[position],
+                reading: readings[index],
+                part,
+              })
+            )
+          );
+          return new ResolvedRequirements(
+            new Map(names.map((name, index) => [name, resolvedEntries.get(index)!])),
+            parts.map(({ resolved }) => ({ conflicts: resolved.conflicts, conflictsAmong: resolved.conflictsAmong })),
             spec.permissive === true,
-            conflictsAmong,
-            spec.builds
-          )
+            spec.result
+          );
+        }
       );
     }
   );
+}
+
+/** Get `target` as the {@link ResolutionContext} of its collection resolved for
+ * `operation`: the target itself where that is its own operation. */
+function resolutionContextFor(target: TargetContext, operation: string): ResolutionContext {
+  return operation === target.operation
+    ? target
+    : {
+        name: target.name,
+        operation,
+        given: (target as ResolutionContext).given,
+        getGlobalString: name => target.getGlobalString(name),
+        launchedBy: (runnable, interpreter, interpreterArgs) => target.launchedBy(runnable, interpreter, interpreterArgs),
+        memoize: (tag, key, create) => target.memoize(tag, key, create),
+        runTask: (task, run) => target.runTask(task, run),
+      };
 }
 
 /**

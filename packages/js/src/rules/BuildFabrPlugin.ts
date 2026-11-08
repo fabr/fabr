@@ -34,6 +34,7 @@ import {
   FileSet,
   FileSetRef,
   PackageFileSet,
+  RequiredSources,
   defineRule,
   describeTarget,
   descriptionFile,
@@ -50,8 +51,8 @@ export default defineRule({
     const stated = jsPackage.requirements!(context);
     return (stated instanceof Computable ? stated : Computable.resolve(stated)).then(spec => ({
       ...spec,
-      requirements: {
-        ...Object.fromEntries(spec.requirements instanceof Map ? spec.requirements : Object.entries(spec.requirements)),
+      build: {
+        ...(Object.fromEntries(spec.build instanceof Map ? spec.build : Object.entries(spec.build ?? {})) as Record<string, RequiredSources>),
         libs: context.getFileProperty("libs"),
         optional_libs: context.getFileProperty("optional_libs"),
       },

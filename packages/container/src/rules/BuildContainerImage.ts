@@ -74,11 +74,11 @@ export default defineRule({
     return Computable.forAll(
       [context.getGlobalString(OCI_TARGET), context.getFileProperty("base").then(sources => baseLibc(context.name, sources))] as const,
       (target: string, libc: ImageLibc | undefined) => ({
-        requirements: {
+        build: {
           dependencies: context.getPackageProperty("base"),
           files: context.getFileProperty("files", Constraints.of({ [TARGET]: contentsTriple(target, libc) })),
         },
-        builds: { package: context.name },
+        result: { package: context.name },
       })
     );
   },

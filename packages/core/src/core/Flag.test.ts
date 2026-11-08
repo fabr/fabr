@@ -50,6 +50,7 @@ describe("Flag", () => {
       collectLists(
         {
           name: "test",
+          operation: "build",
           getGlobalString: () => Computable.resolve("build"),
           launchedBy: (_runnable, name) => Computable.reject(new Error(`no global '${name}' in this test`)),
           memoize: (_t, _k, create) => create("unused"),

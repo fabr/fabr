@@ -108,6 +108,15 @@ deps = @mvn:com.example:widget:2.3.0 @mvn:com.example:util:1.4.2!;
 
 A `!` needs an exact version.
 
+## Compile and runtime classpaths
+
+Your compile classpath and your runtime classpath are resolved separately, as Gradle resolves its
+`compileClasspath` and `runtimeClasspath`: a `jar_package` compiles against the first, and its
+tests and a `java_program` run with the second, as does the `WEB-INF/lib` of a `war_package`. Where
+a dependency on only one of them asks for a later version of a package, the two classpaths can
+hold different versions of it, as Gradle's do unless you turn on its consistent resolution. To use
+one version on both, pin it in your `deps`.
+
 ## BOMs
 
 A BOM (bill of materials) is a POM-packaged artifact whose `<dependencyManagement>` lists
@@ -146,7 +155,8 @@ import. Of a POM's `<dependencies>`:
 
 | Declared in the POM | What fabr does with it |
 |---|---|
-| `compile` or `runtime` scope | A requirement of the package. A `runtime` one is on your compile classpath too, where Gradle puts it only on the runtime classpath. |
+| `compile` scope | A requirement of the package, on your compile classpath and your runtime classpath. |
+| `runtime` scope | A requirement of the package on your runtime classpath only, as in Maven and Gradle. |
 | `provided`, `test` or `system` scope, or `<optional>true</optional>` | Ignored, as Maven and Gradle ignore them. |
 | A dependency with a `<classifier>` | A requirement of the [classified jar](#classified-jars). |
 | A `test-jar` dependency | A requirement of the package's `tests` jar. |
@@ -170,13 +180,19 @@ Libraries published by Gradle often publish a `.module` file beside their POM, a
 POM with the comment `<!-- do_not_remove: published-with-gradle-metadata -->`. Where it does,
 fabr reads the package from the `.module` instead of the POM, as Gradle does. The `.module`
 describes a version as variants, such as Guava's `jre` and `android` flavours, each with its own
-dependencies and files, and fabr takes the variant a Java program runs with:
+dependencies and files. Like Gradle, fabr takes one variant for your compile classpath and one for
+your runtime classpath:
 
-- a library variant for running (`org.gradle.usage` `java-runtime`) on the standard JVM, for a
-  Java release no later than [`JVM_TARGET`](/reference/java/compiling/#the-java-release)'s, the
-  latest such release where there are several; or, for a module that is a platform (a BOM),
-  its platform variant;
+- a library variant of the usage the classpath asks for (`org.gradle.usage` `java-api` to compile
+  against, `java-runtime` to run; to compile against a module that publishes no `java-api`
+  variant, its `java-runtime` one), on the standard JVM, for a Java release no later than
+  [`JVM_TARGET`](/reference/java/compiling/#the-java-release)'s, the latest such release where
+  there are several; or, for a module that is a platform (a BOM), its platform variant;
 - not a variant providing another capability, such as the module's test fixtures.
+
+So a library's `compileOnlyApi` dependencies (in its `java-api` variant only, such as JUnit's
+`apiguardian-api`) are on your compile classpath and not installed, and its `implementation`
+dependencies (in its `java-runtime` variant only) are installed and not compiled against.
 
 Of that variant:
 
@@ -190,12 +206,10 @@ Of that variant:
 | `files` | The package's files, checked against the SHA-1 the `.module` states. |
 | `available-at` | A requirement of the module named, which holds the variant: a Kotlin Multiplatform library's root module answers with its `-jvm` module. |
 
-The runtime variant's dependencies are compiled against too, as a POM's `runtime` dependencies
-are, where Gradle compiles against the API variant's. The `.module` is read for a release no later
-than `JVM_TARGET`'s, so changing `JVM_TARGET` can select a different variant of a library that
-publishes one per release. Where no variant suits, it
-is the error `… has no variant a Java program on Java 17 can run with`, with the variants there
-are.
+A package's files always come from its `java-runtime` variant. The `.module` is read for a release
+no later than `JVM_TARGET`'s, so changing `JVM_TARGET` can select a different variant of a library
+that publishes one per release. Where no variant suits, it is the error
+`… has no java-runtime variant for Java 17` (or `java-api`), with the variants there are.
 
 ## Classified jars
 
@@ -331,6 +345,10 @@ password can't be read; write it with `${env.NAME}` instead.
 
 - A project can't write an exclusion of its own: a package a dependency requires can't be left
   out, only overridden with `!`. Exclusions a dependency's POM or `.module` publishes are read.
+- A project can't declare a dependency of its own for one classpath only: `deps` are on both, so
+  what Gradle writes as `runtimeOnly` (a JDBC driver) is on your compile classpath too, and what
+  it writes as `compileOnlyApi` is installed. The [classpaths](#compile-and-runtime-classpaths) of
+  the packages your dependencies publish are read.
 - Relocations and POM profiles are not read.
 - Two packages providing one capability, such as Guava and `google-collections`, are both
   installed, where Gradle reports a conflict.

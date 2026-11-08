@@ -91,7 +91,7 @@ export default defineRule({
       const written = version?.toString();
       const builds = { package: context.name, format: NPM_FORMAT, ...(written === undefined ? {} : { version: written }) };
       return {
-        requirements: {
+        build: {
           srcs: context.getFileProperty("srcs"),
           resources: context.getFileProperty("resources"),
           tests: context.getFileProperty("tests"),
@@ -104,7 +104,7 @@ export default defineRule({
           test_resources: context.getFileProperty("test_resources"),
           test_expectations: context.getFileProperty("test_expectations"),
         },
-        builds,
+        result: builds,
       };
     });
   },

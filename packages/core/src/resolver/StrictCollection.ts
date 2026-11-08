@@ -111,6 +111,34 @@ export class Conflicts {
   public error(): Computable<Error | undefined> {
     return this.refusal();
   }
+
+  /** Make the conflicts of several collections used together: each package
+   * that conflicts in any of them, refused with every one's error. */
+  public static union(each: ReadonlyArray<Conflicts>): Conflicts {
+    const found = each.filter(conflicts => conflicts.size > 0);
+    if (found.length <= 1) {
+      return found[0] ?? NO_CONFLICTS;
+    }
+    const versions = new Map<string, Set<string>>();
+    for (const conflicts of found) {
+      for (const [name, shipped] of conflicts.versions) {
+        versions.set(name, new Set([...(versions.get(name) ?? []), ...shipped]));
+      }
+    }
+    let refused: Computable<Error | undefined> | undefined;
+    return new Conflicts(
+      versions,
+      pkg => found.some(conflicts => conflicts.includes(pkg)),
+      () =>
+        (refused ??= Computable.forAll(
+          found.map(conflicts => conflicts.error()),
+          (...errors: Array<Error | undefined>) => {
+            const all = errors.filter((error): error is Error => error !== undefined);
+            return all.length === 0 ? undefined : MultiError.of(all);
+          }
+        ))
+    );
+  }
 }
 
 /** The conflicts of a collection where nothing conflicts. */

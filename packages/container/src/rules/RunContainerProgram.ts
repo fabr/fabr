@@ -30,7 +30,7 @@ import { IContainerRun, imageRunnable } from "../ImageRunnable";
  */
 export default defineRule({
   requirements(context) {
-    return { requirements: { image: context.getPackageProperty("image", BUILD_OVERRIDE) } };
+    return { run: { image: context.getPackageProperty("image", BUILD_OVERRIDE) } };
   },
   evaluateMaterialized(context, { image }) {
     const images = image.filter((source): source is ImageFileSet => source instanceof ImageFileSet);
