@@ -16,15 +16,21 @@ number.
 - Add support for map splices in target properties.
 - Breaking: Cache failed test runs like passing ones; add --retry-failed to run failed tests again.
 - Add vulnerability audit via osv.
+- Add --trace[=FILE] to build, test and run: a trace of the run's work for Perfetto or chrome://tracing.
 
 @fabr-build/aws:
 - Add s3 download support.
+
+@fabr-build/container:
+- New container image support.
+- Add container_program, to run an image with its environment, ports, network and host names.
 
 @fabr-build/java:
 - New Java support.
 
 @fabr-build/js:
 - js_package now takes a compile_deps property for compile-only inputs.
+- js_script takes env, the environment variables its program is launched with.
 - Add sources operation.
 - Allow any version of a package with eg @npm:debug? (instead of specific versions)
 - Move bundling format out to a new property JS_BUNDLE_FORMAT (with target defaults)
@@ -38,6 +44,7 @@ number.
 - js_package tests compile against the package's own build, checking and emitting only the tests.
 - Run again only the test files a change can reach, coverage included.
 - Add layout/pnp flag to run tests through a PnP table instead of node_modules.
+- js_test takes compile_deps; dom there type-checks against the DOM and runs the tests under node.
 - Fix setImmediate/MessageChannel being visible to jsdom tests (as under jest).
 - Test processes end once their report is written, rather than waiting on what the tests left running.
 - Incremental test compilation and execution.

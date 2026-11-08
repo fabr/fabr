@@ -440,6 +440,7 @@ generated from it.
 | `--coverage[=DIR]` | `test` | Measure code coverage, print a summary and write `DIR/lcov.info` (`coverage/` by default). |
 | `-q`, `--quiet` | all | Don't show the progress display or the output of build steps. A step that fails still shows its output in the error. |
 | `--no-progress` | all | Don't show the progress display. Output from build steps is then printed as it arrives, as it is when stderr isn't a terminal. |
+| `--trace[=FILE]` | `build`, `test`, `run` | Write a trace of the run's work to `FILE` (`fabr-trace.json` by default). See [Tracing a run](#tracing-a-run). |
 | `--refresh` | `build`, `test`, `run`, `shell`, `ls`, `cat`, `cp`, `deps`, `audit`, `sync` | Check again for anything a server can change under the same address, such as a registry's version lists or an S3 object, however recently fabr last checked. Without it, fabr checks each at most once a day. |
 | `-l` | `ls`, `list-*` | Long listing: hash and size for `ls`, source location for the `list-` commands. |
 | `--json` | `list-*` | Output as JSON. |
@@ -452,6 +453,26 @@ generated from it.
 On a terminal, fabr shows the steps in progress at the bottom of the screen, and holds each step's
 output until the step finishes, so that the output of steps running in parallel isn't mixed
 together.
+
+## Tracing a run
+
+`--trace` records what the run did and when, in the trace-event format that
+[Perfetto](https://ui.perfetto.dev) and Chrome's `chrome://tracing` open: drop the file onto either.
+The trace holds one span per unit of work fabr performed — a target's build step, a test run, a
+resolution, a download — from when it started to when it ended, on a track per concurrent task, so
+the timeline shows what ran alongside what and where the run waited on one chain. Within a task,
+`waiting` spans mark the stretches it queued for an execution slot; within a test run, each test
+file's run is an async span placed by the runner's own clock, with its outcomes. Cycle boundaries
+are instants, so a watch run's cycles read apart. A span's `args` carry the task's constraints and
+the chain of targets that required it, as the start line does.
+
+Work served from the cache runs no step and appears nowhere, which is the point: the trace is of
+what the run had to do. The file is written whole at the end of each cycle, and again if the run is
+interrupted, with any task then still running marked `unfinished`.
+
+```sh
+fabr test --trace=traces/full.json all
+```
 
 ## Naming targets and files
 

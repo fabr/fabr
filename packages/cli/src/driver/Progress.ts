@@ -412,7 +412,7 @@ function formatBar(fraction: number): string {
  * Free of the surrounding context (which required it, under what constraints):
  * that is {@link context}, added to the line that introduces the item.
  */
-function describe(task: TaskDescription): string {
+export function describe(task: TaskDescription): string {
   switch (task.kind) {
     case "target-build": {
       /* A sub-target carries its action verb as `label` ("Compiling"); anything
@@ -445,13 +445,13 @@ function describe(task: TaskDescription): string {
  * Only a fetch is ever incidental, which the narrowing carries to the summary
  * rows.
  */
-function incidental(task: TaskDescription): task is IFetchTask {
+export function incidental(task: TaskDescription): task is IFetchTask {
   return task.kind === "fetch" && task.role === "index";
 }
 
 /** Render the context a start line adds to {@link describe}: the explicit constraints
  *  the target builds under, and the chain of targets that required it. */
-function context(task: TaskDescription): string {
+export function context(task: TaskDescription): string {
   if (task.kind !== "target-build") {
     return "";
   }

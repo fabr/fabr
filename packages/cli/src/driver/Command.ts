@@ -84,9 +84,9 @@ interface CommandSpec {
 }
 
 const COMMAND_SPECS: CommandSpec[] = [
-  { name: "build", synopsis: "[-w] <targets>", summary: "Build the given targets (the default command)", accepts: ["-w", "-q", "--no-progress", "--refresh", "-f"], requiresTarget: true },
-  { name: "test", synopsis: "[-w] [-u] [-t PATTERN] [--coverage] [--retry-failed] <targets>", summary: "Build and run the given targets' tests", accepts: ["-w", "-u", "-t", "--coverage", "--retry-failed", "-q", "--no-progress", "--refresh", "-f"], requiresTarget: true },
-  { name: "run", synopsis: "[-w] <target> [args…]", summary: "Execute a target, forwarding trailing args to it", accepts: ["-w", "-q", "--no-progress", "--refresh", "-f"], requiresTarget: true },
+  { name: "build", synopsis: "[-w] <targets>", summary: "Build the given targets (the default command)", accepts: ["-w", "-q", "--no-progress", "--refresh", "--trace", "-f"], requiresTarget: true },
+  { name: "test", synopsis: "[-w] [-u] [-t PATTERN] [--coverage] [--retry-failed] <targets>", summary: "Build and run the given targets' tests", accepts: ["-w", "-u", "-t", "--coverage", "--retry-failed", "-q", "--no-progress", "--refresh", "--trace", "-f"], requiresTarget: true },
+  { name: "run", synopsis: "[-w] <target> [args…]", summary: "Execute a target, forwarding trailing args to it", accepts: ["-w", "-q", "--no-progress", "--refresh", "--trace", "-f"], requiresTarget: true },
   { name: "shell", synopsis: "<target>", summary: "Stage a target's build sandbox and open a shell in it (debugging)", accepts: ["-q", "--no-progress", "--refresh"], singleTarget: true, requiresTarget: true },
   { name: "ls", synopsis: "[-l] <names>", summary: "Build the given targets and list their contents", accepts: ["-l", "-q", "--no-progress", "--refresh"], requiresTarget: true },
   { name: "cat", synopsis: "<names>", summary: "Build a target and write its matching files to stdout", accepts: ["-q", "--no-progress", "--refresh"], requiresTarget: true },
@@ -181,6 +181,9 @@ export interface Options {
   /** For `test --coverage[=<dir>]`: the directory the coverage report is written
    * to, a plain filesystem path resolved against the invocation cwd. */
   coverageDir?: string;
+  /** For `--trace[=<file>]`: where the run's trace is written, a plain
+   * filesystem path resolved against the invocation cwd. */
+  traceFile?: string;
   /** Raw `-D` overrides, normalized into a Constraints at the driver's getConfig funnel. */
   properties: Map<string, string>;
   /** The invocation as source text — what a name given here is *written in*, so
@@ -247,6 +250,7 @@ function printUsage(write: (message: string) => void = console.log): void {
       "                    Read every optional lib of the plugins in use (list-all)\n" +
       "  -q, --quiet       Suppress live output: subcommand output and the progress display\n" +
       "  --no-progress     No progress display; subcommand output streams as it arrives\n" +
+      "  --trace[=FILE]    Write a trace of the run's work to FILE, fabr-trace.json by default (build/test/run)\n" +
       "  --refresh         Re-check tags and version lists however recently they were fetched\n" +
       "  --                End of options: following arguments are targets, even if they start with '-'\n" +
       "  -h, --help        Print this help and exit\n" +
@@ -268,6 +272,9 @@ type SeenFlag = { raw: string; flag: string };
 /** The forms `audit --format` writes its report in besides text. */
 export type AuditFormat = "sarif";
 const AUDIT_FORMATS: ReadonlyArray<AuditFormat> = ["sarif"];
+
+/** Where `--trace` writes the run's trace when not given a file. */
+const DEFAULT_TRACE_FILE = "fabr-trace.json";
 
 /** Where `--coverage` writes its report when not given a directory: jest's and
  * c8's convention. */
@@ -331,6 +338,9 @@ function applyOption(arg: string, next: string | undefined, options: Options, se
     options.properties.set(COVERAGE, COVERAGE_ON);
     options.coverageDir = arg === "--coverage" ? DEFAULT_COVERAGE_DIR : arg.slice("--coverage=".length);
     seenFlags.push({ raw: arg, flag: "--coverage" });
+  } else if (arg === "--trace" || arg.startsWith("--trace=")) {
+    options.traceFile = arg === "--trace" ? DEFAULT_TRACE_FILE : arg.slice("--trace=".length);
+    seenFlags.push({ raw: arg, flag: "--trace" });
   } else if (arg === "-q" || arg === "--quiet") {
     options.quiet = true;
     seenFlags.push({ raw: arg, flag: "-q" });

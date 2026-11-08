@@ -98,6 +98,7 @@ import { getSourceRoot, getBuildCacheRoot, getHostProperties } from "./Environme
 import { IInvocationSite } from "./CommandLineSource";
 import { TerminalInteraction } from "./Interaction";
 import { ProgressReporter } from "./Progress";
+import { TraceWriter } from "./Trace";
 import { setActiveTerminal, TerminalStream } from "./Terminal";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -751,6 +752,13 @@ async function runWith(options: Options, operation: Operation, watch = false, se
       markers: showsMarkers(options.command, watch),
     });
     execution.onBuildEvent(progress.buildListener, { output: !options.quiet });
+    if (options.traceFile !== undefined) {
+      /* The trace is written at each cycle's end; a run cut short writes what
+       * it saw from an exit hook, since process.exit runs no continuation. */
+      const trace = new TraceWriter(path.resolve(process.cwd(), options.traceFile));
+      execution.onBuildEvent(trace.buildListener);
+      process.on("exit", () => trace.write());
+    }
     /* A terminal to ask on (an npm publish's second-factor ceremony) — only
      * when both the answer channel (stdin) and the question channel (stderr,
      * the diagnostic stream) are ttys; its absence is the "non-interactive

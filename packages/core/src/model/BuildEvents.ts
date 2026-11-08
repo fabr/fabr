@@ -128,7 +128,18 @@ export interface ITaskEndEvent extends ITaskEvent {
  */
 export type TaskProgress =
   | { measure: "bytes"; done: number; total?: number }
-  | { measure: "tests"; files: number; totalFiles: number; passed: number; failed: number };
+  | { measure: "tests"; files: number; totalFiles: number; passed: number; failed: number; latest?: ITestFileRun };
+
+/** A test file's run as its report states it: the file, the run's wall-clock
+ *  start and stop (epoch milliseconds, the runner's own timing) and its
+ *  outcomes. Carried on the tests measure for the invocation just finished. */
+export interface ITestFileRun {
+  file: string;
+  start: number;
+  stop: number;
+  passed: number;
+  failed: number;
+}
 
 /** Whether the task is actively doing anything, or queued waiting for
  *  execution resources. */
