@@ -514,6 +514,10 @@ const DIAG_UNTERMINATED_EXTGLOB = new Diagnostic<{ leader: string; loc: ISourceP
   LogLevel.Error,
   "Unterminated extglob group '{leader}', expected ')' (quote it to match literally)"
 );
+const DIAG_NESTED_NEGATION = new Diagnostic<{ loc: ISourcePosition }>(
+  LogLevel.Error,
+  "A '!(…)' group cannot be inside another extglob group"
+);
 
 /** @return true if a name IS the bare `*` wildcard — one glob unit of `*` and no
  * literal text — otherwise false, as for a quoted `'*'`, which is that literal
@@ -890,6 +894,9 @@ export class BuildParser {
      * enter the group. The interior is scanned normally, so wildcards, quoted
      * strings and `${...}` substitutions all work inside one, as in bash. */
     const openExtglob = (leader: number): void => {
+      if (leader === CHAR_BANG && extglobDepth > 0) {
+        this.nestedNegationError(this.reader.currentOffset());
+      }
       maybeIdent = false;
       nameBuilder.appendEscapedString(this.reader.substring(posn));
       if (extglobDepth++ === 0) {
@@ -1764,6 +1771,12 @@ export class BuildParser {
       leader: this.reader.substring(at, at + 2),
       loc: { ...this.source, offset: at },
     });
+    throw new FabrError(PARSE_ERROR);
+  }
+
+  /** Reported at a `!(` written inside another extglob group (`at` is its offset). */
+  private nestedNegationError(at: number): never {
+    this.log.log(DIAG_NESTED_NEGATION, { loc: { ...this.source, offset: at } });
     throw new FabrError(PARSE_ERROR);
   }
 

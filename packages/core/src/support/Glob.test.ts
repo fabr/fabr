@@ -43,6 +43,97 @@ describe("globMatcher", () => {
   });
 });
 
+describe("globMatcher negation", () => {
+  const matches = (glob: string, paths: string[]): Map<string, boolean> => {
+    const matcher = globMatcher(glob);
+    return new Map(paths.map(p => [p, matcher(p)]));
+  };
+
+  it("subtracts a group spanning segments, wherever the globstars place it", () => {
+    expect(matches("**/!(@shorthand/api)/**", ["a/@shorthand/api/x.js", "@shorthand/api/x.js", "@shorthand/ui/x.js", "a/b/c.js"])).to.deep.equal(
+      new Map([
+        ["a/@shorthand/api/x.js", false],
+        ["@shorthand/api/x.js", false],
+        ["@shorthand/ui/x.js", true],
+        ["a/b/c.js", true],
+      ])
+    );
+  });
+
+  it("keeps to the segment boundaries the pattern's own slashes give", () => {
+    const matcher = globMatcher("**/!(@shorthand/api)/**");
+    expect(matcher("@shorthand/api-v2/x.js")).to.equal(true);
+    expect(matcher("x/@shorthand/api/y/z.js")).to.equal(false);
+  });
+
+  it("makes each group a constraint of its own, all of which must hold", () => {
+    const paths = ["src/x.js", "src/x.ts", "foo/bar/x.js", "a/foo/bar/b/c.js", "foo/barn/x.js", "foo/bar.ts", "foo/bar.js", "x.js"];
+    expect(matches("**/!(foo/bar)/**/!(*.ts)", paths)).to.deep.equal(
+      new Map([
+        ["src/x.js", true],
+        ["src/x.ts", false],
+        ["foo/bar/x.js", false],
+        ["a/foo/bar/b/c.js", false],
+        ["foo/barn/x.js", true],
+        ["foo/bar.ts", false],
+        ["foo/bar.js", true],
+        /* The literal `/` after the first group needs a directory, as `**\/*\/**\/*` does. */
+        ["x.js", false],
+      ])
+    );
+  });
+
+  it("reads a group whose contents hold slashes as any text, slashes included", () => {
+    const matcher = globMatcher("**!(/foo/bar/)**/*.ts");
+    expect(matcher("src/x.ts")).to.equal(true);
+    expect(matcher("a/b/c/x.ts")).to.equal(true);
+    expect(matcher("a/foo/bar/x.ts")).to.equal(false);
+    expect(matcher("foo/bar/b/x.ts")).to.equal(false);
+    expect(matcher("foo/barn/x.ts")).to.equal(true);
+  });
+
+  it("keeps a group without slashes to one segment", () => {
+    const tests = globMatcher("!(*.test).ts");
+    expect(tests("foo.ts")).to.equal(true);
+    expect(tests("foo.test.ts")).to.equal(false);
+    expect(tests("src/foo.ts")).to.equal(false);
+    const top = globMatcher("!(node_modules)/**");
+    expect(top("node_modules/x.js")).to.equal(false);
+    expect(top("a/node_modules/x.js")).to.equal(true);
+    expect(top("src/x.js")).to.equal(true);
+  });
+
+  it("excludes only the segment named, not every segment beginning with it", () => {
+    const matcher = globMatcher("src/!(generated)/**");
+    expect(matcher("src/generated/x.ts")).to.equal(false);
+    expect(matcher("src/generated-api/x.ts")).to.equal(true);
+    expect(globMatcher("!(a|b)/*")("ab/x")).to.equal(true);
+  });
+
+  it("subtracts each alternative, including a nested group's", () => {
+    const matcher = globMatcher("!(Validation|@(V3|api))/**");
+    expect(matcher("Validation/f.ts")).to.equal(false);
+    expect(matcher("V3/f.ts")).to.equal(false);
+    expect(matcher("api/f.ts")).to.equal(false);
+    expect(matcher("web/f.ts")).to.equal(true);
+  });
+
+  it("means what the group excludes, not some other text there (unlike bash)", () => {
+    /* bash matches both, the group taking the empty string. */
+    expect(globMatcher("!(a)*")("ab")).to.equal(false);
+    expect(globMatcher("*!(a)")("a")).to.equal(false);
+    expect(globMatcher("!(a)*")("ba")).to.equal(true);
+  });
+
+  it("leaves an escaped group literal", () => {
+    expect(globMatcher("\\!\\(a\\)/*")("!(a)/x")).to.equal(true);
+  });
+
+  it("refuses a group inside another", () => {
+    expect(() => globMatcher("@(!(a)|b)")).to.throw(/cannot be inside another group/);
+  });
+});
+
 describe("globPrefixRegex", () => {
   it("anchors and strips a literal prefix", () => {
     const re = globPrefixRegex("src/");
@@ -54,6 +145,10 @@ describe("globPrefixRegex", () => {
     const re = globPrefixRegex("packages/*/lib/");
     expect(re.test("packages/.hidden/lib/x.js")).to.equal(true);
     expect(re.test("packages/core/lib/x.js")).to.equal(true);
+  });
+
+  it("strips a negation group as the wildcard it stands for", () => {
+    expect("web/lib/x.js".replace(globPrefixRegex("!(api)/lib/"), "")).to.equal("x.js");
   });
 });
 
@@ -83,5 +178,12 @@ describe("globCaptureRegex", () => {
 
   it("matches dotfiles (same policy as globMatcher)", () => {
     expect(caps("**/*", "a/.hidden/x")).to.deep.equal(["a/.hidden", "x"]);
+  });
+
+  it("subtracts a negation group without capturing it", () => {
+    expect(caps("**/!(*.test).ts", "a/foo.ts")).to.deep.equal(["a"]);
+    expect(caps("**/!(*.test).ts", "a/foo.test.ts")).to.equal(null);
+    expect("foo.ts".replace(globCaptureRegex("!(*.test).ts"), "out.txt")).to.equal("out.txt");
+    expect(globCaptureRegex("!(*.test).ts").test("foo.test.ts")).to.equal(false);
   });
 });

@@ -37,9 +37,18 @@ export type GlobMatcher = (path: string) => boolean;
  * `src/**`) means *every* file beneath it, and a build step's dotfile outputs
  * must survive result collection. picomatch excludes dotfiles by default, so
  * `dot` is set here and every matcher in the engine goes through this function.
+ *
+ * A `!(…)` group is a subtraction over the whole pattern (see
+ * {@link negationsOf}): `A!(X)B` matches what `A*B` matches and `AXB` does not.
  */
 export function globMatcher(glob: string): GlobMatcher {
-  return picomatch(glob, { dot: true });
+  const negated = negationsOf(glob);
+  if (negated === undefined) {
+    return picomatch(glob, { dot: true });
+  }
+  const base = negated.base(false);
+  const excluded = negated.excluded();
+  return path => base.test(path) && !excluded.some(re => re.test(path));
 }
 
 /**
@@ -55,10 +64,15 @@ export function globMatcher(glob: string): GlobMatcher {
  * group), which would desync the positional `$n` references. With only `*`/`**`
  * present picomatch emits exactly one group per wildcard in order. A
  * wildcard-free template references no group, so its selector is unrestricted
- * and this is then used purely as a matcher.
+ * and this is then used purely as a matcher. A `!(…)` group captures nothing:
+ * what it subtracts is checked by lookbehinds after the end anchor.
  */
 export function globCaptureRegex(glob: string): RegExp {
-  return picomatch.makeRe(glob, { dot: true, capture: true });
+  const negated = negationsOf(glob);
+  if (negated === undefined) {
+    return picomatch.makeRe(glob, { dot: true, capture: true });
+  }
+  return new RegExp(negated.base(true).source + negated.excluded().map(re => `(?<!${re.source})`).join(""));
 }
 
 /**
@@ -66,7 +80,150 @@ export function globCaptureRegex(glob: string): RegExp {
  * prefix from result names (the colon-form naming rule: `src:**` names results
  * relative to `src`). Uses the same dotfile policy as {@link globMatcher}, so a
  * globbed prefix strips the same dotfile directories the search side matches.
+ * A `!(…)` group strips as the wildcard it stands for: the selection has already
+ * subtracted what it excludes.
  */
 export function globPrefixRegex(prefix: string): RegExp {
-  return new RegExp("^" + picomatch.parse(prefix, { dot: true }).output);
+  const negated = negationsOf(prefix);
+  const output = picomatch.parse(negated === undefined ? prefix : negated.withWildcards(), { dot: true }).output;
+  return new RegExp("^" + (negated === undefined ? output : negated.expand(output)));
+}
+
+/** A glob's `!(…)` groups, and the patterns its subtraction is made of. */
+interface INegations {
+  /** The pattern with each group as the wildcard it stands for. */
+  base(capture: boolean): RegExp;
+  /** One pattern per alternative of each group, the other groups as wildcards. */
+  excluded(): RegExp[];
+  /** The pattern with each group as a placeholder {@link expand} fills in. */
+  withWildcards(): string;
+  /** Replace each placeholder in a compiled regex source with its wildcard. */
+  expand(source: string): string;
+}
+
+/** A `!(…)` group: its span in the glob and its alternatives. */
+interface INegationGroup {
+  start: number;
+  end: number;
+  alternatives: string[];
+  /** true if an alternative holds a `/`, otherwise false. */
+  spansSegments: boolean;
+  /** true if the group is bounded by `/` or the ends of the glob on both sides, otherwise false. */
+  wholeSegment: boolean;
+}
+
+/**
+ * Find the `!(…)` groups of a glob and make the subtraction they stand for.
+ *
+ * A group is a wildcard in the pattern it sits in — one path segment's worth
+ * (`*`), or any text at all, `/` included, where its contents hold a `/`; like
+ * `*`, never empty where it stands as a whole segment — and
+ * each of its alternatives, written in its place, is a pattern the path must not
+ * match. So `**\/!(foo/bar)/**\/!(*.ts)` matches what `**\/*\/**\/*` matches,
+ * less `**\/foo/bar/**\/*` and `**\/*\/**\/*.ts`. A group inside another group is
+ * refused (the parser refuses one written in a build file first).
+ *
+ * @return undefined for a glob with no `!(…)` group.
+ */
+function negationsOf(glob: string): INegations | undefined {
+  const groups = negationGroups(glob);
+  if (groups.length === 0) {
+    return undefined;
+  }
+  /* Each group compiles as a placeholder of plain letters, which picomatch
+   * passes through as literal text, then replaced by the group's wildcard in
+   * the regex it emits. */
+  let stem = "FABRNEGATION";
+  while (glob.includes(stem)) {
+    stem += "X";
+  }
+  const placeholder = (i: number): string => `${stem}${i}${stem}`;
+  /* A group standing as a whole segment is never empty, as `*` there is not. */
+  const wildcard = (group: INegationGroup): string =>
+    `(?:${group.spansSegments ? "." : "[^/]"}${group.wholeSegment ? "+?" : "*?"})`;
+  const assemble = (replace: (group: INegationGroup, i: number) => string): string => {
+    let text = "";
+    let at = 0;
+    groups.forEach((group, i) => {
+      text += glob.substring(at, group.start) + replace(group, i);
+      at = group.end;
+    });
+    return text + glob.substring(at);
+  };
+  const expand = (source: string): string =>
+    groups.reduce((text, group, i) => text.replaceAll(placeholder(i), wildcard(group)), source);
+  const compile = (pattern: string, capture: boolean): RegExp =>
+    new RegExp(expand(picomatch.makeRe(pattern, { dot: true, capture }).source));
+  const withWildcards = (): string => assemble((_, i) => placeholder(i));
+  return {
+    base: capture => compile(withWildcards(), capture),
+    excluded: () =>
+      groups.flatMap((negated, n) =>
+        negated.alternatives.map(alternative => compile(assemble((group, i) => (i === n ? alternative : placeholder(i))), false))
+      ),
+    withWildcards,
+    expand,
+  };
+}
+
+/**
+ * Find the `!(…)` groups at the top level of a glob. A `\` escapes the next
+ * character and a `[…]` class is read whole, so neither opens nor closes a group.
+ */
+function negationGroups(glob: string): INegationGroup[] {
+  const groups: INegationGroup[] = [];
+  /* The open groups, innermost last: whether each is a negation, and where its
+   * current alternative began. */
+  const open: { negation: boolean; start: number; from: number; alternatives: string[] }[] = [];
+  for (let i = 0; i < glob.length; i++) {
+    const ch = glob[i];
+    if (ch === "\\") {
+      i++;
+    } else if (ch === "[") {
+      i = classEnd(glob, i);
+    } else if ("!@+*?".includes(ch) && glob[i + 1] === "(") {
+      if (ch === "!" && open.length > 0) {
+        throw new Error(`A '!(…)' group cannot be inside another group, in '${glob}'`);
+      }
+      open.push({ negation: ch === "!", start: i, from: i + 2, alternatives: [] });
+      i++;
+    } else if (ch === "|" && open.length > 0) {
+      const group = open[open.length - 1];
+      group.alternatives.push(glob.substring(group.from, i));
+      group.from = i + 1;
+    } else if (ch === ")" && open.length > 0) {
+      const group = open.pop()!;
+      if (group.negation) {
+        const alternatives = [...group.alternatives, glob.substring(group.from, i)];
+        groups.push({
+          start: group.start,
+          end: i + 1,
+          alternatives,
+          spansSegments: alternatives.some(alt => alt.includes("/")),
+          wholeSegment: (group.start === 0 || glob[group.start - 1] === "/") && (i + 1 === glob.length || glob[i + 1] === "/"),
+        });
+      }
+    }
+  }
+  return groups;
+}
+
+/** @return the index of the `]` closing the class opened at `start`, or `start` where none does. */
+function classEnd(glob: string, start: number): number {
+  let i = start + 1;
+  if (glob[i] === "!" || glob[i] === "^") {
+    i++;
+  }
+  /* A `]` first in the class is one of its members. */
+  if (glob[i] === "]") {
+    i++;
+  }
+  for (; i < glob.length; i++) {
+    if (glob[i] === "\\") {
+      i++;
+    } else if (glob[i] === "]") {
+      return i;
+    }
+  }
+  return start;
 }

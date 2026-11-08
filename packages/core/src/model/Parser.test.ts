@@ -1179,6 +1179,18 @@ describe("Parser Tests", () => {
       ]);
       expect(() => parseName("!(abc")).to.throw(/Unterminated extglob group '!\('/);
     });
+
+    it("rejects a negation group inside another group, positioned at it", () => {
+      expect(parseInvalid("srcs = @(!(a)|b)/**;")).to.deep.equal([
+        diagnosticBlock(1, 10, "A '!(…)' group cannot be inside another extglob group", "srcs = @(!(a)|b)/**;"),
+      ]);
+    });
+
+    it("keeps a group's slashes inside the group", () => {
+      const name = parseName("src/**/!(@shorthand/api)/**");
+      expect(name.getLiteralPathPrefix()).to.equal("src/");
+      expect(name.toGlobString()).to.equal("src/**/!(@shorthand/api)/**");
+    });
   });
 
   describe("command pipelines", () => {

@@ -569,6 +569,15 @@ describe("FSFileSource extglob enumeration", () => {
     expect(await found("api/!(x).ts")).to.deep.equal(["api/f.ts"]);
   });
 
+  it("excludes a group spanning segments at any depth", async () => {
+    for (const dir of ["web/@shorthand/api", "web/@shorthand/ui", "@shorthand/api"]) {
+      fs.mkdirSync(path.join(root, dir), { recursive: true });
+      fs.writeFileSync(path.join(root, dir, "g.ts"), "y");
+    }
+    expect(await found("**/!(@shorthand/api)/**")).to.deep.equal(["V3/f.ts", "Validation/f.ts", "api/f.ts", "web/@shorthand/ui/g.ts", "web/f.ts"]);
+    expect(await found("**!(/@shorthand/api/)**/*.ts")).to.deep.equal(["V3/f.ts", "Validation/f.ts", "api/f.ts", "web/@shorthand/ui/g.ts", "web/f.ts"]);
+  });
+
   it("treats the group's characters literally when quoted", async () => {
     fs.mkdirSync(path.join(root, "!(lit)"));
     fs.writeFileSync(path.join(root, "!(lit)", "g.ts"), "y");

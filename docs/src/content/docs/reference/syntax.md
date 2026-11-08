@@ -117,7 +117,8 @@ srcs = src;                    # a directory: everything under it
 ```
 
 Bash's extended globs are supported too. Each is a prefix character followed by a parenthesised
-list of one or more patterns separated by `|`, and matches within one path component:
+list of one or more patterns separated by `|`. Each matches within one path component, except
+`!(…)`, described below:
 
 | Pattern | Matches |
 | --- | --- |
@@ -136,6 +137,29 @@ srcs = src/!(*.test).ts;            # .ts files other than .test.ts
 
 The patterns in a list can themselves contain wildcards, character classes, further groups and
 `${…}` substitutions. An unclosed group, such as `!(` with no `)`, is an error.
+
+#### Negation
+
+A `!(…)` group removes what it lists from the whole pattern. A path matches `A!(X)B` when it
+matches `A*B` and does not match `AXB`. The listed patterns can span directories, so a group
+can exclude a path at any depth:
+
+```
+srcs = **/!(@shorthand/api)/**;           # everything not under an @shorthand/api directory
+srcs = **!(/@shorthand/api/)**/*.ts;      # the same, for .ts files
+srcs = **/!(gen/out)/**/!(*.test.ts);     # neither under gen/out, nor a .test.ts file
+```
+
+- A group with no `/` in its patterns stands for one path component, as `*` does. With a `/`, it
+  stands for any part of a path. A group that is a whole component by itself always matches
+  something, as `*` does there.
+- Each group in a pattern is applied separately, and the path must satisfy all of them. In the
+  last example, `x.js` at the top level doesn't match, because the `/` after the first group
+  requires a directory.
+- This differs from bash, where the group may match some other text at that position. In bash,
+  `!(a)*` matches `ab`, because the group can match the empty string. In fabr it doesn't,
+  because `ab` matches `a*`.
+- A `!(…)` group can't be inside another group. `@(!(a)|b)` is an error.
 
 ### Quoting
 
