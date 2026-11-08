@@ -542,13 +542,39 @@ function isWildcardKey(name: Name): boolean {
  *
  * @return error message on failure, otherwise undefined.
  */
+/**
+ * @return `selector`'s glob units with its `!(…)` groups left out: a group subtracts
+ * from what the selector matches and captures nothing for a template to replay.
+ */
+function unitsOutsideNegations(selector: Name): string[] {
+  const units: string[] = [];
+  let depth = 0;
+  for (const unit of selector.getGlobUnits()) {
+    let outside = "";
+    for (let at = 0; at < unit.length; at++) {
+      if (depth > 0) {
+        depth += unit[at] === "(" ? 1 : unit[at] === ")" ? -1 : 0;
+      } else if (unit.startsWith("!(", at)) {
+        depth = 1;
+        at++;
+      } else {
+        outside += unit[at];
+      }
+    }
+    if (outside !== "") {
+      units.push(outside);
+    }
+  }
+  return units;
+}
+
 function checkRenameWildcards(selector: Name, template: Name): string | undefined {
   const templateUnits = template.getGlobUnits();
   const captures = template.getBackrefIndices();
   if (templateUnits.length === 0 && captures.length === 0) {
     return undefined;
   }
-  const selectorUnits = selector.getGlobUnits();
+  const selectorUnits = unitsOutsideNegations(selector);
   const bad = [...selectorUnits, ...templateUnits].find(unit => unit !== "*" && unit !== "**");
   if (bad !== undefined) {
     return `rename wildcards must be '*' or '**' (found '${bad}')`;

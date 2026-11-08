@@ -1037,6 +1037,26 @@ describe("Parser Tests", () => {
       });
     });
 
+    it("counts a '!(…)' group in the selector as no wildcard: it subtracts and captures nothing", () => {
+      expect(parseInvalid("out = **/!(lib/*)/** -> out/$1/$2;")).to.deep.equal([]);
+      expect(parseInvalid("out = src/!(*.test).ts -> out/*.js;")).to.deep.equal([
+        diagnosticBlock(
+          1,
+          24,
+          "Invalid rename template: selector and template must have equal wildcard counts (0 vs 1)",
+          "out = src/!(*.test).ts -> out/*.js;"
+        ),
+      ]);
+      expect(parseInvalid("out = **/!(lib/*)/** -> out/**;")).to.deep.equal([
+        diagnosticBlock(
+          1,
+          22,
+          "Invalid rename template: selector and template must have equal wildcard counts (2 vs 1)",
+          "out = **/!(lib/*)/** -> out/**;"
+        ),
+      ]);
+    });
+
     it("rejects a wildcard picomatch does not capture positionally", () => {
       expect(parseInvalid("out = a?.js -> a?.out;")).to.deep.equal([
         diagnosticBlock(
