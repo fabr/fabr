@@ -18,7 +18,7 @@
  */
 
 import { IPropertyDecl, ITargetDecl, ITargetDefDecl } from "./AST";
-import { IPrefixMatch, IPropertyEntry } from "./Namespace";
+import { IPrefixMatch, IPropertyEntry, Namespace } from "./Namespace";
 import { BuildContext } from "../context/index";
 import { Constraints } from "./Constraints";
 import { ExecutionContext } from "./ExecutionContext";
@@ -85,6 +85,13 @@ export interface BuildModel {
 
   getDecl(name: string): IPropertyEntry | ITargetDecl | undefined;
 
+  /** @return the namespace of the names the file `file` names declares
+   *  privately, or undefined where it declares none. */
+  getPrivateScope(file: string): Namespace | undefined;
+
+  /** @return the names of the files that declare `name` privately, in name order. */
+  getPrivateFiles(name: string): string[];
+
   /** @return the target this name declares, or undefined if it names something
    * else (a property, a namespace) or nothing at all — for a caller that needs
    * a target's *type* (and so what can be done with it) before asking for it. */
@@ -92,7 +99,10 @@ export interface BuildModel {
 
   getTargetDef(name: string): ITargetDefDecl | undefined;
 
-  getPrefixMatch(name: Name): IPrefixMatch | undefined;
+  /** Look up the declaration a prefix of `name` names, as written in the file
+   *  `file` names: the longest prefix declared, that file's private
+   *  declaration of it before a public one. */
+  getPrefixMatch(name: Name, file?: string): IPrefixMatch | undefined;
 
   /**
    * Look up the declared target a written reference builds — its literal

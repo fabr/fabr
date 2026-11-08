@@ -135,6 +135,12 @@ export abstract class TargetContext {
     return this.name;
   }
 
+  /** Get the configuration this target's own name is resolved in: its own,
+   *  as the file declaring it sees it. */
+  protected get ownConfiguration(): InternalBuildContext {
+    return this.context.inFile(this.getDeclaredContext().target.source.file);
+  }
+
   /** The operation this target's configuration is under (see
    * {@link operationOf}). */
   public get operation(): string {
@@ -368,7 +374,7 @@ export abstract class TargetContext {
   }
 
   public lookupPublishRef(name: Name): Computable<RepositoryPublishRef> {
-    const match = this.context.getPrefixTargetIfExists(name, this.stack);
+    const match = this.ownConfiguration.getPrefixTargetIfExists(name, this.stack);
     if (!match) {
       return Computable.reject(new FabrError(`'${name.toString()}' does not name a repository`));
     }
@@ -557,7 +563,7 @@ export abstract class TargetContext {
    * `stack`, so this target is named as the requester.
    */
   public buildSelfWithOverrides(overrides: Constraints): Computable<SourceRef[]> {
-    return this.context.resolveTarget(this.declaredName, this.stack, overrides).then(materializeTargets);
+    return this.ownConfiguration.resolveTarget(this.declaredName, this.stack, overrides).then(materializeTargets);
   }
 
   /**
@@ -566,7 +572,7 @@ export abstract class TargetContext {
    * read as packages ({@link PackageSources}).
    */
   public resolveSelfWithOverrides(overrides: Constraints): Computable<PackageSources> {
-    return this.context.resolveTarget(this.declaredName, this.stack, overrides).then(sources => new PackageSources(sources));
+    return this.ownConfiguration.resolveTarget(this.declaredName, this.stack, overrides).then(sources => new PackageSources(sources));
   }
 
   /**
@@ -804,7 +810,7 @@ export class DeclaredTargetContext extends TargetContext {
 
   /** Resolve this target in the configuration of `constraints`, as a reference to it written in a rule's block does. */
   public resolveIn(constraints: Constraints, stack?: IDependencyStack): Computable<SourceRef[]> {
-    return this.context.inConfiguration(constraints).resolveTarget(this.declaredName, stack);
+    return this.ownConfiguration.inConfiguration(constraints).resolveTarget(this.declaredName, stack);
   }
 
   /** Get the configuration of `constraints` this target's names are looked up in. */
@@ -814,7 +820,8 @@ export class DeclaredTargetContext extends TargetContext {
 
   /** Resolve this target where it is built, and @return it resolved. */
   public resolvedSelf(): Computable<ResolvedTarget> {
-    return this.context.resolveTarget(this.declaredName, this.stack).then(() => this.context.resolvedTarget(this.declaredName));
+    const own = this.ownConfiguration;
+    return own.resolveTarget(this.declaredName, this.stack).then(() => own.resolvedTarget(this.declaredName));
   }
 
   /** Get the declarations of `name` that apply under `alias`, their values substituted there, with the configuration they are looked up in. */
@@ -825,7 +832,7 @@ export class DeclaredTargetContext extends TargetContext {
         decls.map(decl =>
           Computable.forAll(
             decl.values.map(value =>
-              isNameValue(value) ? at.substituteName(value.value, stack).then((substituted): IValue => ({ ...value, value: substituted })) : Computable.resolve(value)
+              isNameValue(value) ? at.substituteName(value, stack).then((substituted): IValue => ({ ...value, value: substituted })) : Computable.resolve(value)
             ),
             (...values: IValue[]): IPropertyDecl => ({ ...decl, values })
           )

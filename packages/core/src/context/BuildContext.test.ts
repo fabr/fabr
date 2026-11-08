@@ -48,7 +48,7 @@ import files from "../rules/DefaultFilesRule";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { makeRewrite, Name } from "../core/Name";
 import { renderProvenance } from "../core/Provenance";
-import { ConflictError, CycleError, FabrError, MultiError, toError } from "../core/Errors";
+import { ConflictError, CycleError, FabrError, helpOf, MultiError, toError } from "../core/Errors";
 import { cycleErrorOf } from "../model/ErrorFormatter";
 import { LogFormatter, LogLevel } from "../support/Log";
 import { BuildAction, IBuildActionDefinition } from "../core/BuildAction";
@@ -5339,5 +5339,127 @@ describe("a repository a namespace makes", () => {
       e => e as Error
     );
     expect(err?.message).to.equal("'@empty:m' is a no_such_type, which no plugin in use defines");
+  });
+
+});
+
+describe("private declarations", () => {
+  /** Make the model of `files`, by name, expecting no errors. */
+  function modelOf(files: Record<string, string>): BuildModel {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const parsed = Object.entries(files).map(([file, text]) => parseBuildString(EMPTY_FILESET, file, text, logger));
+    const model = toBuildModel(parsed, logger, testContributions);
+    expect(errors).to.deep.equal([]);
+    return model;
+  }
+
+  /** @return the errors making the model of `files` reports. */
+  function errorsOf(files: Record<string, string>): string[] {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    toBuildModel(Object.entries(files).map(([file, text]) => parseBuildString(EMPTY_FILESET, file, text, logger)), logger, testContributions);
+    return errors;
+  }
+
+  const read = async (model: BuildModel, name: string, constraints: Record<string, string> = {}): Promise<string[]> =>
+    (await internal(model.getConfig(Constraints.of(constraints), execution)).getProperty(name)).getValues();
+
+  const TYPES = "targetdef test_file { content = STRING; }\ntargetdef test_good { deps = PACKAGES; }\n";
+  const contentOf = async (model: BuildModel, name: string): Promise<string> => {
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine(name));
+    return (await (await lastDeps!.get("f.txt"))!.getBuffer()).toString("utf8");
+  };
+
+  it("is read by a substitution written in its file, and the public declaration elsewhere", async () => {
+    const model = modelOf({ "A.fabr": "private X = a;\nY = ${X};\n", "B.fabr": "X = b;\nZ = ${X};\n" });
+    expect(await read(model, "Y")).to.deep.equal(["a"]);
+    expect(await read(model, "Z")).to.deep.equal(["b"]);
+    expect(await read(model, "X")).to.deep.equal(["b"]);
+  });
+
+  it("is not set by a constraint of its name", async () => {
+    const model = modelOf({ "A.fabr": "private X = a;\nY = ${X};\n", "B.fabr": "X = b;\nZ = ${X};\n" });
+    expect(await read(model, "Y", { X: "c" })).to.deep.equal(["a"]);
+    expect(await read(model, "Z", { X: "c" })).to.deep.equal(["c"]);
+  });
+
+  it("decides a guard written in its file", async () => {
+    const model = modelOf({ "A.fabr": "private MODE = m;\nG<MODE=m> = yes;\nG<MODE=n> = no;\n", "B.fabr": "MODE = n;\n" });
+    expect(await read(model, "G")).to.deep.equal(["yes"]);
+  });
+
+  it("answers a reference written in its file, wherever the value holding it is read", async () => {
+    const model = modelOf({
+      "T.fabr": "targetdef test_file { content = STRING; }\ntargetdef test_good { deps = PACKAGES; }\n",
+      "A.fabr": "private test_file lib { content = private; }\nSHARED = lib;\n",
+      "B.fabr": "test_file lib { content = public; }\ntest_good viaShared { deps = SHARED; }\ntest_good direct { deps = lib; }\n",
+    });
+    expect(await contentOf(model, "viaShared")).to.equal("private");
+    expect(await contentOf(model, "direct")).to.equal("public");
+  });
+
+  it("cannot be named from the command line", async () => {
+    const model = modelOf({
+      "T.fabr": "targetdef test_file { content = STRING; }\n",
+      "A.fabr": "private test_file only { content = x; }\n",
+    });
+    const err = await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("only")).then(
+      () => undefined,
+      e => e as Error
+    );
+    expect(err?.message).to.equal("Unknown name 'only'");
+    expect(helpOf(err!)).to.deep.equal(["'only' is private to A.fabr"]);
+    expect(model.getTargets().map(target => target.name)).to.deep.equal([]);
+  });
+
+  it("conflicts with a public declaration of its name in the same file", () => {
+    expect(errorsOf({ "A.fabr": "X = a;\nprivate X = b;\n" }).join("\n")).to.match(/Duplicate declaration of property 'X'/);
+    expect(errorsOf({ "A.fabr": "private X = a;\n", "B.fabr": "X = b;\n" })).to.deep.equal([]);
+  });
+
+  it("lets a rule written in .fabr match a public target of a file declaring private names", async () => {
+    const model = modelOf({
+      "T.fabr": TYPES + "targetdef test_wrapped { }\n",
+      "A.fabr": "private P = secret;\nrule test_wrapped w = test_file out { content = ${P}; }\ntest_wrapped x { }\ntest_good t { deps = x; }\n",
+      "B.fabr": "P = public;\n",
+    });
+    expect(await contentOf(model, "t")).to.equal("secret");
+  });
+
+  it("takes a marker on a private target's name", async () => {
+    const model = modelOf({ "T.fabr": TYPES, "A.fabr": "private test_file lib { content = priv; }\ntest_good forced { deps = lib!; }\n" });
+    expect(await contentOf(model, "forced")).to.equal("priv");
+  });
+
+  it("matches a public name under a private one by the longer prefix", async () => {
+    const model = modelOf({
+      "T.fabr": TYPES,
+      "A.fabr": "private test_file lib { content = priv; }\ntest_good t { deps = lib/sub; }\n",
+      "B.fabr": "test_file lib/sub { content = pubsub; }\n",
+    });
+    expect(await contentOf(model, "t")).to.equal("pubsub");
+  });
+
+  it("selects a private target's rule from the public names, as a public target's", async () => {
+    const model = modelOf({
+      "T.fabr": "targetdef test_constrained { }\n",
+      "A.fabr": "private FLAVOR = other;\nprivate test_constrained p { }\ntest_constrained q { }\n",
+      "B.fabr": "FLAVOR = special;\n",
+    });
+    const config = model.getConfig(Constraints.of({}), execution);
+    await config.materialize(writtenOnCommandLine("q"));
+    const viaPrivate = modelOf({
+      "T.fabr": "targetdef test_constrained { }\ntargetdef test_good { deps = PACKAGES; }\n",
+      "A.fabr": "private FLAVOR = other;\nprivate test_constrained p { }\ntest_good viaP { deps = p; }\n",
+      "B.fabr": "FLAVOR = special;\n",
+    });
+    await viaPrivate.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("viaP"));
+  });
+
+  it("is refused for a declaration that is not a target or property", () => {
+    for (const text of ["private default X = a;\n", "private include ./x.fabr;\n", "private targetdef t { }\n"]) {
+      expect(errorsOf({ "A.fabr": text }).join("\n"), text).to.match(/a property name or target type after 'private'/);
+    }
   });
 });

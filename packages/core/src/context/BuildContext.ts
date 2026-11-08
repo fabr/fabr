@@ -172,8 +172,9 @@ export interface InternalBuildContext extends BuildContext {
    */
   inConfiguration(constraints: Constraints): InternalBuildContext;
 
-  /** Substitute every `${NAME}` and command in `name`, as a value's are. */
-  substituteName(name: Name, stack?: IDependencyStack): Computable<Name>;
+  /** Substitute every `${NAME}` and command in the written `value`'s name, as
+   *  the file it is written in reads them. */
+  substituteName(value: INameValue, stack?: IDependencyStack): Computable<Name>;
 
   /**
    * Get the declarations of a property that apply in this configuration: those
@@ -308,6 +309,13 @@ export interface InternalBuildContext extends BuildContext {
     name: Name,
     stack?: IDependencyStack
   ): { target: Computable<SourceRef[]>; rest: Name; name: string; retainedPrefix: string } | undefined;
+
+  /**
+   * Get this configuration as the build file `file` names sees it: where the
+   * file declares private names, the configuration that looks those up first;
+   * otherwise this one.
+   */
+  inFile(file: string | undefined): InternalBuildContext;
 
   /**
    * Resolve the declared name `name`, building nothing.

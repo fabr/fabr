@@ -319,10 +319,7 @@ export class ModelBuilder implements BuildModel {
         }
       }
       this.optionalLibIncludes.push(...file.includes.filter(include => optionalLibOf(include.name) !== undefined));
-      file.properties.forEach(prop => this.builder.addDecl(prop));
-      file.defaults.forEach(decl => this.builder.addDefaultDecl(decl));
-      file.targetdefs.forEach(def => this.builder.addDecl(def));
-      file.targets.forEach(target => this.builder.addDecl(target));
+      this.builder.addFile(file);
       for (const decl of file.rules) {
         const rule = new DeclaredRule(decl, this.load);
         this.declaredRules.push(rule);
@@ -549,8 +546,16 @@ export class ModelBuilder implements BuildModel {
     return this.root.getDecl(name);
   }
 
+  public getPrivateScope(file: string): Namespace | undefined {
+    return this.builder.getScope(file);
+  }
+
+  public getPrivateFiles(name: string): string[] {
+    return this.builder.getPrivateFiles(name);
+  }
+
   public getTargetDecl(name: string): ITargetDecl | undefined {
-    const decl = this.root.getDecl(name);
+    const decl = this.getDecl(name);
     return decl?.kind === DeclKind.Target ? decl : undefined;
   }
 
@@ -558,8 +563,10 @@ export class ModelBuilder implements BuildModel {
     return this.root.getTargetDef(name);
   }
 
-  public getPrefixMatch(name: Name): IPrefixMatch | undefined {
-    return this.root.getPrefixMatch(name);
+  public getPrefixMatch(name: Name, file?: string): IPrefixMatch | undefined {
+    const own = file === undefined ? undefined : this.builder.getScope(file)?.getPrefixMatch(name);
+    const outer = this.root.getPrefixMatch(name);
+    return own !== undefined && (outer === undefined || own.name.length >= outer.name.length) ? own : outer;
   }
 
   public getReferencedTarget(name: string): ITargetDecl | undefined {

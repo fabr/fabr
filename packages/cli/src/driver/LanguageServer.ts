@@ -239,7 +239,8 @@ export class LanguageServer {
         if (model === undefined) {
           return [];
         }
-        return contents.targets.flatMap(target => {
+        /* A private target is not one the command line can name. */
+        return contents.targets.filter(target => !target.private).flatMap(target => {
           const range = rangeOf({ ...target.source, offset: target.offset, endOffset: target.offset + target.name.toString().length });
           return range === undefined
             ? []
@@ -255,7 +256,7 @@ export class LanguageServer {
         if (this.model === undefined) {
           return [];
         }
-        return completionsAt(this.model, text, offsetOf(text, position)).map(completion => ({
+        return completionsAt(this.model, text, offsetOf(text, position), path.relative(this.sourceRoot, fileURLToPath(uri))).map(completion => ({
           label: completion.label,
           kind: COMPLETION_KINDS[completion.kind],
           ...(completion.detail === undefined ? {} : { detail: completion.detail }),

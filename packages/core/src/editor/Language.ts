@@ -324,7 +324,7 @@ function referenceAt(model: BuildModel, source: IBuildFile, start: number, end: 
   if (substituted !== undefined) {
     return propertyNamed(model, substituted.name, substituted.origin);
   }
-  const match = model.getPrefixMatch(name);
+  const match = model.getPrefixMatch(name, source.file);
   if (match === undefined) {
     return undefined;
   }
@@ -453,7 +453,7 @@ function entriesNaming(decl: ITargetDecl, member: string): INameValue[] {
 
 /** @return what the global or target `name` is, as named at `origin`. */
 function propertyNamed(model: BuildModel, name: string, origin: ISourceRange): INamed {
-  const decl = model.getDecl(name);
+  const decl = model.getPrivateScope(origin.source.file)?.getDecl(name) ?? model.getDecl(name);
   return { origin, declarations: decl === undefined ? [] : spansOf(decl), ...(decl === undefined ? {} : { documentation: describeProperty(name, decl) }) };
 }
 
@@ -568,23 +568,39 @@ function parameterCompletions(model: BuildModel, rule: RuleScope): ICompletion[]
 }
 
 /** The words that open a declaration that is not a target's. */
-const KEYWORDS = ["targetdef", "rule", "repository", "plugin", "include", "default"];
+const KEYWORDS = ["targetdef", "rule", "repository", "plugin", "include", "default", "private"];
 
 /**
- * @return what may complete what is typed at `offset` in `text`, a build file
- * as the editor holds it: inside `${`, the project's globals; a property's name
+ * @return what may complete what is typed at `offset` in `text`, the build
+ * file `file` names as the editor holds it, whose private names it sees:
+ * inside `${`, the project's globals; a property's name
  * in a target's body, the properties its type declares and what it can
  * splice (the project's map properties, and in a rule's block the rule's
  * parameter); after `=`, the
  * project's targets and globals; at the top level, the target types and the
  * keywords. What is typed so far is the editor's to match.
  */
-export function completionsAt(model: BuildModel, text: string, offset: number): ICompletion[] {
+export function completionsAt(model: BuildModel, text: string, offset: number, file?: string): ICompletion[] {
   const context = typingContext(text, offset);
+  /* The file's own private names, and the public names they do not hide. */
+  const own = file === undefined ? undefined : model.getPrivateScope(file);
+  const visible = <T>(own: Array<{ name: string; decl: T }>, all: Array<{ name: string; decl: T }>): Array<{ name: string; decl: T }> => [
+    ...own,
+    ...all.filter(({ name }) => !own.some(mine => mine.name === name)),
+  ];
   const globals = (): ICompletion[] =>
-    model.getProperties().map(({ name, decl }) => ({ label: name, kind: "property", ...(decl.docComment === undefined ? {} : { comment: decl.docComment }) }));
+    visible(own?.getProperties() ?? [], model.getProperties()).map(({ name, decl }) => ({
+      label: name,
+      kind: "property",
+      ...(decl.docComment === undefined ? {} : { comment: decl.docComment }),
+    }));
   const targets = (): ICompletion[] =>
-    model.getTargets().map(({ name, decl }) => ({ label: name, kind: "target", detail: decl.type, ...(decl.docComment === undefined ? {} : { comment: decl.docComment }) }));
+    visible(own?.getTargets() ?? [], model.getTargets()).map(({ name, decl }) => ({
+      label: name,
+      kind: "target",
+      detail: decl.type,
+      ...(decl.docComment === undefined ? {} : { comment: decl.docComment }),
+    }));
   switch (context.kind) {
     case "substitution":
       return globals();

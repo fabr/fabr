@@ -50,6 +50,9 @@ export interface ITargetDecl extends IBaseDecl {
   type: string;
   typeOffset: number;
   name: Name;
+  /** Whether it is written `private`: seen only by references written in its
+   *  file, where it takes precedence over a public declaration of its name. */
+  private?: boolean;
   /** The body, in written order: its property declarations, and in a target of
    * a rule's block, splices of the rule's parameter (`pkg;`). For each property,
    * the last item that supplies it is what the target has. */
@@ -188,6 +191,9 @@ export interface IPropertyDecl extends IBaseDecl {
   kind: DeclKind.Property;
   name: Name;
   values: IValue[];
+  /** Whether it is written `private`: seen only by references written in its
+   *  file, where it takes precedence over a public declaration of its name. */
+  private?: boolean;
   /** The doc-comment prose written above this property, marker-stripped, or
    * undefined if none. Runtime-only documentation metadata (read for docs of
    * global config properties like `BUILD_TYPE`, `JS_TARGET`). */

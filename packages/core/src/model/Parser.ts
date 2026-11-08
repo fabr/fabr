@@ -478,8 +478,10 @@ const DIAG_INVALID_IMPLEMENTATION = new Diagnostic<{ loc: ISourcePosition }>(
   LogLevel.Error,
   "An implementation names an entry of a package, as 'package:entry' (no glob patterns or variables)"
 );
+/** The declarations that cannot be private, by their keyword. */
+const PRIVATE_REFUSED = new Set(["include", "plugin", "rule", "targetdef", "default", "private", "repository"]);
 /** The declarations a rule's block cannot hold, by their keyword. */
-const RULE_BLOCK_REFUSED = new Set(["include", "plugin", "rule", "targetdef", "default", "repository"]);
+const RULE_BLOCK_REFUSED = new Set(["include", "plugin", "rule", "targetdef", "default", "private", "repository"]);
 const DIAG_RULE_BLOCK_DECL =new Diagnostic<{ keyword: string; loc: ISourcePosition }>(
   LogLevel.Error,
   "A rule's block declares only targets and properties, not '{keyword}'"
@@ -2254,29 +2256,31 @@ export class BuildParser {
   /**
    * DefaultDecl ::= 'default' ( PropertyDecl | TargetDecl )
    *                            ^
+   * PrivateDecl ::= 'private' ( PropertyDecl | TargetDecl )
+   *                            ^
    *
-   * `default` prefixes either form of named declaration, so the word here is a
-   * property name or a target type and must be an identifier — a `/`-bearing
-   * SIMPLE_NAME (or anything else) is a positioned error, NOT a target of type
-   * `default`. Which form follows is decided by the token after it, exactly as
-   * for an undefaulted declaration.
+   * `default` and `private` (the `keyword`) each prefix either form of named
+   * declaration, so the word here is a property name or a target type and must
+   * be an identifier — a `/`-bearing SIMPLE_NAME (or anything else) is a
+   * positioned error, NOT a target of the keyword's type. Which form follows is
+   * decided by the token after it, exactly as for an unprefixed declaration. A
+   * targetdef can be neither, and no other keyword's declaration is private.
    */
-  private parseDefaultDecl(docComment: string | undefined): IResolvableDecl {
+  private parsePrefixedDecl(keyword: "default" | "private", docComment: string | undefined): IResolvableDecl {
     const name = this.token;
-    if (name.type !== TokenType.IDENTIFIER) {
-      this.unexpectedTokenError("a property name or target type after 'default'");
+    const expected = `a property name or target type after '${keyword}'`;
+    if (name.type !== TokenType.IDENTIFIER || (keyword === "private" && PRIVATE_REFUSED.has(name.text))) {
+      this.unexpectedTokenError(expected);
     }
     const next = this.nextToken();
     if (next.type === TokenType.EQUALS || next.type === TokenType.LANGLE) {
-      /* `<` is the default's guard (`default F<TARGET=…> = …`), as on an ordinary
-       * global. */
+      /* `<` is the declaration's guard (`default F<TARGET=…> = …`), as on an
+       * ordinary global. */
       return this.parsePropertyDecl(this.finishPropertyKey(Name.fromLiteral(name.text)), name.start, docComment);
     } else if (next.type === TokenType.IDENTIFIER || next.type === TokenType.SIMPLE_NAME) {
-      /* Only properties and targets have a default slot: a targetdef is not
-       * defaultable, so `default targetdef x { … }` is an error reported at the
-       * keyword, rather than a target whose type is `targetdef`. */
+      /* Reported at the word, rather than read as a target of that type. */
       if (name.text === "targetdef") {
-        this.unexpectedTokenError("a property name or target type after 'default'", name.start);
+        this.unexpectedTokenError(expected, name.start);
       }
       return this.parseTargetDecl(name.text, name.start, docComment);
     } else {
@@ -2631,7 +2635,7 @@ export class BuildParser {
    * Parse a statement.
    *
    * Statement ::= PropertyDecl | TargetDecl | IncludeDecl | PluginDecl | TargetDefDecl | DefaultDecl
-   *             | GuardBlock
+   *             | PrivateDecl | GuardBlock
    *               ^
    * PropertyDecl ::= NAME Guard? '=' expr ';'
    * TargetDecl ::= NAME NAME '{' PropertyList '}'
@@ -2639,6 +2643,7 @@ export class BuildParser {
    * PluginDecl ::= 'plugin' Reference ';'
    * TargetDefDecl ::= 'targetdef' NAME ( 'extends' NAME )? '{' PropertyTypeList '}'
    * DefaultDecl ::= 'default' ( PropertyDecl | TargetDecl | 'rule' RuleBody )
+   * PrivateDecl ::= 'private' ( PropertyDecl | TargetDecl )
    * RuleDecl ::= 'rule' NAME RuleBody
    * RuleBody ::= NAME RuleGuard? '=' RuleImplementation
    * RepositoryDecl ::= 'repository' NAME '=' NAME ';'
@@ -2659,7 +2664,14 @@ export class BuildParser {
         this.nextToken();
         this.result.rules.push(this.parseRuleDecl(undefined, undefined, token.start));
       } else if (token.text === "default") {
-        this.result.defaults.push(this.parseDefaultDecl(doc));
+        this.result.defaults.push(this.parsePrefixedDecl("default", doc));
+      } else if (token.text === "private" && next.type === TokenType.IDENTIFIER) {
+        const decl = { ...this.parsePrefixedDecl("private", doc), private: true };
+        if (decl.kind === DeclKind.Target) {
+          this.result.targets.push(decl);
+        } else {
+          this.result.properties.push(decl);
+        }
       } else if (token.text === "rule" && next.type === TokenType.IDENTIFIER) {
         const type = next.text;
         this.nextToken();

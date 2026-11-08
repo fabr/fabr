@@ -214,4 +214,33 @@ describe("build file language", () => {
     expect(parts("2.0.0 @dep")).to.deep.equal(["2.0.0", ["@dep"]]);
     expect(parts("typescript;")).to.deep.equal(["typescript", ["@dep"]]);
   });
+
+  describe("in a file declaring private names", () => {
+    const priv = "targetdef holder { srcs = FILES; }\n# Private.\nprivate holder lib { srcs = b.txt; }\nprivate MODE = m;\nholder user { srcs = lib ${MODE}; }\n";
+    const other = "holder lib { srcs = a.txt; }\nMODE = n;\nholder elsewhere { srcs = lib ${MODE}; }\n";
+    const privContents = parseBuildString(EMPTY_FILESET, "PRIV.fabr", priv, log);
+    const otherContents = parseBuildString(EMPTY_FILESET, "OTHER.fabr", other, log);
+    const privModel = toBuildModel([privContents, otherContents], log, []);
+    const declaredIn = (contents: typeof privContents, text: string, needle: string): string[] => {
+      const offset = text.indexOf(needle) + 1;
+      return (namedAt(privModel, writtenAt(contents, offset)!, offset)?.declarations ?? []).map(span => `${span.file}:${span.offset}`);
+    };
+
+    it("finds a reference's declaration as the file it is written in sees it", () => {
+      expect(declaredIn(privContents, priv, "lib ${")).to.deep.equal([`PRIV.fabr:${priv.indexOf("lib {")}`]);
+      expect(declaredIn(privContents, priv, "MODE}")).to.deep.equal([`PRIV.fabr:${priv.indexOf("MODE =")}`]);
+      expect(declaredIn(otherContents, other, "lib ${")).to.deep.equal([`OTHER.fabr:${other.indexOf("lib {")}`]);
+      expect(declaredIn(otherContents, other, "MODE}")).to.deep.equal([`OTHER.fabr:${other.indexOf("MODE =")}`]);
+    });
+
+    it("offers the file's private names to complete, and another file's not", () => {
+      const typed = "holder x { srcs = ";
+      const offered = (file: string): Array<string | undefined> =>
+        completionsAt(privModel, typed, typed.length, file)
+          .filter(completion => completion.label === "lib")
+          .map(completion => completion.comment);
+      expect(offered("PRIV.fabr")).to.deep.equal(["Private."]);
+      expect(offered("OTHER.fabr")).to.deep.equal([undefined]);
+    });
+  });
 });

@@ -409,7 +409,8 @@ reuse. Inside a target it is one of that target's inputs. The value is a
 [string](#string-properties), a [map](#map-properties) or a [command](#command-property).
 
 A global property can be set from outside the build file: for one run with `-DNAME=value` on the
-command line, or for one reference with a [constraint](#constraints).
+command line, or for one reference with a [constraint](#constraints). A
+[private](#private-declarations) property can't.
 
 ### Default properties
 
@@ -608,6 +609,9 @@ A default target is used only if no other declaration has its name. A plugin dec
 supplies this way, so that a project can replace one by declaring a target with the same name. Two
 default declarations of one name are still an error.
 
+A target can also be declared [`private`](#private-declarations), which only its own build file
+can see.
+
 ### Splicing a map into a target
 
 Naming a [map property](#map-properties) alone in a target's body, as a statement, takes the map's
@@ -635,6 +639,39 @@ js_package cli  { JS_DEFAULTS; srcs = src:**/*.ts; test_framework = node; }
 Inside a [rule's block](#rule-and-repository-declarations), the rule's parameter is the target
 being built as a map of its properties, so `pkg;` splices all of them (see
 [Splicing the target's properties](/guides/rules/#splicing-the-targets-properties)).
+
+## Private declarations
+
+`private` before a target or a global property declares a name that only the build file it is
+written in can see. Use it for a target that exists only to be used by others in the same file,
+so that it doesn't add a name to the rest of the project:
+
+```
+private patched glob-promise {
+  srcs = @npm:glob-promise:1.33.0;
+  patches = patches/glob.patch;
+}
+
+js_package editor {
+  srcs = src:**/*.ts;
+  deps = glob-promise;
+}
+```
+
+- Every reference written in the file sees its private names, including those in `${…}`
+  substitutions and in [guards](#guarded-properties). There, a private name is used in place of a
+  declaration of the same name in any other build file.
+- Other build files, the command line and the `list-` commands don't see a private name. Naming one
+  on the command line is an error that says which file it is private to.
+- `-DNAME=value` and a [constraint](#constraints) set only the public property of that name. A
+  private property keeps the value its file gives it.
+- A reference means what it means in the file it is written in, as a relative path does. So a
+  property `SHARED = glob-promise;` written in the same file names the private target wherever
+  another file refers to `SHARED`. A `${SHARED}` substitution inserts its text, which names
+  whatever `glob-promise` is in the file the substitution is written in.
+- A file can't declare one name both privately and publicly. Only target and property
+  declarations can be private, so `private default`, `private include` and the like are errors, and
+  an included file doesn't see the private names of the file that includes it.
 
 ## Targetdef declarations
 

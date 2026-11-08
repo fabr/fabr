@@ -321,8 +321,8 @@ const DIAG_PLUGIN_DECLARES_PLUGIN = Diagnostic.Error<{ loc: ISourcePosition }>(
  * changes what was read before it.
  */
 export function checkPluginFile(file: IBuildFileContents, log: Log): void {
-  [...file.properties, ...file.targets].forEach(decl => log.log(DIAG_PLUGIN_ORDINARY, { loc: declPosn(decl) }));
-  file.defaults
+  [...file.properties, ...file.targets].filter(decl => !decl.private).forEach(decl => log.log(DIAG_PLUGIN_ORDINARY, { loc: declPosn(decl) }));
+  [...file.defaults, ...file.targets.filter(target => target.private)]
     .filter(decl => decl.kind === DeclKind.Target && decl.type === FABR_PLUGIN)
     .forEach(decl => log.log(DIAG_PLUGIN_DECLARES_PLUGIN, { loc: declPosn(decl) }));
 }

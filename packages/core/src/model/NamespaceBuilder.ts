@@ -22,6 +22,7 @@ import { Diagnostic, ISourcePosition, Log } from "../support/Log";
 import {
   DeclKind,
   declName,
+  IBuildFileContents,
   declPosn,
   getDeclKindName,
   IResolvableDecl,
@@ -69,6 +70,8 @@ export class NamespaceBuilder {
   private root: NamespaceNode;
   /** Declarations superseded as they were added, validated with the rest by {@link resolve}. */
   private superseded: IResolvableDecl[] = [];
+  /** Each file's private declarations, by the file's name. */
+  private readonly scopes = new Map<string, NamespaceNode>();
 
   constructor(log: Log) {
     this.log = log;
@@ -215,6 +218,41 @@ export class NamespaceBuilder {
     return Namespace.of(this.root);
   }
 
+  /**
+   * Add the declarations of `file`: a public one to the namespace, a private
+   * one to the namespace of that file's private names. A private declaration
+   * of a name the file also declares publicly is the ordinary conflict.
+   */
+  public addFile(file: IBuildFileContents): void {
+    const resolvable = [...file.properties, ...file.targets];
+    file.properties.filter(prop => !prop.private).forEach(prop => this.addDecl(prop));
+    file.defaults.forEach(decl => this.addDefaultDecl(decl));
+    file.targetdefs.forEach(def => this.addDecl(def));
+    file.targets.filter(target => !target.private).forEach(target => this.addDecl(target));
+    const declared = new Map([...resolvable.filter(decl => !decl.private), ...file.defaults].map(decl => [declName(decl), decl]));
+    for (const decl of resolvable.filter(decl => decl.private)) {
+      const publicDecl = declared.get(declName(decl));
+      if (publicDecl !== undefined) {
+        this.conflictError(publicDecl, decl);
+        continue;
+      }
+      const scope = this.scopes.get(decl.source.file) ?? newNamespaceNode();
+      this.scopes.set(decl.source.file, scope);
+      this.addDecl(decl, scope);
+    }
+  }
+
+  /** @return the names of the files that declare `name` privately, in name order. */
+  public getPrivateFiles(name: string): string[] {
+    return [...this.scopes].filter(([, scope]) => Namespace.of(scope).getDecl(name) !== undefined).map(([file]) => file).sort();
+  }
+
+  /** @return the namespace of the private names of the file named `file`, or undefined where it declares none. */
+  public getScope(file: string): Namespace | undefined {
+    const scope = this.scopes.get(file);
+    return scope === undefined ? undefined : Namespace.of(scope);
+  }
+
   private getNodeFor(root: NamespaceNode, parts: string[], decl: INamedDecl): NamespaceNode | undefined {
     let node = root;
     for (const part of parts) {
@@ -283,6 +321,7 @@ export class NamespaceBuilder {
   public validate(): void {
     this.validateInheritance();
     this.resolve(this.root);
+    this.scopes.forEach(scope => this.resolve(scope));
     this.superseded.forEach(decl => this.validateDecl(decl));
   }
 
