@@ -226,7 +226,11 @@ js_package app {
 Under `layout/pnp`, a package is only found by being imported or required. Code that finds a
 file by looking in `node_modules` itself (reading `node_modules/x/package.json` directly, or
 walking up from its own directory to a sibling package) finds nothing, as does a program a test
-starts. A package with peer dependencies is loaded from a path of its own for each set of peers it
+starts. The same goes for a native addon whose binary is linked against a library in a sibling
+package by a relative path (`sharp`, whose `@img/sharp-<platform>` binary looks for
+`@img/sharp-libvips-<platform>` beside it): each package is its own directory in fabr's cache, so
+the library is not where the binary expects it and the addon fails to load. A package with peer
+dependencies is loaded from a path of its own for each set of peers it
 is given, which exists only for imports, so the package reading one of its own files through `fs`
 (`fs.readFileSync(path.join(__dirname, "template.html"))`) finds nothing there either.
 `layout/node_modules` asks for the tree explicitly. `--coverage` needs the tree, so a
@@ -619,10 +623,13 @@ and runs your program once for each test file, with the compiled tests as its wo
 - **`--pnp`** names the PnP table the test processes resolve packages through, where the
   install has one in place of `node_modules` (see [How tests find their
   packages](#how-tests-find-their-packages)).
-- **`--reads`** asks the runner to write, as a JSON array, the files the test process loaded or
-  read, by their paths relative to the working directory. A runner that can't say what was read,
-  as when a test started another process, or that doesn't support the option, writes no file, and
-  its test files run again on every change.
+- **`--reads`** asks the runner to write what the test process read, as a JSON document
+  `{"files": […], "lookups": […]}`: `files` the files it loaded, read or probed for, by their
+  paths relative to the working directory, and `lookups` each package it looked up by a bare
+  specifier, as `{"from": <the file that asked>, "name": <the package>, "to": <the file that
+  answered>}`, `to` left out where nothing did. A runner that can't say what was read, as when a
+  test started another process, or that doesn't support the option, writes no file, and its test
+  files run again on every change.
 - **The report** must be written to the `--report` file as a [CTRF](https://ctrf.io/) document,
   `{"results": {"tool": …, "summary": …, "tests": […]}}`, with each of the summary's counts
   (`tests`, `passed`, `failed`, `pending`, `skipped`, `other`, `start`, `stop`) a number.

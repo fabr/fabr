@@ -22,8 +22,6 @@ import {
   BuildAction,
   toChangesDocument,
   Computable,
-  FabrError,
-  mapComputable,
   BuildResult,
   configFiles,
   EXEC_ACTION,
@@ -41,9 +39,7 @@ import {
   stringListConfig,
   writeFileSet,
 } from "@fabr-build/core";
-import { assembleNodeModules } from "./NodeModules";
-import { pnpManifestOf, treeMountOf } from "./PnPManifest";
-import { PNP_DATA_FILE } from "@fabr-build/js-tools";
+import { layoutPackages, NodeLayout, NODE_MODULES, selfConfig } from "./Layout";
 import { splitDepsPath, toRunReport } from "@fabr-build/js-tools";
 
 /**
@@ -71,7 +67,7 @@ function sourcePathTable(files: FileSet, packages: ReadonlyMap<string, FileSet>)
  * The JS ecosystem's build step, and the one place that owns **how a JS tool
  * reaches its dependencies**: make them reachable, then run it — core's generic
  * `exec` with the one thing every JS tool needs in front of it. Which
- * arrangement is the {@link PNP}/{@link NODE_MODULES} choice: a rule says
+ * arrangement is the `pnp`/`node_modules` choice ({@link NodeLayout}): a rule says
  * which it wants and nothing else.
  *
  * The rule hands the *packages* over as delivered; the key walks that graph
@@ -92,7 +88,6 @@ export const NODE_EXEC_ACTION: IBuildActionDefinition = {
    * and needs no bump here. */
   version: EXEC_ACTION.version + 10,
   run: (action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> => {
-    const deps = depsInput(action);
     const sourcePathsName = optionalConfig(action, "sourcePaths");
     /* The table, over the staged files (with `laid`, a layout staged with them)
      * and, where the rule asks, the packages where the layout puts them. */
@@ -131,29 +126,21 @@ export const NODE_EXEC_ACTION: IBuildActionDefinition = {
           depsReportName === undefined && incremental === undefined ? result : withBookkeeping(result, depsReportName, incremental)
         );
     const argv = stringListConfig(action, "argv");
-    const layout = stringConfig(action, "layout");
-    if (layout !== PNP) {
-      const mount = stringConfig(action, "mount");
-      const mounted = assembleNodeModules(deps);
-      const layout = FileSet.layout({ [mount]: mounted });
-      return exec(FileSet.unionAll(files, layout, sourcePaths(withPackages ? layout : EMPTY_FILESET)), argv);
-    }
-    /* Nothing is laid out: the packages become trees in the cache's pool, and
-     * what each of them SEES is a row in the table staged beside the sources.
-     * Materializing them is this step's work like any other layout's — so a hit
-     * touches the pool not at all, and a pool wiped between builds heals on the
-     * next miss that needs it rather than on every evaluation. */
-    const manifest = pnpManifestOf(deps, selfPackage(action));
-    const execPnP = (argv: string[], incremental?: Incremental, handover?: Handover): Computable<BuildResult> =>
-      mapComputable(manifest.packages, pkg => ctx.ensureTree(pkg)).then(() =>
+    /* The packages are laid out as the rule asked: a tree staged at the mount,
+     * or nothing at all — each a tree in the cache's pool, and what each of
+     * them SEES a row in the table staged beside the sources. Materializing
+     * them is this step's work like any other layout's — so a hit touches the
+     * pool not at all, and a pool wiped between builds heals on the next miss
+     * that needs it rather than on every evaluation. */
+    const packages = layoutPackages(action, ctx.workDir, tree => ctx.ensureTree(tree), stringConfig(action, "mount"));
+    const execLaid = (argv: string[], incremental?: Incremental, handover?: Handover): Computable<BuildResult> =>
+      packages.then(layout =>
         exec(
-          FileSet.unionAll(
-            files,
-            sourcePaths(EMPTY_FILESET, withPackages ? new Map(manifest.packages.map(pkg => [treeMountOf(pkg), pkg])) : undefined),
-            /* The manifest addresses trees by name in the pool beside the
-             * working directory, so the trees need no mount of their own. */
-            FileSet.layout({ [PNP_DATA_FILE]: manifest.toFile() })
-          ),
+          /* A tree layout carries its packages' source paths with its files; a
+           * table addresses trees by name in the pool beside the working
+           * directory, so the trees need no mount of their own and the table
+           * names them where they lie. */
+          FileSet.unionAll(files, layout.files, sourcePaths(withPackages ? layout.files : EMPTY_FILESET, withPackages ? layout.trees : undefined)),
           argv,
           incremental,
           handover
@@ -162,7 +149,7 @@ export const NODE_EXEC_ACTION: IBuildActionDefinition = {
     const stateDir = optionalConfig(action, "stateDir");
     const changes = optionalConfig(action, "changes");
     if (stateDir === undefined && changes === undefined) {
-      return execPnP(argv);
+      return execLaid(argv);
     }
     /* The incremental treatment, where the rule named somewhere to keep state or
      * somewhere to be told what moved (pnp only; either alone is a coherent
@@ -186,30 +173,13 @@ export const NODE_EXEC_ACTION: IBuildActionDefinition = {
         const outputs = carries && previous !== undefined ? baseOutputLayout(action, previous) : undefined;
         if (staged === undefined || (carries && previous !== undefined && outputs === undefined)) {
           /* No base, or one whose outputs have nowhere to go: a cold compile. */
-          return execPnP(argv, { stateDir });
+          return execLaid(argv, { stateDir });
         }
-        return execPnP(argv, { stateDir }, { staged, outputs });
+        return execLaid(argv, { stateDir }, { staged, outputs });
       }
     );
   },
 };
-
-/**
- * How a tool reaches its dependencies. Two peers, one choice per rule:
- *
- * - `pnp` — no tree at all: each package is materialized once in the cache's
- *   tree pool and a generated PnP table says what resolves to what. The
- *   strictest and by far the cheapest (a step stages only its own sources), and
- *   what every tool fabr can hand a manifest to uses.
- * - `node_modules` — a real tree at the mount point ({@link assembleNodeModules}):
- *   the direct deps visible at the top, each package resolving its own. What a
- *   tool that resolves through the filesystem needs.
- */
-export const PNP = "pnp";
-export const NODE_MODULES = "node_modules";
-
-/** The layout tokens, for a caller that validates one. */
-export type NodeLayout = typeof PNP | typeof NODE_MODULES;
 
 /**
  * Make the `js:exec` action: stage `files`, make `deps` reachable as
@@ -224,9 +194,10 @@ export type NodeLayout = typeof PNP | typeof NODE_MODULES;
  * @param options.mount where an ASSEMBLED layout goes (`node_modules` for
  *   anything node resolves through; its own directory for a tool with a
  *   private convention). Unused by `pnp`, which mounts nothing.
- * @param options.self under `pnp` only: the package identity the staged
- *   sources themselves carry, so they can resolve their own name. Its parts
- *   are ordinary inputs, so they key like everything else.
+ * @param options.self the package identity the staged sources themselves
+ *   carry, so they can resolve their own name: a row of the table under `pnp`,
+ *   a link at the mount under `node_modules`. Its parts are ordinary inputs,
+ *   so they key like everything else.
  * @param options.config file-shaped configuration the rule generated for the
  *   tool (a tsconfig, a rewrite table), staged at its names beside `files` but
  *   keyed as configuration: each distinct config is its own target key, so a
@@ -296,7 +267,7 @@ export function createNodeExecAction(
       outputs: collectedWith(outputs, options.depsReport, options.stateDir),
       mount: options.mount ?? "node_modules",
       layout: options.layout ?? NODE_MODULES,
-      ...(options.self ? { selfName: options.self.name, selfLocation: options.self.location } : {}),
+      ...selfConfig(options.self),
       ...(options.config ? { config: options.config } : {}),
       ...(options.depsReport ? { depsReport: options.depsReport } : {}),
       ...(options.stateDir ? { stateDir: options.stateDir } : {}),
@@ -452,14 +423,6 @@ function selectionOf(reads: Iterable<string>): DiscoveredDeps {
   return new Map([["deps", [...reads].map(read => splitDepsPath(read))]]);
 }
 
-/** Read the `self` options back for the pnp arm: absent unless the rule gave
- * the sources a package identity. */
-function selfPackage(action: BuildAction): { name: string; location: string } | undefined {
-  const name = action.config.selfName;
-  const location = action.config.selfLocation;
-  return typeof name === "string" && typeof location === "string" ? { name, location } : undefined;
-}
-
 /** List the patterns the run's work dir is collected by, given the emit pattern
  * and which pieces of bookkeeping this action asked for. The emit pattern is
  * last, which {@link baseOutputLayout} relies on; a run collecting nothing but
@@ -469,13 +432,3 @@ function collectedWith(outputs: string, depsReport: string | undefined, stateDir
   return bookkeeping.length === 0 ? outputs : [...bookkeeping, outputs];
 }
 
-/** Read the `deps` input: the direct deps as delivered, which the step
- * assembles — discoverable where the tool reports its reads, an ordinary input
- * otherwise. */
-function depsInput(action: BuildAction): FileSet[] {
-  const value = action.discoverable?.deps ?? action.inputs.deps;
-  if (!Array.isArray(value)) {
-    throw new FabrError(`Input 'deps' must be a list of filesets`);
-  }
-  return value;
-}

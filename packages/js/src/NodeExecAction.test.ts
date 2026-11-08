@@ -40,7 +40,8 @@ import {
   dependenciesOn,
 } from "@fabr-build/core";
 import { assembleNodeModules } from "./NodeModules";
-import { createNodeExecAction, NODE_EXEC_ACTION, NODE_MODULES, PNP } from "./NodeExecAction";
+import { NODE_MODULES, PNP } from "./Layout";
+import { createNodeExecAction, NODE_EXEC_ACTION } from "./NodeExecAction";
 import { pnpManifestOf, referenceOf } from "./PnPManifest";
 import {
   CHANGES_FILE,

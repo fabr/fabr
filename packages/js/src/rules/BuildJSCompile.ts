@@ -63,7 +63,8 @@ import {
   resolveSourceVersion,
   usesDom,
 } from "../JSPackage";
-import { createNodeExecAction, PNP } from "../NodeExecAction";
+import { PNP } from "../Layout";
+import { createNodeExecAction } from "../NodeExecAction";
 import { assertOnePackagePerName } from "../PnPManifest";
 import { describeUnit } from "../Description";
 import {

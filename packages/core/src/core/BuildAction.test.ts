@@ -335,6 +335,16 @@ describe("the action key", () => {
     expect(pkg("a", []), "a package whose source paths the tool is not given").to.equal(pkg("b", []));
   });
 
+  it("keys a linked install by its hash alone, in a section of its own", () => {
+    const install = (content: string): FileSet => new FileSet(new Map([["bin/tool.js", MemoryFile.from(content)]]));
+    const linked = (links: Record<string, FileSet>): string => new BuildAction(STEP, { srcs: sources("x") }, {}, { links }).actionKey();
+    expect(linked({ ".tools": install("one") })).to.contain(`\n# links\n.tools=${install("one").toManifestHash()}`);
+    expect(linked({ ".tools": install("one") }), "its content").to.not.equal(linked({ ".tools": install("two") }));
+    expect(linked({ ".tools": install("one") }), "its name").to.not.equal(linked({ ".runner": install("one") }));
+    expect(linked({ b: install("one"), a: install("two") }), "in one order").to.equal(linked({ a: install("two"), b: install("one") }));
+    expect(linked({}), "none, and a config member of the name").to.not.equal(new BuildAction(STEP, { srcs: sources("x") }, { links: ".tools" }).actionKey());
+  });
+
   it("keeps same-named members apart across the two sections", () => {
     /* The sections are rendered with their own headers even when empty, so a
      * member cannot slide from one section to the other and land on the same

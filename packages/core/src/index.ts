@@ -39,7 +39,7 @@ export * from "./core/Reference";
 export * from "./core/NamespaceRef";
 export * from "./core/PartialRepositoryRef";
 export * from "./core/TargetRef";
-export { contentStream, deleteTree, HASH_ALGORITHM, hashString } from "./core/FSWrapper";
+export { contentStream, deleteTree, HASH_ALGORITHM, hashString, symlink } from "./core/FSWrapper";
 export * from "./core/FileSetRef";
 export * from "./core/RunnableFileSet";
 export * from "./core/PublishableFileSet";

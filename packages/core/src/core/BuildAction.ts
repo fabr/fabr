@@ -22,17 +22,18 @@
  * by, and the run contract a step is handed and answers with.
  */
 
+import { join } from "path";
 import type { Reference } from "./Reference";
 import { Computable } from "./Computable";
 import { FileSet } from "./FileSet";
-import { hashString } from "./FSWrapper";
+import { hashString, symlink } from "./FSWrapper";
 import { PackageFileSet } from "./PackageFileSet";
 import { ABSENT_PREFIX, DiscoveredDeps, encodeName } from "./Manifest";
 import { Name } from "./Name";
 import type { ActionContext } from "./BuildCache";
 import type { ITargetDecl } from "../model/AST";
 import type { ITaskReport } from "../support/Execute";
-import { compareText } from "../support/Functional";
+import { compareText, mapComputable } from "../support/Functional";
 import { FabrError } from "./Errors";
 
 /**
@@ -150,12 +151,13 @@ export interface IBuildActionOptions {
    */
   sourcePathInputs?: ReadonlyArray<string>;
   /**
-   * File sets the step needs in the tree pool ({@link ActionContext.ensureTree}),
-   * which its inputs name by content (a PnP table naming each by its manifest
-   * hash). No part of the key or of the recorded base: the inputs that name
-   * them are.
+   * Installs the step links into its work directory from the tree pool
+   * ({@link ActionContext.ensureTree}) rather than stages file by file — a
+   * tool's own install, a test runner's — by the name each is linked at. In
+   * the key by hash alone (the `links` section), no part of the recorded base,
+   * and ensured and linked by {@link linkTrees}.
    */
-  trees?: ReadonlyArray<FileSet>;
+  links?: Readonly<Record<string, FileSet>>;
 }
 
 export class BuildAction {
@@ -164,7 +166,7 @@ export class BuildAction {
   public readonly trackChangedFiles: boolean;
   public readonly reshape?: (output: FileSet) => FileSet | Computable<FileSet>;
   public readonly sourcePathInputs: ReadonlyArray<string>;
-  public readonly trees: ReadonlyArray<FileSet>;
+  public readonly links: Readonly<Record<string, FileSet>>;
 
   constructor(
     public readonly step: IBuildActionDefinition,
@@ -181,7 +183,7 @@ export class BuildAction {
     this.trackChangedFiles = options.trackChangedFiles ?? false;
     this.reshape = options.reshape;
     this.sourcePathInputs = options.sourcePathInputs ?? [];
-    this.trees = options.trees ?? [];
+    this.links = options.links ?? {};
   }
 
   /** @return the options this action was made with. */
@@ -192,7 +194,7 @@ export class BuildAction {
       trackChangedFiles: this.trackChangedFiles,
       reshape: this.reshape,
       sourcePathInputs: this.sourcePathInputs,
-      trees: this.trees,
+      links: this.links,
     };
   }
 
@@ -234,19 +236,36 @@ export class BuildAction {
 
   /**
    * Render the key material this action is demanded under: `rule:<id>:<version>`, then
-   * the file-inputs section, then the config section, each under its own header
-   * line with one `name=manifest` line per member, names sorted. Both sections
-   * are always rendered, so an empty one cannot alias a shifted one.
+   * the file-inputs section, then the config section, then the links section
+   * (each linked install by its hash), each under its own header line with one
+   * `name=…` line per member, names sorted. Every section is always rendered,
+   * so an empty one cannot alias a shifted one.
    *
    * With no discoverable deps this is the complete key; with {@link discoverable}
    * it is the **anchor**, and the entry is stored under
    * {@link preciseActionKey} — never under a bare anchor.
    */
   public actionKey(): string {
+    const links = Object.keys(this.links)
+      .sort(compareText)
+      .map(name => `${name}=${this.links[name].toManifestHash()}`)
+      .join("\n");
     return `rule:${this.step.id}:${this.step.version}\n# inputs\n${manifestFileInputs(this.inputs, this.sourcePathInputs)}\n# config\n${manifestConfig(
       this.config
-    )}`;
+    )}\n# links\n${links}`;
   }
+}
+
+/**
+ * Link each of the action's {@link IBuildActionOptions.links} into `dir`, at
+ * its name, from the tree the pool holds it as — ensured first, so the target
+ * exists. The link's target is the tree's own path on this machine, which no
+ * output of a step carries.
+ */
+export function linkTrees(action: BuildAction, dir: string, ensureTree: (files: FileSet) => Computable<string>): Computable<void> {
+  return mapComputable(Object.keys(action.links).sort(compareText), name =>
+    ensureTree(action.links[name]).then(path => symlink(path, join(dir, name)))
+  ).then(() => undefined);
 }
 
 /* The action's reading face: what a build step's `run` uses to take a typed

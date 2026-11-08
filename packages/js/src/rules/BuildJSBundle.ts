@@ -54,7 +54,8 @@ import {
   TargetContext,
 } from "@fabr-build/core";
 import { compileContents, formatJSTarget, JSTarget, parseJSTarget, stripExtension, usesNodeGlobals } from "../JSPackage";
-import { createNodeExecAction, PNP } from "../NodeExecAction";
+import { PNP } from "../Layout";
+import { createNodeExecAction } from "../NodeExecAction";
 import { SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "@fabr-build/js-tools";
 import { pnpManifestOf } from "../PnPManifest";
 import {

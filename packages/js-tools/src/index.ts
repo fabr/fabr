@@ -34,6 +34,7 @@ export * from "./pnp/PnPApi";
 export * from "./pnp/PnPResolver";
 export * from "./pnp/PnPState";
 export * from "./pnp/ReadSet";
+export * from "./testRunner/ReadsDocument";
 export * from "./pnp/VirtualPath";
 export { MANIFEST_FLAG } from "./support/Main";
 export * from "./support/SourceMap";

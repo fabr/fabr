@@ -18,13 +18,16 @@
  */
 
 /**
- * What a test process read: the runner contract's `--reads` document, from
- * which the test step decides which test files a change can reach. Every
- * module the process loaded, the `package.json` nearest each, and every file it
- * read through `fs`, named relative to the runner's working directory. Where the process did what no
- * record can follow — started another process or a worker thread, whose reads
- * are its own — there is no document, and the step runs the file again on
- * every change.
+ * What a test process read: the runner contract's `--reads` document
+ * ({@link IReadsDocument}), from which the test step decides which test files a
+ * change can reach. Every module the process loaded, the `package.json` nearest
+ * each, every file it read or probed through `fs` (a probe that found a
+ * directory named with a trailing `/`), and every package it looked up by a
+ * bare specifier, found or not. A directory listing is not recorded: no record
+ * of one can say what its appearing entries would have been. Where the
+ * process did what no record can follow — started another process or a worker
+ * thread, whose reads are its own — there is no document, and the step runs
+ * the file again on every change.
  */
 
 import * as fs from "node:fs";
@@ -32,14 +35,40 @@ import * as path from "node:path";
 import * as nodeModule from "node:module";
 import { createRequire, Module } from "node:module";
 import { fileURLToPath } from "node:url";
+import { splitSpecifier } from "../pnp/PnPResolver";
+import { resolveVirtual } from "../pnp/VirtualPath";
+import { ILookup, IReadsDocument, toReadsDocument } from "./ReadsDocument";
+
+/* The functions this recorder uses for itself, taken before it wraps them. */
+const { existsSync, realpathSync, statSync } = fs;
 
 type AnyFunction = (...args: unknown[]) => unknown;
 
-/** The `fs` functions that read a file, its content or its metadata, by the
- * path given first; `open` is among them only for reading (see
+/** The `fs` functions that read a file, its content or its metadata, or probe
+ * for it, by the path given first; `open` is among them only for reading (see
  * {@link opensForReading}). */
-const READERS = ["readFileSync", "readFile", "createReadStream", "statSync", "stat", "lstatSync", "lstat", "copyFileSync", "copyFile", "cpSync", "cp", "openAsBlob"] as const;
-const PROMISE_READERS = ["readFile", "stat", "lstat", "copyFile", "cp"] as const;
+const READERS = [
+  "readFileSync",
+  "readFile",
+  "createReadStream",
+  "statSync",
+  "stat",
+  "lstatSync",
+  "lstat",
+  "existsSync",
+  "accessSync",
+  "access",
+  "realpathSync",
+  "realpath",
+  "readlinkSync",
+  "readlink",
+  "copyFileSync",
+  "copyFile",
+  "cpSync",
+  "cp",
+  "openAsBlob",
+] as const;
+const PROMISE_READERS = ["readFile", "stat", "lstat", "access", "realpath", "readlink", "copyFile", "cp"] as const;
 const OPENERS = ["openSync", "open"] as const;
 
 /** The `child_process` functions that start a process. */
@@ -49,20 +78,31 @@ const SPAWNERS = ["spawn", "spawnSync", "exec", "execSync", "execFile", "execFil
 interface IRecording {
   loaded: Set<string>;
   read: Set<string>;
+  /** Each lookup by the file that asked and the package name, to the absolute
+   *  path that answered, or null where nothing did. */
+  lookups: Map<string, string | null>;
   untracked: boolean;
+}
+
+/** What a process read, every path absolute. */
+export interface IRecordedReads {
+  files: string[];
+  lookups: ILookup[];
 }
 
 /**
  * Start recording what this process reads, and return how to collect it: the
- * absolute paths of every module loaded, from start-up on, and of every file
- * read through `fs` since, by its real path; or undefined where the process
- * has since started another process or a worker thread.
+ * absolute paths of every module loaded, from start-up on, of every file read
+ * or probed through `fs` since, by its real path, and every package looked up
+ * by a bare specifier; or undefined where the process has since started
+ * another process or a worker thread.
  */
-export function recordReads(): () => string[] | undefined {
-  const current: IRecording = { loaded: new Set(), read: new Set(), untracked: false };
+export function recordReads(): () => IRecordedReads | undefined {
+  const current: IRecording = { loaded: new Set(), read: new Set(), lookups: new Map(), untracked: false };
   wrapReaders(current.read);
   wrapStarters(current);
   wrapLoaders(current.loaded);
+  wrapLookups(current.lookups);
   const cache = createRequire(__filename).cache;
   /* A module is loaded by its real path already. A file read through `fs` may
    * be named through a link — a `node_modules` one — so its directory is
@@ -73,7 +113,7 @@ export function recordReads(): () => string[] | undefined {
     let real = realDirectories.get(directory);
     if (real === undefined) {
       try {
-        real = fs.realpathSync(directory);
+        real = realpathSync(directory);
       } catch {
         real = directory;
       }
@@ -90,7 +130,7 @@ export function recordReads(): () => string[] | undefined {
     }
     const here = path.join(directory, "package.json");
     const parent = path.dirname(directory);
-    const found = fs.existsSync(here) ? here : parent === directory ? undefined : manifestOf(parent);
+    const found = existsSync(here) ? here : parent === directory ? undefined : manifestOf(parent);
     manifests.set(directory, found);
     return found;
   };
@@ -99,9 +139,84 @@ export function recordReads(): () => string[] | undefined {
       return undefined;
     }
     const modules = [...current.loaded, ...Object.keys(cache)];
-    const nearest = modules.flatMap(module => manifestOf(path.dirname(module)) ?? []);
-    return [...modules, ...nearest, ...[...current.read].map(realPathOf)];
+    /* A module at a virtual location is probed for its manifest at the
+     * physical one, where the files are; the step names a read either way. */
+    const nearest = modules.flatMap(module => manifestOf(path.dirname(resolveVirtual(module))) ?? []);
+    const lookups = [...current.lookups].map(([key, to]): ILookup => {
+      const [from, name] = key.split("\0");
+      return to === null ? { from, name } : { from, name, to };
+    });
+    return { files: [...modules, ...nearest, ...[...current.read].map(realPathOf).map(markDirectory)], lookups };
   };
+}
+
+/** @return `file` with a trailing separator where it is a directory now, else as it is. */
+function markDirectory(file: string): string {
+  try {
+    return statSync(file).isDirectory() ? file + path.sep : file;
+  } catch {
+    return file;
+  }
+}
+
+/** A specifier that is a URL (`data:`, `file:`, `node:`), which names no package. */
+const URL_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
+
+/** @return the package a bare specifier names, or undefined where it names none (a path, a URL, a built-in). */
+function lookupName(specifier: unknown): string | undefined {
+  if (typeof specifier !== "string" || nodeModule.isBuiltin(specifier) || URL_SCHEME.test(specifier)) {
+    return undefined;
+  }
+  return splitSpecifier(specifier)?.name;
+}
+
+/**
+ * Record into `lookups` each package looked up by a bare specifier, as the
+ * CommonJS loader resolves one (`Module._resolveFilename`) and as node's own
+ * resolve hooks do for either module system: the file that asked and the
+ * package name, to the file that answered, or null where the lookup failed. A
+ * failed lookup of a subpath does not unsay an answer the package gave.
+ */
+function wrapLookups(lookups: Map<string, string | null>): void {
+  const note = (from: string | undefined, name: string | undefined, to: string | null): void => {
+    if (from === undefined || name === undefined) {
+      return;
+    }
+    const key = `${from}\0${name}`;
+    if (to !== null || !lookups.has(key)) {
+      lookups.set(key, to === null ? null : path.resolve(to));
+    }
+  };
+  const loader = Module as unknown as { _resolveFilename: AnyFunction };
+  const resolveFilename = loader._resolveFilename;
+  loader._resolveFilename = function (this: unknown, request: unknown, parent: unknown, ...rest: unknown[]): unknown {
+    const name = lookupName(request);
+    const from = (parent as { filename?: unknown } | null | undefined)?.filename;
+    const asked = name !== undefined && typeof from === "string" ? from : undefined;
+    try {
+      const resolved = resolveFilename.call(this, request, parent, ...rest);
+      note(asked, name, typeof resolved === "string" ? resolved : null);
+      return resolved;
+    } catch (err: unknown) {
+      note(asked, name, null);
+      throw err;
+    }
+  };
+  const registerHooks = (nodeModule as { registerHooks?: (hooks: unknown) => unknown }).registerHooks;
+  registerHooks?.({
+    resolve(specifier: string, context: { parentURL?: string }, nextResolve: AnyFunction) {
+      const name = lookupName(specifier);
+      const from = name !== undefined && context.parentURL?.startsWith("file:") ? fileURLToPath(context.parentURL) : undefined;
+      try {
+        const resolved = nextResolve(specifier, context) as { url?: string };
+        note(from, name, typeof resolved.url === "string" && resolved.url.startsWith("file:") ? fileURLToPath(resolved.url) : null);
+        return resolved;
+      } catch (err: unknown) {
+        note(from, name, null);
+        throw err;
+      }
+    },
+  });
 }
 
 /** @return the path `target` names, where it names one. */
@@ -109,16 +224,17 @@ function pathOf(target: unknown): string | undefined {
   return typeof target === "string" ? target : target instanceof URL ? fileURLToPath(target) : Buffer.isBuffer(target) ? target.toString() : undefined;
 }
 
-/** Replace `owner[name]` with a function that shows `note` its arguments first. */
+/** Replace `owner[name]` with a function that shows `note` its arguments first,
+ *  carrying the original's own members (`realpathSync.native`). */
 function wrap(owner: Record<string, unknown>, name: string, note: (args: unknown[]) => void): void {
   const original = owner[name];
   if (typeof original !== "function") {
     return;
   }
-  owner[name] = function (this: unknown, ...args: unknown[]): unknown {
+  owner[name] = Object.assign(function (this: unknown, ...args: unknown[]): unknown {
     note(args);
     return (original as AnyFunction).apply(this, args);
-  };
+  }, original);
 }
 
 /** @return true if `flags`, as `fs.open` takes them, open a file for reading, otherwise false. */
@@ -218,41 +334,46 @@ export function recordReadsInto(directory: string): void {
 
 /** @return what the processes recording into `directory` read, or undefined
  * where any of them did what no record can follow. */
-export function readsRecordedIn(directory: string): string[] | undefined {
+export function readsRecordedIn(directory: string): IRecordedReads | undefined {
   const each = fs
     .readdirSync(directory)
     .filter(name => name.endsWith(".json"))
     .map(name => toRecordedReads(JSON.parse(fs.readFileSync(path.join(directory, name), "utf8"))));
-  return each.some(reads => reads === undefined) ? undefined : each.flatMap(reads => reads ?? []);
+  return each.some(reads => reads === undefined)
+    ? undefined
+    : { files: each.flatMap(reads => reads?.files ?? []), lookups: each.flatMap(reads => reads?.lookups ?? []) };
 }
 
-/** Convert one process's recorded reads: a list of paths, or `null` for what no record can follow. */
-function toRecordedReads(json: unknown): string[] | undefined {
+/** Convert one process's recorded reads, or `null` for what no record can follow. */
+function toRecordedReads(json: unknown): IRecordedReads | undefined {
   if (json === null) {
     return undefined;
   }
-  if (!Array.isArray(json) || json.some(read => typeof read !== "string")) {
-    throw new Error("expected a list of the paths a test process read");
-  }
-  return json as string[];
+  const document = toReadsDocument(json);
+  return { files: [...document.files], lookups: [...document.lookups] };
 }
 
 /** @return `reads` with the PnP table the processes resolved through, which
  * each loaded before anything could record it. */
-export function withPnpTable(reads: string[] | undefined, table: string | undefined): string[] | undefined {
-  return reads === undefined || table === undefined ? reads : [...reads, table];
+export function withPnpTable(reads: IRecordedReads | undefined, table: string | undefined): IRecordedReads | undefined {
+  return reads === undefined || table === undefined ? reads : { ...reads, files: [...reads.files, table] };
 }
 
 /**
- * Write `reads` as the `--reads` document at `file`: sorted, deduplicated,
- * each relative to the working directory. Undefined reads — something no
- * record can follow — write no document.
+ * Write `reads` as the `--reads` document at `file` ({@link IReadsDocument}):
+ * sorted, deduplicated, each path relative to the working directory. Undefined
+ * reads — something no record can follow — write no document.
  */
-export function writeReads(file: string, reads: Iterable<string> | undefined): void {
+export function writeReads(file: string, reads: IRecordedReads | undefined): void {
   if (reads === undefined) {
     return;
   }
   const cwd = process.cwd();
-  const names = new Set([...reads].map(read => path.relative(cwd, read).split(path.sep).join("/")));
-  fs.writeFileSync(file, JSON.stringify([...names].sort()));
+  const relative = (read: string): string => path.relative(cwd, read).split(path.sep).join("/");
+  const files = [...new Set(reads.files.map(relative))].sort();
+  const lookups = [...new Map(reads.lookups.map(lookup => [`${lookup.from}\0${lookup.name}`, lookup])).values()]
+    .map((lookup): ILookup => ({ from: relative(lookup.from), name: lookup.name, ...(lookup.to === undefined ? {} : { to: relative(lookup.to) }) }))
+    .sort((a, b) => (a.from < b.from ? -1 : a.from > b.from ? 1 : a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const document: IReadsDocument = { files, lookups };
+  fs.writeFileSync(file, JSON.stringify(document));
 }

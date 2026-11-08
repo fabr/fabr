@@ -32,6 +32,7 @@ import {
   BuildResult,
   Computable,
   COVERAGE_REPORT_FILENAME,
+  DiscoveredDeps,
   execute,
   ExecutionError,
   FabrError,
@@ -43,18 +44,19 @@ import {
   IChangedFiles,
   IFile,
   IStagedStep,
+  joinDepsPath,
+  linkTrees,
   ITaskReport,
   ITestReport,
   lcovOf,
-  mapComputable,
   MemoryFile,
   mergeCoverage,
   mergeTestReports,
   MultiError,
-  PackageFileSet,
   parseJson,
   parseLcov,
   readJsonFile,
+  splitDepsPath,
   stringListConfig,
   TaskProgress,
   TEST_REPORT_FILENAME,
@@ -65,8 +67,9 @@ import {
   toTestReport,
   writeFileSet,
 } from "@fabr-build/core";
-import { type ICoverageOptions, MANIFEST_FLAG } from "@fabr-build/js-tools";
+import { type ICoverageOptions, IReadsDocument, MANIFEST_FLAG, toReadsDocument } from "@fabr-build/js-tools";
 import { COMPILE_OUT_DIR } from "./rules/BuildJSCompile";
+import { IPackageLayout, layoutPackages, NodeLayout, ReadName, selfConfig } from "./Layout";
 
 /**
  * The test-run build step: stage the complete installation (built in
@@ -80,7 +83,9 @@ import { COMPILE_OUT_DIR } from "./rules/BuildJSCompile";
  * report is read (core's `checkTestReport`). A run that could not be performed —
  * an invocation that crashed, or wrote no report — throws, and enters nothing.
  */
-const JS_TEST_STEP: IBuildActionDefinition = { id: "js:test-run", version: 8, run: runTests, stage: stageTests };
+/* Bump the version when what the step stages, keeps between runs or reports
+ * as its reads changes. */
+const JS_TEST_STEP: IBuildActionDefinition = { id: "js:test-run", version: 9, run: runTests, stage: stageTests };
 
 /** Read the `env` config member, the variables the test processes run with: each written `NAME=value`, a name holding no `=`. */
 function declaredEnv(action: BuildAction): Record<string, string> {
@@ -94,16 +99,38 @@ function declaredEnv(action: BuildAction): Record<string, string> {
 
 /** Stage the installation as {@link runTests} does, and describe its per-file invocations of the runner. */
 function stageTests(action: BuildAction, dir: string, ensureTree: (files: FileSet) => Computable<string>): Computable<IStagedStep> {
-  const staged = fileSetInput(action, "staged");
-  const writable = fileSetInput(action, "writable");
   const argv = stringListConfig(action, "argv");
-  return Computable.forAll([testFilesOf(action), writeFileSet(dir, staged.minus(writable)), mapComputable([...action.trees], ensureTree)], testFiles =>
-    writeFileSet(dir, writable, { copy: true }).then(() => ({
-      cwd: COMPILE_OUT_DIR,
-      commands: testFiles.map((file, index) => [[findExecutable(argv[0], join(dir, COMPILE_OUT_DIR)), ...invocationOf(argv, file, index)]]),
-      env: new Map(Object.entries(declaredEnv(action))),
-    }))
-  );
+  return Computable.forAll([testFilesOf(action), stageInstall(action, dir, ensureTree, work => work())], testFiles => ({
+    cwd: COMPILE_OUT_DIR,
+    commands: testFiles.map((file, index) => [[findExecutable(argv[0], join(dir, COMPILE_OUT_DIR)), ...invocationOf(argv, file, index)]]),
+    env: new Map(Object.entries(declaredEnv(action))),
+  }));
+}
+
+/**
+ * Stage the installation into `dir`: the run's own files, the packages laid
+ * out as the action's `layout` says ({@link layoutPackages}, as the compile
+ * step lays its out) and the linked installs. Answers with how a read of the
+ * staged installation is named in the action's key ({@link IPackageLayout.nameRead}) — the
+ * layout itself.
+ */
+function stageInstall(
+  action: BuildAction,
+  dir: string,
+  ensureTree: (files: FileSet) => Computable<string>,
+  admit: <T>(work: () => Computable<T>) => Computable<T>
+): Computable<IPackageLayout> {
+  const files = fileSetInput(action, "files");
+  const writable = fileSetInput(action, "writable");
+  return layoutPackages(action, dir, ensureTree).then(layout => {
+    /* One admission for the whole installation — its writes are halves of
+     * staging it, not separate pieces of work — and given back before any test
+     * process asks for a slot of its own. */
+    const staged = FileSet.unionAll(files, layout.files);
+    return admit(() => writeFileSet(dir, staged.minus(writable)).then(() => writeFileSet(dir, writable, { copy: true })))
+      .then(() => linkTrees(action, dir, ensureTree))
+      .then(() => layout);
+  });
 }
 
 /** Where the test files' names are, among the action's inputs: an input
@@ -121,7 +148,6 @@ function testFilesOf(action: BuildAction): Computable<string[]> {
   return readJsonFile(file, toStringList);
 }
 
-
 /** @return the runner's invocation for one test file: `argv` less its
  * interpreter, then the file's own report and reads documents, then the file. */
 function invocationOf(argv: string[], file: string, index: number): string[] {
@@ -130,8 +156,6 @@ function invocationOf(argv: string[], file: string, index: number): string[] {
 
 function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
   const workDir = ctx.workDir;
-  const staged = fileSetInput(action, "staged");
-  const writable = fileSetInput(action, "writable");
   const argv = stringListConfig(action, "argv");
   const outputs = stringListConfig(action, "outputs");
   const declared = declaredEnv(action);
@@ -143,16 +167,10 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
    * that could alter their output); a test that must spawn a tool references it
    * by an absolute path (e.g. process.execPath), which needs no PATH. The argv's leading command
    * (the runner's interpreter) is PATH-resolved here, at run time. */
-  /* One admission for the whole installation — the two writes are halves of
-   * staging it, not separate pieces of work — and given back before any test
-   * process asks for a slot of its own. */
   return Computable.forAll([testFilesOf(action), ctx.changedFiles(), ctx.incrementalState().then(keptRunsOf), measured], (testFiles, changes, kept, coverage) => {
     const { rerun, reused } = filesToRun(testFiles, changes, kept, coverage !== undefined);
-    return mapComputable([...action.trees], tree => ctx.ensureTree(tree))
-      .then(() =>
-        ctx.admit(report, () => writeFileSet(workDir, staged.minus(writable)).then(() => writeFileSet(workDir, writable, { copy: true })))
-      )
-      .then(() => {
+    return stageInstall(action, workDir, tree => ctx.ensureTree(tree), work => ctx.admit(report, work))
+      .then(layout => {
         /* Each file's outcome is known the moment its invocation ends — the
          * report it wrote is read there — so the run can say how it is going
          * while it goes, rather than only in the summary at the end. */
@@ -165,7 +183,7 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
            * rejects here; its outcome is judged as data below. */
           rerun.map(file => {
             const index = testFiles.indexOf(file);
-            return runOneFile(ctx, report, argv, coverage?.environmentOf(index) ?? declared, file, index)
+            return runOneFile(ctx, report, argv, coverage?.environmentOf(index) ?? declared, file, index, layout)
               .then(run =>
                 coverage === undefined || "error" in run ? run : coverage.lcovOfFile(index).then(lcov => (lcov === undefined ? run : { ...run, coverage: lcov }))
               )
@@ -175,8 +193,23 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
         );
       })
       .then(latest => (coverage === undefined ? Computable.resolve(latest) : coverage.merge(latest).then(() => latest)))
-      .then(latest => getResultFileSet(workDir, outputs).then(result => ({ result, incrementalState: keptStateOf(latest) })));
+      .then(latest => getResultFileSet(workDir, outputs).then(result => ({ result, incrementalState: keptStateOf(latest), ...selectionOf(latest) })));
   });
+}
+
+/**
+ * What the run read of its packages, as the selection the entry is keyed on:
+ * every deps row any test file's run read, this run's and the kept ones' alike.
+ * Nothing where any file's reads are unknown (a process the runner could not
+ * follow), which keys the entry on the whole deps input, as an unreported run
+ * means.
+ */
+function selectionOf(latest: ReadonlyArray<ILatestRun>): { discoveredDeps?: DiscoveredDeps } {
+  if (latest.some(run => run.deps === undefined)) {
+    return {};
+  }
+  const rows = [...new Set(latest.flatMap(run => [...run.deps!]))].sort();
+  return { discoveredDeps: new Map([["deps", rows.map(row => splitDepsPath(row))]]) };
 }
 
 /** Where a measured run's test processes write their V8 coverage, a directory per test file. */
@@ -257,6 +290,8 @@ function measuredFilesOf(action: BuildAction): Computable<string[]> {
 /** What a test file's last run came to, as the step keeps it. */
 export interface IKeptRun {
   report: ITestReport;
+  /** The deps rows of the packages' files the run read; absent as `reads` is. */
+  deps?: ReadonlySet<string>;
   /** What the run read, by install name; absent where its runner did not say. */
   reads?: ReadonlySet<string>;
   /** The run's lcov, in a measured run. */
@@ -280,7 +315,7 @@ const KEPT_RUNS_FILE = "runs.json";
  */
 interface IKeptRunsDocument {
   names: string[];
-  runs: Array<{ file: string; report: ITestReport; reads?: number[] }>;
+  runs: Array<{ file: string; report: ITestReport; reads?: number[]; deps?: number[] }>;
 }
 
 /** Convert a kept-runs document. */
@@ -297,11 +332,15 @@ function toKeptRunsDocument(json: unknown): IKeptRunsDocument {
       if (typeof run.file !== "string") {
         throw new Error("expected a run's test file");
       }
-      const reads = run.reads;
-      if (reads !== undefined && (!Array.isArray(reads) || reads.some(index => typeof index !== "number" || names[index] === undefined))) {
-        throw new Error(`expected the indices of what ${run.file} read`);
-      }
-      return { file: run.file, report: toTestReport(run.report), ...(reads === undefined ? {} : { reads: reads as number[] }) };
+      const indices = (list: unknown, what: string): number[] | undefined => {
+        if (list !== undefined && (!Array.isArray(list) || list.some(index => typeof index !== "number" || names[index] === undefined))) {
+          throw new Error(`expected the indices of ${what} ${run.file} read`);
+        }
+        return list as number[] | undefined;
+      };
+      const reads = indices(run.reads, "what");
+      const deps = indices(run.deps, "the dependency files");
+      return { file: run.file, report: toTestReport(run.report), ...(reads === undefined ? {} : { reads }), ...(deps === undefined ? {} : { deps }) };
     }),
   };
 }
@@ -323,6 +362,7 @@ function keptRunsOf(state: FileSet | undefined): Computable<Map<string, IKeptRun
             {
               report: run.report,
               ...(run.reads === undefined ? {} : { reads: new Set(run.reads.map(index => document.names[index])) }),
+              ...(run.deps === undefined ? {} : { deps: new Set(run.deps.map(index => document.names[index])) }),
               ...(coverage === undefined ? {} : { coverage }),
             },
           ];
@@ -364,7 +404,7 @@ export function filesToRun(
       run.reads !== undefined &&
       !(measured && run.coverage === undefined) &&
       run.report.results.summary.failed === 0 &&
-      ![...run.reads].some(read => changed.has(read))
+      ![...run.reads, ...(run.deps ?? [])].some(read => changed.has(read))
     ) {
       reused.set(file, run);
     }
@@ -400,6 +440,7 @@ class RunTally {
       totalFiles: this.totalFiles,
       passed: this.passed,
       failed: this.failed,
+      ...(summary === undefined ? {} : { latest: { file: run.file, start: summary.start, stop: summary.stop, passed: summary.passed, failed: summary.failed } }),
     });
     return run;
   }
@@ -408,30 +449,83 @@ class RunTally {
 /** One invocation's outcome: its report, or the failure no report explains. */
 type IFileRun = ({ file: string } & IKeptRun) | { file: string; error: Error };
 
+/** Name the per-invocation report, distinct per file so the invocations do not overwrite each other's. */
+function invocationReport(index: number): string {
+  return `${TEST_REPORT_FILENAME}.${index}`;
+}
+
 /** Name the per-invocation reads document, distinct per file as its report is. */
 function invocationReads(index: number): string {
   return `.fabr-reads.${index}.json`;
 }
 
-/** @return what a `--reads` document says was read, by install name (the
- * runner names them relative to its working directory, the compiled tree), or
- * undefined where the runner wrote none. */
-function readsOf(document: string): ReadonlySet<string> | undefined {
-  let names: string[];
+/**
+ * Read an invocation's reads document ({@link IReadsDocument}) and name what
+ * it says in the key's vocabulary (see {@link IPackageLayout.nameRead}): the
+ * run's own files by name, and as deps rows the packages' files read, a probe
+ * that found a package's directory itself as the package's manifest, and each
+ * package looked up — the binding row of the lookup, the requirer's route
+ * then `<name> package.json`, present where the requirer's own edge answered
+ * and absent otherwise, and where a direct member answered instead the
+ * top-level row too. The runner names a path relative to its working directory,
+ * `cwd`. Undefined where the document is unreadable — a process the runner
+ * could not follow — or where what was read fits no row: a lookup answered by
+ * neither the requirer's own edges nor a direct member (a `node_modules`
+ * tree's hidden links, which answer from the whole closure), or a probe that
+ * found a directory within a package (whose presence no file row states); the
+ * file is then run again next time and the run is keyed on the whole input.
+ */
+function readsOf(document: string, cwd: string, layout: IPackageLayout): { reads: ReadonlySet<string>; deps: ReadonlySet<string> } | undefined {
+  let read: IReadsDocument;
   try {
-    names = parseJson(fs.readFileSync(document), document, toStringList);
+    read = parseJson(fs.readFileSync(document), document, toReadsDocument);
   } catch {
     return undefined;
   }
-  return new Set(names.map(name => posix.normalize(posix.join(COMPILE_OUT_DIR, name))));
+  const name = (relative: string): ReadName | undefined => layout.nameRead(join(cwd, ...relative.split("/")));
+  const reads = new Set<string>();
+  const deps = new Set<string>();
+  for (const file of read.files) {
+    const directory = file.endsWith("/");
+    const named = name(file);
+    if (named === undefined) {
+      continue;
+    }
+    if ("file" in named) {
+      reads.add(named.file);
+    } else if (!directory) {
+      deps.add(joinDepsPath([...named.route, named.path]));
+    } else if (named.path === "") {
+      deps.add(joinDepsPath([...named.route, MANIFEST_FILE]));
+    } else {
+      return undefined;
+    }
+  }
+  for (const lookup of read.lookups) {
+    const requirer = name(lookup.from);
+    if (requirer === undefined) {
+      continue;
+    }
+    const route = "file" in requirer ? [] : requirer.route;
+    deps.add(joinDepsPath([...route, lookup.name, MANIFEST_FILE]));
+    const answer = lookup.to === undefined ? undefined : name(lookup.to);
+    if (answer === undefined || "file" in answer || answer.package === undefined) {
+      continue;
+    }
+    const ownEdge = "file" in requirer ? false : requirer.package?.packages.some(dep => dep.packageName === lookup.name) ?? false;
+    if (ownEdge) {
+      continue;
+    }
+    if (!layout.members.includes(answer.package)) {
+      return undefined;
+    }
+    deps.add(joinDepsPath([lookup.name, MANIFEST_FILE]));
+  }
+  return { reads, deps };
 }
 
-/** Name the per-invocation report: distinct per file so parallel invocations
- * never collide, and unselected by the `outputs` projection (only the merged
- * {@link TEST_REPORT_FILENAME} is), so collection discards them. */
-function invocationReport(index: number): string {
-  return `${TEST_REPORT_FILENAME}.${index}`;
-}
+/** The file node reads to resolve a package: a lookup's row ends at it. */
+const MANIFEST_FILE = "package.json";
 
 function runOneFile(
   ctx: ActionContext,
@@ -439,7 +533,8 @@ function runOneFile(
   argv: string[],
   env: Record<string, string>,
   file: string,
-  index: number
+  index: number,
+  layout: IPackageLayout
 ): Computable<IFileRun> {
   const reportName = invocationReport(index);
   const invocation = invocationOf(argv, file, index);
@@ -456,8 +551,9 @@ function runOneFile(
     )
     .then(error => judgeRun(join(ctx.workDir, COMPILE_OUT_DIR), [argv[0], ...invocation], reportName, file, error))
     .then((run): IFileRun => {
-      const reads = "error" in run ? undefined : readsOf(join(ctx.workDir, COMPILE_OUT_DIR, invocationReads(index)));
-      return reads === undefined ? run : { ...run, reads };
+      const cwd = join(ctx.workDir, COMPILE_OUT_DIR);
+      const named = "error" in run ? undefined : readsOf(join(cwd, invocationReads(index)), cwd, layout);
+      return named === undefined ? run : { ...run, reads: named.reads, deps: named.deps };
     });
 }
 
@@ -531,24 +627,40 @@ function keptStateOf(latest: ReadonlyArray<ILatestRun>): FileSet {
 
 /** Write `runs` as the kept-runs document. */
 function keptRunsDocument(runs: ReadonlyArray<ILatestRun>): string {
-  const names = [...new Set(runs.flatMap(run => [...(run.reads ?? [])]))].sort();
+  const names = [...new Set(runs.flatMap(run => [...(run.reads ?? []), ...(run.deps ?? [])]))].sort();
   const index = new Map(names.map((name, at) => [name, at]));
+  const indicesOf = (set: ReadonlySet<string> | undefined): number[] | undefined =>
+    set === undefined ? undefined : [...set].map(name => index.get(name)!).sort((a, b) => a - b);
   const document: IKeptRunsDocument = {
     names,
-    runs: runs.map(run => ({ file: run.file, report: run.report, ...(run.reads === undefined ? {} : { reads: [...run.reads].map(name => index.get(name)!).sort((a, b) => a - b) }) })),
+    runs: runs.map(run => {
+      const reads = indicesOf(run.reads);
+      const deps = indicesOf(run.deps);
+      return { file: run.file, report: run.report, ...(reads === undefined ? {} : { reads }), ...(deps === undefined ? {} : { deps }) };
+    }),
   };
   return JSON.stringify(document);
 }
 
 /** What one test run is made from. */
 export interface ITestRunInputs {
-  /** The packages whose trees the run's PnP table names, which must be in
-   * the cache's pool when it runs; none for an install with a `node_modules`
-   * tree. */
-  trees?: ReadonlyArray<PackageFileSet>;
-  /** The complete installation. */
-  staged: FileSet;
-  /** The subset of `staged` the runner may rewrite (the recorded expectations,
+  /** Installs reached through a link into the tree pool rather than staged
+   *  file by file — the runner's, and a measured run's coverage driver's — by
+   *  the name each is linked at. Each is a tree the step ensures, and names
+   *  in the key by its hash alone. */
+  links?: Readonly<Record<string, FileSet>>;
+  /** The run's own files, named relative to the installation root: the
+   *  compiled tree and what sits beside it. */
+  files: FileSet;
+  /** The packages the tests load, as delivered: the action's discoverable
+   *  input, laid out by the step as `layout` says and keyed on what the runs
+   *  read of them. */
+  packages: FileSet[];
+  layout: NodeLayout;
+  /** The package identity the compiled tree carries, where the tests are a
+   *  package's: how it resolves its own name. */
+  self?: { name: string; location: string };
+  /** The subset of `files` the runner may rewrite (the recorded expectations,
    * under TEST_EXPECTATIONS=update): staged as writable copies rather than
    * links into the content store. */
   writable: FileSet;
@@ -571,11 +683,11 @@ export interface ITestRunInputs {
  * @return the action that runs the tests. A generic exec cannot serve: a red
  * run must fail the target while keeping the report.
  */
-export function createTestRunAction({ trees, staged, writable, argv, testFiles, outputs, env, coverage }: ITestRunInputs): BuildAction {
+export function createTestRunAction({ links = {}, files, packages, layout, self, writable, argv, testFiles, outputs, env, coverage }: ITestRunInputs): BuildAction {
   return new BuildAction(
     JS_TEST_STEP,
     {
-      staged,
+      files,
       writable,
       [TEST_FILES_INPUT]: FileSet.layout({ [TEST_FILES_FILE]: MemoryFile.from(JSON.stringify(testFiles)) }),
       ...(coverage ? { [COVERAGE_INPUT]: FileSet.layout({ [COVERAGE_MEASURED_FILE]: MemoryFile.from(JSON.stringify(coverage.measured)) }) } : {}),
@@ -583,11 +695,15 @@ export function createTestRunAction({ trees, staged, writable, argv, testFiles, 
     {
       argv,
       outputs,
+      layout,
+      ...selfConfig(self),
       ...(env.size > 0 ? { env: [...env].map(([name, value]) => `${name}=${value}`) } : {}),
       ...(coverage ? { coverage_argv: coverage.argv } : {}),
     },
     /* Each test file's last run is kept, and what changed since decides which
-     * files run again. */
-    { trackChangedFiles: true, trees }
+     * files run again. The packages are discoverable: the runs report what they read of them,
+     * and the entry is keyed on that selection, as a reporting compile's is. */
+    { discoverable: { deps: packages }, trackChangedFiles: true, links }
   );
 }
+

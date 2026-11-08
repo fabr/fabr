@@ -196,7 +196,17 @@ describe("filesToRun", () => {
 
   it("runs the files whose reads changed, and no others", () => {
     expect(filesToRun(files, changes(["build/a.js"]), kept, false).rerun).to.deep.equal(["a.test.js"]);
-    expect(filesToRun(files, changes(["node_modules/x/index.js"]), kept, false).rerun).to.deep.equal([]);
+    expect(filesToRun(files, changes(["build/c.js"]), kept, false).rerun).to.deep.equal([]);
+  });
+
+  it("runs the files whose deps rows changed — a package's file, or a lookup's answer", () => {
+    const rows = new Map([
+      ["a.test.js", { report: report(0), reads: new Set(["build/a.test.js"]), deps: new Set(["lib index.js", "lib package.json"]) }],
+      ["b.test.js", { report: report(0), reads: new Set(["build/b.test.js"]), deps: new Set(["opt package.json"]) }],
+    ]);
+    expect(filesToRun(files, changes(["lib index.js"]), rows, false).rerun).to.deep.equal(["a.test.js"]);
+    expect(filesToRun(files, changes(["opt package.json"]), rows, false).rerun, "the probed package appeared").to.deep.equal(["b.test.js"]);
+    expect(filesToRun(files, changes(["lib other.js"]), rows, false).rerun).to.deep.equal([]);
   });
 
   it("runs every file where nothing is kept to compare with, or a file was added or deleted", () => {

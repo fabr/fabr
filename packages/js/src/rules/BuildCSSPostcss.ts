@@ -50,7 +50,8 @@ import { browserQueryOf } from "../BrowserRepository";
 import { buildPostcssOptions, CSS_OUTDIR, CSS_SRC_ROOT, CSS_TOOL_DIR } from "../CSSCompile";
 import { emitsSourceMap } from "../JSPackage";
 import { DEPS_REPORT_FILE, DEPS_REPORT_FLAG, MANIFEST_FLAG, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "@fabr-build/js-tools";
-import { createNodeExecAction, PNP } from "../NodeExecAction";
+import { PNP } from "../Layout";
+import { createNodeExecAction } from "../NodeExecAction";
 
 /** The `css_postcss` rule. */
 export default defineRule({

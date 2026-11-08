@@ -17,6 +17,7 @@ number.
 - Breaking: Cache failed test runs like passing ones; add --retry-failed to run failed tests again.
 - Add vulnerability audit via osv.
 - Add --trace[=FILE] to build, test and run: a trace of the run's work for Perfetto or chrome://tracing.
+- Allow 'fabr build' of run-only targets, and cat/ls of run and test only targets.
 
 @fabr-build/aws:
 - Add s3 download support.
@@ -30,7 +31,9 @@ number.
 
 @fabr-build/js:
 - js_package now takes a compile_deps property for compile-only inputs.
+- Load only the browser table from caniuse-lite, not every feature's data.
 - js_script takes env, the environment variables its program is launched with.
+- A package's dependency on a dist-tag (`latest`) is read as `*`, so the build's own requirement on the package selects it.
 - Add sources operation.
 - Allow any version of a package with eg @npm:debug? (instead of specific versions)
 - Move bundling format out to a new property JS_BUNDLE_FORMAT (with target defaults)

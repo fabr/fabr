@@ -38,7 +38,8 @@ import {
   SILENT_REPORT,
   dependenciesOn,
 } from "@fabr-build/core";
-import { createNodeExecAction, NODE_EXEC_ACTION, PNP } from "../NodeExecAction";
+import { PNP } from "../Layout";
+import { createNodeExecAction, NODE_EXEC_ACTION } from "../NodeExecAction";
 import { parseDriverMemo, toCompileTelemetry } from "@fabr-build/js-tools";
 import { CHANGES_FILE, CHANGES_FLAG, DEPS_REPORT_FILE, STATE_DIR, STATE_DIR_FLAG } from "@fabr-build/js-tools";
 import { COMPILE_OUT_DIR, COMPILE_SRC_DIR, makeTsConfig } from "../rules/BuildJSCompile";

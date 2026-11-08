@@ -79,7 +79,6 @@ import {
   RuleResult,
   RunnableFileSet,
   SourceRef,
-  SymlinkFile,
   TargetContext,
   TEST_EXPECTATIONS,
   TEST_NAME_PATTERN,
@@ -96,10 +95,9 @@ import {
 import { type ITypeScriptPayload, layOutUnits, TSSERVER_PLUGIN, TYPESCRIPT_DATA_KIND } from "./Description";
 import { PNP_DATA_FILE, SOURCE_LOCATIONS_FILE } from "@fabr-build/js-tools";
 import { createTestRunAction } from "./TestRunAction";
-import { pnpManifestOf } from "./PnPManifest";
 import { posix } from "path";
 import { COMPILE_OUT_DIR, COMPILE_SRC_DIR } from "./rules/BuildJSCompile";
-import { assembleNodeModules, packageDirectories } from "./NodeModules";
+import { packageDirectories } from "./NodeModules";
 import {
   compileContents,
   DECLARATION_FILE,
@@ -382,7 +380,6 @@ export function compileAndRunTests(
        * output already rides the compiled tree (and a raw .js would collide). */
       const allDeps = [...deps, ...testDeps];
       const packages = allDeps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
-      const runtimeModules = assembleNodeModules(packages);
       const resources = resourceFiles(allDeps.filter(dep => !(dep instanceof PackageFileSet)));
 
       const testTarget = testTargetOf(jsTarget, framework);
@@ -403,7 +400,6 @@ export function compileAndRunTests(
           /* The lowered CSS is a sibling of the compiled code that imports it. */
           copied: FileSet.unionAll(built.passthrough, built.css).minus(tested ?? EMPTY_FILESET),
           compileSrcs: built.compileSrcs,
-          nodeModules: runtimeModules,
           resources,
           runner,
           tests,
@@ -530,32 +526,6 @@ export function describeTests(
   });
 }
 
-/**
- * Make the install's self-mount: `node_modules/<packageName>` as a SYMLINK to
- * the compiled tree (`build/`), so the compiled tree's self-referential
- * requires (`@scope/pkg/sub`, which `paths` resolved at compile time but which
- * survive verbatim into the emitted JS) resolve when the tests run.
- *
- * A symlink rather than a second copy of the tree: node resolves a module to
- * its realpath, so `require("@scope/pkg/sub")` and a relative `require("./sub")`
- * reach the SAME file and therefore the same module instance. Copying would
- * give each edge its own instance — separate module state, failing `instanceof`,
- * duplicated singletons. This is the same device pnpm and yarn workspaces use.
- */
-function selfMount(packageName: string | undefined): FileSet {
-  if (packageName === undefined) {
-    return EMPTY_FILESET;
-  }
-  /* Relative to the link's own DIRECTORY, which sits N levels below the install
-   * root for an N-segment name: node_modules for the last segment, plus one per
-   * scope segment above it (node_modules/@scope/pkg -> ../..). It points at the
-   * COMPILED tree, not the install root: the emitted code lives under `build/`
-   * (mounted beside its sources so source maps resolve), so a self-referential
-   * `@scope/pkg/sub` has to land there or it resolves to nothing. */
-  const up = "../".repeat(packageName.split("/").length);
-  return FileSet.layout({ [packageName]: new SymlinkFile(up + COMPILE_OUT_DIR) });
-}
-
 /** Select the runnable test files: the JS entries of the *actual* compiled tree
  * whose stem is one of the declared tests' stems, sorted for determinism. No
  * source→output name is predicted — js_compile named these; we only select.
@@ -597,7 +567,6 @@ interface ITestRun {
   /** The compile's own `src/` tree, staged beside the output as the compile
    * laid it out — see the layout in planTestRun. */
   compileSrcs: FileSet;
-  nodeModules: FileSet;
   resources: FileSet;
   runner: RunnableFileSet;
   /** The declared test sources, for mapping refreshed snapshots back to them. */
@@ -607,10 +576,11 @@ interface ITestRun {
   /** Whether the suite needs a DOM (the `dom` source flag), named to the runner
    * as its `--env`. */
   needsDom: boolean;
-  /** How the packages the test processes load are laid out (the `layout/*`
-   * flags): as `nodeModules`, or as a PnP table over `packages`. */
+  /** How the test processes reach `packages` (the `layout/*` flags): a
+   * `node_modules` tree, or a PnP table over the pool's trees — laid out by
+   * the test-run step. */
   layout: "pnp" | "node_modules";
-  /** The packages the install holds. */
+  /** The packages the tests load, as delivered. */
   packages: PackageFileSet[];
   /** Verbatim runtime files for the tests, mounted with the compiled output. */
   testResources: FileSet;
@@ -674,21 +644,10 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
     if (pnp && coverage !== undefined) {
       throw new FabrError("Measuring coverage needs the tests' packages in a node_modules tree; drop layout/pnp for --coverage");
     }
-    /* Under PnP the packages are rows of a table over the cache's trees, the
-     * package under test one at its compiled tree; any change to them is a
-     * change to the table, which every test process reads. */
-    const manifest = pnp
-      ? pnpManifestOf(
-          run.packages,
-          run.packageName === undefined ? undefined : { name: run.packageName, location: `./${COMPILE_OUT_DIR}/` },
-          /* The runner's own install is a node_modules tree, and no package of the table. */
-          `^${RUNNER_STAGE_DIR.replace(/\./g, "\\.")}(/|$)`
-        )
-      : undefined;
-    const staged = FileSet.layout({
-      ...(manifest === undefined ? { node_modules: [run.nodeModules, selfMount(run.packageName)] } : { [PNP_DATA_FILE]: manifest.toFile() }),
-      [RUNNER_STAGE_DIR]: [run.runner],
-      ...(coverage?.staged ?? {}),
+    /* The run's own files. The packages are the action's `deps`, which the step
+     * lays out as `layout` says, so they key as a compile's do and no tree is
+     * built to look an entry up. */
+    const files = FileSet.layout({
       "package.json": packageJson,
       /* Resources and records join the compiled tree, which is also the working
        * directory: a test's `./x` means the same thing here as in the source
@@ -716,7 +675,7 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
         /* `./`-prefixed: the runner contract distinguishes a path within the
          * installation from a bare module name by exactly that prefix. */
         ...(setupFile === undefined ? [] : [`--setup=./${setupFile}`]),
-        ...(manifest === undefined ? [] : [`--pnp=../${PNP_DATA_FILE}`]),
+        ...(pnp ? [`--pnp=../${PNP_DATA_FILE}`] : []),
       ],
       /* The runner stays at the install root while the working directory is the
        * compiled tree, so its entry, and the pool its node is in, are reached one
@@ -750,8 +709,14 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
      * offers back to the tree — every evaluation, so refreshed records reach
      * the driver on a cache hit as well as on a miss. */
     return createTestRunAction({
-      trees: manifest?.packages,
-      staged,
+      /* The runner's install, and a measured run's driver's, are trees of the
+       * pool linked into the installation: one line of the key each, where
+       * their several thousand files were staged and listed per target. */
+      links: { [RUNNER_STAGE_DIR]: run.runner, ...(coverage?.links ?? {}) },
+      files,
+      packages: run.packages,
+      layout: run.layout,
+      self: run.packageName === undefined ? undefined : { name: run.packageName, location: `./${COMPILE_OUT_DIR}/` },
       writable,
       argv,
       testFiles,
@@ -772,7 +737,7 @@ function measuredRun(
   { driver, packages }: { driver: RunnableFileSet; packages: PackageFileSet[] },
   compiled: FileSet,
   testInfrastructure: ReadonlySet<string>
-): { staged: Record<string, FileSet[]>; argv: string[]; measured: string[] } {
+): { links: Record<string, FileSet>; argv: string[]; measured: string[] } {
   const own = [...compiled]
     .map(([name]) => name)
     .filter(name => COMPILED_SCRIPT.test(name) && !testInfrastructure.has(name))
@@ -783,7 +748,7 @@ function measuredRun(
       [...pkg].map(([name]) => name).filter(name => COMPILED_SCRIPT.test(name)).map(name => `node_modules/${directory}/${name}`)
     );
   return {
-    staged: { [COVERAGE_STAGE_DIR]: [driver] },
+    links: { [COVERAGE_STAGE_DIR]: driver },
     argv: driver.toCommandLine([], { base: COVERAGE_STAGE_DIR }),
     measured: [...new Set([...own, ...installed])].sort(),
   };

@@ -162,7 +162,7 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
     expect(result.stderr).to.contain("1 test passed");
   });
 
-  it("runs every test file again under layout/pnp when a package changes the table", () => {
+  it("runs again under layout/pnp only the test file that read a changed package", () => {
     const { marker, ran } = runMarker();
     const unique = `${process.pid}-${Date.now()}`;
     const files = (greeting: string): Record<string, string> => ({
@@ -180,7 +180,119 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
     expect(ran()).to.deep.equal(["a", "b"]);
     const changed = runFabr(files(`${unique}-changed`), ["-DJS_TARGET=es2020", "test", "thing"]);
     expect(changed.status, changed.stderr).to.equal(0);
-    expect(ran(), "the table every file resolved through changed").to.deep.equal(["a", "b"]);
+    /* `b` never loaded `lib`: the packages are keyed on what each file read,
+     * under a PnP table as under a node_modules tree. */
+    expect(ran(), "the file that read the changed package").to.deep.equal(["a"]);
+  });
+
+  for (const layout of ["node_modules", "pnp"]) {
+    it(`serves a test run from the cache when a dependency changes only in files no test read (layout/${layout})`, () => {
+      const { marker, ran } = runMarker();
+      const unique = `${process.pid}-${Date.now()}`;
+      const files = (other: string): Record<string, string> => ({
+        ...STUB_TSC,
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\n\n" +
+          STUB_TSC_CONFIG +
+          "\njs_package lib { srcs = libsrc:**/*.ts; }\n" +
+          `js_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  deps = lib;\n  test_deps = layout/${layout};\n  test_env = { MARKER = "${marker}"; }\n}\n`,
+        "libsrc/index.ts": `exports.greeting = "${unique}";\n`,
+        "libsrc/other.ts": `exports.other = "${other}";\n`,
+        "src/a.test.ts": 'require("lib");\nrequire("fs").appendFileSync(process.env.MARKER, "a\\n");\ndescribe("a", () => { it("is", () => {}); });\n',
+      });
+      expect(runFabr(files(unique), ["-DJS_TARGET=es2020", "test", "thing"]).status).to.equal(0);
+      expect(ran()).to.deep.equal(["a"]);
+      /* The package changed, in a file the test never loaded: the run's key
+       * names what was read, so the entry stands and nothing runs. */
+      const changed = runFabr(files(`${unique}-changed`), ["-DJS_TARGET=es2020", "test", "thing"]);
+      expect(changed.status, changed.stderr).to.equal(0);
+      expect(ran(), "no test read the changed file").to.deep.equal([]);
+      expect(changed.stderr).to.contain("1 test passed");
+    });
+  }
+
+  for (const layout of ["node_modules", "pnp"]) {
+    it(`runs again a test that looked for a package it did not find, once the package is there (layout/${layout})`, () => {
+      const { marker, ran } = runMarker();
+      const unique = `${process.pid}-${Date.now()}`;
+      const files = (withOpt: boolean): Record<string, string> => ({
+        ...STUB_TSC,
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\n\n" +
+          STUB_TSC_CONFIG +
+          "\njs_package lib { srcs = libsrc:**/*.ts; }\n" +
+          (withOpt ? "js_package opt { srcs = optsrc:**/*.ts; }\n" : "") +
+          `js_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  deps = lib${withOpt ? " opt" : ""};\n  test_deps = layout/${layout};\n  test_env = { MARKER = "${marker}"; }\n}\n`,
+        "libsrc/index.ts": `exports.greeting = "${unique}";\n`,
+        "optsrc/index.ts": 'exports.v = "opt";\n',
+        "src/a.test.ts":
+          'require("lib");\nlet v; try { v = require("opt").v; } catch { v = "none"; }\n' +
+          'require("fs").appendFileSync(process.env.MARKER, "a:" + v + "\\n");\ndescribe("a", () => { it("is", () => {}); });\n',
+      });
+      expect(runFabr(files(false), ["-DJS_TARGET=es2020", "test", "thing"]).status).to.equal(0);
+      expect(ran()).to.deep.equal(["a:none"]);
+      /* The lookup that found nothing is a row of the key, absent; the package
+       * appearing makes it present. */
+      const added = runFabr(files(true), ["-DJS_TARGET=es2020", "test", "thing"]);
+      expect(added.status, added.stderr).to.equal(0);
+      expect(ran(), "the test looked for the package").to.deep.equal(["a:opt"]);
+    });
+  }
+
+  it("runs again a test that probed the tree for a package, once the package is there (layout/node_modules)", () => {
+    const { marker, ran } = runMarker();
+    const unique = `${process.pid}-${Date.now()}`;
+    const files = (withOpt: boolean): Record<string, string> => ({
+      ...STUB_TSC,
+      "PROJECT.fabr":
+        "plugin @fabr-build/js;\n\n" +
+        STUB_TSC_CONFIG +
+        "\njs_package lib { srcs = libsrc:**/*.ts; }\n" +
+        (withOpt ? "js_package opt { srcs = optsrc:**/*.ts; }\n" : "") +
+        `js_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  deps = lib${withOpt ? " opt" : ""};\n  test_env = { MARKER = "${marker}"; }\n}\n`,
+      "libsrc/index.ts": `exports.greeting = "${unique}";\n`,
+      "optsrc/index.ts": 'exports.v = "opt";\n',
+      "src/a.test.ts":
+        'const fs = require("fs"); const path = require("path");\n' +
+        'const dir = path.join(__dirname, "..", "node_modules", "opt");\n' +
+        'const present = fs.existsSync(dir) + ":" + fs.existsSync(path.join(dir, "package.json"));\n' +
+        'fs.appendFileSync(process.env.MARKER, "a:" + present + "\\n");\ndescribe("a", () => { it("is", () => {}); });\n',
+    });
+    expect(runFabr(files(false), ["-DJS_TARGET=es2020", "test", "thing"]).status).to.equal(0);
+    expect(ran()).to.deep.equal(["a:false:false"]);
+    /* The probe of the package's directory and of its manifest are both the
+     * package's presence, a row the package's appearance flips. */
+    const added = runFabr(files(true), ["-DJS_TARGET=es2020", "test", "thing"]);
+    expect(added.status, added.stderr).to.equal(0);
+    expect(ran(), "the test probed for the package").to.deep.equal(["a:true:true"]);
+  });
+
+  it("keys a test on the whole input where a package it loaded was found through the tree's hidden links (layout/node_modules)", () => {
+    /* `lib` requires `other` without declaring it: the tree's hidden links
+     * answer from the whole closure, which no row can pin, so the run is keyed
+     * on everything and a change nothing read still reruns it. */
+    const { marker, ran } = runMarker();
+    const unique = `${process.pid}-${Date.now()}`;
+    const files = (unread: string): Record<string, string> => ({
+      ...STUB_TSC,
+      "PROJECT.fabr":
+        "plugin @fabr-build/js;\n\n" +
+        STUB_TSC_CONFIG +
+        "\njs_package other { srcs = othersrc:**/*.ts; }\n" +
+        "js_package mid { srcs = midsrc:**/*.ts; deps = other; }\n" +
+        "js_package lib { srcs = libsrc:**/*.ts; deps = mid; }\n" +
+        `js_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  deps = lib;\n  test_env = { MARKER = "${marker}"; }\n}\n`,
+      "othersrc/index.ts": `exports.v = "${unique}";\n`,
+      "othersrc/unread.ts": `exports.unread = "${unread}";\n`,
+      "midsrc/index.ts": 'exports.v = require("other").v;\n',
+      "libsrc/index.ts": 'exports.v = require("other").v;\n',
+      "src/a.test.ts": 'require("lib");\nrequire("fs").appendFileSync(process.env.MARKER, "a\\n");\ndescribe("a", () => { it("is", () => {}); });\n',
+    });
+    expect(runFabr(files(unique), ["-DJS_TARGET=es2020", "test", "thing"]).status).to.equal(0);
+    expect(ran()).to.deep.equal(["a"]);
+    const changed = runFabr(files(`${unique}-changed`), ["-DJS_TARGET=es2020", "test", "thing"]);
+    expect(changed.status, changed.stderr).to.equal(0);
+    expect(ran(), "keyed on the whole input").to.deep.equal(["a"]);
   });
 
   it("runs again under layout/pnp a test whose own file changed, where a package has a file of its name", () => {
@@ -519,5 +631,19 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
     );
     expect(result.stderr).to.contain("1 test passed");
     expect(result.status).to.equal(0);
+  });
+
+  it("reads a test's files as its results, and refuses to build it", () => {
+    const files = {
+      ...STUB_TSC,
+      "PROJECT.fabr": "plugin @fabr-build/js;\n\n" + STUB_TSC_CONFIG + "\njs_test standalone {\n  tests = it:**/*.test.ts;\n}\n",
+      "it/alone.test.ts": 'const assert = require("node:assert");\ndescribe("x", () => { it("passes", () => { assert.ok(true); }); });\n',
+    };
+    const listed = runFabr(files, ["-DJS_TARGET=es2020", "ls", "standalone"]);
+    expect(listed.status, listed.stderr).to.equal(0);
+    expect(listed.stdout.split("\n")).to.include("ctrf-report.json");
+    const built = runFabr(files, ["-DJS_TARGET=es2020", "build", "standalone"]);
+    expect(built.status).not.to.equal(0);
+    expect(built.stderr).to.contain("try 'fabr test standalone'");
   });
 });
