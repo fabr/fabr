@@ -401,9 +401,11 @@ function createRepository(context: TargetContext): Computable<Repository> {
         [context.execution.buildCache.ensureTree(caniuse.files), context.execution.buildCache.ensureTree(mapping.files)],
         (caniuseDir: string, mappingDir: string) => {
           /* Loaded from where the pool holds them: they are the data packages
-           * the project pins, not any copy installed with fabr. */
+           * the project pins, not any copy installed with fabr. The agents table
+           * alone, by its own module: the package's index also loads every
+           * feature's data, some six hundred modules the repository reads none of. */
           /* eslint-disable @typescript-eslint/no-var-requires */
-          const { agents } = require(path.resolve(caniuseDir)) as { agents: ICaniuseAgents };
+          const { agents } = require(path.resolve(caniuseDir, "dist/unpacker/agents")) as { agents: ICaniuseAgents };
           const { getCompatibleVersions } = require(path.resolve(mappingDir)) as {
             getCompatibleVersions(options: { targetYear: number; suppressWarnings: boolean }): Array<{ browser: string; version: string }>;
           };
