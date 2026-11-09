@@ -70,8 +70,8 @@ function sourcePathTable(files: FileSet, packages: ReadonlyMap<string, FileSet>)
  * arrangement is the `pnp`/`node_modules` choice ({@link NodeLayout}): a rule says
  * which it wants and nothing else.
  *
- * The rule hands the *packages* over as delivered; the key walks that graph
- * (see `manifestFileInput`) plus the layout token, and what this step makes of
+ * The rule hands the *packages* over as resolved; the key walks that graph
+ * (see `manifestFileInputs`) plus the layout token, and what this step makes of
  * them is a pure function of those, so the key is computed without building
  * anything: evaluation does no filesystem work, and a cache hit does none
  * either.
@@ -129,9 +129,8 @@ export const NODE_EXEC_ACTION: IBuildActionDefinition = {
     /* The packages are laid out as the rule asked: a tree staged at the mount,
      * or nothing at all — each a tree in the cache's pool, and what each of
      * them SEES a row in the table staged beside the sources. Materializing
-     * them is this step's work like any other layout's — so a hit touches the
-     * pool not at all, and a pool wiped between builds heals on the next miss
-     * that needs it rather than on every evaluation. */
+     * them is this step's work like any other layout's, so a hit does not touch
+     * the pool. */
     const packages = layoutPackages(action, ctx.workDir, tree => ctx.ensureTree(tree), stringConfig(action, "mount"));
     const execLaid = (argv: string[], incremental?: Incremental, handover?: Handover): Computable<BuildResult> =>
       packages.then(layout =>
@@ -286,8 +285,7 @@ export function createNodeExecAction(
       ...(reported ? { discoverable: { deps } } : {}),
       label: options.label,
       /* A tool told where to keep state, or where to find what moved, is one that
-       * diffs — so the cache is asked to record what this build was made from.
-       * Nothing else pays for a record nothing reads. */
+       * diffs — so the cache is asked to record what this build was made from. */
       trackChangedFiles: options.stateDir !== undefined || options.changes !== undefined,
       /* The table names `files` always, and the packages where the rule asks. */
       sourcePathInputs: options.sourcePaths === undefined ? [] : options.packageSourcePaths ? ["files", "deps"] : ["files"],

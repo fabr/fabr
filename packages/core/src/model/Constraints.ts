@@ -95,7 +95,7 @@ export const UPDATE_EXPECTATIONS = "update";
  * where it matches part of the test's name as its runner names it (suite and
  * test names joined by spaces for the js runners, `Class#method` for JUnit);
  * empty (the default, declared in STD.fabr) runs them all. `fabr test
- * -t` sets it. Named here because the driver and the test rules agree on it.
+ * -t` sets it, and the test rules read it.
  */
 export const TEST_NAME_PATTERN = "TEST_NAME_PATTERN";
 

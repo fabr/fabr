@@ -91,7 +91,7 @@ export abstract class Reference {
   /** Whether what answers this reference must be a package. */
   public abstract readonly requiresPackage: boolean;
 
-  /** The name what this reference names is delivered under: the rename
+  /** The name what this reference names is required as: the rename
    * written on it, or its own. */
   public get localName(): string {
     return this.renameTo ?? this.name;

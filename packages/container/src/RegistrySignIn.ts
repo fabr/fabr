@@ -87,7 +87,7 @@ export class RegistrySignIn implements Credential {
     return sendRequest(url, { method: "GET", headers: credential === undefined ? {} : { authorization: basicAuthorization(credential) } }).then(response => {
       if (response.statusCode !== 200) {
         throw new FabrError(`${challenge.realm} refused a token for ${scopes.join(", ")} (${response.statusCode})`).withHelp(
-          credential === undefined ? `log in to ${new URL(this.registry).host} with \`podman login\`` : "check the credential is for this registry and allowed this access"
+          credential === undefined ? `log in to ${new URL(this.registry).host} with \`docker login\` or \`podman login\`` : "check the credential is for this registry and allowed this access"
         );
       }
       return parseJson(response.body, `token from ${challenge.realm}`, toToken);

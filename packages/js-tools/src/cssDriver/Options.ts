@@ -80,9 +80,9 @@ export interface IPostcssSource {
   /** The map the input ARRIVED with (relative to the options' `srcRoot`), for the
    * output map to chain through; absent for an authored stylesheet. */
   prev?: string;
-  /** Where the source map goes, relative to the options' `outdir`: chained through
-   * {@link prev} for a module, carried through beside a plain stylesheet that
-   * arrived with one, absent otherwise. */
+  /** Where the source map goes, relative to the options' `outdir`, chained through
+   * {@link prev} where the input arrived with a map; absent where the build
+   * writes no maps. */
   map?: string;
 }
 

@@ -1823,7 +1823,7 @@ describe("BuildContext", () => {
     "test_file c2 { content = two; }\n" +
     "sync release { pub:alpha:1.0.0 = c1; pub:beta:2.0.0 = c2; }\n";
 
-  /** The release above, or the one `input` declares, as the given operation sees it. */
+  /** @return the release above, or the one `input` declares, as the given operation sees it. */
   function releaseConfig(operation: string, input = RELEASE_INPUT): BuildContext {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
@@ -4118,7 +4118,7 @@ describe("Rule selection", () => {
   });
 
   describe("on a targetdef that extends another", () => {
-    /** The files a rule built, each named by the rule and holding what it read. */
+    /** Make what a rule built: the one file `file`, named by the rule and holding what it read. */
     const made = (file: string, text: string): FileSet => new FileSet(new Map([[file, new MemoryFile(Buffer.from(text))]]));
     const baseRule: RuleDefinition = {
       type: "base",
@@ -4155,7 +4155,7 @@ describe("Rule selection", () => {
       );
     }
 
-    /** The errors loading `input` reports. */
+    /** @return the errors loading `input` reports. */
     function errorsOf(input: string): string[] {
       const errors: string[] = [];
       const log = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
@@ -5267,7 +5267,7 @@ describe("rules written in .fabr", () => {
       return modelOf(SPLICE_DEFS + input);
     }
 
-    /** The errors loading `input` reports. */
+    /** @return the errors loading `input` reports. */
     function errorsOf(input: string): string[] {
       const errors: string[] = [];
       const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));

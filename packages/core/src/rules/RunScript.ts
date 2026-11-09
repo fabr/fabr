@@ -38,9 +38,8 @@ import { FabrError } from "../core/Errors";
 export default defineRule({
   /* deps/entry are ordinary build content, read under build rather than the run
    * operation this rule is selected by (constraints otherwise propagate). Both
-   * are read for their files: each requirement delivers its own — a repository
-   * reference the package's files alone, a target what it built — and nothing
-   * is resolved together. */
+   * are read for their files — a repository reference as the package's files
+   * alone, a target as what it built — and nothing is resolved together. */
   requirements(context) {
     return {
       run: {

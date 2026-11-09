@@ -249,9 +249,7 @@ export class NPMRepository
       coordinate => isRepositoryReader(coordinate.source) && coordinate.source.format === NPM_FORMAT
     );
     /* Later entries win the merge: a name published by the release over a
-     * target's name, and own-batch assignments over release-wide. (A name can't
-     * be batch-unique but release-ambiguous *and missing* from the batch map —
-     * own coordinates are a subset of the release's.) */
+     * target's name, and own-batch assignments over release-wide. */
     const published = uniqueTargets(targets);
     const coMembers = new Map([
       ...published,

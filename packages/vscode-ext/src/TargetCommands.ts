@@ -86,7 +86,7 @@ function toTestFinish(params: unknown): { originId: string; finish: ITestFinish 
 export function registerTargetCommands(projects: ReadonlyMap<string, IServedProject>, output: vscode.OutputChannel): vscode.Disposable & { refresh(): void } {
   let origins = 0;
   const controller = vscode.tests.createTestController("fabr", "Fabr");
-  /* A request's notifications, by its originId. */
+  /* What receives a request's test finishes, by its originId. */
   const listening = new Map<string, (finish: ITestFinish) => void>();
   const listened = new Set<JsonRpcClient>();
   const listen = (client: JsonRpcClient): void => {

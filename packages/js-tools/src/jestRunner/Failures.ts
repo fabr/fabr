@@ -87,8 +87,8 @@ export function formatFailures(test: IFormattableResult, projectConfig: unknown,
 /**
  * Format an error raised outside any test as presentable text, as jest prints a
  * suite's execution error: the errors' text, then the stack with jest's own
- * frames removed. A document the formatter declines to render is reported by
- * its text as it arrived.
+ * frames removed. An error the formatter declines to render is reported by its
+ * text as it arrived.
  */
 export function formatExecError(error: IExecError, projectConfig: unknown, globalConfig: unknown, testPath: string): string {
   const util = jestLibrary("jest-message-util") as IMessageUtil;

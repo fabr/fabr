@@ -73,8 +73,8 @@ export interface BuildContext {
 
   /**
    * Materialize what `ref` names: build every target it reaches and fetch
-   * every external reference, and return the content. A delivered package comes back as that
-   * package's own files, without its dependency closure. An {@link IncompleteRef} (a
+   * every external reference, and return the content. A package comes back as
+   * its own files, without its dependency closure. An {@link IncompleteRef} (a
    * repository named on its own, a name in one such as `@npm:glob`, or a
    * namespace) has no content and comes back as it stands: a caller wanting
    * content refuses it ({@link refuseNamespaces}), and one listing names lists

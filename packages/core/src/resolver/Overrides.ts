@@ -45,7 +45,7 @@ function canonicalExactVersion<V, C>(domain: VersionDomain<V, C>, text: string |
 
 /** The `?` sanctions written in a batch. */
 export interface Sanctions {
-  /** pkg → the canonical exact versions whose forks a strict delivery may accept. */
+  /** pkg → the canonical exact versions whose forks a strict collection may accept. */
   readonly versions: Map<PackageName, Set<string>>;
   /** The packages a `?` stating no version sanctions at every version. */
   readonly everyVersion: Set<PackageName>;
@@ -55,7 +55,7 @@ export interface Sanctions {
  * Collect the `?` sanctions written in a batch, rejecting the contradictory
  * marker combinations — a package both forced and alternated, or forced at two
  * different versions — via `fail`, which the caller supplies so the error is
- * attributed to the written references (this module stays reference-free).
+ * attributed to the written references.
  */
 export function collectSanctions<V, C>(
   domain: VersionDomain<V, C>,

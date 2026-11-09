@@ -122,8 +122,7 @@ function stageInstall(
   const files = fileSetInput(action, "files");
   const writable = fileSetInput(action, "writable");
   return layoutPackages(action, dir, ensureTree).then(layout => {
-    /* One admission for the whole installation — its writes are halves of
-     * staging it, not separate pieces of work — and given back before any test
+    /* One admission for the whole installation, given back before any test
      * process asks for a slot of its own. */
     const staged = FileSet.unionAll(files, layout.files);
     return admit(() => writeFileSet(dir, staged.minus(writable)).then(() => writeFileSet(dir, writable, { copy: true })))
@@ -170,9 +169,8 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
     const { rerun, reused } = filesToRun(testFiles, changes, kept, coverage !== undefined);
     return stageInstall(action, workDir, tree => ctx.ensureTree(tree), work => ctx.admit(report, work))
       .then(layout => {
-        /* Each file's outcome is known the moment its invocation ends — the
-         * report it wrote is read there — so the run can say how it is going
-         * while it goes, rather than only in the summary at the end. */
+        /* Each file's outcome is tallied as its invocation ends, from the
+         * report it wrote. */
         const tally = new RunTally(rerun.length, report.progress);
         return Computable.forAll(
           /* All issued at once: each execution queues on the funnel, which is
@@ -197,7 +195,7 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
 }
 
 /**
- * What the run read of its packages, as the selection the entry is keyed on:
+ * @return what the run read of its packages, as the selection the entry is keyed on:
  * every deps row any test file's run read, this run's and the kept ones' alike.
  * Nothing where any file's reads are unknown (a process the runner could not
  * follow), which keys the entry on the whole deps input, as an unreported run
@@ -647,7 +645,7 @@ export interface ITestRunInputs {
   /** The run's own files, named relative to the installation root: the
    *  compiled tree and what sits beside it. */
   files: FileSet;
-  /** The packages the tests load, as delivered: the action's discoverable
+  /** The packages the tests load: the action's discoverable
    *  input, laid out by the step as `layout` says and keyed on what the runs
    *  read of them. */
   packages: FileSet[];

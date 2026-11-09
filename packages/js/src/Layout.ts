@@ -27,9 +27,8 @@ import { ISelfPackage, pnpManifestOf } from "./PnPManifest";
  * How a tool reaches its dependencies. Two peers, one choice per rule:
  *
  * - `pnp` — no tree at all: each package is materialized once in the cache's
- *   tree pool and a generated PnP table says what resolves to what. The
- *   strictest and by far the cheapest (a step stages only its own sources), and
- *   what every tool fabr can hand a manifest to uses.
+ *   tree pool and a generated PnP table says what resolves to what; a step
+ *   stages only its own sources. Used by every tool fabr can hand a table to.
  * - `node_modules` — a real tree at the mount point ({@link assembleNodeModules}):
  *   the direct deps visible at the top, each package resolving its own. What a
  *   tool that resolves through the filesystem needs.
@@ -110,7 +109,7 @@ function layoutConfig(action: BuildAction): NodeLayout {
   return layout;
 }
 
-/** Read the `deps` input: the packages the tool reaches, as delivered — the
+/** Read the `deps` input: the packages the tool reaches — the
  *  action's discoverable input where the tool reports what it read of them. */
 function depsInput(action: BuildAction): FileSet[] {
   const value = action.discoverable?.deps ?? action.inputs.deps;
@@ -120,7 +119,7 @@ function depsInput(action: BuildAction): FileSet[] {
   return value;
 }
 
-/** The config entries that record `self`, read back by {@link selfPackage}. */
+/** @return the config entries that record `self`, read back by {@link selfPackage}. */
 export function selfConfig(self: ISelfPackage | undefined): Record<string, string> {
   return self === undefined ? {} : { selfName: self.name, selfLocation: self.location };
 }
@@ -134,7 +133,7 @@ function selfPackage(action: BuildAction): ISelfPackage | undefined {
 }
 
 /**
- * The sources' own entry in a `node_modules` tree: a link from their package's
+ * @return the sources' own entry in a `node_modules` tree: a link from their package's
  * name to where they lie, so they resolve their own name as their consumers do.
  * Nothing where the sources are no package's.
  */
@@ -148,14 +147,14 @@ function selfLink(self: ISelfPackage | undefined, mount: string): FileSet {
   return FileSet.layout({ [self.name]: new SymlinkFile(up + posix.normalize(self.location).replace(/\/$/, "")) });
 }
 
-/** The pattern of the names the action links installs at, which a PnP table
+/** @return the pattern of the names the action links installs at, which a PnP table
  *  leaves out of its lookups. */
 function linkPattern(action: BuildAction): string | undefined {
   const names = Object.keys(action.links);
   return names.length === 0 ? undefined : `^(${names.map(name => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(/|$)`;
 }
 
-/** The canonical route of each package reachable from `deps`: the first the
+/** @return the canonical route of each package reachable from `deps`: the first the
  *  key's own walk reaches it by, as a deps row names it. */
 function routesOf(deps: FileSet[]): Map<PackageFileSet, string[]> {
   const routes = new Map<PackageFileSet, string[]>();

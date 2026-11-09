@@ -154,11 +154,9 @@ export function writeFileSet(targetDir: string, files: FileSet, options?: { copy
     return mapComputable(entries, ({ name, file, targetName, dirname }) => {
       const filepath = file.getAbsPath();
       if (file instanceof HostLink) {
-        /* The one licensed escape from the staged tree, and it is per-CLASS, not
-         * a widening of the guard below: being a host link is not something
-         * content can claim (fabr constructs every one, and nothing parses one
-         * back), and it names a program fabr found on this host and identified
-         * by its content. */
+        /* The one link staged leading out of the tree, unchecked by the guard
+         * below: only fabr makes a host link (see HostLink), naming a program
+         * it found on this host and identified by its content. */
         return stage(symlink(file.location, targetName), name);
       }
       if (file instanceof SymlinkFile) {

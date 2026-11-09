@@ -327,7 +327,7 @@ export interface VersionDomain<V, C> {
   readonly providedMismatch?: "tolerate" | "refuse";
 
   /**
-   * True where every delivery of the ecosystem is flat — one version of each
+   * True where every installation of the ecosystem is flat — one version of each
    * package, as on a JVM classpath — so a violated edge is never repaired by a
    * fork and stays a violation for the strict check to judge.
    */

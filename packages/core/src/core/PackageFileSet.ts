@@ -206,7 +206,7 @@ export class ResolvedNode implements PackageMetadata {
   }
 
   /**
-   * Make a copy named `packageName`, its content delivered under that name: a
+   * Make a copy named `packageName`, its content renamed with it: a
    * package renamed is a package of its own, which its key says.
    */
   public withPackageName(packageName: string): ResolvedNode {

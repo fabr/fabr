@@ -264,7 +264,7 @@ export class ModelBuilder implements BuildModel {
   /**
    * Make a model of no files, with the rules and repositories of
    * `contributions`, whose declared implementations `load` loads: by default,
-   * from core and the plugins added. What is added to it gets wrong is
+   * from core and the plugins added. What is wrong in what is added to it is
    * reported through `out` when it is finished, so a model made and dropped
    * reports nothing.
    */

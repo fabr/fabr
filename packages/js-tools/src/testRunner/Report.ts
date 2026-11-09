@@ -268,13 +268,12 @@ export function buildReport(tests: ITestResult[], start: number, stop: number): 
 }
 
 /**
- * End this process once its report is written. The report is the run's
- * result, so nothing the tests leave behind may hold the process: where a
- * request is still in flight (a DNS lookup on libuv's threadpool, which
- * `process.exit` must wait for), the process runs its `exit` listeners, writes
- * its V8 coverage where it is measured (`NODE_V8_COVERAGE`), and ends at once
- * by signal instead of with `status`, and output not yet written to a pipe may
- * be lost. The end is immediate, never on a later turn of the event loop,
+ * End this process once its report is written, whatever the tests left
+ * running. Where a libuv request is still in flight (a DNS lookup on the
+ * threadpool, which `process.exit` would wait for), the process runs its `exit`
+ * listeners, writes its V8 coverage where it is measured (`NODE_V8_COVERAGE`)
+ * and kills itself rather than exiting with `status`; output not yet written
+ * to a pipe may then be lost. Never deferred to a later turn of the event loop,
  * which work the tests left running may never yield.
  */
 export function endAfterReport(status: number): never {

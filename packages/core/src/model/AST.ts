@@ -300,7 +300,7 @@ export interface IRuleDecl extends IBaseDecl {
   kind: DeclKind.Rule;
   /** The target type; undefined for a rule of every type. */
   type?: string;
-  /** Where the target type is written; undefined where it is. */
+  /** Where the target type is written; undefined where it is not. */
   typeOffset?: number;
   /** The name the declaration gives the target, in guards on its properties. */
   param: string;

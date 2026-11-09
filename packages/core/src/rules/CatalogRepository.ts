@@ -71,9 +71,9 @@ interface ResolvedCatalog {
  * **table** rather than a registry. The joint resolution is the catalog's own
  * collection point (resolveCatalog, under `build`), made once for each of a
  * consumer's collections that asks (`build` and `run`, as a rule's two
- * collections are resolved apart), and every consuming
- * reference rides the normal RepositoryRef path, grouped by this instance at
- * the consumer's collection point and answered from the table.
+ * collections are resolved apart), and every consuming reference rides the
+ * normal RepositoryRef path, grouped by this instance at the consumer's
+ * collection point and answered from the table.
  */
 export class CatalogRepository implements Repository, RepositoryCollection {
   constructor(
@@ -233,10 +233,11 @@ function entryNodes(sources: SourceRef[], markers: Markers): Computable<Array<So
 /**
  * Resolve the catalog's `deps` jointly under `build`, whatever the catalog is
  * consumed under, for the consumer's collection `side`, and key each entry by
- * the name it is delivered as. No member
- * is fetched and nothing is built: an entry that is a target is its node,
- * unbuilt, with what its rule states it passes on. Of entries claiming one
- * name, a forced one (`!`) is the member; otherwise they are a conflict.
+ * the name it is addressed by: its package name, or the alias a written rename
+ * gives it. No member is fetched and nothing is built: an entry that is a
+ * target is its node, unbuilt, with what its rule states it passes on. Of
+ * entries claiming one name, a forced one (`!`) is the member; otherwise they
+ * are a conflict.
  */
 function resolveCatalog(context: TargetContext, side: UsedFor): Computable<ResolvedCatalog> {
   const markers: Markers = new Map();

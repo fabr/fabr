@@ -263,17 +263,17 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
     });
   }
 
-  /** Name the repository an image's name is in at the registry: a single-segment name in the default namespace. */
+  /** @return the repository an image's name is in at the registry: a single-segment name's in the default namespace. */
   private repositoryOf(image: string): string {
     return this.defaultNamespace !== undefined && !image.includes("/") ? `${this.defaultNamespace}/${image}` : image;
   }
 }
 
-/** Make the repository an `oci_repository` declaration declares. */
 /**
  * Make the repository an `oci_repository` declaration declares, or a namespace
- * makes with `url` and `credential`: its own `url` first, and a `credential` in
- * place of signing in with the auth files' (see RegistrySignIn).
+ * makes with `url` and `credential`: the declaration's `url` over the one
+ * given, and a `credential` in place of signing in with the auth files' (see
+ * {@link authFileSignIn}).
  */
 function createRepository(context: TargetContext, url?: string, credential?: Credential): Computable<Repository> {
   return Computable.forAll(

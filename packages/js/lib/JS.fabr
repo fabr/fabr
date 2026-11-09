@@ -672,7 +672,7 @@ default js_script JS_VITEST_RUNNER {
 }
 
 #
-# How the js target types are built, and the npm and Node.js repository types made.
+# How the js target types are built, and the npm, Node.js and browser repository types made.
 #
 rule js_package pkg<BUILD_OPERATION=build> = @fabr-build/js:rules/BuildJSPackage;
 rule js_package pkg<BUILD_OPERATION=run> = @fabr-build/js:rules/RunJSPackage;

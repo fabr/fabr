@@ -147,10 +147,10 @@ export function sassSourceOutputs(path: string, sourceMaps = false): ISassSource
 }
 
 /**
- * Name every output the postcss step produces for one stylesheet input.
- * `carriedMaps` is the step's map inputs: a plain stylesheet that arrived with
- * one (a lowered Sass source) carries it through; one that arrived without (an
- * authored `.css`, copied verbatim) has no transform for a map to describe.
+ * Name every output the postcss step produces for one stylesheet input: its
+ * css, and with `sourceMaps` its map. `carriedMaps` is the step's map inputs: a
+ * stylesheet that arrived with one (a lowered Sass source) has it as the map
+ * its own map composes onto (`prev`).
  */
 export function postcssSourceOutputs(path: string, packageName: string, sourceMaps = false, carriedMaps?: ReadonlySet<string>): IPostcssSource {
   const scope = cssScopeDigest(packageName, path);
@@ -180,7 +180,8 @@ export function postcssSourceOutputs(path: string, packageName: string, sourceMa
  * Lower (and scope) the classified stylesheet bucket: the `sass_compile`
  * sub-target lowers the Sass sources (partials staged, never listed), then the
  * `css_postcss` sub-target runs the postcss chain over the lowered tree plus
- * the authored plain CSS — scoping the css-modules, publishing everything.
+ * the authored plain CSS — scoping the css-modules and prefixing every
+ * stylesheet for `BROWSER_TARGET`.
  * `deps` are the packages Sass `@use`/`@import` may load from, answered by the
  * driver's importer from the dependency table; `packageName` is the identity
  * scoped names are derived from. Builds under BUILD_OPERATION=build — lowering

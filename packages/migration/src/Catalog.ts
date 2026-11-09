@@ -133,8 +133,8 @@ export function highest(versions: Iterable<string>): string | undefined {
   return [...versions].sort((a, b) => compareVersions(parseVersion(a), parseVersion(b))).pop();
 }
 
-/** The name a package writes a named pnpm catalog's version of `name` under,
- * where it differs from the default catalog's. */
+/** @return the name a package writes a named pnpm catalog's version of `name`
+ * under, where it differs from the default catalog's. */
 export function namedCatalogAddress(name: string, catalog: string): string {
   return `${name}-${catalog}`;
 }
@@ -148,8 +148,8 @@ export interface CatalogAddress {
  * Build the catalog of `workspace` from what its manifests declare (the root's
  * first, then each workspace package's), its pnpm catalogs and its overrides, and say
  * where each package's registry dependencies are in it. `addressOf(manifest,
- * name)` is defined after: a dependency the catalog holds no entry for is
- * reported here.
+ * name)` is undefined for a dependency the catalog holds no entry for, which
+ * is reported here.
  */
 export function buildCatalog(
   workspace: Workspace,
@@ -168,7 +168,7 @@ export function buildCatalog(
     return version === undefined ? undefined : `^${version}`;
   };
 
-  /* Each entry a manifest states: an address -> the entry, a higher floor in
+  /* Record an entry a manifest states under its address, a higher floor in
    * one major replacing a lower. */
   const offer = (address: string, packageName: string, range: string, from: string): void => {
     const held = catalog.entries.get(address);
@@ -270,8 +270,9 @@ export function buildCatalog(
  * Apply the project's overrides to `catalog`. An override is a substitution,
  * fabr's `!`, and is written as one where it says the same thing: it is not
  * scoped to a path or a range, its value is an exact version, and it is the
- * only override of its package. Any other is an ordinary floor on the
- * package where the catalog has no entry for it.
+ * only override of its package. Any other is a floor on the package: its
+ * entry where the catalog has none, else, unscoped, a raise of the entry's
+ * floor; any other override is reported and left out.
  */
 function applyOverrides(workspace: Workspace, catalog: Catalog, report: Report): void {
   const count = new Map<string, number>();

@@ -66,8 +66,8 @@ export function npmPurl(purl: string): { name: string; version: string } | undef
   return match === null ? undefined : { name: decodeURIComponent(match[1]), version: decodeURIComponent(match[2]) };
 }
 
-/** Collect the floorless-required packages a resolution failure carries, and
- * whether it carries anything else. */
+/** Collect into `found` the floorless-required packages a resolution failure carries.
+ * @return true if it carries any other failure, otherwise false. */
 function floorlessOf(err: unknown, found: Set<string>): boolean {
   if (err instanceof MultiError) {
     return err.errors.map(each => floorlessOf(each, found)).some(Boolean);

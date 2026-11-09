@@ -6,7 +6,7 @@
 # stage, the one published, does.
 fabr_plugin @fabr-build/java {
   srcs = src:**/*.ts ../../README.md -> README.md ../../COPYING -> LICENSE;
-  # The entry point, and the modules JAVA.fabr's rule and repository declarations name.
+  # The modules JAVA.fabr's rule and repository declarations name.
   exports = src:rules/!(*.test).ts src:MavenRepository.ts src:JdkDistribution.ts;
   tests = src:**/*.test.ts;
   deps = @pkg:@types/node @pkg:fast-xml-builder @pkg:sax;

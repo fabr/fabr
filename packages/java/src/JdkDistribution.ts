@@ -26,7 +26,7 @@
  * checked against the digest the API states. Nothing is selected or
  * resolved; `@jdk` on its own lists the releases.
  *
- * Run, a release offers each command in its home's `bin/` by name
+ * Under `run`, a release offers each command in its home's `bin/` by name
  * (`@jdk:17.0.12+7:javac`), wherever the home is (`Contents/Home/` on macOS),
  * and on Windows without its `.exe`.
  */
@@ -210,7 +210,7 @@ export class JdkDistribution implements Repository, RepositoryLookup {
       .then(files => (this.context.operation === "run" ? makeJdkRunnable(files) : files));
   }
 
-  /** Name the target platform as the Adoptium API does: `mac`/`linux`/`alpine-linux`/`windows`, `x64`/`aarch64`. */
+  /** Get the target platform as the Adoptium API names it: `mac`/`linux`/`alpine-linux`/`windows`, `x64`/`aarch64`. */
   private platform(): Computable<Platform> {
     return this.context.getGlobalString(TARGET).then(triple => {
       const { os, cpu, libc } = tripleToNpm(triple);

@@ -27,7 +27,7 @@ export const CATALOG_FILE = "CATALOG.fabr";
 /** The file a package's target is written to, in its directory. */
 export const BUILD_FILE = "BUILD.fabr";
 
-/** Code-unit order, the canonical one. */
+/** Compare `a` and `b` in code-unit order, the canonical one. */
 function byText(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }

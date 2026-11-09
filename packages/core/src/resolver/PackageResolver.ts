@@ -413,7 +413,7 @@ function buildOf(pkg: Package): string {
   return buildKey(configuration, hashString(content.key).slice(0, 8));
 }
 
-/** @return true if `pkg` may be a candidate of a resolution in `format`: a package built in the project declared in another format may not, otherwise false. */
+/** @return true if `pkg` may be a candidate of a resolution in `format`, otherwise false: a package built in the project declared in another format may not. */
 function inFormat(pkg: Package, format: object): boolean {
   const declared = pkg instanceof ResolvedNode ? pkg.content.declared : undefined;
   return declared === undefined || declared === "files" || declared.format === undefined || declared.format === format;
@@ -1479,9 +1479,9 @@ function lowerBound<V, C>(
 }
 
 /**
- * The files of the package a resolution's root is pinned to, with no
- * dependency closure: the version `resolution` bound `reference` to, fetched
- * alone, or given `operation`, what that version publishes for it. The pinned
+ * Fetch the files of the package a resolution's root is pinned to, with no
+ * dependency closure: the version `resolution` bound `reference` to, alone,
+ * or given `operation`, what that version publishes for it. The pinned
  * counterpart of {@link resolveBarePackage} and {@link resolvePublishedFor},
  * for a holder of a stored resolution (a catalog).
  */

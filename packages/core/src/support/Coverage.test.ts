@@ -18,7 +18,10 @@
  */
 
 import { expect } from "chai";
-import { coverageTotals, lcovOf, mergeCoverage, parseLcov } from "./Coverage";
+import { FileSet } from "../core/FileSet";
+import { MemoryFile } from "../core/MemoryFS";
+import { coverageTotals, getCoverageReports, lcovOf, mergeCoverage, parseLcov } from "./Coverage";
+import { COVERAGE_REPORT_FILENAME } from "./TestResult";
 
 const lcov = (source: string, lines: Array<[number, number]>, branches: Array<[string, number]> = [], fn = 1): string =>
   [
@@ -85,5 +88,13 @@ describe("coverage merging", () => {
         "",
       ].join("\n")
     );
+  });
+
+  it("reads every measured target's document among a name's results", async () => {
+    const measured = (text: string): FileSet => new FileSet(new Map([[COVERAGE_REPORT_FILENAME, MemoryFile.from(text)]]));
+    const first = lcov("./a.ts", [[1, 1]]);
+    const second = lcov("./b.ts", [[1, 0]]);
+    expect(await getCoverageReports([measured(first), new FileSet(new Map()), measured(second)])).to.deep.equal([first, second]);
+    expect(await getCoverageReports([new FileSet(new Map())])).to.deep.equal([]);
   });
 });

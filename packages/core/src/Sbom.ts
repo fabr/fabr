@@ -123,8 +123,9 @@ export function cycloneDxNaming(purl: string): { group?: string; name: string } 
   return parts.length > 1 ? { group: parts.slice(0, -1).join("/"), name } : { name };
 }
 
-/** Name a package in the document: its purl, else its name and version, a
- * build with the configuration that tells it from the target's other builds. */
+/** @return the name of `pkg` in the document: its purl, else its name and
+ * version, a build's with the configuration that tells it from the target's
+ * other builds. */
 function referenceOf(pkg: Package): string {
   const purl = pkg.version === undefined || builtInProject(pkg.origin) ? undefined : purlOf(pkg.origin, pkg.packageName, pkg.version);
   if (purl !== undefined) {

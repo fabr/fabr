@@ -43,7 +43,7 @@ import { DEFAULT_REGION, IAccountSettings } from "./Types";
 export const REPOSITORY_TYPES = "AWS_REPOSITORY_TYPES";
 
 /**
- * What an `aws_account` declaration is: a namespace of the account's
+ * An `aws_account` declaration, as the namespace of the account's
  * services, each a repository of its own (`s3`, `ecr`) or a namespace of them
  * (`codeartifact`), and of other accounts' resources, by their IDs
  * (`111122223333`), reached with this account's credentials. ECR's registry

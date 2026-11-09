@@ -64,10 +64,8 @@ import { OCI_TARGET, ociPlatformOf } from "../OciRepository";
  * layer of `files` above them, with the target's settings applied to the
  * base's config. The base is what the image passes on: an image holds its
  * base, so what requires the image requires the base. Its `files` are resolved
- * for the image's platform, the C library the base has filled in, so native
- * packages are chosen for it: found along the chain of bases to the first one
- * pulled from a registry, which is fetched to read it, a base built in the
- * project never built for it.
+ * for the image's platform, with the C library the base has filled in (see
+ * {@link baseLibc}).
  */
 export default defineRule({
   requirements(context) {
@@ -137,7 +135,7 @@ function setsMoreThanBuild(settings: IImageSettings): boolean {
   return settings.entry !== undefined || settings.args.length > 0 || settings.workdir !== undefined || settings.user !== undefined || settings.ports.length > 0 || settings.metadata.length > 0;
 }
 
-/** @return the container engine `engine` is as the one file named `engine`. */
+/** @return the install holding `engine`'s one program, named `engine`. */
 function engineProgram(target: string, engine: RunnableFileSet): FileSet {
   const files = [...engine].map(([, file]) => file);
   if (files.length !== 1 || !(files[0] instanceof HostLink)) {
@@ -209,7 +207,7 @@ export function contentsTriple(target: string, libc: ImageLibc | undefined): str
   return target;
 }
 
-/** Build the image: write `files` as a layer above `base`'s and apply the settings to its config, as records. */
+/** Build the image as records: write `files`, or what the build command changed, as a layer above `base`'s, and apply the settings to its config. */
 function runImage(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
   const base = fileSetInput(action, "base");
   const files = fileSetInput(action, "files");

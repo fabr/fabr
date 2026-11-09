@@ -633,10 +633,10 @@ export function completionsAt(model: BuildModel, text: string, offset: number, f
   }
 }
 
-/** Where in a build file's grammar a place is, as far as the text before it says. */
 /** The rule whose block a place is in: its parameter, and the type it is for, if it is for one. */
 type RuleScope = { parameter: string; type?: string };
 
+/** Where in a build file's grammar a place is, as far as the text before it says. */
 type TypingContext =
   | { kind: "substitution" }
   | { kind: "value"; rule?: RuleScope }

@@ -22,7 +22,7 @@
  * vocabulary — target types, config properties, flags) and writes the Markdown
  * reference pages into the given output directory, each at its place in the site
  * under `content/` — one per source package (core, the JS plugin, the Java
- * plugin, the AWS plugin), and beside a plugin's page one for its optional libs — with
+ * plugin, the container plugin, the AWS plugin), and beside a plugin's page one for its optional libs — with
  * `reference-pages.json`, the sidebar entry of each. Compiled and launched by fabr
  * as a TypeScript js_script (the `gendoc` target); the pages are `.md`, not
  * `.mdx`, because the doc-comment prose contains `{ ... }` which MDX would parse
@@ -140,7 +140,8 @@ const GROUPS: Group[] = [
       "The target types, configuration properties, and flags that ship in fabr's core (`STD.fabr`) and are",
       "always available, independent of any language plugin. Ecosystem-specific definitions (like",
       "`js_package`) come from plugins — see [JavaScript targets and configuration](/reference/js/targets/),",
-      "[Java targets and configuration](/reference/java/targets/) and [AWS targets and",
+      "[Java targets and configuration](/reference/java/targets/), [Container targets and",
+      "configuration](/reference/container/targets/) and [AWS targets and",
       "configuration](/reference/aws/targets/).",
       "",
       "This page is generated from `fabr list-all`, so it never drifts from the code.",
@@ -193,6 +194,21 @@ const GROUPS: Group[] = [
         "This page is generated from `fabr list-all`, so it never drifts from the code.",
       ],
     },
+  },
+  {
+    link: "/reference/container/targets/",
+    section: "Container reference",
+    label: "Targets & configuration",
+    title: "Container targets and configuration",
+    description: "The target types and configuration from the @fabr-build/container plugin.",
+    intro: [
+      "The target types and configuration properties contributed by the `@fabr-build/container` plugin",
+      "(`plugin @fabr-build/container;`), which builds, pulls, pushes and runs OCI container images.",
+      "Core definitions (like `sync`) are in [Core targets and configuration](/reference/standard-rules/).",
+      "",
+      "This page is generated from `fabr list-all`, so it never drifts from the code.",
+    ],
+    plugin: "@fabr-build/container",
   },
   {
     link: "/reference/aws/targets/",

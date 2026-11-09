@@ -146,7 +146,7 @@ function selfReferencePaths(packageName: string): Record<string, string[]> {
   return { [packageName]: ["./src/index"], [`${packageName}/*`]: ["./src/*"] };
 }
 
-/** The `lib` list: the source level, plus the DOM where the sources use it,
+/** @return the `lib` list: the source level, plus the DOM where the sources use it,
  * its iterables included (TypeScript 6 merged `dom.iterable` into `dom`, leaving
  * the name an empty stub; before 6 it is a lib of its own). */
 function libFor(level: string, hasDom: boolean): string[] {
@@ -533,14 +533,11 @@ function compileAction(
       label: "compile",
       config,
       /* The four locations the argv above names, so the step stages and
-       * collects the files the driver was told to use. The compile reads
-       * a handful of declaration files out of a whole closure and reports
-       * which, so the entry is keyed on that selection rather than on the
-       * whole deps input — editing a dependency this compile never opened
-       * then costs nothing. And it compiles incrementally: handed the last
-       * green build of this target key — its state, its output, and what
-       * changed since — the driver plans for itself and checks and emits
-       * only what the change reaches. */
+       * collects the files the driver was told to use. The driver reports
+       * which declaration files it read, and the entry is keyed on that
+       * selection rather than on the whole deps input. Handed the last green
+       * build of this target key — its state, its output, and what changed
+       * since — it checks and emits only what the change reaches. */
       depsReport: DEPS_REPORT_FILE,
       stateDir: STATE_DIR,
       changes: CHANGES_FILE,

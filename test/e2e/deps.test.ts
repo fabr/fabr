@@ -85,6 +85,13 @@ describe("e2e: fabr deps", () => {
     expect(result.stderr).to.not.contain("Compiling");
   });
 
+  it("shows a target whose rule requires it under another operation by what it requires there", () => {
+    const result = deps("deps_lib<BUILD_OPERATION=run>");
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stdout).to.equal(["deps_lib<BUILD_OPERATION=run>", "deps", "└── deps_base<JS_TARGET=es2020>", ""].join("\n"));
+    expect(result.stderr).to.not.contain("Compiling");
+  });
+
   it("asks a target with no build rule under the operation it has", () => {
     const result = deps("deps_tool", "deps_base");
     expect(result.status, result.stderr).to.equal(0);

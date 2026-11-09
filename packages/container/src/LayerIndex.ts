@@ -26,9 +26,9 @@ export type LayerEntryType = "file" | "directory" | "symlink" | "hardlink" | "ot
 
 /**
  * One entry of a layer's tar, as its filesystem manifest records it: its path
- * (normalized, relative to the image's root), what it is, and its stored
- * metadata; a regular file also where its bytes are in the uncompressed tar,
- * their hash (as the blob pool names content) and their mime.
+ * (relative to the image's root, `.` and `..` collapsed), what it is, and its
+ * stored metadata; a regular file also where its bytes are in the uncompressed
+ * tar, their hash (as the blob pool names content) and their mime.
  */
 export interface ILayerEntry {
   readonly path: string;
@@ -220,7 +220,7 @@ function entryOf(h: IHeader): ILayerEntry {
   };
 }
 
-/** Normalize an entry's path, refusing one that leaves the tree; the root itself is the empty path. */
+/** Read an entry's path relative to the tree's root, `.` and `..` collapsed and a trailing `/` dropped, refusing one that leaves the tree; the root itself is the empty path. */
 function checkedPath(raw: string): string {
   const trimmed = raw.replace(/\/+$/, "");
   if (trimmed === "" || trimmed === ".") {

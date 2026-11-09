@@ -280,9 +280,9 @@ function preloadOptions(preloads: string[], update: boolean): { execArgv?: strin
   return {};
 }
 
-/** Select the tests run by name: node:test matches a nested test's full name,
- * its suites' names and its own joined by spaces, as jest and vitest do. Not
- * available before node 22, where a pattern is refused rather than ignored. */
+/** @return node:test's option selecting the tests run by name, which it matches
+ * against a nested test's full name, its suites' names and its own joined by
+ * spaces, as jest and vitest do. Throws for a pattern before node 22. */
 function namePatternOption(pattern: string | undefined): { testNamePatterns?: string[] } {
   if (pattern === undefined) {
     return {};

@@ -25,6 +25,8 @@ fabr_plugin @fabr-build/js {
   # (each driver itself requires its own from the tool install fabr stages,
   # never from here). The bundler's single-variant rule is a claim about what
   # esbuild does with a package's conditions, so only the real one can hold it.
+  # postcss and its plugins: the postcss driver's tests; the browser data: the
+  # browser repository's.
   # @yarnpkg/pnp: the PnP resolver is checked against Yarn's own runtime.
   # sass-embedded + the importer: the Sass driver's tests lower real stylesheets.
   test_deps = chai jest_types @pkg:typescript @pkg:esbuild @pkg:postcss @pkg:postcss-modules

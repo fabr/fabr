@@ -274,7 +274,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
       return { message: cause.message };
     }
     const written = closing.value.value.toString();
-    const shadowed = written !== cause.name;
+    const shadowed = written.startsWith(`${cause.name}:`);
     const reached = cause.entered;
     const notes =
       rest.length > 0

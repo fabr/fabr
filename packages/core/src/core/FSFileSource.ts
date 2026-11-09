@@ -430,8 +430,8 @@ export class FSFileSource implements FileSource {
    * Name.rebase and the resolver's filesystem arm). */
   public readonly root: string;
   /**
-   * When present, `find` results are *live*: a single {@link parcelWatcher}
-   * subscription over the source tree re-settles them as files change (batched
+   * When present, `find` results are *live*: the source's @parcel/watcher
+   * subscriptions ({@link subscriptions}) re-settle them as files change (batched
    * through the controller). Absent → one-shot enumeration, no watching. Fixed
    * at construction, so a source is watching-or-not for its whole life.
    */

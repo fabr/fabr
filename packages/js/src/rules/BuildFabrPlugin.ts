@@ -18,12 +18,11 @@
  */
 
 /**
- * The `fabr_plugin` target as a package: its base package (`srcs`) with its
- * `.fabr` files (`libs`) and further files (`resources`) added, named as the
- * target is, at the base package's version and with its requirements. Its
- * `package.json` is the base package's, named as the plugin and listing the
- * `libs` under `"@fabr-build/plugin"`, which marks it a plugin. This is the
- * plugin as it is published and installed.
+ * The `fabr_plugin` target as a package: the `js_package` it is, with its
+ * `.fabr` files (`libs` and `optional_libs`) added, at that package's name,
+ * version and requirements. Its `package.json` is the `js_package`'s, named as
+ * the plugin and listing the `.fabr` files under `"@fabr-build/plugin"`, which
+ * marks it a plugin. This is the plugin as it is published and installed.
  */
 
 import {

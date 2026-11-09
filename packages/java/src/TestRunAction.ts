@@ -45,7 +45,7 @@ import {
 
 /**
  * The step that runs a Java test suite: stage the install, run the runner once
- * on every test class, and deliver its CTRF report, and the coverage report
+ * on every test class, and collect its CTRF report, and the coverage report
  * of a measured run beside it. A run whose tests failed is a result like a
  * green one, and enters the cache: its report says what failed, and its task
  * ends as failed. A run that wrote no report fails with the runner's own output.

@@ -439,8 +439,7 @@ export class MockRegistry {
    *
    * The real module is loaded in isolation, as jest loads it: every module the
    * load adds to the cache of the loader it is loaded through is evicted once
-   * the metadata is taken. A
-   * module that imports this one back (a cycle) is then evaluated afresh when
+   * the metadata is taken. A module that imports this one back (a cycle) is then evaluated afresh when
    * the code under test requires it, bound to the mock rather than to the real
    * module the mock was taken from.
    */

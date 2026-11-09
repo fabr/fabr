@@ -98,7 +98,7 @@ const CLASSIFIERS = new Map([
 /** The operation that answers with each classifier's jar. */
 const OPERATIONS = new Map([...CLASSIFIERS].map(([operation, classifier]) => [classifier, operation]));
 
-/** @return the classifiers `auto_attach`, `value`, lists, each one a jar an operation answers with. */
+/** @return the classifiers `value`, a repository's `auto_attach`, lists, refusing any that is not a jar an operation answers with. */
 function autoAttachOf(repository: string, value: { toString(): string } | undefined): string[] {
   const classifiers = value === undefined ? [] : value.toString().split(/\s+/).filter(word => word !== "");
   const unknown = classifiers.find(classifier => !OPERATIONS.has(classifier));
@@ -216,7 +216,8 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
 
   /**
    * Vend the publish coordinate `name` names: `<group>:<artifact>:<version>`,
-   * the version exact, or `<group>:<artifact>:<classifier>:<version>`.
+   * the version exact, or with a variant, `<group>:<artifact>/<classifier>:<version>`
+   * (see {@link parseMavenPublishCoordinate}).
    */
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
     return new MavenPublishRef(this, parseMavenPublishCoordinate(name));
@@ -324,7 +325,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     return new FabrError(`${doing} ${this.url}/${path} failed (${response.statusCode})${detail === "" ? "" : `: ${detail}`}`);
   }
 
-  /** Name the environment a resolution for `operation` depends on: the Java
+  /** Get the environment a resolution for `operation` depends on: the Java
    * release and the usage, by which a package's requirements are selected. */
   public environmentKey(operation?: string): Computable<string> {
     const usage = usageFor(operation);

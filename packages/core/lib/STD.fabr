@@ -69,8 +69,9 @@ targetdef catalog {
 #         run = list_api --json | render_docs > reference.md;
 #     }
 #
-# Each command in `run` is a runnable target or package, never a program found
-# on the host. The commands run in a directory holding `srcs`.
+# Each command in `run` is a runnable target or package, or a program on your
+# machine named through `@host` (`@host:clang`). The commands run in a directory
+# holding `srcs`.
 #
 # The result is the files the redirections capture (`> name`). When `output` is
 # set, the result is instead the files it selects, from the captured files and

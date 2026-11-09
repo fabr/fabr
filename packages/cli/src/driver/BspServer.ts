@@ -135,7 +135,7 @@ export class BspServer {
   private names = new Map<string, string>();
   /** The describing task of a pass not yet finished. */
   private pass?: { id: string };
-  /** What serves the current model's descriptions: reseated by each `serve`, so a superseded model's detach. */
+  /** What serves the current model's descriptions: reseated by each `serve`, which detaches a superseded model's. */
   private readonly serving = new ComputableHandle<void>();
 
   /** Serve BSP over `connection`, for the project at `sourceRoot`, calling `end` when the client asks the server to exit. */
@@ -362,7 +362,7 @@ export class BspServer {
     return { originId, statusCode };
   }
 
-  /** Answer a request waiting for a model from none once one of `execution`'s cycles has ended without serving one. */
+  /** Answer the requests waiting for a model once one of `execution`'s cycles has ended, whether or not it served one. */
   public attach(execution: ExecutionContext): void {
     execution.onBuildEvent(event => {
       if (event.kind === "cycle-end") {

@@ -49,8 +49,8 @@ targetdef container_image {
     # Ports the image exposes: `8080`, or with its protocol, `53/udp`.
     ports = STRING;
     # A shell command run in `base` (`/bin/sh -c`), its changes a layer below
-    # `files`'s: `apt-get install -y …`. Its result is kept, not rebuilt from
-    # its inputs: a command reading the network may give another layer if run again.
+    # `files`'s: `apt-get install -y …`. It runs again only when `base`, the
+    # command, `env` or the platform changes; what it downloads is not tracked.
     build = STRING;
     # Facts about the image, written as its labels over the base's: OCI's keys
     # (`description`, `licenses`, `source`, `url`, `title`, `documentation`,
@@ -83,7 +83,7 @@ targetdef container_program {
 rule container_program c<BUILD_OPERATION=run> = @fabr-build/container:rules/RunContainerProgram;
 
 #
-# The container engine `fabr run` of an image runs it with: Docker, or podman
+# The container engine that runs images and build commands: Docker, or podman
 # (`@host:podman`), whose commands are the same.
 #
 default CONTAINER_ENGINE = @host:docker;

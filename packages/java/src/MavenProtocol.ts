@@ -24,7 +24,7 @@
  * how a target building one is named. A reference may be written that way or
  * as Maven writes a coordinate: `@mvn:org.slf4j/slf4j-api:1.7.36` and
  * `@mvn:org.slf4j:slf4j-api:1.7.36` are the same reference, and anything
- * after the version is a projection into the package. Run, a package starts
+ * after the version is a projection into the package. Under `run`, a package starts
  * the `Main-Class` its jar's manifest names.
  */
 
@@ -32,7 +32,7 @@ import { Computable, FabrError, IProjection, markerOnProjection, Name, PackageFo
 import { jarMainClass, makeJarRunnable } from "./JarPackage";
 import { MAVEN_VERSIONS, MavenConstraint, MavenVersion } from "./MavenVersion";
 
-/** Name a Maven package as fabr does: `group/artifact`. */
+/** @return a Maven package's name as fabr writes it: `group/artifact`. */
 export function mavenName(groupId: string, artifactId: string): string {
   return `${groupId}/${artifactId}`;
 }
@@ -88,8 +88,8 @@ function splitMavenReference(name: Name): Requirement & { projection?: IProjecti
 /**
  * Split an artifact as a reference writes it, `<artifact>/<classifier>`,
  * `<artifact>/<classifier>@<extension>` or `<artifact>@<extension>` where it
- * names a file other than the version's artifact: @return the artifact, and
- * the rest as the requirement's variant (`linux-x86_64`, `bin@zip`, `@zip`).
+ * names a file other than the version's artifact, into the artifact and the
+ * rest, the requirement's variant (`linux-x86_64`, `bin@zip`, `@zip`).
  */
 function splitClassifier(written: string): { artifactId: string; variant: { variant?: string } } {
   const at = written.indexOf("@");
@@ -102,8 +102,8 @@ function splitClassifier(written: string): { artifactId: string; variant: { vari
 }
 
 /**
- * Read a Maven variant: @return the classifier it names, if any, and the
- * extension of its file, `jar` where it names none.
+ * Read a Maven variant as the classifier it names, if any, and the extension
+ * of its file, `jar` where it names none.
  */
 export function mavenVariantOf(variant: string): { classifier?: string; extension: string } {
   const at = variant.indexOf("@");
@@ -155,9 +155,11 @@ export function parseMavenPublishCoordinate(name: Name): { name: string; version
     /* A fourth part is read as a classifier elsewhere: say how fabr writes one. */
     const tail = projection?.prefix === "" ? projection.pattern.getSimpleName() : undefined;
     const classified = version !== undefined && tail !== undefined && !/[:/]/.test(tail);
+    /* Either order may be meant: `g:a:sources:1.0.0`, or Gradle's `g:a:1.0.0:sources`. */
+    const [classifier, written] = classified && /^\d/.test(version) && !/^\d/.test(tail) ? [tail, version] : [version, tail];
     throw new FabrError(`publish coordinate '${literal}' must name a group, an artifact and a version (com.example:app:1.0.0)`).withHelp(
       classified
-        ? `a classifier follows the artifact: write '${packageName.replace("/", ":")}/${version}:${tail}'`
+        ? `a classifier follows the artifact: write '${packageName.replace("/", ":")}/${classifier}:${written}'`
         : "a classifier follows the artifact, as in com.example:app/sources:1.0.0"
     );
   }

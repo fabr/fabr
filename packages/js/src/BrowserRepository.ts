@@ -97,9 +97,9 @@ function compareCaniuse(a: string, b: string): number {
  * Make the browser data from Can I Use's `agents` and Baseline's versions by
  * year: every released, numbered version of each browser, and each year from
  * 2015 to the last year a browser release falls in that Baseline gives
- * versions for. A version a Baseline year
- * names is a version of its browser, whether or not Can I Use lists it (Can I
- * Use lists only the current Android releases).
+ * versions for. A version a Baseline year names is a version of its browser,
+ * whether or not Can I Use lists it (Can I Use lists only the current Android
+ * releases).
  */
 export function browserDataOf(agents: ICaniuseAgents, baselineVersions: IBaselineVersions): IBrowserData {
   const browsers = new Map<string, string[]>();
@@ -162,7 +162,7 @@ function caniuseOf(text: string): string {
   return written === "" || written === "0" ? ALL : written;
 }
 
-/** The newest version a semver constraint admits, or undefined where it admits ever newer ones. */
+/** @return the newest version a semver constraint admits, or undefined where it admits ever newer ones. */
 function newestOf(constraint: SemverConstraint): SemverVersion | undefined {
   let newest: SemverVersion | undefined;
   for (const range of constraint.ranges) {
@@ -238,10 +238,10 @@ function validateBrowserRequirement({ name, versionConstraint }: Requirement): v
 }
 
 /**
- * Write the browsers `packages` reach as a browserslist query, each by the
- * lowest version selected for it (`safari >= 17.2, chrome >= 120`), or as `op_mini all` where
- * that version is Can I Use's `all`; `baseline`
- * names no browser and is left out, as are the browsers of nothing. Sorted.
+ * Write the browsers `packages` reach as a browserslist query, sorted, each by
+ * the lowest version selected for it (`safari >= 17.2, chrome >= 120`), or as
+ * `op_mini all` where that version is Can I Use's `all`; `baseline` names no
+ * browser and is left out.
  */
 export function browserQueryOf(packages: ReadonlyArray<PackageFileSet>): string {
   const lowest = new Map<string, string>();
@@ -318,7 +318,7 @@ export class BrowserRepository implements Repository, RepositoryReader<SemverVer
     throw new FabrError(`${this.name} cannot be published to`);
   }
 
-  /** A browser is the same whatever the build's platform. */
+  /** @return the empty key: a browser is the same whatever the build's platform. */
   public environmentKey(): Computable<string> {
     return Computable.resolve("");
   }
@@ -400,10 +400,10 @@ function createRepository(context: TargetContext): Computable<Repository> {
       return Computable.forAll(
         [context.execution.buildCache.ensureTree(caniuse.files), context.execution.buildCache.ensureTree(mapping.files)],
         (caniuseDir: string, mappingDir: string) => {
-          /* Loaded from where the pool holds them: they are the data packages
-           * the project pins, not any copy installed with fabr. The agents table
-           * alone, by its own module: the package's index also loads every
-           * feature's data, some six hundred modules the repository reads none of. */
+          /* Loaded from where the pool holds them: the data packages the
+           * project pins, not a copy installed with fabr. Only the agents
+           * table's own module: the package's index also loads every feature's
+           * data, which the repository does not read. */
           /* eslint-disable @typescript-eslint/no-var-requires */
           const { agents } = require(path.resolve(caniuseDir, "dist/unpacker/agents")) as { agents: ICaniuseAgents };
           const { getCompatibleVersions } = require(path.resolve(mappingDir)) as {

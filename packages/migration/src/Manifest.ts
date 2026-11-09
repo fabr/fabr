@@ -74,7 +74,8 @@ export function readManifest(root: string, dir: string): Manifest {
   };
 }
 
-/** @return every dependency `manifest` declares, name -> spec, a peer last. */
+/** @return every dependency `manifest` declares, name -> spec, each as the first
+ * block declaring it writes it (peers last). */
 export function declaredDependencies(manifest: Manifest): Map<string, string> {
   const all = new Map<string, string>();
   for (const block of DEPENDENCY_BLOCKS) {

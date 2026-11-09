@@ -115,7 +115,7 @@ function start(context: vscode.ExtensionContext): void {
   }
 }
 
-/** What pointing the `tsdk` came to, once this activation has: see {@link pointTsdk}. */
+/** The outcome of pointing the `tsdk`, once this activation has started to: see {@link pointTsdk}. */
 let pointing: Promise<boolean> | undefined;
 
 /**

@@ -112,7 +112,7 @@ export class LanguageServer {
     return { log: (diagnostic, params) => collectingLog(this.sourceRoot, log, this.reported).log(diagnostic, params) };
   }
 
-  /** Publish the diagnostics of each of `execution`'s cycles as it ends, a request waiting for a model answered from none once one has. Subscribes once, however often called. */
+  /** Publish the diagnostics of each of `execution`'s cycles as it ends, and answer the requests waiting for a model, from none where none has loaded, once one has ended. Subscribes once, however often called. */
   public attach(execution: ExecutionContext): void {
     if (this.execution === execution) {
       return;
@@ -308,7 +308,7 @@ function offsetOf(text: string, position: IPosition): number {
   return Math.min(offset + position.character, text.length);
 }
 
-/** Make the LSP `DocumentSymbol` for `symbol`, what it holds beneath it. */
+/** Make the LSP `DocumentSymbol` for `symbol`, with what it holds beneath it. */
 function documentSymbol(symbol: IBuildFileSymbol): Record<string, unknown> {
   return {
     name: symbol.name,

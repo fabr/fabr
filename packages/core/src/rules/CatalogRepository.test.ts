@@ -2166,7 +2166,7 @@ describe("CatalogRepository (through the model)", () => {
       pkg.dependencies.map(dep => (dep.package ? dep.package.packageId : `ref:${dep.reference.toString()}`));
     const dependency = (pkg: PackageFileSet, name: string): PackageFileSet | undefined => pkg.getDependency(name)?.package as PackageFileSet | undefined;
     const text = (pkg: FileSet, name: string): Promise<string> => Promise.resolve(pkg.getFile(name)!.readString());
-    /** The message deepest down a failure's chain of causes, or "" where it succeeded. */
+    /** @return the message deepest down `run`'s chain of causes where it fails, or "" where it succeeds. */
     const outcomeOf = async (run: Computable<unknown>): Promise<string> => {
       try {
         await Promise.resolve(run);

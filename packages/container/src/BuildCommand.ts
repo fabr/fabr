@@ -71,7 +71,7 @@ export function changedPaths(diff: string): IChangedPaths {
     }
   }
   const paths = [...kinds.keys()].sort();
-  /* Whether an ancestor of `p` was changed as `kind` says. */
+  /* @return true if an ancestor of `p` was changed as `kind` says, otherwise false. */
   const under = (p: string, kind: string): boolean => {
     for (let at = path.posix.dirname(p); at !== "/" && at !== "."; at = path.posix.dirname(at)) {
       if (kinds.get(at) === kind) {
@@ -99,12 +99,12 @@ export interface IBuildCommand {
 
 /**
  * Run `command` in `base` with the container engine, and write what it
- * changed as a layer under `dir`: loaded into the engine where it lacks the
- * base, run in a container named for this process (and those dead runs left
- * removed first), then each changed path
- * copied out and written, with a whiteout per deletion, owners and modes kept
- * and times fixed, indexed as it is written. The container is removed whatever
- * happens. The command's output is the step's.
+ * changed as a layer under `dir`: the base loaded into the engine where the
+ * engine lacks it, the command run in a container named for this process (the
+ * containers dead runs left removed first), then each changed path copied out
+ * and written, with a whiteout per deletion, owners and modes kept and times
+ * fixed, indexed as it is written. The container is removed whatever happens.
+ * The command's output is the step's.
  */
 export function runBuildCommand(
   ctx: ActionContext,

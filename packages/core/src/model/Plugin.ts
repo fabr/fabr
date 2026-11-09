@@ -406,7 +406,7 @@ export function pluginLibsOf(libs: FileSet[], optionalLibs: FileSet[]): PluginLi
  */
 export function pluginPackageJson(base: IFile | undefined, name: string, { libs, optionalLibs }: PluginLibs): Computable<IFile> {
   if (base === undefined) {
-    throw new FabrError(`a 'fabr_plugin' target's 'srcs' is a package with a ${MANIFEST}`);
+    throw new FabrError(`the package fabr_plugin '${name}' builds has no ${MANIFEST}`);
   }
   return base.readString().then(text => {
     const manifest = { ...parseJson(text, MANIFEST, toJsonObject), name, [PLUGIN_MANIFEST_FIELD]: { libs, ...(optionalLibs.length > 0 ? { optional_libs: optionalLibs } : {}) } };

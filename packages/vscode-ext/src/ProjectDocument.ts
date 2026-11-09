@@ -56,7 +56,7 @@ interface IUnitSummary {
   generated: string[];
 }
 
-/** A unit's pool trees, as its table writes their locations. */
+/** The prefix of a pool tree's location, as a unit's table writes it. */
 const POOL_PREFIX = "./.fabr-tree/";
 
 /** A unit, read from its description. */

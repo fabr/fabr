@@ -109,10 +109,9 @@ default flag java/no_parameters { }
 targetdef jar_package {
     # The Java sources.
     srcs = FILES;
-    # The packages the sources use, and `java<release>` flags. A BOM here
-    # (`@mvn:org.springframework.boot:spring-boot-dependencies:2.7.18`) gives
-    # the versions of the packages it manages where they are used, so those
-    # may be written without one (`@mvn:org.springframework.boot:spring-boot-starter-web`).
+    # The packages the sources use, and `java<release>` flags. A BOM here gives
+    # the versions of the packages it manages, which may then be written
+    # without one.
     deps = PACKAGES;
     # Packages the sources use that whatever runs the jar must provide, such as
     # the servlet API a container supplies. The jar does not carry them.
@@ -135,7 +134,7 @@ targetdef jar_package {
     processors = PACKAGES;
     # Files to put in the jar as they are, named as they are found on the
     # classpath (`application.properties`). A jar or zip among them is stored
-    # uncompressed, so that a nested jar can be read in place.
+    # uncompressed.
     resources = FILES;
     # The class the program starts in (`com.example.Main`), which the jar's
     # manifest names as its `Main-Class`: one of the jar's, or of a package it

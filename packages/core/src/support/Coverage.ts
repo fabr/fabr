@@ -23,7 +23,7 @@
  */
 
 import { Computable } from "../core/Computable";
-import { FileSet } from "../core/FileSet";
+import { FileSet, IFile } from "../core/FileSet";
 import { SourceRef } from "../core/Repository";
 import { COVERAGE_REPORT_FILENAME } from "./TestResult";
 
@@ -186,16 +186,17 @@ export function coverageTotals(coverage: Iterable<ICoverageRecord>): { lines: IC
 }
 
 /**
- * Get the lcov document a measured test target delivered beside its report, or
- * undefined where it delivered none.
+ * Get the lcov documents the measured test targets among `sources` produced
+ * beside their reports, one per target; empty where none produced one.
  */
-export function getCoverageReport(sources: SourceRef[]): Computable<string | undefined> {
+export function getCoverageReports(sources: SourceRef[]): Computable<string[]> {
   const sets = sources.filter((source): source is FileSet => source instanceof FileSet);
   return Computable.forAll(
     sets.map(set => set.get(COVERAGE_REPORT_FILENAME)),
-    (...files): Computable<string | undefined> | undefined => {
-      const file = files.find(f => f !== undefined);
-      return file && file.getBuffer().then(buffer => buffer.toString("utf8"));
-    }
+    (...files): Computable<string[]> =>
+      Computable.forAll(
+        files.filter((file): file is IFile => file !== undefined).map(file => file.getBuffer()),
+        (...buffers: Buffer[]) => buffers.map(buffer => buffer.toString("utf8"))
+      )
   );
 }

@@ -229,13 +229,12 @@ export function hasTestFailures(output: FileSet): Computable<boolean> {
 }
 
 /**
- * @return the test report of what a name delivered: one source's report as it
- * is, several sources' (a name listing several test targets) merged, or
- * `undefined` if none produced a report artifact at all (rendered as "no
- * tests"). A report that IS present but cannot be parsed — malformed JSON, or
- * valid JSON that isn't a recognizable CTRF report — is a genuine failure and
- * rejects, rather than being silently swallowed as "no tests": a corrupt report
- * is a real problem worth surfacing.
+ * @return the test report among `sources`, what a name was built to: one
+ * source's report as it is, several sources' (a name listing several test
+ * targets) merged, or `undefined` if none produced a report artifact at all
+ * (rendered as "no tests"). A report that IS present but cannot be parsed —
+ * malformed JSON, or valid JSON that isn't a recognizable CTRF report —
+ * rejects.
  */
 export function getTestReport(sources: SourceRef[]): Computable<ITestReport | undefined> {
   const sets = sources.filter((source): source is FileSet => source instanceof FileSet);

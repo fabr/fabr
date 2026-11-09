@@ -68,7 +68,7 @@ fi
 exec "$here/${ENGINE_COMMAND}" run --rm --init -i --name "$name" "$@"
 `;
 
-/** Remove the launch's container, whether or not it is still running: what the runnable's teardown runs. */
+/** The runnable's teardown: the command removing the launch's container, whether or not it is still running. */
 const TEARDOWN: readonly RunnableArgument[] = ["/bin/sh", "-c", 'exec "$0" rm -f "fabr-$FABR_LAUNCH" >/dev/null 2>&1', [{ installPath: ENGINE_COMMAND }]];
 
 /** How a program runs its image: the engine's options for the run, and its arguments. */
@@ -131,13 +131,13 @@ function exposedPorts(image: ImageFileSet): string[] {
   return exposed !== null && typeof exposed === "object" ? Object.keys(exposed).filter(port => /^\d+\/(tcp|udp|sctp)$/.test(port)).sort() : [];
 }
 
-/** Reap what dead runs left in the engine `engine` is, where it is a program of this host. */
+/** Reap the containers dead runs left in `engine`, where it is a program of this host. */
 function reapEngine(limit: Semaphore, engine: RunnableFileSet): Computable<void> {
   const [program] = [...engine].map(([, file]) => file);
   return program instanceof HostLink ? reapContainers(limit, program.location, hostEnvironment()) : Computable.resolve(undefined);
 }
 
-/** @return the container engine `engine` is as the one file of the install named `engine`. */
+/** @return the install holding `engine`'s one program, named {@link ENGINE_COMMAND}. */
 function engineProgram(name: string, engine: RunnableFileSet): FileSet {
   const files = [...engine].map(([, file]) => file);
   if (files.length !== 1) {

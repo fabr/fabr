@@ -1088,8 +1088,8 @@ export function installResolution(
  * relative form of an import of the compile's own package. */
 export interface IInstalledResolution {
   finishDiagnostics(diagnostics: readonly Diagnostic[], file?: SourceFile): readonly Diagnostic[];
-  /** Forget every lookup's answer, so the next asks the files again: what a
-   * language service does when its files may have changed. */
+  /** Forget every lookup's answer, so the next asks the files again; a language
+   * service calls it when its files may have changed. */
   invalidate(): void;
   packageSpecifier(specifier: string, containingFile: string): string | undefined;
   ownSpecifier(specifier: string, containingFile: string): string | undefined;
@@ -3161,10 +3161,10 @@ function withDeclarationChanges(
 
 /**
  * @return true if the changes `plan` starts from can reach a file this compile
- * checks, otherwise false. A declared source passes a change on only where its
- * declaration moved, so they can wherever there is no bound, a deletion, or a
- * seed that is no declared source, whose declaration moved, that the memo does
- * not know, or that affects global scope.
+ * checks, otherwise false: they can wherever there is no bound, a deletion, or
+ * a seed that is not a declared source, whose declaration moved, that the memo
+ * does not know, or that affects global scope (a declared source passes a
+ * change on only where its declaration moved).
  */
 function reachesCheckedFiles(plan: ICompilePlan, declared: ReadonlyMap<string, string>, moved: ReadonlySet<string>): boolean {
   return (

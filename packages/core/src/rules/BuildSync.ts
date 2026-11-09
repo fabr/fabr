@@ -33,11 +33,9 @@ import { DependencyFailedError, NameResolutionError } from "../model/Errors";
 import { RuleImplementation, RuleResult } from "./Types";
 
 /**
- * The `sync` rule. There is no files rule of its own: packaging IS the fileset,
- * so there is nothing a files view could skip, and the generic files rule (a
- * build passthrough) serves it — which is what makes `fabr cat
- * release/@npm/x/1.0.0/package.json` and the same reference written in a build
- * script name the same thing.
+ * The `sync` rule. Under `files` the generic files rule hands back its build,
+ * so `fabr cat release/@npm/x/1.0.0/package.json` names the same file as that
+ * reference written in a build file.
  */
 export default {
   /* Each member's content is a requirement keyed by {@link Member.content},

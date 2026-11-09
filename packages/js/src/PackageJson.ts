@@ -837,10 +837,9 @@ export function rewriteManifest(
 /**
  * Rewrite one dependency block's co-member entries, by the package each names
  * (its key, or the package an alias names), to the members' assigned versions.
- * A `peerDependencies` entry pins **exact**: a peer is singleton-by-identity (a `provided_deps` peer), so the consumer must supply the EXACT
- * co-member instance the package was built against, not merely a semver-compatible
- * one — a range can't express "the same loaded module". Every other field takes a
- * caret range.
+ * A `peerDependencies` entry (a `provided_deps` peer) pins **exact**: the
+ * consumer must supply the co-member instance the package was built against.
+ * Every other field takes a caret range.
  */
 function rewriteCoMemberField(
   deps: Record<string, unknown>,
@@ -880,8 +879,7 @@ export function memberDependencies(manifest: Record<string, unknown>, memberName
 /**
  * List the install-relevant dependencies of a rewritten manifest that remain
  * unresolvable — a `*` constraint after co-member rewriting, as the entry's own or
- * an alias's. A
- * built-but-versionless dep declares `*` (its version exists only at publish);
+ * an alias's. A built-but-versionless dep declares `*` (its version exists only at publish);
  * if the sync doesn't publish it (or publishes it at several versions, so no
  * single rewrite exists), the `*` survives to here — and a published package
  * with an unconstrained dependency is broken for every consumer, so the caller

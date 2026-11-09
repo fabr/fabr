@@ -18,10 +18,11 @@
  */
 
 /**
- * `host_searchpath`: the programs of the machine fabr runs on, used where they lie. A
- * reference names a program as a shell would run it — a command searched for
- * on PATH (`@host:clang`), or an absolute path — and is answered with that program as a runnable, identified by its content: what
- * enters a key is the program's hash, never its path (see {@link HostLink}).
+ * `host_searchpath`: the programs of the machine fabr runs on, used where they
+ * lie. A reference names a program as a shell would run it — a command
+ * searched for on PATH (`@host:clang`), or an absolute path — and is answered
+ * with that program as a runnable, identified by its content: what enters a key
+ * is the program's hash, never its path (see {@link HostLink}).
  *
  * Only the program named is identified. What it runs in turn — a compiler's
  * assembler and linker, the headers and libraries it reads — is not, so a
@@ -119,7 +120,7 @@ function commandOf(name: string): string {
   return path.posix.basename(name);
 }
 
-/** Register the `host_searchpath` repository type. */
+/** @return the registration of the `host_searchpath` repository type. */
 export function hostSearchPathRegistration(): RepositoryRegistration {
   return {
     type: "host_searchpath",

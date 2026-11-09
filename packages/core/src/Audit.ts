@@ -77,7 +77,7 @@ export interface AuditedPackage {
   readonly paths: ReadonlyArray<AuditedPath>;
 }
 
-/** A package as a path names it. */
+/** @return `pkg` as a path names it. */
 function pathName(pkg: Package): string {
   return pkg.version === undefined ? pkg.packageName : `${pkg.packageName}@${pkg.version}`;
 }
@@ -397,8 +397,9 @@ export function fixedVersions(advisory: Advisory, pkg: AuditedPackage): string[]
     .map(each => each.text);
 }
 
-/** The level a result is reported at, by the database's rating: the worst two
- * are errors, the next warnings, the least notes, an unrated one a warning. */
+/** @return the level a result for `advisory` is reported at, by the database's
+ * rating: the worst two are errors, the next two warnings, the least a note, an
+ * unrated one a warning. */
 function sarifLevel(advisory: Advisory): ISarifResult["level"] {
   const rank = severityRank(advisory);
   return rank < 2 ? "error" : rank < 4 ? "warning" : rank < SEVERITIES.length ? "note" : "warning";

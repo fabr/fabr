@@ -163,7 +163,7 @@ export function parsePom(text: string, what: string): RawPom {
   };
 }
 
-/** Name a coordinate as Maven writes it: `group:artifact:version`. */
+/** @return a coordinate as Maven writes it: `group:artifact:version`. */
 export function coordinateText({ groupId, artifactId, version }: PomCoordinate): string {
   return `${groupId}:${artifactId}:${version}`;
 }

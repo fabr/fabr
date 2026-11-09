@@ -576,10 +576,8 @@ export interface CapturedOutput {
  * `input` on its stdin, and return what it wrote and how it exited, whatever
  * that was: for a short host program whose answer fabr reads (a credential
  * helper's), never a build step's output, so kept nowhere — not in the
- * cache, not on screen. Its environment is `env` alone.
- * 
- * Note: this is not hermetic by design - it's intended for eg auth helpers
- * where we specifically don't want to cache the result (and its allowed to change)
+ * cache, not on screen. Its environment is `env` alone. Not hermetic: its
+ * answer is cached nowhere, and may differ from one call to the next.
  */
 export function executeInternalCapture(limit: Semaphore, cmd: string, args: string[], input: string, env: Record<string, string>): Computable<CapturedOutput> {
   return limit.run(() =>

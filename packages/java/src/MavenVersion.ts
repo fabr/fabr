@@ -330,8 +330,8 @@ function minimumOf(constraint: MavenConstraint): MavenVersion {
 /** The qualifiers a stable release never carries. */
 const UNSTABLE = /(^|[.-])(alpha|beta|milestone|rc|cr|snapshot|ea|preview)|[.-]?(a|b|m)\d/i;
 
-/** Maven's versions: soft requirements are floors, and every delivery is flat
- *  (one version per package, as on a classpath). */
+/** Maven's versions: soft requirements are floors, and every installation is
+ *  flat (one version per package, as on a classpath). */
 export const MAVEN_VERSIONS: VersionDomain<MavenVersion, MavenConstraint> = {
   parseConstraint: parseMavenConstraint,
   unconstrained: { kind: "range", intervals: [{}] },

@@ -68,7 +68,7 @@ function blameFor(entry: NamespaceEntry): INamedDecl | NamespaceNode {
 export class NamespaceBuilder {
   private log: Log;
   private root: NamespaceNode;
-  /** Declarations superseded as they were added, validated with the rest by {@link resolve}. */
+  /** Declarations superseded as they were added, validated with the rest by {@link validate}. */
   private superseded: IResolvableDecl[] = [];
   /** Each file's private declarations, by the file's name. */
   private readonly scopes = new Map<string, NamespaceNode>();
@@ -117,7 +117,7 @@ export class NamespaceBuilder {
    * `default` one of the same key (they are different tiers). Across kinds the
    * tiers work the same way: an ordinary
    * declaration supersedes a `default` one of the other kind (a property keeps
-   * a default target as its fallback — see {@link buildNamespace}), while two
+   * a default target as its `fallbackTarget`), while two
    * `default`s of one name conflict whatever their kinds. Anything else — a
    * repeated key within a tier, an unguarded redeclaration, two targets, a
    * clash with a namespace — is the duplicate it looks like.

@@ -186,7 +186,6 @@ export class BuildContextImpl implements InternalBuildContext {
   /** The rule-built targets of this configuration, resolved, by name. A
    * target's entry in `targetCache` is the reference to it. */
   private readonly resolvedTargets = new Map<string, Computable<ResolvedTarget>>();
-  /** The instances of rules written in `.fabr`, by the declared name of the target each matched. */
 
   constructor(model: IBuildModel, constraints: Constraints, execution: ExecutionContext) {
     this.model = model;
@@ -2514,12 +2513,12 @@ class ScopedBuildContext extends ScopedConfiguration {
     return this.scope.rule.local(name);
   }
 
-  /** The rule's parameter is the block's too. */
+  /** @return true if `name` is the rule's parameter or one the block declares, otherwise false. */
   protected owns(name: string): boolean {
     return name === this.scope.param || super.owns(name);
   }
 
-  /** A name whose first part is the parameter or one the block declares is the block's. */
+  /** @return the block's match for `name` where its first part is the parameter or one the block declares, otherwise undefined. */
   protected ownPrefixMatch(name: Name): ScopedMatch | undefined {
     const literal = name.getLiteralPathPrefix();
     const first = literal.split(/[:/]/)[0];
@@ -2675,8 +2674,9 @@ class FileScopedContext extends ScopedConfiguration {
     return this.names.getDecl(name);
   }
 
-  /** A private name is matched where it is the longest declared prefix, a
-   *  public name under it being matched by that. */
+  /** @return the file's match for a prefix of `name`: a private name where it
+   *  is the longest declared prefix (a public name declared under it is matched
+   *  as itself), otherwise undefined. */
   protected ownPrefixMatch(name: Name): ScopedMatch | undefined {
     const match = this.model.getPrefixMatch(name, this.file);
     return match !== undefined && this.names.getDecl(match.name) === match.decl ? match : undefined;

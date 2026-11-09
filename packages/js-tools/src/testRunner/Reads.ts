@@ -23,8 +23,7 @@
  * change can reach. Every module the process loaded, the `package.json` nearest
  * each, every file it read or probed through `fs` (a probe that found a
  * directory named with a trailing `/`), and every package it looked up by a
- * bare specifier, found or not. A directory listing is not recorded: no record
- * of one can say what its appearing entries would have been. Where the
+ * bare specifier, found or not. A directory listing is not recorded. Where the
  * process did what no record can follow — started another process or a worker
  * thread, whose reads are its own — there is no document, and the step runs
  * the file again on every change.
@@ -106,7 +105,7 @@ export function recordReads(): () => IRecordedReads | undefined {
   const cache = createRequire(__filename).cache;
   /* A module is loaded by its real path already. A file read through `fs` may
    * be named through a link — a `node_modules` one — so its directory is
-   * resolved, once per directory: the reads are few, the directories fewer. */
+   * resolved, once per directory. */
   const realDirectories = new Map<string, string>();
   const realPathOf = (file: string): string => {
     const directory = path.dirname(file);

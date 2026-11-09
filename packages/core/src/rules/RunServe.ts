@@ -40,11 +40,11 @@ import { defineRule, RuleResult } from "./Types";
 export default defineRule({
   /* deps/files are ordinary build content, read under build rather than the run
    * operation this rule is selected by (constraints otherwise propagate). Both
-   * are read for their files, as script's are: each requirement delivers its
-   * own — a repository reference the package's files alone, a target what it
-   * built — and nothing is resolved together. `tool` is read apart in
-   * `evaluate`, under the run operation (getRunnableProperty), as a program to
-   * execute on this machine, and built alongside them rather than after. */
+   * are read for their files, as script's are — a repository reference as the
+   * package's files alone, a target as what it built — and nothing is resolved
+   * together. `tool` is read apart in `evaluate`, under the run operation
+   * (getRunnableProperty), as a program to execute on this machine, and built
+   * alongside them rather than after. */
   requirements(context) {
     return {
       run: {

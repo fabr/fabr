@@ -31,7 +31,7 @@ const END_OF_TAR = Buffer.alloc(1024);
 export type TarEntryCallback = (err?: Error | null) => void;
 
 /**
- * Write a tar archive, read from it: each {@link entry} in the order made,
+ * A tar archive, written as it is read: each {@link entry} in the order made,
  * then the end-of-archive marker once {@link finalize} is called. A header is
  * written as one ustar block where it fits, else with a pax header before it
  * carrying what does not, and its `pax` records and `xattrs`.

@@ -133,7 +133,7 @@ export interface IBuildActionOptions {
    */
   trackChangedFiles?: boolean;
   /**
-   * Gives the step's output the shape the target delivers: what the files
+   * Gives the step's output the shape the target yields: what the files
    * ARE — a package, with its identity — or how they divide, which a cached
    * step cannot carry. Applied to the output every evaluation, whether the
    * step ran or its entry was served.

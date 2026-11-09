@@ -177,11 +177,13 @@ export interface RuleImplementation {
    * and is read in `evaluate`. Nor is a tool: it is read in `evaluate`, to be
    * run.
    *
-   * Four names mean something to the framework. `dependencies`, `provided`
-   * and `optional_provided` are what the target passes on: requirements of
-   * whatever requires the target too, the last two bound by that consumer (an
-   * optional one only to what the consumer supplies or its installation
-   * holds). `extends` is
+   * Six names mean something to the framework. `dependencies`, `provided`,
+   * `optional_provided`, `runtime` and `compile` are what the target passes
+   * on: requirements of whatever requires the target too. `provided` and
+   * `optional_provided` are bound by that consumer (an optional one only to
+   * what the consumer supplies or its installation holds); `runtime` goes to
+   * the consumer's `run` collection alone, and `compile` to its `build` one
+   * alone. `extends` is
    * the package the target is made from; where it is exactly one package,
    * the target passes on that package's version and requirements. Every
    * other name is private to the target's build. A name a rule qualifies

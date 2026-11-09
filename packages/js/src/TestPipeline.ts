@@ -308,8 +308,7 @@ export function packageBuildOverrides(context: TargetContext, property: string):
  * the `package` requirement, whose declarations the compile is given — lay the
  * result out as a runnable installation, beside the package, together with the
  * deps, the test-only deps and the runner, and execute the runner over the
- * compiled test files. The output
- * artifact is the test report; a red run fails the target with the report's
+ * compiled test files. The output artifact is the test report; a red run fails the target with the report's
  * failure summary.
  *
  * The last argument is the target's {@link TestRequirements}, materialized:
@@ -481,11 +480,9 @@ function testCompile(
 /**
  * Describe a test target as its run would compile it: its BSP target, tagged
  * a test, and its test unit — the run's compile of its sources and tests,
- * resolved as the run resolves them. The unit is the run's whole program;
- * that the run checks and emits only the tests, its sources having been by
- * the package's build, is not part of a description (describing builds
- * nothing, so there are no declarations to name), and an editor checks the
- * whole program in any case.
+ * resolved as the run resolves them. The unit is the run's whole program,
+ * sources included: describing builds nothing, so there are no package
+ * declarations to compile the sources against.
  */
 export function describeTests(
   context: TargetContext,
@@ -578,7 +575,7 @@ interface ITestRun {
    * `node_modules` tree, or a PnP table over the pool's trees — laid out by
    * the test-run step. */
   layout: "pnp" | "node_modules";
-  /** The packages the tests load, as delivered. */
+  /** The packages the tests load. */
   packages: PackageFileSet[];
   /** Verbatim runtime files for the tests, mounted with the compiled output. */
   testResources: FileSet;
@@ -599,11 +596,11 @@ interface ITestRun {
 }
 
 /**
- * Plan the test run: the runtime installation (deps/test-deps as node_modules,
- * the runner's install staged under {@link RUNNER_STAGE_DIR}, a minimal
- * package.json and any copied sources) is assembled in resolution, and the
- * compiled tree — the output of the shared js_compile sub-target — is passed
- * in as a concrete input to the test-run action.
+ * Plan the test run: the run's own files (the compiled tree — the output of the
+ * shared js_compile sub-target — a minimal package.json and any copied
+ * sources) are assembled in resolution and passed as concrete inputs to the
+ * test-run action, which lays out the packages as its `deps` and links the
+ * runner's install at {@link RUNNER_STAGE_DIR}.
  *
  * The run is yielded as the test-run action with a reshape
  * ({@link reshapeTestResult}): the report, failures and all, is the target's
@@ -709,8 +706,7 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
      * the driver on a cache hit as well as on a miss. */
     return createTestRunAction({
       /* The runner's install, and a measured run's driver's, are trees of the
-       * pool linked into the installation: one line of the key each, where
-       * their several thousand files were staged and listed per target. */
+       * pool linked into the installation, each one line of the key. */
       links: { [RUNNER_STAGE_DIR]: run.runner, ...(coverage?.links ?? {}) },
       files,
       packages: run.packages,

@@ -1810,7 +1810,7 @@ function resolveInstance(
  * Resolve `requests`, each repository's as one batch ({@link resolveBatch}),
  * and finish each reference's delivery ({@link RepositoryRef.applyTo}). A
  * `?` alternate is answered by its own reference. A repository with a resolution in
- * `collection` delivers its batch from it. A request for files joins no
+ * `collection` answers its batch from it. A request for files joins no
  * resolution, so nothing here waits on it: it is answered {@link PendingFiles
  * pending}, fetched when the collection is given its content.
  */

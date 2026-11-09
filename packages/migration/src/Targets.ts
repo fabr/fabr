@@ -178,7 +178,7 @@ function cascade(
   from: string
 ): void {
   const declared = declaredDependencies(manifest);
-  /* Whether the package can write a reference to `name`: its own dependency, the root's, or another workspace package. */
+  /* True if the package can write a reference to `name`: its own dependency, the root's, or another workspace package. */
   const referable = (name: string): boolean => reference(name) !== undefined;
   const bring = (name: string, why: string): void => {
     const ref = reference(name);

@@ -531,7 +531,7 @@ export abstract class TargetContext {
     return this.context.makeRepository(this, type, member);
   }
 
-  /** @return true if a plugin in use (or core) defines the repository type `type`, otherwise false: whether {@link makeRepository} can make one. */
+  /** @return true if a plugin in use (or core) defines the repository type `type`, so {@link makeRepository} can make one, otherwise false. */
   public hasRepositoryType(type: string): boolean {
     return this.context.hasRepositoryType(type);
   }

@@ -133,14 +133,18 @@ describe("parseMavenPublishCoordinate", () => {
     expect(() => MAVEN_FORMAT.parsePublishCoordinate(parseName("com.example:app/a/b:1.0.0"))).to.throw(/a classifier where it has one/);
   });
 
-  it("says how to write a classifier, given one as a fourth part", () => {
-    let help: string[] = [];
-    try {
-      MAVEN_FORMAT.parsePublishCoordinate(parseName("com.example:app:sources:1.0.0"));
-    } catch (err) {
-      help = (err as FabrError).help ?? [];
+  it("says how to write a classifier, given one as a fourth part in either order", () => {
+    const helpFor = (written: string): string[] => {
+      try {
+        MAVEN_FORMAT.parsePublishCoordinate(parseName(written));
+      } catch (err) {
+        return (err as FabrError).help ?? [];
+      }
+      return [];
+    };
+    for (const written of ["com.example:app:sources:1.0.0", "com.example:app:1.0.0:sources"]) {
+      expect(helpFor(written)).to.deep.equal(["a classifier follows the artifact: write 'com.example:app/sources:1.0.0'"]);
     }
-    expect(help).to.deep.equal(["a classifier follows the artifact: write 'com.example:app/sources:1.0.0'"]);
   });
 });
 

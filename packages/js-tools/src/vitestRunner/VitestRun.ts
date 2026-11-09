@@ -63,8 +63,8 @@ export interface IReportedModule {
  * Make the options one invocation runs vitest with, for the test files of
  * `options` in the installation whose working directory is `root`, each worker
  * loading the runner's own `preloads` before the target's setup entries, and
- * `workerPreloads` before anything at all. Nothing is
- * read from a config file: what a suite needs is what the target declares.
+ * `workerPreloads` before anything at all. Nothing is read from a config file:
+ * what a suite needs is what the target declares.
  *
  * Modules load through node's own loader (`viteModuleRunner: false`), which is
  * what the compiled tests are built for, and recorded snapshots are checked

@@ -102,6 +102,16 @@ describe("DiagnosticErrorFormatter", () => {
     expect(diag.help?.[0]).to.contain("write './base:*.ts' for the path");
   });
 
+  it("offers the './' spelling only where the written name projects the target's own name", () => {
+    /* `fabr_plugin @example/text-lint { resources = lint-rules; }`, where
+     * `lint-rules` is built with the plugin's own rules: no path is shadowed. */
+    const plugin = targetDecl("@example/text-lint");
+    const circular = new CircularDependencyError("@example/text-lint", [{ value: value("lint-rules"), property: propertyDecl("resources"), target: plugin }], plugin);
+    const [diag] = capture(new DependencyFailedError(plugin, circular));
+
+    expect(diag.help ?? []).to.deep.equal([]);
+  });
+
   it("renders a cycle's own hops once, not again as the trail that reached it", () => {
     /* one -> two -> one: the hop that required `two` is both part of the cycle
      * and the trail the failure propagated along. */

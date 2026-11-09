@@ -115,10 +115,8 @@ export interface RepositoryLookup {
    * when the collection that asked is given its content — so a reading that
    * never materializes (`fabr deps`) downloads nothing. A node that is no
    * package is marked {@link PackageContent.plain}, so it claims no name
-   * among the collection's packages. Single-item by design:
-   * joint version selection over a batch is the resolution layer's business
-   * (a resolving registry never implements this face), so what remains here
-   * is a repository that answers each reference on its own (`fabr_home`).
+   * among the collection's packages. A registry, whose references resolve
+   * jointly, never implements this face.
    * Projections and provenance carried by the reference are applied by the
    * caller.
    */
@@ -526,8 +524,8 @@ export class RepositoryRef extends Reference implements Requirement {
     }
   }
 
-  /** The name what this reference names is delivered under: the rename
-   * written on it, or its own, and for a variant, the variant's name under it. */
+  /** The name what this reference names is required as: the rename written
+   * on it, or its own, and for a variant, the variant's name under it. */
   public override get localName(): string {
     return this.variant === undefined ? super.localName : variantName(super.localName, this.variant);
   }
