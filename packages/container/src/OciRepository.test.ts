@@ -31,7 +31,7 @@ import {
   FileSet,
   IFile,
   MemoryFile,
-  NamespaceRef,
+  PartialRepositoryRef,
   packToTarball,
   openUrlStream,
   parseName,
@@ -283,19 +283,19 @@ describe("OciRepository", () => {
 
   it("lists an image's tags, page by page, each as the reference to its image", async () => {
     const context = fetchingContext("x86_64-unknown-linux");
-    const repository = new OciRepository(context, new Registry(context, registry.url), "library");
+    const repository = new OciRepository(context, new Registry(context, registry.url, new RegistrySignIn(registry.url, () => Computable.resolve(undefined))), "library");
     for (const tag of ["2.0", "1.1", "0.9"]) {
       const node = await Promise.resolve(repository.resolve(repository.getRepositoryRef(parseName("demo:1.0")) as RepositoryRef));
       const image = (await Promise.resolve(node.content.files())) as ImageFileSet;
       const [carrier] = await Promise.resolve(repository.package([{ destination: repository.getRepositoryPublishRef(parseName(`demo:${tag}`)), content: image }]));
       await Promise.resolve(repository.publish(carrier));
     }
-    const listed = await Promise.resolve(repository.children(repository.getRepositoryRef(parseName("demo")) as NamespaceRef));
+    const listed = await Promise.resolve(repository.children(repository.getRepositoryRef(parseName("demo")) as PartialRepositoryRef));
     expect([...listed.keys()]).to.deep.equal(["0.9", "1.0", "1.1", "2.0"]);
     const ref = listed.get("1.1") as RepositoryRef;
     expect([ref.name, ref.versionConstraint]).to.deep.equal(["demo", "1.1"]);
     expect(registry.requests.filter(request => request.startsWith("GET /v2/library/demo/tags/list"))).to.have.lengthOf(2);
-    const missing = await Promise.resolve(repository.children(repository.getRepositoryRef(parseName("absent")) as NamespaceRef)).catch((err: Error) => err);
+    const missing = await Promise.resolve(repository.children(repository.getRepositoryRef(parseName("absent")) as PartialRepositoryRef)).catch((err: Error) => err);
     expect((missing as Error).message).to.match(/has no image absent/);
   });
 

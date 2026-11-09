@@ -154,7 +154,7 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
   }
 
   /** List the tags of the image a namespace names, each as the reference to its image; the registry's every image cannot be listed. */
-  public children({ name }: NamespaceRef): Computable<Map<string, Reference>> {
+  public children({ name }: PartialRepositoryRef): Computable<Map<string, Reference>> {
     if (name === "") {
       return Computable.reject(
         new FabrError(`${this.context.name} cannot list every image it holds`).withHelp(`name an image to list its tags, as in '${this.context.name}:node'`)
