@@ -25,7 +25,7 @@ In a pnpm or Yarn checkout that holds a fabr project in a subdirectory, the fabr
 are answered by fabr and the rest of the checkout by its own `node_modules` and `tsconfig.json`.
 
 The editor sees what the build sees as long as the build compiles the project with a TypeScript
-VS Code also understands; the differences are listed under [Limitations](#limitations).
+VS Code also understands; the differences are listed under [Known issues](#known-issues).
 
 ## Installing
 
@@ -127,7 +127,13 @@ A large project can need more memory than VS Code gives its TypeScript server by
 (3 GB): checking slows to a crawl, or the server restarts. Raise
 `typescript.tsserver.maxTsServerMemory`, in megabytes, to 6144 or more.
 
-## Limitations
+## Not supported
+
+- **Editors other than VS Code, and languages other than TypeScript, JavaScript, Java and fabr's
+  build files.** VS Code's own Sass and CSS support resolves a package's stylesheets through
+  `node_modules`.
+
+## Known issues
 
 - **The editor's TypeScript is VS Code's own** (TypeScript 6 in current VS Code), not the
   version the build compiles with. Where the two differ — a library type added in one, a check
@@ -138,9 +144,6 @@ A large project can need more memory than VS Code gives its TypeScript server by
   dependencies, but an `export * from` line is not followed, and neither is an import inside a
   package the build installs more than one way (for example, against two versions of a peer
   dependency). Both work once loading finishes, with nothing to reopen.
-- **TypeScript, JavaScript, Java and fabr's build files**, and only in VS Code. Stylesheets and
-  other editors are not yet supported: VS Code's own Sass and CSS support resolves
-  a package's stylesheets through `node_modules`.
 - **Java**: annotation processors do not run in the editor, and the sources a processor would
   generate are missing; a module's sources (`module-info.java`) are checked on the classpath.
 - A package whose sources are all generated (the output of a `generate` target) is not shown

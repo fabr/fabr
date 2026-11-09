@@ -43,7 +43,7 @@ plugin @fabr-build/js;
 fabr_plugin @example/text-lint {
   srcs = src:**/*.ts;
   exports = src:rules/*.ts;
-  provided_deps = @npm:@fabr-build/core:^0.3.1;
+  provided_deps = @npm:@fabr-build/core:^0.4.0;
   libs = lib/LINT.fabr;
 }
 ```
@@ -125,7 +125,7 @@ Add a test target to `PROJECT.fabr`:
 ```
 js_test e2e {
   tests = test:**/*.test.ts;
-  deps = @example/text-lint @npm:@fabr-build/cli:^0.3.1 @npm:@types/node:22.15.3;
+  deps = @example/text-lint @npm:@fabr-build/cli:^0.4.0 @npm:@types/node:22.15.3;
 }
 ```
 
@@ -186,8 +186,10 @@ with `fabr cat`; `describe`, `it` and `after` are provided by fabr's test runner
 
 ```sh
 $ fabr test e2e
+✓ Compiling tests for e2e (0.9s)
 ✓ Testing e2e (1.1s)
 e2e: 1 test passed
+Built e2e
 ```
 
 ## 3. Running a tool
@@ -213,13 +215,14 @@ A tool is a target too. Declare it in `LINT.fabr`, with a global that names it:
 # The program a text_lint target runs over its files.
 default TEXT_LINTER = @example/text-lint-tools/linter;
 
-script @example/text-lint-tools/linter {
+default script @example/text-lint-tools/linter {
   entry = ./linter.sh;
 }
 ```
 
 `script` is core's target type for a shell script; `./linter.sh` is relative to the `.fabr` file.
-Because `TEXT_LINTER` is a `default`, a project can point it at a linter of its own. Then change
+A plugin's `.fabr` files declare only defaults, so the target is a `default` too. Because
+`TEXT_LINTER` is a `default`, a project can point it at a linter of its own. Then change
 the rule's implementation to run the tool:
 
 ```ts
@@ -272,8 +275,11 @@ describe("text_lint", () => {
 
 ```sh
 $ fabr test e2e
+✓ Compiling @example/text-lint (0.9s)
+✓ Compiling tests for e2e (0.9s)
 ✓ Testing e2e (1.5s)
 e2e: 2 tests passed
+Built e2e
 ```
 
 ## 4. An option
@@ -342,8 +348,11 @@ that sets it:
 
 ```sh
 $ fabr test e2e
+✓ Compiling @example/text-lint (0.9s)
+✓ Compiling tests for e2e (0.9s)
 ✓ Testing e2e (1.8s)
 e2e: 3 tests passed
+Built e2e
 ```
 
 ## 5. Publishing
@@ -366,7 +375,7 @@ $ fabr ls release
 $ fabr sync release
 ```
 
-The generated `package.json` lists `@fabr-build/core` under `peerDependencies` as `^0.3.1`, and
+The generated `package.json` lists `@fabr-build/core` under `peerDependencies` as `^0.4.0`, and
 a `release` build leaves out the source maps. See [Publishing packages](/reference/js/publishing/)
 for credentials and the rest of the package's metadata.
 

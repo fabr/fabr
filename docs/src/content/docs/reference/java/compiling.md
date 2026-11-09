@@ -17,7 +17,7 @@ you choose, against the jars its dependencies resolve to. This page covers what 
 | `module-info.java` with the module path | Recognised, as Gradle does it; see [Modules](#modules). |
 | `project.build.sourceEncoding` | Always UTF-8. |
 | `-parameters` in `<compilerArgs>` / `options.compilerArgs` | On by default; see [Parameter names](#parameter-names). |
-| Other `<compilerArgs>` / `options.compilerArgs` | See [Not currently supported](#not-currently-supported). |
+| Other `<compilerArgs>` / `options.compilerArgs` | See [Not supported](#not-supported). |
 
 ## What the compiler is given
 
@@ -25,12 +25,13 @@ For every compile fabr runs:
 
 ```sh
 javac --release <N> -encoding UTF-8 -proc:none -implicit:none -g -parameters \
-      -d classes -classpath <the jars> <the sources>
+      -d classes -s generated -classpath <the jars> <the sources>
 ```
 
 with `-processorpath <the processors>` in place of `-proc:none` where the target has
-[annotation processors](#annotation-processors), `--module-path` where it is a
-[module](#modules). `-parameters` is left out with the [`java/no_parameters` flag](#parameter-names).
+[annotation processors](#annotation-processors), and `--module-path` where it is a
+[module](#modules). The sources the processors generate (`-s`) are kept beside the classes, and
+are part of the target's [javadoc and sources](/reference/java/packaging/#javadoc-and-sources). `-parameters` is left out with the [`java/no_parameters` flag](#parameter-names).
 
 `-g` records all of javac's debug information, local variable names included, as Maven and
 Gradle record it. A `release` build (`BUILD_TYPE=release`) is given `-g:source,lines` instead:
@@ -140,7 +141,7 @@ without a `module-info.java` puts every jar on the classpath.
 `fabr run` runs a modular program on the module path too; see
 [Running programs](/reference/java/running/#modules).
 
-## Not currently supported
+## Not supported
 
 - There is no way to pass further options to `javac`, such as `-Xlint` or `-Werror`.
 - The source encoding is always UTF-8.

@@ -43,6 +43,10 @@ A target that can only be run ends fabr's own arguments: everything after it goe
 as `--port 3000` does above. To pass arguments to a target that can also be built, name the
 command: `fabr run mylib --flag`.
 
+Without a command, fabr takes only the options `-D`, `-w`, `-q`, `--no-progress` and `--refresh`.
+Any other option, such as `--trace` or `-u`, needs the command written out
+(`fabr test -u mylib`); otherwise fabr stops with `Option '-u' is not valid without a command`.
+
 ## Commands
 
 ### `build`
@@ -68,9 +72,10 @@ When nothing has changed since the last build, fabr prints `Already up to date`.
 
 ### `test`
 
-Compiles and runs the targets' tests, and prints a summary for each target. The tests run in a
-copy of their declared inputs, so they can't change your project directory. Targets are named as
-for [`build`](#build).
+Compiles and runs the targets' tests, and prints a summary for each name you give. A name that
+lists several test targets, such as a property naming them (`TESTED = a b c;`), gets one summary
+of all their tests. The tests run in a copy of their declared inputs, so they can't change your
+project directory. Targets are named as for [`build`](#build).
 
 ```sh
 fabr test mylib
@@ -81,20 +86,26 @@ fabr test --retry-failed mylib    # run failed tests again rather than report th
 fabr test --report results.xml --format junit mylib    # also write the results as JUnit XML
 ```
 
+Every target's tests run to the end whether or not some fail. Once all of them have finished,
+fabr prints each summary, with the failed tests listed under it, writes any reports you asked
+for, and then exits with status 1 if any test failed. A failing test doesn't make its target
+fail: a target that uses another's test results, such as its `ctrf-report.json`, still builds.
+
 A run is cached, passing or failing, and isn't repeated until something the tests depend on
 changes: a failing run's failures are reported again, and the command fails again. With
-`--retry-failed`, a target whose cached run failed runs its tests again. With `-u`,
-new and changed snapshots are written back into your source tree after a passing run, and each
-file is named as it is written. With `--coverage`, the tests are measured for code coverage: a
-summary is printed and an lcov report written to `coverage/lcov.info`, or to `<dir>/lcov.info`
-with `--coverage=<dir>`; the directory is relative to the current directory. With
-`--report <file>`, the results of every target tested are written to one file, as a
-[CTRF](https://ctrf.io) report, or as JUnit XML with `--format junit`, for a CI system's test
-results view; the file is relative to the current directory. Both reports are written whether or
-not the tests pass, before the command fails for any that didn't. With `-t <pattern>`,
-only the tests whose names match the regular expression are run, and the run fails if no
-test in any of the targets matches. See testing for [JavaScript](/reference/js/testing/) and
-[Java](/reference/java/testing/).
+`--retry-failed`, a target whose cached run failed runs its tests again; it can't be combined
+with `-w`.
+
+| Option | Effect |
+|---|---|
+| `-u` | New and changed snapshots are written back into your source tree, after a run in which no test failed. Each file is named as it is written. |
+| `-t <pattern>` | Only the tests whose names match the regular expression are run. If no test in any of the targets matches, the command fails with `No test's name matches the pattern '<pattern>'`. |
+| `--coverage` | The tests are measured for code coverage: a summary is printed and an lcov report written to `coverage/lcov.info`, or to `<dir>/lcov.info` with `--coverage=<dir>`. |
+| `--report <file>` | The results of every target tested are written to one file, as a [CTRF](https://ctrf.io) report, or as JUnit XML with `--format junit`, for a CI system's test results view. See [Continuous integration](/guides/ci/#test-results). |
+
+Paths are relative to the current directory. The coverage report and `--report` file are written
+whether or not the tests pass, but not when a build error stops the run before the tests finish.
+See testing for [JavaScript](/reference/js/testing/) and [Java](/reference/java/testing/).
 
 ### An operation's name
 
@@ -107,10 +118,11 @@ fabr lint app lib
 fabr lint -w app
 ```
 
-`fabr lint app` builds `app` as `fabr build 'app<BUILD_OPERATION=lint>'` does, and takes the same
-options as `build`. Any operation a rule's guard names (`<BUILD_OPERATION=lint>`) can be given this
-way, and `fabr list-operations` lists them. A word no rule names as an operation
-is read as a target name, as before.
+`fabr lint app` builds `app` as `fabr build 'app<BUILD_OPERATION=lint>'` does. It takes the
+options a command [left out](#leaving-the-command-out) takes: `-D`, `-w`, `-q`, `--no-progress`
+and `--refresh`. Any operation a rule's guard names (`<BUILD_OPERATION=lint>`) can be given this
+way, and `fabr list-operations` lists them. A word no rule names as an operation is read as a
+target name.
 
 An operation's name is a command even where the project also declares a target of that name, as
 `build` and `test` are: write `fabr build lint` to build the target, or put it after `--`.
@@ -302,15 +314,17 @@ fabr audit myapp
 GHSA-35jh-r3h4-6jhm (CVE-2021-23337)  HIGH  Command Injection in lodash
   lodash@4.17.15, fixed in 4.17.21
     myapp > express@4.17.1 > lodash@4.17.15
-  https://github.com/advisories/GHSA-35jh-r3h4-6jhm
+  https://nvd.nist.gov/vuln/detail/CVE-2021-23337
 
-1 advisory affects 1 of the 57 packages checked
+1 advisory affects 1 of 57 packages checked
 ```
 
 The packages checked are the ones `deps` prints for the same references, read the same way: the
 tree a target's build resolves, under `build` unless the reference requires another operation
 (`'myapp<BUILD_OPERATION=test>'` checks its `test_deps` too), with nothing built and nothing
-downloaded from a registry. Every package a registry publishes is checked at the exact version the
+downloaded from a registry. For a Java library that is its compile classpath; audit the program,
+war or installation you deploy to check what runs. See
+[Auditing dependencies](/guides/auditing/) for what to do about an advisory. Every package a registry publishes is checked at the exact version the
 tree selects. A package built in your project has no published version, so it is not checked
 itself, though what it depends on is. Each advisory lists the affected package with the versions
 the advisory says fix it and one path by which each reference reaches it; the remedy is to require
@@ -486,27 +500,31 @@ is declared, and `--json` gives the output as JSON.
 
 Writes everything the other `list-` commands report, as one JSON document. The
 [core](/reference/standard-rules/) and [JavaScript](/reference/js/targets/) reference pages are
-generated from it.
+generated from it. `--include-optional` also reads every
+[optional `.fabr` file](/reference/syntax/#plugins-and-includes) of the plugins the project uses, as though
+the project included each one, so that what they declare is listed too.
 
 ## Options
 
 | Option | Applies to | Meaning |
 |---|---|---|
-| `-DNAME=VALUE` | all | Set a configuration property for this run, overriding the build file and any default. |
-| `-w` | `build`, `test`, `run` | Keep running, and rebuild, retest or restart when sources change. See [Watch mode](/guides/watch/). |
+| `-DNAME=VALUE` | all | Set a configuration property for this run, overriding the build file and any default. For `run`, put it before the target. |
+| `-w` | `build`, `test`, `run`, an operation's name | Keep running, and rebuild, retest or restart when sources change. See [Watch mode](/guides/watch/). |
 | `-u`, `--update` | `test` | Record new and changed snapshots, and write them into your source tree. |
 | `-t PATTERN` | `test` | Run only the tests whose names match the regular expression `PATTERN`: for [JavaScript](/reference/js/testing/#running-tests), suite and test names joined by spaces; for [Java](/reference/java/testing/#running-some-of-the-tests), `Class#method`. Sets `TEST_NAME_PATTERN`. |
 | `--coverage[=DIR]` | `test` | Measure code coverage, print a summary and write `DIR/lcov.info` (`coverage/` by default). |
+| `--retry-failed` | `test` | Run again the tests of a target whose cached run failed, rather than report the cached failure. Can't be combined with `-w`. |
 | `--report FILE` | `test` | Write the results of every target tested to `FILE`, failures included, as CTRF (the default) or as `--format` says. |
-| `-q`, `--quiet` | all | Don't show the progress display or the output of build steps. A step that fails still shows its output in the error. |
-| `--no-progress` | all | Don't show the progress display. Output from build steps is then printed as it arrives, as it is when stderr isn't a terminal. |
+| `-q`, `--quiet` | all but the `list-` commands | Don't show the progress display or the output of build steps. A step that fails still shows its output in the error. |
+| `--no-progress` | all but `build-server` and the `list-` commands | Don't show the progress display. Output from build steps is then printed as it arrives, as it is when stderr isn't a terminal. |
 | `--trace[=FILE]` | `build`, `test`, `run` | Write a trace of the run's work to `FILE` (`fabr-trace.json` by default). See [Tracing a run](#tracing-a-run). |
-| `--refresh` | `build`, `test`, `run`, `shell`, `ls`, `cat`, `cp`, `deps`, `audit`, `sync` | Check again for anything a server can change under the same address, such as a registry's version lists or an S3 object, however recently fabr last checked. Without it, fabr checks each at most once a day. |
-| `-l` | `ls`, `list-*` | Long listing: hash and size for `ls`, source location for the `list-` commands. |
+| `--refresh` | all but `build-server` and the `list-` commands | Check again for anything a server can change under the same address, such as a registry's version lists or an S3 object, however recently fabr last checked. Without it, fabr checks each at most once a day. |
+| `-l` | `ls`, `list-targets`, `list-targetdefs`, `list-properties` | Long listing: hash and size for `ls`, source location for the `list-` commands. |
 | `--json` | `list-*` | Output as JSON. |
-| `--format FORMAT` | `audit`, `test` | The report's format: `sarif` for `audit`, instead of text; `ctrf` or `junit` for `test --report`. |
+| `--format FORMAT` | `audit`, `test` | The report's format: `sarif` for `audit`, instead of text; `ctrf` or `junit` for `test`, which needs `--report` with it. |
 | `--all` | `list-targets` | Include the targets fabr and its plugins declare. |
-| `--operation OP` | `list-targets` | List only the targets whose type has a rule for the operation `OP`. |
+| `--operation OP` | `list-targets` | List only the targets whose type has a rule for the operation `OP`. Give it more than once for any of several operations. |
+| `--include-optional` | `list-all` | Also read the optional `.fabr` files of the plugins the project uses. |
 | `--` | all | End of options. What follows is a target, even if it starts with `-` or is the name of a command. |
 | `-v`, `--version` | | Print fabr's version. |
 | `-h`, `--help` | | Print a summary of the commands and options. |
@@ -514,6 +532,18 @@ generated from it.
 On a terminal, fabr shows the steps in progress at the bottom of the screen, and holds each step's
 output until the step finishes, so that the output of steps running in parallel isn't mixed
 together.
+
+## Exit status
+
+| Status | Meaning |
+|---|---|
+| 0 | Everything named was built, all tests passed, and `audit` found no advisory. |
+| 1 | Anything else: a build error, a failing test, an advisory found by `audit`, a dependency that couldn't be resolved, an unknown target or option, a command with no target, a failed `sync`. |
+| 2 | An internal error in fabr. |
+| 130, 143, 129 | Interrupted by `SIGINT`, `SIGTERM` or `SIGHUP`. Running steps are stopped first. |
+
+`fabr run` exits with the status of the program it ran, and `fabr shell` with the status of the
+shell. The output says what failed.
 
 ## Tracing a run
 

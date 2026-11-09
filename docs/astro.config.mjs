@@ -77,9 +77,12 @@ export default defineConfig({
             { label: "Conceptual model", link: "/guides/concepts" },
             { label: "Projects with several packages", link: "/guides/multi-package/" },
             { label: "Migrating an npm, Yarn or pnpm project", link: "/guides/migrating-js/" },
+            { label: "Migrating a Maven or Gradle project", link: "/guides/migrating-java/" },
+            { label: "Running your own tools", link: "/guides/tools/" },
             { label: "Watch mode & dev servers", link: "/guides/watch/" },
             { label: "VS Code support", link: "/guides/vscode/" },
             { label: "Continuous integration", link: "/guides/ci/" },
+            { label: "Auditing dependencies", link: "/guides/auditing/" },
             { label: "Writing your own rules", link: "/guides/rules/" },
           ],
         },
@@ -100,7 +103,6 @@ export default defineConfig({
         {
           label: "JavaScript reference",
           items: [
-            ...generated("JavaScript reference"),
             { label: "Dependencies", link: "/reference/js/dependencies/" },
             { label: "Module resolution", link: "/reference/js/module-resolution/" },
             { label: "TypeScript compilation", link: "/reference/js/typescript/" },
@@ -108,28 +110,38 @@ export default defineConfig({
             { label: "Testing", link: "/reference/js/testing/" },
             { label: "Bundling", link: "/reference/js/bundling/" },
             { label: "Publishing packages", link: "/reference/js/publishing/" },
+            ...generated("JavaScript reference"),
           ],
         },
         {
           label: "Java reference",
           items: [
-            ...generated("Java reference"),
             { label: "Dependencies", link: "/reference/java/dependencies/" },
             { label: "Compiling", link: "/reference/java/compiling/" },
             { label: "Testing", link: "/reference/java/testing/" },
             { label: "Running programs", link: "/reference/java/running/" },
             { label: "Packaging", link: "/reference/java/packaging/" },
             { label: "Publishing", link: "/reference/java/publishing/" },
+            ...generated("Java reference"),
+          ],
+        },
+        {
+          label: "Container reference",
+          items: [
+            { label: "Building images", link: "/reference/container/images/" },
+            { label: "Registries", link: "/reference/container/registries/" },
+            { label: "Running containers", link: "/reference/container/running/" },
+            ...generated("Container reference"),
           ],
         },
         {
           label: "AWS reference",
           items: [
-            ...generated("AWS reference"),
             { label: "Accounts and credentials", link: "/reference/aws/accounts/" },
             { label: "Amazon S3", link: "/reference/aws/s3/" },
             { label: "Amazon ECR", link: "/reference/aws/ecr/" },
             { label: "AWS CodeArtifact", link: "/reference/aws/codeartifact/" },
+            ...generated("AWS reference"),
           ],
         },
         {

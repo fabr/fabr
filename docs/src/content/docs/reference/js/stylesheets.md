@@ -4,9 +4,9 @@ description: How fabr builds CSS, Sass and css-modules as part of a JavaScript p
 ---
 
 Stylesheets are ordinary sources. List them in a target's `srcs` beside the TypeScript that
-imports them, and fabr compiles Sass to CSS, scopes css-modules, types their class names, and
-rewrites the imports to match. There is no loader or plugin to configure and no separate target to
-declare.
+imports them, and fabr compiles Sass to CSS, scopes css-modules, types their class names, adds
+the vendor prefixes your [target browsers](#browser-support) need, and rewrites the imports to
+match. There is no loader or plugin to configure and no separate target to declare.
 
 ```
 js_package ui {
@@ -30,7 +30,8 @@ element.className = styles.cardTitle;     // "card-title_FCiirPWT"
 | `typed-css-modules`, a `declare module "*.module.scss"` shim | Not needed: each css-module is typed from its own class names. |
 | `import styles from "./x.module.scss"` works because the bundler handles it | The published JavaScript imports a generated `x.css.js`, so the package works without a bundler plugin. |
 | Sass `@use "~pkg/file"` (webpack's `~` prefix) | Write `@use "pkg/file"`. The `~` prefix is refused. |
-| `postcss.config.js`, autoprefixer, Tailwind | Not supported; see [What isn't supported](#what-isnt-supported). |
+| autoprefixer, with a `browserslist` configuration | Built in: every stylesheet is prefixed for the browsers the `BROWSER_TARGET` setting names; see [Browser support](#browser-support). |
+| `postcss.config.js`, Tailwind CSS, other PostCSS plugins | Not supported; see [Not supported](#not-supported). |
 | Less, Stylus | Not compiled. |
 
 ## What each file produces
@@ -39,16 +40,16 @@ A stylesheet is recognised by its extension:
 
 | Source | Output | Notes |
 |---|---|---|
-| `theme.css` | `theme.css` | Copied unchanged. |
-| `theme.scss`, `theme.sass` | `theme.css` | Compiled by Sass. |
+| `theme.css` | `theme.css` | With vendor prefixes added; otherwise unchanged. |
+| `theme.scss`, `theme.sass` | `theme.css` | Compiled by Sass, then prefixed. |
 | `Card.module.css`, `Card.module.scss`, `Card.module.sass` | `Card.css`, `Card.css.js`, `Card.css.d.ts` | A css-module: the CSS with its class names scoped, and a JavaScript module exporting them. The `.module` part of the name isn't kept. |
 | `_variables.scss` | nothing | A Sass partial, available to `@use` from the target's other stylesheets. |
 | `.less`, `.styl` | the same file | Shipped as it is, not compiled. |
 
 Source maps (`theme.css.map`) are written beside the CSS in `debug` and `relwithdebinfo` builds.
-They point back to the Sass source, include its text, and name it by its path from the project
-root, such as `fabr:./src/theme.scss`, as the [TypeScript compiler's maps](/reference/js/typescript/#source-maps)
-do.
+They point back to the stylesheet you wrote, Sass or CSS, include its text, and name it by its
+path from the project root, such as `fabr:./src/theme.scss`, as the
+[TypeScript compiler's maps](/reference/js/typescript/#source-maps) do.
 
 Because a css-module's output drops `.module`, `Card.module.scss` and a `Card.scss` or `Card.css`
 in the same directory would both produce `Card.css`. Fabr reports that as a conflict; rename one
@@ -160,6 +161,37 @@ A package's `.scss` sources are compiled, and only the CSS is shipped. To publis
 packages can `@use`, such as variables and mixins, list those files in the target's `resources`
 instead of `srcs`: resources are shipped as they are.
 
+## Browser support
+
+Every stylesheet, plain CSS and Sass alike, is run through
+[autoprefixer](https://github.com/postcss/autoprefixer), which adds the vendor-prefixed forms of
+properties and selectors that the target browsers need:
+
+```css
+/* src/theme.css */
+.toolbar { user-select: none; }
+
+/* built theme.css, for the default browsers */
+.toolbar { -webkit-user-select: none; user-select: none; }
+```
+
+The browsers are named by the `BROWSER_TARGET` setting, each as the lowest version you support,
+in place of a `browserslist` query. The default is `@browser:baseline:2023`: every core browser
+(Chrome, Edge, Firefox and Safari, on desktop and mobile) at the version that supports all of
+[Baseline](https://web.dev/baseline) 2023. Name a Baseline year, or browsers by their
+[Can I Use](https://caniuse.com/) names (`chrome`, `and_chr`, `edge`, `firefox`, `safari`,
+`ios_saf`), or a mixture:
+
+```
+BROWSER_TARGET = @browser:baseline:2023 @browser:safari:15.4;
+```
+
+Where two references name the same browser, the lower version applies. The data comes from the
+packages the `BROWSER_DATA` setting pins (`caniuse-lite` and `baseline-browser-mapping`), so it
+changes only when you change those versions. `BROWSER_TARGET` affects stylesheets only: the
+JavaScript language level a bundle is compiled to is set by
+[`JS_TARGET`](/reference/js/bundling/#format-and-platform).
+
 ## In a bundle
 
 A [`js_bundle`](/reference/js/targets/#js_bundle) handles stylesheets the same way, and then
@@ -180,11 +212,11 @@ target's own sources is built as it is for the package, so a test sees its real 
 names. Any other stylesheet import yields a stand-in whose every property is its own name. See
 [Testing](/reference/js/testing/#stylesheets-and-other-assets).
 
-## What isn't supported
+## Not supported
 
-- **PostCSS plugins.** There is no `postcss.config.js`, and no way to add a plugin, so
-  autoprefixer, Tailwind CSS and `postcss-preset-env` can't be run as part of a fabr build.
-  Vendor prefixes aren't added and `browserslist` isn't read.
+- **PostCSS plugins other than autoprefixer.** There is no `postcss.config.js`, and no way to add
+  a plugin, so Tailwind CSS and `postcss-preset-env` can't be run as part of a fabr build. A
+  `browserslist` configuration isn't read; set [`BROWSER_TARGET`](#browser-support) instead.
 - **Less and Stylus** aren't compiled.
 - **Named exports from css-modules.** Only the default export exists.
 - **css-modules options** such as a custom scoped-name pattern or a different naming convention.

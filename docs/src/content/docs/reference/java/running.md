@@ -77,7 +77,8 @@ A `jar_package` takes `agents` too, for `fabr run`.
 ## Modules
 
 A program whose own classes include a `module-info.class`, or, with no classes of its own, whose
-first dependency is a module, runs on the module path: the jars that are modules go on
+first dependency's jar holds one (an automatic module, named only by `Automatic-Module-Name`, does
+not count), runs on the module path: the jars that are modules go on
 `--module-path` with `--add-modules ALL-MODULE-PATH`, and the rest on the classpath, as they were
 placed for [compiling](/reference/java/compiling/#modules).
 

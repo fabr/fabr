@@ -1,6 +1,6 @@
 ---
 title: Continuous integration
-description: How to run fabr in CI — installing it, what to cache, what its output and exit status look like, collecting test results and coverage, and what isn't available yet.
+description: How to run fabr in CI — installing it, what to cache, what its output and exit status look like, collecting test results, coverage, security advisories and traces, and what isn't available yet.
 ---
 
 Running fabr in CI needs little setup: install Node.js and fabr, run the same commands you run
@@ -14,13 +14,13 @@ steps:
   - uses: actions/setup-node@v4
     with:
       node-version: 22
-  - run: npm install -g @fabr-build/cli@0.3.1
+  - run: npm install -g @fabr-build/cli@0.4.0
   - uses: actions/cache@v4
     with:
       path: ~/.cache/fabr
       key: fabr-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
       restore-keys: fabr-${{ runner.os }}-${{ runner.arch }}-
-  - run: fabr test @acme/core @acme/app
+  - run: fabr test --report reports/tests.xml --format junit @acme/core @acme/app
   - run: fabr build release
 ```
 
@@ -67,16 +67,14 @@ nothing.
 
 ## Exit status
 
-| Status | Meaning |
-|---|---|
-| 0 | Everything named was built, and all tests passed. |
-| 1 | Anything else: a build error, a failing test, a dependency that couldn't be resolved, an unknown target or option, a command with no target, a failed `sync`. |
-| 2 | An internal error in fabr. |
-| 130, 143, 129 | Interrupted by `SIGINT`, `SIGTERM` or `SIGHUP`. Running steps are stopped first. |
+Fabr exits with status 0 when everything named was built and every test passed, and with 1 for
+anything else, a failing test and a build error alike; the output says which. `fabr audit` exits
+with 1 when it finds an advisory. A run interrupted by `SIGINT`, `SIGTERM` or `SIGHUP` stops its
+running steps first and exits with 130, 143 or 129. The
+[command-line reference](/reference/command-line/#exit-status) lists every status.
 
-`fabr run` exits with the status of the program it ran.
-
-A failing test and a build error both give 1. The output says which.
+`fabr test` runs every named target's tests to the end, writes its reports and only then exits
+with 1, so a step after it that collects results gets them all; see [Test results](#test-results).
 
 ## Output
 
@@ -169,17 +167,37 @@ they go unused for 30 days.
 
 ## Test results
 
-`fabr test` prints a summary for each target and the details of each failure, and fails when any
-test failed. To give your CI system the results too, write them to a file with `--report`: as JUnit
-XML, which CircleCI, GitLab, Jenkins and most others read, or as a [CTRF](https://ctrf.io) report:
+`fabr test` prints a summary for each name you give and the details of each failure, and fails
+when any test failed. To give your CI system the results too, write them to a file with
+`--report`: as JUnit XML, which CircleCI's `store_test_results`, GitLab, Jenkins and most others
+read, or as a
+[CTRF](https://ctrf.io) report:
 
 ```sh
 fabr test --report reports/tests.xml --format junit TESTED
 ```
 
-The file holds the results of every target tested, one test suite per test file, and is written
-whether or not the tests pass, before the command fails for any that didn't. Each target's own
-report is also kept as `ctrf-report.json`, which `fabr cp` copies out, failures and all:
+The file holds the results of every target tested, one test suite per test file, with each failed
+test's message. It is written whether or not the tests pass, before the command fails for any that
+didn't, so collect it in a step that runs after a failure too. A build error that stops the run
+before the tests finish writes no file.
+
+```yaml
+# GitHub Actions: keep the report even when the tests fail
+  - run: fabr test --report reports/tests.xml --format junit TESTED
+  - uses: actions/upload-artifact@v4
+    if: always()
+    with:
+      name: test-results
+      path: reports/
+```
+
+A failed test run is cached like a passing one, so running the same commit again, as a CI retry
+does, reports the same failures without running the tests. To run them again, for a test you
+suspect is flaky, add `--retry-failed`.
+
+Each target's own report is also kept as `ctrf-report.json`, which `fabr cp` copies out, failures
+and all:
 
 ```sh
 fabr cp '@acme/core<BUILD_OPERATION=test>:ctrf-report.json' reports/core
@@ -201,16 +219,72 @@ directory. Coverage is reported whether or not the tests pass. A run with
 reuses its own earlier results. [Testing](/reference/js/testing/#coverage) describes what is
 measured.
 
+## Security advisories
+
+`fabr audit` checks the packages your targets depend on against the [OSV](https://osv.dev)
+database and exits with status 1 when any advisory affects one of them; see
+[Auditing dependencies](/guides/auditing/) for what it checks and how to act on a finding. In CI,
+write the report as SARIF and upload it, so that each advisory appears as a code-scanning alert
+at the line of your build file that brings the package in:
+
+```yaml
+# GitHub Actions: show advisories as code-scanning alerts
+  - run: fabr audit --format sarif @acme/app > audit.sarif
+    continue-on-error: true
+  - uses: github/codeql-action/upload-sarif@v3
+    with:
+      sarif_file: audit.sarif
+```
+
+Drop `continue-on-error` to fail the job instead. An audit that couldn't run, for instance because
+the advisory database couldn't be reached, also exits with 1 and leaves `audit.sarif` empty, so
+`continue-on-error` hides that failure from the audit step; the error is in its log. Advisories are read fresh on each run and never cached, so a commit that
+passed yesterday can fail today when a new advisory is published; run the audit in a job of its
+own, or on a schedule, if that shouldn't block a merge.
+
+## Software bill of materials
+
+`fabr sbom` writes a [CycloneDX](https://cyclonedx.org) bill of materials of a target's
+dependencies to stdout. Keep it with each release, or hand it to a dependency-tracking service:
+
+```yaml
+# GitHub Actions: keep the SBOM with the build
+  - run: fabr sbom -q @acme/app > app.cdx.json
+  - uses: actions/upload-artifact@v4
+    with:
+      name: sbom
+      path: app.cdx.json
+```
+
+It downloads no packages, and the same sources give the same file. See
+[Writing a bill of materials](/guides/auditing/#writing-a-bill-of-materials).
+
+## Finding out where a run's time goes
+
+`--trace` on `fabr build`, `fabr test` or `fabr run` writes a timeline of the work the run did,
+which [Perfetto](https://ui.perfetto.dev) opens. Keep it as an artifact to see why a CI run was
+slow: which steps ran, what ran in parallel, and where the run waited.
+
+```sh
+fabr test --trace=reports/trace.json TESTED
+```
+
+Work served from the cache doesn't appear in the trace. See
+[Tracing a run](/reference/command-line/#tracing-a-run).
+
 ## Network access
 
 Fabr contacts the npm registry (or the registry `NPM_REPOSITORY_URL` names), the hosts that
 registry's packages are downloaded from, `nodejs.org` and `unofficial-builds.nodejs.org` for the
-Node.js release, and the URLs of any `fetch` targets.
+Node.js release, and the URLs of any `fetch` targets. A Java build also contacts Maven Central (or
+the repository `MAVEN_REPOSITORY_URL` names) and `api.adoptium.net` for the JDK, and `fabr audit`
+contacts `api.osv.dev`.
 
 - **A build whose packages and Node.js release are all in the cache makes no requests.**
-  Published versions are never re-fetched. The exception is a `NODE` setting that names a version
-  range, for which fabr rechecks nodejs.org's list of releases about once an hour; write an exact
-  version to avoid it.
+  Published versions are never re-fetched. The exception is a list that can change, such as
+  nodejs.org's list of releases when `NODE` names a version range, or a Maven package's versions
+  when a requirement names a range: fabr checks it again at most once a day, or on every run given
+  `--refresh`. Write exact versions to avoid it.
 - **Proxies** are taken from `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`.
 - **Private registries** take credentials from `.npmrc`, where a value can come from the
   environment: `//npm.example.com/:_authToken=${NPM_TOKEN}`. See
@@ -242,10 +316,12 @@ memory, limit each test process instead, with `NODE_OPTIONS` in `test_env`.
 - Running `fabr sync` again after a partial failure is safe: versions already published are
   skipped.
 
-## What isn't supported
+## Not supported
 
 - **A shared or remote cache.**
 - **A limit on parallel steps.**
-- **A machine-readable log, or CI annotations.**
-- **Building in a container image, lint and format steps, and reports of outdated or vulnerable
-  dependencies** aren't part of fabr yet.
+- **A machine-readable log, or CI annotations.** `--report` and `--trace` write the test results
+  and the timeline as files, but the log itself is plain text.
+- **Lint and format steps** aren't built in. A rule can give your targets a `lint` operation; see
+  [Writing your own rules](/guides/rules/#a-rule-for-another-operation).
+- **A report of outdated dependencies.**

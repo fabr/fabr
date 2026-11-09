@@ -48,6 +48,7 @@ Java project with Maven or Gradle:
 | Run scripts in the right order: build, then test; or `mvn install` a module so the next one sees it | Name what you want: `fabr test mylib`. Fabr derives the order, builds what the target depends on, and runs steps in parallel. |
 | Start each tool's watch mode | Add `-w` to any command: `fabr test -w mylib`. |
 | `npm ls` or `mvn dependency:tree` to see which versions you got | `fabr deps mylib` prints the dependency tree a target resolves to, without downloading the packages. |
+| `npm audit` or a dependency-check plugin | `fabr audit mylib` checks that tree against the OSV database of security advisories, and `fabr sbom mylib` writes it as a CycloneDX bill of materials. |
 | Find output in `dist/`, `build/` or `target/` | Output stays in fabr's cache, out of your tree. You list, print or copy it with `fabr ls`, `cat` and `cp`. |
 | Switch configuration for a release build | `fabr build -DBUILD_TYPE=release app`. |
 
@@ -153,7 +154,7 @@ on your machine and aren't part of that guarantee. See
 | **rule** | How to carry out an operation on targets of one type. The most specific rule for the target's type and the current configuration is used. |
 | **operation** | What is being done with a target: `build`, `test` or `run`. |
 | **file set** | A set of named files. Source patterns, built targets and downloaded packages are all file sets, and are referred to the same way. |
-| **plugin** | A package that adds target types and rules for an ecosystem or service, such as `@fabr-build/js`, `@fabr-build/java` or `@fabr-build/aws`. |
+| **plugin** | A package that adds target types and rules for an ecosystem or service, such as `@fabr-build/js`, `@fabr-build/java`, `@fabr-build/container` or `@fabr-build/aws`. |
 
 [The conceptual model](/guides/concepts/) explains how these fit together.
 
@@ -166,23 +167,31 @@ on your machine and aren't part of that guarantee. See
 - **[Conceptual model](/guides/concepts/)**: file sets, properties, and building one target in
   several configurations.
 - **Guides**: [projects with several packages](/guides/multi-package/),
-  [watch mode and dev servers](/guides/watch/), [continuous integration](/guides/ci/) and
-  [writing your own rules](/guides/rules/).
+  [migrating an npm, Yarn or pnpm project](/guides/migrating-js/),
+  [watch mode and dev servers](/guides/watch/), [VS Code support](/guides/vscode/),
+  [continuous integration](/guides/ci/) and [writing your own rules](/guides/rules/).
+- **Example**: [Spring Boot with a React front end](/examples/spring-boot-react/).
 - **[Command line](/reference/command-line/)** and **[Language syntax](/reference/syntax/)**: the
   `fabr` command and the `.fabr` language in full.
 - **[Core targets and configuration](/reference/standard-rules/)**: the target types and settings
   that are always available.
 - **[Writing a plugin](/developer/writing-a-plugin/)**: add target types and rules of your own.
-- **JavaScript reference**: [targets and configuration](/reference/js/targets/),
-  [dependencies](/reference/js/dependencies/), [module resolution](/reference/js/module-resolution/),
-  [TypeScript compilation](/reference/js/typescript/), [stylesheets](/reference/js/stylesheets/),
-  [testing](/reference/js/testing/), [bundling](/reference/js/bundling/) and
-  [publishing](/reference/js/publishing/).
-- **Java reference**: [targets and configuration](/reference/java/targets/),
-  [dependencies](/reference/java/dependencies/),
-  [compiling](/reference/java/compiling/), [testing](/reference/java/testing/),
-  [running programs](/reference/java/running/) and [packaging](/reference/java/packaging/).
-- **AWS reference**: [targets and configuration](/reference/aws/targets/),
-  [accounts and credentials](/reference/aws/accounts/), [Amazon S3](/reference/aws/s3/),
-  [Amazon ECR](/reference/aws/ecr/) and [AWS CodeArtifact](/reference/aws/codeartifact/): build
-  inputs from S3, ECR and CodeArtifact, and publishing to them.
+- **JavaScript reference**: [dependencies](/reference/js/dependencies/), [module
+  resolution](/reference/js/module-resolution/), [TypeScript
+  compilation](/reference/js/typescript/), [stylesheets](/reference/js/stylesheets/),
+  [testing](/reference/js/testing/), [bundling](/reference/js/bundling/),
+  [publishing](/reference/js/publishing/) and [targets and configuration](/reference/js/targets/).
+- **Java reference**: [dependencies](/reference/java/dependencies/),
+  [compiling](/reference/java/compiling/), [testing](/reference/java/testing/), [running
+  programs](/reference/java/running/), [packaging](/reference/java/packaging/),
+  [publishing](/reference/java/publishing/) and [targets and
+  configuration](/reference/java/targets/).
+- **Container reference**: [building images](/reference/container/images/),
+  [registries](/reference/container/registries/), [running
+  containers](/reference/container/running/) and [targets and
+  configuration](/reference/container/targets/).
+- **AWS reference**: [accounts and credentials](/reference/aws/accounts/), [Amazon
+  S3](/reference/aws/s3/), [Amazon ECR](/reference/aws/ecr/), [AWS
+  CodeArtifact](/reference/aws/codeartifact/) and [targets and
+  configuration](/reference/aws/targets/): build inputs from S3, ECR and CodeArtifact, and
+  publishing to them.

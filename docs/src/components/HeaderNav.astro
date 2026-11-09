@@ -24,13 +24,13 @@
 // after them from `social:` config.
 import Default from "@astrojs/starlight/components/SocialIcons.astro";
 
-// Each section points at its first page: only /introduction/ and /quickstart-js/
+// Each section points at its first page: only /introduction/ and /quickstart/
 // are pages in their own right. An entry without `match` is external (never the
 // current page).
 const SECTIONS = [
   { label: "Introduction", href: "/introduction/", match: "/introduction/" },
   { label: "News", href: "https://blog.fabr.build/" },
-  { label: "Quickstart", href: "/quickstart-js/", match: "/quickstart-js/" },
+  { label: "Quickstart", href: "/quickstart/", match: "/quickstart" },
   { label: "Guides", href: "/guides/concepts/", match: "/guides/" },
   { label: "Reference", href: "/reference/command-line/", match: "/reference/" },
 ];

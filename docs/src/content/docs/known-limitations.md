@@ -7,9 +7,9 @@ Fabr builds, tests and runs real JavaScript, TypeScript and Java projects, itsel
 is under active development. This page lists the places where its present behaviour falls short
 of what it intends, with a workaround for each. Limits of a particular feature are documented with
 that feature: see [Testing](/reference/js/testing/),
-[Stylesheets](/reference/js/stylesheets/#what-isnt-supported) and
-[TypeScript compilation](/reference/js/typescript/) for JavaScript, and the "Not currently supported"
-sections of the [Java reference](/reference/java/dependencies/#not-currently-supported) pages.
+[Stylesheets](/reference/js/stylesheets/#not-supported) and
+[TypeScript compilation](/reference/js/typescript/) for JavaScript, and the "Not supported"
+sections of the [Java reference](/reference/java/dependencies/#not-supported) pages.
 
 | Limitation | Effect |
 |---|---|

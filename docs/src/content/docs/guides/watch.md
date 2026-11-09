@@ -31,6 +31,14 @@ summary again, so the terminal shows whether the tests pass as you edit. A chang
 nothing to redo, such as an edit to a file no target uses, prints nothing. A build error is
 reported once, and fabr goes on watching for the change that fixes it.
 
+`fabr test -w` reruns a target's tests only when something they depend on changes, and for
+JavaScript only the test files a change can reach run again; see
+[Running tests](/reference/js/testing/#running-tests). `--retry-failed`, which runs failed tests again without a change,
+can't be combined with `-w`.
+
+`--trace` works under `-w` too: the trace file is rewritten at the end of each round, with each
+round marked; see [Tracing a run](/reference/command-line/#tracing-a-run).
+
 Editing a build file takes effect in the same way as editing a source.
 
 ## Restart a program on change

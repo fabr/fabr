@@ -3,8 +3,9 @@ title: Amazon ECR
 description: How to pull container images from an ECR registry and push images to it, signed in with an AWS account's own credentials.
 ---
 
-An image in an Amazon ECR repository can be the base of a `container_image`, or read like any
-image, and a `sync` target can push images to ECR. The registry is signed in to with your AWS
+An image in an Amazon ECR repository can be the base of a
+[`container_image`](/reference/container/images/), or read like any image, and a `sync` target can
+push images to ECR. The registry is signed in to with your AWS
 account's credentials, so there is no `docker login` step, and nothing for Docker to keep.
 
 ```
@@ -29,7 +30,9 @@ fabr sync release     # pushes the image to ECR
 ```
 
 ECR registries are read and written by the container plugin, so a project using ECR declares both
-`@fabr-build/container` and `@fabr-build/aws`. `@aws` is the AWS account requests are signed in
+`@fabr-build/container` and `@fabr-build/aws`. How images are named, pulled and pushed in any
+registry is on the container plugin's [Registries](/reference/container/registries/) page; this
+page covers what is particular to ECR. `@aws` is the AWS account requests are signed in
 with; see [Accounts and credentials](/reference/aws/accounts/).
 
 ## Coming from the AWS CLI and Docker
@@ -53,7 +56,10 @@ a path inside it:
 @aws:ecr:base-images/node:22:etc/os-release   # a file of the image's filesystem
 ```
 
-The image is chosen for the build's target platform, as for any registry the container plugin reads.
+The image is chosen for the [build's platform](/reference/container/images/#the-images-platform),
+as for any registry the container plugin reads. A tag is checked again once fabr's answer for it is
+a day old, or straight away with `--refresh`; see [Tags and
+digests](/reference/container/registries/#tags-and-digests).
 
 ### The registry's address
 
@@ -62,7 +68,8 @@ in two regions of one account, is two repositories. fabr finds the account's reg
 account's `account_id` and `region`:
 
 - **With `account_id`** (recommended), the registry's address is known without asking AWS, so a
-  build whose images are already cached needs no network at all.
+  build whose images are cached needs the network only to check a tag again, once a day or with
+  `--refresh`; one that names its images by digest needs none.
 - **Without it**, fabr asks ECR for the address when an image is first named, which needs the
   network and credentials even when the image is cached.
 
@@ -93,8 +100,9 @@ sync release {
 }
 ```
 
-`fabr sync release` uploads the layers the repository lacks, then the manifest. An entry whose tag
-already names the same manifest is reported as already synced. The ECR repository must exist
+`fabr sync release` uploads the layers the repository lacks, then the manifest, as for [any
+registry](/reference/container/registries/#pushing-images). An entry whose tag already names the
+same manifest is reported as already synced. The ECR repository must exist
 before you push to it, as with `docker push`: create it with `aws ecr create-repository`, or
 let your account's settings create it on push.
 

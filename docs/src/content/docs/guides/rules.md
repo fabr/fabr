@@ -10,6 +10,9 @@ rules come with fabr and its plugins, written in code. You can also write a rule
 `.fabr` files, out of targets you could declare yourself: run a tool over a target's sources,
 generate a file from its properties, or build it with another target's rule. The target type can
 be one a plugin provides or one you declare, and the operation one it already has or a new one.
+A rule that needs more than targets can express, such as reading a tool's report, is written in
+TypeScript as part of a plugin, which your project can build itself as a `fabr_plugin` target;
+see [Writing a plugin](/developer/writing-a-plugin/).
 
 You don't call a rule: fabr applies it to every target of its type whose operation and guard it
 matches, as it does the standard rules, so each target gets its own copy of the rule's targets,
@@ -126,8 +129,8 @@ name: the package's own `package.json` still says `"name": "weather"`.
 The one-step rule above is the short form of this: `= generate gen { … }` means
 `= gen { generate gen { … } }`.
 
-`fabr build app` builds the client first, reporting its steps as `code weather` and
-`Compiling weather`.
+`fabr build app` builds the client first, reporting its steps as `Building code for weather` and
+`Compiling client for weather`.
 
 ## A rule for another operation
 
@@ -288,8 +291,8 @@ guarded ones included.
 A target in the block is built under the name of the target the rule is building, as that target's
 own work, so whatever its rule names after its target is named after the target being built (see
 [Packages are named after the target](#a-rule-of-several-steps)). The block's name for a target is
-how the block refers to it, and how fabr's progress output and errors name its work: `Building
-report for app`, `Compiling report for app failed`.
+how the block refers to it, and how fabr's progress output and errors name its work, as in
+`Building report for app`.
 
 Since every target in the block is a package of the target's name, and a property read as packages
 takes one package of each name, a target of the block can list only one other target of the block
@@ -301,11 +304,14 @@ packages, name them for their files (`classes:classes/**`).
 ## Package versions
 
 The result, and every target of the block it reaches through what each target requires, resolve
-their packages together, as the parts of one target do. A target is reached when another one
-names it among what it requires, for its package (`deps = api`) or only for its files
-(`resources = classes:classes/**`). So in a war rule, the `deps` that `classes` compiles against
-and the jars `libs` lays into `WEB-INF/lib` are the same versions, and a package any reached
-target adds beside `w.deps` raises a version for all of them.
+their packages together, as the parts of one target do: what they build against as one set of
+versions, and what they install or run as another, each target's requirements joining the set
+its own rule puts them in. A target is reached when another one names it among what it requires,
+for its package (`deps = api`) or only for its files (`resources = classes:classes/**`). So in
+Java's `war_package` rule, the `deps` that `classes` compiles against are one set, the jars `libs`
+lays into `WEB-INF/lib` the other, and a package any reached target adds beside `w.deps` raises
+its version for the whole of its set. Where only one set asks for a later version of a package,
+the two can hold different versions of it, as a Java project's compile and runtime classpaths can ([Compile and runtime classpaths](/reference/java/dependencies/#compile-and-runtime-classpaths)).
 
 A target of the block that the result doesn't reach this way, such as a program another target
 runs as a command, has its versions chosen for it alone, as any tool's are. A target in the block whose own
@@ -320,9 +326,11 @@ type collects its packages permissively, as `java_program` does.
 `fabr deps` on a target a rule builds shows that resolution from the target's side: a section for
 each of the target's own properties the block reads (`deps`, `provided_deps`), holding what it
 resolved to, and a section `required by <type> rule` for what the block adds itself. The block's
-own targets aren't shown; what they pass on is in those sections. Where the result is a target
-outside the block, such as the target itself under another operation, it's shown under the rule's
-section, as what the target is made from.
+own targets aren't shown; what they pass on is in those sections. Where the result is another
+target of your project, outside the block, it's shown under the rule's section, as what the target
+is made from. Where the result is the target itself under another operation, as in
+`= pkg<BUILD_OPERATION=build> { … }`, run `fabr deps` on the target under that operation to see
+what it requires.
 
 ## Configuration
 

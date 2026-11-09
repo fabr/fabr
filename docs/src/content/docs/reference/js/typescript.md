@@ -24,7 +24,7 @@ your build file:
 | tsconfig.json option | In fabr |
 |---|---|
 | `target`, `module` | The `JS_TARGET` setting, written `<ES-version>-<module>-<environment>`, for example `JS_TARGET = es2022-esm;`. The module part is `commonjs`, `esm` or `dual` ([both formats in one package](#one-package-in-both-module-formats)); the default is `es6-esm`. |
-| `lib` | Follows the ES version in `JS_TARGET`. To declare the level your sources are written against separately, add an ES-level flag (`es5`, `es2015` … `es2023`, `esnext`) to the target's `deps`; using a newer API is then a compile error, and sources declared below `es2022` keep assignment semantics for class fields whatever version is emitted. Add the `dom` flag for browser APIs. |
+| `lib` | Follows the ES version in `JS_TARGET`. To declare the level your sources are written against separately, add an ES-level flag (`es5`, `es2015` … `es2023`, `esnext`) to the target's `deps`; using a newer API is then a compile error, and sources declared below `es2022` keep assignment semantics for class fields whatever version is emitted. Add the `dom` flag for browser APIs, which adds the `dom` and `dom.iterable` libraries. |
 | `strict` and the options it enables | On. Relax them per target with `ts/…` flags in `deps` (see below). |
 | `esModuleInterop` | On. Add `ts/no_es_module_interop` for code written with `import * as x` of a callable CommonJS module. |
 | `experimentalDecorators`, `emitDecoratorMetadata` | Off. Add `ts/experimental_decorators` or `ts/emit_decorator_metadata` (which implies the first). |
@@ -44,6 +44,10 @@ js_package app {
   deps = @npm:react:19.1.0 ts/no_strict_null_checks ts/experimental_decorators dom;
 }
 ```
+
+A flag can also go in `compile_deps`, which affects only how the target is compiled. That matters
+for `dom`, which in `deps` also runs the target's tests under jsdom, and in `compile_deps` gives the
+DOM types alone; see [DOM tests](/reference/js/testing/#dom-tests).
 
 The strictness flags each turn off one option: `ts/no_strict` (all of `strict`),
 `ts/allow_implicit_any`, `ts/allow_implicit_this`, `ts/no_strict_null_checks`,

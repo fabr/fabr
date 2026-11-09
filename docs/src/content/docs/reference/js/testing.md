@@ -54,13 +54,14 @@ js_package mylib {
 }
 ```
 
-Test files are compiled together with the package's sources, so a test imports the code it tests
-by relative path, or by the package's own name. The tests run against the package as `fabr build`
-builds it, so the sources are compiled once for both. Where the package is built in a different
-module format from the one the test framework loads, fabr builds it a second time in that format
-for its tests. The tests can use everything in `deps` as well as
-`test_deps`. Nothing listed under `tests` or `test_deps` becomes part of the built package, and
-`test_deps` are not added to its `package.json`.
+A test imports the code it tests by relative path, or by the package's own name. The tests run
+against the package as `fabr build` builds it: the test files are compiled against the type
+declarations that build emitted, so only the tests themselves are type-checked and compiled, and
+an edit to a test doesn't recompile the package. Where the package is built in a different module
+format from the one the test framework loads, fabr builds it a second time in that format for its
+tests. The tests can use everything in `deps`, `compile_deps` and `test_deps`, and find the
+package's `resources` where the package ships them. Nothing listed under `tests` or `test_deps`
+becomes part of the built package, and `test_deps` are not added to its `package.json`.
 
 For tests that don't belong to a package, such as an end-to-end suite, declare a `js_test`. It
 takes the same settings under shorter names:
@@ -69,6 +70,7 @@ takes the same settings under shorter names:
 |---|---|---|
 | `tests` | `tests` | The test files. |
 | `deps` and `test_deps` | `deps` | Packages and supporting sources the tests use. |
+| `compile_deps` | `compile_deps` | Packages the tests are compiled against whose [flags](#dom-tests) don't change how they run. |
 | `test_framework` | `framework` | `node`, `jest` or `vitest`. |
 | `test_env` | `env` | Environment variables for the test processes. |
 | `test_resources` | `resources` | Files the tests read at run time. |
@@ -113,9 +115,10 @@ the `describe` blocks it is in and its own, joined by spaces, as `dates parse is
 `it("parse iso")` inside `describe("dates")`. Each framework does the matching, so its own rules
 apply: jest ignores case, and `node:test` also matches a test's own name alone. Under jest and
 vitest the tests not selected are counted as skipped. The summary ends `(filtered)`, and if no
-test in any target matches, the run fails. The pattern is part of what is cached, so a filtered
-run and a full one are cached separately. A failing
-run prints a line for each failed test and fails the command, naming the test file by its path in
+test in any target matches, the run stops with `No test's name matches the pattern '…'`. The
+pattern is part of what is cached, so a filtered run and a full one are cached separately.
+
+A failing run prints a line for each failed test and fails the command, naming the test file by its path in
 your project, as in `greets by name (src/greet.test.ts): 'Hello, x!' == 'Hello, world!'`. Under
 jest and vitest the line is followed by the detail the framework itself shows, such as a matcher's
 diff and the stack trace, with stack frames naming your TypeScript sources.
@@ -124,18 +127,23 @@ Some things differ from running a test framework's own command:
 
 - **A run is cached, passing or failing.** If nothing the tests depend on has changed, `fabr test`
   reports the previous result without running them again; a failing run's failures are reported
-  again, and the command fails again. To run failing tests again anyway, as for a flaky test, use
-  `fabr test --retry-failed`.
+  again, and the command fails again, until something they depend on changes. To run the failed
+  test files again anyway, as for a flaky test, use
+  [`fabr test --retry-failed`](/reference/command-line/#test). The
+  [exit status](/reference/command-line/#exit-status) is 1 whenever a test failed.
 - **Only the test files a change can reach run again.** Each test file's run records what it
   loaded and read; after a change, a file runs again if it read something that changed, or failed
   last time, and the rest keep their previous results, their coverage included under `--coverage`.
-  Adding or deleting a file runs every test file of the target again. A test file that starts a process or a worker
-  thread runs again on every change, since what those read can't be recorded.
+  Adding or deleting a file runs every test file of the target again. A test file that starts a
+  process or a worker thread runs again on every change, since what those read can't be
+  recorded.
 - **You select tests by target and by name, not by file.** `fabr test -t` selects by name, as
   `jest -t` does; there is no equivalent of passing a file path, and arguments aren't passed
   through to the framework. To run a subset routinely, give it its own target.
 - **Each test file runs in its own process,** in parallel up to the number of processors, so test
   files share no state. Framework options that control workers or isolation don't apply.
+- **A test file's process ends once its results are reported,** even if the tests left a timer,
+  a server or an open connection behind, as with jest's `--forceExit`.
 - **A test times out after 120 seconds** under every framework, where jest and vitest default to
   5 seconds. A timeout you set on an individual test still applies, as does `jest.setTimeout`.
 
@@ -248,14 +256,15 @@ js_package widgets {
 }
 ```
 
-The flag does two things: it adds the DOM type declarations to the compile, and it runs the tests
-under jsdom. Put it in `deps` when the package's own sources use DOM APIs, and in `test_deps` when
+The flag does two things: it adds the DOM type declarations to the compile (TypeScript's `dom`
+and `dom.iterable` libraries), and it runs the tests under jsdom. Put it in `deps` when the package's own sources use DOM APIs, and in `test_deps` when
 only the tests do. The `node` framework has no DOM environment; a target with the `dom` flag needs
 `jest` or `vitest`.
 
 Code that runs under node but contains code for a browser, such as the callbacks a Puppeteer or
 Playwright script passes to `page.evaluate`, needs the DOM types without a DOM to run in. Put the
-flag in `compile_deps` instead: the tests are compiled against the DOM and run under node.
+flag in `compile_deps` instead, on a `js_package` or a `js_test`: the tests are compiled against
+the DOM and run under node.
 
 ```
 js_test recorder_tests {
@@ -265,6 +274,10 @@ js_test recorder_tests {
   framework = jest;
 }
 ```
+
+Under the `jest` framework, a jsdom test has no `setImmediate`, `clearImmediate`, `MessageChannel`
+or `MessagePort`, as under jest itself, so code that picks a scheduler by what exists (React does)
+behaves as it does under jest.
 
 Both jest and vitest also accept their usual per-file comment, `@jest-environment jsdom` or
 `// @vitest-environment jsdom`, which overrides the environment for that file. The comment
@@ -613,7 +626,7 @@ and runs your program once for each test file, with the compiled tests as its wo
 ```
 
 - **`--env`** is `jsdom` for a target with the [`dom` flag](#dom-tests) in its `deps` or
-  `test_deps`, and `node` otherwise.
+  `test_deps` (not `compile_deps`), and `node` otherwise.
 - **`--update-snapshots`** is passed by `fabr test -u`.
 - **`--name-pattern`** is passed by `fabr test -t`: run only the tests whose full names match.
 - **`--setup`** names a [`setupTests`](#a-setup-file) file to load before the test file.
@@ -656,6 +669,8 @@ the runner starts are measured as long as that variable is passed on.
 | `EACCES: permission denied, open '…/__snapshots__/x.test.ts.snap'` under `fabr test -u`, or `.snap` files in the built package | The `.snap` files are matched by `srcs`, not `test_expectations` | Match them with `test_expectations` only. |
 | `Recorded snapshots need node 23.4 or later` | `node` framework snapshots, with `NODE` set to an older release | Set [`NODE`](/reference/js/dependencies/#the-nodejs-version) to Node.js 23.4 or later. |
 | `The jest compatibility runner needs node 22.15 or later`, or `The vitest runner needs node 22.15 or later` | `NODE` is set to an older release | Set [`NODE`](/reference/js/dependencies/#the-nodejs-version) to Node.js 22.15 or later. |
+| `Measuring coverage needs the tests' packages in a node_modules tree; drop layout/pnp for --coverage` | `fabr test --coverage` on a target with the `layout/pnp` flag | Measure it without the flag; see [How tests find their packages](#how-tests-find-their-packages). |
+| `No test's name matches the pattern '…'` | `fabr test -t` with a pattern that no test's full name matches | Check the pattern against the `describe` and test names, joined by spaces. |
 | `Test target has more than one setupTests script` | Two `setupTests` files at the root of the source tree, such as a `.ts` and a `.js` | Keep one. |
 | `The jest compatibility runner supports jest 29 and 30, but JEST is pinned to …` | `JEST` names another major version | Set `JEST` to a jest 29 or 30 release. |
 | `fabr runs vitest 4.1 or later, but the target's vitest is …` | An older vitest in `test_deps` | Use vitest 4.1 or later. |

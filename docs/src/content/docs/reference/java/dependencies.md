@@ -21,12 +21,15 @@ answer every time. This page covers declaring dependencies and how their version
 | `<scope>test</scope>` / `testImplementation` | `test_deps`. |
 | `annotationProcessor`, `<annotationProcessorPaths>` | `processors`; see [Annotation processors](/reference/java/compiling/#annotation-processors). |
 | A BOM in `<dependencyManagement>` with `<scope>import</scope>` / `platform(…)` | The BOM in `deps`, `test_deps` or wherever its versions are used; see [BOMs](#boms). |
+| Versions in a parent POM's `<dependencyManagement>` / a version catalog (`libs.versions.toml`) | A [catalog](#catalogs). |
 | Nearest-wins conflict resolution | The highest version anything requires; see [How versions are chosen](#how-versions-are-chosen). |
 | `<classifier>linux-x86_64</classifier>` / `group:artifact:version:classifier` | `@mvn:<group>:<artifact>/<classifier>:<version>`; see [Classified jars](#classified-jars). |
 | `<type>zip</type>` / `group:artifact:version:classifier@zip` | `@mvn:<group>:<artifact>/<classifier>@zip:<version>`, or with no classifier `<artifact>@zip`; see [Files other than jars](#files-other-than-jars). |
 | `<exclusions>` in a dependency's POM | Read, as Maven reads them; see [What fabr reads from a POM](#what-fabr-reads-from-a-pom). |
-| `<exclusions>` in your own build | See [Not currently supported](#not-currently-supported). |
-| `<repositories>`, `settings.xml` mirrors | A [`maven_repository`](#repositories), or `MAVEN_REPOSITORY_URL`. |
+| `<exclusions>` in your own build | See [Not supported](#not-supported). |
+| `<repositories>` / `repositories { maven { … } }` | A [`maven_repository`](#repositories); several combined with a [`repository_group`](#combining-repositories). |
+| `<mirrors>` in `settings.xml` | `MAVEN_REPOSITORY_URL`; see [Mirrors and proxies](#mirrors-and-proxies). |
+| `<proxies>` in `settings.xml` | The `https_proxy` environment variable; see [Mirrors and proxies](#mirrors-and-proxies). |
 | `<servers>` in `settings.xml` | The same file; see [Credentials](#credentials). |
 | `mvn dependency:tree` / `gradle dependencies` | `fabr deps <target>`. |
 | Gradle Module Metadata (`.module`) | Read where the POM says it is published; see [Gradle Module Metadata](#gradle-module-metadata). |
@@ -121,6 +124,16 @@ a dependency on only one of them asks for a later version of a package, the two 
 hold different versions of it, as Gradle's do unless you turn on its consistent resolution. To use
 one version on both, pin it in your `deps`.
 
+What goes on each follows from the scopes involved. Your `compile_api_deps` and `compile_deps` are
+on the compile classpath only, and your `runtime_deps` on the runtime classpath only; see
+[Which properties take dependencies](#which-properties-take-dependencies). A dependency's own
+requirements are split the same way: its POM's `runtime` scope dependencies are on your runtime
+classpath only, and where it publishes [Gradle Module Metadata](#gradle-module-metadata), its
+`java-api` variant gives your compile classpath and its `java-runtime` variant your runtime one.
+`fabr deps <target>` shows a target's dependencies under the property each is written in.
+When you publish a jar, its POM records each property with the matching scope; see
+[The generated POM](/reference/java/publishing/#the-generated-pom).
+
 ## BOMs
 
 A BOM (bill of materials) is a POM-packaged artifact whose `<dependencyManagement>` lists
@@ -150,6 +163,52 @@ something requires a later one. A package also forced with its own `!` keeps tha
 deps = @mvn:org.springframework.boot:spring-boot-dependencies:4.0.0!
        @mvn:org.springframework:spring-core:7.0.10;    # spring-core 7.0.1, the BOM's
 ```
+
+## Catalogs
+
+A catalog is a named list of dependencies whose versions are chosen once, together, which targets
+then name without a version. It does for a multi-module project what a parent POM's
+`<dependencyManagement>` or a Gradle version catalog does. A Maven package in a catalog is named by
+`<group>/<artifact>`:
+
+```
+catalog @lib {
+  deps = @mvn:com.google.guava:guava:33.2.1-jre
+         @mvn:org.apache.commons:commons-text:1.11.0
+         @mvn:org.apache.commons:commons-lang3:3.14.0
+         @mvn:org.junit:junit-bom:5.11.4
+         @mvn:org.junit.jupiter:junit-jupiter
+         @mvn:org.junit.platform:junit-platform-launcher;
+}
+
+jar_package app {
+  srcs = src/main/java:**/*.java;
+  deps = @lib:com.google.guava/guava @lib:org.apache.commons/commons-text;
+  tests = src/test/java:**/*.java;
+  test_deps = @lib:org.junit.jupiter/junit-jupiter @lib:org.junit.platform/junit-platform-launcher;
+}
+```
+
+- **A BOM can be a member**, and gives versions to the members written without one, as it does in a
+  target's `deps`; see [BOMs](#boms). The BOM itself needn't be named by the targets.
+- **A catalog's versions apply to what its members bring in.** `commons-text` 1.11.0 asks for
+  `commons-lang3` 3.13.0, but the catalog lists 3.14.0, so `app` gets 3.14.0, though it doesn't name
+  `commons-lang3`, as a `<dependencyManagement>` entry would give it.
+- **Every target that uses a member gets the catalog's versions.** A target that asks for another
+  version of one of them directly, such as `@lib:org.apache.commons/commons-text` beside
+  `@mvn:org.apache.commons:commons-lang3:3.14.0` in a catalog that selected 3.13.0, fails with a
+  [version conflict](#when-versions-conflict):
+
+  ```text
+  Resolution requires multiple versions of the same package:
+    org.apache.commons/commons-lang3 is required as '[3.13.0]' and as '3.14.0', and no one version is both
+  ```
+
+  Change the version in the catalog instead, so that every target agrees.
+
+The rest of what a catalog does, such as fetching a member only when a target uses it, is the same
+for every kind of package; see [Catalogs](/reference/js/dependencies/#catalogs). A jar whose
+dependencies come from a catalog can't yet be published; see [Not supported](#not-supported).
 
 ## What fabr reads from a POM
 
@@ -301,8 +360,43 @@ jar_package app {
 }
 ```
 
-A package's own requirements are looked up in the repository it came from, so the repository must
-hold everything its packages require; a repository manager that proxies Central does.
+### Combining repositories
+
+Maven and Gradle look for each package in every repository the build lists. Fabr looks for a
+package, and for everything its POM requires, in one repository only: the one its reference names.
+So `@corp` above must hold everything `billing` requires, as a repository manager that proxies
+Central (a Nexus or Artifactory group repository) does. Setting `MAVEN_REPOSITORY_URL` to such a
+repository is then all a build needs.
+
+A repository that holds only some packages, such as Google's, is combined with Central in a
+`repository_group`, which chooses the repository for each package by its name:
+
+```
+maven_repository @google {
+  url = https://maven.google.com;
+}
+
+repository_group @deps {
+  androidx.* = @google;
+  *          = @mvn;
+}
+
+jar_package app {
+  srcs = src/main/java:**/*.java;
+  deps = @deps:androidx.annotation:annotation:1.8.0;
+}
+```
+
+`androidx.annotation` comes from Google's repository, and the Kotlin standard library it requires
+from Central. A key is a package name, `<group>/<artifact>`, or a prefix of one ending in `*`, or `*`
+alone for every other package; the longest matching key decides. A package is looked up only in the
+repository its name selects, never in another as a fallback, and versions are chosen across all of
+them together.
+
+Where a repository lacks a package one of its packages requires, the error names the repository:
+`org.jetbrains.kotlin:kotlin-stdlib:1.7.10 is not published at https://maven.google.com (required by
+androidx.annotation/annotation-jvm@1.8.0 < androidx.annotation/annotation@1.8.0)`. Combine it with
+Central in a `repository_group`, or use a repository manager that proxies both.
 
 ### Credentials
 
@@ -345,7 +439,17 @@ the file in CI. A server's `<configuration><httpHeaders>` are sent too, for a re
 a token from a header, such as GitLab's `Private-Token`. A password encrypted with Maven's master
 password can't be read; write it with `${env.NAME}` instead.
 
-## Not currently supported
+### Mirrors and proxies
+
+Fabr reads only the `<servers>` of `settings.xml`. Its `<mirrors>`, `<proxies>`, `<profiles>` and
+`<localRepository>` are not read:
+
+- **A mirror** of Central is `MAVEN_REPOSITORY_URL`, or a `maven_repository @mvn` of your own where
+  it needs credentials; see [Credentials](#credentials).
+- **A proxy** comes from the standard environment variables, `https_proxy`, `http_proxy` and
+  `no_proxy`, in upper or lower case.
+
+## Not supported
 
 - A project can't write an exclusion of its own: a package a dependency requires can't be left
   out, only overridden with `!`. Exclusions a dependency's POM or `.module` publishes are read.
@@ -356,3 +460,9 @@ password can't be read; write it with `${env.NAME}` instead.
   `@mvn:<group>:<artifact>/test-fixtures:<version>`, but the dependencies Gradle publishes for
   them are not read: write them beside it.
 - Timestamped `-SNAPSHOT` versions are not resolved.
+- Your local repository (`~/.m2/repository`) is not read, and a `maven_repository` URL can't be a
+  `file:` URL.
+- A jar whose `deps`, `provided_deps`, `optional_provided_deps`, `runtime_deps` or
+  `compile_api_deps` come from a [catalog](#catalogs) can't be published: the `sync` fails with
+  `cannot publish … it depends on 'com.google.guava/guava', which is no Maven package`. Give those
+  dependencies their versions directly, or through a property.

@@ -4,22 +4,29 @@ description: The syntax of PROJECT.fabr and the .fabr files it includes — refe
 ---
 
 A fabr build file (`PROJECT.fabr`, and any files it includes) is written in a small declarative
-language. It has four kinds of statement:
+language made of these statements:
 
 | Statement | Example | Section |
 |---|---|---|
 | Load a plugin or another file | `plugin @fabr-build/js;` | [Plugins and includes](#plugins-and-includes) |
 | Set a property | `JS_TARGET = es2022-esm;` | [Properties](#properties) |
 | Declare a target | `js_package mylib { srcs = src:**/*.ts; }` | [Target declarations](#target-declarations) |
+| Declare a fallback | `default TYPESCRIPT = @npm:typescript:5.6.3;` | [Default properties](#default-properties) |
+| Declare a name for one file only | `private VERSION = 2.4.0;` | [Private declarations](#private-declarations) |
+| Apply a guard to several declarations | `<TARGET=*-apple-*> { … }` | [Guarded properties](#guarded-properties) |
 | Define a target type | `targetdef mytype { srcs = FILES; }` | [Targetdef declarations](#targetdef-declarations) |
 | Define a type from another | `targetdef mytype extends js_package { docs = FILES; }` | [Extending a type](#extending-a-type) |
+| Say how a type is built | `rule mytype t<BUILD_OPERATION=build> = …;` | [Rule and repository declarations](#rule-and-repository-declarations) |
 
 Most of what you write inside them is [references](#references): the patterns that name files,
 targets and packages.
 
-Two rules apply throughout. Every name, whether a property or a target, is declared once. And the
-order of declarations doesn't matter: a name can be used before the line that declares it, and
-nothing is worked out until a build needs it.
+Two rules apply throughout. Every name, whether a property or a target, is declared once in the
+project; a [default](#default-properties) that another declaration replaces,
+[guarded](#guarded-properties) declarations of one property, and [private](#private-declarations)
+names, which belong to one file, are the exceptions. And the order of declarations doesn't
+matter: a name can be used before the line that declares it, and nothing is worked out until a
+build needs it.
 
 ## Comments and whitespace
 
@@ -163,14 +170,22 @@ srcs = **/!(gen/out)/**/!(*.test.ts);     # neither under gen/out, nor a .test.t
 
 ### Quoting
 
-An unquoted value can contain letters, digits, `_`, and `/ - . @ :`, the glob characters
-`* ? [ ]`, and the extended-glob forms above. Outside an extended glob, `(`, `)`, `|` and `!` are
-ordinary characters, so a leading `!` on its own doesn't negate anything.
+An unquoted word runs until whitespace or one of `, = { } ; < > #`. In it, `* ? [ ]` and the
+extended-glob forms above are wildcards, `$` and a backtick start a
+[substitution](#variable-substitution), and every other character stands for itself, so
+`@npm:react:^19.1.0` needs no quotes. Outside an extended glob, `(`, `)`, `|` and `!` are ordinary
+characters, so a leading `!` on its own doesn't negate anything.
 
-Quote a value that contains spaces or any other character:
+Quote a value, or part of one, that contains whitespace or any of those characters:
 
-- **Single quotes** `'…'` take the text as it is.
-- **Double quotes** `"…"` allow `${…}` substitution and backslash escapes.
+- **Single quotes** `'…'` take the text as it is: no substitution, no escapes, no wildcards.
+- **Double quotes** `"…"` allow `${…}` and backtick substitution and backslash escapes, and take
+  wildcards literally: `"*.ts"` names a file called `*.ts`.
+
+A backslash, in double quotes or in an unquoted word, takes the next character literally
+(`a\ b` is one word, `\"` a double quote), except for the C escapes `\n`, `\t`, `\r`, `\a`, `\b`,
+`\e`, `\f`, `\v`, `\xHH` and `\0NNN` (octal). Quoted and unquoted parts written together make one
+word: `'it''s'` is `its`, and `"v${VERSION}"-rc` is one word.
 
 A quoted value may span lines. Each line break, and the indentation of the line after it, is
 part of the text, so a shell script written in one reads as the script would in a file:
@@ -275,9 +290,10 @@ Inside single quotes it is ordinary text.
 srcs = generated/`version_tool --short`/*.js;
 ```
 
-- **The command must be something fabr can run**: a runnable target, a property naming one, or a
-  package such as `@npm:typescript:5.6.3:tsc`. A program that exists only on your machine, such as
-  `cc` or `sed`, can't be named.
+- **The command must be something fabr can run**: a runnable target, a property naming one, a
+  package such as `@npm:typescript:5.6.3:tsc`, or a program installed on your machine, named
+  through [`@host`](#programs-on-your-machine) (`` `@host:uname -s` ``). A bare `uname` is looked
+  up as a name in your project, not on your `PATH`.
 - **The output is trimmed**, and runs of whitespace inside it, newlines included, become single
   spaces, as a shell does. For output of several lines, use a
   [`generate`](/reference/standard-rules/#generate) target and read the file it produces.
@@ -328,10 +344,15 @@ srcs = src/**/*.ts -> lib/**/*.mts;
 ```
 
 - The `->` has spaces around it and comes last in the reference.
-- Both sides use only `*` and `**` as wildcards, not `?` or `[…]`, and the same number of them.
+- Both sides use only `*` and `**` as wildcards, not `?`, `[…]` or an extended glob other than
+  `!(…)`, and the same number of them.
 - A template with no wildcard names one file, so the left side can be any pattern that matches
   exactly one: `srcs = vendor/*/dist/index.js -> vendor.js;`. Matching two files is an error,
   since both would get the same name.
+- A [`!(…)` group](#negation) on the left is not one of its wildcards: it isn't counted, and what
+  it matched is left out of the new name. `src/!(generated)/*.ts -> lib/*.js` names
+  `src/api/client.ts` `lib/client.js`. A selection whose only wildcard is inside a negation, such
+  as `src/!(*.test).ts`, can therefore only be renamed to a single name.
 
 A template can instead refer to the wildcards by number, `$1` for the first and so on. The counts
 then needn't match, so a numbered template can repeat a wildcard, reorder them or leave one out:
@@ -525,16 +546,20 @@ metadata = { COMMON; description = This particular package; };
 
 ### Command property
 
-A command is a pipeline, written much as in a shell. A [`generate`](/reference/standard-rules/#generate)
-target's `run` is one, and so is the inside of a [command substitution](#command-substitution).
+A command is a pipeline, written much as in a shell. The `run` of a
+[`generate`](/reference/standard-rules/#generate) or a
+[`patched`](/reference/standard-rules/#patched) target is one, and so is the inside of a
+[command substitution](#command-substitution).
 
 ```
 run = my_script -l < src/input.txt | paginate > output.txt;
 ```
 
-Each command is something fabr can run: a runnable target, or a package with a command-line
-program. Programs on your machine can't be named. The arguments are words, and a pattern among
-them is expanded against the target's input files.
+Each command is something fabr can run: a runnable target, a package with a command-line
+program, or a program installed on your machine, named through
+[`@host`](#programs-on-your-machine). The arguments are words, and a pattern among them is
+expanded against the target's input files. A command can't be written in a
+[map](#map-properties).
 
 | Form | Meaning |
 | --- | --- |
@@ -557,6 +582,22 @@ sets `output`, that chooses the result instead, from those files and from any fi
 wrote, and a kept file it doesn't match is left out. A kept file and a written file with the same
 name is an error. Files that `incremental` selects are kept for the command's next run rather
 than added to the result; see [`generate`](/reference/standard-rules/#generate).
+
+#### Programs on your machine
+
+`@host:<command>` is the program a shell would run for `<command>`, found on fabr's own `PATH`, and
+`@host:<absolute path>` the program at that path:
+
+```
+run = @host:sed -e s/DEBUG/RELEASE/ < config.in > config.out;
+```
+
+Fabr identifies the program by its contents, so a different build of `sed` rebuilds what used it.
+It doesn't track what the program reads or runs in turn, such as a compiler's headers or its
+linker, and the program starts with no environment variables except those its target's `env`
+sets. Prefer a tool fabr fetches, such as an npm package, where there is one; use `@host` for
+what only your machine provides. The [`host_searchpath`](/reference/standard-rules/#host_searchpath)
+entry has the details.
 
 ### Guarded properties
 
@@ -628,9 +669,10 @@ js_package mylib {
 }
 ```
 
-The type is one that fabr's core or a loaded plugin defines; the reference pages for
-[core](/reference/standard-rules/) and [JavaScript](/reference/js/targets/) list them with their
-properties. The name is how the target is referred to, in build files and on the command line.
+The type is one that fabr's core or a loaded plugin defines, or one your own
+[`targetdef`](#targetdef-declarations) declares; the reference pages for
+[core](/reference/standard-rules/) and [JavaScript](/reference/js/targets/) list the standard ones
+with their properties. The name is how the target is referred to, in build files and on the command line.
 
 A target can be declared `default`, like a property:
 
@@ -667,7 +709,9 @@ js_package cli  { JS_DEFAULTS; srcs = src:**/*.ts; test_framework = node; }
   entry whose value doesn't fit its property (a `{ … }` block for a `FILES` property) is an error
   when the target is built, as is a `REQUIRED` property that the body as spliced doesn't set.
 - **Only a map can be spliced.** A target's name isn't a map: it stands for what the target builds.
-  A splice can't be guarded.
+  A splice can't be guarded, either with a `<…>` after it or inside a
+  [guard block](#guarded-properties). A map can't hold a [command](#command-property), so a
+  `COMMAND` property such as `generate`'s `run` is written in the target itself.
 
 Inside a [rule's block](#rule-and-repository-declarations), the rule's parameter is the target
 being built as a map of its properties, so `pkg;` splices all of them (see

@@ -23,9 +23,9 @@ plugin @fabr-home:@example/text-lint;
 
 The declaration brings in the plugin's own `.fabr` files, so its target types can be used straight
 away, with no `include`. A plugin declared in several files is loaded once. Core's own library is
-always present, so the `flag`, `script`, `generate`, `patched`, `serve` and `sync` target types,
-and the `catalog`, `fetch`, `repository_group` and `fabr_home` repository types, need no
-declaration.
+always present, so the `flag`, `script`, `generate`, `patched`, `zip`, `serve` and `sync` target
+types, and the `catalog`, `fetch`, `repository_group`, `fabr_home` and `host_searchpath` repository
+types, need no declaration.
 
 A plugin's name is read like any other reference. Fabr's own plugins are named as they are
 published, `@fabr-build/js` and `@fabr-build/java`: names in the `@fabr-build` scope mean the
@@ -79,9 +79,30 @@ text_lint docs { srcs = docs/**/*.md; }
 
 Where a `plugin` declaration names a `fabr_plugin` target, fabr reads the target's `libs` with the
 project's own files, before anything is built, and loads no installed copy. So `libs` and
-`optional_libs` must be literal paths or patterns, relative to the file declaring the target. The plugin's code is
-built, for the machine fabr runs on, the first time a rule or repository it implements is used; a
-run that uses none of them builds none of it.
+`optional_libs` must be literal paths or patterns, relative to the file declaring the target, with
+no `${…}` substitution or [splice](/reference/syntax/#splicing-a-map-into-a-target). The plugin's
+code is built, for the machine fabr runs on, the first time a rule or repository it implements is
+used; a run that uses none of them builds none of it.
+
+A plugin whose `resources` include something its own rules build depends on itself, and fails
+with `Circular dependency: '@example/text-lint' depends on itself`. Build it in two stages, with a
+property of your own: the project uses the plugin without those resources, and the copy you build
+and publish has them:
+
+```
+STAGE = 1;
+
+plugin @example/text-lint<STAGE=0>;
+
+fabr_plugin @example/text-lint {
+  srcs = src:**/*.ts;
+  exports = src:rules/*.ts;
+  libs = lib/LINT.fabr;
+  resources<STAGE=1> = lint-rules;
+}
+
+text_lint lint-rules { srcs = rules/**; }
+```
 
 Built (`fabr build @example/text-lint`), the target is the plugin as a package: the package its
 `js_package` properties build, with its `libs` and any [`optional_libs`](#optional-fabr-files)
@@ -121,9 +142,11 @@ it in a `plugin` declaration is an error.
 
 A plugin's `.fabr` files declare only defaults: `default` properties and targets (`default flag
 dom { }`, `default js_script TEXT_LINTER { … }`), along with target types, `rule` and `repository`
-declarations, and `plugin` declarations of the plugins it builds on. An ordinary declaration there
-is an error, and so is a `fabr_plugin`: only a project declares a plugin it builds. So a project's own declaration of a name always takes precedence, and a plugin used
-later never changes what was read before it.
+declarations, `plugin` declarations of the plugins it builds on, and
+[`private`](/reference/syntax/#private-declarations) declarations, which only that file sees. Any
+other declaration there is an error that asks you to write it as a `default`, and so is a `fabr_plugin`: only a project declares a plugin it builds.
+So a project's own declaration of a name always takes precedence, and a plugin used later never
+changes what was read before it.
 
 ### Optional .fabr files
 
@@ -157,7 +180,7 @@ plugin @fabr-build/js;
 fabr_plugin @example/text-lint {
   srcs = src:**/*.ts;
   exports = src:rules/*.ts;
-  provided_deps = @npm:@fabr-build/core:^0.3.1;
+  provided_deps = @npm:@fabr-build/core:^0.4.0;
   libs = lib/LINT.fabr;
   optional_libs = lib/markdown.fabr;
   resources = lib/linter.sh;
@@ -185,7 +208,7 @@ separate package, `@fabr-build/js-tools`, and a plugin with tools of its own can
 ```
 js_package @example/text-lint-tools {
   srcs = src:**/*.ts;
-  optional_provided_deps = @npm:@fabr-build/core:^0.3.1;
+  optional_provided_deps = @npm:@fabr-build/core:^0.4.0;
 }
 ```
 
@@ -241,6 +264,8 @@ default rule t<BUILD_OPERATION=files> = @fabr-build/core:rules/DefaultFilesRule;
 
 A declaration names the target type, a name for the target, its guards, and its implementation.
 `default rule` is a rule for every type, consulted for a type with no rule of its own that applies.
+A rule that only combines targets of existing types can instead be written in `.fabr`, with no
+code at all; see [Writing your own rules](/guides/rules/).
 
 | Part | Meaning |
 |---|---|
@@ -298,7 +323,11 @@ export default defineRule({
     const stated = jsPackage.requirements!(context);
     return (stated instanceof Computable ? stated : Computable.resolve(stated)).then(spec => ({
       ...spec,
-      build: { ...spec.build, libs: context.getFileProperty("libs") },
+      build: {
+        ...(Object.fromEntries(spec.build instanceof Map ? spec.build : Object.entries(spec.build ?? {})) as Record<string, RequiredSources>),
+        libs: context.getFileProperty("libs"),
+        optional_libs: context.getFileProperty("optional_libs"),
+      },
     }));
   },
   evaluateResolved(context, requirements) {
@@ -446,9 +475,10 @@ Either returns the target's content directly (a `FileSet`) or a `BuildAction` th
 or a `Computable` of one. The rule is evaluated on every build; a `BuildAction` is what fabr
 caches.
 
-Write the evaluation as an arrow function, as above. TypeScript gives the requirement names
-their types only once it has typed `requirements`, so a named function passed as
-`evaluateMaterialized` beside an inline `requirements` arrow sees no names at all.
+Write the evaluation inline in the object passed to `defineRule`, as a method or an arrow
+function. TypeScript gives the requirement names their types only once it has typed
+`requirements`, so a separately declared function passed as `evaluateMaterialized` sees no names
+at all.
 
 #### Running a tool
 
@@ -459,8 +489,11 @@ returns a `BuildAction` that runs it:
 - `createExecAction(files, argv, outputs?, label?)` stages `files` in an empty working directory,
   runs `argv` there with an empty environment, and collects the files matching `outputs` as the
   result. A non-zero exit fails the target, with the program's output in the error.
-- `new BuildAction(step, inputs, config, discoverable?, label?)` runs a step of your own,
-  `{ id, version, run(action, ctx, report) }`, where `createExecAction` will not do.
+- `new BuildAction(step, inputs, config, options?)` runs a step of your own,
+  `{ id, version, run(action, ctx, report) }`, where `createExecAction` will not do. `options`
+  gives the action a `label`, and a `reshape` function that turns the step's output into what the
+  target is (a package with its name, say), applied whether the step ran or its result came from
+  the cache.
 
 An action's result is cached under its step's `id` and `version` and a digest of its `inputs`
 (file content) and `config` (arguments, patterns, generated configuration). Bump `version` when
@@ -519,10 +552,20 @@ type (`npm_repository @npm { … }`):
 repository npm_repository = @fabr-build/js:NPMRepository;
 ```
 
-The implementation is the module's default export, a `provider` function. It is called once per build configuration that uses the repository, with the
-declaration's `TargetContext`: its property readers, `memoize(tag, key, fn)` to cache the result of
-a resolution, `fetch(url, tag, process, report)` to download, and `runTask` to report progress. It
-returns a `Repository`, or a plain `FileSource` for a repository that only holds files.
+The implementation is the module's default export, a `provider` function. It is called once per
+build configuration that uses the repository, with the declaration's `TargetContext`: its property
+readers, `memoize(tag, key, fn)` to cache the result of a resolution, `fetch(cacheKey, tag,
+request, report, options?)` to download through fabr's cache, and `runTask` to report progress. It
+returns a `Repository`, a plain `FileSource` for a repository that only holds files, or a
+`Namespace` whose names are made when first asked for (`get(name)`), each a repository, a further
+namespace or files: an `aws_account` is one, its services each a repository.
+
+A namespace can hold repositories of types other plugins define, without importing them:
+`context.makeRepository(type, { name, url, credential })` makes one as a declaration of that type
+would be, and `context.hasRepositoryType(type)` says whether a plugin in use defines `type`. The
+provider of the type made is then called with the `url` and `credential` as its second and third
+arguments: the `url` is used where the repository's properties give none, and the `credential`
+ahead of any its ecosystem would find for itself.
 
 A `Repository` makes references from what is written (`getRepositoryRef`, and
 `getRepositoryPublishRef` for [`sync`](/reference/js/publishing/)). Each reference carries the
@@ -533,17 +576,23 @@ interface that answers it:
 | `RepositoryReader` | A registry. The references to it that a target makes are resolved together, one version of each package. It supplies each version's requirements (`getRequirements`), the package (`fetch`), a package's own files (`fetchFiles`), and states the operation of the configuration it was made in (`operation`), which decides whether a reference to it is answered with the package, its files alone, or the program it is. | `npm_repository` |
 | `RepositoryLookup` | Each reference on its own (`resolve`, optionally `resolveFiles`). | `fabr_home` |
 | `RepositoryCollection` | A set the repository resolved itself (`member`). | `catalog` |
+| `RepositoryWriter` | A destination [`sync`](/reference/js/publishing/) publishes to: it packages each member's content (`package`) and uploads it (`publish`). | `npm_repository`, an S3 bucket |
 
 A repository named on its own, or with a scope of its names (`@fabr-home:@fabr-build`), is
 not a package: `getRepositoryRef` may return a `PartialRepositoryRef` for a scope, from which a name
-projected into it (`@fabr-build/js-tools`) goes on. This is what lets a property of a group's name
+projected into it (`@fabr-build/js-tools`) goes on. A repository that can list a name's children
+implements `children`, which is what `fabr ls` shows: npm lists a package's versions, S3 a
+bucket's objects. This is what lets a property of a group's name
 answer every name in the group; see
 [Properties that stand in for a group of names](/reference/syntax/#properties-that-stand-in-for-a-group-of-names).
 
-## Current limitations
+## Not supported
 
 - A rule or repository declaration names an implementation of fabr's core or of a plugin the
   project uses, not of any other package.
 - A plugin can build on `@fabr-build/core` only, not on another plugin's exports, since that would
   load a second copy of the other plugin.
+
+## Known issues
+
 - The interface is the whole of `@fabr-build/core`. It is not yet versioned or stable.

@@ -24,7 +24,7 @@ fabr ls web        # main.js, main.js.map, main.css, …
 
 A bundle is deliberately simple compared with webpack or Vite: there are no plugins and no
 configuration file, and several things those tools do aren't available. Check
-[What isn't supported](#what-isnt-supported) before converting an application.
+[Not supported](#not-supported) before converting an application.
 
 ## Coming from esbuild, webpack or Vite
 
@@ -63,7 +63,18 @@ fabr: 'lodash' is neither bundled (add it, or its package, to 'srcs') nor a decl
 ```
 
 Listing a package in `srcs` includes its own dependencies too. Listing one in `deps` leaves out
-its dependencies as well, unless something in `srcs` also needs them.
+its dependencies as well, unless something in `srcs` also needs them. When a package is in both
+lists, the one that names it more directly wins:
+
+| The package is | Result |
+|---|---|
+| Listed in both `srcs` and `deps` | Bundled |
+| Listed in `deps`, and a dependency of a package in `srcs` | Left as an import |
+| A dependency of packages in both lists | Bundled |
+
+Within a package, the file bundled is the one its `exports` map names for the bundle's platform,
+with a package's build for bundlers (its `module` condition) among the conditions that match; see
+[Export conditions by tool](/reference/js/module-resolution/#export-conditions-by-tool).
 
 **Every source file in `srcs` is compiled**, whether or not the entry reaches it. Give each bundle
 a pattern that matches only its own sources; a file meant for another bundle, importing packages
@@ -120,6 +131,16 @@ source maps, your own sources are named by their compiled files instead (`main.j
 deployment step that needs the
 chunk graph, to preload a page's chunks or to write a manifest of hashed names, reads it from
 here.
+
+`metafile.json` is part of the bundle's output, so a reference to the whole output, such as
+`web:** -> static/assets/**` in a served directory or a jar, ships it too. To leave it out, select
+the files you mean to ship:
+
+| Reference | Selects |
+|---|---|
+| `web:**/!(metafile.json)` | Every file but `metafile.json`, chunks and assets included. |
+| `web:**/!(metafile.json)* -> static/assets/**/*` | The same files, moved under `static/assets/`. |
+| `web:main-*` | Only the files named after the entry `main`: its JavaScript, its CSS and their source maps. |
 
 `BUILD_TYPE` decides minification and source maps:
 
@@ -181,8 +202,11 @@ ES module for browsers and `es2020-commonjs-browser` a script. The module format
 the bundle should have where it is used, with a [constraint](/reference/syntax/#constraints):
 `web<JS_TARGET=es2015-commonjs-browser>`, or `web<JS_BUNDLE_FORMAT=esm-split>`.
 
-For Node.js, built-in modules such as `fs` and `node:path` are left as imports. For a browser they
-aren't available; see [Node.js APIs in a browser bundle](#nodejs-apis-in-a-browser-bundle).
+For Node.js, built-in modules such as `fs` and `node:path` are left as imports, and in a `cjs`
+bundle `import.meta.url`, `import.meta.dirname` and `import.meta.filename` are given their
+CommonJS values, since the sources are compiled as ES modules before they are bundled. For a
+browser, built-in modules aren't available; see
+[Node.js APIs in a browser bundle](#nodejs-apis-in-a-browser-bundle).
 
 ### Splitting into chunks
 
@@ -285,7 +309,8 @@ srcs = @npm:path-browserify:1.0.1 -> path
        @npm:stream-browserify:3.0.0 -> stream;
 ```
 
-Every package in the bundle that imports `path` then gets it.
+Every package in the bundle that imports `path` or `node:path` then gets it: in a browser bundle,
+the `node:` prefix is dropped before the import is resolved.
 
 **Globals.** For `process`, `Buffer` and `global`, add the `js/node_globals` flag together with
 the `process` and `buffer` packages:
@@ -306,17 +331,25 @@ with `sync` or run with `fabr run`. Other targets use its files by reference.
   (`output = *-*.js -> $1.js;`). It runs on the Node.js release that the
   [`NODE` setting](/reference/js/dependencies/#the-nodejs-version) names.
 - **Put it in a larger set of files**, such as a site, by selecting and renaming:
-  `web:** -> assets/**`.
+  `web:**/!(metafile.json)* -> assets/**/*`, which leaves out
+  [`metafile.json`](#output).
 
 ### Serving a bundle during development
 
 A [`serve`](/reference/standard-rules/#serve) target puts a bundle and a hand-written HTML page
-behind a static server:
+behind a static server. The page names the bundle's files, so the bundle drops the hash from its
+entry's name:
 
 ```
+js_bundle web {
+  entry  = src:main.tsx;
+  srcs   = src:** @npm:react:19.1.0 @npm:react-dom:19.1.0;
+  output = *-*.js -> $1.js;      # main.js and main.css
+}
+
 serve site {
   tool  = @npm:http-server:14.1.1;
-  files = public:** web:** -> assets/**;
+  files = public:** web:**/!(metafile.json)* -> assets/**/*;
   args  = -c-1 .;
 }
 ```
@@ -336,23 +369,22 @@ Editing a source rebuilds the bundle and replaces the served files, without rest
 Reload the page to see the change: nothing tells the browser. See
 [Watch mode & dev servers](/guides/watch/).
 
-## What isn't supported
+## Not supported
 
 - **HTML.** There is no HTML entry point and nothing generates or rewrites an HTML page. Write the
   page by hand, as above.
-- **Hashed names for the bundle's entries.** Assets and chunks get a content hash; `main.js` and
-  `main.css` don't.
 - **Hot module reload** and live reload.
 - **esbuild plugins and options.** Only what this page describes can be set. That rules out
   `alias` and tsconfig `paths`, `banner` and `footer`, a global name for a script bundle, `drop`,
   inline source maps, and marking a path or a pattern as external.
-- **Older browsers.** The language level is an ES version. There is no `browserslist`, and no
-  polyfills are added.
+- **Older browsers.** The JavaScript language level is the ES version in `JS_TARGET`, and no
+  polyfills are added. (`BROWSER_TARGET` sets the browsers that
+  [stylesheets are prefixed for](/reference/js/stylesheets/#browser-support), and nothing else.)
 - **Inlining assets** as data URLs, and a public path or CDN prefix for asset URLs.
 - **WebAssembly and workers.** A `.wasm` import is an asset URL, and `new Worker(new URL(…))` isn't
   recognised. Bundle a worker as an entry of its own and load it by its output name.
-- **PostCSS plugins,** including autoprefixer and Tailwind CSS; see
-  [Stylesheets](/reference/js/stylesheets/#what-isnt-supported).
+- **PostCSS plugins** other than autoprefixer, such as Tailwind CSS; see
+  [Stylesheets](/reference/js/stylesheets/#not-supported).
 - **esbuild's warnings** aren't shown; only its errors.
 
 ## Troubleshooting

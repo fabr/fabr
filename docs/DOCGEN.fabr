@@ -1,9 +1,11 @@
 # Minimal project staged as the docs generator's input: it loads the standard
-# vocabulary (core is always present; the js, java and aws plugins add
-# js_package, jar_package, aws_account et al) so `fabr list-targetdefs --json`,
-# run against it, documents exactly what a fabr + @fabr-build/js +
-# @fabr-build/java + @fabr-build/aws user has.
+# vocabulary (core is always present; the js, java, container and aws plugins
+# add js_package, jar_package, container_image, aws_account et al) so
+# `fabr list-targetdefs --json`, run against it, documents exactly what a fabr +
+# @fabr-build/js + @fabr-build/java + @fabr-build/container + @fabr-build/aws
+# user has.
 # See PROJECT.fabr's `reference_docs` target.
 plugin @fabr-build/js;
 plugin @fabr-build/java;
+plugin @fabr-build/container;
 plugin @fabr-build/aws;

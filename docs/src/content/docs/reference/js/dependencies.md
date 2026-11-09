@@ -157,10 +157,20 @@ one place. The catalog can be named anything; a project can have several.
   `@npm:typescript:6.0.0-beta -> typescript-6` is then `@pkg:typescript-6`.
 - **Targets in your own project and [patched packages](#patching-a-package)** can be members, by
   name.
-- **A catalog and a direct `@npm:` reference are resolved separately.** A target that uses
-  `@pkg:react` and also `@npm:scheduler:0.25.0` gets `scheduler` at that version for its own
-  imports and whatever version the catalog chose for `react`'s; if those differ, that is a
-  [version conflict](#when-versions-conflict). Prefer adding the package to the catalog.
+- **The catalog's versions apply to a target's direct `@npm:` dependencies too.** In a target that
+  uses `@pkg:react-dom` and `@npm:some-lib:1.0.0`, where `some-lib` depends on `scheduler`,
+  `some-lib` gets the `scheduler` the catalog chose for `react-dom`. Where that version doesn't
+  satisfy what a package asks for, or the target asks for another version itself, the target
+  fails with a [version conflict](#when-versions-conflict) that names where each version came
+  from:
+
+  ```text
+  scheduler is required as '0.23.2' and as '^0.25.0', and no one version is both
+    '0.23.2' pinned by '@pkg:react-dom'
+    '^0.25.0' required via: some-lib@1.0.0
+  ```
+
+  The usual fix is to add the package to the catalog, so that every target agrees on it.
 
 Naming a member the catalog doesn't have fails with `Catalog @pkg has no member 'x'`, followed by
 the list of members it does have.
@@ -373,7 +383,7 @@ A regular (non-optional) dependency that doesn't support the platform is an erro
 An optional dependency required only as `*` is left out, because no version of it can be selected.
 If you need one, declare it yourself with a version.
 
-## What fabr doesn't do
+## Not supported
 
 - **Install scripts aren't run.** `preinstall`, `install` and `postinstall` scripts in a package
   are ignored. A package that downloads or compiles something in such a script won't have done so.
@@ -547,9 +557,9 @@ against the integrity hash the registry publishes before it is used.
 
 Node.js releases are kept the same way. The first build that needs one downloads it, about 30 MB,
 and checks it against the `SHASUMS256.txt` file published with the release. Where `NODE` names a
-range, fabr also reads nodejs.org's list of releases, and checks it again once nodejs.org's caching
-headers say the copy is stale (currently after an hour); without a network connection it uses the
-copy it has, with a warning. An exact version needs no list.
+range, fabr also reads nodejs.org's list of releases, and checks it again at most once a day, or
+on the next run given [`--refresh`](/reference/command-line/#options); without a network connection it
+uses the copy it has, with a warning. An exact version needs no list.
 
 Deleting the cache is always safe: the next build downloads what it needs and selects the same
 versions.

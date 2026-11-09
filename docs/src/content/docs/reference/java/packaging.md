@@ -287,6 +287,6 @@ The jar has no `BOOT-INF/classpath.idx`, which fixes the order of the jars on th
 no `layers.idx` for layered container images.
 [Writing your own rules](/guides/rules/) explains the rule's parts.
 
-## Not currently supported
+## Not supported
 
 - The javadoc doesn't link to the JDK's documentation or to the dependencies' javadoc.

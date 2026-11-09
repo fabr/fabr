@@ -17,8 +17,9 @@ are among the target's `test_deps` find and run the tests.
 | `<scope>test</scope>` / `testImplementation` | `test_deps`. |
 | Surefire / `useJUnitPlatform()` | Built in: tests always run on the JUnit Platform. |
 | Surefire bundles the platform launcher | The launcher is one of your `test_deps`. |
-| `-Dtest=…` / `--tests …` | See [Not currently supported](#not-currently-supported). |
-| Test reports under `target/surefire-reports` | A summary per target, and a [CTRF](https://ctrf.io) report. |
+| `-Dtest=…` / `--tests …` | `fabr test -t <regex>`; see [Running some of the tests](#running-some-of-the-tests). |
+| Test reports under `target/surefire-reports` | A summary per target; `fabr test --report <file> --format junit` writes JUnit XML, or [CTRF](https://ctrf.io) without `--format`. |
+| jacoco-maven-plugin / the `jacoco` plugin | `fabr test --coverage`; see [Code coverage](#code-coverage). |
 
 ## Setting up
 
@@ -45,8 +46,11 @@ JUnit release than the engine can find no tests at all.
 
 ## How tests run
 
-The tests are compiled against the jar, everything the jar requires, and the `test_deps`, then run
-in one JVM on `JAVA`, with `test_resources` on the classpath. The engines look for tests among
+The tests are compiled against the jar, everything the jar requires, and the `test_deps`, with the
+target's `processors` running on them, then run in one JVM on `JAVA`, with `test_resources` on the
+classpath. Like the jar's own sources, they are compiled against the compile classpath and run
+with the runtime classpath, so `runtime_deps` are there when the tests run but not when they
+compile; see [Which properties take dependencies](/reference/java/dependencies/#which-properties-take-dependencies). The engines look for tests among
 every class the `tests` compile to. **Surefire:** runs only classes named `Test*`, `*Test`,
 `*Tests` or `*TestCase`. **fabr:** runs every class an engine recognises as a test, whatever its
 name.
@@ -58,7 +62,13 @@ fabr test app
 prints `app: 12 tests passed` for each target, or the tests that failed with their messages. A
 run is cached, passing or failing: running `fabr test` again with nothing changed reports the
 result without running the tests, and `fabr test --retry-failed` runs a failed target's tests
-again. A target with no `tests` passes without running anything.
+again. A target with no `tests` passes without running anything. To collect every tested
+target's results in one file for a CI system, as Surefire's XML reports are collected, give
+`--report`:
+
+```sh
+fabr test --report test-results.xml --format junit app
+```
 
 The tests run with no environment variables of their own, so a test can't depend on what is set in
 your shell. JUnit's [configuration parameters](https://junit.org/junit5/docs/current/user-guide/#running-tests-config-params),
@@ -120,6 +130,6 @@ the kind of tests they are (add `junit-jupiter` for JUnit 5, `junit-vintage-engi
 or the engine and the launcher are of different JUnit releases; give both their versions from one
 BOM.
 
-## Not currently supported
+## Not supported
 
 - All of a target's tests run in one JVM, which can't be given arguments of its own.

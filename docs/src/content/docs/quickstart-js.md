@@ -5,7 +5,8 @@ description: Build, test, and run a TypeScript package with fabr.
 
 This guide takes you from an empty directory to a TypeScript package that is compiled, tested and
 runnable. The whole project is a `PROJECT.fabr` file and your sources: there is no `package.json`,
-`tsconfig.json`, test configuration or lockfile to write.
+`tsconfig.json`, test configuration or lockfile to write. To convert a project you already have,
+see [Migrating an npm, Yarn or pnpm project](/guides/migrating-js/).
 
 ## Install
 
@@ -142,10 +143,15 @@ describe("greet", () => {
 fabr test mylib
 ```
 
-A summary such as `mylib: 1 test passed` is printed for each target, and a failing test fails the
-build. A run is cached, so running `fabr test` again without changes reports the result without
-re-running the tests; `fabr test --retry-failed mylib` runs failed tests again. `fabr test --coverage mylib` also measures code coverage, printing a
-summary and writing an lcov report to `coverage/lcov.info`.
+A summary such as `mylib: 1 test passed` is printed for each target, followed by any failed tests,
+and `fabr test` exits with status 1 if any test failed. A run is cached, passing or failing, so
+running `fabr test` again without changes reports the same result without re-running the tests;
+`fabr test --retry-failed mylib` runs failed tests again. Other options:
+
+```sh
+fabr test -t 'greets' mylib      # only the tests whose names match a regular expression
+fabr test --coverage mylib       # also measure coverage, writing coverage/lcov.info
+```
 
 To run an existing jest or vitest suite, or for snapshots, DOM tests and coverage, see
 [Testing](/reference/js/testing/).
@@ -180,6 +186,8 @@ name is passed to it. Options for fabr itself go before the target.
 | `fabr cat <reference>` | Print them. |
 | `fabr cp <reference…> <dir>` | Copy them into a directory. |
 | `fabr deps <target>` | Show the dependency versions the target resolves to. |
+| `fabr audit <target>` | Check those dependencies for known security advisories. |
+| `fabr list-targets` | List the project's targets and what each can do. |
 
 Two options work with most of them:
 

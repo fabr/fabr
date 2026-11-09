@@ -8,7 +8,8 @@ description: Convert an existing JavaScript project to fabr with fabr-migrate, a
 target for each package, plus a [catalog](/reference/js/dependencies/#catalogs) holding every
 registry dependency. It also adds the version pins fabr needs to select the versions your lockfile
 was tested with. It converts your dependencies, not your build: whatever your `package.json`
-scripts and tool configurations do is left for you to write as fabr targets.
+scripts and tool configurations do is left for you to write as fabr targets; see
+[Running your own tools](/guides/tools/).
 
 :::caution[Experimental]
 `fabr-migrate` is a best-effort starting point, not a complete conversion. Expect to review what it
@@ -60,7 +61,7 @@ So how far it gets you depends on how your packages build:
 | File | Contents |
 |---|---|
 | `PROJECT.fabr` | The JavaScript plugin, an `include` of `CATALOG.fabr` and of each package's build file, and `TYPESCRIPT` and `JS_TEST_FRAMEWORK` where your project uses a TypeScript 5 or 6 compiler, Jest or Vitest. |
-| `<package>/BUILD.fabr` | A `js_package` for the package: its sources, tests and dependencies. |
+| `<package>/BUILD.fabr` | A `js_package` for the package: its sources, tests, dependencies and `version`. |
 | `CATALOG.fabr` | The `@dep` catalog, with the pins it adds, and an `npm_repository` for each private registry. |
 
 From then on the files are your project's to edit. `fabr-migrate` never overwrites a file that
@@ -81,7 +82,7 @@ A project with no workspaces gets one `js_package`, for the root `package.json`,
 | `"@acme/core": "workspace:*"`, or any spec naming a package of the workspace | `@acme/core` in `deps`: the other package's target. |
 | `"ts6": "npm:typescript@^6.0.0"` (an alias) | `@npm:typescript:^6.0.0 -> ts6`, so your code still imports `ts6`. See [renaming a package](/reference/js/dependencies/#renaming-a-package). |
 | `"react": "catalog:"` (a pnpm catalog) | The catalog's version, as an ordinary entry. A named catalog (`catalog:legacy`) whose version differs from the default catalog's becomes an entry named `react-legacy`, which the package writes as `@dep:react-legacy -> react`. |
-| `"lodash": "latest"` (a dist-tag) | The version your lockfile installs, as `^4.17.21`. fabr doesn't read dist-tags. |
+| `"lodash": "latest"` (a dist-tag) | The version your lockfile installs, as `^4.17.21`, since a build file can't name a dist-tag. With no lockfile version to use, it isn't converted, and is listed in the report. |
 | `file:`, `link:`, git and tarball URLs | Not converted. Listed in the report. |
 
 Development dependencies go in `deps`, the same list as runtime ones. That is correct for an
@@ -179,7 +180,8 @@ catalog @dep {
 ```
 
 - **Raised versions.** Where fabr would select a version lower than every version your lockfile
-  installs in the same major, the catalog asks for the lowest of those instead. A raised entry your
+  installs within the same `^` range (the same major, or the same minor for a `0.x` version), the
+  catalog asks for the lowest of those instead. A raised entry your
   `package.json` declared keeps its place in the list with a comment saying what changed. A package
   no `package.json` names gets an entry of its own in the raised section. Where the lockfile installs
   a package at one version only, the raise may cross a major, because that one version satisfied
@@ -193,8 +195,8 @@ catalog @dep {
   lockfile installs it at two versions too, each version is marked with `?`, which allows it (see
   [when versions conflict](/reference/js/dependencies/#when-versions-conflict)).
 
-The tool resolves, pins and resolves again until a round adds nothing; this usually takes three to
-six rounds. These are the only pins it adds. A package fabr already selects at or above your
+The tool resolves, pins and resolves again until a round adds nothing, for at most ten rounds;
+the report says so if the pins haven't settled by then. These are the only pins it adds. A package fabr already selects at or above your
 lockfile's version is left alone, so the catalog asks for no more than your project needs.
 
 To write the catalog from your `package.json` files alone, without resolving anything, run

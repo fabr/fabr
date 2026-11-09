@@ -52,7 +52,9 @@ fabr sync release     # publish it
 - The generated `package.json`.
 
 It doesn't contain your TypeScript sources, your tests, or anything listed in `test_deps`,
-`test_resources` or `test_expectations`.
+`test_resources` or `test_expectations`. To get the sources themselves, as for a sources archive
+beside the package, use [`fabr sources`](/reference/command-line/#an-operations-name): it gives
+the target's `srcs` and `resources` as files, named as those properties name them.
 
 Nothing is added automatically, so list the README and licence in `srcs`. A file from outside the
 package's directory keeps only its own name: `srcs = src:**/*.ts ../../LICENSE;` puts `LICENSE`
@@ -94,8 +96,8 @@ For the target at the top of this page, built as ES modules:
 | `peerDependenciesMeta` | `optional_provided_deps`, each marked `optional`. |
 | anything else | `metadata`. |
 
-There are no `devDependencies`: test dependencies aren't recorded, and build tools aren't
-dependencies.
+There are no `devDependencies`: test dependencies and `compile_deps` aren't recorded, and build
+tools aren't dependencies.
 
 ### Entry points
 
@@ -300,7 +302,7 @@ sync release {
 
 `access` is `public` or `private`. One `sync` can publish to several registries.
 
-## What isn't supported
+## Not supported
 
 - **Dist-tags.** Every publish becomes `latest`. Publishing a prerelease or a patch to an old
   release line moves `latest` to it.

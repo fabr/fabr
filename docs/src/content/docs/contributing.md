@@ -11,7 +11,8 @@ design discussion and contributions are all welcome.
 
 ## Repository layout
 
-The repository holds five packages, under `packages/`:
+The packages are under `packages/`. Five of them make up fabr itself, the command and the
+JavaScript support it needs to build itself:
 
 | Package | What it contains |
 |---|---|
@@ -20,6 +21,20 @@ The repository holds five packages, under `packages/`:
 | `js-tools` (`@fabr-build/js-tools`) | The programs those rules run, each a separate process: the TypeScript compiler driver, the bundler, Sass and PostCSS drivers, the coverage driver, and the three test runners. |
 | `cli` (`@fabr-build/cli`) | The `fabr` command: argument handling, progress display and error reporting. |
 | `sass-pnp-importer` (`@fabr-build/sass-pnp-importer`) | A standalone Sass importer that finds package stylesheets without a `node_modules` directory. |
+
+The others are built only by fabr:
+
+| Package | What it contains |
+|---|---|
+| `java` (`@fabr-build/java`) | The Java plugin: `jar_package`, `java_program`, Maven repositories and JDK distributions. |
+| `aws` (`@fabr-build/aws`) | The AWS plugin: AWS accounts, S3, and the sign-in for ECR and CodeArtifact. |
+| `container` (`@fabr-build/container`) | The container plugin: OCI images and registries. |
+| `migration` (`@fabr-build/migration`) | `fabr-migrate`, which converts an npm, Yarn or pnpm project to fabr. |
+| `vscode-ext` | The VS Code extension. |
+
+Each of these has a `BUILD.fabr` and no `package.json` or `tsconfig.json` of its own: Yarn and
+jest don't see it, and `fabr test <package>` (for example `./fabr test @fabr-build/java`) builds
+and tests it. A new package is set up the same way.
 
 The top-level `PROJECT.fabr` is fabr's own build file, and a good example of a larger one.
 End-to-end tests, which run the built `fabr` command against small projects, are in `test/e2e/`.
@@ -34,26 +49,27 @@ fabr build all
 fabr test  all e2e_tests
 ```
 
-`all` is a property in `PROJECT.fabr` listing the five packages.
+`all` is a property in `PROJECT.fabr` listing every package.
 
 To get a `fabr` to do that with, you need to build one from source first, which is what the Yarn
 scripts are for:
 
 | Command | What it does |
 |---|---|
-| `yarn build` | Compiles the packages with `tsc`, giving a first `fabr`, which `yarn fabr` runs. |
-| `yarn bootstrap` | Runs `yarn build` and uses the result to build fabr's installation (`fabr_install`: the CLI and the plugins installed with it) and copy it into `bootstrap/`. *That* fabr then runs every package's tests and the end-to-end tests. The `fabr` script at the top of the repository runs the fabr in `bootstrap/`. |
-| `yarn dist` | Runs `yarn build`, the tests under jest, and eslint. |
+| `yarn build` | Compiles the five packages of fabr itself with `tsc`, giving a first `fabr`, which `yarn fabr` runs. |
+| `yarn bootstrap` | Runs `yarn build` and uses the result to build fabr's installation (`fabr_install`: the CLI and the plugins installed with it) and copy it into `bootstrap/`. *That* fabr then runs `fabr test all e2e_tests`: every package's tests and the end-to-end tests. The `./fabr` script at the top of the repository runs the fabr in `bootstrap/`. |
+| `yarn dist` | Runs `yarn build`, those five packages' tests and the end-to-end tests under jest, and eslint. |
 
-Before proposing a change, run both `yarn bootstrap` and `yarn dist`. The first shows that fabr
+Once `yarn bootstrap` has run, use `./fabr` for everyday work (`./fabr build all`, `./fabr test
+@fabr-build/core`). Before proposing a change, run both `yarn bootstrap` and `yarn dist`. The first shows that fabr
 still builds and tests itself. The second is still needed because fabr has no lint step of its
 own yet. Lint errors fail it; the existing warnings are tolerated.
 
 Tests are `*.test.ts` files beside the code they test, written with `describe`/`it` and chai
 assertions so that the same files run under jest in `yarn dist` and under `fabr test`.
 
-The cache is at `~/Library/Caches/fabr` on macOS and `~/.cache/fabr` on Linux, or wherever
-`FABR_CACHE_DIR` says. Deleting it is always safe.
+The cache is at `~/Library/Caches/fabr` on macOS and `$XDG_CACHE_HOME/fabr` (`~/.cache/fabr` by
+default) on Linux, or wherever `FABR_CACHE_DIR` says. Deleting it is always safe.
 
 ## Conventions
 
@@ -66,7 +82,7 @@ The cache is at `~/Library/Caches/fabr` on macOS and `~/.cache/fabr` on Linux, o
 
 ## Writing a plugin
 
-Support for a language or ecosystem is a plugin: an npm package that exports an `activate()`
-function returning its rules, repository types and `.fabr` files. A build file loads it with
+Support for a language or ecosystem is a plugin: an npm package whose `.fabr` files declare its
+target types and rules, implemented by modules the package exports. A build file loads it with
 `plugin <package>;`. [Writing a plugin](/developer/writing-a-plugin/) walks through building one, and
 [Plugin reference](/developer/plugins/) documents the interface.

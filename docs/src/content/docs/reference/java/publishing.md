@@ -153,7 +153,7 @@ Elements fabr writes itself (`modelVersion`, `groupId`, `artifactId`, `version`,
 `properties`, `build`, `reporting`, `profiles`, `repositories`, `pluginRepositories`,
 `distributionManagement`) are errors in `metadata`.
 
-## Not currently supported
+## Not supported
 
 - Publishing to Maven Central is not supported: Central takes uploads only through its Portal,
   and requires PGP signatures beside each file.

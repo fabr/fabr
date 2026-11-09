@@ -44,8 +44,10 @@ were a directory:
 The same references work on the command line (`fabr ls hello`, `fabr cat hello/package.json`) and
 as another target's inputs. Using a target in a reference is what causes it to be built.
 
-Target names are global to the project, whichever build file declares them, and a target takes
-precedence over a directory of the same name. Write a directory as `./hello` to be unambiguous.
+Target names are global to the project, whichever build file declares them, unless a target is
+declared [`private`](/reference/syntax/#private-declarations) to its own file. A target takes
+precedence over a directory of the same name, so write a directory as `./hello` to be
+unambiguous.
 
 ### So is a package from a registry
 
@@ -110,7 +112,8 @@ GREETING = "hello v${VERSION}";
 Two things differ from variables in a script:
 
 - **A property is assigned once.** There is no reassignment, so a property means the same thing
-  everywhere in the project.
+  everywhere in the project. A [guarded](/reference/syntax/#guarded-properties) declaration can
+  give it a different value in a different configuration, never a second value in the same one.
 - **Order doesn't matter.** A property can be used before the line that declares it, and its
   value is worked out only when something needs it.
 
@@ -141,6 +144,7 @@ JS_TARGET = es2021-commonjs;
 
 js_package base {
   srcs = ./base:*.ts;
+  exports = ./base:index.ts;
 }
 
 js_package second {
@@ -157,12 +161,19 @@ js_package third {
 
 ```
 $ fabr build third
-info:✓ Compiling base (required by third) (486ms)
-info:✓ Compiling base [JS_TARGET=es2021-esm] (required by second < third) (620ms)
-info:✓ Compiling second [JS_TARGET=es2021-esm] (required by third) (431ms)
+info:Compiling base (required by third)
+info:Compiling base [JS_TARGET=es2021-esm] (required by second < third)
+info:✓ Compiling base (652ms)
+info:✓ Compiling base (810ms)
+info:Compiling second [JS_TARGET=es2021-esm] (required by third)
+info:✓ Compiling second (553ms)
+info:Compiling third
 info:✓ Compiling third (549ms)
 info:Built third
 ```
+
+(This is the output with no terminal attached, as in CI. In a terminal, fabr shows the work in
+progress at the bottom of the screen instead of the lines that start it.)
 
 `base` is compiled twice: once as CommonJS because `third` depends on it, and once as ES modules
 because the ES-module `second` does. A constraint carries through to everything the constrained
@@ -173,9 +184,10 @@ release builds, the ES-module ones included.
 
 ## Rules and operations
 
-A rule is what does the building. Each rule applies to one target type and one **operation**:
-`build`, `test` or `run`. The command you give chooses the operation, so `fabr test mylib` and
-`fabr build mylib` apply different rules to the same target.
+A rule is what does the building. Each rule applies to one target type and one **operation**,
+such as `build`, `test` or `run`. The command you give chooses the operation, so `fabr test mylib`
+and `fabr build mylib` apply different rules to the same target. Plugins and your own rules can
+add operations, each a command of its own; `fabr list-operations` lists them.
 
 The standard rules ship with fabr's core and its plugins, written in TypeScript, and a project can
 write its own in its `.fabr` files (see [Writing your own rules](/guides/rules/)). When a target type has several rules for an operation, the one that matches the
@@ -218,6 +230,13 @@ js_package ui {
 ```
 
 [Dependencies](/reference/js/dependencies/) covers how versions are chosen and what catalogs do.
+
+A target that both builds against its dependencies and installs or runs them resolves the two
+separately, as Gradle resolves a compile and a runtime classpath. An npm package declares the
+same dependencies for both, so for JavaScript the two agree; a Java library's can differ (see
+[Compile and runtime classpaths](/reference/java/dependencies/#compile-and-runtime-classpaths)).
+A catalog likewise chooses its members' versions once for building and once for running, and
+every target that uses it takes the catalog's choice for each.
 
 :::note
 Catalogs and registries don't have to be named with a leading `@`. It is a convention that makes

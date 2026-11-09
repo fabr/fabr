@@ -30,6 +30,8 @@ record of exactly which packages it depends on, and every import of a package na
 that record:
 
 - **Your sources** can import the packages listed in your target's `deps`, and nothing else.
+  (On a `js_package`, `provided_deps`, `optional_provided_deps` and `compile_deps` count too, and
+  its tests can also import its `test_deps`.)
 - **Each dependency** can import the packages declared in its own `package.json`: `dependencies`,
   `optionalDependencies` and `peerDependencies`.
 - **Nothing outside the build** is ever consulted. A `node_modules` directory elsewhere on your
@@ -164,7 +166,10 @@ Which conditions in an `exports` map apply depends on what's reading the package
 
 Tests and programs started with `fabr run` execute from a generated `node_modules` directory
 containing exactly the packages the build resolved, so Node.js's own resolution applies to them
-unchanged. The directory is laid out the way pnpm lays one out:
+unchanged. (A target's tests can instead resolve their packages through a Yarn PnP-style table,
+with the `layout/pnp` flag; see [How tests find their packages](/reference/js/testing/#how-tests-find-their-packages).
+An import of an undeclared package then resolves as it does when compiling.) The directory is laid
+out the way pnpm lays one out:
 
 - The top level holds only the packages the target declares.
 - Each package is stored once, under `node_modules/.fabr/`, with links to its own dependencies

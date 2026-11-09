@@ -111,8 +111,8 @@ export function App() {
 body { font-family: system-ui, sans-serif; margin: 2rem; }
 ```
 
-The bundle produces `main.js`, `main.css` and, in a debug build, their source maps, and nothing
-writes an HTML page for you. `frontend/public/index.html` is written by hand and loads the two files
+The bundle produces `main.js`, `main.css`, in a debug build their source maps, and esbuild's
+`metafile.json`; nothing writes an HTML page for you. `frontend/public/index.html` is written by hand and loads the two files
 from an `assets/` directory beside it:
 
 ```html
@@ -134,7 +134,7 @@ You can build the bundle on its own and look at it:
 
 ```sh
 fabr build web
-fabr ls web        # main.css, main.css.map, main.js, main.js.map
+fabr ls web        # main.css, main.css.map, main.js, main.js.map, metafile.json
 ```
 
 ## The server
@@ -146,7 +146,7 @@ jar_package server {
   srcs = src/main/java:**/*.java;
   resources = src/main/resources:**
               ../frontend/public:** -> static/**
-              web:** -> static/assets/**;
+              web:main.* -> static/assets/main.*;
   deps = @mvn:org.springframework.boot:spring-boot-dependencies:4.1.2
          @mvn:org.springframework.boot:spring-boot-starter-webmvc
          java21;
@@ -164,12 +164,13 @@ The `resources` are where the two halves meet. Spring Boot serves the files it f
 |---|---|
 | `application.properties` | `src/main/resources:**`, the usual Spring Boot resources. |
 | `static/index.html` | `../frontend/public:** -> static/**`: the page, renamed under `static/`. |
-| `static/assets/main.js`, `main.css`, … | `web:** -> static/assets/**`: every file the `web` bundle produces. |
+| `static/assets/main.js`, `main.css`, … | `web:main.* -> static/assets/main.*`: the bundle and its stylesheet, with their source maps in a debug build. |
 
 `web` is the bundle's target name, so building the server builds the bundle first, and a change to
-the front end's sources changes the jar. Each `-> static/**` is a
+the front end's sources changes the jar. `web:main.*` selects the bundle's `main` files and leaves
+out its `metafile.json`, a description of the build that the browser has no use for. Each `->` is a
 [rename](/reference/syntax/#projection-and-renaming): the files the left side selects, each placed
-under the new prefix.
+under the new name, its `*` filled in from the file it selects.
 
 The Java sources are an ordinary Spring Boot application. `ShopApplication.java`:
 
@@ -280,8 +281,8 @@ runs on any Java 21 or later.
 
 ## Next steps
 
-- [Bundling](/reference/js/bundling/): assets, constants with `defines`, and what a bundle doesn't
-  support, such as code splitting.
+- [Bundling](/reference/js/bundling/): assets, constants with `defines`, and splitting a bundle
+  into chunks.
 - [Testing](/reference/java/testing/) and [JavaScript testing](/reference/js/testing/): add `tests`
   to the server and a `js_test` for the front end, and run both with `fabr test`.
 - [Projects with several packages](/guides/multi-package/): sharing versions and settings as the

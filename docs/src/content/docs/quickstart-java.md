@@ -18,6 +18,7 @@ fabr downloads one.
 | `<scope>test</scope>` / `testImplementation` | `test_deps`. |
 | `<scope>provided</scope>` / `compileOnly` | `provided_deps`, or `compile_deps` for a jar nothing needs at run time; see [Dependencies](/reference/java/dependencies/). |
 | `<scope>runtime</scope>` / `runtimeOnly` | `runtime_deps`. |
+| `compileOnlyApi` | `compile_api_deps`. |
 | `maven.compiler.release` / `toolchain` | `JVM_TARGET`, and the `JAVAC`/`JAVA` settings; see [Compiling](/reference/java/compiling/). |
 | `mvn package` / `gradle jar` | `fabr build`. |
 | `mvn test` / `gradle test` | `fabr test`. |
@@ -151,6 +152,8 @@ prints `greeter: 1 test passed`, and a failing test fails the build. A run is ca
 | `fabr test <target>` | Compile and run the target's tests. |
 | `fabr run <target> [args…]` | Build a program and run it. |
 | `fabr doc <target>` | Generate a jar's javadoc. |
+| `fabr sources <target>` | Gather a jar's sources, as a sources jar holds them. |
+| `fabr sync <target>` | Publish to a Maven repository; see [Publishing](/reference/java/publishing/). |
 | `fabr ls <reference>` | List the files a target produces. |
 | `fabr cat <reference>` | Print them. |
 | `fabr cp <reference…> <dir>` | Copy them into a directory. |
@@ -166,14 +169,16 @@ The [command-line reference](/reference/command-line/) has the rest.
 
 ## Next steps
 
-- [Dependencies](/reference/java/dependencies/): Maven references, how versions are chosen, BOMs
-  and dependency scopes.
+- [Dependencies](/reference/java/dependencies/): Maven references, how versions are chosen, BOMs,
+  dependency scopes, and the separate compile and runtime classpaths.
 - [Compiling](/reference/java/compiling/): the JDK, the Java release, annotation processors and
   modules.
-- [Testing](/reference/java/testing/): JUnit engines and test failures.
+- [Testing](/reference/java/testing/): JUnit engines, selecting tests, code coverage and test failures.
 - [Running programs](/reference/java/running/): `java_program`, JVM arguments and Java agents.
 - [Packaging](/reference/java/packaging/): the jar's manifest, wars, ears, Spring Boot executable
   jars, and layouts of your own.
+- [Publishing](/reference/java/publishing/): uploading jars, with generated POMs and sources and
+  javadoc jars, to a Maven repository.
 - [Targets and configuration](/reference/java/targets/): every Java target and setting.
 - [Projects with several packages](/guides/multi-package/): targets that depend on each other.
 - [A Spring Boot server with a React front end](/examples/spring-boot-react/): a worked example
