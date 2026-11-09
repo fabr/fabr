@@ -71,6 +71,34 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
     expect(result.stderr).to.contain("fails on purpose");
   });
 
+  it("writes a failing run's results with --report, as CTRF or JUnit, and still fails the command", () => {
+    const files = project(
+      'describe("thing", () => { it("holds", () => {}); it("fails on purpose", () => { assert.equal(1, 2); }); });'
+    );
+    const ctrf = runFabr(files, ["-DJS_TARGET=es2020", "test", "--report", "out/report.json", "thing"], ["out/report.json"]);
+    expect(ctrf.status).to.not.equal(0);
+    expect(ctrf.stderr).to.contain("fails on purpose");
+    const report = JSON.parse(ctrf.files?.["out/report.json"] ?? "{}");
+    expect(report.results.summary).to.include({ tests: 2, passed: 1, failed: 1 });
+
+    const junit = runFabr(files, ["-DJS_TARGET=es2020", "test", "--report=out/junit.xml", "--format", "junit", "thing"], ["out/junit.xml"]);
+    expect(junit.status).to.not.equal(0);
+    const xml = junit.files?.["out/junit.xml"] ?? "";
+    expect(xml).to.match(/<testsuites [^>]*tests="2" failures="1"/);
+    expect(xml).to.match(/<testcase name="[^"]*fails on purpose"[^>]*>\s*<failure/);
+    expect(xml).to.match(/<testcase name="[^"]*holds"[^>]*\/>/);
+  });
+
+  it("copies out a failing run's report, since the report is the run's result", () => {
+    const result = runFabr(
+      project('describe("thing", () => { it("fails on purpose", () => { assert.equal(1, 2); }); });'),
+      ["-DJS_TARGET=es2020", "cp", "thing<BUILD_OPERATION=test>:ctrf-report.json", "out"],
+      ["out/ctrf-report.json"]
+    );
+    expect(result.status, result.stderr).to.equal(0);
+    expect(JSON.parse(result.files?.["out/ctrf-report.json"] ?? "{}").results.summary.failed).to.equal(1);
+  });
+
   it("keeps a red run as its result, reported from the cache until --retry-failed runs its failed files again", () => {
     /* Unique to this run, so the first run is a miss whatever the shared cache holds. */
     const { marker, ran } = runMarker();

@@ -83,7 +83,6 @@ import {
   TEST_EXPECTATIONS,
   TEST_NAME_PATTERN,
   TEST_REPORT_FILENAME,
-  checkTestReport,
   toEnvironment,
   TREE_MOUNT,
   UPDATE_EXPECTATIONS,
@@ -607,10 +606,9 @@ interface ITestRun {
  * in as a concrete input to the test-run action.
  *
  * The run is yielded as the test-run action with a reshape
- * ({@link reshapeTestResult}), which fails the target where the report says
- * tests failed: otherwise the report is the target's content, and any
- * refreshed snapshot files become write-back candidates paired with their
- * source locations. The reshape is applied every evaluation, so the candidates
+ * ({@link reshapeTestResult}): the report, failures and all, is the target's
+ * content, and any refreshed snapshot files become write-back candidates
+ * paired with their source locations. The reshape is applied every evaluation, so the candidates
  * reconstruct on the CACHE-HIT path too (a warm replay of an update run whose
  * writes were never applied still offers them).
  */
@@ -724,7 +722,7 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
       outputs,
       env: toEnvironment(run.env),
       coverage: coverage && { argv: coverage.argv, measured: coverage.measured },
-    }).withReshape(result => checkTestReport(result).then(checked => reshapeTestResult(checked, run.tests, records)));
+    }).withReshape(result => reshapeTestResult(result, run.tests, records));
   });
 }
 

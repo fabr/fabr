@@ -217,23 +217,15 @@ export function testFailureOf(report: ITestReport): TestsFailedError | undefined
 }
 
 /**
- * Check the test report among a test run's `output`: answer the output where
- * no test failed, else fail with the failure the report states. A run whose
- * tests failed is a cached result like a green one, and this is where it fails
- * its target, on a cache hit as on a miss.
+ * @return true if the test report among a test run's `output` records a failed
+ * test, otherwise false (and false where the output holds no report).
  */
-export function checkTestReport(output: FileSet): Computable<FileSet> {
+export function hasTestFailures(output: FileSet): Computable<boolean> {
   const file = output.getFile(TEST_REPORT_FILENAME);
   if (file === undefined) {
-    return Computable.resolve(output);
+    return Computable.resolve(false);
   }
-  return readJsonFile(file, toTestReport).then(report => {
-    const failure = testFailureOf(report);
-    if (failure !== undefined) {
-      throw failure;
-    }
-    return output;
-  });
+  return readJsonFile(file, toTestReport).then(report => report.results.summary.failed > 0);
 }
 
 /**

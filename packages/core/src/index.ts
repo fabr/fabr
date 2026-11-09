@@ -96,6 +96,7 @@ export * from "./support/Mime";
 export * from "./support/Platform";
 export { StringReader } from "./support/StringReader";
 export * from "./support/Coverage";
+export * from "./support/JUnit";
 export * from "./support/Sarif";
 export * from "./support/TestResult";
 export * from "./support/Unpack";

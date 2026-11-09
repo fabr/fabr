@@ -91,7 +91,8 @@ import {
   NoRuleFoundError,
   ReferenceFailedError,
 } from "../model/Errors";
-import { ConflictError, FabrError, IConflictSide, IConflictSource, TestsFailedError, toError } from "../core/Errors";
+import { ConflictError, FabrError, IConflictSide, IConflictSource, toError } from "../core/Errors";
+import { hasTestFailures } from "../support/TestResult";
 import { createPipelineAction, stagePipeline } from "../rules/PipelineAction";
 import { closestMatch } from "../support/Suggest";
 import { Name, NameConstraint, NamePart, NamePartKind } from "../core/Name";
@@ -1849,23 +1850,15 @@ export class BuildContextImpl implements InternalBuildContext {
      * the discoverable deps and the change tracking from the action itself. */
     const outcome = execution.buildCache.getOrCreateAction(action, create, { ...options, processLimit: execution.processLimit });
     const reshape = action.reshape;
-    if (reshape === undefined) {
-      return outcome.then(({ files }) => files);
-    }
+    const delivered = (files: FileSet): Computable<FileSet> => (reshape === undefined ? Computable.resolve(files) : Computable.resolve(files).then(reshape));
     /* A red test run served from the cache rather than performed here is
      * performed again, once, where the run asks for that (`--retry-failed`),
      * from its own last run: what it reruns is the step's to decide. */
-    return outcome.then(({ files, created }) => {
-      const delivered = Computable.resolve(files).then(reshape);
-      return execution.retryFailed && !created && !options.retry
-        ? delivered.catch(err => {
-            if (!(err instanceof TestsFailedError)) {
-              throw err;
-            }
-            return this.performAction(action, task, { ...options, retry: true });
-          })
-        : delivered;
-    });
+    return outcome.then(({ files, created }) =>
+      execution.retryFailed && !created && !options.retry
+        ? hasTestFailures(files).then(failed => (failed ? this.performAction(action, task, { ...options, retry: true }) : delivered(files)))
+        : delivered(files)
+    );
   }
 
   /**

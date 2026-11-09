@@ -85,7 +85,7 @@ interface CommandSpec {
 
 const COMMAND_SPECS: CommandSpec[] = [
   { name: "build", synopsis: "[-w] <targets>", summary: "Build the given targets (the default command)", accepts: ["-w", "-q", "--no-progress", "--refresh", "--trace", "-f"], requiresTarget: true },
-  { name: "test", synopsis: "[-w] [-u] [-t PATTERN] [--coverage] [--retry-failed] <targets>", summary: "Build and run the given targets' tests", accepts: ["-w", "-u", "-t", "--coverage", "--retry-failed", "-q", "--no-progress", "--refresh", "--trace", "-f"], requiresTarget: true },
+  { name: "test", synopsis: "[-w] [-u] [-t PATTERN] [--coverage] [--retry-failed] [--report FILE [--format ctrf|junit]] <targets>", summary: "Build and run the given targets' tests", accepts: ["-w", "-u", "-t", "--coverage", "--retry-failed", "--report", "--format", "-q", "--no-progress", "--refresh", "--trace", "-f"], requiresTarget: true },
   { name: "run", synopsis: "[-w] <target> [args…]", summary: "Execute a target, forwarding trailing args to it", accepts: ["-w", "-q", "--no-progress", "--refresh", "--trace", "-f"], requiresTarget: true },
   { name: "shell", synopsis: "<target>", summary: "Stage a target's build sandbox and open a shell in it (debugging)", accepts: ["-q", "--no-progress", "--refresh"], singleTarget: true, requiresTarget: true },
   { name: "ls", synopsis: "[-l] <names>", summary: "Build the given targets and list their contents", accepts: ["-l", "-q", "--no-progress", "--refresh"], requiresTarget: true },
@@ -177,11 +177,15 @@ export interface Options {
   /** For `cp`: the destination directory (the final positional), a plain
    * filesystem path resolved against the invocation cwd — not a model name. */
   dest?: string;
-  /** For `audit --format`: the form the report takes instead of text. */
-  format?: AuditFormat;
+  /** For `audit --format`: the form the report takes instead of text; for
+   * `test --format`: the form `--report` writes. */
+  format?: ReportFormat;
   /** For `list-targets --operation`: the operations a listed target's type must
    *  have a rule for, any one of them. */
   operations?: string[];
+  /** For `test --report <file>`: where the run's test report is written, a plain
+   * filesystem path resolved against the invocation cwd. */
+  reportFile?: string;
   /** For `test --coverage[=<dir>]`: the directory the coverage report is written
    * to, a plain filesystem path resolved against the invocation cwd. */
   coverageDir?: string;
@@ -246,9 +250,10 @@ function printUsage(write: (message: string) => void = console.log): void {
       "  -t PATTERN        Run only the tests whose names match the regular expression PATTERN (test)\n" +
       "  --coverage[=DIR]  Measure code coverage and write DIR/lcov.info, coverage/ by default (test)\n" +
       "  --retry-failed    Run again the tests whose last run failed, rather than report it from the cache (test)\n" +
+      "  --report FILE     Write the tests' results to FILE, failures included, as CTRF or with --format junit (test)\n" +
       "  -l                Long listing: hash and size per file (ls), or source location (list-*)\n" +
       "  --json            Emit JSON (the list-* verbs)\n" +
-      "  --format sarif    Write the report as SARIF instead of text (audit)\n" +
+      "  --format FORMAT   The report's format: sarif instead of text (audit), or ctrf or junit (test --report)\n" +
       "  --all             Include system-contributed targets (list-targets)\n" +
       "  --operation OP    List only targets whose type has a rule for OP; repeatable (list-targets)\n" +
       "  --include-optional\n" +
@@ -274,9 +279,14 @@ function usageError(message: string): never {
 /** One option flag as written, with the canonical form it is validated as. */
 type SeenFlag = { raw: string; flag: string };
 
-/** The forms `audit --format` writes its report in besides text. */
-export type AuditFormat = "sarif";
-const AUDIT_FORMATS: ReadonlyArray<AuditFormat> = ["sarif"];
+/** The forms a report is written in: `audit`'s besides text, and `test --report`'s. */
+export type ReportFormat = "sarif" | "ctrf" | "junit";
+/** The formats each command's `--format` takes. */
+const FORMATS = new Map<string, ReadonlyArray<ReportFormat>>([
+  ["audit", ["sarif"]],
+  ["test", ["ctrf", "junit"]],
+]);
+const ALL_FORMATS: ReadonlyArray<ReportFormat> = ["sarif", "ctrf", "junit"];
 
 /** Where `--trace` writes the run's trace when not given a file. */
 const DEFAULT_TRACE_FILE = "fabr-trace.json";
@@ -329,15 +339,23 @@ function applyOption(arg: string, next: string | undefined, options: Options, se
   } else if (arg === "--format" || arg.startsWith("--format=")) {
     const given = arg === "--format" ? next : arg.slice("--format=".length);
     if (given === undefined) {
-      usageError(`Option '--format' requires a format: ${AUDIT_FORMATS.join(" or ")}`);
+      usageError(`Option '--format' requires a format: ${ALL_FORMATS.join(", ")}`);
     }
-    const format = AUDIT_FORMATS.find(each => each === given);
+    const format = ALL_FORMATS.find(each => each === given);
     if (format === undefined) {
-      usageError(`Option '--format' takes ${AUDIT_FORMATS.join(" or ")}, not '${given}'`);
+      usageError(`Option '--format' takes ${ALL_FORMATS.join(", ")}, not '${given}'`);
     }
     options.format = format;
     seenFlags.push({ raw: arg, flag: "--format" });
     return arg === "--format" ? 1 : 0;
+  } else if (arg === "--report" || arg.startsWith("--report=")) {
+    const file = arg === "--report" ? next : arg.slice("--report=".length);
+    if (!file) {
+      usageError("Option '--report' requires a file");
+    }
+    options.reportFile = file;
+    seenFlags.push({ raw: arg, flag: "--report" });
+    return arg === "--report" ? 1 : 0;
   } else if (arg === "--operation" || arg.startsWith("--operation=")) {
     const operation = arg === "--operation" ? next : arg.slice("--operation=".length);
     if (!operation) {
@@ -475,6 +493,13 @@ export function parseCommandLine(args: string[]): Options {
     if (!accepts.has(flag)) {
       usageError(`Option '${raw}' is not valid for the '${options.command}' command`);
     }
+  }
+  const formats = FORMATS.get(options.command) ?? [];
+  if (options.format !== undefined && !formats.includes(options.format)) {
+    usageError(`Option '--format' takes ${formats.join(" or ")} for the '${options.command}' command, not '${options.format}'`);
+  }
+  if (options.command === "test" && options.format !== undefined && options.reportFile === undefined) {
+    usageError("Option '--format' needs '--report FILE' for the 'test' command");
   }
   /* A single-target command (`shell`) errors on a second target rather than
    * silently building only the first. */

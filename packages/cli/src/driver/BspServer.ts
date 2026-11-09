@@ -36,9 +36,7 @@ import {
   getTestReport,
   type IDescribing,
   type ITestReport,
-  MultiError,
   type SourceRef,
-  TestsFailedError,
   type IBuildTarget,
   type IDescription,
   type IJavacOptions,
@@ -102,22 +100,6 @@ const TEST_STATUSES: Record<ITestReport["results"]["tests"][number]["status"], n
 /** @return a promise of what `computable` first settles to. */
 function settled<T>(computable: Computable<T>): Promise<T> {
   return new Promise((resolve, reject) => computable.once(resolve, reject));
-}
-
-/** @return the test failure `err` reports, among the errors it holds, or undefined if it reports none. */
-function testsFailedIn(err: Error): TestsFailedError | undefined {
-  if (err instanceof TestsFailedError) {
-    return err;
-  }
-  const cause = (err as { cause?: unknown }).cause;
-  const inner = err instanceof MultiError ? err.errors : cause instanceof Error ? [cause] : [];
-  for (const each of inner) {
-    const found = testsFailedIn(each);
-    if (found !== undefined) {
-      return found;
-    }
-  }
-  return undefined;
 }
 
 /** BSP's `StatusCode`s, as a task finishes. */
@@ -322,17 +304,13 @@ export class BspServer {
           ? Promise.resolve({ uri, error: new Error(`${uri} is not served`) as Error | undefined, report: undefined as ITestReport | undefined })
           : settled(operations[operation](name)).then(
               results => (operation === "test" ? settled(getTestReport(results.flat())) : Promise.resolve(undefined)).then(report => ({ uri, error: undefined, report })),
-              (err: unknown) => {
-                const error = toError(err);
-                const failed = testsFailedIn(error);
-                return { uri, error, report: failed?.report };
-              }
+              (err: unknown) => ({ uri, error: toError(err) as Error | undefined, report: undefined as ITestReport | undefined })
             )
       )
     );
     let tests = 0;
     for (const { uri, error, report } of outcomes) {
-      if (error !== undefined && testsFailedIn(error) === undefined) {
+      if (error !== undefined) {
         this.publish(uri, this.reported(log, error));
       } else {
         this.publish(uri, []);
@@ -377,7 +355,9 @@ export class BspServer {
         });
       }
     }
-    const statusCode = outcomes.every(({ error }) => error === undefined) ? TASK_OK : TASK_ERROR;
+    const statusCode = outcomes.every(({ error, report }) => error === undefined && !(report !== undefined && report.results.summary.failed > 0))
+      ? TASK_OK
+      : TASK_ERROR;
     this.connection.notify("build/taskFinish", { taskId: task, originId, eventTime: Date.now(), status: statusCode });
     return { originId, statusCode };
   }

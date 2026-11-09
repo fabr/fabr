@@ -79,8 +79,7 @@ import { IPackageLayout, layoutPackages, NodeLayout, ReadName, selfConfig } from
  * invocation is a partition the runner contract permits, so each test process
  * is an ordinary unit of the machine-wide execution funnel. A run whose tests
  * failed is a result like a green one, and enters the cache: its merged report
- * says what failed, its task ends as failed, and the target fails where the
- * report is read (core's `checkTestReport`). A run that could not be performed —
+ * says what failed, and its task ends as failed. A run that could not be performed —
  * an invocation that crashed, or wrote no report — throws, and enters nothing.
  */
 /* Bump the version when what the step stages, keeps between runs or reports

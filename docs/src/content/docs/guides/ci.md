@@ -169,17 +169,21 @@ they go unused for 30 days.
 
 ## Test results
 
-`fabr test` prints a summary for each target and the details of each failure. A target's results
-are also kept as a [CTRF](https://ctrf.io) report, `ctrf-report.json`, which many CI systems can
-display. Copy it out after the tests have run:
+`fabr test` prints a summary for each target and the details of each failure, and fails when any
+test failed. To give your CI system the results too, write them to a file with `--report`: as JUnit
+XML, which CircleCI, GitLab, Jenkins and most others read, or as a [CTRF](https://ctrf.io) report:
 
 ```sh
-fabr test @acme/core
-fabr cp '@acme/core<BUILD_OPERATION=test>:ctrf-report.json' reports/core
+fabr test --report reports/tests.xml --format junit TESTED
 ```
 
-When tests fail, the target fails, and so does a `fabr cp` of its report: the failures are in the
-log.
+The file holds the results of every target tested, one test suite per test file, and is written
+whether or not the tests pass, before the command fails for any that didn't. Each target's own
+report is also kept as `ctrf-report.json`, which `fabr cp` copies out, failures and all:
+
+```sh
+fabr cp '@acme/core<BUILD_OPERATION=test>:ctrf-report.json' reports/core
+```
 
 ## Coverage
 
@@ -192,7 +196,7 @@ fabr test --coverage=reports/coverage TESTED
 
 This writes `reports/coverage/lcov.info`, with each source named by its path in your project;
 `--coverage` alone writes `coverage/lcov.info`. The directory is relative to the current
-directory. Like the CTRF report, coverage is reported only when every test passes. A run with
+directory. Coverage is reported whether or not the tests pass. A run with
 `--coverage` is cached separately from one without it, so a job that always passes `--coverage`
 reuses its own earlier results. [Testing](/reference/js/testing/#coverage) describes what is
 measured.
@@ -243,6 +247,5 @@ memory, limit each test process instead, with `NODE_OPTIONS` in `test_env`.
 - **A shared or remote cache.**
 - **A limit on parallel steps.**
 - **A machine-readable log, or CI annotations.**
-- **A test report or coverage report for a failing run.**
 - **Building in a container image, lint and format steps, and reports of outdated or vulnerable
   dependencies** aren't part of fabr yet.

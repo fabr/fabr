@@ -25,6 +25,7 @@
  * the package's `maven-metadata.xml` brought up to date when it is uploaded.
  */
 
+import XMLBuilder from "fast-xml-builder";
 import * as crypto from "node:crypto";
 import {
   Computable,
@@ -116,23 +117,23 @@ export function metadataPath(groupId: string, artifactId: string): string {
   return `${groupId.replace(/\./g, "/")}/${artifactId}/maven-metadata.xml`;
 }
 
-/** Escape `text` for an XML element's content. */
-function escaped(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const builder = new XMLBuilder({ ignoreAttributes: false, attributeNamePrefix: "@_", format: true, indentBy: "  " });
+
+/** @return the XML document whose root element is `root`'s one entry: an element's children by name, a repeated one as a list, its attributes prefixed `@_`. */
+function xmlDocument(root: Record<string, unknown>): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>\n${builder.build(root)}`;
 }
 
-function dependencyXml({ groupId, artifactId, version, type, classifier, scope, optional }: PomDependency, indent: string): string[] {
-  return [
-    `${indent}<dependency>`,
-    `${indent}  <groupId>${escaped(groupId)}</groupId>`,
-    `${indent}  <artifactId>${escaped(artifactId)}</artifactId>`,
-    ...(version === undefined ? [] : [`${indent}  <version>${escaped(version)}</version>`]),
-    ...(type === undefined || type === "jar" ? [] : [`${indent}  <type>${escaped(type)}</type>`]),
-    ...(classifier === undefined ? [] : [`${indent}  <classifier>${escaped(classifier)}</classifier>`]),
-    ...(scope === undefined || scope === "compile" ? [] : [`${indent}  <scope>${escaped(scope)}</scope>`]),
-    ...(optional ? [`${indent}  <optional>true</optional>`] : []),
-    `${indent}</dependency>`,
-  ];
+function dependencyElement({ groupId, artifactId, version, type, classifier, scope, optional }: PomDependency): Record<string, unknown> {
+  return {
+    groupId,
+    artifactId,
+    ...(version === undefined ? {} : { version }),
+    ...(type === undefined || type === "jar" ? {} : { type }),
+    ...(classifier === undefined ? {} : { classifier }),
+    ...(scope === undefined || scope === "compile" ? {} : { scope }),
+    ...(optional ? { optional: "true" } : {}),
+  };
 }
 
 /**
@@ -182,48 +183,38 @@ function isMapList(value: MetadataValue): value is readonly MetadataMap[] {
   return Array.isArray(value) && !isStrings(value);
 }
 
-/** Write one `metadata` entry as POM elements, at `indent`. */
-function metadataXml(key: string, value: MetadataValue, indent: string): string[] {
+/** @return the content of the POM element one `metadata` entry under `key` writes. */
+function metadataElement(key: string, value: MetadataValue): unknown {
   const child = LIST_ELEMENTS.get(key);
   if (child !== undefined) {
-    const items: string[] = isStrings(value)
-      ? value.flatMap(word => [`${indent}  <${child}>${escaped(word)}</${child}>`])
-      : (isMapList(value) ? value : [value as MetadataMap]).flatMap(item => mapXml(child, item, `${indent}  `));
-    return [`${indent}<${key}>`, ...items, `${indent}</${key}>`];
+    return { [child]: isStrings(value) ? [...value] : (isMapList(value) ? value : [value as MetadataMap]).map(mapElement) };
   }
-  return isStrings(value) ? [`${indent}<${key}>${escaped(value.join(" "))}</${key}>`] : mapXml(key, value as MetadataMap, indent);
+  return isStrings(value) ? value.join(" ") : mapElement(value as MetadataMap);
 }
 
-function mapXml(key: string, map: MetadataMap, indent: string): string[] {
-  return [`${indent}<${key}>`, ...[...map].flatMap(([each, value]) => metadataXml(each, value, `${indent}  `)), `${indent}</${key}>`];
+function mapElement(map: MetadataMap): Record<string, unknown> {
+  return Object.fromEntries([...map].map(([key, value]) => [key, metadataElement(key, value)]));
 }
 
 /** Write `pom` as a `pom.xml`. */
 export function pomText(pom: Pom): string {
-  const lines = [
-    `<?xml version="1.0" encoding="UTF-8"?>`,
-    `<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">`,
-    `  <modelVersion>4.0.0</modelVersion>`,
-    `  <groupId>${escaped(pom.groupId)}</groupId>`,
-    `  <artifactId>${escaped(pom.artifactId)}</artifactId>`,
-    `  <version>${escaped(pom.version)}</version>`,
-    ...(pom.packaging === "jar" ? [] : [`  <packaging>${escaped(pom.packaging)}</packaging>`]),
-    ...[...pom.metadata].flatMap(([key, value]) => metadataXml(key, value, "  ")),
-    ...(pom.dependencyManagement.length === 0
-      ? []
-      : [
-          `  <dependencyManagement>`,
-          `    <dependencies>`,
-          ...pom.dependencyManagement.flatMap(managed => dependencyXml(managed, "      ")),
-          `    </dependencies>`,
-          `  </dependencyManagement>`,
-        ]),
-    ...(pom.dependencies.length === 0
-      ? []
-      : [`  <dependencies>`, ...pom.dependencies.flatMap(dep => dependencyXml(dep, "    ")), `  </dependencies>`]),
-    `</project>`,
-  ];
-  return lines.join("\n") + "\n";
+  return xmlDocument({
+    project: {
+      "@_xmlns": "http://maven.apache.org/POM/4.0.0",
+      "@_xmlns:xsi": "http://www.w3.org/2001/XMLSchema-instance",
+      "@_xsi:schemaLocation": "http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd",
+      modelVersion: "4.0.0",
+      groupId: pom.groupId,
+      artifactId: pom.artifactId,
+      version: pom.version,
+      ...(pom.packaging === "jar" ? {} : { packaging: pom.packaging }),
+      ...mapElement(pom.metadata),
+      ...(pom.dependencyManagement.length === 0
+        ? {}
+        : { dependencyManagement: { dependencies: { dependency: pom.dependencyManagement.map(dependencyElement) } } }),
+      ...(pom.dependencies.length === 0 ? {} : { dependencies: { dependency: pom.dependencies.map(dependencyElement) } }),
+    },
+  });
 }
 
 /** Make the checksum files of `bytes` published at `path`, each named `<path>.<algorithm>`. */
@@ -248,23 +239,13 @@ export function mergedMetadata(existing: string | undefined, groupId: string, ar
     .map(parsed => parsed.text);
   const highest = versions[versions.length - 1];
   const lastUpdated = now.toISOString().replace(/[-:T]/g, "").substring(0, 14);
-  return (
-    [
-      `<?xml version="1.0" encoding="UTF-8"?>`,
-      `<metadata>`,
-      `  <groupId>${escaped(groupId)}</groupId>`,
-      `  <artifactId>${escaped(artifactId)}</artifactId>`,
-      `  <versioning>`,
-      `    <latest>${escaped(highest)}</latest>`,
-      `    <release>${escaped(highest)}</release>`,
-      `    <versions>`,
-      ...versions.map(each => `      <version>${escaped(each)}</version>`),
-      `    </versions>`,
-      `    <lastUpdated>${lastUpdated}</lastUpdated>`,
-      `  </versioning>`,
-      `</metadata>`,
-    ].join("\n") + "\n"
-  );
+  return xmlDocument({
+    metadata: {
+      groupId,
+      artifactId,
+      versioning: { latest: highest, release: highest, versions: { version: versions }, lastUpdated },
+    },
+  });
 }
 
 /**

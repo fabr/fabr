@@ -47,9 +47,14 @@ import {
   Fabr,
   FileSet,
   hashString,
+  formatTestFailures,
   formatTestSummary,
   IFile,
   getTestReport,
+  ITestReport,
+  mergeTestReports,
+  TestsFailedError,
+  toJUnitXml,
   Name,
   parseName,
   Log,
@@ -113,6 +118,7 @@ const DIAG_COVERAGE = Diagnostic.Info<{ lines: string; functions: string; branch
   "Coverage: lines {lines}, functions {functions}, branches {branches}"
 );
 const DIAG_COVERAGE_WRITTEN = Diagnostic.Info<{ file: string }>("Coverage report written to {file}");
+const DIAG_TEST_REPORT_WRITTEN = Diagnostic.Info<{ file: string }>("Test report written to {file}");
 const DIAG_COVERAGE_NONE = Diagnostic.Warn<Record<string, never>>("No test target measured any coverage");
 /* A measured source no reference reaches (generated during the build): it has
  * no place in the project to report it against. */
@@ -363,10 +369,12 @@ function runsOnly(model: BuildModel, name: string): boolean {
   return operations.includes("run") && !operations.some(operation => operation === "build" || operation === "*");
 }
 
-/** Run `fabr test <targets>`: the core operation, with the summaries and
- * expectation write-backs composed onto its results — a `then` on the results
- * re-runs exactly when a watch cycle changed them, so per-change reporting is
- * ordinary composition. */
+/** Run `fabr test <targets>`: the core operation, with the summaries, the
+ * reports and the expectation write-backs composed onto its results — a `then`
+ * on the results re-runs exactly when a watch cycle changed them, so
+ * per-change reporting is ordinary composition. A test target's result is its
+ * report, failures included; the run fails where any test failed, after the
+ * reports are written, and expectations are written back only where none did. */
 function runTest(
   model: BuildModel,
   options: Options,
@@ -378,10 +386,68 @@ function runTest(
   execution.retryFailed = options.retryFailed;
   const refs = names.map(name => options.commandLine.refFor(name, site));
   return testOperation(configFor(model, options, execution, "test"), refs).then(results =>
-    reportTestResults(execution.log, names, results, options.properties.get(TEST_NAME_PATTERN) || undefined)
-      .then(() => applyExpectationUpdates(execution, site, results))
-      .then(() => (options.coverageDir === undefined ? undefined : reportCoverage(execution, site, options.coverageDir, results)))
+    Computable.forAll(
+      results.map(sources => getTestReport(sources)),
+      (...reports: (ITestReport | undefined)[]) => reports
+    ).then(reports => {
+      const failure = reportTestResults(execution.log, names, reports, options.properties.get(TEST_NAME_PATTERN) || undefined);
+      return (options.reportFile === undefined ? Computable.resolve(undefined) : writeTestReport(execution, site, options.reportFile, options.format, reports))
+        .then(() => (failure === undefined ? applyExpectationUpdates(execution, site, results) : undefined))
+        .then(() => (options.coverageDir === undefined ? undefined : reportCoverage(execution, site, options.coverageDir, results)))
+        .then(() => {
+          if (failure !== undefined) {
+            throw failure;
+          }
+        });
+    })
   );
+}
+
+/** Write the run's test results, every name's merged into one report, to `file`, as CTRF or (`junit`) JUnit XML. */
+function writeTestReport(
+  execution: ExecutionContext,
+  site: IInvocationSite,
+  file: string,
+  format: Options["format"],
+  reports: (ITestReport | undefined)[]
+): Computable<void> {
+  const present = reports.filter((report): report is ITestReport => report !== undefined);
+  const report = present.length === 0 ? emptyTestReport() : present.length === 1 ? present[0] : mergeTestReports(present);
+  const text = format === "junit" ? toJUnitXml(report) : `${JSON.stringify(report, null, 2)}\n`;
+  return writeReportFile(execution, site, path.resolve(file), MemoryFile.from(text)).then(() =>
+    execution.log.log(DIAG_TEST_REPORT_WRITTEN, { file })
+  );
+}
+
+/** @return a report of a run that ran no tests. */
+function emptyTestReport(): ITestReport {
+  const now = Date.now();
+  return {
+    results: {
+      tool: { name: "fabr" },
+      summary: { tests: 0, passed: 0, failed: 0, pending: 0, skipped: 0, other: 0, start: now, stop: now },
+      tests: [],
+    },
+  };
+}
+
+/**
+ * Write a report the run produced to `destination`. Where it lies in the
+ * project's tree it is written through the source tree, as an expectation
+ * update is, so a watching run recognises the write as its own.
+ */
+function writeReportFile(execution: ExecutionContext, site: IInvocationSite, destination: string, file: IFile): Computable<void> {
+  const sources = site.sourceFileSource;
+  const root = fs.realpathSync(sources.root);
+  const dir = path.dirname(destination);
+  const inTree = !path.relative(root, fs.existsSync(dir) ? fs.realpathSync(dir) : dir).startsWith("..");
+  if (inTree) {
+    return sources.applyWriteBack([{ file, destination }]).then(() => undefined);
+  }
+  fs.mkdirSync(dir, { recursive: true });
+  return file.getBuffer().then(buffer => {
+    fs.writeFileSync(destination, buffer);
+  });
 }
 
 /** Format a coverage total as the summary shows it: the percentage, then the counts. */
@@ -427,18 +493,9 @@ function reportCoverage(execution: ExecutionContext, site: IInvocationSite, dir:
         functions: coverageText(totals.functions),
         branches: coverageText(totals.branches),
       });
-      const report = (): void => execution.log.log(DIAG_COVERAGE_WRITTEN, { file: path.join(dir, COVERAGE_REPORT_FILENAME) });
-      const file = MemoryFile.from(lcovOf(placed));
-      const root = fs.realpathSync(sources.root);
-      const inTree = !path.relative(root, path.resolve(fs.existsSync(dir) ? fs.realpathSync(dir) : dir)).startsWith("..");
-      if (inTree) {
-        return sources.applyWriteBack([{ file, destination }]).then(report);
-      }
-      fs.mkdirSync(path.dirname(destination), { recursive: true });
-      return file.getBuffer().then(buffer => {
-        fs.writeFileSync(destination, buffer);
-        report();
-      });
+      return writeReportFile(execution, site, destination, MemoryFile.from(lcovOf(placed))).then(() =>
+        execution.log.log(DIAG_COVERAGE_WRITTEN, { file: path.join(dir, COVERAGE_REPORT_FILENAME) })
+      );
     }
   );
 }
@@ -1634,26 +1691,31 @@ function renderListing(files: FileSet, longListing: boolean): Computable<string[
 }
 
 /**
- * Report each target's test result summary — for a test run the interesting
- * outcome is the tests, not the build — from its test report artifact (whether freshly
- * run or cached-green). A run given `-t` marks each summary filtered, and fails
- * where its pattern ran no test in any of the targets.
+ * Log the test summary of each name a run tested, from its report (whether
+ * freshly run or cached), and return the failure of the names whose tests
+ * failed, or undefined where none did: their summaries and failed tests, which
+ * the failure is reported as. A run given `-t` marks each summary filtered, and
+ * fails where its pattern ran no test in any of the targets.
  */
-function reportTestResults(log: Log, names: string[], results: SourceRef[][], namePattern: string | undefined): Computable<void> {
-  return Computable.forAll(
-    results.map(sources => getTestReport(sources)),
-    (...reports) => {
-      const filtered = namePattern === undefined ? "" : " (filtered)";
-      reports.forEach((report, i) => {
-        log.log(DIAG_TEST_RESULT, { name: names[i], summary: (report ? formatTestSummary(report) : "no tests") + filtered });
-      });
-      const ran = reports.reduce(
-        (count, report) => count + (report ? report.results.summary.passed + report.results.summary.failed : 0),
-        0
-      );
-      if (namePattern !== undefined && ran === 0) {
-        throw new FabrError(`No test's name matches the pattern '${namePattern}'`);
-      }
+function reportTestResults(log: Log, names: string[], reports: (ITestReport | undefined)[], namePattern: string | undefined): TestsFailedError | undefined {
+  const filtered = namePattern === undefined ? "" : " (filtered)";
+  const failures: string[] = [];
+  let failed = 0;
+  let tests = 0;
+  reports.forEach((report, i) => {
+    if (report !== undefined && report.results.summary.failed > 0) {
+      /* The summary line, the failed tests, then the summary line again, so a long list ends with what it added up to. */
+      const summary = `${names[i]}: ${formatTestSummary(report)}${filtered}`;
+      failures.push(summary, ...formatTestFailures(report).split("\n").slice(1), summary);
+      failed += report.results.summary.failed;
+      tests += report.results.summary.tests;
+    } else {
+      log.log(DIAG_TEST_RESULT, { name: names[i], summary: (report ? formatTestSummary(report) : "no tests") + filtered });
     }
-  );
+  });
+  const ran = reports.reduce((count, report) => count + (report ? report.results.summary.passed + report.results.summary.failed : 0), 0);
+  if (namePattern !== undefined && ran === 0) {
+    throw new FabrError(`No test's name matches the pattern '${namePattern}'`);
+  }
+  return failures.length === 0 ? undefined : new TestsFailedError(failures.join("\n"), failed, tests);
 }

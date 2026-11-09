@@ -27,7 +27,6 @@ import {
   MultiError,
   RequirementResolutionError,
   TargetNotPackageError,
-  TestsFailedError,
 } from "../core/Errors";
 import { chainSteps, IProvenanceStep, renderProvenance } from "../core/Provenance";
 import { RepositoryRef } from "../core/Repository";
@@ -252,16 +251,6 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
       return owner
         ? { message: `Failed to build ${failedName(owner)}: ${cause.message}`, loc: declPosn(owner.target), notes, help: helpOf(cause) }
         : { message: cause.message, notes, help: helpOf(cause) };
-    }
-    if (owner && cause instanceof TestsFailedError) {
-      /* Tests failed: the target built fine, so report the (pre-rendered)
-       * test summary rather than a build failure — the summary line first, the
-       * failed tests, then the summary line again where there were any, so a
-       * long list ends with what it added up to. */
-      const name = failedName(owner);
-      const [summary, ...failures] = cause.message.split("\n");
-      const lines = failures.length === 0 ? [`${name}: ${summary}`] : [`${name}: ${summary}`, ...failures, `${name}: ${summary}`];
-      return { message: lines.join("\n"), loc: declPosn(owner.target) };
     }
     if (owner) {
       return { message: `Failed to build ${failedName(owner)}: ${cause.message}`, loc: declPosn(owner.target), help: helpOf(cause) };

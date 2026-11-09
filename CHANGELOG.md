@@ -15,6 +15,10 @@ number.
 - Add targetdef inheritance: derived targets inherit their base's rules but can extend and override.
 - Add support for map splices in target properties.
 - Breaking: Cache failed test runs like passing ones; add --retry-failed to run failed tests again.
+- Test targets now complete normally whether or not tests fail; top-level 'fabr test'
+still reports non-zero exit code with failures.
+- Add `fabr test --report FILE [--format ctrf|junit]`: every tested target's results in one CTRF or JUnit XML file
+- Write a failing test run's coverage report too.
 - Add vulnerability audit via osv.
 - Add --trace[=FILE] to build, test and run: a trace of the run's work for Perfetto or chrome://tracing.
 - Allow 'fabr build' of run-only targets, and cat/ls of run and test only targets.

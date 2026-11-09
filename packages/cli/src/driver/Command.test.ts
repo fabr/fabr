@@ -310,6 +310,17 @@ describe("Command", () => {
     expect(capture(["sbom"]).err.join("\n")).to.match(/requires/);
   });
 
+  it("parses test --report with the format it is written in", () => {
+    const options = parseCommandLine(["node", "fabr", "test", "--report", "out/junit.xml", "--format", "junit", "app"]);
+    expect(options.reportFile).to.equal("out/junit.xml");
+    expect(options.format).to.equal("junit");
+    expect(options.targets).to.deep.equal(["app"]);
+    expect(parseCommandLine(["node", "fabr", "test", "--report=out/report.json", "app"]).format).to.equal(undefined);
+    expect(capture(["test", "--report", "x", "--format", "sarif", "app"]).err.join("\n")).to.match(/takes ctrf or junit for the 'test' command/);
+    expect(capture(["test", "--format", "junit", "app"]).err.join("\n")).to.match(/needs '--report FILE'/);
+    expect(capture(["build", "--report", "x", "app"]).err.join("\n")).to.match(/not valid/);
+  });
+
   it("parses audit as a query over names, with --format for its output", () => {
     const options = parseCommandLine(["node", "fabr", "audit", "--format", "sarif", "app", "@npm:glob:10.0.0"]);
     expect(options.command).to.equal("audit");

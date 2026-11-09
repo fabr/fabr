@@ -115,7 +115,7 @@ apply: jest ignores case, and `node:test` also matches a test's own name alone. 
 vitest the tests not selected are counted as skipped. The summary ends `(filtered)`, and if no
 test in any target matches, the run fails. The pattern is part of what is cached, so a filtered
 run and a full one are cached separately. A failing
-run fails the target and prints a line for each failed test, naming the test file by its path in
+run prints a line for each failed test and fails the command, naming the test file by its path in
 your project, as in `greets by name (src/greet.test.ts): 'Hello, x!' == 'Hello, world!'`. Under
 jest and vitest the line is followed by the detail the framework itself shows, such as a matcher's
 diff and the stack trace, with stack frames naming your TypeScript sources.

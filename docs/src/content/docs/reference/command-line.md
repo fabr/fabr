@@ -78,6 +78,7 @@ fabr test -u mylib    # also record new and changed snapshots
 fabr test -t 'dates parse' mylib    # run only the tests whose names match
 fabr test --coverage mylib    # also measure code coverage
 fabr test --retry-failed mylib    # run failed tests again rather than report the cached failure
+fabr test --report results.xml --format junit mylib    # also write the results as JUnit XML
 ```
 
 A run is cached, passing or failing, and isn't repeated until something the tests depend on
@@ -86,7 +87,11 @@ changes: a failing run's failures are reported again, and the command fails agai
 new and changed snapshots are written back into your source tree after a passing run, and each
 file is named as it is written. With `--coverage`, the tests are measured for code coverage: a
 summary is printed and an lcov report written to `coverage/lcov.info`, or to `<dir>/lcov.info`
-with `--coverage=<dir>`; the directory is relative to the current directory. With `-t <pattern>`,
+with `--coverage=<dir>`; the directory is relative to the current directory. With
+`--report <file>`, the results of every target tested are written to one file, as a
+[CTRF](https://ctrf.io) report, or as JUnit XML with `--format junit`, for a CI system's test
+results view; the file is relative to the current directory. Both reports are written whether or
+not the tests pass, before the command fails for any that didn't. With `-t <pattern>`,
 only the tests whose names match the regular expression are run, and the run fails if no
 test in any of the targets matches. See testing for [JavaScript](/reference/js/testing/) and
 [Java](/reference/java/testing/).
@@ -492,13 +497,14 @@ generated from it.
 | `-u`, `--update` | `test` | Record new and changed snapshots, and write them into your source tree. |
 | `-t PATTERN` | `test` | Run only the tests whose names match the regular expression `PATTERN`: for [JavaScript](/reference/js/testing/#running-tests), suite and test names joined by spaces; for [Java](/reference/java/testing/#running-some-of-the-tests), `Class#method`. Sets `TEST_NAME_PATTERN`. |
 | `--coverage[=DIR]` | `test` | Measure code coverage, print a summary and write `DIR/lcov.info` (`coverage/` by default). |
+| `--report FILE` | `test` | Write the results of every target tested to `FILE`, failures included, as CTRF (the default) or as `--format` says. |
 | `-q`, `--quiet` | all | Don't show the progress display or the output of build steps. A step that fails still shows its output in the error. |
 | `--no-progress` | all | Don't show the progress display. Output from build steps is then printed as it arrives, as it is when stderr isn't a terminal. |
 | `--trace[=FILE]` | `build`, `test`, `run` | Write a trace of the run's work to `FILE` (`fabr-trace.json` by default). See [Tracing a run](#tracing-a-run). |
 | `--refresh` | `build`, `test`, `run`, `shell`, `ls`, `cat`, `cp`, `deps`, `audit`, `sync` | Check again for anything a server can change under the same address, such as a registry's version lists or an S3 object, however recently fabr last checked. Without it, fabr checks each at most once a day. |
 | `-l` | `ls`, `list-*` | Long listing: hash and size for `ls`, source location for the `list-` commands. |
 | `--json` | `list-*` | Output as JSON. |
-| `--format sarif` | `audit` | Write the report as SARIF instead of text. |
+| `--format FORMAT` | `audit`, `test` | The report's format: `sarif` for `audit`, instead of text; `ctrf` or `junit` for `test --report`. |
 | `--all` | `list-targets` | Include the targets fabr and its plugins declare. |
 | `--operation OP` | `list-targets` | List only the targets whose type has a rule for the operation `OP`. |
 | `--` | all | End of options. What follows is a target, even if it starts with `-` or is the name of a command. |
