@@ -158,7 +158,7 @@ Which conditions in an `exports` map apply depends on what's reading the package
 | Tool | Conditions |
 |---|---|
 | TypeScript compilation | `types`; `import` for ES-module output or `require` for CommonJS output; `module-sync` |
-| Bundling (`js_bundle`) | esbuild's usual conditions for the platform in `JS_TARGET` (`browser` or `node`), plus `module-sync` |
+| Bundling (`js_bundle`) | esbuild's usual conditions for the platform in `JS_TARGET`: `browser` or `node`, `import` or `require`, `module` (a package's build for bundlers) and `default`; plus `module-sync` |
 | Sass stylesheets | `sass`, `style` |
 | Tests and `fabr run` | Node.js's own conditions (`node`, `import`/`require`, `module-sync`, `default`) |
 

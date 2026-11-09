@@ -134,8 +134,8 @@ interface IEsbuild {
  * CSS/JSON are concatenated/parsed natively; JS/TS are compiled. */
 const CODE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".css", ".json", ".txt"]);
 
-/** The conditions the bundle adds to esbuild's own (see {@link toEsbuildOptions}). */
-const EXTRA_CONDITIONS = ["module-sync"];
+/** The conditions the bundle gives esbuild beside its own (see {@link toEsbuildOptions}). */
+const EXTRA_CONDITIONS = ["module", "module-sync"];
 
 /** The importer kinds that reference an *asset* (a URL in a stylesheet) rather
  * than code: a miss on one of these is an external runtime URL, not an error. */
@@ -435,7 +435,7 @@ async function resolveSingleVariant(
 /**
  * Get the conditions esbuild resolves a package's `exports` under, for an
  * import of `kind` on `platform`: `default`, the platform's, the kind's and
- * {@link EXTRA_CONDITIONS} (with `conditions` set, esbuild adds no `module`).
+ * {@link EXTRA_CONDITIONS}.
  */
 export function conditionsFor(kind: string, platform: IBundleOptions["platform"]): ReadonlySet<string> {
   const byKind = kind === "require-call" || kind === "require-resolve" ? "require" : "import";
@@ -538,10 +538,12 @@ function toEsbuildOptions(options: IBundleOptions, unresolved: Set<string>): Rec
     /* css-modules: `.module.css` scopes its identifiers and exports the map to
      * the importing JS; every other stylesheet keeps global names. */
     loader: { ".module.css": "local-css", ".css": "global-css" },
-    /* ADDED to esbuild's own conditions, not replacing them. `module-sync`
-     * marks an ESM entry that may be loaded synchronously — what node 22 and
-     * later require() — and fabr's compiler resolves it, so the bundler must
-     * too; esbuild consumes ESM whatever format it is emitting. */
+    /* esbuild adds these to `default`, the platform's and the kind's. `module`
+     * is the bundler's ESM entry, which esbuild uses only while no conditions
+     * are set, so it is listed. `module-sync` marks an ESM entry that may be
+     * loaded synchronously — what node 22 and later require() — and fabr's
+     * compiler resolves it, so the bundler must too; esbuild consumes ESM
+     * whatever format it is emitting. */
     conditions: EXTRA_CONDITIONS,
     ...(options.define ? { define: options.define } : {}),
     ...(options.inject ? { inject: options.inject } : {}),

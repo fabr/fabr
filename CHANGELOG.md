@@ -52,6 +52,7 @@ number.
 - Handle node: imports in browser bundling (strip off the node:)
 - Fix packages in both srcs + deps being left unbundled.
 - Fix bundling cjs files with __dirname/etc.
+- Fix bundles ignoring a package's `module` export condition (its build for bundlers), which esbuild otherwise honours.
 - Fix resources not being mounted during package tests.
 - js_package tests compile against the package's own build, checking and emitting only the tests.
 - Run again only the test files a change can reach, coverage included.

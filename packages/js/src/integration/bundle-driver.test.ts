@@ -225,6 +225,14 @@ for (const layout of ["node_modules", "pnp"] as const) describe(`the bundle driv
     assert.deepEqual(await copiesIn("esm"), ["ESM_COPY"]);
   });
 
+  it("takes a package's bundler entry, as esbuild does by default", async () => {
+    /* `module` names the ESM build a package publishes for bundlers; esbuild
+     * uses it unless conditions are set, which the driver sets. */
+    publishing({ ".": { module: "./esm.mjs", default: "./cjs.cjs" } });
+    assert.deepEqual(await copiesIn("cjs"), ["ESM_COPY"]);
+    assert.deepEqual(await copiesIn("esm"), ["ESM_COPY"]);
+  });
+
   it("takes the one copy a single-condition package publishes, whatever the format", async () => {
     /* The other kind: a package with nothing to choose between. The native kind
      * finds nothing and the fallback answers, so a CJS-only package still
