@@ -91,9 +91,6 @@ function label(dep: Dependency, style: Style): string {
   return requested === undefined ? `${name}${style(DIM, ":")}${selected}` : `${name}${style(DIM, `:${requested} ->`)} ${selected}`;
 }
 
-/** The heading each of a package's own requirements is printed under: the name
- * of the property that conventionally holds it. */
-
 /** One name's tree: its sections, each the edges to the packages a
  * requirement holds, and the versions conflicting among them. */
 export interface DependencyTree {
@@ -116,12 +113,13 @@ function edgesOf(sources: ReadonlyArray<Resolved>, references: ReadonlyArray<Ref
  * Split what `target` requires into sections by where each source was written:
  * the target's own property it was read from (`deps`), or the rule, for what
  * the rule requires itself (`required by <type> rule`). What the target's rule
- * builds under the target's own name is part of the target, not something it
- * requires, and is left out. Each source is shown once.
+ * builds under the target's own name (a rule block's result, the target under
+ * another operation) is part of the target, not something it requires: it is
+ * shown by what it requires in turn, and what conflicts there is the target's
+ * too. Each source is shown once.
  */
-function requiredAsWritten(target: ResolvedTarget): Map<string, Dependency[]> {
-  const decl = declOf(target.origin);
-  const ruleSection = `required by ${decl?.type ?? "its"} rule`;
+function requiredAsWritten(target: ResolvedTarget): { parts: Map<string, Dependency[]>; conflicts: Conflicts } {
+  const conflicts: Conflicts[] = [];
   const sections = new Map<string, { sources: Resolved[]; references: Array<Reference | undefined> }>();
   const seen = new Set<unknown>();
   const seenText = new Set<string>();
@@ -136,28 +134,46 @@ function requiredAsWritten(target: ResolvedTarget): Map<string, Dependency[]> {
       seenText.add(text);
       return true;
     }
-    if (seen.has(source)) {
+    /* Copies of one node (each part of the target reads its own) share its content key. */
+    const identity = source instanceof ResolvedNode ? source.content.key : source;
+    if (seen.has(identity)) {
       return false;
     }
-    seen.add(source);
+    seen.add(identity);
     return true;
   };
-  for (const [name, sources] of target.resolved.sources) {
-    const references = target.resolved.references.get(name) ?? [];
-    sources.forEach((source, at) => {
-      const partOfTarget = source instanceof ResolvedNode && source !== target && source.content.builds === target.content.builds;
-      if (partOfTarget || !first(source)) {
-        return;
-      }
-      const property = decl === undefined ? undefined : propertyOf(references[at] ?? source, decl);
-      const section = property === undefined ? ruleSection : declName(property);
-      const held = sections.get(section) ?? { sources: [], references: [] };
-      held.sources.push(source);
-      held.references.push(references[at]);
-      sections.set(section, held);
-    });
-  }
-  return new Map([...sections].map(([section, { sources, references }]) => [section, edgesOf(sources, references)]));
+  const walked = new Set<ResolvedTarget>();
+  const walk = (part: ResolvedTarget): void => {
+    walked.add(part);
+    conflicts.push(part.resolved.conflicts);
+    const decl = declOf(part.origin);
+    const ruleSection = `required by ${decl?.type ?? "its"} rule`;
+    for (const [name, sources] of part.resolved.sources) {
+      const references = part.resolved.references.get(name) ?? [];
+      sources.forEach((source, at) => {
+        if (source instanceof ResolvedNode && source.content.builds === target.content.builds) {
+          if (source instanceof ResolvedTarget && !walked.has(source)) {
+            walk(source);
+          }
+          return;
+        }
+        if (!first(source)) {
+          return;
+        }
+        const property = decl === undefined ? undefined : propertyOf(references[at] ?? source, decl);
+        const section = property === undefined ? ruleSection : declName(property);
+        const held = sections.get(section) ?? { sources: [], references: [] };
+        held.sources.push(source);
+        held.references.push(references[at]);
+        sections.set(section, held);
+      });
+    }
+  };
+  walk(target);
+  return {
+    parts: new Map([...sections].map(([section, { sources, references }]) => [section, edgesOf(sources, references)])),
+    conflicts: Conflicts.union(conflicts),
+  };
 }
 
 /** Get the declaration of the target whose node `origin` is the provenance of, if it is a target's. */
@@ -196,7 +212,7 @@ export function sectionsOf(title: string, resolved: ResolvedRequirements): Depen
   const denoted = resolved.denoted;
   const [only] = denoted;
   if (denoted.length === 1 && only instanceof ResolvedTarget) {
-    return { title, parts: requiredAsWritten(only), conflicts: only.resolved.conflicts };
+    return { title, ...requiredAsWritten(only) };
   }
   return { title, parts: new Map([["", edgesOf(denoted, resolved.references.get("") ?? [])]]), conflicts: resolved.conflicts };
 }
@@ -321,7 +337,7 @@ export function renderAudit(report: AuditReport, style: Style = (_code, text) =>
     lines.push(report.packages.length === 0 ? "No packages to audit" : `No known advisories affect the ${packages} checked`);
   } else {
     const affected = new Set(report.findings.flatMap(finding => finding.packages.map(pkg => pkg.purl))).size;
-    lines.push(`${plural(report.findings.length, "advisory affects", "advisories affect")} ${affected} of the ${packages} checked`);
+    lines.push(`${plural(report.findings.length, "advisory affects", "advisories affect")} ${affected} of ${packages} checked`);
   }
   return lines;
 }

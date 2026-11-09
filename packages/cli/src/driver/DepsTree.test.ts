@@ -319,7 +319,7 @@ describe("renderAudit", () => {
       "    app > express@4.17.1 > lodash@4.17.15 (+2)",
       "  https://github.com/advisories/GHSA-35jh-r3h4-6jhm",
       "",
-      "2 advisories affect 2 of the 3 packages checked",
+      "2 advisories affect 2 of 3 packages checked",
     ]);
   });
 
