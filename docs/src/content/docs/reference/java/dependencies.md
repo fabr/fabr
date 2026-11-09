@@ -63,7 +63,7 @@ A dependency on another target in the same project is written by its name: `deps
 | Property | Used for | Passed on to whatever depends on the jar |
 |---|---|---|
 | `deps` | Packages the code uses | Yes. |
-| `provided_deps` | Packages the code uses that whatever runs it supplies, such as the servlet API a container provides | As a requirement the consumer must meet; the jar doesn't carry them. |
+| `provided_deps` | Packages the code uses that whatever runs it supplies, such as the servlet API a container provides | As a requirement the consumer must meet; the jar doesn't carry them, and an installation of it holds them only where something else requires them. |
 | `optional_provided_deps` | As `provided_deps`, for packages whatever runs it may leave out | Only where the consumer has the package anyway. |
 | `compile_deps` | Packages the code is compiled against that nothing needs when it runs, such as an annotations-only jar | No. |
 | `compile_api_deps` | As `compile_deps`, for packages the jar's own API names, such as the annotations on its public classes | To what compiles against the jar; never installed. |

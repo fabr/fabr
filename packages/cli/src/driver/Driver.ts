@@ -111,7 +111,7 @@ import { setActiveTerminal, TerminalStream } from "./Terminal";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const DIAG_BUILD_FAILED = Diagnostic.Error<Record<string, never>>("Build failed");
+const DIAG_FAILED = Diagnostic.Error<{ work: string }>("{work} failed");
 const DIAG_ERROR = Diagnostic.Error<{ message: string }>("{message}");
 const DIAG_TEST_RESULT = Diagnostic.Info<{ name: string; summary: string }>("{name}: {summary}");
 const DIAG_COVERAGE = Diagnostic.Info<{ lines: string; functions: string; branches: string }>(
@@ -892,7 +892,7 @@ async function runWith(options: Options, operation: Operation, watch = false, se
       )
       .catch(err => {
         reportFailure(log, err);
-        log.log(DIAG_BUILD_FAILED, {});
+        log.log(DIAG_FAILED, { work: failedWork(options.command) });
         flushAndExit(1);
       });
   } catch (err) {
@@ -901,9 +901,14 @@ async function runWith(options: Options, operation: Operation, watch = false, se
      * chain's own `.catch`, so it would otherwise escape as a raw unhandled
      * rejection. Report it like any other failure and exit. */
     reportFailure(log, toError(err));
-    log.log(DIAG_BUILD_FAILED, {});
+    log.log(DIAG_FAILED, { work: failedWork(options.command) });
     flushAndExit(1);
   }
+}
+
+/** @return what a run of `command` that failed says failed: `Audit` for an audit, otherwise `Build`. */
+function failedWork(command: string): string {
+  return command === "audit" ? "Audit" : "Build";
 }
 
 /** @return true if this verb's runs render the per-cycle status marker ("Built
@@ -966,7 +971,7 @@ function runWatched(operation: Operation, fabr: Fabr, site: IInvocationSite, log
       /* Render only a NEW failure — never re-print an unchanged tree per cycle. */
       if (result !== lastFailure) {
         reportFailure(log, result);
-        log.log(DIAG_BUILD_FAILED, {});
+        log.log(DIAG_FAILED, { work: "Build" });
         log.log(DIAG_WATCHING, {});
       }
     } else if (!announced || lastFailure !== undefined) {

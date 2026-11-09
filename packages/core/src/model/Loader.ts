@@ -174,7 +174,10 @@ interface LoadedFile {
   /** The file's work-list key: relative to the project's root for a project file, absolute for a lib file. */
   file: string;
   decls: IBuildFileContents;
+  /** The errors reported parsing it: where there are any, its declarations are not validated. */
   parseErrors: number;
+  /** The errors reported resolving its includes. */
+  includeErrors: number;
 }
 
 /** The empty decl set for a file an include matched but which was gone by the
@@ -315,7 +318,11 @@ class ProjectLoader {
       const fresh = files.filter(file => !read.has(file.file) && read.add(file.file));
       model.addFiles(
         fresh.map(file => file.decls),
-        { fromPlugin, reported: fresh.reduce((total, file) => total + file.parseErrors, 0) }
+        {
+          fromPlugin,
+          reported: fresh.reduce((total, file) => total + file.parseErrors + file.includeErrors, 0),
+          unparsed: fresh.filter(file => file.parseErrors > 0).map(file => file.file),
+        }
       );
       for (const { decl, resolved, reported } of plugins) {
         model.addPlugin(decl, resolved, reported);
@@ -350,7 +357,7 @@ class ProjectLoader {
         if (!this.includeSites.has(file)) {
           throw new FabrError("File not found: " + file);
         }
-        return { value: { file, decls: NO_DECLS, parseErrors: 0 }, next: [] };
+        return { value: { file, decls: NO_DECLS, parseErrors: 0, includeErrors: 0 }, next: [] };
       }
       return f.readString().then(content => {
         /* Parsing logs each error and recovers rather than throwing, so count
@@ -364,7 +371,7 @@ class ProjectLoader {
           .filter(include => optionalLibOf(include.name) === undefined)
           .map(include => this.includedFiles(fs, file, include));
         return Computable.forAll(included, (...resolved) => ({
-          value: { file, decls, parseErrors: parseLog.errorCount + resolved.reduce((total, one) => total + one.errors, 0) },
+          value: { file, decls, parseErrors: parseLog.errorCount, includeErrors: resolved.reduce((total, one) => total + one.errors, 0) },
           next: resolved.flatMap(one => one.files),
         }));
       });

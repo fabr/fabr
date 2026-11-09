@@ -123,6 +123,19 @@ builds `commons-text-1.11.0.jar` and `commons-lang3-3.13.0.jar`. Loose files amo
 kept as they are. It is the piece the archive layouts below are made of: placed under a directory
 of an archive, with a [rename](/reference/syntax/), it is that archive's library directory.
 
+A package that something requires only as a `provided_deps` is not installed: whatever runs the
+installation supplies it, as Maven and Gradle leave `provided` and `compileOnly` dependencies out.
+An installation's own `provided_deps` name what that is. They are resolved with its `deps`, so the
+two use one version of each package, and left out together with everything they require, however
+the `deps` reach them, as Gradle's `war` plugin leaves out `providedCompile`:
+
+```
+java_installation libs {
+  deps = app;
+  provided_deps = @mvn:jakarta.platform:jakarta.jakartaee-api:10.0.0;
+}
+```
+
 ## Wars
 
 A `war_package` builds `<name>.war`:
@@ -143,8 +156,9 @@ war_package shop {
 }
 ```
 
-`provided_deps` are compiled against and left out of `WEB-INF/lib`, for the servlet API and
-anything else the container supplies. With the Maven layout above, `src/main/webapp/WEB-INF/web.xml`
+`provided_deps` are compiled against and left out of `WEB-INF/lib`, with everything they require,
+for the servlet API and anything else the container supplies. A package a `jar_package` among the
+`deps` requires as a `provided_deps` is left out too, unless the war's `deps` require it. With the Maven layout above, `src/main/webapp/WEB-INF/web.xml`
 is the war's `WEB-INF/web.xml`; a descriptor kept elsewhere is placed with a rename:
 
 ```

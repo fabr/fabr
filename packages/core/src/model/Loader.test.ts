@@ -233,6 +233,20 @@ describe("Loader", () => {
     expect(logged.join("\n")).to.match(/PROJECT\.fabr:1:9/);
   });
 
+  it("validates no declaration of a file that failed to parse, and every other file's", async () => {
+    const { error, logged } = await loadErr(
+      files({
+        "PROJECT.fabr": "include ./other.fabr;\ntargetdef needs { value = REQUIRED STRING; }\nneeds broken { value = a > ; }\n",
+        "other.fabr": "needs missing { }\n",
+      })
+    );
+    expect(error).to.be.an.instanceOf(BuildFilesInvalidError);
+    const text = logged.join("\n");
+    expect(text).to.match(/PROJECT\.fabr:3/);
+    expect(text).to.contain("Missing required property 'value' in needs target 'missing'");
+    expect(text).not.to.contain("target 'broken'");
+  });
+
   it("traces a missing include back through the whole include chain", async () => {
     const { error, logged } = await loadErr(
       files({

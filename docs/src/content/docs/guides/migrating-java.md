@@ -147,9 +147,9 @@ Three of these differ from what you may expect:
   used a package only through yours can keep doing so, but it is clearer to declare it.
 - **Maven's `provided` in a library is `compile_deps`.** Maven doesn't pass a `provided` dependency on
   to anything that uses the library, and neither does `compile_deps`. `provided_deps` does pass it on,
-  as a requirement: a module or program that uses the library and doesn't supply the package itself
-  installs the version you named. Keep `provided_deps` for a `war_package`, where it leaves the
-  servlet API and anything else the container supplies out of `WEB-INF/lib`.
+  as a requirement: a program or test run that uses the library and doesn't supply the package
+  itself runs with the version you named. Keep `provided_deps` for a `war_package`, where it leaves
+  the servlet API and anything else the container supplies out of `WEB-INF/lib`.
 - **The JUnit Platform launcher goes in `test_deps`.** Surefire and Gradle supply one; fabr runs the
   tests with the launcher you name, which must be of the same JUnit release as the engine. See
   [Testing](/reference/java/testing/#setting-up).

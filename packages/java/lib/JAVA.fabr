@@ -211,7 +211,7 @@ targetdef war_package {
     # The packages the sources use, and `java<release>` flags.
     deps = PACKAGES;
     # Packages the sources use that the container supplies, such as the
-    # servlet API. The archive does not carry them.
+    # servlet API. The archive does not carry them, nor anything they require.
     provided_deps = PACKAGES;
     # The annotation processors the compiler runs: packages, resolved apart
     # from the ones the sources use.
@@ -230,6 +230,7 @@ rule war_package w<BUILD_OPERATION=build> = war:*.jar -> *.war {
     }
     java_installation libs {
         deps = w.deps;
+        provided_deps = w.provided_deps;
     }
     jar_package war {
         resources = classes:classes/** -> WEB-INF/classes/** w.resources:** -> WEB-INF/classes/**
@@ -365,12 +366,15 @@ targetdef javadoc {
 #
 # The installation of packages: the jars of every package `deps` hold or
 # reach, each by its own file name, with the loose files among `deps` as they
-# are.
+# are. A package reached only as a provided requirement is not installed.
 #
 
 targetdef java_installation {
     # The packages installed, and loose files.
     deps = PACKAGES;
+    # Packages that whatever runs the installation supplies. They are resolved
+    # with `deps`, and left out with everything they require.
+    provided_deps = PACKAGES;
 }
 
 #

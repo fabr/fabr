@@ -30,6 +30,8 @@ import {
   BuildResult,
   Computable,
   DescribedPackage,
+  Dependency,
+  dependencyName,
   FabrError,
   FileSet,
   fileSetInput,
@@ -86,8 +88,12 @@ export function javaRelease(jvmTarget: string, deps: readonly FileSet[]): number
   return source;
 }
 
-/** @return `packages` and every package they reach, each once, nearest first. */
-function closureOf(packages: readonly PackageFileSet[]): PackageFileSet[] {
+/**
+ * @return `packages` and every package they reach, each once, nearest first:
+ * through every edge, or with `throughProvided` false, through every edge but
+ * the provided ones.
+ */
+function closureOf(packages: readonly PackageFileSet[], throughProvided = true): PackageFileSet[] {
   const seen = new Set<PackageFileSet>();
   const queue = [...packages];
   const ordered: PackageFileSet[] = [];
@@ -95,7 +101,9 @@ function closureOf(packages: readonly PackageFileSet[]): PackageFileSet[] {
     if (!seen.has(next)) {
       seen.add(next);
       ordered.push(next);
-      queue.push(...next.packages);
+      const pkg = next;
+      const follows = (dep: Dependency<PackageFileSet>): boolean => throughProvided || !pkg.provided.has(dependencyName(dep));
+      queue.push(...pkg.dependencies.flatMap(dep => (dep.package !== undefined && follows(dep) ? [dep.package] : [])));
     }
   }
   return ordered;
@@ -120,11 +128,21 @@ export function classpathOf(deps: readonly FileSet[]): Array<[string, IFile]> {
 
 /**
  * Lay out the installation `deps` make: the jars of every package they hold
- * or reach, each named by its own file name, and the loose files among them as
- * they are. Two different files of one name are a conflict.
+ * or reach by an edge that is not a provided one, each named by its own file
+ * name, and the loose files among them as they are, leaving out the packages
+ * `provided` hold and every package those reach. Two different files of one
+ * name are a conflict. Throws where `provided` holds files that are no
+ * package.
  */
-export function installationOf(deps: readonly FileSet[]): FileSet {
-  const packages = closureOf(deps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet));
+export function installationOf(deps: readonly FileSet[], provided: readonly FileSet[] = []): FileSet {
+  if (provided.some(dep => !(dep instanceof PackageFileSet) && !(dep instanceof Flag))) {
+    throw new FabrError("provided_deps holds files that are no package").withHelp("an installation leaves out packages: list loose files in deps, or not at all");
+  }
+  const supplied = new Set(closureOf(provided.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet)).map(pkg => pkg.packageId));
+  const packages = closureOf(
+    deps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet),
+    false
+  ).filter(pkg => !supplied.has(pkg.packageId));
   const loose = deps.filter(dep => !(dep instanceof PackageFileSet) && !(dep instanceof Flag));
   return FileSet.unionAll(
     ...packages.map(pkg => pkg.rename(name => (name.endsWith(".jar") ? path.posix.basename(name) : undefined))),

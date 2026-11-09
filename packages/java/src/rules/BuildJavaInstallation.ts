@@ -20,7 +20,9 @@
 /**
  * The java_installation rule: the jars of every package `deps` hold or reach,
  * each named by its own file name, with the loose files among `deps` as they
- * are.
+ * are, less the packages `provided_deps` hold and everything they reach. The
+ * two are resolved as one collection, and `provided_deps` are passed on as
+ * what whatever runs the installation must provide.
  */
 
 import { defineRule, FileSet } from "@fabr-build/core";
@@ -30,9 +32,15 @@ import { MAVEN_FORMAT } from "../MavenProtocol";
 /** The `java_installation` rule. */
 export default defineRule({
   requirements(context) {
-    return { run: { deps: context.getPackageProperty("deps", undefined, MAVEN_FORMAT) }, result: "files" };
+    return {
+      run: {
+        deps: context.getPackageProperty("deps", undefined, MAVEN_FORMAT),
+        provided: context.getPackageProperty("provided_deps", undefined, MAVEN_FORMAT),
+      },
+      result: "files",
+    };
   },
-  evaluateMaterialized(_context, { deps }: { deps: FileSet[] }) {
-    return installationOf(deps);
+  evaluateMaterialized(_context, { deps, provided }: { deps: FileSet[]; provided: FileSet[] }) {
+    return installationOf(deps, provided);
   },
 });

@@ -113,6 +113,35 @@ describe("installationOf", () => {
       "leaf-1.0.jar",
     ]);
   });
+
+  /* A package of `name` holding `<name>.jar`, with an edge to each of `edges`, those under `provided` named provided. */
+  const jarPackage = (name: string, edges: PackageFileSet[] = [], provided: PackageFileSet[] = []): PackageFileSet =>
+    new PackageFileSet(
+      files(`${name}-1.0.jar`),
+      `org.example/${name}`,
+      "1.0",
+      [...edges, ...provided].map(pkg => ({ reference: new RepositoryRef({} as RefSource, { name: pkg.packageName!, versionConstraint: "1.0" }), package: pkg })),
+      undefined,
+      new Map(provided.map(pkg => [pkg.packageName!, "expected" as const]))
+    );
+  const installed = (deps: FileSet[], provided?: FileSet[]): string[] => [...installationOf(deps, provided)].map(([name]) => name).sort();
+
+  it("installs a package a provided requirement reaches only where another edge reaches it too", () => {
+    const api = jarPackage("api");
+    expect(installed([jarPackage("lib", [], [api])])).to.deep.equal(["lib-1.0.jar"]);
+    expect(installed([jarPackage("lib", [], [api]), jarPackage("other", [api])])).to.deep.equal(["api-1.0.jar", "lib-1.0.jar", "other-1.0.jar"]);
+  });
+
+  it("leaves out the packages provided_deps hold, and everything they require, however deps reach them", () => {
+    const shared = jarPackage("shared");
+    const api = jarPackage("api", [shared]);
+    const lib = jarPackage("lib", [shared, jarPackage("own")], [api]);
+    expect(installed([lib, jarPackage("other", [api])], [api])).to.deep.equal(["lib-1.0.jar", "other-1.0.jar", "own-1.0.jar"]);
+  });
+
+  it("refuses files among provided_deps that are no package", () => {
+    expect(() => installationOf([jarPackage("lib")], [files("container.jar")])).to.throw(/provided_deps holds files that are no package/);
+  });
 });
 
 describe("manifests", () => {

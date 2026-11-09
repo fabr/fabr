@@ -64,5 +64,7 @@ describe("e2e: fabr audit", () => {
     const result = fabrAudit("audit_app:build/*.js");
     expect(result.status).to.not.equal(0);
     expect(result.stderr).to.match(/name the target|selects/i);
+    expect(result.stderr).to.contain("Audit failed");
+    expect(result.stderr).to.not.contain("Build failed");
   });
 });

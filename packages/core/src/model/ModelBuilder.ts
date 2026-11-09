@@ -22,6 +22,7 @@ import {
   declPosn,
   IBuildFileContents,
   IIncludeDecl,
+  IBuildFile,
   INameValue,
   IPluginDecl,
   IPropertyDecl,
@@ -258,6 +259,8 @@ export class ModelBuilder implements BuildModel {
   private readonly held: Array<(log: Log) => void> = [];
   /** The errors reported elsewhere about what was added: reading its files, resolving its plugins. */
   private reported = 0;
+  /** The files that failed to parse, by name: their declarations are not validated. */
+  private readonly unparsed = new Set<string>();
   /** The plugins that failed to build, whose failures {@link finish} rejects with. */
   private readonly failedBuilds: Error[] = [];
 
@@ -301,14 +304,19 @@ export class ModelBuilder implements BuildModel {
 
   /**
    * Add the declarations of `files` to the model, `reported` errors having been
-   * reported reading them. A name they declare that the model already declares
+   * reported reading them, the files named in `unparsed` failing to parse: their
+   * declarations are not validated, holding only what parsed. A name they declare that the model already declares
    * is the ordinary conflict. Nothing is checked against a targetdef until
    * {@link validate}, so a file may use a type a file added later declares.
    * A plugin's files (`fromPlugin`) may declare only defaults, and no
    * `fabr_plugin`, so nothing they add changes what was read before them.
    */
-  public addFiles(files: IBuildFileContents[], { fromPlugin, reported = 0 }: { fromPlugin: boolean; reported?: number }): void {
+  public addFiles(
+    files: IBuildFileContents[],
+    { fromPlugin, reported = 0, unparsed = [] }: { fromPlugin: boolean; reported?: number; unparsed?: ReadonlyArray<string> }
+  ): void {
     this.reported += reported;
+    unparsed.forEach(file => this.unparsed.add(file));
     for (const file of files) {
       if (fromPlugin) {
         checkPluginFile(file, this.log);
@@ -432,7 +440,8 @@ export class ModelBuilder implements BuildModel {
    * for. A rule or repository type that fails is reported and withdrawn.
    */
   private validate(): void {
-    this.builder.validate();
+    const parsed = (decl: { source: IBuildFile }): boolean => !this.unparsed.has(decl.source.file);
+    this.builder.validate(parsed);
     for (const rule of this.contributedRules) {
       if (rule.type !== undefined) {
         this.assertTargetProperties(rule.type, rule);
@@ -440,6 +449,9 @@ export class ModelBuilder implements BuildModel {
     }
     for (const rule of this.declaredRules) {
       const { decl } = rule;
+      if (!parsed(decl)) {
+        continue;
+      }
       if (isRuleBlock(decl.implementation)) {
         validateRuleBlock(decl, decl.implementation, type => this.root.getTargetDef(type), this.log);
       }
@@ -457,7 +469,7 @@ export class ModelBuilder implements BuildModel {
       }
       this.targetRules.set(decl.type, (this.targetRules.get(decl.type) ?? []).filter(other => other !== rule));
     }
-    for (const decl of this.declaredRepositories) {
+    for (const decl of this.declaredRepositories.filter(parsed)) {
       if (this.root.getTargetDef(decl.type) === undefined) {
         this.log.log(DIAG_REPOSITORY_UNKNOWN_TYPE, { type: decl.type, loc: declPosn(decl) });
         this.repositories.delete(decl.type);

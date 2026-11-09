@@ -22,6 +22,7 @@ import { Diagnostic, ISourcePosition, Log } from "../support/Log";
 import {
   DeclKind,
   declName,
+  IBuildFile,
   IBuildFileContents,
   declPosn,
   getDeclKindName,
@@ -283,10 +284,10 @@ export class NamespaceBuilder {
    * chain of bases does not lead back to it, and each property it redeclares
    * keeps the base's type and does not make a required property optional.
    */
-  private validateInheritance(): void {
+  private validateInheritance(parsed: (decl: { source: IBuildFile }) => boolean): void {
     const namespace = Namespace.of(this.root);
     for (const def of this.root.targetDefs.values()) {
-      if (def.extends === undefined) {
+      if (def.extends === undefined || !parsed(def)) {
         continue;
       }
       const loc = { ...def.source, offset: def.extends.offset };
@@ -317,43 +318,45 @@ export class NamespaceBuilder {
     }
   }
 
-  /** Validate every declaration added so far against the targetdefs added so far. */
-  public validate(): void {
-    this.validateInheritance();
-    this.resolve(this.root);
-    this.scopes.forEach(scope => this.resolve(scope));
-    this.superseded.forEach(decl => this.validateDecl(decl));
+  /** Validate every declaration added so far against the targetdefs added so
+   * far: each `parsed` says came from a file that parsed. */
+  public validate(parsed: (decl: { source: IBuildFile }) => boolean): void {
+    this.validateInheritance(parsed);
+    const validate = (decl: ITargetDefDecl | ITargetDecl | IPropertyDecl): void => {
+      if (parsed(decl)) {
+        this.validateDecl(decl);
+      }
+    };
+    this.resolve(this.root, validate, parsed);
+    this.scopes.forEach(scope => this.resolve(scope, validate, parsed));
+    this.superseded.forEach(validate);
   }
 
-  private resolve(node: NamespaceNode): void {
+  private resolve(
+    node: NamespaceNode,
+    validate: (decl: ITargetDefDecl | ITargetDecl | IPropertyDecl) => void,
+    parsed: (decl: { source: IBuildFile }) => boolean
+  ): void {
     node.content.forEach(child => {
       if (isNamespaceNode(child)) {
-        this.resolve(child);
+        this.resolve(child, validate, parsed);
+      } else if (child.kind === DeclKind.Property) {
+        [...child.decls, ...child.defaults].forEach(validate);
       } else {
-        this.validateEntry(child);
+        validate(child);
       }
     });
     if (node.fallback !== undefined) {
-      this.validateEntry(node.fallback);
+      [...node.fallback.decls, ...node.fallback.defaults].forEach(validate);
     }
     /* Default targets live apart from `content` but are validated the same way:
      * declared ⇒ validated, whether or not anything ends up taking it. (A
      * default *property* is inside its entry, so the walk above covers it.) */
-    node.defaultTargets.forEach(child => this.validateDecl(child));
+    node.defaultTargets.forEach(validate);
     /* Targetdefs likewise live apart: each schema's own `default` values are
      * validated against the declared type here, so a malformed default fails
      * the load rather than the first resolution that takes it. */
-    node.targetDefs.forEach(def => validateTargetDef(def, this.log));
-  }
-
-  /** Validate every declaration under one name — a property having as many as
-   * its guards distinguish, in either tier, each validated in its own right. */
-  private validateEntry(entry: ITargetDecl | IPropertyEntry): void {
-    if (entry.kind === DeclKind.Property) {
-      [...entry.decls, ...entry.defaults].forEach(decl => this.validateDecl(decl));
-    } else {
-      this.validateDecl(entry);
-    }
+    node.targetDefs.forEach(def => parsed(def) && validateTargetDef(def, this.log));
   }
 
   /** Validate one collated declaration: a target against its targetdef schema, a
