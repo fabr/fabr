@@ -5,7 +5,7 @@ plugin @fabr-boot/js;
 include docs/BUILD.fabr;
 include packages/*/BUILD.fabr;
 
-FABR_VERSION=0.3.1;
+FABR_VERSION=0.4.0;
 FABR_METADATA = {
   keywords = build-tool build-system monorepo;
   license = GPL-3.0-or-later;
@@ -39,6 +39,8 @@ catalog @pkg {
          @npm:yauzl:3.4.0 @npm:@types/yauzl:3.4.0 @npm:yazl:3.3.1 @npm:@types/yazl:3.3.1
          @npm:@napi-rs/lzma:1.5.1
          @npm:diff:9.0.0
+         # Core's JUnit test report writer.
+         @npm:fast-xml-builder:1.3.1
          # The migration tool's lockfile and workspace reader.
          @npm:yaml:2.9.1 @npm:@types/picomatch:4.0.3
          # The Java plugin's XML reader (POMs, maven-metadata.xml).
