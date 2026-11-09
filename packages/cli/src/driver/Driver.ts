@@ -86,7 +86,7 @@ import {
   writeBackCandidates,
   COVERAGE_REPORT_FILENAME,
   coverageTotals,
-  getCoverageReport,
+  getCoverageReports,
   ICoverageTotal,
   lcovOf,
   MemoryFile,
@@ -370,9 +370,8 @@ function runsOnly(model: BuildModel, name: string): boolean {
 }
 
 /** Run `fabr test <targets>`: the core operation, with the summaries, the
- * reports and the expectation write-backs composed onto its results — a `then`
- * on the results re-runs exactly when a watch cycle changed them, so
- * per-change reporting is ordinary composition. A test target's result is its
+ * reports and the expectation write-backs composed onto its results, so they
+ * run again whenever a watch cycle changes those. A test target's result is its
  * report, failures included; the run fails where any test failed, after the
  * reports are written, and expectations are written back only where none did. */
 function runTest(
@@ -465,9 +464,9 @@ function coverageText({ covered, total }: ICoverageTotal): string {
  */
 function reportCoverage(execution: ExecutionContext, site: IInvocationSite, dir: string, results: SourceRef[][]): Computable<void> {
   return Computable.forAll(
-    results.map(sources => getCoverageReport(sources)),
-    (...documents): Computable<void> | void => {
-      const measured = documents.filter((document): document is string => document !== undefined);
+    results.map(sources => getCoverageReports(sources)),
+    (...documents: string[][]): Computable<void> | void => {
+      const measured = documents.flat();
       if (measured.length === 0) {
         execution.log.log(DIAG_COVERAGE_NONE, {});
         return;
