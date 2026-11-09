@@ -107,13 +107,15 @@ publishes no com.example:greeter:1.0.0 for it to be beside`.
 ## The generated POM
 
 The POM records the coordinate, and one `<dependency>` for each of the target's `deps`,
-`provided_deps` and `optional_provided_deps`:
+`provided_deps`, `optional_provided_deps`, `runtime_deps` and `compile_api_deps`:
 
 | The target's | In the POM |
 |---|---|
 | `deps` | A dependency. |
 | `provided_deps` | A dependency with `<scope>provided</scope>`. |
 | `optional_provided_deps` | A dependency with `<optional>true</optional>`. |
+| `runtime_deps` | A dependency with `<scope>runtime</scope>`. |
+| `compile_api_deps` | A dependency, as Gradle writes `compileOnlyApi` in a POM: Maven has no scope for a dependency compiled against and not run with, so a Maven build of your consumer also installs it. |
 | A BOM in any of them | An `import` in `<dependencyManagement>`. |
 | `compile_deps`, `test_deps`, `processors` | Nothing. |
 

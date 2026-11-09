@@ -152,9 +152,10 @@ export interface RepositoryLookup {
  * repository's resolution, fetching and building only what it reaches.
  */
 export interface RepositoryCollection {
-  /** Look up the member `reference` names. Rejects, attributed to the reference,
-   *  where it names none. */
-  member(reference: RepositoryRef): Computable<ResolvedMember>;
+  /** Look up the member `reference` names, as the collection resolved for
+   *  `operation` asks for it. Rejects, attributed to the reference, where it
+   *  names none. */
+  member(reference: RepositoryRef, operation: string): Computable<ResolvedMember>;
 
   /** As {@link RepositoryLookup.declaredRequirement}. */
   declaredRequirement?(ref: RepositoryRef): Computable<Requirement | undefined>;

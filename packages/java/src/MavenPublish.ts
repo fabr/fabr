@@ -311,7 +311,10 @@ function pomDependencyOf(
       return {};
     }
     const provided = pkg.provided.get(dependencyName(dep));
-    const scope = provided === "expected" ? { scope: "provided" } : {};
+    /* A dependency passed on to a consumer's runtime alone is runtime-scoped;
+     * one passed on to its compile alone is compile-scoped, as Gradle writes
+     * `compileOnlyApi`: Maven has no scope for it. */
+    const scope = provided === "expected" ? { scope: "provided" } : pkg.usedFor.get(dependencyName(dep)) === "run" ? { scope: "runtime" } : {};
     const optional = provided === "optional";
     const { reference } = dep;
     if (reference instanceof RepositoryRef) {

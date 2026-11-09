@@ -41,6 +41,7 @@ import {
   packageNodeSignature,
   reachableNodes,
   ResolvedNode,
+  UsedFor,
 } from "../core/PackageFileSet";
 import { isRepositoryCollection, isRepositoryReader, Materialized, PendingFiles, ProjectedPackage, RefSource, RepositoryCollection, RepositoryLookup, RepositoryReader, RepositoryRef, Resolved, SourceRef } from "../core/Repository";
 import { PackageRequest, Pin, Resolution, ResolutionContext, ResolvedCollection } from "../resolver/Types";
@@ -360,7 +361,7 @@ function resolveMember(
   resolvedMembers: Map<RepositoryRef, Computable<Package | undefined>>
 ): Computable<FileSet | ResolvedNode | PendingFiles> {
   const { reference } = request;
-  return source.member(reference).then((member): FileSet | ResolvedNode | PendingFiles | Computable<FileSet | ResolvedNode> => {
+  return source.member(reference, context.operation).then((member): FileSet | ResolvedNode | PendingFiles | Computable<FileSet | ResolvedNode> => {
     const { collection, entry } = member;
     const local = isPackage(entry);
     /* What a package of the project fails to build with is its own to report,
@@ -410,7 +411,7 @@ function memberPackage(
   const { reference } = request;
   let held = resolvedMembers.get(reference);
   if (held === undefined) {
-    held = source.member(reference).then(({ collection, entry, operation }): Computable<Package | undefined> => {
+    held = source.member(reference, context.operation).then(({ collection, entry, operation }): Computable<Package | undefined> => {
       if (isFilesOperation(operation)) {
         return Computable.resolve(undefined);
       }
@@ -478,6 +479,103 @@ export function consumeMarker(ref: TargetRef, nodes: Unbuilt[], markers: Markers
   }
   nodes.filter((node): node is ResolvedNode => node instanceof ResolvedNode).forEach(node => markers.set(node, override));
   return override === "alternate" ? [] : nodes;
+}
+
+/** Get `context` as the {@link ResolutionContext} of a collection resolved for
+ * `operation`: `context` itself where that is its own operation. */
+export function withOperation(context: ResolutionContext, operation: string): ResolutionContext {
+  return operation === context.operation
+    ? context
+    : {
+        name: context.name,
+        operation,
+        given: context.given,
+        getGlobalString: name => context.getGlobalString(name),
+        launchedBy: (runnable, interpreter, interpreterArgs) => context.launchedBy(runnable, interpreter, interpreterArgs),
+        memoize: (tag, key, create) => context.memoize(tag, key, create),
+        runTask: (task, run) => context.runTask(task, run),
+      };
+}
+
+/** @return the collection a resolution for `operation` is: the `build` one
+ * for `build`, the `run` one for any other. */
+export function usedForOf(operation: string): UsedFor {
+  return operation === "build" ? "build" : "run";
+}
+
+/**
+ * Make the nodes among `sources` as a collection resolved for `operation`
+ * reads them: each node with an edge passed on to the other collection alone
+ * ({@link PackageMetadata.usedFor}), or reaching one, copied without such
+ * edges; every other source as it is. `markers` is remapped onto the copies.
+ * Packages in hand are taken as they stand.
+ */
+export function sidedNodes<T extends SourceRef | Unbuilt>(sources: T[], operation: string, markers: Markers): T[] {
+  const side = usedForOf(operation);
+  const leftOut = (pkg: Package, dep: Dependency): boolean => {
+    const only = pkg.usedFor.get(dependencyName(dep));
+    return only !== undefined && only !== side;
+  };
+  /* Which nodes change: one with an edge left out, and whatever reaches one. */
+  const reached = new Set<ResolvedNode>();
+  const parents = new Map<ResolvedNode, ResolvedNode[]>();
+  const pending = sources.filter((source): source is T & ResolvedNode => source instanceof ResolvedNode) as ResolvedNode[];
+  const changed = new Set<ResolvedNode>();
+  while (pending.length > 0) {
+    const pkg = pending.pop()!;
+    if (reached.has(pkg)) {
+      continue;
+    }
+    reached.add(pkg);
+    for (const dep of pkg.dependencies) {
+      if (leftOut(pkg, dep)) {
+        changed.add(pkg);
+      } else if (dep.package instanceof ResolvedNode) {
+        parents.set(dep.package, [...(parents.get(dep.package) ?? []), pkg]);
+        pending.push(dep.package);
+      }
+    }
+  }
+  if (changed.size === 0) {
+    return sources;
+  }
+  const spreading = [...changed];
+  while (spreading.length > 0) {
+    for (const parent of parents.get(spreading.pop()!) ?? []) {
+      if (!changed.has(parent)) {
+        changed.add(parent);
+        spreading.push(parent);
+      }
+    }
+  }
+  const builder = new PackageGraphBuilder();
+  const made = new Map<ResolvedNode, ResolvedNode>();
+  const copy = (pkg: ResolvedNode): ResolvedNode => {
+    const held = made.get(pkg);
+    if (held !== undefined) {
+      return held;
+    }
+    const node = builder.copy(pkg);
+    made.set(pkg, node);
+    const kept = pkg.dependencies.filter(dep => !leftOut(pkg, dep));
+    builder.wire(
+      node,
+      kept.map((dep): Dependency => (dep.package instanceof ResolvedNode && changed.has(dep.package) ? { reference: dep.reference, package: copy(dep.package) } : dep)),
+      pkg.provided,
+      new Map([...pkg.usedFor].filter(([, only]) => only === side))
+    );
+    return node;
+  };
+  const result = sources.map(source => (source instanceof ResolvedNode && changed.has(source) ? (copy(source) as unknown as T) : source));
+  builder.seal();
+  for (const [pkg, node] of made) {
+    const marker = markers.get(pkg);
+    if (marker !== undefined) {
+      markers.delete(pkg);
+      markers.set(node, marker);
+    }
+  }
+  return result;
 }
 
 /**
@@ -721,7 +819,8 @@ function foldEqualNodes(roots: ReadonlyArray<Package>): Map<Package, Package> {
     builder.wire(
       node,
       one.dependencies.map((dep): Dependency => (dep.package === undefined ? dep : { reference: dep.reference, package: fold(dep.package) })),
-      one.provided
+      one.provided,
+      one.usedFor
     );
     return node;
   };
@@ -879,7 +978,8 @@ function mergeResolutions(
         const to = target(one, dep);
         return to === undefined ? dep : { reference: to.reference ?? dep.reference, package: merge(to.package) };
       }),
-      one.provided
+      one.provided,
+      one.usedFor
     );
     return node;
   };
@@ -969,7 +1069,7 @@ function conflictsOf(
     const request = collection.requests.get(reference);
     return isRepositoryCollection(source) && request?.as !== "files"
       ? [
-          source.member(reference).then(({ collection: catalog, entry, operation }) =>
+          source.member(reference, context.operation).then(({ collection: catalog, entry, operation }) =>
             isFilesOperation(operation)
               ? []
               : resolvedBatches(catalog, entry instanceof RepositoryRef ? [entry] : []).then(batches =>
@@ -1317,7 +1417,8 @@ export function bindProvided<S extends Resolved>(sources: S[], taken?: ReadonlyS
       bound.map(({ dep, supply }) =>
         supply === undefined ? { reference: dep.reference } : { reference: dep.reference, package: copy(supply.pkg, supply.scope) }
       ),
-      pkg.provided
+      pkg.provided,
+      pkg.usedFor
     );
     return node;
   };
@@ -1418,7 +1519,23 @@ export function resolveLists(
       )
     ),
     (...opened: Opened[][]) => opened
-  ).then(opened => resolveBuiltLists(context, opened, extracted, instantiated, reads, markers));
+  ).then(opened => {
+    /* The nodes as this collection's side reads them, each still resolved for its reference. */
+    const sided = sidedNodes(
+      opened.flat().map(({ source }) => source),
+      context.operation,
+      markers
+    );
+    let at = 0;
+    return resolveBuiltLists(
+      context,
+      opened.map(list => list.map(({ reference }) => ({ source: sided[at++], reference }))),
+      extracted,
+      instantiated,
+      reads,
+      markers
+    );
+  });
 }
 
 /** One source of a list as opened for resolution, and the written reference

@@ -23,9 +23,8 @@ import { FabrError, toError } from "../core/Errors";
 import { FileSet } from "../core/FileSet";
 import { FileSetRef } from "../core/FileSetRef";
 import { Materialized, SourceRef } from "../core/Repository";
-import { checked, materializeLists, ResolvedLists, resolveLists } from "./CollectionPoint";
+import { checked, materializeLists, ResolvedLists, resolveLists, withOperation } from "./CollectionPoint";
 import { Conflicts } from "../resolver/StrictCollection";
-import type { ResolutionContext } from "../resolver/Types";
 import { Builds, PackageFileSet, Dependency } from "../core/PackageFileSet";
 import { Resolved } from "../core/Repository";
 import type { InternalBuildContext } from "./BuildContext";
@@ -81,13 +80,21 @@ export const PROVIDED_KEY = "provided";
  * leave out: the target is built against them, and a consumer binds each only
  * to what it supplies or its installation already holds. */
 export const OPTIONAL_PROVIDED_KEY = "optional_provided";
+/** As {@link DEPENDENCIES_KEY}, for the requirements passed on to what a
+ * consumer runs with alone (its `run` collection): Maven's `runtime` scope,
+ * Gradle's `runtimeOnly`. */
+export const RUNTIME_KEY = "runtime";
+/** As {@link DEPENDENCIES_KEY}, for the requirements passed on to what a
+ * consumer compiles against alone (its `build` collection): Gradle's
+ * `compileOnlyApi`. */
+export const COMPILE_KEY = "compile";
 /**
  * The package the target is made from: resolved on its own, as material and
  * not as a requirement. Where it is exactly one package, the target is a
  * package with that one's version and requirements.
  */
 export const EXTENDS_KEY = "extends";
-const TRANSITIVE_KEYS: ReadonlySet<string> = new Set([DEPENDENCIES_KEY, PROVIDED_KEY, OPTIONAL_PROVIDED_KEY, EXTENDS_KEY]);
+const TRANSITIVE_KEYS: ReadonlySet<string> = new Set([DEPENDENCIES_KEY, PROVIDED_KEY, OPTIONAL_PROVIDED_KEY, RUNTIME_KEY, COMPILE_KEY, EXTENDS_KEY]);
 
 /**
  * What a requirement settles to once materialized: one read
@@ -354,7 +361,7 @@ export function resolveRequirements(target: TargetContext, spec: ResolutionSpec)
         operations.map(operation => {
           const at = names.flatMap((_, index) => (entries[index][2] === operation ? [index] : []));
           return resolveLists(
-            resolutionContextFor(target, operation),
+            withOperation(target, operation),
             at.map(index => lists[index]),
             at.map(index => readings[index] !== "contained"),
             at.map(index => requirementName(names[index]) === EXTENDS_KEY),
@@ -385,21 +392,7 @@ export function resolveRequirements(target: TargetContext, spec: ResolutionSpec)
   );
 }
 
-/** Get `target` as the {@link ResolutionContext} of its collection resolved for
- * `operation`: the target itself where that is its own operation. */
-function resolutionContextFor(target: TargetContext, operation: string): ResolutionContext {
-  return operation === target.operation
-    ? target
-    : {
-        name: target.name,
-        operation,
-        given: (target as ResolutionContext).given,
-        getGlobalString: name => target.getGlobalString(name),
-        launchedBy: (runnable, interpreter, interpreterArgs) => target.launchedBy(runnable, interpreter, interpreterArgs),
-        memoize: (tag, key, create) => target.memoize(tag, key, create),
-        runTask: (task, run) => target.runTask(task, run),
-      };
-}
+
 
 /**
  * Get the requirement name `key` stands for: its last part, so that a name a

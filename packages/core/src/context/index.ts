@@ -28,6 +28,7 @@ export { TargetContext } from "./TargetContext";
 export { CommandValue, MaterializedCommandPipeline, MaterializedCommandStage } from "./Commands";
 export { collectLists, PERMISSIVE_RESOLUTION, ResolutionOptions } from "./CollectionPoint";
 export {
+  COMPILE_KEY,
   ContainedSources,
   DEPENDENCIES_KEY,
   MaterializedRequirements,
@@ -36,6 +37,7 @@ export {
   PackageSources,
   ResolutionSpec,
   PROVIDED_KEY,
+  RUNTIME_KEY,
   RequiredSources,
   Requirements,
   ResolvedRequirements,

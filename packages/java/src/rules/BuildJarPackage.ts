@@ -38,6 +38,7 @@ import {
   PackageFileSet,
   PropertyMap,
   Provided,
+  UsedFor,
   RuleResult,
   TargetContext,
 } from "@fabr-build/core";
@@ -52,6 +53,8 @@ interface JarInputs {
   dependencies: FileSet[];
   provided: FileSet[];
   optional_provided: FileSet[];
+  compile: FileSet[];
+  runtime: FileSet[];
   compile_deps: FileSet[];
 }
 
@@ -60,12 +63,17 @@ interface JarEdges {
   dependencies: ReadonlyArray<Dependency<PackageFileSet>>;
   provided: ReadonlyArray<Dependency<PackageFileSet>>;
   optional_provided: ReadonlyArray<Dependency<PackageFileSet>>;
+  compile: ReadonlyArray<Dependency<PackageFileSet>>;
+  runtime: ReadonlyArray<Dependency<PackageFileSet>>;
 }
 
 /** The `jar_package` rule, under `build`. */
 export default defineRule({
-  /* `dependencies`, `provided` and `optional_provided` are what the package
-   * passes on; `compile_deps` is compiled against and private to the build. */
+  /* `dependencies`, `provided`, `optional_provided`, `compile` and `runtime`
+   * are what the package passes on, the last two to one of a consumer's
+   * collections only; `compile_deps` is compiled against and private to the
+   * build. `runtime` is not compiled against, so it is resolved as what is
+   * run. */
   requirements(context) {
     return {
       build: {
@@ -74,7 +82,11 @@ export default defineRule({
         dependencies: context.getPackageProperty("deps"),
         provided: context.getPackageProperty("provided_deps"),
         optional_provided: context.getPackageProperty("optional_provided_deps"),
+        compile: context.getPackageProperty("compile_api_deps"),
         compile_deps: context.getPackageProperty("compile_deps"),
+      },
+      run: {
+        runtime: context.getPackageProperty("runtime_deps"),
       },
       result: { package: context.name, format: MAVEN_FORMAT },
     };
@@ -86,16 +98,18 @@ export default defineRule({
         requirements.packages("dependencies"),
         requirements.packages("provided"),
         requirements.packages("optional_provided"),
+        requirements.packages("compile"),
+        requirements.packages("runtime"),
         context.getProperty("main_class"),
         context.getMap("manifest"),
         context.getMap("metadata"),
       ],
-      (inputs, dependencies, provided, optional_provided, mainClass, manifest, metadata) => {
+      (inputs, dependencies, provided, optional_provided, compile, runtime, mainClass, manifest, metadata) => {
         checkPomMetadata(context.name, metadata, (key, message) => mapEntryError(metadata, key, message));
         return buildJar(
           context,
           inputs,
-          { dependencies, provided, optional_provided },
+          { dependencies, provided, optional_provided, compile, runtime },
           manifestAttributesOf(context.name, mainClass?.toString(), manifest),
           metadata
         );
@@ -107,7 +121,7 @@ export default defineRule({
     return Computable.forAll([requirements.describeAll(), context.getProperty("main_class")], (inputs, mainClass) =>
       describeJava(context, requirements.resolved, {
         sources: FileSet.unionAll(...inputs.srcs),
-        deps: [...inputs.dependencies, ...inputs.provided, ...inputs.optional_provided, ...inputs.compile_deps],
+        deps: [...inputs.dependencies, ...inputs.provided, ...inputs.optional_provided, ...inputs.compile, ...inputs.compile_deps],
         tags: [mainClass === undefined ? "library" : "application"],
       })
     );
@@ -119,19 +133,23 @@ export function jarNameOf(target: string): string {
   return `${path.posix.basename(target)}.jar`;
 }
 
-/** Make the target's package: `files`, requiring what `edges` lead to, the provided ones named so, with its `metadata`. */
+/** Make the target's package: `files`, requiring what `edges` lead to, the provided ones and those passed on to one collection only named so, with its `metadata`. */
 function packageOf(context: TargetContext, files: FileSet, edges: JarEdges, metadata: PropertyMap): PackageFileSet {
   return new PackageFileSet(
     files,
     context.name,
     undefined,
-    [...edges.dependencies, ...edges.provided, ...edges.optional_provided],
+    [...edges.dependencies, ...edges.provided, ...edges.optional_provided, ...edges.runtime, ...edges.compile],
     undefined,
     new Map([
       ...edges.provided.map((dep): [string, Provided] => [dependencyName(dep), "expected"]),
       ...edges.optional_provided.map((dep): [string, Provided] => [dependencyName(dep), "optional"]),
     ]),
-    metadata
+    metadata,
+    new Map([
+      ...edges.runtime.map((dep): [string, UsedFor] => [dependencyName(dep), "run"]),
+      ...edges.compile.map((dep): [string, UsedFor] => [dependencyName(dep), "build"]),
+    ])
   );
 }
 
@@ -174,8 +192,8 @@ function buildJar(
   const { mainClass } = attributes;
   const { srcs, resources } = inputs;
   const sources = FileSet.unionAll(...srcs);
-  const runtime = [...inputs.dependencies, ...inputs.provided, ...inputs.optional_provided];
-  const compileDeps = [...inputs.dependencies, ...inputs.provided, ...inputs.optional_provided, ...inputs.compile_deps];
+  const runtime = [...inputs.dependencies, ...inputs.provided, ...inputs.optional_provided, ...inputs.runtime];
+  const compileDeps = [...inputs.dependencies, ...inputs.provided, ...inputs.optional_provided, ...inputs.compile, ...inputs.compile_deps];
   const classes = sources.isEmpty()
     ? Computable.resolve(EMPTY_FILESET)
     : processorsOf(context).then(processors =>

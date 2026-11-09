@@ -17,6 +17,7 @@ fabr downloads one.
 | `<dependencies>` / `implementation` | The target's `deps`, written `@mvn:<group>:<artifact>:<version>`. |
 | `<scope>test</scope>` / `testImplementation` | `test_deps`. |
 | `<scope>provided</scope>` / `compileOnly` | `provided_deps`, or `compile_deps` for a jar nothing needs at run time; see [Dependencies](/reference/java/dependencies/). |
+| `<scope>runtime</scope>` / `runtimeOnly` | `runtime_deps`. |
 | `maven.compiler.release` / `toolchain` | `JVM_TARGET`, and the `JAVAC`/`JAVA` settings; see [Compiling](/reference/java/compiling/). |
 | `mvn package` / `gradle jar` | `fabr build`. |
 | `mvn test` / `gradle test` | `fabr test`. |

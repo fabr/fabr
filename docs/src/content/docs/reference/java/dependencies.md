@@ -13,10 +13,11 @@ answer every time. This page covers declaring dependencies and how their version
 | With Maven or Gradle | In fabr |
 |---|---|
 | `<dependency>` with `<scope>compile</scope>` / `implementation`, `api` | A target's `deps`. |
-| `<scope>runtime</scope>` / `runtimeOnly` | `deps`. |
+| `<scope>runtime</scope>` / `runtimeOnly` | `runtime_deps`. |
 | `<scope>provided</scope>` / `compileOnly` for a jar the runtime supplies | `provided_deps`. |
 | `<optional>true</optional>` | `optional_provided_deps`. |
 | `compileOnly` for a jar nothing needs at run time (annotations) | `compile_deps`. |
+| `compileOnlyApi` for a jar your public API names but nothing needs at run time | `compile_api_deps`. |
 | `<scope>test</scope>` / `testImplementation` | `test_deps`. |
 | `annotationProcessor`, `<annotationProcessorPaths>` | `processors`; see [Annotation processors](/reference/java/compiling/#annotation-processors). |
 | A BOM in `<dependencyManagement>` with `<scope>import</scope>` / `platform(…)` | The BOM in `deps`, `test_deps` or wherever its versions are used; see [BOMs](#boms). |
@@ -58,10 +59,13 @@ A dependency on another target in the same project is written by its name: `deps
 | `provided_deps` | Packages the code uses that whatever runs it supplies, such as the servlet API a container provides | As a requirement the consumer must meet; the jar doesn't carry them. |
 | `optional_provided_deps` | As `provided_deps`, for packages whatever runs it may leave out | Only where the consumer has the package anyway. |
 | `compile_deps` | Packages the code is compiled against that nothing needs when it runs, such as an annotations-only jar | No. |
+| `compile_api_deps` | As `compile_deps`, for packages the jar's own API names, such as the annotations on its public classes | To what compiles against the jar; never installed. |
+| `runtime_deps` | Packages the code needs only when it runs, such as a JDBC driver | To what runs the jar; never compiled against. |
 | `test_deps` | Packages only the tests use | No. |
 
-The sources are compiled against all of them but `test_deps`, and the tests against all five. The
-tests run with all but `compile_deps` on the classpath.
+The sources are compiled against all of them but `runtime_deps` and `test_deps`, and the tests
+against all but `runtime_deps`. The tests run with all but `compile_deps` and `compile_api_deps`
+on the classpath.
 
 ## How versions are chosen
 
@@ -345,10 +349,6 @@ password can't be read; write it with `${env.NAME}` instead.
 
 - A project can't write an exclusion of its own: a package a dependency requires can't be left
   out, only overridden with `!`. Exclusions a dependency's POM or `.module` publishes are read.
-- A project can't declare a dependency of its own for one classpath only: `deps` are on both, so
-  what Gradle writes as `runtimeOnly` (a JDBC driver) is on your compile classpath too, and what
-  it writes as `compileOnlyApi` is installed. The [classpaths](#compile-and-runtime-classpaths) of
-  the packages your dependencies publish are read.
 - Relocations and POM profiles are not read.
 - Two packages providing one capability, such as Guava and `google-collections`, are both
   installed, where Gradle reports a conflict.

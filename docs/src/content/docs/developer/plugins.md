@@ -368,13 +368,17 @@ package it supports.
 A `targetdef` declares each property `FILES` or `PACKAGES`. `getPackageProperty` reads only a
 `PACKAGES` property; `getFileProperty` reads either.
 
-Four requirement names say what the target passes on to whatever depends on it:
+Six requirement names say what the target passes on to whatever depends on it:
 
 - **`dependencies`**: what a package the target builds requires.
 - **`provided`**: the same, for requirements the consumer supplies (npm's peer dependencies).
 - **`optional_provided`**: as `provided`, for requirements the consumer may leave out (npm's
   optional peer dependencies). The target is built against them, and each is bound only to what
   the consumer supplies or already has installed.
+- **`runtime`**: as `dependencies`, for requirements passed on to what a consumer runs with alone
+  (its `run` collection): Maven's `runtime` scope, Gradle's `runtimeOnly`.
+- **`compile`**: as `dependencies`, for requirements passed on to what a consumer compiles against
+  alone (its `build` collection): Gradle's `compileOnlyApi`.
 - **`extends`**: the package the target is made from; where that is one package, the target passes
   on its version and requirements.
 
@@ -388,7 +392,8 @@ A package the rule returns lists what it requires as its `dependencies`: `{ refe
 pairs, the edges `requirements.packages("dependencies")` hands the evaluation — each package among
 the requirement with the reference it was resolved for. The edges from `provided` and
 `optional_provided` go in the same list, and the package's `provided` map names each of them,
-`"expected"` or `"optional"`.
+`"expected"` or `"optional"`. So do the edges from `runtime` and `compile`, which its `usedFor`
+map names, `"run"` or `"build"`: a consumer's collection for the other leaves the edge out.
 
 Everything a target depends on belongs in `requirements`, except the **tools** it runs, which are
 read in the evaluation ([below](#running-a-tool)). Whatever the evaluation reads for itself is not part of

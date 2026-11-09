@@ -21,13 +21,13 @@ import { Computable } from "../core/Computable";
 import { FabrError } from "../core/Errors";
 import { FileSet } from "../core/FileSet";
 import { IProjection, Miss } from "../core/Reference";
-import { Builds, Dependency, dependencyName, isPackage, NodeFields, PackageContent, PackageFileSet, Provided, ResolvedNode } from "../core/PackageFileSet";
+import { Builds, Dependency, dependencyName, isPackage, NodeFields, PackageContent, PackageFileSet, Provided, ResolvedNode, UsedFor } from "../core/PackageFileSet";
 
 import { Resolved, SourceRef } from "../core/Repository";
 import { TargetNode } from "../core/TargetRef";
 import { BUILD_OPERATION, isFilesOperation, shownConstraints } from "../model/Constraints";
 import { ITargetOrigin, TARGET_PROVENANCE } from "../model/Target";
-import { DEPENDENCIES_KEY, EXTENDS_KEY, OPTIONAL_PROVIDED_KEY, PROVIDED_KEY, ResolvedRequirements } from "./Collection";
+import { COMPILE_KEY, DEPENDENCIES_KEY, EXTENDS_KEY, OPTIONAL_PROVIDED_KEY, PROVIDED_KEY, ResolvedRequirements, RUNTIME_KEY } from "./Collection";
 import { NameLabel } from "../model/Errors";
 import type { DeclaredTargetContext } from "./TargetContext";
 
@@ -37,26 +37,36 @@ export interface Stated {
   dependencies: ReadonlyArray<Dependency>;
   /** The names among `dependencies` that are provided requirements. */
   provided?: ReadonlyMap<string, Provided>;
+  /** The names among `dependencies` passed on to one collection only. */
+  usedFor?: ReadonlyMap<string, UsedFor>;
 }
 
 /**
  * Get what a target passes on to whatever requires it, from its requirements:
  * where its `extends` (`made`) is one package, that package's version and
  * requirements; otherwise the edges `edgesOf` gives for its `dependencies`,
- * `provided` and `optional_provided`, the last two named provided.
+ * `provided`, `optional_provided`, `runtime` and `compile`, the second and
+ * third named provided, the last two passed on to the `run` and the `build`
+ * collection alone.
  */
 export function passedOn(made: ReadonlyArray<unknown>, edgesOf: (name: string) => Dependency[]): Stated {
   const [only, ...others] = made;
   if (others.length === 0 && isPackage(only)) {
-    return { version: only.version, dependencies: only.dependencies, provided: only.provided };
+    return { version: only.version, dependencies: only.dependencies, provided: only.provided, usedFor: only.usedFor };
   }
   const provided = edgesOf(PROVIDED_KEY);
   const optional = edgesOf(OPTIONAL_PROVIDED_KEY);
+  const runtime = edgesOf(RUNTIME_KEY);
+  const compile = edgesOf(COMPILE_KEY);
   return {
-    dependencies: [...edgesOf(DEPENDENCIES_KEY), ...provided, ...optional],
+    dependencies: [...edgesOf(DEPENDENCIES_KEY), ...provided, ...optional, ...runtime, ...compile],
     provided: new Map([
       ...provided.map((dep): [string, Provided] => [dependencyName(dep), "expected"]),
       ...optional.map((dep): [string, Provided] => [dependencyName(dep), "optional"]),
+    ]),
+    usedFor: new Map([
+      ...runtime.map((dep): [string, UsedFor] => [dependencyName(dep), "run"]),
+      ...compile.map((dep): [string, UsedFor] => [dependencyName(dep), "build"]),
     ]),
   };
 }
@@ -206,11 +216,11 @@ export abstract class ResolvedTarget extends ResolvedNode implements TargetNode 
  * read in, and how to build it. Materializing it builds it.
  *
  * To whatever requires it, it is a node named as the target is, requiring
- * what its rule states as passed on: its `dependencies`, `provided` and
- * `optional_provided`, or
+ * what its rule states as passed on: its `dependencies`, `provided`,
+ * `optional_provided`, `runtime` and `compile`, or
  * the version and requirements of the one package it `extends`, or nothing.
  * What it builds — a package, or files — is what its rule declares
- * (`ResolvedRequirements.builds`), checked when it is built, or otherwise
+ * (`ResolvedRequirements.result`), checked when it is built, or otherwise
  * known only then.
  */
 export class DeclaredResolvedTarget extends ResolvedTarget {
@@ -218,7 +228,7 @@ export class DeclaredResolvedTarget extends ResolvedTarget {
     private readonly build: TargetBuild,
     fields: NodeFields
   ) {
-    super(fields.content, fields.packageName, fields.version, fields.dependencies, fields.origin, fields.provided);
+    super(fields.content, fields.packageName, fields.version, fields.dependencies, fields.origin, fields.provided, fields.usedFor);
   }
 
   /**
@@ -240,6 +250,7 @@ export class DeclaredResolvedTarget extends ResolvedTarget {
       dependencies: stated.dependencies,
       origin: targetOrigin(context),
       provided: stated.provided ?? new Map(),
+      usedFor: stated.usedFor ?? new Map(),
     });
   }
 
@@ -323,7 +334,7 @@ export class BlockTargetNode extends ResolvedNode implements TargetNode {
     private readonly target: () => Computable<ResolvedTarget>,
     fields: NodeFields
   ) {
-    super(fields.content, fields.packageName, fields.version, fields.dependencies, fields.origin, fields.provided);
+    super(fields.content, fields.packageName, fields.version, fields.dependencies, fields.origin, fields.provided, fields.usedFor);
   }
 
   /** Make the node of the target `context` names, which passes on `dependencies`, those named in `provided` provided, and which `target` resolves to build. */
@@ -335,6 +346,7 @@ export class BlockTargetNode extends ResolvedNode implements TargetNode {
       dependencies: stated.dependencies,
       origin: targetOrigin(context),
       provided: stated.provided ?? new Map(),
+      usedFor: stated.usedFor ?? new Map(),
     });
   }
 

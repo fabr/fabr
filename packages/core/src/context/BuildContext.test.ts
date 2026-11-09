@@ -38,7 +38,7 @@ import {
   SourceRef,
   Resolved,
 } from "../core/Repository";
-import { dependencyName, isPackage, PackageFileSet, ResolvedNode } from "../core/PackageFileSet";
+import { dependencyName, isPackage, PackageFileSet, ResolvedNode, UsedFor } from "../core/PackageFileSet";
 import { buildOperation, describeOperation } from "../Fabr";
 import { materializeTargets, TargetRef } from "../core/TargetRef";
 import { ResolvedTarget } from "./ResolvedTarget";
@@ -86,6 +86,7 @@ import { BuildModel } from "../model/BuildModel";
 import chai, { expect } from "chai";
 import chaiAsPromised from "chai-as-promised";
 import { BuildCache } from "../core/BuildCache";
+import { catalogRepositoryRegistration } from "../rules/CatalogRepository";
 
 chai.use(chaiAsPromised);
 
@@ -267,6 +268,28 @@ testRules.push(
       lastSplit = { compile: closureNames(compile), install: closureNames(install) };
       return EMPTY_FILESET;
     },
+  })
+);
+/* A package passing on its `deps` to both of a consumer's collections, its
+ * `runtime_deps` to what runs it alone and its `compile_api_deps` to what
+ * compiles against it alone. */
+testRules.push(
+  defineRule({
+    type: "test_scoped",
+    properties: {},
+    requirements: context => ({
+      build: { dependencies: context.getPackageProperty("deps"), compile: context.getPackageProperty("compile_api_deps") },
+      run: { runtime: context.getPackageProperty("runtime_deps") },
+    }),
+    evaluateResolved: (context, requirements) =>
+      Computable.forAll(
+        [requirements.packages("dependencies"), requirements.packages("runtime"), requirements.packages("compile")],
+        (dependencies, runtime, compile) =>
+          new PackageFileSet(new Map([["scoped.txt", MemoryFile.from("")]]), context.name, undefined, [...dependencies, ...runtime, ...compile], undefined, undefined, undefined, new Map([
+            ...runtime.map((dep): [string, UsedFor] => [dependencyName(dep), "run"]),
+            ...compile.map((dep): [string, UsedFor] => [dependencyName(dep), "build"]),
+          ]))
+      ),
   })
 );
 /* States one requirement in both collections. */
@@ -585,6 +608,8 @@ class TestRegistry implements Repository, RepositoryReader<SemverVersion, Semver
 /* A fresh identity per instance: a resolution is memoized by it through the
  * cache, and each test's model is a fresh registry. */
 let registries = 0;
+/* Core's catalog, under a type of its own here. */
+registerRepositoryProvider("test_catalog", context => catalogRepositoryRegistration.provider(context));
 registerRepositoryProvider("test_registry", context => Computable.resolve(new TestRegistry(`${context.name}#${++registries}`, context.operation, context.name)));
 
 /* A registry whose references must state a version, as npm's must: a name with
@@ -2721,6 +2746,9 @@ describe("BuildContext", () => {
       "targetdef test_split_twice { deps = PACKAGES; }\n" +
       "test_registry @reg { }\n" +
       "test_split app { deps = @reg:lib; }\n" +
+      "targetdef test_catalog { deps = PACKAGES; }\n" +
+      "test_catalog @cat { deps = @reg:lib; }\n" +
+      "test_split viacatalog { deps = @cat:lib; }\n" +
       "test_split_twice twice { deps = @reg:lib; }\n";
 
     function configOf(): BuildContext {
@@ -2734,6 +2762,26 @@ describe("BuildContext", () => {
     it("resolves each collection for its operation, as a separate graph", async () => {
       await configOf().materialize(writtenOnCommandLine("app"));
       expect(lastSplit).to.deep.equal({ compile: ["lib", "x"], install: ["lib", "x", "y"] });
+    });
+
+    it("resolves a catalog's member for each collection that asks for it", async () => {
+      await configOf().materialize(writtenOnCommandLine("viacatalog"));
+      expect(lastSplit).to.deep.equal({ compile: ["lib", "x"], install: ["lib", "x", "y"] });
+    });
+
+    it("passes a built package's edges for one collection on to that collection alone", async () => {
+      const errors: string[] = [];
+      const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+      const scoped =
+        "targetdef test_scoped { deps = PACKAGES; runtime_deps = PACKAGES; compile_api_deps = PACKAGES; }\n" +
+        "targetdef test_split { deps = PACKAGES; }\ntargetdef test_package { }\n" +
+        "test_package lib { }\ntest_package driver { }\ntest_package annotations { }\n" +
+        "test_scoped mylib { deps = lib; runtime_deps = driver; compile_api_deps = annotations; }\n" +
+        "test_split app { deps = mylib; }\n";
+      const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", scoped, logger)], logger, testContributions);
+      expect(errors).to.deep.equal([]);
+      await model.getConfig(Constraints.of({ [BUILD_OPERATION]: "build" }), splitExecution).materialize(writtenOnCommandLine("app"));
+      expect(lastSplit).to.deep.equal({ compile: ["annotations", "lib", "mylib"], install: ["driver", "lib", "mylib"] });
     });
 
     it("refuses a requirement stated for both", async () => {

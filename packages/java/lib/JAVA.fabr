@@ -123,6 +123,13 @@ targetdef jar_package {
     # Packages the sources are compiled against that nothing needs when the jar
     # runs, such as an annotations-only jar. They are not passed on.
     compile_deps = PACKAGES;
+    # As `compile_deps`, for packages the jar's own API names, such as the
+    # annotations on its public classes: passed on to what compiles against
+    # the jar, never installed.
+    compile_api_deps = PACKAGES;
+    # Packages the jar needs only when it runs, such as a JDBC driver: not
+    # compiled against, and passed on to what runs the jar.
+    runtime_deps = PACKAGES;
     # The annotation processors the compiler runs, such as lombok: packages,
     # resolved apart from the ones the sources use.
     processors = PACKAGES;
@@ -269,12 +276,12 @@ rule ear_package e<BUILD_OPERATION=build> = ear:*.jar -> *.ear {
 rule jar_package pkg<BUILD_OPERATION=doc> = docs<BUILD_OPERATION=build> {
     java_compile compile {
         srcs = pkg.srcs;
-        deps = pkg.deps pkg.provided_deps pkg.optional_provided_deps pkg.compile_deps;
+        deps = pkg.deps pkg.provided_deps pkg.optional_provided_deps pkg.compile_api_deps pkg.compile_deps;
         processors = pkg.processors;
     }
     javadoc docs {
         srcs = pkg.srcs compile:generated/** -> **;
-        deps = pkg.deps pkg.provided_deps pkg.optional_provided_deps pkg.compile_deps;
+        deps = pkg.deps pkg.provided_deps pkg.optional_provided_deps pkg.compile_api_deps pkg.compile_deps;
     }
 }
 
@@ -303,7 +310,7 @@ rule war_package w<BUILD_OPERATION=doc> = docs<BUILD_OPERATION=build> {
 rule jar_package pkg<BUILD_OPERATION=sources> = contents<BUILD_OPERATION=build> {
     java_compile compile {
         srcs = pkg.srcs;
-        deps = pkg.deps pkg.provided_deps pkg.optional_provided_deps pkg.compile_deps;
+        deps = pkg.deps pkg.provided_deps pkg.optional_provided_deps pkg.compile_api_deps pkg.compile_deps;
         processors = pkg.processors;
     }
     contents = pkg.srcs compile:generated/** -> ** pkg.resources;

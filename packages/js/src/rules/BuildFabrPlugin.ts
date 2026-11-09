@@ -68,7 +68,7 @@ export default defineRule({
         const files = [...FileSet.unionAll(built, ...libs, ...optionalLibs)].filter(([name]) => name !== MANIFEST);
         return pluginPackageJson(built.getFile(MANIFEST), context.name, pluginLibsOf(libs, optionalLibs)).then(
           manifest =>
-            new PackageFileSet(new FileSet(new Map([...files, [MANIFEST, manifest]])), built.packageName, built.version, built.dependencies, built.origin, built.provided)
+            new PackageFileSet(new FileSet(new Map([...files, [MANIFEST, manifest]])), built.packageName, built.version, built.dependencies, built.origin, built.provided, undefined, built.usedFor)
         );
       }
     );

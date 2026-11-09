@@ -31,6 +31,7 @@ import {
   PackageFileSet,
   parseJson,
   Provided,
+  UsedFor,
   SymlinkFile,
 } from "@fabr-build/core";
 import { ILayerEntry, ILayerIndex } from "./LayerIndex";
@@ -80,9 +81,10 @@ export class ImageFileSet extends PackageFileSet {
     origin?: IProvenanceStep,
     provided?: ReadonlyMap<string, Provided>,
     metadata?: MetadataMap,
+    usedFor?: ReadonlyMap<string, UsedFor>,
     image?: { readonly config: IImageConfig; readonly layers: readonly ILayerRecord[] }
   ) {
-    super(files, packageName, version, dependencies, origin, provided, metadata);
+    super(files, packageName, version, dependencies, origin, provided, metadata, usedFor);
     const from = image ?? (files instanceof ImageFileSet ? files : undefined);
     if (from === undefined) {
       throw new FabrError(`'${packageName}' is made as an image from files that are no image`);
@@ -99,7 +101,7 @@ export class ImageFileSet extends PackageFileSet {
     version?: string,
     origin?: IProvenanceStep
   ): ImageFileSet {
-    return new ImageFileSet(filesystemOf(layers), packageName, version, [], origin, undefined, undefined, { config, layers });
+    return new ImageFileSet(filesystemOf(layers), packageName, version, [], origin, undefined, undefined, undefined, { config, layers });
   }
 
   /**

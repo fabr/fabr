@@ -100,7 +100,7 @@ function patched(context: TargetContext, { srcs, patches }: { srcs: FileSet[]; p
        * to make. The reference to the target that asks for it is given it there. */
       const [only] = srcs;
       return srcs.length === 1 && only instanceof PackageFileSet
-        ? action.withReshape(changed => new PackageFileSet(changed, context.name, only.version, only.dependencies, only.origin, only.provided))
+        ? action.withReshape(changed => new PackageFileSet(changed, context.name, only.version, only.dependencies, only.origin, only.provided, undefined, only.usedFor))
         : action;
     }
   );

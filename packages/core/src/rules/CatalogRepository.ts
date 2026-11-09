@@ -19,7 +19,7 @@
 
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
-import { contentOf, isPackage, Package, ResolvedNode } from "../core/PackageFileSet";
+import { contentOf, isPackage, Package, ResolvedNode, UsedFor } from "../core/PackageFileSet";
 import { TargetRef, Unbuilt } from "../core/TargetRef";
 import { RepositoryCollection, ProjectedPackage, isRepositoryReader, Repository, RepositoryPublishRef, RepositoryRef, SourceRef } from "../core/Repository";
 import { ResolvedCollection, ResolvedMember, Resolution } from "../resolver/Types";
@@ -33,7 +33,7 @@ import type { Reference } from "../core/Reference";
 import type { PartialRepositoryRef } from "../core/PartialRepositoryRef";
 /* A catalog is a collection point of its own, the one outside context/, so it
  * takes these from the module rather than the package's API. */
-import { consumeMarker, Markers, resolveCollection } from "../context/CollectionPoint";
+import { consumeMarker, Markers, resolveCollection, sidedNodes, usedForOf, withOperation } from "../context/CollectionPoint";
 import { TargetContext } from "../context/index";
 import { BUILD_OVERRIDE } from "../model/Constraints";
 import { declaredRequirement, knownAs } from "../resolver/PackageResolver";
@@ -69,7 +69,9 @@ interface ResolvedCatalog {
  *
  * Mechanically it is a {@link Repository} whose read face answers from a
  * **table** rather than a registry. The joint resolution is the catalog's own
- * collection point (resolveCatalog, under `build`), and every consuming
+ * collection point (resolveCatalog, under `build`), made once for each of a
+ * consumer's collections that asks (`build` and `run`, as a rule's two
+ * collections are resolved apart), and every consuming
  * reference rides the normal RepositoryRef path, grouped by this instance at
  * the consumer's collection point and answered from the table.
  */
@@ -79,20 +81,35 @@ export class CatalogRepository implements Repository, RepositoryCollection {
     /* The operation of the configuration this instance was made in (interned
      * per BuildContext like any repository). */
     private readonly operation: string,
-    /* The entries, resolved once and shared, each target among them held as
-     * its node, unbuilt: declaring or consulting a catalog fetches no member
-     * and builds nothing. */
-    private readonly resolved: Computable<ResolvedCatalog>
+    /* Resolve the entries for one of a consumer's collections, each target
+     * among them held as its node, unbuilt: declaring or consulting a catalog
+     * fetches no member and builds nothing. */
+    private readonly resolve: (side: UsedFor) => Computable<ResolvedCatalog>
   ) {}
 
+  /** The entries as each collection resolved them, once and shared. */
+  private readonly sides = new Map<UsedFor, Computable<ResolvedCatalog>>();
+
+  /** Get the entries as the collection `side` resolves them: resolved on first demand, once. */
+  private resolved(side: UsedFor = "build"): Computable<ResolvedCatalog> {
+    const held = this.sides.get(side);
+    if (held !== undefined) {
+      return held;
+    }
+    const made = this.resolve(side);
+    this.sides.set(side, made);
+    return made;
+  }
+
   /**
-   * Look up the ONE member `reference` names in the catalog's resolution, with
-   * the operation of this instance's configuration, which says what it is
-   * answered with. Whether what a consumer takes is acceptable is judged at
-   * that consumer's collection point, over everything it uses together.
+   * Look up the ONE member `reference` names in the catalog's resolution for
+   * the consumer's collection resolved for `operation`, with the operation of
+   * this instance's configuration, which says what it is answered with.
+   * Whether what a consumer takes is acceptable is judged at that consumer's
+   * collection point, over everything it uses together.
    */
-  public member(reference: RepositoryRef): Computable<ResolvedMember> {
-    return this.resolved.then(
+  public member(reference: RepositoryRef, operation: string): Computable<ResolvedMember> {
+    return this.resolved(usedForOf(operation)).then(
       (catalog): ResolvedMember => ({
         collection: catalog.collection,
         entry: this.entryFor(reference, catalog),
@@ -132,7 +149,7 @@ export class CatalogRepository implements Repository, RepositoryCollection {
    */
   public declaredRequirement(ref: RepositoryRef): Computable<Requirement | undefined> {
     const name = ref.name;
-    return this.resolved.then(({ entries }) => {
+    return this.resolved().then(({ entries }) => {
       const entry = entries.get(name);
       return entry === undefined
         ? Computable.resolve(undefined)
@@ -173,7 +190,7 @@ export class CatalogRepository implements Repository, RepositoryCollection {
     if (namespace !== "") {
       return Computable.reject(new FabrError(`Catalog ${this.catalogName} has no namespace '${namespace}'`));
     }
-    return this.resolved.then(
+    return this.resolved().then(
       ({ entries }) =>
         new Map(
           [...entries.keys()]
@@ -215,16 +232,18 @@ function entryNodes(sources: SourceRef[], markers: Markers): Computable<Array<So
 
 /**
  * Resolve the catalog's `deps` jointly under `build`, whatever the catalog is
- * consumed under, and key each entry by the name it is delivered as. No member
+ * consumed under, for the consumer's collection `side`, and key each entry by
+ * the name it is delivered as. No member
  * is fetched and nothing is built: an entry that is a target is its node,
  * unbuilt, with what its rule states it passes on. Of entries claiming one
  * name, a forced one (`!`) is the member; otherwise they are a conflict.
  */
-function resolveCatalog(context: TargetContext): Computable<ResolvedCatalog> {
+function resolveCatalog(context: TargetContext, side: UsedFor): Computable<ResolvedCatalog> {
   const markers: Markers = new Map();
   return context
     .getFileProperty("deps", BUILD_OVERRIDE)
     .then(sources => entryNodes(sources, markers))
+    .then(sources => sidedNodes(sources, side, markers))
     .then(sources => {
       const references = sources.filter((source): source is RepositoryRef => source instanceof RepositoryRef);
       /* A catalog pins whole packages: an entry projecting *into* one would
@@ -284,7 +303,7 @@ function resolveCatalog(context: TargetContext): Computable<ResolvedCatalog> {
           }
           return content;
         });
-      const collection = resolveCollection(context, [...references, ...local], undefined, undefined, markers);
+      const collection = resolveCollection(withOperation(context, side), [...references, ...local], undefined, undefined, markers);
       const written = new Set(references);
       /* A catalog is one collection point: every resolution is made before its
        * entries are keyed. */
@@ -329,7 +348,7 @@ function resolveCatalog(context: TargetContext): Computable<ResolvedCatalog> {
 }
 
 function createCatalog(context: TargetContext): Computable<Repository> {
-  return Computable.resolve(new CatalogRepository(context.name, context.operation, resolveCatalog(context)));
+  return Computable.resolve(new CatalogRepository(context.name, context.operation, side => resolveCatalog(context, side)));
 }
 
 export const catalogRepositoryRegistration: RepositoryRegistration = { type: "catalog", provider: createCatalog };

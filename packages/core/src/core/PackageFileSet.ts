@@ -34,6 +34,13 @@ export type Provided = NonNullable<Requirement["provided"]>;
 
 const NOTHING_PROVIDED: ReadonlyMap<string, Provided> = new Map();
 
+/** The one collection a package's edge is passed on to, where it is not
+ * passed on to both: what its consumers compile against (`build`), or what
+ * they run with (`run`). */
+export type UsedFor = "build" | "run";
+
+const USED_FOR_BOTH: ReadonlyMap<string, UsedFor> = new Map();
+
 /**
  * What a package says about itself for publishing, beyond its name, version
  * and dependencies (a description, a licence, where its source is): the
@@ -60,6 +67,10 @@ export interface PackageMetadata {
   readonly dependencies: ReadonlyArray<Dependency>;
   /** The names among `dependencies` that are provided requirements. */
   readonly provided: ReadonlyMap<string, Provided>;
+  /** The names among `dependencies` passed on to one of a consumer's
+   * collections only, with which: a collection resolved for the other leaves
+   * the edge out. */
+  readonly usedFor: ReadonlyMap<string, UsedFor>;
   readonly origin?: IProvenanceStep;
   /** `name@version`, the package's identity. */
   readonly packageId: string;
@@ -154,6 +165,7 @@ export interface NodeFields {
   readonly dependencies: ReadonlyArray<Dependency>;
   readonly origin?: IProvenanceStep;
   readonly provided: ReadonlyMap<string, Provided>;
+  readonly usedFor: ReadonlyMap<string, UsedFor>;
 }
 
 /**
@@ -172,7 +184,8 @@ export class ResolvedNode implements PackageMetadata {
     public readonly version?: string,
     public readonly dependencies: ReadonlyArray<Dependency> = [],
     public readonly origin?: IProvenanceStep,
-    public readonly provided: ReadonlyMap<string, Provided> = NOTHING_PROVIDED
+    public readonly provided: ReadonlyMap<string, Provided> = NOTHING_PROVIDED,
+    public readonly usedFor: ReadonlyMap<string, UsedFor> = USED_FOR_BOTH
   ) {}
 
   public get packageId(): string {
@@ -223,7 +236,8 @@ export class ResolvedNode implements PackageMetadata {
       fields.version,
       fields.dependencies,
       fields.origin,
-      fields.provided
+      fields.provided,
+      fields.usedFor
     );
   }
 
@@ -236,6 +250,7 @@ export class ResolvedNode implements PackageMetadata {
       dependencies: this.dependencies,
       origin: this.origin,
       provided: this.provided,
+      usedFor: this.usedFor,
     };
   }
 
@@ -301,7 +316,10 @@ export class PackageFileSet extends FileSet {
     /* The names among `dependencies` that are provided requirements, each with
      * how strongly it is expected. */
     public readonly provided: ReadonlyMap<string, Provided> = NOTHING_PROVIDED,
-    metadata?: MetadataMap
+    metadata?: MetadataMap,
+    /* The names among `dependencies` passed on to one of a consumer's
+     * collections only (see {@link PackageMetadata.usedFor}). */
+    public readonly usedFor: ReadonlyMap<string, UsedFor> = USED_FOR_BOTH
   ) {
     /* An existing FileSet passes straight through — the base shares its content
      * (already canonical) rather than copying and rechecking every name, which
@@ -347,7 +365,7 @@ export class PackageFileSet extends FileSet {
 
   /** @return a copy of this package, of its own class, under `packageName` and `origin`. */
   private remade(packageName: string, origin: IProvenanceStep | undefined): PackageFileSet {
-    return new (this.constructor as PackageClass)(this, packageName, this.version, this.dependencies, origin, this.provided);
+    return new (this.constructor as PackageClass)(this, packageName, this.version, this.dependencies, origin, this.provided, undefined, this.usedFor);
   }
 
   public getDependency(name: string): Dependency<PackageFileSet> | undefined {
@@ -610,7 +628,10 @@ export function packageNameConflict(held: PackageFileSet, arrived: PackageFileSe
  * fine (a leaf simply has no dependencies). The builder is single-use.
  */
 export class PackageGraphBuilder {
-  private readonly pending = new Map<Package, { dependencies: Array<Dependency>; provided: Map<string, Provided> }>();
+  private readonly pending = new Map<
+    Package,
+    { dependencies: Array<Dependency>; provided: Map<string, Provided>; usedFor: Map<string, UsedFor> }
+  >();
   private readonly wired = new Set<Package>();
   private sealed = false;
 
@@ -629,12 +650,13 @@ export class PackageGraphBuilder {
      * the builder fill them in after construction. */
     const dependencies: Array<Dependency<PackageFileSet>> = [];
     const provided = new Map<string, Provided>();
+    const usedFor = new Map<string, UsedFor>();
     /* A package is rebuilt as its own class, as {@link PackageFileSet.withOrigin} remakes it. */
     const made = files instanceof PackageFileSet ? (files.constructor as PackageClass) : PackageFileSet;
     const pkg = described
-      ? new DescribedPackage(files, packageName, version, dependencies, origin, provided)
-      : new made(files, packageName, version, dependencies, origin, provided);
-    this.pending.set(pkg, { dependencies, provided });
+      ? new DescribedPackage(files, packageName, version, dependencies, origin, provided, undefined, usedFor)
+      : new made(files, packageName, version, dependencies, origin, provided, undefined, usedFor);
+    this.pending.set(pkg, { dependencies, provided, usedFor });
     return pkg;
   }
 
@@ -645,8 +667,9 @@ export class PackageGraphBuilder {
     }
     const dependencies: Array<Dependency> = [];
     const provided = new Map<string, Provided>();
-    const pkg = new ResolvedNode(content, packageName, version, dependencies, origin, provided);
-    this.pending.set(pkg, { dependencies, provided });
+    const usedFor = new Map<string, UsedFor>();
+    const pkg = new ResolvedNode(content, packageName, version, dependencies, origin, provided, usedFor);
+    this.pending.set(pkg, { dependencies, provided, usedFor });
     return pkg;
   }
 
@@ -662,17 +685,20 @@ export class PackageGraphBuilder {
     }
     const dependencies: Array<Dependency> = [];
     const provided = new Map<string, Provided>();
-    const node = pkg.copy({ dependencies, provided, origin });
-    this.pending.set(node, { dependencies, provided });
+    const usedFor = new Map<string, UsedFor>();
+    const node = pkg.copy({ dependencies, provided, usedFor, origin });
+    this.pending.set(node, { dependencies, provided, usedFor });
     return node;
   }
 
-  /** Wire a node's dependencies, and which of them are provided requirements
-   * (once — an empty wiring counts), to nodes of this or any graph. */
+  /** Wire a node's dependencies, which of them are provided requirements and
+   * which are passed on to one collection only (once — an empty wiring
+   * counts), to nodes of this or any graph. */
   public wire(
     pkg: Package,
     dependencies: ReadonlyArray<Dependency>,
-    provided: ReadonlyMap<string, Provided> = NOTHING_PROVIDED
+    provided: ReadonlyMap<string, Provided> = NOTHING_PROVIDED,
+    usedFor: ReadonlyMap<string, UsedFor> = USED_FOR_BOTH
   ): void {
     const lists = this.pending.get(pkg);
     if (lists === undefined) {
@@ -684,6 +710,7 @@ export class PackageGraphBuilder {
     this.wired.add(pkg);
     lists.dependencies.push(...dependencies);
     provided.forEach((expected, name) => lists.provided.set(name, expected));
+    usedFor.forEach((side, name) => lists.usedFor.set(name, side));
   }
 
   /** Freeze every node's lists; the graph is now immutable. */
@@ -789,7 +816,7 @@ function materializeGraph(roots: ReadonlyArray<Package>, describe: boolean): Com
         if (held === undefined && description !== undefined) {
           held = builder.node(description, pkg.packageName, pkg.version, pkg.origin, true);
           made.set(pkg, held);
-          builder.wire(held, wiredDependencies(pkg), pkg.provided);
+          builder.wire(held, wiredDependencies(pkg), pkg.provided, pkg.usedFor);
         }
         if (held === undefined) {
           const files = (content.get(pkg) ?? pkg) as FileSet;
@@ -802,7 +829,7 @@ function materializeGraph(roots: ReadonlyArray<Package>, describe: boolean): Com
           const name = files instanceof PackageFileSet ? files.packageName : pkg.packageName;
           held = builder.node(files, name, version, builds === undefined ? pkg.origin : rootedAt(pkg.origin, files.origin));
           made.set(pkg, held);
-          builder.wire(held, wiredDependencies(pkg), pkg.provided);
+          builder.wire(held, wiredDependencies(pkg), pkg.provided, pkg.usedFor);
         }
         return held;
       };

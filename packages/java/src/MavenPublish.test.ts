@@ -18,7 +18,19 @@
  */
 
 import { expect } from "chai";
-import { Computable, FileSet, MemoryFile, PublishableFileSet, PublishStatus, readZipMembers, RepositoryWriter } from "@fabr-build/core";
+import {
+  Computable,
+  FileSet,
+  MemoryFile,
+  PackageFileSet,
+  PublishableFileSet,
+  PublishStatus,
+  readZipMembers,
+  RepositoryReader,
+  RepositoryRef,
+  RepositoryWriter,
+} from "@fabr-build/core";
+import { MAVEN_FORMAT } from "./MavenProtocol";
 import {
   checkPomMetadata,
   checksumFiles,
@@ -185,6 +197,36 @@ describe("classified members", () => {
   it("take content that is one jar as that jar", async () => {
     const carrier = await packageClassifiedMember({ destination: ref("javadoc"), content: files({ "made.jar": "JAR" }) }, [ref(), ref("javadoc")]);
     expect(await (await carrier.get("com/example/app/1.0.0/app-1.0.0-javadoc.jar"))!.readString()).to.equal("JAR");
+  });
+
+  it("scope a dependency passed on to what runs the package alone as runtime, and one passed on to what compiles against it alone as compile", async () => {
+    const reader = {
+      format: MAVEN_FORMAT,
+      identity: "test",
+      operation: "build",
+      getRequirements: () => Computable.resolve([]),
+      fetchFiles: () => Computable.resolve(new FileSet(new Map())),
+      fetch: () => Computable.reject(new Error("not fetched")),
+    } as unknown as RepositoryReader<unknown, unknown>;
+    const edge = (name: string): { reference: RepositoryRef } => ({ reference: new RepositoryRef(reader, { name, versionConstraint: "1.0" }) });
+    const pkg = new PackageFileSet(
+      files({ "app.jar": "JAR" }),
+      "com.example/app",
+      "1.0.0",
+      [edge("com.example/lib"), edge("com.example/driver"), edge("com.example/annotations")],
+      undefined,
+      undefined,
+      undefined,
+      new Map([
+        ["com.example/driver", "run"],
+        ["com.example/annotations", "build"],
+      ])
+    );
+    const member = await packageMavenMember({ destination: ref(), content: pkg }, new Map(), new Set(), [ref()]);
+    const pom = await (await member.get("com/example/app/1.0.0/app-1.0.0.pom"))!.readString();
+    expect(pom).to.contain("<artifactId>driver</artifactId>\n      <version>1.0</version>\n      <scope>runtime</scope>\n");
+    expect(pom).to.contain("<artifactId>annotations</artifactId>\n      <version>1.0</version>\n    </dependency>");
+    expect(pom).to.contain("<artifactId>lib</artifactId>\n      <version>1.0</version>\n    </dependency>");
   });
 
   it("need their version's artifact in the same release, which is uploaded after them", async () => {

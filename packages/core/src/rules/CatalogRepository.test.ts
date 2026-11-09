@@ -75,10 +75,11 @@ function writtenOnCommandLine(name: string): INameValue {
 const emptyCatalog = new CatalogRepository(
   "@cat",
   "build",
-  Computable.resolve({
-    entries: new Map(),
-    collection: { requests: new Map(), resolutions: new Map(), locals: new Map(), members: new Map(), instances: new Set(), resolvedMembers: new Map() },
-  })
+  () =>
+    Computable.resolve({
+      entries: new Map(),
+      collection: { requests: new Map(), resolutions: new Map(), locals: new Map(), members: new Map(), instances: new Set(), resolvedMembers: new Map() },
+    })
 );
 
 describe("CatalogRepository.getRepositoryRef", () => {
@@ -1196,7 +1197,8 @@ describe("CatalogRepository (through the model)", () => {
       );
       const config = model.getConfig(Constraints.of({}), execution);
       await config.resolve(written);
-      expect(backings.get("@backing")!.fetched).to.deep.equal([]);
+      /* The catalog resolves its entries for a consumer's collection when one first asks for a member. */
+      expect(backings.get("@backing")?.fetched ?? []).to.deep.equal([]);
       await config.materialize(writtenOnCommandLine("a"));
       expect(await lastDeps!.readFile("foo/data.txt")).to.equal("foo");
       expect(backings.get("@backing")!.fetched).to.deep.equal(["foo@1.0.0"]);
