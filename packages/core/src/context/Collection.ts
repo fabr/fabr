@@ -22,11 +22,11 @@ import { Computable } from "../core/Computable";
 import { FabrError, toError } from "../core/Errors";
 import { FileSet } from "../core/FileSet";
 import { FileSetRef } from "../core/FileSetRef";
-import { Materialized, RepositoryRef, SourceRef } from "../core/Repository";
+import { Materialized, SourceRef } from "../core/Repository";
 import { checked, materializeLists, ResolvedLists, resolveLists } from "./CollectionPoint";
 import { Conflicts } from "../resolver/StrictCollection";
 import type { ResolutionContext } from "../resolver/Types";
-import { Builds, PackageFileSet, ResolvedNode, Dependency } from "../core/PackageFileSet";
+import { Builds, PackageFileSet, Dependency } from "../core/PackageFileSet";
 import { Resolved } from "../core/Repository";
 import type { InternalBuildContext } from "./BuildContext";
 import type { TargetContext } from "./TargetContext";
@@ -320,25 +320,6 @@ type CollectedSource = FileSet | FileSetRef;
  * these: it states what its target requires and is handed the result.
  */
 
-/**
- * Reduce a package to material to make another from: the package alone, each
- * requirement it has bound to a repository's package put back as the
- * reference that asked for it. What is made from it is resolved again by
- * whatever requires that, so nothing this package's own resolution selected
- * is fetched for it.
- */
-function asMaterial(source: Resolved): Resolved {
-  return source instanceof ResolvedNode
-    ? new ResolvedNode(
-        source.content,
-        source.packageName,
-        source.version,
-        source.dependencies.map(dep => (dep.package !== undefined && dep.reference instanceof RepositoryRef ? { reference: dep.reference } : dep)),
-        source.origin,
-        source.provided
-      )
-    : source;
-}
 
 /**
  * Run the resolve half of `target`'s collection point: every requirement read,
@@ -385,8 +366,7 @@ export function resolveRequirements(target: TargetContext, spec: ResolutionSpec)
           parts.forEach(({ at, resolved }, part) =>
             at.forEach((index, position) =>
               resolvedEntries.set(index, {
-                sources:
-                  requirementName(names[index]) === EXTENDS_KEY ? resolved.lists[position].map(asMaterial) : resolved.lists[position],
+                sources: resolved.lists[position],
                 references: resolved.references[position],
                 reading: readings[index],
                 part,

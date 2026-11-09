@@ -22,6 +22,7 @@ number.
 - Add `private` declarations: a target or global property only its own build file sees.
 - Test output is now reported the same way as other build steps.
 - `patched` now takes an optional `run` command to modify files in place (after any `patches`).
+- Fix joint resolution of catalog + non-catalog deps.
 - `fabr test` of a name listing several test targets summarises all of their tests, not only the first target's.
 - Fix: A test whose sources import a JSON file listed among its deps no longer fails on the compiled copy conflicting with it.
 - Negative extglobs can now match multiple paths eg !(foo/bar)/**
@@ -63,6 +64,7 @@ number.
 
 @fabr-build/vscode-ext:
 - New VSCode extension.
+- Highlight single-quoted strings, and quoted strings across the lines they span.
 
 ## Fabr 0.3.1
 @fabr-build/core:

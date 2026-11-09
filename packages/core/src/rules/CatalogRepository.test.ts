@@ -77,7 +77,7 @@ const emptyCatalog = new CatalogRepository(
   "build",
   Computable.resolve({
     entries: new Map(),
-    collection: { requests: new Map(), resolutions: new Map(), locals: new Map(), members: new Map(), instances: new Set() },
+    collection: { requests: new Map(), resolutions: new Map(), locals: new Map(), members: new Map(), instances: new Set(), resolvedMembers: new Map() },
   })
 );
 
@@ -757,9 +757,11 @@ describe("CatalogRepository (through the model)", () => {
         }
       }
       expect(message).to.contain("Resolution requires multiple versions of the same package:");
-      expect(message).to.contain("x is required at 1.0.0 and 2.0.0");
-      expect(message).to.contain("1.0.0 required via: b@1.0.0 -> y@1.0.0");
-      expect(message).to.contain("2.0.0 required directly ('2.0.0')");
+      /* The catalog's selection is a pin of the consumer's batch, so the
+       * disagreement is stated there: the pin against the direct reference. */
+      expect(message).to.contain("x is required as '1.0.0' and as '2.0.0', and no one version is both");
+      expect(message).to.contain("'1.0.0' pinned by '@cat:b'");
+      expect(message).to.contain("'2.0.0' required directly");
       /* The direct reference's exact pin already sanctions 2.0.0; the remedy
        * completes the set. */
       expect(help).to.contain("@backing:x:1.0.0?");
@@ -2157,6 +2159,227 @@ describe("CatalogRepository (through the model)", () => {
     });
   });
 
+  describe("a catalog's selections pin the consumer's batch", () => {
+    const edges = (pkg: PackageFileSet): string[] =>
+      pkg.dependencies.map(dep => (dep.package ? dep.package.packageId : `ref:${dep.reference.toString()}`));
+    const dependency = (pkg: PackageFileSet, name: string): PackageFileSet | undefined => pkg.getDependency(name)?.package as PackageFileSet | undefined;
+    const text = (pkg: FileSet, name: string): Promise<string> => Promise.resolve(pkg.getFile(name)!.readString());
+    /** The message deepest down a failure's chain of causes, or "" where it succeeded. */
+    const outcomeOf = async (run: Computable<unknown>): Promise<string> => {
+      try {
+        await Promise.resolve(run);
+        return "";
+      } catch (err) {
+        let message = "";
+        for (let current: unknown = err; current instanceof Error; current = (current as { cause?: unknown }).cause) {
+          message = current.message;
+        }
+        return message;
+      }
+    };
+    const fetchedBy = (): string[] => backings.get("@backing")!.fetched;
+
+    it("selects a direct reference's transitive at the version a member's closure binds, one node", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "catalog @cat { deps = @backing:foo:1.0.0 @backing:baz:1.2.0; }\n" +
+          "test_deps a { deps = @cat:foo @backing:bar:1.0.0; }\n"
+      );
+      requirementTable.set("foo@1.0.0", [{ name: "baz", versionConstraint: "^1.0.0" }]);
+      requirementTable.set("bar@1.0.0", [{ name: "baz", versionConstraint: "^1.0.0" }]);
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
+      const [foo, bar] = lastDepSets as PackageFileSet[];
+      expect(edges(foo)).to.deep.equal(["baz@1.2.0"]);
+      /* Alone, bar's floor is baz@1.0.0; with the catalog's selection a pin of
+       * the batch it is baz@1.2.0, the one node foo's edge leads to. */
+      expect(edges(bar)).to.deep.equal(["baz@1.2.0"]);
+      expect(dependency(bar, "baz")).to.equal(dependency(foo, "baz"));
+      expect(fetchedBy().filter(fetched => fetched === "baz@1.2.0")).to.have.length(1);
+    });
+
+    it("refuses a direct reference a pin cannot satisfy, naming the pin, until the version is sanctioned", async () => {
+      const source = (sanction: string): string =>
+        "package_repo @backing { }\n" +
+        "catalog @cat { deps = @backing:foo:1.0.0 @backing:baz:1.2.0; }\n" +
+        `test_deps a { deps = @cat:foo @backing:bar:1.0.0${sanction}; }\n`;
+      const requires = (): void => {
+        requirementTable.set("foo@1.0.0", [{ name: "baz", versionConstraint: "^1.0.0" }]);
+        requirementTable.set("bar@1.0.0", [{ name: "baz", versionConstraint: "^2.0.0" }]);
+      };
+      let model = build(source(""));
+      requires();
+      const message = await outcomeOf(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a")));
+      expect(message).to.contain("Resolution requires multiple versions of the same package:");
+      expect(message).to.contain("baz is required as '1.2.0' and as '^2.0.0', and no one version is both");
+      expect(message).to.contain("'1.2.0' pinned by '@cat:foo'");
+      expect(message).to.contain("'^2.0.0' required via: bar@1.0.0");
+      model = build(source(" @backing:baz:2.0.0?"));
+      requires();
+      expect(await outcomeOf(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a")))).to.equal("");
+      const [foo, bar] = lastDepSets as PackageFileSet[];
+      expect(edges(foo)).to.deep.equal(["baz@1.2.0"]);
+      expect(edges(bar)).to.deep.equal(["baz@2.0.0"]);
+    });
+
+    it("takes a catalog's fork as a second pin of the name, judged as two versions are", async () => {
+      const source = (sanction: string): string =>
+        "package_repo @backing { }\n" +
+        "catalog @cat { deps = @backing:p:1.0.0 @backing:q:1.0.0 @backing:z:2.0.0; }\n" +
+        `test_deps a { deps = @cat:p @cat:q @backing:w:1.0.0${sanction}; }\n`;
+      const requires = (): void => {
+        /* The catalog selects z@2.0.0 and, for p, forks z@1.0.0. */
+        requirementTable.set("p@1.0.0", [{ name: "z", versionConstraint: "^1.0.0" }]);
+        requirementTable.set("q@1.0.0", [{ name: "z", versionConstraint: "^2.0.0" }]);
+      };
+      let model = build(source(""));
+      requires();
+      const message = await outcomeOf(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a")));
+      expect(message).to.contain("Resolution requires multiple versions of the same package:");
+      /* Both versions are the catalog's, arriving as pins of the batch. */
+      expect(message).to.contain("pinned by '@cat:");
+      expect(message).to.contain("required z versions: 1.0.0, 2.0.0");
+      model = build(source(" @backing:z:1.0.0?"));
+      requires();
+      expect(await outcomeOf(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a")))).to.equal("");
+      const [p, q] = lastDepSets as PackageFileSet[];
+      expect(edges(p)).to.deep.equal(["z@1.0.0"]);
+      expect(edges(q)).to.deep.equal(["z@2.0.0"]);
+    });
+
+    it("leaves a build's provided requirement, and its marker, the build's own: the consumer selects", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_pkg lib { provided = @backing:react:1.0.0!; }\n" +
+          "test_deps a { deps = lib @backing:react:1.2.0; }\n"
+      );
+      expect(await outcomeOf(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a")))).to.equal("");
+      const [lib, react] = lastDepSets as PackageFileSet[];
+      expect(react.packageId).to.equal("react@1.2.0");
+      expect(edges(lib)).to.deep.equal(["react@1.2.0"]);
+    });
+
+    it("refuses two catalogs whose selections of one package differ, until the consumer sanctions it", async () => {
+      const source = (sanction: string): string =>
+        "package_repo @backing { }\n" +
+        "catalog @one { deps = @backing:foo:1.0.0 @backing:baz:1.2.0; }\n" +
+        "catalog @two { deps = @backing:bar:1.0.0 @backing:baz:1.3.0; }\n" +
+        `test_deps a { deps = @one:foo @two:bar${sanction}; }\n`;
+      const requires = (): void => {
+        requirementTable.set("foo@1.0.0", [{ name: "baz", versionConstraint: "^1.0.0" }]);
+        requirementTable.set("bar@1.0.0", [{ name: "baz", versionConstraint: "^1.0.0" }]);
+      };
+      let model = build(source(""));
+      requires();
+      /* Each catalog's entry settles its own selection and vouches for no other catalog's. */
+      const message = await outcomeOf(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a")));
+      expect(message).to.contain("Resolution requires multiple versions of the same package:");
+      expect(message).to.contain("baz is required at 1.2.0 and 1.3.0");
+      model = build(source(" @backing:baz:1.3.0?"));
+      requires();
+      expect(await outcomeOf(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a")))).to.equal("");
+    });
+
+    it("takes one catalog's own sanction of its fork with the fork", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "catalog @cat { deps = @backing:p:1.0.0 @backing:q:1.0.0 @backing:z:2.0.0 @backing:z:1.0.0?; }\n" +
+          "test_deps a { deps = @cat:p @cat:q; }\n"
+      );
+      requirementTable.set("p@1.0.0", [{ name: "z", versionConstraint: "^1.0.0" }]);
+      requirementTable.set("q@1.0.0", [{ name: "z", versionConstraint: "^2.0.0" }]);
+      expect(await outcomeOf(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a")))).to.equal("");
+      const [p, q] = lastDepSets as PackageFileSet[];
+      expect(edges(p)).to.deep.equal(["z@1.0.0"]);
+      expect(edges(q)).to.deep.equal(["z@2.0.0"]);
+    });
+
+    it("puts the collection's own build in place of a catalog member a build's edge reaches by name", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "catalog @cat { deps = @backing:foo:1.0.0; }\n" +
+          "test_patch fix { }\n" +
+          "patched foo { srcs = @backing:foo:1.0.0; patches = fix; }\n" +
+          "test_stated lib { deps = @cat:foo; }\n" +
+          "test_deps a { deps = lib foo; }\n"
+      );
+      patchTexts.set(
+        "fix",
+        [
+          "diff --git a/foo/data.txt b/foo/data.txt",
+          "--- a/foo/data.txt",
+          "+++ b/foo/data.txt",
+          "@@ -1 +1 @@",
+          "-foo",
+          "\\ No newline at end of file",
+          "+foo, patched",
+          "\\ No newline at end of file",
+          "",
+        ].join("\n")
+      );
+      expect(await outcomeOf(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a")))).to.equal("");
+      const [lib, foo] = lastDepSets as PackageFileSet[];
+      /* lib states `@cat:foo` as the reference; asked here, the catalog's
+       * answer is a package of a name the collection builds, so the build stands. */
+      expect(dependency(lib, "foo")).to.equal(foo);
+      expect(await text(foo, "foo/data.txt")).to.equal("foo, patched");
+    });
+
+    it("does not pin a catalog's binding of a member's provided requirement, which the consumer binds", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "catalog @cat { deps = @backing:x:1.0.0 @backing:y:1.0.0; }\n" +
+          "test_deps a { deps = @cat:x @backing:y:2.0.0; }\n"
+      );
+      requirementTable.set("x@1.0.0", [{ name: "y", versionConstraint: "^1.0.0", provided: "expected" }]);
+      expect(await outcomeOf(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a")))).to.equal("");
+      const [x] = lastDepSets as PackageFileSet[];
+      expect(edges(x)).to.deep.equal(["y@2.0.0"]);
+    });
+
+    it("pins nothing of a name the collection builds, which answers for it", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "catalog @cat { deps = @backing:foo:1.0.0 @backing:bar:1.0.0; }\n" +
+          "test_patch fix { }\n" +
+          "patched bar { srcs = @backing:bar:1.0.0; patches = fix; }\n" +
+          "test_deps a { deps = @cat:foo bar @backing:w:1.0.0; }\n"
+      );
+      requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "^1.0.0" }]);
+      patchTexts.set(
+        "fix",
+        [
+          "diff --git a/bar/data.txt b/bar/data.txt",
+          "--- a/bar/data.txt",
+          "+++ b/bar/data.txt",
+          "@@ -1 +1 @@",
+          "-bar",
+          "\\ No newline at end of file",
+          "+bar, patched",
+          "\\ No newline at end of file",
+          "",
+        ].join("\n")
+      );
+      expect(await outcomeOf(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a")))).to.equal("");
+      const [foo] = lastDepSets as PackageFileSet[];
+      expect(edges(foo)).to.deep.equal(["bar@1.0.0"]);
+      expect(await text(dependency(foo, "bar")!, "bar/data.txt")).to.equal("bar, patched");
+    });
+
+    it("leaves a build's written registry range the consumer's to select", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_stated lib { deps = @backing:foo:^1.0.0; }\n" +
+          "test_deps a { deps = lib @backing:foo:1.2.0; }\n"
+      );
+      expect(await outcomeOf(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a")))).to.equal("");
+      /* lib built against its own selection, foo@1.0.0; what it states to its
+       * consumer is the range, which the consumer's pin settles. */
+      const [lib, foo] = lastDepSets as PackageFileSet[];
+      expect(edges(lib)).to.deep.equal(["foo@1.2.0"]);
+      expect(foo.packageId).to.equal("foo@1.2.0");
+    });
+  });
+
   describe("a patched package", () => {
     /** A patch replacing the one line `pkg`'s fixture file holds. */
     const rewrite = (pkg: string, to: string): string =>
@@ -2227,6 +2450,25 @@ describe("CatalogRepository (through the model)", () => {
       /* What it declares is selected with the consumer's own requirements. */
       expect(edges(foo)).to.deep.equal(["bar@1.2.0"]);
       expect([...new Set(backings.get("@backing")!.fetched)].sort()).to.deep.equal(["bar@1.2.0", "foo@1.0.0"]);
+    });
+
+    it("is made from a catalog's member: the version the catalog pins, patched", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "catalog @cat { deps = @backing:foo:1.0.0 @backing:bar:1.2.0; }\n" +
+          "test_patch fix { }\n" +
+          "patched foo { srcs = @cat:foo; patches = fix; }\n" +
+          "test_deps a { deps = foo; }\n"
+      );
+      patchTexts.set("fix", rewrite("foo", "foo, patched"));
+      requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "^1.0.0" }]);
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
+      const foo = lastDepSets[0] as PackageFileSet;
+      expect(foo.packageId).to.equal("foo@1.0.0");
+      expect(await text(foo, "foo/data.txt")).to.equal("foo, patched");
+      /* The catalog's binding of what foo declares comes with it: the
+       * consumer takes the member's closure as the catalog resolved it. */
+      expect(edges(foo)).to.deep.equal(["bar@1.2.0"]);
     });
 
     it("carries a provided requirement of the package as one, for its consumer to bind", async () => {

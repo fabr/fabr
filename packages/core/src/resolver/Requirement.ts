@@ -233,6 +233,12 @@ export function allowingBuilds<V, C>(domain: VersionDomain<V, C>): VersionDomain
     versionToString: version => (isBuildVersion(version) ? version : domain.versionToString(version as V)),
     parseVersion: text => (isBuildVersion(text) ? text : domain.parseVersion(text)),
     exactVersion: text => (isBuildVersion(text) ? text : exactVersion?.(text)),
+    exactConstraint: version => (isBuildVersion(version) ? version : exactConstraintOf(domain, version as V)),
     ...(isStable === undefined ? {} : { isStable: (version: V | string) => isBuildVersion(version) || isStable(version as V) }),
   };
+}
+
+/** Write the constraint of `domain` that admits exactly `version`. */
+export function exactConstraintOf<V, C>(domain: VersionDomain<V, C>, version: V): string {
+  return domain.exactConstraint === undefined ? domain.versionToString(version) : domain.exactConstraint(version);
 }

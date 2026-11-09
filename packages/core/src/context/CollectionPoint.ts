@@ -43,7 +43,7 @@ import {
   ResolvedNode,
 } from "../core/PackageFileSet";
 import { isRepositoryCollection, isRepositoryReader, Materialized, PendingFiles, ProjectedPackage, RefSource, RepositoryCollection, RepositoryLookup, RepositoryReader, RepositoryRef, Resolved, SourceRef } from "../core/Repository";
-import { PackageRequest, Resolution, ResolutionContext, ResolvedCollection } from "../resolver/Types";
+import { PackageRequest, Pin, Resolution, ResolutionContext, ResolvedCollection } from "../resolver/Types";
 import { packageRequest } from "../resolver/PackageResolver";
 import { DOC_OPERATION, isFilesOperation, SOURCES_OPERATION } from "../model/Constraints";
 import { Conflicts, findConflicts, NO_CONFLICTS, ResolvedBatch } from "../resolver/StrictCollection";
@@ -88,10 +88,11 @@ function fileRequests(
  * than something required. Nothing an instance requires is resolved here. Its
  * edges are for the collection point the derived package reaches.
  *
- * - A reference joins no resolution and pins nothing, and is delivered as the
+ * - A reference joins no resolution and pins nothing: a registry's is the
  *   package carrying the requirements it declares as references (see
- *   {@link instantiatePackage}). A projected reference selects files, so it is
- *   no instance request.
+ *   {@link instantiatePackage}), a catalog's the member as the catalog
+ *   resolved it. A projected reference selects files, so it is no instance
+ *   request.
  * - A package already in hand is delivered as it stands.
  */
 function instanceRequests(instantiated: ReadonlyArray<SourceRef | Unbuilt>): ReadonlySet<RepositoryRef | Package> {
@@ -250,7 +251,8 @@ function resolveBatch(
   context: ResolutionContext,
   source: RefSource,
   requests: ReadonlyArray<PackageRequest>,
-  resolution?: () => Computable<Resolution>
+  resolution: (() => Computable<Resolution>) | undefined,
+  resolvedMembers: Map<RepositoryRef, Computable<Package | undefined>>
 ): Computable<Array<FileSet | ResolvedNode | PendingFiles>> {
   const operation = isRepositoryReader(source) ? source.operation : undefined;
   {
@@ -272,10 +274,10 @@ function resolveBatch(
       [answered, ...apart.map((request): Computable<FileSet | ResolvedNode | PendingFiles> => {
         const { reference } = request;
         if (request.as === "instance") {
-          return attributedTo(reference, () => resolveInstance(source, request));
+          return attributedTo(reference, () => resolveInstance(context, source, request, resolvedMembers));
         }
         if (isRepositoryCollection(source)) {
-          return resolveMember(context, source, request).labelled(new ProvenanceLabel(reference.steps));
+          return resolveMember(context, source, request, resolvedMembers).labelled(new ProvenanceLabel(reference.steps));
         }
         if (isRepositoryReader(source)) {
           if (request.as === "files") {
@@ -354,7 +356,8 @@ function runnableNode(pkg: Package, runnable: (pkg: PackageFileSet) => Computabl
 function resolveMember(
   context: ResolutionContext,
   source: RepositoryCollection,
-  request: PackageRequest
+  request: PackageRequest,
+  resolvedMembers: Map<RepositoryRef, Computable<Package | undefined>>
 ): Computable<FileSet | ResolvedNode | PendingFiles> {
   const { reference } = request;
   return source.member(reference).then((member): FileSet | ResolvedNode | PendingFiles | Computable<FileSet | ResolvedNode> => {
@@ -371,14 +374,12 @@ function resolveMember(
       return new PendingFiles(alone);
     }
     const resolved = (): Computable<Package> =>
-      attributedTo(reference, () =>
-        resolveSources(context, collection, [entry]).then(({ delivered: [pkg] }): Package => {
-          if (!isPackage(pkg)) {
-            throw new FabrError(`internal: '${reference.toString()}' resolved to no package`);
-          }
-          return pkg;
-        })
-      );
+      memberPackage(context, source, request, resolvedMembers).then(pkg => {
+        if (pkg === undefined) {
+          throw new FabrError(`internal: '${reference.toString()}' resolved to no package`);
+        }
+        return pkg;
+      });
     if (member.operation !== "run") {
       return resolved();
     }
@@ -392,6 +393,39 @@ function resolveMember(
     }
     return resolved().then(pkg => runnableNode(pkg, held => attributedTo(reference, () => runnableFrom(context, entry.source, held))));
   });
+}
+
+/**
+ * Resolve the member of `source`'s collection that `request` names as the
+ * collection did: its package, wired to that selection, made once per
+ * reference (`resolvedMembers`). Undefined where the member is answered by
+ * its files alone (the `files` operation).
+ */
+function memberPackage(
+  context: ResolutionContext,
+  source: RepositoryCollection,
+  request: PackageRequest,
+  resolvedMembers: Map<RepositoryRef, Computable<Package | undefined>>
+): Computable<Package | undefined> {
+  const { reference } = request;
+  let held = resolvedMembers.get(reference);
+  if (held === undefined) {
+    held = source.member(reference).then(({ collection, entry, operation }): Computable<Package | undefined> => {
+      if (isFilesOperation(operation)) {
+        return Computable.resolve(undefined);
+      }
+      return attributedTo(reference, () =>
+        resolveSources(context, collection, [entry]).then(({ delivered: [pkg] }): Package => {
+          if (!isPackage(pkg)) {
+            throw new FabrError(`internal: '${reference.toString()}' resolved to no package`);
+          }
+          return pkg;
+        })
+      );
+    });
+    resolvedMembers.set(reference, held);
+  }
+  return held;
 }
 
 /** Fetch the package `entry` names, alone, at the version `collection` resolved it to, or what
@@ -464,6 +498,7 @@ export function resolveCollection(
 ): ResolvedCollection {
   const held = new Set([...(instances ?? [])].filter(isPackage));
   const gathered = gatherRequirements(sources.filter(source => !(isPackage(source) && held.has(source))));
+  const resolvedMembers = new Map<RepositoryRef, Computable<Package | undefined>>();
   const requests = gathered.requests.map((request): PackageRequest =>
     files?.has(request.reference) === true
       ? { ...request, as: "files" }
@@ -493,18 +528,36 @@ export function resolveCollection(
       registries.set(source.identity, [...(registries.get(source.identity) ?? []), [source, packaged]]);
     }
   }
-  for (const group of registries.values()) {
+  /* The collection's builds answer for their names within what a catalog
+   * resolved, so a catalog's selection of one of those names pins nothing. */
+  const members = membersOf([...gathered.own], markers);
+  const catalogued = requests.filter(request => isRepositoryCollection(request.reference.source) && request.as !== "files");
+  /* The pins of the registry `identity`: the selections the sources reach
+   * through bound edges, and those each catalog member among the requests
+   * reaches, as the catalog resolved it. Gathered when the registry's batch
+   * first resolves: a catalog's resolution never waits on this one. */
+  let gatheredPins: Computable<Pin[]> | undefined;
+  const pinsFor = (identity: string): Computable<Pin[]> =>
+    (gatheredPins ??= Computable.forAll(
+      catalogued.map(request =>
+        memberPackage(context, request.reference.source as RepositoryCollection, request, resolvedMembers).then(pkg =>
+          pkg === undefined ? [] : pinsOf(pkg, request.reference)
+        )
+      ),
+      (...found: Pin[][]) => [...gathered.pins, ...found.flat()]
+    )).then(pins => pins.filter(pin => pin.selection.registry === identity && !members.has(pin.selection.renameTo ?? pin.selection.name)));
+  for (const [identity, group] of registries) {
     let started: Computable<Map<RefSource, Computable<Resolution>>> | undefined;
     const byEnvironment = (): Computable<Map<RefSource, Computable<Resolution>>> =>
       (started ??= Computable.forAll(
-        group.map(([source]) => source.environmentKey(context.operation)),
-        (...environments: string[]) => {
+        [pinsFor(identity), ...group.map(([source]) => source.environmentKey(context.operation))] as const,
+        (pins: Pin[], ...environments: string[]) => {
           const shared = new Map<string, Array<[RepositoryReader<unknown, unknown>, PackageRequest[]]>>();
           group.forEach((member, index) => shared.set(environments[index], [...(shared.get(environments[index]) ?? []), member]));
           const resolved = new Map<RefSource, Computable<Resolution>>();
           for (const members of shared.values()) {
             const sources = new Set<RefSource>(members.map(([source]) => source));
-            const resolution = resolvePackages(context, members[0][0], members.flatMap(([, batch]) => batch), locals, own, sources);
+            const resolution = resolvePackages(context, members[0][0], members.flatMap(([, batch]) => batch), locals, own, sources, pins);
             members.forEach(([source]) => resolved.set(source, resolution));
           }
           return resolved;
@@ -519,8 +572,9 @@ export function resolveCollection(
     resolutions,
     ...(locals.length === 0 ? {} : { builds: buildsResolution(requests, resolutions, locals, own) }),
     locals: new Map(locals.map(pkg => [contentOf(pkg).key, pkg])),
-    members: membersOf([...gathered.own], markers),
+    members,
     instances: held,
+    resolvedMembers,
   };
 }
 
@@ -584,7 +638,7 @@ export function resolveSources(
   }
   const builds = resolved.builds;
   return Computable.forAll(
-    [resolveRequests(context, requests, resolved.resolutions), builds === undefined ? Computable.resolve(undefined) : builds.resolution()] as const,
+    [resolveRequests(context, requests, resolved), builds === undefined ? Computable.resolve(undefined) : builds.resolution()] as const,
     (finished, resolution) => {
       const roots = sources.map((source): Resolved[] => {
         if (source instanceof RepositoryRef) {
@@ -710,10 +764,23 @@ function mergeResolutions(
     const resolved = reference instanceof RepositoryRef ? finished.get(reference) : undefined;
     return isPackage(resolved) ? resolved : undefined;
   };
-  /* What a catalog's members reach: packages another collection resolved. */
+  /* What a catalog's members reach, and what the roots reach through bound
+   * edges, less what this collection's own batches answered with and reach:
+   * packages another collection resolved. */
   const catalogued = [...finished].flatMap(([reference, value]) => (isRepositoryCollection(reference.source) ? packageIn(value) ?? [] : []));
-  const asked = new Set(catalogued);
-  const foreign = new Set(reachableNodes(catalogued).filter(pkg => !asked.has(pkg)));
+  /* A member the collection itself names stands; one asked for a build's
+   * carried reference is what another collection resolved, as its closure is. */
+  const asked = new Set(
+    [...finished].flatMap(([reference, value]) =>
+      isRepositoryCollection(reference.source) && collection.requests.get(reference)?.as === "package" ? packageIn(value) ?? [] : []
+    )
+  );
+  const own = new Set(
+    reachableNodes([...finished].flatMap(([reference, value]) => (isRepositoryCollection(reference.source) ? [] : packageIn(value) ?? []))).filter(
+      pkg => !isBuildVersion(pkg)
+    )
+  );
+  const foreign = new Set(reachableNodes([...catalogued, ...roots]).filter(pkg => !asked.has(pkg) && !own.has(pkg) && !isBuildVersion(pkg)));
   /** The build of this collection that stands for `pkg`, where another
    * collection resolved it under that build's name. */
   const member = (pkg: Package): Package | undefined => {
@@ -857,7 +924,7 @@ export function materializeShallow(
       return finish(new Map()).map(({ resolved }) => resolved) as Materialized[];
     }
     const collection = resolveCollection(context, references);
-    return resolveRequests(context, references.map(packageRequest), collection.resolutions).then(finished =>
+    return resolveRequests(context, references.map(packageRequest), collection).then(finished =>
       conflictsOf(context, collection, finished, [...finished.values()])
         .then(conflicts => checked(conflicts, options?.resolutionMode === "permissive"))
         .then(() => {
@@ -903,7 +970,11 @@ function conflictsOf(
     return isRepositoryCollection(source) && request?.as !== "files"
       ? [
           source.member(reference).then(({ collection: catalog, entry, operation }) =>
-            isFilesOperation(operation) ? [] : resolvedBatches(catalog, entry instanceof RepositoryRef ? [entry] : [])
+            isFilesOperation(operation)
+              ? []
+              : resolvedBatches(catalog, entry instanceof RepositoryRef ? [entry] : []).then(batches =>
+                  batches.map((batch): ResolvedBatch => ({ ...batch, catalog: true }))
+                )
           ),
         ]
       : [];
@@ -1448,8 +1519,13 @@ function gatherRequirements(sources: Array<SourceRef | Unbuilt>): {
   requests: PackageRequest[];
   locals: Package[];
   own: Set<Package>;
+  /** The registries' selections the sources reach through bound edges, taken
+   * as they stand: each a pin of the registry's resolution here. */
+  pins: Pin[];
 } {
   const locals: Package[] = [];
+  const pins: Pin[] = [];
+  const pinned = new Set<Package>();
 
   /* Those of them the sources hold outright: the collection's own
    * requirements, as a reference among the sources is. */
@@ -1470,21 +1546,33 @@ function gatherRequirements(sources: Array<SourceRef | Unbuilt>): {
       /* Known to be no package: it claims no name and requires nothing. */
     } else if (isPackage(source) && !visited.has(source)) {
       /* A package held or built here: what it carries is its own
-       * requirements. An edge bound to a repository's node — resolved
-       * elsewhere, its files not yet had — is its reference, asked for again
-       * here; one bound to a target's node or to a package in hand leads
-       * into that; one bound to nothing is its reference. */
+       * requirements. An edge bound to nothing is its reference, asked here;
+       * one bound to a registry's selection is taken as bound; one bound to a
+       * target's node or to a package in hand leads into that. */
       visited.add(source);
       locals.push(source);
       if (!carried) {
         own.add(source);
       }
       for (const dep of source.dependencies) {
-        if (source.provided.get(dependencyName(dep)) === "optional") {
+        const provided = source.provided.get(dependencyName(dep));
+        if (provided === "optional") {
           continue;
         }
         const bound = dep.package;
-        gather(bound === undefined || (bound instanceof ResolvedNode && !isBuild(bound)) ? dep.reference : bound, true);
+        if (bound === undefined) {
+          gather(dep.reference, true);
+        } else if (isSelection(bound)) {
+          /* Bound to a registry's selection by whatever resolved this package:
+           * taken as it stands, a pin of the batch — unless the edge is a
+           * provided requirement, whose binding is the offer the consumer may
+           * replace, neither pinned nor asked again. */
+          if (provided === undefined) {
+            take(bound, source);
+          }
+        } else {
+          gather(bound, true);
+        }
       }
     } else if (source instanceof FileSetRef) {
       /* A pending projection's base still carries its refs — they resolve at
@@ -1494,9 +1582,49 @@ function gatherRequirements(sources: Array<SourceRef | Unbuilt>): {
       gather(source.base, carried);
     }
   };
+  /* A node bound into a package here by another collection is taken as it
+   * stands, with what it reaches through its dependency edges: each
+   * registry's selection among them a pin, reached through `via`. */
+  const take = (node: Package, via: Package): void => takenPins(node, via, pins, pinned);
   sources.forEach(source => gather(source, false));
   const requests = references.map((reference): PackageRequest => ({ reference, as: direct.has(reference) ? "package" : "carried" }));
-  return { requests, locals, own };
+  return { requests, locals, own, pins };
+}
+
+/** @return true if `pkg` is a registry's selection (a node of a resolution,
+ * no build), otherwise false. */
+function isSelection(pkg: Package | undefined): pkg is ResolvedNode {
+  return pkg instanceof ResolvedNode && pkg.content.selection !== undefined;
+}
+
+/**
+ * Gather into `pins` the pins the package `pkg`, taken as another collection
+ * bound it, makes for whatever reaches it through `via`: each registry's
+ * selection among itself and what it reaches through bound dependency edges —
+ * not a provided edge, whose binding is the consumer's to make. `seen` holds
+ * what was gathered already.
+ */
+function takenPins(pkg: Package, via: RepositoryRef | Package, pins: Pin[], seen: Set<Package>): void {
+  if (seen.has(pkg)) {
+    return;
+  }
+  seen.add(pkg);
+  if (isSelection(pkg)) {
+    pins.push({ selection: pkg.content.selection!, via });
+  }
+  for (const dep of pkg.dependencies) {
+    if (pkg.provided.get(dependencyName(dep)) === undefined && dep.package !== undefined) {
+      takenPins(dep.package, via, pins, seen);
+    }
+  }
+}
+
+/** Gather the pins a catalog's member `pkg`, resolved as the catalog did,
+ * makes for the collection that reaches it through `via`. */
+function pinsOf(pkg: Package, via: RepositoryRef): Pin[] {
+  const pins: Pin[] = [];
+  takenPins(pkg, via, pins, new Set());
+  return pins;
 }
 
 /** @return true if `pkg` is a target's node — a package built in the project,
@@ -1534,33 +1662,50 @@ function resolvedApart(request: PackageRequest): boolean {
   return request.as === "instance" || request.as === "files";
 }
 
-/** Resolve the package `request` names as an {@link instanceRequests instance},
- * which only a registry can deliver. */
-function resolveInstance(source: RefSource, { reference }: PackageRequest): Computable<FileSet | ResolvedNode> {
-  if (!isRepositoryReader(source)) {
-    throw new FabrError(
-      `'${reference.toString()}' names a package its repository pins rather than resolves, so its requirements are not that repository's to state`
-    ).withHelp("name the package in the registry it comes from");
+/**
+ * Resolve the package `request` names as an {@link instanceRequests instance}:
+ * a registry's at the reference's lower bound, carrying what that version
+ * declares as references; a collection's as the member it resolved, its edges
+ * bound as the collection bound them; a lookup's as it holds it.
+ */
+function resolveInstance(
+  context: ResolutionContext,
+  source: RefSource,
+  request: PackageRequest,
+  resolvedMembers: Map<RepositoryRef, Computable<Package | undefined>>
+): Computable<FileSet | ResolvedNode> {
+  const { reference } = request;
+  if (isRepositoryReader(source)) {
+    return instantiatePackage(source, reference);
   }
-  return instantiatePackage(source, reference);
+  if (isRepositoryCollection(source)) {
+    return memberPackage(context, source, request, resolvedMembers).then((pkg): Package => {
+      if (pkg === undefined) {
+        throw new FabrError(`internal: '${reference.toString()}' resolved to no package`);
+      }
+      return pkg;
+    });
+  }
+  return resolveLookup(source, reference);
 }
 
 /**
  * Resolve `requests`, each repository's as one batch ({@link resolveBatch}),
  * and finish each reference's delivery ({@link RepositoryRef.applyTo}). A
  * `?` alternate is answered by its own reference. A repository with a resolution in
- * `resolutions` delivers its batch from it. A request for files joins no
+ * `collection` delivers its batch from it. A request for files joins no
  * resolution, so nothing here waits on it: it is answered {@link PendingFiles
  * pending}, fetched when the collection is given its content.
  */
 function resolveRequests(
   context: ResolutionContext,
   requests: ReadonlyArray<PackageRequest>,
-  resolutions?: ReadonlyMap<RefSource, () => Computable<Resolution>>
+  collection: Pick<ResolvedCollection, "resolutions" | "resolvedMembers">
 ): Computable<Map<RepositoryRef, Resolved | RepositoryRef>> {
+  const { resolutions, resolvedMembers } = collection;
   const batches = [...groupRequests(requests.filter(request => request.as !== "files"))];
   return Computable.forAll(
-    batches.map(([repository, batch]) => resolveBatch(context, repository, batch, resolutions?.get(repository))),
+    batches.map(([repository, batch]) => resolveBatch(context, repository, batch, resolutions.get(repository), resolvedMembers)),
     (...results: Array<FileSet | ResolvedNode | PendingFiles>[]) => {
       const finished = new Map<RepositoryRef, Resolved | RepositoryRef>();
       const finish = (reference: RepositoryRef, resolved: FileSet | ResolvedNode | PendingFiles): Resolved | RepositoryRef =>
@@ -1580,7 +1725,7 @@ function resolveRequests(
             reference,
             new PendingFiles(() =>
               attributedTo(reference, () =>
-                resolveBatch(context, source, [request], resolutions?.get(source)).then(
+                resolveBatch(context, source, [request], resolutions.get(source), resolvedMembers).then(
                   ([files]) => reference.applyTo(files as FileSet) as FileSet | FileSetRef
                 )
               )

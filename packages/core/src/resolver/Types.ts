@@ -20,7 +20,7 @@
 import type { RunnableArgument, RunnableFileSet } from "../core/RunnableFileSet";
 import { Computable } from "../core/Computable";
 import type { FileSet } from "../core/FileSet";
-import type { Package, PackageFileSet } from "../core/PackageFileSet";
+import type { Package, PackageFileSet, RegistrySelection } from "../core/PackageFileSet";
 import type { RefSource, RepositoryReader, RepositoryRef } from "../core/Repository";
 import type { TaskDescription } from "../model/BuildEvents";
 import type { ITaskReport } from "../support/Execute";
@@ -360,6 +360,12 @@ export interface VersionDomain<V, C> {
   exactVersion?(text: string): V | undefined;
 
   /**
+   * Write the constraint that admits exactly `version`. Optional: a domain
+   * without it is one whose version text is that constraint (semver).
+   */
+  exactConstraint?(version: V): string;
+
+  /**
    * @return true if the version is suggestion-eligible (not a prerelease),
    * otherwise false: the repair suggester proposes only stable versions.
    * Optional: a domain without it treats every version as stable.
@@ -419,6 +425,17 @@ export interface ResolvedRoot {
  */
 export interface Resolution {
   readonly roots: ReadonlyArray<ResolvedRoot>;
+}
+
+/**
+ * A selection a collection takes as it stands — a catalog's, reached through
+ * a bound edge — and so pins its own resolution to: the package at exactly
+ * that version. `via` is what the collection reached it through: a catalog
+ * member's reference, or a build whose edges a catalog bound.
+ */
+export interface Pin {
+  readonly selection: RegistrySelection;
+  readonly via: RepositoryRef | Package;
 }
 
 /**
@@ -503,6 +520,10 @@ export interface ResolvedCollection {
   /** The packages among the sources taken as instances
    * (`instanceRequests`): delivered as they stand, and no candidate. */
   readonly instances: ReadonlySet<Package>;
+  /** Each catalog member among the requests, resolved as its catalog did,
+   * by reference: made once, when first asked for. Undefined where the
+   * member is answered by its files alone. */
+  readonly resolvedMembers: Map<RepositoryRef, Computable<Package | undefined>>;
 }
 
 /**

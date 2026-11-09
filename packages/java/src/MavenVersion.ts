@@ -345,6 +345,8 @@ export const MAVEN_VERSIONS: VersionDomain<MavenVersion, MavenConstraint> = {
       : constraint.intervals.some(interval => admits(interval, version)),
   versionToString: version => version.text,
   parseVersion: parseMavenVersion,
+  /* A bare version is a soft floor to Maven; only the hard range names it alone. */
+  exactConstraint: version => `[${version.text}]`,
   exactVersion: text => {
     try {
       const constraint = parseMavenConstraint(text);

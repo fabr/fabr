@@ -35,11 +35,11 @@ import { FileSetRef } from "../core/FileSetRef";
 import { isPackage, Package } from "../core/PackageFileSet";
 import { IProvenanceStep } from "../core/Provenance";
 import { isRepositoryCollection, ProjectedPackage, RepositoryReader, RepositoryRef } from "../core/Repository";
-import { PackageRequest, Resolution } from "./Types";
+import { PackageRequest, Resolution, Pin } from "./Types";
 import { violatedAmong } from "./Overrides";
 import { BUILDS_ALONE, violationKey, violationKeys } from "./Requirement";
 import { ResolutionExplainer, MVSResolution } from "./MVSResolution";
-import { conflictError, RefRenderer, sanctionHelp, suggestSanctions, SuggestSources } from "./ResolutionReport";
+import { conflictError, RefRenderer, RootRenderer, sanctionHelp, suggestSanctions, SuggestSources } from "./ResolutionReport";
 import { Requirement, ROOT_REQUIRER, Selected, VersionDomain, Violation } from "./Types";
 
 /**
@@ -55,6 +55,9 @@ export interface ResolvedBatch {
   /** Whether the collection's own builds were resolved in it, their
    * requirements among its roots. */
   readonly builds: boolean;
+  /** Whether it is a catalog's resolution, reached through a member, rather
+   * than one of the collection's own. */
+  readonly catalog?: boolean;
 }
 
 /**
@@ -68,9 +71,16 @@ export interface CheckedResolution<V = unknown, C = unknown> {
    * alone): resolutions are checked together only within one. */
   readonly format: object;
   readonly graph: MVSResolution<V>;
-  /** The requirements the collection made of it, as written: `?` alternates
-   * included. */
+  /** The requirements the collection made of it: those written, `?`
+   * alternates included, and its pins. */
   readonly requested: readonly Requirement[];
+  /** The selections the collection took as they stand, each an exact root
+   * of the resolution that nothing wrote. */
+  readonly pins: ReadonlyArray<Pin>;
+  /** Whether it is a catalog's resolution rather than one of the
+   * collection's own: its sanctions hold together, and with the collection's
+   * own, never with another catalog's. */
+  readonly catalog: boolean;
   /** The versions written as sanctioned (`?`, or an exact pin), by package. */
   readonly written: ReadonlyMap<string, ReadonlySet<string>>;
   /** The packages sanctioned at every version, by a `?` stating none. */
@@ -143,6 +153,20 @@ export class Conflicts {
 
 /** The conflicts of a collection where nothing conflicts. */
 export const NO_CONFLICTS = new Conflicts(new Map(), () => false, () => Computable.resolve(undefined));
+
+/** Make the {@link RootRenderer} naming each of `pins` as what the
+ * collection reached it through. */
+function pinText(pins: ReadonlyArray<Pin>, ownWritten: ReadonlyMap<string, ReadonlySet<string>>): RootRenderer {
+  return (name, versionConstraint) => {
+    const pin = pins.find(({ selection }) => (selection.renameTo ?? selection.name) === name && selection.version === versionConstraint);
+    if (pin === undefined || (versionConstraint !== undefined && ownWritten.get(name)?.has(versionConstraint) === true)) {
+      return undefined;
+    }
+    const { via } = pin;
+    const text = via instanceof RepositoryRef ? `${via.repositoryName === undefined ? "" : `${via.repositoryName}:`}${via.toString()}` : via.packageName;
+    return `pinned by '${text}'`;
+  };
+}
 
 /**
  * Find what conflicts in a collection. `resolutions` are the resolutions it
@@ -255,9 +279,23 @@ function checkDomain<V, C>(group: CheckedResolution<V, C>[], packages: ReadonlyA
       written.set(pkg, new Set([...(written.get(pkg) ?? []), ...versions]));
     }
   }
-  const everyVersion = new Set(group.flatMap(resolution => [...resolution.everyVersion]));
-  const sanctioned = (pkg: string): boolean =>
-    everyVersion.has(pkg) || [...(shipped.get(pkg)?.keys() ?? [])].every(version => written.get(pkg)?.has(version) === true);
+  /* What sanctions a package shipped at several versions: the collection's
+   * own written versions, together with one catalog's — a catalog's entries
+   * settle its own selections, and vouch for no other catalog's. */
+  const own = group.filter(resolution => !resolution.catalog);
+  const catalogs = group.filter(resolution => resolution.catalog);
+  const ownWritten = new Map<string, Set<string>>();
+  for (const resolution of own) {
+    for (const [pkg, versions] of resolution.written) {
+      ownWritten.set(pkg, new Set([...(ownWritten.get(pkg) ?? []), ...versions]));
+    }
+  }
+  const ownEveryVersion = new Set(own.flatMap(resolution => [...resolution.everyVersion]));
+  const coveredBy = (pkg: string, together?: CheckedResolution<V, C>): boolean =>
+    ownEveryVersion.has(pkg) ||
+    together?.everyVersion.has(pkg) === true ||
+    [...(shipped.get(pkg)?.keys() ?? [])].every(version => ownWritten.get(pkg)?.has(version) === true || together?.written.get(pkg)?.has(version) === true);
+  const sanctioned = (pkg: string): boolean => coveredBy(pkg) || catalogs.some(catalog => coveredBy(pkg, catalog));
   const shippedOf = (pkg: string): Selected<V>[] => [...(shipped.get(pkg)?.values() ?? [])].map(entry => entry.selection);
 
   /* Each resolution's recorded violations in its own scope — the roots the
@@ -316,7 +354,7 @@ function checkDomain<V, C>(group: CheckedResolution<V, C>[], packages: ReadonlyA
           ? suggestSanctions(outstanding, graphs[0], all, members.flatMap(resolution => resolution.requested), written, members[0].sources())
           : Computable.resolve(sanctionHelp(conflictedSanctions(outstanding, duplicates, shipped, written, domain, refText)));
       return suggestion.then(help => {
-        const error = conflictError(outstanding, duplicates, all, explaining, refText, written, help);
+        const error = conflictError(outstanding, duplicates, all, explaining, refText, written, help, pinText(members.flatMap(resolution => resolution.pins), ownWritten));
         /* A reference takes part where its closure holds a version of a
          * conflicted package, or the requirer of a violation. */
         const requirers = new Set(outstanding.map(violation => violation.requiredBy));

@@ -91,9 +91,28 @@ export type Builds =
   | { readonly package: string; readonly format?: PackageFormat<unknown, unknown>; readonly version?: string }
   | "files";
 
+/**
+ * The selection a registry's node is: the registry, and the package at the
+ * version it selected, under the name it is published as. A collection that
+ * reaches the node through a bound edge takes it as a pin of its own
+ * resolution for that registry.
+ */
+export interface RegistrySelection {
+  /** The registry's identity ({@link RepositoryReader.identity}). */
+  readonly registry: string;
+  /** The name the package is published under. */
+  readonly name: string;
+  /** The name it is required as, where a rename gives it another. */
+  readonly renameTo?: string;
+  /** The version, as the registry's format writes it. */
+  readonly version: string;
+}
+
 export interface PackageContent {
   /** Names the files without reading them: one key, one set of files. */
   readonly key: string;
+  /** The registry's selection the node is, where it is one. */
+  readonly selection?: RegistrySelection;
   /** Get the files, fetching or building them on first demand: one set, or,
    * where a target's build is no package, its sources as they stand. */
   files(): Computable<FileSet | ReadonlyArray<SourceRef>>;

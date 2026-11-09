@@ -127,6 +127,13 @@ describe("MavenConstraint", () => {
     expect(MAVEN_VERSIONS.exactVersion?.("[1.2,1.3)")).to.equal(undefined);
   });
 
+  it("writes the constraint admitting exactly a version as the one-version range, since a bare version is a soft floor", () => {
+    const exact = MAVEN_VERSIONS.exactConstraint!(parseMavenVersion("1.2"));
+    expect(exact).to.equal("[1.2]");
+    expect(MAVEN_VERSIONS.satisfies(parseMavenVersion("1.3"), parseMavenConstraint(exact))).to.equal(false);
+    expect(MAVEN_VERSIONS.satisfies(parseMavenVersion("1.3"), parseMavenConstraint("1.2"))).to.equal(true);
+  });
+
   it("refuses a malformed range", () => {
     expect(() => parseMavenConstraint("[1.0,2.0")).to.throw(/not a Maven version range/);
     expect(() => parseMavenConstraint("(1.0)")).to.throw(/single version/);

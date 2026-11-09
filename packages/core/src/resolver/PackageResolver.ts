@@ -31,11 +31,11 @@ import { FileSet } from "../core/FileSet";
 import { hashString } from "../core/FSWrapper";
 import { MemoryFile } from "../core/MemoryFS";
 import { Name } from "../core/Name";
-import { contentOf, Dependency, dependencyName, isPackage, Package, PackageFileSet, PackageGraphBuilder, ResolvedNode, Provided } from "../core/PackageFileSet";
+import { contentOf, Dependency, dependencyName, isPackage, Package, PackageFileSet, PackageGraphBuilder, ResolvedNode, Provided, RegistrySelection } from "../core/PackageFileSet";
 import { isRepositoryReader, RefSource, Repository, RepositoryReader, RepositoryRef, SourceRef } from "../core/Repository";
 import { PartialRepositoryRef } from "../core/PartialRepositoryRef";
 import { TargetRef } from "../core/TargetRef";
-import { PackageRequest, ResolutionContext, Resolution, ResolvedRoot } from "./Types";
+import { PackageRequest, ResolutionContext, Resolution, ResolvedRoot, Pin } from "./Types";
 import { chainSteps, IProvenanceStep, ISourcePathStep, SOURCE_PATH_PROVENANCE } from "../core/Provenance";
 import type { Reference } from "../core/Reference";
 import { RunnableFileSet } from "../core/RunnableFileSet";
@@ -57,6 +57,7 @@ import {
   versionConstraintText,
   violationKey,
   violationKeys,
+  exactConstraintOf,
 } from "./Requirement";
 import { deserializeResolutionDoc, IResolutionDoc, serializeResolutionDoc } from "./ResolutionDoc";
 import { nodeId, MVSResolution } from "./MVSResolution";
@@ -300,7 +301,10 @@ class DomainResolution<V, C> implements Resolution {
     public readonly rootReferences: ReadonlyMap<string, RepositoryRef>,
     /** The requirement each request was read as, by its reference (a
      * reference is requested one way); one not read yet is read on demand. */
-    private readonly requested: Map<RepositoryRef, Requirement>
+    private readonly requested: Map<RepositoryRef, Requirement>,
+    /** The selections the collection took as they stand, each an exact root
+     * of the resolution; see {@link resolvePackages}. */
+    public readonly pins: ReadonlyArray<Pin>
   ) {}
 
   /** The graph of resolved nodes the resolution has. */
@@ -448,7 +452,16 @@ function buildsOf<V, C>(
       const role = provided === undefined ? {} : { provided };
       const required = dep.package;
       const reference = dep.reference instanceof RepositoryRef ? dep.reference : undefined;
-      if (reference === undefined) {
+      const bound = required instanceof ResolvedNode ? required.content.selection : undefined;
+      if (bound !== undefined && registry !== undefined && bound.registry === registry.identity) {
+        /* Bound to a registry's selection by whatever resolved this package:
+         * the edge is a requirement on exactly that selection, a pin of the
+         * batch. A bound provided edge is the offer the consumer may replace,
+         * no requirement of the batch. */
+        if (provided === undefined) {
+          requirements.push(pinRequirement({ selection: bound, via: pkg }, registry.format));
+        }
+      } else if (reference === undefined) {
         if (required !== undefined && !isPlainNode(required)) {
           requirements.push({ name: dependencyName(dep), versionConstraint: buildOf(required), ...role });
         }
@@ -554,6 +567,30 @@ function requirementReference<V, C>(registry: RepositoryReader<V, C>, requiremen
   });
 }
 
+/** Make the {@link RegistrySelection} a node of `registry` is, for `selection`. */
+function selectionOf<V, C>(registry: RepositoryReader<V, C>, selection: Selected<V | string>): RegistrySelection {
+  const name = selection.publishedName ?? selection.name;
+  return {
+    registry: registry.identity,
+    name,
+    ...(name === selection.name ? {} : { renameTo: selection.name }),
+    version: registry.format.versionToString(selection.version as V),
+  };
+}
+
+/**
+ * Make the requirement a pin makes of the batch: the pinned package at exactly
+ * its version, renamed as it is required.
+ */
+export function pinRequirement<V, C>(pin: Pin, format: PackageFormat<V, C>): Requirement {
+  const { selection } = pin;
+  return {
+    name: selection.name,
+    versionConstraint: exactConstraintOf(format, format.parseVersion(selection.version)),
+    ...(selection.renameTo === undefined ? {} : { renameTo: selection.renameTo }),
+  };
+}
+
 /** Make the reference to `registry` that is an exact pin of `selection`: of
  * the name it is published under, renamed to the one it is required as. */
 function pinnedReference<V, C>(
@@ -564,7 +601,7 @@ function pinnedReference<V, C>(
   const name = selection.publishedName ?? selection.name;
   return new RepositoryRef(registry, {
     name,
-    versionConstraint: versionToString(selection.version),
+    versionConstraint: isBuildVersion(selection.version) ? versionToString(selection.version) : exactConstraintOf(registry.format, selection.version as V),
     renameTo: name === selection.name ? undefined : selection.name,
   });
 }
@@ -602,11 +639,16 @@ export function resolvePackages<V, C>(
   own: ReadonlyMap<Package, Requirement["override"]> = new Map(),
   /** The instances of `registry` the requests are addressed to: one registry,
    * under configurations that cannot change what it resolves. */
-  sources: ReadonlySet<RefSource> = new Set([registry])
+  sources: ReadonlySet<RefSource> = new Set([registry]),
+  /** The selections of `registry` the collection takes as they stand (a
+   * catalog's, reached through a bound edge): each an exact root of the
+   * resolution, written by nothing. */
+  pins: ReadonlyArray<Pin> = []
 ): Computable<Resolution> {
   const { format } = registry;
   const domain = allowingBuilds(format);
   const references = requests.map(request => request.reference);
+  const pinned = pins.map(pin => pinRequirement(pin, format));
   /* No operation here: a resolution is a function of the requirements alone
    * (build and run share one), and what varies by operation is the SHAPE of
    * the answer, which the collection point decides from the repository's
@@ -657,6 +699,7 @@ export function resolvePackages<V, C>(
     const { roots: rootReqs, keys: rootKeys } = canonicalRequirements([
       ...requirements.filter((_, index) => requests[index].as === "package" || !builds.carried.has(references[index])),
       ...builds.roots,
+      ...pinned,
     ]);
     const rootIndex = new Map<string, number>(rootKeys.map((key, index) => [key, index]));
     /* Only the collection's own requirements are written by it: a package's
@@ -669,7 +712,10 @@ export function resolvePackages<V, C>(
       sanctions.versions,
       requirements.filter((req, index) => requests[index].as === "package" && req.override !== "alternate")
     );
-    return getJointResolution(context, registry, repositoryNameOf(references), rootReqs, rootKeys, builds)
+    /* A pin the collection also wrote is its requirement, named as such. */
+    const writtenKeys = new Set(requirements.filter((_, index) => requests[index].as === "package").map(requirementKey));
+    const pinnedKeys = new Set(pinned.map(requirementKey).filter(key => !writtenKeys.has(key)));
+    return getJointResolution(context, registry, repositoryNameOf(references), rootReqs, rootKeys, builds, pinnedKeys)
       .then(graph => {
         const rootReferences = new Map<string, RepositoryRef>();
         requirements.forEach((req, index) => {
@@ -679,7 +725,7 @@ export function resolvePackages<V, C>(
             rootReferences.set(graph.id(bound), references[index]);
           }
         });
-        return new DomainResolution(registry, roots, rootIndex, graph, written, sanctions.everyVersion, builds, rootReferences, requested);
+        return new DomainResolution(registry, roots, rootIndex, graph, written, sanctions.everyVersion, builds, rootReferences, requested, pins);
       })
       .catch(err => attributeResolutionFailure(err, references, requirements));
   });
@@ -716,7 +762,8 @@ export function resolveBuilds(
         sanctions.everyVersion,
         builds,
         new Map(),
-        new Map()
+        new Map(),
+        []
       );
     });
   });
@@ -795,9 +842,9 @@ export function bindBuild<V, C>(
  * selections a package is.
  */
 export function checkedResolution(context: ResolutionContext, batch: ResolvedBatch): CheckedResolution {
-  const { registry, requests } = batch;
+  const { registry, requests, catalog } = batch;
   const resolved = batch.resolution as DomainResolution<unknown, unknown>;
-  const { graph, written, everyVersion, builds } = resolved;
+  const { graph, written, everyVersion, builds, pins } = resolved;
   const domain = (registry === undefined ? BUILDS_ALONE : allowingBuilds(registry.format)) as VersionDomain<unknown, unknown>;
   const references = requests.map(request => request.reference);
   let asked: Requirement[] = [];
@@ -814,11 +861,18 @@ export function checkedResolution(context: ResolutionContext, batch: ResolvedBat
     domain,
     format: registry === undefined ? BUILDS_ALONE : registry.format,
     graph,
-    requested: [...asked, ...(batch.builds ? builds.roots : [])],
+    requested: [...asked, ...(registry === undefined ? [] : pins.map(pin => pinRequirement(pin, registry.format))), ...(batch.builds ? builds.roots : [])],
+    pins,
+    catalog: catalog === true,
     written,
     everyVersion,
     refText: registry === undefined ? buildText : refTextFor(references, registry),
-    selectionOf: pkg => built.get(contentOf(pkg).key) ?? (pkg.version === undefined ? undefined : graph.node(`${pkg.packageName}@${pkg.version}`)),
+    /* A build is a selection only where it is a candidate; a registry's
+     * node is one by its id. A build that keeps a registry version (a
+     * patched package) is not that registry's selection of it. */
+    selectionOf: pkg =>
+      built.get(contentOf(pkg).key) ??
+      (pkg instanceof ResolvedNode && pkg.content.builds !== undefined ? undefined : pkg.version === undefined ? undefined : graph.node(`${pkg.packageName}@${pkg.version}`)),
     buildOrigin: selection => builds.built.get(graph.id(selection))?.pkg.origin,
     sources: () =>
       registry === undefined
@@ -1081,6 +1135,7 @@ class ResolutionGraph<V, C> {
       node = builder.resolved(
         {
           key: `${registry.identity} ${id}`,
+          selection: selectionOf(registry, selected),
           files: fetchedOnce(() => registry.fetch(published, version).then(pkg => (pkg.packageName === selected.name ? pkg : pkg.withPackageName(selected.name)))),
           ...(registry.getVersionMetadata === undefined ? {} : { metadata: () => registry.getVersionMetadata!(published, version) }),
         },
@@ -1332,7 +1387,11 @@ export function instantiatePackage<V, C>(registry: RepositoryReader<V, C>, refer
       );
       const shown = format.versionToString(version);
       return new ResolvedNode(
-        { key: `${registry.identity} ${req.name}@${shown}`, files: fetchedOnce(() => registry.fetch(req.name, version).catch(unpublished)) },
+        {
+          key: `${registry.identity} ${req.name}@${shown}`,
+          selection: { registry: registry.identity, name: req.name, version: shown },
+          files: fetchedOnce(() => registry.fetch(req.name, version).catch(unpublished)),
+        },
         req.name,
         shown,
         dependencies,
@@ -1480,6 +1539,7 @@ function suggestSourcesFor<V, C>(
         roots,
         roots.map(req => requirementKey(req)),
         builds,
+        new Set(),
         false
       ),
   };
@@ -1513,6 +1573,9 @@ function getJointResolution<V, C>(
   roots: Requirement[],
   rootKeys: string[],
   builds: Builds,
+  /** The keys of those of `roots` that are pins and nothing the consumer
+   * wrote: key material, but none the task names. */
+  pinnedKeys: ReadonlySet<string> = new Set(),
   enrich = true
 ): Computable<MVSResolution<V | string>> {
   const { format } = registry;
@@ -1533,7 +1596,12 @@ function getJointResolution<V, C>(
          * tracked, so the metadata reads it fans out are attributable to a
          * resolution still in flight rather than appearing on their own. */
         context.runTask(
-          { kind: "repository-resolve", repository: repositoryName ?? registry.identity, consumer: context.name, requirements: rootKeys },
+          {
+            kind: "repository-resolve",
+            repository: repositoryName ?? registry.identity,
+            consumer: context.name,
+            requirements: rootKeys.filter(key => !pinnedKeys.has(key)),
+          },
           () =>
             resolveMVS(roots, domain, withBuilds(registry, builds, context.operation)).then(result => {
               /* Hard errors (unparseable constraints, floorless-only

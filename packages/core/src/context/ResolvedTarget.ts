@@ -87,10 +87,16 @@ class TargetBuild {
     return (this.materialized ??= Computable.detached(() => this.evaluate()).labelled(this.label));
   }
 
-  /** Get what the target passes on to whatever requires it. */
+  /**
+   * Get what the target passes on to whatever requires it: each requirement
+   * as the reference it was resolved for. A reference to a target names that
+   * build exactly, so the edge is bound to its node; any other is unbound —
+   * what the target's own batch selected for it is the build's business, and
+   * the consumer resolves the reference with its own. A package the target is
+   * made from (`extends`) passes on its edges as it has them, bindings
+   * included.
+   */
   public stated(): Stated {
-    /* The edges to the packages among a requirement: each the reference it
-     * was resolved for, which every package a collection delivers has. */
     const carried = (name: string): Dependency[] => {
       const references = this.resolved.references.get(name) ?? [];
       return (this.requirements.get(name) ?? []).flatMap((source, at): Dependency[] => {
@@ -101,7 +107,7 @@ class TargetBuild {
         if (reference === undefined) {
           throw new FabrError(`internal: '${source.packageId}' among '${name}' of '${this.context.name}' was resolved for no reference`);
         }
-        return [{ reference, package: source }];
+        return [source instanceof ResolvedNode && source.content.builds !== undefined ? { reference, package: source } : { reference }];
       });
     };
     return passedOn(this.requirements.get(EXTENDS_KEY) ?? [], carried);

@@ -48,6 +48,13 @@ import {
  * verbatim into a deps list. */
 export type RefRenderer = (pkg: PackageIdentity, versionText: string, marker?: "?" | "!") => string;
 
+/**
+ * Describe a root requirement of the resolution that the consumer did not
+ * write — a pin — as "pinned by …", or undefined where the requirement is the
+ * consumer's own.
+ */
+export type RootRenderer = (name: string, versionConstraint: string | undefined) => string | undefined;
+
 /** Make a requirement on `pkg` at exactly `version`. */
 function requirementAt(pkg: PackageIdentity, version: string): Requirement {
   return pkg.publishedName === undefined
@@ -152,7 +159,8 @@ function conflictLines<V>(
   violation: Violation<V>,
   moreRequirers: string,
   explainer: ResolutionExplainer<V>,
-  versionToString: (version: V) => string
+  versionToString: (version: V) => string,
+  rootText?: RootRenderer
 ): string[] {
   const { find, pathTo } = explainer;
   const selected = versionToString(violation.selected);
@@ -163,19 +171,19 @@ function conflictLines<V>(
       ...explainViolation(violation, explainer, versionToString),
     ];
   }
-  const via = (requiredBy: string): string => {
-    if (requiredBy === ROOT_REQUIRER) {
-      return "required directly";
+  const via = (edge: { requiredBy: string; versionConstraint: string | undefined }): string => {
+    if (edge.requiredBy === ROOT_REQUIRER) {
+      return rootText?.(violation.name, edge.versionConstraint) ?? "required directly";
     }
-    const requirer = find(requiredBy);
-    return `required via: ${requirer === undefined ? nodeLabel(requiredBy) : pathTo(requirer).join(" -> ")}`;
+    const requirer = find(edge.requiredBy);
+    return `required via: ${requirer === undefined ? nodeLabel(edge.requiredBy) : pathTo(requirer).join(" -> ")}`;
   };
   const violated = versionConstraintText(violation.versionConstraint, violation.name);
   const winning = versionConstraintText(winner.versionConstraint, violation.name);
   return [
     `${violation.name} is required as ${violated} and as ${winning}, and no one version is both`,
-    `  ${violated} ${via(violation.requiredBy)}${moreRequirers}`,
-    `  ${winning} ${via(winner.requiredBy)}`,
+    `  ${violated} ${via(violation)}${moreRequirers}`,
+    `  ${winning} ${via(winner)}`,
   ];
 }
 
@@ -205,7 +213,8 @@ function explainDuplicate<V>(
   pkg: string,
   versions: readonly V[],
   explainer: ResolutionExplainer<V>,
-  versionToString: (version: V) => string
+  versionToString: (version: V) => string,
+  rootText?: RootRenderer
 ): string[] {
   return versions.flatMap(version => {
     const selection = explainer.find(`${pkg}@${versionToString(version)}`);
@@ -216,7 +225,7 @@ function explainDuplicate<V>(
     const shown = versionText(versionToString(version), pkg);
     const stated = via.versionConstraint === undefined || isBuildVersion(via.versionConstraint) ? "" : ` (${versionConstraintText(via.versionConstraint, pkg)})`;
     return via.requiredBy === ROOT_REQUIRER
-      ? [`  ${shown} required directly${stated}`]
+      ? [`  ${shown} ${rootText?.(pkg, via.versionConstraint) ?? "required directly"}${stated}`]
       : [`  ${shown} required via: ${explainer.pathTo(selection).join(" -> ")}`];
   });
 }
@@ -243,7 +252,8 @@ export function conflictError<V>(
   graph: Pick<MVSResolution<V>, "versionToString" | "explainer">,
   refText: RefRenderer,
   written?: ReadonlyMap<string, ReadonlySet<string>>,
-  suggestion?: string[]
+  suggestion?: string[],
+  rootText?: RootRenderer
 ): Error {
   const { versionToString } = graph;
   /* Chains explain through the whole resolution — a subset delivery's chain
@@ -256,7 +266,7 @@ export function conflictError<V>(
   const sanctionNoted = new Set<string>();
   for (const { first, others } of groupViolations(violations, versionToString)) {
     const moreRequirers = others.length > 0 ? ` (and ${others.length} more)` : "";
-    lines.push(...conflictLines(first, moreRequirers, explainer, versionToString), ...alsoRequiredBy(first.name, first.versionConstraint, others));
+    lines.push(...conflictLines(first, moreRequirers, explainer, versionToString, rootText), ...alsoRequiredBy(first.name, first.versionConstraint, others));
     /* A partial sanction is a set mismatch, called out where the conflict is
      * reported: the versions this delivery needs vs the versions written. */
     const declared = written?.get(first.name);
@@ -279,7 +289,7 @@ export function conflictError<V>(
   for (const [pkg, versions] of duplicates.filter(([pkg]) => !violatedPkgs.has(pkg))) {
     lines.push(
       `${pkg} is required at ${versions.map(version => versionText(versionToString(version), pkg)).join(" and ")}`,
-      ...explainDuplicate(pkg, versions, explainer, versionToString)
+      ...explainDuplicate(pkg, versions, explainer, versionToString, rootText)
     );
   }
   /* The help IS the remedy: the suggester's pasteable override set when it
