@@ -261,6 +261,8 @@ export interface IResolutionError {
   publishedName?: string;
   /** The node that declared the erring requirement (for the grouped render). */
   requiredBy?: string;
+  /** For the grouped required-only-floorless error: every package it names. */
+  floorless?: ReadonlyArray<PackageIdentity>;
   /** Remedy line(s) a consumer attached (a concrete pin suggestion), rendered
    * as the diagnostic's `help`. */
   help?: string[];

@@ -35,6 +35,9 @@ number.
 - New container image support.
 - Add container_program, to run an image with its environment, ports, network and host names.
 
+@fabr-build/migration:
+- New: `fabr-migrate` converts an npm, Yarn or pnpm project to fabr.
+
 @fabr-build/java:
 - New Java support.
 

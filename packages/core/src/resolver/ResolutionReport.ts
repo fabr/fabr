@@ -621,6 +621,7 @@ export function completeRepairSet<V, C>(
         `the following packages are required only without a version lower bound ('*'), ` +
         `so no version is selectable — name one explicitly:\n${[...detailLines, ...conflictNote].join("\n")}`,
       rootName: errors.find(error => error.name !== undefined)!.rootName,
+      floorless: [...requirersOf.keys()].sort().map(identity),
       help,
     };
     return [combined, ...others];

@@ -76,6 +76,7 @@ export default defineConfig({
           items: [
             { label: "Conceptual model", link: "/guides/concepts" },
             { label: "Projects with several packages", link: "/guides/multi-package/" },
+            { label: "Migrating an npm, Yarn or pnpm project", link: "/guides/migrating-js/" },
             { label: "Watch mode & dev servers", link: "/guides/watch/" },
             { label: "VS Code support", link: "/guides/vscode/" },
             { label: "Continuous integration", link: "/guides/ci/" },

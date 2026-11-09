@@ -1,0 +1,11 @@
+# The migration tool: writes the .fabr files that build an existing npm, yarn
+# or pnpm project. It is not part of fabr, so only fabr builds it.
+js_package @fabr-build/migration {
+  srcs = src:**/*.ts ../../README.md -> README.md ../../COPYING -> LICENSE;
+  tests = src:**/*.test.ts;
+  deps = @pkg:@types/node @fabr-build/core @fabr-build/js @pkg:picomatch @pkg:@types/picomatch @pkg:yaml
+         @pkg:typescript;
+  # The tests' helper, which writes a project to a temporary directory.
+  test_deps = chai jest_types src:TestProject.ts;
+  metadata = { FABR_METADATA; description = "Converts an npm, yarn or pnpm project to fabr (experimental)" }
+}

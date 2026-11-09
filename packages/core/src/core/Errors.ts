@@ -317,6 +317,7 @@ export class ResolutionWalkError extends FabrError {
       name?: string;
       publishedName?: string;
       requiredBy?: string;
+      floorless?: ReadonlyArray<{ name: string; publishedName?: string }>;
       help?: string[];
     }>
   ) {

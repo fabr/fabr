@@ -39,6 +39,8 @@ catalog @pkg {
          @npm:yauzl:3.4.0 @npm:@types/yauzl:3.4.0 @npm:yazl:3.3.1 @npm:@types/yazl:3.3.1
          @npm:@napi-rs/lzma:1.5.1
          @npm:diff:9.0.0
+         # The migration tool's lockfile and workspace reader.
+         @npm:yaml:2.9.1 @npm:@types/picomatch:4.0.3
          # The Java plugin's XML reader (POMs, maven-metadata.xml).
          @npm:sax:1.6.1 @npm:@types/sax:1.2.7
          # The AWS plugin's credential chain and request signing. Their
@@ -131,6 +133,7 @@ sync release {
   @npm:@fabr-build/container:${FABR_VERSION} = @fabr-build/container;
   @npm:@fabr-build/aws:${FABR_VERSION} = @fabr-build/aws;
   @npm:@fabr-build/sass-pnp-importer:${FABR_VERSION} = @fabr-build/sass-pnp-importer;
+  @npm:@fabr-build/migration:${FABR_VERSION} = @fabr-build/migration;
 }
 
 # fabr as it is installed: the CLI and the plugins installed with it, each
@@ -141,4 +144,4 @@ js_installation fabr_install {
 
 all = @fabr-build/core @fabr-build/js @fabr-build/js-tools @fabr-build/cli 
       @fabr-build/sass-pnp-importer @fabr-build/java @fabr-build/aws 
-      @fabr-build/container vscode-ext;
+      @fabr-build/container @fabr-build/migration vscode-ext;

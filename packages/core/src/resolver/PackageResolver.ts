@@ -1061,12 +1061,12 @@ function attributeResolutionFailure(err: unknown, references: RepositoryRef[], r
   if (err instanceof ResolutionWalkError) {
     /* Each walk failure attributes independently (they may sit under
      * different roots); one without a matching written reference reports
-     * plain. A failure's remedy (a pin suggestion) rides as its help.
-     * MultiError unwraps a sole failure. */
+     * plain. A failure's remedy (a pin suggestion) rides as its help, and the
+     * failure itself as the cause's data. MultiError unwraps a sole failure. */
     throw MultiError.of(
       err.failures.map(failure => {
         const culpable = culpableFor(failure.rootName);
-        const cause = new FabrError(failure.message).withHelp(failure.help ?? []);
+        const cause = new ResolutionWalkError([failure]).withHelp(failure.help ?? []);
         return culpable.length > 0 ? new RequirementResolutionError(culpable, cause) : cause;
       })
     );

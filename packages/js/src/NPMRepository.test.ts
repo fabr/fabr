@@ -57,6 +57,7 @@ import {
   Requirement,
   RequirementResolutionError,
   ResolutionContext,
+  ResolutionWalkError,
   MVSResolution,
   ResolutionOptions,
   ROOT_REQUIRER,
@@ -1631,6 +1632,10 @@ describe("override markers", () => {
     expect(helpText(err)).to.contain("@npm:T:24.2.0?");
     expect(helpText(err)).to.contain("@npm:U:3.1.0?");
     expect(helpText(err)).to.contain("none is a direct dependency");
+    /* The packages it names are data on the failure, not only text. */
+    const cause = err instanceof RequirementResolutionError ? err.cause : err;
+    expect(cause).to.be.instanceOf(ResolutionWalkError);
+    expect((cause as ResolutionWalkError).failures.flatMap(failure => failure.floorless ?? []).map(pkg => pkg.name)).to.deep.equal(["T", "U"]);
   });
 
   it("a '?' stating no version supplies no version to a package required only without a lower bound", async () => {
