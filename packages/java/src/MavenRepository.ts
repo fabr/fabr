@@ -81,7 +81,7 @@ import {
   publishedFilePath,
   repositoryPath,
 } from "./MavenPublish";
-import { MavenConstraint, MavenVersion, MAVEN_VERSIONS } from "./MavenVersion";
+import { constraintOfVersion, MavenConstraint, MavenVersion, MAVEN_VERSIONS, parseMavenVersion } from "./MavenVersion";
 import { coordinateText, EffectivePom, effectivePom, parsePom, passedOnDependencies, PomCoordinate, RawPom } from "./Pom";
 import { GradleModule, GradleVariant, javaVariant, JavaUsage, parseGradleModule, variantRequirements } from "./GradleModule";
 import { javaRelease } from "./JarPackage";
@@ -126,7 +126,7 @@ function bomDependencies(pom: EffectivePom): Requirement[] {
     if (dependency.version === undefined || dependency.classifier !== undefined || (dependency.type ?? "jar") !== "jar" || managed.has(name)) {
       continue;
     }
-    managed.set(name, { name, versionConstraint: dependency.version, bom: true });
+    managed.set(name, { name, versionConstraint: constraintOfVersion(dependency.version), bom: true });
   }
   return [...managed.values()];
 }
@@ -392,7 +392,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     return this.effectivePomOf(name, version.text).then(pom => [
       ...passedOnDependencies(pom, usage).map(dependency => ({
         name: mavenName(dependency.groupId, dependency.artifactId),
-        versionConstraint: dependency.version,
+        versionConstraint: constraintOfVersion(dependency.version),
         ...(dependency.classifier === undefined ? {} : { variant: dependency.classifier }),
         ...(dependency.exclusions === undefined ? {} : { excludes: dependency.exclusions }),
       })),
@@ -601,6 +601,12 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
 
   /** Read the POM published at a coordinate, or undefined where there is none. */
   private pom(coordinate: PomCoordinate): Computable<RawPom | undefined> {
+    try {
+      parseMavenVersion(coordinate.version);
+    } catch {
+      /* What is no Maven version (a range's floor just above a version) is published nowhere. */
+      return Computable.resolve(undefined);
+    }
     const url = `${this.versionUrl(coordinate)}/${coordinate.artifactId}-${coordinate.version}.pom`;
     return this.poms.getOrCreate(url, () =>
       fetchDocument(this.context, {

@@ -117,7 +117,8 @@ targetdef generate {
     # Where to write what changed in the inputs since the last successful run, one
     # `A|M|D<tab>name` line per file; not written where there is no such run.
     changes = STRING;
-    # Environment variables for the commands, which run with no others.
+    # Environment variables for the commands, over each runnable's own `env`:
+    # the commands run with no others.
     env = MAP;
 }
 
@@ -140,7 +141,8 @@ targetdef patched {
     # A command run after the patches, in the directory holding the files, which
     # it changes in place: a pipeline of runnables as `generate`'s `run` is.
     run = COMMAND;
-    # Environment variables for the command, which runs with no others.
+    # Environment variables for the command, over each runnable's own `env`:
+    # the command runs with no others.
     env = MAP;
 }
 

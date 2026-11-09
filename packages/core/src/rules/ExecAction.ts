@@ -76,7 +76,7 @@ function stageExec(action: BuildAction, dir: string): Computable<IStagedStep> {
   const argv = stringListConfig(action, "argv");
   return writeFileSet(dir, FileSet.unionAll(fileSetInput(action, "files"), configFiles(action))).then(() => ({
     cwd: ".",
-    commands: [[[findExecutable(argv[0], dir), ...argv.slice(1)]]],
+    commands: [{ stages: [{ argv: [findExecutable(argv[0], dir), ...argv.slice(1)] }] }],
     env: new Map(),
   }));
 }

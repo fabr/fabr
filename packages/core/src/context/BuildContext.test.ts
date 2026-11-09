@@ -48,7 +48,7 @@ import files from "../rules/DefaultFilesRule";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { makeRewrite, Name } from "../core/Name";
 import { renderProvenance } from "../core/Provenance";
-import { ConflictError, CycleError, FabrError, helpOf, MultiError, toError } from "../core/Errors";
+import { ConflictError, CycleError, FabrError, helpOf, MultiError, RequirementResolutionError, toError } from "../core/Errors";
 import { cycleErrorOf } from "../model/ErrorFormatter";
 import { LogFormatter, LogLevel } from "../support/Log";
 import { BuildAction, IBuildActionDefinition } from "../core/BuildAction";
@@ -211,6 +211,15 @@ testRules.push(
         heldDeps = deps;
         return EMPTY_FILESET;
       }),
+  })
+);
+/* Takes the packages of the test registry's format alone in its `deps`. */
+testRules.push(
+  defineRule({
+    type: "test_formatted",
+    properties: {},
+    requirements: context => Computable.resolve({ build: { deps: context.getPackageProperty("deps", undefined, REGISTRY_FORMAT) } }),
+    evaluateResolved: () => Computable.resolve(EMPTY_FILESET),
   })
 );
 /* A package made from the package its `srcs` names, as `patched` is: named
@@ -536,6 +545,7 @@ registerRepositoryProvider("test_tool_repo", context => Computable.resolve(new T
  * nothing. A package is one file; under `run` it is delivered as a runnable. */
 const REGISTRY_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
   ...SEMVER,
+  name: "test",
   resolutionTag: "buildcontexttest:resolve:1",
   providedMismatch: "tolerate",
   splitReference: (name: Name) => {
@@ -616,6 +626,7 @@ registerRepositoryProvider("test_registry", context => Computable.resolve(new Te
  * none is not yet a complete reference. */
 const VERSIONED_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
   ...REGISTRY_FORMAT,
+  name: "versioned",
   resolutionTag: "buildcontexttest:versioned:1",
   splitReference: (name: Name) => {
     const written = name.toBaseString();
@@ -2796,6 +2807,55 @@ describe("BuildContext", () => {
         }
       );
       expect(refused).to.contain("the requirement 'deps' is stated for both build and run");
+    });
+  });
+
+  describe("A requirement read as packages of one format", () => {
+    let root: string;
+    let formatExecution: ExecutionContext;
+    beforeEach(() => {
+      root = fs.mkdtempSync(nodePath.join(os.tmpdir(), "fabr-format-test-"));
+      formatExecution = new ExecutionContext(new BuildCache(root, testLog), testLog, EMPTY_FILESET, EMPTY_FILESET);
+    });
+    afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+
+    const input =
+      "targetdef test_registry { }\ntargetdef test_versioned_registry { }\ntargetdef test_catalog { deps = PACKAGES; }\n" +
+      "targetdef test_formatted { deps = PACKAGES; }\ntargetdef test_package { }\n" +
+      "test_registry @reg { }\ntest_versioned_registry @ver { }\n" +
+      "test_catalog @cat { deps = @reg:lib; }\ntest_catalog @vcat { deps = @ver:other:1.0.0; }\n" +
+      "targetdef test_made { srcs = PACKAGES; }\ntest_made madeok { srcs = @reg:y; }\ntest_made madebad { srcs = @ver:other:1.0.0; }\n" +
+      "test_package built { }\n" +
+      "test_formatted ok { deps = @reg:x @cat:lib built madeok; }\n" +
+      "test_formatted made { deps = madebad; }\n" +
+      "test_formatted direct { deps = @ver:other:1.0.0; }\n" +
+      "test_formatted catalogued { deps = @vcat:other; }\n";
+
+    function refusal(name: string): Promise<string | undefined> {
+      const errors: string[] = [];
+      const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+      const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+      expect(errors).to.deep.equal([]);
+      return Promise.resolve(model.getConfig(Constraints.of({ [BUILD_OPERATION]: "build" }), formatExecution).materialize(writtenOnCommandLine(name))).then(
+        () => undefined,
+        (err: unknown) => {
+          let cause = err;
+          while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError || cause instanceof RequirementResolutionError) {
+            cause = cause.cause;
+          }
+          return (cause as Error).message;
+        }
+      );
+    }
+
+    it("takes the format's packages, directly, through a catalog, or made from one, and a build that declares no format", async () => {
+      expect(await refusal("ok")).to.equal(undefined);
+    });
+
+    it("refuses a package of another format, directly, through a catalog, or as the one package a target is made from", async () => {
+      expect(await refusal("direct")).to.equal("'@ver:other:1.0.0' is no test package");
+      expect(await refusal("catalogued")).to.equal("'@vcat:other' is no test package");
+      expect(await refusal("made")).to.equal("'madebad' is no test package");
     });
   });
 

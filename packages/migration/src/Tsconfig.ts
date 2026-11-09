@@ -19,6 +19,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import * as ts from "typescript";
 import { isJsonObject } from "@fabr-build/core";
 
 /** The compiler options of a tsconfig that say what its sources import. */
@@ -33,31 +34,6 @@ export interface TsconfigOptions {
   readonly paths: ReadonlyMap<string, ReadonlyArray<string>>;
 }
 
-/** Strip the comments and trailing commas JSON-with-comments allows, leaving strings as they are. */
-export function stripJsonComments(text: string): string {
-  let out = "";
-  for (let at = 0; at < text.length; at++) {
-    const char = text[at];
-    if (char === '"') {
-      const end = /^"(?:[^"\\]|\\.)*"/.exec(text.slice(at));
-      const literal = end?.[0] ?? text.slice(at);
-      out += literal;
-      at += literal.length - 1;
-    } else if (char === "/" && text[at + 1] === "/") {
-      while (at < text.length && text[at] !== "\n") {
-        at++;
-      }
-      out += "\n";
-    } else if (char === "/" && text[at + 1] === "*") {
-      const end = text.indexOf("*/", at + 2);
-      at = end < 0 ? text.length : end + 1;
-    } else {
-      out += char;
-    }
-  }
-  return out.replace(/,(\s*[}\]])/g, "$1");
-}
-
 /** Read the tsconfig in `file` with the options it inherits through relative
  * `extends`; undefined where it cannot be read. An `extends` naming a package is
  * not followed. */
@@ -66,13 +42,9 @@ export function readTsconfig(file: string, seen = new Set<string>()): TsconfigOp
     return undefined;
   }
   seen.add(file);
-  let doc: unknown;
-  try {
-    doc = JSON.parse(stripJsonComments(fs.readFileSync(file, "utf8")));
-  } catch {
-    return undefined;
-  }
-  if (!isJsonObject(doc)) {
+  /* tsconfig is JSON with comments and trailing commas, read as tsc reads it. */
+  const { config: doc, error } = ts.parseConfigFileTextToJson(file, fs.readFileSync(file, "utf8"));
+  if (error !== undefined || !isJsonObject(doc)) {
     return undefined;
   }
   const dir = path.dirname(file);

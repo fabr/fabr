@@ -79,14 +79,14 @@ export default defineRule({
       build: {
         srcs: context.getFileProperty("srcs"),
         resources: context.getFileProperty("resources"),
-        dependencies: context.getPackageProperty("deps"),
-        provided: context.getPackageProperty("provided_deps"),
-        optional_provided: context.getPackageProperty("optional_provided_deps"),
-        compile: context.getPackageProperty("compile_api_deps"),
-        compile_deps: context.getPackageProperty("compile_deps"),
+        dependencies: context.getPackageProperty("deps", undefined, MAVEN_FORMAT),
+        provided: context.getPackageProperty("provided_deps", undefined, MAVEN_FORMAT),
+        optional_provided: context.getPackageProperty("optional_provided_deps", undefined, MAVEN_FORMAT),
+        compile: context.getPackageProperty("compile_api_deps", undefined, MAVEN_FORMAT),
+        compile_deps: context.getPackageProperty("compile_deps", undefined, MAVEN_FORMAT),
       },
       run: {
-        runtime: context.getPackageProperty("runtime_deps"),
+        runtime: context.getPackageProperty("runtime_deps", undefined, MAVEN_FORMAT),
       },
       result: { package: context.name, format: MAVEN_FORMAT },
     };

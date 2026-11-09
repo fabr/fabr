@@ -48,11 +48,12 @@ import { emitsSourceMap } from "../JSPackage";
 import { DEPS_REPORT_FILE, DEPS_REPORT_FLAG, MANIFEST_FLAG, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "@fabr-build/js-tools";
 import { PNP } from "../Layout";
 import { createNodeExecAction } from "../NodeExecAction";
+import { NPM_FORMAT } from "../NPMProtocol";
 
 /** The `sass_compile` rule. */
 export default defineRule({
   requirements(context) {
-    return { build: { srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps") }, result: "files" };
+    return { build: { srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps", undefined, NPM_FORMAT) }, result: "files" };
   },
   evaluateMaterialized(context, collected) {
     return buildSassCompile(context, collected);

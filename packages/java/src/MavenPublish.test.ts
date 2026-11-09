@@ -26,6 +26,7 @@ import {
   PublishableFileSet,
   PublishStatus,
   readZipMembers,
+  RepositoryCollection,
   RepositoryReader,
   RepositoryRef,
   RepositoryWriter,
@@ -227,6 +228,18 @@ describe("classified members", () => {
     expect(pom).to.contain("<artifactId>driver</artifactId>\n      <version>1.0</version>\n      <scope>runtime</scope>\n");
     expect(pom).to.contain("<artifactId>annotations</artifactId>\n      <version>1.0</version>\n    </dependency>");
     expect(pom).to.contain("<artifactId>lib</artifactId>\n      <version>1.0</version>\n    </dependency>");
+  });
+
+  it("record a dependency a catalog states as the requirement the catalog declares for it", async () => {
+    const catalog = {
+      declaredRequirement: () => Computable.resolve({ name: "com.example/lib", versionConstraint: "2.0" }),
+    } as unknown as RepositoryCollection;
+    const pkg = new PackageFileSet(files({ "app.jar": "JAR" }), "com.example/app", "1.0.0", [
+      { reference: new RepositoryRef(catalog, { name: "com.example/lib", versionConstraint: undefined }) },
+    ]);
+    const member = await packageMavenMember({ destination: ref(), content: pkg }, new Map(), new Set(), [ref()]);
+    const pom = await (await member.get("com/example/app/1.0.0/app-1.0.0.pom"))!.readString();
+    expect(pom).to.contain("<groupId>com.example</groupId>\n      <artifactId>lib</artifactId>\n      <version>2.0</version>\n    </dependency>");
   });
 
   it("need their version's artifact in the same release, which is uploaded after them", async () => {

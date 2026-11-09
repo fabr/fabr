@@ -86,6 +86,21 @@ describe("e2e: js_script (runnable) + generate", () => {
     expect(result.stdout).to.equal("hello there");
   });
 
+  it("launches the program with its env as a generate command, the generate target's env set over it", () => {
+    const result = runFabr(
+      {
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\n\n" +
+          "js_script greet { entry = src:greet.js; env = { GREETING = hello; WHO = script; } }\n" +
+          "generate gen { run = greet > out.txt; env = { WHO = target; } }\n",
+        "src/greet.js": 'process.stdout.write(`${process.env.GREETING} ${process.env.WHO}`);\n',
+      },
+      ["cat", "gen:out.txt"]
+    );
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stdout).to.equal("hello target");
+  });
+
   it("runs a built package as the entry via its declared bin (relative imports resolve)", () => {
     /* Package-mode entry: the package joins the install and its (generated,
      * by-convention) package.json bin is the entry — launched from its

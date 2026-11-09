@@ -36,6 +36,7 @@ import { contentPackageMember } from "./ContentPackage";
  * (`{"name": …, "version": …, "deps": {…}}`). */
 const FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
   ...SEMVER,
+  name: "test",
   resolutionTag: "test:resolve:1",
   splitReference: (name: Name) => ({ name: name.toBaseString(), versionConstraint: undefined }),
   validateRequirement: () => {

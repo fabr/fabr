@@ -25,6 +25,7 @@
 
 import { BUILD_OVERRIDE, Computable, defineRule, PackageSources, ResolutionSpec, TargetContext } from "@fabr-build/core";
 import { compileAndRunTests, describeTests, packageBuildOverrides, TestRequirements, testFramework, testRequirements } from "../TestPipeline";
+import { NPM_FORMAT } from "../NPMProtocol";
 
 /** The `js_package` rule, under `test`: the package's tests, run under the test framework its `test_framework` names. */
 export default defineRule({
@@ -42,11 +43,11 @@ export default defineRule({
         packageBuildOverrides(context, "test_framework").then(overrides => context.resolveSelfWithOverrides(overrides)),
         context.getFileProperty("srcs", BUILD_OVERRIDE),
         context.getFileProperty("tests", BUILD_OVERRIDE),
-        context.getPackageProperty("deps", BUILD_OVERRIDE),
-        context.getPackageProperty("provided_deps", BUILD_OVERRIDE),
-        context.getPackageProperty("optional_provided_deps", BUILD_OVERRIDE),
-        context.getPackageProperty("compile_deps", BUILD_OVERRIDE),
-        context.getPackageProperty("test_deps", BUILD_OVERRIDE),
+        context.getPackageProperty("deps", BUILD_OVERRIDE, NPM_FORMAT),
+        context.getPackageProperty("provided_deps", BUILD_OVERRIDE, NPM_FORMAT),
+        context.getPackageProperty("optional_provided_deps", BUILD_OVERRIDE, NPM_FORMAT),
+        context.getPackageProperty("compile_deps", BUILD_OVERRIDE, NPM_FORMAT),
+        context.getPackageProperty("test_deps", BUILD_OVERRIDE, NPM_FORMAT),
         context.getFileProperty("test_resources", BUILD_OVERRIDE),
         context.getFileProperty("resources", BUILD_OVERRIDE),
         context.getFileProperty("test_expectations", BUILD_OVERRIDE),
@@ -56,7 +57,7 @@ export default defineRule({
           package: built,
           srcs,
           tests,
-          deps: new PackageSources([...deps.sources, ...provided.sources, ...optional.sources]),
+          deps: new PackageSources([...deps.sources, ...provided.sources, ...optional.sources], NPM_FORMAT),
           compile_deps: compileOnly,
           test_deps,
           test_resources,

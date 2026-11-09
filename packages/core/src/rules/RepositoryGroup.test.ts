@@ -189,6 +189,7 @@ function makeFormat(tag: string): PackageFormat<SemverVersion, SemverConstraint>
   };
   return {
     ...SEMVER,
+    name: "test",
     resolutionTag: tag,
     splitReference: (name: Name) => {
       const split = splitIdentity(name.toBaseString());

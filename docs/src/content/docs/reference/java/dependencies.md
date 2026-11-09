@@ -49,6 +49,10 @@ jar_package app {
 [Repositories](#repositories). The version is a version (`1.7.36`), as Maven reads one, or a
 Maven version range in quotes: `@mvn:com.example:lib:"[1.0,2.0)"`. Fabr shows a package's name as
 `<group>/<artifact>`, as in `org.slf4j/slf4j-api`, and accepts it written that way too.
+Gradle's dynamic versions (`1.+`, `latest.release`) and Maven's `LATEST` and `RELEASE` are
+refused. Where a dependency's own POM or `.module` states one, `latest.release`, `LATEST` and
+`RELEASE` are read as stating no lower bound, answered by the version the rest of the build
+selects, and `1.+` as the range of versions it prefixes, `[1,2)`.
 
 A dependency on another target in the same project is written by its name: `deps = mylib;`.
 
@@ -207,8 +211,8 @@ jar_package app {
   Change the version in the catalog instead, so that every target agrees.
 
 The rest of what a catalog does, such as fetching a member only when a target uses it, is the same
-for every kind of package; see [Catalogs](/reference/js/dependencies/#catalogs). A jar whose
-dependencies come from a catalog can't yet be published; see [Not supported](#not-supported).
+for every kind of package; see [Catalogs](/reference/js/dependencies/#catalogs). A published
+jar's POM records each catalog dependency at the version the catalog states for it.
 
 ## What fabr reads from a POM
 
@@ -462,7 +466,3 @@ Fabr reads only the `<servers>` of `settings.xml`. Its `<mirrors>`, `<proxies>`,
 - Timestamped `-SNAPSHOT` versions are not resolved.
 - Your local repository (`~/.m2/repository`) is not read, and a `maven_repository` URL can't be a
   `file:` URL.
-- A jar whose `deps`, `provided_deps`, `optional_provided_deps`, `runtime_deps` or
-  `compile_api_deps` come from a [catalog](#catalogs) can't be published: the `sync` fails with
-  `cannot publish … it depends on 'com.google.guava/guava', which is no Maven package`. Give those
-  dependencies their versions directly, or through a property.

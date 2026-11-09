@@ -572,6 +572,7 @@ function selectionOf<V, C>(registry: RepositoryReader<V, C>, selection: Selected
   const name = selection.publishedName ?? selection.name;
   return {
     registry: registry.identity,
+    format: registry.format,
     name,
     ...(name === selection.name ? {} : { renameTo: selection.name }),
     version: registry.format.versionToString(selection.version as V),
@@ -1389,7 +1390,7 @@ export function instantiatePackage<V, C>(registry: RepositoryReader<V, C>, refer
       return new ResolvedNode(
         {
           key: `${registry.identity} ${req.name}@${shown}`,
-          selection: { registry: registry.identity, name: req.name, version: shown },
+          selection: { registry: registry.identity, format: registry.format, name: req.name, version: shown },
           files: fetchedOnce(() => registry.fetch(req.name, version).catch(unpublished)),
         },
         req.name,

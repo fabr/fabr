@@ -52,6 +52,7 @@ import { emitsSourceMap } from "../JSPackage";
 import { DEPS_REPORT_FILE, DEPS_REPORT_FLAG, MANIFEST_FLAG, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "@fabr-build/js-tools";
 import { PNP } from "../Layout";
 import { createNodeExecAction } from "../NodeExecAction";
+import { NPM_FORMAT } from "../NPMProtocol";
 
 /** The `css_postcss` rule. */
 export default defineRule({
@@ -59,7 +60,7 @@ export default defineRule({
     return {
       build: {
         srcs: context.getFileProperty("srcs"),
-        deps: context.getPackageProperty("deps"),
+        deps: context.getPackageProperty("deps", undefined, NPM_FORMAT),
         browsers: context.getGlobalFileProperty("BROWSER_TARGET").then(sources => new PackageSources(sources)),
       },
       result: "files",

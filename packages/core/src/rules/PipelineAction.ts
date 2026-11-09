@@ -21,7 +21,7 @@ import { ConflictError, FabrError } from "../core/Errors";
 import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import { Name } from "../core/Name";
-import { executePipeline, findExecutable, ITaskReport, StageSpec, StageStreams } from "../support/Execute";
+import { executePipeline, findExecutable, ITaskReport, StageSpec, StageStreams, variableEntry } from "../support/Execute";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { BuildAction, BuildResult, configFiles, fileSetInput, IBuildActionDefinition, IStagedStep, stringConfig } from "../core/BuildAction";
 import { ActionContext, IChangedFiles, toChangesDocument, TREE_MOUNT } from "../core/BuildCache";
@@ -146,7 +146,7 @@ export function stdinBytes(stdin: FileSet | undefined): Computable<Buffer | unde
 
 /* The version tracks what the step does and what its serialized stage spec
  * means; either changing is a bump. */
-export const PIPELINE_ACTION: IBuildActionDefinition = { id: "core:command-pipeline", version: 4, run: runPipeline, stage: stagePipelineStep };
+export const PIPELINE_ACTION: IBuildActionDefinition = { id: "core:command-pipeline", version: 5, run: runPipeline, stage: stagePipelineStep };
 
 /** @return the variables a command runs with, as the `env` config member holds them. */
 export function envEntries(env: ReadonlyMap<string, string>): string[] {
@@ -155,19 +155,24 @@ export function envEntries(env: ReadonlyMap<string, string>): string[] {
 
 /** Read the `env` config member: each variable written `NAME=value`, a name holding no `=`. */
 export function envConfig(action: BuildAction): Map<string, string> {
-  return new Map(
-    (Array.isArray(action.config.env) ? action.config.env : []).map((entry): [string, string] => {
-      const at = entry.indexOf("=");
-      return [entry.slice(0, at), entry.slice(at + 1)];
-    })
-  );
+  return new Map((Array.isArray(action.config.env) ? action.config.env : []).map(variableEntry));
 }
 
-function stagePipelineStep(action: BuildAction, dir: string): Computable<IStagedStep> {
+/** Stage the pipeline's files into `dir`. Its standard input is read from the
+ * cache's tree pool through the link beside `dir`, as the run reads it from the
+ * cache rather than the work directory. */
+function stagePipelineStep(action: BuildAction, dir: string, ensureTree: (files: FileSet) => Computable<string>): Computable<IStagedStep> {
   const specs: StageSpec[] = JSON.parse(stringConfig(action, "spec"));
-  return writeFileSet(dir, FileSet.unionAll(fileSetInput(action, "files"), configFiles(action))).then(() => ({
+  const [input] = action.inputs.stdin instanceof FileSet ? [...action.inputs.stdin] : [];
+  const stdin = input === undefined ? Computable.resolve(undefined) : ensureTree(new FileSet(new Map([input]))).then(tree => path.posix.join(TREE_MOUNT, path.basename(tree), input[0]));
+  return Computable.forAll([stdin, writeFileSet(dir, FileSet.unionAll(fileSetInput(action, "files"), configFiles(action)))], stdinPath => ({
     cwd: ".",
-    commands: [specs.map(({ argv }) => [findExecutable(argv[0], dir), ...argv.slice(1)])],
+    commands: [
+      {
+        stages: specs.map(spec => ({ ...spec, argv: [findExecutable(spec.argv[0], dir), ...spec.argv.slice(1)] })),
+        ...(stdinPath === undefined ? {} : { stdin: stdinPath }),
+      },
+    ],
     env: envConfig(action),
   }));
 }
@@ -214,6 +219,7 @@ export function stagePipeline(
       stdout: stage.stdout,
       stderr: stage.stderr,
       mergedTo: stage.mergedTo,
+      ...(stage.runnable.env.size > 0 ? { env: envEntries(stage.runnable.env) } : {}),
     };
   });
   return { files: FileSet.unionAll(srcs, ...mounts), specs };

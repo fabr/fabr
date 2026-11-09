@@ -561,8 +561,3 @@ BOM; see [Testing](/reference/java/testing/#troubleshooting).
 - **Options for `javac`** beyond those fabr sets, such as `-Xlint` or `-Werror`, and **arguments for
   the test JVM**, such as Surefire's `argLine`.
 - **`-SNAPSHOT` versions**, as dependencies or for publishing.
-- **Publishing a jar whose dependencies come from a catalog.** `fabr sync` and `fabr build` on the
-  `sync` target fail with `cannot publish @corp:com.acme/core:1.4.0: it depends on 'com.google.guava/guava', which is no Maven package`.
-  Give a published jar's `deps`, `provided_deps`, `optional_provided_deps`, `runtime_deps` and
-  `compile_api_deps` their versions directly or through properties; `test_deps` and `compile_deps`
-  can still use the catalog.

@@ -137,7 +137,7 @@ describe("Gradle Module Metadata", () => {
     expect(() => javaVariant(twice, 21, "java-runtime", "m")).to.throw(/several java-runtime variants for Java 21: a, b/);
   });
 
-  it("reads strictly as a range or an exact version, prefers where nothing else is stated, and an artifact selector as a variant", () => {
+  it("reads strictly as a range or an exact version, prefers where nothing else is stated, a tag (`latest.release`) as stating no floor, a prefix version (`1.+`) as its range, and an artifact selector as a variant", () => {
     const variant = javaVariant(
       toGradleModule({
         formatVersion: "1.1",
@@ -150,6 +150,8 @@ describe("Gradle Module Metadata", () => {
               { group: "g", module: "range", version: { strictly: "[1.0,2.0)" } },
               { group: "g", module: "preferred", version: { prefers: "3.1" } },
               { group: "g", module: "managed" },
+              { group: "g", module: "latest", version: { requires: "latest.release" } },
+              { group: "g", module: "prefix", version: { strictly: "1.+" } },
               { group: "g", module: "native", version: { requires: "4.1" }, thirdPartyCompatibility: { artifactSelector: { name: "native", type: "jar", classifier: "linux-x86_64" } } },
               { group: "g", module: "dist", version: { requires: "1" }, thirdPartyCompatibility: { artifactSelector: { name: "dist", type: "zip", extension: "zip" } } },
               { group: "g", module: "fixtures", version: { requires: "1" }, requestedCapabilities: [{ group: "g", name: "fixtures-test-fixtures" }] },
@@ -166,6 +168,8 @@ describe("Gradle Module Metadata", () => {
       { name: "g/range", versionConstraint: "[1.0,2.0)" },
       { name: "g/preferred", versionConstraint: "3.1" },
       { name: "g/managed", versionConstraint: undefined },
+      { name: "g/latest", versionConstraint: "(,)" },
+      { name: "g/prefix", versionConstraint: "[1,2)" },
       { name: "g/native", versionConstraint: "4.1", variant: "linux-x86_64" },
       { name: "g/dist", versionConstraint: "1", variant: "@zip" },
     ]);

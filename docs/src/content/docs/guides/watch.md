@@ -108,7 +108,7 @@ serve site {
 
 A [`generate`](/reference/standard-rules/#generate) target has `env` too, with a difference: its
 commands are build steps and start with no environment, so the variables in `env` are the only
-ones they have.
+ones they have, beside each program's own `env`, which the target's is set over.
 
 ### An example
 

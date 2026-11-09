@@ -31,6 +31,7 @@ import { materializeTargets } from "../core/TargetRef";
 import { RunnableArgument, RunnableFileSet } from "../core/RunnableFileSet";
 import { Dependency, PackageFileSet } from "../core/PackageFileSet";
 import { Requirement } from "../resolver/Types";
+import type { PackageFormat } from "../resolver/PackageFormat";
 import { declaredRequirement } from "../resolver/PackageResolver";
 import { Flag } from "../core/Flag";
 import { RuleBlockDefinition, SubTargetInputs } from "../rules/Types";
@@ -160,10 +161,11 @@ export abstract class TargetContext {
   /**
    * Read a PACKAGES property as packages (see {@link PackageSources}): for a
    * requirement on packages, where a target is the package of its name and
-   * the lot is resolved together. {@link getFileProperty} as a requirement
-   * is the files of what the property names, and nothing more.
+   * the lot is resolved together, each package in `format` where it is given.
+   * {@link getFileProperty} as a requirement is the files of what the
+   * property names, and nothing more.
    */
-  public getPackageProperty(name: string, overrides?: Constraints): Computable<PackageSources> {
+  public getPackageProperty(name: string, overrides?: Constraints, format?: PackageFormat<unknown, unknown>): Computable<PackageSources> {
     const schema = this.targetDef.properties.get(name) ?? this.targetDef.properties.get("*");
     if (schema !== undefined && schema.type !== PropertyType.Packages) {
       return Computable.reject(
@@ -172,7 +174,7 @@ export abstract class TargetContext {
         )
       );
     }
-    return this.getFileProperty(name, overrides).then(sources => new PackageSources(sources));
+    return this.getFileProperty(name, overrides).then(sources => new PackageSources(sources, format));
   }
 
   /**

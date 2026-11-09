@@ -19,12 +19,16 @@
 
 import { expect } from "chai";
 import * as path from "path";
-import { importsLocalFile, readTsconfig, stripJsonComments } from "./Tsconfig";
+import { importsLocalFile, readTsconfig } from "./Tsconfig";
 import { writeProject } from "./TestProject";
 
 describe("reading a tsconfig", () => {
-  it("strips comments and trailing commas, never inside a string", () => {
-    expect(JSON.parse(stripJsonComments('{ "a": "//x/*y*/", // note\n /* block */ "b": [1, 2,], }'))).to.deep.equal({ a: "//x/*y*/", b: [1, 2] });
+  it("reads comments and trailing commas, never inside a string", () => {
+    const root = writeProject({
+      "tsconfig.json": '{ "compilerOptions": { "baseUrl": ".", // note\n /* block */ "paths": { "a,]/*": ["b,}/*", "c/*d*/e",], }, }, }',
+    });
+    const options = readTsconfig(path.join(root, "tsconfig.json"))!;
+    expect(options.paths.get("a,]/*")).to.deep.equal([path.join(root, "b,}/*"), path.join(root, "c/*d*/e")]);
   });
 
   it("inherits options through a relative extends", () => {

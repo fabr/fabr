@@ -25,11 +25,12 @@
 
 import { defineRule, FileSet, PackageFileSet } from "@fabr-build/core";
 import { assembleNodeModules } from "../NodeModules";
+import { NPM_FORMAT } from "../NPMProtocol";
 
 /** The `js_installation` rule. */
 export default defineRule({
   requirements(context) {
-    return { run: { deps: context.getPackageProperty("deps") }, result: "files" };
+    return { run: { deps: context.getPackageProperty("deps", undefined, NPM_FORMAT) }, result: "files" };
   },
   evaluateMaterialized(_context, { deps }: { deps: FileSet[] }) {
     const packages = deps.filter(dep => dep instanceof PackageFileSet);

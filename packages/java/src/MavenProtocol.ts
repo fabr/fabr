@@ -133,7 +133,7 @@ function validateMavenRequirement({ name, versionConstraint, override, variant }
     MAVEN_VERSIONS.parseConstraint(versionConstraint);
   } catch {
     throw new FabrError(`'${versionConstraint}' is not a valid Maven version or range`).withHelp(
-      "write a version (1.7.36) or a range ([1.0,2.0))"
+      "dynamic versions such as '1.+' and 'latest.release' are not supported: pin a version or range instead"
     );
   }
   if (override !== undefined && MAVEN_VERSIONS.exactVersion?.(versionConstraint) === undefined) {
@@ -180,6 +180,7 @@ export function parseMavenPublishCoordinate(name: Name): { name: string; version
 
 export const MAVEN_FORMAT: PackageFormat<MavenVersion, MavenConstraint> = {
   ...MAVEN_VERSIONS,
+  name: "Maven",
   resolutionTag: "maven:resolve:6",
   splitReference: splitMavenReference,
   validateRequirement: validateMavenRequirement,

@@ -55,6 +55,8 @@ export interface IContentPackage<V> {
  * `{ ...SEMVER, resolutionTag, … }`).
  */
 export interface PackageFormat<V, C> extends VersionDomain<V, C> {
+  /** The format's name as a message shows it (`npm`, `Maven`). */
+  readonly name: string;
   /**
    * The memo tag persisted joint resolutions are keyed under (e.g.
    * `npm:resolve:20`) — bumped when the resolution computation or the document

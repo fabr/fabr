@@ -101,7 +101,7 @@ function stageTests(action: BuildAction, dir: string, ensureTree: (files: FileSe
   const argv = stringListConfig(action, "argv");
   return Computable.forAll([testFilesOf(action), stageInstall(action, dir, ensureTree, work => work())], testFiles => ({
     cwd: COMPILE_OUT_DIR,
-    commands: testFiles.map((file, index) => [[findExecutable(argv[0], join(dir, COMPILE_OUT_DIR)), ...invocationOf(argv, file, index)]]),
+    commands: testFiles.map((file, index) => ({ stages: [{ argv: [findExecutable(argv[0], join(dir, COMPILE_OUT_DIR)), ...invocationOf(argv, file, index)] }] })),
     env: new Map(Object.entries(declaredEnv(action))),
   }));
 }

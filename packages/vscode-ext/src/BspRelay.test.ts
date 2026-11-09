@@ -102,4 +102,13 @@ describe("build server relay", () => {
     fromServer.write(frame({ jsonrpc: "2.0", method: "buildTarget/didChange", params: { changes: [] } }));
     expect(await fromRelay()).to.deep.equal({ jsonrpc: "2.0", method: "buildTarget/didChange", params: { changes: [] } });
   });
+
+  it("skips a malformed frame and reads on", async () => {
+    const garbage = "{ not json";
+    connection.write(`Content-Length: ${garbage.length}\r\n\r\n${garbage}`);
+    connection.write("X-Header: no length\r\n\r\n");
+    connection.write(frame(5));
+    connection.write(frame({ jsonrpc: "2.0", id: 2, method: "build/initialize", params: {} }));
+    expect(await fromRelay()).to.deep.equal({ jsonrpc: "2.0", id: 2, result: { displayName: "fabr", data: { root: "file:///p/" } } });
+  });
 });

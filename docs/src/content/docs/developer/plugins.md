@@ -395,7 +395,9 @@ one. `js_package` reads `test_deps` this way, which lets a test-support package 
 package it supports.
 
 A `targetdef` declares each property `FILES` or `PACKAGES`. `getPackageProperty` reads only a
-`PACKAGES` property; `getFileProperty` reads either.
+`PACKAGES` property; `getFileProperty` reads either. Give `getPackageProperty` the format the
+rule takes (`getPackageProperty("deps", undefined, NPM_FORMAT)`) unless it handles a package of
+any format: a package of another format among them is refused where it is written.
 
 Six requirement names say what the target passes on to whatever depends on it:
 
@@ -408,8 +410,8 @@ Six requirement names say what the target passes on to whatever depends on it:
   (its `run` collection): Maven's `runtime` scope, Gradle's `runtimeOnly`.
 - **`compile`**: as `dependencies`, for requirements passed on to what a consumer compiles against
   alone (its `build` collection): Gradle's `compileOnlyApi`.
-- **`extends`**: the package the target is made from; where that is one package, the target passes
-  on its version and requirements.
+- **`extends`**: the package the target is made from; where that is one package, the target is a
+  package of its format, and passes on its version and requirements.
 
 These must be read with `getPackageProperty`. Every other name is private to the target's build.
 Stating what a target passes on is what lets whatever depends on it be resolved, and shown by

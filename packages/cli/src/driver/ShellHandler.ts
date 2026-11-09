@@ -18,7 +18,7 @@
  */
 
 import { join } from "node:path";
-import { BuildAction, BuildCache, Computable, Diagnostic, executeInteractive, IStagedStep, Log } from "@fabr-build/core";
+import { BuildAction, BuildCache, Computable, Diagnostic, executeInteractive, IStagedCommand, IStagedStep, Log, variableEntry } from "@fabr-build/core";
 import { withTerminalSuspended } from "./Terminal";
 
 const DIAG_SHELL = Diagnostic.Info<{ name: string; dir: string; commands: string }>(
@@ -66,12 +66,13 @@ export function shellInto(cache: BuildCache, name: string, action: BuildAction |
 }
 
 /** Describe the commands a staged step would run, as `$ …` lines to reproduce by hand:
- * a pipeline's stages joined with `|`, the first {@link SHOWN_COMMANDS} and a count of the rest. */
+ * a pipeline's stages joined with `|`, each with its redirections, the first
+ * {@link SHOWN_COMMANDS} and a count of the rest. */
 function describeCommands({ commands, env }: IStagedStep): string {
   if (commands.length === 0) {
     return "  (this step runs no external command)";
   }
-  const lines = commands.slice(0, SHOWN_COMMANDS).map(stages => "  $ " + stages.map(argv => argv.map(quote).join(" ")).join(" | "));
+  const lines = commands.slice(0, SHOWN_COMMANDS).map(command => `  $ ${commandText(command, env)}`);
   if (commands.length > SHOWN_COMMANDS) {
     lines.push(`  … and ${commands.length - SHOWN_COMMANDS} more like it`);
   }
@@ -79,6 +80,24 @@ function describeCommands({ commands, env }: IStagedStep): string {
     lines.push(`  with ${[...env].map(([variable, value]) => `${variable}=${quote(value)}`).join(" ")}`);
   }
   return lines.join("\n");
+}
+
+/** Write `command` as a shell writes it: each stage's own variables that `env`, the
+ * step's, does not set, its argv and its redirections, the first stage's standard
+ * input after its argv, the stages joined with `|`. */
+function commandText({ stages, stdin }: IStagedCommand, env: ReadonlyMap<string, string>): string {
+  return stages
+    .map(({ argv, stdout, stderr, mergedTo, env: own = [] }, index) =>
+      [
+        ...own.map(variableEntry).flatMap(([name, value]) => (env.has(name) ? [] : [`${name}=${quote(value)}`])),
+        ...argv.map(quote),
+        ...(index === 0 && stdin !== undefined ? [`< ${quote(stdin)}`] : []),
+        ...(stdout === undefined ? [] : [`> ${quote(stdout)}`]),
+        ...(stderr === undefined ? [] : [`2> ${quote(stderr)}`]),
+        ...(mergedTo === "out" ? ["2>&1"] : mergedTo === "err" ? ["1>&2"] : []),
+      ].join(" ")
+    )
+    .join(" | ");
 }
 
 /** Quote an argument minimally for the shell, so a printed command is copy-pasteable. */

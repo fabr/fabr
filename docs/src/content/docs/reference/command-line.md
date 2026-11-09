@@ -186,17 +186,28 @@ its program's installation as its files, and a target that can only be tested ha
 `fabr cat my_test:ctrf-report.json` runs the tests and prints the report. The same goes for `cat`
 and `cp`.
 
-A reference to a package with no version, or to a repository, lists what it contains: an npm
-package's published versions, newest first; a catalog's members; or the packages installed in a
-scope of `@fabr-home`. Nothing is downloaded or built to list them, and `-l` makes no difference.
+A reference to a package or image with no version, or to a repository, lists what it contains.
+Nothing is downloaded or built to list them, and `-l` makes no difference.
+
+| Reference | Lists |
+|---|---|
+| An npm or Maven package (`@npm:esbuild`, `@mvn:com.google.guava:guava`) | Its published versions, newest first. |
+| A container image (`@docker:alpine`) | Its tags, in name order. |
+| A JDK distribution (`@jdk`) | The releases published for the target platform, newest first. |
+| A catalog (`@pkg`) | Its members. |
+| A `repository_group`'s package | Its versions, as the repository it is routed to lists them. |
+| A scope of `@fabr-home` (`@fabr-home:@fabr-build`) | The packages installed in it. |
+| An AWS account, an S3 bucket, or a prefix in one | The account's services; the bucket's or prefix's objects and prefixes. See [Amazon S3](/reference/aws/s3/). |
 
 ```sh
 fabr ls @npm:esbuild
+fabr ls @docker:alpine
 fabr ls @pkg
 ```
 
-npm can't list every package it holds, or every package in a scope, so `fabr ls @npm` and
-`fabr ls @npm:@types` are errors; name a package instead, as in `fabr ls @npm:@types/node`.
+A registry can't list every package or image it holds, so `fabr ls @npm`, `fabr ls @mvn` and
+`fabr ls @docker` are errors, as are an npm scope (`@npm:@types`) and a Maven group
+(`@mvn:com.google.guava`); name a package or image instead, as in `fabr ls @npm:@types/node`.
 Likewise `fabr ls @fabr-home` is an error, and `fabr ls @fabr-home:@fabr-build` lists the scope.
 
 ### `cat`

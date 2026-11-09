@@ -432,7 +432,8 @@ targetdef js_script {
     entry = REQUIRED FILES;
     # Arguments passed to the program ahead of any given when it is run.
     args = STRING;
-    # Environment variables the program is launched with.
+    # Environment variables the program is launched with, wherever it runs: a
+    # `generate` or `patched` target's own `env` is set over them.
     env = MAP;
 }
 

@@ -71,6 +71,21 @@ export function passedOn(made: ReadonlyArray<unknown>, edgesOf: (name: string) =
   };
 }
 
+/**
+ * @return what a target whose rule declares nothing builds, where it is made
+ * from `made` (its `extends`): from exactly one package, a package named
+ * `name` in that package's format, as {@link passedOn} passes on its version
+ * and requirements; otherwise undefined, known when it is built.
+ */
+function madeFrom(name: string, made: ReadonlyArray<unknown>): Builds | undefined {
+  const [only, ...others] = made;
+  if (others.length > 0 || !isPackage(only)) {
+    return undefined;
+  }
+  const format = only instanceof ResolvedNode ? only.format : undefined;
+  return { package: name, ...(format === undefined ? {} : { format }) };
+}
+
 /** A declared target's requirements and how to build it: what its node and
  * every copy of the node share. */
 class TargetBuild {
@@ -243,10 +258,11 @@ export class DeclaredResolvedTarget extends ResolvedTarget {
   ): DeclaredResolvedTarget {
     const build = new TargetBuild(context, resolved, evaluate);
     const stated = build.stated();
+    const declared = resolved.result ?? madeFrom(context.name, resolved.sources.get(EXTENDS_KEY) ?? []);
     return new DeclaredResolvedTarget(build, {
-      content: targetContent(context, plain => build.built(plain), resolved.result, describe),
-      packageName: declaredName(context, resolved.result),
-      version: stated.version ?? declaredVersion(resolved.result),
+      content: targetContent(context, plain => build.built(plain), declared, describe),
+      packageName: declaredName(context, declared),
+      version: stated.version ?? declaredVersion(declared),
       dependencies: stated.dependencies,
       origin: targetOrigin(context),
       provided: stated.provided ?? new Map(),

@@ -291,8 +291,8 @@ There is no `HOME` and no `PATH`, so a program that finds another one by name on
 find it. A shell script run by `script` still finds the standard system utilities, such as `cat`
 and `sed`, through `sh`'s own default search path, but not `node` or anything else you installed.
 Name each program as a command of its own (`@host:protoc`, a `js_script`) rather than calling it
-from inside a script. A `js_script`'s own `env` applies when you start it with `fabr run`, not as a
-command here: set the variables it needs in the `generate` target's `env`.
+from inside a script. A `js_script`'s own `env` applies here too, and the `generate` target's `env`
+is set over it.
 
 `fabr shell <target>` opens a shell in the directory the step runs in, with its inputs in place, and
 prints the command it would run; use it to try a failing step by hand. See

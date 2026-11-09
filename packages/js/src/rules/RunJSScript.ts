@@ -64,6 +64,7 @@ import {
   soleModuleFormat,
   stripPackageJson,
 } from "../JSPackage";
+import { NPM_FORMAT } from "../NPMProtocol";
 
 /** The `js_script` rule, under `run`. */
 export default defineRule({
@@ -82,7 +83,7 @@ export default defineRule({
   ): ResolutionSpec<NoRequirements, { deps: Computable<PackageSources>; entry: Computable<ContainedSources> }> {
     return {
       run: {
-        deps: context.getPackageProperty("deps", BUILD_OVERRIDE),
+        deps: context.getPackageProperty("deps", BUILD_OVERRIDE, NPM_FORMAT),
         entry: context.getContainedFileProperty("entry", BUILD_OVERRIDE),
       },
       permissive: true,

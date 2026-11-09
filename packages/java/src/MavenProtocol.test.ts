@@ -109,6 +109,11 @@ describe("MAVEN_FORMAT", () => {
     expect(() => MAVEN_FORMAT.validateRequirement(refOf('org.yaml:snakeyaml:"[2.2"'))).to.throw(/not a valid Maven version or range/);
     expect(() => MAVEN_FORMAT.validateRequirement({ name: "snakeyaml", versionConstraint: "2.2" })).to.throw(/not a Maven package name/);
   });
+
+  it("refuses a tag or a prefix version written in a reference", () => {
+    expect(() => MAVEN_FORMAT.validateRequirement(refOf("org.yaml:snakeyaml:2.+"))).to.throw(/not a valid Maven version or range/);
+    expect(() => MAVEN_FORMAT.validateRequirement(refOf("org.yaml:snakeyaml:latest.release"))).to.throw(/not a valid Maven version or range/);
+  });
 });
 
 describe("parseMavenPublishCoordinate", () => {

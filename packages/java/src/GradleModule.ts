@@ -28,7 +28,7 @@
 
 import { FabrError, parseJson, Requirement, toJsonObject } from "@fabr-build/core";
 import { mavenName } from "./MavenProtocol";
-import { parseMavenConstraint, rangeExcluding } from "./MavenVersion";
+import { constraintOfVersion, parseMavenConstraint, rangeExcluding } from "./MavenVersion";
 
 /** The comment Gradle writes in a POM it publishes with a `.module` beside it. */
 export const GRADLE_METADATA_MARKER = "do_not_remove: published-with-gradle-metadata";
@@ -275,7 +275,8 @@ export function variantRequirements(variant: GradleVariant): Requirement[] {
  */
 function versionOf(dependency: GradleDependency): string | undefined {
   const { strictly } = dependency;
-  const stated = strictly !== undefined ? (/^[[(]/.test(strictly) ? strictly : `[${strictly}]`) : (dependency.requires ?? dependency.prefers);
+  const strict = constraintOfVersion(strictly);
+  const stated = strict !== undefined ? (/^[[(]/.test(strict) ? strict : `[${strict}]`) : constraintOfVersion(dependency.requires ?? dependency.prefers);
   if (dependency.rejects.length === 0) {
     return stated;
   }

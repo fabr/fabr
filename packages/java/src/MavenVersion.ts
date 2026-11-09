@@ -47,6 +47,10 @@ export interface MavenVersion {
   /** The version as published, which is its identity. */
   readonly text: string;
   readonly items: Item[];
+  /** Set on the floor of a range whose lower bound excludes the version
+   *  `items` name: it sorts above that version and below every version above
+   *  it, so it is never published, and is written `(<version>`. */
+  readonly above?: true;
 }
 
 interface Bound {
@@ -247,18 +251,54 @@ function compareLists(left: Item[], right: Item[]): number {
   return 0;
 }
 
-/** Parse a version as published. Throws on an empty one, or one with a character
- *  no Maven version holds (a range's brackets, an unexpanded `${property}`). */
+/** A tag naming whichever version is newest: Gradle's `latest.<status>`, Maven 2's `LATEST` and `RELEASE`. */
+const VERSION_TAG = /^(?:latest\.\S+|LATEST|RELEASE)$/;
+
+/** Gradle's prefix versions, `1.+` and `+`, the stem before the `.+` captured. */
+const PREFIX_VERSION = /^(?:(.*)\.)?\+$/;
+
+/**
+ * @return the constraint a dependency's version in a published POM or `.module`
+ * states: `(,)` for a tag (`latest.release`, `LATEST`); for a Gradle prefix
+ * version, the range of versions with that prefix (`1.2.+` is `[1.2,1.3)`, `+`
+ * is `(,)`, a stem not ending in a number its floor alone); otherwise the version.
+ */
+export function constraintOfVersion(text: string | undefined): string | undefined {
+  const trimmed = text?.trim();
+  if (trimmed === undefined || VERSION_TAG.test(trimmed)) {
+    return trimmed === undefined ? undefined : "(,)";
+  }
+  const prefix = PREFIX_VERSION.exec(trimmed);
+  if (prefix === null) {
+    return text;
+  }
+  const stem = prefix[1];
+  if (stem === undefined) {
+    return "(,)";
+  }
+  const parts = stem.split(".");
+  const last = parts[parts.length - 1];
+  return /^\d+$/.test(last) ? `[${stem},${[...parts.slice(0, -1), String(BigInt(last) + BigInt(1))].join(".")})` : `[${stem},)`;
+}
+
+/** Parse a version as published. Throws on an empty one, one with a character
+ *  no Maven version holds (a range's brackets, an unexpanded `${property}`), a
+ *  tag (`LATEST`, `latest.release`) or a Gradle prefix version (`1.+`). */
 export function parseMavenVersion(text: string): MavenVersion {
   const trimmed = text.trim();
-  if (trimmed === "" || /[[\](),${}\s]/.test(trimmed)) {
+  if (trimmed === "" || /[[\](),${}\s]/.test(trimmed) || VERSION_TAG.test(trimmed) || PREFIX_VERSION.test(trimmed)) {
     throw new FabrError(`'${text}' is not a Maven version`);
   }
   return { text: trimmed, items: parseItems(trimmed) };
 }
 
 export function compareMavenVersions(a: MavenVersion, b: MavenVersion): number {
-  return compareLists(a.items, b.items);
+  return compareLists(a.items, b.items) || (a.above === b.above ? 0 : a.above ? 1 : -1);
+}
+
+/** @return the version just above `version`: above it, and below every version above it. */
+function justAbove(version: MavenVersion): MavenVersion {
+  return { text: `(${version.text}`, items: version.items, above: true };
 }
 
 function parseBound(text: string, inclusive: boolean): Bound | undefined {
@@ -323,7 +363,7 @@ function minimumOf(constraint: MavenConstraint): MavenVersion {
   if (constraint.kind === "soft") {
     return constraint.floor;
   }
-  const floors = constraint.intervals.map(interval => interval.lower?.version ?? ZERO);
+  const floors = constraint.intervals.map(({ lower }) => (lower === undefined ? ZERO : lower.inclusive ? lower.version : justAbove(lower.version)));
   return floors.reduce((lowest, floor) => (compareMavenVersions(floor, lowest) < 0 ? floor : lowest));
 }
 

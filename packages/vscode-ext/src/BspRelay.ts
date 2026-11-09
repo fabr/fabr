@@ -25,7 +25,7 @@
 
 import * as fs from "fs";
 import * as net from "net";
-import type { JsonRpcClient } from "./JsonRpcClient";
+import { type JsonRpcClient, takeFrame } from "./JsonRpcClient";
 
 /** A JSON-RPC message, as a connection reads it. */
 interface IMessage {
@@ -80,21 +80,29 @@ export function relayBuildServer(client: JsonRpcClient, initialized: unknown, so
   });
 }
 
-/** Call `receive` with each message read from `input`, each framed by a `Content-Length` header as LSP frames one. */
+/** @return `json` as a JSON-RPC message, or undefined where it is none: an object whose `id` and `method`, where it has them, are a number or string and a string. */
+function toMessage(json: unknown): IMessage | undefined {
+  if (typeof json !== "object" || json === null || Array.isArray(json)) {
+    return undefined;
+  }
+  const { id, method, params } = json as Record<string, unknown>;
+  if ((id !== undefined && typeof id !== "number" && typeof id !== "string") || (method !== undefined && typeof method !== "string")) {
+    return undefined;
+  }
+  return { ...(id === undefined ? {} : { id }), ...(method === undefined ? {} : { method }), params };
+}
+
+/** Call `receive` with each message read from `input`, a frame that holds none skipped. */
 function readMessages(input: net.Socket, receive: (message: IMessage) => void): void {
   let buffer = Buffer.alloc(0);
   input.on("data", (data: Buffer) => {
     buffer = Buffer.concat([buffer, data]);
-    for (;;) {
-      const blank = buffer.indexOf("\r\n\r\n");
-      const length = blank < 0 ? null : /^content-length: *(\d+)$/im.exec(buffer.subarray(0, blank).toString("latin1"));
-      const end = length === null ? 0 : blank + 4 + Number(length[1]);
-      if (length === null || buffer.length < end) {
-        return;
+    for (let frame = takeFrame(buffer); frame !== undefined; frame = takeFrame(buffer)) {
+      buffer = frame.rest;
+      const message = toMessage(frame.json);
+      if (message !== undefined) {
+        receive(message);
       }
-      const message = JSON.parse(buffer.subarray(blank + 4, end).toString("utf8")) as IMessage;
-      buffer = buffer.subarray(end);
-      receive(message);
     }
   });
 }

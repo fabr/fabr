@@ -78,6 +78,7 @@ import {
   STATE_DIR,
   STATE_DIR_FLAG,
 } from "@fabr-build/js-tools";
+import { NPM_FORMAT } from "../NPMProtocol";
 
 /** The `js_compile` rule. */
 export default defineRule({
@@ -85,7 +86,7 @@ export default defineRule({
     return {
       build: {
         srcs: context.getFileProperty("srcs"),
-        deps: context.getPackageProperty("deps"),
+        deps: context.getPackageProperty("deps", undefined, NPM_FORMAT),
         resources: context.getFileProperty("resources"),
         declarations: context.getFileProperty("declarations"),
       },

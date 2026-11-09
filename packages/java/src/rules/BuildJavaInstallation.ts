@@ -25,11 +25,12 @@
 
 import { defineRule, FileSet } from "@fabr-build/core";
 import { installationOf } from "../JarPackage";
+import { MAVEN_FORMAT } from "../MavenProtocol";
 
 /** The `java_installation` rule. */
 export default defineRule({
   requirements(context) {
-    return { run: { deps: context.getPackageProperty("deps") }, result: "files" };
+    return { run: { deps: context.getPackageProperty("deps", undefined, MAVEN_FORMAT) }, result: "files" };
   },
   evaluateMaterialized(_context, { deps }: { deps: FileSet[] }) {
     return installationOf(deps);

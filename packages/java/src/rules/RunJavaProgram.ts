@@ -36,6 +36,7 @@ import {
   TargetContext,
 } from "@fabr-build/core";
 import { checkMainClass, compileOutputOf, COMPILED_CLASSES_DIR, jarMainClass, makeJarRunnable, packageOf, processorsOf } from "../JarPackage";
+import { MAVEN_FORMAT } from "../MavenProtocol";
 
 interface ProgramInputs {
   srcs: FileSet[];
@@ -54,11 +55,11 @@ export default defineRule({
     return {
       build: {
         srcs: context.getFileProperty("srcs", BUILD_OVERRIDE),
-        deps: context.getPackageProperty("deps", BUILD_OVERRIDE),
+        deps: context.getPackageProperty("deps", BUILD_OVERRIDE, MAVEN_FORMAT),
       },
       run: {
-        classpath: context.getPackageProperty("deps", BUILD_OVERRIDE),
-        agents: context.getPackageProperty("agents", BUILD_OVERRIDE),
+        classpath: context.getPackageProperty("deps", BUILD_OVERRIDE, MAVEN_FORMAT),
+        agents: context.getPackageProperty("agents", BUILD_OVERRIDE, MAVEN_FORMAT),
       },
       permissive: true,
     };

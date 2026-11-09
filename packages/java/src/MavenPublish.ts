@@ -299,9 +299,6 @@ function pomDependencyOf(
     const optional = provided === "optional";
     const { reference } = dep;
     if (reference instanceof RepositoryRef) {
-      if (!isRepositoryReader(reference.source) || reference.source.format !== MAVEN_FORMAT) {
-        throw new FabrError(`cannot publish ${destination.toString()}: it depends on '${reference.toString()}', which is no Maven package`);
-      }
       if (declared.versionConstraint === undefined) {
         throw new FabrError(`cannot publish ${destination.toString()}: no version to record for '${reference.toString()}'`);
       }

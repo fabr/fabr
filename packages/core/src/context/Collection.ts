@@ -19,13 +19,14 @@
 
 import { Reference } from "../core/Reference";
 import { Computable } from "../core/Computable";
-import { FabrError, toError } from "../core/Errors";
+import { FabrError, RequirementResolutionError, toError } from "../core/Errors";
 import { FileSet } from "../core/FileSet";
 import { FileSetRef } from "../core/FileSetRef";
-import { Materialized, SourceRef } from "../core/Repository";
+import { Materialized, RepositoryRef, SourceRef } from "../core/Repository";
 import { checked, materializeLists, ResolvedLists, resolveLists, withOperation } from "./CollectionPoint";
 import { Conflicts } from "../resolver/StrictCollection";
-import { Builds, PackageFileSet, Dependency } from "../core/PackageFileSet";
+import { Builds, PackageFileSet, Dependency, ResolvedNode } from "../core/PackageFileSet";
+import type { PackageFormat } from "../resolver/PackageFormat";
 import { Resolved } from "../core/Repository";
 import type { InternalBuildContext } from "./BuildContext";
 import type { TargetContext } from "./TargetContext";
@@ -46,12 +47,16 @@ export class ContainedSources {
  * A property's sources, read as packages: a target among them is the package
  * of its name, and a repository's reference a requirement, all resolved
  * together with the target's other packages. Loose files and flags among
- * them are themselves.
+ * them are themselves. Where `format` is given, every package among them
+ * whose format is known must be in it.
  */
 export class PackageSources {
   /** Tells this from the other readings by type. */
   public readonly read = "packages";
-  constructor(public readonly sources: SourceRef[]) {}
+  constructor(
+    public readonly sources: SourceRef[],
+    public readonly format?: PackageFormat<unknown, unknown>
+  ) {}
 }
 
 /**
@@ -371,14 +376,19 @@ export function resolveRequirements(target: TargetContext, spec: ResolutionSpec)
         (...parts: Array<{ at: number[]; resolved: ResolvedLists }>) => {
           const resolvedEntries = new Map<number, ResolvedRequirement>();
           parts.forEach(({ at, resolved }, part) =>
-            at.forEach((index, position) =>
-              resolvedEntries.set(index, {
+            at.forEach((index, position) => {
+              const value = values[index];
+              const entry: ResolvedRequirement = {
                 sources: resolved.lists[position],
                 references: resolved.references[position],
                 reading: readings[index],
                 part,
-              })
-            )
+              };
+              if (value instanceof PackageSources && value.format !== undefined) {
+                refuseOtherFormats(target, entry, value.format);
+              }
+              resolvedEntries.set(index, entry);
+            })
           );
           return new ResolvedRequirements(
             new Map(names.map((name, index) => [name, resolvedEntries.get(index)!])),
@@ -393,6 +403,23 @@ export function resolveRequirements(target: TargetContext, spec: ResolutionSpec)
 }
 
 
+
+/** Refuse a package among `entry`'s sources whose format is known and is not `format`, attributed to the reference it was resolved for. */
+function refuseOtherFormats(target: TargetContext, { sources, references }: ResolvedRequirement, format: PackageFormat<unknown, unknown>): void {
+  sources.forEach((source, at) => {
+    const found = source instanceof ResolvedNode ? source.format : undefined;
+    if (!(source instanceof ResolvedNode) || found === undefined || found === format) {
+      return;
+    }
+    const reference = references[at];
+    const written =
+      reference === undefined ? source.packageName : reference instanceof RepositoryRef && reference.repositoryName !== undefined ? `${reference.repositoryName}:${reference.toString()}` : reference.toString();
+    const error = new FabrError(`'${written}' is no ${format.name} package`).withHelp(
+      `it is a package of ${found.name}, and '${target.name}' takes ${format.name} packages here`
+    );
+    throw reference === undefined ? error : new RequirementResolutionError([reference], error);
+  });
+}
 
 /**
  * Get the requirement name `key` stands for: its last part, so that a name a

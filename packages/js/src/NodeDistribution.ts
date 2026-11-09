@@ -157,6 +157,7 @@ function makeNodeRunnable(pkg: PackageFileSet): Computable<RunnableFileSet> {
 /** The format of a node distribution: semver versions of the one package `node`. */
 export const NODE_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
   ...SEMVER,
+  name: "node",
   resolutionTag: "node:resolve:1",
   splitReference: splitNodeReference,
   validateRequirement: validateNodeRequirement,

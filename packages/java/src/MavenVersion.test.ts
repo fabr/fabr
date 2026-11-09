@@ -18,7 +18,8 @@
  */
 
 import { expect } from "chai";
-import { compareMavenVersions, MAVEN_VERSIONS, parseMavenConstraint, parseMavenVersion } from "./MavenVersion";
+import { Computable, Requirement, resolveMVS, VersionNotFoundError } from "@fabr-build/core";
+import { compareMavenVersions, constraintOfVersion, MAVEN_VERSIONS, parseMavenConstraint, parseMavenVersion } from "./MavenVersion";
 
 const order = (a: string, b: string): number => Math.sign(compareMavenVersions(parseMavenVersion(a), parseMavenVersion(b)));
 
@@ -89,6 +90,20 @@ describe("MavenVersion", () => {
   it("refuses what is not a version", () => {
     expect(() => parseMavenVersion("${jackson.version}")).to.throw(/not a Maven version/);
     expect(() => parseMavenVersion("")).to.throw(/not a Maven version/);
+    for (const notAVersion of ["1.+", "+", "latest.release", "latest.integration", "LATEST", "RELEASE"]) {
+      expect(() => parseMavenVersion(notAVersion), notAVersion).to.throw(/not a Maven version/);
+    }
+  });
+
+  it("reads a tag a dependency states as stating no floor, a prefix version as the range of its prefix, and anything else as written", () => {
+    for (const tag of ["latest.release", "latest.integration", "LATEST", "RELEASE", "+"]) {
+      expect(MAVEN_VERSIONS.isFloorless(parseMavenConstraint(constraintOfVersion(tag)!)), tag).to.equal(true);
+    }
+    expect(constraintOfVersion("1.+")).to.equal("[1,2)");
+    expect(constraintOfVersion("1.9.+")).to.equal("[1.9,1.10)");
+    expect(constraintOfVersion("1.0-beta.+")).to.equal("[1.0-beta,)");
+    expect(constraintOfVersion("1.2")).to.equal("1.2");
+    expect(constraintOfVersion(undefined)).to.equal(undefined);
   });
 });
 
@@ -119,6 +134,37 @@ describe("MavenConstraint", () => {
     expect(MAVEN_VERSIONS.isFloorless(parseMavenConstraint("(,1.0]"))).to.equal(true);
     expect(MAVEN_VERSIONS.isFloorless(parseMavenConstraint("[1.0,)"))).to.equal(false);
     expect(MAVEN_VERSIONS.isFloorless(MAVEN_VERSIONS.unconstrained)).to.equal(true);
+  });
+
+  it("takes the floor of an exclusive lower bound as just above it: above it and every version equal to it, below every version above it", () => {
+    const floor = MAVEN_VERSIONS.minimumOf(parseMavenConstraint("(1.7,2.0)"));
+    for (const below of ["1.7", "1.7.0", "1.7-ga", "1.6"]) {
+      expect(compareMavenVersions(floor, parseMavenVersion(below)), below).to.equal(1);
+    }
+    for (const above of ["1.7.0.1", "1.7-sp", "1.7-sp-alpha", "1.8"]) {
+      expect(compareMavenVersions(floor, parseMavenVersion(above)), above).to.equal(-1);
+    }
+    expect(MAVEN_VERSIONS.satisfies(floor, parseMavenConstraint("(1.7,2.0)"))).to.equal(true);
+    expect(() => parseMavenVersion(MAVEN_VERSIONS.versionToString(floor))).to.throw(/not a Maven version/);
+  });
+
+  it("resolves an exclusive lower bound to the lowest version published above it", async () => {
+    const published = new Map([["lib", ["1.7", "1.8", "1.9"]]]);
+    const resolution = await resolveMVS([{ name: "lib", versionConstraint: "(1.7,2.0)" }], MAVEN_VERSIONS, {
+      getRequirements: (name, version) => {
+        if (!published.get(name)?.includes(version.text)) {
+          throw new VersionNotFoundError(name, version.text, `${name}:${version.text} is not published`);
+        }
+        return Computable.resolve<Requirement[]>([]);
+      },
+      lowestAvailable: (name, constraint) => {
+        const parsed = parseMavenConstraint(constraint);
+        const [lowest] = (published.get(name) ?? []).map(parseMavenVersion).filter(version => MAVEN_VERSIONS.satisfies(version, parsed)).sort(compareMavenVersions);
+        return Computable.resolve(lowest);
+      },
+    });
+    expect([...resolution.selections].map(selection => `${selection.name}@${selection.version.text}`)).to.deep.equal(["lib@1.8"]);
+    expect(resolution.violations).to.deep.equal([]);
   });
 
   it("names an exact version for a plain version or a one-version range", () => {

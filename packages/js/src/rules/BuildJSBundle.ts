@@ -69,6 +69,7 @@ import {
   IBundleEntrySource,
   toBundleFormat,
 } from "../JSBundle";
+import { NPM_FORMAT } from "../NPMProtocol";
 
 /** The `js_bundle` rule. */
 export default defineRule({
@@ -84,9 +85,9 @@ export default defineRule({
       const inputTarget = bundleInputTarget(parseJSTarget(target));
       return {
         build: {
-          srcs: context.getPackageProperty("srcs", inputTarget),
+          srcs: context.getPackageProperty("srcs", inputTarget, NPM_FORMAT),
           entry: context.getContainedFileProperty("entry", inputTarget),
-          deps: context.getPackageProperty("deps", inputTarget),
+          deps: context.getPackageProperty("deps", inputTarget, NPM_FORMAT),
         },
         result: "files" as const,
       };

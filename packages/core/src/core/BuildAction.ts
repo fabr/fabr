@@ -32,7 +32,7 @@ import { ABSENT_PREFIX, DiscoveredDeps, encodeName } from "./Manifest";
 import { Name } from "./Name";
 import type { ActionContext } from "./BuildCache";
 import type { ITargetDecl } from "../model/AST";
-import type { ITaskReport } from "../support/Execute";
+import type { ITaskReport, StageSpec } from "../support/Execute";
 import { compareText, mapComputable } from "../support/Functional";
 import { FabrError } from "./Errors";
 
@@ -99,12 +99,20 @@ export interface IBuildActionDefinition {
   stage?(action: BuildAction, dir: string, ensureTree: (files: FileSet) => Computable<string>): Computable<IStagedStep>;
 }
 
+/** One command a staged step would run: a pipeline of stages, each its argv
+ * (the executable first) and the streams it captures, and the file its first
+ * stage reads as its standard input, relative to where the command runs. */
+export interface IStagedCommand {
+  stages: StageSpec[];
+  stdin?: string;
+}
+
 /** What a step would run in the directory it was staged into (see {@link IBuildActionDefinition.stage}). */
 export interface IStagedStep {
   /** Where the commands run, relative to the staged directory. */
   cwd: string;
-  /** The commands, each a pipeline of one or more stages' argvs, the executable first. */
-  commands: string[][][];
+  /** The commands, each a pipeline of one or more stages. */
+  commands: IStagedCommand[];
   /** The environment the commands run with: their whole environment. */
   env: ReadonlyMap<string, string>;
 }

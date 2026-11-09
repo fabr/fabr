@@ -28,8 +28,8 @@ describe("e2e: fabr shell", () => {
   const project = {
     "PROJECT.fabr":
       "plugin @fabr-build/js;\n" +
-      "js_script gen { entry = src:gen.js; }\n" +
-      "generate g {\n  srcs = src:data.txt;\n  run = gen > out.txt;\n}\n" +
+      "js_script gen { entry = src:gen.js; env = { MODE = \"a b\"; WHO = script; } }\n" +
+      "generate g {\n  srcs = src:data.txt;\n  run = gen < src:data.txt > out.txt;\n  env = { WHO = target; };\n}\n" +
       "flag ff { }\n",
     "src/gen.js": "require('fs').writeFileSync('out.txt','generated\\n');\n",
     "src/data.txt": "a\nb\n",
@@ -41,7 +41,8 @@ describe("e2e: fabr shell", () => {
     /* The intro names the target, the staged dir — a work dir in the cache's own
      * work tree, like the step's would be — and the reproducible command. */
     expect(result.stderr).to.match(/Sandbox for 'g' staged at .*[/\\]work[/\\][^/\\]+[/\\]shell-/);
-    expect(result.stderr).to.contain("node gen.js");
+    expect(result.stderr).to.match(/\$ MODE='a b' \S+ gen\.js < \.\.\/\.fabr-tree\/[0-9a-f]+\/data\.txt > out\.txt/);
+    expect(result.stderr).to.contain("with WHO=target");
   });
 
   it("stages a test run in its compiled tree, with the runner's command for each test file and its environment", () => {

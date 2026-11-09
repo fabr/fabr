@@ -623,6 +623,14 @@ export interface StageStreams {
  * stdin, passed to executePipeline directly rather than repeated per stage. */
 export interface StageSpec extends StageStreams {
   argv: string[];
+  /** The variables its runnable is launched with, each `NAME=value`, under the pipeline's own. */
+  env?: string[];
+}
+
+/** Split a `NAME=value` variable at its first `=`. */
+export function variableEntry(entry: string): [string, string] {
+  const at = entry.indexOf("=");
+  return [entry.slice(0, at), entry.slice(at + 1)];
 }
 
 function stageCommandLine(spec: StageSpec): string {
@@ -746,7 +754,7 @@ function pipelineUnbounded(
         const stdinCfg = i === 0 ? (stdin ? "pipe" : "ignore") : "pipe";
         const proc = spawn(argvs[i][0], argvs[i].slice(1), {
           cwd,
-          env: Object.fromEntries(env),
+          env: { ...Object.fromEntries((specs[i].env ?? []).map(variableEntry)), ...Object.fromEntries(env) },
           stdio: [stdinCfg, "pipe", "pipe"],
           windowsHide: true,
           ...DETACHED,

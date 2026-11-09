@@ -53,11 +53,12 @@ import {
   quotedArgument,
   stagedJars,
 } from "../JarPackage";
+import { MAVEN_FORMAT } from "../MavenProtocol";
 
 /** The `java_compile` rule. */
 export default defineRule({
   requirements(context) {
-    return { build: { srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps") }, result: "files" };
+    return { build: { srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps", undefined, MAVEN_FORMAT) }, result: "files" };
   },
   evaluateMaterialized(context, inputs) {
     return compileJava(context, inputs);

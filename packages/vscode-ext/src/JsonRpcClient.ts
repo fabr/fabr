@@ -43,6 +43,39 @@ function toMessage(json: unknown): IMessage | undefined {
 }
 
 /**
+ * Read the first frame in `buffer`, framed by a `Content-Length` header as LSP
+ * frames one.
+ *
+ * @return the frame's `fabr-protocol` header, its body parsed as JSON (absent
+ * where it is none), and what follows it in `rest`; or undefined where `buffer`
+ * holds no whole frame yet. A frame whose headers state no length is taken up
+ * to the end of its headers, with no body, so a malformed frame never stops
+ * the reading.
+ */
+export function takeFrame(buffer: Buffer): { rest: Buffer; protocol?: string; json?: unknown } | undefined {
+  const blank = buffer.indexOf("\r\n\r\n");
+  if (blank < 0) {
+    return undefined;
+  }
+  const headers = buffer.subarray(0, blank).toString("latin1");
+  const protocol = /^fabr-protocol: *(\S+)$/im.exec(headers)?.[1];
+  const length = /^content-length: *(\d+)$/im.exec(headers);
+  if (length === null) {
+    return { rest: buffer.subarray(blank + 4), protocol };
+  }
+  const end = blank + 4 + Number(length[1]);
+  if (buffer.length < end) {
+    return undefined;
+  }
+  const rest = buffer.subarray(end);
+  try {
+    return { rest, protocol, json: JSON.parse(buffer.subarray(blank + 4, end).toString("utf8")) };
+  } catch {
+    return { rest, protocol };
+  }
+}
+
+/**
  * A JSON-RPC client over a server's stdio, each message framed by a
  * `Content-Length` header as LSP frames one, of one of the protocols the
  * server carries: BSP's, whose frames are untagged, or
@@ -113,35 +146,14 @@ export class JsonRpcClient {
     this.anyHandlers.push(handler);
   }
 
-  /**
-   * @return the next frame in the buffer, taken from it, or undefined where it
-   * holds no whole frame yet. A frame whose headers state no length is dropped
-   * up to the end of its headers, and one whose body is no JSON-RPC message is
-   * returned with none, so a malformed frame never stops the reading.
-   */
+  /** @return the next frame in the buffer, taken from it, as {@link takeFrame} reads one. */
   private next(): { protocol?: string; message?: IMessage } | undefined {
-    const blank = this.buffer.indexOf("\r\n\r\n");
-    if (blank < 0) {
+    const frame = takeFrame(this.buffer);
+    if (frame === undefined) {
       return undefined;
     }
-    const headers = this.buffer.subarray(0, blank).toString("latin1");
-    const protocol = /^fabr-protocol: *(\S+)$/im.exec(headers)?.[1];
-    const length = /^content-length: *(\d+)$/im.exec(headers);
-    if (length === null) {
-      this.buffer = this.buffer.subarray(blank + 4);
-      return { protocol };
-    }
-    const end = blank + 4 + Number(length[1]);
-    if (this.buffer.length < end) {
-      return undefined;
-    }
-    const body = this.buffer.subarray(blank + 4, end).toString("utf8");
-    this.buffer = this.buffer.subarray(end);
-    try {
-      return { protocol, message: toMessage(JSON.parse(body)) };
-    } catch {
-      return { protocol };
-    }
+    this.buffer = frame.rest;
+    return { protocol: frame.protocol, message: toMessage(frame.json) };
   }
 
   private receive(message: IMessage): void {

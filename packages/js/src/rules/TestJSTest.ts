@@ -27,6 +27,7 @@
 
 import { BUILD_OVERRIDE, Computable, defineRule, PackageSources, ResolutionSpec, TargetContext } from "@fabr-build/core";
 import { compileAndRunTests, describeTests, TestRequirements, testFramework, testRequirements } from "../TestPipeline";
+import { NPM_FORMAT } from "../NPMProtocol";
 
 /** The `js_test` rule: the tests, run under the test framework the target's `framework` names. */
 export default defineRule({
@@ -34,8 +35,8 @@ export default defineRule({
     return Computable.forAll(
       [
         context.getFileProperty("tests", BUILD_OVERRIDE),
-        context.getPackageProperty("deps", BUILD_OVERRIDE),
-        context.getPackageProperty("compile_deps", BUILD_OVERRIDE),
+        context.getPackageProperty("deps", BUILD_OVERRIDE, NPM_FORMAT),
+        context.getPackageProperty("compile_deps", BUILD_OVERRIDE, NPM_FORMAT),
         context.getFileProperty("resources", BUILD_OVERRIDE),
         context.getFileProperty("expectations", BUILD_OVERRIDE),
       ],

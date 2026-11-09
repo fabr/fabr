@@ -37,7 +37,7 @@ import { IProvenanceStep } from "../core/Provenance";
 import { isRepositoryCollection, ProjectedPackage, RepositoryReader, RepositoryRef } from "../core/Repository";
 import { PackageRequest, Resolution, Pin } from "./Types";
 import { violatedAmong } from "./Overrides";
-import { BUILDS_ALONE, violationKey, violationKeys } from "./Requirement";
+import { BUILDS_ALONE, exactConstraintOf, violationKey, violationKeys } from "./Requirement";
 import { ResolutionExplainer, MVSResolution } from "./MVSResolution";
 import { conflictError, RefRenderer, RootRenderer, sanctionHelp, suggestSanctions, SuggestSources } from "./ResolutionReport";
 import { Requirement, ROOT_REQUIRER, Selected, VersionDomain, Violation } from "./Types";
@@ -155,10 +155,14 @@ export class Conflicts {
 export const NO_CONFLICTS = new Conflicts(new Map(), () => false, () => Computable.resolve(undefined));
 
 /** Make the {@link RootRenderer} naming each of `pins` as what the
- * collection reached it through. */
-function pinText(pins: ReadonlyArray<Pin>, ownWritten: ReadonlyMap<string, ReadonlySet<string>>): RootRenderer {
+ * collection reached it through, each pin's requirement spelled as `domain`'s
+ * exact constraint. */
+function pinText<V, C>(pins: ReadonlyArray<Pin>, ownWritten: ReadonlyMap<string, ReadonlySet<string>>, domain: VersionDomain<V, C>): RootRenderer {
   return (name, versionConstraint) => {
-    const pin = pins.find(({ selection }) => (selection.renameTo ?? selection.name) === name && selection.version === versionConstraint);
+    const pin = pins.find(
+      ({ selection }) =>
+        (selection.renameTo ?? selection.name) === name && exactConstraintOf(domain, domain.parseVersion(selection.version)) === versionConstraint
+    );
     if (pin === undefined || (versionConstraint !== undefined && ownWritten.get(name)?.has(versionConstraint) === true)) {
       return undefined;
     }
@@ -354,7 +358,7 @@ function checkDomain<V, C>(group: CheckedResolution<V, C>[], packages: ReadonlyA
           ? suggestSanctions(outstanding, graphs[0], all, members.flatMap(resolution => resolution.requested), written, members[0].sources())
           : Computable.resolve(sanctionHelp(conflictedSanctions(outstanding, duplicates, shipped, written, domain, refText)));
       return suggestion.then(help => {
-        const error = conflictError(outstanding, duplicates, all, explaining, refText, written, help, pinText(members.flatMap(resolution => resolution.pins), ownWritten));
+        const error = conflictError(outstanding, duplicates, all, explaining, refText, written, help, pinText(members.flatMap(resolution => resolution.pins), ownWritten, domain));
         /* A reference takes part where its closure holds a version of a
          * conflicted package, or the requirer of a violation. */
         const requirers = new Set(outstanding.map(violation => violation.requiredBy));

@@ -49,6 +49,7 @@ import {
 import { classpathOf, compileOutputOf, COMPILED_CLASSES_DIR, packageOf, processorsOf } from "../JarPackage";
 import { describeJava } from "../Description";
 import { createTestRunAction } from "../TestRunAction";
+import { MAVEN_FORMAT } from "../MavenProtocol";
 
 interface TestInputs {
   pkg: FileSet[];
@@ -76,16 +77,16 @@ export default defineRule({
         srcs: context.getFileProperty("srcs", BUILD_OVERRIDE),
         tests: context.getFileProperty("tests", BUILD_OVERRIDE),
         test_resources: context.getFileProperty("test_resources", BUILD_OVERRIDE),
-        provided: context.getPackageProperty("provided_deps", BUILD_OVERRIDE),
-        optional_provided: context.getPackageProperty("optional_provided_deps", BUILD_OVERRIDE),
-        compile_deps: context.getPackageProperty("compile_deps", BUILD_OVERRIDE),
-        test_deps: context.getPackageProperty("test_deps", BUILD_OVERRIDE),
+        provided: context.getPackageProperty("provided_deps", BUILD_OVERRIDE, MAVEN_FORMAT),
+        optional_provided: context.getPackageProperty("optional_provided_deps", BUILD_OVERRIDE, MAVEN_FORMAT),
+        compile_deps: context.getPackageProperty("compile_deps", BUILD_OVERRIDE, MAVEN_FORMAT),
+        test_deps: context.getPackageProperty("test_deps", BUILD_OVERRIDE, MAVEN_FORMAT),
       },
       run: {
         run_pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE),
-        run_provided: context.getPackageProperty("provided_deps", BUILD_OVERRIDE),
-        run_optional_provided: context.getPackageProperty("optional_provided_deps", BUILD_OVERRIDE),
-        run_test_deps: context.getPackageProperty("test_deps", BUILD_OVERRIDE),
+        run_provided: context.getPackageProperty("provided_deps", BUILD_OVERRIDE, MAVEN_FORMAT),
+        run_optional_provided: context.getPackageProperty("optional_provided_deps", BUILD_OVERRIDE, MAVEN_FORMAT),
+        run_test_deps: context.getPackageProperty("test_deps", BUILD_OVERRIDE, MAVEN_FORMAT),
       },
     };
   },

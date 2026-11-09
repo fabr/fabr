@@ -25,11 +25,12 @@
 
 import { BUILD_OVERRIDE, Computable, defineRule, FabrError, FileSet, PackageFileSet, RunnableFileSet, TargetContext } from "@fabr-build/core";
 import { jarMainClass, makeJarRunnable } from "../JarPackage";
+import { MAVEN_FORMAT } from "../MavenProtocol";
 
 /** The `jar_package` rule, under `run`. */
 export default defineRule({
   requirements(context) {
-    return { run: { pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE), agents: context.getPackageProperty("agents", BUILD_OVERRIDE) } };
+    return { run: { pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE), agents: context.getPackageProperty("agents", BUILD_OVERRIDE, MAVEN_FORMAT) } };
   },
   evaluateMaterialized(context, { pkg, agents }) {
     return context.getProperty("main_class").then(mainClass => runnableJar(context, pkg, agents, mainClass?.toString()));

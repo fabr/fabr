@@ -134,8 +134,13 @@ describe("CatalogRepository (through the model)", () => {
    * no version). Read off the name's
    * base form, since the facets (a `-> alias` rename) say what to do *about*
    * the reference and name no part of the package. */
+  /** Spell an exact pin as `=<version>`, as a format whose bare version is no
+   * exact constraint does (Maven's `[1.2]`); off but in the test that sets it. */
+  let exactSpelled = false;
   const CAT_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
     ...SEMVER,
+    exactConstraint: version => `${exactSpelled ? "=" : ""}${SEMVER.versionToString(version)}`,
+    name: "test",
     resolutionTag: "cattest:resolve:1",
     providedMismatch: "tolerate",
     splitReference: (name: Name) => {
@@ -2221,6 +2226,23 @@ describe("CatalogRepository (through the model)", () => {
       const [foo, bar] = lastDepSets as PackageFileSet[];
       expect(edges(foo)).to.deep.equal(["baz@1.2.0"]);
       expect(edges(bar)).to.deep.equal(["baz@2.0.0"]);
+    });
+
+    it("names a pin spelled as the format's exact constraint", async () => {
+      exactSpelled = true;
+      try {
+        const model = build(
+          "package_repo @backing { }\n" +
+            "catalog @cat { deps = @backing:foo:1.0.0 @backing:baz:1.2.0; }\n" +
+            "test_deps a { deps = @cat:foo @backing:bar:1.0.0; }\n"
+        );
+        requirementTable.set("foo@1.0.0", [{ name: "baz", versionConstraint: "^1.0.0" }]);
+        requirementTable.set("bar@1.0.0", [{ name: "baz", versionConstraint: "^2.0.0" }]);
+        const message = await outcomeOf(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a")));
+        expect(message).to.contain("'=1.2.0' pinned by '@cat:foo'");
+      } finally {
+        exactSpelled = false;
+      }
     });
 
     it("takes a catalog's fork as a second pin of the name, judged as two versions are", async () => {

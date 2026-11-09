@@ -91,7 +91,8 @@ by digest to build from exactly the same image wherever and whenever the build r
 An image's layers are downloaded only when something needs its files, and each is kept by its
 digest, so images that share layers download them once.
 
-`fabr ls` of an image's name, with no tag, lists its tags, as the registry holds them now:
+`fabr ls` of an image's name, with no tag, lists its tags in name order, as the registry holds them
+now:
 
 ```sh
 fabr ls @docker:alpine
@@ -210,9 +211,9 @@ it is stored under.
 auth file names a credential helper fabr can't find. Put the helper's directory on `PATH`, or log
 in again so the credentials are stored in the file.
 
-**`'@docker:alpine' cannot be listed`**: a repository's tags can't be listed. Name a tag.
+**`@docker cannot list every image it holds`**: `fabr ls` was given the registry on its own. Name an
+image to list its tags: `fabr ls @docker:alpine`.
 
 ## Not supported
 
-- A registry's tags can't be listed with `fabr ls`.
 - Fabr pushes one platform's image under a tag; it doesn't push a multi-platform image index.

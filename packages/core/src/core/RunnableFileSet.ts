@@ -99,8 +99,9 @@ export class RunnableFileSet extends FileSet {
      * persona; the entry is anchored at the install) — or `install` — the staged install
      * root (the app persona: a served program's world is its own content). */
     public readonly launchCwd: "caller" | "install" = "caller",
-    /** Environment variables the program is launched with, over whatever
-     * environment its launcher gives it. */
+    /** Environment variables the program is launched with: over the
+     * environment its launcher inherits, under any variables the launcher sets
+     * itself (a `generate` target's `env`). */
     public readonly env: ReadonlyMap<string, string> = NO_ENV,
     origin?: IProvenanceStep,
     /** Arguments given the interpreter before the entry (`--module-path …`), a

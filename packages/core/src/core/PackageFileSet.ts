@@ -111,6 +111,8 @@ export type Builds =
 export interface RegistrySelection {
   /** The registry's identity ({@link RepositoryReader.identity}). */
   readonly registry: string;
+  /** The registry's format. */
+  readonly format: PackageFormat<unknown, unknown>;
   /** The name the package is published under. */
   readonly name: string;
   /** The name it is required as, where a rename gives it another. */
@@ -190,6 +192,12 @@ export class ResolvedNode implements PackageMetadata {
 
   public get packageId(): string {
     return `${this.packageName}@${this.version ?? "*"}`;
+  }
+
+  /** The format the package is in, where it is known: its registry's, or the one its target's rule declares. */
+  public get format(): PackageFormat<unknown, unknown> | undefined {
+    const { selection, declared } = this.content;
+    return selection?.format ?? (declared === undefined || declared === "files" ? undefined : declared.format);
   }
 
   public get packages(): Package[] {
