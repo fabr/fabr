@@ -79,9 +79,15 @@ class PatchedTarget extends ResolvedTarget {
 
   constructor(name: string, from: Dependency, fixes: string[]) {
     const pkg = from.package!;
-    super({ key: `built ${name}`, files: () => Computable.resolve(EMPTY_FILESET), builds: name }, name, pkg.version, pkg.dependencies, {
-      kind: "target",
-    });
+    super(
+      { key: `built ${name}`, files: () => Computable.resolve(EMPTY_FILESET), builds: name },
+      name,
+      pkg.version,
+      pkg.dependencies,
+      {
+        kind: "target",
+      }
+    );
     this.resolved = new ResolvedRequirements(
       new Map([["extends", { sources: [pkg], references: [from.reference], reading: "packages", part: 0 }]]) as never,
       [{ conflicts: NO_CONFLICTS, conflictsAmong: () => Computable.resolve(NO_CONFLICTS) }],
@@ -100,7 +106,9 @@ class PatchedTarget extends ResolvedTarget {
   }
 }
 
-/** A target `name` building `builds` whose rule requires the one requirement `requirement`, holding `deps`. */
+/** A target `name` building `builds` whose rule requires the one requirement
+ * `requirement`, holding `deps`: the package each edge binds, or its reference
+ * where it binds none (a target read for its files). */
 class RequiringTarget extends ResolvedTarget {
   public readonly resolved: ResolvedRequirements;
 
@@ -110,7 +118,15 @@ class RequiringTarget extends ResolvedTarget {
     });
     this.resolved = new ResolvedRequirements(
       new Map([
-        [requirement, { sources: deps.map(dep => dep.package!), references: deps.map(dep => dep.reference), reading: "packages", part: 0 }],
+        [
+          requirement,
+          {
+            sources: deps.map(dep => dep.package ?? dep.reference),
+            references: deps.map(dep => dep.reference),
+            reading: "packages",
+            part: 0,
+          },
+        ],
       ]) as never,
       [{ conflicts: NO_CONFLICTS, conflictsAmong: () => Computable.resolve(NO_CONFLICTS) }],
       false
@@ -187,9 +203,34 @@ describe("sbom", () => {
     ]);
   });
 
+  it("makes a target read for its files a component of its reader, with everything it requires, however deep the reader", async () => {
+    const lodash = registry("lodash", "4.17.21");
+    const app = new RequiringTarget("app", "app", "deps", [lodash]);
+    const read: Dependency = {
+      reference: new TargetRef({ resolvedTarget: () => Computable.resolve(app) } as unknown as TargetSource, "app"),
+    };
+    const image = new RequiringTarget("image", "image", "files", [read]);
+    const outer = new RequiringTarget("outer", "outer", "dependencies", [
+      { reference: new TargetRef({} as TargetSource, "image"), package: image },
+    ]);
+    const bom = await sbom(
+      { title: "outer", resolved: ResolvedRequirements.of([outer], [new TargetRef({} as TargetSource, "outer")], NO_CONFLICTS) },
+      { version: "1.2.3" }
+    );
+    expect(bom.dependencies).to.deep.equal([
+      { ref: "outer", dependsOn: ["image"] },
+      { ref: "app", dependsOn: ["pkg:test/lodash@4.17.21"] },
+      { ref: "image", dependsOn: ["app"] },
+      { ref: "pkg:test/lodash@4.17.21", dependsOn: [] },
+    ]);
+  });
+
   it("gives a target made from a registry package that package as its ancestor, and the advisories its build fixes", async () => {
     const lodash = registry("lodash", "4.17.15");
-    const patched: Dependency = { reference: new TargetRef({} as TargetSource, "lodash"), package: new PatchedTarget("lodash", lodash, ["CVE-2021-23337"]) };
+    const patched: Dependency = {
+      reference: new TargetRef({} as TargetSource, "lodash"),
+      package: new PatchedTarget("lodash", lodash, ["CVE-2021-23337"]),
+    };
     const bom = await sbom(named("app", built("app", "", [patched])), { version: "1.2.3" });
     expect(bom.components).to.deep.equal([
       {

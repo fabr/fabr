@@ -33,6 +33,7 @@ import {
   osvServer,
   parseJson,
   Property,
+  targetsReadWithin,
   toVexStatements,
   VexStatement,
   requireWhole,
@@ -403,7 +404,11 @@ function runTest(
       (...reports: (ITestReport | undefined)[]) => reports
     ).then(reports => {
       const failure = reportTestResults(execution.log, names, reports, options.properties.get(TEST_NAME_PATTERN) || undefined);
-      return (options.reportFile === undefined ? Computable.resolve(undefined) : writeTestReport(execution, site, options.reportFile, options.format, reports))
+      return (
+        options.reportFile === undefined
+          ? Computable.resolve(undefined)
+          : writeTestReport(execution, site, options.reportFile, options.format, reports)
+      )
         .then(() => (failure === undefined ? applyExpectationUpdates(execution, site, results) : undefined))
         .then(() => (options.coverageDir === undefined ? undefined : reportCoverage(execution, site, options.coverageDir, results)))
         .then(() => {
@@ -1046,12 +1051,10 @@ function listedNames(
 ): Computable<Map<string, Reference> | SourceRef[]>[] {
   const config = configFor(model, options, execution, FILES_OPERATION);
   return options.targets.map(name =>
-    config
-      .materialize(options.commandLine.refFor(name, site))
-      .then((sources): Computable<Map<string, Reference> | SourceRef[]> => {
-        const [only] = sources;
-        return sources.length === 1 && isIncompleteRef(only) ? only.children() : openedAll(refuseNamespaces(sources));
-      })
+    config.materialize(options.commandLine.refFor(name, site)).then((sources): Computable<Map<string, Reference> | SourceRef[]> => {
+      const [only] = sources;
+      return sources.length === 1 && isIncompleteRef(only) ? only.children() : openedAll(refuseNamespaces(sources));
+    })
   );
 }
 
@@ -1280,10 +1283,16 @@ function resolvedName(config: BuildContext, ref: INameValue, title: string): Com
  * (`pkg<BUILD_OPERATION=test>`).
  */
 function printDependencies(model: BuildModel, options: Options, execution: ExecutionContext, site: IInvocationSite): Computable<void> {
-  return resolvedNames(model, options, execution, site).then(names => {
-    const blocks: DependencyTree[] = names.map(({ title, resolved }) => sectionsOf(title, resolved));
-    renderDependencyTrees(blocks, stdoutStyle()).forEach(line => console.log(line));
-  });
+  return resolvedNames(model, options, execution, site)
+    .then(names =>
+      Computable.forAll(
+        names.map(({ title, resolved }) => targetsReadWithin(resolved).then(read => sectionsOf(title, resolved, read))),
+        (...blocks: DependencyTree[]) => blocks
+      )
+    )
+    .then(blocks => {
+      renderDependencyTrees(blocks, stdoutStyle()).forEach(line => console.log(line));
+    });
 }
 
 /**
@@ -1420,8 +1429,7 @@ function listDeclaredTargets(model: BuildModel, options: Options, execution: Exe
   const named = new Set(options.targets.filter(name => !isGlob(name)));
   const patterns = options.targets.filter(isGlob).map(globMatcher);
   const listed = (name: string, decl: ITargetDecl): boolean =>
-    named.has(name) ||
-    ((options.all || !isSystem(decl)) && (options.targets.length === 0 || patterns.some(matches => matches(name))));
+    named.has(name) || ((options.all || !isSystem(decl)) && (options.targets.length === 0 || patterns.some(matches => matches(name))));
   const wanted = options.operations;
   const targets = model
     .getTargets()
@@ -1457,7 +1465,9 @@ function listDeclaredTargets(model: BuildModel, options: Options, execution: Exe
   const operationsWidth = options.longListing ? Math.max(0, ...targets.map(target => operationsOf(target.operations).length)) : 0;
   for (const { name, decl, operations } of targets) {
     const location = options.longListing ? "  " + formatDeclLocation(decl) : "";
-    const line = `${name.padEnd(nameWidth)}  ${decl.type.padEnd(typeWidth)}  ${operationsOf(operations).padEnd(operationsWidth)}${location}`;
+    const line = `${name.padEnd(nameWidth)}  ${decl.type.padEnd(typeWidth)}  ${operationsOf(operations).padEnd(
+      operationsWidth
+    )}${location}`;
     console.log(line.trimEnd());
   }
   return Computable.resolve(undefined);
@@ -1745,7 +1755,12 @@ function renderListing(files: FileSet, longListing: boolean): Computable<string[
  * the failure is reported as. A run given `-t` marks each summary filtered, and
  * fails where its pattern ran no test in any of the targets.
  */
-function reportTestResults(log: Log, names: string[], reports: (ITestReport | undefined)[], namePattern: string | undefined): TestsFailedError | undefined {
+function reportTestResults(
+  log: Log,
+  names: string[],
+  reports: (ITestReport | undefined)[],
+  namePattern: string | undefined
+): TestsFailedError | undefined {
   const filtered = namePattern === undefined ? "" : " (filtered)";
   const failures: string[] = [];
   let failed = 0;
@@ -1761,7 +1776,10 @@ function reportTestResults(log: Log, names: string[], reports: (ITestReport | un
       log.log(DIAG_TEST_RESULT, { name: names[i], summary: (report ? formatTestSummary(report) : "no tests") + filtered });
     }
   });
-  const ran = reports.reduce((count, report) => count + (report ? report.results.summary.passed + report.results.summary.failed : 0), 0);
+  const ran = reports.reduce(
+    (count, report) => count + (report ? report.results.summary.passed + report.results.summary.failed : 0),
+    0
+  );
   if (namePattern !== undefined && ran === 0) {
     throw new FabrError(`No test's name matches the pattern '${namePattern}'`);
   }

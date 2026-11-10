@@ -161,7 +161,9 @@ export class Fabr {
   public evaluate<T>(operation: (model: BuildModel) => Computable<T>): Computable<T> {
     const evaluation = loadProject(this.execution, PROJECT_FILENAME, coreContribution(), this.host, this.loadOptions).then(operation);
     this.execution.observeEvaluation(evaluation);
-    return evaluation.finally(() => Computable.forAll([this.sourceFileSource.persistIndex(), this.hostFileSource.persistIndex()], () => undefined));
+    return evaluation.finally(() =>
+      Computable.forAll([this.sourceFileSource.persistIndex(), this.hostFileSource.persistIndex()], () => undefined)
+    );
   }
 
   /**
@@ -275,8 +277,8 @@ export function requiredSources(target: ResolvedTarget): { parts: ResolvedTarget
       source instanceof TargetRef
         ? [source.toString(), ...source.projections.map(({ pattern, prefix }) => `${prefix} ${pattern.toString()}`)].join(":")
         : source instanceof ResolvedNode
-          ? source.content.key
-          : source;
+        ? source.content.key
+        : source;
     if (seen.has(identity)) {
       return false;
     }
@@ -321,13 +323,129 @@ export function edgesOf(sources: ReadonlyArray<Resolved>, references: ReadonlyAr
 export function rootEdges(resolved: ResolvedRequirements): Dependency[] {
   const [only] = resolved.denoted;
   if (resolved.denoted.length === 1 && only instanceof ResolvedTarget) {
-    const { required } = requiredSources(only);
-    return edgesOf(
-      required.map(each => each.source),
-      required.map(each => each.reference)
-    );
+    return requiredEdges(only);
   }
   return edgesOf(resolved.denoted, resolved.references.get("") ?? []);
+}
+
+/** List the edges to the packages among what `target` requires ({@link requiredSources}). */
+export function requiredEdges(target: ResolvedTarget): Dependency[] {
+  const { required } = requiredSources(target);
+  return edgesOf(
+    required.map(each => each.source),
+    required.map(each => each.reference)
+  );
+}
+
+/**
+ * Resolve the edges to the targets `target` requires for their files: one per
+ * {@link TargetRef} among {@link requiredSources}, its reference that one.
+ * What they build becomes part of what `target` builds.
+ */
+export function targetsReadForFiles(target: ResolvedTarget): Computable<Dependency[]> {
+  const refs = requiredSources(target).required.flatMap(({ source }) => (source instanceof TargetRef ? [source] : []));
+  return Computable.forAll(
+    refs.map(ref => ref.resolveTarget()),
+    (...nodes: ResolvedNode[]) =>
+      nodes.flatMap((node, at): Dependency[] => (node instanceof ResolvedTarget ? [{ reference: refs[at], package: node }] : []))
+  );
+}
+
+/** An edge a walk of what a name's build is made of follows, and whether the
+ * package it binds is wholly part of that build: a target whose files another
+ * target takes in. */
+export interface WalkedEdge {
+  readonly edge: Dependency;
+  readonly whole: boolean;
+}
+
+/**
+ * List the edges a walk of what a name's build is made of follows from `pkg`:
+ * where `whole`, everything it requires ({@link requiredEdges}), otherwise what
+ * it passes on; then, for a target, the targets it reads for their files,
+ * which `readFor` looks up ({@link walkReadingFiles}).
+ */
+export function walkedEdges(
+  pkg: Package,
+  whole: boolean,
+  readFor: (target: ResolvedTarget) => ReadonlyArray<Dependency>
+): WalkedEdge[] {
+  const target = pkg instanceof ResolvedTarget ? pkg : undefined;
+  return [
+    ...(whole && target !== undefined ? requiredEdges(target) : pkg.dependencies).map(edge => ({ edge, whole: false })),
+    ...(target === undefined ? [] : readFor(target)).map(edge => ({ edge, whole: true })),
+  ];
+}
+
+/**
+ * List the edges a walk of what the name that resolved to `resolved` is made
+ * of starts from: for one target, everything it requires and the targets it
+ * reads for their files; for anything else, the packages among what it denotes.
+ */
+export function nameEdges(
+  resolved: ResolvedRequirements,
+  readFor: (target: ResolvedTarget) => ReadonlyArray<Dependency>
+): WalkedEdge[] {
+  const [only] = resolved.denoted;
+  return resolved.denoted.length === 1 && only instanceof ResolvedTarget
+    ? walkedEdges(only, true, readFor)
+    : rootEdges(resolved).map(edge => ({ edge, whole: false }));
+}
+
+/**
+ * Resolve the targets each target the walk of what the name that resolved to
+ * `resolved` is made of reaches reads for their files ({@link nameEdges},
+ * {@link walkedEdges}), by the target that reads them.
+ */
+export function targetsReadWithin(resolved: ResolvedRequirements): Computable<ReadonlyMap<ResolvedTarget, ReadonlyArray<Dependency>>> {
+  return walkReadingFiles(readFor => {
+    const read = new Map<ResolvedTarget, ReadonlyArray<Dependency>>();
+    const recorded = (target: ResolvedTarget): ReadonlyArray<Dependency> => {
+      const edges = readFor(target);
+      read.set(target, edges);
+      return edges;
+    };
+    const seen = new Map<Package, Set<boolean>>();
+    const visit = (edges: ReadonlyArray<WalkedEdge>): void => {
+      for (const { edge, whole } of edges) {
+        const pkg = edge.package;
+        if (pkg === undefined || seen.get(pkg)?.has(whole)) {
+          continue;
+        }
+        seen.set(pkg, (seen.get(pkg) ?? new Set<boolean>()).add(whole));
+        visit(walkedEdges(pkg, whole, recorded));
+      }
+    };
+    visit(nameEdges(resolved, recorded));
+    return read;
+  });
+}
+
+/**
+ * Run `walk` over what has been resolved of the targets each target reads for
+ * its files, looked up through the `readFor` it is given (none yet where a
+ * target's are not resolved), and again with those it looked up resolved,
+ * until it looks up none that are not: its last result.
+ */
+export function walkReadingFiles<T>(walk: (readFor: (target: ResolvedTarget) => ReadonlyArray<Dependency>) => T): Computable<T> {
+  const attempt = (read: ReadonlyMap<ResolvedTarget, Dependency[]>): Computable<T> => {
+    const unread = new Set<ResolvedTarget>();
+    const result = walk(target => {
+      const edges = read.get(target);
+      if (edges === undefined) {
+        unread.add(target);
+      }
+      return edges ?? [];
+    });
+    if (unread.size === 0) {
+      return Computable.resolve(result);
+    }
+    const targets = [...unread];
+    return Computable.forAll(targets.map(targetsReadForFiles), (...edges: Dependency[][]) =>
+      attempt(new Map([...read, ...targets.map((target, at) => [target, edges[at]] as const)]))
+    );
+  };
+  return attempt(new Map());
 }
 
 /**

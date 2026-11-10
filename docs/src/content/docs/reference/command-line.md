@@ -298,9 +298,11 @@ fabr deps @dep:chai          # a catalog member, at the versions the catalog pin
 
 `deps` builds none of the targets it lists and downloads no packages from a registry: it reads
 what each target declares and resolves versions exactly as a build would, which needs only each
-package's registry metadata. Only the properties that take packages are shown: a target named in
-one is listed by its name, whether it builds a package or plain files, and what a property that
-takes files names (`srcs`, `resources`) is left out. So are the tools a target runs, such as the
+package's registry metadata. The properties that take packages are shown: a target named in one is
+listed by its name, whether it builds a package or plain files. A target whose files a property
+takes in (`files = server:** -> opt/server/**;` on a `container_image`) is listed under that
+property too, with everything it requires beneath it, since its build becomes part of this one;
+plain files (`srcs = src:**;`) are left out. So are the tools a target runs, such as the
 TypeScript compiler or a `generate` target's `run` command, which are installed apart from the
 target's own packages. A target with no packages prints `No dependencies`. A reference that selects
 files (`mylib:build/*.js`) is an error: name the target.
@@ -344,6 +346,10 @@ the advisory says fix it and one path by which each reference reaches it; the re
 a fixed version at the root, for instance `@npm:lodash:4.17.21!` or a catalog entry, since a root
 requirement decides the version for the whole tree.
 
+The packages checked are the ones [`deps`](#deps) shows for the name: a target whose files another
+takes in (a program a `container_image` holds in its `files`) is checked as part of that target,
+with everything it requires.
+
 The command exits with status 1 when any advisory affects a package, one a patched package fixes
 or an [OpenVEX](https://github.com/openvex/spec) statement in a document the
 `ADVISORIES_SUPPRESSION_FILE` property names says doesn't affect it aside, and 0 otherwise. `--format
@@ -385,7 +391,9 @@ digest of its content the registry publishes: npm's `dist.integrity` and Maven's
 artifact. Those are read from each registry's metadata for the exact version, one small document
 per package the first time, and cached forever, since a published version's metadata never changes.
 No package is downloaded. A package built in your project is a component by name, and by version
-where its target declares one.
+where its target declares one. A target whose files another takes in (a program a
+`container_image` holds in its `files`) is a component that target depends on, with everything it
+requires.
 
 The document is a function of the resolution alone: it carries no timestamp or serial number, so
 two runs over the same sources write the same bytes.

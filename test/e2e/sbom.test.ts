@@ -63,6 +63,19 @@ describe("e2e: fabr sbom", () => {
     ]);
   });
 
+  it("makes a target another reads for its files a component of it, with everything it requires", () => {
+    const project = PROJECT + "script sbom_tool { entry = ./tool.sh; deps = sbom_lib:**; }\n";
+    const result = runFabr({ "PROJECT.fabr": project, ...FILES, "tool.sh": "echo tool\n" }, ["sbom", "sbom_tool"]);
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stderr).to.not.contain("Compiling");
+    const bom = JSON.parse(result.stdout);
+    expect(bom.dependencies).to.deep.equal([
+      { ref: "sbom_tool", dependsOn: ["sbom_lib"] },
+      { ref: "sbom_base", dependsOn: [] },
+      { ref: "sbom_lib", dependsOn: ["sbom_base"] },
+    ]);
+  });
+
   it("takes one target", () => {
     const result = runFabr({ "PROJECT.fabr": PROJECT, ...FILES }, ["sbom", "sbom_app", "sbom_lib"]);
     expect(result.status).to.not.equal(0);

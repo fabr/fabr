@@ -37,6 +37,7 @@ import {
   ResolvedTarget,
   TargetRef,
   TargetSource,
+  WalkedEdge,
 } from "@fabr-build/core";
 import { renderAudit, renderDependencyTrees, sectionsOf } from "./DepsTree";
 
@@ -77,8 +78,13 @@ function delivered(
   return { reference: reference(name, constraint), package: new PackageFileSet([], name, version, dependencies) };
 }
 
+/** Make a tree's sections of `parts`, each edge followed for what its package passes on. */
+function walkedParts(parts: Array<[string, Dependency[]]>): Map<string, WalkedEdge[]> {
+  return new Map(parts.map(([name, deps]) => [name, deps.map(edge => ({ edge, whole: false }))]));
+}
+
 function rendered(parts: Array<[string, Dependency[]]>, title = "app"): string[] {
-  return renderDependencyTrees([{ title, parts: new Map(parts) }]);
+  return renderDependencyTrees([{ title, parts: walkedParts(parts) }]);
 }
 
 describe("renderDependencyTrees", () => {
@@ -109,7 +115,7 @@ describe("renderDependencyTrees", () => {
     const lines = renderDependencyTrees([
       {
         title: "app",
-        parts: new Map([
+        parts: walkedParts([
           [
             "deps",
             [delivered("left", "1.0.0", "1.0.0", [delivered("react", "17.0.2", "^17.0.0")]), delivered("react", "18.3.1", "^18.0.0")],
@@ -144,7 +150,7 @@ describe("renderDependencyTrees", () => {
     const lines = renderDependencyTrees([
       {
         title: "app",
-        parts: new Map([["deps", [node("lib", "", [base]), node("lib2", "", [release])]]]),
+        parts: walkedParts([["deps", [node("lib", "", [base]), node("lib2", "", [release])]]]),
         conflicts: new Conflicts(
           new Map([["base", new Set(["<build #00000000>", "<build JS_TARGET=es2022 #11111111>"])]]),
           pkg => pkg.packageName === "base",
@@ -237,7 +243,7 @@ describe("renderDependencyTrees", () => {
     };
     const local = { reference: target("local"), package: new PackageFileSet([], "local", undefined, [], { kind: "target" }) };
     const lines = renderDependencyTrees(
-      [{ title: "app", parts: new Map([["deps", [local, registry]]]) }],
+      [{ title: "app", parts: walkedParts([["deps", [local, registry]]]) }],
       (code, text) => `<${code}>${text}</>`
     );
     expect(lines).to.deep.equal([
@@ -252,8 +258,8 @@ describe("renderDependencyTrees", () => {
 
   it("separates the blocks of several names", () => {
     const lines = renderDependencyTrees([
-      { title: "one", parts: new Map([["deps", [delivered("x", "1.0.0", "1.0.0")]]]) },
-      { title: "two", parts: new Map() },
+      { title: "one", parts: walkedParts([["deps", [delivered("x", "1.0.0", "1.0.0")]]]) },
+      { title: "two", parts: walkedParts([]) },
     ]);
     expect(lines).to.deep.equal(["one", "deps", "└── x:1.0.0", "", "two", "No dependencies"]);
   });
@@ -311,7 +317,10 @@ class RequiringTarget extends ResolvedTarget {
     });
     this.resolved = new ResolvedRequirements(
       new Map([
-        [requirement, { sources: deps.map(dep => dep.package!), references: deps.map(dep => dep.reference), reading: "packages", part: 0 }],
+        [
+          requirement,
+          { sources: deps.map(dep => dep.package!), references: deps.map(dep => dep.reference), reading: "packages", part: 0 },
+        ],
       ]) as never,
       [{ conflicts: NO_CONFLICTS, conflictsAmong: () => Computable.resolve(NO_CONFLICTS) }],
       false
@@ -332,7 +341,7 @@ describe("sectionsOf", () => {
     const build = new RequiringTarget("app", "app", "deps", [delivered("lodash", "4.17.21", "^4.17.0")]);
     const run = new RequiringTarget("app", "app", "build", [{ reference: target("app"), package: build }]);
     const tree = sectionsOf("app", ResolvedRequirements.of([run], [target("app")], NO_CONFLICTS));
-    expect([...tree.parts].map(([section, deps]) => [section, deps.map(dep => dep.package?.packageName)])).to.deep.equal([
+    expect([...tree.parts].map(([section, deps]) => [section, deps.map(({ edge }) => edge.package?.packageName)])).to.deep.equal([
       ["required by its rule", ["lodash"]],
     ]);
   });
@@ -372,7 +381,10 @@ describe("renderAudit", () => {
   });
 
   it("renders a package a patched target fixes an advisory in as fixed there, and counts the advisory apart", () => {
-    const patched = { ...audited("lodash", "4.17.15", [["app", "lodash@4.17.15"], 0]), patchedBy: { target: "lodash", fixes: [LODASH.id] } };
+    const patched = {
+      ...audited("lodash", "4.17.15", [["app", "lodash@4.17.15"], 0]),
+      patchedBy: { target: "lodash", fixes: [LODASH.id] },
+    };
     const minimist = audited("minimist", "0.0.8", [["app", "minimist@0.0.8"], 0]);
     const report: AuditReport = {
       packages: [patched, minimist],

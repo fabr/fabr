@@ -19,7 +19,6 @@
 
 import {
   Reference,
-  Resolved,
   ResolvedRequirements,
   ResolvedTarget,
   Package,
@@ -49,7 +48,10 @@ import {
   fixedVersions,
   pathText,
   severityRank,
+  TargetRef,
   vexText,
+  walkedEdges,
+  WalkedEdge,
 } from "@fabr-build/core";
 
 /** What a line of the tree may be marked with, and what each mark means. */
@@ -98,9 +100,11 @@ function label(dep: Dependency, style: Style): string {
  * requirement holds, and the versions conflicting among them. */
 export interface DependencyTree {
   readonly title: string;
-  readonly parts: ReadonlyMap<string, ReadonlyArray<Dependency>>;
+  readonly parts: ReadonlyMap<string, ReadonlyArray<WalkedEdge>>;
   /** The versions that conflict in what the name requires. */
   readonly conflicts?: Conflicts;
+  /** The edges to the targets each target in the tree reads for their files ({@link targetsReadWithin}). */
+  readonly readFiles?: ReadonlyMap<ResolvedTarget, ReadonlyArray<Dependency>>;
 }
 
 /**
@@ -112,22 +116,25 @@ export interface DependencyTree {
  * shown by what it requires in turn, and what conflicts there is the target's
  * too. Each source is shown once.
  */
-function requiredAsWritten(target: ResolvedTarget): { parts: Map<string, Dependency[]>; conflicts: Conflicts } {
+function requiredAsWritten(
+  target: ResolvedTarget,
+  readFiles: ReadonlyMap<ResolvedTarget, ReadonlyArray<Dependency>>
+): { parts: Map<string, WalkedEdge[]>; conflicts: Conflicts } {
   const { parts, required } = requiredSources(target);
-  const sections = new Map<string, { sources: Resolved[]; references: Array<Reference | undefined> }>();
+  const read = readFiles.get(target) ?? [];
+  const sections = new Map<string, WalkedEdge[]>();
   for (const { part, source, reference } of required) {
     const decl = declOf(part.origin);
     const property = decl === undefined ? undefined : propertyOf(reference ?? source, decl);
     const section = property === undefined ? `required by ${decl?.type ?? "its"} rule` : declName(property);
-    const held = sections.get(section) ?? { sources: [], references: [] };
-    held.sources.push(source);
-    held.references.push(reference);
-    sections.set(section, held);
+    /* A target read for its files is shown as the target, wholly part of this one. */
+    const edges: WalkedEdge[] =
+      source instanceof TargetRef
+        ? read.filter(edge => edge.reference === source).map(edge => ({ edge, whole: true }))
+        : edgesOf([source], [reference]).map(edge => ({ edge, whole: false }));
+    sections.set(section, [...(sections.get(section) ?? []), ...edges]);
   }
-  return {
-    parts: new Map([...sections].map(([section, { sources, references }]) => [section, edgesOf(sources, references)])),
-    conflicts: Conflicts.union(parts.map(part => part.resolved.conflicts)),
-  };
+  return { parts: sections, conflicts: Conflicts.union(parts.map(part => part.resolved.conflicts)) };
 }
 
 /** Get the declaration of the target whose node `origin` is the provenance of, if it is a target's. */
@@ -157,18 +164,28 @@ function propertyOf(source: unknown, decl: ITargetDecl): IPropertyDecl | undefin
 
 /**
  * Split what a name resolved to into the tree's sections. One target is shown
- * by what it requires, a section per requirement, with what conflicts there.
+ * by what it requires, a section per requirement, with what conflicts there; a
+ * target it reads for its files (resolved in `readFiles`) as that target.
  * Anything else (an external requirement, a catalog member, a global naming
  * several things) is shown as what it names, in one unnamed section, with each
  * target among it as its node.
  */
-export function sectionsOf(title: string, resolved: ResolvedRequirements): DependencyTree {
+export function sectionsOf(
+  title: string,
+  resolved: ResolvedRequirements,
+  readFiles: ReadonlyMap<ResolvedTarget, ReadonlyArray<Dependency>> = new Map()
+): DependencyTree {
   const denoted = resolved.denoted;
   const [only] = denoted;
   if (denoted.length === 1 && only instanceof ResolvedTarget) {
-    return { title, ...requiredAsWritten(only) };
+    return { title, ...requiredAsWritten(only, readFiles), readFiles };
   }
-  return { title, parts: new Map([["", edgesOf(denoted, resolved.references.get("") ?? [])]]), conflicts: resolved.conflicts };
+  return {
+    title,
+    parts: new Map([["", edgesOf(denoted, resolved.references.get("") ?? []).map(edge => ({ edge, whole: false }))]]),
+    conflicts: resolved.conflicts,
+    readFiles,
+  };
 }
 
 /** List `conflicts` as notes: each package and its conflicting versions, a
@@ -198,16 +215,17 @@ export function renderDependencyTrees(blocks: ReadonlyArray<DependencyTree>, sty
     present.forEach(mark => used.add(mark));
     return [text, ...present.map(mark => style(mark === "n" ? YELLOW : mark === "!" ? RED : DIM, `(${mark})`))].join(" ");
   };
-  blocks.forEach(({ title, parts, conflicts = NO_CONFLICTS }, index) => {
+  blocks.forEach(({ title, parts, conflicts = NO_CONFLICTS, readFiles = new Map() }, index) => {
     const sections = [...parts]
-      .map(([name, roots]): [string, ReadonlyArray<Dependency>] => [name, roots])
+      .map(([name, roots]): [string, ReadonlyArray<WalkedEdge>] => [name, roots])
       .filter(([, roots]) => roots.length > 0);
     const nodeOf = nodeNaming(
-      sections.flatMap(([, roots]) => roots.flatMap(root => (root.package === undefined ? [] : [root.package])))
+      sections.flatMap(([, roots]) => roots.flatMap(({ edge }) => (edge.package === undefined ? [] : [edge.package])))
     );
+    const readFor = (target: ResolvedTarget): ReadonlyArray<Dependency> => readFiles.get(target) ?? [];
     const shown = new Set<string>();
-    const walk = (requirer: Package | undefined, deps: ReadonlyArray<Dependency>, indent: string): void => {
-      deps.forEach((dep, at) => {
+    const walk = (requirer: Package | undefined, deps: ReadonlyArray<WalkedEdge>, indent: string): void => {
+      deps.forEach(({ edge: dep, whole }, at) => {
         const last = at === deps.length - 1;
         const pkg = dep.package;
         const provided = requirer !== undefined && requirer.provided.has(dependencyName(dep));
@@ -220,9 +238,10 @@ export function renderDependencyTrees(blocks: ReadonlyArray<DependencyTree>, sty
         const node = nodeOf(pkg);
         const repeated = shown.has(node);
         shown.add(node);
-        lines.push(marked(text, provided && "p", conflicts.includes(pkg) && "!", repeated && pkg.dependencies.length > 0 && "*"));
+        const edges = walkedEdges(pkg, whole, readFor);
+        lines.push(marked(text, provided && "p", conflicts.includes(pkg) && "!", repeated && edges.length > 0 && "*"));
         if (!repeated) {
-          walk(pkg, pkg.dependencies, `${indent}${last ? "    " : "│   "}`);
+          walk(pkg, edges, `${indent}${last ? "    " : "│   "}`);
         }
       });
     };
@@ -280,7 +299,9 @@ export function renderAudit(report: AuditReport, style: Style = (_code, text) =>
     for (const pkg of packages) {
       const versions = fixedVersions(advisory, pkg);
       const patched = pkg.patchedBy === undefined ? "" : ` as patched by '${pkg.patchedBy.target}'`;
-      lines.push(`  ${pkg.packageName}@${pkg.version}${patched}${versions.length === 0 ? "" : style(DIM, `, fixed in ${versions.join(", ")}`)}`);
+      lines.push(
+        `  ${pkg.packageName}@${pkg.version}${patched}${versions.length === 0 ? "" : style(DIM, `, fixed in ${versions.join(", ")}`)}`
+      );
       pkg.paths.forEach(path => lines.push(style(DIM, `    ${pathText(path)}`)));
     }
     for (const pkg of fixed) {

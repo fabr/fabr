@@ -120,9 +120,15 @@ class PatchedTarget extends ResolvedTarget {
 
   constructor(name: string, from: Dependency, fixes: string[]) {
     const pkg = from.package!;
-    super({ key: `built ${name}`, files: () => Computable.resolve(EMPTY_FILESET), builds: name }, name, pkg.version, pkg.dependencies, {
-      kind: "target",
-    });
+    super(
+      { key: `built ${name}`, files: () => Computable.resolve(EMPTY_FILESET), builds: name },
+      name,
+      pkg.version,
+      pkg.dependencies,
+      {
+        kind: "target",
+      }
+    );
     this.resolved = new ResolvedRequirements(
       new Map([["extends", { sources: [pkg], references: [from.reference], reading: "packages", part: 0 }]]) as never,
       [{ conflicts: NO_CONFLICTS, conflictsAmong: () => Computable.resolve(NO_CONFLICTS) }],
@@ -153,7 +159,12 @@ class RequiringTarget extends ResolvedTarget {
       new Map(
         [...requirements].map(([key, deps], part) => [
           key,
-          { sources: deps.map(dep => dep.package!), references: deps.map(dep => dep.reference), reading: "packages", part },
+          {
+            sources: deps.map(dep => dep.package ?? dep.reference),
+            references: deps.map(dep => dep.reference),
+            reading: "packages",
+            part,
+          },
         ])
       ) as never,
       [...requirements].map(() => ({ conflicts: NO_CONFLICTS, conflictsAmong: () => Computable.resolve(NO_CONFLICTS) })),
@@ -176,7 +187,11 @@ class RequiringTarget extends ResolvedTarget {
  * build, which requires `deps`: what `app<BUILD_OPERATION=run>` resolves to. */
 function runTarget(deps: Dependency[]): ResolvedName {
   const build = new RequiringTarget("app", "app", new Map([["deps", deps]]));
-  const run = new RequiringTarget("app", "app", new Map([["build", [{ reference: new TargetRef({} as TargetSource, "app"), package: build }]]]));
+  const run = new RequiringTarget(
+    "app",
+    "app",
+    new Map([["build", [{ reference: new TargetRef({} as TargetSource, "app"), package: build }]]])
+  );
   return { title: "app", resolved: ResolvedRequirements.of([run], [new TargetRef({} as TargetSource, "app")], NO_CONFLICTS) };
 }
 
@@ -236,7 +251,7 @@ const MINIMIST: Advisory = {
 };
 
 describe("auditedPackages", () => {
-  it("lists each registry package once, at its exact version, with the first path per tree and the count of its other edges", () => {
+  it("lists each registry package once, at its exact version, with the first path per tree and the count of its other edges", async () => {
     const lodash = registry("lodash", "4.17.15");
     const app = named("app", [
       registry("express", "4.17.1", [lodash]),
@@ -245,7 +260,7 @@ describe("auditedPackages", () => {
       registry("chai", "4.3.6"),
     ]);
     const tool = named("tool", [lodash]);
-    expect(auditedPackages([app, tool])).to.deep.equal([
+    expect(await auditedPackages([app, tool])).to.deep.equal([
       { ...audited("chai", "4.3.6"), paths: [{ path: ["app", "chai@4.3.6"], others: 0 }] },
       { ...audited("express", "4.17.1"), paths: [{ path: ["app", "express@4.17.1"], others: 0 }] },
       {
@@ -259,19 +274,19 @@ describe("auditedPackages", () => {
     ]);
   });
 
-  it("walks through a package built in the project and asks about nothing of it", () => {
+  it("walks through a package built in the project and asks about nothing of it", async () => {
     const lib = built("lib", [registry("semver", "7.6.3")]);
-    expect(auditedPackages([named("app", [lib])])).to.deep.equal([
+    expect(await auditedPackages([named("app", [lib])])).to.deep.equal([
       { ...audited("semver", "7.6.3"), paths: [{ path: ["app", "lib", "semver@7.6.3"], others: 0 }] },
     ]);
   });
 
-  it("asks about a target made from a registry package as that package, apart from the package itself", () => {
+  it("asks about a target made from a registry package as that package, apart from the package itself", async () => {
     const semver = registry("semver", "7.6.3");
     const lodash = registry("lodash", "4.17.15", [semver]);
     const app = named("app", [built("lib", [patched("lodash", lodash, ["CVE-2021-23337"])])]);
     const tool = named("tool", [lodash]);
-    expect(auditedPackages([app, tool])).to.deep.equal([
+    expect(await auditedPackages([app, tool])).to.deep.equal([
       { ...audited("lodash", "4.17.15"), paths: [{ path: ["tool", "lodash@4.17.15"], others: 0 }] },
       {
         ...audited("lodash", "4.17.15"),
@@ -288,23 +303,39 @@ describe("auditedPackages", () => {
     ]);
   });
 
-  it("asks about a renamed package under the name the registry publishes it as", () => {
+  it("asks about a renamed package under the name the registry publishes it as", async () => {
     const aliased = registry("wrap-ansi-cjs", "7.0.0", [], "wrap-ansi");
-    expect(auditedPackages([named("app", [aliased])]).map(pkg => pkg.purl)).to.deep.equal(["pkg:test/wrap-ansi@7.0.0"]);
+    expect((await auditedPackages([named("app", [aliased])])).map(pkg => pkg.purl)).to.deep.equal(["pkg:test/wrap-ansi@7.0.0"]);
   });
 
-  it("walks a target's build under another operation as part of the target", () => {
-    expect(auditedPackages([runTarget([registry("lodash", "4.17.15")])])).to.deep.equal([
+  it("walks a target's build under another operation as part of the target", async () => {
+    expect(await auditedPackages([runTarget([registry("lodash", "4.17.15")])])).to.deep.equal([
       { ...audited("lodash", "4.17.15"), paths: [{ path: ["app", "lodash@4.17.15"], others: 0 }] },
     ]);
   });
 
-  it("leaves out a package whose provenance holds no resolution", () => {
+  it("walks a target read for its files as part of its reader, everything it requires, however deep the reader", async () => {
+    const lodash = registry("lodash", "4.17.15");
+    const program = new RequiringTarget("program", "program", new Map([["deps", [lodash]]]));
+    const read: Dependency = {
+      reference: new TargetRef({ resolvedTarget: () => Computable.resolve(program) } as unknown as TargetSource, "program"),
+    };
+    const image = new RequiringTarget("image", "image", new Map([["files", [read]]]));
+    const outer = { reference: new TargetRef({} as TargetSource, "image"), package: image };
+    expect(await auditedPackages([named("image", [outer])])).to.deep.equal([
+      { ...audited("lodash", "4.17.15"), paths: [{ path: ["image", "program", "lodash@4.17.15"], others: 0 }] },
+    ]);
+    expect(await auditedPackages([named("app", [built("outer", [outer])])])).to.deep.equal([
+      { ...audited("lodash", "4.17.15"), paths: [{ path: ["app", "outer", "image", "program", "lodash@4.17.15"], others: 0 }] },
+    ]);
+  });
+
+  it("leaves out a package whose provenance holds no resolution", async () => {
     const installed: Dependency = {
       reference: reference("sass"),
       package: new PackageFileSet([], "sass", "1.0.0", [], { kind: "fabr-home" }),
     };
-    expect(auditedPackages([named("app", [installed])])).to.deep.equal([]);
+    expect(await auditedPackages([named("app", [installed])])).to.deep.equal([]);
   });
 });
 
@@ -499,7 +530,10 @@ describe("audit", () => {
   it("reports an advisory a patched target declares it fixes, by id or alias, as fixed there, and a declared fix nothing bears out", async () => {
     const lodash = registry("lodash", "4.17.15");
     const OTHER: Advisory = { ...LODASH, id: "GHSA-p6mc-m468-83gw", aliases: [], severity: "LOW" };
-    const names = [named("app", [built("lib", [patched("lodash", lodash, ["CVE-2021-23337", "GHSA-none"])])]), named("tool", [lodash])];
+    const names = [
+      named("app", [built("lib", [patched("lodash", lodash, ["CVE-2021-23337", "GHSA-none"])])]),
+      named("tool", [lodash]),
+    ];
     const answers = server([
       [LODASH, ["pkg:test/lodash@4.17.15"]],
       [OTHER, ["pkg:test/lodash@4.17.15"]],
@@ -529,14 +563,26 @@ describe("audit", () => {
     const statements = toVexStatements("vex.json")({
       timestamp: "2026-01-01T00:00:00Z",
       statements: [
-        { vulnerability: { name: "CVE-2021-23337" }, products: [{ "@id": "pkg:test/lodash" }], status: "not_affected", justification: "inline_mitigations_already_exist" },
-        { vulnerability: MINIMIST.id, products: ["pkg:test/minimist@0.0.8"], status: "not_affected", timestamp: "2026-01-02T00:00:00Z" },
+        {
+          vulnerability: { name: "CVE-2021-23337" },
+          products: [{ "@id": "pkg:test/lodash" }],
+          status: "not_affected",
+          justification: "inline_mitigations_already_exist",
+        },
+        {
+          vulnerability: MINIMIST.id,
+          products: ["pkg:test/minimist@0.0.8"],
+          status: "not_affected",
+          timestamp: "2026-01-02T00:00:00Z",
+        },
         { vulnerability: MINIMIST.id, products: ["pkg:test/minimist@0.0.8"], status: "affected", timestamp: "2026-01-03T00:00:00Z" },
       ],
     });
     const report = await audit(names, answers(), statements);
     const [plain] = report.packages;
-    expect(report.findings.map(({ advisory, packages, suppressed }) => [advisory.id, packages.map(pkg => pkg.packageName), suppressed])).to.deep.equal([
+    expect(
+      report.findings.map(({ advisory, packages, suppressed }) => [advisory.id, packages.map(pkg => pkg.packageName), suppressed])
+    ).to.deep.equal([
       [MINIMIST.id, ["minimist"], []],
       [LODASH.id, [], [{ pkg: plain, statement: statements[0] }]],
     ]);
@@ -546,10 +592,15 @@ describe("audit", () => {
 
   it("reports a declared fix of a target made from no registry package as matching nothing", async () => {
     const vendored = new RequiringTarget("foo", "foo", new Map(), ["GHSA-1"]);
-    const names = [named("app", [{ reference: new TargetRef({} as TargetSource, "foo"), package: vendored }, registry("chai", "4.3.6")])];
+    const names = [
+      named("app", [{ reference: new TargetRef({} as TargetSource, "foo"), package: vendored }, registry("chai", "4.3.6")]),
+    ];
     const report = await audit(names, server([]));
     expect(report.unmatched).to.deep.equal([{ target: "foo", id: "GHSA-1" }]);
-    const alone = await audit([named("app", [built("lib", [{ reference: new TargetRef({} as TargetSource, "foo"), package: vendored }])])], server([]));
+    const alone = await audit(
+      [named("app", [built("lib", [{ reference: new TargetRef({} as TargetSource, "foo"), package: vendored }])])],
+      server([])
+    );
     expect(alone.unmatched).to.deep.equal([{ target: "foo", id: "GHSA-1" }]);
   });
 });

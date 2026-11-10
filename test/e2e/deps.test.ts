@@ -100,6 +100,16 @@ describe("e2e: fabr deps", () => {
     );
   });
 
+  it("shows a target another reads for its files as part of it, with everything it requires", () => {
+    const result = runFabr(
+      { "PROJECT.fabr": PROJECT + "script deps_files { entry = ./tool.sh; deps = deps_lib:**; }\n", ...FILES, "tool.sh": "echo tool\n" },
+      ["-DJS_TARGET=es2020", "deps", "deps_files"]
+    );
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stdout).to.equal(["deps_files", "deps", "└── deps_lib<JS_TARGET=es2020>", "    └── deps_base<JS_TARGET=es2020>", ""].join("\n"));
+    expect(result.stderr).to.not.contain("Compiling");
+  });
+
   it("shows a target a rule written in .fabr builds by the target's properties and the rule", () => {
     const result = deps("deps_bundle");
     expect(result.status, result.stderr).to.equal(0);

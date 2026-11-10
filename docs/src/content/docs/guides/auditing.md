@@ -89,6 +89,12 @@ fabr audit 'app<BUILD_OPERATION=test>'
 A target type with no `build` of its own is read under the one operation it has: a `java_program`
 or a `js_script` under `run`.
 
+`fabr audit` checks the packages [`fabr deps`](/reference/command-line/#deps) shows for the same
+name. A target whose files another target takes in is checked as part of that target, with
+everything it requires: auditing a `container_image` checks the program it holds in its `files`, such as a
+`js_installation` or `java_installation`, and its dependencies. What a base image pulled from a
+registry contains, such as its operating system's packages, isn't checked.
+
 For Java, a `jar_package` is checked against its compile classpath, which leaves out the
 `runtime`-scope dependencies of the packages it uses. Audit what you deploy instead: a
 `java_program`, `war_package` or `java_installation` is checked against its runtime classpath, the
@@ -373,7 +379,8 @@ fabr sbom @mvn:org.apache.commons:commons-text:1.10.0 > commons-text.cdx.json
 
 The packages it lists are the ones `fabr audit` checks for the same name, read the same way, so a
 `<BUILD_OPERATION=…>` on the name, and the [Java classpath](#running-fabr-audit), apply here too.
-It takes exactly one name.
+A target whose files another target takes in, such as a program a `container_image` holds in its
+`files`, is a component of the target that takes it. It takes exactly one name.
 
 The document holds:
 

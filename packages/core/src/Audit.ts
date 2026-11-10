@@ -22,7 +22,7 @@ import { FabrError } from "./core/Errors";
 import { sendRequest } from "./core/Fetch";
 import { Dependency, Package } from "./core/PackageFileSet";
 import { ResolvedTarget } from "./context/index";
-import { madeFrom, ResolvedName, rootEdges } from "./Fabr";
+import { madeFrom, nameEdges, ResolvedName, walkedEdges, WalkedEdge, walkReadingFiles } from "./Fabr";
 import { declPosn } from "./model/AST";
 import { IModelStep, MODEL_PROVENANCE } from "./model/ModelProvenance";
 import { builtInProject } from "./model/Target";
@@ -92,14 +92,23 @@ function pathName(pkg: Package): string {
  * made from where it is made from one, apart from that package itself;
  * otherwise it is asked about nothing, having no published version.
  */
-export function auditedPackages(names: ReadonlyArray<ResolvedName>): AuditedPackage[] {
-  return walkNames(names).packages;
+export function auditedPackages(names: ReadonlyArray<ResolvedName>): Computable<AuditedPackage[]> {
+  return walkNames(names).then(walked => walked.packages);
 }
 
 /** List the {@link auditedPackages} among what `names` resolve to, and the
  * advisories declared fixed by each target among them that is made from no
  * registry package to fix them in. */
-function walkNames(names: ReadonlyArray<ResolvedName>): { packages: AuditedPackage[]; unattached: UnmatchedFix[] } {
+function walkNames(names: ReadonlyArray<ResolvedName>): Computable<{ packages: AuditedPackage[]; unattached: UnmatchedFix[] }> {
+  return walkReadingFiles(readFor => walkNamesReading(names, readFor));
+}
+
+/** Walk `names` as {@link walkNames} does, with what `readFor` holds of the
+ * targets each target reads for its files. */
+function walkNamesReading(
+  names: ReadonlyArray<ResolvedName>,
+  readFor: (target: ResolvedTarget) => ReadonlyArray<Dependency>
+): { packages: AuditedPackage[]; unattached: UnmatchedFix[] } {
   const unattached: UnmatchedFix[] = [];
   interface Entry {
     purl: string;
@@ -114,8 +123,8 @@ function walkNames(names: ReadonlyArray<ResolvedName>): { packages: AuditedPacka
     /* Each package's dependencies are walked once; every further edge to it is
      * counted as another path. */
     const reached = new Map<Package, { path: string[]; others: number } | undefined>();
-    const walk = (deps: ReadonlyArray<Dependency>, path: string[], site: ISourceSpan | undefined): void => {
-      for (const dependency of deps) {
+    const walk = (edges: ReadonlyArray<WalkedEdge>, path: string[], site: ISourceSpan | undefined): void => {
+      for (const { edge: dependency, whole } of edges) {
         const pkg = dependency.package;
         if (pkg === undefined) {
           continue;
@@ -156,10 +165,10 @@ function walkNames(names: ReadonlyArray<ResolvedName>): { packages: AuditedPacka
           entry.paths.push(found);
           audited.set(key, entry);
         }
-        walk(pkg.dependencies, here, written);
+        walk(walkedEdges(pkg, whole, readFor), here, written);
       }
     };
-    walk(rootEdges(resolved), [title], undefined);
+    walk(nameEdges(resolved, readFor), [title], undefined);
   }
   return { packages: [...audited].sort(([a], [b]) => compareText(a, b)).map(([, entry]) => entry), unattached };
 }
@@ -373,7 +382,8 @@ export function severityRank(advisory: Advisory): number {
 }
 
 /**
- * Audit what `names` resolve to: ask `server` about every registry package among them, and
+ * Audit what `names` resolve to: ask `server` about every registry package among them,
+ * those the targets read for their files require included, and
  * report each advisory it answers with against the packages it affects,
  * the worst first, apart from those made into targets that declare their
  * builds fix it, and apart from those `statements` say it does not affect
@@ -386,7 +396,16 @@ export function audit(
   server: AdvisoryServer,
   statements: ReadonlyArray<VexStatement> = []
 ): Computable<AuditReport> {
-  const { packages, unattached } = walkNames(names);
+  return walkNames(names).then(({ packages, unattached }) => auditPackages(packages, unattached, server, statements));
+}
+
+/** Audit `packages` as {@link audit} does, with the fixes `unattached` declares where there is nothing to fix them in. */
+function auditPackages(
+  packages: AuditedPackage[],
+  unattached: UnmatchedFix[],
+  server: AdvisoryServer,
+  statements: ReadonlyArray<VexStatement>
+): Computable<AuditReport> {
   if (packages.length === 0) {
     return Computable.resolve({ packages, findings: [], unmatched: unattached });
   }
@@ -399,7 +418,8 @@ export function audit(
       (...advisories: Advisory[]): AuditReport => {
         const byId = new Map(ids.map((id, at) => [id, advisories[at]]));
         const affecting = (pkg: AuditedPackage): Advisory[] => (answered.get(pkg.purl) ?? []).map(id => byId.get(id)!);
-        const fixes = (pkg: AuditedPackage, advisory: Advisory): boolean => pkg.patchedBy !== undefined && namedAmong(advisory, pkg.patchedBy.fixes);
+        const fixes = (pkg: AuditedPackage, advisory: Advisory): boolean =>
+          pkg.patchedBy !== undefined && namedAmong(advisory, pkg.patchedBy.fixes);
         return {
           packages,
           findings: advisories
@@ -418,11 +438,7 @@ export function audit(
                 ),
               };
             })
-            .sort(
-              (a, b) =>
-                severityRank(a.advisory) - severityRank(b.advisory) ||
-                compareText(a.advisory.id, b.advisory.id)
-            ),
+            .sort((a, b) => severityRank(a.advisory) - severityRank(b.advisory) || compareText(a.advisory.id, b.advisory.id)),
           unmatched: [
             ...packages.flatMap(pkg =>
               pkg.patchedBy === undefined
@@ -546,8 +562,8 @@ export function auditSarif(
       ...(patched !== undefined && namedAmong(advisory, patched.fixes)
         ? { suppressions: [{ kind: "inSource" as const, justification: `fixed by the patched target '${patched.target}'` }] }
         : statement !== undefined
-          ? { suppressions: [{ kind: "external" as const, justification: vexText(statement) }] }
-          : {}),
+        ? { suppressions: [{ kind: "external" as const, justification: vexText(statement) }] }
+        : {}),
       properties: {
         purl: pkg.purl,
         fixed,

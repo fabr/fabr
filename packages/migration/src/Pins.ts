@@ -76,7 +76,8 @@ function floorlessOf(err: unknown, found: Set<string>): boolean {
   if (err instanceof ResolutionWalkError) {
     let other = false;
     for (const failure of err.failures) {
-      const named = failure.floorless ?? (failure.name === undefined ? [] : [{ name: failure.name, publishedName: failure.publishedName }]);
+      const named =
+        failure.floorless ?? (failure.name === undefined ? [] : [{ name: failure.name, publishedName: failure.publishedName }]);
       named.forEach(pkg => found.add(pkg.publishedName ?? pkg.name));
       other ||= named.length === 0;
     }
@@ -102,7 +103,12 @@ function evaluate<T>(
   const log = new LogFormatter(LogLevel.Warn, line => process.stderr.write(`${line}\n`));
   const fabr = new Fabr({ sourceRoot: root, cacheRoot, log });
   const reference = (name: string): INameValue =>
-    syntheticValue(parseName(name), { fs: fabr.sourceFileSource, file: "<fabr-migrate>", reader: new StringReader(name) }, 0, name.length);
+    syntheticValue(
+      parseName(name),
+      { fs: fabr.sourceFileSource, file: "<fabr-migrate>", reader: new StringReader(name) },
+      0,
+      name.length
+    );
   const evaluation = fabr.evaluate(model =>
     operation(model.getConfig(Constraints.of({ [HOST]: hostTriple(), [BUILD_OPERATION]: buildOperation }), fabr.execution), reference)
   );
@@ -119,13 +125,7 @@ export function observe(root: string, cacheRoot: string, targets: ReadonlyArray<
   const floorless = new Set<string>();
   const failures = new Set<string>();
   const failed: string[] = [];
-  const take = (title: string, resolved: ResolvedRequirements): void => {
-    for (const pkg of auditedPackages([{ title, resolved }])) {
-      const named = npmPurl(pkg.purl);
-      if (named !== undefined) {
-        selected.set(named.name, (selected.get(named.name) ?? new Set()).add(named.version));
-      }
-    }
+  const take = (title: string, resolved: ResolvedRequirements): Computable<void> => {
     for (const denoted of resolved.denoted) {
       if (denoted instanceof ResolvedTarget) {
         for (const [name, versions] of denoted.resolved.conflicts.versions) {
@@ -135,6 +135,14 @@ export function observe(root: string, cacheRoot: string, targets: ReadonlyArray<
         }
       }
     }
+    return auditedPackages([{ title, resolved }]).then(packages => {
+      for (const pkg of packages) {
+        const named = npmPurl(pkg.purl);
+        if (named !== undefined) {
+          selected.set(named.name, (selected.get(named.name) ?? new Set()).add(named.version));
+        }
+      }
+    });
   };
   const fail = (err: unknown): void => {
     if (floorlessOf(err, floorless)) {
@@ -241,7 +249,10 @@ export function proposePins(
     }
     const note = locked === undefined ? `${file} does not install it: the latest published` : undefined;
     if (locked === undefined) {
-      unanswered.push([`Packages required only without a lower bound, which ${file} does not install (pinned at the latest published)`, `${name}@${version}`]);
+      unanswered.push([
+        `Packages required only without a lower bound, which ${file} does not install (pinned at the latest published)`,
+        `${name}@${version}`,
+      ]);
     }
     if (catalog.raise(name, version, "floorless", note)) {
       added++;
@@ -261,7 +272,9 @@ export function proposePins(
         continue;
       }
       if (version === principal) {
-        const note = catalog.entries.has(name) ? `raised: the declared floor gives ${version}, where ${file} installs ${compatible[0]}` : undefined;
+        const note = catalog.entries.has(name)
+          ? `raised: the declared floor gives ${version}, where ${file} installs ${compatible[0]}`
+          : undefined;
         if (catalog.raise(name, compatible[0], "raise", note)) {
           added++;
         }

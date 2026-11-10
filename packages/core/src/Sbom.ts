@@ -21,10 +21,10 @@ import SPDX_LICENSE_IDS from "spdx-license-ids/index.json";
 import SPDX_DEPRECATED_IDS from "spdx-license-ids/deprecated.json";
 import { Computable } from "./core/Computable";
 import { FabrError } from "./core/Errors";
-import { Dependency, isPackage, Package, ResolvedNode } from "./core/PackageFileSet";
+import { isPackage, Package, ResolvedNode } from "./core/PackageFileSet";
 import { ILicense, IVersionMetadata } from "./core/Repository";
 import { ResolvedTarget } from "./context/index";
-import { madeFrom, ResolvedName, rootEdges } from "./Fabr";
+import { madeFrom, ResolvedName, walkedEdges, WalkedEdge, walkReadingFiles } from "./Fabr";
 import { builtInProject } from "./model/Target";
 import { purlOf } from "./resolver/ResolutionProvenance";
 import { compareText } from "./support/Functional";
@@ -172,7 +172,9 @@ function pedigreeOf(from: Package, fixes: ReadonlyArray<string>): NonNullable<IC
 /**
  * Make the bill of materials of what `name` resolves to: one target, whose
  * build is the component described and whose rule's requirements are its
- * dependencies, or one package, with its closure. A name resolving to several
+ * dependencies, or one package, with its closure. A target read for its files
+ * (a program a `container_image` holds) is a component its reader depends on,
+ * with everything it requires. A name resolving to several
  * things is refused: a bill describes one. `tool` names the fabr that wrote it.
  */
 export function sbom(name: ResolvedName, tool: { version: string }): Computable<ICycloneDxBom> {
@@ -186,65 +188,74 @@ export function sbom(name: ResolvedName, tool: { version: string }): Computable<
     );
   }
   const root = { type: only instanceof ResolvedTarget ? "application" : "library", "bom-ref": referenceOf(only) } as const;
-  /* Every package reached, once, by its reference, with the packages its edges bind. */
-  const reached = new Map<string, { pkg: Package; dependsOn: Set<string> }>();
-  const walk = (deps: ReadonlyArray<Dependency>): string[] =>
-    deps.flatMap(({ package: pkg }) => {
-      if (pkg === undefined) {
-        return [];
-      }
-      const ref = referenceOf(pkg);
-      if (!reached.has(ref) && ref !== root["bom-ref"]) {
-        const entry = { pkg, dependsOn: new Set<string>() };
-        reached.set(ref, entry);
-        walk(pkg.dependencies).forEach(dep => entry.dependsOn.add(dep));
-      }
-      return [ref];
-    });
-  const rootDependsOn = new Set(walk(only instanceof ResolvedTarget ? rootEdges(resolved) : only.dependencies));
-  const refs = [...reached.keys()].sort(compareText);
-  const metadata = (pkg: Package): Computable<IVersionMetadata | undefined> =>
-    pkg instanceof ResolvedNode && pkg.content.metadata !== undefined ? pkg.content.metadata() : Computable.resolve(undefined);
-  return Computable.forAll(
-    [metadata(only), ...refs.map(ref => metadata(reached.get(ref)!.pkg))],
-    (...published: Array<IVersionMetadata | undefined>) => {
-      const component = (
-        ref: string,
-        pkg: Package,
-        meta: IVersionMetadata | undefined,
-        type: "application" | "library"
-      ): ICycloneDxComponent => {
-        const hashes = (meta?.hashes ?? []).flatMap(digest => {
-          const hash = cycloneDxHash(digest);
-          return hash === undefined ? [] : [hash];
-        });
-        const made = madeFrom(pkg);
-        return {
-          type,
-          "bom-ref": ref,
-          ...(ref.startsWith("pkg:") ? cycloneDxNaming(ref) : { name: pkg.packageName }),
-          ...(pkg.version === undefined ? {} : { version: pkg.version }),
-          ...(ref.startsWith("pkg:") ? { purl: ref } : {}),
-          ...(meta === undefined || meta.licenses.length === 0 ? {} : { licenses: meta.licenses.map(cycloneDxLicense) }),
-          ...(hashes.length === 0 ? {} : { hashes }),
-          ...(made === undefined ? {} : { pedigree: pedigreeOf(made.from, made.fixes) }),
+  const bill = walkReadingFiles(readFor => {
+    /* Every package reached, once, by its reference, with the packages its edges bind. */
+    const reached = new Map<string, { pkg: Package; dependsOn: Set<string> }>();
+    const walk = (edges: ReadonlyArray<WalkedEdge>): string[] =>
+      edges.flatMap(({ edge: { package: pkg }, whole }) => {
+        if (pkg === undefined) {
+          return [];
+        }
+        const ref = referenceOf(pkg);
+        if (!reached.has(ref) && ref !== root["bom-ref"]) {
+          const entry = { pkg, dependsOn: new Set<string>() };
+          reached.set(ref, entry);
+          walk(walkedEdges(pkg, whole, readFor)).forEach(dep => entry.dependsOn.add(dep));
+        }
+        return [ref];
+      });
+    const rootDependsOn = new Set(walk(walkedEdges(only, only instanceof ResolvedTarget, readFor)));
+    return { reached, rootDependsOn };
+  });
+  const document = (
+    reached: ReadonlyMap<string, { pkg: Package; dependsOn: Set<string> }>,
+    rootDependsOn: ReadonlySet<string>
+  ): Computable<ICycloneDxBom> => {
+    const refs = [...reached.keys()].sort(compareText);
+    const metadata = (pkg: Package): Computable<IVersionMetadata | undefined> =>
+      pkg instanceof ResolvedNode && pkg.content.metadata !== undefined ? pkg.content.metadata() : Computable.resolve(undefined);
+    return Computable.forAll(
+      [metadata(only), ...refs.map(ref => metadata(reached.get(ref)!.pkg))],
+      (...published: Array<IVersionMetadata | undefined>) => {
+        const component = (
+          ref: string,
+          pkg: Package,
+          meta: IVersionMetadata | undefined,
+          type: "application" | "library"
+        ): ICycloneDxComponent => {
+          const hashes = (meta?.hashes ?? []).flatMap(digest => {
+            const hash = cycloneDxHash(digest);
+            return hash === undefined ? [] : [hash];
+          });
+          const made = madeFrom(pkg);
+          return {
+            type,
+            "bom-ref": ref,
+            ...(ref.startsWith("pkg:") ? cycloneDxNaming(ref) : { name: pkg.packageName }),
+            ...(pkg.version === undefined ? {} : { version: pkg.version }),
+            ...(ref.startsWith("pkg:") ? { purl: ref } : {}),
+            ...(meta === undefined || meta.licenses.length === 0 ? {} : { licenses: meta.licenses.map(cycloneDxLicense) }),
+            ...(hashes.length === 0 ? {} : { hashes }),
+            ...(made === undefined ? {} : { pedigree: pedigreeOf(made.from, made.fixes) }),
+          };
         };
-      };
-      const [rootMeta, ...rest] = published;
-      return {
-        bomFormat: "CycloneDX",
-        specVersion: "1.6",
-        version: 1,
-        metadata: {
-          tools: { components: [{ type: "application", "bom-ref": "fabr", name: "fabr", version: tool.version }] },
-          component: component(root["bom-ref"], only, rootMeta, root.type),
-        },
-        components: refs.map((ref, at) => component(ref, reached.get(ref)!.pkg, rest[at], "library")),
-        dependencies: [
-          { ref: root["bom-ref"], dependsOn: [...rootDependsOn].sort(compareText) },
-          ...refs.map(ref => ({ ref, dependsOn: [...reached.get(ref)!.dependsOn].sort(compareText) })),
-        ],
-      };
-    }
-  );
+        const [rootMeta, ...rest] = published;
+        return {
+          bomFormat: "CycloneDX",
+          specVersion: "1.6",
+          version: 1,
+          metadata: {
+            tools: { components: [{ type: "application", "bom-ref": "fabr", name: "fabr", version: tool.version }] },
+            component: component(root["bom-ref"], only, rootMeta, root.type),
+          },
+          components: refs.map((ref, at) => component(ref, reached.get(ref)!.pkg, rest[at], "library")),
+          dependencies: [
+            { ref: root["bom-ref"], dependsOn: [...rootDependsOn].sort(compareText) },
+            ...refs.map(ref => ({ ref, dependsOn: [...reached.get(ref)!.dependsOn].sort(compareText) })),
+          ],
+        };
+      }
+    );
+  };
+  return bill.then(({ reached, rootDependsOn }) => document(reached, rootDependsOn));
 }
