@@ -107,7 +107,7 @@ Build the package and look at what it contains:
 ```sh
 $ fabr build @example/text-lint
 ✓ Compiling @example/text-lint (0.8s)
-Built @example/text-lint
+Built @example/text-lint (1.2s)
 $ fabr ls @example/text-lint
 lib/LINT.fabr
 package.json
@@ -189,7 +189,7 @@ $ fabr test e2e
 ✓ Compiling tests for e2e (0.9s)
 ✓ Testing e2e (1.1s)
 e2e: 1 test passed
-Built e2e
+Built e2e (2.4s)
 ```
 
 ## 3. Running a tool
@@ -279,7 +279,7 @@ $ fabr test e2e
 ✓ Compiling tests for e2e (0.9s)
 ✓ Testing e2e (1.5s)
 e2e: 2 tests passed
-Built e2e
+Built e2e (3.7s)
 ```
 
 ## 4. An option
@@ -352,7 +352,7 @@ $ fabr test e2e
 ✓ Compiling tests for e2e (0.9s)
 ✓ Testing e2e (1.8s)
 e2e: 3 tests passed
-Built e2e
+Built e2e (4.0s)
 ```
 
 ## 5. Publishing

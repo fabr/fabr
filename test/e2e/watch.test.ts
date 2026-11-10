@@ -74,7 +74,7 @@ describe("e2e: watch mode (fabr build -w)", () => {
        * ended, so `bar` was reported with it rather than carried over. */
       session.write("src/value.sh", 'printf "0"\n');
       await session.waitFor("Watching for changes", { count: 2, timeoutMs: 60000 });
-      expect(session.stderr).to.match(/info:Built foo\n/);
+      expect(session.stderr).to.match(/info:Built foo \(/);
       expect(session.stderr).to.not.match(/Built .*bar/);
       expect(session.stderr.match(/Circular dependency/g)).to.have.length(1);
     } finally {

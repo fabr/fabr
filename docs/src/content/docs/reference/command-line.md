@@ -68,7 +68,7 @@ A target that can only be run, such as a `serve` target, builds everything its p
 without starting it, so a later `fabr run` starts at once. A target that can only be tested is an
 error that points at `fabr test`.
 
-When nothing has changed since the last build, fabr prints `Already up to date`.
+When nothing has changed since the last build, fabr prints `Already up to date`. This line and the `Built …` line end with how long the build took.
 
 ### `test`
 

@@ -184,17 +184,22 @@ describe("ProgressReporter", () => {
     expect(lines).to.deep.equal(["info://pkg err| tsc: error TS2322", "info://pkg out| tsc: 41% done"]);
   });
 
-  it("renders a cycle opening as nothing — the record arrives on the cycle-end", () => {
+  it("renders a cycle opening as the changes that started it", () => {
     const { lines, reporter } = report();
     send(reporter, { kind: "cycle-start", cycle: 1 });
-    expect(lines).to.deep.equal([]);
+    expect(lines).to.deep.equal(["info:Changes detected, rebuilding"]);
   });
 
-  it("renders the cycle's record: what was built, or that nothing needed to be", () => {
-    const { lines, reporter } = report();
+  it("renders the cycle's record: what was built, or that nothing needed to be, and how long it took", () => {
+    const { lines, reporter, tick } = report();
+    /* The first cycle has no cycle-start: it is timed from the reporter's start. */
+    tick(2400);
     send(reporter, { kind: "cycle-end", cycle: 0, failed: false, built: ["app", "lib"] });
+    tick(5000);
+    send(reporter, { kind: "cycle-start", cycle: 1 });
+    tick(300);
     send(reporter, { kind: "cycle-end", cycle: 1, failed: false, built: [] });
-    expect(lines).to.deep.equal(["info:Built app, lib", "info:Already up to date"]);
+    expect(lines).to.deep.equal(["info:Built app, lib (2.4s)", "info:Changes detected, rebuilding", "info:Already up to date (300ms)"]);
   });
 
   it("renders no marker for a failed cycle — the error path reports the failure", () => {
@@ -209,7 +214,8 @@ describe("ProgressReporter", () => {
     const lines: string[] = [];
     const log = new LogFormatter(LogLevel.Info, line => lines.push(line));
     const reporter = new ProgressReporter(log, { markers: false, now: () => 0 });
-    send(reporter, { kind: "cycle-end", cycle: 0, failed: false, built: ["app"] });
+    send(reporter, { kind: "cycle-start", cycle: 1 });
+    send(reporter, { kind: "cycle-end", cycle: 1, failed: false, built: ["app"] });
     expect(lines).to.deep.equal([]);
   });
 

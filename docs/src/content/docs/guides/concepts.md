@@ -169,7 +169,7 @@ info:Compiling second [JS_TARGET=es2021-esm] (required by third)
 info:✓ Compiling second (553ms)
 info:Compiling third
 info:✓ Compiling third (549ms)
-info:Built third
+info:Built third (2.9s)
 ```
 
 (This is the output with no terminal attached, as in CI. In a terminal, fabr shows the work in

@@ -40,8 +40,9 @@ const DIAG_TASK_DONE = Diagnostic.Info<{ mark: string; what: string; chain: stri
   "{mark} {what}{chain} {duration}{reason}"
 );
 const DIAG_STEP_OUTPUT = Diagnostic.Info<{ prefix: string; line: string }>("{prefix} {line}");
-const DIAG_BUILD_COMPLETE = Diagnostic.Info<{ targets: string }>("Built {targets}");
-const DIAG_UP_TO_DATE = Diagnostic.Info<Record<string, never>>("Already up to date");
+const DIAG_BUILD_COMPLETE = Diagnostic.Info<{ targets: string; duration: string }>("Built {targets} {duration}");
+const DIAG_UP_TO_DATE = Diagnostic.Info<{ duration: string }>("Already up to date {duration}");
+const DIAG_CHANGES_DETECTED = Diagnostic.Info<Record<string, never>>("Changes detected, rebuilding");
 
 /** Progress verbs for the well-known operations; anything else renders as
  *  "Running <operation> on <target>". */
@@ -155,6 +156,9 @@ export class ProgressReporter {
   /** Whether cycle-end events render the status marker ("Built X" / "Already
    *  up to date") — the driver's per-verb policy. */
   private readonly markers: boolean;
+  /** When the current cycle began, as this reporter saw it: its construction
+   *  for the first cycle, which has no cycle-start, else the cycle-start. */
+  private cycleStarted: number;
 
   constructor(
     log: Log,
@@ -167,6 +171,7 @@ export class ProgressReporter {
     this.announceStart = !(this.terminal?.hasPane ?? false) && !options.quiet;
     this.holdOutput = this.terminal?.hasPane ?? false;
     this.markers = options.markers ?? true;
+    this.cycleStarted = this.now();
     /* The pane is *pulled*: its rows carry elapsed times and download sizes,
      * which advance with the clock rather than with events, so it must be
      * rendered at paint time and not handed over as text. */
@@ -228,18 +233,23 @@ export class ProgressReporter {
       }
 
       case "cycle-start":
-        /* A boundary, not task: nothing to draw — the pane already shows what
-         * is in flight, and the record arrives on the cycle-end. */
+        this.cycleStarted = this.now();
+        /* Only a watch run's later cycles start with an event: the line opens
+         * the round whose record arrives on the cycle-end. */
+        if (this.markers) {
+          this.log.log(DIAG_CHANGES_DETECTED, {});
+        }
         return;
 
       case "cycle-end":
         /* The per-cycle status marker. A failed cycle renders none — the
          * driver's error path reports the failure itself. */
         if (this.markers && !event.failed) {
+          const duration = this.style(SGR_DIM, `(${formatDuration(this.now() - this.cycleStarted)})`);
           if (event.built.length > 0) {
-            this.log.log(DIAG_BUILD_COMPLETE, { targets: event.built.join(", ") });
+            this.log.log(DIAG_BUILD_COMPLETE, { targets: event.built.join(", "), duration });
           } else {
-            this.log.log(DIAG_UP_TO_DATE, {});
+            this.log.log(DIAG_UP_TO_DATE, { duration });
           }
         }
         return;

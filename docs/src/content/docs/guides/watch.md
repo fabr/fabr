@@ -26,7 +26,7 @@ fabr build -w mylib     # recompile when a source changes
 fabr test -w mylib      # recompile and re-run the tests
 ```
 
-Each round prints what it rebuilt, ending with `Built mylib`, and `fabr test -w` prints the test
+Each round opens with `Changes detected, rebuilding`, prints what it rebuilt, ending with `Built mylib`, and `fabr test -w` prints the test
 summary again, so the terminal shows whether the tests pass as you edit. A change that leaves
 nothing to redo, such as an edit to a file no target uses, prints nothing. A build error is
 reported once, and fabr goes on watching for the change that fixes it.
