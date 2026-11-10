@@ -160,7 +160,7 @@ export interface ITarBlock {
  * @throws where the checksum is wrong or the format is neither ustar nor GNU.
  */
 export function decodeBlock(block: Buffer): ITarBlock | null {
-  let typeflag = block[156] === 0 ? 0 : block[156] - ZERO_OFFSET;
+  const typeflag = block[156] === 0 ? 0 : block[156] - ZERO_OFFSET;
   let name = decodeText(block, 0, 100);
   const sum = checksum(block);
   /* The checksum of an all-zero block is that of its spaces alone. */
@@ -176,10 +176,6 @@ export function decodeBlock(block: Buffer): ITarBlock | null {
     }
   } else if (!isGnu(block)) {
     throw new Error("Invalid tar header: unknown format.");
-  }
-  /* An old tar marks a directory by its trailing `/` alone. */
-  if (typeflag === 0 && name.endsWith("/")) {
-    typeflag = 5;
   }
   return {
     typeflag,
@@ -270,9 +266,12 @@ export function headerOf(
     }
   }
   const mtime = parseFloat(text("mtime") ?? "");
+  const name = text("path") ?? longPath ?? block.name;
   return {
-    name: text("path") ?? longPath ?? block.name,
-    type: TYPE_OF_FLAG.get(block.typeflag) ?? null,
+    name,
+    /* An old tar marks a directory by its trailing `/` alone: judged on the
+     * whole name, since a long name's truncated copy in the block can end in one. */
+    type: block.typeflag === 0 && name.endsWith("/") ? "directory" : (TYPE_OF_FLAG.get(block.typeflag) ?? null),
     mode: block.mode,
     uid: integer("uid", block.uid),
     gid: integer("gid", block.gid),

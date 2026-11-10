@@ -212,6 +212,24 @@ describe("TarPack and TarExtract", () => {
     expect(entries[1].content.toString()).to.equal("hello");
   });
 
+  it("reads a file as a directory by its trailing / only where its whole name ends in one", async () => {
+    const longName = "a/".repeat(50) + "file.js";
+    const archive = Buffer.concat([
+      ustarBlock("L", "././@LongLink", longName.length + 1),
+      padded(Buffer.from(longName + "\0")),
+      ustarBlock("0", longName.slice(0, 100), 5),
+      padded(Buffer.from("hello")),
+      ustarBlock("0", "old/", 0),
+      Buffer.alloc(1024),
+    ]);
+    const entries = await extracted(archive);
+    expect(entries.map(({ header }) => [header.name, header.type])).to.deep.equal([
+      [longName, "file"],
+      ["old/", "directory"],
+    ]);
+    expect(entries[0].content.toString()).to.equal("hello");
+  });
+
   it("keeps the pax records it does not interpret, and writes them back", async () => {
     const [entry] = await extracted(
       await packed([
