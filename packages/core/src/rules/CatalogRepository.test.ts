@@ -52,6 +52,7 @@ import { IContentPackage, PackageFormat } from "../resolver/PackageFormat";
 import { requestedConstraint, resolveBarePackage, vendPackageRef } from "../resolver/PackageResolver";
 import { RepositoryReader, Resolved, SourceRef } from "../core/Repository";
 import { expect } from "chai";
+import { madeFrom } from "../Audit";
 
 /** Group what `resolved` requires by name: a target's requirements, and
  * anything else as itself under no name, the shape `fabr deps` prints. */
@@ -561,7 +562,7 @@ describe("CatalogRepository (through the model)", () => {
     "targetdef test_built { deps = PACKAGES; version = STRING; }\n" +
     "targetdef test_stated { deps = PACKAGES; }\n" +
     "targetdef test_drift { deps = PACKAGES; }\n" +
-    "targetdef patched { srcs = REQUIRED PACKAGES; patches = FILES; run = COMMAND; env = MAP; }\n";
+    "targetdef patched { srcs = REQUIRED PACKAGES; patches = FILES; run = COMMAND; env = MAP; fixes = STRING; }\n";
 
   function build(source: string): BuildModel {
     backings.clear();
@@ -2456,6 +2457,39 @@ describe("CatalogRepository (through the model)", () => {
       /* Resolving it fetched nothing: the package it patches is fetched when
        * the patch is applied. */
       expect(backings.get("@backing")!.fetched).to.deep.equal([]);
+    });
+
+    it("declares the advisories its build fixes in the package it is made from, for an audit to read unbuilt", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_patch fix { }\n" +
+          "patched foo { srcs = @backing:foo; patches = fix; fixes = GHSA-aaaa-bbbb-cccc CVE-2026-0001; }\n" +
+          "test_stated app { deps = foo; }\n"
+      );
+      patchTexts.set("fix", rewrite("foo", "foo, patched"));
+      const resolved = await model.getConfig(Constraints.of({}), execution).resolve(writtenOnCommandLine("app"));
+      const [foo] = requirementsOf(resolved).get("dependencies") as ResolvedNode[];
+      const made = madeFrom(foo);
+      expect(made?.from.packageId).to.equal("foo@1.0.0");
+      expect(made?.fixes).to.deep.equal(["GHSA-aaaa-bbbb-cccc", "CVE-2026-0001"]);
+      expect(backings.get("@backing")!.fetched).to.deep.equal([]);
+    });
+
+    it("refuses advisories it fixes where its srcs are not one package", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_patch fix { }\n" +
+          "patched foo { srcs = @backing:foo @backing:bar; patches = fix; fixes = GHSA-aaaa-bbbb-cccc; }\n"
+      );
+      patchTexts.set("fix", rewrite("foo", "foo, patched"));
+      const failure = await model
+        .getConfig(Constraints.of({}), execution)
+        .materialize(writtenOnCommandLine("foo"))
+        .then(
+          () => undefined,
+          (err: unknown) => err
+        );
+      expect(messagesOf(failure).join("\n")).to.match(/'fixes' are advisories of a package, but its 'srcs' are not one package/);
     });
 
     it("is the package it patches, with its files changed and its requirements resolved by the consumer", async () => {

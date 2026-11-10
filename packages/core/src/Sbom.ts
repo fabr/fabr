@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { ResolvedName, rootEdges } from "./Audit";
+import { madeFrom, ResolvedName, rootEdges } from "./Audit";
 import { Computable } from "./core/Computable";
 import { FabrError } from "./core/Errors";
 import { Dependency, isPackage, Package, ResolvedNode } from "./core/PackageFileSet";
@@ -59,6 +59,15 @@ export interface ICycloneDxComponent {
   purl?: string;
   licenses?: ICycloneDxLicense[];
   hashes?: ICycloneDxHash[];
+  /** What the component is made from: the package it changes, and the change. */
+  pedigree?: { ancestors: Array<Omit<ICycloneDxComponent, "bom-ref">>; patches: ICycloneDxPatch[] };
+}
+
+/** A change to an ancestor, with the issues it resolves: here, the advisories
+ * a target declares its build fixes. */
+export interface ICycloneDxPatch {
+  type: "unofficial";
+  resolves?: Array<{ type: "security"; id: string }>;
 }
 
 export interface ICycloneDxDependency {
@@ -138,6 +147,24 @@ function referenceOf(pkg: Package): string {
   return `${pkg.packageName}${configuration}${pkg.version === undefined ? "" : `@${pkg.version}`}`;
 }
 
+/** Make the pedigree of a component made from the package `from` by a change
+ * that fixes the advisories `fixes`. */
+function pedigreeOf(from: Package, fixes: ReadonlyArray<string>): NonNullable<ICycloneDxComponent["pedigree"]> {
+  const ref = referenceOf(from);
+  /* No bom-ref: the package itself may be a component of the document too. */
+  const ancestor: Omit<ICycloneDxComponent, "bom-ref"> = {
+    type: "library",
+    ...(ref.startsWith("pkg:") ? cycloneDxNaming(ref) : { name: from.packageName }),
+    ...(from.version === undefined ? {} : { version: from.version }),
+    ...(ref.startsWith("pkg:") ? { purl: ref } : {}),
+  };
+  const patch: ICycloneDxPatch = {
+    type: "unofficial",
+    ...(fixes.length === 0 ? {} : { resolves: fixes.map(id => ({ type: "security" as const, id })) }),
+  };
+  return { ancestors: [ancestor], patches: [patch] };
+}
+
 function compareText(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
@@ -200,6 +227,7 @@ export function sbom(name: ResolvedName, tool: { version: string }): Computable<
           const hash = cycloneDxHash(digest);
           return hash === undefined ? [] : [hash];
         });
+        const made = madeFrom(pkg);
         return {
           type,
           "bom-ref": ref,
@@ -208,6 +236,7 @@ export function sbom(name: ResolvedName, tool: { version: string }): Computable<
           ...(ref.startsWith("pkg:") ? { purl: ref } : {}),
           ...(meta === undefined || meta.licenses.length === 0 ? {} : { licenses: meta.licenses.map(cycloneDxLicense) }),
           ...(hashes.length === 0 ? {} : { hashes }),
+          ...(made === undefined ? {} : { pedigree: pedigreeOf(made.from, made.fixes) }),
         };
       };
       const [rootMeta, ...rest] = published;

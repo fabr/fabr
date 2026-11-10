@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { ResolvedRequirements } from "./context/index";
+import { ResolvedRequirements, ResolvedTarget } from "./context/index";
 import { Computable } from "./core/Computable";
 import { FabrError } from "./core/Errors";
 import { EMPTY_FILESET, FileSource } from "./core/FileSet";
@@ -38,6 +38,7 @@ import { StringReader } from "./support/StringReader";
 import {
   Advisory,
   AdvisoryServer,
+  affectsAny,
   audit,
   auditedPackages,
   AuditedPackage,
@@ -109,6 +110,39 @@ function built(name: string, dependencies: Dependency[] = []): Dependency {
       { kind: "target" }
     ),
   };
+}
+
+/** A target made from the package `from` is the edge to, as `patched` makes one: named as the
+ * target is, at that package's version and with its requirements, its build declared to fix `fixes`. */
+class PatchedTarget extends ResolvedTarget {
+  public readonly resolved: ResolvedRequirements;
+
+  constructor(name: string, from: Dependency, fixes: string[]) {
+    const pkg = from.package!;
+    super({ key: `built ${name}`, files: () => Computable.resolve(EMPTY_FILESET), builds: name }, name, pkg.version, pkg.dependencies, {
+      kind: "target",
+    });
+    this.resolved = new ResolvedRequirements(
+      new Map([["extends", { sources: [pkg], references: [from.reference], reading: "packages", part: 0 }]]) as never,
+      [{ conflicts: NO_CONFLICTS, conflictsAmong: () => Computable.resolve(NO_CONFLICTS) }],
+      false,
+      undefined,
+      fixes
+    );
+  }
+
+  public materialize(): Computable<never[]> {
+    return Computable.resolve([]);
+  }
+
+  public projectBuilt(): never[] {
+    return [];
+  }
+}
+
+/** The patched target `name` made from `from`, fixing `fixes`, as the edge the reference to it makes. */
+function patched(name: string, from: Dependency, fixes: string[]): Dependency {
+  return { reference: new TargetRef({} as TargetSource, name), package: new PatchedTarget(name, from, fixes) };
 }
 
 /** What `title` resolved to: the packages `deps` are the edges to, as one unnamed list. */
@@ -189,6 +223,28 @@ describe("auditedPackages", () => {
     const lib = built("lib", [registry("semver", "7.6.3")]);
     expect(auditedPackages([named("app", [lib])])).to.deep.equal([
       { ...audited("semver", "7.6.3"), paths: [{ path: ["app", "lib", "semver@7.6.3"], others: 0 }] },
+    ]);
+  });
+
+  it("asks about a target made from a registry package as that package, apart from the package itself", () => {
+    const semver = registry("semver", "7.6.3");
+    const lodash = registry("lodash", "4.17.15", [semver]);
+    const app = named("app", [built("lib", [patched("lodash", lodash, ["CVE-2021-23337"])])]);
+    const tool = named("tool", [lodash]);
+    expect(auditedPackages([app, tool])).to.deep.equal([
+      { ...audited("lodash", "4.17.15"), paths: [{ path: ["tool", "lodash@4.17.15"], others: 0 }] },
+      {
+        ...audited("lodash", "4.17.15"),
+        paths: [{ path: ["app", "lib", "lodash@4.17.15"], others: 0 }],
+        patchedBy: { target: "lodash", fixes: ["CVE-2021-23337"] },
+      },
+      {
+        ...audited("semver", "7.6.3"),
+        paths: [
+          { path: ["app", "lib", "lodash@4.17.15", "semver@7.6.3"], others: 0 },
+          { path: ["tool", "lodash@4.17.15", "semver@7.6.3"], others: 0 },
+        ],
+      },
     ]);
   });
 
@@ -273,6 +329,17 @@ describe("auditSarif", () => {
         },
       },
     ]);
+  });
+
+  it("writes a result a patched target fixes as suppressed in source", async () => {
+    const names = [named("app", [built("lib", [patched("lodash", registry("lodash", "4.17.15"), [LODASH.id])])])];
+    const report = await audit(names, server([[LODASH, ["pkg:test/lodash@4.17.15"]]]));
+    const [result] = auditSarif(report, { version: "1.2.3" }, () => undefined).runs[0].results;
+    expect(result.message.text).to.equal(
+      "lodash@4.17.15 as patched by 'lodash' (fixed in 4.17.21), required through app > lib > lodash@4.17.15"
+    );
+    expect(result.suppressions).to.deep.equal([{ kind: "inSource", justification: "fixed by the patched target 'lodash'" }]);
+    expect(result.properties).to.deep.include({ patchedBy: "lodash" });
   });
 
   it("locates nothing for a reference written outside the project, and rates an unrated advisory a warning", async () => {
@@ -365,6 +432,27 @@ describe("audit", () => {
     const answers = server([]);
     const report = await audit([named("app", [built("lib")])], answers);
     expect(answers.queries).to.deep.equal([]);
-    expect(report).to.deep.equal({ packages: [], findings: [] });
+    expect(report).to.deep.equal({ packages: [], findings: [], unmatched: [] });
+  });
+
+  it("reports an advisory a patched target declares it fixes, by id or alias, as fixed there, and a declared fix nothing bears out", async () => {
+    const lodash = registry("lodash", "4.17.15");
+    const OTHER: Advisory = { ...LODASH, id: "GHSA-p6mc-m468-83gw", aliases: [], severity: "LOW" };
+    const names = [named("app", [built("lib", [patched("lodash", lodash, ["CVE-2021-23337", "GHSA-none"])])]), named("tool", [lodash])];
+    const answers = server([
+      [LODASH, ["pkg:test/lodash@4.17.15"]],
+      [OTHER, ["pkg:test/lodash@4.17.15"]],
+    ]);
+    const report = await audit(names, answers);
+    expect(answers.queries).to.deep.equal([["pkg:test/lodash@4.17.15"]]);
+    const [plain, made] = report.packages;
+    expect(report.findings.map(({ advisory, packages, fixed }) => [advisory.id, packages, fixed])).to.deep.equal([
+      [LODASH.id, [plain], [made]],
+      [OTHER.id, [plain, made], []],
+    ]);
+    expect(report.unmatched).to.deep.equal([{ target: "lodash", id: "GHSA-none", pkg: made }]);
+    expect(affectsAny(report)).to.equal(true);
+    const fixedOnly = await audit([names[0]], server([[LODASH, ["pkg:test/lodash@4.17.15"]]]));
+    expect(affectsAny(fixedOnly)).to.equal(false);
   });
 });

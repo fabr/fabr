@@ -68,6 +68,9 @@ export interface ISarifResult {
   level: SarifLevel;
   message: ISarifMessage;
   locations?: ISarifLocation[];
+  /** Why the result does not stand, where it does not: `inSource` for a
+   * suppression the project declares. */
+  suppressions?: Array<{ kind: "inSource" | "external"; justification?: string }>;
   properties?: Record<string, unknown>;
 }
 

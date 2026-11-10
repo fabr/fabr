@@ -23,7 +23,7 @@ import { EMPTY_FILESET } from "./core/FileSet";
 import { Dependency, ResolvedNode } from "./core/PackageFileSet";
 import { IVersionMetadata, RefSource, RepositoryRef } from "./core/Repository";
 import { TargetRef, TargetSource } from "./core/TargetRef";
-import { ResolvedRequirements } from "./context/index";
+import { ResolvedRequirements, ResolvedTarget } from "./context/index";
 import { PackageFormat } from "./resolver/PackageFormat";
 import { IResolutionOrigin, PACKAGE_RESOLUTION_PROVENANCE } from "./resolver/ResolutionProvenance";
 import { NO_CONFLICTS } from "./resolver/StrictCollection";
@@ -71,6 +71,33 @@ function built(name: string, configuration = "", dependencies: Dependency[] = []
       { kind: "target" }
     ),
   };
+}
+
+/** A target made from the package `from` is the edge to, as `patched` makes one, its build declared to fix `fixes`. */
+class PatchedTarget extends ResolvedTarget {
+  public readonly resolved: ResolvedRequirements;
+
+  constructor(name: string, from: Dependency, fixes: string[]) {
+    const pkg = from.package!;
+    super({ key: `built ${name}`, files: () => Computable.resolve(EMPTY_FILESET), builds: name }, name, pkg.version, pkg.dependencies, {
+      kind: "target",
+    });
+    this.resolved = new ResolvedRequirements(
+      new Map([["extends", { sources: [pkg], references: [from.reference], reading: "packages", part: 0 }]]) as never,
+      [{ conflicts: NO_CONFLICTS, conflictsAmong: () => Computable.resolve(NO_CONFLICTS) }],
+      false,
+      undefined,
+      fixes
+    );
+  }
+
+  public materialize(): Computable<never[]> {
+    return Computable.resolve([]);
+  }
+
+  public projectBuilt(): never[] {
+    return [];
+  }
 }
 
 /** What `title` resolved to: the one package `dep` is the edge to. */
@@ -131,6 +158,24 @@ describe("sbom", () => {
       { ref: "lib<BUILD_TYPE=release>", dependsOn: ["pkg:test/semver@7.6.3"] },
       { ref: "pkg:test/lodash@4.17.21", dependsOn: [] },
       { ref: "pkg:test/semver@7.6.3", dependsOn: [] },
+    ]);
+  });
+
+  it("gives a target made from a registry package that package as its ancestor, and the advisories its build fixes", async () => {
+    const lodash = registry("lodash", "4.17.15");
+    const patched: Dependency = { reference: new TargetRef({} as TargetSource, "lodash"), package: new PatchedTarget("lodash", lodash, ["CVE-2021-23337"]) };
+    const bom = await sbom(named("app", built("app", "", [patched])), { version: "1.2.3" });
+    expect(bom.components).to.deep.equal([
+      {
+        type: "library",
+        "bom-ref": "lodash@4.17.15",
+        name: "lodash",
+        version: "4.17.15",
+        pedigree: {
+          ancestors: [{ type: "library", name: "lodash", version: "4.17.15", purl: "pkg:test/lodash@4.17.15" }],
+          patches: [{ type: "unofficial", resolves: [{ type: "security", id: "CVE-2021-23337" }] }],
+        },
+      },
     ]);
   });
 

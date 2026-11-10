@@ -31,6 +31,7 @@ export {
   COMPILE_KEY,
   ContainedSources,
   DEPENDENCIES_KEY,
+  EXTENDS_KEY,
   MaterializedRequirements,
   NoRequirements,
   OPTIONAL_PROVIDED_KEY,

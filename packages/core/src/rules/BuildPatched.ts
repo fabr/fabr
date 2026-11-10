@@ -29,7 +29,8 @@
  * resolved on its own as material, so a package named in a repository carries
  * what it declares for the consumer's collection point to resolve. A patch
  * therefore changes a package's files and nothing else, its manifest included
- * as a file.
+ * as a file. `fixes` names the advisories the change fixes in that package,
+ * declared for an audit to read.
  */
 
 import * as fs from "fs";
@@ -43,6 +44,7 @@ import { PackageFileSet } from "../core/PackageFileSet";
 import { getResultFileSet, writeFileSet } from "../core/Staging";
 import { SymlinkFile } from "../core/SymlinkFile";
 import { MaterializedCommandPipeline, TargetContext, toEnvironment } from "../context/index";
+import { Property } from "../model/Property";
 import { executePipeline, ITaskReport, StageSpec } from "../support/Execute";
 import { FilePatch, parsePatchFile } from "../support/Patch";
 import { envConfig, envEntries, stagePipeline, stdinBytes } from "./PipelineAction";
@@ -53,7 +55,10 @@ export default defineRule({
   /* One package patched is a package again, at the version and with the
    * requirements of the one it was made from. */
   requirements(context) {
-    return { build: { extends: context.getPackageProperty("srcs"), patches: context.getFileProperty("patches") } };
+    return context.getProperty("fixes").then(fixes => ({
+      build: { extends: context.getPackageProperty("srcs"), patches: context.getFileProperty("patches") },
+      fixes: fixes?.getValues() ?? [],
+    }));
   },
   evaluateMaterialized(context, { extends: srcs, patches }) {
     return patched(context, { srcs, patches });
@@ -69,10 +74,15 @@ const FILES_DIR = "files";
 function patched(context: TargetContext, { srcs, patches }: { srcs: FileSet[]; patches: FileSet[] }): Computable<RuleResult> {
   const files = FileSet.unionAll(...srcs);
   return Computable.forAll(
-    [context.getCommandProperty("run", files), context.getMap("env").then(toEnvironment)],
-    (stages: MaterializedCommandPipeline, env: ReadonlyMap<string, string>) => {
+    [context.getCommandProperty("run", files), context.getMap("env").then(toEnvironment), context.getProperty("fixes")],
+    (stages: MaterializedCommandPipeline, env: ReadonlyMap<string, string>, fixes: Property | undefined) => {
       if (patches.length === 0 && stages.length === 0) {
         throw new FabrError("a 'patched' target requires 'patches' or 'run'");
+      }
+      if (fixes !== undefined && fixes.getValues().length > 0 && !(srcs.length === 1 && srcs[0] instanceof PackageFileSet)) {
+        throw new FabrError("a 'patched' target's 'fixes' are advisories of a package, but its 'srcs' are not one package").withHelp(
+          "name the package the patches fix as 'srcs', or leave 'fixes' out"
+        );
       }
       /* Written order: each patch applies to what the ones before it left. */
       const order = patches.flatMap(set => [...set].map(([name]) => name).sort());

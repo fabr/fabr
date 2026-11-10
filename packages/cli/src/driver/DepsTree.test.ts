@@ -305,9 +305,10 @@ describe("renderAudit", () => {
     const report: AuditReport = {
       packages: [audited("express", "4.17.1"), lodash, minimist],
       findings: [
-        { advisory: MINIMIST, packages: [minimist] },
-        { advisory: LODASH, packages: [lodash] },
+        { advisory: MINIMIST, packages: [minimist], fixed: [] },
+        { advisory: LODASH, packages: [lodash], fixed: [] },
       ],
+      unmatched: [],
     };
     expect(renderAudit(report)).to.deep.equal([
       "GHSA-xvch-5gv4-984h  CRITICAL  Prototype Pollution in minimist",
@@ -324,9 +325,37 @@ describe("renderAudit", () => {
   });
 
   it("says when there was nothing to audit, and counts a clean run's packages", () => {
-    expect(renderAudit({ packages: [], findings: [] })).to.deep.equal(["No packages to audit"]);
-    expect(renderAudit({ packages: [audited("chai", "4.3.6")], findings: [] })).to.deep.equal([
+    expect(renderAudit({ packages: [], findings: [], unmatched: [] })).to.deep.equal(["No packages to audit"]);
+    expect(renderAudit({ packages: [audited("chai", "4.3.6")], findings: [], unmatched: [] })).to.deep.equal([
       "No known advisories affect the 1 package checked",
     ]);
+  });
+
+  it("renders a package a patched target fixes an advisory in as fixed there, and counts the advisory apart", () => {
+    const patched = { ...audited("lodash", "4.17.15", [["app", "lodash@4.17.15"], 0]), patchedBy: { target: "lodash", fixes: [LODASH.id] } };
+    const minimist = audited("minimist", "0.0.8", [["app", "minimist@0.0.8"], 0]);
+    const report: AuditReport = {
+      packages: [patched, minimist],
+      findings: [
+        { advisory: LODASH, packages: [], fixed: [patched] },
+        { advisory: { ...MINIMIST, affected: [] }, packages: [patched], fixed: [] },
+      ],
+      unmatched: [],
+    };
+    expect(renderAudit(report)).to.deep.equal([
+      "GHSA-35jh-r3h4-6jhm (CVE-2021-23337)  HIGH  Command Injection in lodash",
+      "  lodash@4.17.15, fixed by 'lodash'",
+      "    app > lodash@4.17.15",
+      "  https://github.com/advisories/GHSA-35jh-r3h4-6jhm",
+      "",
+      "GHSA-xvch-5gv4-984h  CRITICAL  Prototype Pollution in minimist",
+      "  lodash@4.17.15 as patched by 'lodash'",
+      "    app > lodash@4.17.15",
+      "",
+      "1 advisory affects 1 of 2 packages checked; 1 advisory is fixed by patched packages",
+    ]);
+    expect(renderAudit({ ...report, findings: [report.findings[0]] }).pop()).to.equal(
+      "No known advisories affect the 2 packages checked; 1 advisory is fixed by patched packages"
+    );
   });
 });

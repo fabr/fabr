@@ -337,12 +337,14 @@ downloaded from a registry. For a Java library that is its compile classpath; au
 war or installation you deploy to check what runs. See
 [Auditing dependencies](/guides/auditing/) for what to do about an advisory. Every package a registry publishes is checked at the exact version the
 tree selects. A package built in your project has no published version, so it is not checked
-itself, though what it depends on is. Each advisory lists the affected package with the versions
+itself, though what it depends on is. A `patched` package is the exception: it is checked at the
+version it was made from, and an advisory its `fixes` names is reported as fixed by it. Each advisory lists the affected package with the versions
 the advisory says fix it and one path by which each reference reaches it; the remedy is to require
 a fixed version at the root, for instance `@npm:lodash:4.17.21!` or a catalog entry, since a root
 requirement decides the version for the whole tree.
 
-The command exits with status 1 when any advisory affects a package, and 0 otherwise. `--format
+The command exits with status 1 when any advisory affects a package, one a patched package fixes
+aside, and 0 otherwise. `--format
 sarif` writes the report as [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/) instead
 of text, the format code-scanning services such as GitHub code scanning take and most analysers
 emit. Each advisory is a rule and each affected package a result, with the fixed versions and the

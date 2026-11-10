@@ -47,14 +47,16 @@ What `fabr audit` checks, and what it leaves out:
 
 - **Checked:** every package from npm or a Maven repository among what a target's build requires,
   directly or through other packages, at the exact version selected.
-- **Not checked:** packages built in your project, including a [patched](#patching-a-package)
-  package, which have no published version to ask about (what they depend on is checked); the
+- **Checked as the package it changes:** a [patched](#patching-a-package) package, at the
+  version it was made from. An advisory its `fixes` names is reported as fixed by the patch.
+- **Not checked:** other packages built in your project, which have no published version to ask
+  about (what they depend on is checked); the
   tools fabr runs during a build, such as the TypeScript compiler, a bundler or a test runner,
   which aren't part of the target's dependencies; and the Node.js release and the JDK.
 - **No fixing.** The report names the versions that fix each advisory; you choose one and edit
   the build file.
 - **No ignore list or severity threshold.** Every advisory found is reported, and any one of them
-  makes the command fail.
+  makes the command fail, except one a patched package declares it fixes.
 - **Advisories are read live.** Each run asks the database afresh and caches nothing, so the same
   commit can pass one day and fail the next, when a new advisory is published.
 
@@ -145,6 +147,7 @@ GHSA-599f-7c49-w659 (CVE-2022-42889)  CRITICAL  Arbitrary code execution in Apac
 ### Exit status
 
 `fabr audit` exits with 0 when no advisory affects any package checked, and with 1 when one does.
+An advisory a [patched package fixes](#patching-a-package) doesn't count.
 It also exits with 1 when the audit couldn't run: an unknown name, a dependency that can't be
 resolved, or an advisory database that can't be reached, each reported on stderr with an `error:`
 line. The [command-line reference](/reference/command-line/#exit-status) lists every status.
@@ -265,9 +268,39 @@ whose range it overrides. See
 ### Patching a package
 
 Where no fixed release exists, a [`patched`](/reference/js/dependencies/#patching-a-package) target
-replaces the package everywhere in the build with your own copy. A patched package is built in your
-project, so `fabr audit` no longer checks it: it stops reporting the advisory whether or not your
-patch fixes it. Keep a note of why the patch exists, and remove it once a fixed release is out.
+replaces the package everywhere in the build with your own copy. `fabr audit` still checks a
+patched package, at the version it was made from, so the advisory is still reported. To say that
+the patch fixes it, list the advisory in the target's `fixes`, by its OSV id or any of its aliases:
+
+```
+patched lodash {
+  srcs = @npm:lodash:4.17.15;
+  patches = patches/lodash-template.patch;
+  fixes = GHSA-35jh-r3h4-6jhm;
+}
+```
+
+The report then shows the package as fixed by the patch, and that advisory no longer makes the
+command fail:
+
+```
+GHSA-35jh-r3h4-6jhm (CVE-2021-23337)  HIGH  Command Injection in lodash
+  lodash@4.17.15, fixed by 'lodash'
+    app > async@2.6.3 > lodash@4.17.15
+  https://nvd.nist.gov/vuln/detail/CVE-2021-23337
+
+No known advisories affect the 3 packages checked; 1 advisory is fixed by patched packages
+```
+
+Every other advisory affecting the original version is reported as usual, against
+`lodash@4.17.15 as patched by 'lodash'`. Fabr doesn't check that the patch actually fixes what
+`fixes` lists; that is your claim. An id in `fixes` that names no advisory affecting the package
+gets a warning on stderr. That happens when `srcs` has moved to a version the advisory doesn't
+affect, or when the id is misspelt. Remove the patch once a fixed release is out.
+
+In SARIF, a fixed package's result carries a `suppressions` entry of kind `inSource`. In a bill of
+materials, a patched package's component has a `pedigree`: the original package as its ancestor,
+and a patch that `resolves` each advisory in `fixes`.
 
 ## Writing a bill of materials
 
@@ -292,6 +325,8 @@ The document holds:
   by its [package URL](https://github.com/package-url/purl-spec) (`pkg:npm/async@2.6.3`,
   `pkg:maven/org.apache.commons/commons-lang3@3.11`), with its Maven group or npm scope as `group`. A package
   built in your project is a component by its name, and its version where the target declares one.
+  A [patched](#patching-a-package) package also has a `pedigree` naming the package it was made from
+  and the advisories its `fixes` lists.
 - **Its licence**, as its registry publishes it: npm's `license` field, which is usually an SPDX id
   (`"id": "MIT"`) or expression, and Maven's POM `<licenses>`, taken from the nearest parent POM
   that declares one, which is usually a name and URL (`"name": "Apache License, Version 2.0"`).

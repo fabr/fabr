@@ -130,8 +130,10 @@ export type Requirements = Record<string, RequiredSources> | ReadonlyMap<string,
  * its compile scope for the first and its runtime scope for the second);
  * whether they are collected permissively, so that a target built with them is
  * not refused for versions that conflict, as a sealed program install is not
- * (`permissive`); and what the target builds, where the rule knows
- * (`result`). A name is one requirement whichever collection holds it, so the
+ * (`permissive`); what the target builds, where the rule knows
+ * (`result`); and the advisories its build fixes in the package it is made
+ * from (`fixes`: ids as an advisory database names them, its aliases
+ * included), which an audit reports as fixed by the target. A name is one requirement whichever collection holds it, so the
  * two hold different names.
  */
 export interface ResolutionSpec<B extends Requirements = Requirements, R extends Requirements = NoRequirements> {
@@ -139,6 +141,7 @@ export interface ResolutionSpec<B extends Requirements = Requirements, R extends
   readonly run?: R;
   readonly permissive?: boolean;
   readonly result?: Builds;
+  readonly fixes?: ReadonlyArray<string>;
 }
 
 /** A collection of a {@link ResolutionSpec} that states nothing. */
@@ -212,7 +215,9 @@ export class ResolvedRequirements {
     /** Whether the requirements are collected {@link ResolutionSpec.permissive permissively}. */
     public readonly permissive: boolean,
     /** What the target builds, as its rule declares it, where it does. */
-    public readonly result?: Builds
+    public readonly result?: Builds,
+    /** The advisories the target's build fixes in the package it is made from, as its rule declares them ({@link ResolutionSpec.fixes}). */
+    public readonly fixes: ReadonlyArray<string> = []
   ) {
     this.sources = new Map([...entries].map(([name, entry]) => [name, entry.sources]));
     this.references = new Map([...entries].map(([name, entry]) => [name, entry.references]));
@@ -250,17 +255,17 @@ export class ResolvedRequirements {
       }
       return [name, entry];
     });
-    return new ResolvedRequirements(new Map(kept), this.parts, this.permissive, this.result);
+    return new ResolvedRequirements(new Map(kept), this.parts, this.permissive, this.result, this.fixes);
   }
 
   /**
    * Get the requirements of the target `target` among these, each named
    * `<target>.<name>`, as requirements named `<name>`, collected strictly
-   * unless `permissive`, of a target that builds what `result` says, with
-   * what conflicts among their sources alone, in each collection that
+   * unless `permissive`, of a target that builds what `result` says and fixes
+   * the advisories `fixes` names, with what conflicts among their sources alone, in each collection that
    * resolved them.
    */
-  public ofTarget(target: string, permissive: boolean, result?: Builds): Computable<ResolvedRequirements> {
+  public ofTarget(target: string, { permissive, result, fixes }: Pick<ResolutionSpec, "permissive" | "result" | "fixes">): Computable<ResolvedRequirements> {
     const kept = [...this.entries]
       .filter(([name]) => name.startsWith(`${target}.`))
       .map(([name, entry]): [string, ResolvedRequirement] => [name.substring(target.length + 1), entry]);
@@ -270,8 +275,9 @@ export class ResolvedRequirements {
         new ResolvedRequirements(
           new Map(kept),
           this.parts.map((part, index) => ({ conflicts: conflicts[index], conflictsAmong: part.conflictsAmong })),
-          permissive,
-          result
+          permissive === true,
+          result,
+          fixes
         )
     );
   }
@@ -394,7 +400,8 @@ export function resolveRequirements(target: TargetContext, spec: ResolutionSpec)
             new Map(names.map((name, index) => [name, resolvedEntries.get(index)!])),
             parts.map(({ resolved }) => ({ conflicts: resolved.conflicts, conflictsAmong: resolved.conflictsAmong })),
             spec.permissive === true,
-            spec.result
+            spec.result,
+            spec.fixes
           );
         }
       );

@@ -23,6 +23,7 @@ import {
   globMatcher,
   isGlob,
   FILES_OPERATION,
+  affectsAny,
   audit,
   auditSarif,
   BuildContext,
@@ -124,6 +125,11 @@ const DIAG_COVERAGE_NONE = Diagnostic.Warn<Record<string, never>>("No test targe
  * no place in the project to report it against. */
 const DIAG_COVERAGE_UNPLACEABLE = Diagnostic.Warn<{ count: number; examples: string }>(
   "Left {count} generated source(s) out of the coverage report, having no source path: {examples}"
+);
+/* A declared fix the advisory database does not bear out: the claim is stale
+ * (the package moved on) or misspelt. */
+const DIAG_AUDIT_UNMATCHED_FIX = Diagnostic.Warn<{ target: string; id: string; pkg: string }>(
+  "'{target}' declares it fixes {id}, which is not an advisory affecting {pkg}"
 );
 const DIAG_WATCHING = Diagnostic.Info<Record<string, never>>("Watching for changes (Ctrl-C to stop)");
 const DIAG_UNHANDLED = Diagnostic.Warn<{ message: string }>("Unhandled error: {message}");
@@ -1324,7 +1330,7 @@ function writeSbom(model: BuildModel, options: Options, execution: ExecutionCont
  * built, each registry package among them asked about at its exact version
  * (core's {@link audit}).
  * The report goes to stdout, as text or with `--format sarif` as SARIF, and the run
- * exits 1 where any advisory affects a package. The database is asked after
+ * exits 1 where any advisory affects a package, one a patched target fixes aside. The database is asked after
  * the evaluation settles, as a program is launched: it is no part of the
  * build.
  */
@@ -1350,7 +1356,10 @@ function auditDependencies(
           } else {
             renderAudit(report, stdoutStyle()).forEach(line => console.log(line));
           }
-          return report.findings.length > 0 ? 1 : 0;
+          report.unmatched.forEach(({ target, id, pkg }) =>
+            execution.log.log(DIAG_AUDIT_UNMATCHED_FIX, { target, id, pkg: `${pkg.packageName}@${pkg.version}` })
+          );
+          return affectsAny(report) ? 1 : 0;
         })
   );
 }

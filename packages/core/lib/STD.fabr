@@ -144,6 +144,9 @@ targetdef patched {
     # Environment variables for the command, over each runnable's own `env`:
     # the command runs with no others.
     env = MAP;
+    # The advisories the change fixes in the package `srcs` names, by id or
+    # alias (`GHSA-…`, `CVE-…`): `fabr audit` reports them as fixed here.
+    fixes = STRING;
 }
 
 #

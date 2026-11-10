@@ -23,7 +23,7 @@ import { sendRequest } from "./core/Fetch";
 import { Dependency, isPackage, Package, ResolvedNode } from "./core/PackageFileSet";
 import { Reference } from "./core/Reference";
 import { Resolved } from "./core/Repository";
-import { ResolvedRequirements, ResolvedTarget } from "./context/index";
+import { EXTENDS_KEY, ResolvedRequirements, ResolvedTarget } from "./context/index";
 import { declPosn } from "./model/AST";
 import { IModelStep, MODEL_PROVENANCE } from "./model/ModelProvenance";
 import { builtInProject } from "./model/Target";
@@ -36,7 +36,8 @@ import { ISarifLocation, ISarifLog, ISarifResult, ISarifRule, sarifLog } from ".
 /**
  * Audit what names resolve to against a database of security advisories: the
  * registry packages among the dependencies, each at its exact version, asked
- * about by its purl. The render-free operation behind `fabr audit`: a driver
+ * about by its purl, and each target made from one (a `patched` package) as
+ * the package it is made from, its build fixing what its rule declares. The render-free operation behind `fabr audit`: a driver
  * resolves the names ({@link BuildContext.resolve}), hands them to
  * {@link audit} with the {@link AdvisoryServer} to ask, and renders the
  * {@link AuditReport}, or writes it as SARIF ({@link auditSarif}). Nothing is
@@ -75,6 +76,32 @@ export interface AuditedPackage {
   readonly format: PackageFormat<unknown, unknown>;
   /** How each tree reaches the package, one entry per tree that does. */
   readonly paths: ReadonlyArray<AuditedPath>;
+  /** The target the package is made into, where the trees reach a target made
+   * from it rather than the package itself, with the advisories its rule
+   * declares the target's build fixes ({@link ResolvedRequirements.fixes}). */
+  readonly patchedBy?: { readonly target: string; readonly fixes: ReadonlyArray<string> };
+}
+
+/**
+ * @return the registry package the target `pkg` is made from, where it
+ * `extends` exactly one, directly or through targets that each extend exactly
+ * one, with the advisories those targets declare their builds fix; otherwise
+ * undefined.
+ */
+export function madeFrom(pkg: Package): { readonly from: Package; readonly fixes: ReadonlyArray<string> } | undefined {
+  if (!(pkg instanceof ResolvedTarget)) {
+    return undefined;
+  }
+  const sources = pkg.resolved.sources.get(EXTENDS_KEY) ?? [];
+  const [only] = sources;
+  if (sources.length !== 1 || !isPackage(only)) {
+    return undefined;
+  }
+  if (!builtInProject(only.origin)) {
+    return { from: only, fixes: pkg.resolved.fixes };
+  }
+  const inner = madeFrom(only);
+  return inner === undefined ? undefined : { from: inner.from, fixes: [...pkg.resolved.fixes, ...inner.fixes] };
 }
 
 /** @return `pkg` as a path names it. */
@@ -118,15 +145,18 @@ export function rootEdges(resolved: ResolvedRequirements): Dependency[] {
  * List the packages among what `names` resolve to that an advisory database
  * can be asked about: each registry package at its exact version, by its purl,
  * once however many names reach it. A package built in the project is walked
- * through for what it requires and asked about nothing, having no published
- * version.
+ * through for what it requires, and asked about as the registry package it is
+ * made from where it is made from one, apart from that package itself;
+ * otherwise it is asked about nothing, having no published version.
  */
 export function auditedPackages(names: ReadonlyArray<ResolvedName>): AuditedPackage[] {
   interface Entry {
+    purl: string;
     packageName: string;
     version: string;
     format: PackageFormat<unknown, unknown>;
     paths: Array<{ path: string[]; others: number; site?: ISourceSpan }>;
+    patchedBy?: { target: string; fixes: ReadonlyArray<string> };
   }
   const audited = new Map<string, Entry>();
   for (const { title, resolved } of names) {
@@ -148,25 +178,36 @@ export function auditedPackages(names: ReadonlyArray<ResolvedName>): AuditedPack
           continue;
         }
         const here = [...path, pathName(pkg)];
-        const version = builtInProject(pkg.origin) ? undefined : pkg.version;
-        const purl = version === undefined ? undefined : purlOf(pkg.origin, pkg.packageName, version);
-        const format = purl === undefined ? undefined : formatOf(pkg.origin);
+        const patched = builtInProject(pkg.origin) ? madeFrom(pkg) : undefined;
+        const subject = patched?.from ?? (builtInProject(pkg.origin) ? undefined : pkg);
+        const version = subject?.version;
+        const purl = subject === undefined || version === undefined ? undefined : purlOf(subject.origin, subject.packageName, version);
+        const format = purl === undefined ? undefined : formatOf(subject!.origin);
         const found =
           purl === undefined || version === undefined || format === undefined
             ? undefined
             : { path: here, others: 0, ...(written === undefined ? {} : { site: written }) };
         reached.set(pkg, found);
         if (found !== undefined) {
-          const entry = audited.get(purl!) ?? { packageName: pkg.packageName, version: version!, format: format!, paths: [] };
+          /* A target made from the package is a package of its own. */
+          const key = patched === undefined ? purl! : `${purl!} ${pkg.packageName}`;
+          const entry = audited.get(key) ?? {
+            purl: purl!,
+            packageName: subject!.packageName,
+            version: version!,
+            format: format!,
+            paths: [],
+            ...(patched === undefined ? {} : { patchedBy: { target: pkg.packageName, fixes: patched.fixes } }),
+          };
           entry.paths.push(found);
-          audited.set(purl!, entry);
+          audited.set(key, entry);
         }
         walk(pkg.dependencies, here, written);
       }
     };
     walk(rootEdges(resolved), [title], undefined);
   }
-  return [...audited].map(([purl, entry]) => ({ purl, ...entry })).sort((a, b) => (a.purl < b.purl ? -1 : a.purl > b.purl ? 1 : 0));
+  return [...audited].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([, entry]) => entry);
 }
 
 /** A range of versions an advisory affects, in one package. */
@@ -323,13 +364,37 @@ export function osvServer(base: string): AdvisoryServer {
 /** One advisory the audit found, and the audited packages it affects. */
 export interface Finding {
   readonly advisory: Advisory;
+  /** The packages it affects. */
   readonly packages: ReadonlyArray<AuditedPackage>;
+  /** The packages it would affect, made into targets whose builds fix it. */
+  readonly fixed: ReadonlyArray<AuditedPackage>;
 }
 
-/** What an audit found: the packages asked about, and the advisories affecting them. */
+/** An advisory a target declares its build fixes, which affects nothing it is made from. */
+export interface UnmatchedFix {
+  readonly target: string;
+  /** The advisory as the target names it. */
+  readonly id: string;
+  /** The package the target is made from. */
+  readonly pkg: AuditedPackage;
+}
+
+/** What an audit found: the packages asked about, the advisories affecting
+ * them, and the fixes declared for advisories that do not. */
 export interface AuditReport {
   readonly packages: ReadonlyArray<AuditedPackage>;
   readonly findings: ReadonlyArray<Finding>;
+  readonly unmatched: ReadonlyArray<UnmatchedFix>;
+}
+
+/** @return true if `advisory` is one of those `ids` name, by its id or an alias, otherwise false. */
+function namedAmong(advisory: Advisory, ids: ReadonlyArray<string>): boolean {
+  return ids.includes(advisory.id) || advisory.aliases.some(alias => ids.includes(alias));
+}
+
+/** @return true if any advisory `report` found affects a package, as one its builds do not fix, otherwise false. */
+export function affectsAny(report: AuditReport): boolean {
+  return report.findings.some(finding => finding.packages.length > 0);
 }
 
 /** The order advisories are reported in: the database's ratings from the
@@ -345,29 +410,46 @@ export function severityRank(advisory: Advisory): number {
 /**
  * Audit what `names` resolve to: ask `server` about every registry package among them, and
  * report each advisory it answers with against the packages it affects,
- * the worst first.
+ * the worst first, apart from those made into targets that declare their
+ * builds fix it; and report each advisory a target declares its build fixes
+ * that affects nothing it is made from.
  */
 export function audit(names: ReadonlyArray<ResolvedName>, server: AdvisoryServer): Computable<AuditReport> {
   const packages = auditedPackages(names);
   if (packages.length === 0) {
-    return Computable.resolve({ packages, findings: [] });
+    return Computable.resolve({ packages, findings: [], unmatched: [] });
   }
-  return server.query(packages.map(pkg => pkg.purl)).then(answers => {
-    const affected = new Map<string, AuditedPackage[]>();
-    answers.forEach((ids, at) => ids.forEach(id => affected.set(id, [...(affected.get(id) ?? []), packages[at]])));
-    const ids = [...affected.keys()].sort();
+  const purls = [...new Set(packages.map(pkg => pkg.purl))];
+  return server.query(purls).then(answers => {
+    const answered = new Map(purls.map((purl, at) => [purl, answers[at]]));
+    const ids = [...new Set(answers.flat())].sort();
     return Computable.forAll(
       ids.map(id => server.advisory(id)),
-      (...advisories: Advisory[]) => ({
-        packages,
-        findings: advisories
-          .map((advisory, at): Finding => ({ advisory, packages: affected.get(ids[at])! }))
-          .sort(
-            (a, b) =>
-              severityRank(a.advisory) - severityRank(b.advisory) ||
-              (a.advisory.id < b.advisory.id ? -1 : a.advisory.id > b.advisory.id ? 1 : 0)
+      (...advisories: Advisory[]): AuditReport => {
+        const byId = new Map(ids.map((id, at) => [id, advisories[at]]));
+        const affecting = (pkg: AuditedPackage): Advisory[] => (answered.get(pkg.purl) ?? []).map(id => byId.get(id)!);
+        const fixes = (pkg: AuditedPackage, advisory: Advisory): boolean => pkg.patchedBy !== undefined && namedAmong(advisory, pkg.patchedBy.fixes);
+        return {
+          packages,
+          findings: advisories
+            .map((advisory, at): Finding => {
+              const reached = packages.filter(pkg => answered.get(pkg.purl)!.includes(ids[at]));
+              return { advisory, packages: reached.filter(pkg => !fixes(pkg, advisory)), fixed: reached.filter(pkg => fixes(pkg, advisory)) };
+            })
+            .sort(
+              (a, b) =>
+                severityRank(a.advisory) - severityRank(b.advisory) ||
+                (a.advisory.id < b.advisory.id ? -1 : a.advisory.id > b.advisory.id ? 1 : 0)
+            ),
+          unmatched: packages.flatMap(pkg =>
+            pkg.patchedBy === undefined
+              ? []
+              : pkg.patchedBy.fixes
+                  .filter(id => !affecting(pkg).some(advisory => namedAmong(advisory, [id])))
+                  .map((id): UnmatchedFix => ({ target: pkg.patchedBy!.target, id, pkg }))
           ),
-      })
+        };
+      }
     );
   });
 }
@@ -415,14 +497,15 @@ const SECURITY_SEVERITY = new Map([
   ["LOW", "2.0"],
 ]);
 
-/** Render a path as a result's message spells it. */
-function pathText({ path, others }: AuditedPath): string {
+/** Render a path as a report spells it. */
+export function pathText({ path, others }: AuditedPath): string {
   return `${path.join(" > ")}${others === 0 ? "" : ` (+${others})`}`;
 }
 
 /**
  * Shape an audit report as SARIF, for a code-scanning service: each advisory a
- * rule, each affected package a result at the level its rating gives, located
+ * rule, each affected package a result at the level its rating gives (one a
+ * target's build fixes, suppressed in source), located
  * where `locate` places the written references that bring it in, where it
  * places them (a reference written in the project's own build files). `tool`
  * names the fabr that ran.
@@ -443,26 +526,37 @@ export function auditSarif(
         : { "security-severity": SECURITY_SEVERITY.get(advisory.severity.toUpperCase()) }),
     },
   }));
-  const results = report.findings.flatMap(({ advisory }, ruleIndex) =>
-    report.findings[ruleIndex].packages.map((pkg): ISarifResult => {
-      const fixed = fixedVersions(advisory, pkg);
-      const locations = [...new Set(pkg.paths.flatMap(path => (path.site === undefined ? [] : [path.site])))].flatMap(site => {
-        const location = locate(site);
-        return location === undefined ? [] : [location];
-      });
-      return {
-        ruleId: advisory.id,
-        ruleIndex,
-        level: sarifLevel(advisory),
-        message: {
-          text: `${pkg.packageName}@${pkg.version}${
-            fixed.length === 0 ? "" : ` (fixed in ${fixed.join(", ")})`
-          }, required through ${pkg.paths.map(pathText).join("; ")}`,
-        },
-        ...(locations.length === 0 ? {} : { locations }),
-        properties: { purl: pkg.purl, fixed, paths: pkg.paths.map(({ path, others }) => ({ path, others })) },
-      };
-    })
+  const result = (advisory: Advisory, ruleIndex: number, pkg: AuditedPackage): ISarifResult => {
+    const fixed = fixedVersions(advisory, pkg);
+    const locations = [...new Set(pkg.paths.flatMap(path => (path.site === undefined ? [] : [path.site])))].flatMap(site => {
+      const location = locate(site);
+      return location === undefined ? [] : [location];
+    });
+    const patched = pkg.patchedBy;
+    return {
+      ruleId: advisory.id,
+      ruleIndex,
+      level: sarifLevel(advisory),
+      message: {
+        text: `${pkg.packageName}@${pkg.version}${patched === undefined ? "" : ` as patched by '${patched.target}'`}${
+          fixed.length === 0 ? "" : ` (fixed in ${fixed.join(", ")})`
+        }, required through ${pkg.paths.map(pathText).join("; ")}`,
+      },
+      ...(locations.length === 0 ? {} : { locations }),
+      /* A target that declares it fixes the advisory says so where it is declared. */
+      ...(patched === undefined || !namedAmong(advisory, patched.fixes)
+        ? {}
+        : { suppressions: [{ kind: "inSource" as const, justification: `fixed by the patched target '${patched.target}'` }] }),
+      properties: {
+        purl: pkg.purl,
+        fixed,
+        paths: pkg.paths.map(({ path, others }) => ({ path, others })),
+        ...(patched === undefined ? {} : { patchedBy: patched.target }),
+      },
+    };
+  };
+  const results = report.findings.flatMap(({ advisory, packages, fixed }, ruleIndex) =>
+    [...packages, ...fixed].map(pkg => result(advisory, ruleIndex, pkg))
   );
   return sarifLog({ name: "fabr", version: tool.version, informationUri: "https://fabr.build/", rules }, results, {
     packagesChecked: report.packages.length,

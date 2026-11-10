@@ -2001,8 +2001,8 @@ interface BlockRequirements {
   readonly result: ReadonlyArray<SourceRef>;
   /** The requirement each key of `requirements` stands for. */
   readonly names: ReadonlyMap<string, string>;
-  /** Each target reached, by name, with whether its rule collects permissively and what it declares it builds. */
-  readonly reachedTargets: ReadonlyMap<string, { readonly permissive: boolean; readonly result?: Builds }>;
+  /** Each target reached, by name, with whether its rule collects permissively, what it declares it builds and the advisories it declares its build fixes. */
+  readonly reachedTargets: ReadonlyMap<string, Pick<ResolutionSpec, "permissive" | "result" | "fixes">>;
 }
 
 /** The name of what a block's result reference names among the requirements of a rule written in `.fabr`: no `<target>.<requirement>`. */
@@ -2150,8 +2150,8 @@ class RuleScope {
   }
 
   /** Get the requirements of the block's target `name`, reached by the result: its part of the matched target's, collected and building as its rule declares (`reached`). */
-  public requirementsOf(name: string, reached: { readonly permissive: boolean; readonly result?: Builds }): Computable<ResolvedRequirements> {
-    return this.collection().then(collected => collected.ofTarget(name, reached.permissive, reached.result));
+  public requirementsOf(name: string, reached: Pick<ResolutionSpec, "permissive" | "result" | "fixes">): Computable<ResolvedRequirements> {
+    return this.collection().then(collected => collected.ofTarget(name, reached));
   }
 
   /** Get the state `rule` keeps for the block's target `name` in the configuration of `constraints`, made by `make` on first use: one in each configuration, however the target is looked up there. */
@@ -2194,6 +2194,7 @@ class RuleScope {
     interface Requires {
       readonly permissive: boolean;
       readonly result?: Builds;
+      readonly fixes?: ReadonlyArray<string>;
       /** Each requirement, with the operation its collection is resolved for. */
       readonly entries: ReadonlyArray<[string, Read, string]>;
     }
@@ -2220,6 +2221,7 @@ class RuleScope {
               (...values: Read[]): Requires => ({
                 permissive: stated.permissive === true,
                 result: stated.result,
+                fixes: stated.fixes,
                 entries: entries.map(([name, , operation], index): [string, Read, string] => [name, values[index], operation]),
               })
             );
@@ -2247,12 +2249,12 @@ class RuleScope {
           const build = new Map<string, RequiredSources>([[RESULT_KEY, sources]]);
           const run = new Map<string, RequiredSources>();
           const names = new Map<string, string>([[RESULT_KEY, RESULT_KEY]]);
-          const reachedTargets = new Map<string, { permissive: boolean; result?: Builds }>();
+          const reachedTargets = new Map<string, Pick<ResolutionSpec, "permissive" | "result" | "fixes">>();
           for (const target of targets) {
             const found = reached.get(target);
             if (found !== undefined) {
               const local = declName(target);
-              reachedTargets.set(local, { permissive: found.permissive, result: found.result });
+              reachedTargets.set(local, { permissive: found.permissive, result: found.result, fixes: found.fixes });
               for (const [name, value, operation] of found.entries) {
                 (operation === "run" ? run : build).set(`${local}.${name}`, value);
                 names.set(`${local}.${name}`, name);

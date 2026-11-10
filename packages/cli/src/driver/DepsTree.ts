@@ -46,6 +46,7 @@ import {
   Advisory,
   AuditReport,
   fixedVersions,
+  pathText,
   severityRank,
 } from "@fabr-build/core";
 
@@ -310,12 +311,13 @@ function severityStyle(advisory: Advisory, style: Style): string {
 /**
  * Render an audit report: a block per advisory — its id and aliases, the
  * database's rating and its summary, then each affected package with the
- * versions that fix it and a path the tree reaches it by — and the count.
+ * versions that fix it and a path the tree reaches it by, then each a patched
+ * target fixes — and the count.
  * `style` paints the output for a terminal.
  */
 export function renderAudit(report: AuditReport, style: Style = (_code, text) => text): string[] {
   const lines: string[] = [];
-  for (const { advisory, packages } of report.findings) {
+  for (const { advisory, packages, fixed } of report.findings) {
     const title = [advisory.id, ...(advisory.aliases.length > 0 ? [style(DIM, `(${advisory.aliases.join(", ")})`)] : [])].join(" ");
     lines.push(
       [style(BOLD, title), ...(advisory.severity === undefined ? [] : [severityStyle(advisory, style)]), advisory.summary]
@@ -323,9 +325,14 @@ export function renderAudit(report: AuditReport, style: Style = (_code, text) =>
         .join("  ")
     );
     for (const pkg of packages) {
-      const fixed = fixedVersions(advisory, pkg);
-      lines.push(`  ${pkg.packageName}@${pkg.version}${fixed.length === 0 ? "" : style(DIM, `, fixed in ${fixed.join(", ")}`)}`);
-      pkg.paths.forEach(({ path, others }) => lines.push(style(DIM, `    ${path.join(" > ")}${others === 0 ? "" : ` (+${others})`}`)));
+      const versions = fixedVersions(advisory, pkg);
+      const patched = pkg.patchedBy === undefined ? "" : ` as patched by '${pkg.patchedBy.target}'`;
+      lines.push(`  ${pkg.packageName}@${pkg.version}${patched}${versions.length === 0 ? "" : style(DIM, `, fixed in ${versions.join(", ")}`)}`);
+      pkg.paths.forEach(path => lines.push(style(DIM, `    ${pathText(path)}`)));
+    }
+    for (const pkg of fixed) {
+      lines.push(`  ${pkg.packageName}@${pkg.version}${style(DIM, `, fixed by '${pkg.patchedBy!.target}'`)}`);
+      pkg.paths.forEach(path => lines.push(style(DIM, `    ${pathText(path)}`)));
     }
     if (advisory.url !== undefined) {
       lines.push(`  ${style(DIM, advisory.url)}`);
@@ -333,11 +340,14 @@ export function renderAudit(report: AuditReport, style: Style = (_code, text) =>
     lines.push("");
   }
   const packages = plural(report.packages.length, "package", "packages");
-  if (report.findings.length === 0) {
-    lines.push(report.packages.length === 0 ? "No packages to audit" : `No known advisories affect the ${packages} checked`);
+  const affecting = report.findings.filter(finding => finding.packages.length > 0);
+  const fixed = report.findings.length - affecting.length;
+  const patches = fixed === 0 ? "" : `; ${plural(fixed, "advisory is", "advisories are")} fixed by patched packages`;
+  if (affecting.length === 0) {
+    lines.push(report.packages.length === 0 ? "No packages to audit" : `No known advisories affect the ${packages} checked${patches}`);
   } else {
-    const affected = new Set(report.findings.flatMap(finding => finding.packages.map(pkg => pkg.purl))).size;
-    lines.push(`${plural(report.findings.length, "advisory affects", "advisories affect")} ${affected} of ${packages} checked`);
+    const affected = new Set(affecting.flatMap(finding => finding.packages.map(pkg => pkg.purl))).size;
+    lines.push(`${plural(affecting.length, "advisory affects", "advisories affect")} ${affected} of ${packages} checked${patches}`);
   }
   return lines;
 }
