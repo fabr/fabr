@@ -23,6 +23,8 @@ import { Transform } from "stream";
 import { createGzip } from "zlib";
 import {
   Computable,
+  contentSize,
+  contentStream,
   FabrError,
   getResultFileSet,
   IFile,
@@ -35,8 +37,8 @@ import {
   TargetContext,
   toJsonObject,
 } from "@fabr-build/core";
-import { contentOf, ImageFileSet, ILayerRecord, sizeOf } from "./ImageFileSet";
-import { digested, digestOf, IDescriptor, OCI_CONFIG, OCI_MANIFEST, Registry } from "./OciProtocol";
+import { ImageFileSet, ILayerRecord } from "./ImageFileSet";
+import { digested, digestOf, IDescriptor, OCI_CONFIG, OCI_MANIFEST, Registry, toManifestDocument } from "./OciProtocol";
 import { authFileSignIn } from "./RegistrySignIn";
 
 /** A layer as published: gzip-compressed. */
@@ -52,11 +54,12 @@ const CARRIER_CONFIG = "config.json";
 const CARRIER_SOURCES = "sources.json";
 const CARRIER_BLOBS = "blobs";
 
-/** Where a layer published before can be had from, by its published digest. */
+/** Where a layer published before can be had from, by its published digest, and the name its registry's login is stored under where it declares one. */
 interface ILayerSource {
   readonly digest: string;
   readonly registry: string;
   readonly repository: string;
+  readonly loginUrl?: string;
 }
 
 /**
@@ -99,14 +102,19 @@ function publishedLayer(context: TargetContext, layer: ILayerRecord): Computable
   if (published !== undefined) {
     return Computable.resolve({
       descriptor: { mediaType: published.mediaType, digest: published.digest, size: published.size },
-      source: { digest: published.digest, registry: published.registry, repository: published.repository },
+      source: {
+        digest: published.digest,
+        registry: published.registry,
+        repository: published.repository,
+        ...(published.loginUrl === undefined ? {} : { loginUrl: published.loginUrl }),
+      },
     });
   }
   return context
     .memoize(GZIP_TAG, layer.index.diffId, workDir => compressLayer(layer.tar, path.join(workDir, "layer.tar.gz")).then(() => getResultFileSet(workDir, "layer.tar.gz")))
     .then(files => {
       const blob = files.getFile("layer.tar.gz")!;
-      return sizeOf(blob).then(size => ({ descriptor: { mediaType: OCI_LAYER_GZIP, digest: `sha256:${blob.hash}`, size }, blob }));
+      return contentSize(blob).then(size => ({ descriptor: { mediaType: OCI_LAYER_GZIP, digest: `sha256:${blob.hash}`, size }, blob }));
     });
 }
 
@@ -116,7 +124,7 @@ function publishedLayer(context: TargetContext, layer: ILayerRecord): Computable
  * already none.
  */
 function compressLayer(tar: IFile, out: string): Computable<void> {
-  return contentOf(tar).then(
+  return contentStream(tar).then(
     source =>
       Computable.from<void>((resolve, reject) => {
         let seen = 0;
@@ -152,8 +160,8 @@ export function pushImage(context: TargetContext, registry: Registry, carrier: P
     [carrier.readFile(CARRIER_MANIFEST), carrier.readFile(CARRIER_CONFIG), carrier.readFile(CARRIER_SOURCES)] as const,
     (manifestText: string, configText: string, sourcesText: string) => {
       const manifest = Buffer.from(manifestText, "utf8");
-      const layers = (toJsonObject(JSON.parse(manifestText)).layers as IDescriptor[]) ?? [];
-      const sources = new Map(parseJson(sourcesText, CARRIER_SOURCES, json => json as ILayerSource[]).map(source => [source.digest, source]));
+      const layers = parseJson(manifestText, CARRIER_MANIFEST, toManifestLayers);
+      const sources = new Map(parseJson(sourcesText, CARRIER_SOURCES, toLayerSources).map(source => [source.digest, source]));
       return registry.taggedDigest(repository, tag).then(existing => {
         if (existing === digestOf(manifest)) {
           return Computable.resolve<PublishStatus>("already-synced");
@@ -184,18 +192,42 @@ function pushBlob(
     if (held) {
       return Computable.resolve(undefined);
     }
+    const sameRegistry = source !== undefined && source.registry === registry.url;
     const upload = (): Computable<void> =>
       file !== undefined
-        ? contentOf(file).then(stream => registry.uploadBlob(repository, blob.digest, blob.size, () => stream))
+        ? contentStream(file).then(stream => registry.uploadBlob(repository, blob.digest, blob.size, stream))
         : source !== undefined
-        ? new Registry(context, source.registry, authFileSignIn(context, source.registry))
+        ? (sameRegistry ? registry : new Registry(context, source.registry, authFileSignIn(context, source.registry, source.loginUrl)))
             .blobStream(source.repository, blob.digest)
-            .then(stream => registry.uploadBlob(repository, blob.digest, blob.size, () => stream))
+            .then(stream => registry.uploadBlob(repository, blob.digest, blob.size, stream))
         : Computable.reject<void>(new FabrError(`nothing holds the blob ${blob.digest} to push`));
-    if (source !== undefined && source.registry === registry.url) {
+    if (source !== undefined && sameRegistry) {
       return registry.mountBlob(repository, blob.digest, source.repository).then(mounted => (mounted ? Computable.resolve(undefined) : upload()));
     }
     return upload();
+  });
+}
+
+/** Read the layers of a carrier's manifest. */
+function toManifestLayers(json: unknown): IDescriptor[] {
+  const manifest = toManifestDocument(json, OCI_MANIFEST);
+  if (manifest.kind !== "manifest") {
+    throw new FabrError("a carrier's manifest is an image index");
+  }
+  return [...manifest.layers];
+}
+
+/** Read a carrier's record of where each layer published before is had from. */
+function toLayerSources(json: unknown): ILayerSource[] {
+  if (!Array.isArray(json)) {
+    throw new FabrError("expected a list of layer sources");
+  }
+  return json.map(entry => {
+    const { digest, registry, repository, loginUrl } = toJsonObject(entry);
+    if (typeof digest !== "string" || typeof registry !== "string" || typeof repository !== "string" || (loginUrl !== undefined && typeof loginUrl !== "string")) {
+      throw new FabrError("a layer source lacks its 'digest', 'registry' or 'repository'");
+    }
+    return { digest, registry, repository, ...(loginUrl === undefined ? {} : { loginUrl }) };
   });
 }
 

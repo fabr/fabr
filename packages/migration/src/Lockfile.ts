@@ -21,6 +21,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { parseAllDocuments, parse as parseYaml } from "yaml";
 import { isJsonObject, parseJson, parseVersion } from "@fabr-build/core";
+import { parseSpec } from "./Spec";
 
 /** What a lockfile records: the versions installed of each package, by the
  * name the registry publishes it under. */
@@ -68,7 +69,7 @@ function splitAtVersion(key: string): [string, string] | undefined {
 
 /**
  * Read a pnpm lockfile: each `packages` key names a package and its version —
- * `name@1.2.3` (v9), `/name@1.2.3(peer@2.0.0)` (v6-v8), `/name/1.2.3` (v5).
+ * `name@1.2.3` (v9), `/name@1.2.3(peer@2.0.0)` (v6-v8), `/name/1.2.3_peer@2.0.0` (v5).
  * pnpm 10 writes its config dependencies as a document of their own before
  * the lockfile's.
  */
@@ -81,14 +82,11 @@ export function readPnpmLock(text: string): Map<string, Set<string>> {
     }
     for (const key of Object.keys(doc.packages)) {
       const bare = key.replace(/^\//, "").replace(/\(.*$/, "");
-      const split = splitAtVersion(bare);
+      /* v5's `name/1.2.3`, its peers after a `_` (`foo/1.2.3_bar@2.0.0`). */
+      const v5 = /^((?:@[^/]+\/)?[^/@]+)\/([^/_]+)(?:_.*)?$/.exec(bare);
+      const split = v5 !== null ? ([v5[1], v5[2]] as [string, string]) : splitAtVersion(bare);
       if (split !== undefined) {
         record(versions, ...split);
-      } else {
-        const slash = bare.lastIndexOf("/");
-        if (slash > 0) {
-          record(versions, bare.slice(0, slash), bare.slice(slash + 1));
-        }
       }
     }
   }
@@ -100,7 +98,7 @@ export function readYarnLock(text: string): Map<string, Set<string>> {
   return /^__metadata:/m.test(text) ? readBerryLock(text) : readClassicYarnLock(text);
 }
 
-/** Read yarn berry's lockfile: each entry's `resolution` is `name@npm:1.2.3`. */
+/** Read yarn berry's lockfile: each entry's `resolution` is `name@npm:1.2.3`, or a patch of one (`name@patch:name@npm%3A1.2.3#…`). */
 function readBerryLock(text: string): Map<string, Set<string>> {
   const versions = new Map<string, Set<string>>();
   const doc: unknown = parseYaml(text);
@@ -109,6 +107,14 @@ function readBerryLock(text: string): Map<string, Set<string>> {
   }
   for (const [key, entry] of Object.entries(doc)) {
     if (key === "__metadata" || !isJsonObject(entry) || typeof entry.resolution !== "string") {
+      continue;
+    }
+    const patch = entry.resolution.indexOf("@patch:", 1);
+    if (patch > 0) {
+      const patched = parseSpec(entry.resolution.slice(0, patch), entry.resolution.slice(patch + 1));
+      if (patched.kind === "registry") {
+        record(versions, patched.packageName, patched.range);
+      }
       continue;
     }
     const at = entry.resolution.lastIndexOf("@npm:");

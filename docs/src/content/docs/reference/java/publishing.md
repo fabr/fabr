@@ -47,10 +47,10 @@ For each entry, at its path in the repository's layout (`com/example/greeter/1.0
 - Any [classified jars](#sources-and-javadoc-jars), such as `<artifact>-<version>-sources.jar`.
 - An `.md5` and a `.sha1` checksum beside each.
 
-Then the package's `maven-metadata.xml` is brought up to date with the new version. The POM is
-uploaded after the artifact and the classified jars, so a version is visible only once all of
-them are there. An entry
-whose POM is already in the repository is reported as already synced, and nothing is uploaded.
+The package's `maven-metadata.xml` is brought up to date with the new version, and the POM is
+uploaded last of all, after its checksums, so a version is visible only once everything else is
+there. An entry whose POM is already in the repository is reported as already synced, and nothing
+is uploaded.
 
 `fabr build release` produces all of these without uploading, under the release's name:
 

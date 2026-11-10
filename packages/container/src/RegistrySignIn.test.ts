@@ -34,6 +34,12 @@ describe("the scopes a registry request needs", () => {
     ]);
   });
 
+  it("reads a repository whose name holds a request's kind, from the end of the path", () => {
+    expect(scopesOf({ method: "GET", url: `${REGISTRY}/v2/acme/blobs/app/manifests/latest` }, REGISTRY)).to.deep.equal(["repository:acme/blobs/app:pull"]);
+    expect(scopesOf({ method: "GET", url: `${REGISTRY}/v2/acme/manifests/tags/list` }, REGISTRY)).to.deep.equal(["repository:acme/manifests:pull"]);
+    expect(scopesOf({ method: "POST", url: `${REGISTRY}/v2/acme/blobs/app/blobs/uploads/` }, REGISTRY)).to.deep.equal(["repository:acme/blobs/app:pull,push"]);
+  });
+
   it("adds pulling the repository a blob is mounted from", () => {
     expect(scopesOf({ method: "POST", url: `${REGISTRY}/v2/acme/copy/blobs/uploads/?mount=sha256:ab&from=library/node` }, REGISTRY)).to.deep.equal([
       "repository:acme/copy:pull,push",

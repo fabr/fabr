@@ -133,11 +133,12 @@ function writeEntry(entry: yauzl.Entry, name: string, stream: Readable, createOu
       crc = crc32(data, crc);
     });
     stream.on("error", err => fail(zipError(err, entry)));
+    output.stream.on("error", fail);
     stream.on("end", () => {
       if (crc !== entry.crc32) {
         fail(corrupt(entry));
       } else {
-        output.finalize(name, mode & 0o7777 || 0o644).then(file => resolve([name, file]), fail);
+        output.finalize(name, (mode & 0o7777) || 0o644).then(file => resolve([name, file]), fail);
       }
     });
     stream.pipe(output.stream, { end: false });
@@ -178,7 +179,8 @@ export function extractZip(createOutput: () => IOutputHandle): { sink: Writable;
       done();
     },
   });
-  /* A failure of the stream feeding it (a dropped connection) destroys the sink. */
+  /* A failure of the spool, or of the stream feeding it (a dropped connection), destroys the sink. */
+  spool.stream.on("error", err => sink.destroy(err));
   sink.on("error", err => {
     spool.discard().then(() => settle.reject(err));
   });

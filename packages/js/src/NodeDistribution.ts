@@ -44,7 +44,6 @@ import {
   RepositoryPublishRef,
   RepositoryReader,
   RepositoryRef,
-  RepositoryRegistration,
   Requirement,
   resolveBarePackage,
   MemoryCache,
@@ -352,7 +351,6 @@ function createRepository(context: TargetContext): Computable<Repository> {
   return context.getRequiredString("url").then(url => new NodeDistribution(context, url.replace(/\/+$/, "")));
 }
 
-export const nodeDistributionRegistration: RepositoryRegistration = { type: "node_distribution", provider: createRepository };
 
 /** The implementation JS.fabr's `repository` declaration names. */
 export default createRepository;

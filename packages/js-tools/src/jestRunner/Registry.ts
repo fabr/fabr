@@ -45,7 +45,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire, isBuiltin, Module } from "node:module";
 import { assetStubFor } from "../testRunner/Assets";
-import { installRootOf, isRegistryModule, RUNNER_ROOT } from "./Tools";
+import { isRegistryModule, isRunnerModule } from "./Tools";
 
 /** What a caller module is, for resolution purposes: node's CJS Module. */
 export interface ILoaderModule {
@@ -80,11 +80,12 @@ const MOCK_SCHEME = "fabr-mock:";
 
 /**
  * The one registry both seams consult. Keys are **resolved absolute paths**
- * where the specifier resolves to a file, and the bare specifier otherwise (a
- * virtual mock, or a package that isn't installed) — so `./x` from two
- * different callers and `pkg/x` from a third all agree when they name the same
- * file, which is what makes a mock registered in one module visible at every
- * edge that reaches it.
+ * where the specifier resolves to a file, a core module's name without `node:`,
+ * and otherwise (a virtual mock, or a module that isn't installed) the
+ * absolute path a relative or absolute specifier names, or a bare specifier's
+ * text — so `./x` from two different callers and `pkg/x` from a third all
+ * agree when they name the same file, which is what makes a mock registered in
+ * one module visible at every edge that reaches it.
  */
 export class MockRegistry {
   private readonly entries = new Map<string, IMockEntry>();
@@ -111,12 +112,8 @@ export class MockRegistry {
    * by the child (runTestFile) once the jest object can be made. */
   public jestGlobalsFor: (caller: ILoaderModule | undefined) => unknown = () => ({});
 
-  /** The install the tests run in, whose modules are the registry's. */
-  private readonly installRoot: string;
-
   constructor(private readonly root: string, private readonly moduleMocker: IModuleMocker) {
     this.rootMocks = listRootMocks(root);
-    this.installRoot = installRootOf(root);
   }
 
   /* ---- registration (the jest object's module operations) ---- */
@@ -185,7 +182,7 @@ export class MockRegistry {
     const cache = this.moduleCache;
     const modules = new Map<string, NodeModule>();
     for (const [filename, module] of Object.entries(cache)) {
-      if (module !== undefined && isRegistryModule(this.installRoot, filename)) {
+      if (module !== undefined && isRegistryModule(filename)) {
         modules.set(filename, module);
       }
     }
@@ -211,7 +208,7 @@ export class MockRegistry {
   private evictRegistryModules(): void {
     const cache = this.moduleCache;
     for (const filename of Object.keys(cache)) {
-      if (isRegistryModule(this.installRoot, filename)) {
+      if (isRegistryModule(filename)) {
         delete cache[filename];
       }
     }
@@ -259,7 +256,7 @@ export class MockRegistry {
       if (rootMock !== undefined) {
         return this.instance(key, () => this.load(rootMock));
       }
-      if (this.automockAll && key !== request) {
+      if (this.automockAll && path.isAbsolute(key)) {
         return this.instance(key, () => this.automockOf(key));
       }
       /* A stylesheet or a binary: there is no bundler under test, and handing
@@ -373,7 +370,7 @@ export class MockRegistry {
 
   /** Resolve a specifier the way the calling module would, or undefined if it
    * names nothing on disk (a virtual mock, or a genuinely missing module —
-   * indistinguishable here, and both legitimately keyed by their text). */
+   * indistinguishable here, and both keyed by {@link unresolvedKey}). */
   public resolve(request: string, caller: ILoaderModule | undefined): string | undefined {
     return withoutHooks(() => {
       try {
@@ -389,7 +386,7 @@ export class MockRegistry {
   }
 
   /** Make the registry key for a registration. An unresolvable specifier is
-   * legitimately keyed by its text for a `{virtual: true}` mock or an unmock
+   * legitimately keyed by {@link unresolvedKey} for a `{virtual: true}` mock or an unmock
    * (there is nothing real to protect), for an asset request (judged on the
    * request — see Assets.ts), and for a package whose mock is a root
    * `__mocks__` entry (which is what makes it servable at all); anything else
@@ -409,7 +406,7 @@ export class MockRegistry {
    * same file from wherever it is asked for, as jest keys it — so a `{virtual:
    * true}` mock of `../config/test.json` answers a `require` of that file by
    * its absolute path — and a bare name is its text. */
-  private unresolvedKey(specifier: string, caller: ILoaderModule | undefined): string {
+  public unresolvedKey(specifier: string, caller: ILoaderModule | undefined): string {
     const isPath = specifier.startsWith("./") || specifier.startsWith("../") || path.isAbsolute(specifier);
     return isPath ? path.resolve(path.dirname(caller?.filename ?? path.join(this.root, "index.js")), specifier) : specifier;
   }
@@ -437,9 +434,10 @@ export class MockRegistry {
    * worth reinventing — it is jest-mock's, driven off the real module's
    * metadata.
    *
-   * The real module is loaded in isolation, as jest loads it: every module the
-   * load adds to the cache of the loader it is loaded through is evicted once
-   * the metadata is taken. A module that imports this one back (a cycle) is then evaluated afresh when
+   * The real module is loaded in isolation, as jest loads it: every registry
+   * module (see {@link isRegistryModule}) the load adds to the cache of the
+   * loader it is loaded through is evicted once the metadata is taken. A
+   * module that imports this one back (a cycle) is then evaluated afresh when
    * the code under test requires it, bound to the mock rather than to the real
    * module the mock was taken from.
    */
@@ -450,7 +448,7 @@ export class MockRegistry {
       return this.moduleMocker.generateFromMetadata(this.moduleMocker.getMetadata(this.loadActual(key)));
     } finally {
       for (const filename of Object.keys(cache)) {
-        if (!cached.has(filename)) {
+        if (!cached.has(filename) && isRegistryModule(filename)) {
           delete cache[filename];
         }
       }
@@ -585,50 +583,7 @@ function installEsmSeam(registry: MockRegistry): void {
    * registerHooks is there. */
   const { registerHooks } = Module as unknown as { registerHooks: (hooks: unknown) => void };
   registerHooks({
-    resolve(specifier: string, context: unknown, nextResolve: (s: string, c: unknown) => { url: string }): unknown {
-      /* These hooks fire for `require` as well as `import`, so the registry's
-       * OWN resolutions (keying a mock, finding the actual module behind one)
-       * must pass straight through — otherwise looking a mock up would resolve
-       * to the mock, without end. */
-      if (bypassing > 0) {
-        return nextResolve(specifier, context);
-      }
-      /* The runner's machinery is exempt from mocking on this seam too — the
-       * same rule serve() applies to a CJS caller, judged here on the
-       * importing module's URL. */
-      const parent = (context as { parentURL?: string }).parentURL;
-      if (parent !== undefined && parent.startsWith("file:") && isRunnerInternal(fileURLToPath(parent))) {
-        return nextResolve(specifier, context);
-      }
-      /* Resolve FIRST and key on the answer. Asking the registry to resolve the
-       * specifier here would re-enter this very hook; node has already done the
-       * work, so use it. */
-      let resolved: { url: string } | undefined;
-      let failure: unknown;
-      try {
-        resolved = nextResolve(specifier, context);
-      } catch (err) {
-        failure = err;
-      }
-      const key = resolved?.url.startsWith("file:")
-        ? fileURLToPath(resolved.url)
-        : resolved?.url.startsWith("node:")
-          ? coreModuleKey(resolved.url)
-          : specifier;
-      /* The URL carries whichever name the registry actually knows the mock
-       * under: the resolved path normally, the bare specifier for a root
-       * `__mocks__` entry or a virtual mock (both registered by name, which the
-       * load hook's serve must be able to find again). */
-      const mockKey = registry.hasMockFor(key) ? key : registry.hasMockFor(specifier) ? specifier : undefined;
-      if (mockKey !== undefined) {
-        return { url: mockUrl(registry, mockKey), shortCircuit: true };
-      }
-      if (resolved === undefined) {
-        /* Nothing mocked it and it doesn't exist: node's own error, unaltered. */
-        throw failure;
-      }
-      return resolved;
-    },
+    resolve: makeResolveHook(registry),
     load(url: string, context: unknown, nextLoad: (u: string, c: unknown) => unknown): unknown {
       if (!url.startsWith(MOCK_SCHEME)) {
         return nextLoad(url, context);
@@ -642,6 +597,62 @@ function installEsmSeam(registry: MockRegistry): void {
       return { format: "module", shortCircuit: true, source: syntheticModule(key) };
     },
   });
+}
+
+/**
+ * Make the ES-module seam's resolve hook: an edge the registry holds a mock for
+ * resolves to the mock's synthetic module, keyed as the CommonJS seam keys it.
+ */
+export function makeResolveHook(
+  registry: MockRegistry
+): (specifier: string, context: unknown, nextResolve: (s: string, c: unknown) => { url: string }) => unknown {
+  return (specifier: string, context: unknown, nextResolve: (s: string, c: unknown) => { url: string }): unknown => {
+    /* These hooks fire for `require` as well as `import`, so the registry's
+     * OWN resolutions (keying a mock, finding the actual module behind one)
+     * must pass straight through — otherwise looking a mock up would resolve
+     * to the mock, without end. */
+    if (bypassing > 0) {
+      return nextResolve(specifier, context);
+    }
+    /* The runner's machinery is exempt from mocking on this seam too — the
+     * same rule serve() applies to a CJS caller, judged here on the
+     * importing module's URL. */
+    const parent = (context as { parentURL?: string }).parentURL;
+    if (parent !== undefined && parent.startsWith("file:") && isRunnerInternal(fileURLToPath(parent))) {
+      return nextResolve(specifier, context);
+    }
+    /* Resolve FIRST and key on the answer. Asking the registry to resolve the
+     * specifier here would re-enter this very hook; node has already done the
+     * work, so use it. */
+    let resolved: { url: string } | undefined;
+    let failure: unknown;
+    try {
+      resolved = nextResolve(specifier, context);
+    } catch (err) {
+      failure = err;
+    }
+    const key =
+      resolved === undefined
+        ? registry.unresolvedKey(specifier, parent?.startsWith("file:") ? { filename: fileURLToPath(parent) } : undefined)
+        : resolved.url.startsWith("file:")
+          ? fileURLToPath(resolved.url)
+          : resolved.url.startsWith("node:")
+            ? coreModuleKey(resolved.url)
+            : specifier;
+    /* The URL carries whichever name the registry actually knows the mock
+     * under: the key computed above normally (a virtual mock's included), the
+     * bare specifier for a root `__mocks__` entry (registered by name, which
+     * the load hook's serve must be able to find again). */
+    const mockKey = registry.hasMockFor(key) ? key : registry.hasMockFor(specifier) ? specifier : undefined;
+    if (mockKey !== undefined) {
+      return { url: mockUrl(registry, mockKey), shortCircuit: true };
+    }
+    if (resolved === undefined) {
+      /* Nothing mocked it and it doesn't exist: node's own error, unaltered. */
+      throw failure;
+    }
+    return resolved;
+  };
 }
 
 /**
@@ -699,5 +710,5 @@ function keyFromMockUrl(url: string): string {
  * the registry never mocks for — see the exemption in
  * {@link MockRegistry.serve} — otherwise false. */
 function isRunnerInternal(filename: string | undefined): boolean {
-  return filename !== undefined && filename.startsWith(RUNNER_ROOT + path.sep);
+  return filename !== undefined && isRunnerModule(filename);
 }

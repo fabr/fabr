@@ -65,11 +65,17 @@ const CYCLE_TID = 0;
  * it waited for an execution slot as spans within it, each test file's run as
  * an async span placed by the runner's own timing, and each cycle's start and
  * end as instants. Concurrent tasks take distinct tracks, a track being reused
- * once its task ends, so the trace reads as the pane did. Written whole at
- * each cycle's end and on {@link write}, as the trace-event JSON array.
+ * once its task ends, so the trace reads as the pane did. Written as the
+ * trace-event JSON array, each cycle's events appended at its end and the
+ * array closed by {@link write}; until then the file lacks its closing `]`,
+ * which the format allows.
  */
 export class TraceWriter {
-  private readonly events: ITraceEvent[] = [];
+  /** The events not yet written. */
+  private events: ITraceEvent[] = [];
+  /** Whether the file has been begun, and whether an event has been written to it. */
+  private begun = false;
+  private written = false;
   private readonly open = new Map<number, IOpenTask>();
   /** Each track's task, by lane; undefined where the track is free. */
   private readonly lanes: Array<number | undefined> = [];
@@ -94,13 +100,30 @@ export class TraceWriter {
     return event => this.onBuildEvent(event);
   }
 
-  /** Write the trace as it stands: every event so far, and a task still open
-   *  as a span to now, marked unfinished. */
+  /** Finish the trace: write the events not yet written, and each task still
+   *  open as a span to now, marked unfinished, and close the array. */
   public write(): void {
     const now = this.now();
     const unfinished = [...this.open.entries()].map(([id, open]) => this.taskSpan(id, open, now, { unfinished: true }));
-    fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    fs.writeFileSync(this.file, `[\n${[...this.events, ...unfinished].map(event => JSON.stringify(event)).join(",\n")}\n]\n`);
+    this.events.push(...unfinished);
+    this.flush();
+    fs.appendFileSync(this.file, "\n]\n");
+  }
+
+  /** Write the events not yet written after those that were, beginning the file the first time. */
+  private flush(): void {
+    const text = this.events.map(event => JSON.stringify(event)).join(",\n");
+    const any = this.events.length > 0;
+    this.events = [];
+    if (!this.begun) {
+      fs.mkdirSync(path.dirname(this.file), { recursive: true });
+      fs.writeFileSync(this.file, `[\n${text}`);
+      this.begun = true;
+      this.written = any;
+    } else if (any) {
+      fs.appendFileSync(this.file, `${this.written ? ",\n" : ""}${text}`);
+      this.written = true;
+    }
   }
 
   private onBuildEvent(event: BuildEvent): void {
@@ -141,7 +164,7 @@ export class TraceWriter {
         return;
       case "cycle-end":
         this.events.push(this.instant(`cycle ${event.cycle} end`, { failed: event.failed, built: event.built }));
-        this.write();
+        this.flush();
         return;
       case "task-output":
         return;

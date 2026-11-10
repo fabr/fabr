@@ -17,14 +17,17 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { madeFrom, ResolvedName, rootEdges } from "./Audit";
+import SPDX_LICENSE_IDS from "spdx-license-ids/index.json";
+import SPDX_DEPRECATED_IDS from "spdx-license-ids/deprecated.json";
 import { Computable } from "./core/Computable";
 import { FabrError } from "./core/Errors";
 import { Dependency, isPackage, Package, ResolvedNode } from "./core/PackageFileSet";
 import { ILicense, IVersionMetadata } from "./core/Repository";
 import { ResolvedTarget } from "./context/index";
+import { madeFrom, ResolvedName, rootEdges } from "./Fabr";
 import { builtInProject } from "./model/Target";
 import { purlOf } from "./resolver/ResolutionProvenance";
+import { compareText } from "./support/Functional";
 import { ExpectedDigest } from "./support/Integrity";
 
 /**
@@ -87,17 +90,18 @@ export interface ICycloneDxBom {
   dependencies: ICycloneDxDependency[];
 }
 
-/** An SPDX licence id or a single licence name, as against an expression over several. */
-const SPDX_ID = /^[A-Za-z0-9.+-]+$/;
+/** The licence ids of the SPDX licence list, which CycloneDX validates a licence's `id` against. */
+const SPDX_IDS = new Set([...SPDX_LICENSE_IDS, ...SPDX_DEPRECATED_IDS]);
 const SPDX_OPERATOR = /\s(AND|OR|WITH)\s|[()]/;
 
 /** Convert a licence as a package declares it to CycloneDX's: an expression
- * where it combines several, an SPDX id where it is spelled as one, a name otherwise. */
+ * where it combines several, an SPDX id where it is one of the SPDX licence
+ * list's, a name otherwise. */
 export function cycloneDxLicense({ text, url }: ILicense): ICycloneDxLicense {
   if (SPDX_OPERATOR.test(text)) {
     return { expression: text };
   }
-  return { license: { ...(SPDX_ID.test(text) ? { id: text } : { name: text }), ...(url === undefined ? {} : { url }) } };
+  return { license: { ...(SPDX_IDS.has(text) ? { id: text } : { name: text }), ...(url === undefined ? {} : { url }) } };
 }
 
 /** The names CycloneDX gives the digest algorithms registries publish. */
@@ -165,10 +169,6 @@ function pedigreeOf(from: Package, fixes: ReadonlyArray<string>): NonNullable<IC
   return { ancestors: [ancestor], patches: [patch] };
 }
 
-function compareText(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
 /**
  * Make the bill of materials of what `name` resolves to: one target, whose
  * build is the component described and whose rule's requirements are its
@@ -185,16 +185,7 @@ export function sbom(name: ResolvedName, tool: { version: string }): Computable<
       }; a bill of materials describes one package or target`
     );
   }
-  const root: ICycloneDxComponent = {
-    type: only instanceof ResolvedTarget ? "application" : "library",
-    "bom-ref": referenceOf(only),
-    name: only.packageName,
-    ...(only.version === undefined ? {} : { version: only.version }),
-  };
-  const rootPurl = only instanceof ResolvedTarget ? undefined : referenceOf(only);
-  if (rootPurl !== undefined && rootPurl.startsWith("pkg:")) {
-    root.purl = rootPurl;
-  }
+  const root = { type: only instanceof ResolvedTarget ? "application" : "library", "bom-ref": referenceOf(only) } as const;
   /* Every package reached, once, by its reference, with the packages its edges bind. */
   const reached = new Map<string, { pkg: Package; dependsOn: Set<string> }>();
   const walk = (deps: ReadonlyArray<Dependency>): string[] =>

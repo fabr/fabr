@@ -218,7 +218,7 @@ interface ICacheEntry {
 }
 
 /** What demanding an action's entry came to (see {@link BuildCache.getOrCreateAction}). */
-export interface IActionOutcome {
+interface IActionOutcome {
   files: FileSet;
   /** True where this demand built the entry, false where it was served or joined. */
   created: boolean;
@@ -530,9 +530,15 @@ export class BuildCache {
     const work = path.join(dir, STEP_WORK_DIR);
     fs.mkdirSync(work, { recursive: true });
     const link = path.join(dir, TREE_LINK);
-    if (fs.lstatSync(link, { throwIfNoEntry: false }) === undefined) {
-      fs.symlinkSync(this.treeRoot, link);
+    const stat = fs.lstatSync(link, { throwIfNoEntry: false });
+    if (stat?.isSymbolicLink() && fs.readlinkSync(link) === this.treeRoot) {
+      return work;
     }
+    /* A slot a cache at another path laid out links to that cache's pool. */
+    if (stat !== undefined) {
+      fs.rmSync(link, { recursive: true, force: true });
+    }
+    fs.symlinkSync(this.treeRoot, link);
     return work;
   }
 
@@ -928,7 +934,12 @@ export class BuildCache {
       firstError = err;
       pendingReject?.(err);
     };
-    fileStream.on("error", recordError);
+    /* A spool failure (ENOSPC) fails the handed-out stream too, so whatever
+     * writes into it fails rather than waiting on a drain that never comes. */
+    fileStream.on("error", err => {
+      recordError(err);
+      sink.destroy(err);
+    });
     /* The leading bytes, captured as they stream past, so finalize can classify
      * the content (IFile.mime) from the same pass that hashes it. */
     let head = Buffer.alloc(0);

@@ -159,6 +159,12 @@ function opened(sources: ReadonlyArray<SourceRef>, open: (ref: TargetRef) => Com
   );
 }
 
+/** @return the reference to one whole target that `sources` is, if that is what they are. */
+export function soleWholeTarget(sources: ReadonlyArray<SourceRef>): TargetRef | undefined {
+  const [only, ...others] = sources;
+  return others.length === 0 && only instanceof TargetRef && only.whole ? only : undefined;
+}
+
 /** Build every target reference among `sources` and replace it with the
  * target's result. */
 export function materializeTargets(sources: ReadonlyArray<SourceRef>): Computable<SourceRef[]> {

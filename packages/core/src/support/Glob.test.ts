@@ -18,7 +18,18 @@
  */
 
 import { expect } from "chai";
-import { globCaptureRegex, globMatcher, globPrefixRegex } from "./Glob";
+import { globCaptureRegex, globMatcher, globPrefixRegex, isGlob } from "./Glob";
+
+describe("isGlob", () => {
+  it("recognises wildcards, classes and every extglob group", () => {
+    for (const glob of ["*.ts", "a?c", "[ab].js", "src/!(gen)", "@(a|b)", "+(x)", "*(x)", "?(x)"]) {
+      expect(isGlob(glob), glob).to.equal(true);
+    }
+    for (const literal of ["src/a.ts", "@npm:chai:5.0.0", "foo!", "a+b", "(x)"]) {
+      expect(isGlob(literal), literal).to.equal(false);
+    }
+  });
+});
 
 describe("globMatcher", () => {
   it("matches dotfiles under a directory expansion", () => {
@@ -48,6 +59,16 @@ describe("globMatcher negation", () => {
     const matcher = globMatcher(glob);
     return new Map(paths.map(p => [p, matcher(p)]));
   };
+
+  it("reads a POSIX class inside a group's bracket expression whole", () => {
+    expect(matches("!([[:alpha:]|]).txt", ["a.txt", "|.txt", "1.txt"])).to.deep.equal(
+      new Map([
+        ["a.txt", false],
+        ["|.txt", false],
+        ["1.txt", true],
+      ])
+    );
+  });
 
   it("subtracts a group spanning segments, wherever the globstars place it", () => {
     expect(matches("**/!(@shorthand/api)/**", ["a/@shorthand/api/x.js", "@shorthand/api/x.js", "@shorthand/ui/x.js", "a/b/c.js"])).to.deep.equal(

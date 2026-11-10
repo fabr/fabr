@@ -25,7 +25,7 @@ import { Writable } from "stream";
 import { StringDecoder } from "string_decoder";
 import { getSystemErrorMap } from "util";
 import { Computable } from "../core/Computable";
-import { CommandFailedError, ExecutionError, ICommandOutputLine } from "../core/Errors";
+import { CommandFailedError, ExecutionError, FabrError, ICommandOutputLine } from "../core/Errors";
 import { FileSet, IFile } from "../core/FileSet";
 import { Semaphore } from "./Semaphore";
 import type { TaskProgress, TaskState } from "../model/BuildEvents";
@@ -627,9 +627,12 @@ export interface StageSpec extends StageStreams {
   env?: string[];
 }
 
-/** Split a `NAME=value` variable at its first `=`. */
+/** Split a `NAME=value` variable at its first `=`; an entry with none is an error. */
 export function variableEntry(entry: string): [string, string] {
   const at = entry.indexOf("=");
+  if (at === -1) {
+    throw new FabrError(`environment entry '${entry}' is not of the form NAME=value`);
+  }
   return [entry.slice(0, at), entry.slice(at + 1)];
 }
 

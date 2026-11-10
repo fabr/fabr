@@ -151,8 +151,8 @@ export const NODE_EXEC_ACTION: IBuildActionDefinition = {
       return execLaid(argv);
     }
     /* The incremental treatment, where the rule named somewhere to keep state or
-     * somewhere to be told what moved (pnp only; either alone is a coherent
-     * ask, and reporting reads is a third capability neither implies). It
+     * somewhere to be told what moved, under either layout (either alone is a
+     * coherent ask, and reporting reads is a third capability neither implies). It
      * changes nothing about the key, the result or the argv — the rule composed
      * that, naming these same locations — so a run with a base and one without
      * are the same invocation, one of them faster: what differs is only whether

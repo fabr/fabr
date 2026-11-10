@@ -17,11 +17,16 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-/**
- * @return fabr's own environment, for a host program run as the user would run
- * it: a container engine finds its daemon or machine through it, a credential
- * helper its login.
- */
-export function hostEnvironment(): Record<string, string> {
-  return Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
+/* Declarations for spdx-license-ids, which publishes the SPDX licence list's
+ * identifiers as JSON arrays and no types. */
+declare module "spdx-license-ids/index.json" {
+  /** The current licence identifiers. */
+  const ids: string[];
+  export = ids;
+}
+
+declare module "spdx-license-ids/deprecated.json" {
+  /** The identifiers the list deprecates, which remain valid identifiers. */
+  const ids: string[];
+  export = ids;
 }

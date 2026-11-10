@@ -19,7 +19,28 @@
 
 import { createHash, Hash } from "crypto";
 import { PassThrough, Writable } from "stream";
-import { Computable, FabrError, HASH_ALGORITHM, IOutputHandle, normalizeEntryName, sniffMime, SNIFF_LENGTH } from "@fabr-build/core";
+import {
+  Computable,
+  decodeBlock,
+  decodeLongPath,
+  decodePaxRecords,
+  FabrError,
+  GNU_LONG_LINK_PATH,
+  HASH_ALGORITHM,
+  headerOf,
+  IOutputHandle,
+  isDescribingBlock,
+  isLongPathBlock,
+  ITarBlock,
+  normalizeEntryName,
+  paddingOf,
+  PAX_GLOBAL_HEADER,
+  PAX_HEADER,
+  sniffMime,
+  SNIFF_LENGTH,
+  TAR_BLOCK_SIZE,
+  TarEntryType,
+} from "@fabr-build/core";
 
 /** What an entry of a layer is. Device nodes, fifos and sockets are `other`: recorded, never presented. */
 export type LayerEntryType = "file" | "directory" | "symlink" | "hardlink" | "other";
@@ -50,22 +71,11 @@ export interface ILayerIndex {
   readonly diffId: string;
 }
 
-const BLOCK = 512;
-
-/** The fields a pax or GNU long-name header sets on the entry that follows it. */
-interface IPending {
-  path?: string;
-  linkname?: string;
-  size?: number;
-  uid?: number;
-  gid?: number;
-}
-
-/** A header whose body is still being read: an entry's content, or a pax/GNU record for the next. */
+/** A header whose body is still being read: an entry's content, or a pax/GNU block describing the next. */
 interface IBody {
   readonly remaining: number;
   readonly entry?: { header: IHeader; offset: number; hash: Hash; head: Buffer[]; headLength: number };
-  readonly record?: { kind: "pax" | "longname" | "longlink"; chunks: Buffer[] };
+  readonly describing?: { block: ITarBlock; chunks: Buffer[] };
 }
 
 interface IHeader {
@@ -81,8 +91,8 @@ interface IHeader {
 /**
  * Index a layer's uncompressed tar as it streams through: write the tar into
  * the returned sink, and read the index from `result` once it has finished.
- * Reads ustar, pax (`path`, `linkpath`, `size`, `uid`, `gid`) and GNU long
- * names; a name leaving the tree is refused, as an unpacked archive's is.
+ * Reads ustar, pax and GNU long names, as core's tar reader does; a name
+ * leaving the tree is refused, as an unpacked archive's is.
  */
 export function indexLayer(): { sink: Writable; result: () => ILayerIndex } {
   const entries: ILayerEntry[] = [];
@@ -92,52 +102,64 @@ export function indexLayer(): { sink: Writable; result: () => ILayerIndex } {
   let headerLength = 0;
   let body: IBody | undefined;
   let padding = 0;
-  let pending: IPending = {};
+  const globalRecords = new Map<string, Buffer>();
+  let records: Map<string, Buffer> | undefined;
+  let longPath: string | undefined;
+  let longLinkPath: string | undefined;
   let ended = false;
 
   const finishBody = (finished: IBody): void => {
     if (finished.entry !== undefined) {
       const { header: h, offset, hash, head } = finished.entry;
       entries.push({ ...entryOf(h), offset, size: h.size, hash: hash.digest("hex"), mime: sniffMime(Buffer.concat(head)) });
-    } else if (finished.record !== undefined) {
-      const data = Buffer.concat(finished.record.chunks);
-      if (finished.record.kind === "pax") {
-        pending = { ...pending, ...paxFields(data) };
-      } else {
-        const text = data.toString("utf8").replace(/\0.*$/s, "");
-        pending = finished.record.kind === "longname" ? { ...pending, path: text } : { ...pending, linkname: text };
+    } else if (finished.describing !== undefined) {
+      const { block, chunks } = finished.describing;
+      const content = Buffer.concat(chunks);
+      if (block.typeflag === PAX_HEADER) {
+        records = decodePaxRecords(content);
+      } else if (block.typeflag === PAX_GLOBAL_HEADER) {
+        for (const [key, value] of decodePaxRecords(content)) {
+          globalRecords.set(key, value);
+        }
+      } else if (block.typeflag === GNU_LONG_LINK_PATH) {
+        longLinkPath = decodeLongPath(content);
+      } else if (isLongPathBlock(block.typeflag)) {
+        longPath = decodeLongPath(content);
       }
     }
   };
 
-  const startEntry = (block: Buffer): void => {
-    if (block.every(byte => byte === 0)) {
+  const startEntry = (raw: Buffer): void => {
+    const block = decodeBlock(raw);
+    if (block === null) {
       ended = true;
       return;
     }
-    const raw = parseHeader(block);
-    const size = pending.size ?? raw.size;
-    const typeflag = String.fromCharCode(block[156]);
-    padding = (BLOCK - (size % BLOCK)) % BLOCK;
-    if (typeflag === "x" || typeflag === "g" || typeflag === "L" || typeflag === "K") {
-      const kind = typeflag === "L" ? "longname" : typeflag === "K" ? "longlink" : "pax";
-      /* A global pax header applies to every entry after it; fabr reads none of its fields, so it is skipped. */
-      body = { remaining: size, ...(typeflag === "g" ? {} : { record: { kind, chunks: [] } }) };
+    if (isDescribingBlock(block.typeflag)) {
+      padding = paddingOf(block.size);
+      body = { remaining: block.size, describing: { block, chunks: [] } };
     } else {
+      const merged = new Map(globalRecords);
+      for (const [key, value] of records ?? []) {
+        merged.set(key, value);
+      }
+      const read = headerOf(block, merged, longPath, longLinkPath);
+      records = longPath = longLinkPath = undefined;
       const h: IHeader = {
-        ...raw,
-        size,
-        path: checkedPath(pending.path ?? raw.path),
-        linkname: pending.linkname ?? raw.linkname,
-        uid: pending.uid ?? raw.uid,
-        gid: pending.gid ?? raw.gid,
+        path: checkedPath(read.name),
+        type: entryType(read.type),
+        mode: read.mode & 0o7777,
+        uid: read.uid,
+        gid: read.gid,
+        size: read.type === "directory" ? 0 : read.size,
+        linkname: read.linkname,
       };
-      pending = {};
+      padding = paddingOf(h.size);
       if (h.type === "file") {
-        body = { remaining: size, entry: { header: h, offset: position, hash: createHash(HASH_ALGORITHM), head: [], headLength: 0 } };
+        body = { remaining: h.size, entry: { header: h, offset: position, hash: createHash(HASH_ALGORITHM), head: [], headLength: 0 } };
       } else {
         entries.push(entryOf(h));
-        body = { remaining: size };
+        body = { remaining: h.size };
       }
     }
     if (body.remaining === 0) {
@@ -158,8 +180,8 @@ export function indexLayer(): { sink: Writable; result: () => ILayerIndex } {
             body.entry.head.push(piece.subarray(0, SNIFF_LENGTH - body.entry.headLength));
             body.entry.headLength += Math.min(piece.length, SNIFF_LENGTH - body.entry.headLength);
           }
-        } else if (body.record !== undefined) {
-          body.record.chunks.push(piece);
+        } else if (body.describing !== undefined) {
+          body.describing.chunks.push(piece);
         }
         at += take;
         position += take;
@@ -174,12 +196,12 @@ export function indexLayer(): { sink: Writable; result: () => ILayerIndex } {
         position += take;
         padding -= take;
       } else {
-        const take = Math.min(BLOCK - headerLength, chunk.length - at);
+        const take = Math.min(TAR_BLOCK_SIZE - headerLength, chunk.length - at);
         header.push(chunk.subarray(at, at + take));
         headerLength += take;
         at += take;
         position += take;
-        if (headerLength === BLOCK) {
+        if (headerLength === TAR_BLOCK_SIZE) {
           const block = Buffer.concat(header);
           header = [];
           headerLength = 0;
@@ -233,110 +255,39 @@ function checkedPath(raw: string): string {
   return normalized;
 }
 
-function parseHeader(block: Buffer): IHeader & { size: number } {
-  const checksum = numberField(block, 148, 8);
-  let sum = 0;
-  for (let index = 0; index < BLOCK; index++) {
-    sum += index >= 148 && index < 156 ? 0x20 : block[index];
-  }
-  if (checksum !== sum) {
-    throw new FabrError("a layer's tar has a header whose checksum does not match");
-  }
-  const ustar = block.toString("latin1", 257, 262) === "ustar";
-  const prefix = ustar ? textField(block, 345, 155) : "";
-  const name = textField(block, 0, 100);
-  return {
-    path: prefix === "" ? name : `${prefix}/${name}`,
-    type: entryType(String.fromCharCode(block[156])),
-    mode: numberField(block, 100, 8) & 0o7777,
-    uid: numberField(block, 108, 8),
-    gid: numberField(block, 116, 8),
-    size: numberField(block, 124, 12),
-    linkname: textField(block, 157, 100),
-  };
-}
-
-function entryType(flag: string): LayerEntryType {
-  switch (flag) {
-    case "0":
-    case "\0":
-    case "7":
+function entryType(type: TarEntryType | null): LayerEntryType {
+  switch (type) {
+    case "file":
+    case "contiguous-file":
       return "file";
-    case "1":
+    case "link":
       return "hardlink";
-    case "2":
+    case "symlink":
       return "symlink";
-    case "5":
+    case "directory":
       return "directory";
     default:
       return "other";
   }
 }
 
-function textField(block: Buffer, start: number, length: number): string {
-  const field = block.subarray(start, start + length);
-  const end = field.indexOf(0);
-  return field.toString("utf8", 0, end === -1 ? length : end);
-}
-
-/** Read a numeric field: octal text, or GNU's base-256 where its first byte's high bit is set. */
-function numberField(block: Buffer, start: number, length: number): number {
-  const field = block.subarray(start, start + length);
-  if (field[0] & 0x80) {
-    let value = field[0] & 0x7f;
-    for (let index = 1; index < length; index++) {
-      value = value * 256 + field[index];
-    }
-    return value;
-  }
-  const text = field.toString("latin1").replace(/[\0 ]+.*$/s, "").trim();
-  return text === "" ? 0 : parseInt(text, 8);
-}
-
-/** Read the fields fabr uses from a pax extended header's records (`<length> <key>=<value>\n`). */
-function paxFields(data: Buffer): IPending {
-  const fields: IPending = {};
-  let at = 0;
-  while (at < data.length) {
-    const space = data.indexOf(0x20, at);
-    if (space === -1) {
-      break;
-    }
-    const length = parseInt(data.toString("latin1", at, space), 10);
-    if (!(length > 0)) {
-      break;
-    }
-    const record = data.toString("utf8", space + 1, at + length - 1);
-    const eq = record.indexOf("=");
-    const key = record.substring(0, eq);
-    const value = record.substring(eq + 1);
-    if (key === "path") {
-      fields.path = value;
-    } else if (key === "linkpath") {
-      fields.linkname = value;
-    } else if (key === "size") {
-      fields.size = Number(value);
-    } else if (key === "uid") {
-      fields.uid = Number(value);
-    } else if (key === "gid") {
-      fields.gid = Number(value);
-    }
-    at += length;
-  }
-  return fields;
-}
-
 /** Make an output whose bytes also go to `sink`, which has finished before the output is finalized. */
 export function teeOutput(output: IOutputHandle, sink: Writable): IOutputHandle {
   const stream = new PassThrough();
+  let failure: Error | undefined;
+  sink.on("error", err => {
+    failure = err;
+  });
   stream.pipe(output.stream, { end: false });
   stream.pipe(sink);
   const finished = (): Computable<void> =>
     Computable.from<void>((resolve, reject) => {
-      sink.on("error", reject);
-      if (sink.writableFinished) {
+      if (failure !== undefined) {
+        reject(failure);
+      } else if (sink.writableFinished) {
         resolve();
       } else {
+        sink.on("error", reject);
         sink.on("finish", () => resolve());
       }
       stream.end();

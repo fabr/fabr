@@ -47,10 +47,9 @@ import {
   targetIdentifier,
   toError,
 } from "@fabr-build/core";
-import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
-import { getVersion } from "./Command";
+import { getVersion, installationDirectory } from "./Command";
 import { type JsonRpcConnection, MethodNotFound } from "./JsonRpc";
 import { collectingLog, type IProtocolDiagnostic } from "./ProtocolDiagnostics";
 import { toDocumentParams, toTargetsParams } from "./ProtocolParams";
@@ -478,7 +477,7 @@ export class BspServer {
           },
           /* The project's root, and the fabr installation serving it, which a
            * payload's modules resolve from. */
-          data: { root: this.fileUri("./"), installation: installationDirectory() },
+          data: { root: this.fileUri("./"), installation: installationDirectory() ?? __dirname },
         };
       case "build/initialized":
       case "workspace/reload":
@@ -544,14 +543,3 @@ function fileUri(directory: string, written: string): string {
   return written.endsWith("/") && !uri.endsWith("/") ? `${uri}/` : uri;
 }
 
-/** @return the directory of the fabr installation this server runs from: the CLI package's own. */
-function installationDirectory(): string {
-  for (let dir = __dirname; ; dir = path.dirname(dir)) {
-    if (fs.existsSync(path.join(dir, "package.json"))) {
-      return dir;
-    }
-    if (path.dirname(dir) === dir) {
-      return __dirname;
-    }
-  }
-}

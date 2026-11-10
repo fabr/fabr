@@ -34,6 +34,7 @@
 import * as fs from "node:fs";
 import { Module } from "node:module";
 import * as path from "node:path";
+import { resolveVirtual } from "../pnp/VirtualPath";
 import { userModule, userModuleFile } from "./Tools";
 
 interface IJsdomWindow {
@@ -309,11 +310,12 @@ function compileEnvironmentWithNodeSchedulers(jsdomMain: string | undefined): vo
 }
 
 /** @return the directory of the package `name` that `file` belongs to: the
- * nearest above it whose `package.json` names it. */
-function packageRootOf(file: string, name: string): string | undefined {
+ * nearest above it whose `package.json` names it, read through the physical
+ * location where the directory is a PnP virtual one. */
+export function packageRootOf(file: string, name: string): string | undefined {
   for (let directory = path.dirname(file); ; directory = path.dirname(directory)) {
     try {
-      if ((JSON.parse(fs.readFileSync(path.join(directory, "package.json"), "utf8")) as { name?: unknown }).name === name) {
+      if ((JSON.parse(fs.readFileSync(path.join(resolveVirtual(directory), "package.json"), "utf8")) as { name?: unknown }).name === name) {
         return directory;
       }
     } catch {

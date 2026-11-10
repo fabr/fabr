@@ -36,16 +36,24 @@ import {
   DescribedPackage,
   DESCRIPTION_EXTENDS,
   DESCRIPTION_FILE,
+  FabrError,
   FileSet,
+  fileSetInput,
   IBuildActionDefinition,
+  isJsonObject,
+  JsonConverter,
   mapComputable,
   MemoryFile,
   PackageFileSet,
+  readJsonFile,
   RuleResult,
+  stringConfig,
+  toJsonObject,
   TREE_MOUNT,
 } from "@fabr-build/core";
 import { PNP_DATA_FILE } from "@fabr-build/js-tools";
 import { posix } from "path";
+import { depsInput } from "./Layout";
 import { CJS_JS_EXTENSION, CJS_TYPE_EXTENSION, dualFormatOutputs, ESM_JS_EXTENSION, ESM_TYPE_EXTENSION, JSTarget } from "./JSPackage";
 import { pnpManifestOf } from "./PnPManifest";
 import type { ICompileSetup } from "./rules/BuildJSCompile";
@@ -155,7 +163,7 @@ export function describeUnit(setup: ICompileSetup): RuleResult {
  * directory holding them all (`root`) — none where a project file is not
  * named so — with the names of those no project file holds.
  */
-export function sourceRoot(srcs: FileSet): { root?: string; rootDirs: string[]; generated: string[] } {
+function sourceRoot(srcs: FileSet): { root?: string; rootDirs: string[]; generated: string[] } {
   const roots = new Set<string>();
   const generated: string[] = [];
   let unnamed = false;
@@ -228,7 +236,7 @@ function commonDirectory(dirs: readonly string[]): string {
  * as one tree, and — where the unit is a package — a composite project whose
  * outputs lie where its package's manifest names them.
  */
-export function editorConfig(setup: ICompileSetup, rootDirs: readonly string[], place: (name: string) => string): Record<string, unknown> {
+function editorConfig(setup: ICompileSetup, rootDirs: readonly string[], place: (name: string) => string): Record<string, unknown> {
   /* Each directory as a path from the unit's root. */
   const root = commonDirectory(rootDirs);
   const dirs = rootDirs.map(dir => `./${dir.slice(root.length)}`);
@@ -310,10 +318,10 @@ const DESCRIBE_UNIT_ACTION: IBuildActionDefinition = {
   id: "js:describe-unit",
   version: 4,
   run: (action: BuildAction, ctx: ActionContext): Computable<BuildResult> => {
-    const deps = action.inputs.deps as FileSet[];
-    const files = action.inputs.files as FileSet;
-    const root = action.config.root as string;
-    const self = action.config.self as string;
+    const deps = depsInput(action);
+    const files = fileSetInput(action, "files");
+    const root = stringConfig(action, "root");
+    const self = stringConfig(action, "self");
     const manifest = pnpManifestOf(deps, self === "" ? undefined : { name: self, location: "./" });
     const described = manifest.packages.filter((pkg): pkg is DescribedPackage => pkg instanceof DescribedPackage);
     const fetched = manifest.packages.filter(pkg => !(pkg instanceof DescribedPackage));
@@ -343,9 +351,40 @@ const DESCRIBE_UNIT_ACTION: IBuildActionDefinition = {
   },
 };
 
-/** @return the JSON document `file` of `description`, or undefined if it holds none. */
-function jsonOf(description: FileSet, file: string): Computable<Record<string, unknown> | undefined> {
-  return description.get(file).then(found => (found === undefined ? undefined : found.getBuffer().then(buffer => JSON.parse(buffer.toString("utf8")))));
+/** @return the JSON document `file` of `description`, read by `convert`, or undefined if it holds none. */
+function jsonOf<T>(description: FileSet, file: string, convert: JsonConverter<T>): Computable<T | undefined> {
+  return description.get(file).then(found => (found === undefined ? undefined : readJsonFile(found, convert)));
+}
+
+/** A target's name in its description, and its units' description directories. */
+interface IDescribedUnits {
+  displayName?: string;
+  dirs: string[];
+}
+
+/** Convert a target's description ({@link DESCRIPTION_FILE}) to its name and the
+ * directories of its units: none where its payload is no {@link ITypeScriptPayload}. */
+function toDescribedUnits(json: unknown): IDescribedUnits {
+  const target = toJsonObject(json).target;
+  if (!isJsonObject(target)) {
+    return { dirs: [] };
+  }
+  const displayName = typeof target.displayName === "string" ? target.displayName : undefined;
+  const units = isJsonObject(target.data) ? target.data.units : undefined;
+  const dirs = isJsonObject(units) ? Object.values(units) : [];
+  if (dirs.some(dir => typeof dir !== "string")) {
+    throw new FabrError("expected each unit's directory to be a string");
+  }
+  return { displayName, dirs: dirs as string[] };
+}
+
+/** Convert a unit's summary ({@link UNIT_FILE}) to the fields read of it here. */
+function toUnitSummary(json: unknown): Pick<IUnitSummary, "root" | "package"> {
+  const { root, package: pkg } = toJsonObject(json);
+  if ((root !== undefined && typeof root !== "string") || (pkg !== undefined && typeof pkg !== "string")) {
+    throw new FabrError("expected a unit's 'root' and 'package' to be strings");
+  }
+  return { root, package: pkg };
 }
 
 /**
@@ -354,13 +393,11 @@ function jsonOf(description: FileSet, file: string): Computable<Record<string, u
  * description's target is named (whatever name the package is installed
  * under) — or undefined if no unit does.
  */
-function ownUnitOf(description: FileSet): Computable<{ dir: string; summary: IUnitSummary } | undefined> {
-  return jsonOf(description, DESCRIPTION_FILE).then(found => {
-    const target = found?.target as { displayName?: string; data?: Partial<ITypeScriptPayload> } | undefined;
-    const dirs = Object.values(target?.data?.units ?? {});
-    return Computable.forAll(dirs.map(dir => jsonOf(description, `${dir}/${UNIT_FILE}`)), (...found) => {
-      const summaries = found as Array<IUnitSummary | undefined>;
-      const index = summaries.findIndex(summary => summary !== undefined && summary.package === target?.displayName);
+function ownUnitOf(description: FileSet): Computable<{ dir: string; summary: Pick<IUnitSummary, "root" | "package"> } | undefined> {
+  return jsonOf(description, DESCRIPTION_FILE, toDescribedUnits).then(found => {
+    const { displayName, dirs } = found ?? { dirs: [] };
+    return Computable.forAll(dirs.map(dir => jsonOf(description, `${dir}/${UNIT_FILE}`, toUnitSummary)), (...summaries) => {
+      const index = summaries.findIndex(summary => summary !== undefined && summary.package === displayName);
       return index < 0 ? undefined : { dir: dirs[index], summary: summaries[index]! };
     });
   });
@@ -396,7 +433,7 @@ function installedViewOf(description: FileSet): Computable<FileSet> {
     const shipped = [...description].filter(
       ([file]) => file !== DESCRIPTION_FILE && file !== MANIFEST_FILE && !file.startsWith(`${UNITS_DIR}/`) && !file.startsWith(`${DESCRIPTION_EXTENDS}/`)
     );
-    return jsonOf(description, MANIFEST_FILE).then(manifest => {
+    return jsonOf(description, MANIFEST_FILE, toJsonObject).then(manifest => {
       const view = new Map([...shipped, ...generated]);
       if (manifest !== undefined) {
         view.set(MANIFEST_FILE, MemoryFile.from(JSON.stringify(sourceManifest(manifest, [...generated.keys()]), null, 2) + "\n"));

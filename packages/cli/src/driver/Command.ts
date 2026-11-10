@@ -17,30 +17,43 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { readFileSync } from "fs";
-import { COVERAGE, COVERAGE_ON, preferredOperation, TEST_EXPECTATIONS, TEST_NAME_PATTERN, UPDATE_EXPECTATIONS } from "@fabr-build/core";
+import { existsSync, readFileSync } from "fs";
+import { COVERAGE, COVERAGE_ON, parseJson, preferredOperation, TEST_EXPECTATIONS, TEST_NAME_PATTERN, toJsonObject, UPDATE_EXPECTATIONS } from "@fabr-build/core";
 import { CommandLineSource } from "./CommandLineSource";
 import { dirname, join } from "path";
 
-/** The fabr version, read from the CLI package's own package.json at runtime.
- * The compiled module's depth below the package root differs between build
- * layouts (`build/driver/` under the yarn/tsc devchain, but `driver/` in the
- * fabr-built package, which strips the outDir), so we walk up to the *nearest*
- * package.json — the CLI's own in every
- * layout. That first hit is authoritative: we never climb past it (an ancestor
- * could be an unrelated package). The version is stamped only at release, so a
- * present-but-versionless package.json is an unreleased build. */
-export function getVersion(): string {
-  for (let dir = __dirname; ; ) {
-    try {
-      return JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).version ?? "0.0.0-dev";
-    } catch {
-      const parent = dirname(dir);
-      if (parent === dir) {
-        return "unknown";
-      }
-      dir = parent;
+/** @return the directory of the fabr installation this runs from: the CLI
+ * package's own, the nearest directory above this module holding a
+ * package.json. The compiled module's depth below the package root differs
+ * between build layouts (`build/driver/` under the yarn/tsc devchain, but
+ * `driver/` in the fabr-built package, which strips the outDir), and that
+ * nearest package.json is the CLI's own in every layout: nothing above it is
+ * looked at (an ancestor could be an unrelated package). Undefined where there
+ * is none. */
+export function installationDirectory(): string | undefined {
+  for (let dir = __dirname; ; dir = dirname(dir)) {
+    if (existsSync(join(dir, "package.json"))) {
+      return dir;
     }
+    if (dirname(dir) === dir) {
+      return undefined;
+    }
+  }
+}
+
+/** @return the fabr version, read from the CLI package's own package.json
+ * ({@link installationDirectory}) at runtime. The version is stamped only at
+ * release, so a present-but-versionless package.json is an unreleased build. */
+export function getVersion(): string {
+  const dir = installationDirectory();
+  if (dir === undefined) {
+    return "unknown";
+  }
+  try {
+    const { version } = parseJson(readFileSync(join(dir, "package.json")), "fabr's package.json", toJsonObject);
+    return typeof version === "string" ? version : "0.0.0-dev";
+  } catch {
+    return "unknown";
   }
 }
 
@@ -575,10 +588,10 @@ export function completeCommandLine(
     }
   }
   /* The inferable commands are build/test/run, which accept -w, -q,
-   * --no-progress, --refresh and -f; a flag meaningful only to some other command needs
+   * --no-progress, --refresh, --trace and -f; a flag meaningful only to some other command needs
    * that command written out. */
   for (const { raw, flag } of seenFlags) {
-    if (flag !== "-w" && flag !== "-q" && flag !== "--no-progress" && flag !== "--refresh" && flag !== "-f") {
+    if (flag !== "-w" && flag !== "-q" && flag !== "--no-progress" && flag !== "--refresh" && flag !== "--trace" && flag !== "-f") {
       usageError(`Option '${raw}' is not valid without a command`);
     }
   }

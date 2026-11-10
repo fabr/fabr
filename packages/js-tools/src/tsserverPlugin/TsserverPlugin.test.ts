@@ -403,6 +403,34 @@ describe("tsserver plugin", () => {
     expect(service.getDefinitionAtPosition(test, positionOf(test, '"testdep"'))?.map(d => d.fileName)).to.deep.equal([fixture.file("store/testdep/index.d.ts")]);
   });
 
+  it("reads each unit's config once to resolve by importer in the syntax server", () => {
+    const main = fixture.file("app/src/main.ts");
+    const service = projectService(fixture.units, ts.LanguageServiceMode.PartialSemantic);
+    const configs = new Set(fixture.units.map(unit => unit.config));
+    const reads = new Map<string, number>();
+    const readFile = ts.sys.readFile;
+    ts.sys.readFile = (file, encoding) => {
+      if (configs.has(file)) {
+        reads.set(file, (reads.get(file) ?? 0) + 1);
+      }
+      return readFile.call(ts.sys, file, encoding);
+    };
+    try {
+      open(service, main);
+    } finally {
+      ts.sys.readFile = readFile;
+    }
+    expect([...reads.values()]).to.deep.equal(fixture.units.map(() => 1));
+  });
+
+  it("leaves a unit whose PnP table is missing as tsserver has it", () => {
+    fs.rmSync(fixture.file("app/.pnp.data.json"));
+    const main = fixture.file("app/src/main.ts");
+    const service = open(projectService(fixture.units), main);
+    const dep = service.getDefinitionAtPosition(main, positionOf(main, '"dep"'));
+    expect(dep?.map(d => d.fileName)).to.deep.equal([fixture.file("node_modules/dep/index.d.ts")]);
+  });
+
   it("resolves by importer in the syntax server", () => {
     const main = fixture.file("app/src/main.ts");
     const service = open(projectService(fixture.units, ts.LanguageServiceMode.PartialSemantic), main);

@@ -1182,6 +1182,8 @@ class ResolutionGraph<V, C> {
       node = builder.resolved(
         {
           key: `${registry.identity} ${key}`,
+          /* A variant is of its package's one selection. */
+          selection: selectionOf(registry, selected),
           files: fetchedOnce(() => fetchVariantOf(registry, selected.publishedName ?? selected.name, version, variant).then(files => new PackageFileSet(files, name, versionText))),
         },
         name,

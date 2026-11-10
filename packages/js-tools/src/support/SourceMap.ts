@@ -179,3 +179,27 @@ function flagValue(argv: string[], flag: string): string | undefined {
 export function referenceOfEntry(entry: string): string | undefined {
   return entry.startsWith(FABR_SCHEME) ? entry.slice(FABR_SCHEME.length) : undefined;
 }
+
+/**
+ * Get the source a compiled file's own map (`<compiled>.map`) names first: a
+ * fabr reference as written, or a relative entry resolved against the map's
+ * `sourceRoot`, absolute. Undefined where there is no readable map or it names
+ * no source.
+ */
+export function getMapSource(compiled: string): string | undefined {
+  let map: unknown;
+  try {
+    map = JSON.parse(fs.readFileSync(`${compiled}.map`, "utf8"));
+  } catch {
+    return undefined;
+  }
+  if (typeof map !== "object" || map === null) {
+    return undefined;
+  }
+  const { sources, sourceRoot } = map as { sources?: unknown; sourceRoot?: unknown };
+  const first: unknown = Array.isArray(sources) ? sources[0] : undefined;
+  if (typeof first !== "string") {
+    return undefined;
+  }
+  return referenceOfEntry(first) !== undefined ? first : path.resolve(path.dirname(compiled), typeof sourceRoot === "string" ? sourceRoot : "", first);
+}

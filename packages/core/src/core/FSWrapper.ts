@@ -341,3 +341,9 @@ export function contentStream(file: IFile): Computable<Readable> {
   const where = file.getAbsPath();
   return where !== undefined ? Computable.resolve(fs.createReadStream(where)) : file.getBuffer().then(buffer => Readable.from([buffer]));
 }
+
+/** @return the size of `file`'s content in bytes: from the pool where it is there, else from memory. */
+export function contentSize(file: IFile): Computable<number> {
+  const where = file.getAbsPath();
+  return where !== undefined ? stat(where).then(stats => stats.size) : file.getBuffer().then(buffer => buffer.length);
+}

@@ -73,7 +73,7 @@ export type RunnableArgument = string | readonly ArgumentPart[];
  * @return `args` as command-line text, each install path named within
  * `installDir`: the install's directory, as the command line reaches it.
  */
-export function resolveArguments(args: readonly RunnableArgument[], installDir: string): string[] {
+function resolveArguments(args: readonly RunnableArgument[], installDir: string): string[] {
   const part = (piece: ArgumentPart): string => (typeof piece === "string" ? piece : path.join(installDir, piece.installPath));
   return args.map(arg => (typeof arg === "string" ? arg : arg.map(part).join("")));
 }
@@ -470,7 +470,11 @@ export function startLaunch(runnable: RunnableFileSet, installDir: string, env: 
   return { env: launchEnv, end };
 }
 
-/** @return fabr's own environment. */
-function hostEnvironment(): Record<string, string> {
+/**
+ * @return fabr's own environment, for a host program run as the user would run
+ * it: a container engine finds its daemon or machine through it, a credential
+ * helper its login.
+ */
+export function hostEnvironment(): Record<string, string> {
   return Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
 }

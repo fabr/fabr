@@ -28,9 +28,12 @@
 
 import * as path from "path";
 import { PnpResolver, splitSpecifier } from "../pnp/PnPResolver";
+import type { IPnpSerializedState } from "../pnp/PnPState";
 import { realpathKeepingVirtual } from "../pnp/VirtualPath";
+import { DECLARATION_EXTENSION } from "../tscDriver/Planning";
 import {
   type CompilerOptions,
+  DECLARATION_FILE,
   type IImportRewrite,
   type IInstalledResolution,
   type IResolutionHost,
@@ -113,9 +116,9 @@ export interface IPluginCreateInfo {
   languageServiceHost: ILanguageServiceHost;
 }
 
-/** The extensions a source file of a unit may have, in the order the compiler
- * looks for them. */
-const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts"];
+/** The extensions a TypeScript source file of a unit may have, in the order
+ * the compiler looks for them. */
+const TYPESCRIPT_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts"];
 
 /** A module's file, as the compiler reads one: the others are resources. */
 const MODULE_EXTENSION = /\.(?:[cm]?[jt]sx?|json)$/;
@@ -145,7 +148,7 @@ export function createLanguageService(ts: IServerTypeScript, info: IPluginCreate
  * @return the unit whose config names `project`, or undefined if `project` is
  * none of `units`.
  */
-export function unitOf(project: IProject, units: readonly ITypeScriptUnit[]): ITypeScriptUnit | undefined {
+function unitOf(project: IProject, units: readonly ITypeScriptUnit[]): ITypeScriptUnit | undefined {
   const name = project.getProjectName();
   return units.find(unit => unit.config === name);
 }
@@ -159,16 +162,20 @@ export function unitOf(project: IProject, units: readonly ITypeScriptUnit[]): IT
  *
  * @return the language service tsserver is to use for the project.
  */
-export function decorateUnitProject(
+function decorateUnitProject(
   ts: IServerTypeScript,
   info: IPluginCreateInfo,
   unit: ITypeScriptUnit,
   units: readonly ITypeScriptUnit[]
 ): ILanguageService {
   const host = info.languageServiceHost;
-  const options = parsedOptions(ts, unit);
+  const table = readTable(ts, unit, info.project);
+  if (table === undefined) {
+    return info.languageService;
+  }
+  const configs = parsedConfigs(ts, units);
   const links = new Map<string, string>();
-  const { resolution, installed } = unitResolution(ts, host, unit, options, units, links);
+  const { resolution, installed } = unitResolution(ts, host, unit, table, configs.get(unit)!.options, localLayouts(units, configs), links);
   for (const hook of RESOLUTION_HOOKS) {
     if (resolution[hook] !== undefined) {
       (host as unknown as Record<string, unknown>)[hook] = resolution[hook];
@@ -211,21 +218,20 @@ function withFinishedDiagnostics(service: ILanguageService, installed: IInstalle
  * the unit installs) — under that unit's options, leaving an import from any
  * other file to the resolution `info`'s host already has.
  */
-export function resolveByImporter(ts: IServerTypeScript, info: IPluginCreateInfo, units: readonly ITypeScriptUnit[]): void {
+function resolveByImporter(ts: IServerTypeScript, info: IPluginCreateInfo, units: readonly ITypeScriptUnit[]): void {
   const host = info.languageServiceHost;
   const links = new Map<string, string>();
+  const configs = parsedConfigs(ts, units);
+  const layouts = localLayouts(units, configs);
   const byRoot = units
-    .map(unit => {
-      const parsed = ts.getParsedCommandLineOfConfigFile(unit.config, {}, configHost(ts));
-      const options = parsed?.options ?? {};
-      const { resolution, resolver } = unitResolution(ts, host, unit, options, units, links);
-      return {
-        root: unit.root + path.sep,
-        files: new Set((parsed?.fileNames ?? []).map(file => path.resolve(file))),
-        options,
-        resolution,
-        resolver,
-      };
+    .flatMap(unit => {
+      const table = readTable(ts, unit, info.project);
+      if (table === undefined) {
+        return [];
+      }
+      const { options, fileNames } = configs.get(unit)!;
+      const { resolution, resolver } = unitResolution(ts, host, unit, table, options, layouts, links);
+      return [{ root: unit.root + path.sep, files: new Set(fileNames.map(file => path.resolve(file))), options, resolution, resolver }];
     })
     .sort((a, b) => b.root.length - a.root.length);
   type Unit = (typeof byRoot)[number];
@@ -254,27 +260,59 @@ export function resolveByImporter(ts: IServerTypeScript, info: IPluginCreateInfo
   info.project.projectService.logger.info(`fabr: syntax server resolves by importer across ${units.length} units`);
 }
 
+/** How a unit that builds a package lays its outputs out, with the package's name. */
+interface ILocalLayout extends IOutputLayout {
+  package: string;
+}
+
+/**
+ * @return the output layout of every unit of `units` that builds a package,
+ * by its config as `configs` holds it:
+ * a package may import itself by name, and a package's tests import it as
+ * the package does.
+ */
+function localLayouts(units: readonly ITypeScriptUnit[], configs: ReadonlyMap<ITypeScriptUnit, IUnitConfig>): ILocalLayout[] {
+  return units.flatMap(unit => (unit.package === undefined ? [] : [{ package: unit.package, ...outputLayout(configs.get(unit)!.options, unit) }]));
+}
+
+/**
+ * @return `unit`'s PnP table, or undefined where it cannot be read, which is
+ * logged to `project`'s server log: the unit's project is then left as
+ * tsserver has it.
+ */
+function readTable(ts: IServerTypeScript, unit: ITypeScriptUnit, project: IProject): IPnpSerializedState | undefined {
+  const text = ts.sys.readFile(unit.table);
+  if (text === undefined) {
+    project.projectService.logger.info(`fabr: ${unit.config} has no PnP table at ${unit.table}; it resolves as tsserver resolves it`);
+    return undefined;
+  }
+  try {
+    return JSON.parse(text) as IPnpSerializedState;
+  } catch (err) {
+    project.projectService.logger.info(`fabr: ${unit.table} is not a PnP table (${err instanceof Error ? err.message : String(err)}); ${unit.config} resolves as tsserver resolves it`);
+    return undefined;
+  }
+}
+
 /**
  * Make `unit`'s resolution over `host`: the driver's, through the unit's table,
- * with a local unit's output declarations answering as present wherever their
- * sources are — tsserver holds a referenced project's outputs as present only
- * in its program's own host, and the resolution reads the project's.
+ * with a local unit's output declarations (`layouts`) answering as present
+ * wherever their sources are — tsserver holds a referenced project's outputs
+ * as present only in its program's own host, and the resolution reads the
+ * project's.
  */
 function unitResolution(
   ts: IServerTypeScript,
   host: ILanguageServiceHost,
   unit: ITypeScriptUnit,
+  table: IPnpSerializedState,
   options: CompilerOptions,
-  units: readonly ITypeScriptUnit[],
+  layouts: readonly ILocalLayout[],
   links: Map<string, string>
 ): { resolution: IResolutionHost; installed: IInstalledResolution; resolver: PnpResolver } {
-  /* Every unit's package, the unit's own among them: a package may import
-   * itself by name, and a package's tests import it as the package does. */
-  const locals = units
-    .filter(other => other.package !== undefined)
-    .map(other => ({ own: other.package === unit.package, ...outputLayout(parsedOptions(ts, other), other) }));
+  const locals = layouts.map(layout => ({ ...layout, own: layout.package === unit.package }));
   const isLocalOutput = (file: string): boolean =>
-    locals.some(layout => layout.sourcesOf(file).some(source => SOURCE_EXTENSIONS.some(extension => host.fileExists(source + extension))));
+    locals.some(layout => layout.sourcesOf(file).some(source => TYPESCRIPT_EXTENSIONS.some(extension => host.fileExists(source + extension))));
   /* A file no step compiles (a stylesheet a package ships as it is) is at its
    * name in the package where one of the package's directories holds it. */
   const isLocalResource = (file: string): boolean =>
@@ -288,9 +326,9 @@ function unitResolution(
   const redirected = (file: string): string | undefined => {
     for (const layout of locals.filter(local => local.rootDirs > 1)) {
       for (const source of layout.sourcesOf(file)) {
-        const extension = SOURCE_EXTENSIONS.find(candidate => host.fileExists(source + candidate));
+        const extension = TYPESCRIPT_EXTENSIONS.find(candidate => host.fileExists(source + candidate));
         if (extension !== undefined) {
-          return layout.own ? source + extension : source + declarationExtension(extension);
+          return layout.own ? source + extension : source + DECLARATION_EXTENSION.get(extension)!;
         }
       }
     }
@@ -302,9 +340,7 @@ function unitResolution(
     readFile: file => host.readFile(file),
     getCanonicalFileName: canonical,
   };
-  const resolver = new PnpResolver(JSON.parse(ts.sys.readFile(unit.table) ?? "null"), unit.root, conditionsOf(ts, options), {
-    validateExports: false,
-  });
+  const resolver = new PnpResolver(table, unit.root, conditionsOf(ts, options), { validateExports: false });
   const installed = installResolution(ts, resolution, options, resolver, unit.root, unit.rewrites, unit.resources);
   /* A package import is stated as reached through `<unit>/node_modules/<name>`,
    * a link to the package's directory: tsserver names a module by its package
@@ -320,7 +356,7 @@ function unitResolution(
       const resolved = answer.resolvedModule;
       const target = resolved && redirected(resolved.resolvedFileName);
       if (resolved && target !== undefined) {
-        const extension = /\.d\.[cm]?ts$/.exec(target)?.[0] ?? path.extname(target);
+        const extension = DECLARATION_FILE.exec(target)?.[0] ?? path.extname(target);
         return {
           ...answer,
           resolvedModule: { ...resolved, resolvedFileName: target, extension, isExternalLibraryImport: false, originalPath: undefined },
@@ -353,11 +389,6 @@ function unitResolution(
     }
   }
   return { resolution, installed, resolver };
-}
-
-/** @return the extension of the declaration a source of `extension` is compiled to. */
-function declarationExtension(extension: string): string {
-  return extension === ".mts" ? ".d.mts" : extension === ".cts" ? ".d.cts" : ".d.ts";
 }
 
 /** @return true if `extension`, a resolution's, is a JavaScript module's, otherwise false. */
@@ -412,6 +443,13 @@ function answerLinks(host: ILanguageServiceHost, links: ReadonlyMap<string, stri
   }
 }
 
+/** How a compile lays its outputs out; see {@link outputLayout}. */
+interface IOutputLayout {
+  rootDirs: number;
+  sourcesOf(file: string): string[];
+  filesOf(file: string): string[];
+}
+
 /**
  * @return how the compile of `unit`, with `options`, lays its declarations
  * out: `sourcesOf` an output (`<outDir>/x.d.ts`) gives the sources (`x`, less
@@ -421,10 +459,7 @@ function answerLinks(host: ILanguageServiceHost, links: ReadonlyMap<string, stri
  * of the package (`<outDir>/x.scss`) likewise gives where it may lie, at its
  * name beneath each; `rootDirs`, how many such directories there are.
  */
-function outputLayout(
-  options: CompilerOptions,
-  unit: ITypeScriptUnit
-): { rootDirs: number; sourcesOf(file: string): string[]; filesOf(file: string): string[] } {
+function outputLayout(options: CompilerOptions, unit: ITypeScriptUnit): IOutputLayout {
   const base = path.dirname(unit.config);
   const outDir = path.resolve(base, typeof options.outDir === "string" ? options.outDir : ".");
   const rootDirs = (Array.isArray(options.rootDirs) && options.rootDirs.length > 0 ? (options.rootDirs as string[]) : [typeof options.rootDir === "string" ? options.rootDir : "."]).map(
@@ -435,31 +470,47 @@ function outputLayout(
   return {
     rootDirs: rootDirs.length,
     sourcesOf: file => {
-      const match = /\.d\.([cm]?)ts$/.exec(file);
+      const match = DECLARATION_FILE.exec(file);
       return match === null ? [] : filesOf(file.slice(0, match.index));
     },
     filesOf,
   };
 }
 
-/** Each unit config's options, by the config's path, with the text they were parsed from. */
-const parsedConfigs = new Map<string, { text: string; options: CompilerOptions }>();
+/** A unit config's compiler options and the files it lists. */
+interface IUnitConfig {
+  options: CompilerOptions;
+  fileNames: readonly string[];
+}
+
+/** Each unit config as parsed, by the config's path, with the text it was parsed from. */
+const configCache = new Map<string, { text: string; config: IUnitConfig }>();
+
+/** @return each of `units`' configs as the compiler parses it, each config read once. */
+function parsedConfigs(ts: IServerTypeScript, units: readonly ITypeScriptUnit[]): Map<ITypeScriptUnit, IUnitConfig> {
+  return new Map(units.map(unit => [unit, parsedConfig(ts, unit)]));
+}
 
 /**
- * @return `unit`'s compiler options, as its config states them: parsed again
- * only where the config's text has changed since it was last parsed.
+ * @return `unit`'s config as the compiler parses it: parsed again, from the
+ * text read here, only where that text has changed since it was last parsed.
  */
-function parsedOptions(ts: IServerTypeScript, unit: ITypeScriptUnit): CompilerOptions {
+function parsedConfig(ts: IServerTypeScript, unit: ITypeScriptUnit): IUnitConfig {
   const text = ts.sys.readFile(unit.config);
-  const held = parsedConfigs.get(unit.config);
+  const held = configCache.get(unit.config);
   if (held !== undefined && held.text === text) {
-    return held.options;
+    return held.config;
   }
-  const options = ts.getParsedCommandLineOfConfigFile(unit.config, {}, configHost(ts))?.options ?? {};
+  const host = configHost(ts) as { readFile(file: string, encoding?: string): string | undefined };
+  const parsed = ts.getParsedCommandLineOfConfigFile(unit.config, {}, {
+    ...host,
+    readFile: (file: string, encoding?: string) => (file === unit.config ? text : host.readFile(file, encoding)),
+  });
+  const config = { options: parsed?.options ?? {}, fileNames: parsed?.fileNames ?? [] };
   if (text !== undefined) {
-    parsedConfigs.set(unit.config, { text, options });
+    configCache.set(unit.config, { text, config });
   }
-  return options;
+  return config;
 }
 
 /**
@@ -475,7 +526,7 @@ function scopedAutoImports(service: ILanguageService): ILanguageService {
       return false;
     }
     const base = path.resolve(path.dirname(file), specifier);
-    const target = ["", ...SOURCE_EXTENSIONS, ".d.ts", ...SOURCE_EXTENSIONS.map(extension => "/index" + extension)]
+    const target = ["", ...TYPESCRIPT_EXTENSIONS, ".d.ts", ...TYPESCRIPT_EXTENSIONS.map(extension => "/index" + extension)]
       .map(suffix => base + suffix)
       .find(candidate => program.getSourceFile(candidate) !== undefined);
     return target !== undefined && program.isSourceOfProjectReferenceRedirect(target);

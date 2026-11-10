@@ -78,7 +78,7 @@ export class SymlinkFile implements IFile {
  * a link ever be written to a manifest and re-read, it comes back as a plain
  * symlink whose target is not a path to anything, which the staging containment
  * guard drops. */
-export const HOST_LINK_SCHEME = "fabr-host:";
+const HOST_LINK_SCHEME = "fabr-host:";
 
 /**
  * A link to a program of the host, used where it lies (`@host:clang`).

@@ -140,7 +140,7 @@ describe("effectivePom", () => {
     ]);
   });
 
-  it("reads a dependency's exclusions, with its managed ones beside them", async () => {
+  it("reads a dependency's exclusions, its managed ones only where it declares none", async () => {
     const pom = `<project><groupId>g</groupId><artifactId>a</artifactId><version>1</version>
       <dependencyManagement><dependencies>
         <dependency><groupId>x</groupId><artifactId>y</artifactId><version>2</version>
@@ -153,13 +153,21 @@ describe("effectivePom", () => {
             <exclusion><groupId>org.slf4j</groupId><artifactId>*</artifactId></exclusion>
           </exclusions></dependency>
         <dependency><groupId>x</groupId><artifactId>z</artifactId><version>3</version></dependency>
+        <dependency><groupId>x</groupId><artifactId>w</artifactId></dependency>
       </dependencies></project>`;
-    const effectivePom = await effective("g:a:1", pom);
+    const managed = pom.replace(
+      "</dependencies></dependencyManagement>",
+      `<dependency><groupId>x</groupId><artifactId>w</artifactId><version>4</version>
+        <exclusions><exclusion><groupId>m</groupId><artifactId>other</artifactId></exclusion></exclusions></dependency>
+      </dependencies></dependencyManagement>`
+    );
+    const effectivePom = await effective("g:a:1", managed);
     expect(
       passedOnDependencies(effectivePom, "java-runtime").map(dependency => [dependency.artifactId, dependency.exclusions])
     ).to.deep.equal([
-      ["y", ["commons-logging/commons-logging", "org.slf4j/*", "m/managed"]],
+      ["y", ["commons-logging/commons-logging", "org.slf4j/*"]],
       ["z", undefined],
+      ["w", ["m/other"]],
     ]);
   });
 

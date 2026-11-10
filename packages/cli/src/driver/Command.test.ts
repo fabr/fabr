@@ -460,6 +460,14 @@ describe("Command", () => {
       expect(result.run).to.deep.equal({ target: "server", args: ["-w"] });
     });
 
+    it("takes a trace flag before or after the target (`fabr lib --trace`)", () => {
+      for (const args of [["lib", "--trace"], ["--trace", "lib"], ["lib", "--trace=out.json"]]) {
+        const options = parseCommandLine(["node", "fabr", ...args]);
+        expect(completeCommandLine(options, operationsOf), args.join(" ")).to.deep.equal({ build: ["lib"], test: [] });
+        expect(options.traceFile).to.equal(args.includes("--trace=out.json") ? "out.json" : "fabr-trace.json");
+      }
+    });
+
     it("takes a force flag from the deferred tail (`fabr lib -f`)", () => {
       /* Only the second pass sees it, which is why the driver re-reads the
        * run-wide options once the plan is complete. */

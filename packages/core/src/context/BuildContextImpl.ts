@@ -26,7 +26,7 @@ import { ResolutionContext } from "../resolver/Types";
 import { PERMISSIVE_RESOLUTION } from "./CollectionPoint";
 import { materializeShallow, resolveLists } from "./CollectionPoint";
 import { FileSetRef, FileSourceRef } from "../core/FileSetRef";
-import { TargetNode, TargetRef, TargetSource, Unbuilt } from "../core/TargetRef";
+import { soleWholeTarget, TargetNode, TargetRef, TargetSource, Unbuilt } from "../core/TargetRef";
 import { ResolvedTarget } from "./ResolvedTarget";
 import { PartialRepositoryRef } from "../core/PartialRepositoryRef";
 import { IProjection, jointMiss, Miss, Reference } from "../core/Reference";
@@ -1087,12 +1087,8 @@ export class BuildContextImpl implements InternalBuildContext {
       if (!substituted.hasConstraints()) {
         return { context: this.getContextWithOverrides(callerOverrides), reference: substituted, substitutions };
       }
-      const required: Record<string, string> = Object.create(null);
-      for (const [key, value] of substituted.getConstraints()) {
-        required[key] = value.toString();
-      }
       /* Caller override last, so it wins on a shared key. */
-      const merged = Constraints.of(required).with(callerOverrides);
+      const merged = constraintsOf(substituted.getConstraints()).with(callerOverrides);
       return { context: this.getContextWithOverrides(merged), reference: substituted.withConstraints([]), substitutions };
     });
   }
@@ -1304,11 +1300,7 @@ export class BuildContextImpl implements InternalBuildContext {
     const constraints = part.constraints;
     return Computable.forAll(
       constraints.map(([, value]) => this.substituteNameVars(value, stack, callerOverrides)),
-      (...values: Name[]) => {
-        const required: Record<string, string> = Object.create(null);
-        constraints.forEach(([key], i) => (required[key] = values[i].toString()));
-        return Constraints.of(required);
-      }
+      (...values: Name[]) => constraintsOf(constraints.map(([key], i): NameConstraint => [key, values[i]]))
     ).then(required => read(this.getContextWithOverrides(required)));
   }
 
@@ -1947,12 +1939,6 @@ function versionsOf(source: SourceRef): SourceRef {
     : source;
 }
 
-/** @return the reference to one whole target that `sources` is, if that is what they are. */
-function soleWholeTarget(sources: SourceRef[]): TargetRef | undefined {
-  const [only, ...others] = sources;
-  return others.length === 0 && only instanceof TargetRef && only.whole ? only : undefined;
-}
-
 /** Make the error for `rule` selected for a target inside its own application. */
 function recursiveRuleError(rule: RuleBlockDefinition): FabrError {
   const { decl } = rule;
@@ -1981,11 +1967,13 @@ interface ReferencedProperty {
 
 /** @return the constraints a reference requires (`ref<k=v>`), if it requires any. */
 function requirementOf(name: Name): Constraints | undefined {
-  if (!name.hasConstraints()) {
-    return undefined;
-  }
+  return name.hasConstraints() ? constraintsOf(name.getConstraints()) : undefined;
+}
+
+/** Make the {@link Constraints} `constraints`, each value's text the key's value. */
+function constraintsOf(constraints: readonly NameConstraint[]): Constraints {
   const required: Record<string, string> = Object.create(null);
-  for (const [key, value] of name.getConstraints()) {
+  for (const [key, value] of constraints) {
     required[key] = value.toString();
   }
   return Constraints.of(required);

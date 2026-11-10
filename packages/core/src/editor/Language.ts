@@ -93,7 +93,7 @@ export type Written =
 /** @return the declarations `contents` holds, in written order. */
 export function symbolsOf(contents: IBuildFileContents): IBuildFileSymbol[] {
   const symbols: IBuildFileSymbol[] = [
-    ...contents.targets.map(targetSymbol),
+    ...[...contents.targets, ...contents.defaults.filter((decl): decl is ITargetDecl => decl.kind === DeclKind.Target)].map(targetSymbol),
     ...[...contents.properties, ...contents.defaults.filter((decl): decl is IPropertyDecl => decl.kind === DeclKind.Property)].map(propertySymbol),
     ...contents.targetdefs.map(
       (targetdef): IBuildFileSymbol => ({ name: targetdef.name, kind: "targetdef", range: span(targetdef, targetdef.offset + targetdef.name.length), selection: span(targetdef, targetdef.offset + targetdef.name.length) })
@@ -206,6 +206,10 @@ export function writtenAt(contents: IBuildFileContents, offset: number): Written
     if (found !== undefined) {
       return found;
     }
+  }
+  const repository = contents.repositories.find(decl => within(decl.implementation.offset, decl.implementation.endOffset));
+  if (repository !== undefined) {
+    return { kind: "value", value: repository.implementation };
   }
   const plugin = contents.plugins.find(decl => within(decl.offset, decl.endOffset ?? decl.offset + decl.name.toString().length));
   if (plugin !== undefined) {
@@ -415,10 +419,21 @@ function parameterNamed(model: BuildModel, rule: IRuleDecl, origin: ISourceRange
 /** @return the property `name` of the target type `type`, as named at `origin`: its schema, where the type is declared. */
 function schemaNamed(model: BuildModel, type: string, name: string, origin: ISourceRange): INamed {
   const targetdef = model.getTargetDef(type);
-  const schema = targetdef?.properties.get(name) ?? targetdef?.properties.get("*");
+  const key = targetdef?.properties.has(name) ? name : "*";
+  const schema = targetdef?.properties.get(key);
+  /* The targetdef that declares it: up the bases while each has it as inherited. */
+  let declaring = targetdef;
+  for (const visited = new Set<ITargetDefDecl>(); declaring?.extends !== undefined && schema !== undefined; ) {
+    visited.add(declaring);
+    const base = model.getTargetDef(declaring.extends.name);
+    if (base === undefined || visited.has(base) || base.properties.get(key) !== declaring.properties.get(key)) {
+      break;
+    }
+    declaring = base;
+  }
   return {
     origin,
-    declarations: targetdef === undefined ? [] : [spanOf(targetdef)],
+    declarations: declaring === undefined ? [] : [spanOf(declaring)],
     ...(schema === undefined
       ? {}
       : {
@@ -493,7 +508,8 @@ function spanOf(decl: ITargetDecl | IPropertyDecl | ITargetDefDecl): ISourceSpan
 /** @return the `${NAME}` substitution written at `offset` in `source` between `from` and `end`, its name and span, or undefined if none is. */
 function substitutionAt(source: IBuildFile, from: number, end: number, offset: number): { name: string; origin: ISourceRange } | undefined {
   const text = source.reader.substring(from, end);
-  for (const match of text.matchAll(/\$\{([^}<]+)(?:<[^}]*>)?\}/g)) {
+  /* The name, a requirement on it, and an edit after it (`#p`, `%p`, `/a/b`), a backslash quoting a character of the edit. */
+  for (const match of text.matchAll(/\$\{\s*([^\s}<#%/]+)\s*(?:<[^}]*>)?\s*(?:[#%/](?:\\.|[^}\\])*)?\}/g)) {
     const start = from + match.index!;
     if (offset >= start && offset <= start + match[0].length) {
       return { name: match[1].trim(), origin: { source, offset: start, endOffset: start + match[0].length } };
@@ -518,9 +534,27 @@ function valueText(decl: IPropertyDecl): string {
   return first === undefined ? "" : decl.source.reader.substring(first.offset, last.endOffset);
 }
 
-/** @return the span of `decl`'s name. */
+/** @return the span of `decl`'s name as written: to the end the parser
+ * recorded, else to the end of its key, a `<…>` guard on it included. */
 function nameRange(decl: ITargetDecl | IPropertyDecl): ISourceRange {
-  return span(decl, decl.offset + decl.name.toString().length);
+  if (decl.endOffset !== undefined) {
+    return span(decl, decl.endOffset);
+  }
+  const { reader } = decl.source;
+  let end = decl.offset;
+  for (let depth = 0; ; end++) {
+    const char = reader.substring(end, end + 1);
+    if (char === "") {
+      break;
+    } else if (char === "<") {
+      depth++;
+    } else if (char === ">" && depth > 0) {
+      depth--;
+    } else if (depth === 0 && (char === "=" || /\s/.test(char))) {
+      break;
+    }
+  }
+  return span(decl, Math.max(end, decl.offset + 1));
 }
 
 /** @return the span of a target's declaration, from its type to its last value. */
@@ -616,8 +650,7 @@ export function completionsAt(model: BuildModel, text: string, offset: number, f
           detail: `${schema.required ? "REQUIRED " : ""}${propertyTypeName(schema)}`,
           ...(schema.docComment === undefined ? {} : { comment: schema.docComment }),
         }));
-      const maps = model
-        .getProperties()
+      const maps = visible(own?.getProperties() ?? [], model.getProperties())
         .filter(({ decl }) => hasMapValue(decl))
         .map(({ name, decl }): ICompletion => ({ label: name, kind: "property", detail: "MAP", ...(decl.docComment === undefined ? {} : { comment: decl.docComment }) }));
       const parameter: ICompletion[] = context.rule === undefined ? [] : [{ label: context.rule.parameter, kind: "target", detail: "the target being built" }];
@@ -644,12 +677,20 @@ type TypingContext =
   | { kind: "top-level" }
   | { kind: "other" };
 
-/** @return where in the grammar `offset` in `text` lies, read from the text before it, comments and strings skipped. */
+/** @return where in the grammar `offset` in `text` lies, read from the text before it, comments, strings and command substitutions skipped. */
 function typingContext(text: string, offset: number): TypingContext {
   /* Each open brace's header: the text of its statement before it. */
   const headers: string[] = [];
   let statement = "";
-  let substitution = false;
+  /* Skip from `i`, an opening character, past the run it opens up to `close`;
+   * returns where it ends, or undefined where that is at or past `offset`. */
+  const skipTo = (i: number, close: string, escapes: boolean): number | undefined => {
+    let end = i + 1;
+    while (end < text.length && text[end] !== close) {
+      end += escapes && text[end] === "\\" ? 2 : 1;
+    }
+    return end >= offset ? undefined : end;
+  };
   for (let i = 0; i < offset; i++) {
     const char = text[i];
     if (char === "#") {
@@ -660,12 +701,10 @@ function typingContext(text: string, offset: number): TypingContext {
       i = end;
       continue;
     }
-    if (char === '"') {
-      let end = i + 1;
-      while (end < text.length && text[end] !== '"') {
-        end += text[end] === "\\" ? 2 : 1;
-      }
-      if (end >= offset) {
+    if (char === '"' || char === "'" || char === "`") {
+      /* A single-quoted string has no escapes. */
+      const end = skipTo(i, char, char !== "'");
+      if (end === undefined) {
         return { kind: "other" };
       }
       statement += text.slice(i, end + 1);
@@ -673,10 +712,17 @@ function typingContext(text: string, offset: number): TypingContext {
       continue;
     }
     if (char === "$" && text[i + 1] === "{") {
-      substitution = true;
-    } else if (char === "}" && substitution) {
-      substitution = false;
-    } else if (char === "{") {
+      /* A substitution's name, then perhaps a requirement and an edit (`#p`,
+       * `%p`, `/a/b`), which is no comment. */
+      const end = skipTo(i + 1, "}", true);
+      if (end === undefined) {
+        return /^\s*[\w.-]*$/.test(text.slice(i + 2, offset)) ? { kind: "substitution" } : { kind: "other" };
+      }
+      statement += text.slice(i, end + 1);
+      i = end;
+      continue;
+    }
+    if (char === "{") {
       headers.push(statement.trim());
       statement = "";
       continue;
@@ -689,9 +735,6 @@ function typingContext(text: string, offset: number): TypingContext {
       continue;
     }
     statement += char;
-  }
-  if (substitution) {
-    return { kind: "substitution" };
   }
   /* Within a rule's block, its parameter (`rule <type> <param>`, `default rule <param>`). */
   const unguarded = (text: string): string => text.replace(/<[^>]*>/g, "");
@@ -712,6 +755,6 @@ function typingContext(text: string, offset: number): TypingContext {
   }
   /* A target's body: `<type> <name>`, perhaps guarded, or the short form of a
    * rule's block, `rule … = <type> <name>`. */
-  const target = /^(?:default\s+)?([A-Za-z_][\w-]*)\s+[^\s=]+$/.exec(unguarded(header)) ?? /=\s*([A-Za-z_][\w-]*)\s+[^\s=]+$/.exec(unguarded(header));
+  const target = /^(?:(?:default|private)\s+)?([A-Za-z_][\w-]*)\s+[^\s=]+$/.exec(unguarded(header)) ?? /=\s*([A-Za-z_][\w-]*)\s+[^\s=]+$/.exec(unguarded(header));
   return target !== null && !KEYWORDS.includes(target[1]) ? { kind: "property-name", type: target[1], ...inRule } : { kind: "other" };
 }

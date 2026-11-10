@@ -19,8 +19,7 @@
 
 import * as os from "node:os";
 import * as path from "node:path";
-import { Computable, executeInternalCapture, ExecutionContext, FabrError, findExecutable, isJsonObject, parseJson, PluginKey, Semaphore } from "@fabr-build/core";
-import { hostEnvironment } from "./HostEnvironment";
+import { Computable, executeInternalCapture, ExecutionContext, FabrError, findExecutable, hostEnvironment, isJsonObject, parseJson, PluginKey, Semaphore } from "@fabr-build/core";
 
 /** A registry's credential, as an auth file holds one. */
 export interface IRegistryCredential {
@@ -32,7 +31,7 @@ export interface IRegistryCredential {
  * @return the auth files credentials are read from, in podman's order
  * (containers-auth.json(5)), then Docker's.
  */
-export function authFilePaths(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string[] {
+function authFilePaths(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string[] {
   const home = os.homedir();
   return [
     ...(platform === "linux" && env.XDG_RUNTIME_DIR ? [path.join(env.XDG_RUNTIME_DIR, "containers", "auth.json")] : []),
@@ -43,7 +42,7 @@ export function authFilePaths(env: NodeJS.ProcessEnv = process.env, platform: No
 }
 
 /** What an auth file holds: credentials by registry host, the helper that holds a host's, and the helper that holds the rest. */
-export interface IAuthFile {
+interface IAuthFile {
   /** Each host's credential, and the key it is filed under (Docker Hub's is `https://index.docker.io/v1/`). */
   readonly credentials: ReadonlyMap<string, IRegistryCredential>;
   /** The helper holding each host's credential (`credHelpers`). */
@@ -173,7 +172,7 @@ function askHelper(limit: Semaphore, helper: string, server: string): Computable
 }
 
 /** The container plugin's per-run state, held on the ExecutionContext and shared by every repository of the run. */
-export class ContainerPluginContext {
+class ContainerPluginContext {
   private authMemo?: Computable<RegistryAuth>;
 
   constructor(private readonly execution: ExecutionContext) {}

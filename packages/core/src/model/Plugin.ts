@@ -57,7 +57,7 @@ interface IFabrPluginModule {
 export const MANIFEST = "package.json";
 
 /** The `package.json` field that marks a package as a fabr plugin, listing its `.fabr` files. */
-export const PLUGIN_MANIFEST_FIELD = "@fabr-build/plugin";
+const PLUGIN_MANIFEST_FIELD = "@fabr-build/plugin";
 
 /** A plugin's `.fabr` files, as paths within its package. */
 export interface PluginLibs {

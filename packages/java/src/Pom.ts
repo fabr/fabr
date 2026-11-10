@@ -304,8 +304,8 @@ export function effectivePom(pom: RawPom, load: PomLoader, what: string, depth =
           if (filledVersion === undefined) {
             throw new FabrError(`${what}: dependency ${dependency.groupId}:${dependency.artifactId} has no version, and none is managed`);
           }
-          /* A managed dependency's exclusions apply beside its own. */
-          const exclusions = [...new Set([...(dependency.exclusions ?? []), ...(managedEntry?.exclusions ?? [])])];
+          /* A managed entry's exclusions apply to a dependency that declares none, as Maven's model merger copies them. */
+          const exclusions = dependency.exclusions ?? managedEntry?.exclusions ?? [];
           return {
             ...dependency,
             version: filledVersion,

@@ -25,14 +25,7 @@
 
 import * as fs from "fs";
 import * as net from "net";
-import { type JsonRpcClient, takeFrame } from "./JsonRpcClient";
-
-/** A JSON-RPC message, as a connection reads it. */
-interface IMessage {
-  id?: number | string;
-  method?: string;
-  params?: unknown;
-}
+import { type IMessage, type JsonRpcClient, sendMessage, takeFrame, toMessage } from "./JsonRpcClient";
 
 /**
  * Serve `client`'s server at the socket `socket`, `initialized` the result of
@@ -42,9 +35,9 @@ interface IMessage {
  */
 export function relayBuildServer(client: JsonRpcClient, initialized: unknown, socket: string): Promise<net.Server> {
   const connections = new Set<net.Socket>();
-  client.onAnyNotification((method, params) => {
+  const forwarding = client.onAnyNotification((method, params) => {
     for (const connection of connections) {
-      send(connection, { jsonrpc: "2.0", method, params });
+      sendMessage(connection, { jsonrpc: "2.0", method, params });
     }
   });
   fs.rmSync(socket, { force: true });
@@ -66,30 +59,23 @@ export function relayBuildServer(client: JsonRpcClient, initialized: unknown, so
             ? Promise.resolve(null)
             : client.request(message.method, message.params);
       answer.then(
-        result => send(connection, { jsonrpc: "2.0", id: message.id, result: result ?? null }),
-        (err: unknown) => send(connection, { jsonrpc: "2.0", id: message.id, error: { code: -32603, message: err instanceof Error ? err.message : String(err) } })
+        result => sendMessage(connection, { jsonrpc: "2.0", id: message.id, result: result ?? null }),
+        (err: unknown) => sendMessage(connection, { jsonrpc: "2.0", id: message.id, error: { code: -32603, message: err instanceof Error ? err.message : String(err) } })
       );
     });
   });
+  server.on("close", forwarding);
   return new Promise((resolve, reject) => {
-    server.once("error", reject);
+    const failed = (err: Error): void => {
+      forwarding();
+      reject(err);
+    };
+    server.once("error", failed);
     server.listen(socket, () => {
-      server.off("error", reject);
+      server.off("error", failed);
       resolve(server);
     });
   });
-}
-
-/** @return `json` as a JSON-RPC message, or undefined where it is none: an object whose `id` and `method`, where it has them, are a number or string and a string. */
-function toMessage(json: unknown): IMessage | undefined {
-  if (typeof json !== "object" || json === null || Array.isArray(json)) {
-    return undefined;
-  }
-  const { id, method, params } = json as Record<string, unknown>;
-  if ((id !== undefined && typeof id !== "number" && typeof id !== "string") || (method !== undefined && typeof method !== "string")) {
-    return undefined;
-  }
-  return { ...(id === undefined ? {} : { id }), ...(method === undefined ? {} : { method }), params };
 }
 
 /** Call `receive` with each message read from `input`, a frame that holds none skipped. */
@@ -105,10 +91,4 @@ function readMessages(input: net.Socket, receive: (message: IMessage) => void): 
       }
     }
   });
-}
-
-function send(output: net.Socket, message: unknown): void {
-  const body = Buffer.from(JSON.stringify(message), "utf8");
-  output.write(`Content-Length: ${body.length}\r\n\r\n`);
-  output.write(body);
 }

@@ -531,6 +531,6 @@ function packageEdges(name: string, collected: Collected): Array<Dependency<Pack
 }
 
 /** List a rule's requirements as pairs of name and sources, in the order written. */
-export function requirementEntries(requirements: Requirements): Array<[string, RequiredSources]> {
+function requirementEntries(requirements: Requirements): Array<[string, RequiredSources]> {
   return requirements instanceof Map ? [...requirements] : Object.entries(requirements);
 }

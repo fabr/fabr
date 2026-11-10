@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { compareVersions, parseVersion, versionToString } from "@fabr-build/core";
+import { compareText, compareVersions, parseVersion, versionToString } from "@fabr-build/core";
 import { Lockfile } from "./Lockfile";
 import { DEPENDENCY_BLOCKS, Manifest } from "./Manifest";
 import { Report } from "./Report";
@@ -135,7 +135,7 @@ export function highest(versions: Iterable<string>): string | undefined {
 
 /** @return the name a package writes a named pnpm catalog's version of `name`
  * under, where it differs from the default catalog's. */
-export function namedCatalogAddress(name: string, catalog: string): string {
+function namedCatalogAddress(name: string, catalog: string): string {
   return `${name}-${catalog}`;
 }
 
@@ -204,7 +204,7 @@ export function buildCatalog(
         if ((block === "peerDependencies") !== peers) {
           continue;
         }
-        for (const [name, text] of [...(manifest.blocks.get(block) ?? [])].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+        for (const [name, text] of [...(manifest.blocks.get(block) ?? [])].sort(([a], [b]) => compareText(a, b))) {
           /* A workspace package's name is that package, however its spec is written: a
            * package manager links the workspace's own packages. */
           if (addresses.has(keyOf(manifest, name)) || packageNames.has(name)) {

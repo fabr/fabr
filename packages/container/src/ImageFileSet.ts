@@ -18,7 +18,6 @@
  */
 
 import * as fs from "fs";
-import { Readable } from "stream";
 import {
   Computable,
   Dependency,
@@ -33,6 +32,7 @@ import {
   Provided,
   UsedFor,
   SymlinkFile,
+  toJsonObject,
 } from "@fabr-build/core";
 import { ILayerEntry, ILayerIndex } from "./LayerIndex";
 import { IImageConfig, toImageConfig, toLayerIndex } from "./OciProtocol";
@@ -51,8 +51,15 @@ export interface ILayerRecord {
   readonly index: ILayerIndex;
   /** The index as it is stored, beside the tar. */
   readonly indexFile: IFile;
-  /** How it was published, and the registry and repository it was fetched from. */
-  readonly published?: { readonly digest: string; readonly mediaType: string; readonly size: number; readonly registry: string; readonly repository: string };
+  /** How it was published, and the registry and repository it was fetched from, with the name the registry's login is stored under where it declares one. */
+  readonly published?: {
+    readonly digest: string;
+    readonly mediaType: string;
+    readonly size: number;
+    readonly registry: string;
+    readonly repository: string;
+    readonly loginUrl?: string;
+  };
 }
 
 /**
@@ -153,7 +160,7 @@ export function imageOfRecords(records: FileSet, packageName: string, origin?: I
               tar: records.getFile(`${dir}/${RECORD_TAR}`)!,
               index: parseJson(index, `${dir}/${RECORD_INDEX}`, toLayerIndex),
               indexFile: records.getFile(`${dir}/${RECORD_INDEX}`)!,
-              ...(published === undefined ? {} : { published: JSON.parse(published) as ILayerRecord["published"] }),
+              ...(published === undefined ? {} : { published: parseJson(published, `${dir}/${RECORD_PUBLISHED}`, toPublished) }),
             })
           )
         ),
@@ -162,6 +169,23 @@ export function imageOfRecords(records: FileSet, packageName: string, origin?: I
     ] as const,
     (config: string, layers: ILayerRecord[]) => ImageFileSet.of(parseJson(config, RECORD_CONFIG, toImageConfig), layers, packageName, undefined, origin)
   );
+}
+
+/** Read a layer's `published.json` record. */
+function toPublished(json: unknown): NonNullable<ILayerRecord["published"]> {
+  const doc = toJsonObject(json);
+  const { digest, mediaType, size, registry, repository, loginUrl } = doc;
+  if (
+    typeof digest !== "string" ||
+    typeof mediaType !== "string" ||
+    typeof size !== "number" ||
+    typeof registry !== "string" ||
+    typeof repository !== "string" ||
+    (loginUrl !== undefined && typeof loginUrl !== "string")
+  ) {
+    throw new FabrError("a layer's published record is malformed");
+  }
+  return { digest, mediaType, size, registry, repository, ...(loginUrl === undefined ? {} : { loginUrl }) };
 }
 
 /** The C library an image's programs are linked against, as a target triple's environment names it. */
@@ -181,9 +205,19 @@ export function libcOf(image: FileSet): ImageLibc | undefined {
   return names.some(name => /^(usr\/)?lib(64)?(\/[^/]+-linux-gnu[^/]*)?\/ld-linux[^/]*\.so\.\d+$/.test(name)) ? "gnu" : undefined;
 }
 
-/** Merge `layers`' entries, lowest first, into the files of the filesystem they make. */
+/** An entry of the merged filesystem: the layer it is from, and, for a regular file or a hardlink to one, the entry its content is read as. */
+interface IMergedEntry {
+  readonly entry: ILayerEntry;
+  readonly content?: { readonly entry: ILayerEntry; readonly layer: ILayerRecord };
+}
+
+/**
+ * Merge `layers`' entries, lowest first, into the files of the filesystem they
+ * make. A hardlink shares the content of its target as the filesystem holds
+ * it where the link's layer applies, whatever a later layer does to the target.
+ */
 function filesystemOf(layers: readonly ILayerRecord[]): Map<string, IFile> {
-  const merged = new Map<string, { entry: ILayerEntry; layer: ILayerRecord }>();
+  const merged = new Map<string, IMergedEntry>();
   for (const layer of layers) {
     /* A layer's whiteouts apply to the layers below it, so before its own entries are added. */
     for (const entry of layer.index.entries) {
@@ -205,13 +239,14 @@ function filesystemOf(layers: readonly ILayerRecord[]): Map<string, IFile> {
           /* A file replacing a directory hides what was under it. */
           removeUnder(merged, entry.path);
         }
-        merged.set(entry.path, { entry, layer });
+        const content = entry.type === "file" ? { entry, layer } : entry.type === "hardlink" ? merged.get(entry.linkname ?? "")?.content : undefined;
+        merged.set(entry.path, { entry, ...(content === undefined ? {} : { content }) });
       }
     }
   }
   const files = new Map<string, IFile>();
-  for (const [path, { entry, layer }] of merged) {
-    const file = fileOf(entry, layer, merged);
+  for (const [path, merge] of merged) {
+    const file = fileOf(merge);
     if (file !== undefined) {
       files.set(path, file);
     }
@@ -229,18 +264,11 @@ function removeUnder(merged: Map<string, unknown>, dir: string): void {
 }
 
 /** Make the file an entry presents: a regular file read from its layer, a symlink, or the file a hardlink shares. */
-function fileOf(entry: ILayerEntry, layer: ILayerRecord, merged: ReadonlyMap<string, { entry: ILayerEntry; layer: ILayerRecord }>): IFile | undefined {
-  if (entry.type === "file") {
-    return new LayerEntryFile(layer.tar, entry);
-  }
+function fileOf({ entry, content }: IMergedEntry): IFile | undefined {
   if (entry.type === "symlink") {
     return new SymlinkFile(entry.linkname ?? "");
   }
-  if (entry.type === "hardlink") {
-    const target = merged.get(entry.linkname ?? "");
-    return target !== undefined && target.entry.type === "file" ? new LayerEntryFile(target.layer.tar, target.entry, entry.mode) : undefined;
-  }
-  return undefined;
+  return content === undefined ? undefined : new LayerEntryFile(content.layer.tar, content.entry, entry.mode);
 }
 
 /**
@@ -248,7 +276,7 @@ function fileOf(entry: ILayerEntry, layer: ILayerRecord, merged: ReadonlyMap<str
  * records them, its content read from its range of the layer's stored tar when
  * wanted. It has no path of its own, so it is copied wherever it is staged.
  */
-export class LayerEntryFile implements IFile {
+class LayerEntryFile implements IFile {
   public readonly hash: string;
   public readonly mime: string;
   public readonly mode: number;
@@ -298,18 +326,4 @@ export class LayerEntryFile implements IFile {
   public getAbsPath(): undefined {
     return undefined;
   }
-}
-
-/** @return a stream of `file`'s content: from the store where it is there, else from its bytes. */
-export function contentOf(file: IFile): Computable<Readable> {
-  const where = file.getAbsPath();
-  return where !== undefined ? Computable.resolve<Readable>(fs.createReadStream(where)) : file.getBuffer().then(buffer => Readable.from([buffer]));
-}
-
-/** @return the size of `file`'s content: from the store where it is there, else from its bytes. */
-export function sizeOf(file: IFile): Computable<number> {
-  const where = file.getAbsPath();
-  return where === undefined
-    ? file.getBuffer().then(buffer => buffer.length)
-    : Computable.from<number>((resolve, reject) => fs.stat(where, (err, stats) => (err ? reject(err) : resolve(stats.size))));
 }

@@ -333,6 +333,15 @@ describe("Parser Tests", () => {
     ]);
   });
 
+  it("rejects a default private or repository declaration", () => {
+    expect(parseInvalid("default private holder t { srcs = a; }").join("\n")).to.contain(
+      "Read Identifier but expected a property name or target type after 'default'"
+    );
+    expect(parseInvalid("default repository npm = @p/q:R;").join("\n")).to.contain(
+      "Read Identifier but expected a property name or target type after 'default'"
+    );
+  });
+
   it("Property with Subst var", () => {
     expect(summarize(parseValid("A=b; B=${A};"))).to.deep.equal(summary({ properties: { A: ["b"], B: ["var(A)"] } }));
   });
@@ -1599,6 +1608,12 @@ describe("Parser Tests", () => {
       expect(parseInvalid("rule t x<y.p=a> = @p/q:rules/R;").join("\n")).to.contain(
         "Rule guard 'y.p' is neither a property of the configuration nor one of 'x'"
       );
+    });
+
+    it("refuses a guard key that names no property: an empty one, or a path", () => {
+      expect(parseInvalid("rule t pkg<pkg.=x> = @p/q:rules/R;").join("\n")).to.contain("expected a constraint key");
+      expect(parseInvalid("rule t pkg<a/b=x> = @p/q:rules/R;").join("\n")).to.contain("expected a constraint key");
+      expect(parseInvalid("rule t pkg<pkg.a.b=x> = @p/q:rules/R;").join("\n")).to.contain("expected a constraint key");
     });
 
     it("refuses an implementation that names no entry of a package", () => {

@@ -200,7 +200,11 @@ public final class Runner {
         }
     }
 
-    /** The outcome of each test the run reached, in the order they finished. */
+    /**
+     * The outcome of each test the run reached, in the order they finished.
+     * JUnit may call it from several threads at once (parallel execution), so
+     * every method that touches its state holds its lock.
+     */
     private static final class Results implements TestExecutionListener {
         private final Map<String, String> sources;
         private final Map<String, Long> started = new HashMap<>();
@@ -215,17 +219,17 @@ public final class Runner {
         }
 
         @Override
-        public void testPlanExecutionStarted(TestPlan testPlan) {
+        public synchronized void testPlanExecutionStarted(TestPlan testPlan) {
             plan = testPlan;
         }
 
         @Override
-        public void executionStarted(TestIdentifier id) {
+        public synchronized void executionStarted(TestIdentifier id) {
             started.put(id.getUniqueId(), System.currentTimeMillis());
         }
 
         @Override
-        public void executionSkipped(TestIdentifier id, String reason) {
+        public synchronized void executionSkipped(TestIdentifier id, String reason) {
             /* A skipped container's tests are not reported one by one: each is skipped with it. */
             List<TestIdentifier> skippedTests = id.isTest()
                 ? List.of(id)
@@ -237,7 +241,7 @@ public final class Runner {
         }
 
         @Override
-        public void executionFinished(TestIdentifier id, TestExecutionResult result) {
+        public synchronized void executionFinished(TestIdentifier id, TestExecutionResult result) {
             long duration = System.currentTimeMillis() - started.getOrDefault(id.getUniqueId(), System.currentTimeMillis());
             Optional<Throwable> thrown = result.getThrowable();
             switch (result.getStatus()) {
@@ -265,7 +269,7 @@ public final class Runner {
             }
         }
 
-        private void add(TestIdentifier id, String status, long duration, String message, String trace) {
+        private synchronized void add(TestIdentifier id, String status, long duration, String message, String trace) {
             StringBuilder json = new StringBuilder("{");
             field(json, "name", id.getDisplayName()).append(',');
             field(json, "status", status).append(',');
@@ -297,7 +301,7 @@ public final class Runner {
             return sources.get(topLevel.replace('.', '/') + ".java");
         }
 
-        String toCtrf(long start, long stop) {
+        synchronized String toCtrf(long start, long stop) {
             StringBuilder json = new StringBuilder("{\"results\":{\"tool\":{\"name\":\"fabr-junit-runner\"},\"summary\":{");
             json.append("\"tests\":").append(tests.size());
             json.append(",\"passed\":").append(passed);

@@ -89,16 +89,20 @@ describe("JSON-RPC connection", () => {
     expect(sent.map(({ message }) => message.id)).to.deep.equal([1, 2]);
   });
 
-  it("holds each protocol's notifications until its own initialize is answered", async () => {
+  it("holds each protocol's notifications until its own initialize is answered, and drops those of a protocol with no client", async () => {
     const { input, sent, connection, settle } = connect();
     connection.notify("early", 1);
-    connection.notify("early", 2, "lsp");
+    connection.notify("unheard", 2, "lsp");
+    input.write(frame({ jsonrpc: "2.0", method: "$/hello" }, "lsp"));
+    await settle();
+    connection.notify("early", 3, "lsp");
     input.write(frame({ jsonrpc: "2.0", id: 1, method: "initialize" }, "lsp"));
     await settle();
     expect(sent.map(({ protocol, message }) => [protocol, message.method ?? message.id])).to.deep.equal([
       ["lsp", 1],
       ["lsp", "early"],
     ]);
+    expect(sent[1].message.params).to.equal(3);
     input.write(frame({ jsonrpc: "2.0", id: 2, method: "build/initialize" }));
     await settle();
     expect(sent.slice(2).map(({ protocol, message }) => [protocol, message.method ?? message.id])).to.deep.equal([

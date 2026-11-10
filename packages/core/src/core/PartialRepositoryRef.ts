@@ -18,7 +18,7 @@
  */
 
 import { Computable } from "./Computable";
-import { FabrError, RequirementResolutionError, toError } from "./Errors";
+import { FabrError } from "./Errors";
 import { NO_REFERENCE_FIELDS, Reference, ReferenceFields } from "./Reference";
 import type { Name } from "./Name";
 import type { Repository, RepositoryPublishRef, RepositoryRef } from "./Repository";
@@ -79,13 +79,7 @@ export class PartialRepositoryRef extends Reference {
    * repository cannot list it.
    */
   public children(): Computable<Map<string, Reference>> {
-    const listed = this.repository.children?.(this);
-    if (listed === undefined) {
-      return Computable.reject(this.attributed(new FabrError(`'${this.toString()}' cannot be listed`)));
-    }
-    return listed.catch(err => {
-      throw this.attributed(toError(err));
-    });
+    return this.listedChildren(this.repository.children?.(this));
   }
 
   public toString(): string {
@@ -118,11 +112,6 @@ export class PartialRepositoryRef extends Reference {
             "write the rest of the name after it"
           )
     );
-  }
-
-  /** Attribute `err` to where this reference was written. */
-  private attributed(err: Error): Error {
-    return err instanceof RequirementResolutionError ? err : new RequirementResolutionError([this], err);
   }
 
   /** Complete this repository name by `name`, written after `separator`. */

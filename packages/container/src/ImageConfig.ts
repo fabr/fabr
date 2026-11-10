@@ -43,7 +43,7 @@ export interface IImageSettings {
 const OCI_LABEL_KEYS: ReadonlySet<string> = new Set(["title", "description", "url", "source", "documentation", "licenses", "vendor", "authors"]);
 
 /** @return the label `metadata`'s `key` is written as: OCI's own for a key it defines, else the key as written. */
-export function labelKey(key: string): string {
+function labelKey(key: string): string {
   return OCI_LABEL_KEYS.has(key) ? `org.opencontainers.image.${key}` : key;
 }
 

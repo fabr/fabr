@@ -124,7 +124,8 @@ export interface RegistrySelection {
 export interface PackageContent {
   /** Names the files without reading them: one key, one set of files. */
   readonly key: string;
-  /** The registry's selection the node is, where it is one. */
+  /** The registry's selection the node is, or for a variant's node the
+   * selection of its package, where it is one. */
   readonly selection?: RegistrySelection;
   /** Get the files, fetching or building them on first demand: one set, or,
    * where a target's build is no package, its sources as they stand. */
@@ -222,7 +223,8 @@ export class ResolvedNode implements PackageMetadata {
       return this;
     }
     const { content } = this;
-    /* A rename names a package: what the rule declared is that package, renamed. */
+    /* A rename names a package: what the rule declared is that package,
+     * renamed, and where it declared nothing, the package of the new name. */
     const declared: Builds | undefined = content.declared === "files" ? content.declared : { ...content.declared, package: packageName };
     return this.copy({
       packageName,
@@ -307,7 +309,7 @@ export function contentOf(pkg: Package): PackageContent {
  * constructor's arguments. A subclass carries what it adds from the package
  * it is made from (`files`), as {@link PackageFileSet.metadata} is carried.
  */
-export type PackageClass = new (...args: ConstructorParameters<typeof PackageFileSet>) => PackageFileSet;
+type PackageClass = new (...args: ConstructorParameters<typeof PackageFileSet>) => PackageFileSet;
 
 export class PackageFileSet extends FileSet {
   /** What the package says about itself for publishing: given, or else that
@@ -791,14 +793,20 @@ function materializeGraph(roots: ReadonlyArray<Package>, describe: boolean): Com
       describing(node) ? node.content.describe!().then(description => description, (): undefined => undefined) : node.content.files()
     ),
     (...files: Array<FileSet | ReadonlyArray<SourceRef> | undefined>) => {
-      const content = new Map<Package, FileSet | ReadonlyArray<SourceRef>>(
-        nodes.filter(node => !describing(node)).map(node => [node, files[nodes.indexOf(node)]!])
-      );
-      const descriptions = new Map<Package, FileSet>(
-        nodes.filter(node => describing(node) && files[nodes.indexOf(node)] !== undefined).map(node => [node, files[nodes.indexOf(node)] as FileSet])
-      );
+      const content = new Map<Package, FileSet | ReadonlyArray<SourceRef>>();
+      const descriptions = new Map<Package, FileSet>();
       /* The targets whose description failed. */
-      const failed = new Set<Package>(nodes.filter(node => describing(node) && files[nodes.indexOf(node)] === undefined));
+      const failed = new Set<Package>();
+      nodes.forEach((node, i) => {
+        const found = files[i];
+        if (!describing(node)) {
+          content.set(node, found!);
+        } else if (found === undefined) {
+          failed.add(node);
+        } else {
+          descriptions.set(node, found as FileSet);
+        }
+      });
       const builder = new PackageGraphBuilder();
       const made = new Map<Package, PackageFileSet>();
       /* A node's content where that is no package (what a target built as

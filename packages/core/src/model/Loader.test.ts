@@ -302,6 +302,17 @@ describe("Loader", () => {
     expect(model.getTargetDecl("t")?.type).to.equal("thing");
   });
 
+  it("resolves a plugin's name as the file declaring it sees it, its private names included", async () => {
+    const model = await load(
+      files({
+        "PROJECT.fabr": FABR_PLUGIN_DEF + "private fabr_plugin p { libs = P.fabr; }\nplugin p;\n",
+        "P.fabr": "default from_p = yes;\n",
+      }),
+      "PROJECT.fabr"
+    );
+    expect(propertyValue(model, "from_p")).to.equal("yes");
+  });
+
   it("refuses a splice in a plugin's target, whose body is read as written", async () => {
     const { error, logged } = await loadErr(
       files({ "PROJECT.fabr": FABR_PLUGIN_DEF + "COMMON = { libs = P.fabr; };\nfabr_plugin p { COMMON; libs = P.fabr; }\nplugin p;\n", "P.fabr": "" })
@@ -408,6 +419,13 @@ describe("Loader", () => {
     );
     expect(error).to.be.an.instanceOf(BuildFilesInvalidError);
     expect(logged.join("\n")).to.match(/'p' is not a plugin this project uses/);
+  });
+
+  it("reports a plugin naming nothing, and not an include of its optional libs as well", async () => {
+    const { error, logged } = await loadErr(files({ "PROJECT.fabr": "plugin @fabr/definitely-not-installed;\ninclude q:X.fabr;\n" }));
+    expect(error).to.be.an.instanceOf(BuildFilesInvalidError);
+    expect(logged.join("\n")).to.match(/names nothing the project declares/);
+    expect(logged.join("\n")).not.to.match(/is not a plugin this project uses/);
   });
 
   it("refuses an ordinary declaration in a plugin's optional lib", async () => {

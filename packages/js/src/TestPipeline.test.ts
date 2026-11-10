@@ -18,9 +18,13 @@
  */
 
 import { expect } from "chai";
-import { EMPTY_FILESET, FileSet, IChangedFiles, IFile, ITestReport, MemoryFile } from "@fabr-build/core";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { dependenciesOn, EMPTY_FILESET, FileSet, IChangedFiles, IFile, ITestReport, MemoryFile, PackageFileSet } from "@fabr-build/core";
+import { IPackageLayout, ReadName } from "./Layout";
 import { selectCompiledSetupFile, selectCompiledTestFiles, snapshotWriteBacks } from "./TestPipeline";
-import { filesToRun } from "./TestRunAction";
+import { filesToRun, readsOf } from "./TestRunAction";
 
 /** A FileSet with the given names (contents irrelevant to selection). */
 function fileSetOf(...names: string[]): FileSet {
@@ -205,11 +209,12 @@ describe("filesToRun", () => {
       ["b.test.js", { report: report(0), reads: new Set(["build/b.test.js"]), deps: new Set(["opt package.json"]) }],
     ]);
     expect(filesToRun(files, changes(["lib index.js"]), rows, false).rerun).to.deep.equal(["a.test.js"]);
-    expect(filesToRun(files, changes(["opt package.json"]), rows, false).rerun, "the probed package appeared").to.deep.equal(["b.test.js"]);
+    expect(filesToRun(files, changes([], ["opt package.json"]), rows, false).rerun, "the probed package appeared").to.deep.equal(["b.test.js"]);
+    expect(filesToRun(files, changes([], [], ["lib index.js"]), rows, false).rerun, "the package's file went").to.deep.equal(["a.test.js"]);
     expect(filesToRun(files, changes(["lib other.js"]), rows, false).rerun).to.deep.equal([]);
   });
 
-  it("runs every file where nothing is kept to compare with, or a file was added or deleted", () => {
+  it("runs every file where nothing is kept to compare with, or one of the step's own files was added or deleted", () => {
     expect(filesToRun(files, undefined, kept, false).rerun).to.deep.equal(files);
     expect(filesToRun(files, changes([]), undefined, false).rerun).to.deep.equal(files);
     expect(filesToRun(files, changes([], ["build/c.js"]), kept, false).rerun).to.deep.equal(files);
@@ -228,5 +233,48 @@ describe("filesToRun", () => {
       ["c.test.js", { report: report(0) }],
     ]);
     expect(filesToRun([...files, "c.test.js"], changes([]), partial, false).rerun).to.deep.equal(["a.test.js", "b.test.js", "c.test.js"]);
+  });
+});
+
+describe("readsOf", () => {
+  const x = new PackageFileSet(new Map(), "x", "1.0.0");
+  const y = new PackageFileSet(new Map(), "y", "1.0.0", dependenciesOn(x));
+  const cwd = "/work/build";
+  const names = new Map<string, ReadName>([
+    ["a.test.js", { file: "build/a.test.js" }],
+    ["node_modules/y/index.js", { route: ["y"], path: "index.js", package: y }],
+    ["node_modules/x/index.js", { route: ["y", "x"], path: "index.js", package: x }],
+    ["node_modules/x/sub.js", { route: ["y", "x"], path: "sub.js", package: x }],
+  ]);
+  const layout: IPackageLayout = {
+    files: EMPTY_FILESET,
+    trees: new Map(),
+    members: [y],
+    nameRead: read => names.get(path.relative(cwd, read)),
+  };
+
+  it("takes a package's lookup of itself as answered by the package", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-reads-"));
+    try {
+      const document = path.join(dir, "reads.json");
+      fs.writeFileSync(
+        document,
+        JSON.stringify({
+          files: ["a.test.js", "node_modules/y/index.js", "node_modules/x/index.js", "node_modules/x/sub.js"],
+          lookups: [
+            { from: "a.test.js", name: "y", to: "node_modules/y/index.js" },
+            { from: "node_modules/y/index.js", name: "x", to: "node_modules/x/index.js" },
+            { from: "node_modules/x/index.js", name: "x", to: "node_modules/x/sub.js" },
+          ],
+        })
+      );
+      const named = readsOf(document, cwd, layout);
+      expect(named).to.not.equal(undefined);
+      expect([...named!.deps].sort()).to.deep.equal(
+        ["y index.js", "y package.json", "y x index.js", "y x sub.js", "y x x package.json", "y x package.json"].sort()
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -34,6 +34,7 @@ import {
   FileSetRef,
   PackageFileSet,
   RequiredSources,
+  ResolutionSpec,
   defineRule,
   describeTarget,
   descriptionFile,
@@ -47,14 +48,11 @@ const MANIFEST = "package.json";
 /** The `fabr_plugin` rule, under `build`: the plugin built as the `js_package` it is, with its `.fabr` files laid in and its `package.json` naming them. */
 export default defineRule({
   requirements(context) {
-    const stated = jsPackage.requirements!(context);
-    return (stated instanceof Computable ? stated : Computable.resolve(stated)).then(spec => ({
+    /* js_package states its requirements as a Computable of named records. */
+    const stated = jsPackage.requirements!(context) as Computable<ResolutionSpec<Record<string, RequiredSources>>>;
+    return stated.then(spec => ({
       ...spec,
-      build: {
-        ...(Object.fromEntries(spec.build instanceof Map ? spec.build : Object.entries(spec.build ?? {})) as Record<string, RequiredSources>),
-        libs: context.getFileProperty("libs"),
-        optional_libs: context.getFileProperty("optional_libs"),
-      },
+      build: { ...spec.build, libs: context.getFileProperty("libs"), optional_libs: context.getFileProperty("optional_libs") },
     }));
   },
   evaluateResolved(context, requirements) {

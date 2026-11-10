@@ -42,7 +42,7 @@ import {
   verifiedStream,
 } from "@fabr-build/core";
 import { isDigest } from "./ImageReference";
-import { ILayerIndex, indexLayer } from "./LayerIndex";
+import { ILayerEntry, ILayerIndex, indexLayer, LayerEntryType } from "./LayerIndex";
 
 /* The media types of the documents a registry serves for an image: OCI's and Docker's. */
 export const OCI_INDEX = "application/vnd.oci.image.index.v1+json";
@@ -53,7 +53,7 @@ export const OCI_CONFIG = "application/vnd.oci.image.config.v1+json";
 /** An uncompressed layer, as fabr writes one. */
 export const OCI_LAYER = "application/vnd.oci.image.layer.v1.tar";
 /** What a manifest request accepts: an index or a manifest, OCI's or Docker's. */
-export const MANIFEST_ACCEPT = [OCI_INDEX, OCI_MANIFEST, DOCKER_MANIFEST_LIST, DOCKER_MANIFEST].join(", ");
+const MANIFEST_ACCEPT = [OCI_INDEX, OCI_MANIFEST, DOCKER_MANIFEST_LIST, DOCKER_MANIFEST].join(", ");
 
 /** How a layer's bytes are compressed, by its media type. */
 export type LayerCompression = "none" | "gzip" | "zstd";
@@ -201,7 +201,7 @@ function imageEntries(entries: readonly IIndexEntry[]): IIndexEntry[] {
 }
 
 /** The header in which a registry states a manifest's digest. */
-export const DIGEST_HEADER = "Docker-Content-Digest";
+const DIGEST_HEADER = "Docker-Content-Digest";
 
 /** Bumped when what is kept under each key changes shape. */
 const MANIFEST_TAG = "oci:manifest:1";
@@ -209,8 +209,8 @@ const CONFIG_TAG = "oci:config:1";
 const LAYER_TAG = "oci:layer:1";
 
 /** The names a stored layer's files are kept under in its cache entry. */
-export const LAYER_TAR = "layer.tar";
-export const LAYER_INDEX = "index.json";
+const LAYER_TAR = "layer.tar";
+const LAYER_INDEX = "index.json";
 
 /** A document as its bytes are, read or written, and their digest: what names it. */
 export interface IDigested<T> {
@@ -237,7 +237,7 @@ export function imageManifestOf(served: IDigested<ManifestDocument>): IDigested<
 }
 
 /** A layer as stored: its uncompressed tar (a file in the blob pool) and its index. */
-export interface IStoredLayer {
+interface IStoredLayer {
   readonly tar: IFile;
   readonly index: ILayerIndex;
   readonly indexFile: IFile;
@@ -390,7 +390,7 @@ export class Registry {
   }
 
   /** Upload the blob `digest`, `size` bytes, into `repository`, in one request. */
-  public uploadBlob(repository: string, digest: string, size: number, body: () => Readable | Buffer): Computable<void> {
+  public uploadBlob(repository: string, digest: string, size: number, body: Readable | Buffer): Computable<void> {
     return this.send(`/v2/${repository}/blobs/uploads/`, { method: "POST", headers: { "content-length": "0" } }).then(started => {
       this.expect(started, [202], `starting an upload to ${repository}`);
       const location = started.headers.location;
@@ -401,7 +401,7 @@ export class Registry {
       url.searchParams.set("digest", digest);
       return this.send(
         url.toString(),
-        { method: "PUT", headers: { "content-type": "application/octet-stream", "content-length": String(size) }, body: body() }
+        { method: "PUT", headers: { "content-type": "application/octet-stream", "content-length": String(size) }, body }
       ).then(response => this.expect(response, [201], `uploading the blob ${digest} to ${repository}`));
     });
   }
@@ -448,11 +448,49 @@ export function nextPage(link: string | string[] | undefined): string | undefine
 
 /** Read a layer's index as fabr stores it. */
 export function toLayerIndex(json: unknown): ILayerIndex {
-  const doc = json as ILayerIndex;
-  if (typeof doc?.diffId !== "string" || !Array.isArray(doc.entries)) {
+  const doc = toJsonObject(json);
+  if (typeof doc.diffId !== "string" || !Array.isArray(doc.entries)) {
     throw new FabrError("a stored layer index is malformed");
   }
-  return doc;
+  return { diffId: doc.diffId, entries: doc.entries.map(toLayerEntry) };
+}
+
+const LAYER_ENTRY_TYPES: ReadonlySet<string> = new Set<LayerEntryType>(["file", "directory", "symlink", "hardlink", "other"]);
+
+/** Read one entry of a stored layer index. */
+function toLayerEntry(json: unknown): ILayerEntry {
+  const { path, type, mode, uid, gid, linkname, offset, size, hash, mime } = toJsonObject(json);
+  const optional = (value: unknown, kind: "string" | "number"): boolean => value === undefined || typeof value === kind;
+  if (
+    typeof path !== "string" ||
+    typeof type !== "string" ||
+    !LAYER_ENTRY_TYPES.has(type) ||
+    typeof mode !== "number" ||
+    typeof uid !== "number" ||
+    typeof gid !== "number" ||
+    !optional(linkname, "string") ||
+    !optional(offset, "number") ||
+    !optional(size, "number") ||
+    !optional(hash, "string") ||
+    !optional(mime, "string")
+  ) {
+    throw new FabrError("a stored layer index has a malformed entry");
+  }
+  if (type === "file" && (typeof offset !== "number" || typeof size !== "number" || typeof hash !== "string" || typeof mime !== "string")) {
+    throw new FabrError(`a stored layer index's file '${path}' lacks its range, hash or mime`);
+  }
+  return {
+    path,
+    type: type as LayerEntryType,
+    mode,
+    uid,
+    gid,
+    ...(linkname === undefined ? {} : { linkname: linkname as string }),
+    ...(offset === undefined ? {} : { offset: offset as number }),
+    ...(size === undefined ? {} : { size: size as number }),
+    ...(hash === undefined ? {} : { hash: hash as string }),
+    ...(mime === undefined ? {} : { mime: mime as string }),
+  };
 }
 
 /** Decompress a layer as it streams in, store its tar, index it, and check both digests. */

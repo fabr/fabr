@@ -446,6 +446,15 @@ describe("Name", () => {
         .name();
       expect(name.makeProjector()("a/b.txt")).to.equal(undefined);
     });
+
+    it("does not normalize a climb through an extglob group", () => {
+      const name = new NameBuilder()
+        .appendLiteralString("a/")
+        .appendGlobMetachars("@(b|c)")
+        .appendLiteralString("/../d.txt")
+        .name();
+      expect(name.makeProjector()("a/d.txt")).to.equal(undefined);
+    });
   });
 
   describe("rebase", () => {

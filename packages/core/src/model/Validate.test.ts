@@ -152,6 +152,15 @@ describe("validateTarget (MAP properties)", () => {
     expect(errors[0]).to.match(/duplicate map key 'B'/);
   });
 
+  it("rejects a splice in a target's body that is no plain property name, as in a block", () => {
+    for (const splice of ["x:y", "COMMON*"]) {
+      const errors = validationErrors(def + `COMMON = { srcs = a; };\nm t { ${splice}; }\n`);
+      expect(errors, splice).to.have.lengthOf(1);
+      expect(errors[0]).to.match(/Invalid splice: a map reference is a plain property name/);
+    }
+    expect(validationErrors(def + "COMMON = { srcs = a; };\nm t { COMMON; }\n")).to.deep.equal([]);
+  });
+
   it("rejects a command (pipeline) inside a map block", () => {
     const errors = validationErrors(def + "m t { defines = { A = a | b; }; }\n");
     expect(errors).to.have.lengthOf(1);

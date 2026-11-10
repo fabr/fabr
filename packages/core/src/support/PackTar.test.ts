@@ -154,6 +154,31 @@ describe("Pack", () => {
     }
   }
 
+  it("rejects (rather than hanging) when the output it writes into fails", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-pack-cache-"));
+    const cache = new BuildCache(dir, new LogFormatter(LogLevel.Info, () => undefined));
+    const work = path.join(dir, "work");
+    const own = path.join(work, fs.readdirSync(work).find(name => name.endsWith(`-${process.pid}`))!);
+    fs.chmodSync(own, 0o500);
+    try {
+      const files = new FileSet(new Map([["big.bin", new MemoryFile(Buffer.alloc(1024 * 1024, 7))]]));
+      const failure = await new Promise<string>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("timed out (hang)")), 5000);
+        writeTar(files, cache.getTemporaryWriteStream(), "layer.tar").then(
+          () => resolve(""),
+          (err: NodeJS.ErrnoException) => {
+            clearTimeout(timer);
+            resolve(err.code ?? err.message);
+          }
+        );
+      });
+      expect(failure).to.equal("EACCES");
+    } finally {
+      fs.chmodSync(own, 0o700);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("dedups identical content as a hardlink to the first entry", async () => {
     const tarball = await packToTarball(fileSetOf({ "a.txt": "same", "b.txt": "same", "c.txt": "diff" }));
 

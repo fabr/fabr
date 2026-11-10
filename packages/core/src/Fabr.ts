@@ -24,8 +24,11 @@ import { FSFileSource } from "./core/FSFileSource";
 import { IndexedFileSource } from "./core/IndexedFileSource";
 import { FabrError } from "./core/Errors";
 import { refuseNamespaces } from "./core/NamespaceRef";
+import { Dependency, isPackage, Package, ResolvedNode } from "./core/PackageFileSet";
+import { Reference } from "./core/Reference";
 import { ProjectedPackage, Resolved, SourceRef } from "./core/Repository";
-import { ResolvedTarget } from "./context/index";
+import { TargetRef } from "./core/TargetRef";
+import { EXTENDS_KEY, ResolvedRequirements, ResolvedTarget } from "./context/index";
 import { getSourceFileSource, SourceFileSource } from "./core/SourceFileSource";
 import { WatchController } from "./core/WatchController";
 import { BuildContext } from "./context/index";
@@ -35,9 +38,11 @@ import { BuildCycle, ExecutionContext, hostFiles } from "./model/ExecutionContex
 import { reportFailure } from "./model/ErrorFormatter";
 import { coreContribution, ILoadOptions, loadProject } from "./model/Loader";
 import { Constraints } from "./model/Constraints";
+import { builtInProject } from "./model/Target";
 import { SyncSource } from "./rules/BuildSync";
 import { Diagnostic, Log } from "./support/Log";
-import { DESCRIBED_OPERATIONS, DESCRIPTION_FILE, type IDescription } from "./support/Description";
+import { DESCRIBED_OPERATIONS, DESCRIPTION_FILE, type IDescription, toDescription } from "./support/Description";
+import { readJsonFile } from "./support/Json";
 
 const DIAG_WATCH_WARNING = Diagnostic.Warn<{ message: string }>("{message}");
 
@@ -234,6 +239,119 @@ export function testOperation(config: BuildContext, refs: INameValue[]): Computa
   return Computable.forAll(build(config, refs), (...results: SourceRef[][]) => results);
 }
 
+/** A name as written, and what it resolved to. */
+export interface ResolvedName {
+  readonly title: string;
+  readonly resolved: ResolvedRequirements;
+}
+
+/** A source among what a target requires, with where it was required. */
+export interface RequiredSource {
+  /** The target whose rule requires it: the target itself, or what its rule
+   * builds under the target's own name. */
+  readonly part: ResolvedTarget;
+  /** The requirement it is among. */
+  readonly requirement: string;
+  readonly source: Resolved;
+  /** The reference it was resolved for, where it was resolved for one. */
+  readonly reference: Reference | undefined;
+}
+
+/**
+ * List what `target` requires: the sources among its rule's requirements, and
+ * among the requirements of what its rule builds under the target's own name
+ * (a rule block's result, the target under another operation), which is part
+ * of the target, not something it requires. `parts` are the targets walked,
+ * `target` first. Each source is listed once: the copies of one node (each
+ * part reads its own) by their content key, a reference to a target by what
+ * it names.
+ */
+export function requiredSources(target: ResolvedTarget): { parts: ResolvedTarget[]; required: RequiredSource[] } {
+  const parts: ResolvedTarget[] = [];
+  const required: RequiredSource[] = [];
+  const seen = new Set<unknown>();
+  const first = (source: Resolved): boolean => {
+    const identity =
+      source instanceof TargetRef
+        ? [source.toString(), ...source.projections.map(({ pattern, prefix }) => `${prefix} ${pattern.toString()}`)].join(":")
+        : source instanceof ResolvedNode
+          ? source.content.key
+          : source;
+    if (seen.has(identity)) {
+      return false;
+    }
+    seen.add(identity);
+    return true;
+  };
+  const walk = (part: ResolvedTarget): void => {
+    parts.push(part);
+    for (const [requirement, sources] of part.resolved.sources) {
+      const references = part.resolved.references.get(requirement) ?? [];
+      sources.forEach((source, at) => {
+        if (source instanceof ResolvedNode && source.content.builds === target.content.builds) {
+          if (source instanceof ResolvedTarget && !parts.includes(source)) {
+            walk(source);
+          }
+          return;
+        }
+        if (first(source)) {
+          required.push({ part, requirement, source, reference: references[at] });
+        }
+      });
+    }
+  };
+  walk(target);
+  return { parts, required };
+}
+
+/** List the edges to the packages among `sources`, each with the reference it
+ * was resolved for (aligned with `sources`). */
+export function edgesOf(sources: ReadonlyArray<Resolved>, references: ReadonlyArray<Reference | undefined>): Dependency[] {
+  return sources.flatMap((source, at): Dependency[] => {
+    const reference = references[at];
+    return isPackage(source) && reference !== undefined ? [{ reference, package: source }] : [];
+  });
+}
+
+/**
+ * List the edges a name's dependencies start from: for one target, the
+ * packages among what it requires ({@link requiredSources}); for anything
+ * else, the packages among what the name denotes.
+ */
+export function rootEdges(resolved: ResolvedRequirements): Dependency[] {
+  const [only] = resolved.denoted;
+  if (resolved.denoted.length === 1 && only instanceof ResolvedTarget) {
+    const { required } = requiredSources(only);
+    return edgesOf(
+      required.map(each => each.source),
+      required.map(each => each.reference)
+    );
+  }
+  return edgesOf(resolved.denoted, resolved.references.get("") ?? []);
+}
+
+/**
+ * @return the registry package the target `pkg` is made from, where it
+ * `extends` exactly one, directly or through targets that each extend exactly
+ * one, with the advisories those targets declare their builds fix; otherwise
+ * undefined.
+ */
+export function madeFrom(pkg: Package): { readonly from: Package; readonly fixes: ReadonlyArray<string> } | undefined {
+  if (!(pkg instanceof ResolvedTarget)) {
+    return undefined;
+  }
+  const sources = pkg.resolved.sources.get(EXTENDS_KEY) ?? [];
+  const [only] = sources;
+  if (sources.length !== 1 || !isPackage(only)) {
+    return undefined;
+  }
+  if (!builtInProject(only.origin)) {
+    return { from: only, fixes: pkg.resolved.fixes };
+  }
+  const inner = madeFrom(only);
+  return inner === undefined ? undefined : { from: inner.from, fixes: [...pkg.resolved.fixes, ...inner.fixes] };
+}
+
 /** A target of a project as it is described, under one of the operations it is described under. */
 export interface IDescribingTarget {
   name: string;
@@ -284,7 +402,7 @@ export function describeOperation(
                 : Computable.forAll([execution.buildCache.ensureTree(tree), tree.get(DESCRIPTION_FILE)], (directory, file) =>
                     file === undefined
                       ? undefined
-                      : file.getBuffer().then(buffer => ({ directory, description: JSON.parse(buffer.toString("utf8")) as IDescription }))
+                      : readJsonFile(file, toDescription).then(description => ({ directory, description }))
                   )
             ),
         })

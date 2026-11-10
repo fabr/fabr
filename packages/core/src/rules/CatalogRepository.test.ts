@@ -52,7 +52,7 @@ import { IContentPackage, PackageFormat } from "../resolver/PackageFormat";
 import { requestedConstraint, resolveBarePackage, vendPackageRef } from "../resolver/PackageResolver";
 import { RepositoryReader, Resolved, SourceRef } from "../core/Repository";
 import { expect } from "chai";
-import { madeFrom } from "../Audit";
+import { madeFrom } from "../Fabr";
 
 /** Group what `resolved` requires by name: a target's requirements, and
  * anything else as itself under no name, the shape `fabr deps` prints. */
@@ -2261,7 +2261,8 @@ describe("CatalogRepository (through the model)", () => {
       const message = await outcomeOf(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a")));
       expect(message).to.contain("Resolution requires multiple versions of the same package:");
       /* Both versions are the catalog's, arriving as pins of the batch. */
-      expect(message).to.contain("pinned by '@cat:");
+      expect(message).to.contain("'1.0.0' pinned by '@cat:p'");
+      expect(message).to.contain("'2.0.0' pinned by '@cat:q'");
       expect(message).to.contain("required z versions: 1.0.0, 2.0.0");
       model = build(source(" @backing:z:1.0.0?"));
       requires();
@@ -2302,6 +2303,21 @@ describe("CatalogRepository (through the model)", () => {
       model = build(source(" @backing:baz:1.3.0?"));
       requires();
       expect(await outcomeOf(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a")))).to.equal("");
+    });
+
+    it("refuses two catalogs whose selections of one package differ, each reached through two members", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "catalog @one { deps = @backing:foo:1.0.0 @backing:foo2:1.0.0 @backing:baz:1.2.0; }\n" +
+          "catalog @two { deps = @backing:bar:1.0.0 @backing:bar2:1.0.0 @backing:baz:1.3.0; }\n" +
+          "test_deps a { deps = @one:foo @one:foo2 @two:bar @two:bar2; }\n"
+      );
+      for (const pkg of ["foo", "foo2", "bar", "bar2"]) {
+        requirementTable.set(`${pkg}@1.0.0`, [{ name: "baz", versionConstraint: "^1.0.0" }]);
+      }
+      const message = await outcomeOf(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a")));
+      expect(message).to.contain("Resolution requires multiple versions of the same package:");
+      expect(message).to.contain("baz is required at 1.2.0 and 1.3.0");
     });
 
     it("takes one catalog's own sanction of its fork with the fork", async () => {
@@ -2577,6 +2593,45 @@ describe("CatalogRepository (through the model)", () => {
       scriptTexts.set("edit", "read line < foo/data.txt\nprintf '%s, then edited' \"$line\" > foo/data.txt\n");
       await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       expect(await text(lastDepSets[0], "foo/data.txt")).to.equal("foo, patched, then edited");
+    });
+
+    it("refuses a capture named like a file it leaves, naming the redirect", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_sh edit { }\n" +
+          "patched foo { srcs = @backing:foo; run = edit > foo/data.txt; }\n" +
+          "test_deps a { deps = foo; }\n"
+      );
+      scriptTexts.set("edit", "/bin/ls -A\n");
+      const err = await model
+        .getConfig(Constraints.of({}), execution)
+        .materialize(writtenOnCommandLine("a"))
+        .then(
+          () => undefined,
+          (error: unknown) => error
+        );
+      expect(messagesOf(err).join("\n")).to.contain('the redirect "> foo/data.txt"');
+    });
+
+    it("stages its sandbox as its step runs: the files patched where its command runs, the command beside them", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_patch fix { }\n" +
+          "test_sh edit { }\n" +
+          "patched foo { srcs = @backing:foo; patches = fix; run = edit; }\n"
+      );
+      patchTexts.set("fix", rewrite("foo", "foo, patched"));
+      scriptTexts.set("edit", "/bin/ls -A\n");
+      const action = await model.getConfig(Constraints.of({}), execution).getAction(writtenOnCommandLine("foo"));
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-patched-stage-"));
+      try {
+        const staged = await action!.step.stage!(action!, dir, files => execution.buildCache.ensureTree(files));
+        expect(staged.cwd).to.equal("files");
+        expect(staged.commands).to.have.lengthOf(1);
+        expect(fs.readFileSync(path.join(dir, "files", "foo", "data.txt"), "utf8")).to.equal("foo, patched");
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
     });
 
     it("is refused with neither patches nor a command", async () => {

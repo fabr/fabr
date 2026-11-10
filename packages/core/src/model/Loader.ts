@@ -253,13 +253,15 @@ class ProjectLoader {
    */
   private round(previous: Round[], roots: string[], fromPlugin: boolean): Computable<BuildModel> {
     return this.walk(roots).then(files => {
-      const model = this.modelOf([...previous, { files, fromPlugin, plugins: [], optionalLibs: [] }]);
+      const rounds: Round[] = [...previous, { files, fromPlugin, plugins: [], optionalLibs: [] }];
+      const model = this.modelOf(rounds);
       const ready = model.pendingPlugins().flatMap(decl => {
-        const match = model.getPrefixMatch(decl.name);
+        const match = model.getPrefixMatch(decl.name, decl.source.file);
         return match === undefined ? [] : [{ decl, match }];
       });
       const optionalLibs = model.pendingOptionalLibs().flatMap(decl => this.optionalLibsOf(model, decl));
       if (ready.length === 0 && optionalLibs.length === 0) {
+        this.forgetLibs(rounds);
         return model.finish();
       }
       return Computable.forAll(
@@ -434,6 +436,16 @@ class ProjectLoader {
       notes: includeChain(this.includeSites, include),
     });
     return { files: [], errors: 1 };
+  }
+
+  /** Forget the libs of each `fabr_plugin` target no file of `rounds`, a whole load's, declares. */
+  private forgetLibs(rounds: Round[]): void {
+    const declared = new Set<unknown>(rounds.flatMap(({ files }) => files.flatMap(({ decls }) => [...decls.targets, ...decls.defaults])));
+    for (const target of [...this.libs.keys()]) {
+      if (!declared.has(target)) {
+        this.libs.delete(target);
+      }
+    }
   }
 
   /** Resolve the `libs` or `optional_libs`, `property`, of the `fabr_plugin` target `target`, as includes of the file declaring it. */

@@ -26,12 +26,12 @@ import { ISourceSpan } from "./Log";
  * run of one tool: its rules (what can be found) and its results (what was),
  * each result located in a source file where it has a place.
  */
-export const SARIF_SCHEMA = "https://json.schemastore.org/sarif-2.1.0.json";
+const SARIF_SCHEMA = "https://json.schemastore.org/sarif-2.1.0.json";
 
 /** The base a result's `uri` is relative to: the root of the source tree, as code-scanning services name it. */
 export const SARIF_SOURCE_ROOT = "%SRCROOT%";
 
-export type SarifLevel = "none" | "note" | "warning" | "error";
+type SarifLevel = "none" | "note" | "warning" | "error";
 
 export interface ISarifMessage {
   text: string;
@@ -46,7 +46,7 @@ export interface ISarifRule {
   properties?: Record<string, unknown>;
 }
 
-export interface ISarifRegion {
+interface ISarifRegion {
   startLine: number;
   startColumn?: number;
   endLine?: number;
@@ -74,14 +74,14 @@ export interface ISarifResult {
   properties?: Record<string, unknown>;
 }
 
-export interface ISarifTool {
+interface ISarifTool {
   name: string;
   version?: string;
   informationUri?: string;
   rules: ISarifRule[];
 }
 
-export interface ISarifRun {
+interface ISarifRun {
   tool: { driver: ISarifTool };
   results: ISarifResult[];
   /** What the run covered, as the tool describes it. */

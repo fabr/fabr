@@ -70,6 +70,31 @@ describe("Unpack", () => {
     fs.rmSync(cacheDir, { recursive: true, force: true });
   });
 
+  /** Run `body` with this process's work tree unwritable, so every spool the cache opens fails. */
+  async function withFailingSpool(body: () => Promise<void>): Promise<void> {
+    const work = path.join(cacheDir, "work");
+    const own = path.join(work, fs.readdirSync(work).find(name => name.endsWith(`-${process.pid}`))!);
+    fs.chmodSync(own, 0o500);
+    try {
+      await body();
+    } finally {
+      fs.chmodSync(own, 0o700);
+    }
+  }
+
+  it("rejects (rather than hanging) when the spool a tar entry is written to fails", async () => {
+    const pack = new TarPack();
+    pack.entry({ name: "package/big.bin" }, crypto.randomBytes(512 * 1024));
+    pack.finalize();
+    await withFailingSpool(async () => {
+      const failure = await withTimeout(unpackStream(pack, createOutput)).then(
+        () => "",
+        (err: NodeJS.ErrnoException) => err.code ?? err.message
+      );
+      expect(failure).to.equal("EACCES");
+    });
+  });
+
   it("tar.gz", async () => {
     const input = Buffer.from(
       `H4sICKfHJGYAA3Rlc3QudGFyAO2UzY6bMBDHc85ToBz2VJuvAKs97aFSLz30CVI54A1OwFges2pU
@@ -445,6 +470,17 @@ describe("Unpack", () => {
         (err: Error) => err.message
       );
       expect(failure).to.equal("connection dropped");
+    });
+
+    it("rejects (rather than hanging) when the spool the archive is written to fails", async () => {
+      const zip = handZip([{ name: "a.bin", content: crypto.randomBytes(512 * 1024).toString("latin1"), stored: true }]);
+      await withFailingSpool(async () => {
+        const failure = await withTimeout(unpackStream(chunked(zip, 16 * 1024), createOutput)).then(
+          () => "",
+          (err: NodeJS.ErrnoException) => err.code ?? err.message
+        );
+        expect(failure).to.equal("EACCES");
+      });
     });
 
     it("reads one member, passing over the rest", async () => {

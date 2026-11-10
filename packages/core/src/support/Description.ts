@@ -35,6 +35,8 @@ import { MemoryFile } from "../core/MemoryFS";
 import type { ResolvedRequirements } from "../context/Collection";
 import { TargetRef } from "../core/TargetRef";
 import type { TargetContext } from "../context/TargetContext";
+import { FabrError } from "../core/Errors";
+import { isJsonObject } from "./Json";
 
 /** The name a target's description has among its `describe` result's files. */
 export const DESCRIPTION_FILE = "describe.json";
@@ -181,6 +183,55 @@ export function describeTarget(context: TargetContext, requirements: ResolvedReq
       ...(options.javacOptions === undefined ? {} : { javacOptions: options.javacOptions }),
     };
   });
+}
+
+/** @return true if `value` is an array of strings, otherwise false. */
+function isStrings(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(each => typeof each === "string");
+}
+
+/** @return true if `value` is an array of objects each with a string `uri`, otherwise false. */
+function isIdentifiers(value: unknown): value is IBuildTargetIdentifier[] {
+  return Array.isArray(value) && value.every(each => isJsonObject(each) && typeof each.uri === "string");
+}
+
+/** Convert a description as a `describe` result's {@link DESCRIPTION_FILE} holds it. */
+export function toDescription(json: unknown): IDescription {
+  if (!isJsonObject(json) || !isJsonObject(json.target)) {
+    throw new FabrError("expected a description with a target");
+  }
+  const target = json.target;
+  const capabilities = target.capabilities;
+  if (
+    !isIdentifiers([target.id]) ||
+    typeof target.displayName !== "string" ||
+    (target.baseDirectory !== undefined && typeof target.baseDirectory !== "string") ||
+    !isStrings(target.tags) ||
+    !isStrings(target.languageIds) ||
+    !isIdentifiers(target.dependencies) ||
+    !isJsonObject(capabilities) ||
+    !["canCompile", "canTest", "canRun", "canDebug"].every(key => typeof capabilities[key] === "boolean") ||
+    (target.dataKind !== undefined && typeof target.dataKind !== "string")
+  ) {
+    throw new FabrError("expected a description's target to be a BSP build target");
+  }
+  if (
+    !Array.isArray(json.sources) ||
+    !json.sources.every(each => isJsonObject(each) && typeof each.uri === "string" && (each.kind === 1 || each.kind === 2) && typeof each.generated === "boolean")
+  ) {
+    throw new FabrError("expected a description's sources to be BSP source items");
+  }
+  if (!isStrings(json.roots)) {
+    throw new FabrError("expected a description's roots to be strings");
+  }
+  const javac = json.javacOptions;
+  if (
+    javac !== undefined &&
+    !(isJsonObject(javac) && isStrings(javac.options) && isStrings(javac.classpath) && typeof javac.classDirectory === "string")
+  ) {
+    throw new FabrError("expected a description's javacOptions to be BSP javac options");
+  }
+  return json as unknown as IDescription;
 }
 
 /** @return `description` as the file a `describe` result holds it in. */

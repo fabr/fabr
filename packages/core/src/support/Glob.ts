@@ -19,12 +19,64 @@
 
 import picomatch from "picomatch";
 
-/** The glob metacharacters: a name holding none is a literal. */
-export const GLOB_METACHAR = /[*?[]/;
+/** The glob metacharacters, an extglob group's leader among them (`!(`, `@(`, `+(`): a name holding none is a literal. */
+export const GLOB_METACHAR = /[*?[]|[!@+]\(/;
 
 /** @return true if `text` holds a glob metacharacter, otherwise false. */
 export function isGlob(text: string): boolean {
   return GLOB_METACHAR.test(text);
+}
+
+/** The POSIX classes a bracket expression may name, as regex class contents. */
+export const POSIX_CLASSES: ReadonlyMap<string, string> = new Map([
+  ["alnum", "A-Za-z0-9"],
+  ["alpha", "A-Za-z"],
+  ["blank", " \\t"],
+  ["cntrl", "\\x00-\\x1f\\x7f"],
+  ["digit", "0-9"],
+  ["graph", "!-~"],
+  ["lower", "a-z"],
+  ["print", " -~"],
+  ["punct", "!-\\/:-@\\[-`{-~"],
+  ["space", " \\t\\n\\r\\f\\v"],
+  ["upper", "A-Z"],
+  ["xdigit", "0-9A-Fa-f"],
+]);
+
+/** A bracket expression's member as written: a character, or a POSIX class (`[:digit:]`) by name. */
+export type BracketMember = { readonly char: string } | { readonly posixClass: string };
+
+/**
+ * Read the bracket expression opening at `open`: whether `!` or `^` negates it,
+ * its members, and the index of its closing `]`, or undefined where it has none.
+ * A `]` first in the expression (after any `!` or `^`) is a member, as in bash;
+ * a `\` quotes the character after it; `[:name:]` names one of {@link POSIX_CLASSES}.
+ */
+export function readBracketExpression(text: string, open: number): { negated: boolean; members: BracketMember[]; end: number } | undefined {
+  let i = open + 1;
+  let negated = false;
+  if (text[i] === "!" || text[i] === "^") {
+    negated = true;
+    i++;
+  }
+  const members: BracketMember[] = [];
+  for (let first = true; i < text.length; i++, first = false) {
+    const ch = text[i];
+    if (ch === "]" && !first) {
+      return { negated, members, end: i };
+    }
+    if (ch === "[" && text[i + 1] === ":") {
+      const close = text.indexOf(":]", i + 2);
+      const name = close === -1 ? undefined : text.slice(i + 2, close);
+      if (name !== undefined && POSIX_CLASSES.has(name)) {
+        members.push({ posixClass: name });
+        i = close + 1;
+        continue;
+      }
+    }
+    members.push({ char: ch === "\\" && i + 1 < text.length ? text[++i] : ch });
+  }
+  return undefined;
 }
 
 /** A compiled glob: true iff the given (forward-slash) path matches. */
@@ -210,20 +262,5 @@ function negationGroups(glob: string): INegationGroup[] {
 
 /** @return the index of the `]` closing the class opened at `start`, or `start` where none does. */
 function classEnd(glob: string, start: number): number {
-  let i = start + 1;
-  if (glob[i] === "!" || glob[i] === "^") {
-    i++;
-  }
-  /* A `]` first in the class is one of its members. */
-  if (glob[i] === "]") {
-    i++;
-  }
-  for (; i < glob.length; i++) {
-    if (glob[i] === "\\") {
-      i++;
-    } else if (glob[i] === "]") {
-      return i;
-    }
-  }
-  return start;
+  return readBracketExpression(glob, start)?.end ?? start;
 }

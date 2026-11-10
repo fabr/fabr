@@ -23,7 +23,7 @@ import { SyncSources } from "../context/Collection";
 import { Computable, ComputableSource } from "../core/Computable";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
 import { RepositoryPublishRef, RepositoryWriter, SourceRef } from "../core/Repository";
-import { TargetRef } from "../core/TargetRef";
+import { soleWholeTarget } from "../core/TargetRef";
 import { refuseNamespaces } from "../core/NamespaceRef";
 import { PublishableFileSet } from "../core/PublishableFileSet";
 import { Name, NAME_COMPONENT_SEPARATOR, NAME_LEVEL_SEPARATOR } from "../core/Name";
@@ -137,7 +137,7 @@ export function publishOrder(carriers: ReadonlyArray<PublishableFileSet>): Publi
  *
  * Being a namespace rather than one flat FileSet is what makes those names mean
  * the same thing under every operation: there is no separate `files` view to
- * disagree with the build (see {@link syncRule}).
+ * disagree with the build (see the `sync` rule, this module's default export).
  */
 export class SyncSource implements FileSource {
   /** Coordinate (slash form) -> the carrier, packaged at most once however many
@@ -298,8 +298,8 @@ export class SyncSource implements FileSource {
       (...contents: SourceRef[][]) => {
         const targets = new Map<string, RepositoryPublishRef[]>();
         contents.forEach((sources, index) => {
-          const [only] = sources;
-          if (sources.length === 1 && only instanceof TargetRef && only.whole) {
+          const only = soleWholeTarget(sources);
+          if (only !== undefined) {
             targets.set(only.name, [...(targets.get(only.name) ?? []), members[index].assigned]);
           }
         });
@@ -372,8 +372,7 @@ function attachmentsOf(context: TargetContext, declared: Map<string, Member>): C
     (...contents: SourceRef[][]) => {
       const table = new Map(declared);
       all.forEach((member, index) => {
-        const [only] = contents[index];
-        const target = contents[index].length === 1 && only instanceof TargetRef && only.whole ? only.name : undefined;
+        const target = soleWholeTarget(contents[index])?.name;
         for (const { destination, operation } of member.assigned.source.attachments?.(member.assigned) ?? []) {
           const path = memberPath(destination.toString());
           if (target !== undefined && !table.has(path) && context.hasTargetRule(target, operation)) {

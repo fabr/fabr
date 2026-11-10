@@ -353,7 +353,7 @@ rule js_package pkg<BUILD_OPERATION=sources> = contents<BUILD_OPERATION=build> {
 #       srcs = src:**/*.ts @npm:lodash:4.17.21;
 #     }
 #
-# The module format and platform follow `JS_TARGET`. `release` and
+# The platform follows `JS_TARGET`, and the module format `JS_BUNDLE_FORMAT`. `release` and
 # `relwithdebinfo` builds are minified; `debug` and `relwithdebinfo` builds have
 # source maps.
 #
@@ -369,8 +369,9 @@ targetdef js_bundle {
     deps = PACKAGES;
     # Renames for the output files. An entry is named `<name>-[hash].js`, chunks
     # `chunks/[name]-[hash].js` and assets `[name]-[hash].[ext]`, their
-    # placeholders filled in by esbuild: `*-*.js -> $1.$2.min.js`, or
-    # `*-*.js -> $1.js` to drop the hash. All entries share one pattern.
+    # placeholders filled in by esbuild after the rename, so it matches them
+    # as written: `*-'[hash]'.js -> $1.'[hash]'.min.js`, or
+    # `*-'[hash]'.js -> $1.js` to drop the hash. All entries share one pattern.
     output = REWRITE;
     # Constants to substitute at compile time (esbuild's `define`). Each value
     # is JavaScript source text, so a string needs its own quotes:

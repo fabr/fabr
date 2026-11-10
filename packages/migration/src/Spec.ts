@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { parseConstraint, SemverConstraint, SemverVersion } from "@fabr-build/core";
+import { compareVersions, parseConstraint, SemverConstraint, SemverVersion } from "@fabr-build/core";
 
 /** A dependency spec as a package manager reads it. */
 export type Spec =
@@ -81,11 +81,7 @@ export function parseSpec(name: string, text: string): Spec {
 
 /** @return the lowest version `constraint` admits: its least lower bound. */
 export function floorOf(constraint: SemverConstraint): SemverVersion {
-  return constraint.ranges.map(range => range.min).reduce((low, each) => (compareSemver(each, low) < 0 ? each : low));
-}
-
-function compareSemver(a: SemverVersion, b: SemverVersion): number {
-  return a.major - b.major || a.minor - b.minor || a.patch - b.patch;
+  return constraint.ranges.map(range => range.min).reduce((low, each) => (compareVersions(each, low) < 0 ? each : low));
 }
 
 /** @return true if `range` has no lower bound (`*`, `<4.1.0`), otherwise false. */

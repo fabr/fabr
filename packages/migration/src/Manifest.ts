@@ -23,7 +23,7 @@ import { isJsonObject, parseJson, toJsonObject } from "@fabr-build/core";
 
 /** The dependency blocks of a `package.json` this tool reads. */
 export const DEPENDENCY_BLOCKS = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"] as const;
-export type DependencyBlock = (typeof DEPENDENCY_BLOCKS)[number];
+type DependencyBlock = (typeof DEPENDENCY_BLOCKS)[number];
 
 /** A `package.json` of the project: the root's or a workspace package's. */
 export interface Manifest {

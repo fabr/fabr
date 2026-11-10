@@ -44,7 +44,7 @@ import { findExecutable } from "../support/Execute";
 import type { TargetContext } from "../context/index";
 import { RepositoryRegistration } from "./Types";
 
-export const HOST_PROGRAM_PROVENANCE = "host-program";
+const HOST_PROGRAM_PROVENANCE = "host-program";
 
 /** A program of the host, and where it was found. */
 interface IHostProgramOrigin extends IProvenanceStep {
@@ -79,7 +79,11 @@ export class HostSearchPathRepository implements Repository, RepositoryLookup {
         "write the reference without the marker"
       );
     }
-    if (name.hasGlob() || command.length === 0 || command.includes(":") || (command.includes("/") && !path.isAbsolute(command))) {
+    /* On Windows a drive's `:` is part of an absolute path, and `\` separates its parts; any other `:` names no program. */
+    const windows = process.platform === "win32";
+    const drive = windows && /^[A-Za-z]:[\\/]/.test(command) ? 2 : 0;
+    const isPath = command.includes("/") || (windows && command.includes("\\"));
+    if (name.hasGlob() || command.length === 0 || command.includes(":", drive) || (isPath && !path.isAbsolute(command))) {
       throw new FabrError(`'${name.toString()}' is not the name of a program`).withHelp(
         "name a program as a shell runs it, as in '@host:clang', or by its absolute path"
       );
@@ -117,11 +121,11 @@ export class HostSearchPathRepository implements Repository, RepositoryLookup {
 
 /** @return the command a program named `name` is run as: its name, or the last part of its path. */
 function commandOf(name: string): string {
-  return path.posix.basename(name);
+  return path.basename(name);
 }
 
 /** @return the registration of the `host_searchpath` repository type. */
-export function hostSearchPathRegistration(): RepositoryRegistration {
+function hostSearchPathRegistration(): RepositoryRegistration {
   return {
     type: "host_searchpath",
     provider: (context: TargetContext) =>

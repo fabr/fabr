@@ -31,6 +31,20 @@ still reports non-zero exit code with failures.
 - Fix: A test whose sources import a JSON file listed among its deps no longer fails on the compiled copy conflicting with it.
 - Negative extglobs can now match multiple paths eg !(foo/bar)/**
 - Add support for separate build + runtime resolution.
+- Fix: a tool (a command's runnable, a `*_DRIVER` global, Java's annotation processors and JaCoCo) is resolved for `run`, so it gets its runtime-only dependencies.
+- Fix: a build whose configuration names a reference holding an `@` (`-Dchai=@npm:chai:5.0.0`) no longer loses its dependencies in resolution.
+- Fix: two catalogs whose selections of one package differ are refused when the consumer uses two members of each.
+- Fix: a tar archive whose directory entry states a size no longer loses the entries after it.
+- Fix: a name holding an extglob group (`@(a|b)`, `+(…)`, `!(…)`) is read as a pattern, in a reference and on the command line.
+- Fix: a failed write into the cache (a full disk) fails the download or unpack rather than leaving it waiting.
+- An environment entry with no `=` is an error naming it.
+- Fix: `fabr audit` and `fabr sbom` of a target under another operation (`app<BUILD_OPERATION=run>`) report what its build requires, as `fabr deps` shows it.
+- Fix: a bill of materials names a licence by its SPDX id only where the SPDX licence list has it (`UNLICENSED` is a name).
+- Fix: `fabr audit` reads fixed versions from an advisory's version ranges only, not its commit ranges, and warns of a `fixes` on a target made from no registry package.
+- Fix: `--trace` is accepted after the target too (`fabr app --trace`); under watch each cycle is added to the trace rather than the file rewritten.
+- Fix: `fabr shell` opens the sandbox of a `patched` target, its patches applied; a `run` capture named like a file it leaves is reported naming the redirect.
+- `list-targets` of a private name says which file it is private to.
+- `default private …` and `default repository …`, a rule guard naming no property (`pkg<pkg.=x>`) and a target-body splice of anything but a plain name are errors.
 
 @fabr-build/aws:
 - Add s3 download support.
@@ -55,6 +69,7 @@ still reports non-zero exit code with failures.
 - Move bundling format out to a new property JS_BUNDLE_FORMAT (with target defaults)
 - Add bundle splitting + metafile support.
 - Support renaming bundled chunks + assets.
+- Breaking: Name bundle entries by their content, `<stem>-[hash].js` (so `bundle:main.js` becomes `bundle:main-*.js`); rename them with `output`, eg `*-'[hash]'.js -> $1.js` to drop the hash.
 - dom dependency includes dom.iterator as well (for TS5.x, no effect on TS6.x)
 - Handle node: imports in browser bundling (strip off the node:)
 - Fix packages in both srcs + deps being left unbundled.
@@ -69,10 +84,13 @@ still reports non-zero exit code with failures.
 - Test processes end once their report is written, rather than waiting on what the tests left running.
 - Incremental test compilation and execution.
 - Support pnp for test execution.
+- Fix jest's `resetModules`/`isolateModules` not reloading packages under layout/pnp, and never reloading jest's own libraries.
+- Fix a `{virtual: true}` jest mock of a relative path not answering an `import()` of it.
+- Fix `enableAutomock` automocking `node:`-prefixed core modules.
+- Fix a test file reading a package that imports itself by name being run again on every change.
 
 @fabr-build/vscode-ext:
 - New VSCode extension.
-- Highlight single-quoted strings, and quoted strings across the lines they span.
 
 ## Fabr 0.3.1
 @fabr-build/core:

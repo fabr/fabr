@@ -17,9 +17,8 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { Computable, FabrError, FileSet, HostLink, IFile, MemoryFile, RunnableArgument, RunnableFileSet, Semaphore } from "@fabr-build/core";
+import { Computable, FabrError, FileSet, HostLink, hostEnvironment, IFile, MemoryFile, RunnableArgument, RunnableFileSet, Semaphore } from "@fabr-build/core";
 import { ownerHost, reapContainers } from "./Containers";
-import { hostEnvironment } from "./HostEnvironment";
 import { ImageFileSet } from "./ImageFileSet";
 import { imageLayout, manifestOf } from "./OciLayout";
 

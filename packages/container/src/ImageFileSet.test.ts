@@ -21,20 +21,30 @@ import { gunzipSync } from "zlib";
 import { createHash } from "crypto";
 import { expect } from "chai";
 import { FileSet, IFile, MemoryFile, packToTarball, SymlinkFile } from "@fabr-build/core";
-import { ImageFileSet, imageOfRecords, libcOf } from "./ImageFileSet";
+import { ILayerRecord, ImageFileSet, imageOfRecords, libcOf } from "./ImageFileSet";
 import { indexLayer, ILayerIndex } from "./LayerIndex";
 import { imageLayout } from "./OciLayout";
 import { toImageConfig } from "./OciProtocol";
 
-/** Make an image of one layer holding `files`. */
-async function imageOf(files: Record<string, string | SymlinkFile>): Promise<ImageFileSet> {
+/** Make a layer holding `files`, files of the same content packed as hardlinks to the first. */
+async function layerOf(files: Record<string, string | SymlinkFile>): Promise<ILayerRecord> {
   const set = new FileSet(new Map<string, IFile>(Object.entries(files).map(([name, content]) => [name, typeof content === "string" ? MemoryFile.from(content) : content])));
   const tar = gunzipSync(await Promise.resolve(packToTarball(set)));
   const { sink, result } = indexLayer();
   await new Promise<void>((resolve, reject) => sink.on("finish", resolve).on("error", reject).end(tar));
   const index: ILayerIndex = result();
-  const config = toImageConfig({ architecture: "amd64", os: "linux", rootfs: { type: "layers", diff_ids: [index.diffId] } });
-  return ImageFileSet.of(config, [{ tar: new MemoryFile(tar), index, indexFile: MemoryFile.from(JSON.stringify(index)) }], "img");
+  return { tar: new MemoryFile(tar), index, indexFile: MemoryFile.from(JSON.stringify(index)) };
+}
+
+/** Make an image of `layers`, lowest first. */
+function imageOfLayers(layers: ILayerRecord[]): ImageFileSet {
+  const config = toImageConfig({ architecture: "amd64", os: "linux", rootfs: { type: "layers", diff_ids: layers.map(layer => layer.index.diffId) } });
+  return ImageFileSet.of(config, layers, "img");
+}
+
+/** Make an image of one layer holding `files`. */
+async function imageOf(files: Record<string, string | SymlinkFile>): Promise<ImageFileSet> {
+  return imageOfLayers([await layerOf(files)]);
 }
 
 describe("ImageFileSet", () => {
@@ -52,6 +62,17 @@ describe("ImageFileSet", () => {
     expect(stamped).to.be.instanceOf(ImageFileSet);
     expect((stamped as ImageFileSet).layers).to.equal(image.layers);
     expect(image.withPackageName("other")).to.be.instanceOf(ImageFileSet);
+  });
+
+  it("reads a hardlink as its target is where its layer applies, whatever a later layer does to the target", async () => {
+    const linked = await layerOf({ "bin/a": "x", "bin/b": "x" });
+    expect(linked.index.entries.find(entry => entry.path === "bin/b")?.type).to.equal("hardlink");
+    const replaced = imageOfLayers([linked, await layerOf({ "bin/a": "y" })]);
+    expect(await replaced.readFile("bin/a")).to.equal("y");
+    expect(await replaced.readFile("bin/b")).to.equal("x");
+    const removed = imageOfLayers([linked, await layerOf({ "bin/.wh.a": "" })]);
+    expect([...removed].map(([name]) => name)).to.deep.equal(["bin/b"]);
+    expect(await removed.readFile("bin/b")).to.equal("x");
   });
 
   it("finds the C library an image has from its dynamic loader", async () => {

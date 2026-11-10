@@ -51,7 +51,11 @@ function tracer(): { writer: TraceWriter; tick: (ms: number) => void; read: () =
   return {
     writer,
     tick: ms => (clock += ms),
-    read: () => (JSON.parse(fs.readFileSync(file, "utf8")) as ITraced[]).filter(event => event.ph !== "M"),
+    /* A trace not yet finished lacks its closing `]`, as the format allows. */
+    read: () => {
+      const text = fs.readFileSync(file, "utf8").trimEnd();
+      return (JSON.parse(text.endsWith("]") ? text : `${text}\n]`) as ITraced[]).filter(event => event.ph !== "M");
+    },
     send: event => writer.buildListener(event),
   };
 }
@@ -118,6 +122,23 @@ describe("TraceWriter", () => {
     expect(run[0].args).to.deep.equal({ passed: 3, failed: 1 });
     /* The cycle's end wrote the file, and is in it as an instant. */
     expect(events.filter(event => event.ph === "i").map(event => event.name)).to.deep.equal(["cycle 0 end"]);
+  });
+
+  it("appends each cycle's events at its end, and closes the array when finished", () => {
+    const { tick, read, send, writer } = tracer();
+    send({ kind: "task-start", id: 1, task: building("a"), state: "running" });
+    tick(1);
+    send({ kind: "task-end", id: 1, task: building("a"), failed: false });
+    send({ kind: "cycle-end", cycle: 0, failed: false, built: ["a"] });
+    expect(read().map(event => event.name)).to.deep.equal(["Building a", "cycle 0 end"]);
+    send({ kind: "cycle-start", cycle: 1 });
+    send({ kind: "task-start", id: 2, task: building("b"), state: "running" });
+    tick(1);
+    send({ kind: "task-end", id: 2, task: building("b"), failed: false });
+    send({ kind: "cycle-end", cycle: 1, failed: false, built: ["b"] });
+    expect(read().map(event => event.name)).to.deep.equal(["Building a", "cycle 0 end", "cycle 1 start", "Building b", "cycle 1 end"]);
+    writer.write();
+    expect(read()).to.have.lengthOf(5);
   });
 
   it("writes a task still open as an unfinished span to now", () => {

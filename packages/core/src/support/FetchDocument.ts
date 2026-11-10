@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { Readable } from "stream";
+import { finished, Readable } from "stream";
 import { Computable } from "../core/Computable";
 import { FetchOptions, IFetchContext, IFetchRequest } from "../core/BuildCache";
 import type { Credential } from "../core/Credential";
@@ -192,6 +192,8 @@ export function fetchFile(context: CacheFetcher, request: IFileRequest): Computa
         process: (content: Readable, { createOutput }: IFetchContext) => {
           const { stream, verify } = verifiedStream(content, expected, url);
           const output = createOutput();
+          /* A failed write ends the download with its error. */
+          output.stream.once("error", err => content.destroy(err));
           stream.pipe(output.stream, { end: false });
           return streamed(stream)
             .then(
@@ -214,10 +216,9 @@ export function fetchFile(context: CacheFetcher, request: IFileRequest): Computa
   );
 }
 
-/** Settle when a stream has been fully consumed (or failed). */
+/** Settle when a stream has been fully consumed, or has failed or closed before its end. */
 function streamed(stream: NodeJS.ReadableStream): Computable<void> {
   return Computable.from<void>((resolve, reject) => {
-    stream.on("end", () => resolve(undefined));
-    stream.on("error", err => reject(err instanceof Error ? err : new Error(String(err))));
+    finished(stream, { writable: false }, err => (err ? reject(toError(err)) : resolve(undefined)));
   });
 }

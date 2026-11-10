@@ -30,7 +30,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { takeCoverage } from "node:v8";
 import type { ITestReport, ITestResult, ITestSummary } from "@fabr-build/core";
-import { referenceOfEntry, SOURCE_LOCATIONS_FILE } from "../support/SourceMap";
+import { getMapSource, referenceOfEntry, SOURCE_LOCATIONS_FILE } from "../support/SourceMap";
 
 /**
  * The mounts a test installation is laid out under — the compile's own `src/`
@@ -61,7 +61,7 @@ const reportPaths = new Map<string, string>();
 export function reportPathOf(file: string): string {
   let name = reportPaths.get(file);
   if (name === undefined) {
-    const entry = mapEntryOf(file);
+    const entry = getMapSource(file);
     const reference = entry === undefined ? undefined : referenceOfEntry(entry);
     name =
       reference !== undefined
@@ -85,27 +85,6 @@ function stripMount(relative: string): string {
 }
 
 /**
- * The source a compiled file's own `.js.map` names, as written there: a fabr
- * reference, or a path relative to the map (resolved here, against its
- * `sourceRoot`). Undefined when it cannot be known — no map (a release build
- * emits none), unreadable, or not JSON.
- */
-function mapEntryOf(compiled: string): string | undefined {
-  try {
-    const map = JSON.parse(fs.readFileSync(`${compiled}.map`, "utf8")) as { sources?: string[]; sourceRoot?: string };
-    /* tsc emits one source per output; a `sources` with anything else in it is
-     * not something this can meaningfully name, so take the first or nothing. */
-    const [first] = map.sources ?? [];
-    if (typeof first === "string") {
-      return referenceOfEntry(first) !== undefined ? first : path.resolve(path.dirname(compiled), map.sourceRoot ?? "", first);
-    }
-  } catch {
-    /* Fall through: the caller decides what an unknown source means. */
-  }
-  return undefined;
-}
-
-/**
  * Where the source a compiled file was emitted from is staged, per its own
  * `.js.map`: the path a relative entry resolves to, or for a fabr reference the
  * location the installation records for it ({@link SOURCE_LOCATIONS_FILE}).
@@ -114,7 +93,7 @@ function mapEntryOf(compiled: string): string | undefined {
  * Shared rather than private: the jest flavour reads a test's docblock from it.
  */
 export function sourcePathOf(compiled: string): string | undefined {
-  const entry = mapEntryOf(compiled);
+  const entry = getMapSource(compiled);
   const reference = entry === undefined ? undefined : referenceOfEntry(entry);
   if (reference === undefined) {
     return entry;
@@ -168,7 +147,7 @@ export const SNAPSHOT_EXT = ".snap";
  */
 export function snapshotPathOf(testPath: string): string {
   const dir = path.join(path.dirname(testPath), SNAPSHOT_DIR);
-  const source = mapEntryOf(testPath);
+  const source = getMapSource(testPath);
   if (source !== undefined) {
     return path.join(dir, path.posix.basename(referenceOfEntry(source) ?? source.split(path.sep).join("/")) + SNAPSHOT_EXT);
   }

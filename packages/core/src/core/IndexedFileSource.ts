@@ -20,7 +20,7 @@
 import * as path from "path";
 import { BuildCache } from "./BuildCache";
 import { Computable } from "./Computable";
-import { FSFile, FSFileSource, TreeQuery } from "./FSFileSource";
+import { fileModeOf, FSFile, FSFileSource, TreeQuery } from "./FSFileSource";
 import { hashFileStreamed, hashString, isDirectoryError, isNotFound, readFileBuffer, stat } from "./FSWrapper";
 import { ISourceIndexRow } from "./Manifest";
 import { WatchController } from "./WatchController";
@@ -106,7 +106,7 @@ export class IndexedFileSource extends FSFileSource {
             const mime = sniffMime(bytes);
             this.recordIndexRow(rows, filename, fileStat.size, fileStat.mtimeMs, hash, mime);
             return this.cache
-              .ensureBlob(hash, bytes, fileStat.mode)
+              .ensureBlob(hash, bytes, fileModeOf(fsStat))
               .then(blobPath => new FSFile(this.root, filename, fsStat, hash, mime, blobPath));
           });
         })

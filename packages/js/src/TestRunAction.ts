@@ -59,6 +59,7 @@ import {
   splitDepsPath,
   stringListConfig,
   TaskProgress,
+  variableEntry,
   TEST_REPORT_FILENAME,
   testFailureOf,
   toError,
@@ -88,12 +89,7 @@ const JS_TEST_STEP: IBuildActionDefinition = { id: "js:test-run", version: 9, ru
 
 /** Read the `env` config member, the variables the test processes run with: each written `NAME=value`, a name holding no `=`. */
 function declaredEnv(action: BuildAction): Record<string, string> {
-  return Object.fromEntries(
-    (Array.isArray(action.config.env) ? action.config.env : []).map((entry): [string, string] => {
-      const at = entry.indexOf("=");
-      return [entry.slice(0, at), entry.slice(at + 1)];
-    })
-  );
+  return Object.fromEntries((Array.isArray(action.config.env) ? action.config.env : []).map(variableEntry));
 }
 
 /** Stage the installation as {@link runTests} does, and describe its per-file invocations of the runner. */
@@ -377,11 +373,12 @@ export interface IFilesToRun {
 
 /**
  * @return the test files to run: every one, where nothing is kept to compare
- * with or a file was added or deleted — whether a file exists is not among what
- * a run reports reading, so no record can say whom that reaches — and
- * otherwise each with no kept run, a kept run that failed, a runner that did
- * not say what it read, a read among what changed, or — in a measured run — no
- * kept coverage; and the kept run of every other file.
+ * with or one of the step's own files was added or deleted — whether such a
+ * file exists is not among what a run reports reading, so no record can say
+ * whom that reaches — and otherwise each with no kept run, a kept run that
+ * failed, a runner that did not say what it read, a read or deps row among
+ * what changed, was added or was deleted, or — in a measured run — no kept
+ * coverage; and the kept run of every other file.
  */
 export function filesToRun(
   testFiles: string[],
@@ -389,10 +386,17 @@ export function filesToRun(
   kept: ReadonlyMap<string, IKeptRun> | undefined,
   measured: boolean
 ): IFilesToRun {
-  if (kept === undefined || changes === undefined || changes.added.length > 0 || changes.deleted.length > 0) {
+  if (kept === undefined || changes === undefined) {
     return { rerun: testFiles, reused: new Map() };
   }
-  const changed = new Set(changes.changed);
+  /* A name some kept run recorded among its deps rows is that row; any other
+   * name added or deleted is one of the step's own files. */
+  const rows = new Set([...kept.values()].flatMap(run => [...(run.deps ?? [])]));
+  const ownFile = (name: string): boolean => !rows.has(name);
+  if (changes.added.some(ownFile) || changes.deleted.some(ownFile)) {
+    return { rerun: testFiles, reused: new Map() };
+  }
+  const changed = new Set([...changes.changed, ...changes.added, ...changes.deleted]);
   const reused = new Map<string, IKeptRun>();
   for (const file of testFiles) {
     const run = kept.get(file);
@@ -462,9 +466,9 @@ function invocationReads(index: number): string {
  * run's own files by name, and as deps rows the packages' files read, a probe
  * that found a package's directory itself as the package's manifest, and each
  * package looked up — the binding row of the lookup, the requirer's route
- * then `<name> package.json`, present where the requirer's own edge answered
- * and absent otherwise, and where a direct member answered instead the
- * top-level row too. The runner names a path relative to its working directory,
+ * then `<name> package.json`, present where the requirer's own edge or the
+ * requirer itself (a self-reference) answered and absent otherwise, and where
+ * a direct member answered instead the top-level row too. The runner names a path relative to its working directory,
  * `cwd`. Undefined where the document is unreadable — a process the runner
  * could not follow — or where what was read fits no row: a lookup answered by
  * neither the requirer's own edges nor a direct member (a `node_modules`
@@ -472,7 +476,7 @@ function invocationReads(index: number): string {
  * found a directory within a package (whose presence no file row states); the
  * file is then run again next time and the run is keyed on the whole input.
  */
-function readsOf(document: string, cwd: string, layout: IPackageLayout): { reads: ReadonlySet<string>; deps: ReadonlySet<string> } | undefined {
+export function readsOf(document: string, cwd: string, layout: IPackageLayout): { reads: ReadonlySet<string>; deps: ReadonlySet<string> } | undefined {
   let read: IReadsDocument;
   try {
     read = parseJson(fs.readFileSync(document), document, toReadsDocument);
@@ -509,7 +513,12 @@ function readsOf(document: string, cwd: string, layout: IPackageLayout): { reads
     if (answer === undefined || "file" in answer || answer.package === undefined) {
       continue;
     }
-    const ownEdge = "file" in requirer ? false : requirer.package?.packages.some(dep => dep.packageName === lookup.name) ?? false;
+    /* A package's lookup of itself (a self-reference through its own
+     * `exports`) is answered by the requirer, whose route row is added above. */
+    const ownEdge =
+      "file" in requirer
+        ? false
+        : answer.package === requirer.package || (requirer.package?.packages.some(dep => dep.packageName === lookup.name) ?? false);
     if (ownEdge) {
       continue;
     }

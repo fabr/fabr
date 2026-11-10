@@ -61,12 +61,15 @@
       }
     },
     "keyword-declaration": {
-      "match": "^\\s*(rule|repository|plugin|include)\\b(?:\\s+([A-Za-z_][\\w-]*)(?=\\s+[^\\s=;]))?",
+      "match": "^\\s*(?:(default)\\s+(?=rule\\b))?(rule|repository|plugin|include)\\b(?:\\s+([A-Za-z_][\\w-]*)(?=\\s+[^\\s=;]))?",
       "captures": {
         "1": {
           "name": "keyword.control.fabr"
         },
         "2": {
+          "name": "keyword.control.fabr"
+        },
+        "3": {
           "name": "entity.name.type.fabr"
         }
       }
@@ -225,6 +228,11 @@
         {
           "name": "keyword.operator.rename.fabr",
           "match": "->"
+        },
+        {
+          "name": "string.unquoted.reference.fabr",
+          "comment": "A reference holding an extglob group, whose `|` separates the group's patterns rather than piping.",
+          "match": "(?:[^\\s;{}\"'#`$<|>()]|\\$(?!\\{))*(?<extglob>[!@?+*]\\((?:[^()\\s;{}]|\\g<extglob>)*\\))(?:[^\\s;{}\"'#`$<|>()]|\\$(?!\\{)|\\g<extglob>)*"
         },
         {
           "name": "keyword.operator.pipe.fabr",

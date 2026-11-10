@@ -29,7 +29,7 @@ import { contentStream } from "../core/FSWrapper";
 import { SymlinkFile } from "../core/SymlinkFile";
 import type { IOutputHandle } from "./Execute";
 import { MIME_ZIP } from "./Mime";
-import { ancestorsOf, normalizeEntryName } from "./Paths";
+import { archiveEntryNames, normalizeEntryName } from "./Paths";
 
 export interface ZipOptions {
   /** Names to write before every other entry, in this order (a jar's
@@ -132,11 +132,10 @@ function archiveOf(files: FileSet, options: ZipOptions): Computable<{ zip: yazl.
 
 /** @return the entries of the archive of `files`, in order, a stored entry's content read. */
 function entriesOf(files: FileSet, options: ZipOptions): Computable<ArchiveEntry[]> {
-  const names = [...files].map(([name]) => name);
-  const directories = new Set(names.flatMap(ancestorsOf));
-  const first = (options.first ?? []).filter(name => files.getFile(name) !== undefined);
-  const leading = first.flatMap(name => [...ancestorsOf(name), name]).filter((name, index, all) => all.indexOf(name) === index);
-  const ordered = [...leading, ...[...directories, ...names].filter(name => !leading.includes(name)).sort()];
+  const ordered = archiveEntryNames(
+    [...files].map(([name]) => name),
+    { directories: true, first: (options.first ?? []).filter(name => files.getFile(name) !== undefined) }
+  );
   return mapComputable(ordered, (name): ArchiveEntry | Computable<ArchiveEntry> => {
     if (name.endsWith("/")) {
       return { kind: "directory", name };

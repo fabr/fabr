@@ -27,7 +27,7 @@ import { ResolvedRequirements, ResolvedTarget } from "./context/index";
 import { PackageFormat } from "./resolver/PackageFormat";
 import { IResolutionOrigin, PACKAGE_RESOLUTION_PROVENANCE } from "./resolver/ResolutionProvenance";
 import { NO_CONFLICTS } from "./resolver/StrictCollection";
-import { ResolvedName } from "./Audit";
+import { ResolvedName } from "./Fabr";
 import { cycloneDxHash, cycloneDxLicense, cycloneDxNaming, sbom } from "./Sbom";
 
 /** A format whose purls are `pkg:test/<name>@<version>`; nothing here resolves with it. */
@@ -88,6 +88,32 @@ class PatchedTarget extends ResolvedTarget {
       false,
       undefined,
       fixes
+    );
+  }
+
+  public materialize(): Computable<never[]> {
+    return Computable.resolve([]);
+  }
+
+  public projectBuilt(): never[] {
+    return [];
+  }
+}
+
+/** A target `name` building `builds` whose rule requires the one requirement `requirement`, holding `deps`. */
+class RequiringTarget extends ResolvedTarget {
+  public readonly resolved: ResolvedRequirements;
+
+  constructor(name: string, builds: string, requirement: string, deps: Dependency[]) {
+    super({ key: `built ${name} ${requirement}`, files: () => Computable.resolve(EMPTY_FILESET), builds }, name, undefined, [], {
+      kind: "target",
+    });
+    this.resolved = new ResolvedRequirements(
+      new Map([
+        [requirement, { sources: deps.map(dep => dep.package!), references: deps.map(dep => dep.reference), reading: "packages", part: 0 }],
+      ]) as never,
+      [{ conflicts: NO_CONFLICTS, conflictsAmong: () => Computable.resolve(NO_CONFLICTS) }],
+      false
     );
   }
 
@@ -179,6 +205,15 @@ describe("sbom", () => {
     ]);
   });
 
+  it("describes a target under another operation by what its build requires", async () => {
+    const lodash = registry("lodash", "4.17.15");
+    const build = new RequiringTarget("app", "app", "deps", [lodash]);
+    const run = new RequiringTarget("app", "app", "build", [{ reference: new TargetRef({} as TargetSource, "app"), package: build }]);
+    const bom = await sbom(named("app", { reference: new TargetRef({} as TargetSource, "app"), package: run }), { version: "1.2.3" });
+    expect(bom.components.map(component => component["bom-ref"])).to.deep.equal(["pkg:test/lodash@4.17.15"]);
+    expect(bom.dependencies[0].dependsOn).to.deep.equal(["pkg:test/lodash@4.17.15"]);
+  });
+
   it("refuses a name resolving to several things", () => {
     const a = registry("a", "1.0.0");
     const b = registry("b", "1.0.0");
@@ -205,6 +240,10 @@ describe("cycloneDxLicense", () => {
   it("spells an SPDX id as an id, an expression as an expression, and anything else as a name", () => {
     expect(cycloneDxLicense({ text: "Apache-2.0" })).to.deep.equal({ license: { id: "Apache-2.0" } });
     expect(cycloneDxLicense({ text: "(MIT AND Zlib)" })).to.deep.equal({ expression: "(MIT AND Zlib)" });
+    /* A bare token is an id only where the SPDX licence list has it. */
+    expect(cycloneDxLicense({ text: "GPL-2.0" })).to.deep.equal({ license: { id: "GPL-2.0" } });
+    expect(cycloneDxLicense({ text: "UNLICENSED" })).to.deep.equal({ license: { name: "UNLICENSED" } });
+    expect(cycloneDxLicense({ text: "BSD" })).to.deep.equal({ license: { name: "BSD" } });
     expect(
       cycloneDxLicense({ text: "The Apache Software License, Version 2.0", url: "https://www.apache.org/licenses/LICENSE-2.0.txt" })
     ).to.deep.equal({

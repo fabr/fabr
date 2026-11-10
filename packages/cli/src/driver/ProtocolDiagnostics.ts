@@ -42,16 +42,21 @@ export interface IProtocolDiagnostic {
   relatedInformation?: Array<{ location: { uri: string; range: IProtocolRange }; message: string }>;
 }
 
-/** @return the range `loc` covers, or undefined where its offset lies outside its text. */
+/** @return the range `loc` covers, its characters counted in UTF-16 code
+ * units as the protocols count them, or undefined where its offset lies
+ * outside its text. */
 export function rangeOf(loc: ISourceSpan): IProtocolRange | undefined {
   const start = loc.reader.resolvePosition(loc.offset);
   if (start === undefined) {
     return undefined;
   }
   const end = loc.reader.resolvePosition(loc.endOffset) ?? start;
+  /* A position's column counts code points. */
+  const character = ({ lineText, column }: { lineText: string; column: number }): number =>
+    [...lineText].slice(0, column - 1).join("").length;
   return {
-    start: { line: start.line - 1, character: start.column - 1 },
-    end: { line: end.line - 1, character: end.column - 1 },
+    start: { line: start.line - 1, character: character(start) },
+    end: { line: end.line - 1, character: character(end) },
   };
 }
 

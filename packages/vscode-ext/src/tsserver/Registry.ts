@@ -114,6 +114,74 @@ export function readRegistry(file: string): string[] {
   return problems;
 }
 
+/** How long a writer holds the registry's lock before another takes it as abandoned. */
+const STALE_LOCK_MS = 10_000;
+/** How long a writer waits for the registry's lock before writing without it. */
+const LOCK_WAIT_MS = 2_000;
+
+/** Write `text` to `file` whole: to a temporary beside it, renamed over it. */
+export function writeAtomically(file: string, text: string): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const temporary = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, text);
+  fs.renameSync(temporary, file);
+}
+
+/** @return the documents the registry at `file` lists, or none where it is unreadable. */
+export function registeredDocuments(file: string): string[] {
+  try {
+    const { projects } = JSON.parse(fs.readFileSync(file, "utf8")) as { projects?: unknown };
+    return Array.isArray(projects) ? projects.filter((name): name is string => typeof name === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Rewrite the registry at `file` through `change` of the documents it lists,
+ * one writer at a time across every window: under a lock file beside it,
+ * created exclusively, the registry is read and written whole. A lock older
+ * than {@link STALE_LOCK_MS} is taken as abandoned; one not had within
+ * {@link LOCK_WAIT_MS} is written without.
+ */
+export function updateRegistry(file: string, change: (names: string[]) => string[]): void {
+  const lock = `${file}.lock`;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const held = acquireLock(lock);
+  try {
+    /* Rewritten even when unchanged: a changed document is announced by the registry changing. */
+    writeAtomically(file, JSON.stringify({ version: DOCUMENT_VERSION, projects: change(registeredDocuments(file)), at: Date.now() }, null, 2));
+  } finally {
+    if (held) {
+      fs.rmSync(lock, { force: true });
+    }
+  }
+}
+
+/** Create the lock file `lock`, waiting for another writer's to go. @return true if it was created, otherwise false. */
+function acquireLock(lock: string): boolean {
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  for (const until = Date.now() + LOCK_WAIT_MS; ; ) {
+    try {
+      fs.closeSync(fs.openSync(lock, "wx"));
+      return true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
+        return false;
+      }
+    }
+    const since = fs.statSync(lock, { throwIfNoEntry: false });
+    if (since !== undefined && Date.now() - since.mtimeMs > STALE_LOCK_MS) {
+      fs.rmSync(lock, { force: true });
+      continue;
+    }
+    if (Date.now() >= until) {
+      return false;
+    }
+    Atomics.wait(pause, 0, 0, 10);
+  }
+}
+
 /** @return the document paths a registry names. */
 export function toRegistry(json: unknown): string[] {
   const record = toVersioned(json, "registry");

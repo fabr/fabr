@@ -237,7 +237,7 @@ A dependency's `<exclusions>` leave the packages they name, `*` matching any gro
 out of what that dependency brings in, its own and its dependencies' requirements alike, as in
 Maven and Gradle: a package is left out only where every path that reaches it excludes it, so one
 that something else requires is still installed. Exclusions written in a `<dependencyManagement>`
-entry apply beside a dependency's own. `<profiles>` are not read.
+entry apply to a dependency that declares none of its own, as in Maven. `<profiles>` are not read.
 
 A package's files are its one artifact, `<artifact>-<version>.jar` (`.war`, `.ear` and so on, from
 its `<packaging>`), checked against the `.sha1` the repository publishes beside it. A POM-packaged

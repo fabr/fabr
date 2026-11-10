@@ -21,7 +21,8 @@ import { expect } from "chai";
 import { MemoryFile } from "./MemoryFS";
 import { ConflictError, FabrError } from "./Errors";
 import { FileSet, IFile } from "./FileSet";
-import { assertSamePackageNode, flattenFileSetArray, PackageFileSet, PackageGraphBuilder, packageNodeSignature } from "./PackageFileSet";
+import { assertSamePackageNode, flattenFileSetArray, PackageFileSet, PackageGraphBuilder, packageNodeSignature, ResolvedNode } from "./PackageFileSet";
+import { Computable } from "./Computable";
 import { dependenciesOn } from "./Repository";
 
 describe("PackageFileSet metadata", () => {
@@ -32,6 +33,20 @@ describe("PackageFileSet metadata", () => {
     const builder = new PackageGraphBuilder();
     expect(builder.node(pkg, "lib", "1.0.0").metadata).to.equal(metadata);
     expect(new PackageFileSet(new Map(), "plain").metadata.size).to.equal(0);
+  });
+});
+
+describe("ResolvedNode.withPackageName", () => {
+  const node = (declared?: "files" | { package: string }): ResolvedNode =>
+    new ResolvedNode({ key: "k", files: () => Computable.resolve(new FileSet(new Map())), ...(declared === undefined ? {} : { declared }) }, "lib");
+
+  it("declares a renamed node whose rule declares nothing the package of its new name", () => {
+    expect(node().withPackageName("alias").content.declared).to.deep.equal({ package: "alias" });
+  });
+
+  it("renames what the rule declares, unless it is files", () => {
+    expect(node({ package: "lib" }).withPackageName("alias").content.declared).to.deep.equal({ package: "alias" });
+    expect(node("files").withPackageName("alias").content.declared).to.equal("files");
   });
 });
 

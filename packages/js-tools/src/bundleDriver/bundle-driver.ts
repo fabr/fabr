@@ -49,7 +49,7 @@ import * as path from "node:path";
 import { SourceMap } from "node:module";
 import { PNP_DATA_FILE, PnpResolver } from "../pnp/PnPResolver";
 import { resolveVirtual } from "../pnp/VirtualPath";
-import { referenceOfEntry, stagedReferences, withReferencedSources } from "../support/SourceMap";
+import { getMapSource, referenceOfEntry, stagedReferences, withReferencedSources } from "../support/SourceMap";
 import { BUNDLE_METAFILE, type IBundleOptions } from "./BundleOptions";
 import { type IMetafile, renameMetafilePaths } from "./Metafile";
 
@@ -306,7 +306,12 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
             importer: args.importer,
             resolveDir: args.resolveDir,
           });
-          return unprefixed.errors.length ? null : { path: unprefixed.path, external: unprefixed.external, namespace: unprefixed.namespace };
+          if (unprefixed.errors.length) {
+            /* esbuild reports the specifier as written, so that is the one noted. */
+            unresolved.add(args.path);
+            return null;
+          }
+          return { path: unprefixed.path, external: unprefixed.external, namespace: unprefixed.namespace };
         }
 
         /* A declared dep is externalized by identity: its import survives. */
@@ -613,9 +618,17 @@ export async function main(argv: string[]): Promise<void> {
     errors = failure as IMessage[];
   }
   if (errors.length === 0) {
-    nameMapSources(argv, options.outdir);
+    const root = process.cwd();
+    const named = stagedReferences(argv, root, { withinPackages: true });
+    const referenceOf =
+      named === undefined
+        ? undefined
+        : (staged: string): string | undefined => named(path.relative(root, resolveVirtual(path.resolve(root, staged))).split(path.sep).join("/"));
+    if (referenceOf !== undefined) {
+      nameMapSources(root, options.outdir, referenceOf);
+    }
     if (metafile !== undefined) {
-      const inputName = metafileInputNamer(argv);
+      const inputName = metafileInputNamer(root, referenceOf);
       writeMetafile(options.outdir, metafile, inputName);
       nameModules(metafile, inputName);
     }
@@ -629,39 +642,31 @@ export async function main(argv: string[]): Promise<void> {
 }
 
 /**
- * Name the sources of every map the bundle wrote by the references that
- * resolve to them, where the step staged their table: what esbuild carried
- * through from an input's own map (already a reference) stays as it is. A
- * package's file is looked up where it is stored, not at the virtual path it
- * was reached by, and a source inside a package that the package does not ship
- * (its own map names a `src/` it left out) by that package's reference. Any
- * other source is one of the bundle's own.
+ * Name the sources of every map the bundle wrote under `outdir` by the
+ * references that resolve to them, `referenceOf` naming a path relative to
+ * `root` (by the step's table): what esbuild carried through from an input's
+ * own map (already a reference) stays as it is. A package's file is looked up
+ * where it is stored, not at the virtual path it was reached by, and a source
+ * inside a package that the package does not ship (its own map names a `src/`
+ * it left out) by that package's reference. Any other source is one of the
+ * bundle's own.
  */
-function nameMapSources(argv: string[], outdir: string): void {
-  const root = process.cwd();
-  const named = stagedReferences(argv, root, { withinPackages: true });
-  if (named === undefined) {
-    return;
-  }
-  const referenceOf = (staged: string): string | undefined =>
-    named(path.relative(root, resolveVirtual(path.resolve(root, staged))).split(path.sep).join("/"));
+function nameMapSources(root: string, outdir: string, referenceOf: (staged: string) => string | undefined): void {
   for (const file of mapFilesUnder(path.resolve(root, outdir))) {
     fs.writeFileSync(file, withReferencedSources(fs.readFileSync(file, "utf8"), file, root, referenceOf));
   }
 }
 
 /**
- * Make the namer of the bundle's inputs, as esbuild spells them (relative to the
- * working directory), each named as a map entry is (see {@link nameMapSources}):
- * by the reference its own map names as its sole source, which esbuild carries
- * into the bundle's map, else by the table's row. Each input is named once.
+ * Make the namer of the bundle's inputs, as esbuild spells them (relative to
+ * `root`), each named as a map entry is (see {@link nameMapSources}): by the
+ * reference its own map names first, which esbuild carries into the bundle's
+ * map, else by `referenceOf`. Each input is named once.
  */
-function metafileInputNamer(argv: string[]): (staged: string) => string {
-  const root = process.cwd();
-  const named = stagedReferences(argv, root, { withinPackages: true });
+function metafileInputNamer(root: string, referenceOf: ((staged: string) => string | undefined) | undefined): (staged: string) => string {
   const fileName = (staged: string): string => {
-    const file = resolveVirtual(path.resolve(root, staged));
-    return compiledFrom(file) ?? named?.(path.relative(root, file).split(path.sep).join("/")) ?? staged;
+    const source = getMapSource(resolveVirtual(path.resolve(root, staged)));
+    return (source === undefined ? undefined : referenceOfEntry(source)) ?? referenceOf?.(staged) ?? staged;
   };
   const names = new Map<string, string>();
   /* esbuild writes an input outside its file namespace as `(<namespace>):<path>`
@@ -731,16 +736,6 @@ const MODULE_PATH_OUTPUT = /\.(?:[cm]?js|css)$/;
 const MODULE_COMMENT = /^([ \t]*)(?:\/\/ (.+)|\/\* (.+) \*\/)$/gm;
 /** A string a wrapped module's function is keyed by: `"<path>"` directly before its `(`. */
 const MODULE_KEY = /"([^"\\\n]+)"(?=\()/g;
-
-/** Get the reference a compiled file's own map names as its sole source, if it has one. */
-function compiledFrom(file: string): string | undefined {
-  try {
-    const sources = (JSON.parse(fs.readFileSync(`${file}.map`, "utf8")) as { sources?: unknown }).sources;
-    return Array.isArray(sources) && sources.length === 1 && typeof sources[0] === "string" ? referenceOfEntry(sources[0]) : undefined;
-  } catch {
-    return undefined;
-  }
-}
 
 /** List every `.map` file under `dir`. */
 function mapFilesUnder(dir: string): string[] {

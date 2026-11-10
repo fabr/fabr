@@ -48,7 +48,6 @@ import {
   RepositoryLookup,
   RepositoryPublishRef,
   RepositoryRef,
-  RepositoryRegistration,
   RunnableFileSet,
   stripArchiveRoot,
   SymlinkFile,
@@ -278,7 +277,6 @@ function createRepository(context: TargetContext): Computable<Repository> {
   return context.getRequiredString("url").then(url => new JdkDistribution(context, url.replace(/\/+$/, "")));
 }
 
-export const jdkDistributionRegistration: RepositoryRegistration = { type: "jdk_distribution", provider: createRepository };
 
 /** The implementation JAVA.fabr's `repository` declaration names. */
 export default createRepository;

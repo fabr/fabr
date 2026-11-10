@@ -62,12 +62,13 @@ import { BuildContext, InternalBuildContext } from "./BuildContext";
 import { ResolvedRequirements } from "./Collection";
 import { mapEntryOrigin, PropertyMap, PropertyMapValue } from "./PropertyMap";
 import { BUILD_OPERATION, BUILD_OVERRIDE, Constraints, FILES_OPERATION } from "../model/Constraints";
-import { DESCRIPTION_FILE, describeTarget, descriptionFile } from "../support/Description";
+import { PERMISSIVE_RESOLUTION, sidedNodes } from "./CollectionPoint";
+import { DESCRIPTION_FILE, describeTarget, descriptionFile, toDescription } from "../support/Description";
 import { SEMVER, SemverConstraint, SemverVersion, versionToString } from "../resolver/Semver";
 import { PackageFormat } from "../resolver/PackageFormat";
 import { Requirement } from "../resolver/Types";
 import { publishesNothingFor, resolveBarePackage, vendPackageRef } from "../resolver/PackageResolver";
-import { RepositoryReader } from "../core/Repository";
+import { dependenciesOn, RepositoryReader } from "../core/Repository";
 import { PartialRepositoryRef } from "../core/PartialRepositoryRef";
 import { IncompleteRef, Namespace, NamespaceRef, refuseNamespaces } from "../core/NamespaceRef";
 import {
@@ -298,6 +299,24 @@ testRules.push(
             ...runtime.map((dep): [string, UsedFor] => [dependencyName(dep), "run"]),
             ...compile.map((dep): [string, UsedFor] => [dependencyName(dep), "build"]),
           ]))
+      ),
+  })
+);
+/* Reads `tool` as a runnable, and `processors` as a tool's packages. */
+testRules.push(
+  defineRule({
+    type: "test_tool_user",
+    properties: {},
+    requirements: () => ({}),
+    evaluateResolved: context =>
+      Computable.forAll(
+        [
+          context.getRunnableProperty("tool"),
+          context
+            .getFileProperty("processors", BUILD_OVERRIDE)
+            .then(sources => context.materializeSources(sources, PERMISSIVE_RESOLUTION, "run")),
+        ],
+        () => EMPTY_FILESET
       ),
   })
 );
@@ -567,6 +586,8 @@ const REGISTRY_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
   makeRunnable: pkg => Computable.resolve(RunnableFileSet.forEntry(pkg, `${pkg.packageName}/data.txt`, [], "node")),
 };
 const registryRequirements = new Map<string, Requirement[]>();
+/* Every `<pkg>@<version> <operation>` a TestRegistry was asked the requirements of. */
+const requirementsAsked: string[] = [];
 class TestRegistry implements Repository, RepositoryReader<SemverVersion, SemverConstraint> {
   public readonly format = REGISTRY_FORMAT;
 
@@ -595,6 +616,7 @@ class TestRegistry implements Repository, RepositoryReader<SemverVersion, Semver
   /** Answer what `registryRequirements` holds for the package under `operation` (`<pkg>@<version> <operation>`), else for any. */
   public getRequirements(pkg: string, version: SemverVersion, operation?: string): Computable<Requirement[]> {
     const key = `${pkg}@${versionToString(version)}`;
+    requirementsAsked.push(`${key} ${operation}`);
     return Computable.resolve(registryRequirements.get(`${key} ${operation}`) ?? registryRequirements.get(key) ?? []);
   }
 
@@ -1012,6 +1034,24 @@ describe("BuildContext", () => {
       sources: [],
       roots: [],
     });
+  });
+
+  it("reads a description back only where it is one", () => {
+    const description = {
+      target: {
+        id: { uri: "fabr:app" },
+        displayName: "app",
+        tags: [],
+        languageIds: [],
+        dependencies: [],
+        capabilities: { canCompile: true, canTest: false, canRun: false, canDebug: false },
+      },
+      sources: [{ uri: "./a.ts", kind: 1, generated: false }],
+      roots: ["./"],
+    };
+    expect(toDescription(description)).to.deep.equal(description);
+    expect(() => toDescription({ ...description, target: { ...description.target, tags: "library" } })).to.throw(/BSP build target/);
+    expect(() => toDescription({ ...description, sources: [{ uri: "./a.ts" }] })).to.throw(/BSP source items/);
   });
 
   it("describes every target of the project, each settling on its own, its description in the tree pool", async () => {
@@ -2793,6 +2833,32 @@ describe("BuildContext", () => {
       expect(errors).to.deep.equal([]);
       await model.getConfig(Constraints.of({ [BUILD_OPERATION]: "build" }), splitExecution).materialize(writtenOnCommandLine("app"));
       expect(lastSplit).to.deep.equal({ compile: ["annotations", "lib", "mylib"], install: ["driver", "lib", "mylib"] });
+    });
+
+    it("resolves a tool for run, whatever the operation of the target reading it", async () => {
+      const errors: string[] = [];
+      const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+      const tools =
+        "targetdef test_registry { }\ntest_registry @reg { }\n" +
+        "targetdef test_tool_user { tool = FILES; processors = PACKAGES; }\n" +
+        "test_tool_user app { tool = @reg:lib:1.0.0; processors = @reg:proc:1.0.0; }\n";
+      const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", tools, logger)], logger, testContributions);
+      expect(errors).to.deep.equal([]);
+      requirementsAsked.length = 0;
+      await model.getConfig(Constraints.of({ [BUILD_OPERATION]: "build" }), splitExecution).materialize(writtenOnCommandLine("app"));
+      expect(requirementsAsked.filter(asked => asked.startsWith("lib@") || asked.startsWith("proc@")).sort()).to.deep.equal([
+        "lib@1.0.0 run",
+        "proc@1.0.0 run",
+      ]);
+    });
+
+    it("leaves an edge for the other collection out of a node a projection pends over", () => {
+      const nodeOf = (name: string, deps: ResolvedNode[] = [], usedFor = new Map<string, UsedFor>()): ResolvedNode =>
+        new ResolvedNode({ key: name, files: () => Computable.resolve(EMPTY_FILESET) }, name, "1.0.0", dependenciesOn(...deps), undefined, undefined, usedFor);
+      const lib = nodeOf("lib", [nodeOf("driver"), nodeOf("api")], new Map<string, UsedFor>([["driver", "run"]]));
+      const [projected] = sidedNodes([new ProjectedPackage(lib, [])], "build", new Map());
+      expect(projected).to.be.instanceOf(ProjectedPackage);
+      expect((projected as ProjectedPackage).base.packages.map(pkg => pkg.packageName)).to.deep.equal(["api"]);
     });
 
     it("refuses a requirement stated for both", async () => {
@@ -5016,6 +5082,21 @@ describe("rules written in .fabr", () => {
     }
   });
 
+  it("makes a registry's variant a node of the registry's selection of its package, not a build", async () => {
+    registryRequirements.set("app@1.0.0", [{ name: "native", versionConstraint: "^1.0.0", variant: "linux" }]);
+    try {
+      const model = modelOf("targetdef test_registry { }\ntest_registry @reg { }\ntest_holds h { deps = @reg:app:1.0.0; }\n");
+      const [app] = requirementsOf(await model.getConfig(Constraints.of({}), execution).resolve(writtenOnCommandLine("h"))).get("deps")!;
+      const [{ package: linux }] = (app as ResolvedNode).dependencies;
+      expect(linux).to.be.instanceOf(ResolvedNode);
+      const { content } = linux as ResolvedNode;
+      expect(content.builds).to.equal(undefined);
+      expect(content.selection && `${content.selection.name}@${content.selection.version}`).to.equal("native@1.0.0");
+    } finally {
+      registryRequirements.delete("app@1.0.0");
+    }
+  });
+
   it("answers what the block's targets require of the target from one resolution, with what each adds beside it", async () => {
     registryRequirements.set("raiser@1.0.0", [{ name: "shared", versionConstraint: "^1.2.0" }]);
     const versionsOf = (deps: FileSet[]): string[] =>
@@ -5355,6 +5436,12 @@ describe("rules written in .fabr", () => {
     it("takes what is spliced where no guarded declaration after it applies", async () => {
       const model = splicing("rule lintable pkg = test_file report { pkg; content<FLAVOR=sour> = guarded; }\nlintable a { content = hello; }\n");
       expect(await textOf(model, "a")).to.equal("hello");
+      expect(await textOf(model, "a", "f.txt", { FLAVOR: "sour" })).to.equal("guarded");
+    });
+
+    it("takes what a map spliced into a target supplies where no guarded declaration after it applies", async () => {
+      const model = splicing("COMMON = { content = base; };\ntest_file a { COMMON; content<FLAVOR=sour> = guarded; }\n");
+      expect(await textOf(model, "a")).to.equal("base");
       expect(await textOf(model, "a", "f.txt", { FLAVOR: "sour" })).to.equal("guarded");
     });
 

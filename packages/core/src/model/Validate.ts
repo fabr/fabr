@@ -32,6 +32,7 @@ import {
   IValue,
   IRuleBlock,
   IRuleDecl,
+  ISpliceDecl,
   ITargetDecl,
   ITargetDefDecl,
   parameterProperty,
@@ -77,6 +78,7 @@ const DIAG_INVALID_MAP = new Diagnostic<{ detail: string; loc: ISourcePosition }
   LogLevel.Error,
   "Invalid map property: {detail}"
 );
+const DIAG_INVALID_SPLICE = new Diagnostic<{ detail: string; loc: ISourcePosition }>(LogLevel.Error, "Invalid splice: {detail}");
 const DIAG_INVALID_COMMAND = new Diagnostic<{ detail: string; loc: ISourcePosition }>(
   LogLevel.Error,
   "Invalid command: {detail}"
@@ -113,6 +115,11 @@ export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log
     if (!isPropertyDecl(item)) {
       spliced = true;
       seen.clear();
+      const shape = spliceShapeError(item);
+      if (shape !== undefined) {
+        isValid = false;
+        log.log(DIAG_INVALID_SPLICE, { detail: shape, loc: declPosn(item) });
+      }
       return;
     }
     const prop = item;
@@ -272,6 +279,15 @@ function validateMapProperty(prop: IPropertyDecl, log: Log): boolean {
   return validateBlock(isMapValue(block) ? block.entries : [], log);
 }
 
+/** @return why `splice`'s reference is not a plain property name (a
+ * projection, constraints, a rename or a glob), or undefined where it is one. */
+function spliceShapeError(splice: ISpliceDecl): string | undefined {
+  const ref = splice.ref;
+  return ref.hasLevelSeparator() || ref.hasConstraints() || ref.getRenameTo() || ref.hasGlob()
+    ? `a map reference is a plain property name ('${ref.toString()}')`
+    : undefined;
+}
+
 /** Recursively validate a `{ ... }` block: unique keys per level (literal
  * entries only — what a splice brings in is knowable only at read time, and
  * overriding a spliced key is the point); each entry's values homogeneous —
@@ -288,8 +304,9 @@ function validateBlock(entries: IMapItemDecl[], log: Log): boolean {
   const keys = new Set<string>();
   entries.forEach(entry => {
     if (entry.kind === DeclKind.Splice) {
-      if (entry.ref.hasLevelSeparator() || entry.ref.hasConstraints() || entry.ref.getRenameTo() || entry.ref.hasGlob()) {
-        isValid = fail(`a map reference is a plain property name ('${entry.ref.toString()}')`, entry);
+      const shape = spliceShapeError(entry);
+      if (shape !== undefined) {
+        isValid = fail(shape, entry);
       }
       return;
     }

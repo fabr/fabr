@@ -92,14 +92,38 @@ export function installOverlay(target: typeof fs, current: () => Links, masked: 
     (target as unknown as Record<string, unknown>)[name] = function (this: unknown, file: unknown, ...rest: unknown[]): unknown {
       const linked = typeof file === "string" ? linkedTarget(current(), file) : undefined;
       const listener = rest.find(arg => typeof arg === "function") as ((...args: unknown[]) => void) | undefined;
+      const result = real.call(this, linked ?? file, ...rest);
       if (linked !== undefined && listener !== undefined) {
+        const watch: ILinkWatch = { kind: name, listener, watched: linked };
         const watchers = linkWatchers.get(file as string) ?? new Set();
-        watchers.add({ kind: name, listener });
+        watchers.add(watch);
         linkWatchers.set(file as string, watchers);
+        /* A watch closed is forgotten. */
+        const watcher = result as { close?: () => void } | undefined;
+        if (name === "watch" && typeof watcher?.close === "function") {
+          const close = watcher.close.bind(watcher);
+          watcher.close = (): void => {
+            forgetWatch(file as string, watch);
+            close();
+          };
+        }
       }
-      return real.call(this, linked ?? file, ...rest);
+      return result;
     };
   }
+  /* A linked path's file watches are of its target, so are ended there, and forgotten. */
+  const unwatchFile = target.unwatchFile as (...args: unknown[]) => unknown;
+  (target as unknown as Record<string, unknown>).unwatchFile = function (this: unknown, file: unknown, listener?: unknown): unknown {
+    const watches = typeof file === "string" ? [...(linkWatchers.get(file) ?? [])].filter(watch => watch.kind === "watchFile" && (listener === undefined || watch.listener === listener)) : [];
+    if (watches.length === 0) {
+      return unwatchFile.call(this, file, listener);
+    }
+    for (const watch of watches) {
+      forgetWatch(file as string, watch);
+      unwatchFile.call(this, watch.watched, watch.listener);
+    }
+    return undefined;
+  };
   const readdir = target.readdirSync as (...args: unknown[]) => unknown;
   (target as unknown as Record<string, unknown>).readdirSync = function (this: unknown, dir: unknown, ...rest: unknown[]): unknown {
     const redirected = redirect(dir);
@@ -156,8 +180,24 @@ function relinkedStats(file: string, stats: unknown): unknown {
   return real;
 }
 
-/** The watches tsserver made of linked paths, by path. */
-const linkWatchers = new Map<string, Set<{ kind: "watchFile" | "watch"; listener: (...args: unknown[]) => void }>>();
+/** A watch tsserver made of a linked path: how, its listener, and the path watched, the link's target when it was made. */
+interface ILinkWatch {
+  kind: "watchFile" | "watch";
+  listener: (...args: unknown[]) => void;
+  watched: string;
+}
+
+/** The watches tsserver made of linked paths and has not ended, by path. */
+const linkWatchers = new Map<string, Set<ILinkWatch>>();
+
+/** Forget `watch`, a watch of `file`. */
+function forgetWatch(file: string, watch: ILinkWatch): void {
+  const watchers = linkWatchers.get(file);
+  watchers?.delete(watch);
+  if (watchers?.size === 0) {
+    linkWatchers.delete(file);
+  }
+}
 
 /**
  * Tell the watches of every linked path whose target differs between

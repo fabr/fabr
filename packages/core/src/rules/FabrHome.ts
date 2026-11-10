@@ -299,12 +299,11 @@ export class FabrHomeRepository implements Repository, RepositoryLookup {
   }
 }
 
-/** Register a `fabr_home` repository type looking packages up from `resolveFrom` —
- *  fabr's own code by default; tests look up from within a fixture. */
-export function fabrHomeRegistration(resolveFrom: string = INSTALLED_FROM): RepositoryRegistration {
+/** Register a `fabr_home` repository type looking packages up from fabr's own code. */
+function fabrHomeRegistration(): RepositoryRegistration {
   return {
     type: "fabr_home",
-    provider: (context: TargetContext) => Computable.resolve(new FabrHomeRepository(context.execution.absFileSource, resolveFrom)),
+    provider: (context: TargetContext) => Computable.resolve(new FabrHomeRepository(context.execution.absFileSource, INSTALLED_FROM)),
   };
 }
 

@@ -117,3 +117,15 @@ export function ancestorsOf(name: string): string[] {
   }
   return ancestors;
 }
+
+/**
+ * @return the names of an archive's entries in the order written: `names`, with
+ * every directory above one where `directories` is set; the names in `first`
+ * lead, each after the directories above it, and the rest follow in sorted
+ * order, a directory before the entries within it.
+ */
+export function archiveEntryNames(names: readonly string[], options: { directories: boolean; first?: readonly string[] }): string[] {
+  const all = options.directories ? [...new Set(names.flatMap(ancestorsOf)), ...names] : [...names];
+  const leading = new Set((options.first ?? []).flatMap(name => [...(options.directories ? ancestorsOf(name) : []), name]));
+  return [...leading, ...all.filter(name => !leading.has(name)).sort()];
+}

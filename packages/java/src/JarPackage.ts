@@ -154,12 +154,12 @@ export function installationOf(deps: readonly FileSet[], provided: readonly File
  * Materialize the target's annotation processors (`processors`). They are a
  * tool of the compile, so they are read when it is evaluated, not as a
  * requirement, under `build` whatever the target's operation, and resolved as
- * a collection of their own, permissively.
+ * a collection of their own, permissively, for `run`: they run in the compiler.
  */
 export function processorsOf(context: TargetContext): Computable<FileSet[]> {
   return context
     .getFileProperty("processors", BUILD_OVERRIDE)
-    .then(sources => context.materializeSources(sources, PERMISSIVE_RESOLUTION))
+    .then(sources => context.materializeSources(sources, PERMISSIVE_RESOLUTION, "run"))
     .then(materialized => materialized.filter((source): source is FileSet => source instanceof FileSet));
 }
 

@@ -296,7 +296,9 @@ Every other advisory affecting the original version is reported as usual, agains
 `lodash@4.17.15 as patched by 'lodash'`. Fabr doesn't check that the patch actually fixes what
 `fixes` lists; that is your claim. An id in `fixes` that names no advisory affecting the package
 gets a warning on stderr. That happens when `srcs` has moved to a version the advisory doesn't
-affect, or when the id is misspelt. Remove the patch once a fixed release is out.
+affect, or when the id is misspelt. So does a `fixes` on a `patched` target whose `srcs` isn't one
+registry package (vendored files, say): there is no published version for an advisory to affect.
+Remove the patch once a fixed release is out.
 
 In SARIF, a fixed package's result carries a `suppressions` entry of kind `inSource`. In a bill of
 materials, a patched package's component has a `pedigree`: the original package as its ancestor,

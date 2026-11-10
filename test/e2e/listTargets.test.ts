@@ -161,4 +161,11 @@ describe("e2e: list-targets", () => {
     expect(result.stdout).to.equal("");
     expect(result.stderr).to.match(/No such target: nonesuch/);
   });
+
+  it("says a name no file but one sees is private to it", () => {
+    const result = runFabr({ "PROJECT.fabr": "include ./sub/BUILD.fabr;\n", "sub/BUILD.fabr": "private flag hidden { provides = x; }\n" }, ["list-targets", "hidden"]);
+    expect(result.status).to.equal(1);
+    expect(result.stderr).to.match(/No such target: hidden/);
+    expect(result.stderr).to.match(/'hidden' is private to \S*BUILD\.fabr/);
+  });
 });

@@ -22,7 +22,7 @@ import { Computable } from "../core/Computable";
 import { ITaskReport } from "../support/Execute";
 import { FileSet, FileSource } from "../core/FileSet";
 import { RepositoryPublishRef, Repository, SourceRef } from "../core/Repository";
-import { collectLists, ResolutionOptions } from "./CollectionPoint";
+import { collectLists, ResolutionOptions, withOperation } from "./CollectionPoint";
 import { FileSetRef } from "../core/FileSetRef";
 import { PartialRepositoryRef } from "../core/PartialRepositoryRef";
 import { NamespaceRef } from "../core/NamespaceRef";
@@ -353,17 +353,6 @@ export abstract class TargetContext {
       .labelled(site && new ReferenceLabel({ value: stdin.ref, ...site }));
   }
 
-  /**
-   * Look up a write coordinate, such as a `sync` member's
-   * `@npm:@fabr-build/core:0.1.0`, as a publish reference. A write coordinate
-   * names where content goes, and need not exist in the repository yet. The
-   * repository's name is split off by the prefix match a read uses, and the
-   * repository vends a reference for the rest
-   * ({@link Repository.getRepositoryPublishRef}), which throws without fetching
-   * anything where the address is malformed or the repository is not a publish
-   * destination. `name` must already be substituted, as
-   * {@link getWildcardProperties} gives a `sync`'s keys.
-   */
   /** @return true if the target declared as `name` has a rule for `operation`, otherwise false. */
   public hasTargetRule(name: string, operation: string): boolean {
     const operations = this.getTargetOperations(name);
@@ -375,6 +364,17 @@ export abstract class TargetContext {
     return this.context.getTargetOperations(name);
   }
 
+  /**
+   * Look up a write coordinate, such as a `sync` member's
+   * `@npm:@fabr-build/core:0.1.0`, as a publish reference. A write coordinate
+   * names where content goes, and need not exist in the repository yet. The
+   * repository's name is split off by the prefix match a read uses, and the
+   * repository vends a reference for the rest
+   * ({@link Repository.getRepositoryPublishRef}), which throws without fetching
+   * anything where the address is malformed or the repository is not a publish
+   * destination. `name` must already be substituted, as
+   * {@link getWildcardProperties} gives a `sync`'s keys.
+   */
   public lookupPublishRef(name: Name): Computable<RepositoryPublishRef> {
     const match = this.ownConfiguration.getPrefixTargetIfExists(name, this.stack);
     if (!match) {
@@ -418,10 +418,18 @@ export abstract class TargetContext {
    * applied (descending into archives); content passes through. A
    * `repository_group` content route reads the source it serves this way, while
    * it is resolved. They are a collection of their own, strict unless
-   * `options` says otherwise (a tool's packages, resolved permissively).
+   * `options` says otherwise (a tool's packages, resolved permissively), and
+   * resolved for `operation`, this target's own unless given (`run` for a
+   * tool's packages, which are resolved to be run).
    */
-  public materializeSources(sources: SourceRef[], options?: ResolutionOptions): Computable<(FileSource | Repository | FileSet)[]> {
-    return collectLists(this, [sources], options, [true]).then(([delivered]) => this.context.applyProjections(delivered));
+  public materializeSources(
+    sources: SourceRef[],
+    options?: ResolutionOptions,
+    operation: string = this.operation
+  ): Computable<(FileSource | Repository | FileSet)[]> {
+    return collectLists(withOperation(this, operation), [sources], options, [true]).then(([delivered]) =>
+      this.context.applyProjections(delivered)
+    );
   }
 
   /**
@@ -1200,7 +1208,8 @@ function withDefaults(names: string[], targetDef: ITargetDefDecl): string[] {
 interface ITargetBody {
   /** The declarations written after the last item supplying the name, guards and all. */
   readonly written: ReadonlyMap<string, IPropertyDecl[]>;
-  /** The entry the last splice supplying the name supplied, where nothing is written after it. */
+  /** The entry the last splice supplying the name supplied: the name's value
+   * wherever none of the declarations written after it applies. */
   readonly spliced: ReadonlyMap<string, ISplicedEntry>;
 }
 

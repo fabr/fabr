@@ -83,6 +83,9 @@ export class JsonRpcConnection {
     ["bsp", []],
     ["lsp", []],
   ]);
+  /** The protocols that have a client: BSP's, the connection's own, and each
+   * other whose client has sent a frame naming it. */
+  private readonly heard = new Set<Protocol>(["bsp"]);
 
   constructor(private readonly output: NodeJS.WritableStream) {}
 
@@ -96,6 +99,7 @@ export class JsonRpcConnection {
     input.on("data", (data: Buffer) => {
       this.buffer = Buffer.concat([this.buffer, data]);
       for (let next = this.next(); next !== undefined; next = this.next()) {
+        this.heard.add(next.protocol);
         if ("message" in next) {
           this.dispatch(next.protocol, next.message);
         } else {
@@ -107,9 +111,13 @@ export class JsonRpcConnection {
     input.on("end", onEnd);
   }
 
-  /** Send `protocol`'s notification `method`: once its client's initialize has been answered, and until then held. */
+  /** Send `protocol`'s notification `method`: once its client's initialize has
+   * been answered, and until then held; dropped where the protocol has no client yet. */
   public notify(method: string, params: unknown, protocol: Protocol = "bsp"): void {
     const held = this.held.get(protocol);
+    if (!this.heard.has(protocol)) {
+      return;
+    }
     if (held !== undefined) {
       held.push({ jsonrpc: "2.0", method, params });
     } else {

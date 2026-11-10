@@ -479,6 +479,8 @@ const DIAG_INVALID_IMPLEMENTATION = new Diagnostic<{ loc: ISourcePosition }>(
   "An implementation names an entry of a package, as 'package:entry' (no glob patterns or variables)"
 );
 /** The declarations that cannot be private, by their keyword. */
+/** The keywords whose declarations cannot be written `default` (`default rule` is read before these). */
+const DEFAULT_REFUSED = new Set(["targetdef", "private", "repository"]);
 const PRIVATE_REFUSED = new Set(["include", "plugin", "rule", "targetdef", "default", "private", "repository"]);
 /** The declarations a rule's block cannot hold, by their keyword. */
 const RULE_BLOCK_REFUSED = new Set(["include", "plugin", "rule", "targetdef", "default", "private", "repository"]);
@@ -1847,7 +1849,10 @@ export class BuildParser {
         } else {
           const key = this.token;
           /* A rule's guard may name a property of its target, as `pkg.test_framework`. */
-          if (key.type !== TokenType.IDENTIFIER && !(kind === "rule" && key.type === TokenType.SIMPLE_NAME)) {
+          if (
+            key.type !== TokenType.IDENTIFIER &&
+            !(kind === "rule" && key.type === TokenType.SIMPLE_NAME && key.text.split(".").length === 2 && key.text.split(".").every(isIdentifier))
+          ) {
             this.unexpectedTokenError("a constraint key");
           }
           keyText = key.text;
@@ -2318,8 +2323,8 @@ export class BuildParser {
        * ordinary global. */
       return this.parsePropertyDecl(this.finishPropertyKey(Name.fromLiteral(name.text)), name.start, docComment);
     } else if (next.type === TokenType.IDENTIFIER || next.type === TokenType.SIMPLE_NAME) {
-      /* Reported at the word, rather than read as a target of that type. */
-      if (name.text === "targetdef") {
+      /* Reported at the word, rather than read as a target of that type: none of these declarations is a default. */
+      if (DEFAULT_REFUSED.has(name.text)) {
         this.unexpectedTokenError(expected, name.start);
       }
       return this.parseTargetDecl(name.text, name.start, docComment);

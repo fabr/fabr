@@ -36,7 +36,7 @@ import { JsonRpcClient } from "./JsonRpcClient";
 import { relayBuildServer } from "./BspRelay";
 import { composeProject, type IServedTarget } from "./ProjectDocument";
 import { isRecord, type IProtocolDiagnostic, toDiagnostic, toProtocolDiagnostics } from "./ProtocolDiagnostics";
-import { DOCUMENT_VERSION } from "./tsserver/Registry";
+import { DOCUMENT_VERSION, registeredDocuments, updateRegistry, writeAtomically } from "./tsserver/Registry";
 import { layOutTsdk } from "./tsserver/Wrapper";
 
 /** The file a fabr project's root holds. */
@@ -79,7 +79,7 @@ export function deactivate(): void {
   for (const relay of relays) {
     void relay.then(server => server.close(), () => undefined);
   }
-  updateRegistry(names => names.filter(name => !documents.includes(name)));
+  updateRegistry(REGISTRY, names => names.filter(name => !documents.includes(name)));
 }
 
 function start(context: vscode.ExtensionContext): void {
@@ -212,8 +212,8 @@ function serveProject(
   let written = readIfPresent(document);
   let shown = linksOf(written);
   if (written !== undefined) {
-    const listed = registeredDocuments().includes(document);
-    updateRegistry(names => (names.includes(document) ? names : [...names, document]));
+    const listed = registeredDocuments(REGISTRY).includes(document);
+    updateRegistry(REGISTRY, names => (names.includes(document) ? names : [...names, document]));
     if (shown !== "") {
       /* A TypeScript server started before the document was listed found none of its paths, and none of its watching. */
       void pointTsdk(output).then(changed =>
@@ -316,12 +316,12 @@ function serveProject(
     showStatus();
     /* A document tsserver already read, and the registry still lists, is left as it is. */
     const text = JSON.stringify(composed.document, null, 2);
-    if (text === written && registeredDocuments().includes(document)) {
+    if (text === written && registeredDocuments(REGISTRY).includes(document)) {
       return;
     }
     writeAtomically(document, text);
     written = text;
-    updateRegistry(names => (names.includes(document) ? names : [...names, document]));
+    updateRegistry(REGISTRY, names => (names.includes(document) ? names : [...names, document]));
     /* A file tsserver already opened keeps the config it found, so a change in
      * which paths are served takes a restart; anything else, a reload. Pointing
      * the tsdk restarts it already. */
@@ -489,21 +489,6 @@ const INSTALLED_ENTRY = "@fabr-build/cli/bin/fabr.js";
 /** A JavaScript file, which runs on Node.js. */
 const SCRIPT = /\.[cm]?js$/;
 
-/** Rewrite the registry's document list through `change`, replacing the file whole. */
-function updateRegistry(change: (names: string[]) => string[]): void {
-  /* Rewritten even when unchanged: a changed document is announced by the registry changing. */
-  writeAtomically(REGISTRY, JSON.stringify({ version: DOCUMENT_VERSION, projects: change(registeredDocuments()), at: Date.now() }, null, 2));
-}
-
-/** @return the documents the registry lists, or none where it is unreadable. */
-function registeredDocuments(): string[] {
-  try {
-    return (JSON.parse(fs.readFileSync(REGISTRY, "utf8")) as { projects?: string[] }).projects ?? [];
-  } catch {
-    return [];
-  }
-}
-
 /** @return `file`'s text, or undefined where there is none. */
 function readIfPresent(file: string): string | undefined {
   try {
@@ -520,11 +505,4 @@ function linksOf(text: string | undefined): string {
   } catch {
     return "";
   }
-}
-
-function writeAtomically(file: string, text: string): void {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const temporary = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(temporary, text);
-  fs.renameSync(temporary, file);
 }

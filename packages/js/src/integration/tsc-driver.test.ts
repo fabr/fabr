@@ -2495,6 +2495,31 @@ describe("the tsc driver's wave", () => {
       expect(base.compile.emitted).to.deep.equal(["build/util.test.d.ts", "build/util.test.js"]);
     });
 
+    it("emits a project file a checked source imports, as a whole compile does, with no state directory", () => {
+      const config = path.join(work.root, "tsconfig.json");
+      const parsed = JSON.parse(fs.readFileSync(config, "utf8")) as { compilerOptions: Record<string, unknown> };
+      fs.writeFileSync(config, JSON.stringify({ ...parsed, compilerOptions: { ...parsed.compilerOptions, resolveJsonModule: true, esModuleInterop: true } }));
+      sources({
+        "data.json": '{ "n": 1 }\n',
+        "util.test.ts": 'import { pad } from "./util";\nimport data from "./data.json";\nexport const padded: string = pad(String(data.n));\n',
+      });
+      const run = compile(work.root, flag);
+      expect(run.status, run.output).to.equal(0);
+      expect(fs.existsSync(path.join(work.root, "build", "data.json")), "the imported JSON is emitted").to.equal(true);
+      expect(fs.existsSync(path.join(work.root, "build", "util.js")), "the declared source is not").to.equal(false);
+    });
+
+    it("removes the outputs a source left in the base when another compile comes to declare it", () => {
+      const base = baseline();
+      expect(base.status, base.output).to.equal(0);
+      expect(fs.existsSync(path.join(work.root, "build", "util.js"))).to.equal(true);
+      const run = wave(base.memo, [`${DECLARATIONS}/util.d.ts`], [], flag);
+      expect(run.status, run.output).to.equal(0);
+      expect(fs.existsSync(path.join(work.root, "build", "util.js"))).to.equal(false);
+      expect(fs.existsSync(path.join(work.root, "build", "util.d.ts"))).to.equal(false);
+      expect(fs.existsSync(path.join(work.root, "build", "util.test.js"))).to.equal(true);
+    });
+
     it("waves nothing past a source whose declaration did not move, and its importers where it did", () => {
       const base = baseline(flag);
       expect(base.status, base.output).to.equal(0);

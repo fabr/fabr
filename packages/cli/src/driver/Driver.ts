@@ -131,6 +131,9 @@ const DIAG_COVERAGE_UNPLACEABLE = Diagnostic.Warn<{ count: number; examples: str
 const DIAG_AUDIT_UNMATCHED_FIX = Diagnostic.Warn<{ target: string; id: string; pkg: string }>(
   "'{target}' declares it fixes {id}, which is not an advisory affecting {pkg}"
 );
+const DIAG_AUDIT_UNATTACHED_FIX = Diagnostic.Warn<{ target: string; id: string }>(
+  "'{target}' declares it fixes {id}, but is made from no registry package for an advisory to affect"
+);
 const DIAG_WATCHING = Diagnostic.Info<Record<string, never>>("Watching for changes (Ctrl-C to stop)");
 const DIAG_UNHANDLED = Diagnostic.Warn<{ message: string }>("Unhandled error: {message}");
 const DIAG_COPIED = Diagnostic.Info<{ count: number; dest: string }>("Copied {count} file(s) to {dest}");
@@ -267,8 +270,9 @@ export function runFabr(options: Options): Promise<void> {
         const server = new BspServer(root, connection, end);
         const language = new LanguageServer(root, connection, uri => server.isServed(uri));
         connection.listen(process.stdin, end);
-        /* The driver's own log, which a describe failure is reported to: the
-         * run's also collects the diagnostics of loading the build files. */
+        /* The driver's own log, which a describe failure is reported to (set
+         * by the run's setup, before the operation runs): the run's also
+         * collects the diagnostics of loading the build files. */
         let reporting: Log | undefined;
         return runWith(
           options,
@@ -280,7 +284,7 @@ export function runFabr(options: Options): Promise<void> {
               name => options.commandLine.refFor(name, site),
               execution
             );
-            server.serve(describing, reporting ?? execution.log, {
+            server.serve(describing, reporting!, {
               build: name => buildOperation(configFor(model, options, execution, "build"), [options.commandLine.refFor(name, site)]),
               test: name => testOperation(configFor(model, options, execution, "test"), [options.commandLine.refFor(name, site)]),
             });
@@ -756,13 +760,6 @@ function membersOf(sources: SourceRef[], name: string): Computable<PublishableFi
   );
 }
 
-/**
- * Run the driver lifecycle harness: establish the run's surroundings (stderr log,
- * cache, source tree, progress-reporting ExecutionContext), load the project,
- * then hand the model to `operation` — exiting 0 on success and rendering the
- * failure tree (exit 1) on error. Reaching a drained event loop without an
- * explicit exit is a stall bug, reported loudly (exit 2).
- */
 /** What a verb adds around its run: what it observes of the run's log, and of its execution once made. */
 interface IRunSetup {
   /** The log the run reports to, made from the driver's own. */
@@ -771,6 +768,13 @@ interface IRunSetup {
   execution?: (execution: ExecutionContext) => void;
 }
 
+/**
+ * Run the driver lifecycle harness: establish the run's surroundings (stderr log,
+ * cache, source tree, progress-reporting ExecutionContext), load the project,
+ * then hand the model to `operation` — exiting 0 on success and rendering the
+ * failure tree (exit 1) on error. Reaching a drained event loop without an
+ * explicit exit is a stall bug, reported loudly (exit 2).
+ */
 async function runWith(options: Options, operation: Operation, watch = false, setup: IRunSetup = {}): Promise<void> {
   /* Diagnostics and progress go to stderr; command data (ls listings, cat
    * file contents) goes to stdout, so a build can be filtered from its output.
@@ -837,8 +841,8 @@ async function runWith(options: Options, operation: Operation, watch = false, se
     });
     execution.onBuildEvent(progress.buildListener, { output: !options.quiet });
     if (options.traceFile !== undefined) {
-      /* The trace is written at each cycle's end; a run cut short writes what
-       * it saw from an exit hook, since process.exit runs no continuation. */
+      /* Each cycle's events are added at its end; the trace is finished from
+       * an exit hook, since process.exit runs no continuation. */
       const trace = new TraceWriter(path.resolve(process.cwd(), options.traceFile));
       execution.onBuildEvent(trace.buildListener);
       process.on("exit", () => trace.write());
@@ -1357,7 +1361,9 @@ function auditDependencies(
             renderAudit(report, stdoutStyle()).forEach(line => console.log(line));
           }
           report.unmatched.forEach(({ target, id, pkg }) =>
-            execution.log.log(DIAG_AUDIT_UNMATCHED_FIX, { target, id, pkg: `${pkg.packageName}@${pkg.version}` })
+            pkg === undefined
+              ? execution.log.log(DIAG_AUDIT_UNATTACHED_FIX, { target, id })
+              : execution.log.log(DIAG_AUDIT_UNMATCHED_FIX, { target, id, pkg: `${pkg.packageName}@${pkg.version}` })
           );
           return affectsAny(report) ? 1 : 0;
         })
@@ -1401,7 +1407,12 @@ function listDeclaredTargets(model: BuildModel, options: Options, execution: Exe
     .sort((a, b) => a.name.localeCompare(b.name));
   const missing = [...named].filter(name => !model.getTargets().some(target => target.name === name));
   if (missing.length > 0) {
-    throw new FabrError(`No such target: ${missing.join(", ")}`);
+    const hints = missing.flatMap(name => {
+      const files = model.getPrivateFiles(name);
+      return files.length === 0 ? [] : [`'${name}' is private to ${files.join(", ")}`];
+    });
+    const err = new FabrError(`No such target: ${missing.join(", ")}`);
+    throw hints.length === 0 ? err : err.withHelp(hints);
   }
   if (options.json) {
     const json = targets.map(({ name, decl, operations }) => ({

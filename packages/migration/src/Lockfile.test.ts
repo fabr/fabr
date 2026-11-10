@@ -51,6 +51,11 @@ describe("reading a lockfile", () => {
     expect(listed(readPnpmLock(text))).to.deep.equal({ a: ["1.0.0"], b: ["2.0.0"] });
   });
 
+  it("reads pnpm 5's keys, the peers after a `_` stripped", () => {
+    const text = ["lockfileVersion: 5.4", "packages:", "  /foo/1.2.3_bar@2.0.0:", "    dev: false", "  /@scope/c/3.0.0_@types+react@18.0.0+d@1.0.0:", "    dev: false"].join("\n");
+    expect(listed(readPnpmLock(text))).to.deep.equal({ foo: ["1.2.3"], "@scope/c": ["3.0.0"] });
+  });
+
   it("reads yarn classic's entries, an alias by the package it names", () => {
     const text = [
       "# yarn lockfile v1",
@@ -79,6 +84,22 @@ describe("reading a lockfile", () => {
       '  resolution: "app@workspace:."',
     ].join("\n");
     expect(listed(readYarnLock(text))).to.deep.equal({ a: ["1.4.0"] });
+  });
+
+  it("reads yarn berry's patched resolutions as the version they patch", () => {
+    const text = [
+      "__metadata:",
+      "  version: 8",
+      "",
+      '"resolve@patch:resolve@npm%3A^1.22.0#optional!builtin<compat/resolve>":',
+      "  version: 1.22.8",
+      '  resolution: "resolve@patch:resolve@npm%3A1.22.8#optional!builtin<compat/resolve>::version=1.22.8&hash=c3c19d"',
+      "",
+      '"@scope/b@patch:@scope/b@npm%3A2.0.0#~/.yarn/patches/b.patch":',
+      "  version: 2.0.0",
+      '  resolution: "@scope/b@patch:@scope/b@npm%3A2.0.0#~/.yarn/patches/b.patch::version=2.0.0&hash=1a2b3c"',
+    ].join("\n");
+    expect(listed(readYarnLock(text))).to.deep.equal({ resolve: ["1.22.8"], "@scope/b": ["2.0.0"] });
   });
 
   it("reads npm's packages by install path, leaving out links", () => {

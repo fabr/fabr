@@ -31,11 +31,14 @@ import {
   PackageGraphBuilder,
   RefSource,
   RepositoryRef,
+  NO_CONFLICTS,
   ResolvedNode,
+  ResolvedRequirements,
+  ResolvedTarget,
   TargetRef,
   TargetSource,
 } from "@fabr-build/core";
-import { renderAudit, renderDependencyTrees } from "./DepsTree";
+import { renderAudit, renderDependencyTrees, sectionsOf } from "./DepsTree";
 
 /** A reference as a registry would vend it; nothing here resolves one. */
 function reference(name: string, versionConstraint?: string): RepositoryRef {
@@ -297,6 +300,43 @@ const MINIMIST: Advisory = {
   severity: "CRITICAL",
   affected: [{ purl: "pkg:test/minimist", fixed: ["0.2.4", "1.2.6"] }],
 };
+
+/** A target `name` building `builds` whose rule requires the one requirement `requirement`, holding `deps`. */
+class RequiringTarget extends ResolvedTarget {
+  public readonly resolved: ResolvedRequirements;
+
+  constructor(name: string, builds: string, requirement: string, deps: Dependency[]) {
+    super({ key: `built ${name} ${requirement}`, files: () => Computable.resolve(EMPTY_FILESET), builds }, name, undefined, [], {
+      kind: "target",
+    });
+    this.resolved = new ResolvedRequirements(
+      new Map([
+        [requirement, { sources: deps.map(dep => dep.package!), references: deps.map(dep => dep.reference), reading: "packages", part: 0 }],
+      ]) as never,
+      [{ conflicts: NO_CONFLICTS, conflictsAmong: () => Computable.resolve(NO_CONFLICTS) }],
+      false
+    );
+  }
+
+  public materialize(): Computable<never[]> {
+    return Computable.resolve([]);
+  }
+
+  public projectBuilt(): never[] {
+    return [];
+  }
+}
+
+describe("sectionsOf", () => {
+  it("shows a target under another operation by what its own build requires", () => {
+    const build = new RequiringTarget("app", "app", "deps", [delivered("lodash", "4.17.21", "^4.17.0")]);
+    const run = new RequiringTarget("app", "app", "build", [{ reference: target("app"), package: build }]);
+    const tree = sectionsOf("app", ResolvedRequirements.of([run], [target("app")], NO_CONFLICTS));
+    expect([...tree.parts].map(([section, deps]) => [section, deps.map(dep => dep.package?.packageName)])).to.deep.equal([
+      ["required by its rule", ["lodash"]],
+    ]);
+  });
+});
 
 describe("renderAudit", () => {
   it("renders a block per advisory with the packages it affects, their fixes highest first and a path with its other edges counted", () => {

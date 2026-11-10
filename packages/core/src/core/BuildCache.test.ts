@@ -603,6 +603,23 @@ describe("BuildCache", () => {
     expect(spoolFiles(root)).to.deep.equal([]);
   });
 
+  it("fails the handed-out stream when its spool fails", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const own = path.join(root, "work", `${hostPrefix()}-${process.pid}`);
+    fs.chmodSync(own, 0o500);
+    try {
+      const handle = cache.getTemporaryWriteStream();
+      const failure = await new Promise<NodeJS.ErrnoException>(resolve => handle.stream.on("error", resolve));
+      expect(failure.code).to.equal("EACCES");
+      await toPromise(handle.finalize("out.txt")).then(
+        () => expect.fail("finalize should have rejected"),
+        (err: NodeJS.ErrnoException) => expect(err.code).to.equal("EACCES")
+      );
+    } finally {
+      fs.chmodSync(own, 0o700);
+    }
+  });
+
   it("leaves no spool behind when the output is discarded", async () => {
     const cache = new BuildCache(root, NULL_LOG);
     const handle = cache.getTemporaryWriteStream();
@@ -2187,6 +2204,17 @@ describe("BuildCache work tree", () => {
     expect(dir).to.equal(path.join(slot, "work"));
     expect(fs.readdirSync(slot).sort()).to.deep.equal([".fabr-tree", "work"]);
     expect(fs.existsSync(`${slot}.record`)).to.equal(false);
+    cache.releaseKeptWorkDir(dir);
+  });
+
+  it("relinks a kept slot's tree pool link that names another pool", () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const slot = path.join(root, "work", `${hostPrefix()}@k5.0`);
+    fs.mkdirSync(path.join(slot, "work"), { recursive: true });
+    fs.symlinkSync(path.join(root, "elsewhere", "trees"), path.join(slot, ".fabr-tree"));
+    const dir = cache.holdKeptWorkDir("k5");
+    expect(dir).to.equal(path.join(slot, "work"));
+    expect(fs.readlinkSync(path.join(slot, ".fabr-tree"))).to.equal(cache.treePath);
     cache.releaseKeptWorkDir(dir);
   });
 

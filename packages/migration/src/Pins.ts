@@ -30,6 +30,7 @@ import {
   MultiError,
   parseName,
   parseVersion,
+  compareText,
   compareVersions,
   reportFailure,
   ResolutionWalkError,
@@ -43,7 +44,7 @@ import {
   isIncompleteRef,
   FILES_OPERATION,
 } from "@fabr-build/core";
-import { Catalog } from "./Catalog";
+import { Catalog, highest } from "./Catalog";
 import { Lockfile } from "./Lockfile";
 
 /** What fabr's resolution of a project's targets says, read as the facts the pins answer. */
@@ -204,7 +205,7 @@ function caretCompatible(a: string, b: string): boolean {
 const byVersion = (a: string, b: string): number => compareVersions(parseVersion(a), parseVersion(b));
 
 /** The pins an observation calls for, and what it found that no pin answers. */
-export interface Proposal {
+interface Proposal {
   /** How many pins were added to the catalog. */
   readonly added: number;
   /** Each fact the lockfile gives no answer to, as a line of the report, by heading. */
@@ -232,7 +233,7 @@ export function proposePins(
   const file = lockfile?.file ?? "the lockfile";
   let added = 0;
   for (const name of [...observation.floorless].sort()) {
-    const locked = [...(lockfile?.versions.get(name) ?? [])].sort(byVersion).pop();
+    const locked = highest(lockfile?.versions.get(name) ?? []);
     const version = locked ?? latest.get(name);
     if (version === undefined) {
       unanswered.push(["Packages required only without a lower bound, with no version to pin (add an entry)", name]);
@@ -246,7 +247,7 @@ export function proposePins(
       added++;
     }
   }
-  for (const [name, versions] of [...observation.selected].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+  for (const [name, versions] of [...observation.selected].sort(([a], [b]) => compareText(a, b))) {
     const installed = [...(lockfile?.versions.get(name) ?? [])];
     const sorted = [...versions].sort(byVersion);
     const principal = sorted[sorted.length - 1];
@@ -272,7 +273,7 @@ export function proposePins(
       }
     }
   }
-  for (const [name, versions] of [...observation.conflicts].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+  for (const [name, versions] of [...observation.conflicts].sort(([a], [b]) => compareText(a, b))) {
     const installed = lockfile?.versions.get(name)?.size ?? 0;
     if (installed < 2) {
       unanswered.push([

@@ -43,6 +43,7 @@ import {
   pomText,
   publishedFilePath,
   repositoryPath,
+  uploadOrder,
   variantOf,
 } from "./MavenPublish";
 
@@ -131,6 +132,28 @@ describe("mergedMetadata", () => {
     expect(metadata).to.contain("<version>1.2.0</version>\n      <version>1.9.0</version>\n      <version>1.10.0</version>");
     expect(metadata).to.contain("<latest>1.10.0</latest>");
     expect(mergedMetadata(metadata, "com.example", "app", "1.9.0", now)).to.equal(metadata);
+  });
+
+  it("keeps a listed entry that is no Maven version where it is, sorting the versions around it", () => {
+    const existing = mergedMetadata(undefined, "com.example", "app", "2.0.0", now).replace(
+      "<version>2.0.0</version>",
+      "<version>2.0.0</version>\n      <version>${odd}</version>\n      <version>1.0.0</version>"
+    );
+    const metadata = mergedMetadata(existing, "com.example", "app", "1.5.0", now);
+    expect(metadata).to.contain("<version>1.0.0</version>\n      <version>${odd}</version>\n      <version>1.5.0</version>\n      <version>2.0.0</version>");
+    expect(metadata).to.contain("<latest>2.0.0</latest>");
+  });
+});
+
+describe("uploadOrder", () => {
+  it("uploads the marker last, after its checksums, and everything else before them", () => {
+    const pom = "com/example/app/1.0.0/app-1.0.0.pom";
+    const jar = "com/example/app/1.0.0/app-1.0.0.jar";
+    const paths = [`${pom}.sha1`, pom, `${jar}.md5`, jar, `${pom}.md5`, `${jar}.sha1`];
+    expect(uploadOrder(paths, pom)).to.deep.equal({
+      before: [jar, `${jar}.md5`, `${jar}.sha1`],
+      last: [`${pom}.md5`, `${pom}.sha1`, pom],
+    });
   });
 });
 

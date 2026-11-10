@@ -182,8 +182,8 @@ export function computeBundleEntries(entries: IBundleEntrySource[], rewrite: Rew
 
 /** The names a split bundle's chunks and a bundle's assets are written under,
  * with esbuild's placeholders in them, before the `output` rewrite renames them. */
-export const CHUNK_NAMES = "chunks/[name]-[hash].js";
-export const ASSET_NAMES = "[name]-[hash].[ext]";
+const CHUNK_NAMES = "chunks/[name]-[hash].js";
+const ASSET_NAMES = "[name]-[hash].[ext]";
 
 /**
  * Compute esbuild's `chunkNames` pattern: {@link CHUNK_NAMES} as `rewrite`
@@ -201,6 +201,11 @@ export function computeAssetNames(rewrite: RewriteFn): string {
   return renamedPattern(rewrite, ASSET_NAMES, ".[ext]", "the assets'");
 }
 
+/**
+ * Rename esbuild's naming `pattern` by `rewrite` and strip its `extension`,
+ * refusing a rename that does not keep the extension; `whose` names the
+ * pattern's files in that error.
+ */
 function renamedPattern(rewrite: RewriteFn, pattern: string, extension: string, whose: string): string {
   const output = rewrite(pattern) ?? pattern;
   if (!output.endsWith(extension)) {
@@ -233,9 +238,9 @@ export function buildBundleOptions(
   { entries, entryNames }: IBundleEntryNames,
   external: string[],
   defines: Record<string, string>,
-  inject: string[] = [],
-  chunkNames = computeChunkNames(() => undefined),
-  assetNames = computeAssetNames(() => undefined)
+  inject: string[],
+  chunkNames: string,
+  assetNames: string
 ): IBundleOptions {
   const minify = buildType === "release" || buildType === "relwithdebinfo";
   const sourcemap: "linked" | false = buildType === "release" ? false : "linked";

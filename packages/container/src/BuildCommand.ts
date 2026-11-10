@@ -25,6 +25,7 @@ import {
   execute,
   executeInternalCapture,
   FabrError,
+  hostEnvironment,
   IFile,
   IOutputHandle,
   ITaskReport,
@@ -38,7 +39,6 @@ import { ImageFileSet } from "./ImageFileSet";
 import { indexLayer, teeOutput } from "./LayerIndex";
 import { imageLayout, manifestOf } from "./OciLayout";
 import { containerName, reapContainers, removeOnExit } from "./Containers";
-import { hostEnvironment } from "./HostEnvironment";
 import { IOciPlatform, platformText } from "./OciProtocol";
 
 /** The time stamped on every entry of a layer a build command makes. */

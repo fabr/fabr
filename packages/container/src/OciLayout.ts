@@ -17,8 +17,8 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { Computable, FileSet, IFile, MemoryFile } from "@fabr-build/core";
-import { ImageFileSet, sizeOf } from "./ImageFileSet";
+import { Computable, contentSize, FileSet, IFile, MemoryFile } from "@fabr-build/core";
+import { ImageFileSet } from "./ImageFileSet";
 import { digested, IDigested, OCI_CONFIG, OCI_INDEX, OCI_LAYER, OCI_MANIFEST } from "./OciProtocol";
 
 /**
@@ -67,7 +67,7 @@ export function imageLayout(image: ImageFileSet, name: string): Computable<FileS
 export function manifestOf(image: ImageFileSet): Computable<{ manifest: IDigested<Record<string, unknown>>; config: IDigested<Record<string, unknown>> }> {
   const config = digested(image.config.document);
   return Computable.forAll(
-    image.layers.map(layer => sizeOf(layer.tar)),
+    image.layers.map(layer => contentSize(layer.tar)),
     (...sizes: number[]) => ({
       manifest: digested<Record<string, unknown>>({
         schemaVersion: 2,

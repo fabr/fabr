@@ -140,11 +140,17 @@ function testJar(context: TargetContext, inputs: TestInputs): Computable<RuleRes
   );
   const runner = singleJar(context, "JAVA_TEST_RUNNER");
   const namePattern = context.getGlobalString(TEST_NAME_PATTERN);
-  const measuring = context.getGlobalString(COVERAGE).then(coverage => (coverage === COVERAGE_ON ? coverageTools(context) : undefined));
+  const measuring = context
+    .getGlobalString(COVERAGE)
+    .then(coverage =>
+      coverage === COVERAGE_ON
+        ? Computable.forAll([coverageTools(context), measuredPackages(inputs.srcs)], (tools, packages) => ({ tools, packages }))
+        : undefined
+    );
   const sourceSets = [tests, ...inputs.srcs];
   return Computable.forAll(
-    [classes, runner, sourcesTable(sourceSets), context.getGlobalRunnable("JAVA"), namePattern, measuring, measuredPackages(inputs.srcs)],
-    (output, runnerJar, sources, java, pattern, tools, packages) => {
+    [classes, runner, sourcesTable(sourceSets), context.getGlobalRunnable("JAVA"), namePattern, measuring],
+    (output, runnerJar, sources, java, pattern, coverage) => {
     const compiled = compileOutputOf(output, COMPILED_CLASSES_DIR);
     const pool = context.execution.buildCache;
     return pool.ensureTree(java).then(() => {
@@ -162,7 +168,7 @@ function testJar(context: TargetContext, inputs: TestInputs): Computable<RuleRes
         )
       );
       const selection = pattern === "" ? [] : [`--name-pattern=${pattern}`];
-      const measured = tools && measuredRun(tools, ownJars(inputs.run_pkg), packages);
+      const measured = coverage && measuredRun(coverage.tools, ownJars(inputs.run_pkg), coverage.packages);
       const argv = java.toCommandLine(
         [...(measured?.jvm ?? []), "-cp", classpath, RUNNER_CLASS, `--sources=${SOURCES_FILE}`, ...selection, ...(measured?.runner ?? []), `--scan=${TEST_CLASSES_DIR}`],
         { base: path.posix.join(TREE_MOUNT, java.toManifestHash()) }
@@ -193,11 +199,11 @@ interface ICoverageTools {
   analysis: Array<[string, IFile]>;
 }
 
-/** Materialize `JACOCO_AGENT` and `JACOCO`, a tool's packages, resolved permissively. */
+/** Materialize `JACOCO_AGENT` and `JACOCO`, a tool's packages, resolved permissively for `run`. */
 function coverageTools(context: TargetContext): Computable<ICoverageTools> {
   const analysis = context
     .getGlobalFileProperty("JACOCO", BUILD_OVERRIDE)
-    .then(found => context.materializeSources(found, PERMISSIVE_RESOLUTION))
+    .then(found => context.materializeSources(found, PERMISSIVE_RESOLUTION, "run"))
     .then(found => classpathOf(found.filter((source): source is FileSet => source instanceof FileSet)));
   return Computable.forAll([singleJar(context, "JACOCO_AGENT"), analysis], (agent, jars) => ({ agent, analysis: jars }));
 }

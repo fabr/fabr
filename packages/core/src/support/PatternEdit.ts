@@ -17,6 +17,8 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import { POSIX_CLASSES, readBracketExpression } from "./Glob";
+
 /**
  * The operator of a {@link PatternEdit}, as bash writes it after the name in a
  * `${NAME…}`: `#`/`##` remove the shortest/longest matching prefix, `%`/`%%` the
@@ -130,22 +132,6 @@ function* descending(from: number, to: number): Iterable<number> {
   }
 }
 
-/** The POSIX classes a bracket expression may name, as regex class contents. */
-const POSIX_CLASSES: ReadonlyMap<string, string> = new Map([
-  ["alnum", "A-Za-z0-9"],
-  ["alpha", "A-Za-z"],
-  ["blank", " \\t"],
-  ["cntrl", "\\x00-\\x1f\\x7f"],
-  ["digit", "0-9"],
-  ["graph", "!-~"],
-  ["lower", "a-z"],
-  ["print", " -~"],
-  ["punct", "!-\\/:-@\\[-`{-~"],
-  ["space", " \\t\\n\\r\\f\\v"],
-  ["upper", "A-Z"],
-  ["xdigit", "0-9A-Fa-f"],
-]);
-
 /** The characters a regex gives a meaning to, outside a class. */
 const REGEX_SYNTAX = /[\\^$.*+?()[\]{}|/]/g;
 
@@ -182,35 +168,16 @@ export function patternRegex(pattern: string): RegExp {
 }
 
 /**
- * Read the bracket expression opening at `open`: its regex class and the index
- * of its closing `]`, or undefined where it has none. A `]` first in the
- * expression (after any `!` or `^`) is a member, as in bash.
+ * Read the bracket expression opening at `open` (see {@link readBracketExpression})
+ * as its regex class and the index of its closing `]`, or undefined where it has none.
  */
 function bracketExpression(pattern: string, open: number): { source: string; end: number } | undefined {
-  let i = open + 1;
-  let negated = false;
-  if (pattern[i] === "!" || pattern[i] === "^") {
-    negated = true;
-    i++;
+  const bracket = readBracketExpression(pattern, open);
+  if (bracket === undefined) {
+    return undefined;
   }
-  let members = "";
-  for (let first = true; i < pattern.length; i++, first = false) {
-    const ch = pattern[i];
-    if (ch === "]" && !first) {
-      return { source: `[${negated ? "^" : ""}${members}]`, end: i };
-    }
-    if (ch === "[" && pattern[i + 1] === ":") {
-      const close = pattern.indexOf(":]", i + 2);
-      const posix = close === -1 ? undefined : POSIX_CLASSES.get(pattern.slice(i + 2, close));
-      if (posix !== undefined) {
-        members += posix;
-        i = close + 1;
-        continue;
-      }
-    }
-    members += classMember(ch === "\\" && i + 1 < pattern.length ? pattern[++i] : ch);
-  }
-  return undefined;
+  const members = bracket.members.map(member => ("posixClass" in member ? POSIX_CLASSES.get(member.posixClass)! : classMember(member.char))).join("");
+  return { source: `[${bracket.negated ? "^" : ""}${members}]`, end: bracket.end };
 }
 
 /** @return `ch` as a member of a regex class: itself, quoted where a class gives it a meaning. */

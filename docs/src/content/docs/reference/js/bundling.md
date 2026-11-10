@@ -176,8 +176,13 @@ js_bundle web {
 
 The name must end in `.js`. A bundle's entries are named by one pattern, so with several entries
 the rename must keep the hash in every name, with the same text after it, or drop it from all:
-`*-*.js -> $1.$2.min.js` for each entry's `<name>.<hash>.min.js`, or `*-*.js -> $1.js` for its
-plain name. Renames that would need two patterns are an error.
+`*-'[hash]'.js -> $1.'[hash]'.min.js` for each entry's `<name>.<hash>.min.js`, or
+`*-'[hash]'.js -> $1.js` for its plain name. The rename is made to the name before esbuild fills in
+the hash, so it matches `[hash]` as written, quoted so that it is not read as a character class; a
+bare `*-*.js` would split a name such as `service-worker-[hash].js` at its first `-`. A `*` matches
+within one directory, so for entries in subdirectories write `**/*-'[hash]'.js -> **/*.js`, which
+also drops the hash from the [chunks](#splitting-into-chunks)' names. Renames that would need two
+patterns are an error.
 
 ### Format and platform
 
@@ -328,7 +333,7 @@ with `sync` or run with `fabr run`. Other targets use its files by reference.
   `./dist/web/`.
 - **Run a Node.js bundle** by making it a `js_script`'s entry:
   `js_script worker { entry = worker_bundle:main.js; }`, the bundle renamed to drop the hash
-  (`output = *-*.js -> $1.js;`). It runs on the Node.js release that the
+  (`output = *-'[hash]'.js -> $1.js;`). It runs on the Node.js release that the
   [`NODE` setting](/reference/js/dependencies/#the-nodejs-version) names.
 - **Put it in a larger set of files**, such as a site, by selecting and renaming:
   `web:**/!(metafile.json)* -> assets/**/*`, which leaves out
@@ -344,7 +349,7 @@ entry's name:
 js_bundle web {
   entry  = src:main.tsx;
   srcs   = src:** @npm:react:19.1.0 @npm:react-dom:19.1.0;
-  output = *-*.js -> $1.js;      # main.js and main.css
+  output = *-'[hash]'.js -> $1.js;   # main.js and main.css
 }
 
 serve site {

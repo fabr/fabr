@@ -15,26 +15,27 @@
  */
 
 /** A JSON-RPC message, as a client reads one. */
-interface IMessage {
-  id?: number;
+/** A JSON-RPC message, as a connection reads one. */
+export interface IMessage {
+  id?: number | string;
   method?: string;
   params?: unknown;
   result?: unknown;
   error?: { message: string };
 }
 
-/** @return `json` as a JSON-RPC message, or undefined where it is none: an object whose `id` and `method`, where it has them, are a number and a string. */
-function toMessage(json: unknown): IMessage | undefined {
+/** @return `json` as a JSON-RPC message, or undefined where it is none: an object whose `id` and `method`, where it has them, are a number or a string and a string. */
+export function toMessage(json: unknown): IMessage | undefined {
   if (typeof json !== "object" || json === null || Array.isArray(json)) {
     return undefined;
   }
   const { id, method, params, result, error } = json as Record<string, unknown>;
-  if ((id !== undefined && id !== null && typeof id !== "number") || (method !== undefined && typeof method !== "string")) {
+  if ((id !== undefined && id !== null && typeof id !== "number" && typeof id !== "string") || (method !== undefined && typeof method !== "string")) {
     return undefined;
   }
   const message = typeof error === "object" && error !== null ? String((error as Record<string, unknown>).message ?? "error") : undefined;
   return {
-    ...(typeof id === "number" ? { id } : {}),
+    ...(typeof id === "number" || typeof id === "string" ? { id } : {}),
     ...(method === undefined ? {} : { method }),
     params,
     result,
@@ -141,9 +142,15 @@ export class JsonRpcClient {
     this.handlers.set(method, [...(this.handlers.get(method) ?? []), handler]);
   }
 
-  /** Call `handler` with every notification the server sends. */
-  public onAnyNotification(handler: (method: string, params: unknown) => void): void {
+  /** Call `handler` with every notification the server sends, until the disposer returned is called. */
+  public onAnyNotification(handler: (method: string, params: unknown) => void): () => void {
     this.anyHandlers.push(handler);
+    return () => {
+      const at = this.anyHandlers.indexOf(handler);
+      if (at >= 0) {
+        this.anyHandlers.splice(at, 1);
+      }
+    };
   }
 
   /** @return the next frame in the buffer, taken from it, as {@link takeFrame} reads one. */
@@ -177,9 +184,10 @@ export class JsonRpcClient {
       }
       return;
     }
-    const waiting = message.id === undefined ? undefined : this.pending.get(message.id);
+    const id = message.id;
+    const waiting = typeof id === "number" ? this.pending.get(id) : undefined;
     if (waiting !== undefined) {
-      this.pending.delete(message.id!);
+      this.pending.delete(id as number);
       if (message.error !== undefined) {
         waiting.reject(new Error(message.error.message));
       } else {
@@ -189,8 +197,13 @@ export class JsonRpcClient {
   }
 
   private send(message: unknown): void {
-    const body = Buffer.from(JSON.stringify(message), "utf8");
-    this.output.write(`Content-Length: ${body.length}\r\n${this.protocol === undefined ? "" : `Fabr-Protocol: ${this.protocol}\r\n`}\r\n`);
-    this.output.write(body);
+    sendMessage(this.output, message, this.protocol);
   }
+}
+
+/** Write `message` to `output`, framed by a `Content-Length` header as LSP frames one, tagged with `protocol` where it is not BSP's. */
+export function sendMessage(output: NodeJS.WritableStream, message: unknown, protocol?: string): void {
+  const body = Buffer.from(JSON.stringify(message), "utf8");
+  output.write(`Content-Length: ${body.length}\r\n${protocol === undefined ? "" : `Fabr-Protocol: ${protocol}\r\n`}\r\n`);
+  output.write(body);
 }

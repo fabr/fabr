@@ -135,20 +135,26 @@ export class Conflicts {
         versions.set(name, new Set([...(versions.get(name) ?? []), ...shipped]));
       }
     }
-    let refused: Computable<Error | undefined> | undefined;
     return new Conflicts(
       versions,
       pkg => found.some(conflicts => conflicts.includes(pkg)),
-      () =>
-        (refused ??= Computable.forAll(
-          found.map(conflicts => conflicts.error()),
-          (...errors: Array<Error | undefined>) => {
-            const all = errors.filter((error): error is Error => error !== undefined);
-            return all.length === 0 ? undefined : MultiError.of(all);
-          }
-        ))
+      refusalOf(() => found.map(conflicts => conflicts.error()))
     );
   }
+}
+
+/**
+ * Make the refusal of a collection whose errors `errors` makes: every one of
+ * them that is an error, as one, or undefined where none is. Made on the
+ * first call, once.
+ */
+function refusalOf(errors: () => ReadonlyArray<Computable<Error | undefined>>): () => Computable<Error | undefined> {
+  let refused: Computable<Error | undefined> | undefined;
+  return () =>
+    (refused ??= Computable.forAll(errors(), (...found: Array<Error | undefined>) => {
+      const failures = found.filter((error): error is Error => error !== undefined);
+      return failures.length === 0 ? undefined : MultiError.of(failures);
+    }));
 }
 
 /** The conflicts of a collection where nothing conflicts. */
@@ -210,18 +216,10 @@ export function findConflicts(
   if (conflicts.size === 0) {
     return NO_CONFLICTS;
   }
-  let reported: Computable<Error | undefined> | undefined;
   return new Conflicts(
     conflicts,
     pkg => found.some(domain => domain.conflicting(pkg)),
-    () =>
-      (reported ??= Computable.forAll(
-        found.map(domain => domain.report(finished)),
-        (...errors: Array<Error | undefined>) => {
-          const failures = errors.filter((error): error is Error => error !== undefined);
-          return failures.length === 0 ? undefined : MultiError.of(failures);
-        }
-      ))
+    refusalOf(() => found.map(domain => domain.report(finished)))
   );
 }
 

@@ -242,5 +242,68 @@ describe("build file language", () => {
       expect(offered("PRIV.fabr")).to.deep.equal(["Private."]);
       expect(offered("OTHER.fabr")).to.deep.equal([undefined]);
     });
+
+    it("offers a private target's properties in its body, and the file's private maps to splice", () => {
+      const maps = "targetdef holder { srcs = FILES; }\nprivate COMMON = { srcs = a.txt; };\n";
+      const mapsModel = toBuildModel([parseBuildString(EMPTY_FILESET, "MAPS.fabr", maps, log)], log, []);
+      const typed = "private holder x {\n  ";
+      expect(completionsAt(mapsModel, typed, typed.length, "MAPS.fabr").map(completion => completion.label)).to.deep.equal(["srcs", "COMMON"]);
+      expect(completionsAt(mapsModel, typed, typed.length, "ELSEWHERE.fabr").map(completion => completion.label)).to.deep.equal(["srcs"]);
+    });
+  });
+
+  describe("a substitution's edit", () => {
+    const text = "targetdef holder { srcs = FILES; }\nLIBS = lib;\nholder edited { srcs = ${LIBS%b} ${LIBS#l} ${LIBS/i/o} '#' `ls`; }\n";
+    const edited = parseBuildString(EMPTY_FILESET, "EDIT.fabr", text, log);
+    const editedModel = toBuildModel([edited], log, []);
+
+    it("names the property a substitution with an edit reads", () => {
+      for (const needle of ["LIBS%", "LIBS#", "LIBS/"]) {
+        const offset = text.indexOf(needle) + 1;
+        const named = namedAt(editedModel, writtenAt(edited, offset)!, offset)!;
+        expect(named.declarations.map(span => text.slice(span.offset, span.endOffset ?? span.offset))).to.deep.equal(["LIBS"]);
+        expect(named.documentation?.source).to.equal("LIBS = lib;");
+      }
+    });
+
+    it("reads no comment in a substitution's edit or a string, nor a body in a command substitution", () => {
+      const offered = (typed: string): string[] => completionsAt(editedModel, typed, typed.length).map(completion => completion.label);
+      expect(offered("holder x { srcs = ${LIBS#l} ")).to.include.members(["LIBS"]);
+      expect(offered("holder x { srcs = '#' ")).to.include.members(["LIBS"]);
+      expect(offered("holder x { srcs = `ls {` ")).to.include.members(["LIBS"]);
+      expect(offered("holder x { srcs = ${LIBS#l}; }\nholder y {\n  ")).to.deep.equal(["srcs"]);
+      expect(offered("holder x { srcs = ${LI")).to.deep.equal(["LIBS"]);
+      expect(offered("holder x { srcs = ${LIBS#")).to.deep.equal([]);
+    });
+  });
+
+  it("lists a default target in the outline, and names a guarded key whole however it is spaced", () => {
+    const text = "targetdef holder { srcs = FILES; }\ndefault holder fallback { srcs = a.txt; }\nholder g { srcs<TARGET = x-*> = b.txt; }\n";
+    const guarded = parseBuildString(EMPTY_FILESET, "GUARD.fabr", text, log);
+    expect(symbolsOf(guarded).map(({ name, kind }) => [name, kind])).to.deep.equal([
+      ["holder", "targetdef"],
+      ["fallback", "target"],
+      ["g", "target"],
+    ]);
+    const offset = text.indexOf("x-*");
+    const written = writtenAt(guarded, offset);
+    expect(written?.kind).to.equal("property-name");
+    const named = namedAt(toBuildModel([guarded], log, []), written!, offset)!;
+    expect(text.slice(named.origin.offset, named.origin.endOffset)).to.equal("srcs<TARGET = x-*>");
+  });
+
+  it("finds an inherited property's schema in the targetdef that declares it, and a repository's implementation", () => {
+    const text = "targetdef holder { srcs = FILES; }\ntargetdef bigger extends holder { more = FILES; }\nbigger b { srcs = a.txt; more = b.txt; }\nrepository holder = lib:Thing;\nholder lib { srcs = c.txt; }\n";
+    const inherited = parseBuildString(EMPTY_FILESET, "INHERIT.fabr", text, log);
+    const inheritedModel = toBuildModel([inherited], log, []);
+    const declared = (needle: string): string[] => {
+      const offset = text.indexOf(needle) + 1;
+      return (namedAt(inheritedModel, writtenAt(inherited, offset)!, offset)?.declarations ?? []).map(span => text.slice(span.offset, span.endOffset ?? span.offset));
+    };
+    expect(declared("srcs = a.txt")).to.deep.equal(["holder"]);
+    expect(declared("more = b.txt")).to.deep.equal(["bigger"]);
+    expect(writtenAt(inherited, text.indexOf("lib:Thing") + 1)?.kind).to.equal("value");
+    expect(declared("lib:Thing")).to.deep.equal(["lib"]);
+    expect(errors).to.deep.equal([]);
   });
 });

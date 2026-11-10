@@ -507,11 +507,15 @@ export function usedForOf(operation: string): UsedFor {
  * Make the nodes among `sources` as a collection resolved for `operation`
  * reads them: each node with an edge passed on to the other collection alone
  * ({@link PackageMetadata.usedFor}), or reaching one, copied without such
- * edges; every other source as it is. `markers` is remapped onto the copies.
- * Packages in hand are taken as they stand.
+ * edges, a projection pending over such a node made over its copy; every
+ * other source as it is. `markers` is remapped onto the copies. Packages in
+ * hand are taken as they stand.
  */
 export function sidedNodes<T extends SourceRef | Unbuilt>(sources: T[], operation: string, markers: Markers): T[] {
   const side = usedForOf(operation);
+  /** @return the node `source` is, or the one a projection pends over. */
+  const nodeOf = (source: T): ResolvedNode | undefined =>
+    source instanceof ResolvedNode ? source : source instanceof ProjectedPackage && source.base instanceof ResolvedNode ? source.base : undefined;
   const leftOut = (pkg: Package, dep: Dependency): boolean => {
     const only = pkg.usedFor.get(dependencyName(dep));
     return only !== undefined && only !== side;
@@ -519,7 +523,7 @@ export function sidedNodes<T extends SourceRef | Unbuilt>(sources: T[], operatio
   /* Which nodes change: one with an edge left out, and whatever reaches one. */
   const reached = new Set<ResolvedNode>();
   const parents = new Map<ResolvedNode, ResolvedNode[]>();
-  const pending = sources.filter((source): source is T & ResolvedNode => source instanceof ResolvedNode) as ResolvedNode[];
+  const pending = sources.map(nodeOf).filter((node): node is ResolvedNode => node !== undefined);
   const changed = new Set<ResolvedNode>();
   while (pending.length > 0) {
     const pkg = pending.pop()!;
@@ -566,7 +570,13 @@ export function sidedNodes<T extends SourceRef | Unbuilt>(sources: T[], operatio
     );
     return node;
   };
-  const result = sources.map(source => (source instanceof ResolvedNode && changed.has(source) ? (copy(source) as unknown as T) : source));
+  const result = sources.map((source): T => {
+    const node = nodeOf(source);
+    if (node === undefined || !changed.has(node)) {
+      return source;
+    }
+    return (source instanceof ProjectedPackage ? new ProjectedPackage(copy(node), source.projections, source.miss) : copy(node)) as unknown as T;
+  });
   builder.seal();
   for (const [pkg, node] of made) {
     const marker = markers.get(pkg);
@@ -1136,6 +1146,7 @@ function mergedBatches(batches: ReadonlyArray<ResolvedBatch>): ResolvedBatch[] {
             resolution: batch.resolution,
             requests: [...held.requests, ...batch.requests],
             builds: held.builds || batch.builds,
+            catalog: held.catalog === true || batch.catalog === true,
           }
     );
   }

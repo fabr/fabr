@@ -23,7 +23,7 @@ import * as os from "os";
 import * as path from "path";
 import { PassThrough } from "stream";
 import { Computable } from "../core/Computable";
-import { CommandFailedError } from "../core/Errors";
+import { CommandFailedError, FabrError } from "../core/Errors";
 import { FileSet, IFile } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import { TaskState } from "../model/BuildEvents";
@@ -37,6 +37,7 @@ import {
   IOutputHandle,
   lineSplitter,
   SILENT_REPORT,
+  variableEntry,
 } from "./Execute";
 import { Semaphore } from "./Semaphore";
 
@@ -131,6 +132,17 @@ describe("findExecutable", () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("variableEntry", () => {
+  it("splits a variable at its first '='", () => {
+    expect(variableEntry("A=b=c")).to.deep.equal(["A", "b=c"]);
+    expect(variableEntry("EMPTY=")).to.deep.equal(["EMPTY", ""]);
+  });
+
+  it("refuses an entry with no '=', naming it", () => {
+    expect(() => variableEntry("JUSTANAME")).to.throw(FabrError, "'JUSTANAME'");
   });
 });
 

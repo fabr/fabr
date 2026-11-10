@@ -40,7 +40,7 @@ export * from "./core/Reference";
 export * from "./core/NamespaceRef";
 export * from "./core/PartialRepositoryRef";
 export * from "./core/TargetRef";
-export { contentStream, deleteTree, HASH_ALGORITHM, hashString, symlink } from "./core/FSWrapper";
+export { contentSize, contentStream, deleteTree, HASH_ALGORITHM, hashString, symlink } from "./core/FSWrapper";
 export * from "./core/FileSetRef";
 export * from "./core/RunnableFileSet";
 export * from "./core/PublishableFileSet";
@@ -105,6 +105,20 @@ export * from "./support/UnpackZip";
 export * from "./support/PackTar";
 export * from "./support/PackZip";
 export type { TarEntryHeader, TarEntryType, TarHeader } from "./support/TarHeader";
+export {
+  decodeBlock,
+  decodeLongPath,
+  decodePaxRecords,
+  GNU_LONG_LINK_PATH,
+  headerOf,
+  isDescribingBlock,
+  isLongPathBlock,
+  paddingOf,
+  PAX_GLOBAL_HEADER,
+  PAX_HEADER,
+  TAR_BLOCK_SIZE,
+} from "./support/TarHeader";
+export type { ITarBlock } from "./support/TarHeader";
 export * from "./support/TarExtract";
 export * from "./support/TarPack";
 export * from "./support/Paths";

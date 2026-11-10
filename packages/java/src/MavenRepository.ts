@@ -28,7 +28,6 @@
  */
 
 import {
-  compareText,
   Computable,
   Credential,
   DOC_OPERATION,
@@ -56,7 +55,6 @@ import {
   RepositoryPublishRef,
   RepositoryReader,
   RepositoryRef,
-  RepositoryRegistration,
   RepositoryWriter,
   Requirement,
   resolveBarePackage,
@@ -80,6 +78,7 @@ import {
   packageMavenMember,
   publishedFilePath,
   repositoryPath,
+  uploadOrder,
 } from "./MavenPublish";
 import { constraintOfVersion, MavenConstraint, MavenVersion, MAVEN_VERSIONS, parseMavenVersion } from "./MavenVersion";
 import { coordinateText, EffectivePom, effectivePom, parsePom, passedOnDependencies, PomCoordinate, RawPom } from "./Pom";
@@ -88,6 +87,8 @@ import { javaRelease } from "./JarPackage";
 import { parseXml, xmlChild, xmlChildren } from "./Xml";
 
 const METADATA_FILE = "maven-metadata.xml";
+/** The name a published `.sha1`'s text is kept under in the build cache. */
+const SHA1_FILE = "sha1";
 
 /** The classifier of the jar a version publishes for each operation it answers with one. */
 const CLASSIFIERS = new Map([
@@ -260,9 +261,10 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
 
   /**
    * Upload a packaged member (RepositoryWriter implementation), as `mvn deploy`
-   * does: each file `PUT` at its path, the POM last but for the package's
-   * `maven-metadata.xml`, which is read, merged and `PUT` after them. A member
-   * whose POM is already there is already synced.
+   * does: each file `PUT` at its path, then the package's `maven-metadata.xml`,
+   * read, merged and `PUT`, then the member's marker (its version's POM, or a
+   * classified jar) after its checksums. A member whose marker is already there
+   * is already synced.
    */
   public publish(artifact: PublishableFileSet): Computable<PublishStatus> {
     const destination = packageCoordinateOf(artifact.destination);
@@ -278,15 +280,19 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
       if (existing.statusCode !== 404) {
         throw this.failure("reading", marker, existing);
       }
-      /* The marker goes up last, so a member is published only once all of it is there. */
-      const files = [...artifact].sort(([a], [b]) => Number(a.startsWith(marker)) - Number(b.startsWith(marker)) || compareText(a, b));
-      const uploads = files.reduce<Computable<void>>(
-        (previous, [path, file]) => previous.then(() => file.getBuffer().then(bytes => this.put(path, bytes))),
-        Computable.resolve(undefined)
-      );
-      return classified
-        ? uploads.then((): PublishStatus => "published")
-        : uploads.then(() => this.updateMetadata(groupId, artifactId, version)).then((): PublishStatus => "published");
+      /* The marker goes up last, after its checksums and the package's
+       * metadata, so a member is published only once all of it is there. */
+      const files = new Map<string, IFile>(artifact);
+      const { before, last } = uploadOrder(files.keys(), marker);
+      const upload = (paths: string[]): Computable<void> =>
+        paths.reduce<Computable<void>>(
+          (previous, path) => previous.then(() => files.get(path)!.getBuffer().then(bytes => this.put(path, bytes))),
+          Computable.resolve(undefined)
+        );
+      return upload(before)
+        .then(() => (classified ? undefined : this.updateMetadata(groupId, artifactId, version)))
+        .then(() => upload(last))
+        .then((): PublishStatus => "published");
     });
   }
 
@@ -472,7 +478,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
   public getVersionMetadata(name: string, version: MavenVersion): Computable<IVersionMetadata> {
     const coordinate = this.coordinateOf(name, version.text);
     return this.effectivePomOf(name, version.text).then(pom =>
-      this.sha1Of(`${this.versionUrl(coordinate)}/${this.artifactFileOf(coordinate, pom)}`).then(sha1 => ({
+      this.publishedSha1Of(coordinate, this.artifactFileOf(coordinate, pom)).then(sha1 => ({
         licenses: pom.licenses.flatMap(({ name: text, url }) => (text === undefined ? [] : [{ text, ...(url === undefined ? {} : { url }) }])),
         hashes: sha1 === undefined ? [] : [{ algorithm: "sha1", encoding: "hex" as const, value: sha1 }],
       }))
@@ -506,7 +512,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
       if (pom.packaging !== "pom") {
         return fetchArtifact(() => this.sha1Of(artifactUrl));
       }
-      return this.sha1Of(artifactUrl).then(sha1 =>
+      return this.publishedSha1Of(coordinate, file).then(sha1 =>
         sha1 === undefined ? new PackageFileSet([], name, version.text) : fetchArtifact(() => Computable.resolve(sha1))
       );
     });
@@ -620,6 +626,22 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     );
   }
 
+  /**
+   * Read the `.sha1` the repository publishes beside `file`, a file of the
+   * published version `coordinate`, or undefined where it publishes none. The
+   * answer is kept in the build cache, absence included: what a published
+   * version publishes does not change.
+   */
+  private publishedSha1Of(coordinate: PomCoordinate, file: string): Computable<string | undefined> {
+    return this.context
+      .memoize("maven:published-sha1:1", `${this.identity} ${coordinateText(coordinate)} ${file}`, () =>
+        this.sha1Of(`${this.versionUrl(coordinate)}/${file}`).then(
+          sha1 => new FileSet(sha1 === undefined ? new Map() : new Map([[SHA1_FILE, MemoryFile.from(sha1)]]))
+        )
+      )
+      .then((kept): Computable<string | undefined> => (kept.isEmpty() ? Computable.resolve(undefined) : kept.readFile(SHA1_FILE)));
+  }
+
   /** Read the SHA-1 published beside an artifact, or undefined where there is none. */
   private sha1Of(artifactUrl: string): Computable<string | undefined> {
     const url = `${artifactUrl}.sha1`;
@@ -675,7 +697,6 @@ function createRepository(context: TargetContext, url?: string, credential?: Cre
   );
 }
 
-export const mavenRepositoryRegistration: RepositoryRegistration = { type: "maven_repository", provider: createRepository };
 
 /** The implementation JAVA.fabr's `repository` declaration names. */
 export default createRepository;

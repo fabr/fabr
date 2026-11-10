@@ -97,4 +97,17 @@ describe("overlay over fs", () => {
     watcher.close();
     expect(seen).to.deep.equal(["change"]);
   });
+
+  it("forgets a watch of a link once it is closed or unwatched", () => {
+    const config = path.join(root, "real/tsconfig.json");
+    const seen: string[] = [];
+    view.watch(config, { persistent: false }, (event: string) => seen.push(`watch ${event}`)).close();
+    const listener = (): void => void seen.push("watchFile");
+    view.watchFile(config, { persistent: false, interval: 60_000 }, listener);
+    view.unwatchFile(config, listener);
+    const before = current;
+    current = new Map([...current, [config, path.join(root, "other.json")]]);
+    notifyRelinked(view, before, current);
+    expect(seen).to.deep.equal([]);
+  });
 });

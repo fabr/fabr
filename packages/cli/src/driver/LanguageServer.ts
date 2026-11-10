@@ -195,6 +195,9 @@ export class LanguageServer {
           serverInfo: { name: "fabr", version: getVersion() },
         };
       case "initialized":
+        /* What the last load reported, published before the client was there to hear it. */
+        [...this.loaded.keys()].forEach(uri => this.publishDocument(uri));
+        return null;
       case "shutdown":
       case "exit":
         return null;

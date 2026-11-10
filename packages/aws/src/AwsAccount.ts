@@ -28,7 +28,6 @@ import {
   Reference,
   Repository,
   Namespace,
-  RepositoryRegistration,
   sendRequest,
   TargetContext,
 } from "@fabr-build/core";
@@ -40,7 +39,7 @@ import { identityRequest, parseCallerAccount, STS_SERVICE } from "./Sts";
 import { DEFAULT_REGION, IAccountSettings } from "./Types";
 
 /** The global naming the repository type each AWS service or CodeArtifact format is read and published as. */
-export const REPOSITORY_TYPES = "AWS_REPOSITORY_TYPES";
+const REPOSITORY_TYPES = "AWS_REPOSITORY_TYPES";
 
 /**
  * An `aws_account` declaration, as the namespace of the account's
@@ -365,7 +364,6 @@ function endpointOf(text: string, account: string): URL {
   return url;
 }
 
-export const awsAccountRegistration: RepositoryRegistration = { type: "aws_account", provider: createAccount };
 
 /** The implementation AWS.fabr's `repository` declaration names. */
 export default createAccount;

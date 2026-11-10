@@ -571,8 +571,10 @@ are instants, so a watch run's cycles read apart. A span's `args` carry the task
 the chain of targets that required it, as the start line does.
 
 Work served from the cache runs no step and appears nowhere, which is the point: the trace is of
-what the run had to do. The file is written whole at the end of each cycle, and again if the run is
-interrupted, with any task then still running marked `unfinished`.
+what the run had to do. Each cycle's work is added to the file at the end of the cycle, and the file
+is finished when the run ends, however it ends, with any task then still running marked
+`unfinished`. A trace read before then lacks its closing `]`, which Perfetto and `chrome://tracing`
+accept.
 
 ```sh
 fabr test --trace=traces/full.json all

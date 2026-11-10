@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { Computable, Credential, FabrError, IAuthChallenge, IRequestHead, parseJson, sendRequest, TargetContext } from "@fabr-build/core";
+import { Computable, Credential, FabrError, IAuthChallenge, IRequestHead, isJsonObject, parseJson, sendRequest, TargetContext } from "@fabr-build/core";
 import { containerPluginContext, IRegistryCredential } from "./RegistryAuth";
 
 /**
@@ -117,7 +117,8 @@ export function scopesOf({ method, url }: Pick<IRequestHead, "method" | "url">, 
     return [];
   }
   const path = target.pathname.substring(base.pathname.replace(/\/+$/, "").length);
-  const match = /^\/v2\/(.+?)\/(?:manifests|blobs|tags)(?:\/|$)/.exec(path);
+  /* A repository's name may itself hold `blobs` or `manifests`, so the request's kind is read from the end. */
+  const match = /^\/v2\/(.+)\/(?:manifests\/[^/]+|blobs\/(?:uploads\/[^/]*|[^/]+)|tags\/list)$/.exec(path);
   if (match === null) {
     return [];
   }
@@ -170,9 +171,9 @@ export function parseChallenge(header: string | undefined): IChallenge | undefin
   return { scheme: "bearer", realm, ...(service === undefined ? {} : { service }), ...(scope === undefined ? {} : { scope }) };
 }
 
+/** Read a token realm's answer: its `token`, else its `access_token`. */
 function toToken(json: unknown): string {
-  const doc = json as Record<string, unknown>;
-  const token = typeof doc?.token === "string" ? doc.token : doc?.access_token;
+  const token = isJsonObject(json) ? (typeof json.token === "string" ? json.token : json.access_token) : undefined;
   if (typeof token !== "string" || token === "") {
     throw new FabrError("the answer holds no token");
   }

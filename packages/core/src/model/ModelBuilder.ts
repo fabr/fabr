@@ -263,6 +263,8 @@ export class ModelBuilder implements BuildModel {
   private readonly unparsed = new Set<string>();
   /** The plugins that failed to build, whose failures {@link finish} rejects with. */
   private readonly failedBuilds: Error[] = [];
+  /** How many `plugin` declarations resolved to no plugin, their reasons reported. */
+  private unusablePlugins = 0;
 
   /**
    * Make a model of no files, with the rules and repositories of
@@ -356,8 +358,10 @@ export class ModelBuilder implements BuildModel {
     if (isBuildFailure(resolved)) {
       this.log.log(DIAG_PLUGIN_UNUSABLE, { detail: `Plugin '${decl.name.toString()}' could not be built`, loc: declPosn(decl) });
       this.failedBuilds.push(resolved);
+      this.unusablePlugins++;
     } else if (resolved instanceof Error) {
       this.log.log(DIAG_PLUGIN_UNUSABLE, { detail: resolved.message, loc: declPosn(decl) });
+      this.unusablePlugins++;
     } else if (this.packages.has(resolved.name)) {
       this.log.log(DIAG_PLUGIN_UNUSABLE, { detail: `Plugin '${decl.name.toString()}' is a second plugin named '${resolved.name}'`, loc: declPosn(decl) });
     } else {
@@ -405,16 +409,20 @@ export class ModelBuilder implements BuildModel {
 
   /**
    * Finish the model: report each `plugin` declaration still pending as naming
-   * nothing, check the whole ({@link validate}), and @return the model, or
+   * nothing, and each include of optional libs still pending as of a plugin the
+   * project does not use where every plugin declaration resolved, check the whole ({@link validate}), and @return the model, or
    * throw if anything added held an error: the failures of plugins that did
    * not build, or else a {@link BuildFilesInvalidError} for errors already
    * reported, which only halts. What is wrong is reported first.
    */
   public finish(): BuildModel {
-    for (const decl of this.pendingPlugins()) {
+    const pending = this.pendingPlugins();
+    for (const decl of pending) {
       this.log.log(DIAG_PLUGIN_UNUSABLE, { detail: `Plugin '${decl.name.toString()}' names nothing the project declares`, loc: declPosn(decl) });
     }
-    for (const decl of this.pendingOptionalLibs()) {
+    /* Where a plugin declaration resolved to nothing, its error is the one to
+     * report: an include of its optional libs may be waiting on it. */
+    for (const decl of pending.length > 0 || this.unusablePlugins > 0 ? [] : this.pendingOptionalLibs()) {
       const plugin = optionalLibOf(decl.name)?.plugin;
       this.log.log(DIAG_OPTIONAL_LIB_UNUSED, {
         plugin: plugin ?? "",

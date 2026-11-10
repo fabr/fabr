@@ -25,7 +25,7 @@
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import { Hash } from "@smithy/hash-node";
 import { SignatureV4 } from "@smithy/signature-v4";
-import { Computable, Credential, FabrError, toError } from "@fabr-build/core";
+import { compareText, Computable, Credential, FabrError, toError } from "@fabr-build/core";
 
 /** A request to a service, before it is signed. */
 export interface IServiceRequest {
@@ -102,7 +102,7 @@ export function uriEncode(text: string): string {
 export function requestUrl(request: IServiceRequest): string {
   const host = request.port === undefined ? request.hostname : `${request.hostname}:${request.port}`;
   const query = [...request.query]
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .sort(([a], [b]) => compareText(a, b))
     .map(([key, value]) => `${uriEncode(key)}=${uriEncode(value)}`)
     .join("&");
   return `${request.protocol}//${host}${request.path}${query === "" ? "" : `?${query}`}`;

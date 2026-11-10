@@ -293,12 +293,15 @@ export function testRequirements(written: TestRequirements): ResolutionSpec<Test
  * makes.
  */
 export function packageBuildOverrides(context: TargetContext, property: string): Computable<Constraints> {
-  return Computable.forAll([testFramework(context, property), context.getGlobalString("JS_TARGET", BUILD_OVERRIDE)], (framework, target) => {
-    const jsTarget = parseJSTarget(target);
-    return jsTarget.module === framework.module
-      ? BUILD_OVERRIDE
-      : BUILD_OVERRIDE.with(Constraints.of({ JS_TARGET: formatJSTarget(testTargetOf(jsTarget, framework)) }));
-  });
+  return Computable.forAll(
+    [testFramework(context, property), context.getGlobalString("JS_TARGET", BUILD_OVERRIDE)],
+    (framework, target) => {
+      const jsTarget = parseJSTarget(target);
+      return jsTarget.module === framework.module
+        ? BUILD_OVERRIDE
+        : BUILD_OVERRIDE.with(Constraints.of({ JS_TARGET: formatJSTarget(testTargetOf(jsTarget, framework)) }));
+    }
+  );
 }
 
 /**
@@ -348,7 +351,8 @@ export function compileAndRunTests(
    * sources (the runner testing itself) is dropped. */
   const tested = testedSets.find((set): set is PackageFileSet => set instanceof PackageFileSet);
   const sources = FileSet.unionAll(...srcs, tests).remap(name => (name === RUNNER_GLOBALS_TYPES ? undefined : name));
-  const declarations = tested === undefined ? undefined : stripPackageJson(tested).remap(name => (DECLARATION_FILE.test(name) ? name : undefined));
+  const declarations =
+    tested === undefined ? undefined : stripPackageJson(tested).remap(name => (DECLARATION_FILE.test(name) ? name : undefined));
   /* The declared test sources' stems (path minus extension). Their compiled `.js`
    * are picked out of the *actual* compiled tree by stem in planTestRun, so the
    * source→output naming is never re-derived here — js_compile owns it. */
@@ -368,60 +372,62 @@ export function compileAndRunTests(
     (runner, expectations, target, env, coverage, namePattern): Computable<RuleResult> =>
       (coverage === COVERAGE_ON ? context.getGlobalRunnable("JS_COVERAGE_DRIVER") : Computable.resolve(undefined)).then(
         (coverageDriver): Computable<RuleResult> => {
-      const jsTarget = parseJSTarget(target);
-      /* The test compile may import the package's deps, the test_deps, and the
-       * runner globals directly (all passed to compileJsSources). The runtime
-       * install splits them like RunJSScript: packages mount as node_modules,
-       * while a loose *resource* dep (.json, a template) stages at the install
-       * root next to the compiled tests, so a `./x.json` import resolves. Compilable loose deps (.ts/.js) are excluded here — their
-       * output already rides the compiled tree (and a raw .js would collide). */
-      const allDeps = [...deps, ...testDeps];
-      const packages = allDeps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
-      const resources = resourceFiles(allDeps.filter(dep => !(dep instanceof PackageFileSet)));
+          const jsTarget = parseJSTarget(target);
+          /* The test compile may import the package's deps, the test_deps, and the
+           * runner globals directly (all passed to compileJsSources). The runtime
+           * install splits them like RunJSScript: packages mount as node_modules,
+           * while a loose *resource* dep (.json, a template) stages at the install
+           * root next to the compiled tests, so a `./x.json` import resolves. Compilable loose deps (.ts/.js) are excluded here — their
+           * output already rides the compiled tree (and a raw .js would collide). */
+          const allDeps = [...deps, ...testDeps];
+          const packages = allDeps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
+          const resources = resourceFiles(allDeps.filter(dep => !(dep instanceof PackageFileSet)));
 
-      const testTarget = testTargetOf(jsTarget, framework);
-      return testCompile(context, framework, settings, { sources, declarations, deps, testDeps, runner, testTarget }).then(built => {
-        if (built.sources.ts.isEmpty() && built.sources.js.isEmpty() && built.sources.jsx.isEmpty()) {
-          /* Tests are declared but none is a compilable source (.ts/.tsx/.js/.jsx),
-           * so there is nothing to run — a loud failure, not a silent green. */
-          throw new FabrError("Test target declares test files but none is a compilable source");
-        }
-        return planTestRun(context, {
-          /* The tests' output beside the package's own, as one tree, where what
-           * the package ships is the package's: a JSON source both import is
-           * emitted by the package's compile and passed through, as written,
-           * by the tests'. */
-          compiled: Computable.resolve(
-            tested === undefined ? built.compiled : FileSet.unionAll(stripPackageJson(tested), built.compiled.minus(tested))
-          ),
-          /* The lowered CSS is a sibling of the compiled code that imports it. */
-          copied: FileSet.unionAll(built.passthrough, built.css).minus(tested ?? EMPTY_FILESET),
-          compileSrcs: built.compileSrcs,
-          resources,
-          runner,
-          tests,
-          testStems,
-          testTarget,
-          /* The suite's environment follows the `dom` SOURCE flag, not the
-           * target it is emitted for: a tree that uses the DOM needs jsdom
-           * however it is built, and one that does not should run under plain
-           * node even when its bundle is emitted for a browser. Read off
-           * `deps` AND `test_deps` — the same flags the test compile sees, so
-           * a suite whose TESTS need a DOM its sources do not (a component
-           * library rendering in its tests) declares `dom` in test_deps and
-           * gets both the lib and the environment. */
-          needsDom: usesDom([...runtimeDeps, ...testDeps].filter((dep): dep is Flag => dep instanceof Flag)),
-          layout: layoutOf([...runtimeDeps, ...testDeps].filter((dep): dep is Flag => dep instanceof Flag)),
-          packages,
-          testResources: FileSet.unionAll(...testResources, ...shipped),
-          expectations: FileSet.unionAll(...expectationSets),
-          env,
-          packageName: settings.packageName,
-          update: expectations === UPDATE_EXPECTATIONS,
-          namePattern: namePattern === "" ? undefined : namePattern,
-          coverage: coverageDriver === undefined ? undefined : { driver: coverageDriver, packages },
-        });
-      });
+          const testTarget = testTargetOf(jsTarget, framework);
+          return testCompile(context, framework, settings, { sources, declarations, deps, testDeps, runner, testTarget }).then(
+            built => {
+              if (built.sources.ts.isEmpty() && built.sources.js.isEmpty() && built.sources.jsx.isEmpty()) {
+                /* Tests are declared but none is a compilable source (.ts/.tsx/.js/.jsx),
+                 * so there is nothing to run — a loud failure, not a silent green. */
+                throw new FabrError("Test target declares test files but none is a compilable source");
+              }
+              return planTestRun(context, {
+                /* The tests' output beside the package's own, as one tree, where what
+                 * the package ships is the package's: a JSON source both import is
+                 * emitted by the package's compile and passed through, as written,
+                 * by the tests'. */
+                compiled: Computable.resolve(
+                  tested === undefined ? built.compiled : FileSet.unionAll(stripPackageJson(tested), built.compiled.minus(tested))
+                ),
+                /* The lowered CSS is a sibling of the compiled code that imports it. */
+                copied: FileSet.unionAll(built.passthrough, built.css).minus(tested ?? EMPTY_FILESET),
+                compileSrcs: built.compileSrcs,
+                resources,
+                runner,
+                tests,
+                testStems,
+                testTarget,
+                /* The suite's environment follows the `dom` SOURCE flag, not the
+                 * target it is emitted for: a tree that uses the DOM needs jsdom
+                 * however it is built, and one that does not should run under plain
+                 * node even when its bundle is emitted for a browser. Read off
+                 * `deps` AND `test_deps` — the same flags the test compile sees, so
+                 * a suite whose TESTS need a DOM its sources do not (a component
+                 * library rendering in its tests) declares `dom` in test_deps and
+                 * gets both the lib and the environment. */
+                needsDom: usesDom([...runtimeDeps, ...testDeps].filter((dep): dep is Flag => dep instanceof Flag)),
+                layout: layoutOf([...runtimeDeps, ...testDeps].filter((dep): dep is Flag => dep instanceof Flag)),
+                packages,
+                testResources: FileSet.unionAll(...testResources, ...shipped),
+                expectations: FileSet.unionAll(...expectationSets),
+                env,
+                packageName: settings.packageName,
+                update: expectations === UPDATE_EXPECTATIONS,
+                namePattern: namePattern === "" ? undefined : namePattern,
+                coverage: coverageDriver === undefined ? undefined : { driver: coverageDriver, packages },
+              });
+            }
+          );
         }
       )
   );
@@ -466,15 +472,20 @@ function testCompile(
    * target (`es2020` formats back as `es2020-commonjs-node`), which parses
    * identically and yields an identical tsconfig. Stylesheets among the
    * sources are built as a package would build them. */
-  return compileContents(context, sources, [...deps, ...testDeps, framework.globalsTypes ? runnerGlobalsTypes(runner) : EMPTY_FILESET], {
-    packageName: settings.packageName,
-    declarations,
-    constraints: Constraints.of({ JS_TARGET: formatJSTarget(testTarget) }),
-    /* A distinct label: the test compile is its own work item (its tree
-     * includes the tests), with its own incremental base. */
-    label: describe ? "Describing tests for" : "Compiling tests for",
-    describe,
-  });
+  return compileContents(
+    context,
+    sources,
+    [...deps, ...testDeps, framework.globalsTypes ? runnerGlobalsTypes(runner) : EMPTY_FILESET],
+    {
+      packageName: settings.packageName,
+      declarations,
+      constraints: Constraints.of({ JS_TARGET: formatJSTarget(testTarget) }),
+      /* A distinct label: the test compile is its own work item (its tree
+       * includes the tests), with its own incremental base. */
+      label: describe ? "Describing tests for" : "Compiling tests for",
+      describe,
+    }
+  );
 }
 
 /**
@@ -494,19 +505,29 @@ export function describeTests(
   if ((requirements.resolved.sources.get("tests") ?? []).length === 0) {
     return Computable.resolve(EMPTY_FILESET);
   }
-  return requirements.describeAll().then(({ srcs, tests: testSets, deps: runtimeDeps, compile_deps: compileDeps, test_deps: testDeps }) => {
-    const deps = [...runtimeDeps, ...compileDeps];
-    const tests = FileSet.unionAll(...testSets);
-    if (tests.isEmpty()) {
-      return Computable.resolve(EMPTY_FILESET);
-    }
-    const sources = FileSet.unionAll(...srcs, tests).remap(name => (name === RUNNER_GLOBALS_TYPES ? undefined : name));
-    /* The runner is wanted only for the globals typings it supplies. */
-    return Computable.forAll(
-      [framework.globalsTypes ? context.getGlobalRunnable(framework.runner) : Computable.resolve(EMPTY_FILESET), context.getGlobalString("JS_TARGET", BUILD_OVERRIDE)],
-      (runner, target) =>
-        testCompile(context, framework, settings, { sources, deps, testDeps, runner, testTarget: testTargetOf(parseJSTarget(target), framework) }, true)
-          .then(built => {
+  return requirements
+    .describeAll()
+    .then(({ srcs, tests: testSets, deps: runtimeDeps, compile_deps: compileDeps, test_deps: testDeps }) => {
+      const deps = [...runtimeDeps, ...compileDeps];
+      const tests = FileSet.unionAll(...testSets);
+      if (tests.isEmpty()) {
+        return Computable.resolve(EMPTY_FILESET);
+      }
+      const sources = FileSet.unionAll(...srcs, tests).remap(name => (name === RUNNER_GLOBALS_TYPES ? undefined : name));
+      /* The runner is wanted only for the globals typings it supplies. */
+      return Computable.forAll(
+        [
+          framework.globalsTypes ? context.getGlobalRunnable(framework.runner) : Computable.resolve(EMPTY_FILESET),
+          context.getGlobalString("JS_TARGET", BUILD_OVERRIDE),
+        ],
+        (runner, target) =>
+          testCompile(
+            context,
+            framework,
+            settings,
+            { sources, deps, testDeps, runner, testTarget: testTargetOf(parseJSTarget(target), framework) },
+            true
+          ).then(built => {
             const laidOut = layOutUnits(new Map([["test", built.compiled]]));
             const payload: ITypeScriptPayload = { units: laidOut.units, plugin: TSSERVER_PLUGIN };
             return describeTarget(context, requirements.resolved, {
@@ -517,8 +538,8 @@ export function describeTests(
               data: payload,
             }).then(description => FileSet.unionAll(descriptionFile(description), laidOut.files));
           })
-    );
-  });
+      );
+    });
 }
 
 /** Select the runnable test files: the JS entries of the *actual* compiled tree
@@ -635,7 +656,8 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
      * `build/` is ALSO the working directory (see the test-run action): a test's paths —
      * `./x` from cwd or `__dirname`-relative alike — then mean what they mean in
      * the source tree, since the compiled tree mirrors it. */
-    const coverage = run.coverage && measuredRun(run.coverage, compiledTree, new Set([...testFiles, ...(setupFile ? [setupFile] : [])]));
+    const coverage =
+      run.coverage && measuredRun(run.coverage, compiledTree, new Set([...testFiles, ...(setupFile ? [setupFile] : [])]));
     const pnp = run.layout === "pnp";
     if (pnp && coverage !== undefined) {
       throw new FabrError("Measuring coverage needs the tests' packages in a node_modules tree; drop layout/pnp for --coverage");
@@ -740,7 +762,10 @@ function measuredRun(
   const installed = [...packageDirectories(packages)]
     .filter(([pkg]) => builtInProject(pkg.origin))
     .flatMap(([pkg, directory]) =>
-      [...pkg].map(([name]) => name).filter(name => COMPILED_SCRIPT.test(name)).map(name => `node_modules/${directory}/${name}`)
+      [...pkg]
+        .map(([name]) => name)
+        .filter(name => COMPILED_SCRIPT.test(name))
+        .map(name => `node_modules/${directory}/${name}`)
     );
   return {
     links: { [COVERAGE_STAGE_DIR]: driver },
@@ -832,4 +857,3 @@ function snapshotStem(name: string): string | undefined {
   }
   return posix.join(posix.dirname(dir), stripExtension(posix.basename(name, ".snap")));
 }
-

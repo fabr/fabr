@@ -40,7 +40,6 @@ import {
   RepositoryPublishRef,
   RepositoryRef,
   RepositoryWriter,
-  RepositoryRegistration,
   ResolvedNode,
   RunnableFileSet,
   TargetContext,
@@ -130,7 +129,9 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
     private readonly context: TargetContext,
     private readonly registry: Registry,
     /** The namespace a single-segment name is in (`library` on Docker Hub), where the registry has one. */
-    private readonly defaultNamespace?: string
+    private readonly defaultNamespace?: string,
+    /** The name the registry's login is stored under, where it is not the host of its URL (`login_url`). */
+    private readonly loginUrl?: string
   ) {}
 
   public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
@@ -271,7 +272,14 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
           this.registry.layer(repository, layer, config.diffIds[index]).then(
             (stored): ILayerRecord => ({
               ...stored,
-              published: { digest: layer.digest, mediaType: layer.mediaType, size: layer.size, registry: this.registry.url, repository },
+              published: {
+                digest: layer.digest,
+                mediaType: layer.mediaType,
+                size: layer.size,
+                registry: this.registry.url,
+                repository,
+                ...(this.loginUrl === undefined ? {} : { loginUrl: this.loginUrl }),
+              },
             })
           )
         ),
@@ -302,12 +310,11 @@ function createRepository(context: TargetContext, url?: string, credential?: Cre
       }
       const base = written.replace(/\/+$/, "");
       const signIn = credential ?? authFileSignIn(context, base, loginUrl?.toString());
-      return new OciRepository(context, new Registry(context, base, signIn), defaultNamespace?.toString());
+      return new OciRepository(context, new Registry(context, base, signIn), defaultNamespace?.toString(), credential === undefined ? loginUrl?.toString() : undefined);
     }
   );
 }
 
-export const ociRepositoryRegistration: RepositoryRegistration = { type: "oci_repository", provider: createRepository };
 
 /** The implementation CONTAINER.fabr's `repository` declaration names. */
 export default createRepository;

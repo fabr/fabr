@@ -62,7 +62,7 @@ interface IFakeRegistry {
   close(): Promise<void>;
 }
 
-async function startRegistry(): Promise<IFakeRegistry> {
+async function startRegistry(options: { declineMounts?: boolean } = {}): Promise<IFakeRegistry> {
   const layers = [
     await layerTar({
       "etc/os-release": "base",
@@ -138,7 +138,7 @@ async function startRegistry(): Promise<IFakeRegistry> {
       if (upload !== null && req.method === "POST") {
         const mount = url.searchParams.get("mount");
         const from = url.searchParams.get("from");
-        if (mount !== null && from !== null && repositoryOf(from).blobs.has(mount)) {
+        if (!options.declineMounts && mount !== null && from !== null && repositoryOf(from).blobs.has(mount)) {
           repositoryOf(upload[1]).blobs.add(mount);
           res.writeHead(201).end();
         } else {
@@ -186,10 +186,24 @@ async function startRegistry(): Promise<IFakeRegistry> {
   return { url: origin, requests, close: () => new Promise(done => server.close(() => done())) };
 }
 
-/** A TargetContext whose `fetch` makes the request it is given, with no cache, and whose OCI_TARGET is `triple`. */
-function fetchingContext(triple: string, options: Array<FetchOptions | undefined> = []): TargetContext {
+/**
+ * A TargetContext whose `fetch` makes the request it is given, with no cache,
+ * and whose OCI_TARGET is `triple`; the auth files hold no login, and each
+ * name a login is looked up under is added to `logins`.
+ */
+function fetchingContext(triple: string, options: Array<FetchOptions | undefined> = [], logins: string[] = []): TargetContext {
+  const auth = {
+    registryAuth: () =>
+      Computable.resolve({
+        credentialFor: (server: string) => {
+          logins.push(server);
+          return Computable.resolve(undefined);
+        },
+      }),
+  };
   return {
     name: "@test",
+    execution: { getOrCreatePluginContext: () => auth },
     getGlobalString: () => Computable.resolve(triple),
     fetch: (_key: string, _tag: string, request: () => Computable<IFetchRequest>, _report: unknown, fetchOptions?: FetchOptions) => {
       options.push(fetchOptions);
@@ -279,6 +293,49 @@ describe("OciRepository", () => {
     const pulled = (await Promise.resolve(copied.content.files())) as ImageFileSet;
     expect(await pulled.readFile("app/server")).to.equal("srv");
     expect(await Promise.resolve(repository.publish(carrier))).to.equal("already-synced");
+  });
+
+  it("uploads a layer its registry declines to mount, read through the registry's own sign-in", async () => {
+    const declining = await startRegistry({ declineMounts: true });
+    try {
+      const context = fetchingContext("x86_64-unknown-linux");
+      const repository = new OciRepository(context, new Registry(context, declining.url, new RegistrySignIn(declining.url, () => Computable.resolve(undefined))), "library");
+      const node = await Promise.resolve(repository.resolve(repository.getRepositoryRef(parseName("demo:1.0")) as RepositoryRef));
+      const image = (await Promise.resolve(node.content.files())) as ImageFileSet;
+      const [carrier] = await Promise.resolve(repository.package([{ destination: repository.getRepositoryPublishRef(parseName("myorg/copy:2")), content: image }]));
+      declining.requests.length = 0;
+      expect(await Promise.resolve(repository.publish(carrier))).to.equal("published");
+      expect(declining.requests.filter(request => request.startsWith("GET /v2/library/demo/blobs/"))).to.have.lengthOf(2);
+      /* The token the registry's sign-in holds for reading `library/demo` is reused: no second client signs in. */
+      expect(declining.requests.filter(request => /^GET \/token\?service=test&scope=repository%3Alibrary%2Fdemo%3Apull$/.test(request))).to.deep.equal([]);
+    } finally {
+      await declining.close();
+    }
+  });
+
+  it("copies a layer from the registry it was published to, signing in there under its declared login", async () => {
+    const target = await startRegistry();
+    try {
+      const logins: string[] = [];
+      const context = fetchingContext("x86_64-unknown-linux", [], logins);
+      const source = new OciRepository(
+        context,
+        new Registry(context, registry.url, new RegistrySignIn(registry.url, () => Computable.resolve(undefined))),
+        "library",
+        "https://login.example/v1/"
+      );
+      const node = await Promise.resolve(source.resolve(source.getRepositoryRef(parseName("demo:1.0")) as RepositoryRef));
+      const image = (await Promise.resolve(node.content.files())) as ImageFileSet;
+      expect(image.layers.map(layer => layer.published?.loginUrl)).to.deep.equal(["https://login.example/v1/", "https://login.example/v1/"]);
+      const destination = new OciRepository(context, new Registry(context, target.url, new RegistrySignIn(target.url, () => Computable.resolve(undefined))));
+      const [carrier] = await Promise.resolve(destination.package([{ destination: destination.getRepositoryPublishRef(parseName("myorg/copy:2")), content: image }]));
+      expect(await Promise.resolve(destination.publish(carrier))).to.equal("published");
+      expect(logins).to.include("https://login.example/v1/");
+      const copied = await Promise.resolve(destination.resolve(destination.getRepositoryRef(parseName("myorg/copy:2")) as RepositoryRef));
+      expect(await ((await Promise.resolve(copied.content.files())) as ImageFileSet).readFile("app/server")).to.equal("srv");
+    } finally {
+      await target.close();
+    }
   });
 
   it("lists an image's tags, page by page, each as the reference to its image", async () => {

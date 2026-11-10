@@ -24,9 +24,8 @@ import { FileSetRef } from "../core/FileSetRef";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { Name } from "../core/Name";
 import { Repository, SourceRef } from "../core/Repository";
-import { PERMISSIVE_RESOLUTION } from "./CollectionPoint";
+import { collectLists, PERMISSIVE_RESOLUTION, withOperation } from "./CollectionPoint";
 import { ResolutionContext } from "../resolver/Types";
-import { collectLists } from "./CollectionPoint";
 import { RunnableFileSet, toRunnable } from "../core/RunnableFileSet";
 import { INameValue, IPropertyDecl, ITargetDecl, StreamName } from "../model/AST";
 import { StageStreams } from "../support/Execute";
@@ -95,7 +94,8 @@ export type MaterializedCommandPipeline = MaterializedCommandStage[];
 
 /**
  * Collect `sources` as the tool `name` names and return its runnable. A tool
- * is a collection of its own, resolved permissively, for `context`.
+ * is a collection of its own, resolved permissively for `run` on behalf of
+ * `context`, whatever operation `context` is under.
  */
 export function collectRunnable(
   config: InternalBuildContext,
@@ -103,7 +103,7 @@ export function collectRunnable(
   sources: SourceRef[],
   name: string
 ): Computable<RunnableFileSet> {
-  return collectLists(context, [sources], PERMISSIVE_RESOLUTION)
+  return collectLists(withOperation(context, "run"), [sources], PERMISSIVE_RESOLUTION)
     .then(([materialized]) => config.applyProjections(materialized))
     .then(finished => asRunnable(finished, name));
 }

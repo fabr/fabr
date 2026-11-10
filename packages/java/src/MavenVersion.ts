@@ -30,7 +30,7 @@
  * (`[1.0,2.0)`, `[1.2]`, `(,1.0],[1.2,)`) admits exactly what it names.
  */
 
-import { FabrError, VersionDomain } from "@fabr-build/core";
+import { compareText, FabrError, VersionDomain } from "@fabr-build/core";
 
 /**
  * One item of a parsed version: a number, a qualifier, a qualifier with its
@@ -197,10 +197,6 @@ function parseItems(text: string): Item[] {
 function comparableQualifier(value: string): string {
   const index = QUALIFIERS.indexOf(value);
   return index === -1 ? `${QUALIFIERS.length}-${value}` : String(index);
-}
-
-function compareText(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 /** Compare an item with another, or with a missing one. */

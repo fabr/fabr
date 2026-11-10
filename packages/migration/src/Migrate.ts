@@ -37,7 +37,7 @@ const KEPT = "Files kept as they are (delete one to have it written again)";
 /** The most rounds of resolving and pinning a migration makes. */
 const MAX_ROUNDS = 10;
 
-export interface MigrateOptions {
+interface MigrateOptions {
   /** Resolve the project and add the pins it needs (otherwise only the manifests' entries are written). */
   readonly pins: boolean;
   /** The build cache the resolution reads registry metadata through. */
@@ -46,19 +46,25 @@ export interface MigrateOptions {
   readonly progress: (line: string) => void;
 }
 
-/** @return the root of fabr's build cache, as the CLI finds it. */
+/**
+ * @return the root of fabr's build cache, found exactly as the CLI's
+ * `getBuildCacheRoot` finds it (where to keep the cache is a driver's policy,
+ * so this driver holds its own copy): `FABR_CACHE_DIR`, else `fabr` under the
+ * platform's cache directory, always absolute.
+ */
 export function defaultCacheRoot(): string {
   const explicit = process.env.FABR_CACHE_DIR;
   if (explicit) {
     return path.resolve(explicit);
   }
-  const base =
-    os.platform() === "darwin"
-      ? path.join(os.homedir(), "Library/Caches")
-      : os.platform() === "win32"
-        ? (process.env.LOCALAPPDATA ?? path.join(os.homedir(), "AppData/Local"))
-        : (process.env.XDG_CACHE_HOME ?? path.join(os.homedir(), ".cache"));
-  return path.join(base, "fabr");
+  switch (os.platform()) {
+    case "darwin":
+      return path.resolve(os.homedir(), "Library/Caches", "fabr");
+    case "win32":
+      return path.resolve(process.env.LOCALAPPDATA ?? process.env.APPDATA ?? path.resolve(os.homedir(), "AppData/Local"), "fabr");
+    default:
+      return path.resolve(process.env.XDG_CACHE_HOME ?? path.resolve(os.homedir(), ".cache"), "fabr");
+  }
 }
 
 /** @return `TYPESCRIPT`'s value where the catalog holds a compiler fabr's driver drives (5 or 6), otherwise undefined. */

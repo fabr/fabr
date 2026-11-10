@@ -259,7 +259,7 @@ function resolvePhase<V, C>(
      * converged tree proved blocking — and never a forced package's (the user
      * pinned it; a raise would move a version that was explicitly forced). */
     const canRepair = (id: string): boolean =>
-      registry.lowestAvailable !== undefined && repairable.has(id) && !forced.has(id.substring(0, id.lastIndexOf("@")));
+      registry.lowestAvailable !== undefined && repairable.has(id) && !forced.has(packageOf(id));
     /* Highest minimum seen so far, per package name — the principal winner */
     const selected = new Map<string, Selected<V>>();
     /* Fork selections per package, in creation order (each round's packing is
@@ -273,6 +273,11 @@ function resolvePhase<V, C>(
     /* Violated edges no fork can repair — nothing published satisfies their
      * constraint ("pkg\nconstraint"); they stay bare violations. */
     const unrepairable = new Set<string>();
+    /* The package of every node visited, by its id: a build's version text
+     * may hold an `@`, so an id is never split to find it. */
+    const nodePackages = new Map<string, string>();
+    /** @return the package the visited node `id` is of. */
+    const packageOf = (id: string): string => nodePackages.get(id) ?? id;
     /* Declared requirements of every pkg@version visited (including superseded ones) */
     const nodeRequirements = new Map<string, Requirement[]>();
     /* First reacher of every visited node (a node id, or ROOT_REQUIRER), for
@@ -317,6 +322,8 @@ function resolvePhase<V, C>(
     const nodeDeclared = new Map<string, Requirement[]>();
     const excludedReqs: Array<{ req: Requirement; requiredBy: string }> = [];
     const excludedFired = new Set<{ req: Requirement; requiredBy: string }>();
+    /* Whether any edge walked so far carries exclusions (none: nothing is excluded) */
+    let excluding = false;
     const alternateFired = new Set<string>();
     const floorlessRequired = new Set<string>();
 
@@ -333,7 +340,7 @@ function resolvePhase<V, C>(
       for (let parent = nodeParents.get(rootId); parent && parent !== ROOT_REQUIRER; parent = nodeParents.get(parent)) {
         rootId = parent;
       }
-      return rootId.substring(0, rootId.lastIndexOf("@"));
+      return packageOf(rootId);
     };
     /* Outstanding metadata fetches, plus one guard token held while seeding */
     let pending = 1;
@@ -545,20 +552,24 @@ function resolvePhase<V, C>(
         path.push(parent);
       }
       const rootId = path.at(-1) ?? id;
-      const rootPkg = rootId.substring(0, rootId.lastIndexOf("@"));
+      const rootPkg = rootId === id ? pkg : packageOf(rootId);
       return new MetadataFetchError(pkg, domain.versionToString(version), path, rootPkg, toError(err));
     };
-
-    /** @return the package a node id (`name@version`) is of. */
-    const packageOf = (id: string): string => id.substring(0, id.lastIndexOf("@"));
 
     /**
      * @return true if every path from a root to the node `id` excludes the
      * package `name`, otherwise false: a path that excludes it carries an
-     * edge whose requirement excludes it.
+     * edge whose requirement excludes it. A node no edge reaches is not
+     * excluded.
      */
     const excludedAt = (id: string, name: string): boolean => {
+      if (!excluding) {
+        return false;
+      }
       const start = packageOf(id);
+      if (!incoming.has(start)) {
+        return false;
+      }
       const seen = new Set<string>([start]);
       const stack = [start];
       for (let at = stack.pop(); at !== undefined; at = stack.pop()) {
@@ -591,6 +602,7 @@ function resolvePhase<V, C>(
       const id = nodeId(pkg, version);
       const entry: Demand = { req, requiredBy };
       incoming.set(pkg, [...(incoming.get(pkg) ?? []), { from: requiredBy, excludes: req.excludes }]);
+      excluding ||= (req.excludes?.length ?? 0) > 0;
       const demands = nodeDemands.get(id);
       if (demands) {
         /* Metadata already demanded (or resolved); record the demand for raise
@@ -606,6 +618,7 @@ function resolvePhase<V, C>(
         return;
       }
       nodeDemands.set(id, [entry]);
+      nodePackages.set(id, pkg);
       nodeRequirements.set(id, []);
       nodeParents.set(id, requiredBy);
       pending++;

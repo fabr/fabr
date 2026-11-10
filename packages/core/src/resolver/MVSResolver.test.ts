@@ -1425,6 +1425,14 @@ describe("force overrides", () => {
       expect(result.violations.map(violation => `${violation.versionConstraint} by ${violation.requiredBy}`)).to.deep.equal(["^1.0.0 by A@1.0.0"]);
     });
 
+    it("keeps the edges of a build whose configuration holds an '@'", () => {
+      const withAt = buildKey("chai=@npm:chai:5.0.0", "cccccccc");
+      builds.set(withAt, [{ name: "A", versionConstraint: "^1.0.0" }]);
+      const result = run([{ name: "lib", versionConstraint: withAt }]);
+      expect(ids(result)).to.deep.equal(["A@1.0.0", "lib@1.0.0", `lib@${withAt}`]);
+      expect([...result.edgesOf(`lib@${withAt}`).values()]).to.deep.equal(["A@1.0.0"]);
+    });
+
     it("answers a floorless requirement on its name, as any selection does", () => {
       const result = run(
         [

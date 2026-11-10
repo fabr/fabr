@@ -124,7 +124,7 @@ export function main(argv: string[]): void {
 }
 
 /** One child's outcome as the parent sees it: what it reported, or why it did not. */
-export interface ICompletedFile {
+interface ICompletedFile {
   testFile: string;
   result?: IChildResult;
   /** The child's stderr, kept for a file that died without reporting — see

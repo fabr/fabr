@@ -17,6 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import { compareText } from "@fabr-build/core";
 import { CATALOG, Catalog, CatalogEntry, entryReference, NPM } from "./Catalog";
 import { TargetPlan } from "./Targets";
 import { rangeText } from "./Spec";
@@ -26,11 +27,6 @@ export const CATALOG_FILE = "CATALOG.fabr";
 
 /** The file a package's target is written to, in its directory. */
 export const BUILD_FILE = "BUILD.fabr";
-
-/** Compare `a` and `b` in code-unit order, the canonical one. */
-function byText(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
 
 /** Lay out `property = values;` with one value per line where they do not fit on one. */
 function listProperty(indent: string, property: string, values: ReadonlyArray<string>): string[] {
@@ -44,7 +40,7 @@ function listProperty(indent: string, property: string, values: ReadonlyArray<st
 }
 
 /** The options of the catalog file. */
-export interface CatalogFileOptions {
+interface CatalogFileOptions {
   /** The lockfile the pins were read against, named in the header. */
   readonly lockfile?: string;
   /** The default registry, where it is not npm's. */
@@ -62,11 +58,11 @@ export function renderCatalogFile(catalog: Catalog, options: CatalogFileOptions)
   if (options.registry !== undefined) {
     lines.push(`NPM_REPOSITORY_URL = ${options.registry};`, "");
   }
-  for (const [scope, url] of [...options.scopeRegistries].sort(([a], [b]) => byText(a, b))) {
+  for (const [scope, url] of [...options.scopeRegistries].sort(([a], [b]) => compareText(a, b))) {
     lines.push(`npm_repository ${catalog.scopeRegistries.get(scope) ?? NPM} {`, `  url = ${url};`, "}", "");
   }
   const lockfile = options.lockfile ?? "the lockfile";
-  const entries = [...catalog.entries.values()].sort((a, b) => byText(a.address, b.address));
+  const entries = [...catalog.entries.values()].sort((a, b) => compareText(a.address, b.address));
   const sections: Array<[string | undefined, CatalogEntry[]]> = [
     [undefined, entries.filter(entry => entry.pin === undefined)],
     [`Raised to the versions ${lockfile} installs, where the declared floors give lower ones.`, entries.filter(entry => entry.pin === "raise")],
@@ -90,7 +86,7 @@ export function renderCatalogFile(catalog: Catalog, options: CatalogFileOptions)
   if (catalog.alternates.size > 0) {
     values.push("", `# Packages that ship at several versions, as ${lockfile} installs them.`);
   }
-  for (const [name, versions] of [...catalog.alternates].sort(([a], [b]) => byText(a, b))) {
+  for (const [name, versions] of [...catalog.alternates].sort(([a], [b]) => compareText(a, b))) {
     values.push([...versions].sort().map(version => `${catalog.repositoryOf(name)}:${name}:${rangeText(version)}?`).join(" "));
   }
   if (values.length > 0) {
@@ -101,7 +97,7 @@ export function renderCatalogFile(catalog: Catalog, options: CatalogFileOptions)
 }
 
 /** The options of the project file. */
-export interface ProjectFileOptions {
+interface ProjectFileOptions {
   /** The packages' build files, relative to the project root. */
   readonly buildFiles: ReadonlyArray<string>;
   /** `TYPESCRIPT`'s value, where the catalog holds a compiler fabr can drive. */
@@ -142,9 +138,9 @@ export function renderBuildFile(plan: TargetPlan): string {
   const properties: Array<[string, ReadonlyArray<string>]> = [
     ["srcs", plan.srcs],
     ["tests", plan.tests],
-    ["deps", [...plan.deps].sort(byText)],
-    ["provided_deps", [...plan.provided].sort(byText)],
-    ["optional_provided_deps", [...plan.optionalProvided].sort(byText)],
+    ["deps", [...plan.deps].sort(compareText)],
+    ["provided_deps", [...plan.provided].sort(compareText)],
+    ["optional_provided_deps", [...plan.optionalProvided].sort(compareText)],
   ];
   for (const [property, values] of properties) {
     if (values.length > 0) {

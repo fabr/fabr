@@ -197,6 +197,21 @@ describe("TarPack and TarExtract", () => {
     expect(again.content.toString()).to.equal("elf");
   });
 
+  it("reads no body for a directory whose header states a size", async () => {
+    const archive = Buffer.concat([
+      ustarBlock("5", "dir/", 1024),
+      ustarBlock("0", "dir/file.txt", 5),
+      padded(Buffer.from("hello")),
+      Buffer.alloc(1024),
+    ]);
+    const entries = await extracted(archive);
+    expect(entries.map(({ header }) => [header.name, header.type])).to.deep.equal([
+      ["dir/", "directory"],
+      ["dir/file.txt", "file"],
+    ]);
+    expect(entries[1].content.toString()).to.equal("hello");
+  });
+
   it("keeps the pax records it does not interpret, and writes them back", async () => {
     const [entry] = await extracted(
       await packed([

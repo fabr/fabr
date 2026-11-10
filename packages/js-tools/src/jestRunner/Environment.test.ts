@@ -18,7 +18,10 @@
  */
 
 import { expect } from "chai";
-import { answerWithGlobal, environmentFor, hideNodeSchedulers, inheritedMethods, withNodeSchedulers } from "./Environment";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { answerWithGlobal, environmentFor, hideNodeSchedulers, inheritedMethods, packageRootOf, withNodeSchedulers } from "./Environment";
 
 /* installJsdom itself needs a real jsdom, which fabr's own tests do not carry
  * (it comes from the TARGET's test_deps); what is testable here is the part
@@ -186,5 +189,19 @@ describe("withNodeSchedulers", () => {
 
   it("turns a leading hashbang into a comment of the same line", () => {
     expect(withNodeSchedulers("#!/usr/bin/env node\nexports.x = 1;").split("\n")[0]).to.contain("///usr/bin/env node");
+  });
+});
+
+describe("packageRootOf", () => {
+  it("finds the package of a file under a PnP virtual location, reading its manifest physically", () => {
+    const pool = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-env-")));
+    try {
+      fs.mkdirSync(path.join(pool, "jsdom", "lib"), { recursive: true });
+      fs.writeFileSync(path.join(pool, "jsdom", "package.json"), JSON.stringify({ name: "jsdom" }));
+      const virtual = path.join(pool, "__virtual__", "abc123", "0", "jsdom");
+      expect(packageRootOf(path.join(virtual, "lib", "api.js"), "jsdom")).to.equal(virtual);
+    } finally {
+      fs.rmSync(pool, { recursive: true, force: true });
+    }
   });
 });

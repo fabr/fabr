@@ -45,7 +45,7 @@ export interface FSFileStats {
  * owner may execute it, else {@link DEFAULT_FILE_MODE}. The mode is key
  * material, and its other bits vary with the umask of whatever wrote the file.
  */
-function fileModeOf(stat: FSFileStats): number {
+export function fileModeOf(stat: FSFileStats): number {
   return stat.mode !== undefined && (stat.mode & 0o100) !== 0 ? 0o755 : DEFAULT_FILE_MODE;
 }
 

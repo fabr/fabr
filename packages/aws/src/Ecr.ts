@@ -30,7 +30,7 @@ import { IServiceSettings } from "./Types";
 export const ECR_SERVICE = "ecr";
 
 /** What ECR's `GetAuthorizationToken` gives: the registry's password, already `AWS:<password>` in base64, and the registry's URL. */
-export interface IEcrToken {
+interface IEcrToken {
   readonly authorization: string;
   readonly proxyEndpoint: string;
 }

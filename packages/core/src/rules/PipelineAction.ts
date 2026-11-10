@@ -115,11 +115,12 @@ function keptBase(changed: IChangedFiles | undefined, state: FileSet | undefined
   );
 }
 
-/** Select the redirect captures `output` names, under the names it gives them. A
- * capture selected under the name of a selected written file is a conflict,
- * reported with each side named as the command produced it. */
-function selectedCaptures(captured: FileSet, written: FileSet, output: Name): FileSet {
-  const project = output.makeProjector();
+/** Select the redirect captures `output` names, under the names it gives them,
+ * or every capture under its own name where there is no `output`. A capture
+ * selected under the name of a written file is a conflict, reported with each
+ * side named as the command produced it. */
+export function selectedCaptures(captured: FileSet, written: FileSet, output?: Name): FileSet {
+  const project = output === undefined ? (name: string): string | undefined => name : output.makeProjector();
   for (const [redirect] of captured) {
     const name = project(redirect);
     if (name !== undefined && written.getFile(name) !== undefined) {

@@ -359,7 +359,7 @@ export function importRewrites(rewrites: Name[]): Array<{ pattern: string; repla
 }
 
 /** A compile's requirements, materialized. */
-export interface CompileInputs {
+interface CompileInputs {
   srcs: FileSet[];
   deps: FileSet[];
   resources: FileSet[];
@@ -390,7 +390,7 @@ function resourceNamesOf(resources: FileSet): string[] {
 }
 
 /** Work out the compile `inputs` make in `context`'s configuration, or undefined if they make none. */
-export function compileSetup(context: TargetContext, { srcs: srcSets, deps, resources, declarations }: CompileInputs): Computable<ICompileSetup | undefined> {
+function compileSetup(context: TargetContext, { srcs: srcSets, deps, resources, declarations }: CompileInputs): Computable<ICompileSetup | undefined> {
   if (srcSets.every(srcs => srcs.isEmpty())) {
     return Computable.resolve(undefined);
   }

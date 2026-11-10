@@ -18,14 +18,14 @@
  */
 
 import * as fs from "fs";
-import { Readable } from "stream";
+import { pipeline, Readable } from "stream";
 import { createGzip } from "zlib";
 import { Computable } from "../core/Computable";
 import { stat } from "../core/FSWrapper";
 import { FileSet, IFile } from "../core/FileSet";
 import { SymlinkFile } from "../core/SymlinkFile";
 import type { IOutputHandle } from "./Execute";
-import { ancestorsOf } from "./Paths";
+import { archiveEntryNames } from "./Paths";
 import { TarPack } from "./TarPack";
 
 /**
@@ -91,7 +91,11 @@ export function packToTarball(files: FileSet, options: PackOptions = {}): Comput
     gzip.on("error", reject);
     pack.on("error", reject);
     pack.pipe(gzip);
-    writeEntries(pack, entriesOf(files, options), reject);
+    writeEntries(pack, entriesOf(files, options), err => {
+      pack.destroy(err);
+      gzip.destroy(err);
+      reject(err);
+    });
   });
 }
 
@@ -110,7 +114,8 @@ export function writeTar(files: FileSet, output: IOutputHandle, name: string, op
     const pack = new TarPack();
     pack.on("error", reject);
     pack.on("end", () => resolve());
-    output.stream.on("error", reject);
+    /* A failed output stops the packing; the pack's error settles this. */
+    output.stream.on("error", err => pack.destroy(err));
     pack.pipe(output.stream, { end: false });
     writeEntries(pack, entriesOf(files, options), err => pack.destroy(err));
   }).then(
@@ -125,10 +130,10 @@ export function writeTar(files: FileSet, output: IOutputHandle, name: string, op
 /** @return the entries of the archive of `files`, in the order written. */
 function entriesOf(files: FileSet, options: PackOptions): PackEntry[] {
   const hardlinks = options.hardlinks ?? true;
-  const names = [...files].map(([name]) => name);
-  const directories = options.directories ? [...new Set(names.flatMap(ancestorsOf))] : [];
-  /* A directory's name is a prefix of those within it, so sorts before them. */
-  const ordered = [...directories, ...names].sort();
+  const ordered = archiveEntryNames(
+    [...files].map(([name]) => name),
+    { directories: options.directories ?? false }
+  );
   /* First entry (in sorted order) to carry each content hash — a repeat becomes
    * a hardlink to it, so identical content is packed once. Symlinks are excluded
    * (their "content" is the target text); the sorted order keeps this stable. */
@@ -185,8 +190,8 @@ function writeEntry(pack: TarPack, entry: PackEntry, done: (err?: Error | null) 
     contentOf(entry.file).then(
       ({ size, stream }) => {
         const sink = pack.entry({ ...header, size, mode: entry.file.mode & 0o7777 }, done);
-        stream.on("error", err => sink.destroy(err));
-        stream.pipe(sink);
+        /* Either side's failure closes the other; the entry's callback reports it. */
+        pipeline(stream, sink, () => undefined);
       },
       (err: Error) => done(err)
     );

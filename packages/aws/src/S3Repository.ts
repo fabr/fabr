@@ -20,6 +20,7 @@
 import {
   compareText,
   Computable,
+  contentSize,
   contentStream,
   EMPTY_FILESET,
   FabrError,
@@ -73,7 +74,6 @@ import {
   S3PublishRef,
   s3CoordinateOf,
   sha256Of,
-  sizeOf,
   storedObjects,
 } from "./S3Publish";
 import { IServiceRequest, requestUrl } from "./Signing";
@@ -83,7 +83,7 @@ import { IAccountSettings } from "./Types";
 export const S3_SERVICE = "s3";
 
 /** Provenance kind for an object fetched from S3. */
-export const S3_PROVENANCE = "s3-object";
+const S3_PROVENANCE = "s3-object";
 
 interface IS3Origin extends IProvenanceStep {
   readonly kind: typeof S3_PROVENANCE;
@@ -182,7 +182,7 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
         )
         .then(missing => {
           const toStore = missing.filter((object): object is IStoredObject => object !== undefined);
-          return mapComputable(toStore, object => sizeOf(object.file)).then(sizes => {
+          return mapComputable(toStore, object => contentSize(object.file)).then(sizes => {
             const total = sizes.reduce((sum, size) => sum + size, 0);
             const sent = toStore.map(() => 0);
             const progress = (index: number, bytes: number): void => {

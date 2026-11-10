@@ -154,13 +154,37 @@ export function requireEnvironment(env: string, fromDocblock = false): void {
 }
 
 /**
+ * The directory the runner's own modules are compiled into.
+ */
+export const RUNNER_ROOT = path.dirname(__dirname);
+
+/**
+ * @return the install a module directory belongs to: the directory above the
+ * first `node_modules` on its path, else `dir` itself.
+ */
+export function installRootOf(dir: string): string {
+  const at = dir.indexOf(`${path.sep}node_modules${path.sep}`);
+  return at < 0 ? dir : dir.slice(0, at);
+}
+
+/**
  * Everything under this directory is the runner's own machinery, not the code
- * under test: the load-time hoist skips it (a dependency merely *containing*
- * the token `jest.mock` must never be fed through the transform) and `resetModules`
+ * under test: the runner's install, which holds the runner and its
+ * dependencies, jest's libraries among them. The load-time hoist skips it (a
+ * dependency merely *containing* the token `jest.mock` must never be fed
+ * through the transform), the registry never mocks for it, and `resetModules`
  * leaves it cached (evicting the runner from under itself is not what a test
  * asked for).
  */
-export const RUNNER_ROOT = path.dirname(__dirname);
+export const RUNNER_INSTALL = installRootOf(RUNNER_ROOT);
+
+/**
+ * @return true if a file is the runner's own machinery (see
+ * {@link RUNNER_INSTALL}), otherwise false.
+ */
+export function isRunnerModule(filename: string, runnerInstall = RUNNER_INSTALL): boolean {
+  return filename.startsWith(runnerInstall + path.sep);
+}
 
 /**
  * @return true if a file is the code under test, as opposed to the runner's
@@ -171,36 +195,17 @@ export function isCodeUnderTest(root: string, filename: string): boolean {
   return (
     filename.startsWith(root + path.sep) &&
     !filename.includes(`${path.sep}node_modules${path.sep}`) &&
-    !filename.startsWith(RUNNER_ROOT + path.sep)
+    !isRunnerModule(filename)
   );
-}
-
-/**
- * @return the install the tests at `root` run in: the nearest directory at or
- * above `root` holding a `node_modules`, else `root` itself.
- */
-export function installRootOf(root: string): string {
-  for (let dir = root; ; dir = path.dirname(dir)) {
-    if (fs.existsSync(path.join(dir, "node_modules"))) {
-      return dir;
-    }
-    if (path.dirname(dir) === dir) {
-      return root;
-    }
-  }
 }
 
 /**
  * @return true if a file is in the tests' module registry, otherwise false:
- * anything the install at `installRoot` holds — the code under test and its
- * installed dependencies — bar the runner's own machinery and native addons,
- * which node cannot load a second time. These are what `resetModules` and
- * `isolateModules` load afresh, as jest's registry does.
+ * every module bar the runner's own machinery (under `runnerInstall`) and
+ * native addons, which node cannot load a second time — the code under test
+ * and its dependencies, wherever the layout places them. These are what
+ * `resetModules` and `isolateModules` load afresh, as jest's registry does.
  */
-export function isRegistryModule(installRoot: string, filename: string): boolean {
-  return (
-    filename.startsWith(installRoot + path.sep) &&
-    !filename.startsWith(RUNNER_ROOT + path.sep) &&
-    path.extname(filename) !== ".node"
-  );
+export function isRegistryModule(filename: string, runnerInstall = RUNNER_INSTALL): boolean {
+  return !isRunnerModule(filename, runnerInstall) && path.extname(filename) !== ".node";
 }

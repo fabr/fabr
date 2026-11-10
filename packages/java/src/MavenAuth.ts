@@ -105,9 +105,16 @@ export class MavenAuth {
       .then(text => new MavenAuth(text === undefined ? new Map() : parseMavenSettings(text, settings)));
   }
 
-  /** Make the credential signing a request in with the headers {@link headersFor} gives the server `id`. */
+  /**
+   * Make the credential signing a request in with the headers {@link headersFor}
+   * gives the server `id`. Its headers are fixed, so a 401 is final: answering
+   * the challenge gives nothing to retry with.
+   */
   public static credential(load: () => Computable<MavenAuth>, id: string): Credential {
-    return { authorize: () => load().then(auth => new Map(Object.entries(auth.headersFor(id)))) };
+    return {
+      authorize: (_request, challenge) =>
+        challenge !== undefined ? Computable.resolve<ReadonlyMap<string, string> | undefined>(undefined) : load().then(auth => auth.headersFor(id)),
+    };
   }
 
   /**
@@ -115,16 +122,16 @@ export class MavenAuth {
    * authentication with its username and password, and any headers its
    * configuration adds; none where `settings.xml` has no server of that id.
    */
-  public headersFor(id: string): Record<string, string> {
+  public headersFor(id: string): ReadonlyMap<string, string> {
     const server = this.servers.get(id);
     if (server === undefined) {
-      return {};
+      return new Map();
     }
     const headers = new Map(server.headers);
     if (server.username !== undefined || server.password !== undefined) {
       headers.set("authorization", `Basic ${Buffer.from(`${server.username ?? ""}:${server.password ?? ""}`).toString("base64")}`);
     }
-    return Object.fromEntries(headers);
+    return headers;
   }
 }
 

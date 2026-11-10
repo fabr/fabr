@@ -28,6 +28,7 @@
 import XMLBuilder from "fast-xml-builder";
 import * as crypto from "node:crypto";
 import {
+  compareText,
   Computable,
   declaredRequirement,
   Dependency,
@@ -51,7 +52,7 @@ import {
   RepositoryWriter,
 } from "@fabr-build/core";
 import { MAVEN_FORMAT, mavenVariantOf, splitMavenName } from "./MavenProtocol";
-import { MAVEN_VERSIONS } from "./MavenVersion";
+import { MAVEN_VERSIONS, MavenVersion } from "./MavenVersion";
 import { PomDependency } from "./Pom";
 import { parseXml, xmlChild, xmlChildren } from "./Xml";
 
@@ -226,18 +227,44 @@ export function checksumFiles(path: string, bytes: Buffer): Array<[string, IFile
 }
 
 /**
+ * Split a member's files for upload around `marker`, the file that marks the
+ * member published: `before`, every file but the marker and its checksums, and
+ * `last`, the marker's checksums then the marker itself, each in code-unit
+ * order. Whatever else a publish uploads (the package's `maven-metadata.xml`)
+ * goes between the two, so the marker is present only once all of it is.
+ */
+export function uploadOrder(paths: Iterable<string>, marker: string): { before: string[]; last: string[] } {
+  const all = [...paths].sort(compareText);
+  const ofMarker = (path: string): boolean => path === marker || CHECKSUMS.some(([extension]) => path === `${marker}.${extension}`);
+  return {
+    before: all.filter(path => !ofMarker(path)),
+    last: [...all.filter(path => ofMarker(path) && path !== marker), ...all.filter(path => path === marker)],
+  };
+}
+
+/** @return `text` parsed as a Maven version, or undefined where it is none. */
+function parsedVersion(text: string): MavenVersion | undefined {
+  try {
+    return MAVEN_VERSIONS.parseVersion(text);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Bring a package's `maven-metadata.xml` up to date with `version`: the
  * versions `existing` lists with `version` among them, in Maven's order, the
- * highest of them its latest and release, updated at `now`.
+ * highest of them its latest and release, updated at `now`. A listed entry
+ * that is no Maven version is kept where it is, the versions sorted around it.
  */
 export function mergedMetadata(existing: string | undefined, groupId: string, artifactId: string, version: string, now: Date): string {
   const listed =
     existing === undefined ? [] : xmlChildren(xmlChild(xmlChild(parseXml(existing, "maven-metadata.xml"), "versioning"), "versions"), "version").map(each => each.text);
-  const versions = [...new Set([...listed, version])]
-    .map(text => MAVEN_VERSIONS.parseVersion(text))
-    .sort((a, b) => MAVEN_VERSIONS.compare(a, b))
-    .map(parsed => parsed.text);
-  const highest = versions[versions.length - 1];
+  const entries = [...new Set([...listed, version])].map(text => ({ text, parsed: parsedVersion(text) }));
+  const sorted = entries.flatMap(({ parsed }) => (parsed === undefined ? [] : [parsed])).sort((a, b) => MAVEN_VERSIONS.compare(a, b));
+  let next = 0;
+  const versions = entries.map(({ text, parsed }) => (parsed === undefined ? text : sorted[next++].text));
+  const highest = sorted[sorted.length - 1].text;
   const lastUpdated = now.toISOString().replace(/[-:T]/g, "").substring(0, 14);
   return xmlDocument({
     metadata: {

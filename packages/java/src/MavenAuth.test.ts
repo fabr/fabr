@@ -18,6 +18,7 @@
  */
 
 import { expect } from "chai";
+import { Computable } from "@fabr-build/core";
 import { MavenAuth, parseMavenSettings } from "./MavenAuth";
 
 const SETTINGS = `<?xml version="1.0"?>
@@ -44,7 +45,7 @@ describe("MavenAuth", () => {
     process.env.FABR_TEST_MAVEN_PASSWORD = "s3cret";
     try {
       const auth = new MavenAuth(parseMavenSettings(SETTINGS, "settings.xml"));
-      expect(auth.headersFor("corp")).to.deep.equal({ authorization: `Basic ${Buffer.from("deploy:s3cret").toString("base64")}` });
+      expect(auth.headersFor("corp")).to.deep.equal(new Map([["authorization", `Basic ${Buffer.from("deploy:s3cret").toString("base64")}`]]));
     } finally {
       delete process.env.FABR_TEST_MAVEN_PASSWORD;
     }
@@ -52,8 +53,18 @@ describe("MavenAuth", () => {
 
   it("sends a server's configured headers, and nothing for a repository with no server", () => {
     const auth = new MavenAuth(parseMavenSettings(SETTINGS, "settings.xml"));
-    expect(auth.headersFor("gitlab")).to.deep.equal({ "Private-Token": "abc123" });
-    expect(auth.headersFor("@mvn")).to.deep.equal({});
+    expect(auth.headersFor("gitlab")).to.deep.equal(new Map([["Private-Token", "abc123"]]));
+    expect(auth.headersFor("@mvn")).to.deep.equal(new Map());
+  });
+
+  it("signs a request in with its server's headers, and gives nothing to retry a 401 with", async () => {
+    const auth = new MavenAuth(parseMavenSettings(SETTINGS, "settings.xml"));
+    const credential = MavenAuth.credential(() => Computable.resolve(auth), "gitlab");
+    const head = { method: "GET", url: "https://repo.example/x", headers: new Map<string, string>() };
+    const first = await credential.authorize(head);
+    expect(first).to.deep.equal(new Map([["Private-Token", "abc123"]]));
+    const retry = await credential.authorize(head, { challenges: ["Basic realm=x"] });
+    expect(retry).to.equal(undefined);
   });
 
   it("refuses a password encrypted with Maven's master password, and a document that is no settings", () => {

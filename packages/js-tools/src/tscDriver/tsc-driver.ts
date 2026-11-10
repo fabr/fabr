@@ -271,7 +271,7 @@ interface IProgram {
 }
 type WriteFile = (fileName: string, text: string, writeByteOrderMark: boolean) => void;
 
-export interface ICompilerHost {
+interface ICompilerHost {
   getCurrentDirectory(): string;
   writeFile: WriteFile;
   /** Every file the compiler opens goes through here — sources, declaration
@@ -500,7 +500,7 @@ export function assertDrivableCompiler(version: string): void {
  * JSPackage.ts carries the same rule for the host side; the driver must not
  * import fabr's modules at runtime, so the two are kept in step by hand.
  */
-const DECLARATION_FILE = /\.d\.(?:[cm]?ts|[^./]+\.ts)$/;
+export const DECLARATION_FILE = /\.d\.(?:[cm]?ts|[^./]+\.ts)$/;
 
 /** The digest a shape (an interface artifact's content hash) is taken with.
  * Purely this driver's: both sides of the comparison — the staged base output
@@ -868,9 +868,9 @@ export function installResolution(
     const file = name ? publishedPath(specifier, issuer) : path.resolve(path.dirname(issuer), rewritten(specifier, issuer));
     return file !== undefined && (declared.has(file) || host.fileExists(file)) ? file : undefined;
   };
-  /* Side-effect imports of existing resources, by importing file and
-   * specifier: the imports whose "cannot find module" the finisher drops. */
-  const presentResources = new Set<string>();
+  /* Side-effect imports of existing resources, their specifiers by importing
+   * file: the imports whose "cannot find module" the finisher drops. */
+  const presentResources = new Map<string, Set<string>>();
   /**
    * @return true if an import the compiler left unresolved certainly names a
    * file that is not there, otherwise false: a relative path with an extension
@@ -900,11 +900,11 @@ export function installResolution(
   /* A target that turned the side-effect check off (`ts/allow_unchecked_side_effect_imports`)
    * has its side-effect imports left alone here too. */
   const sideEffectsUnchecked = options[CHECK_SIDE_EFFECT_IMPORTS] === false;
-  /* Imports that load and certainly name a missing file, by importing file and
+  /* Imports that load and certainly name a missing file, by importing file then
    * specifier, with where the specifier is written: reported by the finisher
    * wherever the compiler reported nothing — a `declare module` pattern let it
    * through, or (before TypeScript 5.6) side-effect imports go unchecked. */
-  const missingFiles = new Map<string, { file: SourceFile; start: number; length: number; specifier: string }>();
+  const missingFiles = new Map<string, Map<string, { file: SourceFile; start: number; length: number; specifier: string }>>();
   /* One answer per (asking package, specifier). A name means the same thing to
    * every file of one package — that is what the table says — so the file part
    * is probed once rather than once per import site. */
@@ -955,11 +955,8 @@ export function installResolution(
   host.resolveModuleNameLiterals = (literals, containingFile, _redirected, _options, containingSourceFile) => {
     /* A file's unresolved imports are passed again whenever it is resolved, so
      * what was recorded of them is recorded afresh. */
-    for (const table of [presentResources, missingFiles]) {
-      for (const key of [...table.keys()].filter(key => key.startsWith(`${containingFile}\0`))) {
-        table.delete(key);
-      }
-    }
+    presentResources.delete(containingFile);
+    missingFiles.delete(containingFile);
     return literals.map(literal => {
       const answer = resolveModule(
         literal.text,
@@ -968,7 +965,7 @@ export function installResolution(
         loadsAtRuntime(ts, literal, containingSourceFile)
       );
       if (answer.resolvedModule === undefined && isSideEffectImport(ts, literal) && resourceFile(literal.text, containingFile) !== undefined) {
-        presentResources.add(`${containingFile}\0${literal.text}`);
+        presentResources.set(containingFile, (presentResources.get(containingFile) ?? new Set()).add(literal.text));
       }
       if (
         answer.resolvedModule === undefined &&
@@ -979,7 +976,8 @@ export function installResolution(
       ) {
         const node = literal as IStringLiteralLike & { getStart(file: unknown): number; end: number };
         const start = node.getStart(containingSourceFile);
-        missingFiles.set(`${containingFile}\0${literal.text}`, { file: containingSourceFile, start, length: node.end - start, specifier: literal.text });
+        const missing = missingFiles.get(containingFile) ?? new Map();
+        missingFiles.set(containingFile, missing.set(literal.text, { file: containingSourceFile, start, length: node.end - start, specifier: literal.text }));
       }
       return answer;
     });
@@ -1040,7 +1038,7 @@ export function installResolution(
         return true;
       }
       const specifier = text.slice(info.start + 1, info.start + info.length - 1);
-      return !presentResources.has(`${(info.file as ISourceFileInfo).fileName}\0${specifier}`);
+      return presentResources.get((info.file as ISourceFileInfo).fileName)?.has(specifier) !== true;
     });
   /* An import of a missing file the compiler let through — a `declare module`
    * pattern types it, or the compiler does not check side-effect imports — but
@@ -1055,8 +1053,11 @@ export function installResolution(
         return `${(info.file as ISourceFileInfo | undefined)?.fileName ?? ""}\0${String(info.start)}`;
       })
     );
-    const added = [...missingFiles.values()]
-      .filter(missing => file === undefined || missing.file === file)
+    const candidates =
+      file === undefined
+        ? [...missingFiles.values()].flatMap(missing => [...missing.values()])
+        : [...(missingFiles.get((file as ISourceFileInfo).fileName)?.values() ?? [])].filter(missing => missing.file === file);
+    const added = candidates
       .filter(missing => !reportedAt.has(`${(missing.file as unknown as ISourceFileInfo).fileName}\0${String(missing.start)}`))
       .map(
         missing =>
@@ -2269,7 +2270,7 @@ export function main(argv: string[]): number {
       ? undefined
       : planCompile(handedOver.changes, handover.memo, projectNames, sourceRootOf(parsed.options, root));
   if (plan !== undefined) {
-    prepareEmitTree(root, emitDirectory, plan);
+    prepareEmitTree(root, emitDirectory, plan, declared);
   }
   if (plan !== undefined && reportPath !== undefined && !reachesCheckedFiles(plan, declared, handedOver.moved)) {
     /* Nothing this compile checks can see the change, so there is no program
@@ -2422,7 +2423,7 @@ export function main(argv: string[]): number {
   /* Without a wave, the whole project at once — less the sources another
    * compile checked and emitted, which are in the program only to be compiled
    * against. */
-  const checked = declared.size === 0 ? undefined : checkedFiles(program, parsed, namer, declared);
+  const checked = declared.size === 0 ? undefined : checkedFiles(program, parsed, namer, resolver, declared);
   const emitted =
     built ??
     (checked === undefined
@@ -3007,14 +3008,16 @@ function sourceRootOf(options: CompilerOptions, root: string): string | undefine
  * what it does not write. A wave instead deletes exactly the outputs the memo
  * attributes to sources that are gone: only the compiler that emitted them
  * knew the source→output mapping, which is why the attribution was recorded
- * rather than left to a consumer to reproduce.
+ * rather than left to a consumer to reproduce. It deletes as well the outputs
+ * the memo attributes to a source another compile now declares (`declared`),
+ * which this compile no longer emits.
  */
-function prepareEmitTree(root: string, emitDirectory: string, plan: ICompilePlan): void {
+function prepareEmitTree(root: string, emitDirectory: string, plan: ICompilePlan, declared: ReadonlyMap<string, string>): void {
   if (plan.seeds === undefined) {
     wipeEmitTree(root, emitDirectory);
     return;
   }
-  for (const name of plan.deleted) {
+  for (const name of [...plan.deleted, ...declared.keys()]) {
     for (const output of plan.memo.get(name)?.outputs ?? []) {
       const file = path.resolve(root, emitDirectory, output);
       /* Containment: an attributed name is this driver's own record, but a
@@ -3175,20 +3178,25 @@ function reachesCheckedFiles(plan: ICompilePlan, declared: ReadonlyMap<string, s
 }
 
 /** @return the project's files that are this compile's to check and emit:
- * every root but the sources another compile emitted a declaration for. */
+ * every root, and every project file the program holds as a root imports it
+ * (as a wave's project files are: no default library, nothing of a package
+ * `resolver` installs), but the sources another compile emitted a declaration
+ * for. */
 function checkedFiles(
   program: IProgram,
   parsed: IParsedCommandLine,
   namer: (file: string) => string | undefined,
+  resolver: PnpResolver | undefined,
   declared: ReadonlyMap<string, string>
 ): SourceFile[] {
-  return parsed.fileNames
-    .filter(file => {
-      const name = namer(file);
-      return name === undefined || !declared.has(name);
-    })
-    .map(file => program.getSourceFile(file))
-    .filter((file): file is SourceFile => file !== undefined);
+  const roots = new Set(parsed.fileNames.map(file => path.resolve(file)));
+  return program.getSourceFiles().filter(file => {
+    if (program.isSourceFileDefaultLibrary(file) || resolver?.instanceNameOf(file.fileName) !== undefined) {
+      return false;
+    }
+    const name = namer(file.fileName);
+    return name === undefined ? roots.has(path.resolve(file.fileName)) : !declared.has(name);
+  });
 }
 
 /** Emit each of `files`, as one result. */

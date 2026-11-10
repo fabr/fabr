@@ -44,10 +44,10 @@ import {
   AuditedPackage,
   auditSarif,
   fixedVersions,
-  ResolvedName,
   toAdvisory,
   toQueryResults,
 } from "./Audit";
+import { ResolvedName } from "./Fabr";
 
 /** A format whose purls are `pkg:test/<name>@<version>` and whose versions are
  * dotted numbers; nothing here resolves with it. */
@@ -138,6 +138,45 @@ class PatchedTarget extends ResolvedTarget {
   public projectBuilt(): never[] {
     return [];
   }
+}
+
+/** A target `name` whose rule requires what `requirements` hold, building `builds`, declared to fix `fixes`. */
+class RequiringTarget extends ResolvedTarget {
+  public readonly resolved: ResolvedRequirements;
+
+  constructor(name: string, builds: string, requirements: Map<string, Dependency[]>, fixes: string[] = []) {
+    super({ key: `built ${name} ${builds}`, files: () => Computable.resolve(EMPTY_FILESET), builds }, name, undefined, [], {
+      kind: "target",
+    });
+    this.resolved = new ResolvedRequirements(
+      new Map(
+        [...requirements].map(([key, deps], part) => [
+          key,
+          { sources: deps.map(dep => dep.package!), references: deps.map(dep => dep.reference), reading: "packages", part },
+        ])
+      ) as never,
+      [...requirements].map(() => ({ conflicts: NO_CONFLICTS, conflictsAmong: () => Computable.resolve(NO_CONFLICTS) })),
+      false,
+      undefined,
+      fixes
+    );
+  }
+
+  public materialize(): Computable<never[]> {
+    return Computable.resolve([]);
+  }
+
+  public projectBuilt(): never[] {
+    return [];
+  }
+}
+
+/** The target `app` under the run operation, whose rule requires only its own
+ * build, which requires `deps`: what `app<BUILD_OPERATION=run>` resolves to. */
+function runTarget(deps: Dependency[]): ResolvedName {
+  const build = new RequiringTarget("app", "app", new Map([["deps", deps]]));
+  const run = new RequiringTarget("app", "app", new Map([["build", [{ reference: new TargetRef({} as TargetSource, "app"), package: build }]]]));
+  return { title: "app", resolved: ResolvedRequirements.of([run], [new TargetRef({} as TargetSource, "app")], NO_CONFLICTS) };
 }
 
 /** The patched target `name` made from `from`, fixing `fixes`, as the edge the reference to it makes. */
@@ -251,6 +290,12 @@ describe("auditedPackages", () => {
   it("asks about a renamed package under the name the registry publishes it as", () => {
     const aliased = registry("wrap-ansi-cjs", "7.0.0", [], "wrap-ansi");
     expect(auditedPackages([named("app", [aliased])]).map(pkg => pkg.purl)).to.deep.equal(["pkg:test/wrap-ansi@7.0.0"]);
+  });
+
+  it("walks a target's build under another operation as part of the target", () => {
+    expect(auditedPackages([runTarget([registry("lodash", "4.17.15")])])).to.deep.equal([
+      { ...audited("lodash", "4.17.15"), paths: [{ path: ["app", "lodash@4.17.15"], others: 0 }] },
+    ]);
   });
 
   it("leaves out a package whose provenance holds no resolution", () => {
@@ -367,7 +412,12 @@ describe("toAdvisory", () => {
       affected: [
         {
           package: { ecosystem: "npm", name: "x", purl: "pkg:npm/x" },
-          ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { fixed: "1.2.3" }] }],
+          ranges: [
+            { type: "SEMVER", events: [{ introduced: "0" }, { fixed: "1.2.3" }] },
+            { type: "ECOSYSTEM", events: [{ introduced: "2.0.0" }, { fixed: "2.0.1" }] },
+            /* A GIT range's events are commits, not versions. */
+            { type: "GIT", repo: "https://github.com/x/x", events: [{ introduced: "0" }, { fixed: "abc123" }] },
+          ],
         },
       ],
     });
@@ -377,7 +427,7 @@ describe("toAdvisory", () => {
       summary: "Bad",
       severity: "MODERATE",
       url: "https://github.com/advisories/GHSA-1",
-      affected: [{ purl: "pkg:npm/x", fixed: ["1.2.3"] }],
+      affected: [{ purl: "pkg:npm/x", fixed: ["1.2.3", "2.0.1"] }],
     });
   });
 
@@ -454,5 +504,14 @@ describe("audit", () => {
     expect(affectsAny(report)).to.equal(true);
     const fixedOnly = await audit([names[0]], server([[LODASH, ["pkg:test/lodash@4.17.15"]]]));
     expect(affectsAny(fixedOnly)).to.equal(false);
+  });
+
+  it("reports a declared fix of a target made from no registry package as matching nothing", async () => {
+    const vendored = new RequiringTarget("foo", "foo", new Map(), ["GHSA-1"]);
+    const names = [named("app", [{ reference: new TargetRef({} as TargetSource, "foo"), package: vendored }, registry("chai", "4.3.6")])];
+    const report = await audit(names, server([]));
+    expect(report.unmatched).to.deep.equal([{ target: "foo", id: "GHSA-1" }]);
+    const alone = await audit([named("app", [built("lib", [{ reference: new TargetRef({} as TargetSource, "foo"), package: vendored }])])], server([]));
+    expect(alone.unmatched).to.deep.equal([{ target: "foo", id: "GHSA-1" }]);
   });
 });

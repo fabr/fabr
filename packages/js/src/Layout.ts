@@ -111,7 +111,7 @@ function layoutConfig(action: BuildAction): NodeLayout {
 
 /** Read the `deps` input: the packages the tool reaches — the
  *  action's discoverable input where the tool reports what it read of them. */
-function depsInput(action: BuildAction): FileSet[] {
+export function depsInput(action: BuildAction): FileSet[] {
   const value = action.discoverable?.deps ?? action.inputs.deps;
   if (!Array.isArray(value)) {
     throw new FabrError(`Input 'deps' must be a list of filesets`);
@@ -228,7 +228,7 @@ function poolReadNamer(dir: string, locations: ReadonlyArray<[string, PackageFil
       return within(routes, owner[1], read.slice(owner[0].length + 1).split(sep).join("/"));
     }
     const physical = resolveVirtual(read);
-    const tree = locations.find(([location, pkg]) => physical.startsWith(resolveVirtual(location) + sep) && pkg !== undefined);
+    const tree = locations.find(([location]) => physical.startsWith(resolveVirtual(location) + sep));
     return tree === undefined ? undefined : within(routes, tree[1], physical.slice(resolveVirtual(tree[0]).length + 1).split(sep).join("/"));
   };
 }

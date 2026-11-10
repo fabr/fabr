@@ -17,6 +17,8 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import { Computable } from "./Computable";
+import { FabrError, RequirementResolutionError, toError } from "./Errors";
 import type { Name } from "./Name";
 import type { IProvenanceStep } from "./Provenance";
 
@@ -148,6 +150,25 @@ export abstract class Reference {
   /** Get this reference as written with an override marker. */
   public marked(override: "alternate" | "force"): this {
     return this.copy({ override });
+  }
+
+  /** Attribute `err` to where this reference was written. */
+  protected attributed(err: Error): Error {
+    return err instanceof RequirementResolutionError ? err : new RequirementResolutionError([this], err);
+  }
+
+  /**
+   * Take `listed`, this reference's children as what it names lists them, or
+   * undefined where it cannot list them. Rejects, attributed to this reference,
+   * where they cannot be listed or the listing fails.
+   */
+  protected listedChildren(listed: Computable<Map<string, Reference>> | undefined): Computable<Map<string, Reference>> {
+    if (listed === undefined) {
+      return Computable.reject(this.attributed(new FabrError(`'${this.toString()}' cannot be listed`)));
+    }
+    return listed.catch(err => {
+      throw this.attributed(toError(err));
+    });
   }
 
   /** Make a copy with `changes` made, of the same kind as this reference. */

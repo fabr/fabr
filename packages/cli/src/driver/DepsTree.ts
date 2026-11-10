@@ -22,7 +22,6 @@ import {
   Resolved,
   ResolvedRequirements,
   ResolvedTarget,
-  isPackage,
   Package,
   nodeNaming,
   builtInProject,
@@ -42,8 +41,10 @@ import {
   ITargetOrigin,
   MODEL_PROVENANCE,
   TARGET_PROVENANCE,
-  TargetRef,
   Advisory,
+  compareText,
+  edgesOf,
+  requiredSources,
   AuditReport,
   fixedVersions,
   pathText,
@@ -101,15 +102,6 @@ export interface DependencyTree {
   readonly conflicts?: Conflicts;
 }
 
-/** List the edges to the packages among `sources`, each with the reference it was
- * resolved for. */
-function edgesOf(sources: ReadonlyArray<Resolved>, references: ReadonlyArray<Reference | undefined>): Dependency[] {
-  return sources.flatMap((source, at): Dependency[] => {
-    const reference = references[at];
-    return isPackage(source) && reference !== undefined ? [{ reference, package: source }] : [];
-  });
-}
-
 /**
  * Split what `target` requires into sections by where each source was written:
  * the target's own property it was read from (`deps`), or the rule, for what
@@ -120,60 +112,20 @@ function edgesOf(sources: ReadonlyArray<Resolved>, references: ReadonlyArray<Ref
  * too. Each source is shown once.
  */
 function requiredAsWritten(target: ResolvedTarget): { parts: Map<string, Dependency[]>; conflicts: Conflicts } {
-  const conflicts: Conflicts[] = [];
+  const { parts, required } = requiredSources(target);
   const sections = new Map<string, { sources: Resolved[]; references: Array<Reference | undefined> }>();
-  const seen = new Set<unknown>();
-  const seenText = new Set<string>();
-  const first = (source: Resolved): boolean => {
-    if (source instanceof TargetRef) {
-      const text = [source.toString(), ...source.projections.map(({ pattern, prefix }) => `${prefix} ${pattern.toString()}`)].join(
-        ":"
-      );
-      if (seenText.has(text)) {
-        return false;
-      }
-      seenText.add(text);
-      return true;
-    }
-    /* Copies of one node (each part of the target reads its own) share its content key. */
-    const identity = source instanceof ResolvedNode ? source.content.key : source;
-    if (seen.has(identity)) {
-      return false;
-    }
-    seen.add(identity);
-    return true;
-  };
-  const walked = new Set<ResolvedTarget>();
-  const walk = (part: ResolvedTarget): void => {
-    walked.add(part);
-    conflicts.push(part.resolved.conflicts);
+  for (const { part, source, reference } of required) {
     const decl = declOf(part.origin);
-    const ruleSection = `required by ${decl?.type ?? "its"} rule`;
-    for (const [name, sources] of part.resolved.sources) {
-      const references = part.resolved.references.get(name) ?? [];
-      sources.forEach((source, at) => {
-        if (source instanceof ResolvedNode && source.content.builds === target.content.builds) {
-          if (source instanceof ResolvedTarget && !walked.has(source)) {
-            walk(source);
-          }
-          return;
-        }
-        if (!first(source)) {
-          return;
-        }
-        const property = decl === undefined ? undefined : propertyOf(references[at] ?? source, decl);
-        const section = property === undefined ? ruleSection : declName(property);
-        const held = sections.get(section) ?? { sources: [], references: [] };
-        held.sources.push(source);
-        held.references.push(references[at]);
-        sections.set(section, held);
-      });
-    }
-  };
-  walk(target);
+    const property = decl === undefined ? undefined : propertyOf(reference ?? source, decl);
+    const section = property === undefined ? `required by ${decl?.type ?? "its"} rule` : declName(property);
+    const held = sections.get(section) ?? { sources: [], references: [] };
+    held.sources.push(source);
+    held.references.push(reference);
+    sections.set(section, held);
+  }
   return {
     parts: new Map([...sections].map(([section, { sources, references }]) => [section, edgesOf(sources, references)])),
-    conflicts: Conflicts.union(conflicts),
+    conflicts: Conflicts.union(parts.map(part => part.resolved.conflicts)),
   };
 }
 
@@ -222,7 +174,7 @@ export function sectionsOf(title: string, resolved: ResolvedRequirements): Depen
  * build as the reference to it. */
 function conflictNotes(conflicts: Conflicts): string[] {
   return [...conflicts.versions]
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .sort(([a], [b]) => compareText(a, b))
     .map(([pkg, versions]) => `${pkg}: ${[...versions].map(version => versionText(version, pkg)).join(", ")}`);
 }
 

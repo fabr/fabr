@@ -412,6 +412,40 @@ describe("node built-ins in a browser bundle, over real esbuild", () => {
     assert.ok(bundle.includes("PATH_SHIM"));
     assert.ok(!bundle.includes('require("fs")'));
   });
+
+  it("gives fabr's guidance for a node:<module> nothing in the bundle answers", async () => {
+    fs.writeFileSync(path.join(work, "entry.mjs"), 'import { readFileSync } from "node:fs";\nconsole.log(readFileSync);\n');
+    const options = {
+      entries: [{ in: "entry.mjs", out: "bundle" }],
+      external: [],
+      platform: "browser",
+      format: "esm",
+      splitting: false,
+      chunkNames: "chunks/[name]-[hash]",
+      assetNames: "[name]-[hash]",
+      target: "es2021",
+      minify: false,
+      sourcemap: false,
+      outdir: "out",
+    };
+    fs.writeFileSync(path.join(work, "options.json"), JSON.stringify(options));
+    const written: string[] = [];
+    const write = process.stderr.write.bind(process.stderr);
+    const cwd = process.cwd();
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      written.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      process.chdir(work);
+      await main(["--options=options.json"]);
+    } finally {
+      process.chdir(cwd);
+      process.stderr.write = write;
+    }
+    assert.equal(process.exitCode, 1, "the bundle should have failed");
+    assert.match(written.join(""), /fabr: 'node:fs' is neither bundled/);
+  });
 });
 
 describe("one package wired two ways, bundled by real esbuild through its virtual locations", () => {
@@ -630,6 +664,33 @@ describe("one package wired two ways, bundled by real esbuild through its virtua
     assert.ok(stylesheet !== undefined && stylesheet !== "card.css" && css.includes(`/* ${stylesheet} */`), css);
     assert.ok(entry !== undefined && entry !== "entry.js" && js.includes(`// ${entry}`), js);
     assert.ok(!/^\s*\/\* card\.css \*\/$/m.test(css) && !/^\s*\/\/ entry\.js$/m.test(js), "no staged spelling is left");
+  });
+
+  it("names a stylesheet compiled from several sources by the first its map names", async () => {
+    /* A Sass stylesheet with a partial: its map names the stylesheet and the partial. */
+    stage();
+    fs.writeFileSync(path.join(work, "card.css"), ".card {\n  color: red;\n}\n/*# sourceMappingURL=card.css.map */\n");
+    fs.writeFileSync(
+      path.join(work, "card.css.map"),
+      JSON.stringify({ version: 3, sources: ["fabr:./app/card.scss", "fabr:./app/_colours.scss"], names: [], mappings: "AAAA;EACE" })
+    );
+    fs.writeFileSync(path.join(work, "entry.js"), 'require("./card.css");\n');
+    fs.writeFileSync(path.join(work, SOURCE_PATHS_FILE), JSON.stringify({ "entry.js": "./app/entry.js", "card.css": "app:card.css" }));
+    fs.writeFileSync(
+      path.join(work, "options.json"),
+      JSON.stringify({ entries: [{ in: "entry.js", out: "bundle" }], external: [], platform: "browser", format: "esm", target: "es2021", minify: false, sourcemap: "linked", outdir: "out" })
+    );
+    const cwd = process.cwd();
+    try {
+      process.chdir(work);
+      await main(["--options=options.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE]);
+    } finally {
+      process.chdir(cwd);
+    }
+    assert.equal(process.exitCode ?? 0, 0, "the bundle should have succeeded");
+    const inputs = Object.keys((JSON.parse(fs.readFileSync(path.join(work, "out", "metafile.json"), "utf8")) as { inputs: object }).inputs);
+    assert.ok(inputs.includes("./app/card.scss"), inputs.join(", "));
+    assert.ok(fs.readFileSync(path.join(work, "out", "bundle.css"), "utf8").includes("/* ./app/card.scss */"));
   });
 
   it("keys a wrapped module by its name, padded to the staged path's length so its map still holds", async () => {

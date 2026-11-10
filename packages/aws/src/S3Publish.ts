@@ -23,7 +23,6 @@
  */
 
 import * as crypto from "node:crypto";
-import * as fs from "node:fs";
 import * as path from "node:path";
 import * as mime from "mime-types";
 import {
@@ -137,12 +136,6 @@ export function storedObjects(artifact: PublishableFileSet): IStoredObject[] {
 export function contentTypeOf(key: string, file: IFile): string {
   const extension = path.posix.extname(key);
   return (extension === "" ? false : mime.contentType(extension)) || file.mime;
-}
-
-/** Get `file`'s size in bytes. */
-export function sizeOf(file: IFile): Computable<number> {
-  const where = file.getAbsPath();
-  return where !== undefined ? Computable.resolve(fs.statSync(where).size) : file.getBuffer().then(buffer => buffer.length);
 }
 
 /** Get `file`'s SHA-256, hex-encoded: its hash in the store, which is SHA-256. */

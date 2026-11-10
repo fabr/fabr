@@ -40,6 +40,19 @@ describe("JSON-RPC client", () => {
     expect(seen).to.deep.equal(["bsp a", "lsp b"]);
   });
 
+  it("stops calling a notification handler once it is disposed", async () => {
+    const fromServer = new PassThrough();
+    const client = new JsonRpcClient(new PassThrough(), fromServer);
+    const seen: string[] = [];
+    const dispose = client.onAnyNotification(method => seen.push(method));
+    fromServer.write(frame({ jsonrpc: "2.0", method: "first" }));
+    await new Promise(resolve => setImmediate(resolve));
+    dispose();
+    fromServer.write(frame({ jsonrpc: "2.0", method: "second" }));
+    await new Promise(resolve => setImmediate(resolve));
+    expect(seen).to.deep.equal(["first"]);
+  });
+
   it("drops a malformed frame and goes on reading", async () => {
     const fromServer = new PassThrough();
     const client = new JsonRpcClient(new PassThrough(), fromServer);

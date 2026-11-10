@@ -18,7 +18,7 @@
  */
 
 import { Computable } from "./Computable";
-import { FabrError, RequirementResolutionError, toError } from "./Errors";
+import { FabrError, toError } from "./Errors";
 import type { FileSource } from "./FileSet";
 import { PartialRepositoryRef } from "./PartialRepositoryRef";
 import { NO_REFERENCE_FIELDS, Reference, ReferenceFields } from "./Reference";
@@ -75,13 +75,7 @@ export class NamespaceRef extends Reference {
 
   /** List the names in the namespace. Rejects, attributed to this reference, where it cannot be listed. */
   public children(): Computable<Map<string, Reference>> {
-    const listed = this.namespace.children?.(this);
-    if (listed === undefined) {
-      return Computable.reject(this.attributed(new FabrError(`'${this.toString()}' cannot be listed`)));
-    }
-    return listed.catch(err => {
-      throw this.attributed(toError(err));
-    });
+    return this.listedChildren(this.namespace.children?.(this));
   }
 
   public toString(): string {
@@ -102,11 +96,6 @@ export class NamespaceRef extends Reference {
     return this.attributed(
       new FabrError(`'${written}' names a namespace, not a package or files`).withHelp(`name what you want in it, as in '${written}:<name>:…'`)
     );
-  }
-
-  /** Attribute `err` to where this reference was written. */
-  private attributed(err: Error): Error {
-    return err instanceof RequirementResolutionError ? err : new RequirementResolutionError([this], err);
   }
 
   protected withFields(fields: ReferenceFields): this {
