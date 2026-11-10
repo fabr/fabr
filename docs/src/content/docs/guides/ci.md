@@ -46,6 +46,8 @@ need to be: a package nothing you name depends on isn't needed for this commit's
 - **`fabr build` what you ship that has no tests**: the application you deploy, or the
   [`sync` target](/reference/js/publishing/#publishing-with-sync) that publishes your packages.
   Building a `sync` target produces exactly what would be uploaded, without uploading it.
+- **`fabr build` your checks**: a lint or format check is a target like any other that fails the
+  build when the check fails; see [A step that checks](/guides/tools/#a-step-that-checks).
 
 When the list of tested targets is long, or shared with your team, declare it once as a property
 and name that:
@@ -322,6 +324,4 @@ memory, limit each test process instead, with `NODE_OPTIONS` in `test_env`.
 - **A limit on parallel steps.**
 - **A machine-readable log, or CI annotations.** `--report` and `--trace` write the test results
   and the timeline as files, but the log itself is plain text.
-- **Lint and format steps** aren't built in. A rule can give your targets a `lint` operation; see
-  [Writing your own rules](/guides/rules/#a-rule-for-another-operation).
 - **A report of outdated dependencies.**

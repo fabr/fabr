@@ -138,12 +138,10 @@ A large project can need more memory than VS Code gives its TypeScript server by
 - **The editor's TypeScript is VS Code's own** (TypeScript 6 in current VS Code), not the
   version the build compiles with. Where the two differ — a library type added in one, a check
   tightened in the other — the editor may report an error the build does not, or miss one.
-- **While VS Code's TypeScript server loads a project**, which takes several seconds for a large
-  one, hovers show `(loading...)` and VS Code answers go-to-definition from the open files alone.
-  Imports still resolve as the build resolves them, into packages and from one package to its
-  dependencies, but an `export * from` line is not followed, and neither is an import inside a
-  package the build installs more than one way (for example, against two versions of a peer
-  dependency). Both work once loading finishes, with nothing to reopen.
+- **While VS Code's TypeScript server loads a project**, go-to-definition doesn't follow an
+  `export * from` line, or an import inside a package the build installs more than one way (for
+  example, against two versions of a peer dependency). Other imports resolve as the build
+  resolves them, and both work once loading finishes, with nothing to reopen.
 - **Java**: annotation processors do not run in the editor, and the sources a processor would
   generate are missing; a module's sources (`module-info.java`) are checked on the classpath.
 - A package whose sources are all generated (the output of a `generate` target) is not shown

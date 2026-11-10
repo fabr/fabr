@@ -308,9 +308,6 @@ sync release {
   release line moves `latest` to it.
 - **Provenance attestations** and npm's trusted publishing.
 - **A one-time password from a flag or environment variable.** Use a token that doesn't need one.
-- **Lifecycle scripts** (`prepublishOnly`, `prepack`, `prepare`).
-- **Version bumping, changelogs and git tags.**
-- **Publishing a `js_bundle`.** A bundle isn't a package.
 
 ## Troubleshooting
 

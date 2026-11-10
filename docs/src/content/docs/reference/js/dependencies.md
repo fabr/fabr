@@ -24,7 +24,7 @@ are.
 | `overrides` / `resolutions` | The `!` marker. |
 | Workspace `catalog:` (pnpm, Yarn) | A [catalog](#catalogs). |
 | `patch-package`, `pnpm patch`, `yarn patch` | A [`patched` target](#patching-a-package). |
-| `postinstall` scripts | Not run. |
+| `postinstall` scripts | Not run; see [Install scripts](#install-scripts). |
 | `.nvmrc`, or Volta's `volta.node` | The [`NODE` setting](#the-nodejs-version). Fabr downloads that release and runs your tools and tests on it. |
 
 ## Declaring a dependency
@@ -389,15 +389,36 @@ A regular (non-optional) dependency that doesn't support the platform is an erro
 An optional dependency required only as `*` is left out, because no version of it can be selected.
 If you need one, declare it yourself with a version.
 
+## Install scripts
+
+Fabr doesn't run the `preinstall`, `install` and `postinstall` scripts of the packages you depend
+on. pnpm 10 and Deno don't run them either unless you allow a package, and Bun runs them only for
+packages on its trusted list: a script runs arbitrary code on your machine during the install,
+and what it leaves behind depends on that machine rather than on the package. Most packages with
+native code now publish it prebuilt as platform-specific optional dependencies, as `esbuild`,
+`@swc/core` and `sharp` do, and those work without a script; see
+[Platform-specific and optional dependencies](#platform-specific-and-optional-dependencies).
+
+Where a package's script does something you need, do it in a [`patched` target](#patching-a-package)
+named after the package. Its `run` command runs in a directory holding the package's files, here
+on the Node.js release fabr provides, and the files it leaves there are the package everywhere in
+your build:
+
+```
+patched some-package {
+  srcs = @npm:some-package:2.1.0;
+  run = NODE scripts/postinstall.js;
+}
+```
+
+A script that compiles native code with `node-gyp` also needs a C++ toolchain, which fabr doesn't
+provide; prefer a release of the package that ships prebuilt binaries.
+
 ## Not supported
 
-- **Install scripts aren't run.** `preinstall`, `install` and `postinstall` scripts in a package
-  are ignored. A package that downloads or compiles something in such a script won't have done so.
-  Many have a prebuilt alternative published as platform-specific packages, which does work.
 - **Only registry dependencies are followed.** A dependency whose `package.json` requires
   something by `git+https://`, `file:`, `workspace:` or a tarball URL can't be resolved, and fails
   when that requirement is reached.
-- **`devDependencies` of packages you depend on are ignored,** as with every package manager.
 
 ## Private registries
 

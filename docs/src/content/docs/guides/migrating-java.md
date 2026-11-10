@@ -370,6 +370,8 @@ See [Build what you ship](/guides/multi-package/#build-what-you-ship).
 | `<servers>` in `settings.xml` | Read from `~/.m2/settings.xml`, as Maven reads them. |
 | Credentials in `build.gradle` or `gradle.properties` | A `<server>` in `~/.m2/settings.xml`. |
 | `<proxies>` in `settings.xml` | The `https_proxy`, `http_proxy` and `no_proxy` environment variables. |
+| `mvn install` to `~/.m2/repository`, `mavenLocal()` | Not read, since what it holds depends on what this machine last installed. Modules of one project depend on each other directly; a package built by another project is published to a repository fabr can read. |
+| `-SNAPSHOT` versions | Not supported, by design: fabr takes every version as never changing. Depend on a release, or on the module's target. |
 
 Fabr looks for a package, and for everything its POM requires, in the one repository its reference
 names, where Maven and Gradle search every repository the build lists. Point `@mvn` at a repository
@@ -503,11 +505,10 @@ Compared with what you used before:
 - **Version ranges** select the lowest published version in the range, where Maven and Gradle select
   the highest. `@mvn:org.slf4j:slf4j-api:"[1.7.0,2.0)"` selects 1.7.0. Write the version you use
   instead of a range.
-- **Gradle's dynamic versions** are read as ordinary Maven versions. `1.+` sorts just above 1.0,
-  so it asks for at least the first published 1.x release, as a floor, with no limit below 2.0.
-  `latest.release` sorts below every numbered version, so it asks for nothing, and you get
-  whatever the rest of the build requires, or the oldest published version. Write the version you
-  use.
+- **Gradle's dynamic versions** (`1.+`, `latest.release`) and Maven's `LATEST` and `RELEASE` are
+  refused in your own build files, with `'1.+' is not a valid Maven version or range`: write the
+  version you use. Where a dependency's POM states one, fabr reads it as described in
+  [Declaring a dependency](/reference/java/dependencies/#declaring-a-dependency).
 
 To keep a version you depended on before, require it yourself in the module's `deps`: your own
 requirement is one of the ones the highest is taken from. To hold a package at one version
@@ -545,10 +546,8 @@ BOM; see [Testing](/reference/java/testing/#troubleshooting).
 ## Not supported
 
 - **Kotlin, Groovy and Scala sources.** Fabr compiles Java only.
-- **Your local Maven repository.** Fabr doesn't read `~/.m2/repository`, and a `maven_repository` URL
-  can't be a `file:` URL (`Unsupported protocol: file:`). Modules of one project depend on each
-  other directly; a package built by another project has to be published to a repository fabr can
-  read.
+- **A `file:` repository URL.** A `maven_repository` URL can't be a `file:` URL
+  (`Unsupported protocol: file:`).
 - **Shading and fat jars.** There is no equivalent of `maven-shade-plugin` or Shadow, which relocate
   packages and merge jars into one. For a program, a
   [`java_installation`](/reference/java/packaging/#the-jars-a-program-needs) gives its jars side by
@@ -560,4 +559,3 @@ BOM; see [Testing](/reference/java/testing/#troubleshooting).
   [Dependencies](/reference/java/dependencies/#not-supported).
 - **Options for `javac`** beyond those fabr sets, such as `-Xlint` or `-Werror`, and **arguments for
   the test JVM**, such as Surefire's `argLine`.
-- **`-SNAPSHOT` versions**, as dependencies or for publishing.

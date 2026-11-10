@@ -33,6 +33,8 @@ answer every time. This page covers declaring dependencies and how their version
 | `<servers>` in `settings.xml` | The same file; see [Credentials](#credentials). |
 | `mvn dependency:tree` / `gradle dependencies` | `fabr deps <target>`. |
 | Gradle Module Metadata (`.module`) | Read where the POM says it is published; see [Gradle Module Metadata](#gradle-module-metadata). |
+| `-SNAPSHOT` versions | Not supported, by design: fabr takes every version as never changing, and reads no snapshot metadata, so a snapshot's latest build is never looked up. Depend on a release, or on the project's own target. |
+| The local repository, `~/.m2/repository` (`mvn install`, `mavenLocal()`) | Not read: what it holds depends on what was last installed on this machine. Depend on another module of the project directly, or publish the package to a repository fabr can read. |
 
 ## Declaring a dependency
 
@@ -206,6 +208,8 @@ jar_package app {
   ```text
   Resolution requires multiple versions of the same package:
     org.apache.commons/commons-lang3 is required as '[3.13.0]' and as '3.14.0', and no one version is both
+      '[3.13.0]' pinned by '@lib:org.apache.commons/commons-text'
+      '3.14.0' required directly
   ```
 
   Change the version in the catalog instead, so that every target agrees.
@@ -463,6 +467,4 @@ Fabr reads only the `<servers>` of `settings.xml`. Its `<mirrors>`, `<proxies>`,
 - A module's test fixtures can be required as its classified jar,
   `@mvn:<group>:<artifact>/test-fixtures:<version>`, but the dependencies Gradle publishes for
   them are not read: write them beside it.
-- Timestamped `-SNAPSHOT` versions are not resolved.
-- Your local repository (`~/.m2/repository`) is not read, and a `maven_repository` URL can't be a
-  `file:` URL.
+- A `maven_repository` URL can't be a `file:` URL.

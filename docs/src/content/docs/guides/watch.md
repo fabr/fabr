@@ -134,6 +134,7 @@ files.
 
 ## Stopping
 
-Ctrl-C stops fabr and the program it is running. If fabr itself is killed with `SIGKILL`, the
-program is left running; see
-[Known limitations](/known-limitations/#watch-mode-can-leave-a-program-running-if-fabr-is-force-killed).
+Ctrl-C stops fabr and the program it is running, along with any processes that program started;
+so do `SIGTERM` and `SIGHUP`. A fabr killed with `SIGKILL` (`kill -9`, or the system running out of
+memory) gets no chance to, and leaves the program running with nothing supervising it: stop it by
+hand. For a server, finding the process that holds its port is usually quickest.

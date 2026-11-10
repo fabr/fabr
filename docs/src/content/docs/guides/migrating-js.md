@@ -101,7 +101,9 @@ npm, Yarn and pnpm hoist the root `package.json`'s dependencies, so a workspace 
 one it never declares. Under fabr a package can only import what it declares. To keep those
 imports working, `fabr-migrate` scans each package's sources for the packages they import. For
 each one the root declares and the package doesn't, it adds the dependency to that package's
-`deps`, along with the root's `@types` package for it.
+`deps`, along with the root's `@types` package for it. Only imports of a string literal can be
+read: a package imported only as `require(name)` or `` import(`./${x}`) `` isn't found, so add it
+to the package's `deps` yourself.
 
 Global type packages like `@types/node` are imported by no file. A package gets the ones its
 `tsconfig.json` names in `compilerOptions.types` (including through `extends`, and adding those of
@@ -232,8 +234,6 @@ package builds. For a library you publish, also move test-only dependencies to `
 
 - A Yarn `patch:` dependency is converted as the package unpatched, and listed in the report. To
   patch it, write a [`patched` target](/reference/js/dependencies/#patching-a-package).
-- An import whose module isn't a string literal, such as `require(name)` or `` import(`./${x}`) ``,
-  can't be read, so a package imported only that way isn't added from the root's dependencies.
 - An override scoped to a path or a range has no fabr equivalent, and is written as a minimum
   version (see [overrides](#overrides)).
 - A TypeScript compiler other than 5 or 6 is not used for `TYPESCRIPT`, and fabr's default compiler

@@ -36,6 +36,7 @@ fabr sync release     # publish it
 | `maven-source-plugin` / `withSourcesJar()`, `maven-javadoc-plugin` / `withJavadocJar()` | The repository's `auto_attach`; see [Sources and javadoc jars](#sources-and-javadoc-jars). |
 | An artifact with a classifier | An entry with the classifier after the artifact: `@corp:<group>:<artifact>/<classifier>:<version>`. |
 | Credentials in `settings.xml` | The same file; see [Credentials](/reference/java/dependencies/#credentials). |
+| A `-SNAPSHOT` version | Not published: every published version is a release, which never changes once uploaded. |
 
 ## What is uploaded
 
@@ -157,4 +158,3 @@ Elements fabr writes itself (`modelVersion`, `groupId`, `artifactId`, `version`,
 
 - Publishing to Maven Central is not supported: Central takes uploads only through its Portal,
   and requires PGP signatures beside each file.
-- A `-SNAPSHOT` version can't be published.
