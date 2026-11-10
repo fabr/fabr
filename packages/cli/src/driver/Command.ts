@@ -62,9 +62,11 @@ export enum Mode {
   Watch,
 }
 
-/** One command's help entry: its own argument synopsis (options that apply to it,
- * shown inline — `fabr <name> <synopsis>`) and a one-line summary. The set of
- * commands the command line accepts is derived from this table.
+/** The heading a command is listed under in the help. */
+type CommandGroup = "Building" | "Inspecting" | "Project";
+
+/** One command: its help entry, and the options it accepts. The set of commands
+ * the command line accepts is derived from this table.
  *
  * `build`/`test`/`run` are BUILD_OPERATION values; `ls`/`cat`/`cp` are
  * driver-side verbs that materialize their names under the `files` operation and
@@ -74,17 +76,16 @@ export enum Mode {
  * targets). */
 interface CommandSpec {
   name: string;
+  group: CommandGroup;
+  /** The arguments written after `fabr <name>` in the command's usage line. */
   synopsis: string;
   summary: string;
-  /** The command-specific option flags this command accepts (canonical form —
-   * `--quiet` is recorded as `-q`), used both for the synopsis and to *reject* a
-   * flag applied to a command it means nothing for (`fabr cat --json`). The
-   * universal options (`-D`, `-h`/`--help`, `-v`/`--version`) are always allowed
-   * and are not listed here. `-q`, `--no-progress` and `--refresh` are accepted by every
-   * command that runs build steps but omitted from the synopses (like `-D`) to
-   * keep them focused; `-f`
-   * is validated the same way but omitted from the help text entirely (see
-   * {@link Options.force}). */
+  /** What the command's own help says beyond its summary, if anything. */
+  description?: string;
+  /** The command-specific option flags this command accepts, by their
+   * {@link OptionSpec.flag}, used for its help and to *reject* a flag applied to
+   * a command it means nothing for (`fabr cat --json`). The
+   * {@link UNIVERSAL_OPTIONS} are always allowed and are not listed here. */
   accepts: string[];
   /** This command acts on exactly one target (`shell` stages a single sandbox),
    * so a second target is a usage error rather than being silently dropped.
@@ -96,53 +97,172 @@ interface CommandSpec {
   requiresTarget?: boolean;
 }
 
-const COMMAND_SPECS: CommandSpec[] = [
-  { name: "build", synopsis: "[-w] <targets>", summary: "Build the given targets (the default command)", accepts: ["-w", "-q", "--no-progress", "--refresh", "--trace", "-f"], requiresTarget: true },
-  { name: "test", synopsis: "[-w] [-u] [-t PATTERN] [--coverage] [--retry-failed] [--report FILE [--format ctrf|junit]] <targets>", summary: "Build and run the given targets' tests", accepts: ["-w", "-u", "-t", "--coverage", "--retry-failed", "--report", "--format", "-q", "--no-progress", "--refresh", "--trace", "-f"], requiresTarget: true },
-  { name: "run", synopsis: "[-w] <target> [args…]", summary: "Execute a target, forwarding trailing args to it", accepts: ["-w", "-q", "--no-progress", "--refresh", "--trace", "-f"], requiresTarget: true },
-  { name: "shell", synopsis: "<target>", summary: "Stage a target's build sandbox and open a shell in it (debugging)", accepts: ["-q", "--no-progress", "--refresh"], singleTarget: true, requiresTarget: true },
-  { name: "ls", synopsis: "[-l] <names>", summary: "Build the given targets and list their contents", accepts: ["-l", "-q", "--no-progress", "--refresh"], requiresTarget: true },
-  { name: "cat", synopsis: "<names>", summary: "Build a target and write its matching files to stdout", accepts: ["-q", "--no-progress", "--refresh"], requiresTarget: true },
-  { name: "cp", synopsis: "<sources…> <dest>", summary: "Build targets and copy their files to a destination directory", accepts: ["-q", "--no-progress", "--refresh"], requiresTarget: true },
-  { name: "deps", synopsis: "<names>", summary: "Print the dependency tree of the given targets or packages", accepts: ["-q", "--no-progress", "--refresh"], requiresTarget: true },
-  { name: "sbom", synopsis: "<target>", summary: "Write the software bill of materials (CycloneDX) of a target or package", accepts: ["-q", "--no-progress", "--refresh"], singleTarget: true, requiresTarget: true },
-  { name: "audit", synopsis: "[--format sarif] <names>", summary: "Check the dependencies of the given targets or packages for known security advisories", accepts: ["--format", "-q", "--no-progress", "--refresh"], requiresTarget: true },
-  { name: "sync", synopsis: "<target>", summary: "Build and publish a sync target to its destination coordinates", accepts: ["-q", "--no-progress", "--refresh"], requiresTarget: true },
-  { name: "build-server", synopsis: "", summary: "Serve the project's described targets to an editor over the Build Server Protocol (stdio)", accepts: ["-q"] },
+/** One option flag's help entry. */
+interface OptionSpec {
+  /** The canonical form a command's `accepts` names it by (`--quiet` is `-q`). */
+  flag: string;
+  /** How the help writes it: its spellings and its argument. */
+  usage: string;
+  summary: string;
+  /** What the option does for a particular command, where that differs from
+   * `summary`, by command name. */
+  summaries?: Map<string, string>;
+  /** Left out of the help (`-f`, see {@link Options.force}). */
+  hidden?: boolean;
+}
+
+/** The options every command that runs build steps accepts. */
+const STEP_OPTIONS = ["-q", "--no-progress", "--refresh"];
+
+const LIST_LONG = "Show where each is declared";
+
+const OPTION_SPECS: OptionSpec[] = [
+  { flag: "-w", usage: "-w", summary: "Watch mode: rebuild or re-run as inputs change" },
+  { flag: "-u", usage: "-u, --update", summary: "Update recorded test expectations (snapshots) from the run" },
+  { flag: "-t", usage: "-t PATTERN", summary: "Run only the tests whose names match the regular expression PATTERN" },
+  { flag: "--coverage", usage: "--coverage[=DIR]", summary: "Measure code coverage and write DIR/lcov.info, coverage/ by default" },
+  { flag: "--retry-failed", usage: "--retry-failed", summary: "Run again the tests whose last run failed, rather than report it from the cache" },
+  { flag: "--report", usage: "--report FILE", summary: "Write the tests' results to FILE, failures included, as CTRF or with --format junit" },
   {
-    name: "list-targets",
-    synopsis: "[-l] [--all] [--operation <op>] [--json] [names or patterns]",
-    summary: "List the targets declared in the project, with the operations each supports",
-    accepts: ["-l", "--all", "--operation", "--json"],
+    flag: "--format",
+    usage: "--format FORMAT",
+    summary: "The report's format",
+    summaries: new Map([
+      ["audit", "Write the report as sarif instead of text"],
+      ["test", "Write --report's file as ctrf (the default) or junit"],
+    ]),
   },
   {
-    name: "list-targetdefs",
-    synopsis: "[-l] [--json]",
-    summary: "List the available target types and their properties",
-    accepts: ["-l", "--json"],
+    flag: "-l",
+    usage: "-l",
+    summary: "Long listing",
+    summaries: new Map([
+      ["ls", "Show each file's hash and size"],
+      ["list-targets", LIST_LONG],
+      ["list-targetdefs", LIST_LONG],
+      ["list-properties", LIST_LONG],
+    ]),
   },
-  {
-    name: "list-operations",
-    synopsis: "[--json]",
-    summary: "List the operations the project's rules declare, and the target types of each",
-    accepts: ["--json"],
-  },
-  {
-    name: "list-properties",
-    synopsis: "[-l] [--json]",
-    summary: "List the global configuration properties and flags",
-    accepts: ["-l", "--json"],
-  },
-  {
-    name: "list-all",
-    synopsis: "[--include-optional] [--json]",
-    summary: "Emit the whole vocabulary (types, properties, flags) as JSON, for tooling",
-    accepts: ["--include-optional", "--json"],
-  },
+  { flag: "--json", usage: "--json", summary: "Write JSON instead of a listing" },
+  { flag: "--all", usage: "--all", summary: "Include the targets core and the plugins declare" },
+  { flag: "--operation", usage: "--operation OP", summary: "List only targets whose type has a rule for OP; repeatable" },
+  { flag: "--include-optional", usage: "--include-optional", summary: "Read every optional lib of the plugins in use" },
+  { flag: "-q", usage: "-q, --quiet", summary: "Suppress live output: step output and the progress display" },
+  { flag: "--no-progress", usage: "--no-progress", summary: "No progress display; step output streams as it arrives" },
+  { flag: "--refresh", usage: "--refresh", summary: "Re-check tags and version lists, however recently fetched" },
+  { flag: "--trace", usage: "--trace[=FILE]", summary: "Trace the run's work to FILE, fabr-trace.json by default" },
+  { flag: "-f", usage: "-f, --force", summary: "Rebuild the named targets even where cached", hidden: true },
 ];
 
-const COMMANDS = new Set(COMMAND_SPECS.map((c) => c.name));
+/** The options every command accepts. */
+const UNIVERSAL_OPTIONS: OptionSpec[] = [
+  { flag: "-D", usage: "-DPROP=VALUE", summary: "Set the property PROP to VALUE" },
+  { flag: "--", usage: "--", summary: "End of options: what follows are targets, even if they start with '-'" },
+  { flag: "-h", usage: "-h, --help", summary: "Print help and exit" },
+  { flag: "-v", usage: "-v, --version", summary: "Print the fabr version and exit" },
+];
+
+const OPTION_BY_FLAG = new Map(OPTION_SPECS.map((o) => [o.flag, o]));
+
+const COMMAND_SPECS: CommandSpec[] = [
+  {
+    name: "build",
+    group: "Building",
+    synopsis: "[-w] <targets>",
+    summary: "Build targets (the default command)",
+    description:
+      "With no command, each target takes the operation its type supports — build, else " +
+      "test, else run — and a target that only runs takes the rest of the line as its own " +
+      "arguments. A target named like a command is reached by giving the command first, or " +
+      "after '--'. A project's rules may declare further operations, each a command of its " +
+      "own (`fabr lint app`): 'fabr list-operations' lists them.",
+    accepts: ["-w", ...STEP_OPTIONS, "--trace", "-f"],
+    requiresTarget: true,
+  },
+  {
+    name: "test",
+    group: "Building",
+    synopsis: "[-w] [-u] [-t PATTERN] [--coverage[=DIR]] [--retry-failed] [--report FILE [--format ctrf|junit]] <targets>",
+    summary: "Build and run targets' tests",
+    accepts: ["-w", "-u", "-t", "--coverage", "--retry-failed", "--report", "--format", ...STEP_OPTIONS, "--trace", "-f"],
+    requiresTarget: true,
+  },
+  {
+    name: "run",
+    group: "Building",
+    synopsis: "[-w] <target> [args…]",
+    summary: "Run a target, passing it the arguments after it",
+    description: "fabr's own options go before the target: everything after it is the program's, verbatim.",
+    accepts: ["-w", ...STEP_OPTIONS, "--trace", "-f"],
+    requiresTarget: true,
+  },
+  { name: "sync", group: "Building", synopsis: "<target>", summary: "Build a sync target and publish it to its destination", accepts: STEP_OPTIONS, requiresTarget: true },
+  { name: "ls", group: "Inspecting", synopsis: "[-l] <names>", summary: "Build targets and list their files", accepts: ["-l", ...STEP_OPTIONS], requiresTarget: true },
+  { name: "cat", group: "Inspecting", synopsis: "<names>", summary: "Build targets and write their files to stdout", accepts: STEP_OPTIONS, requiresTarget: true },
+  {
+    name: "cp",
+    group: "Inspecting",
+    synopsis: "<names…> <dest>",
+    summary: "Build targets and copy their files into a directory",
+    accepts: STEP_OPTIONS,
+    requiresTarget: true,
+  },
+  {
+    name: "shell",
+    group: "Inspecting",
+    synopsis: "<target>",
+    summary: "Open a shell in a target's build sandbox",
+    accepts: STEP_OPTIONS,
+    singleTarget: true,
+    requiresTarget: true,
+  },
+  { name: "deps", group: "Inspecting", synopsis: "<names>", summary: "Print the dependency tree of targets or packages", accepts: STEP_OPTIONS, requiresTarget: true },
+  {
+    name: "audit",
+    group: "Inspecting",
+    synopsis: "[--format sarif] <names>",
+    summary: "Check dependencies for known security advisories",
+    accepts: ["--format", ...STEP_OPTIONS],
+    requiresTarget: true,
+  },
+  {
+    name: "sbom",
+    group: "Inspecting",
+    synopsis: "<target>",
+    summary: "Write a target's bill of materials (CycloneDX)",
+    accepts: STEP_OPTIONS,
+    singleTarget: true,
+    requiresTarget: true,
+  },
+  {
+    name: "list-targets",
+    group: "Project",
+    synopsis: "[-l] [--all] [--operation OP] [--json] [names or patterns]",
+    summary: "List the project's targets and their operations",
+    accepts: ["-l", "--all", "--operation", "--json"],
+  },
+  { name: "list-targetdefs", group: "Project", synopsis: "[-l] [--json]", summary: "List the target types and their properties", accepts: ["-l", "--json"] },
+  { name: "list-operations", group: "Project", synopsis: "[--json]", summary: "List the operations the project's rules declare", accepts: ["--json"] },
+  { name: "list-properties", group: "Project", synopsis: "[-l] [--json]", summary: "List the global properties and flags", accepts: ["-l", "--json"] },
+  {
+    name: "list-all",
+    group: "Project",
+    synopsis: "[--include-optional] [--json]",
+    summary: "Write the whole vocabulary as JSON, for tooling",
+    accepts: ["--include-optional", "--json"],
+  },
+  { name: "build-server", group: "Project", synopsis: "", summary: "Serve targets to an editor (Build Server Protocol)", accepts: ["-q"] },
+];
+
 const COMMAND_BY_NAME = new Map(COMMAND_SPECS.map((c) => [c.name, c]));
+/** The command words: every command, and `help`. */
+const COMMANDS = new Set([...COMMAND_BY_NAME.keys(), "help"]);
+
+/** The options a command-less line may carry: those every command it can
+ * resolve to (build, test, run) accepts. */
+const INFERABLE_OPTIONS = new Set(
+  ["build", "test", "run"].map((name) => COMMAND_BY_NAME.get(name)?.accepts ?? []).reduce((all, each) => all.filter((flag) => each.includes(flag)))
+);
 
 export interface Options {
   command: string;
@@ -235,57 +355,145 @@ export interface CommandPlan {
   operation?: { name: string; targets: string[] };
 }
 
-/** Write the usage text to the given sink — stdout for an explicit `-h`/`--help`
- * or a bare `fabr` with neither command nor target (the de-facto help), stderr
- * for a usage *error*. Each command is listed with its own `fabr <name> <synopsis>` line so
- * the options that apply to it are visible in place; the Options section then
- * explains each flag once. */
-function printUsage(write: (message: string) => void = console.log): void {
-  /* Pad each `fabr <name> <synopsis>` to a common width so the summaries align. */
-  const synopses = COMMAND_SPECS.map((c) => `fabr ${c.name} ${c.synopsis}`);
-  const width = Math.max(...synopses.map((s) => s.length));
-  const commandLines = COMMAND_SPECS.map(
-    (c, i) => `  ${synopses[i].padEnd(width)}  ${c.summary}`
-  ).join("\n");
-  write(
-    "Usage: fabr [command] [options] <targets>\n" +
-      "With no command, each target takes the operation its type supports — build, else\n" +
-      "test, else run — and a target that only runs takes the rest of the line as its own\n" +
-      "arguments. A target named like a command is reached by giving the command first.\n" +
-      "A project's rules may declare further operations, each a command of its own\n" +
-      "(`fabr lint app`): 'fabr list-operations' lists them.\n\n" +
-      "Commands:\n" +
-      commandLines +
-      "\n\nOptions:\n" +
-      "  -DPROP=VALUE      Force the given property PROP to VALUE (before the target for run)\n" +
-      "  -w                Watch mode: rebuild / re-run as inputs change (build/test/run)\n" +
-      "  -u, --update      Update recorded test expectations (snapshots) from the run (test)\n" +
-      "  -t PATTERN        Run only the tests whose names match the regular expression PATTERN (test)\n" +
-      "  --coverage[=DIR]  Measure code coverage and write DIR/lcov.info, coverage/ by default (test)\n" +
-      "  --retry-failed    Run again the tests whose last run failed, rather than report it from the cache (test)\n" +
-      "  --report FILE     Write the tests' results to FILE, failures included, as CTRF or with --format junit (test)\n" +
-      "  -l                Long listing: hash and size per file (ls), or source location (list-*)\n" +
-      "  --json            Emit JSON (the list-* verbs)\n" +
-      "  --format FORMAT   The report's format: sarif instead of text (audit), or ctrf or junit (test --report)\n" +
-      "  --all             Include system-contributed targets (list-targets)\n" +
-      "  --operation OP    List only targets whose type has a rule for OP; repeatable (list-targets)\n" +
-      "  --include-optional\n" +
-      "                    Read every optional lib of the plugins in use (list-all)\n" +
-      "  -q, --quiet       Suppress live output: subcommand output and the progress display\n" +
-      "  --no-progress     No progress display; subcommand output streams as it arrives\n" +
-      "  --trace[=FILE]    Write a trace of the run's work to FILE, fabr-trace.json by default (build/test/run)\n" +
-      "  --refresh         Re-check tags and version lists however recently they were fetched\n" +
-      "  --                End of options: following arguments are targets, even if they start with '-'\n" +
-      "  -h, --help        Print this help and exit\n" +
-      "  -v, --version     Print the fabr version and exit\n"
-  );
+/** The widest the help is laid out: the terminal's width, at most 80 columns. */
+function helpWidth(): number {
+  return Math.min(process.stdout.columns || 80, 80);
 }
 
-/** Report a malformed invocation: the diagnostic *and* the usage go to stderr
- * (data streams stay clean), and we exit non-zero. */
-function usageError(message: string): never {
-  console.error(message);
-  printUsage(console.error);
+/** Split `text` into lines of at most `width` columns, breaking between words
+ * (a word longer than `width` stands on a line of its own), or between the
+ * given `words` where `text` is a list of them. */
+function wrap(text: string | string[], width: number): string[] {
+  const lines: string[] = [];
+  let line = "";
+  for (const word of (typeof text === "string" ? text.split(" ") : text).filter((w) => w !== "")) {
+    if (line !== "" && line.length + 1 + word.length > width) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = line === "" ? word : `${line} ${word}`;
+    }
+  }
+  return line === "" ? lines : [...lines, line];
+}
+
+/** Lay out `rows` as an indented two-column list, each description wrapped
+ * beside its term, a term too wide for the column on a line of its own. The
+ * term column is `column` wide, or as wide as the widest term up to 18. */
+function renderRows(rows: [string, string][], width: number, column = Math.min(Math.max(...rows.map(([term]) => term.length)), 18)): string[] {
+  const indent = "  ";
+  const pad = " ".repeat(indent.length + column + 2);
+  return rows.flatMap(([term, text]) => {
+    const lines = wrap(text, width - pad.length);
+    if (term.length > column) {
+      return [indent + term, ...lines.map((l) => pad + l)];
+    }
+    return [indent + term.padEnd(column) + "  " + (lines[0] ?? ""), ...lines.slice(1).map((l) => pad + l)];
+  });
+}
+
+/** Lay out `Usage: fabr <command> <synopsis>`, a synopsis wider than the line
+ * continued under its first argument, broken only between bracketed groups. */
+function renderUsageLine(command: string, synopsis: string, width: number): string[] {
+  const prefix = `Usage: fabr ${command} `;
+  const groups: string[] = [];
+  let depth = 0;
+  let group = "";
+  for (const char of synopsis) {
+    if (char === " " && depth === 0) {
+      groups.push(group);
+      group = "";
+      continue;
+    }
+    depth += char === "[" || char === "<" ? 1 : char === "]" || char === ">" ? -1 : 0;
+    group += char;
+  }
+  groups.push(group);
+  const lines = wrap(groups, width - prefix.length);
+  if (lines.length === 0) {
+    return [prefix.trimEnd()];
+  }
+  return [prefix + lines[0], ...lines.slice(1).map((l) => " ".repeat(prefix.length) + l)];
+}
+
+/** @return the option rows for `flags`, each described as it is for `command`. */
+function optionRows(flags: Iterable<string>, command?: string): [string, string][] {
+  return [...flags]
+    .map((flag) => OPTION_BY_FLAG.get(flag))
+    .filter((o): o is OptionSpec => o !== undefined && !o.hidden)
+    .map((o) => [o.usage, (command !== undefined ? o.summaries?.get(command) : undefined) ?? o.summary]);
+}
+
+/** @return the help for fabr as a whole: the commands by group, and the options
+ * of the commands a target's operation can select. */
+function generalHelp(): string {
+  const width = helpWidth();
+  const groups = [...new Set(COMMAND_SPECS.map((c) => c.group))];
+  const column = Math.max(...COMMAND_SPECS.map((c) => c.name.length));
+  const universal: [string, string][] = UNIVERSAL_OPTIONS.map((o) => [o.usage, o.summary]);
+  return [
+    "Usage: fabr [command] [options] <targets>",
+    "",
+    ...wrap("With no command, each target is built, tested or run, whichever its type supports.", width),
+    ...groups.flatMap((group) => [
+      "",
+      `${group}:`,
+      ...renderRows(
+        COMMAND_SPECS.filter((c) => c.group === group).map((c) => [c.name, c.summary]),
+        width,
+        column
+      ),
+    ]),
+    "",
+    "Options for build, test and run:",
+    ...renderRows(optionRows(INFERABLE_OPTIONS), width),
+    "",
+    "Options for every command:",
+    ...renderRows(universal, width),
+    "",
+    ...wrap(
+      "Run 'fabr help <command>' for a command's options. A project's rules may declare further commands: 'fabr list-operations' lists them.",
+      width
+    ),
+  ].join("\n");
+}
+
+/** @return the help for one command: its usage, what it does, and its options. */
+function commandHelp(spec: CommandSpec): string {
+  const width = helpWidth();
+  const universal = UNIVERSAL_OPTIONS.filter((o) => o.flag !== "-v").map((o): [string, string] => [o.usage, o.summary]);
+  return [
+    ...renderUsageLine(spec.name, spec.synopsis, width),
+    "",
+    ...wrap(`${spec.summary}.`, width),
+    ...(spec.description !== undefined ? ["", ...wrap(spec.description, width)] : []),
+    "",
+    "Options:",
+    ...renderRows([...optionRows(spec.accepts, spec.name), ...universal], width),
+  ].join("\n");
+}
+
+/** Print the help for `command` to stdout, or for fabr as a whole where none is
+ * given, and exit. A name that is no command of fabr's is a usage error. */
+function printHelp(command?: string): never {
+  if (command === undefined || command === "help") {
+    console.log(generalHelp());
+  } else {
+    const spec = COMMAND_BY_NAME.get(command);
+    if (spec === undefined) {
+      usageError(`Unknown command '${command}' (a project's own commands are listed by 'fabr list-operations')`);
+    }
+    console.log(commandHelp(spec));
+  }
+  process.exit(0);
+}
+
+/** Report a malformed invocation to stderr, followed by the help for `command`
+ * where one is known and for fabr as a whole otherwise, and exit non-zero. */
+function usageError(message: string, command?: string): never {
+  const spec = command !== undefined ? COMMAND_BY_NAME.get(command) : undefined;
+  console.error(`${message}\n`);
+  console.error(spec !== undefined ? commandHelp(spec) : generalHelp());
   process.exit(1);
 }
 
@@ -314,15 +522,16 @@ const DEFAULT_COVERAGE_DIR = "coverage";
  * command once it is known. Shared by the two parsing passes: the whole line
  * when a command was given, and (via {@link completeCommandLine}) the tail
  * deferred when one was not. `next` is the argument after `arg`, for an option
- * taking a value of its own.
+ * taking a value of its own; `command` is the command, where it was given before
+ * `arg`, whose help a usage error shows.
  *
  * @return the number of arguments after `arg` the option consumed.
  */
-function applyOption(arg: string, next: string | undefined, options: Options, seenFlags: SeenFlag[]): number {
+function applyOption(arg: string, next: string | undefined, options: Options, seenFlags: SeenFlag[], command?: string): number {
   if (arg === "-t") {
     /* Sugar for the -D pathway, as -u is: which tests run is a build input. */
     if (next === undefined) {
-      usageError(`Option '${arg}' requires a pattern`);
+      usageError(`Option '${arg}' requires a pattern`, command);
     }
     options.properties.set(TEST_NAME_PATTERN, next);
     seenFlags.push({ raw: arg, flag: "-t" });
@@ -352,11 +561,11 @@ function applyOption(arg: string, next: string | undefined, options: Options, se
   } else if (arg === "--format" || arg.startsWith("--format=")) {
     const given = arg === "--format" ? next : arg.slice("--format=".length);
     if (given === undefined) {
-      usageError(`Option '--format' requires a format: ${ALL_FORMATS.join(", ")}`);
+      usageError(`Option '--format' requires a format: ${ALL_FORMATS.join(", ")}`, command);
     }
     const format = ALL_FORMATS.find(each => each === given);
     if (format === undefined) {
-      usageError(`Option '--format' takes ${ALL_FORMATS.join(", ")}, not '${given}'`);
+      usageError(`Option '--format' takes ${ALL_FORMATS.join(", ")}, not '${given}'`, command);
     }
     options.format = format;
     seenFlags.push({ raw: arg, flag: "--format" });
@@ -364,7 +573,7 @@ function applyOption(arg: string, next: string | undefined, options: Options, se
   } else if (arg === "--report" || arg.startsWith("--report=")) {
     const file = arg === "--report" ? next : arg.slice("--report=".length);
     if (!file) {
-      usageError("Option '--report' requires a file");
+      usageError("Option '--report' requires a file", command);
     }
     options.reportFile = file;
     seenFlags.push({ raw: arg, flag: "--report" });
@@ -372,7 +581,7 @@ function applyOption(arg: string, next: string | undefined, options: Options, se
   } else if (arg === "--operation" || arg.startsWith("--operation=")) {
     const operation = arg === "--operation" ? next : arg.slice("--operation=".length);
     if (!operation) {
-      usageError("Option '--operation' requires an operation");
+      usageError("Option '--operation' requires an operation", command);
     }
     options.operations = [...(options.operations ?? []), operation];
     seenFlags.push({ raw: arg, flag: "--operation" });
@@ -401,8 +610,8 @@ function applyOption(arg: string, next: string | undefined, options: Options, se
     options.force = true;
     seenFlags.push({ raw: arg, flag: "-f" });
   } else if (arg === "-h" || arg === "--help") {
-    printUsage();
-    process.exit(0);
+    /* Printed once the command is known: the help is that command's. */
+    seenFlags.push({ raw: arg, flag: "-h" });
   } else if (arg === "--version" || arg === "-v") {
     console.log(`fabr ${getVersion()}`);
     process.exit(0);
@@ -412,11 +621,11 @@ function applyOption(arg: string, next: string | undefined, options: Options, se
     const def = arg.substring(2);
     const eq = def.indexOf("=");
     if (eq <= 0) {
-      usageError(`Malformed option '${arg}' (expected -DKEY=VALUE)`);
+      usageError(`Malformed option '${arg}' (expected -DKEY=VALUE)`, command);
     }
     options.properties.set(def.slice(0, eq).trim(), def.slice(eq + 1).trim());
   } else {
-    usageError(`Unrecognized command-line option '${arg}'`);
+    usageError(`Unrecognized command-line option '${arg}'`, command);
   }
   return 0;
 }
@@ -425,13 +634,14 @@ function applyOption(arg: string, next: string | undefined, options: Options, se
  * *this* invocation; under `-w` there
  * is no such thing — every cycle would rebuild it, so the two together are more
  * likely a mistake than a request. Checked after each parsing pass, since the
- * two flags can land in different ones (`fabr -f x -w`). */
-function checkFlagsCoherent(options: Options): void {
+ * two flags can land in different ones (`fabr -f x -w`). The error shows the
+ * help for `command`, where one was given. */
+function checkFlagsCoherent(options: Options, command?: string): void {
   if (options.force && options.mode === Mode.Watch) {
-    usageError("Options '-f' and '-w' cannot be combined");
+    usageError("Options '-f' and '-w' cannot be combined", command);
   }
   if (options.retryFailed && options.mode === Mode.Watch) {
-    usageError("Options '--retry-failed' and '-w' cannot be combined");
+    usageError("Options '--retry-failed' and '-w' cannot be combined", command);
   }
 }
 
@@ -475,7 +685,7 @@ export function parseCommandLine(args: string[]): Options {
        * Only the first `--` is special — a later one is an ordinary positional. */
       noMoreOptions = true;
     } else if (!noMoreOptions && arg[0] === "-") {
-      consumed = applyOption(arg, opts[index + 1], options, seenFlags);
+      consumed = applyOption(arg, opts[index + 1], options, seenFlags, commandGiven ? options.command : undefined);
     } else if (!noMoreOptions && !commandGiven && options.targets.length === 0 && COMMANDS.has(arg)) {
       /* The first positional argument may name the operation; a target with the
        * same name is reached with an explicit command first (`fabr build test`)
@@ -498,46 +708,51 @@ export function parseCommandLine(args: string[]): Options {
       }
     }
   }
+  if (options.command === "help") {
+    printHelp(options.targets[0]);
+  }
+  if (seenFlags.some(({ flag }) => flag === "-h")) {
+    printHelp(commandGiven ? options.command : undefined);
+  }
   const spec = COMMAND_BY_NAME.get(options.command);
   /* Reject a flag applied to a command it means nothing for (`fabr cat --json`,
    * `fabr build -l`) rather than silently ignoring it. */
   const accepts = new Set(spec?.accepts);
   for (const { raw, flag } of seenFlags) {
     if (!accepts.has(flag)) {
-      usageError(`Option '${raw}' is not valid for the '${options.command}' command`);
+      usageError(`Option '${raw}' is not valid for the '${options.command}' command`, options.command);
     }
   }
   const formats = FORMATS.get(options.command) ?? [];
   if (options.format !== undefined && !formats.includes(options.format)) {
-    usageError(`Option '--format' takes ${formats.join(" or ")} for the '${options.command}' command, not '${options.format}'`);
+    usageError(`Option '--format' takes ${formats.join(" or ")} for the '${options.command}' command, not '${options.format}'`, options.command);
   }
   if (options.command === "test" && options.format !== undefined && options.reportFile === undefined) {
-    usageError("Option '--format' needs '--report FILE' for the 'test' command");
+    usageError("Option '--format' needs '--report FILE' for the 'test' command", "test");
   }
   /* A single-target command (`shell`) errors on a second target rather than
    * silently building only the first. */
   if (spec?.singleTarget && options.targets.length > 1) {
-    usageError(`The '${options.command}' command takes a single target`);
+    usageError(`The '${options.command}' command takes a single target`, options.command);
   }
   if (options.command === "cp") {
     /* `cp <source…> <dest>`: the final positional is the destination directory,
      * split off here so `targets` carries only source names (resolved like
      * cat/ls). At least one source plus a dest are required. */
     if (options.targets.length < 2) {
-      usageError("cp requires at least one source and a destination directory");
+      usageError("cp requires at least one source and a destination directory", "cp");
     }
     options.dest = options.targets.pop();
   }
   if (options.targets.length === 0 && !options.deferred) {
     if (!commandGiven) {
-      printUsage();
-      process.exit(0);
+      printHelp();
     }
     if (spec?.requiresTarget) {
-      usageError(`The '${options.command}' command requires a target`);
+      usageError(`The '${options.command}' command requires a target`, options.command);
     }
   }
-  checkFlagsCoherent(options);
+  checkFlagsCoherent(options, commandGiven ? options.command : undefined);
   return options;
 }
 
@@ -587,11 +802,13 @@ export function completeCommandLine(
       (operation === "test" ? plan.test : plan.build).push(arg);
     }
   }
-  /* The inferable commands are build/test/run, which accept -w, -q,
-   * --no-progress, --refresh, --trace and -f; a flag meaningful only to some other command needs
-   * that command written out. */
+  if (seenFlags.some(({ flag }) => flag === "-h")) {
+    printHelp();
+  }
+  /* A flag meaningful only to some command a target cannot select needs that
+   * command written out. */
   for (const { raw, flag } of seenFlags) {
-    if (flag !== "-w" && flag !== "-q" && flag !== "--no-progress" && flag !== "--refresh" && flag !== "--trace" && flag !== "-f") {
+    if (!INFERABLE_OPTIONS.has(flag)) {
       usageError(`Option '${raw}' is not valid without a command`);
     }
   }

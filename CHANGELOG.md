@@ -45,6 +45,7 @@ still reports non-zero exit code with failures.
 - Fix: `fabr shell` opens the sandbox of a `patched` target, its patches applied; a `run` capture named like a file it leaves is reported naming the redirect.
 - `list-targets` of a private name says which file it is private to.
 - `default private …` and `default repository …`, a rule guard naming no property (`pkg<pkg.=x>`) and a target-body splice of anything but a plain name are errors.
+- Restructure command-line help.
 
 @fabr-build/aws:
 - Add s3 download support.

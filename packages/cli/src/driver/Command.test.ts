@@ -202,11 +202,11 @@ describe("Command", () => {
     expect(out).to.deep.equal([]);
   });
 
-  it("sends an unrecognized-option error AND the usage to stderr, not stdout", () => {
+  it("sends an unrecognized-option error and the help to stderr, not stdout", () => {
     const { exit, out, err } = capture(["--bogus"]);
     expect(exit).to.equal(1);
-    expect(err.join("\n")).to.match(/Unrecognized command-line option '--bogus'/);
-    expect(err.join("\n")).to.match(/Usage: fabr/);
+    expect(err[0]).to.equal("Unrecognized command-line option '--bogus'\n");
+    expect(err[1]).to.equal(capture(["-h"]).out.join("\n"));
     expect(out).to.deep.equal([]);
   });
 
@@ -218,11 +218,10 @@ describe("Command", () => {
   });
 
   for (const command of ["build", "test", "run", "shell", "ls", "cat", "sync"]) {
-    it(`rejects '${command}' with no target — error + usage to stderr, exit 1`, () => {
+    it(`rejects '${command}' with no target — error + the command's help on stderr, exit 1`, () => {
       const { exit, out, err } = capture([command]);
       expect(exit).to.equal(1);
-      expect(err.join("\n")).to.match(new RegExp(`The '${command}' command requires a target`));
-      expect(err.join("\n")).to.match(/Usage: fabr/);
+      expect(err).to.deep.equal([`The '${command}' command requires a target\n`, ...capture(["help", command]).out]);
       expect(out).to.deep.equal([]);
     });
   }
@@ -532,15 +531,61 @@ describe("Command", () => {
   });
 
   for (const flag of ["-h", "--help"]) {
-    it(`prints per-command usage to stdout and exits 0 for ${flag}`, () => {
+    it(`prints the commands by group to stdout and exits 0 for ${flag}`, () => {
       const { exit, out, err } = capture([flag]);
       expect(exit).to.equal(0);
       const text = out.join("\n");
-      expect(text).to.match(/Usage: fabr/);
-      /* Each command lists its own options inline, e.g. `fabr run [-w] <target…>` */
-      expect(text).to.match(/fabr run \[-w\] <target/);
-      expect(text).to.match(/fabr ls \[-l\] <names>/);
+      expect(text).to.match(/^Usage: fabr \[command\]/);
+      expect(text).to.match(/\nBuilding:\n {2}build /);
+      expect(text).to.match(/\nInspecting:\n {2}ls /);
+      /* Only the options of what a target's operation selects, and every command's. */
+      expect(text).to.match(/\n {2}--trace\[=FILE\] /);
+      expect(text).to.not.match(/--include-optional|--coverage/);
       expect(err).to.deep.equal([]);
     });
   }
+
+  it("prints a command's help for 'help <command>', '<command> -h' and '-h <command>'", () => {
+    const expected = capture(["help", "test"]);
+    expect(expected.exit).to.equal(0);
+    expect(expected.out.join("\n")).to.match(/^Usage: fabr test \[-w\] \[-u\]/);
+    expect(expected.out.join("\n")).to.match(/\n {2}--coverage\[=DIR\] +Measure code coverage/);
+    expect(expected.out.join("\n")).to.not.match(/--include-optional/);
+    expect(capture(["test", "-h"]).out).to.deep.equal(expected.out);
+    expect(capture(["-h", "test"]).out).to.deep.equal(expected.out);
+  });
+
+  it("describes an option as it applies to the command whose help it is in", () => {
+    expect(capture(["help", "ls"]).out.join("\n")).to.match(/\n {2}-l +Show each file's hash and size/);
+    expect(capture(["help", "list-targets"]).out.join("\n")).to.match(/\n {2}-l +Show where each is declared/);
+  });
+
+  it("prints the general help for '-h' after a command-less target", () => {
+    const { exit, out } = capture(["foo", "-h"], () => ["build"]);
+    expect(exit).to.equal(0);
+    expect(out.join("\n")).to.match(/^Usage: fabr \[command\]/);
+  });
+
+  it("passes '-h' after a run's target to the program", () => {
+    expect(parseCommandLine(["node", "fabr", "run", "tool", "-h"]).runArgs).to.deep.equal(["-h"]);
+  });
+
+  it("shows the help for the command given with an error found reading an option", () => {
+    const { err } = capture(["test", "foo", "-t"]);
+    expect(err).to.deep.equal(["Option '-t' requires a pattern\n", ...capture(["help", "test"]).out]);
+  });
+
+  it("refuses help for a command fabr does not have", () => {
+    const { exit, err } = capture(["help", "nope"]);
+    expect(exit).to.equal(1);
+    expect(err[0]).to.match(/Unknown command 'nope'/);
+  });
+
+  it("lays every help page out within 80 columns", () => {
+    for (const args of [["-h"], ...["build", "test", "run", "ls", "list-targets", "list-all", "audit"].map((c) => ["help", c])]) {
+      for (const line of capture(args).out.join("\n").split("\n")) {
+        expect(line.length, `'${args.join(" ")}': ${line}`).to.be.at.most(80);
+      }
+    }
+  });
 });

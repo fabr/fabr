@@ -28,6 +28,7 @@ can be piped or redirected on its own.
 | [`sync`](#sync) | Publish packages and files. |
 | [`build-server`](#build-server) | Serve the project's targets to an editor. |
 | [`list-targets`](#list-targets), [`list-targetdefs`](#list-targetdefs), [`list-operations`](#list-operations), [`list-properties`](#list-properties), [`list-all`](#list-all) | Describe the project and what a build file can contain. |
+| `help [command]` | Print the commands, or one command's options. `fabr <command> --help` does the same. |
 
 ### Leaving the command out
 
@@ -43,8 +44,8 @@ A target that can only be run ends fabr's own arguments: everything after it goe
 as `--port 3000` does above. To pass arguments to a target that can also be built, name the
 command: `fabr run mylib --flag`.
 
-Without a command, fabr takes only the options `-D`, `-w`, `-q`, `--no-progress` and `--refresh`.
-Any other option, such as `--trace` or `-u`, needs the command written out
+Without a command, fabr takes only the options `-D`, `-w`, `-q`, `--no-progress`, `--refresh` and
+`--trace`. Any other option, such as `-u`, needs the command written out
 (`fabr test -u mylib`); otherwise fabr stops with `Option '-u' is not valid without a command`.
 
 ## Commands
@@ -119,8 +120,8 @@ fabr lint -w app
 ```
 
 `fabr lint app` builds `app` as `fabr build 'app<BUILD_OPERATION=lint>'` does. It takes the
-options a command [left out](#leaving-the-command-out) takes: `-D`, `-w`, `-q`, `--no-progress`
-and `--refresh`. Any operation a rule's guard names (`<BUILD_OPERATION=lint>`) can be given this
+options a command [left out](#leaving-the-command-out) takes: `-D`, `-w`, `-q`, `--no-progress`,
+`--refresh` and `--trace`. Any operation a rule's guard names (`<BUILD_OPERATION=lint>`) can be given this
 way, and `fabr list-operations` lists them. A word no rule names as an operation is read as a
 target name.
 
@@ -540,7 +541,10 @@ the project included each one, so that what they declare is listed too.
 | `--include-optional` | `list-all` | Also read the optional `.fabr` files of the plugins the project uses. |
 | `--` | all | End of options. What follows is a target, even if it starts with `-` or is the name of a command. |
 | `-v`, `--version` | | Print fabr's version. |
-| `-h`, `--help` | | Print a summary of the commands and options. |
+| `-h`, `--help` | | Print the commands, or with a command (`fabr test --help`), that command's options. |
+
+When fabr can't read a command line, such as one with an option the command doesn't take or with
+no target, it says why and prints the command's help, both to stderr, and exits with status 1.
 
 On a terminal, fabr shows the steps in progress at the bottom of the screen, and holds each step's
 output until the step finishes, so that the output of steps running in parallel isn't mixed
