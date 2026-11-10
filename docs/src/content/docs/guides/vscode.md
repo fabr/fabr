@@ -29,12 +29,19 @@ VS Code also understands; the differences are listed under [Known issues](#known
 
 ## Installing
 
-The extension is not yet published. To install it, build its VSIX in fabr's own repository and
-install that:
+Install [Fabr](https://marketplace.visualstudio.com/items?itemName=fabr-build.fabr) from the
+Visual Studio Marketplace, from the Extensions view or on the command line:
 
 ```sh
-fabr cp vscode_ext_vsix .
-code --install-extension vscode_ext_vsix/vscode-ext.vsix
+code --install-extension fabr-build.fabr
+```
+
+A project can recommend it to everyone who opens it, in `.vscode/extensions.json`:
+
+```json
+{
+  "recommendations": ["fabr-build.fabr"]
+}
 ```
 
 It starts in any window whose workspace holds a `PROJECT.fabr`, once the workspace is trusted:

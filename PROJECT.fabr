@@ -148,4 +148,4 @@ js_installation fabr_install {
 
 all = @fabr-build/core @fabr-build/js @fabr-build/js-tools @fabr-build/cli 
       @fabr-build/sass-pnp-importer @fabr-build/java @fabr-build/aws 
-      @fabr-build/container @fabr-build/migration vscode-ext;
+      @fabr-build/container @fabr-build/migration fabr;
