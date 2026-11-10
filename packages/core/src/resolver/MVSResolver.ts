@@ -254,6 +254,29 @@ function resolvePhase<V, C>(
         }
       }
     }
+    /* The versions written `?` allows, per package, highest first: each
+     * raises the floor of every requirement on its package it satisfies. */
+    const allowed = new Map<string, V[]>();
+    for (const root of roots) {
+      if (root.override === "alternate" && root.versionConstraint !== undefined) {
+        try {
+          const version = domain.minimumOf(constraintOf(domain, root.versionConstraint));
+          allowed.set(requiredAs(root), [...(allowed.get(requiredAs(root)) ?? []), version]);
+        } catch {
+          /* An unparseable alternate allows nothing to raise to */
+        }
+      }
+    }
+    for (const versions of allowed.values()) {
+      versions.sort((a, b) => domain.compare(b, a));
+    }
+    /** @return the floor a requirement on `name` demands: its constraint's
+     * minimum, raised to the highest written `?` version it satisfies. */
+    const floorOf = (name: string, constraint: C): V => {
+      const minimum = domain.minimumOf(constraint);
+      const raised = allowed.get(name)?.find(version => domain.satisfies(version, constraint));
+      return raised !== undefined && domain.compare(raised, minimum) > 0 ? raised : minimum;
+    };
     /** @return true if this walk may raise the floors demanding `id`, otherwise
      * false: the registry must offer the hook, and the node must be one a
      * converged tree proved blocking — and never a forced package's (the user
@@ -374,10 +397,11 @@ function resolvePhase<V, C>(
       }
       if (req.override === "alternate") {
         /* Attach-LAST (the mirror of a peer's attach-first): an alternate
-         * demands nothing and shapes nothing — unless the converged tree
+         * demands nothing of its own — it raises the floors of the
+         * requirements it satisfies (floorOf), and where the converged tree
          * requires the package ONLY floorlessly, where no version is
-         * selectable deterministically; then the written alternate supplies
-         * one (fired at quiescence, like the other convergence repairs).
+         * selectable deterministically, the written alternate supplies one
+         * (fired at quiescence, like the other convergence repairs).
          * Recorded here; never an ordinary demand. One stating no version
          * (`@npm:debug?`) has none to supply. */
         if (req.versionConstraint === undefined) {
@@ -427,7 +451,7 @@ function resolvePhase<V, C>(
         providedReqs.push({ req, requiredBy });
         return;
       }
-      attempt(req, domain.minimumOf(constraint), requiredBy);
+      attempt(req, floorOf(requiredAs(req), constraint), requiredBy);
     };
 
     /** Key a requirement edge in canonical order, for breaking a tie between two
@@ -530,6 +554,10 @@ function resolvePhase<V, C>(
      * the node.
      */
     const nodeNotPublished = (id: string, pkg: string, version: V, err: VersionNotFoundError): void => {
+      if (allowed.get(pkg)?.some(written => domain.compare(written, version) === 0)) {
+        fail(new FabrError(`'${pkg}:${domain.versionToString(version)}?' allows a version of ${pkg} that was never published`));
+        return;
+      }
       notPublished.set(id, err);
       if (canRepair(id)) {
         raiseFloors(pkg, version, nodeDemands.get(id) ?? []);
@@ -1106,7 +1134,7 @@ function resolvePhase<V, C>(
           }
           continue;
         }
-        const floor = domain.minimumOf(edge.constraint);
+        const floor = floorOf(pkg, edge.constraint);
         const classes = classesByPkg.get(pkg) ?? [];
         classesByPkg.set(pkg, classes);
         let placed = false;

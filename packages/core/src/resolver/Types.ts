@@ -67,13 +67,14 @@ export interface Requirement {
    *   this version at resolve time. Ranges the forced version does not
    *   satisfy are recorded as `MVSResolution.coerced` — data, never
    *   violations. Participates in resolution (and its memo identity).
-   * - `"alternate"` (`?`) — a sanction plus a supply of last resort, never an
-   *   ordinary demand: it contributes no floor and mounts nothing of its own.
-   *   It IS a resolver root, handled by a dedicated attach-last branch
-   *   (MVSResolver's enqueue): only when the converged tree requires the
-   *   package solely floorlessly does the written version supply a selection.
-   *   Written with no version (`@npm:debug?`), it sanctions every version of
-   *   the package and supplies none.
+   * - `"alternate"` (`?`) — a sanction and a floor for others' requirements,
+   *   never an ordinary demand: it mounts nothing of its own, and raises the
+   *   floor of every requirement on the package that its version satisfies
+   *   (MVSResolver's `floorOf`), so a package nothing else requires gets
+   *   nothing. Where the converged tree requires the package solely
+   *   floorlessly, the written version supplies the selection (MVSResolver's
+   *   attach-last branch). Written with no version (`@npm:debug?`), it
+   *   sanctions every version of the package and raises and supplies none.
    *   Included in the canonical roots and the resolution memo key (its
    *   `requirementKey` carries the marker); the sanction itself is
    *   judged by the consumer at delivery.

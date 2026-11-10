@@ -38,6 +38,7 @@ still reports non-zero exit code with failures.
 - Fix: a name holding an extglob group (`@(a|b)`, `+(…)`, `!(…)`) is read as a pattern, in a reference and on the command line.
 - Fix: a failed write into the cache (a full disk) fails the download or unpack rather than leaving it waiting.
 - An environment entry with no `=` is an error naming it.
+- `fabr deps`, `fabr audit` and `fabr sbom` follow a target into the targets it takes in for their files (a program in a `container_image`), with everything they require.
 - Fix: `fabr audit` and `fabr sbom` of a target under another operation (`app<BUILD_OPERATION=run>`) report what its build requires, as `fabr deps` shows it.
 - Fix: a bill of materials names a licence by its SPDX id only where the SPDX licence list has it (`UNLICENSED` is a name).
 - Fix: `fabr audit` reads fixed versions from an advisory's version ranges only, not its commit ranges, and warns of a `fixes` on a target made from no registry package.
@@ -46,6 +47,7 @@ still reports non-zero exit code with failures.
 - `list-targets` of a private name says which file it is private to.
 - `default private …` and `default repository …`, a rule guard naming no property (`pkg<pkg.=x>`) and a target-body splice of anything but a plain name are errors.
 - Restructure command-line help.
+- Breaking: a `?` version marker also raises every requirement its version satisfies to that version.
 
 @fabr-build/aws:
 - Add s3 download support.
@@ -90,7 +92,7 @@ still reports non-zero exit code with failures.
 - Fix `enableAutomock` automocking `node:`-prefixed core modules.
 - Fix a test file reading a package that imports itself by name being run again on every change.
 
-@fabr-build/vscode-ext:
+VS Code extension (fabr-build.fabr):
 - New VSCode extension.
 
 ## Fabr 0.3.1

@@ -1594,6 +1594,71 @@ describe("force overrides", () => {
     expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "T@25.0.0"]);
   });
 
+  it("an alternate raises the floor of a requirement it satisfies", () => {
+    const result = resolve(
+      { A: "1.0.0", T: "25.2.0?" },
+      {
+        A: { "1.0.0": { T: "^25.0.0" } },
+        T: { "25.0.0": {}, "25.2.0": {}, "25.3.0": {} },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "T@25.2.0"]);
+  });
+
+  it("an alternate below the selection raises nothing", () => {
+    const result = resolve(
+      { A: "1.0.0", T: "25.0.0?" },
+      {
+        A: { "1.0.0": { T: "^25.2.0" } },
+        T: { "25.0.0": {}, "25.2.0": {} },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "T@25.2.0"]);
+  });
+
+  it("an alternate raises the fork it satisfies and leaves the principal", () => {
+    /* B's ^6.19.5 is violated by C's 7.30.1 and forks: the alternate raises
+     * that fork, and the principal it does not satisfy keeps its version. */
+    const result = resolveOrderIndependent(
+      { B: "1.0.0", C: "1.0.0", U: "6.29.1?" },
+      {
+        B: { "1.0.0": { U: "^6.19.5" } },
+        C: { "1.0.0": { U: "7.30.1" } },
+        U: { "6.19.5": {}, "6.22.0": {}, "6.29.1": {}, "7.30.1": {} },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["B@1.0.0", "C@1.0.0", "U@6.29.1", "U@7.30.1"]);
+    expect(result.selections.find(sel => sel.name === "U" && sel.fork !== undefined)?.version).to.deep.equal(parseVersion("6.29.1"));
+  });
+
+  it("a requirement two alternates satisfy rises to the higher", () => {
+    let result: MVSResolution<SemverVersion> | undefined;
+    resolveMVS(
+      [
+        { name: "A", versionConstraint: "1.0.0" },
+        { name: "T", versionConstraint: "1.5.0", override: "alternate" },
+        { name: "T", versionConstraint: "2.1.0", override: "alternate" },
+      ],
+      SEMVER,
+      mockRegistry({ A: { "1.0.0": { T: ">=1.0.0 <3.0.0" } }, T: { "1.0.0": {}, "1.5.0": {}, "2.1.0": {} } }, false)
+    ).then(resolution => {
+      result = resolution;
+    });
+    expect(selectionStrings(result!)).to.deep.equal(["A@1.0.0", "T@2.1.0"]);
+  });
+
+  it("an alternate naming an unpublished version it would raise to is an error", () => {
+    const err = resolveError(
+      { A: "1.0.0", T: "25.9.0?" },
+      {
+        A: { "1.0.0": { T: "^25.0.0" } },
+        T: { "25.0.0": {}, "25.2.0": {} },
+      },
+      true
+    );
+    expect(err.message).to.equal("'T:25.9.0?' allows a version of T that was never published");
+  });
+
   it("an alternate stays inert when nothing requires the package at all", () => {
     const result = resolve(
       { A: "1.0.0", T: "26.0.0?" },

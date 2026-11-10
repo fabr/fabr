@@ -193,7 +193,7 @@ const NEWEST = SEMVER.parseVersion(`${Number.MAX_SAFE_INTEGER}.0.0`);
 export const BROWSER_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
   ...SEMVER,
   name: "browser",
-  resolutionTag: "browser:resolve:2",
+  resolutionTag: "browser:resolve:3",
   parseVersion: text => SEMVER.parseVersion(semverOf(text)),
   versionToString: version => caniuseOf(SEMVER.versionToString(version)),
   compare: (a, b) => SEMVER.compare(b, a),

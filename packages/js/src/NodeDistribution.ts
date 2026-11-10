@@ -157,7 +157,7 @@ function makeNodeRunnable(pkg: PackageFileSet): Computable<RunnableFileSet> {
 export const NODE_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
   ...SEMVER,
   name: "node",
-  resolutionTag: "node:resolve:1",
+  resolutionTag: "node:resolve:2",
   splitReference: splitNodeReference,
   validateRequirement: validateNodeRequirement,
   parsePublishCoordinate: () => {

@@ -422,9 +422,15 @@ deps = @npm:aws-param-store-sdkv3:4.0.0
 requirements can't agree on one. Listing each version involved with a `?` lets them all be used:
 each package gets the version its own requirement accepts, as it would under npm.
 
+- A `?` also raises every requirement its version satisfies to that version. With
+  `@npm:undici:6.29.1?`, a dependency requiring `undici:^6.19.5` gets 6.29.1, and one requiring
+  `undici:7.30.1` keeps 7.30.1. Writing one `?` per major version moves each to a fixed release,
+  as a security update needs. Where two `?` versions satisfy one requirement, it gets the higher.
 - The entries name the complete set of versions allowed. If a later change makes the build need a
   different version, it fails again and says which entry to update.
-- An entry is not a dependency. It doesn't add the package to the target.
+- An entry is not a dependency. It doesn't add the package to the target, and raises nothing
+  where nothing else requires the package. A `?` naming a version that was never published is an
+  error where it would raise a requirement.
 - In a catalog, an ordinary exact entry counts as allowing that version:
   `deps = @npm:tslib:2.6.2 @npm:tslib:1.14.1?;`.
 - Without a version, `@npm:debug?` allows every version of the package: as many as the build

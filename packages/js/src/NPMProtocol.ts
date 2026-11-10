@@ -686,7 +686,7 @@ export const NPM_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
   ...SEMVER,
   providedMismatch: "tolerate",
   name: "npm",
-  resolutionTag: "npm:resolve:31",
+  resolutionTag: "npm:resolve:32",
   splitReference: splitNpmReference,
   validateRequirement: validateNpmRequirement,
   parsePublishCoordinate: parseNpmPublishCoordinate,
