@@ -21,8 +21,9 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { Computable, ComputableSource, ComputableState } from "./Computable";
-import { FSFileSource, TreeQuery } from "./FSFileSource";
+import { FSFile, FSFileSource, TreeQuery } from "./FSFileSource";
 import { FileSet } from "./FileSet";
+import { WatchController } from "./WatchController";
 import { Name, NamePartKind } from "./Name";
 import { parseName } from "../model/Parser";
 import { expect } from "chai";
@@ -231,14 +232,11 @@ describe("FSFileSource enumeration window (TreeQuery)", () => {
     expect([...fileSet].map(([n]) => n)).to.deep.equal(["dir/new.ts"]);
   });
 
-  it("a stale enumeration cannot clobber a value a watch flush has already settled", async () => {
-    /* The enumeration's build and a flush's recompute both snapshot `files` when they
-     * start, and can finish in either order: here `big.ts` is deleted while its initial
-     * hash is still in flight, so the (shorter) recompute settles the correct set first
-     * and the enumeration's build lands afterwards holding the pre-delete snapshot.
-     * Without the delivery guard it settles that snapshot — resurrecting the deleted
-     * file AND advancing lastManifest to it, so the next recompute sees no change and
-     * the deletion is lost until something else touches the query. */
+  it("buffers a deletion made while the enumerated files are read, and never delivers the deleted file", async () => {
+    /* The enumeration reads its files before it delivers, and events arriving
+     * meanwhile are buffered and replayed against the read files: `big.ts` is deleted
+     * while its read is still in flight, so the first value must already lack it, and
+     * the memo of what was delivered must match it (a later recompute sees no change). */
     fs.mkdirSync(path.join(root, "dir"));
     fs.writeFileSync(path.join(root, "dir", "big.ts"), "x");
     fs.writeFileSync(path.join(root, "dir", "small.ts"), "x");
@@ -247,22 +245,18 @@ describe("FSFileSource enumeration window (TreeQuery)", () => {
     const seen: string[][] = [];
     query.then(fileSet => seen.push([...fileSet].map(([n]) => n)));
     resolveEnum({ names: ["dir/big.ts", "dir/small.ts"], project: rel => rel });
-    /* Enumeration has landed but its build (ingest + hash of both files) is still in
-     * flight — nothing settled yet. */
+    /* Enumeration has landed but its reads are still in flight — nothing settled yet. */
     expect(seen).to.deep.equal([]);
 
-    /* big.ts is deleted and a flush recomputes and applies, all before that build ends. */
+    /* big.ts is deleted before those reads end: the event is buffered, and a flush
+     * meanwhile has nothing to build. */
     fs.rmSync(path.join(root, "dir", "big.ts"));
-    expect(query.applyEvent("dir/big.ts", true)).to.equal(true);
-    const update = await toPromise(query.recompute());
-    update?.invalidate();
-    update?.settle();
-    expect(seen).to.deep.equal([["dir/small.ts"]]);
+    expect(query.applyEvent("dir/big.ts", true)).to.equal(false);
+    expect(await toPromise(query.recompute())).to.equal(null);
 
-    /* Now let the enumeration's build finish. It must deliver nothing. */
     await new Promise(resolve => setTimeout(resolve, 25));
     expect(seen).to.deep.equal([["dir/small.ts"]]);
-    expect([...(query.value as FileSet)].map(([n]) => n)).to.deep.equal(["dir/small.ts"]);
+    expect(await toPromise(query.recompute())).to.equal(null);
   });
 
   it("does not settle a prepared update whose query has since reattached", async () => {
@@ -341,6 +335,168 @@ describe("FSFileSource enumeration window (TreeQuery)", () => {
   });
 });
 
+describe("FSFileSource reads under watch (TreeQuery)", () => {
+  let root: string;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-fs-reads-"));
+    fs.mkdirSync(path.join(root, "src"));
+    fs.writeFileSync(path.join(root, "src", "x.ts"), "x");
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  /** A source whose read of a gated path finishes reading the disk, then waits for
+   * the test to release it before it lands. */
+  class GatedSource extends FSFileSource {
+    private readonly gates = new Map<string, { read: () => void; released: Promise<void> }>();
+
+    /** Gate the next read of `name`: @return when that read has read the disk, and how to let it land. */
+    public gate(name: string): { read: Promise<void>; release: () => void } {
+      let read!: () => void;
+      let release!: () => void;
+      const done = new Promise<void>(resolve => (read = resolve));
+      const released = new Promise<void>(resolve => (release = resolve));
+      this.gates.set(name, { read, released });
+      return { read: done, release };
+    }
+
+    public override ingest(filename: string): Computable<FSFile | undefined> {
+      const gate = this.gates.get(filename);
+      if (gate === undefined) {
+        return super.ingest(filename);
+      }
+      this.gates.delete(filename);
+      return super.ingest(filename).then(file => {
+        gate.read();
+        return Computable.from<FSFile | undefined>(resolve => void gate.released.then(() => resolve(file)));
+      });
+    }
+  }
+
+  const tick = (ms = 20): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
+
+  /** Apply the query's updates until it is steady, as the controller does: @return its files by name, as hashes. */
+  const settled = async (query: TreeQuery): Promise<Map<string, string>> => {
+    for (let quiet = 0; quiet < 3; ) {
+      const update = await toPromise(query.recompute());
+      if (update) {
+        update.invalidate();
+        update.settle();
+        quiet = 0;
+      } else {
+        quiet++;
+      }
+      await tick(10);
+    }
+    return new Map([...(query.value as FileSet)].map(([name, file]) => [name, (file as FSFile).hash]));
+  };
+
+  const hashOf = async (name: string): Promise<string> => (await toPromise(new FSFileSource(root).ingest(name)))!.hash;
+
+  /** A query over `src` that has delivered its first value (wrapped: a query is itself awaitable). */
+  const watched = async (src: FSFileSource): Promise<{ query: TreeQuery }> => {
+    const query = src.find(Name.fromLiteral("src")) as TreeQuery;
+    await toPromise(query.then(set => set));
+    return { query };
+  };
+
+  it("drops a file a rescan was reading when it is deleted before the read lands", async () => {
+    const src = new GatedSource(root);
+    const { query } = await watched(src);
+    fs.mkdirSync(path.join(root, "src", "new"));
+    fs.writeFileSync(path.join(root, "src", "new", "a.ts"), "a");
+    const gate = src.gate("src/new/a.ts");
+    query.applyEvent("src/new", false);
+    await gate.read;
+
+    fs.rmSync(path.join(root, "src", "new", "a.ts"));
+    expect(query.applyEvent("src/new/a.ts", true)).to.equal(true);
+    gate.release();
+    await tick(50);
+    expect([...(await settled(query)).keys()]).to.deep.equal(["src/x.ts"]);
+  });
+
+  it("keeps a newer read of a file over a rescan's older one that lands later", async () => {
+    const src = new GatedSource(root);
+    const { query } = await watched(src);
+    fs.mkdirSync(path.join(root, "src", "new"));
+    fs.writeFileSync(path.join(root, "src", "new", "a.ts"), "v1");
+    const gate = src.gate("src/new/a.ts");
+    query.applyEvent("src/new", false);
+    await gate.read;
+
+    fs.writeFileSync(path.join(root, "src", "new", "a.ts"), "v2");
+    query.applyEvent("src/new/a.ts", false);
+    expect((await settled(query)).get("src/new/a.ts")).to.equal(await hashOf("src/new/a.ts"));
+    gate.release();
+    await tick(50);
+    expect((await settled(query)).get("src/new/a.ts")).to.equal(await hashOf("src/new/a.ts"));
+  });
+
+  it("drops a file whose change event's read is still pending when it is deleted", async () => {
+    const src = new GatedSource(root);
+    const { query } = await watched(src);
+    fs.writeFileSync(path.join(root, "src", "b.ts"), "b");
+    const gate = src.gate("src/b.ts");
+    expect(query.applyEvent("src/b.ts", false)).to.equal(true);
+    await gate.read;
+
+    fs.rmSync(path.join(root, "src", "b.ts"));
+    expect(query.applyEvent("src/b.ts", true)).to.equal(true);
+    gate.release();
+    await tick(50);
+    expect([...(await settled(query)).keys()]).to.deep.equal(["src/x.ts"]);
+  });
+
+  it("takes the later of two events' reads of one file, whichever lands first", async () => {
+    const src = new GatedSource(root);
+    const { query } = await watched(src);
+    fs.writeFileSync(path.join(root, "src", "x.ts"), "v1");
+    const gate = src.gate("src/x.ts");
+    query.applyEvent("src/x.ts", false);
+    await gate.read;
+
+    fs.writeFileSync(path.join(root, "src", "x.ts"), "v2");
+    query.applyEvent("src/x.ts", false);
+    expect((await settled(query)).get("src/x.ts")).to.equal(await hashOf("src/x.ts"));
+    gate.release();
+    await tick(50);
+    expect((await settled(query)).get("src/x.ts")).to.equal(await hashOf("src/x.ts"));
+  });
+
+  it("does not let the enumeration's delivery settle after a later recompute has", async () => {
+    /* The enumeration replays a create buffered meanwhile, so its delivery waits on that
+     * file's read; a delete and a recompute settle the set without it first, and the
+     * enumeration's delivery landing afterwards must settle nothing. */
+    fs.writeFileSync(path.join(root, "src", "new.ts"), "n");
+    const src = new GatedSource(root);
+    let resolveEnum!: (v: EnumResult) => void;
+    const enumerator = (): Computable<EnumResult> => Computable.from<EnumResult>(resolve => (resolveEnum = resolve));
+    const query = new TreeQuery(src, root, Name.fromLiteral("src"), "", enumerator);
+    const seen: string[][] = [];
+    query.then(set => seen.push([...set].map(([name]) => name)));
+
+    expect(query.applyEvent("src/new.ts", false)).to.equal(false);
+    const gate = src.gate("src/new.ts");
+    resolveEnum({ names: ["src/x.ts"], project: rel => rel });
+    await gate.read;
+    expect(seen).to.deep.equal([]);
+
+    fs.rmSync(path.join(root, "src", "new.ts"));
+    expect(query.applyEvent("src/new.ts", true)).to.equal(true);
+    const update = await toPromise(query.recompute());
+    update?.invalidate();
+    update?.settle();
+    expect(seen).to.deep.equal([["src/x.ts"]]);
+
+    gate.release();
+    await tick(50);
+    expect(seen).to.deep.equal([["src/x.ts"]]);
+    expect([...(query.value as FileSet)].map(([name]) => name)).to.deep.equal(["src/x.ts"]);
+  });
+});
+
 /* Directory-level events. macOS reports a rename as one delete of the old path and one
  * create of the new, with NO per-child events, so a query must drop the old subtree and
  * walk the new one — neither of which the projection can judge, being a file-membership
@@ -386,6 +542,36 @@ describe("FSFileSource directory events (TreeQuery)", () => {
     fs.writeFileSync(path.join(root, "src", "a", "one.ts"), "1");
     fs.writeFileSync(path.join(root, "src", "a", "nested", "two.ts"), "2");
   }
+
+  it("shares one query per name while it is in use, and forgets it when nothing uses it", async () => {
+    tree();
+    const controller = new WatchController(10);
+    try {
+      const src = new FSFileSource(root, controller);
+      const query = src.find(Name.fromLiteral("src")) as TreeQuery;
+      expect(src.find(Name.fromLiteral("src"))).to.equal(query);
+      const registered = (): number => (src as unknown as { registrations: Set<TreeQuery> }).registrations.size;
+
+      const dependant = query.then(set => set);
+      expect(names(await toPromise(dependant))).to.deep.equal(["src/a/nested/two.ts", "src/a/one.ts"]);
+      expect(registered()).to.equal(1);
+
+      unlink(query, dependant);
+      expect(query.state).to.equal(ComputableState.Detached);
+      expect(registered()).to.equal(0);
+
+      /* Nothing holds it now: asked again, the name gets a new query, which reads the tree as it is now. */
+      expect((src as unknown as { queries: Map<string, TreeQuery> }).queries.size).to.equal(0);
+      fs.writeFileSync(path.join(root, "src", "a", "three.ts"), "3");
+      const again = src.find(Name.fromLiteral("src")) as TreeQuery;
+      expect(again).to.not.equal(query);
+      expect(names(await toPromise(again.then(set => set)))).to.deep.equal(["src/a/nested/two.ts", "src/a/one.ts", "src/a/three.ts"]);
+      expect(registered()).to.equal(1);
+      expect(src.find(Name.fromLiteral("src"))).to.equal(again);
+    } finally {
+      await controller.close();
+    }
+  });
 
   it("follows a directory rename under a glob reference", async () => {
     tree();

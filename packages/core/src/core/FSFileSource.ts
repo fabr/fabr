@@ -28,7 +28,7 @@ import { DEFAULT_FILE_MODE, FileSet, IFile, FileSource } from "./FileSet";
 import { hashFile, hashString, isDirectoryError, isNotFound, readFile, readFileBuffer, stat, walkTree } from "./FSWrapper";
 import type { BuildCache } from "./BuildCache";
 import { sniffMime } from "../support/Mime";
-import { FabrError, toError } from "./Errors";
+import { FabrError, MultiError, toError } from "./Errors";
 import { IProvenanceStep, namingDigest, registerProvenanceNaming, registerProvenanceRenderer, renamingText, restrictedTo } from "./Provenance";
 import { PreparedUpdate, WatchController, WatchEntry } from "./WatchController";
 
@@ -110,7 +110,13 @@ export class FSFile implements IFile {
  * (a single-file `get` is just a query over a literal, non-glob path).
  */
 export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
-  private readonly files = new Map<string, Computable<FSFile | undefined>>();
+  /* The query's files as last read, by tree-relative path. */
+  private readonly files = new Map<string, FSFile>();
+  /* The paths whose last read failed, with the error a build reports for each. */
+  private readonly failed = new Map<string, Error>();
+  /* The reads a change event started that have not yet landed in `files`/`failed`;
+   * a build waits for these alone. */
+  private readonly pending = new Map<string, Computable<FSFile | undefined>>();
   /* The name's projection: decides membership (a matched path maps to a name,
    * undefined drops it) AND names the result — one derivation for enumeration,
    * live-change filtering and result naming alike. Built once the tree is
@@ -129,10 +135,10 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
    * (a newer enumeration is now authoritative) is discarded — see attach. */
   private attachGeneration = 0;
   /* Bumped whenever a new delivery starts — an attach's enumeration, or a watch
-   * recompute. Both build asynchronously from a snapshot of `files` taken when the
-   * build began, and the two can overlap (an event during the enumeration's own
-   * build), so they can finish in either order: only the latest may settle, or an
-   * earlier one landing afterwards would undo the newer result. Deliberately NOT
+   * recompute. Both build asynchronously, each waiting on the reads pending when it
+   * began, and the two can overlap (an event during the enumeration's own build), so
+   * they can finish in either order: only the latest may settle, or an earlier one
+   * landing afterwards would undo the newer result. Deliberately NOT
    * folded into attachGeneration, which answers a different question — whose
    * *mutations* of files/project are still wanted. A recompute bumping that would
    * make the enumeration about to populate the map discard its own work. */
@@ -144,6 +150,8 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
   /* Paths with a directory rescan in flight, so a burst of events over the same new
    * directory walks it once (see startRescan). */
   private readonly rescanning = new Set<string>();
+  /* The key its source holds it under while it is in use (see FSFileSource.query). */
+  public heldAs?: string;
 
   /** Get the directory, relative to the source's root, that holds everything this
    *  query can match: its static path where it has a pattern, and the directory
@@ -183,7 +191,10 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
      * isCurrent for the split. */
     const generation = ++this.attachGeneration;
     this.owner.registerQuery(this);
+    this.owner.holdQuery(this);
     this.files.clear();
+    this.failed.clear();
+    this.pending.clear();
     /* Detaching left us serving no value, so the memo of what we last delivered is
      * void too: this attach must deliver afresh, and a recompute meanwhile must not
      * mistake the current tree for "already delivered". */
@@ -196,19 +207,14 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
     const enumerator = this.enumerator ?? (() => enumerate(this.root, this.name, this.prefix));
     enumerator().then(({ names, project }) => {
       if (!this.isCurrent(generation)) {
-        return;
+        return Computable.resolve(undefined);
       }
-      names.forEach(name => this.files.set(name, this.owner.ingest(name)));
-      this.project = project;
-      this.enumerating = false;
-      /* Replay events that arrived during the enumeration window against the
-       * now-known projection, before the first settle, so the delivered set is
-       * current (buffered creates added, buffered deletes removed). */
-      for (const [rel, removed] of this.pendingEvents) {
-        this.applyDelta(rel, removed);
-      }
-      this.pendingEvents.length = 0;
-      this.deliver(generation);
+      /* Events stay buffered while the enumerated files are read. */
+      return this.ingestAll(names).then(read => {
+        if (this.isCurrent(generation)) {
+          this.enumerated(generation, read, project);
+        }
+      });
     }, err => {
       if (this.isCurrent(generation)) {
         this.settle(ComputableState.Error, toError(err));
@@ -216,9 +222,30 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
     });
   }
 
+  /** Take the enumeration's reads and projection, replay the events buffered meanwhile,
+   * and deliver the first value. */
+  private enumerated(generation: number, read: ReadonlyArray<IRead>, project: Projector): void {
+    this.store(read);
+    this.project = project;
+    this.enumerating = false;
+    /* Replay events that arrived during the enumeration window against the
+     * now-known projection, before the first settle, so the delivered set is
+     * current (buffered creates added, buffered deletes removed). */
+    for (const [rel, removed] of this.pendingEvents) {
+      this.applyDelta(rel, removed);
+    }
+    this.pendingEvents.length = 0;
+    this.deliver(generation);
+  }
+
   protected override detach(): ComputableSource<unknown>[] {
     const released = super.detach();
     this.owner.unregisterQuery(this);
+    this.owner.releaseQuery(this);
+    /* An attach reads the tree afresh, so a detached query holds no files. */
+    this.files.clear();
+    this.failed.clear();
+    this.pending.clear();
     return released;
   }
 
@@ -245,7 +272,7 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
   /** Apply a filesystem change: if `rel` is one of ours, update the file map and return
    * true (so the source schedules our re-settle); otherwise ignore it and return false. */
   public applyEvent(rel: string, removed: boolean): boolean {
-    /* Before enumeration resolves the projection is unknown — buffer the event to
+    /* Until the enumeration has listed and read its files, buffer the event to
      * replay once it lands (see attach), rather than dropping it. Return false so
      * the source schedules no re-settle now; the enumeration's own deliver()
      * settles the up-to-date set. */
@@ -285,7 +312,7 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
      * rescan. */
     const matched = this.project(rel) !== undefined;
     if (matched) {
-      this.files.set(rel, this.owner.ingest(rel));
+      this.startRead(rel);
     }
     if (this.withinBase(rel)) {
       this.startRescan(rel);
@@ -298,12 +325,14 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
    * projection admits — which is also what lets one event cover a whole subtree (a
    * rename's outgoing half, or an `rm -rf`). */
   private dropSubtree(rel: string): boolean {
-    let dropped = this.files.delete(rel);
     const prefix = rel + "/";
-    for (const name of this.files.keys()) {
-      if (name.startsWith(prefix)) {
-        this.files.delete(name);
-        dropped = true;
+    let dropped = false;
+    for (const held of [this.files, this.failed, this.pending]) {
+      for (const name of [...held.keys()]) {
+        if (name === rel || name.startsWith(prefix)) {
+          held.delete(name);
+          dropped = true;
+        }
       }
     }
     return dropped;
@@ -318,8 +347,8 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
   /**
    * Probe a created path for a subtree and walk it — the only way to discover the files
    * a renamed-in directory now holds, since no per-child events are coming. Reports the
-   * way every other change does: mutate `files`, then ask the controller to re-settle,
-   * so the result still lands through one debounced, batched flush rather than a second
+   * way every other change does: start each file's read, then ask the controller to
+   * re-settle, so the result still lands through one debounced, batched flush rather than a second
    * settling path of its own (the enumeration self-delivers only because at attach time
    * there is no value yet, and no batch to join).
    *
@@ -341,7 +370,9 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
           if (names.length === 0 || !this.isCurrent(generation)) {
             return;
           }
-          names.forEach(name => this.files.set(name, this.owner.ingest(name)));
+          /* Each read is pending until it lands, so a later event on one of these
+           * paths replaces or drops it as it would any other read. */
+          names.forEach(name => this.startRead(name));
           this.owner.notifyQueryChanged(this, names);
         },
         () => {
@@ -351,8 +382,76 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
       );
   }
 
+  /** Read each of `names`, at most {@link INGEST_CONCURRENCY} at a time, recording a
+   * failed read as its error rather than failing the lot. */
+  private ingestAll(names: ReadonlyArray<string>): Computable<IRead[]> {
+    return mapComputable(
+      names,
+      (name): Computable<IRead> => this.owner.ingest(name).then((file): IRead => ({ name, file }), (err: unknown): IRead => ({ name, error: toError(err) })),
+      INGEST_CONCURRENCY
+    );
+  }
+
+  /** Record `read` as the query's current files. */
+  private store(read: ReadonlyArray<IRead>): void {
+    for (const each of read) {
+      this.failed.delete(each.name);
+      this.files.delete(each.name);
+      if (each.error !== undefined) {
+        this.failed.set(each.name, each.error);
+      } else if (each.file !== undefined) {
+        this.files.set(each.name, each.file);
+      }
+    }
+  }
+
+  /** Start reading `rel` now, its result held as pending until it lands in the files: a
+   * change event or a rescan reads its file at once, so the source judges it as it
+   * arrives, and a later event on the path supersedes it. */
+  private startRead(rel: string): void {
+    const generation = this.attachGeneration;
+    const reading = this.owner.ingest(rel);
+    this.pending.set(rel, reading);
+    reading.once(
+      file => this.landRead(generation, rel, reading, { name: rel, file }),
+      err => this.landRead(generation, rel, reading, { name: rel, error: toError(err) })
+    );
+  }
+
+  /** Move a pending read into the files, unless a later event or attach has since replaced it. */
+  private landRead(generation: number, rel: string, reading: Computable<FSFile | undefined>, read: IRead): void {
+    if (this.isCurrent(generation) && this.pending.get(rel) === reading) {
+      this.pending.delete(rel);
+      this.store([read]);
+    }
+  }
+
+  /** Make the query's FileSet from its files, once the reads pending now have landed. */
   private build(): Computable<FileSet> {
-    return buildFileSet(this.files, this.project, this.owner.sourcePathPrefix);
+    const pending = [...this.pending];
+    const files = this.files;
+    const failed = this.failed;
+    return mapComputable(
+      pending,
+      ([name, reading]): Computable<IRead> => reading.then((file): IRead => ({ name, file }), (err: unknown): IRead => ({ name, error: toError(err) })),
+      Infinity
+    ).then(read => {
+      const current = new Map(files);
+      const errors = new Map(failed);
+      for (const each of read) {
+        current.delete(each.name);
+        errors.delete(each.name);
+        if (each.error !== undefined) {
+          errors.set(each.name, each.error);
+        } else if (each.file !== undefined) {
+          current.set(each.name, each.file);
+        }
+      }
+      if (errors.size > 0) {
+        throw MultiError.of([...errors.values()]);
+      }
+      return buildFileSet(current, this.project, this.owner.sourcePathPrefix);
+    });
   }
 
   private deliver(generation: number): void {
@@ -436,6 +535,11 @@ export class FSFileSource implements FileSource {
    * at construction, so a source is watching-or-not for its whole life.
    */
   protected readonly watchController?: WatchController;
+  /* The query each distinct name and prefix asked of `find` resolves to, and the one
+   * each path asked of `get` does: one per question, shared by everything that asks it
+   * while it is in use, and forgotten when it detaches. A caller asking while the query
+   * is in use gets its current files, not a fresh walk of the tree. */
+  private readonly queries = new Map<string, TreeQuery>();
   /**
    * The filesystem subscriptions, one per directory {@link watchedDirectoryOf}
    * names (relative to the root, `""` for the root itself), each made on the
@@ -476,7 +580,33 @@ export class FSFileSource implements FileSource {
      * so an absolute head (a contributed lib file's reference) must shed the
      * root or the compiled matcher and the walked names would live in
      * different domains. The same normalization `get` applies to its path. */
-    return new TreeQuery(this, this.root, name.rebase(this.root), prefix);
+    const rebased = name.rebase(this.root);
+    return this.query(`find ${prefix}\0${rebased.toGlobString()}`, () => new TreeQuery(this, this.root, rebased, prefix));
+  }
+
+  /** Get the query held under `key`, made by `make` where none is held yet. */
+  private query(key: string, make: () => TreeQuery): TreeQuery {
+    let held = this.queries.get(key);
+    if (held === undefined) {
+      held = make();
+      held.heldAs = key;
+      this.queries.set(key, held);
+    }
+    return held;
+  }
+
+  /** Hold `query` under its key again as it attaches, where no other query has taken its place. */
+  public holdQuery(query: TreeQuery): void {
+    if (query.heldAs !== undefined && !this.queries.has(query.heldAs)) {
+      this.queries.set(query.heldAs, query);
+    }
+  }
+
+  /** Forget `query` as it detaches, so a query nothing uses is held by nothing. */
+  public releaseQuery(query: TreeQuery): void {
+    if (query.heldAs !== undefined && this.queries.get(query.heldAs) === query) {
+      this.queries.delete(query.heldAs);
+    }
   }
 
   /** Register a live query with the dispatch set and ensure the subscription (a
@@ -637,7 +767,7 @@ export class FSFileSource implements FileSource {
      * it either relative (the project entry) or absolute (a resolved include). */
     const target = toPosix(path.relative(this.root, path.resolve(this.root, name)));
     const literal = Name.fromLiteral(target);
-    return new TreeQuery(this, this.root, literal, "", () => enumerateFile(this.root, literal)).then(fileSet =>
+    return this.query(`get ${target}`, () => new TreeQuery(this, this.root, literal, "", () => enumerateFile(this.root, literal))).then(fileSet =>
       fileSet.getSingleFile()
     );
   }
@@ -702,27 +832,31 @@ registerProvenanceNaming(SOURCE_TREE_PROVENANCE, {
  * "(source-tree)" placeholder for a step that has nothing to add. */
 registerProvenanceRenderer(SOURCE_TREE_PROVENANCE, () => []);
 
-/** Resolve a query's held files into a FileSet, each named by the query's
- * projection, carrying the source-tree provenance that maps those names back to
- * where they were read from. Shared by the one-shot and live `find` paths. */
-function buildFileSet(
-  files: Map<string, Computable<FSFile | undefined>>,
-  project: Projector,
-  sourcePathPrefix: string | undefined
-): Computable<FileSet> {
-  return Computable.forAll(Array.from(files.values()), (...done: (FSFile | undefined)[]) => {
-    const content = new Map<string, IFile>();
-    const paths = new Map<string, string>();
-    for (const file of done) {
-      const name = file ? project(file.name) : undefined;
-      if (file && name !== undefined) {
-        content.set(name, file);
-        paths.set(name, file.name);
-      }
+/** How many of a query's files are read at once when it reads many together. */
+const INGEST_CONCURRENCY = 64;
+
+/** One file's read: the file, `undefined` where the path holds no file, or the error the read failed with. */
+interface IRead {
+  readonly name: string;
+  readonly file?: FSFile;
+  readonly error?: Error;
+}
+
+/** Make a FileSet of a query's files, each named by the query's projection, carrying
+ * the source-tree provenance that maps those names back to where they were read from.
+ * Shared by the one-shot and live `find` paths. */
+function buildFileSet(files: ReadonlyMap<string, FSFile>, project: Projector, sourcePathPrefix: string | undefined): FileSet {
+  const content = new Map<string, IFile>();
+  const paths = new Map<string, string>();
+  for (const file of files.values()) {
+    const name = project(file.name);
+    if (name !== undefined) {
+      content.set(name, file);
+      paths.set(name, file.name);
     }
-    const origin: ISourceTreeOrigin = { kind: SOURCE_TREE_PROVENANCE, sourcePathPrefix, paths };
-    return new FileSet(content, origin);
-  });
+  }
+  const origin: ISourceTreeOrigin = { kind: SOURCE_TREE_PROVENANCE, sourcePathPrefix, paths };
+  return new FileSet(content, origin);
 }
 
 const WATCH_OPTIONS: parcelWatcher.Options = { ignore: ["**/node_modules/**", "**/.git/**"] };
