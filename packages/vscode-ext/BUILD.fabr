@@ -3,7 +3,7 @@
 # project, and supplies the plugin implementation the wrapper's shim loads.
 # Built by fabr alone: extension.json is the extension's manifest, which the
 # package's generated package.json is made from.
-js_package vscode-ext {
+js_package fabr {
   srcs = src:**/*.ts extension.json -> package.json README.md icon.png ../../COPYING -> LICENSE
          language-configuration.json syntaxes/*.json
          fabr-jdtls-importer:*.jar -> jdtls/*.jar;
@@ -24,11 +24,11 @@ js_package vscode-ext {
   }
 }
 
-# The extension as VS Code installs it: `code --install-extension vscode-ext.vsix`.
-generate vscode_ext_vsix {
-  srcs = vscode-ext<BUILD_TYPE=release> vsix.vscodeignore -> .vscodeignore;
-  run = @npm:@vscode/vsce:4.1.0 package --no-dependencies -o vscode-ext.vsix;
-  output = vscode-ext.vsix;
+# The extension as VS Code installs it: `code --install-extension fabr.vsix`.
+generate fabr_vsix {
+  srcs = fabr<BUILD_TYPE=release> vsix.vscodeignore -> .vscodeignore;
+  run = @npm:@vscode/vsce:4.1.0 package --no-dependencies -o fabr.vsix;
+  output = fabr.vsix;
 }
 
 # The Java language server's own packages, which a bundle it loads is compiled
