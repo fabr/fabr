@@ -31,6 +31,7 @@ import { formatOf, purlOf } from "./resolver/ResolutionProvenance";
 import { isJsonObject, parseJson } from "./support/Json";
 import { ISourceSpan } from "./support/Log";
 import { compareText } from "./support/Functional";
+import { decidingStatement, suppresses, VexStatement } from "./support/OpenVex";
 import { ISarifLocation, ISarifLog, ISarifResult, ISarifRule, sarifLog } from "./support/Sarif";
 
 /**
@@ -40,7 +41,9 @@ import { ISarifLocation, ISarifLog, ISarifResult, ISarifRule, sarifLog } from ".
  * the package it is made from, its build fixing what its rule declares. The render-free operation behind `fabr audit`: a driver
  * resolves the names ({@link BuildContext.resolve}), hands them to
  * {@link audit} with the {@link AdvisoryServer} to ask, and renders the
- * {@link AuditReport}, or writes it as SARIF ({@link auditSarif}). Nothing is
+ * {@link AuditReport}, or writes it as SARIF ({@link auditSarif}). OpenVEX
+ * statements the project makes ({@link VexStatement}) suppress an advisory in
+ * the packages they say it does not affect. Nothing is
  * fetched or built, and nothing the database answers is cached: its answer is
  * read as it stands, and is no input to any build.
  */
@@ -313,6 +316,13 @@ export function osvServer(base: string): AdvisoryServer {
   };
 }
 
+/** A package an advisory would affect, which a VEX statement says it does not. */
+export interface SuppressedPackage {
+  readonly pkg: AuditedPackage;
+  /** The statement deciding the advisory's status in the package. */
+  readonly statement: VexStatement;
+}
+
 /** One advisory the audit found, and the audited packages it affects. */
 export interface Finding {
   readonly advisory: Advisory;
@@ -320,6 +330,8 @@ export interface Finding {
   readonly packages: ReadonlyArray<AuditedPackage>;
   /** The packages it would affect, made into targets whose builds fix it. */
   readonly fixed: ReadonlyArray<AuditedPackage>;
+  /** The packages it would affect, apart from those {@link fixed}, which VEX statements say it does not. */
+  readonly suppressed: ReadonlyArray<SuppressedPackage>;
 }
 
 /** An advisory a target declares its build fixes, which affects nothing it is
@@ -364,10 +376,16 @@ export function severityRank(advisory: Advisory): number {
  * Audit what `names` resolve to: ask `server` about every registry package among them, and
  * report each advisory it answers with against the packages it affects,
  * the worst first, apart from those made into targets that declare their
- * builds fix it; and report each advisory a target declares its build fixes
- * that affects nothing it is made from.
+ * builds fix it, and apart from those `statements` say it does not affect
+ * (the deciding statement's status `not_affected` or `fixed`); and report
+ * each advisory a target declares its build fixes that affects nothing it is
+ * made from.
  */
-export function audit(names: ReadonlyArray<ResolvedName>, server: AdvisoryServer): Computable<AuditReport> {
+export function audit(
+  names: ReadonlyArray<ResolvedName>,
+  server: AdvisoryServer,
+  statements: ReadonlyArray<VexStatement> = []
+): Computable<AuditReport> {
   const { packages, unattached } = walkNames(names);
   if (packages.length === 0) {
     return Computable.resolve({ packages, findings: [], unmatched: unattached });
@@ -387,7 +405,18 @@ export function audit(names: ReadonlyArray<ResolvedName>, server: AdvisoryServer
           findings: advisories
             .map((advisory, at): Finding => {
               const reached = packages.filter(pkg => answered.get(pkg.purl)!.includes(ids[at]));
-              return { advisory, packages: reached.filter(pkg => !fixes(pkg, advisory)), fixed: reached.filter(pkg => fixes(pkg, advisory)) };
+              const known = [advisory.id, ...advisory.aliases];
+              const decided = reached
+                .filter(pkg => !fixes(pkg, advisory))
+                .map(pkg => ({ pkg, statement: decidingStatement(statements, known, pkg.purl) }));
+              return {
+                advisory,
+                packages: decided.filter(({ statement }) => statement === undefined || !suppresses(statement)).map(({ pkg }) => pkg),
+                fixed: reached.filter(pkg => fixes(pkg, advisory)),
+                suppressed: decided.flatMap(({ pkg, statement }) =>
+                  statement !== undefined && suppresses(statement) ? [{ pkg, statement }] : []
+                ),
+              };
             })
             .sort(
               (a, b) =>
@@ -453,6 +482,14 @@ const SECURITY_SEVERITY = new Map([
   ["LOW", "2.0"],
 ]);
 
+/** Render what `statement` says as a report spells it: its status, and its
+ * justification or impact statement where it gives one, then the document it
+ * is read from. */
+export function vexText(statement: VexStatement): string {
+  const why = statement.justification ?? statement.impact;
+  return `${statement.status.replace(/_/g, " ")}${why === undefined ? "" : `: ${why}`} (${statement.document})`;
+}
+
 /** Render a path as a report spells it. */
 export function pathText({ path, others }: AuditedPath): string {
   return `${path.join(" > ")}${others === 0 ? "" : ` (+${others})`}`;
@@ -482,7 +519,7 @@ export function auditSarif(
         : { "security-severity": SECURITY_SEVERITY.get(advisory.severity.toUpperCase()) }),
     },
   }));
-  const result = (advisory: Advisory, ruleIndex: number, pkg: AuditedPackage): ISarifResult => {
+  const result = (advisory: Advisory, ruleIndex: number, pkg: AuditedPackage, statement?: VexStatement): ISarifResult => {
     const fixed = fixedVersions(advisory, pkg);
     /* Paths starting from one reference are located once. */
     const located = new Map<string, ISarifLocation>();
@@ -504,10 +541,13 @@ export function auditSarif(
         }, required through ${pkg.paths.map(pathText).join("; ")}`,
       },
       ...(locations.length === 0 ? {} : { locations }),
-      /* A target that declares it fixes the advisory says so where it is declared. */
-      ...(patched === undefined || !namedAmong(advisory, patched.fixes)
-        ? {}
-        : { suppressions: [{ kind: "inSource" as const, justification: `fixed by the patched target '${patched.target}'` }] }),
+      /* A target that declares it fixes the advisory says so where it is
+       * declared; a VEX statement, in a document of its own. */
+      ...(patched !== undefined && namedAmong(advisory, patched.fixes)
+        ? { suppressions: [{ kind: "inSource" as const, justification: `fixed by the patched target '${patched.target}'` }] }
+        : statement !== undefined
+          ? { suppressions: [{ kind: "external" as const, justification: vexText(statement) }] }
+          : {}),
       properties: {
         purl: pkg.purl,
         fixed,
@@ -516,9 +556,10 @@ export function auditSarif(
       },
     };
   };
-  const results = report.findings.flatMap(({ advisory, packages, fixed }, ruleIndex) =>
-    [...packages, ...fixed].map(pkg => result(advisory, ruleIndex, pkg))
-  );
+  const results = report.findings.flatMap(({ advisory, packages, fixed, suppressed }, ruleIndex) => [
+    ...[...packages, ...fixed].map(pkg => result(advisory, ruleIndex, pkg)),
+    ...suppressed.map(({ pkg, statement }) => result(advisory, ruleIndex, pkg, statement)),
+  ]);
   return sarifLog({ name: "fabr", version: tool.version, informationUri: "https://fabr.build/", rules }, results, {
     packagesChecked: report.packages.length,
   });

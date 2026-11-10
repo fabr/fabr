@@ -49,6 +49,7 @@ import {
   fixedVersions,
   pathText,
   severityRank,
+  vexText,
 } from "@fabr-build/core";
 
 /** What a line of the tree may be marked with, and what each mark means. */
@@ -269,7 +270,7 @@ function severityStyle(advisory: Advisory, style: Style): string {
  */
 export function renderAudit(report: AuditReport, style: Style = (_code, text) => text): string[] {
   const lines: string[] = [];
-  for (const { advisory, packages, fixed } of report.findings) {
+  for (const { advisory, packages, fixed, suppressed } of report.findings) {
     const title = [advisory.id, ...(advisory.aliases.length > 0 ? [style(DIM, `(${advisory.aliases.join(", ")})`)] : [])].join(" ");
     lines.push(
       [style(BOLD, title), ...(advisory.severity === undefined ? [] : [severityStyle(advisory, style)]), advisory.summary]
@@ -286,6 +287,10 @@ export function renderAudit(report: AuditReport, style: Style = (_code, text) =>
       lines.push(`  ${pkg.packageName}@${pkg.version}${style(DIM, `, fixed by '${pkg.patchedBy!.target}'`)}`);
       pkg.paths.forEach(path => lines.push(style(DIM, `    ${pathText(path)}`)));
     }
+    for (const { pkg, statement } of suppressed) {
+      lines.push(`  ${pkg.packageName}@${pkg.version}${style(DIM, `, ${vexText(statement)}`)}`);
+      pkg.paths.forEach(path => lines.push(style(DIM, `    ${pathText(path)}`)));
+    }
     if (advisory.url !== undefined) {
       lines.push(`  ${style(DIM, advisory.url)}`);
     }
@@ -293,8 +298,13 @@ export function renderAudit(report: AuditReport, style: Style = (_code, text) =>
   }
   const packages = plural(report.packages.length, "package", "packages");
   const affecting = report.findings.filter(finding => finding.packages.length > 0);
-  const fixed = report.findings.length - affecting.length;
-  const patches = fixed === 0 ? "" : `; ${plural(fixed, "advisory is", "advisories are")} fixed by patched packages`;
+  const unaffecting = report.findings.filter(finding => finding.packages.length === 0);
+  const fixed = unaffecting.filter(finding => finding.suppressed.length === 0).length;
+  const suppressed = unaffecting.length - fixed;
+  const patches = [
+    ...(fixed === 0 ? [] : [`; ${plural(fixed, "advisory is", "advisories are")} fixed by patched packages`]),
+    ...(suppressed === 0 ? [] : [`; ${plural(suppressed, "advisory is", "advisories are")} suppressed by VEX statements`]),
+  ].join("");
   if (affecting.length === 0) {
     lines.push(report.packages.length === 0 ? "No packages to audit" : `No known advisories affect the ${packages} checked${patches}`);
   } else {

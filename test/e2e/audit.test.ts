@@ -21,7 +21,7 @@ import { expect } from "chai";
 import { runFabr, STUB_TSC, STUB_TSC_CONFIG } from "./harness";
 
 /* `fabr audit` reads the trees `fabr deps` prints and asks the advisory
- * database `ADVISORIES` names about each registry package among them. The
+ * database `ADVISORIES_URL` names about each registry package among them. The
  * fixture's packages are all built in the project, which have no published
  * version to ask about, so the database is never contacted: the address given
  * here answers nothing. */
@@ -37,7 +37,7 @@ const FILES = {
 };
 
 function fabrAudit(...args: string[]): { stdout: string; stderr: string; status: number } {
-  return runFabr({ "PROJECT.fabr": PROJECT, ...FILES }, ["-DJS_TARGET=es2020", "-DADVISORIES=http://127.0.0.1:9/", "audit", ...args]);
+  return runFabr({ "PROJECT.fabr": PROJECT, ...FILES }, ["-DJS_TARGET=es2020", "-DADVISORIES_URL=http://127.0.0.1:9/", "audit", ...args]);
 }
 
 describe("e2e: fabr audit", () => {
@@ -58,6 +58,23 @@ describe("e2e: fabr audit", () => {
       expect(log.runs[0].results).to.deep.equal([]);
       expect(log.runs[0].properties).to.deep.equal({ packagesChecked: 0 });
     }
+  });
+
+  it("reads the OpenVEX documents ADVISORIES_SUPPRESSION_FILE names, and reports one it cannot read", () => {
+    const run = (vex: string): { stdout: string; stderr: string; status: number } =>
+      runFabr({ "PROJECT.fabr": PROJECT + "ADVISORIES_SUPPRESSION_FILE = ./vex.json;\n", ...FILES, "vex.json": vex }, [
+        "-DJS_TARGET=es2020",
+        "-DADVISORIES_URL=http://127.0.0.1:9/",
+        "audit",
+        "audit_app",
+      ]);
+    const valid = run(JSON.stringify({ statements: [{ vulnerability: "CVE-1", products: ["pkg:npm/lodash"], status: "not_affected" }] }));
+    expect(valid.status, valid.stderr).to.equal(0);
+    expect(valid.stdout).to.equal("No packages to audit\n");
+    const invalid = run(JSON.stringify({ statements: [{ vulnerability: "CVE-1", status: "ignored" }] }));
+    expect(invalid.status).to.not.equal(0);
+    expect(invalid.stderr).to.contain("vex.json");
+    expect(invalid.stderr).to.contain("statement 1 has no status OpenVEX defines");
   });
 
   it("refuses a reference that selects files, as deps does", () => {

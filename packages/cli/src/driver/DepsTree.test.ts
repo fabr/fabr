@@ -345,8 +345,8 @@ describe("renderAudit", () => {
     const report: AuditReport = {
       packages: [audited("express", "4.17.1"), lodash, minimist],
       findings: [
-        { advisory: MINIMIST, packages: [minimist], fixed: [] },
-        { advisory: LODASH, packages: [lodash], fixed: [] },
+        { advisory: MINIMIST, packages: [minimist], fixed: [], suppressed: [] },
+        { advisory: LODASH, packages: [lodash], fixed: [], suppressed: [] },
       ],
       unmatched: [],
     };
@@ -377,8 +377,8 @@ describe("renderAudit", () => {
     const report: AuditReport = {
       packages: [patched, minimist],
       findings: [
-        { advisory: LODASH, packages: [], fixed: [patched] },
-        { advisory: { ...MINIMIST, affected: [] }, packages: [patched], fixed: [] },
+        { advisory: LODASH, packages: [], fixed: [patched], suppressed: [] },
+        { advisory: { ...MINIMIST, affected: [] }, packages: [patched], fixed: [], suppressed: [] },
       ],
       unmatched: [],
     };
@@ -397,5 +397,29 @@ describe("renderAudit", () => {
     expect(renderAudit({ ...report, findings: [report.findings[0]] }).pop()).to.equal(
       "No known advisories affect the 2 packages checked; 1 advisory is fixed by patched packages"
     );
+  });
+
+  it("renders a package a VEX statement says an advisory does not affect with what it says, and counts the advisory apart", () => {
+    const lodash = audited("lodash", "4.17.15", [["app", "lodash@4.17.15"], 0]);
+    const statement = {
+      vulnerability: [LODASH.id],
+      products: ["pkg:npm/lodash"],
+      status: "not_affected" as const,
+      justification: "vulnerable_code_not_in_execute_path",
+      document: "vex.json",
+    };
+    const report: AuditReport = {
+      packages: [lodash],
+      findings: [{ advisory: LODASH, packages: [], fixed: [], suppressed: [{ pkg: lodash, statement }] }],
+      unmatched: [],
+    };
+    expect(renderAudit(report)).to.deep.equal([
+      "GHSA-35jh-r3h4-6jhm (CVE-2021-23337)  HIGH  Command Injection in lodash",
+      "  lodash@4.17.15, not affected: vulnerable_code_not_in_execute_path (vex.json)",
+      "    app > lodash@4.17.15",
+      "  https://github.com/advisories/GHSA-35jh-r3h4-6jhm",
+      "",
+      "No known advisories affect the 1 package checked; 1 advisory is suppressed by VEX statements",
+    ]);
   });
 });

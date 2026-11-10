@@ -31,7 +31,10 @@ import {
   ISarifLocation,
   ISourceSpan,
   osvServer,
+  parseJson,
   Property,
+  toVexStatements,
+  VexStatement,
   requireWhole,
   ResolvedName,
   sarifLocation,
@@ -1328,13 +1331,34 @@ function writeSbom(model: BuildModel, options: Options, execution: ExecutionCont
     });
 }
 
+/** The property naming the OpenVEX documents whose statements suppress advisories in `fabr audit`. */
+const ADVISORIES_SUPPRESSION_FILE = "ADVISORIES_SUPPRESSION_FILE";
+
+/**
+ * Read the statements of the OpenVEX documents `ADVISORIES_SUPPRESSION_FILE`
+ * names, in the order it names them.
+ */
+function vexStatements(config: BuildContext, options: Options, site: IInvocationSite): Computable<VexStatement[]> {
+  return config
+    .materialize(options.commandLine.refFor(ADVISORIES_SUPPRESSION_FILE, site))
+    .then(sources => openedAll(refuseNamespaces(sources)))
+    .then(sources => {
+      const files = sources.flatMap(source => (source instanceof FileSet ? [...source] : []));
+      return Computable.forAll(
+        files.map(([name, file]) => file.getBuffer().then(text => parseJson(text, name, toVexStatements(name)))),
+        (...documents: VexStatement[][]) => documents.flat()
+      );
+    });
+}
+
 /**
  * Check the dependencies of each name (`fabr audit`) against the advisory
- * database `ADVISORIES` names: what `fabr deps` prints, resolved and not
+ * database `ADVISORIES_URL` names: what `fabr deps` prints, resolved and not
  * built, each registry package among them asked about at its exact version
  * (core's {@link audit}).
  * The report goes to stdout, as text or with `--format sarif` as SARIF, and the run
- * exits 1 where any advisory affects a package, one a patched target fixes aside. The database is asked after
+ * exits 1 where any advisory affects a package, one a patched target fixes or
+ * a statement of `ADVISORIES_SUPPRESSION_FILE`'s suppresses aside. The database is asked after
  * the evaluation settles, as a program is launched: it is no part of the
  * build.
  */
@@ -1346,10 +1370,10 @@ function auditDependencies(
 ): Computable<Takeover> {
   const config = configFor(model, options, execution, "build");
   return Computable.forAll(
-    [resolvedNames(model, options, execution, site), config.getProperty("ADVISORIES")],
-    (names: ResolvedName[], advisories: Property): Takeover =>
+    [resolvedNames(model, options, execution, site), config.getProperty("ADVISORIES_URL"), vexStatements(config, options, site)],
+    (names: ResolvedName[], advisories: Property, statements: VexStatement[]): Takeover =>
       () =>
-        audit(names, osvServer(advisories.toString())).then(report => {
+        audit(names, osvServer(advisories.toString()), statements).then(report => {
           if (options.format === "sarif") {
             /* A reference is located only where it was written in the project's
              * own tree: a plugin's file and the command line have no place

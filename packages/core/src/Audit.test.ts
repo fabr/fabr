@@ -32,6 +32,7 @@ import { PackageFormat } from "./resolver/PackageFormat";
 import { IResolutionOrigin, PACKAGE_RESOLUTION_PROVENANCE } from "./resolver/ResolutionProvenance";
 import { NO_CONFLICTS } from "./resolver/StrictCollection";
 import { Selected } from "./resolver/Types";
+import { toVexStatements } from "./support/OpenVex";
 import { sarifLocation } from "./support/Sarif";
 import { StringReader } from "./support/StringReader";
 
@@ -387,6 +388,16 @@ describe("auditSarif", () => {
     expect(result.properties).to.deep.include({ patchedBy: "lodash" });
   });
 
+  it("writes a result a VEX statement suppresses as suppressed externally", async () => {
+    const names = [named("app", [registry("lodash", "4.17.15")])];
+    const statements = toVexStatements("vex.json")({
+      statements: [{ vulnerability: LODASH.id, products: ["pkg:test/lodash@4.17.15"], status: "fixed" }],
+    });
+    const report = await audit(names, server([[LODASH, ["pkg:test/lodash@4.17.15"]]]), statements);
+    const [result] = auditSarif(report, { version: "1.0.0" }, () => undefined).runs[0].results;
+    expect(result.suppressions).to.deep.equal([{ kind: "external", justification: "fixed (vex.json)" }]);
+  });
+
   it("locates nothing for a reference written outside the project, and rates an unrated advisory a warning", async () => {
     const names = [named("app", [registry("minimist", "0.0.8")])];
     const report = await audit(names, server([[{ ...MINIMIST, severity: undefined }, ["pkg:test/minimist@0.0.8"]]]));
@@ -504,6 +515,33 @@ describe("audit", () => {
     expect(affectsAny(report)).to.equal(true);
     const fixedOnly = await audit([names[0]], server([[LODASH, ["pkg:test/lodash@4.17.15"]]]));
     expect(affectsAny(fixedOnly)).to.equal(false);
+  });
+
+  it("leaves out of the affected packages those a VEX statement's status says an advisory does not affect, by the latest statement", async () => {
+    const lodash = registry("lodash", "4.17.15");
+    const minimist = registry("minimist", "0.0.8");
+    const names = [named("app", [lodash, minimist])];
+    const answers = (): AdvisoryServer =>
+      server([
+        [LODASH, ["pkg:test/lodash@4.17.15"]],
+        [MINIMIST, ["pkg:test/minimist@0.0.8"]],
+      ]);
+    const statements = toVexStatements("vex.json")({
+      timestamp: "2026-01-01T00:00:00Z",
+      statements: [
+        { vulnerability: { name: "CVE-2021-23337" }, products: [{ "@id": "pkg:test/lodash" }], status: "not_affected", justification: "inline_mitigations_already_exist" },
+        { vulnerability: MINIMIST.id, products: ["pkg:test/minimist@0.0.8"], status: "not_affected", timestamp: "2026-01-02T00:00:00Z" },
+        { vulnerability: MINIMIST.id, products: ["pkg:test/minimist@0.0.8"], status: "affected", timestamp: "2026-01-03T00:00:00Z" },
+      ],
+    });
+    const report = await audit(names, answers(), statements);
+    const [plain] = report.packages;
+    expect(report.findings.map(({ advisory, packages, suppressed }) => [advisory.id, packages.map(pkg => pkg.packageName), suppressed])).to.deep.equal([
+      [MINIMIST.id, ["minimist"], []],
+      [LODASH.id, [], [{ pkg: plain, statement: statements[0] }]],
+    ]);
+    expect(affectsAny(report)).to.equal(true);
+    expect(affectsAny(await audit(names, answers(), statements.slice(0, 2)))).to.equal(false);
   });
 
   it("reports a declared fix of a target made from no registry package as matching nothing", async () => {

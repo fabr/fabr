@@ -345,14 +345,15 @@ a fixed version at the root, for instance `@npm:lodash:4.17.21!` or a catalog en
 requirement decides the version for the whole tree.
 
 The command exits with status 1 when any advisory affects a package, one a patched package fixes
-aside, and 0 otherwise. `--format
+or an [OpenVEX](https://github.com/openvex/spec) statement in a document the
+`ADVISORIES_SUPPRESSION_FILE` property names says doesn't affect it aside, and 0 otherwise. `--format
 sarif` writes the report as [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/) instead
 of text, the format code-scanning services such as GitHub code scanning take and most analysers
 emit. Each advisory is a rule and each affected package a result, with the fixed versions and the
 paths among its properties, located at the line of your build file whose reference brings the
 package in, so the service shows it there; the run records how many packages it checked.
 
-The database is the one the `ADVISORIES` property names: the URL of a server answering the
+The database is the one the `ADVISORIES_URL` property names: the URL of a server answering the
 [OSV API](https://google.github.io/osv.dev/api/), `https://api.osv.dev` by default. Packages are
 named to it by their [package URL](https://github.com/package-url/purl-spec) (`pkg:npm/lodash@4.17.15`,
 `pkg:maven/org.slf4j/slf4j-api@1.7.36`); a package in an ecosystem with no package URL type, such
@@ -360,7 +361,7 @@ as a Node.js release, is not checked. To use a mirror, or an internal database s
 API, set the property in your project or for one run:
 
 ```sh
-fabr -DADVISORIES=https://osv.example.com audit myapp
+fabr -DADVISORIES_URL=https://osv.example.com audit myapp
 ```
 
 Advisories are read as they stand each time: nothing about them is cached, and the result is no

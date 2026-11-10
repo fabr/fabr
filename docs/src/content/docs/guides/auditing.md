@@ -147,7 +147,8 @@ GHSA-599f-7c49-w659 (CVE-2022-42889)  CRITICAL  Arbitrary code execution in Apac
 ### Exit status
 
 `fabr audit` exits with 0 when no advisory affects any package checked, and with 1 when one does.
-An advisory a [patched package fixes](#patching-a-package) doesn't count.
+An advisory a [patched package fixes](#patching-a-package), or a
+[VEX statement suppresses](#suppressing-an-advisory-that-doesnt-apply), doesn't count.
 It also exits with 1 when the audit couldn't run: an unknown name, a dependency that can't be
 resolved, or an advisory database that can't be reached, each reported on stderr with an `error:`
 line. The [command-line reference](/reference/command-line/#exit-status) lists every status.
@@ -172,18 +173,18 @@ line to point at, so its result has no location. The file paths are relative to 
 
 ### Choosing the advisory database
 
-The advisories come from the server the `ADVISORIES` property names, `https://api.osv.dev` unless
+The advisories come from the server the `ADVISORIES_URL` property names, `https://api.osv.dev` unless
 you set it. Any server answering the [OSV API](https://google.github.io/osv.dev/api/) works, such
 as a mirror or an internal database. Set it in your project:
 
 ```
-ADVISORIES = https://osv.internal.example.com;
+ADVISORIES_URL = https://osv.internal.example.com;
 ```
 
 or for one run:
 
 ```sh
-fabr -DADVISORIES=https://osv.internal.example.com audit app
+fabr -DADVISORIES_URL=https://osv.internal.example.com audit app
 ```
 
 ## Acting on an advisory
@@ -304,6 +305,62 @@ In SARIF, a fixed package's result carries a `suppressions` entry of kind `inSou
 materials, a patched package's component has a `pedigree`: the original package as its ancestor,
 and a patch that `resolves` each advisory in `fixes`.
 
+### Suppressing an advisory that doesn't apply
+
+An advisory can affect a package without affecting your program: the vulnerable function is one
+you never call, or the package is only used at build time. Record that in an
+[OpenVEX](https://github.com/openvex/spec) document, and name the document with the
+`ADVISORIES_SUPPRESSION_FILE` property in your project:
+
+```
+ADVISORIES_SUPPRESSION_FILE = ./security/vex.json;
+```
+
+```json
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://example.com/vex/app",
+  "author": "Security team",
+  "timestamp": "2026-11-10T00:00:00Z",
+  "version": 1,
+  "statements": [
+    {
+      "vulnerability": { "name": "CVE-2021-23337" },
+      "products": [{ "@id": "pkg:npm/lodash@4.17.14" }],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "app never calls _.template"
+    }
+  ]
+}
+```
+
+A statement applies to a package when its `vulnerability` names the advisory, by its OSV id, its
+name or any alias, and one of its `products`, or of their `subcomponents`, is the package's
+[package URL](https://github.com/package-url/purl-spec). A package URL without a version applies to
+every version, and qualifiers such as `?type=jar` are ignored. Where several statements apply, the
+one with the latest `timestamp` decides (a statement without one takes its document's); among
+equals, the last one written. Both the 0.2 form shown and the earlier form, where a vulnerability
+and a product are plain strings, are read. The property may name several documents.
+
+A statement with the status `not_affected` or `fixed` suppresses the advisory in that package: the
+report shows the package with the statement's status and justification, and the advisory no longer
+makes the command fail:
+
+```
+GHSA-35jh-r3h4-6jhm (CVE-2021-23337)  HIGH  Command Injection in lodash
+  lodash@4.17.14, not affected: vulnerable_code_not_in_execute_path (security/vex.json)
+    app > async@2.6.3 > lodash@4.17.14
+  https://nvd.nist.gov/vuln/detail/CVE-2021-23337
+
+…; 1 advisory is suppressed by VEX statements
+```
+
+A statement with the status `affected` or `under_investigation` changes nothing: the advisory is
+reported as usual. Because a statement names a version, raising the package to another version
+the advisory affects brings the advisory back until you write a statement for it. In SARIF, a
+suppressed package's result carries a `suppressions` entry of kind `external`.
+
 ## Writing a bill of materials
 
 `fabr sbom` writes a [CycloneDX 1.6](https://cyclonedx.org/docs/1.6/json/) bill of materials of one
@@ -372,7 +429,7 @@ GitHub Actions steps.
 | The advisory is still reported after adding `@npm:x:1.2.3?` | A `?` permits a version without requiring it. | Write the requirement without `?`: `@npm:x:^1.2.3`. |
 | `No packages to audit` for `'app<BUILD_OPERATION=test>'` | The target declares no `tests`, so it has nothing to test. | Audit the target without the operation, or add its tests. |
 | `No packages to audit` | The name has no registry packages among its dependencies. | Check with `fabr deps <name>` that you named the right target. |
-| `error:https://osv.example.com/v1/querybatch answered 404: …` | `ADVISORIES` names something that isn't an OSV API server, or has a path on the end. | Set `ADVISORIES` to the server's root URL, such as `https://api.osv.dev`. |
+| `error:https://osv.example.com/v1/querybatch answered 404: …` | `ADVISORIES_URL` names something that isn't an OSV API server, or has a path on the end. | Set `ADVISORIES_URL` to the server's root URL, such as `https://api.osv.dev`. |
 | `error:getaddrinfo ENOTFOUND osv.example.com` | The advisory server can't be reached. | Check the URL and the network; behind a proxy, set `HTTPS_PROXY`. |
 | `The 'sbom' command takes a single target` | `fabr sbom` describes one thing. | Run it once per target, or name a property listing them with `fabr audit` instead. |
 | `error: 'app:**' selects files of 'app'` | Both commands take a target or package, not a selection of its files. | Name the target: `app`. |

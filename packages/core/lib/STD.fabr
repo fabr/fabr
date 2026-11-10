@@ -38,7 +38,12 @@ default TARGET = ${HOST};
 # The advisory database `fabr audit` checks packages against: the base URL of
 # a server answering OSV's API (https://google.github.io/osv.dev/api/), such
 # as osv.dev or a mirror of it.
-default ADVISORIES = https://api.osv.dev;
+default ADVISORIES_URL = https://api.osv.dev;
+
+# OpenVEX documents (https://github.com/openvex/spec) whose statements suppress
+# an advisory in the packages `fabr audit` checks: one with the status
+# `not_affected` or `fixed` sets the advisory aside in the packages it names.
+default ADVISORIES_SUPPRESSION_FILE = ;
 
 
 #
