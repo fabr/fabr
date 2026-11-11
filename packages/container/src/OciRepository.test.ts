@@ -441,10 +441,18 @@ describe("OciRepository", () => {
   });
 
   it("signs in the registry's own requests alone, never a blob or an upload on another origin", async () => {
-    const credential = { authorize: (): Computable<ReadonlyMap<string, string>> => Computable.resolve(new Map([["authorization", "Basic c"]])) };
+    const credential = {
+      authorize: (): Computable<ReadonlyMap<string, string>> => Computable.resolve(new Map([["authorization", "Basic c"]])),
+    };
     const signIn = registrySignIn(fetchingContext("x86_64-unknown-linux"), "https://registry.example", undefined, credential);
-    const at = (url: string): { method: string; url: string; headers: Map<string, string> } => ({ method: "PUT", url, headers: new Map() });
-    expect(await signIn.authorize(at("https://registry.example/v2/app/blobs/uploads/1"))).to.deep.equal(new Map([["authorization", "Basic c"]]));
+    const at = (url: string): { method: string; url: string; headers: Map<string, string> } => ({
+      method: "PUT",
+      url,
+      headers: new Map(),
+    });
+    expect(await signIn.authorize(at("https://registry.example/v2/app/blobs/uploads/1"))).to.deep.equal(
+      new Map([["authorization", "Basic c"]])
+    );
     expect(await signIn.authorize(at("https://storage.example/upload/1"))).to.deep.equal(new Map());
     expect(await signIn.authorize(at("https://storage.example/upload/1"), { challenges: ["Basic"] })).to.equal(undefined);
   });

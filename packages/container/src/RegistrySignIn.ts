@@ -102,7 +102,11 @@ export class RegistrySignIn implements Credential {
   ): Computable<string> {
     const realm = new URL(challenge.realm);
     /* The credential is sent no less securely than the registry's own requests. */
-    if (credential !== undefined && realm.protocol !== "https:" && !(realm.protocol === "http:" && new URL(this.registry).protocol === "http:")) {
+    if (
+      credential !== undefined &&
+      realm.protocol !== "https:" &&
+      !(realm.protocol === "http:" && new URL(this.registry).protocol === "http:")
+    ) {
       return Computable.reject(
         new FabrError(`${this.registry} asks to be signed in at ${challenge.realm}, which is not https, so its credential is not sent`)
       );

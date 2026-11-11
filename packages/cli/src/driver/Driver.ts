@@ -125,7 +125,7 @@ const DIAG_COVERAGE = Diagnostic.Info<{ lines: string; functions: string; branch
 );
 const DIAG_COVERAGE_WRITTEN = Diagnostic.Info<{ file: string }>("Coverage report written to {file}");
 const DIAG_TRACE_UNWRITTEN = Diagnostic.Warn<{ file: string; message: string }>("Could not write the trace to {file}: {message}");
-const DIAG_TEST_REPORT_WRITTEN =Diagnostic.Info<{ file: string }>("Test report written to {file}");
+const DIAG_TEST_REPORT_WRITTEN = Diagnostic.Info<{ file: string }>("Test report written to {file}");
 const DIAG_COVERAGE_NONE = Diagnostic.Warn<Record<string, never>>("No test target measured any coverage");
 /* A measured source no reference reaches (generated during the build): it has
  * no place in the project to report it against. */
