@@ -42,7 +42,7 @@ import { MaterializedCommandPipeline, TargetContext, toEnvironment } from "../co
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { Name } from "../core/Name";
-import { createPipelineAction, IKeptState, stagePipeline } from "./PipelineAction";
+import { createPipelineAction, IKeptState, stagePipeline } from "../core/PipelineAction";
 import { defineRule, RuleResult } from "./Types";
 import { FabrError } from "../core/Errors";
 

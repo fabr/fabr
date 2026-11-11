@@ -28,7 +28,7 @@ import { Computable } from "../core/Computable";
 import { CommandFailedError, ExecutionError, FabrError, ICommandOutputLine } from "../core/Errors";
 import { FileSet, IFile } from "../core/FileSet";
 import { Semaphore } from "./Semaphore";
-import type { TaskProgress, TaskState } from "../model/BuildEvents";
+import type { TaskProgress, TaskState } from "./Tasks";
 
 /**
  * Which of a child's two streams a line arrived on. Carried because it is the

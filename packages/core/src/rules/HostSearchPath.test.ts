@@ -25,7 +25,7 @@ import { BuildCache } from "../core/BuildCache";
 import { ComputableSource } from "../core/Computable";
 import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { BuildAction } from "../core/BuildAction";
-import { createPipelineAction, stagePipeline } from "./PipelineAction";
+import { createPipelineAction, stagePipeline } from "../core/PipelineAction";
 import { hashString } from "../core/FSWrapper";
 import { hostFiles } from "../model/ExecutionContext";
 import { RepositoryRef } from "../core/Repository";

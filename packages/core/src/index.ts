@@ -24,7 +24,7 @@
  * packages (@fabr-build/js et al) and contribute through their plugin's
  * `activate()`. */
 
-export * from "./Constants";
+export * from "./core/Constants";
 export * from "./Audit";
 export * from "./Fabr";
 export * from "./Sbom";
@@ -64,6 +64,7 @@ export * from "./model/Constraints";
 export { pluginLibsOf, pluginPackageJson } from "./model/Plugin";
 export * from "./model/BuildModel";
 export * from "./model/BuildEvents";
+export * from "./support/Tasks";
 export * from "./model/ErrorFormatter";
 export * from "./model/ExecutionContext";
 export * from "./model/Loader";
@@ -82,7 +83,7 @@ export * from "./resolver/ResolutionProvenance";
 export * from "./resolver/ResolutionReport";
 export * from "./resolver/Semver";
 export * from "./resolver/Types";
-export * from "./support/Description";
+export * from "./context/Description";
 export * from "./support/Execute";
 export * from "./support/Semaphore";
 export * from "./support/Expand";

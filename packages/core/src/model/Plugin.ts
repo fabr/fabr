@@ -28,9 +28,9 @@ import { BUILD_OPERATION, Constraints } from "./Constraints";
 import { FileSet, IFile } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import { RunnableFileSet } from "../core/RunnableFileSet";
-import { installedDirectoryOf } from "../rules/FabrHome";
+import { IProvenanceStep, registerProvenanceDescriber, registerProvenanceRenderer } from "../core/Provenance";
 import { Diagnostic, ISourcePosition, Log } from "../support/Log";
-import { CORE_PACKAGE } from "../Constants";
+import { CORE_PACKAGE } from "../core/Constants";
 import { FabrError, toError } from "../core/Errors";
 import * as Module from "module";
 import { pathToFileURL } from "url";
@@ -40,6 +40,31 @@ import { globMatcher } from "../support/Glob";
 import { Name } from "../core/Name";
 import type { LoadImplementation } from "./ModelBuilder";
 import { Computable, ComputableSource } from "../core/Computable";
+
+export const FABR_HOME_PROVENANCE = "fabr-home";
+
+/** A package delivered from fabr's installation, and where it is installed. */
+export interface IFabrHomeOrigin extends IProvenanceStep {
+  kind: typeof FABR_HOME_PROVENANCE;
+  directory: string;
+}
+
+registerProvenanceRenderer(FABR_HOME_PROVENANCE, step => [
+  { message: `installed with fabr, at ${(step as IFabrHomeOrigin).directory}` },
+]);
+registerProvenanceDescriber(FABR_HOME_PROVENANCE, step => (step as IFabrHomeOrigin).directory);
+
+/** @return the directory the package `files` is installed at, where it was read from fabr's
+ *  installation, otherwise undefined. Its files are copies in the blob pool; this is where
+ *  the installed package itself lies, for a caller that uses it in place (a plugin's code). */
+export function installedDirectoryOf(files: FileSet): string | undefined {
+  for (let step = files.origin; step !== undefined; step = step.parent) {
+    if (step.kind === FABR_HOME_PROVENANCE) {
+      return (step as IFabrHomeOrigin).directory;
+    }
+  }
+  return undefined;
+}
 
 /**
  * The shape a plugin package's main module may export: `activate`, run once

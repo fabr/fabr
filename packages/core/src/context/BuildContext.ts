@@ -104,7 +104,7 @@ export interface BuildContext {
 
   /**
    * Describe the target `ref` names as its rule for this configuration's
-   * operation would build it (see `support/Description`): the description's
+   * operation would build it (see `context/Description`): the description's
    * files, or undefined where that rule describes nothing.
    */
   describe(ref: INameValue): Computable<FileSet | undefined>;

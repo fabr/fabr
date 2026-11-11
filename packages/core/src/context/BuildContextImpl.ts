@@ -99,7 +99,7 @@ import { EXPAND_TAG, expandOnce, findWithDescent } from "../support/Expand";
 import { DependencyFailedError, NameResolutionError, NoRuleFoundError, ReferenceFailedError } from "../model/Errors";
 import { ConflictError, FabrError, IConflictSide, IConflictSource, toError } from "../core/Errors";
 import { hasTestFailures } from "../support/TestResult";
-import { createPipelineAction, stagePipeline } from "../rules/PipelineAction";
+import { createPipelineAction, stagePipeline } from "../core/PipelineAction";
 import { closestMatch } from "../support/Suggest";
 import { Name, NameConstraint, NamePart, NamePartKind } from "../core/Name";
 import { globMatcher } from "../support/Glob";

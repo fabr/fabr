@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { PROJECT_FILENAME } from "./Constants";
+import { PROJECT_FILENAME } from "./core/Constants";
 import { BuildCache } from "./core/BuildCache";
 import { Computable } from "./core/Computable";
 import { FSFileSource } from "./core/FSFileSource";
@@ -41,7 +41,7 @@ import { Constraints } from "./model/Constraints";
 import { builtInProject } from "./model/Target";
 import { SyncSource } from "./rules/BuildSync";
 import { Diagnostic, Log } from "./support/Log";
-import { DESCRIBED_OPERATIONS, DESCRIPTION_FILE, type IDescription, toDescription } from "./support/Description";
+import { DESCRIBED_OPERATIONS, DESCRIPTION_FILE, type IDescription, toDescription } from "./context/Description";
 import { readJsonFile } from "./support/Json";
 
 const DIAG_WATCH_WARNING = Diagnostic.Warn<{ message: string }>("{message}");

@@ -73,7 +73,7 @@ import { ResolvedRequirements } from "./Collection";
 import { mapEntryOrigin, PropertyMap, PropertyMapValue } from "./PropertyMap";
 import { BUILD_OPERATION, BUILD_OVERRIDE, Constraints, FILES_OPERATION } from "../model/Constraints";
 import { PERMISSIVE_RESOLUTION, sidedNodes } from "./CollectionPoint";
-import { DESCRIPTION_FILE, describeTarget, descriptionFile, toDescription } from "../support/Description";
+import { DESCRIPTION_FILE, describeTarget, descriptionFile, toDescription } from "./Description";
 import { SEMVER, SemverConstraint, SemverVersion, versionToString } from "../resolver/Semver";
 import { PackageFormat } from "../resolver/PackageFormat";
 import { Requirement } from "../resolver/Types";

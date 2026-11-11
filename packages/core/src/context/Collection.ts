@@ -524,7 +524,7 @@ export interface Unmaterialized<P> {
   /** The requirements as resolved, nothing materialized. */
   readonly resolved: ResolvedRequirements;
   /** Materialize every requirement as a description needs it (see
-   * support/Description): a package a target builds, where its rule describes
+   * context/Description): a package a target builds, where its rule describes
    * it, is its description, a `DescribedPackage`, and not its build. Versions
    * that conflict are described as the resolution selected them, as `fabr deps`
    * shows them: only a build refuses them. Done on the first call, once. */

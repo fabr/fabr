@@ -36,7 +36,8 @@ import { declaredRequirement } from "../resolver/PackageResolver";
 import { Flag } from "../core/Flag";
 import { RuleBlockDefinition, SubTargetInputs } from "../rules/Types";
 import { Constraints, operationOf } from "../model/Constraints";
-import { IFetchReport, ITargetBuildTask, TaskDescription } from "../model/BuildEvents";
+import { ITargetBuildTask, TaskDescription } from "../model/BuildEvents";
+import { IFetchReport } from "../support/Tasks";
 import { ExecutionContext } from "../model/ExecutionContext";
 import { ITargetOrigin, TARGET_PROVENANCE } from "../model/Target";
 import {

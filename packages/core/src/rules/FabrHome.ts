@@ -36,7 +36,8 @@ import { FileSet, FileSource, IFile } from "../core/FileSet";
 import { Name, NamePartKind } from "../core/Name";
 import { PartialRepositoryRef } from "../core/PartialRepositoryRef";
 import { PackageFileSet, PackageGraphBuilder } from "../core/PackageFileSet";
-import { chainSteps, IProvenanceStep, registerProvenanceDescriber, registerProvenanceRenderer } from "../core/Provenance";
+import { chainSteps, IProvenanceStep } from "../core/Provenance";
+import { FABR_HOME_PROVENANCE, IFabrHomeOrigin } from "../model/Plugin";
 import { RefSource, Repository, RepositoryLookup, RepositoryPublishRef, RepositoryRef } from "../core/Repository";
 import type { Reference } from "../core/Reference";
 import { compareText } from "../support/Functional";
@@ -47,31 +48,6 @@ import { RepositoryImplementation, RepositoryRegistration } from "./Types";
 /** Where lookups of the packages installed with fabr start: fabr's own code,
  *  from which the plugin loader finds plugins too. */
 export const INSTALLED_FROM = __dirname;
-
-export const FABR_HOME_PROVENANCE = "fabr-home";
-
-/** A package delivered from fabr's installation, and where it is installed. */
-interface IFabrHomeOrigin extends IProvenanceStep {
-  kind: typeof FABR_HOME_PROVENANCE;
-  directory: string;
-}
-
-registerProvenanceRenderer(FABR_HOME_PROVENANCE, step => [
-  { message: `installed with fabr, at ${(step as IFabrHomeOrigin).directory}` },
-]);
-registerProvenanceDescriber(FABR_HOME_PROVENANCE, step => (step as IFabrHomeOrigin).directory);
-
-/** @return the directory the package `files` is installed at, where it was read from fabr's
- *  installation, otherwise undefined. Its files are copies in the blob pool; this is where
- *  the installed package itself lies, for a caller that uses it in place (a plugin's code). */
-export function installedDirectoryOf(files: FileSet): string | undefined {
-  for (let step = files.origin; step !== undefined; step = step.parent) {
-    if (step.kind === FABR_HOME_PROVENANCE) {
-      return (step as IFabrHomeOrigin).directory;
-    }
-  }
-  return undefined;
-}
 
 /** What an installed package's manifest says: its version, and the names it
  *  depends on — a name in both blocks being optional, as npm reads it. */

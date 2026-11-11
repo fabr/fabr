@@ -30,7 +30,8 @@ import { Log } from "../support/Log";
 import { Semaphore } from "../support/Semaphore";
 import type { ISlsaBuild } from "../support/Slsa";
 import { declName, ITargetDecl } from "./AST";
-import { BuildEvent, BuildListener, TaskDescription, TaskProgress, TaskState } from "./BuildEvents";
+import { BuildEvent, BuildListener, TaskDescription } from "./BuildEvents";
+import { TaskProgress, TaskState } from "../support/Tasks";
 
 /**
  * The driver's terminal, for the rare interaction a protocol genuinely requires

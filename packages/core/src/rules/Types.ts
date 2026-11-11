@@ -233,7 +233,7 @@ export interface RuleImplementation {
   evaluate: (context: TargetContext, requirements: Unmaterialized<Record<string, RequiredSources>>) => Computable<RuleResult>;
   /**
    * Describe the target as this rule would build it, for tools other than
-   * fabr (an editor, a language server; see support/Description): given its
+   * fabr (an editor, a language server; see context/Description): given its
    * requirements as `evaluate` is, it yields the description's files, or a
    * build step that makes them. Optional: under a rule without it, the target
    * is not described.

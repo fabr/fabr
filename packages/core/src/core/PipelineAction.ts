@@ -15,14 +15,14 @@
  */
 
 import * as path from "path";
-import { getResultFileSets, writeFileSet } from "../core/Staging";
-import { Computable } from "../core/Computable";
-import { ConflictError, FabrError } from "../core/Errors";
-import { EMPTY_FILESET, FileSet } from "../core/FileSet";
-import { MemoryFile } from "../core/MemoryFS";
-import { Name } from "../core/Name";
+import { getResultFileSets, writeFileSet } from "./Staging";
+import { Computable } from "./Computable";
+import { ConflictError, FabrError } from "./Errors";
+import { EMPTY_FILESET, FileSet } from "./FileSet";
+import { MemoryFile } from "./MemoryFS";
+import { Name } from "./Name";
 import { executePipeline, findExecutable, ITaskReport, StageSpec, StageStreams, variableEntry } from "../support/Execute";
-import { RunnableArgument, RunnableFileSet, toArgv } from "../core/RunnableFileSet";
+import { RunnableArgument, RunnableFileSet, toArgv } from "./RunnableFileSet";
 import {
   ActionConfig,
   BuildAction,
@@ -33,8 +33,8 @@ import {
   IBuildActionDefinition,
   IStagedStep,
   stringConfig,
-} from "../core/BuildAction";
-import { ActionContext, IChangedFiles, toChangesDocument, TREE_MOUNT } from "../core/BuildCache";
+} from "./BuildAction";
+import { ActionContext, IChangedFiles, toChangesDocument, TREE_MOUNT } from "./BuildCache";
 
 /**
  * Run the `command-pipeline` build action: stage the combined install (see

@@ -22,7 +22,7 @@ import { Computable } from "../core/Computable";
 import type { FileSet } from "../core/FileSet";
 import type { Package, PackageFileSet, RegistrySelection } from "../core/PackageFileSet";
 import type { RefSource, RepositoryReader, RepositoryRef } from "../core/Repository";
-import type { TaskDescription } from "../model/BuildEvents";
+import type { IRepositoryResolveTask } from "../support/Tasks";
 import type { ITaskReport } from "../support/Execute";
 
 /** A bare package name — the per-name slot minimal version selection selects
@@ -493,7 +493,7 @@ export interface ResolutionContext {
     interpreterArgs?: readonly RunnableArgument[]
   ): Computable<RunnableFileSet>;
   memoize(tag: string, key: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet>;
-  runTask<T>(task: TaskDescription, run: (report: ITaskReport) => Computable<T>): Computable<T>;
+  runTask<T>(task: IRepositoryResolveTask, run: (report: ITaskReport) => Computable<T>): Computable<T>;
 }
 
 /**

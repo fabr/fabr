@@ -55,7 +55,7 @@ import { MaterializedCommandPipeline, TargetContext, toEnvironment } from "../co
 import { Property } from "../model/Property";
 import { executePipeline, findExecutable, ITaskReport } from "../support/Execute";
 import { FilePatch, parsePatchFile } from "../support/Patch";
-import { envConfig, envEntries, pipelineConfig, pipelineSpecs, selectedCaptures, stagePipeline, stdinBytes } from "./PipelineAction";
+import { envConfig, envEntries, pipelineConfig, pipelineSpecs, selectedCaptures, stagePipeline, stdinBytes } from "../core/PipelineAction";
 import { defineRule, RuleResult } from "./Types";
 
 /** The `patched` rule. */

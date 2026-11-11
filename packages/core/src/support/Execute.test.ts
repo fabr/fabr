@@ -26,7 +26,7 @@ import { Computable } from "../core/Computable";
 import { CommandFailedError, FabrError } from "../core/Errors";
 import { FileSet, IFile } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
-import { TaskState } from "../model/BuildEvents";
+import { TaskState } from "./Tasks";
 import {
   activityCounter,
   executeInternalCapture,

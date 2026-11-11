@@ -28,7 +28,8 @@ import { PartialRepositoryRef } from "../core/PartialRepositoryRef";
 import { PackageFileSet, reachablePackages } from "../core/PackageFileSet";
 import { FSFileSource } from "../core/FSFileSource";
 import { RepositoryRef } from "../core/Repository";
-import { FabrHomeRepository, installedDirectoryOf } from "./FabrHome";
+import { FabrHomeRepository } from "./FabrHome";
+import { installedDirectoryOf } from "../model/Plugin";
 import { BuildCache } from "../core/BuildCache";
 import { LogFormatter, LogLevel } from "../support/Log";
 

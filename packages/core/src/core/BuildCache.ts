@@ -22,7 +22,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { Readable, Transform } from "stream";
-import { PROJECT_FILENAME } from "../Constants";
+import { PROJECT_FILENAME } from "./Constants";
 import { Computable, ComputableHandle } from "./Computable";
 import { FabrError, HttpStatusError, toError } from "./Errors";
 import { FetchRole, headUrl, ICacheControl, openUrlStream, reportingProgress } from "./Fetch";

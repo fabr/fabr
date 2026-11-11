@@ -146,7 +146,7 @@ export interface PackageContent {
   /** What the target's rule declares it builds, where it declares it. */
   readonly declared?: Builds;
   /**
-   * Get the target's description (see support/Description), where its rule
+   * Get the target's description (see context/Description), where its rule
    * describes it: what {@link describePackages} gives the node in place of
    * its files.
    */
@@ -765,7 +765,7 @@ export function materializePackages(roots: ReadonlyArray<Package>): Computable<A
 
 /**
  * Give each of `roots`, and each package it reaches, what a description needs
- * of it (see support/Description): as {@link materializePackages} does, except
+ * of it (see context/Description): as {@link materializePackages} does, except
  * that a target whose rule describes it is its description, a
  * {@link DescribedPackage}, in place of its build. A target whose description
  * fails is left out — a root as no sources, an edge to it unbound — so a
@@ -903,7 +903,7 @@ function materializeGraph(
 
 /**
  * A package built in the project, as a description refers to it
- * (support/Description): its identity and its dependencies, with its own
+ * (context/Description): its identity and its dependencies, with its own
  * description in place of its files — so that describing a target describes,
  * and does not build, the packages it requires. Its description is a target's
  * as the Build Server Protocol shapes one

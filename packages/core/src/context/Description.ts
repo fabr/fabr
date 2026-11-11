@@ -32,11 +32,11 @@ import * as path from "path";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
-import type { ResolvedRequirements } from "../context/Collection";
+import type { ResolvedRequirements } from "./Collection";
 import { TargetRef } from "../core/TargetRef";
-import type { TargetContext } from "../context/TargetContext";
+import type { TargetContext } from "./TargetContext";
 import { FabrError } from "../core/Errors";
-import { isJsonObject } from "./Json";
+import { isJsonObject } from "../support/Json";
 
 /** The name a target's description has among its `describe` result's files. */
 export const DESCRIPTION_FILE = "describe.json";

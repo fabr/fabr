@@ -25,7 +25,7 @@ import { HttpStatusError, toError } from "../core/Errors";
 import { readStream } from "../core/Fetch";
 import { FileSet, IFile } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
-import { IFetchReport } from "../model/BuildEvents";
+import { IFetchReport } from "./Tasks";
 import { ExpectedDigest, verifiedStream } from "./Integrity";
 import { unpackStream } from "./Unpack";
 
