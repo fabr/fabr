@@ -52,6 +52,7 @@ import {
   toJsonObject,
   ILicense,
   IVersionMetadata,
+  IdentityProvider,
 } from "@fabr-build/core";
 import { otpChallengeOf, OtpProvider } from "./NPMAuth";
 import { makeNpmRunnable } from "./JSPackage";
@@ -288,6 +289,69 @@ export function toPublishAccess(value: string | undefined): PublishAccess {
     return value;
   }
   throw new FabrError(`invalid access value ${JSON.stringify(value)} (expected "public" or "private"/"restricted")`);
+}
+
+/** The outcome of offering a CI identity for a package's publish: the registry's
+ * publish token for it, or the registry's reason for refusing one. */
+export type TrustedPublishing = { token: string } | { refused: string };
+
+/**
+ * Exchange the CI job's identity for a token publishing `name` to the registry
+ * at `registryUrl` (npm's trusted publishing): an identity token `provider`
+ * issues for the audience `npm:<registry host>`, posted to the registry's
+ * exchange endpoint.
+ * A refusal (no trusted publisher configured for the package, or one naming
+ * another repository or workflow) is a result; a failure to reach the registry,
+ * or a server error, is an error, as is a failure to get the identity token.
+ */
+export function exchangeIdentity(registryUrl: string, name: string, provider: IdentityProvider): Computable<TrustedPublishing> {
+  const escapedName = name.replace(/\//g, "%2f");
+  return provider
+    .token(`npm:${new URL(registryUrl).hostname}`)
+    .then(idToken =>
+      sendRequest(`${registryUrl}/-/npm/v1/oidc/token/exchange/package/${escapedName}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${idToken}`, accept: "application/json" },
+      })
+    )
+    .then(({ statusCode, body }): TrustedPublishing => {
+      if (statusCode >= 200 && statusCode < 300) {
+        return { token: parseJson(body, `trusted publishing response for ${name} from ${registryUrl}`, toExchangedToken) };
+      }
+      if (statusCode === 429 || statusCode >= 500) {
+        throw new FabrError(`trusted publishing for ${name} at ${registryUrl} failed (${statusCode}): ${registryMessage(body)}`);
+      }
+      return { refused: `${registryMessage(body)} (${statusCode})` };
+    });
+}
+
+/** Convert the exchange's response, `{ "token": "<token>" }`, to the token. */
+function toExchangedToken(json: unknown): string {
+  const token = toJsonObject(json).token;
+  if (typeof token !== "string" || token === "") {
+    throw new FabrError("expected a 'token' string");
+  }
+  return token;
+}
+
+/** Get the message of a registry's error response: its JSON `message` or
+ *  `error`, else the body as text. */
+function registryMessage(body: Buffer): string {
+  const text = body.toString("utf8").trim();
+  try {
+    const json: unknown = JSON.parse(text);
+    if (isJsonObject(json)) {
+      for (const field of ["message", "error"]) {
+        const message = json[field];
+        if (typeof message === "string") {
+          return message;
+        }
+      }
+    }
+  } catch {
+    /* Not JSON: the text is the message. */
+  }
+  return text;
 }
 
 /**

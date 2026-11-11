@@ -110,6 +110,7 @@ import { completeCommandLine, Mode, Options, getVersion } from "./Command";
 import { getSourceRoot, getBuildCacheRoot, getHostProperties } from "./Environment";
 import { IInvocationSite } from "./CommandLineSource";
 import { TerminalInteraction } from "./Interaction";
+import { identityProviderOf } from "./Identity";
 import { ProgressReporter } from "./Progress";
 import { TraceWriter } from "./Trace";
 import { setActiveTerminal, TerminalStream } from "./Terminal";
@@ -862,6 +863,7 @@ async function runWith(options: Options, operation: Operation, watch = false, se
     if (process.stdin.isTTY === true && process.stderr.isTTY === true) {
       execution.interaction = new TerminalInteraction(log);
     }
+    execution.identityProvider = identityProviderOf(process.env);
 
     if (fabr.controller) {
       return runWatched(operation, fabr, site, log);

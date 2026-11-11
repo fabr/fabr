@@ -79,6 +79,7 @@ import {
   parseMetadataResponse,
   toPackumentVersions,
   PublishAccess,
+  exchangeIdentity,
   publishToRegistry,
   toPublishAccess,
   tarballBasename,
@@ -321,20 +322,33 @@ export class NPMRepository
    * package name; a 409, or npmjs's 403 "cannot publish over" (version already
    * present), is the already-synced status. Pure upload mechanics — release
    * orchestration (ordering, skipping) is the generic layer's. The credential
-   * is resolved here — the repository owns its own authentication — from the
-   * per-registry `.npmrc` (with `${VAR}` substitution).
+   * is resolved here — the repository owns its own authentication: where the
+   * run has a CI identity, the token the registry exchanges it for (trusted
+   * publishing), else, or where the registry refuses the exchange, the
+   * per-registry `.npmrc`'s (with `${VAR}` substitution).
    */
   public publish(artifact: PublishableFileSet): Computable<PublishStatus> {
     const { name, version } = packageCoordinateOf(artifact.destination);
     const tgzFile = artifact.get(tarballBasename(name, version));
     const manifestFile = artifact.get("package.json");
-    const signedIn = this.credential.authorize({ method: "PUT", url: this.url, headers: new Map() });
-    return Computable.forAll([tgzFile, manifestFile, this.npmAuth(), signedIn], (tgz, manifest, auth, headers) => {
+    const provider = this.context.execution.identityProvider;
+    const trusted = provider ? exchangeIdentity(this.url, name, provider) : Computable.resolve(undefined);
+    return Computable.forAll([tgzFile, manifestFile, this.npmAuth(), trusted], (tgz, manifest, auth, offered) => {
       if (!tgz || !manifest) {
         throw new FabrError(`internal error: publish artifact for ${name}@${version} is missing its tarball or manifest`);
       }
-      return Computable.forAll([tgz.getBuffer(), manifest.readString()], (data, manifestJson) => ({ data, manifestJson, auth, headers }));
-    }).then(({ data, manifestJson, auth, headers }) =>
+      const signedIn =
+        offered && "token" in offered
+          ? Computable.resolve(new Map([["authorization", `Bearer ${offered.token}`]]))
+          : this.credential.authorize({ method: "PUT", url: this.url, headers: new Map() });
+      return Computable.forAll([tgz.getBuffer(), manifest.readString(), signedIn], (data, manifestJson, headers) => ({
+        data,
+        manifestJson,
+        auth,
+        headers,
+        refused: offered && "refused" in offered ? offered.refused : undefined,
+      }));
+    }).then(({ data, manifestJson, auth, headers, refused }) =>
       publishToRegistry(
         this.url,
         { name, version },
@@ -343,7 +357,15 @@ export class NPMRepository
         Object.fromEntries(headers ?? []),
         this.access,
         auth.otpProvider(this.url, this.context.execution.interaction)
-      )
+      ).catch(err => {
+        if (refused !== undefined && err instanceof FabrError) {
+          err.withHelp(
+            `trusted publishing was refused for ${name}: ${refused}; configure this job's workflow or pipeline as its ` +
+              `trusted publisher on the registry (\`npm trust\`), or give a credential for ${this.url} in .npmrc`
+          );
+        }
+        throw err;
+      })
     );
   }
 

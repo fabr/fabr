@@ -39,6 +39,7 @@ fabr sync release     # publish it
 | `npm publish --tag next` | Not supported: every publish is tagged `latest`. |
 | `npm publish --provenance` | Not supported. |
 | `NPM_TOKEN` in `.npmrc` | The same; see [Credentials](#credentials). |
+| Trusted publishing from GitHub Actions, GitLab or CircleCI | The same; see [Trusted publishing](#trusted-publishing). |
 | Workspace packages published together | Several entries in one `sync`; dependencies between them get the right versions. |
 
 ## What a package contains
@@ -284,6 +285,73 @@ On a terminal, a registry that asks for a second factor is handled interactively
 browser for a passkey, or asks for a one-time password. Without a terminal that isn't possible,
 and the publish fails saying so.
 
+### Trusted publishing
+
+From GitHub Actions, GitLab CI/CD or CircleCI, `fabr sync` can publish with no stored token, using
+npm's [trusted publishing](https://docs.npmjs.com/trusted-publishers): the registry accepts the
+job's identity in place of a credential. npm accepts it from GitHub-hosted runners, GitLab.com's
+shared runners and CircleCI's cloud.
+
+To set it up, name the workflow or pipeline as each package's trusted publisher on npm, on the
+package's settings page or with [`npm trust`](https://docs.npmjs.com/cli/commands/npm-trust/):
+
+```sh
+npm trust github @acme/widgets --repo acme/widgets --file release.yml --allow-publish
+```
+
+Then give the job its identity. On GitHub, grant the workflow `id-token: write`:
+
+```yaml
+# .github/workflows/release.yml
+on:
+  release:
+    types: [published]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm install -g @fabr-build/cli
+      - run: fabr sync release
+```
+
+On GitLab and CircleCI, put an identity token for npm's registry in `NPM_ID_TOKEN`, as for
+`npm publish`:
+
+```yaml
+# .gitlab-ci.yml
+publish:
+  id_tokens:
+    NPM_ID_TOKEN:
+      aud: "npm:registry.npmjs.org"
+  script:
+    - fabr sync release
+```
+
+```yaml
+# .circleci/config.yml, in the publishing job's steps
+- run: |
+    export NPM_ID_TOKEN=$(circleci run oidc get --claims '{"aud": "npm:registry.npmjs.org"}')
+    fabr sync release
+```
+
+Each publish then asks the registry for a token for that one package. Where the registry refuses
+one (no trusted publisher is configured for the package, or the configured one names another
+repository or workflow), fabr publishes with the `.npmrc` credential instead, and if that fails
+too, the error says why trusted publishing was refused. Where the registry can't be reached, or
+the job's identity token can't be had, the package isn't published.
+
+- **A package's first version can't be published this way.** npm configures a trusted publisher
+  only for a package that already exists, so publish the first version with a token.
+- **npm doesn't accept trusted publishing from self-hosted runners.** Use a token there.
+- Outside a job with an identity, fabr publishes with the `.npmrc` credential as usual.
+
 ### Other registries, and private packages
 
 `@npm` publishes to the public npm registry, with public access. To publish somewhere else, or
@@ -306,7 +374,7 @@ sync release {
 
 - **Dist-tags.** Every publish becomes `latest`. Publishing a prerelease or a patch to an old
   release line moves `latest` to it.
-- **Provenance attestations** and npm's trusted publishing.
+- **Provenance attestations.**
 - **A one-time password from a flag or environment variable.** Use a token that doesn't need one.
 
 ## Troubleshooting
@@ -320,5 +388,7 @@ sync release {
 | `metadata key 'x' is not carried into a published package` | A checkout-only field in `metadata` | Remove it. |
 | `'x' is named in exports, but produces nothing importable in the built package` | An `exports` entry such as a `.d.ts` file | List a source that compiles to JavaScript. |
 | `publishing … failed (401)` or `(403)` | No credential for the registry, or one that can't publish this package | Check the `.npmrc` entry and that the environment variable it names is set. |
+| `trusted publishing was refused for x` | No trusted publisher is configured for the package, or it names another repository or workflow | Configure the workflow or pipeline as the package's trusted publisher, or give a credential in `.npmrc`. |
+| `the job's identity token in NPM_ID_TOKEN is for '…', not 'npm:…'` | The token was issued for another audience | Issue it with the audience the message names. |
 | `requires a second factor (2FA), and this run has no terminal` | A token that needs a one-time password, used in CI | Use a token that publishes unattended. |
 | The published package has `.js.map` files containing sources | The `sync` entry doesn't require a release build | Write `<BUILD_TYPE=release>` on the entry's target. |

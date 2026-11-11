@@ -63,6 +63,7 @@ still reports non-zero exit code with failures.
 - New Java support.
 
 @fabr-build/js:
+- `fabr sync` publishes to npm with trusted publishing from a GitHub Actions workflow granted `id-token: write`, or a GitLab or CircleCI job given `NPM_ID_TOKEN`, falling back to the `.npmrc` credential where the registry refuses.
 - js_package now takes a compile_deps property for compile-only inputs.
 - Load only the browser table from caniuse-lite, not every feature's data.
 - js_script takes env, the environment variables its program is launched with.

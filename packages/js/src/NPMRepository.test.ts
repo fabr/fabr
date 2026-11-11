@@ -1341,6 +1341,115 @@ describe("NPMRepository publish", () => {
   });
 });
 
+/** A registry answering each `METHOD path` from `routes` with its status and
+ *  body (404 otherwise), recording every request it receives. */
+function routedServer(routes: Record<string, [number, string]>): Promise<{ port: number; requests: CapturedPut[]; close: () => void }> {
+  return new Promise(resolve => {
+    const requests: CapturedPut[] = [];
+    const server = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", c => chunks.push(c));
+      req.on("end", () => {
+        requests.push({ method: req.method, url: req.url, auth: req.headers.authorization, body: Buffer.concat(chunks).toString() });
+        const [status, body] = routes[`${req.method} ${req.url}`] ?? [404, '{"error":"not found"}'];
+        res.writeHead(status, { "content-type": "application/json" });
+        res.end(body);
+      });
+    });
+    server.listen(0, "127.0.0.1", () => resolve({ port: (server.address() as AddressInfo).port, requests, close: () => server.close() }));
+  });
+}
+
+describe("NPMRepository trusted publishing", () => {
+  const EXCHANGE = "POST /-/npm/v1/oidc/token/exchange/package/@fabr%2fcore";
+  const PUT = "PUT /@fabr%2fcore";
+
+  /** Publish @fabr/core@0.1.0 to the registry on `port`, the run's identity
+   *  issuing `id-token` and recording each audience asked for. */
+  async function publishWithIdentity(port: number, audiences: string[], npmrc?: string): Promise<string> {
+    const context = npmrcContext(npmrc);
+    context.execution.identityProvider = {
+      token: (audience: string) => {
+        audiences.push(audience);
+        return Computable.resolve("id-token");
+      },
+    };
+    const repo = new NPMRepository(`http://127.0.0.1:${port}`, context);
+    const destination = coord(repo, "@fabr/core:0.1.0");
+    const src = publishFileSet({ "package.json": JSON.stringify({ name: "@fabr/core", version: "0" }) });
+    const [carrier] = await repo.package([{ destination, content: src }], [destination]);
+    return toPromise(repo.publish(carrier));
+  }
+
+  it("publishes with the token the registry exchanges the identity for", async () => {
+    const server = await routedServer({ [EXCHANGE]: [201, '{"token":"exchanged"}'], [PUT]: [201, "{}"] });
+    try {
+      const audiences: string[] = [];
+      const status = await publishWithIdentity(server.port, audiences, `//127.0.0.1:${server.port}/:_authToken=stored`);
+      expect(status).to.equal("published");
+      expect(audiences).to.deep.equal(["npm:127.0.0.1"]);
+      const [exchange, put] = server.requests;
+      expect(exchange.auth).to.equal("Bearer id-token");
+      expect(`${put.method} ${put.url}`).to.equal(PUT);
+      expect(put.auth).to.equal("Bearer exchanged");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("publishes with the .npmrc credential where the registry refuses the exchange", async () => {
+    const server = await routedServer({
+      [EXCHANGE]: [404, '{"message":"no trusted publisher is configured"}'],
+      [PUT]: [201, "{}"],
+    });
+    try {
+      const status = await publishWithIdentity(server.port, [], `//127.0.0.1:${server.port}/:_authToken=stored`);
+      expect(status).to.equal("published");
+      expect(server.requests[1].auth).to.equal("Bearer stored");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("says why trusted publishing was refused when the publish then fails", async () => {
+    const server = await routedServer({
+      [EXCHANGE]: [404, '{"message":"no trusted publisher is configured"}'],
+      [PUT]: [401, '{"error":"unauthorized"}'],
+    });
+    try {
+      const err = await rejection(() => publishWithIdentity(server.port, []));
+      expect(err.message).to.contain("failed (401)");
+      expect(helpText(err)).to.contain("trusted publishing was refused for @fabr/core: no trusted publisher is configured (404)");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("fails without publishing where the exchange fails at the registry", async () => {
+    const server = await routedServer({ [EXCHANGE]: [503, "unavailable"], [PUT]: [201, "{}"] });
+    try {
+      const err = await rejection(() => publishWithIdentity(server.port, [], `//127.0.0.1:${server.port}/:_authToken=stored`));
+      expect(err.message).to.contain("trusted publishing for @fabr/core");
+      expect(err.message).to.contain("(503)");
+      expect(server.requests.map(r => r.method)).to.deep.equal(["POST"]);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("never sends either token in what a failure reports", async () => {
+    const server = await routedServer({ [EXCHANGE]: [201, '{"token":"exchanged"}'], [PUT]: [500, "registry down"] });
+    try {
+      const err = await rejection(() => publishWithIdentity(server.port, []));
+      const reported = `${err.message}\n${helpText(err)}`;
+      expect(reported).to.not.contain("exchanged");
+      expect(reported).to.not.contain("id-token");
+    } finally {
+      server.close();
+    }
+  });
+});
+
 /** Like fakeContext, but records the auth headers passed with each fetch and
  *  serves a project `.npmrc` (the credential source), so a test can assert which
  *  requests carried the registry credential. */

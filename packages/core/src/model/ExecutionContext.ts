@@ -53,6 +53,18 @@ export interface UserInteraction {
 }
 
 /**
+ * What issues tokens naming the CI job fabr runs in (GitHub Actions, GitLab,
+ * CircleCI: OIDC ID tokens), which a destination exchanges for a short-lived
+ * credential in place of a stored one. Present on the ExecutionContext only
+ * where the job has an identity. Read by publish steps alone, never by a
+ * build; a token must reach no cache key, log line or error.
+ */
+export interface IdentityProvider {
+  /** Get a freshly issued identity token (a JWT) for `audience`. */
+  token(audience: string): Computable<string>;
+}
+
+/**
  * A typed handle a plugin uses to stash its own per-run state on the
  * ExecutionContext — the plugin equivalent of core simply holding a field here.
  * One key per plugin; `T` is the plugin's context object. Identity is by object
@@ -172,6 +184,9 @@ export class ExecutionContext {
    * Set by the driver only when attached to a tty; its absence is the
    * "non-interactive run" signal. */
   public interaction?: UserInteraction;
+  /** The CI job's identity provider, when the job has an identity — see
+   * {@link IdentityProvider}. Set by the driver. */
+  public identityProvider?: IdentityProvider;
   /**
    * Bounds how much of the run's work runs at once — the run-wide execution
    * budget, shared by every BuildContext of the run.
