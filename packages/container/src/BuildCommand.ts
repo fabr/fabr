@@ -81,7 +81,9 @@ export function changedPaths(diff: string): IChangedPaths {
     return false;
   };
   const hasBelow = (p: string): boolean => paths.some(other => other.startsWith(`${p}/`));
-  const copies = paths.filter(p => (kinds.get(p) === "A" && !under(p, "A")) || (kinds.get(p) === "C" && !hasBelow(p) && !under(p, "A")));
+  const copies = paths.filter(
+    p => (kinds.get(p) === "A" && !under(p, "A")) || (kinds.get(p) === "C" && !hasBelow(p) && !under(p, "A"))
+  );
   const deletions = paths.filter(p => kinds.get(p) === "D" && !under(p, "D"));
   return { copies, deletions };
 }
@@ -161,7 +163,14 @@ export function runBuildCommand(
 }
 
 /** Load `base` into the engine under `tag`, where the engine lacks it: its layout, staged, streamed into `load`. */
-function loadBase(ctx: ActionContext, report: ITaskReport, base: ImageFileSet, engine: string, tag: string, env: Record<string, string>): Computable<void> {
+function loadBase(
+  ctx: ActionContext,
+  report: ITaskReport,
+  base: ImageFileSet,
+  engine: string,
+  tag: string,
+  env: Record<string, string>
+): Computable<void> {
   return executeInternalCapture(ctx.processLimit, engine, ["image", "inspect", tag], "", env).then(({ status }) => {
     if (status === 0) {
       return Computable.resolve<void>(undefined);
@@ -195,8 +204,17 @@ function copyOut(
     return Computable.resolve([]);
   }
   const archives = paths.map((p, index) => ({ path: p, archive: path.join(ctx.workDir, `changed-${index}.tar`) }));
-  const script = archives.map(({ path: p, archive }) => `"$ENGINE" cp ${shellQuote(`${container}:${p}`)} - > ${shellQuote(archive)}`).join(" && ");
-  return execute(ctx.processLimit, "/bin/sh", ["-c", script], ctx.workDir, { ...env, ENGINE: engine }, { ...report, output: undefined }).then(() => archives);
+  const script = archives
+    .map(({ path: p, archive }) => `"$ENGINE" cp ${shellQuote(`${container}:${p}`)} - > ${shellQuote(archive)}`)
+    .join(" && ");
+  return execute(
+    ctx.processLimit,
+    "/bin/sh",
+    ["-c", script],
+    ctx.workDir,
+    { ...env, ENGINE: engine },
+    { ...report, output: undefined }
+  ).then(() => archives);
 }
 
 /** Write the layer: a whiteout per deletion, then each copied archive's entries at their paths, times fixed; indexed as it is written. */
@@ -216,7 +234,15 @@ export function writeChanges(
     pack.pipe(sink.stream, { end: false });
     const header = { mtime: FIXED_MTIME, uid: 0, gid: 0 };
     for (const deleted of deletions) {
-      pack.entry({ ...header, name: entryName(path.posix.join(path.posix.dirname(deleted), `.wh.${path.posix.basename(deleted)}`)), mode: 0o644, size: 0 }, Buffer.alloc(0));
+      pack.entry(
+        {
+          ...header,
+          name: entryName(path.posix.join(path.posix.dirname(deleted), `.wh.${path.posix.basename(deleted)}`)),
+          mode: 0o644,
+          size: 0,
+        },
+        Buffer.alloc(0)
+      );
     }
     const next = (index: number): void => {
       if (index >= copies.length) {

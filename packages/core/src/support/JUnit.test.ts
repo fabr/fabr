@@ -46,7 +46,14 @@ describe("toJUnitXml", () => {
   const xml = toJUnitXml(
     reportOf([
       { name: "b holds", status: "passed", duration: 12, filePath: "src/b.test.ts" },
-      { name: "a fails", status: "failed", duration: 1500, filePath: "src/a.test.ts", message: "expected 1 to equal 2", trace: "at a.test.ts:3" },
+      {
+        name: "a fails",
+        status: "failed",
+        duration: 1500,
+        filePath: "src/a.test.ts",
+        message: "expected 1 to equal 2",
+        trace: "at a.test.ts:3",
+      },
       { name: "a waits", status: "skipped", duration: 0, filePath: "src/a.test.ts" },
     ])
   );
@@ -56,7 +63,9 @@ describe("toJUnitXml", () => {
   });
 
   it("makes one suite per test file, in order, each naming its file", () => {
-    const suites = [...xml.matchAll(/<testsuite name="([^"]*)" file="([^"]*)" tests="(\d+)" failures="(\d+)"/g)].map(match => match.slice(1));
+    const suites = [...xml.matchAll(/<testsuite name="([^"]*)" file="([^"]*)" tests="(\d+)" failures="(\d+)"/g)].map(match =>
+      match.slice(1)
+    );
     expect(suites).to.deep.equal([
       ["src/a.test.ts", "src/a.test.ts", "2", "1"],
       ["src/b.test.ts", "src/b.test.ts", "1", "0"],
@@ -72,7 +81,9 @@ describe("toJUnitXml", () => {
   });
 
   it("escapes markup and drops what XML cannot hold", () => {
-    const escaped = toJUnitXml(reportOf([{ name: 'a <b> & "c"', status: "failed", duration: 0, message: "\u001b[31mred\u001b[39m\u0000" }]));
+    const escaped = toJUnitXml(
+      reportOf([{ name: 'a <b> & "c"', status: "failed", duration: 0, message: "\u001b[31mred\u001b[39m\u0000" }])
+    );
     expect(escaped).to.contain('<testcase name="a &lt;b&gt; &amp; &quot;c&quot;" classname="(no file)" time="0.000">');
     expect(escaped).to.contain('<failure message="red">red</failure>');
   });

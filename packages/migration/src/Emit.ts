@@ -65,7 +65,10 @@ export function renderCatalogFile(catalog: Catalog, options: CatalogFileOptions)
   const entries = [...catalog.entries.values()].sort((a, b) => compareText(a.address, b.address));
   const sections: Array<[string | undefined, CatalogEntry[]]> = [
     [undefined, entries.filter(entry => entry.pin === undefined)],
-    [`Raised to the versions ${lockfile} installs, where the declared floors give lower ones.`, entries.filter(entry => entry.pin === "raise")],
+    [
+      `Raised to the versions ${lockfile} installs, where the declared floors give lower ones.`,
+      entries.filter(entry => entry.pin === "raise"),
+    ],
     [`Required only without a lower bound: the versions ${lockfile} installs.`, entries.filter(entry => entry.pin === "floorless")],
   ];
   const values: string[] = [];
@@ -87,11 +90,21 @@ export function renderCatalogFile(catalog: Catalog, options: CatalogFileOptions)
     values.push("", `# Packages that ship at several versions, as ${lockfile} installs them.`);
   }
   for (const [name, versions] of [...catalog.alternates].sort(([a], [b]) => compareText(a, b))) {
-    values.push([...versions].sort().map(version => `${catalog.repositoryOf(name)}:${name}:${rangeText(version)}?`).join(" "));
+    values.push(
+      [...versions]
+        .sort()
+        .map(version => `${catalog.repositoryOf(name)}:${name}:${rangeText(version)}?`)
+        .join(" ")
+    );
   }
   if (values.length > 0) {
     const last = values.map(value => value !== "" && !value.startsWith("#")).lastIndexOf(true);
-    lines.push(`catalog ${CATALOG} {`, "  deps =", ...values.map((value, at) => (value === "" ? "" : `    ${value}${at === last ? ";" : ""}`)), "}");
+    lines.push(
+      `catalog ${CATALOG} {`,
+      "  deps =",
+      ...values.map((value, at) => (value === "" ? "" : `    ${value}${at === last ? ";" : ""}`)),
+      "}"
+    );
   }
   return `${lines.join("\n")}\n`;
 }

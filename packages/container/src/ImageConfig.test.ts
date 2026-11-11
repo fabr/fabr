@@ -35,7 +35,22 @@ describe("imageConfig", () => {
   };
 
   it("applies the settings over the base's config and adds the layer", () => {
-    const config = imageConfig(base, AMD64, { ...NONE, entry: "/app/server", args: ["--port", "8080"], env: [["LANG", "C.UTF-8"], ["MODE", "prod"]], ports: ["8080", "53/udp"] }, DIFF_ID, "made");
+    const config = imageConfig(
+      base,
+      AMD64,
+      {
+        ...NONE,
+        entry: "/app/server",
+        args: ["--port", "8080"],
+        env: [
+          ["LANG", "C.UTF-8"],
+          ["MODE", "prod"],
+        ],
+        ports: ["8080", "53/udp"],
+      },
+      DIFF_ID,
+      "made"
+    );
     expect(config.created).to.equal(FIXED_CREATED);
     expect(config.config).to.deep.equal({
       Env: ["PATH=/bin", "LANG=C.UTF-8", "MODE=prod"],
@@ -54,12 +69,31 @@ describe("imageConfig", () => {
 
   it("starts an image with no base from its platform", () => {
     const config = imageConfig(undefined, { os: "linux", architecture: "arm", variant: "v7" }, NONE, DIFF_ID, "made");
-    expect(config).to.deep.include({ architecture: "arm", os: "linux", variant: "v7", config: {}, rootfs: { type: "layers", diff_ids: [DIFF_ID] } });
+    expect(config).to.deep.include({
+      architecture: "arm",
+      os: "linux",
+      variant: "v7",
+      config: {},
+      rootfs: { type: "layers", diff_ids: [DIFF_ID] },
+    });
   });
 
   it("writes metadata as labels over the base's, OCI's keys under its prefix", () => {
     const labelled = { ...base, config: { ...base.config, Labels: { "org.opencontainers.image.description": "base", keep: "yes" } } };
-    const config = imageConfig(labelled, AMD64, { ...NONE, metadata: [["description", "server"], ["licenses", "MIT"], ["traefik.enable", "true"]] }, undefined, "made");
+    const config = imageConfig(
+      labelled,
+      AMD64,
+      {
+        ...NONE,
+        metadata: [
+          ["description", "server"],
+          ["licenses", "MIT"],
+          ["traefik.enable", "true"],
+        ],
+      },
+      undefined,
+      "made"
+    );
     expect((config.config as Record<string, unknown>).Labels).to.deep.equal({
       "org.opencontainers.image.description": "server",
       keep: "yes",

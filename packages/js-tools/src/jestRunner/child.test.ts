@@ -26,8 +26,19 @@ import { makeJestGlobals } from "./child";
  * test file loads. */
 describe("makeJestGlobals", () => {
   const EXPORTS = [
-    "expect", "describe", "fdescribe", "xdescribe", "it", "fit", "xit", "test", "xtest",
-    "beforeAll", "beforeEach", "afterAll", "afterEach",
+    "expect",
+    "describe",
+    "fdescribe",
+    "xdescribe",
+    "it",
+    "fit",
+    "xit",
+    "test",
+    "xtest",
+    "beforeAll",
+    "beforeEach",
+    "afterAll",
+    "afterEach",
   ];
 
   it("serves the full @jest/globals namespace off the global object", () => {

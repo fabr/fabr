@@ -202,9 +202,14 @@ describe("WatchController", () => {
 
   it("advances the cycle (onBeforeApply) once per applied batch, and not when nothing changed", () => {
     let cycles = 0;
-    const controller = new WatchController(50, timer, () => {}, () => {
-      cycles++;
-    });
+    const controller = new WatchController(
+      50,
+      timer,
+      () => {},
+      () => {
+        cycles++;
+      }
+    );
     /* A batch with a real change: cycle advances once, before the settle. */
     controller.notifyChanged(changeEntry(() => {}));
     timer.fire();
@@ -268,7 +273,10 @@ describe("WatchController", () => {
     const events: string[] = [];
     const timer = new FakeTimer();
     const controller = new WatchController(10, timer);
-    controller.notifyChanged(changeEntry(e => events.push(e)), { defer: true });
+    controller.notifyChanged(
+      changeEntry(e => events.push(e)),
+      { defer: true }
+    );
     expect(timer.hasPending).to.equal(false);
     expect(events).to.deep.equal([]);
   });
@@ -280,7 +288,10 @@ describe("WatchController", () => {
     const timer = new FakeTimer();
     const controller = new WatchController(10, timer);
     /* Recorded on settle only — each entry also reports its invalidate. */
-    controller.notifyChanged(changeEntry(e => e === "settle" && events.push("deferred")), { defer: true });
+    controller.notifyChanged(
+      changeEntry(e => e === "settle" && events.push("deferred")),
+      { defer: true }
+    );
     controller.notifyChanged(changeEntry(e => e === "settle" && events.push("real")));
     expect(timer.hasPending).to.equal(true);
     timer.fire();
@@ -294,7 +305,10 @@ describe("WatchController", () => {
     const events: string[] = [];
     const timer = new FakeTimer();
     const controller = new WatchController(10, timer);
-    controller.notifyChanged(changeEntry(e => e === "settle" && events.push("settle")), { defer: true });
+    controller.notifyChanged(
+      changeEntry(e => e === "settle" && events.push("settle")),
+      { defer: true }
+    );
     controller.armFlush();
     expect(timer.hasPending).to.equal(true);
     timer.fire();

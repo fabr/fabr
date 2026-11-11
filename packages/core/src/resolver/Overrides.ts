@@ -96,7 +96,10 @@ export function collectSanctions<V, C>(
     const existing = forcedAt.get(name);
     if (existing !== undefined && existing !== req.versionConstraint) {
       const shown = (text: string): string => versionText(text, name);
-      fail(name, `'${name}' is forced ('!') at two different versions (${shown(existing)}, ${shown(req.versionConstraint)}) — pick one`);
+      fail(
+        name,
+        `'${name}' is forced ('!') at two different versions (${shown(existing)}, ${shown(req.versionConstraint)}) — pick one`
+      );
     }
     forcedAt.set(name, req.versionConstraint);
   }
@@ -158,7 +161,11 @@ export function satisfiedByAnySelection<V, C>(
  * stands among these selections rather than against the resolution's
  * principal.
  */
-export function violatedAmong<V, C>(domain: VersionDomain<V, C>, selections: readonly Selected<V>[], violation: Violation<V>): boolean {
+export function violatedAmong<V, C>(
+  domain: VersionDomain<V, C>,
+  selections: readonly Selected<V>[],
+  violation: Violation<V>
+): boolean {
   let constraint: C;
   try {
     constraint = domain.parseConstraint(violation.versionConstraint);

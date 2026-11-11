@@ -92,10 +92,8 @@ describe("Name", () => {
   });
 
   describe("rename template", () => {
-    const selector = (): Name =>
-      new NameBuilder().appendGlobMetachars("*").appendLiteralString(".expect").name();
-    const template = (): Name =>
-      new NameBuilder().appendGlobMetachars("*").appendLiteralString(".out").name();
+    const selector = (): Name => new NameBuilder().appendGlobMetachars("*").appendLiteralString(".expect").name();
+    const template = (): Name => new NameBuilder().appendGlobMetachars("*").appendLiteralString(".out").name();
 
     it("round-trips through toString with a spaced arrow", () => {
       const name = selector().withRenameTo(template());
@@ -145,12 +143,7 @@ describe("Name", () => {
         .appendGlobMetachars("*")
         .appendLiteralString(".tgz")
         .name();
-      const tmpl = new NameBuilder()
-        .appendSubstVar("1")
-        .appendSubstVar("2")
-        .appendLiteralString(".out")
-        .name()
-        .asRenameTemplate();
+      const tmpl = new NameBuilder().appendSubstVar("1").appendSubstVar("2").appendLiteralString(".out").name().asRenameTemplate();
       const resolved = substituted(sel.withRenameTo(tmpl), { DIR: "dist" });
       const rename = resolved.makeRenamer(resolved.getRenameTo()!);
       expect(rename("dist/v3.7.tgz")).to.equal("37.out");
@@ -214,11 +207,7 @@ describe("Name", () => {
       /* The template fills no slot, so the selector's wildcards are matched and
        * then discarded: the selector below names whichever file it selects
        * `index.ts` (two of them being FileSet.rename's conflict). */
-      const sel = new NameBuilder()
-        .appendLiteralString("foo/")
-        .appendGlobMetachars("*")
-        .appendLiteralString("/bar/index.ts")
-        .name();
+      const sel = new NameBuilder().appendLiteralString("foo/").appendGlobMetachars("*").appendLiteralString("/bar/index.ts").name();
       const rename = sel.makeRenamer(Name.fromLiteral("index.ts"));
       expect(rename("foo/a/bar/index.ts")).to.equal("index.ts");
       expect(rename("foo/b/bar/index.ts")).to.equal("index.ts");
@@ -226,11 +215,7 @@ describe("Name", () => {
     });
 
     it("renders toReplacement as a $n string, escaping literal $", () => {
-      const tmpl = new NameBuilder()
-        .appendGlobMetachars("*")
-        .appendLiteralString(".$v.out")
-        .appendGlobMetachars("*")
-        .name();
+      const tmpl = new NameBuilder().appendGlobMetachars("*").appendLiteralString(".$v.out").appendGlobMetachars("*").name();
       /* `$v` in a substituted literal must not read as a group reference. */
       expect(tmpl.toReplacement()).to.equal("$1.$$v.out$2");
     });
@@ -280,11 +265,7 @@ describe("Name", () => {
     });
 
     it("retains the full path for a slash-form name", () => {
-      const name = new NameBuilder()
-        .appendLiteralString("src/bar/")
-        .appendGlobMetachars("*")
-        .appendLiteralString(".ts")
-        .name();
+      const name = new NameBuilder().appendLiteralString("src/bar/").appendGlobMetachars("*").appendLiteralString(".ts").name();
       expect(name.makeProjector()("src/bar/x.ts")).to.equal("src/bar/x.ts");
     });
 
@@ -293,11 +274,7 @@ describe("Name", () => {
        * unescaped rendering — `(`/`)`/`!`/`|` are escaped in the matcher's
        * glob string but literal on disk. */
       for (const dir of ["foo(1)", "foo!bar", "a|b"]) {
-        const name = new NameBuilder()
-          .appendLiteralString(`${dir}:`)
-          .appendGlobMetachars("*")
-          .appendLiteralString(".txt")
-          .name();
+        const name = new NameBuilder().appendLiteralString(`${dir}:`).appendGlobMetachars("*").appendLiteralString(".txt").name();
         const project = name.makeProjector();
         expect(project(`${dir}/x.txt`), dir).to.equal("x.txt");
         expect(project("other/x.txt"), dir).to.equal(undefined);
@@ -350,9 +327,7 @@ describe("Name", () => {
     });
 
     it("strips a reached colon under a rename too (matches the slash path)", () => {
-      const rename = reachedColon().withRenameTo(
-        new NameBuilder().appendGlobMetachars("*").appendLiteralString(".out").name()
-      );
+      const rename = reachedColon().withRenameTo(new NameBuilder().appendGlobMetachars("*").appendLiteralString(".out").name());
       const project = rename.makeProjector();
       expect(project("sub/b.expect")).to.equal("b.out");
       expect(project("other/b.expect")).to.equal(undefined);
@@ -375,18 +350,12 @@ describe("Name", () => {
     it("converts every colon and strips up to the last (multi-colon)", () => {
       /* `a:b:*.ts` — all colons are path separators; the alias `a:b` is stripped
        * wholesale (up to the last colon). */
-      const name = new NameBuilder()
-        .appendLiteralString("a:b:")
-        .appendGlobMetachars("*")
-        .appendLiteralString(".ts")
-        .name();
+      const name = new NameBuilder().appendLiteralString("a:b:").appendGlobMetachars("*").appendLiteralString(".ts").name();
       const project = name.makeProjector();
       expect(project("a/b/x.ts")).to.equal("x.ts");
       expect(project("a/b/x.js")).to.equal(undefined);
       /* and the same under a rename */
-      const renamed = name.withRenameTo(
-        new NameBuilder().appendGlobMetachars("*").appendLiteralString(".js").name()
-      );
+      const renamed = name.withRenameTo(new NameBuilder().appendGlobMetachars("*").appendLiteralString(".js").name());
       expect(renamed.makeProjector()("a/b/x.ts")).to.equal("x.js");
     });
   });
@@ -403,11 +372,7 @@ describe("Name", () => {
        * delivers normalized names (`tools/y.js`); the result is named by its
        * path relative to the alias (`../tools/y.js` — FileSet canonicalization
        * later flattens the climb to `tools/y.js`). */
-      const name = new NameBuilder()
-        .appendLiteralString("lib:../tools/")
-        .appendGlobMetachars("*")
-        .appendLiteralString(".js")
-        .name();
+      const name = new NameBuilder().appendLiteralString("lib:../tools/").appendGlobMetachars("*").appendLiteralString(".js").name();
       const project = name.makeProjector();
       expect(project("tools/y.js")).to.equal("../tools/y.js");
       expect(project("lib/y.js")).to.equal(undefined);
@@ -439,20 +404,12 @@ describe("Name", () => {
        * climbs out of is unknown until match time, so lexical normalization
        * must leave it alone (it then never matches a canonical input, the
        * honest outcome). */
-      const name = new NameBuilder()
-        .appendLiteralString("a/")
-        .appendGlobMetachars("*")
-        .appendLiteralString("/../b.txt")
-        .name();
+      const name = new NameBuilder().appendLiteralString("a/").appendGlobMetachars("*").appendLiteralString("/../b.txt").name();
       expect(name.makeProjector()("a/b.txt")).to.equal(undefined);
     });
 
     it("does not normalize a climb through an extglob group", () => {
-      const name = new NameBuilder()
-        .appendLiteralString("a/")
-        .appendGlobMetachars("@(b|c)")
-        .appendLiteralString("/../d.txt")
-        .name();
+      const name = new NameBuilder().appendLiteralString("a/").appendGlobMetachars("@(b|c)").appendLiteralString("/../d.txt").name();
       expect(name.makeProjector()("a/d.txt")).to.equal(undefined);
     });
   });
@@ -590,7 +547,6 @@ describe("Name", () => {
       ).to.deep.equal(["dir", "dir/x.tgz", "dir/x.tgz/foo"]);
     });
   });
-
 });
 
 describe("toRenameRule", () => {
@@ -618,11 +574,24 @@ describe("toRenameRule", () => {
   });
 
   it("agrees with makeRenamer, which is the same compilation plus the application", () => {
-    const selector = new NameBuilder().appendGlobMetachars("**").appendLiteralString("/").appendGlobMetachars("*").appendLiteralString(".in").name();
-    const template = new NameBuilder().appendGlobMetachars("**").appendLiteralString("/").appendGlobMetachars("*").appendLiteralString(".out").name();
+    const selector = new NameBuilder()
+      .appendGlobMetachars("**")
+      .appendLiteralString("/")
+      .appendGlobMetachars("*")
+      .appendLiteralString(".in")
+      .name();
+    const template = new NameBuilder()
+      .appendGlobMetachars("**")
+      .appendLiteralString("/")
+      .appendGlobMetachars("*")
+      .appendLiteralString(".out")
+      .name();
     const { pattern, replacement } = selector.toRenameRule(template);
     for (const input of ["x.in", "a/x.in", "a/b/x.in"]) {
-      const direct = input.replace(new RegExp(pattern), replacement).replace(/\/{2,}/g, "/").replace(/^\/+|\/+$/g, "");
+      const direct = input
+        .replace(new RegExp(pattern), replacement)
+        .replace(/\/{2,}/g, "/")
+        .replace(/^\/+|\/+$/g, "");
       expect(direct, input).to.equal(selector.makeRenamer(template)(input));
     }
   });

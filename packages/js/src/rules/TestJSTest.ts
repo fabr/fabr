@@ -56,9 +56,13 @@ export default defineRule({
   },
   /* Describe the tests as an editor is told of them: the unit the run compiles. */
   describe(context, requirements) {
-    return testFramework(context, "framework").then(framework => describeTests(context, framework, { envProperty: "env" }, requirements));
+    return testFramework(context, "framework").then(framework =>
+      describeTests(context, framework, { envProperty: "env" }, requirements)
+    );
   },
   evaluateMaterialized(context, collected) {
-    return testFramework(context, "framework").then(framework => compileAndRunTests(context, framework, { envProperty: "env" }, collected));
+    return testFramework(context, "framework").then(framework =>
+      compileAndRunTests(context, framework, { envProperty: "env" }, collected)
+    );
   },
 });

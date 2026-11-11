@@ -134,7 +134,6 @@ export interface BuildContext {
    * is; where COVERAGE is unconstrained, it is left to its default.
    */
   runOverrides(extra?: Constraints): Constraints;
-
 }
 
 /**

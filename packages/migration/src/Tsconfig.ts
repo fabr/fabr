@@ -55,7 +55,9 @@ export function readTsconfig(file: string, seen = new Set<string>()): TsconfigOp
   const inherited = parents.reduce<TsconfigOptions>((held, parent) => ({ ...held, ...parent }), { paths: new Map() });
   const options = isJsonObject(doc.compilerOptions) ? doc.compilerOptions : {};
   const baseUrl = typeof options.baseUrl === "string" ? path.resolve(dir, options.baseUrl) : inherited.baseUrl;
-  const types = Array.isArray(options.types) ? options.types.filter((each): each is string => typeof each === "string") : inherited.types;
+  const types = Array.isArray(options.types)
+    ? options.types.filter((each): each is string => typeof each === "string")
+    : inherited.types;
   let paths = inherited.paths;
   if (isJsonObject(options.paths)) {
     /* Targets are relative to baseUrl where it is set, else to this file. */
@@ -63,7 +65,9 @@ export function readTsconfig(file: string, seen = new Set<string>()): TsconfigOp
     paths = new Map(
       Object.entries(options.paths).map(([pattern, targets]): [string, string[]] => [
         pattern,
-        (Array.isArray(targets) ? targets : []).filter((each): each is string => typeof each === "string").map(each => path.resolve(base, each)),
+        (Array.isArray(targets) ? targets : [])
+          .filter((each): each is string => typeof each === "string")
+          .map(each => path.resolve(base, each)),
       ])
     );
   }
@@ -73,7 +77,10 @@ export function readTsconfig(file: string, seen = new Set<string>()): TsconfigOp
 /** Read every `tsconfig*.json` in `dir` (absolute), by file name. */
 export function readTsconfigs(dir: string): Map<string, TsconfigOptions> {
   const read = new Map<string, TsconfigOptions>();
-  for (const name of fs.readdirSync(dir).filter(each => /^tsconfig(\..+)?\.json$/.test(each)).sort()) {
+  for (const name of fs
+    .readdirSync(dir)
+    .filter(each => /^tsconfig(\..+)?\.json$/.test(each))
+    .sort()) {
     const options = readTsconfig(path.join(dir, name));
     if (options !== undefined) {
       read.set(name, options);

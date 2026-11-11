@@ -69,7 +69,10 @@ export function parseSpec(name: string, text: string): Spec {
       ? { kind: "registry", packageName: target.slice(0, at), range: target.slice(at + 1) || "*" }
       : { kind: "registry", packageName: target, range: "*" };
   }
-  if (/^(file:|link:|portal:|git\+|git:|github:|gitlab:|bitbucket:|https?:|ssh:|exec:)/.test(spec) || /^[^@\s][^\s]*\/[^\s]+$/.test(spec)) {
+  if (
+    /^(file:|link:|portal:|git\+|git:|github:|gitlab:|bitbucket:|https?:|ssh:|exec:)/.test(spec) ||
+    /^[^@\s][^\s]*\/[^\s]+$/.test(spec)
+  ) {
     return { kind: "other" };
   }
   const range = spec === "" || spec === "latest" ? undefined : spec;

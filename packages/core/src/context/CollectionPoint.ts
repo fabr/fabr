@@ -43,7 +43,20 @@ import {
   ResolvedNode,
   UsedFor,
 } from "../core/PackageFileSet";
-import { isRepositoryCollection, isRepositoryReader, Materialized, PendingFiles, ProjectedPackage, RefSource, RepositoryCollection, RepositoryLookup, RepositoryReader, RepositoryRef, Resolved, SourceRef } from "../core/Repository";
+import {
+  isRepositoryCollection,
+  isRepositoryReader,
+  Materialized,
+  PendingFiles,
+  ProjectedPackage,
+  RefSource,
+  RepositoryCollection,
+  RepositoryLookup,
+  RepositoryReader,
+  RepositoryRef,
+  Resolved,
+  SourceRef,
+} from "../core/Repository";
 import { PackageRequest, Pin, Resolution, ResolutionContext, ResolvedCollection } from "../resolver/Types";
 import { packageRequest } from "../resolver/PackageResolver";
 import { DOC_OPERATION, isFilesOperation, SOURCES_OPERATION } from "../model/Constraints";
@@ -79,7 +92,9 @@ function fileRequests(
 ): ReadonlySet<RepositoryRef> {
   const packaged = new Set<SourceRef | Unbuilt>(kept);
   return new Set(
-    extracted.filter((source): source is RepositoryRef => source instanceof RepositoryRef && source.projections.length > 0 && !packaged.has(source))
+    extracted.filter(
+      (source): source is RepositoryRef => source instanceof RepositoryRef && source.projections.length > 0 && !packaged.has(source)
+    )
   );
 }
 
@@ -110,10 +125,10 @@ export function packageIn(source: Resolved | SourceRef | Unbuilt): Package | und
   return isPackage(source)
     ? source
     : source instanceof ProjectedPackage
-    ? source.base
-    : source instanceof FileSetRef && source.source instanceof PackageFileSet
-    ? source.source
-    : undefined;
+      ? source.base
+      : source instanceof FileSetRef && source.source instanceof PackageFileSet
+        ? source.source
+        : undefined;
 }
 
 /** Replace the package of `source` with `pkg`, or with the files a target
@@ -131,7 +146,11 @@ function withPackage(source: Resolved | SourceRef | Unbuilt, pkg: Package | File
  * package asked for. */
 function withConstraint(err: unknown): never {
   throw err instanceof TargetNotPackageError && isPackage(err.requirer) && err.constraint === undefined
-    ? new TargetNotPackageError(err.requirer, err.dependency, requestedConstraint(err.requirer.getDependency(err.dependency.packageName)?.reference))
+    ? new TargetNotPackageError(
+        err.requirer,
+        err.dependency,
+        requestedConstraint(err.requirer.getDependency(err.dependency.packageName)?.reference)
+      )
     : err;
 }
 
@@ -222,8 +241,8 @@ export function materializeLists(
           return made instanceof PackageFileSet
             ? [withPackage(source, made) as Materialized]
             : source === pkg
-            ? (made as Materialized[])
-            : [withPackage(source, asOneSet(made)) as Materialized];
+              ? (made as Materialized[])
+              : [withPackage(source, asOneSet(made)) as Materialized];
         })
       );
       return {
@@ -257,7 +276,8 @@ function resolveBatch(
 ): Computable<Array<FileSet | ResolvedNode | PendingFiles>> {
   const operation = isRepositoryReader(source) ? source.operation : undefined;
   {
-    const joint = isRepositoryReader(source) && !isFilesOperation(operation) ? requests.filter(request => !resolvedApart(request)) : [];
+    const joint =
+      isRepositoryReader(source) && !isFilesOperation(operation) ? requests.filter(request => !resolvedApart(request)) : [];
     const position = new Map(joint.map((request, index) => [request, index]));
     /* One joint resolution of the batch, which runs only when a request
      * among it is answered. */
@@ -268,34 +288,49 @@ function resolveBatch(
       closures === undefined || !isRepositoryReader(source)
         ? Computable.resolve<Array<FileSet | ResolvedNode>>([])
         : closures().then(assembled =>
-            assembled.map((pkg): FileSet | ResolvedNode => (pkg === undefined ? EMPTY_FILESET : operation === "run" ? runnableNode(pkg, held => source.format.makeRunnable(held, context)) : pkg))
+            assembled.map((pkg): FileSet | ResolvedNode =>
+              pkg === undefined
+                ? EMPTY_FILESET
+                : operation === "run"
+                  ? runnableNode(pkg, held => source.format.makeRunnable(held, context))
+                  : pkg
+            )
           );
     const apart = requests.filter(request => !position.has(request));
     return Computable.forAll(
-      [answered, ...apart.map((request): Computable<FileSet | ResolvedNode | PendingFiles> => {
-        const { reference } = request;
-        if (request.as === "instance") {
-          return attributedTo(reference, () => resolveInstance(context, source, request, resolvedMembers));
-        }
-        if (isRepositoryCollection(source)) {
-          return resolveMember(context, source, request, resolvedMembers).labelled(new ProvenanceLabel(reference.steps));
-        }
-        if (isRepositoryReader(source)) {
+      [
+        answered,
+        ...apart.map((request): Computable<FileSet | ResolvedNode | PendingFiles> => {
+          const { reference } = request;
+          if (request.as === "instance") {
+            return attributedTo(reference, () => resolveInstance(context, source, request, resolvedMembers));
+          }
+          if (isRepositoryCollection(source)) {
+            return resolveMember(context, source, request, resolvedMembers).labelled(new ProvenanceLabel(reference.steps));
+          }
+          if (isRepositoryReader(source)) {
+            if (request.as === "files") {
+              return attributedTo(reference, () =>
+                fetchFilesFor(source, reference, operation).then(files => new FileSet(files, files.origin))
+              );
+            }
+            if (isFilesOperation(operation)) {
+              return Computable.resolve(
+                new PendingFiles(() => attributedTo(reference, () => fetchFilesFor(source, reference, operation)))
+              );
+            }
+            throw new FabrError(`internal: '${reference.toString()}' is among the batch's joint requests`);
+          }
           if (request.as === "files") {
-            return attributedTo(reference, () => fetchFilesFor(source, reference, operation).then(files => new FileSet(files, files.origin)));
+            return source.resolveFiles !== undefined
+              ? attributedTo(reference, () => source.resolveFiles!(reference).then(files => new FileSet(files, files.origin)))
+              : resolveLookup(source, reference).then(answer =>
+                  answer instanceof ResolvedNode ? (answer.content.files() as Computable<FileSet>) : answer
+                );
           }
-          if (isFilesOperation(operation)) {
-            return Computable.resolve(new PendingFiles(() => attributedTo(reference, () => fetchFilesFor(source, reference, operation))));
-          }
-          throw new FabrError(`internal: '${reference.toString()}' is among the batch's joint requests`);
-        }
-        if (request.as === "files") {
-          return source.resolveFiles !== undefined
-            ? attributedTo(reference, () => source.resolveFiles!(reference).then(files => new FileSet(files, files.origin)))
-            : resolveLookup(source, reference).then(answer => (answer instanceof ResolvedNode ? (answer.content.files() as Computable<FileSet>) : answer));
-        }
-        return resolveLookup(source, reference);
-      })] as const,
+          return resolveLookup(source, reference);
+        }),
+      ] as const,
       (joint, ...resolved) => {
         const rest = resolved[Symbol.iterator]();
         return requests.map(request => (position.has(request) ? joint[position.get(request)!] : rest.next().value!));
@@ -311,7 +346,9 @@ function resolveBatch(
  */
 function resolveLookup(source: RepositoryLookup, reference: RepositoryRef): Computable<FileSet | ResolvedNode> {
   return attributedTo(reference, () => source.resolve(reference)).then(answer =>
-    answer instanceof ResolvedNode ? answer.withContent({ ...answer.content, files: () => attributedTo(reference, () => answer.content.files()) }) : answer
+    answer instanceof ResolvedNode
+      ? answer.withContent({ ...answer.content, files: () => attributedTo(reference, () => answer.content.files()) })
+      : answer
   );
 }
 
@@ -326,7 +363,11 @@ function publishedOperation(operation: string | undefined): string | undefined {
 
 /** Fetch the files `reference` names under `operation`: what its package
  * publishes for a {@link publishedOperation}, and its own files otherwise. */
-function fetchFilesFor(source: RepositoryReader<unknown, unknown>, reference: RepositoryRef, operation: string | undefined): Computable<FileSet> {
+function fetchFilesFor(
+  source: RepositoryReader<unknown, unknown>,
+  reference: RepositoryRef,
+  operation: string | undefined
+): Computable<FileSet> {
   const published = publishedOperation(operation);
   return published === undefined ? source.fetchFiles(reference) : resolvePublishedFor(source, reference, published);
 }
@@ -361,39 +402,45 @@ function resolveMember(
   resolvedMembers: Map<RepositoryRef, Computable<Package | undefined>>
 ): Computable<FileSet | ResolvedNode | PendingFiles> {
   const { reference } = request;
-  return source.member(reference, context.operation).then((member): FileSet | ResolvedNode | PendingFiles | Computable<FileSet | ResolvedNode> => {
-    const { collection, entry } = member;
-    const local = isPackage(entry);
-    /* What a package of the project fails to build with is its own to report,
-     * so only the repository's part is attributed to the reference. */
-    const alone = (): Computable<FileSet> =>
-      local ? contentOf(entry).files().then(asOneSet) : attributedTo(reference, () => pinnedFiles(collection, entry, member.operation));
-    if (request.as === "files") {
-      return alone().then(files => new FileSet(files, files.origin));
-    }
-    if (isFilesOperation(member.operation)) {
-      return new PendingFiles(alone);
-    }
-    const resolved = (): Computable<Package> =>
-      memberPackage(context, source, request, resolvedMembers).then(pkg => {
-        if (pkg === undefined) {
-          throw new FabrError(`internal: '${reference.toString()}' resolved to no package`);
-        }
-        return pkg;
-      });
-    if (member.operation !== "run") {
-      return resolved();
-    }
-    if (local) {
-      return attributedTo(reference, () => {
-        const repository = reference.repositoryName ?? "its repository";
-        throw new FabrError(
-          `${repository} member '${reference.toString()}' is built in this project, which ${repository} cannot deliver as a runnable`
-        ).withHelp(`run the target directly rather than through ${repository}`);
-      });
-    }
-    return resolved().then(pkg => runnableNode(pkg, held => attributedTo(reference, () => runnableFrom(context, entry.source, held))));
-  });
+  return source
+    .member(reference, context.operation)
+    .then((member): FileSet | ResolvedNode | PendingFiles | Computable<FileSet | ResolvedNode> => {
+      const { collection, entry } = member;
+      const local = isPackage(entry);
+      /* What a package of the project fails to build with is its own to report,
+       * so only the repository's part is attributed to the reference. */
+      const alone = (): Computable<FileSet> =>
+        local
+          ? contentOf(entry).files().then(asOneSet)
+          : attributedTo(reference, () => pinnedFiles(collection, entry, member.operation));
+      if (request.as === "files") {
+        return alone().then(files => new FileSet(files, files.origin));
+      }
+      if (isFilesOperation(member.operation)) {
+        return new PendingFiles(alone);
+      }
+      const resolved = (): Computable<Package> =>
+        memberPackage(context, source, request, resolvedMembers).then(pkg => {
+          if (pkg === undefined) {
+            throw new FabrError(`internal: '${reference.toString()}' resolved to no package`);
+          }
+          return pkg;
+        });
+      if (member.operation !== "run") {
+        return resolved();
+      }
+      if (local) {
+        return attributedTo(reference, () => {
+          const repository = reference.repositoryName ?? "its repository";
+          throw new FabrError(
+            `${repository} member '${reference.toString()}' is built in this project, which ${repository} cannot deliver as a runnable`
+          ).withHelp(`run the target directly rather than through ${repository}`);
+        });
+      }
+      return resolved().then(pkg =>
+        runnableNode(pkg, held => attributedTo(reference, () => runnableFrom(context, entry.source, held)))
+      );
+    });
 }
 
 /**
@@ -515,7 +562,11 @@ export function sidedNodes<T extends SourceRef | Unbuilt>(sources: T[], operatio
   const side = usedForOf(operation);
   /** @return the node `source` is, or the one a projection pends over. */
   const nodeOf = (source: T): ResolvedNode | undefined =>
-    source instanceof ResolvedNode ? source : source instanceof ProjectedPackage && source.base instanceof ResolvedNode ? source.base : undefined;
+    source instanceof ResolvedNode
+      ? source
+      : source instanceof ProjectedPackage && source.base instanceof ResolvedNode
+        ? source.base
+        : undefined;
   const leftOut = (pkg: Package, dep: Dependency): boolean => {
     const only = pkg.usedFor.get(dependencyName(dep));
     return only !== undefined && only !== side;
@@ -564,7 +615,11 @@ export function sidedNodes<T extends SourceRef | Unbuilt>(sources: T[], operatio
     const kept = pkg.dependencies.filter(dep => !leftOut(pkg, dep));
     builder.wire(
       node,
-      kept.map((dep): Dependency => (dep.package instanceof ResolvedNode && changed.has(dep.package) ? { reference: dep.reference, package: copy(dep.package) } : dep)),
+      kept.map((dep): Dependency =>
+        dep.package instanceof ResolvedNode && changed.has(dep.package)
+          ? { reference: dep.reference, package: copy(dep.package) }
+          : dep
+      ),
       pkg.provided,
       new Map([...pkg.usedFor].filter(([, only]) => only === side))
     );
@@ -575,7 +630,9 @@ export function sidedNodes<T extends SourceRef | Unbuilt>(sources: T[], operatio
     if (node === undefined || !changed.has(node)) {
       return source;
     }
-    return (source instanceof ProjectedPackage ? new ProjectedPackage(copy(node), source.projections, source.miss) : copy(node)) as unknown as T;
+    return (source instanceof ProjectedPackage
+      ? new ProjectedPackage(copy(node), source.projections, source.miss)
+      : copy(node)) as unknown as T;
   });
   builder.seal();
   for (const [pkg, node] of made) {
@@ -611,8 +668,8 @@ export function resolveCollection(
     files?.has(request.reference) === true
       ? { ...request, as: "files" }
       : instances?.has(request.reference) === true
-      ? { ...request, as: "instance" }
-      : request
+        ? { ...request, as: "instance" }
+        : request
   );
   /* The collection's own builds, each with its marker: an alternate is among
    * them though no source holds it, as a registry's `?` is a requirement of
@@ -653,7 +710,9 @@ export function resolveCollection(
         )
       ),
       (...found: Pin[][]) => [...gathered.pins, ...found.flat()]
-    )).then(pins => pins.filter(pin => pin.selection.registry === identity && !members.has(pin.selection.renameTo ?? pin.selection.name)));
+    )).then(pins =>
+      pins.filter(pin => pin.selection.registry === identity && !members.has(pin.selection.renameTo ?? pin.selection.name))
+    );
   for (const [identity, group] of registries) {
     let started: Computable<Map<RefSource, Computable<Resolution>>> | undefined;
     const byEnvironment = (): Computable<Map<RefSource, Computable<Resolution>>> =>
@@ -665,7 +724,15 @@ export function resolveCollection(
           const resolved = new Map<RefSource, Computable<Resolution>>();
           for (const members of shared.values()) {
             const sources = new Set<RefSource>(members.map(([source]) => source));
-            const resolution = resolvePackages(context, members[0][0], members.flatMap(([, batch]) => batch), locals, own, sources, pins);
+            const resolution = resolvePackages(
+              context,
+              members[0][0],
+              members.flatMap(([, batch]) => batch),
+              locals,
+              own,
+              sources,
+              pins
+            );
             members.forEach(([source]) => resolved.set(source, resolution));
           }
           return resolved;
@@ -707,7 +774,8 @@ function buildsResolution(
 ): NonNullable<ResolvedCollection["builds"]> {
   const built = new Set(locals.map(pkg => pkg.packageName));
   const forcing = requests.find(
-    ({ reference, as }) => as === "package" && reference.override === "force" && built.has(reference.localName) && resolutions.has(reference.source)
+    ({ reference, as }) =>
+      as === "package" && reference.override === "force" && built.has(reference.localName) && resolutions.has(reference.source)
   );
   const source = forcing?.reference.source ?? resolutions.keys().next().value;
   if (source === undefined || !isRepositoryReader(source)) {
@@ -740,13 +808,18 @@ export function resolveSources(
   for (const { reference } of gatherReferences([...sources.filter(source => !taken(source)), ...resolved.locals.values()])) {
     const request = resolved.requests.get(reference);
     if (request === undefined) {
-      return Computable.reject(new FabrError(`internal: '${reference.toString()}' was not resolved with the sources it is delivered among`));
+      return Computable.reject(
+        new FabrError(`internal: '${reference.toString()}' was not resolved with the sources it is delivered among`)
+      );
     }
     requests.push(request);
   }
   const builds = resolved.builds;
   return Computable.forAll(
-    [resolveRequests(context, requests, resolved), builds === undefined ? Computable.resolve(undefined) : builds.resolution()] as const,
+    [
+      resolveRequests(context, requests, resolved),
+      builds === undefined ? Computable.resolve(undefined) : builds.resolution(),
+    ] as const,
     (finished, resolution) => {
       const roots = sources.map((source): Resolved[] => {
         if (source instanceof RepositoryRef) {
@@ -757,7 +830,7 @@ export function resolveSources(
         return [source as Resolved];
       });
       const merged = mergeResolutions(
-        roots.flat().flatMap(source => (taken(source as SourceRef) ? [] : packageIn(source) ?? [])),
+        roots.flat().flatMap(source => (taken(source as SourceRef) ? [] : (packageIn(source) ?? []))),
         finished,
         resolved,
         builds === undefined || resolution === undefined
@@ -828,7 +901,9 @@ function foldEqualNodes(roots: ReadonlyArray<Package>): Map<Package, Package> {
     made.set(one, node);
     builder.wire(
       node,
-      one.dependencies.map((dep): Dependency => (dep.package === undefined ? dep : { reference: dep.reference, package: fold(dep.package) })),
+      one.dependencies.map((dep): Dependency =>
+        dep.package === undefined ? dep : { reference: dep.reference, package: fold(dep.package) }
+      ),
       one.provided,
       one.usedFor
     );
@@ -876,20 +951,24 @@ function mergeResolutions(
   /* What a catalog's members reach, and what the roots reach through bound
    * edges, less what this collection's own batches answered with and reach:
    * packages another collection resolved. */
-  const catalogued = [...finished].flatMap(([reference, value]) => (isRepositoryCollection(reference.source) ? packageIn(value) ?? [] : []));
+  const catalogued = [...finished].flatMap(([reference, value]) =>
+    isRepositoryCollection(reference.source) ? (packageIn(value) ?? []) : []
+  );
   /* A member the collection itself names stands; one asked for a build's
    * carried reference is what another collection resolved, as its closure is. */
   const asked = new Set(
     [...finished].flatMap(([reference, value]) =>
-      isRepositoryCollection(reference.source) && collection.requests.get(reference)?.as === "package" ? packageIn(value) ?? [] : []
+      isRepositoryCollection(reference.source) && collection.requests.get(reference)?.as === "package" ? (packageIn(value) ?? []) : []
     )
   );
   const own = new Set(
-    reachableNodes([...finished].flatMap(([reference, value]) => (isRepositoryCollection(reference.source) ? [] : packageIn(value) ?? []))).filter(
-      pkg => !isBuildVersion(pkg)
-    )
+    reachableNodes(
+      [...finished].flatMap(([reference, value]) => (isRepositoryCollection(reference.source) ? [] : (packageIn(value) ?? [])))
+    ).filter(pkg => !isBuildVersion(pkg))
   );
-  const foreign = new Set(reachableNodes([...catalogued, ...roots]).filter(pkg => !asked.has(pkg) && !own.has(pkg) && !isBuildVersion(pkg)));
+  const foreign = new Set(
+    reachableNodes([...catalogued, ...roots]).filter(pkg => !asked.has(pkg) && !own.has(pkg) && !isBuildVersion(pkg))
+  );
   /** The build of this collection that stands for `pkg`, where another
    * collection resolved it under that build's name. */
   const member = (pkg: Package): Package | undefined => {
@@ -913,7 +992,9 @@ function mergeResolutions(
     if (dep.package === undefined) {
       return undefined;
     }
-    return bind !== undefined && isBuildVersion(requirer) && isBuildVersion(dep.package) ? bind(requirer, dep.package) : { package: dep.package };
+    return bind !== undefined && isBuildVersion(requirer) && isBuildVersion(dep.package)
+      ? bind(requirer, dep.package)
+      : { package: dep.package };
   };
 
   /* Which packages the merge changes: one replaced, a build that is not its
@@ -1079,19 +1160,27 @@ function conflictsOf(
     const request = collection.requests.get(reference);
     return isRepositoryCollection(source) && request?.as !== "files"
       ? [
-          source.member(reference, context.operation).then(({ collection: catalog, entry, operation }) =>
-            isFilesOperation(operation)
-              ? []
-              : resolvedBatches(catalog, entry instanceof RepositoryRef ? [entry] : []).then(batches =>
-                  batches.map((batch): ResolvedBatch => ({ ...batch, catalog: true }))
-                )
-          ),
+          source
+            .member(reference, context.operation)
+            .then(({ collection: catalog, entry, operation }) =>
+              isFilesOperation(operation)
+                ? []
+                : resolvedBatches(catalog, entry instanceof RepositoryRef ? [entry] : []).then(batches =>
+                    batches.map((batch): ResolvedBatch => ({ ...batch, catalog: true }))
+                  )
+            ),
         ]
       : [];
   });
   return Computable.forAll([resolvedBatches(collection, finished.keys()), ...members], (...found: ResolvedBatch[][]) => {
     const batches = mergedBatches(found.flat());
-    return batches.length === 0 ? NO_CONFLICTS : findConflicts(batches.map(batch => checkedResolution(context, batch)), shipped, finished);
+    return batches.length === 0
+      ? NO_CONFLICTS
+      : findConflicts(
+          batches.map(batch => checkedResolution(context, batch)),
+          shipped,
+          finished
+        );
   });
 }
 
@@ -1122,7 +1211,11 @@ function resolvedBatches(collection: ResolvedCollection, references: Iterable<Re
       ),
       ...(builds === undefined
         ? []
-        : [builds.resolution().then((resolution): ResolvedBatch => ({ registry: builds.registry, resolution, requests: [], builds: true }))]),
+        : [
+            builds
+              .resolution()
+              .then((resolution): ResolvedBatch => ({ registry: builds.registry, resolution, requests: [], builds: true })),
+          ]),
     ],
     (...found: ResolvedBatch[]) => found
   );
@@ -1233,7 +1326,9 @@ function requestedName(
   taken?: ReadonlySet<RepositoryRef | Package>
 ): string | undefined {
   if (source instanceof RepositoryRef) {
-    return files?.has(source) === true || source.override === "alternate" || source.projections.length > 0 ? undefined : source.localName;
+    return files?.has(source) === true || source.override === "alternate" || source.projections.length > 0
+      ? undefined
+      : source.localName;
   }
   return isPackage(source) && taken?.has(source) !== true && !isPlainNode(source) ? source.packageName : undefined;
 }
@@ -1244,7 +1339,12 @@ function sameRequest(left: SourceRef | Unbuilt, right: SourceRef | Unbuilt): boo
     const sameRegistry =
       left.source === right.source ||
       (isRepositoryReader(left.source) && isRepositoryReader(right.source) && left.source.identity === right.source.identity);
-    return sameRegistry && left.name === right.name && left.versionConstraint === right.versionConstraint && left.override === right.override;
+    return (
+      sameRegistry &&
+      left.name === right.name &&
+      left.versionConstraint === right.versionConstraint &&
+      left.override === right.override
+    );
   }
   return isPackage(left) && isPackage(right) && contentOf(left).key === contentOf(right).key;
 }
@@ -1263,9 +1363,7 @@ function twoOfOneName(name: string, left: SourceRef | Unbuilt, right: SourceRef 
   };
   const conflict = new ConflictError("packages", name, named(left), named(right));
   conflict.message = `'${name}' is required here as two different packages (from '${conflict.left.label}' and '${conflict.right.label}')`;
-  return conflict.withHelp(
-    `a target requires one package of each name: keep one, or allow the other alongside with '?'`
-  );
+  return conflict.withHelp(`a target requires one package of each name: keep one, or allow the other alongside with '?'`);
 }
 
 /**
@@ -1421,8 +1519,8 @@ export function bindProvided<S extends Resolved>(sources: S[], taken?: ReadonlyS
         (dep.package !== undefined && !optional
           ? { pkg: dep.package, scope: own }
           : dep.reference instanceof RepositoryRef
-          ? ((held): ISupply | undefined => held && { pkg: held, scope: top })(answering(name, dep.reference))
-          : undefined);
+            ? ((held): ISupply | undefined => held && { pkg: held, scope: top })(answering(name, dep.reference))
+            : undefined);
       if (answer !== undefined) {
         own.bindings.set(name, answer);
       }
@@ -1455,7 +1553,7 @@ export function bindProvided<S extends Resolved>(sources: S[], taken?: ReadonlyS
  */
 function providedNamesBelow(packages: Package[]): Map<Package, string[]> {
   const names = new Map(packages.map(pkg => [pkg, new Set(pkg.provided.keys())]));
-  for (let changed = true; changed; ) {
+  for (let changed = true; changed;) {
     changed = false;
     for (const pkg of packages) {
       const own = names.get(pkg)!;
@@ -1540,12 +1638,15 @@ export function resolveListsFor(
     !(source instanceof TargetRef)
       ? Computable.resolve([{ source, reference: source instanceof RepositoryRef ? source : undefined }])
       : read === "files"
-      ? Computable.resolve([{ source, reference: source }])
-      : source.nodes().then(unbuilt =>
-          (extracts && unbuilt.some(each => each instanceof ProjectedPackage) ? [source] : consumeMarker(source, unbuilt, markers)).map(
-            (each): Opened => ({ source: each, reference: source })
-          )
-        );
+        ? Computable.resolve([{ source, reference: source }])
+        : source
+            .nodes()
+            .then(unbuilt =>
+              (extracts && unbuilt.some(each => each instanceof ProjectedPackage)
+                ? [source]
+                : consumeMarker(source, unbuilt, markers)
+              ).map((each): Opened => ({ source: each, reference: source }))
+            );
   return Computable.forAll(
     lists.map((list, index) =>
       Computable.forAll(
@@ -1577,8 +1678,8 @@ export function resolveListsFor(
         at === 0
           ? held
           : sides[at] !== flat || sides[0] !== flat
-          ? resolve(at)
-          : resolvedAlike(flat, first, operation).then(alike => (alike ? held : resolve(at)))
+            ? resolve(at)
+            : resolvedAlike(flat, first, operation).then(alike => (alike ? held : resolve(at)))
       ),
       (...resolved: ResolvedLists[]) => resolved
     );
@@ -1601,7 +1702,9 @@ function resolvedAlike(sources: Array<SourceRef | Unbuilt>, a: string, b: string
     ...new Set(
       requests
         .map(({ reference }) => reference.source)
-        .filter((source): source is RepositoryReader<unknown, unknown> => isRepositoryReader(source) && !isFilesOperation(source.operation))
+        .filter(
+          (source): source is RepositoryReader<unknown, unknown> => isRepositoryReader(source) && !isFilesOperation(source.operation)
+        )
     ),
   ];
   return Computable.forAll(
@@ -1660,31 +1763,30 @@ function resolveBuiltLists(
   const files = new Set<RepositoryRef>([
     ...(extracted === undefined
       ? []
-      : fileRequests(
-          lists.filter((_, index) => extracted[index]).flat(),
-          lists.filter((_, index) => !extracted[index]).flat()
-        )),
+      : fileRequests(lists.filter((_, index) => extracted[index]).flat(), lists.filter((_, index) => !extracted[index]).flat())),
     ...forFiles.filter((source): source is RepositoryRef => source instanceof RepositoryRef && !packaged.has(source)),
   ]);
   const instances = new Set<RepositoryRef | Package>([
     ...(instantiated === undefined ? [] : instanceRequests(lists.filter((_, index) => instantiated[index]).flat())),
     ...forFiles.filter(isPackage).filter(pkg => !packaged.has(pkg)),
   ]);
-  return resolveBuilt(context, lists, files, instances, markers).then(({ resolved, counts, conflicts, conflictsAmong, collection }) => {
-    /* A source resolves to one entry, or to none: a `?` alternate. */
-    const partitioned: Resolved[][] = [];
-    const references: Array<Array<Reference | undefined>> = [];
-    let source = 0;
-    let index = 0;
-    for (const list of opened) {
-      const length = counts.slice(source, source + list.length).reduce((sum, count) => sum + count, 0);
-      partitioned.push(resolved.slice(index, index + length));
-      references.push(list.flatMap(({ reference }, at) => Array<Reference | undefined>(counts[source + at]).fill(reference)));
-      source += list.length;
-      index += length;
+  return resolveBuilt(context, lists, files, instances, markers).then(
+    ({ resolved, counts, conflicts, conflictsAmong, collection }) => {
+      /* A source resolves to one entry, or to none: a `?` alternate. */
+      const partitioned: Resolved[][] = [];
+      const references: Array<Array<Reference | undefined>> = [];
+      let source = 0;
+      let index = 0;
+      for (const list of opened) {
+        const length = counts.slice(source, source + list.length).reduce((sum, count) => sum + count, 0);
+        partitioned.push(resolved.slice(index, index + length));
+        references.push(list.flatMap(({ reference }, at) => Array<Reference | undefined>(counts[source + at]).fill(reference)));
+        source += list.length;
+        index += length;
+      }
+      return { lists: partitioned, references, conflicts, conflictsAmong, collection };
     }
-    return { lists: partitioned, references, conflicts, conflictsAmong, collection };
-  });
+  );
 }
 
 /**
@@ -1907,7 +2009,10 @@ function resolveRequests(
           : reference.applyTo(resolved);
       batches.forEach(([, batch], batchIndex) =>
         batch.forEach((request, index) =>
-          finished.set(request.reference, installsNothing(request) ? request.reference : finish(request.reference, results[batchIndex][index]))
+          finished.set(
+            request.reference,
+            installsNothing(request) ? request.reference : finish(request.reference, results[batchIndex][index])
+          )
         )
       );
       for (const request of requests) {

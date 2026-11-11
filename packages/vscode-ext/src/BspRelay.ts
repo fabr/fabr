@@ -14,7 +14,6 @@
  * details.
  */
 
-
 /**
  * The project's build server, shared with other clients in the window — the
  * Java language server's fabr importer — over a Unix socket: each connection
@@ -60,7 +59,12 @@ export function relayBuildServer(client: JsonRpcClient, initialized: unknown, so
             : client.request(message.method, message.params);
       answer.then(
         result => sendMessage(connection, { jsonrpc: "2.0", id: message.id, result: result ?? null }),
-        (err: unknown) => sendMessage(connection, { jsonrpc: "2.0", id: message.id, error: { code: -32603, message: err instanceof Error ? err.message : String(err) } })
+        (err: unknown) =>
+          sendMessage(connection, {
+            jsonrpc: "2.0",
+            id: message.id,
+            error: { code: -32603, message: err instanceof Error ? err.message : String(err) },
+          })
       );
     });
   });

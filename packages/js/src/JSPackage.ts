@@ -133,7 +133,12 @@ function artifactStem(name: string): string {
  */
 export function dualFormatOutputs(commonjs: FileSet, esm: FileSet): FileSet[] {
   const primary = commonjs.remap(name => (isEsmFormatOutput(name) ? undefined : name));
-  const claimed = new Set([...primary].map(([name]) => name).filter(name => BIN_ENTRY.test(name)).map(artifactStem));
+  const claimed = new Set(
+    [...primary]
+      .map(([name]) => name)
+      .filter(name => BIN_ENTRY.test(name))
+      .map(artifactStem)
+  );
   const secondary = esm.remap(name =>
     isEsmFormatOutput(name) && !(BIN_ENTRY.test(name) && claimed.has(artifactStem(name))) ? name : undefined
   );
@@ -396,7 +401,10 @@ export function resolveSourceVersion(flags: Flag[]): string | undefined {
   const highest = flagClosure(flags)
     .map(flag => flag.name)
     .filter(name => ES_VERSION.test(name))
-    .reduce<string | undefined>((best, name) => (best === undefined || esLevelOrder(name) > esLevelOrder(best) ? name : best), undefined);
+    .reduce<string | undefined>(
+      (best, name) => (best === undefined || esLevelOrder(name) > esLevelOrder(best) ? name : best),
+      undefined
+    );
   return highest === undefined ? undefined : canonicalEsLevel(highest);
 }
 
@@ -821,10 +829,7 @@ export function compileContents(
          * stylesheet it belongs to — and a consuming package resolves neither.
          * `passthroughFiles` ships declarations because a HAND-WRITTEN one is
          * part of a package's surface; a generated one is scaffolding. */
-        passthrough: (keepSourceJs
-          ? FileSet.unionAll(passthroughFiles(augmented), augmented.js)
-          : passthroughFiles(augmented)
-        )
+        passthrough: (keepSourceJs ? FileSet.unionAll(passthroughFiles(augmented), augmented.js) : passthroughFiles(augmented))
           .minus(emitted)
           .minus(generated.dts),
         compileSrcs: compileSrcsOf(augmented, deps) ?? EMPTY_FILESET,
@@ -877,7 +882,10 @@ export function compileJsSources(
     ...(options.resources !== undefined && !options.resources.isEmpty() ? { resources: options.resources } : {}),
     ...(options.declarations !== undefined && !options.declarations.isEmpty() ? { declarations: options.declarations } : {}),
   };
-  const subTargetOptions = { label: options.label ?? (options.describe ? "Describing" : "Compiling"), constraints: BUILD_OVERRIDE.with(options.constraints) };
+  const subTargetOptions = {
+    label: options.label ?? (options.describe ? "Describing" : "Compiling"),
+    constraints: BUILD_OVERRIDE.with(options.constraints),
+  };
   return options.describe
     ? context.describeSubTarget("js_compile", inputs, subTargetOptions).then(described => described ?? EMPTY_FILESET)
     : context.subTarget("js_compile", inputs, subTargetOptions);
@@ -1048,39 +1056,41 @@ export function makeNpmRunnable(
   if (!(pkg instanceof PackageFileSet)) {
     throw new TypeError("cannot make a runnable of a non-package fileset");
   }
-  return binOf(pkg).then(bin => {
-    const root = `node_modules/${pkg.packageName}`;
-    const packages = extras.filter((extra): extra is PackageFileSet => extra instanceof PackageFileSet);
-    const loose = extras.filter(extra => !(extra instanceof PackageFileSet));
-    const install = FileSet.unionAll(FileSet.layout({ node_modules: assembleNodeModules([pkg, ...packages]) }), ...loose);
-    /* Bins first: a declared bin takes precedence over a package file — it wins
-     * its command *name* (a file sharing it is still in the install, just not the
-     * surface entry for it) and, being earlier, wins a same-*path* dedup at launch.
-     * So `fabr run pkg:tsc` is always the declared bin, never a stray file. */
-    const surface = new Map<string, IFile>();
-    for (const [command, binPath] of bin) {
-      surface.set(command, new SymlinkFile(`${root}/${binPath}`));
-    }
-    for (const [name, file] of pkg) {
-      if (!surface.has(name)) {
-        surface.set(name, file);
+  return binOf(pkg)
+    .then(bin => {
+      const root = `node_modules/${pkg.packageName}`;
+      const packages = extras.filter((extra): extra is PackageFileSet => extra instanceof PackageFileSet);
+      const loose = extras.filter(extra => !(extra instanceof PackageFileSet));
+      const install = FileSet.unionAll(FileSet.layout({ node_modules: assembleNodeModules([pkg, ...packages]) }), ...loose);
+      /* Bins first: a declared bin takes precedence over a package file — it wins
+       * its command *name* (a file sharing it is still in the install, just not the
+       * surface entry for it) and, being earlier, wins a same-*path* dedup at launch.
+       * So `fabr run pkg:tsc` is always the declared bin, never a stray file. */
+      const surface = new Map<string, IFile>();
+      for (const [command, binPath] of bin) {
+        surface.set(command, new SymlinkFile(`${root}/${binPath}`));
       }
-    }
-    return context.launchedBy(new RunnableFileSet(install, args, undefined, root, new FileSet(surface)), NODE_GLOBAL);
-  }).then(runnable => {
-    if (!(entry instanceof FileSetRef)) {
-      return runnable;
-    }
-    /* Apply the pending projections as bin selection — the REINTERPRETATION the
-     * pending ref exists for, not the namespace walk. Resolved here rather than
-     * re-deferred over the runnable because this is a rule RESULT: it must be a
-     * FileSet, which a ref is not. */
-    const selected = runnable.selectEntry(entry.projections);
-    if (!selected) {
-      throw new FabrError(`entry projection matched no bin or file of ${pkg.packageId} — nothing to launch`);
-    }
-    return Computable.resolve(selected);
-  });
+      for (const [name, file] of pkg) {
+        if (!surface.has(name)) {
+          surface.set(name, file);
+        }
+      }
+      return context.launchedBy(new RunnableFileSet(install, args, undefined, root, new FileSet(surface)), NODE_GLOBAL);
+    })
+    .then(runnable => {
+      if (!(entry instanceof FileSetRef)) {
+        return runnable;
+      }
+      /* Apply the pending projections as bin selection — the REINTERPRETATION the
+       * pending ref exists for, not the namespace walk. Resolved here rather than
+       * re-deferred over the runnable because this is a rule RESULT: it must be a
+       * FileSet, which a ref is not. */
+      const selected = runnable.selectEntry(entry.projections);
+      if (!selected) {
+        throw new FabrError(`entry projection matched no bin or file of ${pkg.packageId} — nothing to launch`);
+      }
+      return Computable.resolve(selected);
+    });
 }
 
 /**

@@ -151,30 +151,44 @@ function testJar(context: TargetContext, inputs: TestInputs): Computable<RuleRes
   return Computable.forAll(
     [classes, runner, sourcesTable(sourceSets), context.getGlobalRunnable("JAVA"), namePattern, measuring],
     (output, runnerJar, sources, java, pattern, coverage) => {
-    const compiled = compileOutputOf(output, COMPILED_CLASSES_DIR);
-    const pool = context.execution.buildCache;
-    return pool.ensureTree(java).then(() => {
-      const jars = classpathOf(runtime);
-      const classpath = [TEST_CLASSES_DIR, TEST_RESOURCES_DIR, RUNNER_JAR, ...jars.map(([name]) => path.posix.join(CLASSPATH_DIR, name))].join(path.delimiter);
-      const staged = FileSet.unionAll(
-        compiled.mountedAt(TEST_CLASSES_DIR),
-        FileSet.unionAll(...inputs.test_resources).mountedAt(TEST_RESOURCES_DIR),
-        new FileSet(new Map(jars.map(([name, file]): [string, IFile] => [path.posix.join(CLASSPATH_DIR, name), file]))),
-        new FileSet(
-          new Map<string, IFile>([
-            [RUNNER_JAR, runnerJar],
-            [SOURCES_FILE, MemoryFile.from(sources)],
-          ])
-        )
-      );
-      const selection = pattern === "" ? [] : [`--name-pattern=${pattern}`];
-      const measured = coverage && measuredRun(coverage.tools, ownJars(inputs.run_pkg), coverage.packages);
-      const argv = java.toCommandLine(
-        [...(measured?.jvm ?? []), "-cp", classpath, RUNNER_CLASS, `--sources=${SOURCES_FILE}`, ...selection, ...(measured?.runner ?? []), `--scan=${TEST_CLASSES_DIR}`],
-        { base: path.posix.join(TREE_MOUNT, java.toManifestHash()) }
-      );
-      return createTestRunAction(FileSet.unionAll(staged, measured?.staged ?? EMPTY_FILESET), argv, measured !== undefined);
-    });
+      const compiled = compileOutputOf(output, COMPILED_CLASSES_DIR);
+      const pool = context.execution.buildCache;
+      return pool.ensureTree(java).then(() => {
+        const jars = classpathOf(runtime);
+        const classpath = [
+          TEST_CLASSES_DIR,
+          TEST_RESOURCES_DIR,
+          RUNNER_JAR,
+          ...jars.map(([name]) => path.posix.join(CLASSPATH_DIR, name)),
+        ].join(path.delimiter);
+        const staged = FileSet.unionAll(
+          compiled.mountedAt(TEST_CLASSES_DIR),
+          FileSet.unionAll(...inputs.test_resources).mountedAt(TEST_RESOURCES_DIR),
+          new FileSet(new Map(jars.map(([name, file]): [string, IFile] => [path.posix.join(CLASSPATH_DIR, name), file]))),
+          new FileSet(
+            new Map<string, IFile>([
+              [RUNNER_JAR, runnerJar],
+              [SOURCES_FILE, MemoryFile.from(sources)],
+            ])
+          )
+        );
+        const selection = pattern === "" ? [] : [`--name-pattern=${pattern}`];
+        const measured = coverage && measuredRun(coverage.tools, ownJars(inputs.run_pkg), coverage.packages);
+        const argv = java.toCommandLine(
+          [
+            ...(measured?.jvm ?? []),
+            "-cp",
+            classpath,
+            RUNNER_CLASS,
+            `--sources=${SOURCES_FILE}`,
+            ...selection,
+            ...(measured?.runner ?? []),
+            `--scan=${TEST_CLASSES_DIR}`,
+          ],
+          { base: path.posix.join(TREE_MOUNT, java.toManifestHash()) }
+        );
+        return createTestRunAction(FileSet.unionAll(staged, measured?.staged ?? EMPTY_FILESET), argv, measured !== undefined);
+      });
     }
   );
 }
@@ -214,7 +228,11 @@ function coverageTools(context: TargetContext): Computable<ICoverageTools> {
  * what it records for the runner, which converts the coverage of `measured`
  * (staged jar paths) to {@link COVERAGE_REPORT_FILENAME}.
  */
-function measuredRun(tools: ICoverageTools, measured: string[], packages: string[]): { staged: FileSet; jvm: string[]; runner: string[] } {
+function measuredRun(
+  tools: ICoverageTools,
+  measured: string[],
+  packages: string[]
+): { staged: FileSet; jvm: string[]; runner: string[] } {
   const agent = path.posix.join(COVERAGE_DIR, "jacocoagent.jar");
   const analysis = tools.analysis.map(([name, file]): [string, IFile] => [path.posix.join(COVERAGE_DIR, name), file]);
   const includes = packages.includes("") ? "*" : packages.map(name => `${name}.*`).join(":");
@@ -233,7 +251,12 @@ function measuredRun(tools: ICoverageTools, measured: string[], packages: string
 function ownJars(pkg: readonly FileSet[]): string[] {
   return pkg
     .filter((files): files is PackageFileSet => files instanceof PackageFileSet)
-    .flatMap(files => [...files].map(([name]) => name).filter(name => name.endsWith(".jar")).map(name => path.posix.join(CLASSPATH_DIR, files.packageName ?? "", name)));
+    .flatMap(files =>
+      [...files]
+        .map(([name]) => name)
+        .filter(name => name.endsWith(".jar"))
+        .map(name => path.posix.join(CLASSPATH_DIR, files.packageName ?? "", name))
+    );
 }
 
 /** @return the Java packages the sources declare, sorted, "" for the unnamed package. */
@@ -251,7 +274,9 @@ function measuredPackages(srcs: readonly FileSet[]): Computable<string[]> {
  * declaration and file name) and its source path, sorted.
  */
 function sourcesTable(sets: readonly FileSet[]): Computable<string> {
-  const sources = sets.flatMap(set => [...set].filter(([name]) => name.endsWith(".java")).map(([name, file]) => ({ set, name, file })));
+  const sources = sets.flatMap(set =>
+    [...set].filter(([name]) => name.endsWith(".java")).map(([name, file]) => ({ set, name, file }))
+  );
   return Computable.forAll(
     sources.map(({ file }) => file.readString()),
     (...texts) =>

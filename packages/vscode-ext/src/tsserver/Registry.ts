@@ -150,7 +150,10 @@ export function updateRegistry(file: string, change: (names: string[]) => string
   const held = acquireLock(lock);
   try {
     /* Rewritten even when unchanged: a changed document is announced by the registry changing. */
-    writeAtomically(file, JSON.stringify({ version: DOCUMENT_VERSION, projects: change(registeredDocuments(file)), at: Date.now() }, null, 2));
+    writeAtomically(
+      file,
+      JSON.stringify({ version: DOCUMENT_VERSION, projects: change(registeredDocuments(file)), at: Date.now() }, null, 2)
+    );
   } finally {
     if (held) {
       fs.rmSync(lock, { force: true });
@@ -161,7 +164,7 @@ export function updateRegistry(file: string, change: (names: string[]) => string
 /** Create the lock file `lock`, waiting for another writer's to go. @return true if it was created, otherwise false. */
 function acquireLock(lock: string): boolean {
   const pause = new Int32Array(new SharedArrayBuffer(4));
-  for (const until = Date.now() + LOCK_WAIT_MS; ; ) {
+  for (const until = Date.now() + LOCK_WAIT_MS; ;) {
     try {
       fs.closeSync(fs.openSync(lock, "wx"));
       return true;
@@ -225,7 +228,9 @@ export function toProjectDocument(json: unknown): IProjectDocument {
   if (typeof record.links !== "object" || record.links === null || !Array.isArray(record.units)) {
     throw new Error("a project document must have links and units");
   }
-  const links = new Map(Object.entries(record.links as Record<string, unknown>).map(([from, to]) => [text(from, "link"), text(to, "link target")]));
+  const links = new Map(
+    Object.entries(record.links as Record<string, unknown>).map(([from, to]) => [text(from, "link"), text(to, "link target")])
+  );
   const units = record.units.map((unit: unknown): ITypeScriptUnit => {
     const fields = (typeof unit === "object" && unit !== null ? unit : {}) as Record<string, unknown>;
     if (fields.package !== undefined && typeof fields.package !== "string") {

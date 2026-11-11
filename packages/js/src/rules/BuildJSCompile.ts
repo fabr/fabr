@@ -390,7 +390,10 @@ function resourceNamesOf(resources: FileSet): string[] {
 }
 
 /** Work out the compile `inputs` make in `context`'s configuration, or undefined if they make none. */
-function compileSetup(context: TargetContext, { srcs: srcSets, deps, resources, declarations }: CompileInputs): Computable<ICompileSetup | undefined> {
+function compileSetup(
+  context: TargetContext,
+  { srcs: srcSets, deps, resources, declarations }: CompileInputs
+): Computable<ICompileSetup | undefined> {
   if (srcSets.every(srcs => srcs.isEmpty())) {
     return Computable.resolve(undefined);
   }
@@ -454,7 +457,16 @@ function compileSetup(context: TargetContext, { srcs: srcSets, deps, resources, 
           automaticTypes(deps),
           emitsSourceMap(buildType) || coverage === COVERAGE_ON
         );
-        return { tsconfig, srcs, deps, packageName, moduleExtension, rewrites, resources: resourceSet, declarations: FileSet.unionAll(...declarations) };
+        return {
+          tsconfig,
+          srcs,
+          deps,
+          packageName,
+          moduleExtension,
+          rewrites,
+          resources: resourceSet,
+          declarations: FileSet.unionAll(...declarations),
+        };
       };
       return hasJsx ? resolveJsxImportSource(deps).then(setup) : setup("");
     }

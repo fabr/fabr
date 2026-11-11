@@ -23,7 +23,16 @@
  * token CodeArtifact's `GetAuthorizationToken` gives for the domain.
  */
 
-import { Computable, Credential, FabrError, IAuthChallenge, IRequestHead, isJsonObject, parseJson, sendRequest } from "@fabr-build/core";
+import {
+  Computable,
+  Credential,
+  FabrError,
+  IAuthChallenge,
+  IRequestHead,
+  isJsonObject,
+  parseJson,
+  sendRequest,
+} from "@fabr-build/core";
 import { IServiceRequest, requestUrl } from "./Signing";
 import { IServiceSettings } from "./Types";
 
@@ -31,13 +40,26 @@ import { IServiceSettings } from "./Types";
 export const CODEARTIFACT_SERVICE = "codeartifact";
 
 /** Make the URL of `repository`'s endpoint for `format` in the domain `domain` that `owner` owns, in `region`, or at `endpoint` where there is one. */
-export function endpointUrl(domain: string, owner: string, region: string, format: string, repository: string, endpoint?: URL): string {
-  const base = endpoint === undefined ? `https://${domain}-${owner}.d.codeartifact.${region}.amazonaws.com` : endpoint.href.replace(/\/+$/, "");
+export function endpointUrl(
+  domain: string,
+  owner: string,
+  region: string,
+  format: string,
+  repository: string,
+  endpoint?: URL
+): string {
+  const base =
+    endpoint === undefined ? `https://${domain}-${owner}.d.codeartifact.${region}.amazonaws.com` : endpoint.href.replace(/\/+$/, "");
   return `${base}/${format}/${repository}/`;
 }
 
 /** Make the `GetAuthorizationToken` request for the domain `domain` that `owner` owns: to `endpoint` where there is one, else to CodeArtifact's API in `region`. */
-export function tokenRequest(domain: string, owner: string, region: string, endpoint?: URL): IServiceRequest & { readonly body: string } {
+export function tokenRequest(
+  domain: string,
+  owner: string,
+  region: string,
+  endpoint?: URL
+): IServiceRequest & { readonly body: string } {
   const base =
     endpoint === undefined
       ? { protocol: "https:", hostname: `codeartifact.${region}.amazonaws.com`, path: "/v1/authorization-token" }
@@ -115,6 +137,11 @@ export function formatCredential(token: CodeArtifactToken, format: string): Cred
     authorize: (_request: IRequestHead, challenge?: IAuthChallenge) =>
       token
         .current(challenge !== undefined)
-        .then(value => new Map([["authorization", format === "npm" ? `Bearer ${value}` : `Basic ${Buffer.from(`aws:${value}`).toString("base64")}`]])),
+        .then(
+          value =>
+            new Map([
+              ["authorization", format === "npm" ? `Bearer ${value}` : `Basic ${Buffer.from(`aws:${value}`).toString("base64")}`],
+            ])
+        ),
   };
 }

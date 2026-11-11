@@ -111,7 +111,11 @@ export function verifyingStream(expected: ExpectedDigest | undefined, resource: 
  * match. A failure of `content` mid-transfer fails `stream`, so a dropped
  * response fails the attempt rather than raising an unhandled error.
  */
-export function verifiedStream(content: Readable, expected: ExpectedDigest | undefined, resource: string): { stream: Transform; verify: () => void } {
+export function verifiedStream(
+  content: Readable,
+  expected: ExpectedDigest | undefined,
+  resource: string
+): { stream: Transform; verify: () => void } {
   const { hashing, verify } = verifyingStream(expected, resource);
   content.on("error", err => hashing.destroy(toError(err)));
   content.pipe(hashing);

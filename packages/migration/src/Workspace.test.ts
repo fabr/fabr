@@ -37,7 +37,10 @@ describe("reading a workspace", () => {
   });
 
   it("finds yarn and npm's workspaces, or takes the root alone", () => {
-    const root = writeProject({ "package.json": { workspaces: { packages: ["packages/*"] } }, "packages/a/package.json": { name: "a" } });
+    const root = writeProject({
+      "package.json": { workspaces: { packages: ["packages/*"] } },
+      "packages/a/package.json": { name: "a" },
+    });
     expect(readWorkspace(root).packages.map(manifest => manifest.name)).to.deep.equal(["a"]);
     const single = writeProject({ "package.json": { name: "solo" } });
     expect(readWorkspace(single).packages.map(manifest => manifest.dir)).to.deep.equal([""]);

@@ -171,7 +171,7 @@ export abstract class ComputableSource<T> {
    * Promise.finally; any other return value is ignored.
    */
   public finally(onSettled: () => unknown): Computable<T> {
-    const after = (complete: () => T): (T | ComputableSource<T>) => {
+    const after = (complete: () => T): T | ComputableSource<T> => {
       const effect = onSettled();
       return effect instanceof ComputableSource ? effect.then(complete) : complete();
     };
@@ -187,7 +187,7 @@ export abstract class ComputableSource<T> {
   /**
    * Consume this node's result **exactly once**, without holding the receiver
    * in the graph (typically for fire-and-forget situations where you don't want
-   * the chain to hang around (note if the receiver has no other dependents, 
+   * the chain to hang around (note if the receiver has no other dependents,
    * it will be detached)
    */
   public once(fn: (value: T) => void, onError?: (err: Error) => void): void {
@@ -398,7 +398,9 @@ export abstract class ComputableSource<T> {
 
   /** Notify the dependants — those in `dependants`, a snapshot taken for the
    *  caller, else a snapshot taken now — that this node has settled or revalidated. */
-  private notifyDependants(dependants: ReadonlyArray<ComputableSource<unknown>> = this.dependants.length === 0 ? NO_DEPENDANTS : this.dependants.slice()): void {
+  private notifyDependants(
+    dependants: ReadonlyArray<ComputableSource<unknown>> = this.dependants.length === 0 ? NO_DEPENDANTS : this.dependants.slice()
+  ): void {
     cascadeDepth++;
     try {
       for (const dep of dependants) {
@@ -762,7 +764,8 @@ export class Computable<T> extends ComputableSource<T> {
     const labels = [this, ...path].map(node => node.label).filter((label): label is Label => label !== undefined);
     /* The same cycle found again is the same error: an unchanged value. */
     const held = this.currentValue;
-    const same = held instanceof CycleError && held.labels.length === labels.length && held.labels.every((label, i) => label === labels[i]);
+    const same =
+      held instanceof CycleError && held.labels.length === labels.length && held.labels.every((label, i) => label === labels[i]);
     this.binding!.cyclic = true;
     this.settle(ComputableState.Error, same ? held : new CycleError(labels));
   }
@@ -1017,7 +1020,11 @@ export class Computable<T> extends ComputableSource<T> {
     if (this.fn === undefined) {
       return this.binding === undefined && !this.isSettled();
     }
-    return this.canRun() && (this.currentState === ComputableState.Invalid || (this.currentState === ComputableState.Unresolved && this.binding === undefined));
+    return (
+      this.canRun() &&
+      (this.currentState === ComputableState.Invalid ||
+        (this.currentState === ComputableState.Unresolved && this.binding === undefined))
+    );
   }
 
   /**
@@ -1026,7 +1033,10 @@ export class Computable<T> extends ComputableSource<T> {
    * where it does not wait on `closer` at all. A raw source still to settle
    * is in it as a leaf.
    */
-  private static pendingRegion(binding: ComputableSource<unknown>, closer: ComputableSource<unknown>): Array<ComputableSource<unknown>> | undefined {
+  private static pendingRegion(
+    binding: ComputableSource<unknown>,
+    closer: ComputableSource<unknown>
+  ): Array<ComputableSource<unknown>> | undefined {
     const region: Array<ComputableSource<unknown>> = [];
     const seen = new Set<ComputableSource<unknown>>([binding]);
     const pending: ComputableSource<unknown>[] = [binding];

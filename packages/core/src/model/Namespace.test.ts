@@ -87,13 +87,19 @@ describe("Namespace, read as declarations are added", () => {
   });
 
   it("answers a name with an ordinary target over its default one, either declared first", () => {
-    for (const input of ["targetdef t { }\ntargetdef u { }\ndefault t x { }\nu x { }\n", "targetdef t { }\ntargetdef u { }\nu x { }\ndefault t x { }\n"]) {
+    for (const input of [
+      "targetdef t { }\ntargetdef u { }\ndefault t x { }\nu x { }\n",
+      "targetdef t { }\ntargetdef u { }\nu x { }\ndefault t x { }\n",
+    ]) {
       expect(modelOf(input).getTargetDecl("x")?.type).to.equal("u");
     }
   });
 
   it("keeps a default target as a property's fallback, either declared first", () => {
-    for (const input of ["targetdef t { }\ndefault t x { }\nx<K=a> = 1;\nK = b;\n", "targetdef t { }\nx<K=a> = 1;\ndefault t x { }\nK = b;\n"]) {
+    for (const input of [
+      "targetdef t { }\ndefault t x { }\nx<K=a> = 1;\nK = b;\n",
+      "targetdef t { }\nx<K=a> = 1;\ndefault t x { }\nK = b;\n",
+    ]) {
       const entry = modelOf(input).getDecl("x");
       expect(entry?.kind).to.equal(DeclKind.Property);
       expect(entry?.kind === DeclKind.Property ? entry.fallbackTarget?.type : undefined).to.equal("t");

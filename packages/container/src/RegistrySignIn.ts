@@ -17,7 +17,17 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { Computable, Credential, FabrError, IAuthChallenge, IRequestHead, isJsonObject, parseJson, sendRequest, TargetContext } from "@fabr-build/core";
+import {
+  Computable,
+  Credential,
+  FabrError,
+  IAuthChallenge,
+  IRequestHead,
+  isJsonObject,
+  parseJson,
+  sendRequest,
+  TargetContext,
+} from "@fabr-build/core";
 import { containerPluginContext, IRegistryCredential } from "./RegistryAuth";
 
 /**
@@ -55,7 +65,9 @@ export class RegistrySignIn implements Credential {
     }
     const asked = challenge.challenges.map(parseChallenge).find(each => each !== undefined);
     if (asked === undefined) {
-      return Computable.reject(new FabrError(`${this.registry} asks for authentication fabr cannot give (${challenge.challenges.join(", ")})`));
+      return Computable.reject(
+        new FabrError(`${this.registry} asks for authentication fabr cannot give (${challenge.challenges.join(", ")})`)
+      );
     }
     if (asked.scheme === "basic") {
       return this.credentialOf().then(credential => {
@@ -80,14 +92,23 @@ export class RegistrySignIn implements Credential {
   }
 
   /** Fetch a token for `scopes` from the realm `challenge` names, signed in with `credential` where there is one. */
-  private token(challenge: IBearerChallenge, scopes: readonly string[], credential: IRegistryCredential | undefined): Computable<string> {
+  private token(
+    challenge: IBearerChallenge,
+    scopes: readonly string[],
+    credential: IRegistryCredential | undefined
+  ): Computable<string> {
     const query = new URLSearchParams(challenge.service === undefined ? [] : [["service", challenge.service]]);
     scopes.forEach(scope => query.append("scope", scope));
     const url = `${challenge.realm}?${query.toString()}`;
-    return sendRequest(url, { method: "GET", headers: credential === undefined ? {} : { authorization: basicAuthorization(credential) } }).then(response => {
+    return sendRequest(url, {
+      method: "GET",
+      headers: credential === undefined ? {} : { authorization: basicAuthorization(credential) },
+    }).then(response => {
       if (response.statusCode !== 200) {
         throw new FabrError(`${challenge.realm} refused a token for ${scopes.join(", ")} (${response.statusCode})`).withHelp(
-          credential === undefined ? `log in to ${new URL(this.registry).host} with \`docker login\` or \`podman login\`` : "check the credential is for this registry and allowed this access"
+          credential === undefined
+            ? `log in to ${new URL(this.registry).host} with \`docker login\` or \`podman login\``
+            : "check the credential is for this registry and allowed this access"
         );
       }
       return parseJson(response.body, `token from ${challenge.realm}`, toToken);
@@ -125,7 +146,10 @@ export function scopesOf({ method, url }: Pick<IRequestHead, "method" | "url">, 
   const repository = match[1];
   const reading = method === "GET" || method === "HEAD";
   const from = target.searchParams.get("from");
-  return [`repository:${repository}:${reading ? "pull" : "pull,push"}`, ...(from === null || from === repository ? [] : [`repository:${from}:pull`])];
+  return [
+    `repository:${repository}:${reading ? "pull" : "pull,push"}`,
+    ...(from === null || from === repository ? [] : [`repository:${from}:pull`]),
+  ];
 }
 
 /** Make the headers a request carries `token` with. */

@@ -122,16 +122,7 @@ export function cssModuleShim(cssName: string, tokens: Record<string, string>): 
   const locals = Object.keys(tokens).sort();
   const members = locals.map(local => `  readonly ${JSON.stringify(local)}: string;`);
   const entries = locals.map(local => `  ${JSON.stringify(local)}: ${JSON.stringify(tokens[local])},`);
-  return [
-    `import ${specifier};`,
-    "const styles: {",
-    ...members,
-    "} = {",
-    ...entries,
-    "};",
-    "export default styles;",
-    "",
-  ].join("\n");
+  return [`import ${specifier};`, "const styles: {", ...members, "} = {", ...entries, "};", "export default styles;", ""].join("\n");
 }
 
 /**

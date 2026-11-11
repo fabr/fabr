@@ -30,10 +30,14 @@ export function toMessage(json: unknown): IMessage | undefined {
     return undefined;
   }
   const { id, method, params, result, error } = json as Record<string, unknown>;
-  if ((id !== undefined && id !== null && typeof id !== "number" && typeof id !== "string") || (method !== undefined && typeof method !== "string")) {
+  if (
+    (id !== undefined && id !== null && typeof id !== "number" && typeof id !== "string") ||
+    (method !== undefined && typeof method !== "string")
+  ) {
     return undefined;
   }
-  const message = typeof error === "object" && error !== null ? String((error as Record<string, unknown>).message ?? "error") : undefined;
+  const message =
+    typeof error === "object" && error !== null ? String((error as Record<string, unknown>).message ?? "error") : undefined;
   return {
     ...(typeof id === "number" || typeof id === "string" ? { id } : {}),
     ...(method === undefined ? {} : { method }),

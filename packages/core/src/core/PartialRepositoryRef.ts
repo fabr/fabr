@@ -107,7 +107,9 @@ export class PartialRepositoryRef extends Reference {
     const written = this.toString();
     return this.attributed(
       this.name === ""
-        ? new FabrError(`'${written}' names a repository, not a package or files`).withHelp(`name what you want from it, as in '${written}:<name>'`)
+        ? new FabrError(`'${written}' names a repository, not a package or files`).withHelp(
+            `name what you want from it, as in '${written}:<name>'`
+          )
         : new FabrError(`'${written}' is not a complete reference, so it names no package or files`).withHelp(
             "write the rest of the name after it"
           )

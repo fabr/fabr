@@ -129,7 +129,9 @@ export interface IStoredObject {
 export function storedObjects(artifact: PublishableFileSet): IStoredObject[] {
   const coordinate = s3CoordinateOf(artifact.destination);
   const files = [...artifact];
-  return coordinate.isPrefix ? files.map(([name, file]) => ({ key: `${coordinate.key}${name}`, file })) : [{ key: coordinate.key, file: files[0][1] }];
+  return coordinate.isPrefix
+    ? files.map(([name, file]) => ({ key: `${coordinate.key}${name}`, file }))
+    : [{ key: coordinate.key, file: files[0][1] }];
 }
 
 /** Get the `Content-Type` an object holding `file` at `key` is stored with: by the key's extension, else the file's sniffed type. */
@@ -153,13 +155,12 @@ export function checksumOf(file: IFile): string {
 
 /** Get the ETag S3 gives an object stored by one `PutObject` of `file`: its MD5, quoted. */
 export function etagOf(file: IFile): Computable<string> {
-  return contentStream(file).then(
-    stream =>
-      Computable.from<string>((resolve, reject) => {
-        const md5 = crypto.createHash("md5");
-        stream.on("data", chunk => md5.update(chunk));
-        stream.on("end", () => resolve(`"${md5.digest("hex")}"`));
-        stream.on("error", reject);
-      })
+  return contentStream(file).then(stream =>
+    Computable.from<string>((resolve, reject) => {
+      const md5 = crypto.createHash("md5");
+      stream.on("data", chunk => md5.update(chunk));
+      stream.on("end", () => resolve(`"${md5.digest("hex")}"`));
+      stream.on("error", reject);
+    })
   );
 }

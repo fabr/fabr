@@ -27,7 +27,11 @@ describe("toVexStatements", () => {
       timestamp: "2026-01-01T00:00:00Z",
       statements: [
         {
-          vulnerability: { "@id": "https://nvd.nist.gov/vuln/detail/CVE-2021-23337", name: "CVE-2021-23337", aliases: ["GHSA-35jh-r3h4-6jhm"] },
+          vulnerability: {
+            "@id": "https://nvd.nist.gov/vuln/detail/CVE-2021-23337",
+            name: "CVE-2021-23337",
+            aliases: ["GHSA-35jh-r3h4-6jhm"],
+          },
           products: [
             {
               "@id": "https://example.com/app",
@@ -56,7 +60,12 @@ describe("toVexStatements", () => {
     const [statement] = toVexStatements("vex.json")({
       statements: [{ vulnerability: "CVE-1", products: ["pkg:npm/app"], subcomponents: ["pkg:npm/lodash"], status: "fixed" }],
     });
-    expect(statement).to.deep.equal({ vulnerability: ["CVE-1"], products: ["pkg:npm/app", "pkg:npm/lodash"], status: "fixed", document: "vex.json" });
+    expect(statement).to.deep.equal({
+      vulnerability: ["CVE-1"],
+      products: ["pkg:npm/app", "pkg:npm/lodash"],
+      status: "fixed",
+      document: "vex.json",
+    });
   });
 
   it("refuses a document with no statements, a status OpenVEX does not define and a statement naming no vulnerability", () => {

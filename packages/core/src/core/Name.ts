@@ -278,9 +278,7 @@ export class Name {
       return this;
     }
     const parts = this.parts.map(part =>
-      part.kind === NamePartKind.VarSubst && /^[0-9]+$/.test(part.value)
-        ? { kind: NamePartKind.Backref, value: part.value }
-        : part
+      part.kind === NamePartKind.VarSubst && /^[0-9]+$/.test(part.value) ? { kind: NamePartKind.Backref, value: part.value } : part
     );
     return new Name(parts, this.constraints, this.renameTo);
   }
@@ -347,7 +345,10 @@ export class Name {
       if (!re.test(input) || (excludes !== undefined && path.posix.relative(excludes, input) === "")) {
         return undefined;
       }
-      return input.replace(re, replacement).replace(/\/{2,}/g, "/").replace(/^\/+|\/+$/g, "");
+      return input
+        .replace(re, replacement)
+        .replace(/\/{2,}/g, "/")
+        .replace(/^\/+|\/+$/g, "");
     };
   }
 
@@ -434,7 +435,12 @@ export class Name {
     const written = this.renderParts(false);
     const last = written.charAt(written.length - 1);
     const sep = last === NAME_COMPONENT_SEPARATOR || last === NAME_LEVEL_SEPARATOR ? "" : NAME_COMPONENT_SEPARATOR;
-    const tail: NamePart[] = sep ? [{ kind: NamePartKind.Literal, value: sep }, { kind: NamePartKind.Glob, value: "**" }] : [{ kind: NamePartKind.Glob, value: "**" }];
+    const tail: NamePart[] = sep
+      ? [
+          { kind: NamePartKind.Literal, value: sep },
+          { kind: NamePartKind.Glob, value: "**" },
+        ]
+      : [{ kind: NamePartKind.Glob, value: "**" }];
     return this.concat(new Name(tail));
   }
 
@@ -574,11 +580,7 @@ export class Name {
      * backrefs (`$1$2`) merged would read as the one backref `$12`. */
     const parts = this.parts.reduce<NamePart[]>((rest, part) => {
       const newPart = isSubstituted(part) ? { kind: NamePartKind.Literal, value: resolved.get(part)! } : part;
-      if (
-        rest.length > 0 &&
-        newPart.kind === NamePartKind.Literal &&
-        rest[rest.length - 1].kind === NamePartKind.Literal
-      ) {
+      if (rest.length > 0 && newPart.kind === NamePartKind.Literal && rest[rest.length - 1].kind === NamePartKind.Literal) {
         rest[rest.length - 1] = { kind: NamePartKind.Literal, value: rest[rest.length - 1].value + newPart.value };
       } else {
         rest.push(newPart);
@@ -769,7 +771,9 @@ export class Name {
         return part.value;
       case NamePartKind.VarSubst: {
         const constraints =
-          part.constraints === undefined ? "" : "<" + part.constraints.map(([key, value]) => `${key}=${value.toString()}`).join(", ") + ">";
+          part.constraints === undefined
+            ? ""
+            : "<" + part.constraints.map(([key, value]) => `${key}=${value.toString()}`).join(", ") + ">";
         return "${" + part.value + constraints + (part.edit === undefined ? "" : renderPatternEdit(part.edit)) + "}";
       }
       case NamePartKind.Backref:

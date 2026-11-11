@@ -28,7 +28,18 @@
  */
 
 import { buildReference, constraintOf, isBuildVersion, requiredAs } from "./Requirement";
-import { DependencyName, IResolutionError, NodeId, PackageName, RaisedFloor, Requirement, ROOT_REQUIRER, Selected, VersionDomain, Violation } from "./Types";
+import {
+  DependencyName,
+  IResolutionError,
+  NodeId,
+  PackageName,
+  RaisedFloor,
+  Requirement,
+  ROOT_REQUIRER,
+  Selected,
+  VersionDomain,
+  Violation,
+} from "./Types";
 
 /**
  * The identity of one concrete package version — `pkg@version` — as it appears
@@ -446,4 +457,3 @@ export function resolutionExplainer<V>(
     rootBindings: [],
   }).explainer();
 }
-

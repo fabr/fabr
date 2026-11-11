@@ -26,10 +26,15 @@ import { referenceOfEntry, SOURCE_PATHS_FLAG, stagedReferences, withReferencedSo
 describe("withReferencedSources", () => {
   const root = path.resolve("/work");
   const rewrite = (map: object, referenceOf: (staged: string) => string | undefined): Record<string, unknown> =>
-    JSON.parse(withReferencedSources(JSON.stringify(map), path.join(root, "build/a/b.js.map"), root, referenceOf)) as Record<string, unknown>;
+    JSON.parse(withReferencedSources(JSON.stringify(map), path.join(root, "build/a/b.js.map"), root, referenceOf)) as Record<
+      string,
+      unknown
+    >;
 
   it("names a relative entry by the reference its staged path has", () => {
-    const map = rewrite({ version: 3, sources: ["../../src/a/b.ts"] }, staged => (staged === "src/a/b.ts" ? "./pkg/src/a/b.ts" : undefined));
+    const map = rewrite({ version: 3, sources: ["../../src/a/b.ts"] }, staged =>
+      staged === "src/a/b.ts" ? "./pkg/src/a/b.ts" : undefined
+    );
     expect(map.sources).to.deep.equal(["fabr:./pkg/src/a/b.ts"]);
   });
 

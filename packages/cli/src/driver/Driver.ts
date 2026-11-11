@@ -432,9 +432,9 @@ function writeTestReport(
   const present = reports.filter((report): report is ITestReport => report !== undefined);
   const report = present.length === 0 ? emptyTestReport() : present.length === 1 ? present[0] : mergeTestReports(present);
   const text = format === "junit" ? toJUnitXml(report) : `${JSON.stringify(report, null, 2)}\n`;
-  return site.sourceFileSource.writeFile(path.resolve(file), MemoryFile.from(text)).then(() =>
-    execution.log.log(DIAG_TEST_REPORT_WRITTEN, { file })
-  );
+  return site.sourceFileSource
+    .writeFile(path.resolve(file), MemoryFile.from(text))
+    .then(() => execution.log.log(DIAG_TEST_REPORT_WRITTEN, { file }));
 }
 
 /** @return a report of a run that ran no tests. */
@@ -492,9 +492,9 @@ function reportCoverage(execution: ExecutionContext, site: IInvocationSite, dir:
         functions: coverageText(totals.functions),
         branches: coverageText(totals.branches),
       });
-      return site.sourceFileSource.writeFile(destination, MemoryFile.from(lcovOf(placed))).then(() =>
-        execution.log.log(DIAG_COVERAGE_WRITTEN, { file: path.join(dir, COVERAGE_REPORT_FILENAME) })
-      );
+      return site.sourceFileSource
+        .writeFile(destination, MemoryFile.from(lcovOf(placed)))
+        .then(() => execution.log.log(DIAG_COVERAGE_WRITTEN, { file: path.join(dir, COVERAGE_REPORT_FILENAME) }));
     }
   );
 }

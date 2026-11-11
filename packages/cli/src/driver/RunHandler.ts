@@ -60,17 +60,19 @@ export function runInteractive(cache: BuildCache, key: string, runnable: Runnabl
    * the same program syncs what changed rather than staging it all. */
   const dir = cache.holdKeptWorkDir(key);
   const argv = launchArgv(runnable, callerArgs, dir);
-  return stageInstall(cache, dir, runnable)
-    /* The program owns the terminal while it runs (it inherits fabr's stdio),
-     * so fabr's own display steps aside for the duration. Its teardown runs
-     * once it has ended, however it ended. */
-    .then(() => {
-      const launch = startLaunch(runnable, dir, launchEnv(runnable));
-      return withTerminalSuspended(() =>
-        executeInteractive(findExecutable(argv[0], launchDir(runnable, dir)), argv.slice(1), launchDir(runnable, dir), launch.env)
-      ).finally(() => launch.end());
-    })
-    .finally(() => cache.releaseKeptWorkDir(dir));
+  return (
+    stageInstall(cache, dir, runnable)
+      /* The program owns the terminal while it runs (it inherits fabr's stdio),
+       * so fabr's own display steps aside for the duration. Its teardown runs
+       * once it has ended, however it ended. */
+      .then(() => {
+        const launch = startLaunch(runnable, dir, launchEnv(runnable));
+        return withTerminalSuspended(() =>
+          executeInteractive(findExecutable(argv[0], launchDir(runnable, dir)), argv.slice(1), launchDir(runnable, dir), launch.env)
+        ).finally(() => launch.end());
+      })
+      .finally(() => cache.releaseKeptWorkDir(dir))
+  );
 }
 
 /**
@@ -257,7 +259,9 @@ export class RunSupervisor {
     /* A restage into the spare queues behind the writes still landing in it (a
      * sync its own program was given before it was superseded), and starts from
      * what they left: `held` is read once they are done. */
-    const staged = (spare?.writes ?? Computable.resolve(undefined)).then(() => stageInstall(this.cache, install.dir, runnable, spare?.held));
+    const staged = (spare?.writes ?? Computable.resolve(undefined)).then(() =>
+      stageInstall(this.cache, install.dir, runnable, spare?.held)
+    );
     /* Syncs into this install queue behind its staging write — the dir does not
      * hold the program until it lands. Once it has, the gate collapses to a settled
      * node as a sync's does, or the install would hold the spare it was staged from,
@@ -325,13 +329,7 @@ export class RunSupervisor {
   /** Give `install` its child. Generation-guarded: a newer update that superseded
    * us while the old child was exiting discards this now-stale install instead of
    * launching it. */
-  private launch(
-    install: Install,
-    argv: string[],
-    runnable: RunnableFileSet,
-    generation: number,
-    wasRunning: boolean
-  ): void {
+  private launch(install: Install, argv: string[], runnable: RunnableFileSet, generation: number, wasRunning: boolean): void {
     if (generation !== this.generation) {
       this.retire(install);
       return;
@@ -342,7 +340,12 @@ export class RunSupervisor {
       }
       const launch = startLaunch(runnable, install.dir, launchEnv(runnable));
       install.launch = launch;
-      const child = spawnInteractive(findExecutable(argv[0], launchDir(runnable, install.dir)), argv.slice(1), launchDir(runnable, install.dir), launch.env);
+      const child = spawnInteractive(
+        findExecutable(argv[0], launchDir(runnable, install.dir)),
+        argv.slice(1),
+        launchDir(runnable, install.dir),
+        launch.env
+      );
       /* The supervised program owns the terminal from here until it exits —
        * which outlives the build that launched it, so the hand-over is bracketed
        * by the child's own lifetime rather than by a chain. Rebuild diagnostics
@@ -429,7 +432,10 @@ export class RunSupervisor {
       return undefined;
     };
     const sync = target.writes.then(() => {
-      if (generation !== this.generation || (target.held !== undefined && target.served.toManifest() === runnable.served.toManifest())) {
+      if (
+        generation !== this.generation ||
+        (target.held !== undefined && target.served.toManifest() === runnable.served.toManifest())
+      ) {
         return finish();
       }
       /* A dir whose contents are unknown (a write into it failed) is written whole. */

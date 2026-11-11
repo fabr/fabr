@@ -142,7 +142,10 @@ describe("the coverage driver, over real V8 coverage", () => {
     map.sources = [`fabr:./lib/${name}.ts`];
     delete map.sourcesContent;
     fs.mkdirSync(path.join(root, "out"), { recursive: true });
-    fs.writeFileSync(path.join(root, "out", `${name}.js`), outputText.replace(/sourceMappingURL=.*$/m, `sourceMappingURL=${name}.js.map`));
+    fs.writeFileSync(
+      path.join(root, "out", `${name}.js`),
+      outputText.replace(/sourceMappingURL=.*$/m, `sourceMappingURL=${name}.js.map`)
+    );
     fs.writeFileSync(path.join(root, "out", `${name}.js.map`), JSON.stringify(map));
   }
 
@@ -150,8 +153,8 @@ describe("the coverage driver, over real V8 coverage", () => {
    * `import()` of its ES-module library cannot run inside jest's module
    * sandbox): beside this test where it runs compiled, or in the package's
    * build where it runs from its TypeScript source. */
-  const driver = [path.join(__dirname, "../bin/fabr-coverage.js"), path.join(__dirname, "../../build/bin/fabr-coverage.js")].find(file =>
-    fs.existsSync(file)
+  const driver = [path.join(__dirname, "../bin/fabr-coverage.js"), path.join(__dirname, "../../build/bin/fabr-coverage.js")].find(
+    file => fs.existsSync(file)
   )!;
 
   function measure(): Map<string, ILcovRecord> {

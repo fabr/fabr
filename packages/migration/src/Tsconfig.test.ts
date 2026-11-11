@@ -25,7 +25,8 @@ import { writeProject } from "./TestProject";
 describe("reading a tsconfig", () => {
   it("reads comments and trailing commas, never inside a string", () => {
     const root = writeProject({
-      "tsconfig.json": '{ "compilerOptions": { "baseUrl": ".", // note\n /* block */ "paths": { "a,]/*": ["b,}/*", "c/*d*/e",], }, }, }',
+      "tsconfig.json":
+        '{ "compilerOptions": { "baseUrl": ".", // note\n /* block */ "paths": { "a,]/*": ["b,}/*", "c/*d*/e",], }, }, }',
     });
     const options = readTsconfig(path.join(root, "tsconfig.json"))!;
     expect(options.paths.get("a,]/*")).to.deep.equal([path.join(root, "b,}/*"), path.join(root, "c/*d*/e")]);

@@ -18,9 +18,31 @@
  */
 
 import { expect } from "chai";
-import { BUILD_OVERRIDE, FileSet, Flag, MemoryFile, PackageFileSet, packToZip, RefSource, RepositoryRef, TargetContext } from "@fabr-build/core";
+import {
+  BUILD_OVERRIDE,
+  FileSet,
+  Flag,
+  MemoryFile,
+  PackageFileSet,
+  packToZip,
+  RefSource,
+  RepositoryRef,
+  TargetContext,
+} from "@fabr-build/core";
 import TestJarPackage from "./rules/TestJarPackage";
-import { checkMainClass, classFileOf, classpathOf, installationOf, isModularJar, jarMainClass, javaRelease, MANIFEST_NAME, manifestAttributes, manifestFile, packageOf } from "./JarPackage";
+import {
+  checkMainClass,
+  classFileOf,
+  classpathOf,
+  installationOf,
+  isModularJar,
+  jarMainClass,
+  javaRelease,
+  MANIFEST_NAME,
+  manifestAttributes,
+  manifestFile,
+  packageOf,
+} from "./JarPackage";
 
 const files = (...names: string[]): FileSet => new FileSet(new Map(names.map(name => [name, MemoryFile.from(name)])));
 
@@ -31,9 +53,12 @@ describe("jar_package[test]", () => {
     const context = new Proxy(
       {},
       {
-        get: (_target, member) =>
+        get:
+          (_target, member) =>
           (...args: unknown[]) => {
-            reads.push(member === "resolveSelfWithOverrides" ? [String(member), args[0]] : [`${String(member)} ${String(args[0])}`, args[1]]);
+            reads.push(
+              member === "resolveSelfWithOverrides" ? [String(member), args[0]] : [`${String(member)} ${String(args[0])}`, args[1]]
+            );
             return {};
           },
       }
@@ -68,10 +93,16 @@ describe("isModularJar", () => {
       new MemoryFile(await packToZip(new FileSet(new Map(entries.map(([name, text]) => [name, MemoryFile.from(text)])))));
     expect(await isModularJar(await jar(["module-info.class", "x"], ["a/A.class", "x"]))).to.equal(true);
     expect(
-      await isModularJar(await jar([MANIFEST_NAME, "Manifest-Version: 1.0\r\nMulti-Release: true\r\n"], ["META-INF/versions/9/module-info.class", "x"]))
+      await isModularJar(
+        await jar([MANIFEST_NAME, "Manifest-Version: 1.0\r\nMulti-Release: true\r\n"], ["META-INF/versions/9/module-info.class", "x"])
+      )
     ).to.equal(true);
-    expect(await isModularJar(await jar([MANIFEST_NAME, "Manifest-Version: 1.0\r\n"], ["META-INF/versions/9/module-info.class", "x"]))).to.equal(false);
-    expect(await isModularJar(await jar([MANIFEST_NAME, "Manifest-Version: 1.0\r\nAutomatic-Module-Name: org.lib\r\n"]))).to.equal(true);
+    expect(
+      await isModularJar(await jar([MANIFEST_NAME, "Manifest-Version: 1.0\r\n"], ["META-INF/versions/9/module-info.class", "x"]))
+    ).to.equal(false);
+    expect(await isModularJar(await jar([MANIFEST_NAME, "Manifest-Version: 1.0\r\nAutomatic-Module-Name: org.lib\r\n"]))).to.equal(
+      true
+    );
     expect(await isModularJar(await jar([MANIFEST_NAME, "Manifest-Version: 1.0\r\n"], ["a/A.class", "x"]))).to.equal(false);
   });
 });
@@ -107,11 +138,9 @@ describe("installationOf", () => {
     const leaf = new PackageFileSet(files("leaf-1.0.jar", "leaf-1.0.pom"), "org.example/leaf", "1.0");
     const reference = new RepositoryRef({} as RefSource, { name: "org.example/leaf", versionConstraint: "1.0" });
     const app = new PackageFileSet(files("app.jar"), "com.example/app", undefined, [{ reference, package: leaf }]);
-    expect([...installationOf([app, files("com/example/Extra.class"), new Flag("java17", [])])].map(([name]) => name).sort()).to.deep.equal([
-      "app.jar",
-      "com/example/Extra.class",
-      "leaf-1.0.jar",
-    ]);
+    expect(
+      [...installationOf([app, files("com/example/Extra.class"), new Flag("java17", [])])].map(([name]) => name).sort()
+    ).to.deep.equal(["app.jar", "com/example/Extra.class", "leaf-1.0.jar"]);
   });
 
   /* A package of `name` holding `<name>.jar`, with an edge to each of `edges`, those under `provided` named provided. */
@@ -120,16 +149,24 @@ describe("installationOf", () => {
       files(`${name}-1.0.jar`),
       `org.example/${name}`,
       "1.0",
-      [...edges, ...provided].map(pkg => ({ reference: new RepositoryRef({} as RefSource, { name: pkg.packageName!, versionConstraint: "1.0" }), package: pkg })),
+      [...edges, ...provided].map(pkg => ({
+        reference: new RepositoryRef({} as RefSource, { name: pkg.packageName!, versionConstraint: "1.0" }),
+        package: pkg,
+      })),
       undefined,
       new Map(provided.map(pkg => [pkg.packageName!, "expected" as const]))
     );
-  const installed = (deps: FileSet[], provided?: FileSet[]): string[] => [...installationOf(deps, provided)].map(([name]) => name).sort();
+  const installed = (deps: FileSet[], provided?: FileSet[]): string[] =>
+    [...installationOf(deps, provided)].map(([name]) => name).sort();
 
   it("installs a package a provided requirement reaches only where another edge reaches it too", () => {
     const api = jarPackage("api");
     expect(installed([jarPackage("lib", [], [api])])).to.deep.equal(["lib-1.0.jar"]);
-    expect(installed([jarPackage("lib", [], [api]), jarPackage("other", [api])])).to.deep.equal(["api-1.0.jar", "lib-1.0.jar", "other-1.0.jar"]);
+    expect(installed([jarPackage("lib", [], [api]), jarPackage("other", [api])])).to.deep.equal([
+      "api-1.0.jar",
+      "lib-1.0.jar",
+      "other-1.0.jar",
+    ]);
   });
 
   it("leaves out the packages provided_deps hold, and everything they require, however deps reach them", () => {
@@ -140,7 +177,9 @@ describe("installationOf", () => {
   });
 
   it("refuses files among provided_deps that are no package", () => {
-    expect(() => installationOf([jarPackage("lib")], [files("container.jar")])).to.throw(/provided_deps holds files that are no package/);
+    expect(() => installationOf([jarPackage("lib")], [files("container.jar")])).to.throw(
+      /provided_deps holds files that are no package/
+    );
   });
 });
 

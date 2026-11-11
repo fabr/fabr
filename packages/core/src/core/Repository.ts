@@ -633,7 +633,10 @@ const NO_SOURCE: RepositoryLookup = {
  * collection point would have delivered the edge.
  */
 export function dependenciesOn<P extends Package>(...deps: P[]): Array<Dependency<P>> {
-  return deps.map(dep => ({ reference: new RepositoryRef(NO_SOURCE, { name: dep.packageName, versionConstraint: undefined }), package: dep }));
+  return deps.map(dep => ({
+    reference: new RepositoryRef(NO_SOURCE, { name: dep.packageName, versionConstraint: undefined }),
+    package: dep,
+  }));
 }
 
 /**
@@ -698,4 +701,3 @@ export type SourceRef = FileSource | PartialRepositoryRef | NamespaceRef | Repos
  * (`applyProjections`), or hands the ref to a consumer that reinterprets it
  * (see TargetContext.getContainedFileProperty). */
 export type Materialized = FileSource | FileSetRef;
-

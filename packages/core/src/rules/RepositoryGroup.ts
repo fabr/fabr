@@ -22,14 +22,7 @@ import { FabrError } from "../core/Errors";
 import { Name } from "../core/Name";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { FileSet } from "../core/FileSet";
-import {
-  isRepositoryReader,
-  Repository,
-  RepositoryPublishRef,
-  RepositoryReader,
-  RepositoryRef,
-  SourceRef,
-} from "../core/Repository";
+import { isRepositoryReader, Repository, RepositoryPublishRef, RepositoryReader, RepositoryRef, SourceRef } from "../core/Repository";
 import { TargetContext } from "../context/index";
 import { Requirement, Selected } from "../resolver/Types";
 import { PackageFormat } from "../resolver/PackageFormat";
@@ -163,9 +156,7 @@ export function bestRoute<R extends { key: RouteKey }>(routes: readonly R[], nam
  * a MetadataFetchError, which keeps only the cause's message), and the routes
  * are listed so the remedy is visible. No fall-through, ever.
  */
-export class RepositoryGroup<V, C>
-  implements Repository, RepositoryReader<V, C>
-{
+export class RepositoryGroup<V, C> implements Repository, RepositoryReader<V, C> {
   constructor(
     private readonly context: TargetContext,
     /** The domain's shared format — every member holds this same instance
@@ -209,15 +200,19 @@ export class RepositoryGroup<V, C>
     if (listing === undefined) {
       return versionChildren(this, this.format, namespace, member.availableVersions?.(namespace) ?? Computable.resolve(undefined));
     }
-    return listing.call(member, new PartialRepositoryRef(member as Repository & typeof member, namespace)).then(
-      children =>
-        new Map(
-          [...children].map(([name, child]): [string, Reference] => [
-            name,
-            child instanceof RepositoryRef ? new RepositoryRef(this, { name: child.name, versionConstraint: child.versionConstraint }) : child,
-          ])
-        )
-    );
+    return listing
+      .call(member, new PartialRepositoryRef(member as Repository & typeof member, namespace))
+      .then(
+        children =>
+          new Map(
+            [...children].map(([name, child]): [string, Reference] => [
+              name,
+              child instanceof RepositoryRef
+                ? new RepositoryRef(this, { name: child.name, versionConstraint: child.versionConstraint })
+                : child,
+            ])
+          )
+      );
   }
 
   /**
@@ -330,9 +325,10 @@ export class RepositoryGroup<V, C>
     if (member instanceof Error) {
       return Computable.reject(member);
     }
-    return member.fetchFor === undefined ? Computable.reject(publishesNothingFor(member, pkg, operation)) : member.fetchFor(pkg, version, operation);
+    return member.fetchFor === undefined
+      ? Computable.reject(publishesNothingFor(member, pkg, operation))
+      : member.fetchFor(pkg, version, operation);
   }
-
 }
 
 /**
@@ -484,7 +480,9 @@ function routeValue(groupName: string, routeName: string, sources: readonly Sour
   const named = sources.filter((source): source is PartialRepositoryRef => source instanceof PartialRepositoryRef);
   const within = named.find(source => source.name !== "");
   if (within !== undefined) {
-    throw new FabrError(`route '${routeName}' in ${groupName} names a namespace of a repository ('${within.toString()}'), not a repository`).withHelp(
+    throw new FabrError(
+      `route '${routeName}' in ${groupName} names a namespace of a repository ('${within.toString()}'), not a repository`
+    ).withHelp(
       "a route's value is a reference to a declared registry, e.g. `@fortawesome/* = @fa;`: the key selects the package names"
     );
   }

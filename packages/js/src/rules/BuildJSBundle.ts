@@ -80,7 +80,9 @@ export default defineRule({
    */
   requirements(
     context: TargetContext
-  ): Computable<ResolutionSpec<{ srcs: Computable<PackageSources>; entry: Computable<ContainedSources>; deps: Computable<PackageSources> }>> {
+  ): Computable<
+    ResolutionSpec<{ srcs: Computable<PackageSources>; entry: Computable<ContainedSources>; deps: Computable<PackageSources> }>
+  > {
     return context.getGlobalString("JS_TARGET").then(target => {
       const inputTarget = bundleInputTarget(parseJSTarget(target));
       return {
@@ -198,7 +200,17 @@ function stageBundle(
   /* The entry's packages are bundled as srcs are, so they count as srcs here. */
   const external = computeExternalNames([...srcs, ...srcPackages], deps);
   const inject = [...(nodeGlobals ? [NODE_GLOBALS_MODULE] : []), ...(importMeta ? [IMPORT_META_MODULE] : [])];
-  const options = buildBundleOptions(jsTarget, bundleFormat, buildType, entries, external, defines, inject, computeChunkNames(rewrite), computeAssetNames(rewrite));
+  const options = buildBundleOptions(
+    jsTarget,
+    bundleFormat,
+    buildType,
+    entries,
+    external,
+    defines,
+    inject,
+    computeChunkNames(rewrite),
+    computeAssetNames(rewrite)
+  );
   const workspace = {
     [TOOL_DIR]: bundler,
     "bundle-options.json": MemoryFile.from(JSON.stringify(options)),
@@ -209,10 +221,7 @@ function stageBundle(
    * the working root, so the options manifest and outdir resolve against it. */
   /* Its maps name each source by the reference resolving to it, from the table
    * the step stages: the bundle's own sources and the packages it bundles. */
-  const argv = bundler.toCommandLine(
-    ["--options=bundle-options.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE],
-    { base: TOOL_DIR }
-  );
+  const argv = bundler.toCommandLine(["--options=bundle-options.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE], { base: TOOL_DIR });
   /* The bundled packages go over unassembled and unmaterialized: esbuild reads
    * the PnP table natively, so the step generates it (and the trees it names)
    * on a miss. The entry paths in the options document already name those trees
@@ -296,10 +305,7 @@ function composeBundle(context: TargetContext, inputs: IBundleInputs): Computabl
   );
 
   return context.applyProjections(looseSources).then(looseEntries => {
-    const rootTree = FileSet.unionAll(
-      ...inputs.srcs.filter(set => !(set instanceof PackageFileSet)),
-      ...looseEntries
-    );
+    const rootTree = FileSet.unionAll(...inputs.srcs.filter(set => !(set instanceof PackageFileSet)), ...looseEntries);
     /* Both halves of what the sources may import: `srcs` packages are bundled in,
      * `deps` are externalized at link time — but the compile needs both, and the
      * source-mode flags from either list (see bundleFlags), which it reads from
@@ -333,7 +339,8 @@ interface IBundleContents {
 function buildJsBundle(context: TargetContext, contents: IBundleContents): Computable<RuleResult> {
   return Computable.forAll(
     [context.getGlobalString("JS_TARGET"), context.getGlobalString("JS_BUNDLE_FORMAT"), context.getGlobalString("BUILD_TYPE")],
-    (target, bundleFormat, buildType) => buildWithInputs(context, parseJSTarget(target), toBundleFormat(bundleFormat), buildType, contents)
+    (target, bundleFormat, buildType) =>
+      buildWithInputs(context, parseJSTarget(target), toBundleFormat(bundleFormat), buildType, contents)
   );
 }
 

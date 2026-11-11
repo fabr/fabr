@@ -195,7 +195,13 @@ export interface IListing {
  * written (a key may begin or end with a space). Throws, naming `what` as not
  * `kind`, where the document is not well formed or its root is not `root`.
  */
-export function readDocument(text: string, what: string, kind: string, root: string, visit: (path: string, value: string) => void): void {
+export function readDocument(
+  text: string,
+  what: string,
+  kind: string,
+  root: string,
+  visit: (path: string, value: string) => void
+): void {
   const parser = sax.parser(true);
   const fail = (message: string): never => {
     throw new FabrError(`${what} is not ${kind}: ${message}`);

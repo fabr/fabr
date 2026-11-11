@@ -108,7 +108,10 @@ export class ImageFileSet extends PackageFileSet {
     version?: string,
     origin?: IProvenanceStep
   ): ImageFileSet {
-    return new ImageFileSet(filesystemOf(layers), packageName, version, [], origin, undefined, undefined, undefined, { config, layers });
+    return new ImageFileSet(filesystemOf(layers), packageName, version, [], origin, undefined, undefined, undefined, {
+      config,
+      layers,
+    });
   }
 
   /**
@@ -144,7 +147,14 @@ export function layerRecordDir(index: number): string {
 
 /** Read the image named `packageName` back from its records (see {@link ImageFileSet.toRecords}). */
 export function imageOfRecords(records: FileSet, packageName: string, origin?: IProvenanceStep): Computable<ImageFileSet> {
-  const dirs = [...new Set([...records].map(([name]) => name).filter(name => name.startsWith("layers/")).map(name => name.split("/").slice(0, 2).join("/")))].sort();
+  const dirs = [
+    ...new Set(
+      [...records]
+        .map(([name]) => name)
+        .filter(name => name.startsWith("layers/"))
+        .map(name => name.split("/").slice(0, 2).join("/"))
+    ),
+  ].sort();
   const read = (name: string): Computable<string> => {
     const file = records.getFile(name);
     return file === undefined ? Computable.reject<string>(new FabrError(`an image's records lack '${name}'`)) : file.readString();
@@ -155,7 +165,10 @@ export function imageOfRecords(records: FileSet, packageName: string, origin?: I
       Computable.forAll(
         dirs.map(dir =>
           Computable.forAll(
-            [read(`${dir}/${RECORD_INDEX}`), records.getFile(`${dir}/${RECORD_PUBLISHED}`)?.readString() ?? Computable.resolve(undefined)] as const,
+            [
+              read(`${dir}/${RECORD_INDEX}`),
+              records.getFile(`${dir}/${RECORD_PUBLISHED}`)?.readString() ?? Computable.resolve(undefined),
+            ] as const,
             (index: string, published: string | undefined): ILayerRecord => ({
               tar: records.getFile(`${dir}/${RECORD_TAR}`)!,
               index: parseJson(index, `${dir}/${RECORD_INDEX}`, toLayerIndex),
@@ -167,7 +180,8 @@ export function imageOfRecords(records: FileSet, packageName: string, origin?: I
         (...layers: ILayerRecord[]) => layers
       ),
     ] as const,
-    (config: string, layers: ILayerRecord[]) => ImageFileSet.of(parseJson(config, RECORD_CONFIG, toImageConfig), layers, packageName, undefined, origin)
+    (config: string, layers: ILayerRecord[]) =>
+      ImageFileSet.of(parseJson(config, RECORD_CONFIG, toImageConfig), layers, packageName, undefined, origin)
   );
 }
 
@@ -239,7 +253,8 @@ function filesystemOf(layers: readonly ILayerRecord[]): Map<string, IFile> {
           /* A file replacing a directory hides what was under it. */
           removeUnder(merged, entry.path);
         }
-        const content = entry.type === "file" ? { entry, layer } : entry.type === "hardlink" ? merged.get(entry.linkname ?? "")?.content : undefined;
+        const content =
+          entry.type === "file" ? { entry, layer } : entry.type === "hardlink" ? merged.get(entry.linkname ?? "")?.content : undefined;
         merged.set(entry.path, { entry, ...(content === undefined ? {} : { content }) });
       }
     }

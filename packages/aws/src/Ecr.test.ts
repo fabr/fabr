@@ -38,7 +38,10 @@ const STUB_REGISTRY = {
   getRepositoryPublishRef: (name: { toString(): string }) => stubRef(name.toString()),
 };
 
-function stubRef(name: string, repositoryName?: string): { name: string; repositoryName?: string; withRepositoryName(written: string): unknown } {
+function stubRef(
+  name: string,
+  repositoryName?: string
+): { name: string; repositoryName?: string; withRepositoryName(written: string): unknown } {
   return { name, repositoryName, withRepositoryName: (written: string) => stubRef(name, written) };
 }
 
@@ -48,7 +51,9 @@ function refIn(source: unknown, name: Name, separator: ":" | "/"): Computable<un
     const literal = name.getLiteralPrefix();
     const end = literal.search(/[:/]/);
     const first = end === -1 ? literal : literal.substring(0, end);
-    return source.get(first, separator).then(member => (end === -1 ? member : refIn(member, name.substring(end + 1), literal[end] as ":" | "/")));
+    return source
+      .get(first, separator)
+      .then(member => (end === -1 ? member : refIn(member, name.substring(end + 1), literal[end] as ":" | "/")));
   }
   const ref = (source as PartialRepositoryRef).getRepositoryRef(name, separator);
   return Computable.resolve(ref);
@@ -63,11 +68,17 @@ describe("ECR's token request", () => {
   it("goes to ECR's API in the region, or to the endpoint", () => {
     expect(requestUrl(tokenRequest("eu-west-2"))).to.equal("https://api.ecr.eu-west-2.amazonaws.com/");
     expect(requestUrl(tokenRequest("us-east-1", new URL("http://localhost:4566")))).to.equal("http://localhost:4566/");
-    expect(tokenRequest("us-east-1").headers?.get("x-amz-target")).to.equal("AmazonEC2ContainerRegistry_V20150921.GetAuthorizationToken");
+    expect(tokenRequest("us-east-1").headers?.get("x-amz-target")).to.equal(
+      "AmazonEC2ContainerRegistry_V20150921.GetAuthorizationToken"
+    );
   });
 
   it("reads the password and the registry from the answer", () => {
-    expect(toEcrToken({ authorizationData: [{ authorizationToken: "QVdTOnB3", proxyEndpoint: "https://1.dkr.ecr.us-east-1.amazonaws.com" }] })).to.deep.equal({
+    expect(
+      toEcrToken({
+        authorizationData: [{ authorizationToken: "QVdTOnB3", proxyEndpoint: "https://1.dkr.ecr.us-east-1.amazonaws.com" }],
+      })
+    ).to.deep.equal({
       authorization: "QVdTOnB3",
       proxyEndpoint: "https://1.dkr.ecr.us-east-1.amazonaws.com",
     });
@@ -91,7 +102,11 @@ describe("signing in to ECR", () => {
       req.on("end", () => {
         signed.push(req.headers.authorization ?? "");
         const password = Buffer.from(`AWS:password-${signed.length}`).toString("base64");
-        res.writeHead(200).end(JSON.stringify({ authorizationData: [{ authorizationToken: password, proxyEndpoint: "https://1.dkr.ecr.us-east-1.amazonaws.com" }] }));
+        res.writeHead(200).end(
+          JSON.stringify({
+            authorizationData: [{ authorizationToken: password, proxyEndpoint: "https://1.dkr.ecr.us-east-1.amazonaws.com" }],
+          })
+        );
       });
     });
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", () => resolve()));
@@ -112,7 +127,8 @@ describe("signing in to ECR", () => {
     }
   });
 
-  const basic = (n: number): Map<string, string> => new Map([["authorization", `Basic ${Buffer.from(`AWS:password-${n}`).toString("base64")}`]]);
+  const basic = (n: number): Map<string, string> =>
+    new Map([["authorization", `Basic ${Buffer.from(`AWS:password-${n}`).toString("base64")}`]]);
   const head = { method: "GET", url: "http://registry/v2/app/manifests/1", headers: new Map<string, string>() };
 
   it("signs each request in with the password a signed GetAuthorizationToken gives, fetched once", async () => {
@@ -133,7 +149,15 @@ describe("signing in to ECR", () => {
         return Computable.resolve(STUB_REGISTRY);
       },
     } as unknown as TargetContext;
-    const account = new AwsAccount({ name: "@aws", repositoryTypes: TYPES, context, signer: new RequestSigner(undefined), credentials: "profile:default", region: "us-east-1", endpoint });
+    const account = new AwsAccount({
+      name: "@aws",
+      repositoryTypes: TYPES,
+      context,
+      signer: new RequestSigner(undefined),
+      credentials: "profile:default",
+      region: "us-east-1",
+      endpoint,
+    });
     await refOf(account, "ecr");
     await refOf(account, "ecr:app:1");
     expect(made).to.deep.equal([{ type: "oci_repository", name: "ecr", url: endpoint.href }]);
@@ -150,7 +174,15 @@ describe("signing in to ECR", () => {
         return Computable.resolve(STUB_REGISTRY);
       },
     } as unknown as TargetContext;
-    const account = new AwsAccount({ name: "@aws", repositoryTypes: TYPES, context, signer: new RequestSigner(undefined), credentials: "profile:default", region: "eu-west-2", accountId: "123456789012" });
+    const account = new AwsAccount({
+      name: "@aws",
+      repositoryTypes: TYPES,
+      context,
+      signer: new RequestSigner(undefined),
+      credentials: "profile:default",
+      region: "eu-west-2",
+      accountId: "123456789012",
+    });
     await refOf(account, "ecr");
     expect(made).to.deep.equal(["https://123456789012.dkr.ecr.eu-west-2.amazonaws.com"]);
     expect(signed).to.have.lengthOf(0);
@@ -169,7 +201,14 @@ describe("signing in to ECR", () => {
 describe("an account's ECR registry", () => {
   it("is refused, naming the plugin to add, where no plugin in use defines oci_repository", async () => {
     const context = { name: "@aws", hasRepositoryType: () => false } as unknown as TargetContext;
-    const account = new AwsAccount({ name: "@aws", repositoryTypes: TYPES, context, signer: new RequestSigner(undefined), credentials: "profile:default", region: "us-east-1" });
+    const account = new AwsAccount({
+      name: "@aws",
+      repositoryTypes: TYPES,
+      context,
+      signer: new RequestSigner(undefined),
+      credentials: "profile:default",
+      region: "us-east-1",
+    });
     const err = await refOf(account, "ecr:app:1").then(
       () => undefined,
       e => e as Error
@@ -187,7 +226,14 @@ describe("an account's ECR registry", () => {
         return Computable.resolve(STUB_REGISTRY);
       },
     } as unknown as TargetContext;
-    const account = new AwsAccount({ name: "@aws", repositoryTypes: TYPES, context, signer: new RequestSigner(undefined), credentials: "profile:default", region: "eu-west-2" });
+    const account = new AwsAccount({
+      name: "@aws",
+      repositoryTypes: TYPES,
+      context,
+      signer: new RequestSigner(undefined),
+      credentials: "profile:default",
+      region: "eu-west-2",
+    });
     const registry = (await refOf(account, "111122223333:ecr")) as PartialRepositoryRef;
     await refOf(account, "111122223333:ecr:app:1");
     expect(made).to.deep.equal([{ name: "111122223333:ecr", url: "https://111122223333.dkr.ecr.eu-west-2.amazonaws.com" }]);

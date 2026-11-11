@@ -251,7 +251,10 @@ describe("Computable", () => {
       res(7);
       throw new Error("too late");
     });
-    c.then(v => values.push(v), err => errors.push(err));
+    c.then(
+      v => values.push(v),
+      err => errors.push(err)
+    );
     expect(values).to.deep.equal([7]);
     expect(errors).to.have.length(0);
     expect(c.state).to.equal(ComputableState.Valid);
@@ -272,7 +275,10 @@ describe("Computable", () => {
     Computable.from<number>(res => {
       res(3);
       throw new Error("too late");
-    }).then(v => values.push(v), err => errors.push(err));
+    }).then(
+      v => values.push(v),
+      err => errors.push(err)
+    );
     expect(values).to.deep.equal([3]);
     expect(errors).to.have.length(0);
   });
@@ -1427,8 +1433,12 @@ describe("Computable.detached and dependency cycles", () => {
      * source changes, o is re-run while n still holds what it had bound. */
     const source = new TestSource<number>();
     source.set(1);
-    const o: Computable<string> = source.then((value): string | Computable<string> => (value === 1 ? "o1" : n.then(got => `o<-${got}`)));
-    const n: Computable<string> = source.then((value): string | Computable<string> => (value === 1 ? o.then(got => `n<-${got}`) : "n2"));
+    const o: Computable<string> = source.then((value): string | Computable<string> =>
+      value === 1 ? "o1" : n.then(got => `o<-${got}`)
+    );
+    const n: Computable<string> = source.then((value): string | Computable<string> =>
+      value === 1 ? o.then(got => `n<-${got}`) : "n2"
+    );
     const top = Computable.forAll([o, n], (first, second) => `${first},${second}`);
     expect(await top).to.equal("o1,n<-o1");
     source.invalidate();
@@ -1721,7 +1731,12 @@ describe("Computable.detached and dependency cycles", () => {
     cells.push(Computable.detached(() => source.then(value => (value === 0 ? 0 : cells[1].then(x => x + 1)))));
     cells.push(Computable.detached(() => source.then(() => cells[0].then(x => x + 1))));
     const handle = new ComputableHandle<number[]>();
-    handle.seat(Computable.forAll(cells.map(cell => cell.catch(() => -1)), (...values) => values));
+    handle.seat(
+      Computable.forAll(
+        cells.map(cell => cell.catch(() => -1)),
+        (...values) => values
+      )
+    );
     source.invalidate();
     source.set(1);
     expect(cells.map(cell => cell.state)).to.deep.equal([ComputableState.Error, ComputableState.Error]);
@@ -1737,7 +1752,9 @@ describe("Computable.detached and dependency cycles", () => {
 
   it("does not report a node that depends on something settled", async () => {
     const settled = Computable.resolve(1);
-    const outer = Computable.detached(() => settled.then(value => Computable.from<number>(resolve => setTimeout(() => resolve(value + 1), 1))));
+    const outer = Computable.detached(() =>
+      settled.then(value => Computable.from<number>(resolve => setTimeout(() => resolve(value + 1), 1)))
+    );
     expect(await outer).to.equal(2);
   });
 });
@@ -1745,8 +1762,15 @@ describe("Computable.detached and dependency cycles", () => {
 describe("final nodes", () => {
   it("never an errored derived node, which computes again when next demanded", async () => {
     let attempts = 0;
-    const memo = Computable.detached(() => Computable.from<number>((resolve, reject) => (++attempts === 1 ? reject(new Error("transient")) : resolve(1))));
-    const first = await new Promise<string>(resolve => memo.once(() => resolve("value"), err => resolve(err.message)));
+    const memo = Computable.detached(() =>
+      Computable.from<number>((resolve, reject) => (++attempts === 1 ? reject(new Error("transient")) : resolve(1)))
+    );
+    const first = await new Promise<string>(resolve =>
+      memo.once(
+        () => resolve("value"),
+        err => resolve(err.message)
+      )
+    );
     expect(first).to.equal("transient");
     expect(memo.isFinal()).to.equal(false);
     /* Its consumer gone, it detached; demanded again it runs again. */
@@ -1861,12 +1885,17 @@ describe("cycle handling against a from-scratch oracle", () => {
   }
   /** Each node's outcome: its value, or "E" for an error. */
   function outcomes(nodes: ReadonlyArray<Computable<number>>): unknown[] {
-    return nodes.map(node => (node.state === ComputableState.Error ? "E" : node.state === ComputableState.Valid ? node.value : `unsettled:${node.state}`));
+    return nodes.map(node =>
+      node.state === ComputableState.Error ? "E" : node.state === ComputableState.Valid ? node.value : `unsettled:${node.state}`
+    );
   }
   function fresh(shape: IShape, values: number[]): unknown[] {
     const sources = values.map(() => new TestSource<number>());
     const nodes = graphOf(shape, sources);
-    const top = Computable.forAll(nodes.map(node => node.catch(() => "E")), (...all) => all);
+    const top = Computable.forAll(
+      nodes.map(node => node.catch(() => "E")),
+      (...all) => all
+    );
     values.forEach((value, i) => sources[i].set(value));
     expect(top.isSettled()).to.equal(true);
     return outcomes(nodes);
@@ -1880,7 +1909,12 @@ describe("cycle handling against a from-scratch oracle", () => {
     const nodes = graphOf(shape, sources);
     let settlements = 0;
     const handle = new ComputableHandle<unknown[]>(() => settlements++);
-    handle.seat(Computable.forAll(nodes.map(node => node.catch(() => "E")), (...all) => all));
+    handle.seat(
+      Computable.forAll(
+        nodes.map(node => node.catch(() => "E")),
+        (...all) => all
+      )
+    );
     values.forEach((value, i) => sources[i].set(value));
     expect(outcomes(nodes), label).to.deep.equal(fresh(shape, values));
     batches.forEach(([changed, next], batch) => {
@@ -1893,7 +1927,10 @@ describe("cycle handling against a from-scratch oracle", () => {
         sources[i].set(next[i]);
       }
       const seen = outcomes(nodes);
-      expect(seen.filter(outcome => typeof outcome === "string" && outcome.startsWith("unsettled")), `${label} batch ${batch}`).to.deep.equal([]);
+      expect(
+        seen.filter(outcome => typeof outcome === "string" && outcome.startsWith("unsettled")),
+        `${label} batch ${batch}`
+      ).to.deep.equal([]);
       expect(settlements, `${label} batch ${batch}: settlements`).to.be.at.most(1);
       expect(seen, `${label} batch ${batch}`).to.deep.equal(fresh(shape, values));
     });
@@ -1903,7 +1940,17 @@ describe("cycle handling against a from-scratch oracle", () => {
   it("asks the closer from a node that joined its region after the cycle was found", () => {
     /* n1 binds into n4 after n0's cycle through n2 has formed; a later batch
      * reaches n0's ring only through n4, which must ask n0. */
-    replay({ inputs: [[], [], [0, 1], [], [0]], targets: [2, 4, 3, 4, 4] }, [3, 1, 0, 3, 1], [[[3, 4], [3, 1, 0, 3, 0]]], "joined region");
+    replay(
+      { inputs: [[], [], [0, 1], [], [0]], targets: [2, 4, 3, 4, 4] },
+      [3, 1, 0, 3, 1],
+      [
+        [
+          [3, 4],
+          [3, 1, 0, 3, 0],
+        ],
+      ],
+      "joined region"
+    );
   });
 
   it("asks the closer from a node that settles out of its region", () => {
@@ -1913,14 +1960,35 @@ describe("cycle handling against a from-scratch oracle", () => {
       { inputs: [[], [], [0], [2], [3], [1], []], targets: [5, 3, 6, 2, 4, 1, 1] },
       [1, 3, 2, 2, 3, 3, 0],
       [
-        [[1, 4], [1, 3, 2, 2, 3, 3, 0]],
-        [[4, 5], [1, 3, 2, 2, 0, 0, 0]],
-        [[3, 4], [1, 3, 2, 2, 0, 0, 0]],
-        [[0, 4, 5, 6], [1, 3, 2, 2, 1, 3, 2]],
-        [[2, 5, 6], [1, 3, 0, 2, 1, 2, 0]],
+        [
+          [1, 4],
+          [1, 3, 2, 2, 3, 3, 0],
+        ],
+        [
+          [4, 5],
+          [1, 3, 2, 2, 0, 0, 0],
+        ],
+        [
+          [3, 4],
+          [1, 3, 2, 2, 0, 0, 0],
+        ],
+        [
+          [0, 4, 5, 6],
+          [1, 3, 2, 2, 1, 3, 2],
+        ],
+        [
+          [2, 5, 6],
+          [1, 3, 0, 2, 1, 2, 0],
+        ],
         [[6], [1, 3, 0, 2, 1, 2, 3]],
-        [[0, 2, 4, 5, 6], [2, 3, 1, 2, 1, 2, 3]],
-        [[0, 1, 4, 6], [1, 3, 1, 2, 1, 2, 2]],
+        [
+          [0, 2, 4, 5, 6],
+          [2, 3, 1, 2, 1, 2, 3],
+        ],
+        [
+          [0, 1, 4, 6],
+          [1, 3, 1, 2, 1, 2, 2],
+        ],
       ],
       "settled out of region"
     );
@@ -1946,11 +2014,17 @@ describe("cycle handling against a from-scratch oracle", () => {
       const nodes = graphOf(shape, sources);
       let settlements = 0;
       const handle = new ComputableHandle<unknown[]>(() => settlements++);
-      handle.seat(Computable.forAll(nodes.map(node => node.catch(() => "E")), (...all) => all));
+      handle.seat(
+        Computable.forAll(
+          nodes.map(node => node.catch(() => "E")),
+          (...all) => all
+        )
+      );
       settleFixed.forEach(settle => settle());
       values.forEach((value, i) => fixed.has(i) || live[i].set(value));
       const history: string[] = [`initial ${JSON.stringify(values)} fixed ${JSON.stringify([...fixed])}`];
-      const describe = (batch: number): string => `graph ${graph} batch ${batch} shape ${JSON.stringify(shape)}; ${history.join("; ")}`;
+      const describe = (batch: number): string =>
+        `graph ${graph} batch ${batch} shape ${JSON.stringify(shape)}; ${history.join("; ")}`;
       expect(outcomes(nodes), describe(-1)).to.deep.equal(fresh(shape, values));
       const finalOutcomes = new Map<number, unknown>();
       const noteFinal = (seen: unknown[]): void =>
@@ -1975,7 +2049,10 @@ describe("cycle handling against a from-scratch oracle", () => {
         }
         history.push(`batch ${batch} changed ${JSON.stringify(changed)} -> ${JSON.stringify(values)}`);
         const seen = outcomes(nodes);
-        expect(seen.filter(outcome => typeof outcome === "string" && outcome.startsWith("unsettled")), describe(batch)).to.deep.equal([]);
+        expect(
+          seen.filter(outcome => typeof outcome === "string" && outcome.startsWith("unsettled")),
+          describe(batch)
+        ).to.deep.equal([]);
         expect(settlements, `${describe(batch)}: settlements`).to.be.at.most(1);
         expect(seen, describe(batch)).to.deep.equal(fresh(shape, values));
         for (const [i, outcome] of finalOutcomes) {

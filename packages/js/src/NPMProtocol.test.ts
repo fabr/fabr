@@ -91,7 +91,6 @@ describe("parseMetadataResponse", () => {
   });
 });
 
-
 describe("expectedTarballDigest", () => {
   it("prefers the strongest SRI algorithm over a weaker one and the legacy shasum", () => {
     expect(expectedTarballDigest({ integrity: "sha256-aaa sha512-bbb", shasum: "ccc" })).to.deep.equal({
@@ -125,7 +124,11 @@ describe("verifying a tarball against its dist digest", () => {
 
   /** Feed `bytes` through the hashing pass-through to completion, then verify. */
   async function check(dist: { integrity?: string; shasum?: string }): Promise<void> {
-    const { stream, verify } = verifiedStream(Readable.from([bytes]), expectedTarballDigest(dist), "https://example.com/pkg-1.0.0.tgz");
+    const { stream, verify } = verifiedStream(
+      Readable.from([bytes]),
+      expectedTarballDigest(dist),
+      "https://example.com/pkg-1.0.0.tgz"
+    );
     await new Promise<void>((resolve, reject) => {
       stream.on("data", () => undefined);
       stream.on("end", resolve);
@@ -358,17 +361,25 @@ describe("versionMetadataOf", () => {
       licenses: [{ text: "MIT OR Apache-2.0" }],
       hashes: [{ algorithm: "sha512", encoding: "base64", value: "AAAA" }],
     });
-    expect(versionMetadataOf({ name: "x", version: "1.0.0", dist: { tarball: dist.tarball, shasum: "ABC" }, license: { type: "BSD-3-Clause", url: "https://x/LICENSE" } }).licenses).to.deep.equal([
-      { text: "BSD-3-Clause", url: "https://x/LICENSE" },
-    ]);
-    expect(versionMetadataOf({ name: "x", version: "1.0.0", dist, licenses: [{ type: "MIT" }, { type: "GPL-2.0", url: "https://x/GPL" }] }).licenses).to.deep.equal([
-      { text: "MIT" },
-      { text: "GPL-2.0", url: "https://x/GPL" },
-    ]);
+    expect(
+      versionMetadataOf({
+        name: "x",
+        version: "1.0.0",
+        dist: { tarball: dist.tarball, shasum: "ABC" },
+        license: { type: "BSD-3-Clause", url: "https://x/LICENSE" },
+      }).licenses
+    ).to.deep.equal([{ text: "BSD-3-Clause", url: "https://x/LICENSE" }]);
+    expect(
+      versionMetadataOf({ name: "x", version: "1.0.0", dist, licenses: [{ type: "MIT" }, { type: "GPL-2.0", url: "https://x/GPL" }] })
+        .licenses
+    ).to.deep.equal([{ text: "MIT" }, { text: "GPL-2.0", url: "https://x/GPL" }]);
   });
 
   it("states nothing where the manifest declares no licence and the registry no digest", () => {
-    expect(versionMetadataOf({ name: "x", version: "1.0.0", dist: { tarball: dist.tarball } })).to.deep.equal({ licenses: [], hashes: [] });
+    expect(versionMetadataOf({ name: "x", version: "1.0.0", dist: { tarball: dist.tarball } })).to.deep.equal({
+      licenses: [],
+      hashes: [],
+    });
   });
 });
 

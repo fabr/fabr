@@ -31,7 +31,10 @@ export class MemoryFile implements IFile {
 
   /** An in-memory file is a non-executable regular file unless a producer asks
    * otherwise (e.g. a rule stamping a generated script executable). */
-  constructor(buffer: Buffer, public mode: number = DEFAULT_FILE_MODE) {
+  constructor(
+    buffer: Buffer,
+    public mode: number = DEFAULT_FILE_MODE
+  ) {
     this.content = buffer;
     this.hash = hashString(buffer);
     this.mime = sniffMime(buffer);

@@ -131,7 +131,14 @@ describe("Pack", () => {
         const chunks: Buffer[] = [];
         stream.on("data", (chunk: Buffer) => chunks.push(chunk));
         stream.on("end", () => {
-          headers.push({ name: h.name, type: h.type ?? "unknown", mode: h.mode, uid: h.uid, gid: h.gid, body: Buffer.concat(chunks).toString() });
+          headers.push({
+            name: h.name,
+            type: h.type ?? "unknown",
+            mode: h.mode,
+            uid: h.uid,
+            gid: h.gid,
+            body: Buffer.concat(chunks).toString(),
+          });
           next();
         });
       });
@@ -158,7 +165,10 @@ describe("Pack", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-pack-cache-"));
     const cache = new BuildCache(dir, new LogFormatter(LogLevel.Info, () => undefined));
     const work = path.join(dir, "work");
-    const own = path.join(work, fs.readdirSync(work).find(name => name.endsWith(`-${process.pid}`))!);
+    const own = path.join(
+      work,
+      fs.readdirSync(work).find(name => name.endsWith(`-${process.pid}`))!
+    );
     fs.chmodSync(own, 0o500);
     try {
       const files = new FileSet(new Map([["big.bin", new MemoryFile(Buffer.alloc(1024 * 1024, 7))]]));
@@ -259,7 +269,10 @@ describe("Pack", () => {
   });
 
   it("gives every directory above a file an entry of its own, before its contents, when asked", async () => {
-    const headers = await headersOf(await writtenTar(fileSetOf({ "a/b/c.txt": "c", "a-z.txt": "z", "a/d.txt": "d" }), { directories: true }), true);
+    const headers = await headersOf(
+      await writtenTar(fileSetOf({ "a/b/c.txt": "c", "a-z.txt": "z", "a/d.txt": "d" }), { directories: true }),
+      true
+    );
     expect(headers.map(h => [h.name.replace(/\/$/, ""), h.type])).to.deep.equal([
       ["a-z.txt", "file"],
       ["a", "directory"],

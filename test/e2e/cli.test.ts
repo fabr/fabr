@@ -137,8 +137,7 @@ describe("e2e: driver CLI", () => {
      * The formatter must surface both attributed sides — each contributor traced
      * to its underlying file — not just the one-line message. */
     const conflict = {
-      "PROJECT.fabr":
-        "adir = src:a/* -> *;\nbdir = src:b/* -> *;\nscript clash { deps = adir bdir; entry = src:a/go.sh; }\n",
+      "PROJECT.fabr": "adir = src:a/* -> *;\nbdir = src:b/* -> *;\nscript clash { deps = adir bdir; entry = src:a/go.sh; }\n",
       "src/a/go.sh": "true\n",
       "src/a/dup.txt": "FROM A\n",
       "src/b/dup.txt": "FROM B\n",
@@ -421,7 +420,10 @@ describe("e2e: markers and wildcards on a name", () => {
     "d/f2": "",
     srx: "",
   };
-  const listed = (name: string): string[] => runFabr(project, ["ls", "-q", name]).stdout.split("\n").filter(line => line !== "");
+  const listed = (name: string): string[] =>
+    runFabr(project, ["ls", "-q", name])
+      .stdout.split("\n")
+      .filter(line => line !== "");
 
   it("reads a quoted name ending in a marker character as the file it names", () => {
     expect(listed("QUOTED")).to.deep.equal(["hey you!"]);

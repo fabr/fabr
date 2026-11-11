@@ -45,7 +45,10 @@ import { MAVEN_FORMAT } from "../MavenProtocol";
 /** The `javadoc` rule. */
 export default defineRule({
   requirements(context) {
-    return { build: { srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps", undefined, MAVEN_FORMAT) }, result: "files" };
+    return {
+      build: { srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps", undefined, MAVEN_FORMAT) },
+      result: "files",
+    };
   },
   evaluateMaterialized(context, inputs) {
     return generateJavadoc(context, inputs);

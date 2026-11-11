@@ -172,7 +172,7 @@ export class Namespace {
    * with `name`'s own; ends where a base is not declared or one repeats. */
   public getTargetDefChain(name: string): ITargetDefDecl[] {
     const chain: ITargetDefDecl[] = [];
-    for (let def = this.getTargetDef(name); def !== undefined && !chain.includes(def); ) {
+    for (let def = this.getTargetDef(name); def !== undefined && !chain.includes(def);) {
       chain.push(def);
       def = def.extends === undefined ? undefined : this.getTargetDef(def.extends.name);
     }

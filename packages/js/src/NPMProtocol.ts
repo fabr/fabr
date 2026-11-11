@@ -182,9 +182,7 @@ export function platformGateAdmits(gate: unknown, value: string | undefined): bo
  */
 export function matchesTargetPlatform(meta: PlatformGates, target: NpmPlatform): boolean {
   return (
-    platformGateAdmits(meta.os, target.os) &&
-    platformGateAdmits(meta.cpu, target.cpu) &&
-    platformGateAdmits(meta.libc, target.libc)
+    platformGateAdmits(meta.os, target.os) && platformGateAdmits(meta.cpu, target.cpu) && platformGateAdmits(meta.libc, target.libc)
   );
 }
 
@@ -254,10 +252,7 @@ export function versionMetadataOf(meta: INPMPackageMetadata): IVersionMetadata {
   return { licenses, hashes: digest === undefined ? [] : [digest] };
 }
 
-export function expectedTarballDigest(dist: {
-  integrity?: string;
-  shasum?: string;
-}): ExpectedDigest | undefined {
+export function expectedTarballDigest(dist: { integrity?: string; shasum?: string }): ExpectedDigest | undefined {
   const sri = dist.integrity ? parseIntegrity(dist.integrity) : undefined;
   if (sri) {
     return sri;
@@ -337,7 +332,11 @@ function provenanceAttachment(bundle: SerializedBundle): { content_type: string;
  * public, asking with `headers`' credential; undefined where the registry has
  * no such package.
  */
-export function packageVisibility(registryUrl: string, name: string, headers: Record<string, string>): Computable<boolean | undefined> {
+export function packageVisibility(
+  registryUrl: string,
+  name: string,
+  headers: Record<string, string>
+): Computable<boolean | undefined> {
   return sendRequest(`${registryUrl}/-/package/${name.replace(/\//g, "%2f")}/visibility`, {
     method: "GET",
     headers: { ...headers, accept: "application/json" },

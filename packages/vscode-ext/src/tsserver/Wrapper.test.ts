@@ -40,7 +40,12 @@ interface IServer {
 function startServer(tsdkLib: string): IServer {
   const child: ChildProcess = spawn(
     process.execPath,
-    [path.join(tsdkLib, "tsserver.js"), "--useInferredProjectPerProjectRoot", "--disableAutomaticTypingAcquisition", "--canUseWatchEvents"],
+    [
+      path.join(tsdkLib, "tsserver.js"),
+      "--useInferredProjectPerProjectRoot",
+      "--disableAutomaticTypingAcquisition",
+      "--canUseWatchEvents",
+    ],
     { stdio: ["pipe", "pipe", "pipe"] }
   );
   let buffer = Buffer.alloc(0);
@@ -141,8 +146,23 @@ describe("tsserver wrapper", () => {
 
   it("keeps the client's watch events where no fabr project is registered, and drops them where one is", () => {
     const argv = ["node", "tsserver.js", "--canUseWatchEvents", "--globalPlugins", "other"];
-    expect(withPlugin(argv, "/probe", false)).to.deep.equal(["node", "tsserver.js", "--canUseWatchEvents", "--globalPlugins", "other,fabr-tsserver-shim", "--pluginProbeLocations", "/probe"]);
-    expect(withPlugin(argv, "/probe", true)).to.deep.equal(["node", "tsserver.js", "--globalPlugins", "other,fabr-tsserver-shim", "--pluginProbeLocations", "/probe"]);
+    expect(withPlugin(argv, "/probe", false)).to.deep.equal([
+      "node",
+      "tsserver.js",
+      "--canUseWatchEvents",
+      "--globalPlugins",
+      "other,fabr-tsserver-shim",
+      "--pluginProbeLocations",
+      "/probe",
+    ]);
+    expect(withPlugin(argv, "/probe", true)).to.deep.equal([
+      "node",
+      "tsserver.js",
+      "--globalPlugins",
+      "other,fabr-tsserver-shim",
+      "--pluginProbeLocations",
+      "/probe",
+    ]);
   });
 
   it("serves a registered project's config in place of the real one", async () => {

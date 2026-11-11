@@ -170,7 +170,11 @@ class RequiringTarget extends ResolvedTarget {
           },
         ])
       ) as never,
-      [...requirements].map(() => ({ conflicts: NO_CONFLICTS, conflictsAmong: () => Computable.resolve(NO_CONFLICTS), collection: NO_COLLECTION })),
+      [...requirements].map(() => ({
+        conflicts: NO_CONFLICTS,
+        conflictsAmong: () => Computable.resolve(NO_CONFLICTS),
+        collection: NO_COLLECTION,
+      })),
       false,
       undefined,
       fixes
@@ -195,7 +199,10 @@ function runTarget(deps: Dependency[]): ResolvedName {
     "app",
     new Map([["build", [{ reference: new TargetRef({} as TargetSource, "app"), package: build }]]])
   );
-  return { title: "app", resolved: ResolvedRequirements.of([run], [new TargetRef({} as TargetSource, "app")], NO_CONFLICTS, NO_COLLECTION) };
+  return {
+    title: "app",
+    resolved: ResolvedRequirements.of([run], [new TargetRef({} as TargetSource, "app")], NO_CONFLICTS, NO_COLLECTION),
+  };
 }
 
 /** The patched target `name` made from `from`, fixing `fixes`, as the edge the reference to it makes. */
@@ -253,7 +260,6 @@ const MINIMIST: Advisory = {
     { purl: "pkg:test/minimist", fixed: ["1.2.6"] },
   ],
 };
-
 
 describe("auditedPackages", () => {
   it("lists each registry package once, at its exact version, with the first path per tree and the count of its other edges", async () => {

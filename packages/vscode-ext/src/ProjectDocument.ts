@@ -156,7 +156,10 @@ export function composeProject(input: {
     const configs = here.map((_unit, i) => path.join(root, shared ? `tsconfig.fabr-${i}.json` : "tsconfig.json"));
     if (shared) {
       const solution = path.join(input.storage, "solutions", String(index), "tsconfig.json");
-      files.set(solution, JSON.stringify({ files: [], references: configs.map(config => ({ path: `./${path.basename(config)}` })) }, null, 2) + "\n");
+      files.set(
+        solution,
+        JSON.stringify({ files: [], references: configs.map(config => ({ path: `./${path.basename(config)}` })) }, null, 2) + "\n"
+      );
       links.set(path.join(root, "tsconfig.json"), solution);
     }
     here.forEach((unit, i) => {

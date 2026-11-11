@@ -35,7 +35,18 @@ import { mapComputable } from "../support/Functional";
 import { ConflictError, ExecutionError, FabrError } from "./Errors";
 import { FileSet, IFile } from "./FileSet";
 import { FSFile } from "./FSFileSource";
-import { copyFile, deleteFile, hardlink, hashFile, mkdir, readOnlyPermissions, rename, symlink, walkTree, writeFile } from "./FSWrapper";
+import {
+  copyFile,
+  deleteFile,
+  hardlink,
+  hashFile,
+  mkdir,
+  readOnlyPermissions,
+  rename,
+  symlink,
+  walkTree,
+  writeFile,
+} from "./FSWrapper";
 import { Name } from "./Name";
 import { HostLink, SymlinkFile } from "./SymlinkFile";
 import { describeSystemError, killLiveChildren } from "../support/Execute";
@@ -316,14 +327,16 @@ export function syncFileSet(targetDir: string, before: FileSet, after: FileSet):
  * replaced rather than written through. */
 export function stageWrite(temp: string, targetName: string, create: Computable<void>): Computable<void> {
   return asExecutionError(
-    create.then(() => rename(temp, targetName)).catch(err => {
-      try {
-        fs.rmSync(temp, { force: true });
-      } catch {
-        /* best-effort — never outrank the original failure */
-      }
-      throw err;
-    })
+    create
+      .then(() => rename(temp, targetName))
+      .catch(err => {
+        try {
+          fs.rmSync(temp, { force: true });
+        } catch {
+          /* best-effort — never outrank the original failure */
+        }
+        throw err;
+      })
   );
 }
 

@@ -67,12 +67,16 @@ async function loadVitest(root: string): Promise<IVitestNode> {
   try {
     manifest = fromInstall.resolve("vitest/package.json");
   } catch {
-    throw new Error("These tests run under vitest, but 'vitest' is not among the target's dependencies.\nAdd it to the target's test_deps.");
+    throw new Error(
+      "These tests run under vitest, but 'vitest' is not among the target's dependencies.\nAdd it to the target's test_deps."
+    );
   }
   const { version } = JSON.parse(fs.readFileSync(manifest, "utf8")) as { version?: string };
   const [major, minor] = (version ?? "").split(".").map(Number);
   if (!(major > MINIMUM_VITEST[0] || (major === MINIMUM_VITEST[0] && minor >= MINIMUM_VITEST[1]))) {
-    throw new Error(`fabr runs vitest ${MINIMUM_VITEST.join(".")} or later, but the target's vitest is ${version ?? "an unreadable version"}.`);
+    throw new Error(
+      `fabr runs vitest ${MINIMUM_VITEST.join(".")} or later, but the target's vitest is ${version ?? "an unreadable version"}.`
+    );
   }
   return (await importModule(pathToFileURL(fromInstall.resolve("vitest/node")).href)) as IVitestNode;
 }
@@ -87,7 +91,11 @@ async function runTests(options: IRunnerOptions, root: string): Promise<ITestRes
     },
   };
   const children = childPreloads(options);
-  const vitest = await startVitest("test", [], vitestOptions(options, root, [path.join(__dirname, "preload.js")], reporter, children.preloads));
+  const vitest = await startVitest(
+    "test",
+    [],
+    vitestOptions(options, root, [path.join(__dirname, "preload.js")], reporter, children.preloads)
+  );
   await vitest.close();
   children.finish();
   return results;

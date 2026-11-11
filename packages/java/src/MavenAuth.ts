@@ -26,13 +26,7 @@
 
 import * as os from "node:os";
 import * as path from "node:path";
-import {
-  Computable,
-  Credential,
-  ExecutionContext,
-  FabrError,
-  PluginKey,
-} from "@fabr-build/core";
+import { Computable, Credential, ExecutionContext, FabrError, PluginKey } from "@fabr-build/core";
 import { parseXml, xmlChild, xmlChildren, xmlText, XmlElement } from "./Xml";
 
 /** A server's credentials, as `settings.xml` states them. */
@@ -60,9 +54,9 @@ function credential(server: XmlElement, field: string, id: string): string | und
     return undefined;
   }
   if (/^\{.*\}$/s.test(text.trim())) {
-    throw new FabrError(`settings.xml's ${field} for server '${id}' is encrypted with Maven's master password, which fabr cannot read`).withHelp(
-      `write it as \${env.NAME}, read from an environment variable`
-    );
+    throw new FabrError(
+      `settings.xml's ${field} for server '${id}' is encrypted with Maven's master password, which fabr cannot read`
+    ).withHelp(`write it as \${env.NAME}, read from an environment variable`);
   }
   return interpolated(text);
 }
@@ -113,7 +107,9 @@ export class MavenAuth {
   public static credential(load: () => Computable<MavenAuth>, id: string): Credential {
     return {
       authorize: (_request, challenge) =>
-        challenge !== undefined ? Computable.resolve<ReadonlyMap<string, string> | undefined>(undefined) : load().then(auth => auth.headersFor(id)),
+        challenge !== undefined
+          ? Computable.resolve<ReadonlyMap<string, string> | undefined>(undefined)
+          : load().then(auth => auth.headersFor(id)),
     };
   }
 

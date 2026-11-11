@@ -44,7 +44,27 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 const STYLESHEET_EXTENSIONS = ["css", "scss", "sass", "less", "styl"];
 
 /** Binaries a bundler would have turned into a URL. */
-const BINARY_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "svg", "webp", "avif", "bmp", "ico", "woff", "woff2", "ttf", "otf", "eot", "mp4", "webm", "ogg", "mp3", "wav"];
+const BINARY_EXTENSIONS = [
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "svg",
+  "webp",
+  "avif",
+  "bmp",
+  "ico",
+  "woff",
+  "woff2",
+  "ttf",
+  "otf",
+  "eot",
+  "mp4",
+  "webm",
+  "ogg",
+  "mp3",
+  "wav",
+];
 
 function extensionPattern(extensions: string[]): RegExp {
   return new RegExp(`\\.(${extensions.join("|")})$`, "i");
@@ -115,7 +135,11 @@ export function installAssetHooks(): void {
           /* The stub cannot be handed over as a value, only as module source:
            * one that reaches back here for it. */
           const stub = `createRequire(${JSON.stringify(url)})(${JSON.stringify(__filename)}).assetStubFor(${JSON.stringify(fileURLToPath(url))})`;
-          return { format: "module", source: `import { createRequire } from "node:module";\nexport default ${stub};\n`, shortCircuit: true };
+          return {
+            format: "module",
+            source: `import { createRequire } from "node:module";\nexport default ${stub};\n`,
+            shortCircuit: true,
+          };
         }
         return next(url, context);
       },

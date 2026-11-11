@@ -33,7 +33,12 @@ describe("migrating a project", () => {
       "p/a/src/index.ts": "",
     });
     const first = await migrate(root, options);
-    expect(fs.readdirSync(root).filter(name => name.endsWith(".fabr")).sort()).to.deep.equal(["CATALOG.fabr", "PROJECT.fabr"]);
+    expect(
+      fs
+        .readdirSync(root)
+        .filter(name => name.endsWith(".fabr"))
+        .sort()
+    ).to.deep.equal(["CATALOG.fabr", "PROJECT.fabr"]);
     expect(first.render().join("\n")).to.include("a: @types/node (ambient types)");
 
     fs.writeFileSync(path.join(root, "CATALOG.fabr"), "# mine\n");

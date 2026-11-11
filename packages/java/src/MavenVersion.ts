@@ -97,7 +97,11 @@ function parseItem(text: string, combination: boolean, isDigit: boolean): Item {
   if (combination) {
     const joined = text.replace(/-/g, "");
     const index = [...joined].findIndex(isDigitChar);
-    return { kind: "combination", qualifier: stringItem(joined.substring(0, index), true), number: parseItem(joined.substring(index), false, true) };
+    return {
+      kind: "combination",
+      qualifier: stringItem(joined.substring(0, index), true),
+      number: parseItem(joined.substring(index), false, true),
+    };
   }
   return isDigit ? { kind: "int", value: BigInt(text) } : stringItem(text, false);
 }
@@ -333,7 +337,9 @@ function parseRange(text: string): Interval[] {
 
 export function parseMavenConstraint(text: string): MavenConstraint {
   const trimmed = text.trim();
-  return /^[[(]/.test(trimmed) ? { kind: "range", intervals: parseRange(trimmed) } : { kind: "soft", floor: parseMavenVersion(trimmed) };
+  return /^[[(]/.test(trimmed)
+    ? { kind: "range", intervals: parseRange(trimmed) }
+    : { kind: "soft", floor: parseMavenVersion(trimmed) };
 }
 
 function admits(interval: Interval, version: MavenVersion): boolean {
@@ -359,7 +365,9 @@ function minimumOf(constraint: MavenConstraint): MavenVersion {
   if (constraint.kind === "soft") {
     return constraint.floor;
   }
-  const floors = constraint.intervals.map(({ lower }) => (lower === undefined ? ZERO : lower.inclusive ? lower.version : justAbove(lower.version)));
+  const floors = constraint.intervals.map(({ lower }) =>
+    lower === undefined ? ZERO : lower.inclusive ? lower.version : justAbove(lower.version)
+  );
   return floors.reduce((lowest, floor) => (compareMavenVersions(floor, lowest) < 0 ? floor : lowest));
 }
 
@@ -390,7 +398,9 @@ export const MAVEN_VERSIONS: VersionDomain<MavenVersion, MavenConstraint> = {
         return constraint.floor;
       }
       const [only] = constraint.intervals;
-      return constraint.intervals.length === 1 && only.lower !== undefined && only.lower === only.upper ? only.lower.version : undefined;
+      return constraint.intervals.length === 1 && only.lower !== undefined && only.lower === only.upper
+        ? only.lower.version
+        : undefined;
     } catch {
       return undefined;
     }
@@ -433,9 +443,19 @@ function intervalsOf(constraint: MavenConstraint): readonly Interval[] {
 /** @return what of `interval` lies outside `removed`: below it, and above it. */
 function subtract(interval: Interval, removed: Interval): Interval[] {
   const below: Interval | undefined =
-    removed.lower === undefined ? undefined : { lower: interval.lower, upper: lesserUpper(interval.upper, { version: removed.lower.version, inclusive: !removed.lower.inclusive }) };
+    removed.lower === undefined
+      ? undefined
+      : {
+          lower: interval.lower,
+          upper: lesserUpper(interval.upper, { version: removed.lower.version, inclusive: !removed.lower.inclusive }),
+        };
   const above: Interval | undefined =
-    removed.upper === undefined ? undefined : { lower: greaterLower(interval.lower, { version: removed.upper.version, inclusive: !removed.upper.inclusive }), upper: interval.upper };
+    removed.upper === undefined
+      ? undefined
+      : {
+          lower: greaterLower(interval.lower, { version: removed.upper.version, inclusive: !removed.upper.inclusive }),
+          upper: interval.upper,
+        };
   return [below, above].filter((piece): piece is Interval => piece !== undefined && !isEmpty(piece));
 }
 
@@ -447,15 +467,24 @@ function subtract(interval: Interval, removed: Interval): Interval[] {
 export function rangeExcluding(constraint: MavenConstraint, rejected: readonly MavenConstraint[]): string | undefined {
   /* A rejected version is that version alone, not a floor. */
   const removed = rejected.flatMap(reject =>
-    reject.kind === "soft" ? [{ lower: { version: reject.floor, inclusive: true }, upper: { version: reject.floor, inclusive: true } }] : reject.intervals
+    reject.kind === "soft"
+      ? [{ lower: { version: reject.floor, inclusive: true }, upper: { version: reject.floor, inclusive: true } }]
+      : reject.intervals
   );
-  const kept = removed.reduce<Interval[]>((intervals, cut) => intervals.flatMap(interval => subtract(interval, cut)), [...intervalsOf(constraint)]);
+  const kept = removed.reduce<Interval[]>(
+    (intervals, cut) => intervals.flatMap(interval => subtract(interval, cut)),
+    [...intervalsOf(constraint)]
+  );
   if (kept.length === 0) {
     return undefined;
   }
   return kept
     .map(({ lower, upper }) =>
-      lower !== undefined && upper !== undefined && lower.inclusive && upper.inclusive && compareMavenVersions(lower.version, upper.version) === 0
+      lower !== undefined &&
+      upper !== undefined &&
+      lower.inclusive &&
+      upper.inclusive &&
+      compareMavenVersions(lower.version, upper.version) === 0
         ? `[${lower.version.text}]`
         : `${lower?.inclusive ? "[" : "("}${lower?.version.text ?? ""},${upper?.version.text ?? ""}${upper?.inclusive ? "]" : ")"}`
     )

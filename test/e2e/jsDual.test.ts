@@ -34,8 +34,7 @@ describe("e2e: dual js_package", () => {
   };
   const projectWith = (properties: string): Record<string, string> => ({
     ...base,
-    "PROJECT.fabr":
-      "plugin @fabr-build/js;\n\n" + STUB_TSC_CONFIG + `\njs_package thing { srcs = src:**/*.ts; ${properties} }\n`,
+    "PROJECT.fabr": "plugin @fabr-build/js;\n\n" + STUB_TSC_CONFIG + `\njs_package thing { srcs = src:**/*.ts; ${properties} }\n`,
   });
 
   const dual = (properties: string, ...args: string[]): { status: number | null; stdout: string; stderr: string } =>

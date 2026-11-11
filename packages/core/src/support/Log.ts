@@ -256,9 +256,7 @@ export class LogFormatter implements Log {
     const sevSgr = level === LogLevel.Error ? SGR_ERROR : level === LogLevel.Warn ? SGR_WARN : SGR_INFO;
     /* The gutter is sized by the widest line number the block excerpts */
     const locs = [detail.loc, ...(detail.notes ?? []).map(note => note.loc)];
-    const width = Math.max(
-      ...locs.map(loc => String(loc?.reader.resolvePosition(loc.offset)?.line ?? 0).length)
-    );
+    const width = Math.max(...locs.map(loc => String(loc?.reader.resolvePosition(loc.offset)?.line ?? 0).length));
     const lines: string[] = [];
     const [headline, ...restLines] = message.split("\n");
     lines.push(`${this.paint(sevSgr, getLogLevelName(level))}${this.paint(SGR_BOLD, `: ${headline}`)}`);
@@ -297,10 +295,7 @@ export class LogFormatter implements Log {
     let extent = 1;
     if (loc.endOffset !== undefined && loc.endOffset > loc.offset) {
       const end = loc.reader.resolvePosition(loc.endOffset);
-      extent =
-        end && end.line === pos.line
-          ? Math.max(1, end.column - pos.column)
-          : Math.max(1, pos.lineText.length - pos.column + 1);
+      extent = end && end.line === pos.line ? Math.max(1, end.column - pos.column) : Math.max(1, pos.lineText.length - pos.column + 1);
     }
     const marker = this.paint(markerSgr, "^".repeat(extent) + (label ? ` ${label}` : ""));
     lines.push(`${bar} ${" ".repeat(pos.column - 1)}${marker}`);

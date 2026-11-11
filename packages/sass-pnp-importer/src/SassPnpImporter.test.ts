@@ -127,7 +127,10 @@ function yarnApi(root: string, state: Record<string, unknown>): IPnpApi {
 /** Compile `source` as the workspace's `src/entry.scss`, through the importer. */
 function compile(root: string, state: Record<string, unknown>, source: string): string {
   return sass
-    .compileString(source, { url: pathToFileURL(path.join(root, "src", "entry.scss")), importers: [sassPnpImporter({ pnpApi: yarnApi(root, state) })] })
+    .compileString(source, {
+      url: pathToFileURL(path.join(root, "src", "entry.scss")),
+      importers: [sassPnpImporter({ pnpApi: yarnApi(root, state) })],
+    })
     .css.trim();
 }
 
@@ -167,16 +170,32 @@ describe("sassPnpImporter, searching a package as Sass searches a load path", ()
   for (const [index, files] of layouts.entries()) {
     it(`agrees with Sass's own search over layout ${index + 1} (${Object.keys(files).join(", ")})`, () => {
       const { root, state } = workspace(
-        [{ name: "pkg", reference: "1", location: "./pkgs/pkg/", dependencies: [["pkg", "1"]], files: { "package.json": "{}", ...files } }],
+        [
+          {
+            name: "pkg",
+            reference: "1",
+            location: "./pkgs/pkg/",
+            dependencies: [["pkg", "1"]],
+            files: { "package.json": "{}", ...files },
+          },
+        ],
         [["pkg", "1"]]
       );
       for (const request of requests) {
         for (const rule of ["@use", "@import"]) {
           const source = `${rule} "pkg/${request}";\n`;
           const native = outcome(() =>
-            sass.compileString(source, { url: pathToFileURL(path.join(root, "src", "entry.scss")), loadPaths: [path.join(root, "pkgs")] }).css.trim()
+            sass
+              .compileString(source, {
+                url: pathToFileURL(path.join(root, "src", "entry.scss")),
+                loadPaths: [path.join(root, "pkgs")],
+              })
+              .css.trim()
           );
-          expect(outcome(() => compile(root, state, source)), `${source.trim()} over ${Object.keys(files).join(", ")}`).to.equal(native);
+          expect(
+            outcome(() => compile(root, state, source)),
+            `${source.trim()} over ${Object.keys(files).join(", ")}`
+          ).to.equal(native);
         }
       }
     });
@@ -202,12 +221,12 @@ describe("sassPnpImporter, resolving what a package publishes", () => {
   });
 
   it("takes the root from the sass field, then the style field", () => {
-    expect(resolve({ "package.json": JSON.stringify({ sass: "lib/main.scss" }), "lib/main.scss": rule("sass field") }, '@use "pkg";')).to.contain(
-      "sass field"
-    );
-    expect(resolve({ "package.json": JSON.stringify({ style: "lib/main.css" }), "lib/main.css": rule("style field") }, '@use "pkg";')).to.contain(
-      "style field"
-    );
+    expect(
+      resolve({ "package.json": JSON.stringify({ sass: "lib/main.scss" }), "lib/main.scss": rule("sass field") }, '@use "pkg";')
+    ).to.contain("sass field");
+    expect(
+      resolve({ "package.json": JSON.stringify({ style: "lib/main.css" }), "lib/main.css": rule("style field") }, '@use "pkg";')
+    ).to.contain("style field");
   });
 
   it("takes the root's own index when nothing names an entry", () => {
@@ -220,13 +239,21 @@ describe("sassPnpImporter, resolving what a package publishes", () => {
   });
 
   it("reports two exported candidates for one load as ambiguous", () => {
-    const files = { "package.json": JSON.stringify({ exports: { "./*": "./src/*" } }), "src/_colors.scss": rule("a"), "src/colors.scss": rule("b") };
+    const files = {
+      "package.json": JSON.stringify({ exports: { "./*": "./src/*" } }),
+      "src/_colors.scss": rule("a"),
+      "src/colors.scss": rule("b"),
+    };
     expect(resolve(files, '@use "pkg/colors";')).to.equal("<error>");
   });
 
   it("falls through to the package's directory when exports publish nothing for a stylesheet", () => {
     /* A map describing the package's JavaScript is no boundary for its Sass. */
-    const files = { "package.json": JSON.stringify({ exports: { ".": "./index.js" } }), "index.js": "", "scss/_colors.scss": rule("unexported") };
+    const files = {
+      "package.json": JSON.stringify({ exports: { ".": "./index.js" } }),
+      "index.js": "",
+      "scss/_colors.scss": rule("unexported"),
+    };
     expect(resolve(files, '@use "pkg/scss/colors";')).to.contain("unexported");
   });
 
@@ -268,8 +295,20 @@ describe("sassPnpImporter, loading from inside a package", () => {
         { name: "theme", reference: "b", location: "./pkgs/__virtual__/bbbb/0/theme/", dependencies: [["tokens", "2"]], files: {} },
         { name: "tokens", reference: "1", location: "./pkgs/tokens1/", files: tokens("one") },
         { name: "tokens", reference: "2", location: "./pkgs/tokens2/", files: tokens("two") },
-        { name: "left", reference: "1", location: "./pkgs/left/", dependencies: [["theme", "a"]], files: { "package.json": "{}", "_index.scss": '@forward "theme";\n' } },
-        { name: "right", reference: "1", location: "./pkgs/right/", dependencies: [["theme", "b"]], files: { "package.json": "{}", "_index.scss": '@forward "theme";\n' } },
+        {
+          name: "left",
+          reference: "1",
+          location: "./pkgs/left/",
+          dependencies: [["theme", "a"]],
+          files: { "package.json": "{}", "_index.scss": '@forward "theme";\n' },
+        },
+        {
+          name: "right",
+          reference: "1",
+          location: "./pkgs/right/",
+          dependencies: [["theme", "b"]],
+          files: { "package.json": "{}", "_index.scss": '@forward "theme";\n' },
+        },
       ],
       [
         ["left", "1"],
@@ -301,11 +340,21 @@ describe("sassPnpImporter under Yarn's own runtime", () => {
     /* A separate process with Yarn's loader preloaded, as `yarn node` runs one:
      * the importer is constructed with no options at all. */
     const { root, state } = workspace(
-      [{ name: "pkg", reference: "1", location: "./pkgs/pkg/", dependencies: [["pkg", "1"]], files: { "package.json": "{}", "_colors.scss": rule("under yarn") } }],
+      [
+        {
+          name: "pkg",
+          reference: "1",
+          location: "./pkgs/pkg/",
+          dependencies: [["pkg", "1"]],
+          files: { "package.json": "{}", "_colors.scss": rule("under yarn") },
+        },
+      ],
       [["pkg", "1"]]
     );
     fs.writeFileSync(path.join(root, ".pnp.cjs"), yarnPnp.generateInlinedScript(settingsOf(state)));
-    const importer = fs.existsSync(path.join(__dirname, "index.js")) ? path.join(__dirname, "index.js") : path.join(__dirname, "..", "build", "index.js");
+    const importer = fs.existsSync(path.join(__dirname, "index.js"))
+      ? path.join(__dirname, "index.js")
+      : path.join(__dirname, "..", "build", "index.js");
     fs.writeFileSync(
       path.join(root, "src", "run.cjs"),
       [

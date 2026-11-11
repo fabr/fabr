@@ -80,14 +80,16 @@ function runPipeline(action: BuildAction, ctx: ActionContext, report: ITaskRepor
       /* One walk of the work dir collects both: each selection's files under the
        * names it gives them, a file both select in both. */
       const selections = [output, incremental].filter((selection): selection is Name => selection !== undefined);
-      return ctx.admit(report, () => getResultFileSets(ctx.workDir, selections)).then(collected => {
-        const written = output === undefined ? undefined : collected[0];
-        const state = incremental === undefined ? undefined : collected[collected.length - 1];
-        return {
-          result: output === undefined || written === undefined ? captured : outputOf(captured, written, output),
-          ...(state === undefined || state.size === 0 ? {} : { incrementalState: state }),
-        };
-      });
+      return ctx
+        .admit(report, () => getResultFileSets(ctx.workDir, selections))
+        .then(collected => {
+          const written = output === undefined ? undefined : collected[0];
+          const state = incremental === undefined ? undefined : collected[collected.length - 1];
+          return {
+            result: output === undefined || written === undefined ? captured : outputOf(captured, written, output),
+            ...(state === undefined || state.size === 0 ? {} : { incrementalState: state }),
+          };
+        });
     });
 }
 
@@ -157,7 +159,12 @@ export function stdinBytes(stdin: FileSet | undefined): Computable<Buffer | unde
 
 /* The version tracks what the step does and what its serialized stage spec
  * means; either changing is a bump. */
-export const PIPELINE_ACTION: IBuildActionDefinition = { id: "core:command-pipeline", version: 6, run: runPipeline, stage: stagePipelineStep };
+export const PIPELINE_ACTION: IBuildActionDefinition = {
+  id: "core:command-pipeline",
+  version: 6,
+  run: runPipeline,
+  stage: stagePipelineStep,
+};
 
 /** One stage of a pipeline as an action holds it: its command line, the
  * streams it captures, and the variables its runnable is launched with. */
@@ -194,20 +201,30 @@ export function envConfig(action: BuildAction): Map<string, string> {
 /** Stage the pipeline's files into `dir`. Its standard input is read from the
  * cache's tree pool through the link beside `dir`, as the run reads it from the
  * cache rather than the work directory. */
-function stagePipelineStep(action: BuildAction, dir: string, ensureTree: (files: FileSet) => Computable<string>): Computable<IStagedStep> {
+function stagePipelineStep(
+  action: BuildAction,
+  dir: string,
+  ensureTree: (files: FileSet) => Computable<string>
+): Computable<IStagedStep> {
   const specs = pipelineSpecs(action);
   const [input] = action.inputs.stdin instanceof FileSet ? [...action.inputs.stdin] : [];
-  const stdin = input === undefined ? Computable.resolve(undefined) : ensureTree(new FileSet(new Map([input]))).then(tree => path.posix.join(TREE_MOUNT, path.basename(tree), input[0]));
-  return Computable.forAll([stdin, writeFileSet(dir, FileSet.unionAll(fileSetInput(action, "files"), configFiles(action)))], stdinPath => ({
-    cwd: ".",
-    commands: [
-      {
-        stages: specs.map(spec => ({ ...spec, argv: [findExecutable(spec.argv[0], dir), ...spec.argv.slice(1)] })),
-        ...(stdinPath === undefined ? {} : { stdin: stdinPath }),
-      },
-    ],
-    env: envConfig(action),
-  }));
+  const stdin =
+    input === undefined
+      ? Computable.resolve(undefined)
+      : ensureTree(new FileSet(new Map([input]))).then(tree => path.posix.join(TREE_MOUNT, path.basename(tree), input[0]));
+  return Computable.forAll(
+    [stdin, writeFileSet(dir, FileSet.unionAll(fileSetInput(action, "files"), configFiles(action)))],
+    stdinPath => ({
+      cwd: ".",
+      commands: [
+        {
+          stages: specs.map(spec => ({ ...spec, argv: [findExecutable(spec.argv[0], dir), ...spec.argv.slice(1)] })),
+          ...(stdinPath === undefined ? {} : { stdin: stdinPath }),
+        },
+      ],
+      env: envConfig(action),
+    })
+  );
 }
 
 /** One stage as {@link stagePipeline} needs it: the runnable to launch plus its

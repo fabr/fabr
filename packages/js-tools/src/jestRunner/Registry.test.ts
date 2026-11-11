@@ -141,9 +141,7 @@ describe("MockRegistry", () => {
 
   describe("an unresolvable specifier", () => {
     it("is rejected by a non-virtual jest.mock, as jest rejects a typo'd module name", () => {
-      expect(() => registry().setMock("no-such-module-xyz", caller, () => ({}))).to.throw(
-        /Cannot find module 'no-such-module-xyz'/
-      );
+      expect(() => registry().setMock("no-such-module-xyz", caller, () => ({}))).to.throw(/Cannot find module 'no-such-module-xyz'/);
     });
 
     it("registers by text under {virtual: true}", () => {
@@ -253,8 +251,12 @@ describe("MockRegistry", () => {
     });
 
     it("leaves out the runner's own machinery, jest's libraries among it", () => {
-      expect(isRegistryModule(`${runner}/node_modules/.fabr/js-tools/node_modules/@fabr-build/js-tools/build/jestRunner/child.js`, runner)).to.equal(false);
-      expect(isRegistryModule(`${runner}/node_modules/.fabr/jest-mock@30.0.0/node_modules/jest-mock/build/index.js`, runner)).to.equal(false);
+      expect(
+        isRegistryModule(`${runner}/node_modules/.fabr/js-tools/node_modules/@fabr-build/js-tools/build/jestRunner/child.js`, runner)
+      ).to.equal(false);
+      expect(isRegistryModule(`${runner}/node_modules/.fabr/jest-mock@30.0.0/node_modules/jest-mock/build/index.js`, runner)).to.equal(
+        false
+      );
     });
 
     it("holds a package in a node_modules tree beside the tests", () => {
@@ -313,7 +315,9 @@ describe("MockRegistry", () => {
       const missing = (): never => {
         throw new Error("Cannot find module './y'");
       };
-      expect(() => makeResolveHook(registry())("./y", { parentURL: pathToFileURL(caller.filename).href }, missing)).to.throw(/Cannot find module/);
+      expect(() => makeResolveHook(registry())("./y", { parentURL: pathToFileURL(caller.filename).href }, missing)).to.throw(
+        /Cannot find module/
+      );
     });
   });
 

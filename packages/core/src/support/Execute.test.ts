@@ -70,7 +70,9 @@ function memoryOutput(): IOutputHandle {
 }
 
 function runPipeline(stages: Parameters<typeof executePipeline>[1], stdin?: Uint8Array): Promise<FileSet> {
-  return new Promise((resolve, reject) => executePipeline(LIMIT, stages, CWD, memoryOutput, stdin, SILENT_REPORT).then(resolve, reject));
+  return new Promise((resolve, reject) =>
+    executePipeline(LIMIT, stages, CWD, memoryOutput, stdin, SILENT_REPORT).then(resolve, reject)
+  );
 }
 
 /** The text of a captured file in the pipeline result. */
@@ -242,7 +244,14 @@ describe("execute", () => {
     const lines: string[] = [];
     const script = "process.stdout.write('out one\\nout two\\n'); console.error('err'); process.exit(0)";
     const outcomes = await collectSettlements(
-      execute(LIMIT, NODE, ["-e", script], process.cwd(), {}, { ...SILENT_REPORT, output: { line: (text: string) => lines.push(text) } })
+      execute(
+        LIMIT,
+        NODE,
+        ["-e", script],
+        process.cwd(),
+        {},
+        { ...SILENT_REPORT, output: { line: (text: string) => lines.push(text) } }
+      )
     );
     expect(outcomes).to.deep.equal([{ ok: true, value: undefined }]);
     /* Both streams reach the one sink (fabr's output is stderr either way). */
@@ -257,7 +266,14 @@ describe("execute", () => {
   it("reports a streamed failure's output in its message too, between the command and the outcome", async () => {
     const lines: string[] = [];
     const outcomes = await collectSettlements(
-      execute(LIMIT, NODE, ["-e", REASON_SCRIPT], process.cwd(), {}, { ...SILENT_REPORT, output: { line: (text: string) => lines.push(text) } })
+      execute(
+        LIMIT,
+        NODE,
+        ["-e", REASON_SCRIPT],
+        process.cwd(),
+        {},
+        { ...SILENT_REPORT, output: { line: (text: string) => lines.push(text) } }
+      )
     );
     expect(lines).to.deep.equal([REASON]);
     expect(outcomes[0].err?.message).to.match(new RegExp(`^\\$ .*\n${REASON}\nexited with error code 2$`));
@@ -273,10 +289,17 @@ describe("execute", () => {
       "process.stdout.write('Compiling: 41%');" +
       "setTimeout(() => { process.stderr.write('src/a.ts: error TS2322\\n'); process.stdout.write(' done\\n'); }, 60)";
     await collectSettlements(
-      execute(LIMIT, NODE, ["-e", script], process.cwd(), {}, {
-        ...SILENT_REPORT,
-        output: { line: (text: string, stream: string) => lines.push([stream, text]) },
-      })
+      execute(
+        LIMIT,
+        NODE,
+        ["-e", script],
+        process.cwd(),
+        {},
+        {
+          ...SILENT_REPORT,
+          output: { line: (text: string, stream: string) => lines.push([stream, text]) },
+        }
+      )
     );
     expect(lines).to.deep.equal([
       ["err", "src/a.ts: error TS2322"],
@@ -292,10 +315,17 @@ describe("execute", () => {
   it("delivers a tool's unterminated last line", async () => {
     const lines: string[] = [];
     await collectSettlements(
-      execute(LIMIT, NODE, ["-e", "process.stderr.write('no newline here')"], process.cwd(), {}, {
-        ...SILENT_REPORT,
-        output: { line: (text: string) => lines.push(text) },
-      })
+      execute(
+        LIMIT,
+        NODE,
+        ["-e", "process.stderr.write('no newline here')"],
+        process.cwd(),
+        {},
+        {
+          ...SILENT_REPORT,
+          output: { line: (text: string) => lines.push(text) },
+        }
+      )
     );
     expect(lines).to.deep.equal(["no newline here"]);
   });
@@ -380,7 +410,11 @@ describe("executePipeline", () => {
     const files = await runPipeline([
       { argv: [NODE, "-e", "process.stdout.write('hello')"] },
       {
-        argv: [NODE, "-e", "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>process.stdout.write(d.toUpperCase()))"],
+        argv: [
+          NODE,
+          "-e",
+          "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>process.stdout.write(d.toUpperCase()))",
+        ],
         stdout: "out",
       },
     ]);
@@ -391,7 +425,11 @@ describe("executePipeline", () => {
     const files = await runPipeline(
       [
         {
-          argv: [NODE, "-e", "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{process.stdout.write('O'+d);process.stderr.write('E')})"],
+          argv: [
+            NODE,
+            "-e",
+            "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{process.stdout.write('O'+d);process.stderr.write('E')})",
+          ],
           stdout: "log",
           mergedTo: "out" as const,
         },
@@ -476,7 +514,11 @@ describe("executePipeline", () => {
         [
           { argv: [NODE, "-e", "process.stdout.write('OUT\\n');process.stderr.write('ERR\\n')"], mergedTo: "err" as const },
           {
-            argv: [NODE, "-e", "let n=0;process.stdin.on('data',c=>n+=c.length);process.stdin.on('end',()=>process.stdout.write('got '+n+'\\n'))"],
+            argv: [
+              NODE,
+              "-e",
+              "let n=0;process.stdin.on('data',c=>n+=c.length);process.stdin.on('end',()=>process.stdout.write('got '+n+'\\n'))",
+            ],
           },
         ],
         CWD,
@@ -515,13 +557,17 @@ describe("executePipeline", () => {
   it("reports a failed stage's shown output in its message, with or without a sink", async () => {
     const stage = { argv: [NODE, "-e", "console.log('STAGE-OUT');console.error('STAGE-ERR');process.exit(3)"] };
     for (const output of [undefined, { line: () => undefined }]) {
-      const outcomes = await collectSettlements(executePipeline(LIMIT, [stage], CWD, memoryOutput, undefined, { ...SILENT_REPORT, output }));
+      const outcomes = await collectSettlements(
+        executePipeline(LIMIT, [stage], CWD, memoryOutput, undefined, { ...SILENT_REPORT, output })
+      );
       expect(outcomes[0].err?.message).to.include("STAGE-OUT").and.include("STAGE-ERR").and.include("exited with error code 3");
     }
   });
 
   it("fails on the first non-zero stage (pipefail), settling exactly once", async () => {
-    const outcomes = await collectSettlements(executePipeline(LIMIT, [{ argv: [NODE, "-e", "process.exit(4)"] }], CWD, memoryOutput, undefined, SILENT_REPORT));
+    const outcomes = await collectSettlements(
+      executePipeline(LIMIT, [{ argv: [NODE, "-e", "process.exit(4)"] }], CWD, memoryOutput, undefined, SILENT_REPORT)
+    );
     expect(outcomes).to.have.length(1);
     expect(outcomes[0].ok).to.equal(false);
     expect(outcomes[0].err?.message).to.include("exited with error code 4");
@@ -553,7 +599,9 @@ describe("executePipeline", () => {
   });
 
   it("reports a stage spawn failure once, with the exec error", async () => {
-    const outcomes = await collectSettlements(executePipeline(LIMIT, [{ argv: [MISSING] }], CWD, memoryOutput, undefined, SILENT_REPORT));
+    const outcomes = await collectSettlements(
+      executePipeline(LIMIT, [{ argv: [MISSING] }], CWD, memoryOutput, undefined, SILENT_REPORT)
+    );
     expect(outcomes).to.have.length(1);
     expect(outcomes[0].ok).to.equal(false);
     expect(outcomes[0].err?.message).to.include("unable to execute");
@@ -572,7 +620,9 @@ describe("executePipeline", () => {
         'require("fs").writeFileSync(process.argv[1], String(c.pid));' +
         "c.unref();" +
         "process.exit(1);";
-      const outcomes = await collectSettlements(executePipeline(LIMIT, [{ argv: [NODE, "-e", script, pidFile] }], dir, memoryOutput, undefined, SILENT_REPORT));
+      const outcomes = await collectSettlements(
+        executePipeline(LIMIT, [{ argv: [NODE, "-e", script, pidFile] }], dir, memoryOutput, undefined, SILENT_REPORT)
+      );
       expect(outcomes).to.have.length(1);
       expect(outcomes[0].ok).to.equal(false);
       expect(await processGone(Number(fs.readFileSync(pidFile, "utf8")), 15000)).to.equal(true);
@@ -584,13 +634,18 @@ describe("executePipeline", () => {
 
 describe("executeInternalCapture", () => {
   it("feeds a program its input and returns what it wrote and how it exited, failing or not", async () => {
-    const script = "process.stdin.on('data', d => { process.stdout.write(String(d).toUpperCase()); process.stderr.write('note'); process.exit(3); })";
-    const result = await new Promise((resolve, reject) => executeInternalCapture(new Semaphore(1), process.execPath, ["-e", script], "server", {}).then(resolve, reject));
+    const script =
+      "process.stdin.on('data', d => { process.stdout.write(String(d).toUpperCase()); process.stderr.write('note'); process.exit(3); })";
+    const result = await new Promise((resolve, reject) =>
+      executeInternalCapture(new Semaphore(1), process.execPath, ["-e", script], "server", {}).then(resolve, reject)
+    );
     expect(result).to.deep.equal({ status: 3, stdout: "SERVER", stderr: "note" });
   });
 
   it("rejects where the program cannot be started", async () => {
-    const failure = await new Promise((resolve, reject) => executeInternalCapture(new Semaphore(1), "/nonexistent/program", [], "", {}).then(resolve, reject)).catch((err: Error) => err);
+    const failure = await new Promise((resolve, reject) =>
+      executeInternalCapture(new Semaphore(1), "/nonexistent/program", [], "", {}).then(resolve, reject)
+    ).catch((err: Error) => err);
     expect((failure as Error).message).to.match(/unable to execute/);
   });
 });

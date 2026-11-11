@@ -57,7 +57,11 @@ export default defineRule({
   },
   evaluateResolved(context, requirements) {
     return Computable.forAll(
-      [jsPackage.evaluate(context, requirements), requirements.materialize("libs").then(filesOf), requirements.materialize("optional_libs").then(filesOf)],
+      [
+        jsPackage.evaluate(context, requirements),
+        requirements.materialize("libs").then(filesOf),
+        requirements.materialize("optional_libs").then(filesOf),
+      ],
       (built, libs, optionalLibs) => {
         if (!(built instanceof PackageFileSet)) {
           throw new FabrError(`internal: js_package[build] did not build a package for '${context.name}'`);
@@ -65,7 +69,16 @@ export default defineRule({
         const files = [...FileSet.unionAll(built, ...libs, ...optionalLibs)].filter(([name]) => name !== MANIFEST);
         return pluginPackageJson(built.getFile(MANIFEST), context.name, pluginLibsOf(libs, optionalLibs)).then(
           manifest =>
-            new PackageFileSet(new FileSet(new Map([...files, [MANIFEST, manifest]])), built.packageName, built.version, built.dependencies, built.origin, built.provided, undefined, built.usedFor)
+            new PackageFileSet(
+              new FileSet(new Map([...files, [MANIFEST, manifest]])),
+              built.packageName,
+              built.version,
+              built.dependencies,
+              built.origin,
+              built.provided,
+              undefined,
+              built.usedFor
+            )
         );
       }
     );
@@ -76,7 +89,10 @@ export default defineRule({
       [jsPackage.describe!(context, requirements), requirements.describeAll()],
       (code, { libs, optional_libs: optionalLibs }) =>
         describeTarget(context, requirements.resolved, { sources: [...filesOf(libs), ...filesOf(optionalLibs)] }).then(description =>
-          FileSet.unionAll(descriptionFile(description), code instanceof FileSet ? FileSet.layout({ [DESCRIPTION_EXTENDS]: code }) : EMPTY_FILESET)
+          FileSet.unionAll(
+            descriptionFile(description),
+            code instanceof FileSet ? FileSet.layout({ [DESCRIPTION_EXTENDS]: code }) : EMPTY_FILESET
+          )
         )
     );
   },

@@ -235,9 +235,7 @@ export function declaredDependencies(manifest: IDependencyDecls): { required: Re
       provided: optionalPeerNames.has(dep) ? ("optional" as const) : ("expected" as const),
     }));
   const required = [
-    ...[...dependencies]
-      .filter(([dep]) => !optionalDeps.has(dep))
-      .map(([dep, spec]) => dependencyRequirement(dep, spec)),
+    ...[...dependencies].filter(([dep]) => !optionalDeps.has(dep)).map(([dep, spec]) => dependencyRequirement(dep, spec)),
     ...peers,
   ];
   return { required, optional: [...optionalDeps].map(([dep, spec]) => dependencyRequirement(dep, spec)) };
@@ -331,7 +329,10 @@ function renderConditions(conditions: ExportConditions): unknown {
     return encodeTargetPath(sole);
   }
   return Object.fromEntries(
-    [...conditions].map(([condition, value]) => [condition, typeof value === "string" ? encodeTargetPath(value) : renderConditions(value)])
+    [...conditions].map(([condition, value]) => [
+      condition,
+      typeof value === "string" ? encodeTargetPath(value) : renderConditions(value),
+    ])
   );
 }
 
@@ -458,7 +459,11 @@ function exportsByConvention(
  * `.cts` source sitting beside a `foo.ts` — is a different module that happens
  * to share the stem, so it resolves to itself.
  */
-function spellingSubpaths(names: ReadonlySet<string>, stem: string, conditions: ExportConditions): Array<[string, ExportConditions | string]> {
+function spellingSubpaths(
+  names: ReadonlySet<string>,
+  stem: string,
+  conditions: ExportConditions
+): Array<[string, ExportConditions | string]> {
   const targets = conditionTargets(conditions);
   return DELIVERED_SPELLINGS.filter(spelling => names.has(`${stem}${spelling}`)).map(spelling => {
     const file = `./${stem}${spelling}`;
@@ -524,9 +529,16 @@ function sameConditions(a: ExportConditions, b: ExportConditions): boolean {
  * stem, and the wildcards would send `pkg/foo.cjs` to a `foo.cjs.js` that does
  * not exist.
  */
-function coveredByPatterns(names: ReadonlySet<string>, stem: string, conditions: ExportConditions, formats: ReadonlyArray<IExportFormat>): boolean {
+function coveredByPatterns(
+  names: ReadonlySet<string>,
+  stem: string,
+  conditions: ExportConditions,
+  formats: ReadonlyArray<IExportFormat>
+): boolean {
   const delivered = DELIVERED_SPELLINGS.filter(spelling => names.has(`${stem}${spelling}`));
-  return delivered.every(spelling => PATTERN_SUFFIXES.includes(spelling)) && sameConditions(conditions, patternConditions(stem, formats));
+  return (
+    delivered.every(spelling => PATTERN_SUFFIXES.includes(spelling)) && sameConditions(conditions, patternConditions(stem, formats))
+  );
 }
 
 /**
@@ -722,7 +734,8 @@ export function createPackageJson({
    * package needs no map to be reachable, so it gets none. */
   const dual = jsTarget.module === "dual";
   const formats = dual ? DUAL_FORMATS : SINGLE_FORMAT;
-  const exported = exports.length > 0 ? exportsByConvention(files, exports, formats, rewrites) : dual ? exhaustiveExports(files, formats) : undefined;
+  const exported =
+    exports.length > 0 ? exportsByConvention(files, exports, formats, rewrites) : dual ? exhaustiveExports(files, formats) : undefined;
   if (exported !== undefined) {
     packageJson.exports = exported;
   }

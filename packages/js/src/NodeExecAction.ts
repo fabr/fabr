@@ -99,7 +99,12 @@ export const NODE_EXEC_ACTION: IBuildActionDefinition = {
     const withPackages = optionalConfig(action, "packageSourcePaths") !== undefined;
     const files = FileSet.unionAll(fileSetInput(action, "files"), configFiles(action));
     const depsReportName = optionalConfig(action, "depsReport");
-    const exec = (staged: FileSet, argv: readonly RunnableArgument[], incremental?: Incremental, handover?: Handover): Computable<BuildResult> =>
+    const exec = (
+      staged: FileSet,
+      argv: readonly RunnableArgument[],
+      incremental?: Incremental,
+      handover?: Handover
+    ): Computable<BuildResult> =>
       /* An incremental run with a base starts from the last green build's
        * output: the base entry's files are staged under the emit directory —
        * and the driver's own kept files back into its state directory — as
@@ -140,7 +145,11 @@ export const NODE_EXEC_ACTION: IBuildActionDefinition = {
            * table addresses trees by name in the pool beside the working
            * directory, so the trees need no mount of their own and the table
            * names them where they lie. */
-          FileSet.unionAll(files, layout.files, sourcePaths(withPackages ? layout.files : EMPTY_FILESET, withPackages ? layout.trees : undefined)),
+          FileSet.unionAll(
+            files,
+            layout.files,
+            sourcePaths(withPackages ? layout.files : EMPTY_FILESET, withPackages ? layout.trees : undefined)
+          ),
           argv,
           incremental,
           handover
@@ -158,10 +167,8 @@ export const NODE_EXEC_ACTION: IBuildActionDefinition = {
      * that, naming these same locations — so a run with a base and one without
      * are the same invocation, one of them faster: what differs is only whether
      * the files are there to be found. */
-    return Computable.forAll(
-      [ctx.changedFiles(), ctx.incrementalState(), ctx.previousOutputs()],
-      (changedFiles, state, previous) => {
-        const staged = prepareBase(changedFiles, state, stateDir, changes);
+    return Computable.forAll([ctx.changedFiles(), ctx.incrementalState(), ctx.previousOutputs()], (changedFiles, state, previous) => {
+      const staged = prepareBase(changedFiles, state, stateDir, changes);
       /* The previous OUTPUTS go back only to a tool that kept state to correct
        * them with. Staging them is an invitation to emit a delta, and a tool
        * with no state of its own cannot tell which of them went stale — it
@@ -169,15 +176,14 @@ export const NODE_EXEC_ACTION: IBuildActionDefinition = {
        * into the result as a file nothing produced. The rest of the base (the
        * kept files, the change lists) is handed over regardless: it is a
        * tool's own to ignore. */
-        const carries = (state?.size ?? 0) > 0;
-        const outputs = carries && previous !== undefined ? baseOutputLayout(action, previous) : undefined;
-        if (staged === undefined || (carries && previous !== undefined && outputs === undefined)) {
-          /* No base, or one whose outputs have nowhere to go: a cold compile. */
-          return execLaid(argv, { stateDir });
-        }
-        return execLaid(argv, { stateDir }, { staged, outputs });
+      const carries = (state?.size ?? 0) > 0;
+      const outputs = carries && previous !== undefined ? baseOutputLayout(action, previous) : undefined;
+      if (staged === undefined || (carries && previous !== undefined && outputs === undefined)) {
+        /* No base, or one whose outputs have nowhere to go: a cold compile. */
+        return execLaid(argv, { stateDir });
       }
-    );
+      return execLaid(argv, { stateDir }, { staged, outputs });
+    });
   },
 };
 
@@ -430,4 +436,3 @@ function collectedWith(outputs: string, depsReport: string | undefined, stateDir
   const bookkeeping = [...(depsReport ? [depsReport] : []), ...(stateDir ? [`${stateDir}/**`] : [])];
   return bookkeeping.length === 0 ? outputs : [...bookkeeping, outputs];
 }
-

@@ -21,7 +21,15 @@ import { expect } from "chai";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { coreVersionError, hostCoreResolver, implementationLoader, matchOptionalLibs, PluginPackage, resolvePackageFrom, toPluginLibs } from "./Plugin";
+import {
+  coreVersionError,
+  hostCoreResolver,
+  implementationLoader,
+  matchOptionalLibs,
+  PluginPackage,
+  resolvePackageFrom,
+  toPluginLibs,
+} from "./Plugin";
 import { INameValue, syntheticValue } from "./AST";
 import { parseName } from "./Parser";
 import { EMPTY_FILESET } from "../core/FileSet";
@@ -93,7 +101,11 @@ describe("the host's core, for plugins", () => {
       return { url: `file:///elsewhere/${specifier}` };
     };
     const context = { conditions: [], importAttributes: {}, parentURL: undefined };
-    expect(resolve("@fabr-build/core", context, next)).to.deep.equal({ url: "file://" + HOST, format: "commonjs", shortCircuit: true });
+    expect(resolve("@fabr-build/core", context, next)).to.deep.equal({
+      url: "file://" + HOST,
+      format: "commonjs",
+      shortCircuit: true,
+    });
     expect(resolve("sax", context, next)).to.deep.equal({ url: "file:///elsewhere/sax" });
     expect(asked).to.deep.equal(["sax"]);
   });
@@ -130,7 +142,8 @@ describe("implementations a declaration names", () => {
     return manifest;
   }
 
-  const reference = (written: string): INameValue => syntheticValue(parseName(written), { fs: EMPTY_FILESET, file: "TEST.fabr", reader: new StringReader(written) }, 0, written.length);
+  const reference = (written: string): INameValue =>
+    syntheticValue(parseName(written), { fs: EMPTY_FILESET, file: "TEST.fabr", reader: new StringReader(written) }, 0, written.length);
 
   /** @return a package's `package.json` as a plugin's that is in hand. */
   const inHand = (manifest: string) => (): Computable<string> => Computable.resolve(manifest);
@@ -138,7 +151,9 @@ describe("implementations a declaration names", () => {
   it("loads an entry through the package's own exports, under the name the project uses for it", async () => {
     const manifest = writeExporting("@test/plugin");
     const load = implementationLoader(new Map([["@test/alias", inHand(manifest)]]));
-    expect(await load(reference("@test/alias:rules/Thing"))).to.deep.equal({ from: path.join(path.dirname(manifest), "lib", "Thing.js") });
+    expect(await load(reference("@test/alias:rules/Thing"))).to.deep.equal({
+      from: path.join(path.dirname(manifest), "lib", "Thing.js"),
+    });
   });
 
   it("refuses a package the project does not use, and an entry with no default export", async () => {
@@ -148,7 +163,9 @@ describe("implementations a declaration names", () => {
         () => "loaded",
         (err: Error) => err.message
       );
-    expect(await failure("@test/other:rules/Thing")).to.match(/'@test\/other' is neither @fabr-build\/core nor a plugin this project uses/);
+    expect(await failure("@test/other:rules/Thing")).to.match(
+      /'@test\/other' is neither @fabr-build\/core nor a plugin this project uses/
+    );
     expect(await failure("@test/plugin:rules/Bare")).to.match(/'@test\/plugin:rules\/Bare' has no default export/);
   });
 });
@@ -156,7 +173,10 @@ describe("implementations a declaration names", () => {
 describe("a plugin's package.json", () => {
   it("lists its .fabr files as a path or a list of them", () => {
     expect(toPluginLibs({ libs: "lib/JS.fabr" })).to.deep.equal({ libs: ["lib/JS.fabr"], optionalLibs: [] });
-    expect(toPluginLibs({ libs: ["lib/A.fabr", "lib/B.fabr"] })).to.deep.equal({ libs: ["lib/A.fabr", "lib/B.fabr"], optionalLibs: [] });
+    expect(toPluginLibs({ libs: ["lib/A.fabr", "lib/B.fabr"] })).to.deep.equal({
+      libs: ["lib/A.fabr", "lib/B.fabr"],
+      optionalLibs: [],
+    });
     expect(toPluginLibs({})).to.deep.equal({ libs: [], optionalLibs: [] });
   });
 

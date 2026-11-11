@@ -17,7 +17,6 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-
 /**
  * Gradle Module Metadata: the `.module` file Gradle publishes beside a POM,
  * which describes a version as variants, each with its own attributes,
@@ -90,7 +89,11 @@ export function toGradleModule(json: unknown): GradleModule {
   }
   const component = document.component === undefined ? undefined : toJsonObject(document.component);
   return {
-    ...(component === undefined ? {} : { component: `${stringOf(component.group, "its component's group")}:${stringOf(component.module, "its component's module")}` }),
+    ...(component === undefined
+      ? {}
+      : {
+          component: `${stringOf(component.group, "its component's group")}:${stringOf(component.module, "its component's module")}`,
+        }),
     variants: arrayOf(document.variants, "variants").map(toVariant),
   };
 }
@@ -131,8 +134,11 @@ function toDependency(json: unknown): GradleDependency {
   const requires = optional(version.requires, `${group}:${module}'s requires`);
   const strictly = optional(version.strictly, `${group}:${module}'s strictly`);
   const prefers = optional(version.prefers, `${group}:${module}'s prefers`);
-  const rejects = arrayOf(version.rejects, `${group}:${module}'s rejects`).map(reject => stringOf(reject, `${group}:${module}'s rejects`));
-  const classifier = selector === undefined ? undefined : optional(toJsonObject(selector).classifier, `${group}:${module}'s classifier`);
+  const rejects = arrayOf(version.rejects, `${group}:${module}'s rejects`).map(reject =>
+    stringOf(reject, `${group}:${module}'s rejects`)
+  );
+  const classifier =
+    selector === undefined ? undefined : optional(toJsonObject(selector).classifier, `${group}:${module}'s classifier`);
   const extension = selector === undefined ? undefined : optional(toJsonObject(selector).extension, `${group}:${module}'s extension`);
   return {
     group,
@@ -142,7 +148,11 @@ function toDependency(json: unknown): GradleDependency {
     ...(prefers === undefined ? {} : { prefers }),
     rejects,
     attributes: attributesOf(dependency.attributes),
-    ...(selector === undefined ? {} : { artifactSelector: { ...(classifier === undefined ? {} : { classifier }), ...(extension === undefined ? {} : { extension }) } }),
+    ...(selector === undefined
+      ? {}
+      : {
+          artifactSelector: { ...(classifier === undefined ? {} : { classifier }), ...(extension === undefined ? {} : { extension }) },
+        }),
     requestsCapabilities: arrayOf(dependency.requestedCapabilities, `${group}:${module}'s requestedCapabilities`).length > 0,
     excludes: arrayOf(dependency.excludes, `${group}:${module}'s excludes`).map(exclude => {
       const fields = toJsonObject(exclude);
@@ -231,7 +241,9 @@ export function javaVariant(module: GradleModule, release: number, usage: JavaUs
       return best[0];
     }
     if (best.length > 1) {
-      throw new FabrError(`${what} has several ${usage} variants for Java ${release}: ${best.map(variant => variant.name).join(", ")}`);
+      throw new FabrError(
+        `${what} has several ${usage} variants for Java ${release}: ${best.map(variant => variant.name).join(", ")}`
+      );
     }
   }
   throw new FabrError(`${what} has no ${usage} variant for Java ${release}`).withHelp(
@@ -264,7 +276,11 @@ export function variantRequirements(variant: GradleVariant): Requirement[] {
           ...(dependency.excludes.length === 0 ? {} : { excludes: dependency.excludes }),
         };
       }),
-    ...variant.dependencyConstraints.map((constraint): Requirement => ({ name: mavenName(constraint.group, constraint.module), versionConstraint: versionOf(constraint), bom: true })),
+    ...variant.dependencyConstraints.map((constraint): Requirement => ({
+      name: mavenName(constraint.group, constraint.module),
+      versionConstraint: versionOf(constraint),
+      bom: true,
+    })),
   ];
 }
 
@@ -276,7 +292,12 @@ export function variantRequirements(variant: GradleVariant): Requirement[] {
 function versionOf(dependency: GradleDependency): string | undefined {
   const { strictly } = dependency;
   const strict = constraintOfVersion(strictly);
-  const stated = strict !== undefined ? (/^[[(]/.test(strict) ? strict : `[${strict}]`) : constraintOfVersion(dependency.requires ?? dependency.prefers);
+  const stated =
+    strict !== undefined
+      ? /^[[(]/.test(strict)
+        ? strict
+        : `[${strict}]`
+      : constraintOfVersion(dependency.requires ?? dependency.prefers);
   if (dependency.rejects.length === 0) {
     return stated;
   }

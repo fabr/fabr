@@ -146,7 +146,6 @@ export function rootedAt(origin: IProvenanceStep | undefined, root: IProvenanceS
   return origin.parent === undefined ? root : { ...origin, parent: rootedAt(origin.parent, root) };
 }
 
-
 /**
  * What a reference whose provenance includes a step of one kind does with
  * what crosses it: a failure of what the reference names is reported as the
@@ -221,7 +220,11 @@ export interface IProvenanceNaming {
    * beneath's, for the names they have there. Empty where the step and those
    * beneath name nothing.
    */
-  digest(step: IProvenanceStep, names: ReadonlyArray<string> | undefined, below: (names: ReadonlyArray<string> | undefined) => string): string;
+  digest(
+    step: IProvenanceStep,
+    names: ReadonlyArray<string> | undefined,
+    below: (names: ReadonlyArray<string> | undefined) => string
+  ): string;
   /**
    * Get the prefix every file's source path is formed from, `<prefix><name>`,
    * where one prefix names every file of the content the step explains;
@@ -290,7 +293,9 @@ export function sourcePathsDigestOf(step: IProvenanceStep | undefined, names?: R
 
 /** @return the entries of `table` whose keys are among `names`, or the whole table where `names` is undefined. */
 export function restrictedTo<T>(table: ReadonlyMap<string, T>, names: ReadonlyArray<string> | undefined): ReadonlyMap<string, T> {
-  return names === undefined ? table : new Map(names.flatMap((name): Array<[string, T]> => (table.has(name) ? [[name, table.get(name)!]] : [])));
+  return names === undefined
+    ? table
+    : new Map(names.flatMap((name): Array<[string, T]> => (table.has(name) ? [[name, table.get(name)!]] : [])));
 }
 
 /**
@@ -375,7 +380,8 @@ export interface ISourcePathStep extends IProvenanceStep {
 
 registerProvenanceNaming(SOURCE_PATH_PROVENANCE, {
   sourcePath: (step, path, below) => below(path) ?? `${(step as ISourcePathStep).sourcePath}:${path}`,
-  digest: (step, names, below) => namingDigest(SOURCE_PATH_PROVENANCE, JSON.stringify((step as ISourcePathStep).sourcePath), below(names)),
+  digest: (step, names, below) =>
+    namingDigest(SOURCE_PATH_PROVENANCE, JSON.stringify((step as ISourcePathStep).sourcePath), below(names)),
   prefix: (step, below) => wholeContentPrefix(step, (step as ISourcePathStep).sourcePath, below),
 });
 /* Explains nothing a diagnostic needs: the steps beneath say why the content

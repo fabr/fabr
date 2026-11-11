@@ -146,8 +146,18 @@ describe("pnpManifestOf", () => {
      * its own mid. */
     const shared = new Map<string, IFile>([["index.js", MemoryFile.from("// shared")]]);
     const mid = new Map<string, IFile>([["index.js", MemoryFile.from("// mid")]]);
-    const left = new PackageFileSet(shared, "shared", "1.0.0", dependenciesOn(new PackageFileSet(mid, "mid", "1.0.0", dependenciesOn(pkg("leaf", "1.0.0")))));
-    const right = new PackageFileSet(shared, "shared", "1.0.0", dependenciesOn(new PackageFileSet(mid, "mid", "1.0.0", dependenciesOn(pkg("leaf", "2.0.0")))));
+    const left = new PackageFileSet(
+      shared,
+      "shared",
+      "1.0.0",
+      dependenciesOn(new PackageFileSet(mid, "mid", "1.0.0", dependenciesOn(pkg("leaf", "1.0.0"))))
+    );
+    const right = new PackageFileSet(
+      shared,
+      "shared",
+      "1.0.0",
+      dependenciesOn(new PackageFileSet(mid, "mid", "1.0.0", dependenciesOn(pkg("leaf", "2.0.0"))))
+    );
     const manifest = pnpManifestOf([pkg("left", "1.0.0", [left]), pkg("right", "1.0.0", [right])]);
     const rows = [...rowsOf(manifest, "shared").values()];
     expect(rows).to.have.lengthOf(2);

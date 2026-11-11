@@ -32,13 +32,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { readsRecordedIn, withPnpTable, writeReads } from "./Reads";
 import type { ITestResult } from "@fabr-build/core";
-import {
-  buildReport,
-  describeSnapshotFailure,
-  IFailureDescription,
-  reportPathOf,
-  TEST_REPORT_FILENAME,
-} from "./Report";
+import { buildReport, describeSnapshotFailure, IFailureDescription, reportPathOf, TEST_REPORT_FILENAME } from "./Report";
 
 /**
  * The fields we consume from node:test's test:pass / test:fail event data,
@@ -174,7 +168,7 @@ function record(results: ITestResult[], event: ITestEvent, kind: "pass" | "fail"
     status,
     duration: event.details.duration_ms ?? 0,
     message: failure?.message,
-    trace: failure === undefined ? undefined : fileFailureDetail(event, stderr) ?? failure.trace,
+    trace: failure === undefined ? undefined : (fileFailureDetail(event, stderr) ?? failure.trace),
   });
 }
 
@@ -319,10 +313,16 @@ export function childPreloads(options: IRunnerOptions): { preloads: string[]; fi
   };
   /* Resolution first: the recorder is a module like any other. */
   if (options.pnp !== undefined) {
-    generate("pnp.cjs", `require(${JSON.stringify(path.join(__dirname, "..", "pnp", "Runtime.js"))}).installPnpRuntime(${JSON.stringify(options.pnp)});\n`);
+    generate(
+      "pnp.cjs",
+      `require(${JSON.stringify(path.join(__dirname, "..", "pnp", "Runtime.js"))}).installPnpRuntime(${JSON.stringify(options.pnp)});\n`
+    );
   }
   if (options.reads !== undefined) {
-    generate("record.cjs", `require(${JSON.stringify(path.join(__dirname, "Reads.js"))}).recordReadsInto(${JSON.stringify(directory)});\n`);
+    generate(
+      "record.cjs",
+      `require(${JSON.stringify(path.join(__dirname, "Reads.js"))}).recordReadsInto(${JSON.stringify(directory)});\n`
+    );
   }
   return {
     preloads,

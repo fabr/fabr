@@ -289,7 +289,9 @@ describe("resolveImports", () => {
   });
 
   it("picks the condition, and patterns, as exports does", () => {
-    expect(resolveImports({ "#env": { node: "./src/node.js", default: "./src/browser.js" } }, "#env", TYPES)).to.equal("./src/node.js");
+    expect(resolveImports({ "#env": { node: "./src/node.js", default: "./src/browser.js" } }, "#env", TYPES)).to.equal(
+      "./src/node.js"
+    );
     expect(resolveImports({ "#lib/*": "./src/lib/*.js" }, "#lib/pad", TYPES)).to.equal("./src/lib/pad.js");
   });
 

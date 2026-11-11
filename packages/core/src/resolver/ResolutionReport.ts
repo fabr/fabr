@@ -143,7 +143,9 @@ function explainViolation<V>(
    * violation line, so repeating it alone would say nothing. */
   const requirer = violation.requiredBy === ROOT_REQUIRER ? undefined : find(violation.requiredBy);
   if (requirer !== undefined) {
-    lines.push(`  ${versionConstraintText(violation.versionConstraint, violation.name)} required via: ${pathTo(requirer).join(" -> ")}`);
+    lines.push(
+      `  ${versionConstraintText(violation.versionConstraint, violation.name)} required via: ${pathTo(requirer).join(" -> ")}`
+    );
   }
   return lines;
 }
@@ -189,11 +191,7 @@ function conflictLines<V>(
 
 /** Trace the requirement whose floor won `selection` its version, as the path
  * from a root down to it. */
-function winnerOf<V>(
-  selection: Selected<V>,
-  winner: IRequirementEdge,
-  explainer: ResolutionExplainer<V>
-): string {
+function winnerOf<V>(selection: Selected<V>, winner: IRequirementEdge, explainer: ResolutionExplainer<V>): string {
   if (winner.requiredBy === ROOT_REQUIRER) {
     return `the requested ${versionConstraintText(winner.versionConstraint, selection.name)}`;
   }
@@ -223,7 +221,10 @@ function explainDuplicate<V>(
       return [];
     }
     const shown = versionText(versionToString(version), pkg);
-    const stated = via.versionConstraint === undefined || isBuildVersion(via.versionConstraint) ? "" : ` (${versionConstraintText(via.versionConstraint, pkg)})`;
+    const stated =
+      via.versionConstraint === undefined || isBuildVersion(via.versionConstraint)
+        ? ""
+        : ` (${versionConstraintText(via.versionConstraint, pkg)})`;
     return via.requiredBy === ROOT_REQUIRER
       ? [`  ${shown} ${rootText?.(pkg, via.versionConstraint) ?? "required directly"}${stated}`]
       : [`  ${shown} required via: ${explainer.pathTo(selection).join(" -> ")}`];
@@ -266,7 +267,10 @@ export function conflictError<V>(
   const sanctionNoted = new Set<string>();
   for (const { first, others } of groupViolations(violations, versionToString)) {
     const moreRequirers = others.length > 0 ? ` (and ${others.length} more)` : "";
-    lines.push(...conflictLines(first, moreRequirers, explainer, versionToString, rootText), ...alsoRequiredBy(first.name, first.versionConstraint, others));
+    lines.push(
+      ...conflictLines(first, moreRequirers, explainer, versionToString, rootText),
+      ...alsoRequiredBy(first.name, first.versionConstraint, others)
+    );
     /* A partial sanction is a set mismatch, called out where the conflict is
      * reported: the versions this delivery needs vs the versions written. */
     const declared = written?.get(first.name);
@@ -309,12 +313,7 @@ export function conflictError<V>(
  * designed remedy, if the user judges the constraint bogus, and is suggested
  * as such.
  */
-export function unrepairableError<V>(
-  root: string,
-  violations: Violation<V>[],
-  graph: MVSResolution<V>,
-  refText: RefRenderer
-): Error {
+export function unrepairableError<V>(root: string, violations: Violation<V>[], graph: MVSResolution<V>, refText: RefRenderer): Error {
   const { versionToString } = graph;
   const explainer = graph.explainer();
   const groups = groupViolations(violations, versionToString);
@@ -418,7 +417,9 @@ export function suggestSanctions<V, C>(
     /* Override requirements are permissions/substitutions, not constraints a
      * pin must satisfy. */
     const texts = new Set(
-      demanded.flatMap(req => (requiredAs(req) === pkg && req.override === undefined && req.versionConstraint !== undefined ? [req.versionConstraint] : []))
+      demanded.flatMap(req =>
+        requiredAs(req) === pkg && req.override === undefined && req.versionConstraint !== undefined ? [req.versionConstraint] : []
+      )
     );
     for (const sel of needed) {
       for (const req of tree.requirements.get(nodeId(domain, sel.name, sel.version)) ?? []) {

@@ -133,7 +133,11 @@ export function targetIdentifier(name: string): IBuildTargetIdentifier {
  * `options` names with the directories they are named from, with the payload
  * and answers `options` gives.
  */
-export function describeTarget(context: TargetContext, requirements: ResolvedRequirements, options: IDescribeOptions): Computable<IDescription> {
+export function describeTarget(
+  context: TargetContext,
+  requirements: ResolvedRequirements,
+  options: IDescribeOptions
+): Computable<IDescription> {
   const declared = context.getDeclaredContext();
   const name = declared.name;
   return Computable.resolve(undefined).then(() => {
@@ -217,7 +221,13 @@ export function toDescription(json: unknown): IDescription {
   }
   if (
     !Array.isArray(json.sources) ||
-    !json.sources.every(each => isJsonObject(each) && typeof each.uri === "string" && (each.kind === 1 || each.kind === 2) && typeof each.generated === "boolean")
+    !json.sources.every(
+      each =>
+        isJsonObject(each) &&
+        typeof each.uri === "string" &&
+        (each.kind === 1 || each.kind === 2) &&
+        typeof each.generated === "boolean"
+    )
   ) {
     throw new FabrError("expected a description's sources to be BSP source items");
   }

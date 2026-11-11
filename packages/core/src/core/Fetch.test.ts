@@ -128,11 +128,7 @@ function routeServer(routes: (path: string) => { status: number; location?: stri
 describe("openUrlStream redirects", () => {
   it("follows a redirect to the final 200 body", async () => {
     const server = await routeServer(path =>
-      path === "/start"
-        ? { status: 302, location: "/final" }
-        : path === "/final"
-          ? { status: 200, body: "arrived" }
-          : undefined
+      path === "/start" ? { status: 302, location: "/final" } : path === "/final" ? { status: 200, body: "arrived" } : undefined
     );
     try {
       const body = await fetchUrl(`${server.origin}/start`);
@@ -186,7 +182,10 @@ describe("openUrlStream redirects", () => {
  * authorization, and 401 with `challenge` to any other, recording each
  * authorization it is sent.
  */
-function withChallengingServer(accepted: string, challenge: string): Promise<{ url: string; sent: Array<string | undefined>; close: () => void }> {
+function withChallengingServer(
+  accepted: string,
+  challenge: string
+): Promise<{ url: string; sent: Array<string | undefined>; close: () => void }> {
   const sent: Array<string | undefined> = [];
   return new Promise(resolve => {
     const server = http.createServer((req, res) => {
@@ -225,7 +224,10 @@ describe("a request's credential", () => {
     const server = await withChallengingServer("Basic new", 'Basic realm="registry"');
     const asked: IAuthChallenge[] = [];
     try {
-      const response = await sendRequest(server.url, { method: "GET", credential: renewingCredential("Basic old", "Basic new", asked) });
+      const response = await sendRequest(server.url, {
+        method: "GET",
+        credential: renewingCredential("Basic old", "Basic new", asked),
+      });
       expect(response.statusCode).to.equal(200);
       expect(server.sent).to.deep.equal(["Basic old", "Basic new"]);
       expect(asked).to.deep.equal([{ challenges: ['Basic realm="registry"'] }]);
@@ -237,7 +239,14 @@ describe("a request's credential", () => {
   it("answers a streamed GET's 401 the same way", async () => {
     const server = await withChallengingServer("Bearer fresh", 'Bearer realm="https://auth.example/token"');
     try {
-      const response = await openUrlStream(server.url, {}, Date.now, "content", undefined, renewingCredential("Bearer stale", "Bearer fresh"));
+      const response = await openUrlStream(
+        server.url,
+        {},
+        Date.now,
+        "content",
+        undefined,
+        renewingCredential("Bearer stale", "Bearer fresh")
+      );
       expect((await readStream(response.stream!)).toString()).to.equal("let in");
       expect(server.sent).to.deep.equal(["Bearer stale", "Bearer fresh"]);
     } finally {
@@ -248,7 +257,14 @@ describe("a request's credential", () => {
   it("leaves the 401 standing, with its challenges, where the credential gives up", async () => {
     const server = await withChallengingServer("Basic right", 'Basic realm="registry"');
     try {
-      const err = await openUrlStream(server.url, {}, Date.now, "content", undefined, renewingCredential("Basic wrong", undefined)).then(
+      const err = await openUrlStream(
+        server.url,
+        {},
+        Date.now,
+        "content",
+        undefined,
+        renewingCredential("Basic wrong", undefined)
+      ).then(
         () => undefined,
         e => e as HttpStatusError
       );

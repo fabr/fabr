@@ -25,7 +25,17 @@ import { Name } from "../core/Name";
 import { Diagnostic, ErrorTrackingLog, IDiagnosticNote, ISourceSpan, LogLevel } from "../support/Log";
 import { StringReader } from "../support/StringReader";
 import { parseBuildFile } from "./Parser";
-import { DeclKind, declPosn, IBuildFileContents, IIncludeDecl, INameValue, isPropertyDecl, ISpliceDecl, ITargetDecl, optionalLibOf } from "./AST";
+import {
+  DeclKind,
+  declPosn,
+  IBuildFileContents,
+  IIncludeDecl,
+  INameValue,
+  isPropertyDecl,
+  ISpliceDecl,
+  ITargetDecl,
+  optionalLibOf,
+} from "./AST";
 import { BuildModel } from "./BuildModel";
 import { ModelBuilder } from "./ModelBuilder";
 import { ExecutionContext } from "./ExecutionContext";
@@ -152,7 +162,7 @@ function resolveIncludeName(file: string, include: IIncludeDecl): ResolvedInclud
 function includeChain(sites: ReadonlyMap<string, IIncludeDecl>, site: IIncludeDecl): IDiagnosticNote[] {
   const notes: IDiagnosticNote[] = [];
   const seen = new Set<string>();
-  for (let parent = sites.get(site.source.file); parent && !seen.has(parent.source.file); ) {
+  for (let parent = sites.get(site.source.file); parent && !seen.has(parent.source.file);) {
     seen.add(parent.source.file);
     notes.push({ message: "included from here", loc: declPosn(parent) });
     parent = sites.get(parent.source.file);
@@ -302,7 +312,12 @@ class ProjectLoader {
     if (files.length === 0) {
       const listed = plugin.optionalLibs.map(one => one.name).sort();
       const detail = `'${plugin.name}' has no optional lib ${lib.path.toString()}`;
-      return [{ decl, resolved: new FabrError(listed.length === 0 ? `${detail}, and lists none` : `${detail} (it lists ${listed.join(", ")})`) }];
+      return [
+        {
+          decl,
+          resolved: new FabrError(listed.length === 0 ? `${detail}, and lists none` : `${detail} (it lists ${listed.join(", ")})`),
+        },
+      ];
     }
     for (const file of files) {
       if (!this.includeSites.has(file)) {
@@ -373,7 +388,12 @@ class ProjectLoader {
           .filter(include => optionalLibOf(include.name) === undefined)
           .map(include => this.includedFiles(fs, file, include));
         return Computable.forAll(included, (...resolved) => ({
-          value: { file, decls, parseErrors: parseLog.errorCount, includeErrors: resolved.reduce((total, one) => total + one.errors, 0) },
+          value: {
+            file,
+            decls,
+            parseErrors: parseLog.errorCount,
+            includeErrors: resolved.reduce((total, one) => total + one.errors, 0),
+          },
           next: resolved.flatMap(one => one.files),
         }));
       });
@@ -440,7 +460,9 @@ class ProjectLoader {
 
   /** Forget the libs of each `fabr_plugin` target no file of `rounds`, a whole load's, declares. */
   private forgetLibs(rounds: Round[]): void {
-    const declared = new Set<unknown>(rounds.flatMap(({ files }) => files.flatMap(({ decls }) => [...decls.targets, ...decls.defaults])));
+    const declared = new Set<unknown>(
+      rounds.flatMap(({ files }) => files.flatMap(({ decls }) => [...decls.targets, ...decls.defaults]))
+    );
     for (const target of [...this.libs.keys()]) {
       if (!declared.has(target)) {
         this.libs.delete(target);

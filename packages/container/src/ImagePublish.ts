@@ -73,7 +73,9 @@ interface ILayerSource {
 export function packageImage(context: TargetContext, member: PublishMember): Computable<PublishableFileSet> {
   const image = member.content;
   if (!(image instanceof ImageFileSet)) {
-    throw new FabrError(`${member.destination.toString()} can only hold an image`).withHelp("publish a container_image target, or an image from a registry");
+    throw new FabrError(`${member.destination.toString()} can only hold an image`).withHelp(
+      "publish a container_image target, or an image from a registry"
+    );
   }
   return Computable.forAll(
     image.layers.map(layer => publishedLayer(context, layer)),
@@ -89,7 +91,9 @@ export function packageImage(context: TargetContext, member: PublishMember): Com
         [CARRIER_MANIFEST, new MemoryFile(manifest.bytes)],
         [CARRIER_CONFIG, new MemoryFile(config.bytes)],
         [CARRIER_SOURCES, MemoryFile.from(JSON.stringify(layers.flatMap(({ source }) => (source === undefined ? [] : [source]))))],
-        ...layers.flatMap(({ descriptor, blob }): Array<[string, IFile]> => (blob === undefined ? [] : [[blobName(descriptor.digest), blob]])),
+        ...layers.flatMap(({ descriptor, blob }): Array<[string, IFile]> =>
+          blob === undefined ? [] : [[blobName(descriptor.digest), blob]]
+        ),
       ]);
       return new PublishableFileSet(files, member.destination);
     }
@@ -97,7 +101,10 @@ export function packageImage(context: TargetContext, member: PublishMember): Com
 }
 
 /** Make a layer's published form: as it was published, where it was, else compressed here. */
-function publishedLayer(context: TargetContext, layer: ILayerRecord): Computable<{ descriptor: IDescriptor; blob?: IFile; source?: ILayerSource }> {
+function publishedLayer(
+  context: TargetContext,
+  layer: ILayerRecord
+): Computable<{ descriptor: IDescriptor; blob?: IFile; source?: ILayerSource }> {
   const { published } = layer;
   if (published !== undefined) {
     return Computable.resolve({
@@ -111,10 +118,15 @@ function publishedLayer(context: TargetContext, layer: ILayerRecord): Computable
     });
   }
   return context
-    .memoize(GZIP_TAG, layer.index.diffId, workDir => compressLayer(layer.tar, path.join(workDir, "layer.tar.gz")).then(() => getResultFileSet(workDir, "layer.tar.gz")))
+    .memoize(GZIP_TAG, layer.index.diffId, workDir =>
+      compressLayer(layer.tar, path.join(workDir, "layer.tar.gz")).then(() => getResultFileSet(workDir, "layer.tar.gz"))
+    )
     .then(files => {
       const blob = files.getFile("layer.tar.gz")!;
-      return contentSize(blob).then(size => ({ descriptor: { mediaType: OCI_LAYER_GZIP, digest: `sha256:${blob.hash}`, size }, blob }));
+      return contentSize(blob).then(size => ({
+        descriptor: { mediaType: OCI_LAYER_GZIP, digest: `sha256:${blob.hash}`, size },
+        blob,
+      }));
     });
 }
 
@@ -124,26 +136,28 @@ function publishedLayer(context: TargetContext, layer: ILayerRecord): Computable
  * already none.
  */
 function compressLayer(tar: IFile, out: string): Computable<void> {
-  return contentStream(tar).then(
-    source =>
-      Computable.from<void>((resolve, reject) => {
-        let seen = 0;
-        const fixOs = new Transform({
-          transform(chunk: Buffer, _encoding, done): void {
-            if (seen <= 9 && seen + chunk.length > 9) {
-              chunk = Buffer.from(chunk);
-              chunk[9 - seen] = 3;
-            }
-            seen += chunk.length;
-            done(null, chunk);
-          },
-        });
-        const sink = fs.createWriteStream(out);
-        source.on("error", reject);
-        sink.on("error", reject);
-        sink.on("finish", () => resolve());
-        source.pipe(createGzip({ level: 6 })).pipe(fixOs).pipe(sink);
-      })
+  return contentStream(tar).then(source =>
+    Computable.from<void>((resolve, reject) => {
+      let seen = 0;
+      const fixOs = new Transform({
+        transform(chunk: Buffer, _encoding, done): void {
+          if (seen <= 9 && seen + chunk.length > 9) {
+            chunk = Buffer.from(chunk);
+            chunk[9 - seen] = 3;
+          }
+          seen += chunk.length;
+          done(null, chunk);
+        },
+      });
+      const sink = fs.createWriteStream(out);
+      source.on("error", reject);
+      sink.on("error", reject);
+      sink.on("finish", () => resolve());
+      source
+        .pipe(createGzip({ level: 6 }))
+        .pipe(fixOs)
+        .pipe(sink);
+    })
   );
 }
 
@@ -154,7 +168,12 @@ function compressLayer(tar: IFile, out: string): Computable<void> {
  * uploaded (a layer published elsewhere had from there), then the manifest.
  * Already synced where the tag names that manifest.
  */
-export function pushImage(context: TargetContext, registry: Registry, carrier: PublishableFileSet, repository: string): Computable<PublishStatus> {
+export function pushImage(
+  context: TargetContext,
+  registry: Registry,
+  carrier: PublishableFileSet,
+  repository: string
+): Computable<PublishStatus> {
   const tag = packageCoordinateOf(carrier.destination).version;
   return Computable.forAll(
     [carrier.readFile(CARRIER_MANIFEST), carrier.readFile(CARRIER_CONFIG), carrier.readFile(CARRIER_SOURCES)] as const,
@@ -168,8 +187,16 @@ export function pushImage(context: TargetContext, registry: Registry, carrier: P
         }
         const config = Buffer.from(configText, "utf8");
         const blobs = [
-          ...layers.map(layer => pushBlob(context, registry, repository, layer, carrier.getFile(blobName(layer.digest)), sources.get(layer.digest))),
-          pushBlob(context, registry, repository, { mediaType: OCI_CONFIG, digest: digestOf(config), size: config.length }, new MemoryFile(config)),
+          ...layers.map(layer =>
+            pushBlob(context, registry, repository, layer, carrier.getFile(blobName(layer.digest)), sources.get(layer.digest))
+          ),
+          pushBlob(
+            context,
+            registry,
+            repository,
+            { mediaType: OCI_CONFIG, digest: digestOf(config), size: config.length },
+            new MemoryFile(config)
+          ),
         ];
         return Computable.forAll(blobs, () => undefined)
           .then(() => registry.putManifest(repository, tag, manifest, OCI_MANIFEST))
@@ -197,12 +224,17 @@ function pushBlob(
       file !== undefined
         ? contentStream(file).then(stream => registry.uploadBlob(repository, blob.digest, blob.size, stream))
         : source !== undefined
-        ? (sameRegistry ? registry : new Registry(context, source.registry, authFileSignIn(context, source.registry, source.loginUrl)))
-            .blobStream(source.repository, blob.digest)
-            .then(stream => registry.uploadBlob(repository, blob.digest, blob.size, stream))
-        : Computable.reject<void>(new FabrError(`nothing holds the blob ${blob.digest} to push`));
+          ? (sameRegistry
+              ? registry
+              : new Registry(context, source.registry, authFileSignIn(context, source.registry, source.loginUrl))
+            )
+              .blobStream(source.repository, blob.digest)
+              .then(stream => registry.uploadBlob(repository, blob.digest, blob.size, stream))
+          : Computable.reject<void>(new FabrError(`nothing holds the blob ${blob.digest} to push`));
     if (source !== undefined && sameRegistry) {
-      return registry.mountBlob(repository, blob.digest, source.repository).then(mounted => (mounted ? Computable.resolve(undefined) : upload()));
+      return registry
+        .mountBlob(repository, blob.digest, source.repository)
+        .then(mounted => (mounted ? Computable.resolve(undefined) : upload()));
     }
     return upload();
   });
@@ -224,7 +256,12 @@ function toLayerSources(json: unknown): ILayerSource[] {
   }
   return json.map(entry => {
     const { digest, registry, repository, loginUrl } = toJsonObject(entry);
-    if (typeof digest !== "string" || typeof registry !== "string" || typeof repository !== "string" || (loginUrl !== undefined && typeof loginUrl !== "string")) {
+    if (
+      typeof digest !== "string" ||
+      typeof registry !== "string" ||
+      typeof repository !== "string" ||
+      (loginUrl !== undefined && typeof loginUrl !== "string")
+    ) {
       throw new FabrError("a layer source lacks its 'digest', 'registry' or 'repository'");
     }
     return { digest, registry, repository, ...(loginUrl === undefined ? {} : { loginUrl }) };
@@ -234,4 +271,3 @@ function toLayerSources(json: unknown): ILayerSource[] {
 function blobName(digest: string): string {
   return `${CARRIER_BLOBS}/${digest.substring("sha256:".length)}`;
 }
-

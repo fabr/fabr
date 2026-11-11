@@ -140,7 +140,12 @@ describe("sourcePathOf", () => {
     /* At disjoint mounts the name alone decides. */
     const laidOut = (a: [string, string][]): string =>
       FileSet.layout({ x: named("x", a), y: named("y", [["b.txt", "b"]]) }).sourcePathsDigest;
-    expect(laidOut([["a.txt", "one"]]), "a file added at a disjoint mount").to.equal(laidOut([["a.txt", "one"], ["c.txt", "c"]]));
+    expect(laidOut([["a.txt", "one"]]), "a file added at a disjoint mount").to.equal(
+      laidOut([
+        ["a.txt", "one"],
+        ["c.txt", "c"],
+      ])
+    );
   });
 
   it("digests a set by the names it holds alone: a union narrowed to one contributor's files as that contributor", () => {
@@ -152,7 +157,9 @@ describe("sourcePathOf", () => {
     const narrowed = (...others: FileSet[]): FileSet =>
       FileSet.unionAll(styles, ...others).partition(name => (name.endsWith(".scss") ? "styles" : "other")).styles!;
     expect(narrowed(named("y", [["a.test.ts", "t"]])).sourcePathsDigest).to.equal(styles.sourcePathsDigest);
-    expect(narrowed(named("y", [["a.test.ts", "t"]])).sourcePathsDigest).to.equal(narrowed(named("z", [["b.ts", "b"]])).sourcePathsDigest);
+    expect(narrowed(named("y", [["a.test.ts", "t"]])).sourcePathsDigest).to.equal(
+      narrowed(named("z", [["b.ts", "b"]])).sourcePathsDigest
+    );
     /* A name another contributor holds still counts. */
     expect(narrowed(named("y", [["b.scss", "b"]])).sourcePathsDigest).to.not.equal(styles.sourcePathsDigest);
   });

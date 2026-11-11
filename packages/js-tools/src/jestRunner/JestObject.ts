@@ -127,18 +127,24 @@ export function makeJestObject(env: IJestEnvironment, caller: ILoaderModule | un
      * duals, taking effect for requires that follow. Both land in the same
      * registry: the difference is purely *when* they run, which is the hoist's
      * business, not this object's. */
-    mock: (moduleName: string, factory?: () => unknown, options?: { virtual?: boolean }) =>
-      (registry.setMock(moduleName, caller, factory, options?.virtual ?? false), chain()),
-    doMock: (moduleName: string, factory?: () => unknown, options?: { virtual?: boolean }) =>
-      (registry.setMock(moduleName, caller, factory, options?.virtual ?? false), chain()),
+    mock: (moduleName: string, factory?: () => unknown, options?: { virtual?: boolean }) => (
+      registry.setMock(moduleName, caller, factory, options?.virtual ?? false),
+      chain()
+    ),
+    doMock: (moduleName: string, factory?: () => unknown, options?: { virtual?: boolean }) => (
+      registry.setMock(moduleName, caller, factory, options?.virtual ?? false),
+      chain()
+    ),
     unmock: (moduleName: string) => (registry.unmock(moduleName, caller), chain()),
     dontMock: (moduleName: string) => (registry.unmock(moduleName, caller), chain()),
     /* fabr has no module *tree* of its own to walk: a mock is keyed by the file
      * it resolves to, so unmocking one is already deep in the only sense that
      * matters here. */
     deepUnmock: (moduleName: string) => (registry.unmock(moduleName, caller), chain()),
-    setMock: (moduleName: string, moduleExports: unknown) =>
-      (registry.setMock(moduleName, caller, () => moduleExports, true), chain()),
+    setMock: (moduleName: string, moduleExports: unknown) => (
+      registry.setMock(moduleName, caller, () => moduleExports, true),
+      chain()
+    ),
     enableAutomock: () => (registry.setAutomockAll(true), chain()),
     disableAutomock: () => (registry.setAutomockAll(false), chain()),
     /* jest's own long-standing aliases for the pair above. */

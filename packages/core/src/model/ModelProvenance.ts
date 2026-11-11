@@ -107,7 +107,10 @@ export function constraintText(step: IModelStep, context: IRenderContext): strin
   if (entries.length === 0) {
     return undefined;
   }
-  return `with ${entries.map(([key, value]) => `${key}=${value}`).sort().join(" ")}`;
+  return `with ${entries
+    .map(([key, value]) => `${key}=${value}`)
+    .sort()
+    .join(" ")}`;
 }
 
 function findNextModelStep(step: IProvenanceStep | undefined): IModelStep | undefined {

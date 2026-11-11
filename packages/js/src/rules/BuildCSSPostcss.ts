@@ -71,7 +71,10 @@ export default defineRule({
   },
 });
 
-function buildCssPostcss(context: TargetContext, collected: { srcs: FileSet[]; deps: FileSet[]; browsers: FileSet[] }): Computable<RuleResult> {
+function buildCssPostcss(
+  context: TargetContext,
+  collected: { srcs: FileSet[]; deps: FileSet[]; browsers: FileSet[] }
+): Computable<RuleResult> {
   return Computable.forAll(
     [
       Computable.resolve(collected),

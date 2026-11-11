@@ -19,7 +19,17 @@
 
 import { expect } from "chai";
 import * as path from "path";
-import { BuildAction, Computable, dependenciesOn, FileSet, IBuildActionDefinition, IFile, MemoryFile, PackageFileSet, SymlinkFile } from "@fabr-build/core";
+import {
+  BuildAction,
+  Computable,
+  dependenciesOn,
+  FileSet,
+  IBuildActionDefinition,
+  IFile,
+  MemoryFile,
+  PackageFileSet,
+  SymlinkFile,
+} from "@fabr-build/core";
 import { virtualLocation } from "@fabr-build/js-tools";
 import { IPackageLayout, layoutPackages, NODE_MODULES, PNP } from "./Layout";
 import { packageDirectories } from "./NodeModules";
@@ -30,7 +40,12 @@ const DIR = path.resolve("/work/step/work");
 const POOL = path.resolve("/pool/trees");
 
 function pkg(name: string, content = name, deps: PackageFileSet[] = []): PackageFileSet {
-  return new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${content}`)]]), name, "1.0.0", dependenciesOn(...deps));
+  return new PackageFileSet(
+    new Map<string, IFile>([["index.js", MemoryFile.from(`// ${content}`)]]),
+    name,
+    "1.0.0",
+    dependenciesOn(...deps)
+  );
 }
 
 function toPromise<T>(computable: Computable<T>): Promise<T> {
@@ -39,11 +54,17 @@ function toPromise<T>(computable: Computable<T>): Promise<T> {
 
 /** Lay the packages out for a step in {@link DIR}, each tree ensured at its pool path. */
 function laid(deps: FileSet[], layout: string, self?: { name: string; location: string }, mount?: string): Promise<IPackageLayout> {
-  const action = new BuildAction(STEP, {}, { layout, ...(self ? { selfName: self.name, selfLocation: self.location } : {}) }, { discoverable: { deps } });
+  const action = new BuildAction(
+    STEP,
+    {},
+    { layout, ...(self ? { selfName: self.name, selfLocation: self.location } : {}) },
+    { discoverable: { deps } }
+  );
   return toPromise(layoutPackages(action, DIR, tree => Computable.resolve(path.join(POOL, tree.toManifestHash())), mount));
 }
 
-const row = (name: ReturnType<IPackageLayout["nameRead"]>): unknown => (name !== undefined && "route" in name ? { route: name.route, path: name.path, pkg: name.package?.packageName } : name);
+const row = (name: ReturnType<IPackageLayout["nameRead"]>): unknown =>
+  name !== undefined && "route" in name ? { route: name.route, path: name.path, pkg: name.package?.packageName } : name;
 
 describe("layoutPackages", () => {
   const b = pkg("b");
@@ -64,16 +85,38 @@ describe("layoutPackages", () => {
       const layout = await laid([a], NODE_MODULES);
       const directories = packageDirectories([a]);
       expect(layout.nameRead(path.join(DIR, "build", "a.test.js"))).to.deep.equal({ file: "build/a.test.js" });
-      expect(row(layout.nameRead(path.join(DIR, "node_modules", ...directories.get(a)!.split("/"), "index.js")))).to.deep.equal({ route: ["a"], path: "index.js", pkg: "a" });
-      expect(row(layout.nameRead(path.join(DIR, "node_modules", ...directories.get(b)!.split("/"), "lib", "x.js")))).to.deep.equal({ route: ["a", "b"], path: "lib/x.js", pkg: "b" });
+      expect(row(layout.nameRead(path.join(DIR, "node_modules", ...directories.get(a)!.split("/"), "index.js")))).to.deep.equal({
+        route: ["a"],
+        path: "index.js",
+        pkg: "a",
+      });
+      expect(row(layout.nameRead(path.join(DIR, "node_modules", ...directories.get(b)!.split("/"), "lib", "x.js")))).to.deep.equal({
+        route: ["a", "b"],
+        path: "lib/x.js",
+        pkg: "b",
+      });
     });
 
     it("names a probe of the mount's own <name> by that name, with the member there or none", async () => {
       const layout = await laid([a], NODE_MODULES);
-      expect(row(layout.nameRead(path.join(DIR, "node_modules", "a", "package.json")))).to.deep.equal({ route: ["a"], path: "package.json", pkg: "a" });
-      expect(row(layout.nameRead(path.join(DIR, "node_modules", "opt", "package.json")))).to.deep.equal({ route: ["opt"], path: "package.json", pkg: undefined });
-      expect(row(layout.nameRead(path.join(DIR, "node_modules", "@scope", "opt", "index.js")))).to.deep.equal({ route: ["@scope/opt"], path: "index.js", pkg: undefined });
-      expect(layout.nameRead(path.join(DIR, "node_modules", ".fabr", "node_modules", "b", "index.js")), "the hidden links").to.equal(undefined);
+      expect(row(layout.nameRead(path.join(DIR, "node_modules", "a", "package.json")))).to.deep.equal({
+        route: ["a"],
+        path: "package.json",
+        pkg: "a",
+      });
+      expect(row(layout.nameRead(path.join(DIR, "node_modules", "opt", "package.json")))).to.deep.equal({
+        route: ["opt"],
+        path: "package.json",
+        pkg: undefined,
+      });
+      expect(row(layout.nameRead(path.join(DIR, "node_modules", "@scope", "opt", "index.js")))).to.deep.equal({
+        route: ["@scope/opt"],
+        path: "index.js",
+        pkg: undefined,
+      });
+      expect(layout.nameRead(path.join(DIR, "node_modules", ".fabr", "node_modules", "b", "index.js")), "the hidden links").to.equal(
+        undefined
+      );
       expect(layout.nameRead(path.join(DIR, "node_modules", "@scope")), "a bare scope").to.equal(undefined);
     });
 
@@ -81,8 +124,12 @@ describe("layoutPackages", () => {
       const layout = await laid([a], NODE_MODULES, undefined, ".tools/tsc");
       expect(layout.nameRead(path.resolve("/elsewhere/runner/index.js"))).to.equal(undefined);
       expect(layout.nameRead(path.dirname(DIR))).to.equal(undefined);
-      expect(row(layout.nameRead(path.join(DIR, ".tools", "tsc", ...packageDirectories([a]).get(a)!.split("/"), "index.js")))).to.deep.equal({ route: ["a"], path: "index.js", pkg: "a" });
-      expect(layout.nameRead(path.join(DIR, "node_modules", "a", "index.js")), "not the mount").to.deep.equal({ file: "node_modules/a/index.js" });
+      expect(
+        row(layout.nameRead(path.join(DIR, ".tools", "tsc", ...packageDirectories([a]).get(a)!.split("/"), "index.js")))
+      ).to.deep.equal({ route: ["a"], path: "index.js", pkg: "a" });
+      expect(layout.nameRead(path.join(DIR, "node_modules", "a", "index.js")), "not the mount").to.deep.equal({
+        file: "node_modules/a/index.js",
+      });
     });
   });
 
@@ -109,14 +156,21 @@ describe("layoutPackages", () => {
         expect(named !== undefined && "route" in named && named.package).to.equal(wiring);
         expect(row(named)).to.deep.equal({ route: [wiring === left ? "l" : "r", "shared"], path: "index.js", pkg: "shared" });
       }
-      expect(row(layout.nameRead(path.join(POOL, left.toManifestHash(), "index.js"))), "the physical tree, named by the first wiring").to.deep.equal({ route: ["l", "shared"], path: "index.js", pkg: "shared" });
+      expect(
+        row(layout.nameRead(path.join(POOL, left.toManifestHash(), "index.js"))),
+        "the physical tree, named by the first wiring"
+      ).to.deep.equal({ route: ["l", "shared"], path: "index.js", pkg: "shared" });
     });
 
     it("names a read within a tree, physical or virtual, by the package's route", async () => {
       const layout = await laid([a], PNP);
       const tree = path.join(POOL, b.toManifestHash());
       expect(row(layout.nameRead(path.join(tree, "index.js")))).to.deep.equal({ route: ["a", "b"], path: "index.js", pkg: "b" });
-      expect(row(layout.nameRead(path.join(virtualLocation(tree, "0123abcd"), "lib", "y.js")))).to.deep.equal({ route: ["a", "b"], path: "lib/y.js", pkg: "b" });
+      expect(row(layout.nameRead(path.join(virtualLocation(tree, "0123abcd"), "lib", "y.js")))).to.deep.equal({
+        route: ["a", "b"],
+        path: "lib/y.js",
+        pkg: "b",
+      });
       expect(layout.nameRead(path.join(DIR, "build", "a.test.js"))).to.deep.equal({ file: "build/a.test.js" });
       expect(layout.nameRead(path.join(POOL, "0000", "index.js")), "a tree of no package here").to.equal(undefined);
     });

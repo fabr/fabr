@@ -71,7 +71,9 @@ describe("globMatcher negation", () => {
   });
 
   it("subtracts a group spanning segments, wherever the globstars place it", () => {
-    expect(matches("**/!(@shorthand/api)/**", ["a/@shorthand/api/x.js", "@shorthand/api/x.js", "@shorthand/ui/x.js", "a/b/c.js"])).to.deep.equal(
+    expect(
+      matches("**/!(@shorthand/api)/**", ["a/@shorthand/api/x.js", "@shorthand/api/x.js", "@shorthand/ui/x.js", "a/b/c.js"])
+    ).to.deep.equal(
       new Map([
         ["a/@shorthand/api/x.js", false],
         ["@shorthand/api/x.js", false],

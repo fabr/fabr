@@ -18,7 +18,17 @@
  */
 
 import { expect } from "chai";
-import { BuildAction, Computable, configFiles, FileSet, Flag, MemoryFile, Property, RunnableFileSet, TargetContext } from "@fabr-build/core";
+import {
+  BuildAction,
+  Computable,
+  configFiles,
+  FileSet,
+  Flag,
+  MemoryFile,
+  Property,
+  RunnableFileSet,
+  TargetContext,
+} from "@fabr-build/core";
 import jsCompileRule, { jsxModeFor, makeTsConfig } from "./BuildJSCompile";
 import { parseJSTarget } from "../JSPackage";
 
@@ -175,7 +185,15 @@ describe("makeTsConfig", () => {
     const browserNoDom = makeTsConfig(parseJSTarget("es2020-esm-browser")) as unknown as TsConfig;
     expect(browserNoDom.compilerOptions.lib).to.deep.equal(["es2020"]);
 
-    const nodeWithDom = makeTsConfig(parseJSTarget("es2020-commonjs-node"), undefined, {}, undefined, undefined, undefined, true) as unknown as TsConfig;
+    const nodeWithDom = makeTsConfig(
+      parseJSTarget("es2020-commonjs-node"),
+      undefined,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      true
+    ) as unknown as TsConfig;
     expect(nodeWithDom.compilerOptions.lib).to.deep.equal(["es2020", "dom", "dom.iterable"]);
   });
 
@@ -223,8 +241,7 @@ describe("makeTsConfig", () => {
   });
 
   it("emits self-contained JS source maps for debug and relwithdebinfo, not release", () => {
-    const cfg = (bt?: string): TsConfig =>
-      makeTsConfig(parseJSTarget("es2018-commonjs"), undefined, {}, bt) as unknown as TsConfig;
+    const cfg = (bt?: string): TsConfig => makeTsConfig(parseJSTarget("es2018-commonjs"), undefined, {}, bt) as unknown as TsConfig;
     /* debug/relwithdebinfo: sourceMap + inlineSources (the source is embedded in
      * the map, so it's debuggable without shipping a src/ tree). */
     for (const bt of ["debug", "relwithdebinfo"]) {
@@ -236,8 +253,7 @@ describe("makeTsConfig", () => {
   });
 
   it("ships declarations but never a declaration map (it would dangle without a src/ tree)", () => {
-    const cfg = (bt?: string): TsConfig =>
-      makeTsConfig(parseJSTarget("es2018-commonjs"), undefined, {}, bt) as unknown as TsConfig;
+    const cfg = (bt?: string): TsConfig => makeTsConfig(parseJSTarget("es2018-commonjs"), undefined, {}, bt) as unknown as TsConfig;
     for (const bt of ["debug", "relwithdebinfo", "release", undefined]) {
       expect(cfg(bt).compilerOptions.declaration).to.equal(true);
       expect(cfg(bt).compilerOptions.declarationMap).to.equal(undefined);
@@ -325,5 +341,4 @@ describe("js_compile toolchain", () => {
     const argv = (await compileAction()).config.argv as string[];
     expect(argv).to.deep.equal(["node", ".tools/tsc/tscDriver/tsc-driver.js"]);
   });
-
 });

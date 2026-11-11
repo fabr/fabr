@@ -86,7 +86,12 @@ describe("e2e: list-targets", () => {
   it("filters by a glob over target names, '*' within one namespace level", () => {
     const result = runFabr(project, ["list-targets", "tools/*"]);
     expect(result.status).to.equal(0);
-    expect(result.stdout.trim().split("\n").map(line => line.split(/\s+/)[0])).to.deep.equal(["tools/inner", "tools/run"]);
+    expect(
+      result.stdout
+        .trim()
+        .split("\n")
+        .map(line => line.split(/\s+/)[0])
+    ).to.deep.equal(["tools/inner", "tools/run"]);
     const top = runFabr(project, ["list-targets", "*"]);
     expect(top.stdout).to.match(/^hello\s/m);
     expect(top.stdout).not.to.match(/^tools\//m);
@@ -163,7 +168,10 @@ describe("e2e: list-targets", () => {
   });
 
   it("says a name no file but one sees is private to it", () => {
-    const result = runFabr({ "PROJECT.fabr": "include ./sub/BUILD.fabr;\n", "sub/BUILD.fabr": "private flag hidden { provides = x; }\n" }, ["list-targets", "hidden"]);
+    const result = runFabr(
+      { "PROJECT.fabr": "include ./sub/BUILD.fabr;\n", "sub/BUILD.fabr": "private flag hidden { provides = x; }\n" },
+      ["list-targets", "hidden"]
+    );
     expect(result.status).to.equal(1);
     expect(result.stderr).to.match(/No such target: hidden/);
     expect(result.stderr).to.match(/'hidden' is private to \S*BUILD\.fabr/);

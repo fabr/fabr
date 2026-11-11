@@ -36,7 +36,11 @@ function reader(input: NodeJS.ReadableStream): () => Promise<Record<string, unkn
   const waiting: Array<(message: Record<string, unknown>) => void> = [];
   input.on("data", (data: Buffer) => {
     buffer += data.toString("utf8");
-    for (let match = /^Content-Length: (\d+)\r\n\r\n/.exec(buffer); match !== null; match = /^Content-Length: (\d+)\r\n\r\n/.exec(buffer)) {
+    for (
+      let match = /^Content-Length: (\d+)\r\n\r\n/.exec(buffer);
+      match !== null;
+      match = /^Content-Length: (\d+)\r\n\r\n/.exec(buffer)
+    ) {
       const end = match[0].length + Number(match[1]);
       if (buffer.length < end) {
         return;
@@ -73,7 +77,11 @@ describe("build server relay", () => {
     const toServerStream = new PassThrough();
     fromServer = new PassThrough();
     toServer = reader(toServerStream);
-    relay = await relayBuildServer(new JsonRpcClient(toServerStream, fromServer), { displayName: "fabr", data: { root: "file:///p/" } }, socket);
+    relay = await relayBuildServer(
+      new JsonRpcClient(toServerStream, fromServer),
+      { displayName: "fabr", data: { root: "file:///p/" } },
+      socket
+    );
     connection = net.connect(socket);
     fromRelay = reader(connection);
   });

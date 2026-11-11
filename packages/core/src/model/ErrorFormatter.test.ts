@@ -18,19 +18,34 @@
  */
 
 import { expect } from "chai";
-import { CommandFailedError, ConflictError, CycleError, ExecutionError, MultiError, RequirementResolutionError, TargetNotPackageError } from "../core/Errors";
+import {
+  CommandFailedError,
+  ConflictError,
+  CycleError,
+  ExecutionError,
+  MultiError,
+  RequirementResolutionError,
+  TargetNotPackageError,
+} from "../core/Errors";
 import { RefSource, RepositoryRef } from "../core/Repository";
 import { chainSteps, registerProvenanceRenderer } from "../core/Provenance";
 import { IDiagnosticNote, Log } from "../support/Log";
 import { IModelStep, MODEL_PROVENANCE } from "./ModelProvenance";
 import { parseName } from "./Parser";
 import { BUILD_OPERATION, Constraints } from "./Constraints";
-import { CircularDependencyError, DependencyFailedError, IJudgedKey, NameLabel, NoRuleFoundError, ReferenceFailedError, ReferenceLabel } from "./Errors";
+import {
+  CircularDependencyError,
+  DependencyFailedError,
+  IJudgedKey,
+  NameLabel,
+  NoRuleFoundError,
+  ReferenceFailedError,
+  ReferenceLabel,
+} from "./Errors";
 import { DiagnosticErrorFormatter, errorSummary } from "./ErrorFormatter";
 
 /** A stand-in for the driver-injected host facts, and the keys a report elides. */
 const HOST_TRIPLE = "arm64-apple-macosx15.0";
-
 
 /* The AST decl types, taken from the error constructors' parameters.
  * The formatter only reads name/offset/source, so partial stubs suffice (spans
@@ -75,7 +90,9 @@ describe("errorSummary", () => {
   });
 
   it("takes how a failed command ended, not the command", () => {
-    expect(errorSummary(new ExecutionError("$ tsc -p .\nsrc/a.ts: error\nexited with error code 2"))).to.equal("exited with error code 2");
+    expect(errorSummary(new ExecutionError("$ tsc -p .\nsrc/a.ts: error\nexited with error code 2"))).to.equal(
+      "exited with error code 2"
+    );
   });
 
   it("looks through a dependency failure to its cause", () => {
@@ -94,7 +111,11 @@ describe("DiagnosticErrorFormatter", () => {
      * reference; the declaration it reached (which may be in another file) is
      * the evidence, and the remedy is the './' spelling that reaches the path. */
     const base = targetDecl("base");
-    const circular = new CircularDependencyError("base", [{ value: value("base:*.ts"), property: propertyDecl("srcs"), target: base }], base);
+    const circular = new CircularDependencyError(
+      "base",
+      [{ value: value("base:*.ts"), property: propertyDecl("srcs"), target: base }],
+      base
+    );
     const [diag] = capture(new DependencyFailedError(base, circular));
 
     expect(diag.message).to.equal("Circular dependency: 'base' depends on itself");
@@ -106,7 +127,11 @@ describe("DiagnosticErrorFormatter", () => {
     /* `fabr_plugin @example/text-lint { resources = lint-rules; }`, where
      * `lint-rules` is built with the plugin's own rules: no path is shadowed. */
     const plugin = targetDecl("@example/text-lint");
-    const circular = new CircularDependencyError("@example/text-lint", [{ value: value("lint-rules"), property: propertyDecl("resources"), target: plugin }], plugin);
+    const circular = new CircularDependencyError(
+      "@example/text-lint",
+      [{ value: value("lint-rules"), property: propertyDecl("resources"), target: plugin }],
+      plugin
+    );
     const [diag] = capture(new DependencyFailedError(plugin, circular));
 
     expect(diag.help ?? []).to.deep.equal([]);
@@ -159,7 +184,10 @@ describe("DiagnosticErrorFormatter", () => {
     const thing = targetDecl("thing");
     const runner = targetDecl("my_runner");
     const runnerFailure = new DependencyFailedError(runner, new Error("boom"));
-    const failure = new DependencyFailedError(thing, new ReferenceFailedError(value("my_runner"), propertyDecl("RUNNER"), undefined, runnerFailure));
+    const failure = new DependencyFailedError(
+      thing,
+      new ReferenceFailedError(value("my_runner"), propertyDecl("RUNNER"), undefined, runnerFailure)
+    );
 
     const [diag] = capture(failure);
     expect(diag.message).to.equal("Failed to build my_runner: boom");
@@ -168,9 +196,15 @@ describe("DiagnosticErrorFormatter", () => {
 
   it("names a target of a rule's block, and what it is built for, in its failure", () => {
     const shop = targetDecl("shop");
-    expect(capture(new DependencyFailedError(shop, new Error("boom"), undefined, ["jar"]))[0].message).to.equal("Failed to build jar for shop: boom");
-    expect(capture(new DependencyFailedError(shop, new Error("boom"), "Compiling", ["f", "inner"]))[0].message).to.equal("Failed to build f for inner for shop: boom");
-    const compile = new DependencyFailedError(shop, new CommandFailedError("$ javac", [], "exited with error code 1"), "Compiling", ["jar"]);
+    expect(capture(new DependencyFailedError(shop, new Error("boom"), undefined, ["jar"]))[0].message).to.equal(
+      "Failed to build jar for shop: boom"
+    );
+    expect(capture(new DependencyFailedError(shop, new Error("boom"), "Compiling", ["f", "inner"]))[0].message).to.equal(
+      "Failed to build f for inner for shop: boom"
+    );
+    const compile = new DependencyFailedError(shop, new CommandFailedError("$ javac", [], "exited with error code 1"), "Compiling", [
+      "jar",
+    ]);
     expect(capture(compile)[0].message).to.equal("Compiling jar for shop failed:\n$ javac\nexited with error code 1");
   });
 
@@ -190,7 +224,11 @@ describe("DiagnosticErrorFormatter", () => {
     /* `TOOL = t;` read by t's own rule: the one written site is the global's, so
      * the declaration the name reached comes from the cycle itself. */
     const target = targetDecl("t");
-    const circular = new CircularDependencyError("t", [{ value: value("t"), property: propertyDecl("TOOL"), target: undefined }], target);
+    const circular = new CircularDependencyError(
+      "t",
+      [{ value: value("t"), property: propertyDecl("TOOL"), target: undefined }],
+      target
+    );
     const [diag] = capture(new DependencyFailedError(target, circular));
 
     expect(diag.message).to.equal("Circular dependency: 't' depends on itself");
@@ -250,7 +288,10 @@ describe("DiagnosticErrorFormatter", () => {
 
     it("anchors at the reference when the failing target wrote it", () => {
       const app = targetDecl("app");
-      const failure = new DependencyFailedError(app, new RequirementResolutionError([writtenRef("@dep:x", app)], new Error("Unable to resolve x")));
+      const failure = new DependencyFailedError(
+        app,
+        new RequirementResolutionError([writtenRef("@dep:x", app)], new Error("Unable to resolve x"))
+      );
       expect(capture(failure)[0].message).to.equal("Unable to resolve x - required by app deps");
     });
 
@@ -259,7 +300,10 @@ describe("DiagnosticErrorFormatter", () => {
        * the failure is api's, and engine's reference is where it was written. */
       const api = targetDecl("api");
       const engine = targetDecl("engine");
-      const failure = new DependencyFailedError(api, new RequirementResolutionError([writtenRef("@dep:x", engine)], new Error("Unable to resolve x")));
+      const failure = new DependencyFailedError(
+        api,
+        new RequirementResolutionError([writtenRef("@dep:x", engine)], new Error("Unable to resolve x"))
+      );
       const [diagnostic] = capture(failure);
       expect(diagnostic.message).to.equal("Failed to build api: Unable to resolve x");
       expect(diagnostic.notes?.map(note => note.message)).to.deep.equal(["from '@dep:x' (engine deps)"]);
@@ -290,7 +334,9 @@ describe("DiagnosticErrorFormatter", () => {
       property: propertyDecl("deps"),
       target: app,
     });
-    const requirer = RepositoryRef.written(undefined as unknown as RefSource, parseName("@npm:bar:1.0.0")).withStep(step("@npm:bar:1.0.0"));
+    const requirer = RepositoryRef.written(undefined as unknown as RefSource, parseName("@npm:bar:1.0.0")).withStep(
+      step("@npm:bar:1.0.0")
+    );
     const target = { packageName: "foo", origin: step("foo") } as unknown as ConstructorParameters<typeof TargetNotPackageError>[1];
     const failure = new DependencyFailedError(app, new TargetNotPackageError(requirer, target));
     const [diagnostic] = capture(failure);
@@ -353,17 +399,34 @@ describe("DiagnosticErrorFormatter", () => {
   it("names the operation's verb and the target type when no rule matched", () => {
     /* `fabr build` on a run-only targetdef (js_script) — the habitual first
      * mistake, so its wording is worth pinning. */
-    const err = new NoRuleFoundError(targetDecl("tool", "js_script"), Constraints.of({ [BUILD_OPERATION]: "build", HOST: HOST_TRIPLE }));
+    const err = new NoRuleFoundError(
+      targetDecl("tool", "js_script"),
+      Constraints.of({ [BUILD_OPERATION]: "build", HOST: HOST_TRIPLE })
+    );
     const [diag] = capture(err);
     expect(diag.message).to.equal("Cannot build 'tool': no rule matches target type 'js_script'");
   });
 
   describe("a no-rule failure's help", () => {
-    const operation = (pattern: string, value: string): IJudgedKey => ({ key: BUILD_OPERATION, own: false, pattern, value, matched: pattern === value });
-    const own = (key: string, pattern: string, value: string | undefined): IJudgedKey => ({ key, own: true, pattern, value, matched: pattern === value });
+    const operation = (pattern: string, value: string): IJudgedKey => ({
+      key: BUILD_OPERATION,
+      own: false,
+      pattern,
+      value,
+      matched: pattern === value,
+    });
+    const own = (key: string, pattern: string, value: string | undefined): IJudgedKey => ({
+      key,
+      own: true,
+      pattern,
+      value,
+      matched: pattern === value,
+    });
 
     it("suggests an operation the type does support, where the one asked for has no rule", () => {
-      const err = new NoRuleFoundError(targetDecl("tool", "js_script"), Constraints.of({ [BUILD_OPERATION]: "build" }), [[operation("run", "build")]]);
+      const err = new NoRuleFoundError(targetDecl("tool", "js_script"), Constraints.of({ [BUILD_OPERATION]: "build" }), [
+        [operation("run", "build")],
+      ]);
       expect(capture(err)[0].help).to.deep.equal(["'js_script' targets support 'run' — try 'fabr run tool'"]);
     });
 
@@ -385,7 +448,9 @@ describe("DiagnosticErrorFormatter", () => {
       const mode: IJudgedKey = { key: "MODE", own: false, pattern: "fast", value: "fast", matched: true };
       const candidates = [[operation("test", "test"), mode, own("kind", "x", undefined)]];
       const err = new NoRuleFoundError(targetDecl("lib"), Constraints.of({ [BUILD_OPERATION]: "test" }), candidates);
-      expect(capture(err)[0].help).to.deep.equal(["Available test rules for js_package:\n  MODE = fast, target.kind = x  (target.kind is unset)"]);
+      expect(capture(err)[0].help).to.deep.equal([
+        "Available test rules for js_package:\n  MODE = fast, target.kind = x  (target.kind is unset)",
+      ]);
     });
   });
 

@@ -42,16 +42,13 @@ export async function getSourceRoot(): Promise<string> {
       if (parent === dir) {
         /* Reached the filesystem root without finding a project marker: report
          * the actual situation, not the raw `access` ENOENT on `/PROJECT.fabr`. */
-        throw new FabrError(
-          `No ${PROJECT_FILENAME} found in ${process.cwd()} or any parent directory — is this a fabr project?`
-        );
+        throw new FabrError(`No ${PROJECT_FILENAME} found in ${process.cwd()} or any parent directory — is this a fabr project?`);
       } else {
         dir = parent;
       }
     }
   }
 }
-
 
 /**
  * @return the root of our build cache (which may or may not exist at this point),

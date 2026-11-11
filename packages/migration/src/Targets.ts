@@ -132,9 +132,21 @@ export function planTargets(
     }
     const globs = sourceGlobs(scan);
     if (globs.outside.length > 0) {
-      report.add("Test files outside src/ (add them to tests)", `${target}: ${globs.outside.slice(0, 3).join(", ")}${globs.outside.length > 3 ? `, and ${globs.outside.length - 3} more` : ""}`);
+      report.add(
+        "Test files outside src/ (add them to tests)",
+        `${target}: ${globs.outside.slice(0, 3).join(", ")}${globs.outside.length > 3 ? `, and ${globs.outside.length - 3} more` : ""}`
+      );
     }
-    return { manifest, target, report, srcs: globs.srcs, tests: globs.tests, deps: [...deps], provided: [...provided], optionalProvided: [...optionalProvided] };
+    return {
+      manifest,
+      target,
+      report,
+      srcs: globs.srcs,
+      tests: globs.tests,
+      deps: [...deps],
+      provided: [...provided],
+      optionalProvided: [...optionalProvided],
+    };
   });
 }
 
@@ -184,7 +196,10 @@ function cascade(
     const ref = reference(name);
     if (ref !== undefined && !declared.has(name) && !deps.has(ref)) {
       deps.add(ref);
-      report.add("Root dependencies added to a package (hoisted, so it uses them undeclared)", `${manifest.name ?? manifest.dir}: ${name} (${why})`);
+      report.add(
+        "Root dependencies added to a package (hoisted, so it uses them undeclared)",
+        `${manifest.name ?? manifest.dir}: ${name} (${why})`
+      );
     }
   };
   for (const name of [...scan.imports].sort()) {
@@ -196,7 +211,10 @@ function cascade(
         bring(typesPackageOf(name), `the types of ${name}`);
         continue;
       }
-      report.add("Imports nothing declares (add the dependency)", `${name}, imported in ${path.dirname(from) === "." ? "the root" : path.dirname(from)}`);
+      report.add(
+        "Imports nothing declares (add the dependency)",
+        `${name}, imported in ${path.dirname(from) === "." ? "the root" : path.dirname(from)}`
+      );
       continue;
     }
     bring(name, "imported");

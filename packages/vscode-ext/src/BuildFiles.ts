@@ -65,7 +65,11 @@ interface ILspSymbol {
  * @return what to dispose of when the project's server ends, and what has the
  * editor ask for the lenses again once the targets served change.
  */
-export function serveBuildFiles(root: string, client: JsonRpcClient, problems: vscode.DiagnosticCollection): vscode.Disposable & { refreshLenses(): void } {
+export function serveBuildFiles(
+  root: string,
+  client: JsonRpcClient,
+  problems: vscode.DiagnosticCollection
+): vscode.Disposable & { refreshLenses(): void } {
   const lensesChanged = new vscode.EventEmitter<void>();
   const selector: vscode.DocumentSelector = { language: FABR_LANGUAGE, pattern: new vscode.RelativePattern(root, "**/*.fabr") };
   const ours = (document: vscode.TextDocument): boolean => vscode.languages.match(selector, document) > 0;
@@ -77,10 +81,12 @@ export function serveBuildFiles(root: string, client: JsonRpcClient, problems: v
     }
   };
   const textDocument = (document: vscode.TextDocument): { uri: string } => ({ uri: document.uri.toString() });
-  const ready = client.request("initialize", { processId: process.pid, rootUri: vscode.Uri.file(root).toString(), capabilities: {} }).then(() => {
-    client.notify("initialized", {});
-    vscode.workspace.textDocuments.forEach(opened);
-  });
+  const ready = client
+    .request("initialize", { processId: process.pid, rootUri: vscode.Uri.file(root).toString(), capabilities: {} })
+    .then(() => {
+      client.notify("initialized", {});
+      vscode.workspace.textDocuments.forEach(opened);
+    });
   /* The documents this project's server reported in: `problems` is every project's. */
   const reportedIn = new Set<string>();
   client.onNotification("textDocument/publishDiagnostics", params => {
@@ -91,10 +97,12 @@ export function serveBuildFiles(root: string, client: JsonRpcClient, problems: v
     problems.set(vscode.Uri.parse(params.uri), toProtocolDiagnostics(params.diagnostics).map(toDiagnostic));
   });
   const request = <T>(method: string, params: unknown): Thenable<T | undefined> =>
-    ready.then(() => client.request<T>(method, params)).then(
-      result => result,
-      () => undefined
-    );
+    ready
+      .then(() => client.request<T>(method, params))
+      .then(
+        result => result,
+        () => undefined
+      );
   const disposable = vscode.Disposable.from(
     lensesChanged,
     vscode.workspace.onDidOpenTextDocument(opened),
@@ -115,21 +123,26 @@ export function serveBuildFiles(root: string, client: JsonRpcClient, problems: v
       provideDocumentSymbols: document =>
         request<ILspSymbol[]>("textDocument/documentSymbol", { textDocument: textDocument(document) }).then(symbols =>
           (symbols ?? []).map(
-            symbol => new vscode.DocumentSymbol(symbol.name, symbol.detail ?? "", symbol.kind - 1, toRange(symbol.range), toRange(symbol.selectionRange))
+            symbol =>
+              new vscode.DocumentSymbol(
+                symbol.name,
+                symbol.detail ?? "",
+                symbol.kind - 1,
+                toRange(symbol.range),
+                toRange(symbol.selectionRange)
+              )
           )
         ),
     }),
     vscode.languages.registerDefinitionProvider(selector, {
       provideDefinition: (document, position) =>
         request<ILspLocationLink[]>("textDocument/definition", { textDocument: textDocument(document), position }).then(links =>
-          (links ?? []).map(
-            (link): vscode.LocationLink => ({
-              ...(link.originSelectionRange === undefined ? {} : { originSelectionRange: toRange(link.originSelectionRange) }),
-              targetUri: vscode.Uri.parse(link.targetUri),
-              targetRange: toRange(link.targetRange),
-              targetSelectionRange: toRange(link.targetSelectionRange),
-            })
-          )
+          (links ?? []).map((link): vscode.LocationLink => ({
+            ...(link.originSelectionRange === undefined ? {} : { originSelectionRange: toRange(link.originSelectionRange) }),
+            targetUri: vscode.Uri.parse(link.targetUri),
+            targetRange: toRange(link.targetRange),
+            targetSelectionRange: toRange(link.targetSelectionRange),
+          }))
         ),
     }),
     vscode.languages.registerCompletionItemProvider(
@@ -141,7 +154,8 @@ export function serveBuildFiles(root: string, client: JsonRpcClient, problems: v
               /* LSP's kinds count from 1, VS Code's from 0. */
               const completion = new vscode.CompletionItem(item.label, item.kind - 1);
               completion.detail = item.detail;
-              completion.documentation = item.documentation === undefined ? undefined : new vscode.MarkdownString(item.documentation.value);
+              completion.documentation =
+                item.documentation === undefined ? undefined : new vscode.MarkdownString(item.documentation.value);
               return completion;
             })
           ),
@@ -152,14 +166,25 @@ export function serveBuildFiles(root: string, client: JsonRpcClient, problems: v
     vscode.languages.registerCodeLensProvider(selector, {
       onDidChangeCodeLenses: lensesChanged.event,
       provideCodeLenses: document =>
-        request<Array<{ range: IProtocolRange; command: { title: string; command: string; arguments?: unknown[] } }>>("textDocument/codeLens", {
-          textDocument: textDocument(document),
-        }).then(lenses => (lenses ?? []).map(lens => new vscode.CodeLens(toRange(lens.range), lens.command))),
+        request<Array<{ range: IProtocolRange; command: { title: string; command: string; arguments?: unknown[] } }>>(
+          "textDocument/codeLens",
+          {
+            textDocument: textDocument(document),
+          }
+        ).then(lenses => (lenses ?? []).map(lens => new vscode.CodeLens(toRange(lens.range), lens.command))),
     }),
     vscode.languages.registerHoverProvider(selector, {
       provideHover: (document, position) =>
-        request<{ contents: { value: string }; range?: IProtocolRange } | null>("textDocument/hover", { textDocument: textDocument(document), position }).then(hover =>
-          hover ? new vscode.Hover(new vscode.MarkdownString(hover.contents.value), hover.range === undefined ? undefined : toRange(hover.range)) : undefined
+        request<{ contents: { value: string }; range?: IProtocolRange } | null>("textDocument/hover", {
+          textDocument: textDocument(document),
+          position,
+        }).then(hover =>
+          hover
+            ? new vscode.Hover(
+                new vscode.MarkdownString(hover.contents.value),
+                hover.range === undefined ? undefined : toRange(hover.range)
+              )
+            : undefined
         ),
     }),
     { dispose: () => reportedIn.forEach(uri => problems.delete(vscode.Uri.parse(uri))) }

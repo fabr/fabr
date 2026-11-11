@@ -61,7 +61,14 @@ describe("e2e: fabr deps", () => {
     expect(result.stdout).to.equal(
       /* A build reads `test_deps` for its loose files alone, so it resolves none
        * of the packages they name. Those are the test's (see the next case). */
-      ["deps_app", "deps", "├── deps_lib<JS_TARGET=es2020>", "│   └── deps_base<JS_TARGET=es2020>", "└── deps_base<JS_TARGET=es2020>", ""].join("\n")
+      [
+        "deps_app",
+        "deps",
+        "├── deps_lib<JS_TARGET=es2020>",
+        "│   └── deps_base<JS_TARGET=es2020>",
+        "└── deps_base<JS_TARGET=es2020>",
+        "",
+      ].join("\n")
     );
     expect(result.stderr, "nothing is compiled, the packages it depends on included").to.not.contain("Compiling");
   });
@@ -96,17 +103,32 @@ describe("e2e: fabr deps", () => {
     const result = deps("deps_tool", "deps_base");
     expect(result.status, result.stderr).to.equal(0);
     expect(result.stdout).to.equal(
-      ["deps_tool", "deps", "└── deps_lib<JS_TARGET=es2020>", "    └── deps_base<JS_TARGET=es2020>", "", "deps_base", "No dependencies", ""].join("\n")
+      [
+        "deps_tool",
+        "deps",
+        "└── deps_lib<JS_TARGET=es2020>",
+        "    └── deps_base<JS_TARGET=es2020>",
+        "",
+        "deps_base",
+        "No dependencies",
+        "",
+      ].join("\n")
     );
   });
 
   it("shows a target another reads for its files as part of it, with everything it requires", () => {
     const result = runFabr(
-      { "PROJECT.fabr": PROJECT + "script deps_files { entry = ./tool.sh; deps = deps_lib:**; }\n", ...FILES, "tool.sh": "echo tool\n" },
+      {
+        "PROJECT.fabr": PROJECT + "script deps_files { entry = ./tool.sh; deps = deps_lib:**; }\n",
+        ...FILES,
+        "tool.sh": "echo tool\n",
+      },
       ["-DJS_TARGET=es2020", "deps", "deps_files"]
     );
     expect(result.status, result.stderr).to.equal(0);
-    expect(result.stdout).to.equal(["deps_files", "deps", "└── deps_lib<JS_TARGET=es2020>", "    └── deps_base<JS_TARGET=es2020>", ""].join("\n"));
+    expect(result.stdout).to.equal(
+      ["deps_files", "deps", "└── deps_lib<JS_TARGET=es2020>", "    └── deps_base<JS_TARGET=es2020>", ""].join("\n")
+    );
     expect(result.stderr).to.not.contain("Compiling");
   });
 
@@ -169,7 +191,9 @@ describe("e2e: fabr deps", () => {
     const global = runFabr({ "PROJECT.fabr": project, ...FILES }, ["-DJS_TARGET=es2020", "deps", "DEPS_CONF"]);
     expect(global.status, global.stderr).to.equal(0);
     expect(global.stdout).to.contain("│   └── deps_base<JS_TARGET=es2020> (!)\n");
-    expect(global.stdout).to.contain("(!) conflicting in DEPS_CONF:\n  deps_base: deps_base<JS_TARGET=es2020>, deps_base<JS_TARGET=es2022>\n");
+    expect(global.stdout).to.contain(
+      "(!) conflicting in DEPS_CONF:\n  deps_base: deps_base<JS_TARGET=es2020>, deps_base<JS_TARGET=es2022>\n"
+    );
     expect(shown.status, shown.stderr).to.equal(0);
     expect(shown.stdout).to.equal(
       [
@@ -204,7 +228,8 @@ describe("e2e: fabr deps", () => {
     const result = runFabr(
       {
         "PROJECT.fabr":
-          PROJECT + "js_package deps_bad { srcs = bad:**; }\ncatalog @deps_badcat { deps = deps_bad; }\njs_package deps_usesbad { srcs = app:**; deps = @deps_badcat:deps_bad; }\n",
+          PROJECT +
+          "js_package deps_bad { srcs = bad:**; }\ncatalog @deps_badcat { deps = deps_bad; }\njs_package deps_usesbad { srcs = app:**; deps = @deps_badcat:deps_bad; }\n",
         ...FILES,
         "bad/index.ts": 'exports.bad = "deps e2e bad";\n',
         "bad/package.json": "{ not json",

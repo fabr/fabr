@@ -58,7 +58,14 @@ import { BuildAction, IBuildActionDefinition } from "../core/BuildAction";
 import { DiscoveredDeps } from "../core/Manifest";
 import type { Credential } from "../core/Credential";
 import type { TargetContext } from "./TargetContext";
-import { defineRule, PluginContribution, RepositoryProvider, RepositoryRegistration, RuleDefinition, RuleImplementation } from "../rules/Types";
+import {
+  defineRule,
+  PluginContribution,
+  RepositoryProvider,
+  RepositoryRegistration,
+  RuleDefinition,
+  RuleImplementation,
+} from "../rules/Types";
 import { FSFileSource } from "../core/FSFileSource";
 import script from "../rules/RunScript";
 import { BuildContext, InternalBuildContext } from "./BuildContext";
@@ -193,15 +200,23 @@ testRules.push(
     properties: { [BUILD_OPERATION]: "build" },
     requirements: context => Computable.resolve({ build: { dependencies: context.getPackageProperty("deps") } }),
     evaluateResolved: (context, requirements) =>
-      Computable.forAll([requirements.packages("dependencies"), context.getGlobalString("MODE")], (dependencies, mode) =>
-        new PackageFileSet(new Map([["mode.txt", MemoryFile.from(mode)]]), context.name, undefined, dependencies)
+      Computable.forAll(
+        [requirements.packages("dependencies"), context.getGlobalString("MODE")],
+        (dependencies, mode) =>
+          new PackageFileSet(new Map([["mode.txt", MemoryFile.from(mode)]]), context.name, undefined, dependencies)
       ),
     /* Its description: core's fields, the files of its `deps` as its sources, and a payload. */
     describe: (context, requirements) =>
       requirements
         .describeAll()
         .then(({ dependencies }) =>
-          describeTarget(context, requirements.resolved, { sources: dependencies, tags: ["library"], languageIds: ["x"], dataKind: "x", data: { a: 1 } })
+          describeTarget(context, requirements.resolved, {
+            sources: dependencies,
+            tags: ["library"],
+            languageIds: ["x"],
+            dataKind: "x",
+            data: { a: 1 },
+          })
         )
         .then(descriptionFile),
   })
@@ -279,7 +294,10 @@ testRules.push(
   defineRule({
     type: "test_split",
     properties: {},
-    requirements: context => ({ build: { compile: context.getPackageProperty("deps") }, run: { install: context.getPackageProperty("deps") } }),
+    requirements: context => ({
+      build: { compile: context.getPackageProperty("deps") },
+      run: { install: context.getPackageProperty("deps") },
+    }),
     evaluateMaterialized: (_context, { compile, install }) => {
       lastSplit = { compile: closureNames(compile), install: closureNames(install) };
       return EMPTY_FILESET;
@@ -301,10 +319,19 @@ testRules.push(
       Computable.forAll(
         [requirements.packages("dependencies"), requirements.packages("runtime"), requirements.packages("compile")],
         (dependencies, runtime, compile) =>
-          new PackageFileSet(new Map([["scoped.txt", MemoryFile.from("")]]), context.name, undefined, [...dependencies, ...runtime, ...compile], undefined, undefined, undefined, new Map([
-            ...runtime.map((dep): [string, UsedFor] => [dependencyName(dep), "run"]),
-            ...compile.map((dep): [string, UsedFor] => [dependencyName(dep), "build"]),
-          ]))
+          new PackageFileSet(
+            new Map([["scoped.txt", MemoryFile.from("")]]),
+            context.name,
+            undefined,
+            [...dependencies, ...runtime, ...compile],
+            undefined,
+            undefined,
+            undefined,
+            new Map([
+              ...runtime.map((dep): [string, UsedFor] => [dependencyName(dep), "run"]),
+              ...compile.map((dep): [string, UsedFor] => [dependencyName(dep), "build"]),
+            ])
+          )
       ),
   })
 );
@@ -331,7 +358,10 @@ testRules.push(
   defineRule({
     type: "test_split_twice",
     properties: {},
-    requirements: context => ({ build: { deps: context.getPackageProperty("deps") }, run: { deps: context.getPackageProperty("deps") } }),
+    requirements: context => ({
+      build: { deps: context.getPackageProperty("deps") },
+      run: { deps: context.getPackageProperty("deps") },
+    }),
     evaluateResolved: () => Computable.resolve(EMPTY_FILESET),
   })
 );
@@ -368,7 +398,8 @@ testRules.push(
   defineRule({
     type: "test_layered",
     properties: {},
-    requirements: context => Computable.resolve({ build: { dependencies: context.getPackageProperty("base") }, result: { package: context.name } }),
+    requirements: context =>
+      Computable.resolve({ build: { dependencies: context.getPackageProperty("base") }, result: { package: context.name } }),
     evaluateResolved: (context, requirements) =>
       requirements.materializeAll().then(({ dependencies: base }) => {
         lastDeps = FileSet.unionAll(...base);
@@ -382,7 +413,8 @@ testRules.push(
   defineRule({
     type: "test_override",
     properties: {},
-    requirements: context => Computable.resolve({ build: { dep: context.getPackageProperty("dep", Constraints.of({ FLAVOR: "caller" })) } }),
+    requirements: context =>
+      Computable.resolve({ build: { dep: context.getPackageProperty("dep", Constraints.of({ FLAVOR: "caller" })) } }),
     evaluateResolved: (_context, requirements) =>
       requirements.materializeAll().then(({ dep }) => {
         lastDeps = FileSet.unionAll(...dep);
@@ -529,7 +561,9 @@ registerRepositoryProvider("test_repo", context => Computable.resolve(new TestRe
 /* Repository double whose every reference reads one secret file, `key`. */
 class TestSecretRepo extends TestRepo {
   public override resolve(reference: RepositoryRef): Computable<FileSet> {
-    return Computable.resolve(new FileSet(new Map([["key", new SecretFile(`vault:${reference.name}`, `${reference.name}:1`, Buffer.from("hidden"))]])));
+    return Computable.resolve(
+      new FileSet(new Map([["key", new SecretFile(`vault:${reference.name}`, `${reference.name}:1`, Buffer.from("hidden"))]]))
+    );
   }
 }
 registerRepositoryProvider("test_secret_repo", context => Computable.resolve(new TestSecretRepo(context.name)));
@@ -597,7 +631,8 @@ const REGISTRY_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
   readContentPackage: () => {
     throw new Error("not used");
   },
-  makeRunnable: pkg => Computable.resolve(RunnableFileSet.forEntry(pkg, `${pkg.packageName}/data.txt`, [], new HostLink("node", process.execPath))),
+  makeRunnable: pkg =>
+    Computable.resolve(RunnableFileSet.forEntry(pkg, `${pkg.packageName}/data.txt`, [], new HostLink("node", process.execPath))),
 };
 const registryRequirements = new Map<string, Requirement[]>();
 /* Every `<pkg>@<version> <operation>` a TestRegistry was asked the requirements of. */
@@ -640,7 +675,9 @@ class TestRegistry implements Repository, RepositoryReader<SemverVersion, Semver
 
   /** Answer a variant with one file naming it. */
   public fetchVariant(pkg: string, version: SemverVersion, variant: string): Computable<FileSet> {
-    return Computable.resolve(new FileSet(new Map([[`${pkg}-${variant}.txt`, MemoryFile.from(`${pkg}@${versionToString(version)}`)]])));
+    return Computable.resolve(
+      new FileSet(new Map([[`${pkg}-${variant}.txt`, MemoryFile.from(`${pkg}@${versionToString(version)}`)]]))
+    );
   }
 
   /** Answer `doc` with one page per version, and publish nothing for any other operation. */
@@ -648,7 +685,9 @@ class TestRegistry implements Repository, RepositoryReader<SemverVersion, Semver
     if (operation !== "doc") {
       return Computable.reject(publishesNothingFor(this, pkg, operation));
     }
-    return Computable.resolve(new FileSet(new Map([[`${pkg}/index.html`, MemoryFile.from(`doc of ${pkg}@${versionToString(version)}`)]])));
+    return Computable.resolve(
+      new FileSet(new Map([[`${pkg}/index.html`, MemoryFile.from(`doc of ${pkg}@${versionToString(version)}`)]]))
+    );
   }
 }
 /* A fresh identity per instance: a resolution is memoized by it through the
@@ -656,7 +695,9 @@ class TestRegistry implements Repository, RepositoryReader<SemverVersion, Semver
 let registries = 0;
 /* Core's catalog, under a type of its own here. */
 testRepos.push({ ...catalogRepositoryRegistration, type: "test_catalog" });
-registerRepositoryProvider("test_registry", context => Computable.resolve(new TestRegistry(`${context.name}#${++registries}`, context.operation, context.name)));
+registerRepositoryProvider("test_registry", context =>
+  Computable.resolve(new TestRegistry(`${context.name}#${++registries}`, context.operation, context.name))
+);
 
 /* A registry whose references must state a version, as npm's must: a name with
  * none is not yet a complete reference. */
@@ -757,7 +798,11 @@ class TestPubRepo extends TestRepo implements RepositoryWriter {
     return destination.name.startsWith("attached") && !destination.name.endsWith("-doc")
       ? [
           {
-            destination: new PackagePublishRef(this, { name: `${destination.name}-doc`, version: (destination as PackagePublishRef).version }, destination.repositoryName),
+            destination: new PackagePublishRef(
+              this,
+              { name: `${destination.name}-doc`, version: (destination as PackagePublishRef).version },
+              destination.repositoryName
+            ),
             operation: "doc",
           },
         ]
@@ -791,7 +836,12 @@ const accountProvider =
   context =>
     Computable.resolve<Namespace>(
       new TestAccountRepo(
-        context.makeRepository(memberType, { name: "m", properties: { flavour: "blue" }, url: "https://m.example", credential: MEMBER_CREDENTIAL })
+        context.makeRepository(memberType, {
+          name: "m",
+          properties: { flavour: "blue" },
+          url: "https://m.example",
+          credential: MEMBER_CREDENTIAL,
+        })
       )
     );
 registerRepositoryProvider("test_account", accountProvider("test_member"));
@@ -886,7 +936,16 @@ registerRule("test_map_composer", {}, context =>
 let lastCommand: Array<{ args: string[]; stdout?: string }> | undefined;
 registerRule("test_cmd", {}, context =>
   context
-    .getCommandProperty("run", new FileSet(new Map([["a.txt", MemoryFile.from("a")], ["b.txt", MemoryFile.from("b")], ["c.md", MemoryFile.from("c")]])))
+    .getCommandProperty(
+      "run",
+      new FileSet(
+        new Map([
+          ["a.txt", MemoryFile.from("a")],
+          ["b.txt", MemoryFile.from("b")],
+          ["c.md", MemoryFile.from("c")],
+        ])
+      )
+    )
     .then(stages => {
       lastCommand = stages.map(stage => ({ args: stage.args, stdout: stage.stdout }));
       return EMPTY_FILESET;
@@ -961,9 +1020,8 @@ registerRule("test_members", {}, context =>
 registerRule("test_reads_global", {}, context =>
   Computable.forAll([context.getString("wait"), context.getString("mode")], (wait, mode) =>
     (wait ? Computable.from<void>(resolve => setTimeout(resolve, 5)) : Computable.resolve(undefined))
-      .then(
-        (): Computable<unknown> =>
-          mode ? context.getGlobalString("MODE") : context.getGlobalFileProperty("TOOL").then(materializeTargets)
+      .then((): Computable<unknown> =>
+        mode ? context.getGlobalString("MODE") : context.getGlobalFileProperty("TOOL").then(materializeTargets)
       )
       .then(() => EMPTY_FILESET)
   )
@@ -1029,7 +1087,9 @@ describe("BuildContext", () => {
     const input = "MODE = m;\ntargetdef test_carrier { deps = PACKAGES; }\ntest_carrier lib { }\ntest_carrier app { deps = lib; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
-    const described = await model.getConfig(Constraints.of({ [BUILD_OPERATION]: "build" }), execution).describe(writtenOnCommandLine("app"));
+    const described = await model
+      .getConfig(Constraints.of({ [BUILD_OPERATION]: "build" }), execution)
+      .describe(writtenOnCommandLine("app"));
     const file = await described!.get(DESCRIPTION_FILE);
     const text = (await file!.getBuffer()).toString("utf8");
     expect(JSON.parse(text)).to.deep.equal({
@@ -1076,7 +1136,12 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
     /* A run whose absolute-path source is not the one the model's files were read through. */
     const run = new ExecutionContext(new BuildCache(cacheRoot, testLog), testLog, new FileSet(new Map()), new FileSet(new Map()));
-    const describing = describeOperation(model, operation => model.getConfig(Constraints.of({ [BUILD_OPERATION]: operation }), run), name => writtenOnCommandLine(name), run);
+    const describing = describeOperation(
+      model,
+      operation => model.getConfig(Constraints.of({ [BUILD_OPERATION]: operation }), run),
+      name => writtenOnCommandLine(name),
+      run
+    );
     expect(describing.targets.map(({ name, operation }) => ({ name, operation }))).to.deep.equal([
       { name: "lib", operation: "build" },
       { name: "app", operation: "build" },
@@ -1300,7 +1365,10 @@ describe("BuildContext", () => {
       return circularOf(failure);
     }
     const sites = (circular: CircularDependencyError): string[] =>
-      circular.cycle.map(site => `${site.target ? declName(site.target) + " " : ""}${site.property.name.toBaseString()} = ${site.value.value.toString()}`);
+      circular.cycle.map(
+        site =>
+          `${site.target ? declName(site.target) + " " : ""}${site.property.name.toBaseString()} = ${site.value.value.toString()}`
+      );
 
     for (const wait of ["", " wait = yes;"]) {
       const timing = wait ? "after an asynchronous step" : "immediately";
@@ -1326,7 +1394,11 @@ describe("BuildContext", () => {
     }
 
     it("names the command that runs a tool depending on the target running it", async () => {
-      const circular = await cycleOf("targetdef test_cmd { run = COMMAND; }\ntest_cmd g { run = u a.txt; }\ntest_good u { deps = g; }\n", "g", "build");
+      const circular = await cycleOf(
+        "targetdef test_cmd { run = COMMAND; }\ntest_cmd g { run = u a.txt; }\ntest_good u { deps = g; }\n",
+        "g",
+        "build"
+      );
       expect(circular.name).to.equal("g");
       expect(sites(circular)).to.deep.equal(["u deps = g", "g run = u"]);
     });
@@ -1408,7 +1480,11 @@ describe("BuildContext", () => {
       });
 
       it("finds a tool global naming a target that depends on the one reading it", async () => {
-        const circular = await cycleOf(`${TOOLS}TOOLGLOBAL = u;\ntest_good u { deps = t; }\ntest_globalrunnable t { }\n`, "t", "build");
+        const circular = await cycleOf(
+          `${TOOLS}TOOLGLOBAL = u;\ntest_good u { deps = t; }\ntest_globalrunnable t { }\n`,
+          "t",
+          "build"
+        );
         expect(sites(circular)).to.include.members(["TOOLGLOBAL = u", "u deps = t"]);
       });
 
@@ -1422,7 +1498,11 @@ describe("BuildContext", () => {
       });
 
       it("finds a string global whose value reads itself back", async () => {
-        const circular = await cycleOf(`${TOOLS}FLAVOR = ambient;\nGLOBALSTR = \${OTHER};\nOTHER = \${GLOBALSTR};\ntest_globalstr t { }\n`, "t", "build");
+        const circular = await cycleOf(
+          `${TOOLS}FLAVOR = ambient;\nGLOBALSTR = \${OTHER};\nOTHER = \${GLOBALSTR};\ntest_globalstr t { }\n`,
+          "t",
+          "build"
+        );
         expect(["GLOBALSTR", "OTHER"]).to.include(circular.name);
       });
     });
@@ -1869,7 +1949,8 @@ describe("BuildContext", () => {
   it("Hands a target that requires a multi-source target each of its sources", async () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-    const input = "targetdef test_multi { }\ntargetdef test_holds { deps = PACKAGES; }\ntest_multi m { }\ntest_holds u { deps = m; }\n";
+    const input =
+      "targetdef test_multi { }\ntargetdef test_holds { deps = PACKAGES; }\ntest_multi m { }\ntest_holds u { deps = m; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
     await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("u"));
@@ -1998,7 +2079,9 @@ describe("BuildContext", () => {
       const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
       expect(errors).to.deep.equal([]);
       packagedContent.length = 0;
-      await model.getConfig(Constraints.of({ [BUILD_OPERATION]: operation }), execution).materialize(writtenOnCommandLine("shipped:pub:lib:1.0.0:mode.txt"));
+      await model
+        .getConfig(Constraints.of({ [BUILD_OPERATION]: operation }), execution)
+        .materialize(writtenOnCommandLine("shipped:pub:lib:1.0.0:mode.txt"));
       const [content] = packagedContent;
       expect(content, operation).to.be.instanceOf(PackageFileSet);
       const pkg = content as PackageFileSet;
@@ -2030,7 +2113,9 @@ describe("BuildContext", () => {
       "}\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
-    const [release] = await model.getConfig(Constraints.of({ [BUILD_OPERATION]: "build" }), execution).materialize(writtenOnCommandLine("release"));
+    const [release] = await model
+      .getConfig(Constraints.of({ [BUILD_OPERATION]: "build" }), execution)
+      .materialize(writtenOnCommandLine("release"));
     const carriers = await (release as SyncSource).members();
     /* `test_file` has a rule for any operation, so `c1` is attached; `test_carrier`
      * has one for `build` only, so `lib` is not; a declared member at an
@@ -2298,9 +2383,7 @@ describe("BuildContext", () => {
        * and gets first-match-wins for free — the same semantics a written
        * REWRITE property has, since it is the same value one resolves to. */
       lastRewrite = undefined;
-      await build(
-        "targetdef test_rw { out = REWRITE; }\n" + "targetdef test_rw_composer { }\n" + "test_rw_composer t { }\n"
-      );
+      await build("targetdef test_rw { out = REWRITE; }\n" + "targetdef test_rw_composer { }\n" + "test_rw_composer t { }\n");
       /* Each literal rename answers its own name, and a name none of them
        * selects maps to nothing — passthrough, for the rule to decide. */
       expect(lastRewrite).to.deep.equal(["one.js", "two.js", undefined]);
@@ -2883,7 +2966,15 @@ describe("BuildContext", () => {
 
     it("leaves an edge for the other collection out of a node a projection pends over", () => {
       const nodeOf = (name: string, deps: ResolvedNode[] = [], usedFor = new Map<string, UsedFor>()): ResolvedNode =>
-        new ResolvedNode({ key: name, files: () => Computable.resolve(EMPTY_FILESET) }, name, "1.0.0", dependenciesOn(...deps), undefined, undefined, usedFor);
+        new ResolvedNode(
+          { key: name, files: () => Computable.resolve(EMPTY_FILESET) },
+          name,
+          "1.0.0",
+          dependenciesOn(...deps),
+          undefined,
+          undefined,
+          usedFor
+        );
       const lib = nodeOf("lib", [nodeOf("driver"), nodeOf("api")], new Map<string, UsedFor>([["driver", "run"]]));
       const [projected] = sidedNodes([new ProjectedPackage(lib, [])], "build", new Map());
       expect(projected).to.be.instanceOf(ProjectedPackage);
@@ -2931,11 +3022,17 @@ describe("BuildContext", () => {
       const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
       const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
       expect(errors).to.deep.equal([]);
-      return Promise.resolve(model.getConfig(Constraints.of({ [BUILD_OPERATION]: "build" }), formatExecution).materialize(writtenOnCommandLine(name))).then(
+      return Promise.resolve(
+        model.getConfig(Constraints.of({ [BUILD_OPERATION]: "build" }), formatExecution).materialize(writtenOnCommandLine(name))
+      ).then(
         () => undefined,
         (err: unknown) => {
           let cause = err;
-          while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError || cause instanceof RequirementResolutionError) {
+          while (
+            cause instanceof DependencyFailedError ||
+            cause instanceof ReferenceFailedError ||
+            cause instanceof RequirementResolutionError
+          ) {
             cause = cause.cause;
           }
           return (cause as Error).message;
@@ -2995,7 +3092,9 @@ describe("BuildContext", () => {
       const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
       const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
       expect(errors).to.deep.equal([]);
-      return Promise.resolve(model.getConfig(Constraints.of({ [BUILD_OPERATION]: operation }), runExecution).materialize(writtenOnCommandLine(name))).then(
+      return Promise.resolve(
+        model.getConfig(Constraints.of({ [BUILD_OPERATION]: operation }), runExecution).materialize(writtenOnCommandLine(name))
+      ).then(
         () => "accepted",
         (err: unknown) => {
           let cause = err;
@@ -3026,7 +3125,9 @@ describe("BuildContext", () => {
     try {
       const execution = new ExecutionContext(new BuildCache(root, testLog), testLog, EMPTY_FILESET, EMPTY_FILESET);
       const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", "", testLog)], testLog, testContributions);
-      const config = internal(model.getConfig(Constraints.of({ HOST: "arm64-apple-darwin", TARGET: "x86_64-unknown-linux-gnu" }), execution));
+      const config = internal(
+        model.getConfig(Constraints.of({ HOST: "arm64-apple-darwin", TARGET: "x86_64-unknown-linux-gnu" }), execution)
+      );
       const overrides = config.runOverrides();
       expect(overrides.get("TARGET")).to.equal("arm64-apple-darwin");
       expect(overrides.get(BUILD_OPERATION)).to.equal("run");
@@ -3384,9 +3485,7 @@ describe("BuildContext", () => {
     });
 
     it("for a global FILES property", async () => {
-      const model = guardedModel(
-        "GLOBALTOOL<FLAVOR=ambient> = wrong;\nGLOBALTOOL<FLAVOR=caller> = leaf;\ntest_globaltool root { }\n"
-      );
+      const model = guardedModel("GLOBALTOOL<FLAVOR=ambient> = wrong;\nGLOBALTOOL<FLAVOR=caller> = leaf;\ntest_globaltool root { }\n");
       lastDeps = undefined;
       await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("root"));
       expect(await leafContent()).to.equal("caller");
@@ -3903,10 +4002,7 @@ describe("contributed-lib-relative FILES", () => {
 
 describe("an incomplete reference", () => {
   const input =
-    "targetdef test_versioned_registry { }\n" +
-    "test_versioned_registry @reg { }\n" +
-    "A = @reg:foo;\n" +
-    "T = @reg:@scope;\n";
+    "targetdef test_versioned_registry { }\n" + "test_versioned_registry @reg { }\n" + "A = @reg:foo;\n" + "T = @reg:@scope;\n";
 
   function materialize(name: string): Computable<Array<FileSource | IncompleteRef>> {
     const errors: string[] = [];
@@ -3976,7 +4072,10 @@ describe("a namespace's fallback property", () => {
   });
 
   it("leaves a declared name to its declaration, whichever is declared first", async () => {
-    for (const source of ["default @ns = @root:@ns;\ntest_package @ns/tool { }\n", "test_package @ns/tool { }\ndefault @ns = @root:@ns;\n"]) {
+    for (const source of [
+      "default @ns = @root:@ns;\ntest_package @ns/tool { }\n",
+      "test_package @ns/tool { }\ndefault @ns = @root:@ns;\n",
+    ]) {
       const { model, errors } = load(source);
       expect(errors).to.deep.equal([]);
       expect(await answer(model, "@ns/tool")).to.deep.equal({ name: "@ns/tool", fallback: false });
@@ -4114,7 +4213,9 @@ describe("Rule selection", () => {
       { type: "amb", properties: { arch: "armv7" }, evaluate: specificTestRule },
     ]);
     /* Both rules have one key and both match, so neither is more specific. */
-    await expect(selected(tied, "amb", { BUILD_OPERATION: "test", arch: "armv7" })).to.be.rejectedWith(/Ambiguous 'amb' rule selection/);
+    await expect(selected(tied, "amb", { BUILD_OPERATION: "test", arch: "armv7" })).to.be.rejectedWith(
+      /Ambiguous 'amb' rule selection/
+    );
     /* But a config satisfying only one of them selects cleanly. */
     expect(await selected(tied, "amb", { BUILD_OPERATION: "test" })).to.equal(testRule);
   });
@@ -4170,17 +4271,22 @@ describe("Rule selection", () => {
   it("reports a cycle through a key whose value needs a target selected on it", async () => {
     /* `u` settles asynchronously, so by the time it asks for `t` again, t's own
      * evaluation — waiting on MODE, which is waiting on u — is already cached. */
-    const cyclic = modelOf("targetdef typed { }\ntargetdef mid { deps = PACKAGES; }\nMODE = `u`;\nmid u { deps = t; }\ntyped t { }\n", [
-      { type: "typed", properties: {}, evaluate: wildcardRule },
-      { type: "typed", properties: { MODE: "fast" }, evaluate: testRule },
-      {
-        type: "mid",
-        properties: {},
-        requirements: context =>
-          Computable.from<void>(resolve => setTimeout(resolve, 5)).then(() => ({ build: { deps: context.getPackageProperty("deps") } })),
-        evaluate: () => Computable.resolve(EMPTY_FILESET),
-      },
-    ]);
+    const cyclic = modelOf(
+      "targetdef typed { }\ntargetdef mid { deps = PACKAGES; }\nMODE = `u`;\nmid u { deps = t; }\ntyped t { }\n",
+      [
+        { type: "typed", properties: {}, evaluate: wildcardRule },
+        { type: "typed", properties: { MODE: "fast" }, evaluate: testRule },
+        {
+          type: "mid",
+          properties: {},
+          requirements: context =>
+            Computable.from<void>(resolve => setTimeout(resolve, 5)).then(() => ({
+              build: { deps: context.getPackageProperty("deps") },
+            })),
+          evaluate: () => Computable.resolve(EMPTY_FILESET),
+        },
+      ]
+    );
     const outcome = await settledOr(
       Promise.resolve(
         cyclic.getConfig(Constraints.of({ BUILD_OPERATION: "run" }), execution).materialize(writtenOnCommandLine("t"))
@@ -4201,17 +4307,23 @@ describe("Rule selection", () => {
 
   describe("on the target's own properties", () => {
     let ran: string[] = [];
-    const record = (name: string): RuleDefinition["evaluate"] => () => {
-      ran.push(name);
-      return Computable.resolve(EMPTY_FILESET);
-    };
+    const record =
+      (name: string): RuleDefinition["evaluate"] =>
+      () => {
+        ran.push(name);
+        return Computable.resolve(EMPTY_FILESET);
+      };
     const rules: RuleDefinition[] = [
       { type: "typed", properties: {}, evaluate: record("wildcard") },
       { type: "typed", properties: {}, targetProperties: { flavour: "van*" }, evaluate: record("vanilla") },
       { type: "typed", properties: { MODE: "fast" }, evaluate: record("fast") },
       { type: "typed", properties: { MODE: "fast" }, targetProperties: { flavour: "van*" }, evaluate: record("fast vanilla") },
       /* Builds an anonymous `typed` of the flavour it is given. */
-      { type: "outer", properties: {}, evaluate: context => context.getString("inner").then(inner => context.subTarget("typed", inner ? { flavour: inner } : {})) },
+      {
+        type: "outer",
+        properties: {},
+        evaluate: context => context.getString("inner").then(inner => context.subTarget("typed", inner ? { flavour: inner } : {})),
+      },
     ];
     const DEFS = "targetdef typed { flavour = STRING; srcs = FILES; }\ntargetdef outer { inner = STRING; }\n";
 
@@ -4267,8 +4379,12 @@ describe("Rule selection", () => {
     });
 
     it("rejects a rule selecting on a property its type does not declare as a STRING", () => {
-      const keyed = (key: string): RuleDefinition[] => [{ type: "typed", properties: {}, targetProperties: { [key]: "x" }, evaluate: wildcardRule }];
-      expect(() => modelOf(DEFS, keyed("colour"))).to.throw(/selects on its property 'colour', which 'typed' does not declare as a STRING/);
+      const keyed = (key: string): RuleDefinition[] => [
+        { type: "typed", properties: {}, targetProperties: { [key]: "x" }, evaluate: wildcardRule },
+      ];
+      expect(() => modelOf(DEFS, keyed("colour"))).to.throw(
+        /selects on its property 'colour', which 'typed' does not declare as a STRING/
+      );
       expect(() => modelOf(DEFS, keyed("srcs"))).to.throw(/'srcs'/);
     });
   });
@@ -4300,7 +4416,11 @@ describe("Rule selection", () => {
       "targetdef derived extends base { extra = STRING; flavour = STRING default chocolate; }\n" +
       "targetdef grandchild extends derived { }\n";
 
-    async function build(input: string, name: string, config: Record<string, string> = { BUILD_OPERATION: "build" }): Promise<Map<string, string>> {
+    async function build(
+      input: string,
+      name: string,
+      config: Record<string, string> = { BUILD_OPERATION: "build" }
+    ): Promise<Map<string, string>> {
       const files = (await modelOf(DEFS + input, [baseRule, baseTestRule, derivedRule], ["grandchild"])
         .getConfig(Constraints.of(config), execution)
         .materialize(writtenOnCommandLine(name))) as FileSet[];
@@ -4324,9 +4444,16 @@ describe("Rule selection", () => {
     }
 
     it("has every property of its base, a redeclared one as it declares it", async () => {
-      const def = modelOf(DEFS, []).getTargetDefs().find(target => target.name === "derived")!;
+      const def = modelOf(DEFS, [])
+        .getTargetDefs()
+        .find(target => target.name === "derived")!;
       expect([...def.properties.keys()]).to.deep.equal(["flavour", "srcs", "extra"]);
-      expect(modelOf(DEFS, []).getTargetDefs().find(target => target.name === "grandchild")!.properties.has("extra")).to.equal(true);
+      expect(
+        modelOf(DEFS, [])
+          .getTargetDefs()
+          .find(target => target.name === "grandchild")!
+          .properties.has("extra")
+      ).to.equal(true);
     });
 
     it("selects its own rule before its base's, and its base's where none of its own applies", async () => {
@@ -4350,11 +4477,17 @@ describe("Rule selection", () => {
     });
 
     it("reports the operations of its own rules and its bases'", () => {
-      expect(modelOf(DEFS, [baseRule, baseTestRule, derivedRule], ["grandchild"]).getOperations("grandchild")).to.deep.equal(["*", "build", "test"]);
+      expect(modelOf(DEFS, [baseRule, baseTestRule, derivedRule], ["grandchild"]).getOperations("grandchild")).to.deep.equal([
+        "*",
+        "build",
+        "test",
+      ]);
     });
 
     it("refuses a base that is not a targetdef, or a chain of bases leading back to it", () => {
-      expect(errorsOf("targetdef d extends nothing { }\n").join("\n")).to.match(/Targetdef 'd' extends 'nothing', which is not a targetdef/);
+      expect(errorsOf("targetdef d extends nothing { }\n").join("\n")).to.match(
+        /Targetdef 'd' extends 'nothing', which is not a targetdef/
+      );
       expect(errorsOf("targetdef a extends b { }\ntargetdef b extends a { }\n").join("\n")).to.match(/Targetdef 'a' extends itself/);
       expect(errorsOf("targetdef a extends a { }\n").join("\n")).to.match(/Targetdef 'a' extends itself/);
       expect(errorsOf("targetdef a extends { }\n")).to.not.deep.equal([]);
@@ -4362,7 +4495,9 @@ describe("Rule selection", () => {
 
     it("allows a redeclared property its base's type, a new default, and REQUIRED, and nothing else", () => {
       const base = "targetdef base { srcs = FILES; name = REQUIRED STRING; mode = STRING default x; }\n";
-      expect(errorsOf(base + "targetdef d extends base { srcs = REQUIRED FILES; name = REQUIRED STRING; mode = STRING default y; }\n")).to.deep.equal([]);
+      expect(
+        errorsOf(base + "targetdef d extends base { srcs = REQUIRED FILES; name = REQUIRED STRING; mode = STRING default y; }\n")
+      ).to.deep.equal([]);
       expect(errorsOf(base + "targetdef d extends base { srcs = PACKAGES; }\n").join("\n")).to.match(
         /Targetdef 'd' redeclares the property 'srcs' incompatibly: it declares it PACKAGES, where 'base' declares it FILES/
       );
@@ -4386,10 +4521,13 @@ describe("inspecting a target's collection", () => {
       return Computable.resolve({ build: { srcs: context.getFileProperty("srcs"), [part === "deps" ? "dependencies" : part]: deps } });
     },
     evaluate: (context, requirements) =>
-      Computable.forAll([requirements.materializeAll(), requirements.packages(part === "deps" ? "dependencies" : part)], (_collected, deps) => {
-        proceeded.push(context.name);
-        return new PackageFileSet([["index.js", new MemoryFile(Buffer.from(context.name))]], context.name, "1.0.0", deps);
-      }),
+      Computable.forAll(
+        [requirements.materializeAll(), requirements.packages(part === "deps" ? "dependencies" : part)],
+        (_collected, deps) => {
+          proceeded.push(context.name);
+          return new PackageFileSet([["index.js", new MemoryFile(Buffer.from(context.name))]], context.name, "1.0.0", deps);
+        }
+      ),
   });
   /* A rule with requirements that delivers files, not a package. */
   const filesRule: RuleDefinition = {
@@ -4531,7 +4669,6 @@ describe("inspecting a target's collection", () => {
 });
 
 describe("a reference to a target", () => {
-
   /** The targets whose rule was evaluated, in order. */
   let evaluated: string[] = [];
   /* A package made from its `deps`, with one file. */
@@ -4559,13 +4696,15 @@ describe("a reference to a target", () => {
   const noteRule: RuleDefinition = {
     type: "note",
     properties: {},
-    evaluate: context => Computable.resolve(new FileSet(new Map([[`${context.name}.txt`, new MemoryFile(Buffer.from(context.name))]]))),
+    evaluate: context =>
+      Computable.resolve(new FileSet(new Map([[`${context.name}.txt`, new MemoryFile(Buffer.from(context.name))]]))),
   };
   /* A package that requires nothing, from a rule that states no requirements. */
   const bareLibRule: RuleDefinition = {
     type: "barelib",
     properties: {},
-    evaluate: context => Computable.resolve(new PackageFileSet([["index.js", new MemoryFile(Buffer.from(context.name))]], context.name, "1.0.0")),
+    evaluate: context =>
+      Computable.resolve(new PackageFileSet([["index.js", new MemoryFile(Buffer.from(context.name))]], context.name, "1.0.0")),
   };
   /* A package whose build fails. */
   const badLibRule: RuleDefinition = {
@@ -4610,7 +4749,14 @@ describe("a reference to a target", () => {
     evaluate: (context, requirements) =>
       Computable.forAll([requirements.materializeAll(), requirements.packages("dependencies")], (_collected, packages) => {
         const provided = new Map(packages.map(edge => [dependencyName(edge), "expected" as const]));
-        return new PackageFileSet([["index.js", new MemoryFile(Buffer.from(context.name))]], context.name, "1.0.0", packages, undefined, provided);
+        return new PackageFileSet(
+          [["index.js", new MemoryFile(Buffer.from(context.name))]],
+          context.name,
+          "1.0.0",
+          packages,
+          undefined,
+          provided
+        );
       }),
   };
   /* The packages the last `outer` handed its sub-target. */
@@ -4645,7 +4791,21 @@ describe("a reference to a target", () => {
     const errors: string[] = [];
     const log = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const built = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", DEFS + input, log)], log, [
-      { rules: [libRule, genRule, noteRule, brokenRule, badLibRule, bareLibRule, userRule, readerRule, peerLibRule, outerRule, innerRule] },
+      {
+        rules: [
+          libRule,
+          genRule,
+          noteRule,
+          brokenRule,
+          badLibRule,
+          bareLibRule,
+          userRule,
+          readerRule,
+          peerLibRule,
+          outerRule,
+          innerRule,
+        ],
+      },
     ]);
     expect(errors).to.deep.equal([]);
     return built.getConfig(Constraints.of({}), execution);
@@ -4697,7 +4857,11 @@ describe("a reference to a target", () => {
 
   it("gives each file a registry delivers the reference that resolves to it", async () => {
     const log = new LogFormatter(LogLevel.Info, () => undefined);
-    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", "targetdef test_registry { }\ntest_registry @reg { }\n", log)], log, testContributions);
+    const model = toBuildModel(
+      [parseBuildString(EMPTY_FILESET, "TEST.fabr", "targetdef test_registry { }\ntest_registry @reg { }\n", log)],
+      log,
+      testContributions
+    );
     const config = model.getConfig(Constraints.of({}), execution);
     const [pkg] = await config.materialize(writtenOnCommandLine("@reg:pkg:1.2.0"));
     expect([...(pkg as FileSet)].map(([file]) => [file, (pkg as FileSet).sourcePathOf(file)])).to.deep.equal([
@@ -4708,7 +4872,11 @@ describe("a reference to a target", () => {
 
   it("answers a registry's reference under doc with what its version publishes, and refuses one it publishes nothing for", async () => {
     const log = new LogFormatter(LogLevel.Info, () => undefined);
-    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", "targetdef test_registry { }\ntest_registry @reg { }\n", log)], log, testContributions);
+    const model = toBuildModel(
+      [parseBuildString(EMPTY_FILESET, "TEST.fabr", "targetdef test_registry { }\ntest_registry @reg { }\n", log)],
+      log,
+      testContributions
+    );
     const config = model.getConfig(Constraints.of({}), execution);
     const [doc] = await config.materialize(writtenOnCommandLine("@reg:pkg:1.2.0<BUILD_OPERATION=doc>"));
     expect(doc).not.to.be.instanceOf(PackageFileSet);
@@ -4724,7 +4892,9 @@ describe("a reference to a target", () => {
 
   it("hands a sub-target the packages it was given as they stand, provided requirements among them or not", async () => {
     expect(await delivered(configOf("lib base { }\nlib x { deps = base; }\nouter u { deps = x base; }"))).to.equal("x:true,base:true");
-    expect(await delivered(configOf("lib base { }\npeerlib x { deps = base; }\nouter u { deps = x base; }"))).to.equal("x:true,base:true");
+    expect(await delivered(configOf("lib base { }\npeerlib x { deps = base; }\nouter u { deps = x base; }"))).to.equal(
+      "x:true,base:true"
+    );
   });
 
   it("delivers a target and a rename of it as two packages, each for its reference, from one build", async () => {
@@ -4830,7 +5000,9 @@ describe("a reference to a target", () => {
   it("takes such a package as the dependency of another package, wherever that one is required", async () => {
     /* `b`'s rule states nothing, which is to say that `b` requires nothing;
      * `mid` states `b` and builds requiring it. */
-    const built = await configOf("barelib b { }\nlib mid { deps = b; }\nuser u { deps = mid; }").materialize(writtenOnCommandLine("u"));
+    const built = await configOf("barelib b { }\nlib mid { deps = b; }\nuser u { deps = mid; }").materialize(
+      writtenOnCommandLine("u")
+    );
     expect(built).to.have.length(1);
     const [mid] = await configOf("barelib b { }\nlib mid { deps = b; }").materialize(writtenOnCommandLine("mid"));
     expect((mid as PackageFileSet).packages.map(pkg => pkg.packageName)).to.deep.equal(["b"]);
@@ -4917,10 +5089,7 @@ describe("BuildModel repository registration", () => {
   };
   it("rejects a duplicate repository type across contributions", () => {
     expect(() =>
-      toBuildModel([], testLog, [
-        { repositories: [{ type: "dup", provider }] },
-        { repositories: [{ type: "dup", provider }] },
-      ])
+      toBuildModel([], testLog, [{ repositories: [{ type: "dup", provider }] }, { repositories: [{ type: "dup", provider }] }])
     ).to.throw(/Duplicate repository type 'dup'/);
   });
 });
@@ -4933,7 +5102,9 @@ describe("declared rules and repositories", () => {
     return toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions, implementation => {
       const reference = implementation.value.toString();
       loaded.push(reference);
-      return implementations.has(reference) ? Computable.resolve(implementations.get(reference)) : Computable.reject(new Error(`no module ${reference}`));
+      return implementations.has(reference)
+        ? Computable.resolve(implementations.get(reference))
+        : Computable.reject(new Error(`no module ${reference}`));
     });
   }
 
@@ -4984,13 +5155,19 @@ describe("declared rules and repositories", () => {
       (err: Error) => err
     );
     expect(failure).to.be.instanceOf(DependencyFailedError);
-    expect((failure as DependencyFailedError).cause.message).to.match(/The rule implementation '@p\/q:rules\/Missing' could not be loaded: no module/);
+    expect((failure as DependencyFailedError).cause.message).to.match(
+      /The rule implementation '@p\/q:rules\/Missing' could not be loaded: no module/
+    );
   });
 
   it("makes a declared repository type's instances with its implementation", async () => {
     const loaded: string[] = [];
     const provider: RepositoryProvider = () => Computable.resolve(new FileSet(new Map([["out.txt", MemoryFile.from("repo")]])));
-    const model = declaredModel("targetdef dr { }\nrepository dr = @p/q:Repo;\ndr @r { }\n", new Map([["@p/q:Repo", { provider }]]), loaded);
+    const model = declaredModel(
+      "targetdef dr { }\nrepository dr = @p/q:Repo;\ndr @r { }\n",
+      new Map([["@p/q:Repo", { provider }]]),
+      loaded
+    );
     expect(model.getTargets().map(target => target.name)).to.not.include("@r");
     expect(await built(model, "@r")).to.equal("repo");
     expect(loaded).to.deep.equal(["@p/q:Repo"]);
@@ -5003,7 +5180,9 @@ describe("declared rules and repositories", () => {
       return Computable.resolve(new FileSet(new Map()));
     };
     const model = declaredModel("targetdef dr { }\nrepository dr = @p/q:Repo;\n", new Map([["@p/q:Repo", { provider }]]), []);
-    await model.getRepositoryImplementation("dr")!.then(made => made.provider({} as TargetContext, "https://made.example", MEMBER_CREDENTIAL, NO_REQUIREMENTS));
+    await model
+      .getRepositoryImplementation("dr")!
+      .then(made => made.provider({} as TargetContext, "https://made.example", MEMBER_CREDENTIAL, NO_REQUIREMENTS));
     expect(given).to.deep.equal(["https://made.example", MEMBER_CREDENTIAL]);
   });
 });
@@ -5038,7 +5217,12 @@ describe("rules written in .fabr", () => {
   }
 
   /** @return the text of `file` in what `name` materializes to. */
-  async function textOf(model: BuildModel, name: string, file = "f.txt", constraints: Record<string, string> = {}): Promise<string | undefined> {
+  async function textOf(
+    model: BuildModel,
+    name: string,
+    file = "f.txt",
+    constraints: Record<string, string> = {}
+  ): Promise<string | undefined> {
     return (await filesOf(model, name, constraints)).getFile(file)?.readString();
   }
 
@@ -5055,7 +5239,8 @@ describe("rules written in .fabr", () => {
 
   it("builds a target as the one sub-target of a short-form rule, reading the target's properties through the parameter", async () => {
     const model = modelOf(
-      "rule lintable pkg = test_file report { content = ${pkg.content}; }\n" + "lintable a { content = hello; }\nlintable b { content = goodbye; }\n"
+      "rule lintable pkg = test_file report { content = ${pkg.content}; }\n" +
+        "lintable a { content = hello; }\nlintable b { content = goodbye; }\n"
     );
     expect(await textOf(model, "a")).to.equal("hello");
     expect(await textOf(model, "b")).to.equal("goodbye");
@@ -5064,20 +5249,21 @@ describe("rules written in .fabr", () => {
   it("requires what the block's result and the block's targets it reaches require", async () => {
     const defs = "test_file one { content = 1; }\ntest_file extra { content = 2; }\nlintable a { srcs = one; }\n";
     const keysOf = async (rule: string): Promise<string[]> => {
-      const resolved = await modelOf(rule + defs).getConfig(Constraints.of({}), execution).resolve(writtenOnCommandLine("a"));
+      const resolved = await modelOf(rule + defs)
+        .getConfig(Constraints.of({}), execution)
+        .resolve(writtenOnCommandLine("a"));
       return [...requirementsOf(resolved).keys()];
     };
     /* A whole result as what the target is made from; each target reached by its requirements. */
-    expect(await keysOf("rule lintable pkg = held { test_holds held { deps = pkg.srcs extra other; } test_holds other { deps = pkg.srcs extra; } }\n")).to.deep.equal([
-      "extends",
-      "held.deps",
-      "other.deps",
-    ]);
+    expect(
+      await keysOf(
+        "rule lintable pkg = held { test_holds held { deps = pkg.srcs extra other; } test_holds other { deps = pkg.srcs extra; } }\n"
+      )
+    ).to.deep.equal(["extends", "held.deps", "other.deps"]);
     /* A target the result does not reach is not among them. */
-    expect(await keysOf("rule lintable pkg = held { test_holds held { deps = extra; } test_holds other { deps = pkg.srcs; } }\n")).to.deep.equal([
-      "extends",
-      "held.deps",
-    ]);
+    expect(
+      await keysOf("rule lintable pkg = held { test_holds held { deps = extra; } test_holds other { deps = pkg.srcs; } }\n")
+    ).to.deep.equal(["extends", "held.deps"]);
     /* What a result of files names, as `result`. */
     expect(await keysOf("rule lintable pkg = contents { contents = pkg.srcs extra; }\n")).to.deep.equal(["result"]);
     expect(await keysOf("rule lintable pkg = held:** { libs = pkg.srcs; test_holds held { deps = libs extra; } }\n")).to.deep.equal([
@@ -5086,7 +5272,9 @@ describe("rules written in .fabr", () => {
     ]);
     /* A result outside the block is what the target is made from, and reaches none of the block's targets. */
     expect(
-      await keysOf("rule lintable pkg<FLAVOR=plain> = pkg<FLAVOR=lint> { }\nrule lintable pkg<FLAVOR=lint> = held { test_holds held { deps = pkg.srcs; } }\n")
+      await keysOf(
+        "rule lintable pkg<FLAVOR=plain> = pkg<FLAVOR=lint> { }\nrule lintable pkg<FLAVOR=lint> = held { test_holds held { deps = pkg.srcs; } }\n"
+      )
     ).to.deep.equal(["extends"]);
   });
 
@@ -5116,7 +5304,9 @@ describe("rules written in .fabr", () => {
     registryRequirements.set("app@1.0.0", [{ name: "native", versionConstraint: "^1.0.0", variant: "linux" }]);
     try {
       const model = modelOf("targetdef test_registry { }\ntest_registry @reg { }\ntest_holds h { deps = @reg:app:1.0.0; }\n");
-      const [app] = requirementsOf(await model.getConfig(Constraints.of({}), execution).resolve(writtenOnCommandLine("h"))).get("deps")!;
+      const [app] = requirementsOf(await model.getConfig(Constraints.of({}), execution).resolve(writtenOnCommandLine("h"))).get(
+        "deps"
+      )!;
       const [{ package: linux }] = (app as ResolvedNode).dependencies;
       expect(linux).to.be.instanceOf(ResolvedNode);
       const { content } = linux as ResolvedNode;
@@ -5130,32 +5320,49 @@ describe("rules written in .fabr", () => {
   it("answers what the block's targets require of the target from one resolution, with what each adds beside it", async () => {
     registryRequirements.set("raiser@1.0.0", [{ name: "shared", versionConstraint: "^1.2.0" }]);
     const versionsOf = (deps: FileSet[]): string[] =>
-      deps.filter(pkg => pkg instanceof PackageFileSet).map(pkg => `${(pkg as PackageFileSet).packageName}@${(pkg as PackageFileSet).version}`).sort();
+      deps
+        .filter(pkg => pkg instanceof PackageFileSet)
+        .map(pkg => `${(pkg as PackageFileSet).packageName}@${(pkg as PackageFileSet).version}`)
+        .sort();
     const build = async (rule: string): Promise<void> => {
-      const model = modelOf("targetdef test_registry { }\ntest_registry @reg { }\n" + rule + "lintable a { srcs = @reg:shared:^1.0.0; }\n");
+      const model = modelOf(
+        "targetdef test_registry { }\ntest_registry @reg { }\n" + rule + "lintable a { srcs = @reg:shared:^1.0.0; }\n"
+      );
       await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
     };
     try {
       /* What the result adds raises what every target takes from the target. */
-      await build("rule lintable pkg = other { test_holds held { deps = pkg.srcs; } test_good other { deps = pkg.srcs @reg:raiser held; } }\n");
+      await build(
+        "rule lintable pkg = other { test_holds held { deps = pkg.srcs; } test_good other { deps = pkg.srcs @reg:raiser held; } }\n"
+      );
       expect(versionsOf(heldDeps)).to.deep.equal(["shared@1.2.0"]);
       expect(versionsOf(lastDepSets)).to.deep.equal(["raiser@1.0.0", "shared@1.2.0"]);
       /* What another target adds with what it takes from the target does too. */
-      await build("rule lintable pkg = held { test_holds held { deps = pkg.srcs other; } test_good other { deps = pkg.srcs @reg:raiser; } }\n");
+      await build(
+        "rule lintable pkg = held { test_holds held { deps = pkg.srcs other; } test_good other { deps = pkg.srcs @reg:raiser; } }\n"
+      );
       expect(versionsOf(heldDeps)).to.deep.equal(["shared@1.2.0"]);
       expect(versionsOf(lastDepSets)).to.deep.equal(["raiser@1.0.0", "shared@1.2.0"]);
       /* What a target the result reads only for its files adds does too. */
-      await build("rule lintable pkg = held { test_holds held { deps = pkg.srcs other:**; } test_good other { deps = pkg.srcs @reg:raiser; } }\n");
+      await build(
+        "rule lintable pkg = held { test_holds held { deps = pkg.srcs other:**; } test_good other { deps = pkg.srcs @reg:raiser; } }\n"
+      );
       expect(versionsOf(heldDeps)).to.deep.equal(["shared@1.2.0"]);
       /* Whatever the result's configuration is substituted from. */
-      await build("F = plain;\nrule lintable pkg = other<FLAVOR=${F}> { test_holds held { deps = pkg.srcs; } test_good other { deps = pkg.srcs @reg:raiser held; } }\n");
+      await build(
+        "F = plain;\nrule lintable pkg = other<FLAVOR=${F}> { test_holds held { deps = pkg.srcs; } test_good other { deps = pkg.srcs @reg:raiser held; } }\n"
+      );
       expect(versionsOf(heldDeps)).to.deep.equal(["shared@1.2.0"]);
       /* A target of the block named in another configuration resolves apart. */
-      await build("rule lintable pkg = held { test_holds held { deps = pkg.srcs other<FLAVOR=lint>; } test_good other { deps = pkg.srcs @reg:raiser; } }\n");
+      await build(
+        "rule lintable pkg = held { test_holds held { deps = pkg.srcs other<FLAVOR=lint>; } test_good other { deps = pkg.srcs @reg:raiser; } }\n"
+      );
       expect(versionsOf(heldDeps)).to.deep.equal(["shared@1.0.0"]);
       expect(versionsOf(lastDepSets)).to.deep.equal(["raiser@1.0.0", "shared@1.2.0"]);
       /* What a target the result does not reach requires is its own. */
-      await build("rule lintable pkg = held { test_holds held { deps = pkg.srcs; } test_good tool { deps = pkg.srcs @reg:raiser; } }\n");
+      await build(
+        "rule lintable pkg = held { test_holds held { deps = pkg.srcs; } test_good tool { deps = pkg.srcs @reg:raiser; } }\n"
+      );
       expect(versionsOf(heldDeps)).to.deep.equal(["shared@1.0.0"]);
     } finally {
       registryRequirements.delete("raiser@1.0.0");
@@ -5173,18 +5380,24 @@ describe("rules written in .fabr", () => {
   });
 
   it("reads two of the block's targets together for files, and as packages only under names of their own", async () => {
-    const files = modelOf("rule lintable pkg = res { res = held other; test_holds held { deps = pkg.srcs; } test_holds other { deps = pkg.srcs; } }\ntest_file one { content = 1; }\nlintable a { srcs = one; }\n");
+    const files = modelOf(
+      "rule lintable pkg = res { res = held other; test_holds held { deps = pkg.srcs; } test_holds other { deps = pkg.srcs; } }\ntest_file one { content = 1; }\nlintable a { srcs = one; }\n"
+    );
     await filesOf(files, "a");
     const packages = "test_package held { } test_package other { } }\nlintable a { }\n";
-    expect(messagesOf(await failureOf(modelOf("rule lintable pkg = res { test_holds res { deps = held other; } " + packages), "a")).join("\n")).to.contain(
-      "'a' is required here as two different packages"
-    );
+    expect(
+      messagesOf(await failureOf(modelOf("rule lintable pkg = res { test_holds res { deps = held other; } " + packages), "a")).join(
+        "\n"
+      )
+    ).to.contain("'a' is required here as two different packages");
     await filesOf(modelOf("rule lintable pkg = res { test_holds res { deps = held -> a-api other; } " + packages), "a");
     expect(heldDeps.map(pkg => (pkg as PackageFileSet).packageName).sort()).to.deep.equal(["a", "a-api"]);
   });
 
   it("looks a global's value up where the file's names are, whatever the block declares", async () => {
-    const model = modelOf("LIBS = extra;\nrule lintable pkg = held { test_holds held { deps = LIBS; } test_file extra { content = local; } }\ntest_file extra { content = global; }\nlintable a { }\n");
+    const model = modelOf(
+      "LIBS = extra;\nrule lintable pkg = held { test_holds held { deps = LIBS; } test_file extra { content = local; } }\ntest_file extra { content = global; }\nlintable a { }\n"
+    );
     await filesOf(model, "a");
     expect(await Promise.all(heldDeps.map(files => files.getFile("f.txt")!.readString()))).to.deep.equal(["global"]);
   });
@@ -5211,7 +5424,9 @@ describe("rules written in .fabr", () => {
     expect(lastSubtargetNames).to.deep.equal(["held"]);
     /* A rule applied to a target another block's target made. */
     await filesOf(
-      modelOf(defs + "rule lintable pkg = held { test_records_names held { } }\nrule wrapper w = m { test_maker m { } }\nwrapper a { }\n"),
+      modelOf(
+        defs + "rule lintable pkg = held { test_records_names held { } }\nrule wrapper w = m { test_maker m { } }\nwrapper a { }\n"
+      ),
       "a"
     );
     expect(lastSubtargetNames).to.deep.equal(["held", "m"]);
@@ -5228,7 +5443,11 @@ describe("rules written in .fabr", () => {
       );
       await filesOf(model, "a");
       const described = (pkg: PackageFileSet): string => `${pkg.packageName}@${pkg.version ?? "-"}`;
-      expect(lastDepSets.map(pkg => described(pkg as PackageFileSet)).sort()).to.deep.equal(["a@1.0.0", "raiser@1.0.0", "shared@1.2.0"]);
+      expect(lastDepSets.map(pkg => described(pkg as PackageFileSet)).sort()).to.deep.equal([
+        "a@1.0.0",
+        "raiser@1.0.0",
+        "shared@1.2.0",
+      ]);
       const made = lastDepSets.find(pkg => (pkg as PackageFileSet).packageName === "a") as PackageFileSet;
       expect(made.packages.map(described)).to.deep.equal(["shared@1.2.0"]);
     } finally {
@@ -5262,12 +5481,16 @@ describe("rules written in .fabr", () => {
   });
 
   it("finds a cycle among the block's targets as a cycle", async () => {
-    const model = modelOf("rule lintable pkg = held { test_holds held { deps = pkg.srcs other; } test_holds other { deps = held; } }\ntest_file one { content = 1; }\nlintable a { srcs = one; }\n");
+    const model = modelOf(
+      "rule lintable pkg = held { test_holds held { deps = pkg.srcs other; } test_holds other { deps = held; } }\ntest_file one { content = 1; }\nlintable a { srcs = one; }\n"
+    );
     expect(circularOf(await failureOf(model, "a"))).to.be.instanceOf(CircularDependencyError);
   });
 
   it("fails the target where a target of its rule's block cannot say what it requires", async () => {
-    const model = modelOf("rule lintable pkg = held { test_holds held { deps = pkg.srcs other; } test_holds other { deps = pkg.srcs nowhere; } }\ntest_file one { content = 1; }\nlintable a { srcs = one; }\n");
+    const model = modelOf(
+      "rule lintable pkg = held { test_holds held { deps = pkg.srcs other; } test_holds other { deps = pkg.srcs nowhere; } }\ntest_file one { content = 1; }\nlintable a { srcs = one; }\n"
+    );
     expect(messagesOf(await failureOf(model, "a")).join("\n")).to.contain("nowhere");
   });
 
@@ -5279,7 +5502,9 @@ describe("rules written in .fabr", () => {
           "rule lintable pkg = other { test_holds held { deps = pkg.srcs; } test_good other { deps = pkg.srcs @reg:cx-raiser held; } }\n" +
           "lintable a { srcs = @reg:cx:^1.0.0; }\n"
       );
-      expect(messagesOf(await failureOf(model, "a")).join("\n")).to.contain("Resolution requires multiple versions of the same package:");
+      expect(messagesOf(await failureOf(model, "a")).join("\n")).to.contain(
+        "Resolution requires multiple versions of the same package:"
+      );
       /* A target whose rule collects permissively is not refused, nor is one
        * that uses only some of the versions. */
       const loose = modelOf(
@@ -5331,10 +5556,14 @@ describe("rules written in .fabr", () => {
 
   it("looks the block's own names up before the file's, and the target's values in the file's", async () => {
     const defs = "test_file one { content = 1; }\ntest_file extra { content = global; }\nlintable a { srcs = one extra; }\n";
-    const local = modelOf("rule lintable pkg = held { test_holds held { deps = extra; } test_file extra { content = local; } }\n" + defs);
+    const local = modelOf(
+      "rule lintable pkg = held { test_holds held { deps = extra; } test_file extra { content = local; } }\n" + defs
+    );
     await filesOf(local, "a");
     expect(await Promise.all(heldDeps.map(files => files.getFile("f.txt")!.readString()))).to.deep.equal(["local"]);
-    const target = modelOf("rule lintable pkg = held { test_holds held { deps = pkg.srcs; } test_file extra { content = local; } }\n" + defs);
+    const target = modelOf(
+      "rule lintable pkg = held { test_holds held { deps = pkg.srcs; } test_file extra { content = local; } }\n" + defs
+    );
     await filesOf(target, "a");
     const texts = await Promise.all(heldDeps.map(files => files.getFile("f.txt")!.readString()));
     expect(texts.sort()).to.deep.equal(["1", "global"]);
@@ -5361,7 +5590,9 @@ describe("rules written in .fabr", () => {
   });
 
   it("builds the result under the target's name, and another where the result is renamed", async () => {
-    const model = modelOf("rule lintable pkg = built -> other { test_package built { } }\nlintable a { }\ntest_good c { deps = a; }\n");
+    const model = modelOf(
+      "rule lintable pkg = built -> other { test_package built { } }\nlintable a { }\ntest_good c { deps = a; }\n"
+    );
     await filesOf(model, "c");
     expect((lastDepSets[0] as PackageFileSet).packageName).to.equal("other");
     /* Named so when it is resolved, before anything is built. */
@@ -5379,7 +5610,9 @@ describe("rules written in .fabr", () => {
 
   it("refuses a build that is not what its rule declares", async () => {
     const model = modelOf("targetdef test_misdeclared { }\ntest_misdeclared m { }\ntest_good c { deps = m; }\n");
-    expect(messagesOf(await failureOf(model, "c")).join("\n")).to.contain("'m' builds files, though its rule declares the package 'm'");
+    expect(messagesOf(await failureOf(model, "c")).join("\n")).to.contain(
+      "'m' builds files, though its rule declares the package 'm'"
+    );
   });
 
   it("substitutes the bare parameter as the target's name, a rename on the result included", async () => {
@@ -5456,7 +5689,8 @@ describe("rules written in .fabr", () => {
     });
 
     it("takes a property as the last item of the body supplying it has it", async () => {
-      const rules = "rule lintable pkg = test_file report { content = mine; pkg; }\nrule flavoured f = test_file report { f; content = mine; }\n";
+      const rules =
+        "rule lintable pkg = test_file report { content = mine; pkg; }\nrule flavoured f = test_file report { f; content = mine; }\n";
       const model = splicing(rules + "lintable a { content = hello; }\nlintable b { }\nflavoured c { }\n");
       expect(await textOf(model, "a")).to.equal("hello");
       expect(await textOf(model, "b")).to.equal("mine");
@@ -5464,7 +5698,9 @@ describe("rules written in .fabr", () => {
     });
 
     it("takes what is spliced where no guarded declaration after it applies", async () => {
-      const model = splicing("rule lintable pkg = test_file report { pkg; content<FLAVOR=sour> = guarded; }\nlintable a { content = hello; }\n");
+      const model = splicing(
+        "rule lintable pkg = test_file report { pkg; content<FLAVOR=sour> = guarded; }\nlintable a { content = hello; }\n"
+      );
       expect(await textOf(model, "a")).to.equal("hello");
       expect(await textOf(model, "a", "f.txt", { FLAVOR: "sour" })).to.equal("guarded");
     });
@@ -5483,7 +5719,9 @@ describe("rules written in .fabr", () => {
     });
 
     it("takes a map property's entries as properties, read as the property's type", async () => {
-      const shared = splicing("BASE = { content = base; };\nCOMMON = { BASE; };\ntest_file a { COMMON; }\ntest_file b { COMMON; content = own; }\n");
+      const shared = splicing(
+        "BASE = { content = base; };\nCOMMON = { BASE; };\ntest_file a { COMMON; }\ntest_file b { COMMON; content = own; }\n"
+      );
       expect(await textOf(shared, "a")).to.equal("base");
       expect(await textOf(shared, "b")).to.equal("own");
       const held = splicing("COMMON = { deps = one; };\ntest_file one { content = 1; }\ntest_holds h { COMMON; }\n");
@@ -5502,14 +5740,22 @@ describe("rules written in .fabr", () => {
     it("requires a required property of the body as spliced", async () => {
       expect(await textOf(splicing("COMMON = { content = given; };\ntest_needs a { COMMON; }\n"), "a")).to.equal("given");
       const missing = splicing("COMMON = { other = x; };\ntest_needs a { COMMON; }\n");
-      expect(messagesOf(await failureOf(missing, "a")).join("\n")).to.contain("Missing required property 'content' in test_needs target 'a'");
+      expect(messagesOf(await failureOf(missing, "a")).join("\n")).to.contain(
+        "Missing required property 'content' in test_needs target 'a'"
+      );
     });
 
     it("refuses a splice of what is no map, and a guard on a splice", async () => {
       const target = splicing("test_file one { content = 1; }\ntest_file two { one; }\n");
-      expect(messagesOf(await failureOf(target, "two")).join("\n")).to.contain("'one' does not name a map property, so it cannot be spliced");
-      expect(errorsOf("rule lintable pkg = test_file r { <FLAVOR=x> { pkg; } }\n").join("\n")).to.match(/A splice of a target's properties takes no guard/);
-      expect(errorsOf("rule lintable pkg = test_file r { pkg<FLAVOR=x>; }\n").join("\n")).to.match(/A splice of a target's properties takes no guard/);
+      expect(messagesOf(await failureOf(target, "two")).join("\n")).to.contain(
+        "'one' does not name a map property, so it cannot be spliced"
+      );
+      expect(errorsOf("rule lintable pkg = test_file r { <FLAVOR=x> { pkg; } }\n").join("\n")).to.match(
+        /A splice of a target's properties takes no guard/
+      );
+      expect(errorsOf("rule lintable pkg = test_file r { pkg<FLAVOR=x>; }\n").join("\n")).to.match(
+        /A splice of a target's properties takes no guard/
+      );
     });
   });
 
@@ -5521,7 +5767,11 @@ describe("rules written in .fabr", () => {
   /** @return the messages of `err` and the errors it wraps, outermost first. */
   function messagesOf(err: unknown): string[] {
     const messages: string[] = [];
-    for (let at = err; at instanceof Error; at = at instanceof DependencyFailedError || at instanceof ReferenceFailedError ? at.cause : undefined) {
+    for (
+      let at = err;
+      at instanceof Error;
+      at = at instanceof DependencyFailedError || at instanceof ReferenceFailedError ? at.cause : undefined
+    ) {
       messages.push(at.message);
     }
     return messages;
@@ -5553,7 +5803,14 @@ describe("rules written in .fabr", () => {
     expect(errors.join("\n")).to.contain("'pkg.nope' reads a property 'lintable' does not declare");
     errors.length = 0;
     toBuildModel(
-      [parseBuildString(EMPTY_FILESET, "TEST.fabr", DEFS + "rule lintable pkg = test_file r { content = hello-${pkg.whom}; }\n", logger)],
+      [
+        parseBuildString(
+          EMPTY_FILESET,
+          "TEST.fabr",
+          DEFS + "rule lintable pkg = test_file r { content = hello-${pkg.whom}; }\n",
+          logger
+        ),
+      ],
       logger,
       testContributions
     );
@@ -5566,24 +5823,33 @@ describe("a global MAP property", () => {
   registerRule("test_global_map", {}, context =>
     context
       .getGlobalMap("TYPES")
-      .then(map => new FileSet(new Map([["out.txt", MemoryFile.from([...map].map(([key, value]) => `${key}=${String(value)}`).join(" "))]])))
+      .then(
+        map =>
+          new FileSet(new Map([["out.txt", MemoryFile.from([...map].map(([key, value]) => `${key}=${String(value)}`).join(" "))]]))
+      )
   );
 
   async function typesOf(input: string): Promise<string> {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", "targetdef test_global_map { }\ntest_global_map t { }\n" + input, logger)], logger, testContributions);
-    expect(errors).to.deep.equal([]);
-    const [files] = await Promise.resolve(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("t:out.txt"))).catch(
-      (err: Error & { cause?: Error }) => {
-        throw err.cause ?? err;
-      }
+    const model = toBuildModel(
+      [parseBuildString(EMPTY_FILESET, "TEST.fabr", "targetdef test_global_map { }\ntest_global_map t { }\n" + input, logger)],
+      logger,
+      testContributions
     );
+    expect(errors).to.deep.equal([]);
+    const [files] = await Promise.resolve(
+      model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("t:out.txt"))
+    ).catch((err: Error & { cause?: Error }) => {
+      throw err.cause ?? err;
+    });
     return (files as FileSet).readFile("out.txt");
   }
 
   it("is read by a rule as its default declares it", async () => {
-    expect(await typesOf("default TYPES = { ecr = oci_repository; npm = npm_repository; };\n")).to.equal("ecr=oci_repository npm=npm_repository");
+    expect(await typesOf("default TYPES = { ecr = oci_repository; npm = npm_repository; };\n")).to.equal(
+      "ecr=oci_repository npm=npm_repository"
+    );
   });
 
   it("is read as a project's declaration in place of a default", async () => {
@@ -5658,7 +5924,6 @@ describe("a repository a namespace makes", () => {
     );
     expect(err?.message).to.equal("'@empty:m' is a no_such_type, which no plugin in use defines");
   });
-
 });
 
 describe("private declarations", () => {
@@ -5676,7 +5941,11 @@ describe("private declarations", () => {
   function errorsOf(files: Record<string, string>): string[] {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-    toBuildModel(Object.entries(files).map(([file, text]) => parseBuildString(EMPTY_FILESET, file, text, logger)), logger, testContributions);
+    toBuildModel(
+      Object.entries(files).map(([file, text]) => parseBuildString(EMPTY_FILESET, file, text, logger)),
+      logger,
+      testContributions
+    );
     return errors;
   }
 
@@ -5722,10 +5991,13 @@ describe("private declarations", () => {
       "T.fabr": "targetdef test_file { content = STRING; }\n",
       "A.fabr": "private test_file only { content = x; }\n",
     });
-    const err = await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("only")).then(
-      () => undefined,
-      e => e as Error
-    );
+    const err = await model
+      .getConfig(Constraints.of({}), execution)
+      .materialize(writtenOnCommandLine("only"))
+      .then(
+        () => undefined,
+        e => e as Error
+      );
     expect(err?.message).to.equal("Unknown name 'only'");
     expect(helpOf(err!)).to.deep.equal(["'only' is private to A.fabr"]);
     expect(model.getTargets().map(target => target.name)).to.deep.equal([]);
@@ -5739,14 +6011,18 @@ describe("private declarations", () => {
   it("lets a rule written in .fabr match a public target of a file declaring private names", async () => {
     const model = modelOf({
       "T.fabr": TYPES + "targetdef test_wrapped { }\n",
-      "A.fabr": "private P = secret;\nrule test_wrapped w = test_file out { content = ${P}; }\ntest_wrapped x { }\ntest_good t { deps = x; }\n",
+      "A.fabr":
+        "private P = secret;\nrule test_wrapped w = test_file out { content = ${P}; }\ntest_wrapped x { }\ntest_good t { deps = x; }\n",
       "B.fabr": "P = public;\n",
     });
     expect(await contentOf(model, "t")).to.equal("secret");
   });
 
   it("takes a marker on a private target's name", async () => {
-    const model = modelOf({ "T.fabr": TYPES, "A.fabr": "private test_file lib { content = priv; }\ntest_good forced { deps = lib!; }\n" });
+    const model = modelOf({
+      "T.fabr": TYPES,
+      "A.fabr": "private test_file lib { content = priv; }\ntest_good forced { deps = lib!; }\n",
+    });
     expect(await contentOf(model, "forced")).to.equal("priv");
   });
 

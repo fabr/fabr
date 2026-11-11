@@ -73,7 +73,6 @@ export interface IFile {
    */
   mime: string;
 
-
   readString(encoding?: BufferEncoding): Computable<string>;
 
   /**
@@ -764,16 +763,19 @@ registerProvenanceNaming(FILESET_MERGE_PROVENANCE, {
  * however many merges share them.
  */
 function mergeDigestOf(held: ReadonlyArray<{ prefix: string; fileset: FileSet; names?: string[] }>): string {
-  const namesOf = ({ fileset, names }: { fileset: FileSet; names?: string[] }): string[] => names ?? [...fileset].map(([name]) => name);
+  const namesOf = ({ fileset, names }: { fileset: FileSet; names?: string[] }): string[] =>
+    names ?? [...fileset].map(([name]) => name);
   /* One contributor, at the root, names its files as it would alone. */
   if (held.length === 1 && held[0].prefix === "") {
     return sourcePathsDigestOf(held[0].fileset.origin, namesOf(held[0]));
   }
-  const overlaps = (prefix: string): boolean => held.filter(other => other.prefix.startsWith(prefix) || prefix.startsWith(other.prefix)).length > 1;
+  const overlaps = (prefix: string): boolean =>
+    held.filter(other => other.prefix.startsWith(prefix) || prefix.startsWith(other.prefix)).length > 1;
   const sources = held
     .map(contributor => {
       const { prefix, fileset, names } = contributor;
-      const digest = names === undefined || names.length === fileset.size ? fileset.sourcePathsDigest : fileset.sourcePathsDigestOf(names);
+      const digest =
+        names === undefined || names.length === fileset.size ? fileset.sourcePathsDigest : fileset.sourcePathsDigestOf(names);
       return { prefix, contributor, digest };
     })
     .filter(({ digest }) => digest !== "")

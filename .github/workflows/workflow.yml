@@ -10,3 +10,7 @@ jobs:
            node-version: '22'
        - run: yarn install
        - run: yarn bootstrap
+       # Runs even where bootstrap's tests failed, so both results are shown.
+       - name: Check formatting
+         if: ${{ !cancelled() }}
+         run: ./fabr build prettier_check

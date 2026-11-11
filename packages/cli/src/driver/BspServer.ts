@@ -94,7 +94,13 @@ const LANGUAGE_IDS = ["typescript", "javascript", "java"];
 const ZERO_RANGE = { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } };
 
 /** BSP's `TestStatus` of each outcome a test report records. */
-const TEST_STATUSES: Record<ITestReport["results"]["tests"][number]["status"], number> = { passed: 1, failed: 2, pending: 3, other: 3, skipped: 5 };
+const TEST_STATUSES: Record<ITestReport["results"]["tests"][number]["status"], number> = {
+  passed: 1,
+  failed: 2,
+  pending: 3,
+  other: 3,
+  skipped: 5,
+};
 
 /** @return a promise of what `computable` first settles to. */
 function settled<T>(computable: Computable<T>): Promise<T> {
@@ -206,7 +212,10 @@ export class BspServer {
       const uri = served(target);
       return target.described.then(
         pooled => {
-          this.offer(uri, pooled === undefined ? undefined : this.toServed(target.name, target.operation, pooled.directory, pooled.description));
+          this.offer(
+            uri,
+            pooled === undefined ? undefined : this.toServed(target.name, target.operation, pooled.directory, pooled.description)
+          );
           this.publish(uri, []);
           this.settleFailure(uri, false);
           reach(uri, pooled !== undefined);
@@ -282,7 +291,10 @@ export class BspServer {
    *
    * @return the request's result: its `originId`, and whether every target succeeded.
    */
-  private async perform(operation: "build" | "test", { targets, originId }: { targets: string[]; originId?: string }): Promise<unknown> {
+  private async perform(
+    operation: "build" | "test",
+    { targets, originId }: { targets: string[]; originId?: string }
+  ): Promise<unknown> {
     const operations = this.operations;
     const log = this.log;
     if (operations === undefined || log === undefined) {
@@ -300,9 +312,18 @@ export class BspServer {
     const outcomes = await Promise.all(
       named.map(({ uri, name }) =>
         name === undefined
-          ? Promise.resolve({ uri, error: new Error(`${uri} is not served`) as Error | undefined, report: undefined as ITestReport | undefined })
+          ? Promise.resolve({
+              uri,
+              error: new Error(`${uri} is not served`) as Error | undefined,
+              report: undefined as ITestReport | undefined,
+            })
           : settled(operations[operation](name)).then(
-              results => (operation === "test" ? settled(getTestReport(results.flat())) : Promise.resolve(undefined)).then(report => ({ uri, error: undefined, report })),
+              results =>
+                (operation === "test" ? settled(getTestReport(results.flat())) : Promise.resolve(undefined)).then(report => ({
+                  uri,
+                  error: undefined,
+                  report,
+                })),
               (err: unknown) => ({ uri, error: toError(err) as Error | undefined, report: undefined as ITestReport | undefined })
             )
       )
@@ -320,7 +341,13 @@ export class BspServer {
           const testTask = { id: `${task.id}/${tests}`, parents: [task.id] };
           const location = test.filePath === undefined ? undefined : { uri: this.fileUri(`./${test.filePath}`), range: ZERO_RANGE };
           const identity = { displayName: test.name, ...(location === undefined ? {} : { location }) };
-          this.connection.notify("build/taskStart", { taskId: testTask, originId, eventTime: Date.now(), dataKind: "test-start", data: identity });
+          this.connection.notify("build/taskStart", {
+            taskId: testTask,
+            originId,
+            eventTime: Date.now(),
+            dataKind: "test-start",
+            data: identity,
+          });
           this.connection.notify("build/taskFinish", {
             taskId: testTask,
             originId,
@@ -330,7 +357,9 @@ export class BspServer {
             data: {
               ...identity,
               status: TEST_STATUSES[test.status],
-              ...(test.message === undefined ? {} : { message: test.trace === undefined ? test.message : `${test.message}\n${test.trace}` }),
+              ...(test.message === undefined
+                ? {}
+                : { message: test.trace === undefined ? test.message : `${test.message}\n${test.trace}` }),
             },
           });
         }
@@ -354,7 +383,9 @@ export class BspServer {
         });
       }
     }
-    const statusCode = outcomes.every(({ error, report }) => error === undefined && !(report !== undefined && report.results.summary.failed > 0))
+    const statusCode = outcomes.every(
+      ({ error, report }) => error === undefined && !(report !== undefined && report.results.summary.failed > 0)
+    )
       ? TASK_OK
       : TASK_ERROR;
     this.connection.notify("build/taskFinish", { taskId: task, originId, eventTime: Date.now(), status: statusCode });
@@ -379,7 +410,13 @@ export class BspServer {
   private startTask(): { id: string } {
     this.tasks += 1;
     const task = { id: `describe-${this.tasks}` };
-    this.connection.notify("build/taskStart", { taskId: task, eventTime: Date.now(), message: "Describing targets", dataKind: DESCRIBE_TASK_DATA_KIND, data: {} });
+    this.connection.notify("build/taskStart", {
+      taskId: task,
+      eventTime: Date.now(),
+      message: "Describing targets",
+      dataKind: DESCRIBE_TASK_DATA_KIND,
+      data: {},
+    });
     return task;
   }
 
@@ -391,7 +428,10 @@ export class BspServer {
       taskId: task,
       eventTime: Date.now(),
       status: failed.length === 0 ? TASK_OK : TASK_ERROR,
-      message: failed.length === 0 ? "Described the targets" : `Could not describe ${failed.length} ${failed.length === 1 ? "target" : "targets"}`,
+      message:
+        failed.length === 0
+          ? "Described the targets"
+          : `Could not describe ${failed.length} ${failed.length === 1 ? "target" : "targets"}`,
       dataKind: DESCRIBE_TASK_DATA_KIND,
       data: { failed },
     });
@@ -443,7 +483,10 @@ export class BspServer {
   private announce(uri: string, kind: number): void {
     const earlier = this.changes.get(uri);
     /* Created and then changed is still created; deleted and served again, changed. */
-    this.changes.set(uri, earlier === CREATED && kind === CHANGED ? CREATED : earlier === DELETED && kind === CREATED ? CHANGED : kind);
+    this.changes.set(
+      uri,
+      earlier === CREATED && kind === CHANGED ? CREATED : earlier === DELETED && kind === CREATED ? CHANGED : kind
+    );
     this.announcement ??= setTimeout(() => this.flushAnnouncement(), ANNOUNCE_DELAY_MS);
   }
 
@@ -493,7 +536,11 @@ export class BspServer {
       case "buildTarget/sources":
         await this.ready;
         return {
-          items: toTargetsParams(params).targets.map(uri => ({ target: { uri }, sources: this.byUri(uri)?.sources ?? [], roots: this.byUri(uri)?.roots ?? [] })),
+          items: toTargetsParams(params).targets.map(uri => ({
+            target: { uri },
+            sources: this.byUri(uri)?.sources ?? [],
+            roots: this.byUri(uri)?.roots ?? [],
+          })),
         };
       case "buildTarget/javacOptions":
         await this.ready;
@@ -507,7 +554,9 @@ export class BspServer {
         await this.ready;
         const file = toDocumentParams(params).uri;
         return {
-          targets: [...this.served.values()].filter(served => served.sources.some(source => source.uri === file)).map(served => served.target.id),
+          targets: [...this.served.values()]
+            .filter(served => served.sources.some(source => source.uri === file))
+            .map(served => served.target.id),
         };
       }
       case "buildTarget/compile":
@@ -542,4 +591,3 @@ function fileUri(directory: string, written: string): string {
   const uri = pathToFileURL(path.join(directory, written)).href;
   return written.endsWith("/") && !uri.endsWith("/") ? `${uri}/` : uri;
 }
-

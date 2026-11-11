@@ -28,7 +28,16 @@ import { PackageFileSet, PackageGraphBuilder } from "./PackageFileSet";
 import { PartialRepositoryRef } from "./PartialRepositoryRef";
 import type { Reference } from "./Reference";
 import { RequirementResolutionError } from "./Errors";
-import { dependenciesOn, PackagePublishRef, renamedAs, Repository, RepositoryLookup, RepositoryPublishRef, RepositoryRef, RepositoryWriter } from "./Repository";
+import {
+  dependenciesOn,
+  PackagePublishRef,
+  renamedAs,
+  Repository,
+  RepositoryLookup,
+  RepositoryPublishRef,
+  RepositoryRef,
+  RepositoryWriter,
+} from "./Repository";
 import { ResolutionContext } from "../resolver/Types";
 import { bindProvided, collectLists } from "../context/CollectionPoint";
 import { parseName } from "../model/Parser";
@@ -119,7 +128,9 @@ class StubRepository implements Repository {
 
   public resolve(reference: RepositoryRef): Computable<FileSet> {
     const name = reference.name.toString();
-    return Computable.resolve(new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}`)]]), name, "1.0.0"));
+    return Computable.resolve(
+      new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}`)]]), name, "1.0.0")
+    );
   }
 }
 
@@ -147,7 +158,9 @@ describe("PartialRepositoryRef", () => {
     const ref = scope.getRepositoryRef(Name.fromLiteral("widget"), "/") as RepositoryRef;
     expect(ref.name).to.equal("@acme/widget");
     expect(ref.repositoryName).to.equal("@registry");
-    expect((new PartialRepositoryRef(vending).getRepositoryRef(Name.fromLiteral("widget"), ":") as RepositoryRef).name).to.equal("widget");
+    expect((new PartialRepositoryRef(vending).getRepositoryRef(Name.fromLiteral("widget"), ":") as RepositoryRef).name).to.equal(
+      "widget"
+    );
   });
 
   it("is completed by the rest of the name, after the separator it was written with", () => {
@@ -190,7 +203,9 @@ describe("PartialRepositoryRef", () => {
 
   it("vends a publish ref within its namespace, as it does a reference", () => {
     const scope = new PartialRepositoryRef(vending, "@acme", undefined, "@registry");
-    expect(scope.getRepositoryPublishRef(Name.fromLiteral("widget:1.0.0"), "/", "@acme").toString()).to.equal("@acme:@acme/widget:1.0.0");
+    expect(scope.getRepositoryPublishRef(Name.fromLiteral("widget:1.0.0"), "/", "@acme").toString()).to.equal(
+      "@acme:@acme/widget:1.0.0"
+    );
     expect(scope.getRepositoryPublishRef(Name.fromLiteral("widget:1.0.0"), "/").toString()).to.equal("@registry:@acme/widget:1.0.0");
   });
 });

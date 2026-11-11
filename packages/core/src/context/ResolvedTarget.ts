@@ -21,13 +21,32 @@ import { Computable } from "../core/Computable";
 import { FabrError } from "../core/Errors";
 import { FileSet } from "../core/FileSet";
 import { IProjection, Miss } from "../core/Reference";
-import { Builds, Dependency, dependencyName, isPackage, NodeFields, PackageContent, PackageFileSet, Provided, ResolvedNode, UsedFor } from "../core/PackageFileSet";
+import {
+  Builds,
+  Dependency,
+  dependencyName,
+  isPackage,
+  NodeFields,
+  PackageContent,
+  PackageFileSet,
+  Provided,
+  ResolvedNode,
+  UsedFor,
+} from "../core/PackageFileSet";
 
 import { Resolved, SourceRef } from "../core/Repository";
 import { TargetNode } from "../core/TargetRef";
 import { BUILD_OPERATION, isFilesOperation, shownConstraints } from "../model/Constraints";
 import { ITargetOrigin, TARGET_PROVENANCE } from "../model/Target";
-import { COMPILE_KEY, DEPENDENCIES_KEY, EXTENDS_KEY, OPTIONAL_PROVIDED_KEY, PROVIDED_KEY, ResolvedRequirements, RUNTIME_KEY } from "./Collection";
+import {
+  COMPILE_KEY,
+  DEPENDENCIES_KEY,
+  EXTENDS_KEY,
+  OPTIONAL_PROVIDED_KEY,
+  PROVIDED_KEY,
+  ResolvedRequirements,
+  RUNTIME_KEY,
+} from "./Collection";
 import { NameLabel } from "../model/Errors";
 import type { DeclaredTargetContext } from "./TargetContext";
 
@@ -130,9 +149,13 @@ class TargetBuild {
         }
         const reference = references[at];
         if (reference === undefined) {
-          throw new FabrError(`internal: '${source.packageId}' among '${name}' of '${this.context.name}' was resolved for no reference`);
+          throw new FabrError(
+            `internal: '${source.packageId}' among '${name}' of '${this.context.name}' was resolved for no reference`
+          );
         }
-        return [source instanceof ResolvedNode && source.content.builds !== undefined ? { reference, package: source } : { reference }];
+        return [
+          source instanceof ResolvedNode && source.content.builds !== undefined ? { reference, package: source } : { reference },
+        ];
       });
     };
     return passedOn(this.requirements.get(EXTENDS_KEY) ?? [], carried);
@@ -222,7 +245,11 @@ export abstract class ResolvedTarget extends ResolvedNode implements TargetNode 
 
   public abstract materialize(): Computable<SourceRef[]>;
 
-  public abstract projectBuilt(sources: SourceRef[], projection: IProjection, miss: Miss | undefined): SourceRef[] | Computable<SourceRef[]>;
+  public abstract projectBuilt(
+    sources: SourceRef[],
+    projection: IProjection,
+    miss: Miss | undefined
+  ): SourceRef[] | Computable<SourceRef[]>;
 }
 
 /**
@@ -273,7 +300,6 @@ export class DeclaredResolvedTarget extends ResolvedTarget {
   public get resolved(): ResolvedRequirements {
     return this.build.resolved;
   }
-
 
   public materialize(): Computable<SourceRef[]> {
     return this.build.materialize();
@@ -354,9 +380,18 @@ export class BlockTargetNode extends ResolvedNode implements TargetNode {
   }
 
   /** Make the node of the target `context` names, which passes on `dependencies`, those named in `provided` provided, and which `target` resolves to build. */
-  public static of(context: DeclaredTargetContext, stated: Stated, target: () => Computable<ResolvedTarget>, declared?: Builds): BlockTargetNode {
+  public static of(
+    context: DeclaredTargetContext,
+    stated: Stated,
+    target: () => Computable<ResolvedTarget>,
+    declared?: Builds
+  ): BlockTargetNode {
     return new BlockTargetNode(context, target, {
-      content: targetContent(context, () => target().then(resolved => resolved.content.files() as Computable<PackageFileSet | SourceRef[]>), declared),
+      content: targetContent(
+        context,
+        () => target().then(resolved => resolved.content.files() as Computable<PackageFileSet | SourceRef[]>),
+        declared
+      ),
       packageName: declaredName(context, declared),
       version: stated.version ?? declaredVersion(declared),
       dependencies: stated.dependencies,

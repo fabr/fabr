@@ -54,17 +54,19 @@ export function publishSync(execution: ExecutionContext, members: ReadonlyArray<
         return;
       }
       const destination = member.destination.toString();
-      return execution.runTask({ kind: "publish", destination }, report => member.destination.source.publish(member, report)).then(
-        status => {
-          if (status === "already-synced") {
-            execution.log.log(DIAG_ALREADY_SYNCED, { destination });
+      return execution
+        .runTask({ kind: "publish", destination }, report => member.destination.source.publish(member, report))
+        .then(
+          status => {
+            if (status === "already-synced") {
+              execution.log.log(DIAG_ALREADY_SYNCED, { destination });
+            }
+          },
+          err => {
+            markUnavailable(member);
+            execution.log.log(DIAG_PUBLISH_FAILED, { destination, reason: toError(err).message });
           }
-        },
-        err => {
-          markUnavailable(member);
-          execution.log.log(DIAG_PUBLISH_FAILED, { destination, reason: toError(err).message });
-        }
-      );
+        );
     });
   }
   return chain.then(() => {

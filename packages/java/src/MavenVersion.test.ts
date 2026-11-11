@@ -63,7 +63,21 @@ describe("MavenVersion", () => {
   });
 
   it("orders numbers as Maven does", () => {
-    expectAscending(["2.0", "2.0.a", "2-1", "2.0.2", "2.0.123", "2.1.0", "2.1-a", "2.1b", "2.1-c", "2.1-1", "2.1.0.1", "2.2", "2.123"]);
+    expectAscending([
+      "2.0",
+      "2.0.a",
+      "2-1",
+      "2.0.2",
+      "2.0.123",
+      "2.1.0",
+      "2.1-a",
+      "2.1b",
+      "2.1-c",
+      "2.1-1",
+      "2.1.0.1",
+      "2.2",
+      "2.123",
+    ]);
     expectAscending(["11.a2", "11.a11", "11.b2", "11.b11", "11.m2", "11.m11", "11"]);
   });
 
@@ -159,7 +173,10 @@ describe("MavenConstraint", () => {
       },
       lowestAvailable: (name, constraint) => {
         const parsed = parseMavenConstraint(constraint);
-        const [lowest] = (published.get(name) ?? []).map(parseMavenVersion).filter(version => MAVEN_VERSIONS.satisfies(version, parsed)).sort(compareMavenVersions);
+        const [lowest] = (published.get(name) ?? [])
+          .map(parseMavenVersion)
+          .filter(version => MAVEN_VERSIONS.satisfies(version, parsed))
+          .sort(compareMavenVersions);
         return Computable.resolve(lowest);
       },
     });

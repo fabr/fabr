@@ -43,10 +43,7 @@ const NO_ENV: ReadonlyMap<string, string> = new Map();
  * command, and as the text a process is started with ({@link toArgv}).
  */
 export type RunnableArgument =
-  | string
-  | HostLink
-  | { readonly installFile: string }
-  | { readonly join: string; readonly parts: readonly RunnableArgument[] };
+  string | HostLink | { readonly installFile: string } | { readonly join: string; readonly parts: readonly RunnableArgument[] };
 
 /** @return `arg` with each install file in it named within `base`. */
 function placedIn(base: string, arg: RunnableArgument): RunnableArgument {
@@ -190,7 +187,19 @@ export class RunnableFileSet extends FileSet {
   }
 
   public withOrigin(origin: IProvenanceStep): RunnableFileSet {
-    return new RunnableFileSet(this, this.args, this.interpreter, this.root, this.surface, this.served, this.launchCwd, this.env, origin, this.interpreterArgs, this.teardown);
+    return new RunnableFileSet(
+      this,
+      this.args,
+      this.interpreter,
+      this.root,
+      this.surface,
+      this.served,
+      this.launchCwd,
+      this.env,
+      origin,
+      this.interpreterArgs,
+      this.teardown
+    );
   }
 
   /**
@@ -232,7 +241,19 @@ export class RunnableFileSet extends FileSet {
   /** Get this runnable offering a different launch surface — how a projection is
    * applied ({@link selectEntry}), the install and everything else unchanged. */
   public withSurface(surface: FileSet): RunnableFileSet {
-    return new RunnableFileSet(this, this.args, this.interpreter, this.root, surface, this.served, this.launchCwd, this.env, this.origin, this.interpreterArgs, this.teardown);
+    return new RunnableFileSet(
+      this,
+      this.args,
+      this.interpreter,
+      this.root,
+      surface,
+      this.served,
+      this.launchCwd,
+      this.env,
+      this.origin,
+      this.interpreterArgs,
+      this.teardown
+    );
   }
 
   /**
@@ -269,12 +290,36 @@ export class RunnableFileSet extends FileSet {
     if (env.size === 0) {
       return this;
     }
-    return new RunnableFileSet(this, this.args, this.interpreter, this.root, this.surface, this.served, this.launchCwd, new Map([...this.env, ...env]), this.origin, this.interpreterArgs, this.teardown);
+    return new RunnableFileSet(
+      this,
+      this.args,
+      this.interpreter,
+      this.root,
+      this.surface,
+      this.served,
+      this.launchCwd,
+      new Map([...this.env, ...env]),
+      this.origin,
+      this.interpreterArgs,
+      this.teardown
+    );
   }
 
   /** Get this runnable with `teardown` as its teardown (see {@link teardown}). */
   public withTeardown(teardown: readonly RunnableArgument[]): RunnableFileSet {
-    return new RunnableFileSet(this, this.args, this.interpreter, this.root, this.surface, this.served, this.launchCwd, this.env, this.origin, this.interpreterArgs, teardown);
+    return new RunnableFileSet(
+      this,
+      this.args,
+      this.interpreter,
+      this.root,
+      this.surface,
+      this.served,
+      this.launchCwd,
+      this.env,
+      this.origin,
+      this.interpreterArgs,
+      teardown
+    );
   }
 
   /**
@@ -347,7 +392,10 @@ export class RunnableFileSet extends FileSet {
     ];
     const line = [...this.interpreterArgs.map(arg => placedIn(base, arg)), ...own];
     if (this.interpreter instanceof RunnableFileSet) {
-      return this.interpreter.toCommandLine(line, { base: path.posix.join(opts?.pool ?? TREE_MOUNT, this.interpreter.toManifestHash()), pool: opts?.pool });
+      return this.interpreter.toCommandLine(line, {
+        base: path.posix.join(opts?.pool ?? TREE_MOUNT, this.interpreter.toManifestHash()),
+        pool: opts?.pool,
+      });
     }
     return this.interpreter === undefined ? own : [this.interpreter, ...line];
   }

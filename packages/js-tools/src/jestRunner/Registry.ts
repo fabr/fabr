@@ -112,7 +112,10 @@ export class MockRegistry {
    * by the child (runTestFile) once the jest object can be made. */
   public jestGlobalsFor: (caller: ILoaderModule | undefined) => unknown = () => ({});
 
-  constructor(private readonly root: string, private readonly moduleMocker: IModuleMocker) {
+  constructor(
+    private readonly root: string,
+    private readonly moduleMocker: IModuleMocker
+  ) {
     this.rootMocks = listRootMocks(root);
   }
 
@@ -454,7 +457,6 @@ export class MockRegistry {
       }
     }
   }
-
 }
 
 /** The slice of jest-mock's ModuleMocker this module uses. */

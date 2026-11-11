@@ -130,7 +130,9 @@ export class SourceFileSource extends IndexedFileSource {
         /* A candidate's path comes from a source file's own recorded location, so
          * this fires only on a genuinely out-of-tree input; it is checked here
          * regardless, as the boundary where a bad path becomes damage to the disk. */
-        return Computable.reject(new FabrError(`Refusing to write '${write.destination}': it is outside the project directory '${realRoot}'`));
+        return Computable.reject(
+          new FabrError(`Refusing to write '${write.destination}': it is outside the project directory '${realRoot}'`)
+        );
       }
       return this.writeOne({ file: write.file, destination: path.resolve(this.root, name) }, realRoot);
     });

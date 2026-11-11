@@ -36,9 +36,7 @@ describe("derived provenance", () => {
     /* Restating one name as the source of itself is noise — it is simply an
      * input that happens to be called that. */
     const step = derivedFrom("a/Card.css", "css_postcss");
-    expect(renderProvenance(step, { path: "a/Card.css" })).to.deep.equal([
-      { message: "'a/Card.css' is an input of css_postcss" },
-    ]);
+    expect(renderProvenance(step, { path: "a/Card.css" })).to.deep.equal([{ message: "'a/Card.css' is an input of css_postcss" }]);
   });
 
   it("says the same with no output named at all", () => {
@@ -52,7 +50,9 @@ describe("derived provenance", () => {
 });
 
 describe("derivedFromOf", () => {
-  const produced = new FileSet(new Map([["Card.css", MemoryFile.from("a {}")]])).withStep(derivedFrom("./src/Card.scss", "sass_compile"));
+  const produced = new FileSet(new Map([["Card.css", MemoryFile.from("a {}")]])).withStep(
+    derivedFrom("./src/Card.scss", "sass_compile")
+  );
 
   it("answers what a file was produced from through a union and a rename", () => {
     const merged = FileSet.unionAll(produced, new FileSet(new Map([["other.txt", MemoryFile.from("x")]])));

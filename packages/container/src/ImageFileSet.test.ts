@@ -28,7 +28,11 @@ import { toImageConfig } from "./OciProtocol";
 
 /** Make a layer holding `files`, files of the same content packed as hardlinks to the first. */
 async function layerOf(files: Record<string, string | SymlinkFile>): Promise<ILayerRecord> {
-  const set = new FileSet(new Map<string, IFile>(Object.entries(files).map(([name, content]) => [name, typeof content === "string" ? MemoryFile.from(content) : content])));
+  const set = new FileSet(
+    new Map<string, IFile>(
+      Object.entries(files).map(([name, content]) => [name, typeof content === "string" ? MemoryFile.from(content) : content])
+    )
+  );
   const tar = gunzipSync(await Promise.resolve(packToTarball(set)));
   const { sink, result } = indexLayer();
   await new Promise<void>((resolve, reject) => sink.on("finish", resolve).on("error", reject).end(tar));
@@ -38,7 +42,11 @@ async function layerOf(files: Record<string, string | SymlinkFile>): Promise<ILa
 
 /** Make an image of `layers`, lowest first. */
 function imageOfLayers(layers: ILayerRecord[]): ImageFileSet {
-  const config = toImageConfig({ architecture: "amd64", os: "linux", rootfs: { type: "layers", diff_ids: layers.map(layer => layer.index.diffId) } });
+  const config = toImageConfig({
+    architecture: "amd64",
+    os: "linux",
+    rootfs: { type: "layers", diff_ids: layers.map(layer => layer.index.diffId) },
+  });
   return ImageFileSet.of(config, layers, "img");
 }
 
@@ -77,7 +85,9 @@ describe("ImageFileSet", () => {
 
   it("finds the C library an image has from its dynamic loader", async () => {
     expect(libcOf(await imageOf({ "lib/ld-musl-aarch64.so.1": "", "lib/ld-linux-aarch64.so.1": "" }))).to.equal("musl");
-    expect(libcOf(await imageOf({ "usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1": "", "lib": new SymlinkFile("usr/lib") }))).to.equal("gnu");
+    expect(libcOf(await imageOf({ "usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1": "", lib: new SymlinkFile("usr/lib") }))).to.equal(
+      "gnu"
+    );
     expect(libcOf(await imageOf({ "lib64/ld-linux-x86-64.so.2": "" }))).to.equal("gnu");
     expect(libcOf(await imageOf({ "app/server": "static" }))).to.equal(undefined);
   });
@@ -87,7 +97,9 @@ describe("imageLayout", () => {
   it("writes an OCI layout with Docker's manifest beside it, its layers uncompressed", async () => {
     const image = await imageOf({ "etc/hostname": "box" });
     const layout = await Promise.resolve(imageLayout(image, "myorg/app:1.4"));
-    const index = JSON.parse(await layout.readFile("index.json")) as { manifests: Array<{ digest: string; annotations: Record<string, string> }> };
+    const index = JSON.parse(await layout.readFile("index.json")) as {
+      manifests: Array<{ digest: string; annotations: Record<string, string> }>;
+    };
     const manifestPath = `blobs/sha256/${index.manifests[0].digest.substring(7)}`;
     const manifestText = await layout.readFile(manifestPath);
     expect(`sha256:${createHash("sha256").update(manifestText).digest("hex")}`).to.equal(index.manifests[0].digest);

@@ -24,9 +24,7 @@ describe("e2e: script (shell runnable) + run", () => {
   it("runs a shell script and collects its output", () => {
     const result = runFabr(
       {
-        "PROJECT.fabr":
-          "script gen_prog { entry = src:gen.sh; }\n" +
-          "generate gen { run = gen_prog; output = out:**; }\n",
+        "PROJECT.fabr": "script gen_prog { entry = src:gen.sh; }\n" + "generate gen { run = gen_prog; output = out:**; }\n",
         "src/gen.sh": 'mkdir -p out\nprintf "e2e ran\\n" > out/msg.txt\n',
       },
       ["cat", "gen:msg.txt"]
@@ -38,8 +36,7 @@ describe("e2e: script (shell runnable) + run", () => {
   it("passes fixed and caller args through to the script", () => {
     const result = runFabr(
       {
-        "PROJECT.fabr":
-          "script hello { entry = src:hello.sh; args = Ada; }\n",
+        "PROJECT.fabr": "script hello { entry = src:hello.sh; args = Ada; }\n",
         "src/hello.sh": 'printf "hi %s %s" "$1" "$2"\n',
       },
       ["run", "hello", "Lovelace"]
@@ -63,8 +60,7 @@ describe("e2e: script (shell runnable) + run", () => {
     const result = runFabr(
       {
         "PROJECT.fabr":
-          "script gen_prog { deps = src:gen.sh; entry = src:missing.sh; }\n" +
-          "generate gen { run = gen_prog; output = out:**; }\n",
+          "script gen_prog { deps = src:gen.sh; entry = src:missing.sh; }\n" + "generate gen { run = gen_prog; output = out:**; }\n",
         "src/gen.sh": "# present, but not the entry\n",
       },
       ["build", "gen"]

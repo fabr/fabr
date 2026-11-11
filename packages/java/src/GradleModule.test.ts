@@ -17,7 +17,6 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-
 import { expect } from "chai";
 import { Requirement } from "@fabr-build/core";
 import { hasGradleMetadata, javaVariant, parseGradleModule, toGradleModule, variantRequirements } from "./GradleModule";
@@ -28,11 +27,21 @@ const GUAVA = toGradleModule({
   variants: [
     {
       name: "jreApiElements",
-      attributes: { "org.gradle.category": "library", "org.gradle.usage": "java-api", "org.gradle.jvm.environment": "standard-jvm", "org.gradle.jvm.version": 8 },
+      attributes: {
+        "org.gradle.category": "library",
+        "org.gradle.usage": "java-api",
+        "org.gradle.jvm.environment": "standard-jvm",
+        "org.gradle.jvm.version": 8,
+      },
     },
     {
       name: "jreRuntimeElements",
-      attributes: { "org.gradle.category": "library", "org.gradle.usage": "java-runtime", "org.gradle.jvm.environment": "standard-jvm", "org.gradle.jvm.version": 8 },
+      attributes: {
+        "org.gradle.category": "library",
+        "org.gradle.usage": "java-runtime",
+        "org.gradle.jvm.environment": "standard-jvm",
+        "org.gradle.jvm.version": 8,
+      },
       dependencies: [{ group: "com.google.guava", module: "failureaccess", version: { requires: "1.0.2" } }],
       files: [{ name: "guava-33.3.1-jre.jar", url: "guava-33.3.1-jre.jar", sha1: "abc" }],
     },
@@ -71,7 +80,10 @@ describe("Gradle Module Metadata", () => {
     });
     expect(javaVariant(module, 21, "java-runtime", "m").name).to.equal("java17");
     expect(javaVariant(module, 11, "java-runtime", "m").name).to.equal("java8");
-    const late = toGradleModule({ formatVersion: "1.1", variants: [{ name: "java25", attributes: { "org.gradle.usage": "java-runtime", "org.gradle.jvm.version": 25 } }] });
+    const late = toGradleModule({
+      formatVersion: "1.1",
+      variants: [{ name: "java25", attributes: { "org.gradle.usage": "java-runtime", "org.gradle.jvm.version": 25 } }],
+    });
     expect(() => javaVariant(late, 21, "java-runtime", "m")).to.throw(/m has no java-runtime variant for Java 21/);
   });
 
@@ -152,9 +164,24 @@ describe("Gradle Module Metadata", () => {
               { group: "g", module: "managed" },
               { group: "g", module: "latest", version: { requires: "latest.release" } },
               { group: "g", module: "prefix", version: { strictly: "1.+" } },
-              { group: "g", module: "native", version: { requires: "4.1" }, thirdPartyCompatibility: { artifactSelector: { name: "native", type: "jar", classifier: "linux-x86_64" } } },
-              { group: "g", module: "dist", version: { requires: "1" }, thirdPartyCompatibility: { artifactSelector: { name: "dist", type: "zip", extension: "zip" } } },
-              { group: "g", module: "fixtures", version: { requires: "1" }, requestedCapabilities: [{ group: "g", name: "fixtures-test-fixtures" }] },
+              {
+                group: "g",
+                module: "native",
+                version: { requires: "4.1" },
+                thirdPartyCompatibility: { artifactSelector: { name: "native", type: "jar", classifier: "linux-x86_64" } },
+              },
+              {
+                group: "g",
+                module: "dist",
+                version: { requires: "1" },
+                thirdPartyCompatibility: { artifactSelector: { name: "dist", type: "zip", extension: "zip" } },
+              },
+              {
+                group: "g",
+                module: "fixtures",
+                version: { requires: "1" },
+                requestedCapabilities: [{ group: "g", name: "fixtures-test-fixtures" }],
+              },
             ],
           },
         ],
@@ -181,15 +208,25 @@ describe("Gradle Module Metadata", () => {
         javaVariant(
           toGradleModule({
             formatVersion: "1.1",
-            variants: [{ name: "runtime", attributes: { "org.gradle.usage": "java-runtime" }, dependencies: [{ group: "g", module: "m", version }] }],
+            variants: [
+              {
+                name: "runtime",
+                attributes: { "org.gradle.usage": "java-runtime" },
+                dependencies: [{ group: "g", module: "m", version }],
+              },
+            ],
           }),
           21,
           "java-runtime",
           "x"
         )
       );
-    expect(requirementsOf({ requires: "1.0", rejects: ["1.2", "[1.5,1.6)"] })).to.deep.equal([{ name: "g/m", versionConstraint: "[1.0,1.2),(1.2,1.5),[1.6,)" }]);
-    expect(requirementsOf({ strictly: "[1.0,2.0)", rejects: ["1.0"] })).to.deep.equal([{ name: "g/m", versionConstraint: "(1.0,2.0)" }]);
+    expect(requirementsOf({ requires: "1.0", rejects: ["1.2", "[1.5,1.6)"] })).to.deep.equal([
+      { name: "g/m", versionConstraint: "[1.0,1.2),(1.2,1.5),[1.6,)" },
+    ]);
+    expect(requirementsOf({ strictly: "[1.0,2.0)", rejects: ["1.0"] })).to.deep.equal([
+      { name: "g/m", versionConstraint: "(1.0,2.0)" },
+    ]);
     expect(requirementsOf({ rejects: ["2.0"] })).to.deep.equal([{ name: "g/m", versionConstraint: "(,2.0),(2.0,)" }]);
     expect(() => requirementsOf({ strictly: "1.0", rejects: ["1.0"] })).to.throw(/g:m rejects every version it requires/);
   });
@@ -221,9 +258,17 @@ describe("Gradle Module Metadata", () => {
           {
             name: "jvmRuntimeElements-published",
             attributes: { "org.gradle.usage": "java-runtime", "org.jetbrains.kotlin.platform.type": "jvm" },
-            "available-at": { url: "../../core-jvm/1.9.0/core-jvm-1.9.0.module", group: "org.example", module: "core-jvm", version: "1.9.0" },
+            "available-at": {
+              url: "../../core-jvm/1.9.0/core-jvm-1.9.0.module",
+              group: "org.example",
+              module: "core-jvm",
+              version: "1.9.0",
+            },
           },
-          { name: "jsRuntimeElements-published", attributes: { "org.gradle.usage": "kotlin-runtime", "org.jetbrains.kotlin.platform.type": "js" } },
+          {
+            name: "jsRuntimeElements-published",
+            attributes: { "org.gradle.usage": "kotlin-runtime", "org.jetbrains.kotlin.platform.type": "js" },
+          },
         ],
       }),
       21,
@@ -234,7 +279,9 @@ describe("Gradle Module Metadata", () => {
   });
 
   it("refuses a document of another format version, or of the wrong shape, naming it", () => {
-    expect(() => parseGradleModule('{"formatVersion": "2.0", "variants": []}', "m.module")).to.throw(/m\.module.*formatVersion is "2\.0"/);
+    expect(() => parseGradleModule('{"formatVersion": "2.0", "variants": []}', "m.module")).to.throw(
+      /m\.module.*formatVersion is "2\.0"/
+    );
     expect(() => parseGradleModule('{"formatVersion": "1.1", "variants": {}}', "m.module")).to.throw(/variants is not a list/);
   });
 });

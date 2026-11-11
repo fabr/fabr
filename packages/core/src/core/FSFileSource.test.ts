@@ -378,7 +378,7 @@ describe("FSFileSource reads under watch (TreeQuery)", () => {
 
   /** Apply the query's updates until it is steady, as the controller does: @return its files by name, as hashes. */
   const settled = async (query: TreeQuery): Promise<Map<string, string>> => {
-    for (let quiet = 0; quiet < 3; ) {
+    for (let quiet = 0; quiet < 3;) {
       const update = await toPromise(query.recompute());
       if (update) {
         update.invalidate();
@@ -516,7 +516,7 @@ describe("FSFileSource directory events (TreeQuery)", () => {
    * steady state. A rename settles in two steps — the synchronous subtree drop, then the
    * async rescan's own notify — exactly as it does in production, one flush each. */
   const settleFully = async (query: TreeQuery): Promise<string[]> => {
-    for (let quiet = 0; quiet < 3; ) {
+    for (let quiet = 0; quiet < 3;) {
       const update = await toPromise(query.recompute());
       if (update) {
         update.invalidate();
@@ -760,8 +760,20 @@ describe("FSFileSource extglob enumeration", () => {
       fs.mkdirSync(path.join(root, dir), { recursive: true });
       fs.writeFileSync(path.join(root, dir, "g.ts"), "y");
     }
-    expect(await found("**/!(@shorthand/api)/**")).to.deep.equal(["V3/f.ts", "Validation/f.ts", "api/f.ts", "web/@shorthand/ui/g.ts", "web/f.ts"]);
-    expect(await found("**!(/@shorthand/api/)**/*.ts")).to.deep.equal(["V3/f.ts", "Validation/f.ts", "api/f.ts", "web/@shorthand/ui/g.ts", "web/f.ts"]);
+    expect(await found("**/!(@shorthand/api)/**")).to.deep.equal([
+      "V3/f.ts",
+      "Validation/f.ts",
+      "api/f.ts",
+      "web/@shorthand/ui/g.ts",
+      "web/f.ts",
+    ]);
+    expect(await found("**!(/@shorthand/api/)**/*.ts")).to.deep.equal([
+      "V3/f.ts",
+      "Validation/f.ts",
+      "api/f.ts",
+      "web/@shorthand/ui/g.ts",
+      "web/f.ts",
+    ]);
   });
 
   it("treats the group's characters literally when quoted", async () => {

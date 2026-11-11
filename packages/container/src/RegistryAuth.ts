@@ -19,7 +19,18 @@
 
 import * as os from "node:os";
 import * as path from "node:path";
-import { Computable, executeInternalCapture, ExecutionContext, FabrError, findExecutable, hostEnvironment, isJsonObject, parseJson, PluginKey, Semaphore } from "@fabr-build/core";
+import {
+  Computable,
+  executeInternalCapture,
+  ExecutionContext,
+  FabrError,
+  findExecutable,
+  hostEnvironment,
+  isJsonObject,
+  parseJson,
+  PluginKey,
+  Semaphore,
+} from "@fabr-build/core";
 
 /** A registry's credential, as an auth file holds one. */
 export interface IRegistryCredential {
@@ -127,10 +138,10 @@ export class RegistryAuth {
         file?.credentials.get(host) !== undefined
           ? Computable.resolve(file.credentials.get(host))
           : file !== undefined
-          ? askHelper(this.limit, file.helpers.get(host)!, server)
-          : store !== undefined
-          ? askHelper(this.limit, store, server)
-          : Computable.resolve(undefined);
+            ? askHelper(this.limit, file.helpers.get(host)!, server)
+            : store !== undefined
+              ? askHelper(this.limit, store, server)
+              : Computable.resolve(undefined);
       this.asked.set(server, found);
     }
     return found;
@@ -151,7 +162,9 @@ function askHelper(limit: Semaphore, helper: string, server: string): Computable
     found = findExecutable(program);
   } catch {
     return Computable.reject(
-      new FabrError(`the credential for ${server} is held by '${program}', which is not on PATH`).withHelp(`install it, or put its directory on PATH`)
+      new FabrError(`the credential for ${server} is held by '${program}', which is not on PATH`).withHelp(
+        `install it, or put its directory on PATH`
+      )
     );
   }
   return executeInternalCapture(limit, found, ["get"], server, hostEnvironment()).then(({ status, stdout, stderr }) => {

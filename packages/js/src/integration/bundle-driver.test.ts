@@ -131,117 +131,121 @@ describe("unresolvedHelp", () => {
 /* Under either layout: esbuild answers the pinned resolution itself where the
  * packages are a `node_modules` tree, and the staged table answers it where they
  * are pool trees named by a PnP manifest. */
-for (const layout of ["node_modules", "pnp"] as const) describe(`the bundle driver's single-variant rule, over real esbuild (${layout})`, () => {
-  let work: string;
+for (const layout of ["node_modules", "pnp"] as const)
+  describe(`the bundle driver's single-variant rule, over real esbuild (${layout})`, () => {
+    let work: string;
 
-  beforeEach(() => {
-    /* A step's working directory, in a directory of its own for the pool's link. */
-    work = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-variant-")), "work");
-    fs.mkdirSync(work);
-    /* One package reached two ways: an ESM importer and a CJS importer of the
-     * same name, in one graph. Each copy carries a marker, so which of them the
-     * bundle ended up holding is readable in the output. */
-    fs.mkdirSync(path.join(work, "node_modules"), { recursive: true });
-    fs.writeFileSync(path.join(work, "viaImport.mjs"), 'import { marker } from "dualpkg";\nexport const fromImport = marker;\n');
-    fs.writeFileSync(path.join(work, "viaRequire.cjs"), 'const { marker } = require("dualpkg");\nmodule.exports.fromRequire = marker;\n');
-    /* Both values are USED, or tree-shaking would decide the question. */
-    fs.writeFileSync(
-      path.join(work, "entry.mjs"),
-      'import { fromImport } from "./viaImport.mjs";\nimport mod from "./viaRequire.cjs";\nconsole.log(fromImport, mod.fromRequire);\n'
-    );
-  });
+    beforeEach(() => {
+      /* A step's working directory, in a directory of its own for the pool's link. */
+      work = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-variant-")), "work");
+      fs.mkdirSync(work);
+      /* One package reached two ways: an ESM importer and a CJS importer of the
+       * same name, in one graph. Each copy carries a marker, so which of them the
+       * bundle ended up holding is readable in the output. */
+      fs.mkdirSync(path.join(work, "node_modules"), { recursive: true });
+      fs.writeFileSync(path.join(work, "viaImport.mjs"), 'import { marker } from "dualpkg";\nexport const fromImport = marker;\n');
+      fs.writeFileSync(
+        path.join(work, "viaRequire.cjs"),
+        'const { marker } = require("dualpkg");\nmodule.exports.fromRequire = marker;\n'
+      );
+      /* Both values are USED, or tree-shaking would decide the question. */
+      fs.writeFileSync(
+        path.join(work, "entry.mjs"),
+        'import { fromImport } from "./viaImport.mjs";\nimport mod from "./viaRequire.cjs";\nconsole.log(fromImport, mod.fromRequire);\n'
+      );
+    });
 
-  afterEach(() => {
-    fs.rmSync(path.dirname(work), { recursive: true, force: true });
-    process.exitCode = undefined;
-  });
+    afterEach(() => {
+      fs.rmSync(path.dirname(work), { recursive: true, force: true });
+      process.exitCode = undefined;
+    });
 
-  /** Install `dualpkg` with the given `exports` map, both copies present. */
-  function publishing(exports: unknown): void {
-    const files = new Map<string, MemoryFile>([
-      ["package.json", MemoryFile.from(JSON.stringify({ name: "dualpkg", version: "1.0.0", exports }))],
-      ["esm.mjs", MemoryFile.from('export const marker = "ESM_COPY";\n')],
-      ["cjs.cjs", MemoryFile.from('module.exports = { marker: "CJS_COPY" };\n')],
-    ]);
-    const write = (dir: string): void => {
-      fs.mkdirSync(dir, { recursive: true });
-      for (const [name, file] of files) {
-        fs.writeFileSync(path.join(dir, name), file.getBuffer().value as Buffer);
+    /** Install `dualpkg` with the given `exports` map, both copies present. */
+    function publishing(exports: unknown): void {
+      const files = new Map<string, MemoryFile>([
+        ["package.json", MemoryFile.from(JSON.stringify({ name: "dualpkg", version: "1.0.0", exports }))],
+        ["esm.mjs", MemoryFile.from('export const marker = "ESM_COPY";\n')],
+        ["cjs.cjs", MemoryFile.from('module.exports = { marker: "CJS_COPY" };\n')],
+      ]);
+      const write = (dir: string): void => {
+        fs.mkdirSync(dir, { recursive: true });
+        for (const [name, file] of files) {
+          fs.writeFileSync(path.join(dir, name), file.getBuffer().value as Buffer);
+        }
+      };
+      if (layout === "node_modules") {
+        write(path.join(work, "node_modules/dualpkg"));
+        return;
       }
-    };
-    if (layout === "node_modules") {
-      write(path.join(work, "node_modules/dualpkg"));
-      return;
+      const manifest = pnpManifestOf([new PackageFileSet(files, "dualpkg", "1.0.0", [])]);
+      for (const pkg of manifest.packages) {
+        write(path.join(work, "..", "store", path.basename(treeMountOf(pkg))));
+      }
+      fs.symlinkSync(path.join(work, "..", "store"), path.join(work, TREE_MOUNT));
+      fs.writeFileSync(path.join(work, PNP_DATA_FILE), manifest.toFile().getBuffer().value as Buffer);
     }
-    const manifest = pnpManifestOf([new PackageFileSet(files, "dualpkg", "1.0.0", [])]);
-    for (const pkg of manifest.packages) {
-      write(path.join(work, "..", "store", path.basename(treeMountOf(pkg))));
+
+    /** Bundle in `format` and answer which copies of the package came out. */
+    async function copiesIn(format: "cjs" | "esm"): Promise<string[]> {
+      const options = {
+        entries: [{ in: "entry.mjs", out: `bundle-${format}` }],
+        external: [],
+        platform: "node",
+        format,
+        target: "es2021",
+        minify: false,
+        sourcemap: false,
+        outdir: `out-${format}`,
+      };
+      fs.writeFileSync(path.join(work, `options-${format}.json`), JSON.stringify(options));
+      const cwd = process.cwd();
+      try {
+        process.chdir(work);
+        await main([`--options=options-${format}.json`]);
+      } finally {
+        process.chdir(cwd);
+      }
+      assert.equal(process.exitCode ?? 0, 0, "the bundle should have succeeded");
+      const bundled = fs.readFileSync(path.join(work, `out-${format}`, `bundle-${format}.js`), "utf8");
+      return ["ESM_COPY", "CJS_COPY"].filter(marker => bundled.includes(marker));
     }
-    fs.symlinkSync(path.join(work, "..", "store"), path.join(work, TREE_MOUNT));
-    fs.writeFileSync(path.join(work, PNP_DATA_FILE), manifest.toFile().getBuffer().value as Buffer);
-  }
 
-  /** Bundle in `format` and answer which copies of the package came out. */
-  async function copiesIn(format: "cjs" | "esm"): Promise<string[]> {
-    const options = {
-      entries: [{ in: "entry.mjs", out: `bundle-${format}` }],
-      external: [],
-      platform: "node",
-      format,
-      target: "es2021",
-      minify: false,
-      sourcemap: false,
-      outdir: `out-${format}`,
-    };
-    fs.writeFileSync(path.join(work, `options-${format}.json`), JSON.stringify(options));
-    const cwd = process.cwd();
-    try {
-      process.chdir(work);
-      await main([`--options=options-${format}.json`]);
-    } finally {
-      process.chdir(cwd);
-    }
-    assert.equal(process.exitCode ?? 0, 0, "the bundle should have succeeded");
-    const bundled = fs.readFileSync(path.join(work, `out-${format}`, `bundle-${format}.js`), "utf8");
-    return ["ESM_COPY", "CJS_COPY"].filter(marker => bundled.includes(marker));
-  }
+    it("inlines one variant however its importers spell the import", async () => {
+      publishing({ ".": { import: "./esm.mjs", require: "./cjs.cjs" } });
+      /* The bundle's own format decides, and decides once: the `import` site does
+       * not get its own copy just for asking differently. */
+      assert.deepEqual(await copiesIn("cjs"), ["CJS_COPY"]);
+      assert.deepEqual(await copiesIn("esm"), ["ESM_COPY"]);
+    });
 
-  it("inlines one variant however its importers spell the import", async () => {
-    publishing({ ".": { import: "./esm.mjs", require: "./cjs.cjs" } });
-    /* The bundle's own format decides, and decides once: the `import` site does
-     * not get its own copy just for asking differently. */
-    assert.deepEqual(await copiesIn("cjs"), ["CJS_COPY"]);
-    assert.deepEqual(await copiesIn("esm"), ["ESM_COPY"]);
+    it("stays single when the package publishes a synchronously-loadable entry", async () => {
+      /* `module-sync` is the ecosystem's own cure for the hazard — one ESM file
+       * that a require may load — and the driver resolves it (node 22 and later
+       * do). Both formats must still land on that one file: a condition that
+       * matches from either direction is only worth having if it collapses the
+       * two, and it would be worth nothing if it forked them instead. */
+      publishing({ ".": { "module-sync": "./esm.mjs", require: "./cjs.cjs" } });
+      assert.deepEqual(await copiesIn("cjs"), ["ESM_COPY"]);
+      assert.deepEqual(await copiesIn("esm"), ["ESM_COPY"]);
+    });
+
+    it("takes a package's bundler entry, as esbuild does by default", async () => {
+      /* `module` names the ESM build a package publishes for bundlers; esbuild
+       * uses it unless conditions are set, which the driver sets. */
+      publishing({ ".": { module: "./esm.mjs", default: "./cjs.cjs" } });
+      assert.deepEqual(await copiesIn("cjs"), ["ESM_COPY"]);
+      assert.deepEqual(await copiesIn("esm"), ["ESM_COPY"]);
+    });
+
+    it("takes the one copy a single-condition package publishes, whatever the format", async () => {
+      /* The other kind: a package with nothing to choose between. The native kind
+       * finds nothing and the fallback answers, so a CJS-only package still
+       * bundles into an ESM output rather than failing on the kind it was asked
+       * under. */
+      publishing({ ".": { require: "./cjs.cjs" } });
+      assert.deepEqual(await copiesIn("esm"), ["CJS_COPY"]);
+    });
   });
-
-  it("stays single when the package publishes a synchronously-loadable entry", async () => {
-    /* `module-sync` is the ecosystem's own cure for the hazard — one ESM file
-     * that a require may load — and the driver resolves it (node 22 and later
-     * do). Both formats must still land on that one file: a condition that
-     * matches from either direction is only worth having if it collapses the
-     * two, and it would be worth nothing if it forked them instead. */
-    publishing({ ".": { "module-sync": "./esm.mjs", require: "./cjs.cjs" } });
-    assert.deepEqual(await copiesIn("cjs"), ["ESM_COPY"]);
-    assert.deepEqual(await copiesIn("esm"), ["ESM_COPY"]);
-  });
-
-  it("takes a package's bundler entry, as esbuild does by default", async () => {
-    /* `module` names the ESM build a package publishes for bundlers; esbuild
-     * uses it unless conditions are set, which the driver sets. */
-    publishing({ ".": { module: "./esm.mjs", default: "./cjs.cjs" } });
-    assert.deepEqual(await copiesIn("cjs"), ["ESM_COPY"]);
-    assert.deepEqual(await copiesIn("esm"), ["ESM_COPY"]);
-  });
-
-  it("takes the one copy a single-condition package publishes, whatever the format", async () => {
-    /* The other kind: a package with nothing to choose between. The native kind
-     * finds nothing and the fallback answers, so a CJS-only package still
-     * bundles into an ESM output rather than failing on the kind it was asked
-     * under. */
-    publishing({ ".": { require: "./cjs.cjs" } });
-    assert.deepEqual(await copiesIn("esm"), ["CJS_COPY"]);
-  });
-});
 
 describe("a styled import written as a package subpath", () => {
   let work: string;
@@ -297,7 +301,10 @@ describe("a bundle's metafile and chunks, over real esbuild", () => {
     work = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-split-"));
     fs.writeFileSync(path.join(work, "shared.mjs"), 'export const shared = "SHARED_MARKER";\n');
     fs.writeFileSync(path.join(work, "route.mjs"), 'export const route = "ROUTE_MARKER";\n');
-    fs.writeFileSync(path.join(work, "a.mjs"), 'import { shared } from "./shared.mjs";\nconsole.log(shared);\nimport("./route.mjs");\n');
+    fs.writeFileSync(
+      path.join(work, "a.mjs"),
+      'import { shared } from "./shared.mjs";\nconsole.log(shared);\nimport("./route.mjs");\n'
+    );
     fs.writeFileSync(path.join(work, "b.mjs"), 'import { shared } from "./shared.mjs";\nconsole.log(shared);\n');
   });
 
@@ -333,7 +340,9 @@ describe("a bundle's metafile and chunks, over real esbuild", () => {
       process.chdir(cwd);
     }
     assert.equal(process.exitCode ?? 0, 0, "the bundle should have succeeded");
-    return Array.from(fs.readdirSync(path.join(work, "out"), { recursive: true }) as string[], name => name.split(path.sep).join("/")).sort();
+    return Array.from(fs.readdirSync(path.join(work, "out"), { recursive: true }) as string[], name =>
+      name.split(path.sep).join("/")
+    ).sort();
   }
 
   it("puts shared code and a dynamic import's target in chunks the entries import", async () => {
@@ -372,8 +381,14 @@ describe("node built-ins in a browser bundle, over real esbuild", () => {
       fs.writeFileSync(path.join(work, name), text);
     };
     /* A package that needs `fs` only on node, and says so in its `browser` field. */
-    write("node_modules/nodeish/package.json", JSON.stringify({ name: "nodeish", version: "1.0.0", main: "index.js", browser: { fs: false } }));
-    write("node_modules/nodeish/index.js", 'const fs = require("fs");\nmodule.exports = fs && fs.readFileSync ? "NODE" : "BROWSER";\n');
+    write(
+      "node_modules/nodeish/package.json",
+      JSON.stringify({ name: "nodeish", version: "1.0.0", main: "index.js", browser: { fs: false } })
+    );
+    write(
+      "node_modules/nodeish/index.js",
+      'const fs = require("fs");\nmodule.exports = fs && fs.readFileSync ? "NODE" : "BROWSER";\n'
+    );
     /* A substitute for `path`, bundled under the built-in's own name. */
     write("node_modules/path/package.json", JSON.stringify({ name: "path", version: "1.0.0", main: "index.js" }));
     write("node_modules/path/index.js", 'exports.join = () => "PATH_SHIM";\n');
@@ -477,12 +492,18 @@ describe("one package wired two ways, bundled by real esbuild through its virtua
     const dep = (version: string): PackageFileSet =>
       new PackageFileSet(content("dep", version, `module.exports = { v: "dep${version}" };\n`), "dep", version, []);
     const shared = content("shared", "1.0.0", 'module.exports = require("dep");\n');
-    const left = new PackageFileSet(content("left", "1.0.0", 'module.exports = require("shared");\n'), "left", "1.0.0", dependenciesOn(
-      new PackageFileSet(shared, "shared", "1.0.0", dependenciesOn(dep("1.0.0")))
-    ));
-    const right = new PackageFileSet(content("right", "1.0.0", 'module.exports = require("shared");\n'), "right", "1.0.0", dependenciesOn(
-      new PackageFileSet(shared, "shared", "1.0.0", dependenciesOn(dep("2.0.0")))
-    ));
+    const left = new PackageFileSet(
+      content("left", "1.0.0", 'module.exports = require("shared");\n'),
+      "left",
+      "1.0.0",
+      dependenciesOn(new PackageFileSet(shared, "shared", "1.0.0", dependenciesOn(dep("1.0.0"))))
+    );
+    const right = new PackageFileSet(
+      content("right", "1.0.0", 'module.exports = require("shared");\n'),
+      "right",
+      "1.0.0",
+      dependenciesOn(new PackageFileSet(shared, "shared", "1.0.0", dependenciesOn(dep("2.0.0"))))
+    );
     const manifest = pnpManifestOf([left, right]);
     const store = path.join(work, "..", "store");
     for (const pkg of manifest.packages) {
@@ -523,10 +544,7 @@ describe("one package wired two ways, bundled by real esbuild through its virtua
 
   it("resolves each wiring's dependency through its own row", async () => {
     stage();
-    fs.writeFileSync(
-      path.join(work, "entry.js"),
-      'console.log(JSON.stringify([require("left").v, require("right").v]));\n'
-    );
+    fs.writeFileSync(path.join(work, "entry.js"), 'console.log(JSON.stringify([require("left").v, require("right").v]));\n');
     assert.equal(await bundleAndRun("entry.js"), JSON.stringify(["dep1.0.0", "dep2.0.0"]));
   });
 
@@ -551,7 +569,16 @@ describe("one package wired two ways, bundled by real esbuild through its virtua
     fs.writeFileSync(path.join(work, SOURCE_PATHS_FILE), JSON.stringify(table));
     fs.writeFileSync(
       path.join(work, "options.json"),
-      JSON.stringify({ entries: [{ in: "entry.js", out: "bundle" }], external: [], platform: "node", format: "cjs", target: "es2021", minify: false, sourcemap: "linked", outdir: "out" })
+      JSON.stringify({
+        entries: [{ in: "entry.js", out: "bundle" }],
+        external: [],
+        platform: "node",
+        format: "cjs",
+        target: "es2021",
+        minify: false,
+        sourcemap: "linked",
+        outdir: "out",
+      })
     );
     const cwd = process.cwd();
     try {
@@ -581,7 +608,13 @@ describe("one package wired two ways, bundled by real esbuild through its virtua
     fs.mkdirSync(path.join(leftTree, "dist"), { recursive: true });
     fs.writeFileSync(
       path.join(leftTree, "dist", "index.js.map"),
-      JSON.stringify({ version: 3, sources: ["../src/index.ts"], sourcesContent: ["export const v = 1;\n"], names: [], mappings: "AAAA" })
+      JSON.stringify({
+        version: 3,
+        sources: ["../src/index.ts"],
+        sourcesContent: ["export const v = 1;\n"],
+        names: [],
+        mappings: "AAAA",
+      })
     );
     fs.writeFileSync(path.join(work, "entry.js"), 'console.log(require("left").v);\n');
     const table: Record<string, string> = { "entry.js": "./app/entry.js" };
@@ -593,7 +626,16 @@ describe("one package wired two ways, bundled by real esbuild through its virtua
     fs.writeFileSync(path.join(work, SOURCE_PATHS_FILE), JSON.stringify(table));
     fs.writeFileSync(
       path.join(work, "options.json"),
-      JSON.stringify({ entries: [{ in: "entry.js", out: "bundle" }], external: [], platform: "node", format: "cjs", target: "es2021", minify: false, sourcemap: "linked", outdir: "out" })
+      JSON.stringify({
+        entries: [{ in: "entry.js", out: "bundle" }],
+        external: [],
+        platform: "node",
+        format: "cjs",
+        target: "es2021",
+        minify: false,
+        sourcemap: "linked",
+        outdir: "out",
+      })
     );
     const cwd = process.cwd();
     try {
@@ -621,7 +663,16 @@ describe("one package wired two ways, bundled by real esbuild through its virtua
     fs.writeFileSync(path.join(work, SOURCE_PATHS_FILE), JSON.stringify({ "entry.js": "./app/entry.js", "card.css": "app:card.css" }));
     fs.writeFileSync(
       path.join(work, "options.json"),
-      JSON.stringify({ entries: [{ in: "entry.js", out: "bundle" }], external: [], platform: "browser", format: "esm", target: "es2021", minify: false, sourcemap: "linked", outdir: "out" })
+      JSON.stringify({
+        entries: [{ in: "entry.js", out: "bundle" }],
+        external: [],
+        platform: "browser",
+        format: "esm",
+        target: "es2021",
+        minify: false,
+        sourcemap: "linked",
+        outdir: "out",
+      })
     );
     const cwd = process.cwd();
     try {
@@ -646,7 +697,16 @@ describe("one package wired two ways, bundled by real esbuild through its virtua
     fs.writeFileSync(path.join(work, SOURCE_PATHS_FILE), JSON.stringify({ "entry.js": "./app/entry.js", "card.css": "app:card.css" }));
     fs.writeFileSync(
       path.join(work, "options.json"),
-      JSON.stringify({ entries: [{ in: "entry.js", out: "bundle" }], external: [], platform: "browser", format: "esm", target: "es2021", minify: false, sourcemap: "linked", outdir: "out" })
+      JSON.stringify({
+        entries: [{ in: "entry.js", out: "bundle" }],
+        external: [],
+        platform: "browser",
+        format: "esm",
+        target: "es2021",
+        minify: false,
+        sourcemap: "linked",
+        outdir: "out",
+      })
     );
     const cwd = process.cwd();
     try {
@@ -656,7 +716,9 @@ describe("one package wired two ways, bundled by real esbuild through its virtua
       process.chdir(cwd);
     }
     assert.equal(process.exitCode ?? 0, 0, "the bundle should have succeeded");
-    const inputs = Object.keys((JSON.parse(fs.readFileSync(path.join(work, "out", "metafile.json"), "utf8")) as { inputs: object }).inputs);
+    const inputs = Object.keys(
+      (JSON.parse(fs.readFileSync(path.join(work, "out", "metafile.json"), "utf8")) as { inputs: object }).inputs
+    );
     const css = fs.readFileSync(path.join(work, "out", "bundle.css"), "utf8");
     const js = fs.readFileSync(path.join(work, "out", "bundle.js"), "utf8");
     const stylesheet = inputs.find(name => name.includes("card"));
@@ -678,7 +740,16 @@ describe("one package wired two ways, bundled by real esbuild through its virtua
     fs.writeFileSync(path.join(work, SOURCE_PATHS_FILE), JSON.stringify({ "entry.js": "./app/entry.js", "card.css": "app:card.css" }));
     fs.writeFileSync(
       path.join(work, "options.json"),
-      JSON.stringify({ entries: [{ in: "entry.js", out: "bundle" }], external: [], platform: "browser", format: "esm", target: "es2021", minify: false, sourcemap: "linked", outdir: "out" })
+      JSON.stringify({
+        entries: [{ in: "entry.js", out: "bundle" }],
+        external: [],
+        platform: "browser",
+        format: "esm",
+        target: "es2021",
+        minify: false,
+        sourcemap: "linked",
+        outdir: "out",
+      })
     );
     const cwd = process.cwd();
     try {
@@ -688,7 +759,9 @@ describe("one package wired two ways, bundled by real esbuild through its virtua
       process.chdir(cwd);
     }
     assert.equal(process.exitCode ?? 0, 0, "the bundle should have succeeded");
-    const inputs = Object.keys((JSON.parse(fs.readFileSync(path.join(work, "out", "metafile.json"), "utf8")) as { inputs: object }).inputs);
+    const inputs = Object.keys(
+      (JSON.parse(fs.readFileSync(path.join(work, "out", "metafile.json"), "utf8")) as { inputs: object }).inputs
+    );
     assert.ok(inputs.includes("./app/card.scss"), inputs.join(", "));
     assert.ok(fs.readFileSync(path.join(work, "out", "bundle.css"), "utf8").includes("/* ./app/card.scss */"));
   });
@@ -699,10 +772,22 @@ describe("one package wired two ways, bundled by real esbuild through its virtua
     fs.mkdirSync(path.join(work, path.dirname(staged)), { recursive: true });
     fs.writeFileSync(path.join(work, staged), 'module.exports = { lib: "LIB_MARKER" };\n');
     fs.writeFileSync(path.join(work, "entry.mjs"), `import lib from "./${staged}";\nconsole.log(lib);\n`);
-    fs.writeFileSync(path.join(work, SOURCE_PATHS_FILE), JSON.stringify({ "entry.mjs": "./app/entry.mjs", [staged]: "./app/lib.cjs" }));
+    fs.writeFileSync(
+      path.join(work, SOURCE_PATHS_FILE),
+      JSON.stringify({ "entry.mjs": "./app/entry.mjs", [staged]: "./app/lib.cjs" })
+    );
     fs.writeFileSync(
       path.join(work, "options.json"),
-      JSON.stringify({ entries: [{ in: "entry.mjs", out: "bundle" }], external: [], platform: "browser", format: "esm", target: "es2021", minify: false, sourcemap: "linked", outdir: "out" })
+      JSON.stringify({
+        entries: [{ in: "entry.mjs", out: "bundle" }],
+        external: [],
+        platform: "browser",
+        format: "esm",
+        target: "es2021",
+        minify: false,
+        sourcemap: "linked",
+        outdir: "out",
+      })
     );
     const cwd = process.cwd();
     try {
@@ -721,7 +806,10 @@ describe("one package wired two ways, bundled by real esbuild through its virtua
     const lines = js.split("\n");
     const line = lines.findIndex(text => text.includes("LIB_MARKER"));
     const entry = map.findEntry(line, lines[line].indexOf("LIB_MARKER"));
-    assert.ok("originalSource" in entry && entry.originalSource.endsWith("lib.cjs") && entry.originalLine === 0, JSON.stringify(entry));
+    assert.ok(
+      "originalSource" in entry && entry.originalSource.endsWith("lib.cjs") && entry.originalLine === 0,
+      JSON.stringify(entry)
+    );
   });
 
   it("takes an entry point at a virtual location as that wiring", async () => {
@@ -766,7 +854,16 @@ describe("bundle errors, over real esbuild", () => {
     fs.writeFileSync(path.join(work, "entry.js"), entry);
     fs.writeFileSync(
       path.join(work, "options.json"),
-      JSON.stringify({ entries: [{ in: "entry.js", out: "bundle" }], external: [], platform: "node", format: "cjs", target: "es2021", minify: false, sourcemap: false, outdir: "out" })
+      JSON.stringify({
+        entries: [{ in: "entry.js", out: "bundle" }],
+        external: [],
+        platform: "node",
+        format: "cjs",
+        target: "es2021",
+        minify: false,
+        sourcemap: false,
+        outdir: "out",
+      })
     );
     const written: string[] = [];
     const write = process.stderr.write.bind(process.stderr);
@@ -798,7 +895,10 @@ describe("bundle errors, over real esbuild", () => {
     );
 
   it("names a location by its package and version, not its place in the tree pool", async () => {
-    const out = await bundleErrors([pkg("plain", "2.0.0", { "index.js": 'module.exports = require("missing-a");\n' })], 'require("plain");\n');
+    const out = await bundleErrors(
+      [pkg("plain", "2.0.0", { "index.js": 'module.exports = require("missing-a");\n' })],
+      'require("plain");\n'
+    );
     assert.match(out, /plain@2\.0\.0\/index\.js:1:\d+/);
     assert.ok(!out.includes(".fabr-tree"), out);
     assert.ok(!out.includes(PNP_DATA_FILE), out);
@@ -807,9 +907,17 @@ describe("bundle errors, over real esbuild", () => {
 
   it("reports a compiled file's error at the line its source map says was written", async () => {
     const source = '// widget\nimport { thing } from "missing-b";\nexport const value = thing;\n';
-    const compiled = '"use strict";\nconst missing_b_1 = require("missing-b");\nexports.value = missing_b_1.thing;\n//# sourceMappingURL=widget.js.map\n';
+    const compiled =
+      '"use strict";\nconst missing_b_1 = require("missing-b");\nexports.value = missing_b_1.thing;\n//# sourceMappingURL=widget.js.map\n';
     /* Line 2 of the output is line 2 of the source; everything else unmapped. */
-    const map = JSON.stringify({ version: 3, file: "widget.js", sources: ["../src/widget.ts"], sourcesContent: [source], names: [], mappings: ";AACA" });
+    const map = JSON.stringify({
+      version: 3,
+      file: "widget.js",
+      sources: ["../src/widget.ts"],
+      sourcesContent: [source],
+      names: [],
+      mappings: ";AACA",
+    });
     const out = await bundleErrors(
       [pkg("typed", "1.0.0", { "dist/widget.js": compiled, "dist/widget.js.map": map })],
       'require("typed");\n'

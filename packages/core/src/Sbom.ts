@@ -213,7 +213,9 @@ export function sbom(name: ResolvedName, tool: { version: string }): Computable<
         return [ref];
       });
     const rootDependsOn = new Set(
-      walk(described === undefined ? nameEdges(resolved, readFor) : walkedEdges(described, described instanceof ResolvedTarget, readFor))
+      walk(
+        described === undefined ? nameEdges(resolved, readFor) : walkedEdges(described, described instanceof ResolvedTarget, readFor)
+      )
     );
     return { reached, rootDependsOn };
   });
@@ -225,7 +227,10 @@ export function sbom(name: ResolvedName, tool: { version: string }): Computable<
     const metadata = (pkg: Package): Computable<IVersionMetadata | undefined> =>
       pkg instanceof ResolvedNode && pkg.content.metadata !== undefined ? pkg.content.metadata() : Computable.resolve(undefined);
     return Computable.forAll(
-      [described === undefined ? Computable.resolve(undefined) : metadata(described), ...refs.map(ref => metadata(reached.get(ref)!.pkg))],
+      [
+        described === undefined ? Computable.resolve(undefined) : metadata(described),
+        ...refs.map(ref => metadata(reached.get(ref)!.pkg)),
+      ],
       (...published: Array<IVersionMetadata | undefined>) => {
         const component = (
           ref: string,
@@ -257,7 +262,9 @@ export function sbom(name: ResolvedName, tool: { version: string }): Computable<
           metadata: {
             tools: { components: [{ type: "application", "bom-ref": "fabr", name: "fabr", version: tool.version }] },
             component:
-              described === undefined ? { type: root.type, "bom-ref": root["bom-ref"], name: title } : component(root["bom-ref"], described, rootMeta, root.type),
+              described === undefined
+                ? { type: root.type, "bom-ref": root["bom-ref"], name: title }
+                : component(root["bom-ref"], described, rootMeta, root.type),
           },
           components: refs.map((ref, at) => component(ref, reached.get(ref)!.pkg, rest[at], "library")),
           dependencies: [

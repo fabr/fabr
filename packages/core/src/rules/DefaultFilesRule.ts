@@ -65,7 +65,9 @@ function deliverFiles(context: TargetContext): Computable<RuleResult> {
     if (files.length === 0) {
       throw new FabrError(`internal: building '${context.name}' under files did not yield file content`);
     }
-    return files.map(source => (source instanceof PackageFileSet || source instanceof RunnableFileSet ? new FileSet(source, source.origin) : source));
+    return files.map(source =>
+      source instanceof PackageFileSet || source instanceof RunnableFileSet ? new FileSet(source, source.origin) : source
+    );
   });
 }
 

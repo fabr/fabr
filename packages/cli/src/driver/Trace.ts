@@ -130,7 +130,14 @@ export class TraceWriter {
     switch (event.kind) {
       case "task-start": {
         const now = this.now();
-        this.open.set(event.id, { task: event.task, lane: this.claimLane(event.id), started: now, state: event.state, since: now, waited: 0 });
+        this.open.set(event.id, {
+          task: event.task,
+          lane: this.claimLane(event.id),
+          started: now,
+          state: event.state,
+          since: now,
+          waited: 0,
+        });
         return;
       }
       case "task-progress": {
@@ -155,7 +162,12 @@ export class TraceWriter {
         this.open.delete(event.id);
         const now = this.now();
         this.leaveState(open, now);
-        this.events.push(this.taskSpan(event.id, open, now, { failed: event.failed, ...(event.error === undefined ? {} : { error: event.error.message }) }));
+        this.events.push(
+          this.taskSpan(event.id, open, now, {
+            failed: event.failed,
+            ...(event.error === undefined ? {} : { error: event.error.message }),
+          })
+        );
         this.lanes[open.lane] = undefined;
         return;
       }
@@ -176,7 +188,15 @@ export class TraceWriter {
     let lane = this.lanes.findIndex(holder => holder === undefined);
     if (lane < 0) {
       lane = this.lanes.length;
-      this.events.push({ name: "thread_name", cat: "__metadata", ph: "M", ts: 0, pid: PID, tid: lane + 1, args: { name: `task ${lane + 1}` } });
+      this.events.push({
+        name: "thread_name",
+        cat: "__metadata",
+        ph: "M",
+        ts: 0,
+        pid: PID,
+        tid: lane + 1,
+        args: { name: `task ${lane + 1}` },
+      });
     }
     this.lanes[lane] = id;
     return lane;
@@ -192,12 +212,19 @@ export class TraceWriter {
   }
 
   private taskSpan(id: number, open: IOpenTask, end: number, args: Record<string, unknown>): ITraceEvent {
-    return this.span(describeTask(open.task), open.task.kind === "fetch" ? `fetch:${open.task.role}` : open.task.kind, open.started, end, open.lane + 1, {
-      id,
-      context: context(open.task),
-      waited: Math.round(open.waited),
-      ...args,
-    });
+    return this.span(
+      describeTask(open.task),
+      open.task.kind === "fetch" ? `fetch:${open.task.role}` : open.task.kind,
+      open.started,
+      end,
+      open.lane + 1,
+      {
+        id,
+        context: context(open.task),
+        waited: Math.round(open.waited),
+        ...args,
+      }
+    );
   }
 
   /** Draw a test file's run, placed by the runner's own clock, as an async span
@@ -212,7 +239,16 @@ export class TraceWriter {
   }
 
   private span(name: string, cat: string, start: number, end: number, tid: number, args?: Record<string, unknown>): ITraceEvent {
-    return { name, cat, ph: "X", ts: micros(start), dur: micros(end) - micros(start), pid: PID, tid, ...(args === undefined ? {} : { args }) };
+    return {
+      name,
+      cat,
+      ph: "X",
+      ts: micros(start),
+      dur: micros(end) - micros(start),
+      pid: PID,
+      tid,
+      ...(args === undefined ? {} : { args }),
+    };
   }
 
   private instant(name: string, args: Record<string, unknown>): ITraceEvent {

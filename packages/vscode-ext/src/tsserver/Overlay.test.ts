@@ -55,7 +55,10 @@ describe("overlay over fs", () => {
       [path.join(root, "real/tsconfig.json"), path.join(root, "served.json")],
       [path.join(root, "virtual/pkg/package.json"), path.join(root, "other.json")],
     ]);
-    view = { ...fs, realpathSync: Object.assign((p: fs.PathLike) => fs.realpathSync(p), { native: fs.realpathSync.native }) } as typeof fs;
+    view = {
+      ...fs,
+      realpathSync: Object.assign((p: fs.PathLike) => fs.realpathSync(p), { native: fs.realpathSync.native }),
+    } as typeof fs;
     installOverlay(view, () => current);
   });
   afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -63,8 +66,15 @@ describe("overlay over fs", () => {
   it("shows a masked file as missing, and leaves its siblings as they are", () => {
     const nested = path.join(root, "real/src/tsconfig.json");
     fs.writeFileSync(nested, "nested");
-    const masking = { ...fs, realpathSync: Object.assign((p: fs.PathLike) => fs.realpathSync(p), { native: fs.realpathSync.native }) } as typeof fs;
-    installOverlay(masking, () => current, file => file === nested);
+    const masking = {
+      ...fs,
+      realpathSync: Object.assign((p: fs.PathLike) => fs.realpathSync(p), { native: fs.realpathSync.native }),
+    } as typeof fs;
+    installOverlay(
+      masking,
+      () => current,
+      file => file === nested
+    );
     expect(masking.existsSync(nested)).to.equal(false);
     expect(() => masking.readFileSync(nested, "utf8")).to.throw(/ENOENT/);
     expect(() => masking.statSync(nested)).to.throw(/ENOENT/);

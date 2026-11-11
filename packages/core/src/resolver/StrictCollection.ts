@@ -158,22 +158,34 @@ function refusalOf(errors: () => ReadonlyArray<Computable<Error | undefined>>): 
 }
 
 /** The conflicts of a collection where nothing conflicts. */
-export const NO_CONFLICTS = new Conflicts(new Map(), () => false, () => Computable.resolve(undefined));
+export const NO_CONFLICTS = new Conflicts(
+  new Map(),
+  () => false,
+  () => Computable.resolve(undefined)
+);
 
 /** Make the {@link RootRenderer} naming each of `pins` as what the
  * collection reached it through, each pin's requirement spelled as `domain`'s
  * exact constraint. */
-function pinText<V, C>(pins: ReadonlyArray<Pin>, ownWritten: ReadonlyMap<string, ReadonlySet<string>>, domain: VersionDomain<V, C>): RootRenderer {
+function pinText<V, C>(
+  pins: ReadonlyArray<Pin>,
+  ownWritten: ReadonlyMap<string, ReadonlySet<string>>,
+  domain: VersionDomain<V, C>
+): RootRenderer {
   return (name, versionConstraint) => {
     const pin = pins.find(
       ({ selection }) =>
-        (selection.renameTo ?? selection.name) === name && exactConstraintOf(domain, domain.parseVersion(selection.version)) === versionConstraint
+        (selection.renameTo ?? selection.name) === name &&
+        exactConstraintOf(domain, domain.parseVersion(selection.version)) === versionConstraint
     );
     if (pin === undefined || (versionConstraint !== undefined && ownWritten.get(name)?.has(versionConstraint) === true)) {
       return undefined;
     }
     const { via } = pin;
-    const text = via instanceof RepositoryRef ? `${via.repositoryName === undefined ? "" : `${via.repositoryName}:`}${via.toString()}` : via.packageName;
+    const text =
+      via instanceof RepositoryRef
+        ? `${via.repositoryName === undefined ? "" : `${via.repositoryName}:`}${via.toString()}`
+        : via.packageName;
     return `pinned by '${text}'`;
   };
 }
@@ -272,7 +284,10 @@ function checkDomain<V, C>(group: CheckedResolution<V, C>[], packages: ReadonlyA
       const versions = shipped.get(selection.name) ?? new Map<string, IShipped<V, C>>();
       shipped.set(selection.name, versions);
       const held = versions.get(text);
-      versions.set(text, held === undefined ? { selection, by: [resolution] } : { selection: held.selection, by: [...held.by, resolution] });
+      versions.set(
+        text,
+        held === undefined ? { selection, by: [resolution] } : { selection: held.selection, by: [...held.by, resolution] }
+      );
     }
   }
   const written = new Map<string, Set<string>>();
@@ -296,7 +311,9 @@ function checkDomain<V, C>(group: CheckedResolution<V, C>[], packages: ReadonlyA
   const coveredBy = (pkg: string, together?: CheckedResolution<V, C>): boolean =>
     ownEveryVersion.has(pkg) ||
     together?.everyVersion.has(pkg) === true ||
-    [...(shipped.get(pkg)?.keys() ?? [])].every(version => ownWritten.get(pkg)?.has(version) === true || together?.written.get(pkg)?.has(version) === true);
+    [...(shipped.get(pkg)?.keys() ?? [])].every(
+      version => ownWritten.get(pkg)?.has(version) === true || together?.written.get(pkg)?.has(version) === true
+    );
   const sanctioned = (pkg: string): boolean => coveredBy(pkg) || catalogs.some(catalog => coveredBy(pkg, catalog));
   const shippedOf = (pkg: string): Selected<V>[] => [...(shipped.get(pkg)?.values() ?? [])].map(entry => entry.selection);
 
@@ -319,7 +336,10 @@ function checkDomain<V, C>(group: CheckedResolution<V, C>[], packages: ReadonlyA
   }
   const duplicates: Array<[string, V[]]> = [...shipped]
     .filter(([pkg, versions]) => versions.size > 1 && !sanctioned(pkg))
-    .map(([pkg, versions]) => [pkg, [...versions.values()].map(entry => entry.selection.version).sort((a, b) => domain.compare(a, b))]);
+    .map(([pkg, versions]) => [
+      pkg,
+      [...versions.values()].map(entry => entry.selection.version).sort((a, b) => domain.compare(a, b)),
+    ]);
   const conflicted = new Set([...violations.keys()].map(violation => violation.name).concat(duplicates.map(([pkg]) => pkg)));
   const conflicts = new Map([...conflicted].map(pkg => [pkg, new Set(shipped.get(pkg)?.keys() ?? [])] as const));
   const conflicting = (pkg: Package): boolean =>
@@ -353,10 +373,30 @@ function checkDomain<V, C>(group: CheckedResolution<V, C>[], packages: ReadonlyA
        * to verify a pin against, so the remedy is the sanction set. */
       const suggestion =
         graphs.length === 1
-          ? suggestSanctions(outstanding, graphs[0], all, members.flatMap(resolution => resolution.requested), written, members[0].sources())
+          ? suggestSanctions(
+              outstanding,
+              graphs[0],
+              all,
+              members.flatMap(resolution => resolution.requested),
+              written,
+              members[0].sources()
+            )
           : Computable.resolve(sanctionHelp(conflictedSanctions(outstanding, duplicates, shipped, written, domain, refText)));
       return suggestion.then(help => {
-        const error = conflictError(outstanding, duplicates, all, explaining, refText, written, help, pinText(members.flatMap(resolution => resolution.pins), ownWritten, domain));
+        const error = conflictError(
+          outstanding,
+          duplicates,
+          all,
+          explaining,
+          refText,
+          written,
+          help,
+          pinText(
+            members.flatMap(resolution => resolution.pins),
+            ownWritten,
+            domain
+          )
+        );
         /* A reference takes part where its closure holds a version of a
          * conflicted package, or the requirer of a violation. */
         const requirers = new Set(outstanding.map(violation => violation.requiredBy));
@@ -366,7 +406,9 @@ function checkDomain<V, C>(group: CheckedResolution<V, C>[], packages: ReadonlyA
         const builds = [
           ...new Set(
             [...conflicted].flatMap(pkg =>
-              [...(shipped.get(pkg)?.values() ?? [])].flatMap(entry => entry.by.flatMap(resolution => resolution.buildOrigin(entry.selection) ?? []))
+              [...(shipped.get(pkg)?.values() ?? [])].flatMap(entry =>
+                entry.by.flatMap(resolution => resolution.buildOrigin(entry.selection) ?? [])
+              )
             )
           ),
         ];

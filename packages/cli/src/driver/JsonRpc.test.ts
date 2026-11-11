@@ -42,7 +42,10 @@ function connect(): { input: PassThrough; sent: ISent[]; connection: JsonRpcConn
         return;
       }
       const tag = /^Fabr-Protocol: *(\S+)$/im.exec(buffer.slice(0, blank))?.[1];
-      sent.push({ protocol: tag === "lsp" ? "lsp" : "bsp", message: JSON.parse(buffer.slice(blank + 4, blank + 4 + Number(length[1]))) });
+      sent.push({
+        protocol: tag === "lsp" ? "lsp" : "bsp",
+        message: JSON.parse(buffer.slice(blank + 4, blank + 4 + Number(length[1]))),
+      });
       buffer = buffer.slice(blank + 4 + Number(length[1]));
     }
   });

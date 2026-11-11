@@ -22,7 +22,16 @@
  * own credentials, by ECR's `GetAuthorizationToken`.
  */
 
-import { Computable, Credential, FabrError, IAuthChallenge, IRequestHead, isJsonObject, parseJson, sendRequest } from "@fabr-build/core";
+import {
+  Computable,
+  Credential,
+  FabrError,
+  IAuthChallenge,
+  IRequestHead,
+  isJsonObject,
+  parseJson,
+  sendRequest,
+} from "@fabr-build/core";
 import { describeServiceError, jsonRequest, serviceErrorOf } from "./JsonProtocol";
 import { IServiceRequest, requestUrl } from "./Signing";
 import { IServiceSettings } from "./Types";
@@ -54,7 +63,8 @@ export class EcrSignIn implements Credential {
   }
 
   public authorize(_request: IRequestHead, challenge?: IAuthChallenge): Computable<ReadonlyMap<string, string> | undefined> {
-    const token = challenge === undefined || (this.token !== undefined && !this.token.isSettled()) ? this.current() : (this.token = this.fetch());
+    const token =
+      challenge === undefined || (this.token !== undefined && !this.token.isSettled()) ? this.current() : (this.token = this.fetch());
     return token.then(({ authorization }) => new Map([["authorization", `Basic ${authorization}`]]));
   }
 
@@ -67,9 +77,9 @@ export class EcrSignIn implements Credential {
       .then(headers => sendRequest(url, { method: "POST", headers, body: request.body }))
       .then(response => {
         if (response.statusCode !== 200) {
-          throw new FabrError(`ECR refused a registry token (${response.statusCode}: ${describeServiceError(serviceErrorOf(response.body.toString("utf8")))})`).withHelp(
-            "signing in to ECR needs the ecr:GetAuthorizationToken permission"
-          );
+          throw new FabrError(
+            `ECR refused a registry token (${response.statusCode}: ${describeServiceError(serviceErrorOf(response.body.toString("utf8")))})`
+          ).withHelp("signing in to ECR needs the ecr:GetAuthorizationToken permission");
         }
         return parseJson(response.body, `token from ${url}`, toEcrToken);
       });

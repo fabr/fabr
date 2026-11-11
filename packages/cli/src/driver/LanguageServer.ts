@@ -103,7 +103,9 @@ export class LanguageServer {
     private readonly isServed: (uri: string) => boolean
   ) {
     connection.serve("lsp", (method, params) =>
-      this.model === undefined && FROM_THE_MODEL.has(method) ? this.firstModel.then(() => this.handle(method, params)) : this.handle(method, params)
+      this.model === undefined && FROM_THE_MODEL.has(method)
+        ? this.firstModel.then(() => this.handle(method, params))
+        : this.handle(method, params)
     );
   }
 
@@ -220,12 +222,22 @@ export class LanguageServer {
         return symbolsOf(this.parse(toDocumentParams(params).uri).contents).map(documentSymbol);
       case "textDocument/definition": {
         const named = this.named(toPositionParams(params));
-        const origin = named === undefined ? undefined : rangeOf({ ...named.origin.source, offset: named.origin.offset, endOffset: named.origin.endOffset });
+        const origin =
+          named === undefined
+            ? undefined
+            : rangeOf({ ...named.origin.source, offset: named.origin.offset, endOffset: named.origin.endOffset });
         return (named?.declarations ?? []).flatMap(span => {
           const range = rangeOf(span);
           return range === undefined
             ? []
-            : [{ ...(origin === undefined ? {} : { originSelectionRange: origin }), targetUri: documentOf(this.sourceRoot, span), targetRange: range, targetSelectionRange: range }];
+            : [
+                {
+                  ...(origin === undefined ? {} : { originSelectionRange: origin }),
+                  targetUri: documentOf(this.sourceRoot, span),
+                  targetRange: range,
+                  targetSelectionRange: range,
+                },
+              ];
         });
       }
       case "textDocument/hover": {
@@ -243,15 +255,25 @@ export class LanguageServer {
           return [];
         }
         /* A private target is not one the command line can name. */
-        return contents.targets.filter(target => !target.private).flatMap(target => {
-          const range = rangeOf({ ...target.source, offset: target.offset, endOffset: target.offset + target.name.toString().length });
-          return range === undefined
-            ? []
-            : LENSES.filter(({ operation, served: whereServed }) => model.getOperations(target.type).includes(operation) && (!whereServed || this.isServed(served({ name: target.name.toString(), operation })))).map(({ operation, title, command }) => ({
-                range,
-                command: { title, command, arguments: [served({ name: target.name.toString(), operation })] },
-              }));
-        });
+        return contents.targets
+          .filter(target => !target.private)
+          .flatMap(target => {
+            const range = rangeOf({
+              ...target.source,
+              offset: target.offset,
+              endOffset: target.offset + target.name.toString().length,
+            });
+            return range === undefined
+              ? []
+              : LENSES.filter(
+                  ({ operation, served: whereServed }) =>
+                    model.getOperations(target.type).includes(operation) &&
+                    (!whereServed || this.isServed(served({ name: target.name.toString(), operation })))
+                ).map(({ operation, title, command }) => ({
+                  range,
+                  command: { title, command, arguments: [served({ name: target.name.toString(), operation })] },
+                }));
+          });
       }
       case "textDocument/completion": {
         const { uri, position } = toPositionParams(params);
@@ -259,12 +281,14 @@ export class LanguageServer {
         if (this.model === undefined) {
           return [];
         }
-        return completionsAt(this.model, text, offsetOf(text, position), path.relative(this.sourceRoot, fileURLToPath(uri))).map(completion => ({
-          label: completion.label,
-          kind: COMPLETION_KINDS[completion.kind],
-          ...(completion.detail === undefined ? {} : { detail: completion.detail }),
-          ...(completion.comment === undefined ? {} : { documentation: { kind: "markdown", value: completion.comment } }),
-        }));
+        return completionsAt(this.model, text, offsetOf(text, position), path.relative(this.sourceRoot, fileURLToPath(uri))).map(
+          completion => ({
+            label: completion.label,
+            kind: COMPLETION_KINDS[completion.kind],
+            ...(completion.detail === undefined ? {} : { detail: completion.detail }),
+            ...(completion.comment === undefined ? {} : { documentation: { kind: "markdown", value: completion.comment } }),
+          })
+        );
       }
       default:
         throw new MethodNotFound(`${method} is not served`);
@@ -290,7 +314,9 @@ export class LanguageServer {
 /** @return `documentation` as a hover's Markdown: its title as code, in the declaration it is part of; its source as a build file's; then its comment. */
 function markdownOf(documentation: IDocumentation): string {
   return [
-    documentation.title === undefined ? undefined : `\`${documentation.title}\`${documentation.within === undefined ? "" : ` in \`${documentation.within}\``}`,
+    documentation.title === undefined
+      ? undefined
+      : `\`${documentation.title}\`${documentation.within === undefined ? "" : ` in \`${documentation.within}\``}`,
     documentation.source === undefined ? undefined : "```fabr\n" + documentation.source + "\n```",
     documentation.comment,
   ]

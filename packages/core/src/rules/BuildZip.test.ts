@@ -48,7 +48,14 @@ describe("zip", () => {
   /** Build the archive in a model of its own, in a run whose cache is at `root`. */
   const archiveIn = async (root: string): Promise<Buffer> => {
     const model = toBuildModel(
-      [parseBuildString(tree, "BUILD.fabr", "targetdef zip { srcs = FILES; }\nzip deploy/app { srcs = a.txt sub:b.txt link; }\n", log)],
+      [
+        parseBuildString(
+          tree,
+          "BUILD.fabr",
+          "targetdef zip { srcs = FILES; }\nzip deploy/app { srcs = a.txt sub:b.txt link; }\n",
+          log
+        ),
+      ],
       log,
       [{ rules: [{ type: "zip", properties: { [BUILD_OPERATION]: "build" }, ...zip }] }]
     );

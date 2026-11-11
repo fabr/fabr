@@ -32,7 +32,16 @@ const DATA = {
     ["chrome", ["119", "120", "121"]],
     ["op_mini", ["all"]],
   ]),
-  baseline: new Map([["2023", new Map([["safari", "17.2"], ["ios_saf", "17.2"], ["chrome", "120"]])]]),
+  baseline: new Map([
+    [
+      "2023",
+      new Map([
+        ["safari", "17.2"],
+        ["ios_saf", "17.2"],
+        ["chrome", "120"],
+      ]),
+    ],
+  ]),
 };
 
 describe("BROWSER_FORMAT", () => {
@@ -61,7 +70,9 @@ describe("BROWSER_FORMAT", () => {
   it("splits a reference into the browser and its lowest version, and refuses one without a version", () => {
     expect(BROWSER_FORMAT.splitReference(parseName("safari:17.2"))).to.deep.include({ name: "safari", versionConstraint: "17.2" });
     expect(() => BROWSER_FORMAT.validateRequirement({ name: "safari", versionConstraint: undefined })).to.throw(/Missing version/);
-    expect(() => BROWSER_FORMAT.validateRequirement({ name: "safari", versionConstraint: ">=15.4" })).to.throw(/not a browser version/);
+    expect(() => BROWSER_FORMAT.validateRequirement({ name: "safari", versionConstraint: ">=15.4" })).to.throw(
+      /not a browser version/
+    );
     expect(() => BROWSER_FORMAT.validateRequirement({ name: "op_mini", versionConstraint: "all" })).to.not.throw();
     expect(() => BROWSER_FORMAT.splitReference(parseName("safari:17.2:lib/x.js"))).to.throw(/a browser has none/);
   });
@@ -164,7 +175,12 @@ describe("browserDataOf", () => {
     };
     /* eslint-enable @typescript-eslint/no-var-requires */
     const data = browserDataOf(real, year => mapping.getCompatibleVersions({ targetYear: year, suppressWarnings: true }));
-    expect(Object.fromEntries(data.baseline.get("2023")!)).to.include({ safari: "17.2", ios_saf: "17.2", chrome: "120", firefox: "121" });
+    expect(Object.fromEntries(data.baseline.get("2023")!)).to.include({
+      safari: "17.2",
+      ios_saf: "17.2",
+      chrome: "120",
+      firefox: "121",
+    });
     expect(data.browsers.get("safari")).to.include("17.2");
   });
 });

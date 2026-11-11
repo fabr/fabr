@@ -133,7 +133,11 @@ const RESOLUTION_HOOKS = ["resolveModuleNameLiterals", "resolveTypeReferenceDire
  * project resolves each import by its importer's unit
  * ({@link resolveByImporter}), and any other project is left as it is.
  */
-export function createLanguageService(ts: IServerTypeScript, info: IPluginCreateInfo, units: readonly ITypeScriptUnit[]): ILanguageService {
+export function createLanguageService(
+  ts: IServerTypeScript,
+  info: IPluginCreateInfo,
+  units: readonly ITypeScriptUnit[]
+): ILanguageService {
   const unit = unitOf(info.project, units);
   if (unit !== undefined) {
     return decorateUnitProject(ts, info, unit, units);
@@ -175,7 +179,15 @@ function decorateUnitProject(
   }
   const configs = parsedConfigs(ts, units);
   const links = new Map<string, string>();
-  const { resolution, installed } = unitResolution(ts, host, unit, table, configs.get(unit)!.options, localLayouts(units, configs), links);
+  const { resolution, installed } = unitResolution(
+    ts,
+    host,
+    unit,
+    table,
+    configs.get(unit)!.options,
+    localLayouts(units, configs),
+    links
+  );
   for (const hook of RESOLUTION_HOOKS) {
     if (resolution[hook] !== undefined) {
       (host as unknown as Record<string, unknown>)[hook] = resolution[hook];
@@ -231,7 +243,9 @@ function resolveByImporter(ts: IServerTypeScript, info: IPluginCreateInfo, units
       }
       const { options, fileNames } = configs.get(unit)!;
       const { resolution, resolver } = unitResolution(ts, host, unit, table, options, layouts, links);
-      return [{ root: unit.root + path.sep, files: new Set(fileNames.map(file => path.resolve(file))), options, resolution, resolver }];
+      return [
+        { root: unit.root + path.sep, files: new Set(fileNames.map(file => path.resolve(file))), options, resolution, resolver },
+      ];
     })
     .sort((a, b) => b.root.length - a.root.length);
   type Unit = (typeof byRoot)[number];
@@ -239,7 +253,10 @@ function resolveByImporter(ts: IServerTypeScript, info: IPluginCreateInfo, units
   const locating = new Map<string, Unit | undefined>();
   const locatedBy = (from: string): Unit | undefined => {
     if (!locating.has(from)) {
-      locating.set(from, byRoot.find(candidate => locates(candidate.resolver, from)));
+      locating.set(
+        from,
+        byRoot.find(candidate => locates(candidate.resolver, from))
+      );
     }
     return locating.get(from);
   };
@@ -249,7 +266,9 @@ function resolveByImporter(ts: IServerTypeScript, info: IPluginCreateInfo, units
     const previous = hooks[hook];
     hooks[hook] = (items, from, redirected, options, ...rest) => {
       const owner =
-        byRoot.find(candidate => candidate.files.has(path.resolve(from))) ?? byRoot.find(candidate => from.startsWith(candidate.root)) ?? locatedBy(from);
+        byRoot.find(candidate => candidate.files.has(path.resolve(from))) ??
+        byRoot.find(candidate => from.startsWith(candidate.root)) ??
+        locatedBy(from);
       const own = owner && (owner.resolution as unknown as Record<string, Hook | undefined>)[hook];
       return own !== undefined
         ? own(items, from, redirected, owner!.options, ...rest)
@@ -272,7 +291,9 @@ interface ILocalLayout extends IOutputLayout {
  * the package does.
  */
 function localLayouts(units: readonly ITypeScriptUnit[], configs: ReadonlyMap<ITypeScriptUnit, IUnitConfig>): ILocalLayout[] {
-  return units.flatMap(unit => (unit.package === undefined ? [] : [{ package: unit.package, ...outputLayout(configs.get(unit)!.options, unit) }]));
+  return units.flatMap(unit =>
+    unit.package === undefined ? [] : [{ package: unit.package, ...outputLayout(configs.get(unit)!.options, unit) }]
+  );
 }
 
 /**
@@ -289,7 +310,9 @@ function readTable(ts: IServerTypeScript, unit: ITypeScriptUnit, project: IProje
   try {
     return JSON.parse(text) as IPnpSerializedState;
   } catch (err) {
-    project.projectService.logger.info(`fabr: ${unit.table} is not a PnP table (${err instanceof Error ? err.message : String(err)}); ${unit.config} resolves as tsserver resolves it`);
+    project.projectService.logger.info(
+      `fabr: ${unit.table} is not a PnP table (${err instanceof Error ? err.message : String(err)}); ${unit.config} resolves as tsserver resolves it`
+    );
     return undefined;
   }
 }
@@ -312,7 +335,9 @@ function unitResolution(
 ): { resolution: IResolutionHost; installed: IInstalledResolution; resolver: PnpResolver } {
   const locals = layouts.map(layout => ({ ...layout, own: layout.package === unit.package }));
   const isLocalOutput = (file: string): boolean =>
-    locals.some(layout => layout.sourcesOf(file).some(source => TYPESCRIPT_EXTENSIONS.some(extension => host.fileExists(source + extension))));
+    locals.some(layout =>
+      layout.sourcesOf(file).some(source => TYPESCRIPT_EXTENSIONS.some(extension => host.fileExists(source + extension)))
+    );
   /* A file no step compiles (a stylesheet a package ships as it is) is at its
    * name in the package where one of the package's directories holds it. */
   const isLocalResource = (file: string): boolean =>
@@ -359,12 +384,25 @@ function unitResolution(
         const extension = DECLARATION_FILE.exec(target)?.[0] ?? path.extname(target);
         return {
           ...answer,
-          resolvedModule: { ...resolved, resolvedFileName: target, extension, isExternalLibraryImport: false, originalPath: undefined },
+          resolvedModule: {
+            ...resolved,
+            resolvedFileName: target,
+            extension,
+            isExternalLibraryImport: false,
+            originalPath: undefined,
+          },
         };
       }
       const split = splitSpecifier(literals[i].text);
-      const directory = resolved && split && from.startsWith(unit.root + path.sep) ? packageDirectory(resolver, split.name, from) : undefined;
-      if (!resolved || isJavaScript(resolved.extension) || !split || !directory || !resolved.resolvedFileName.startsWith(path.join(directory, path.sep))) {
+      const directory =
+        resolved && split && from.startsWith(unit.root + path.sep) ? packageDirectory(resolver, split.name, from) : undefined;
+      if (
+        !resolved ||
+        isJavaScript(resolved.extension) ||
+        !split ||
+        !directory ||
+        !resolved.resolvedFileName.startsWith(path.join(directory, path.sep))
+      ) {
         return answer;
       }
       const link = path.join(unit.root, "node_modules", split.name);
@@ -462,11 +500,15 @@ interface IOutputLayout {
 function outputLayout(options: CompilerOptions, unit: ITypeScriptUnit): IOutputLayout {
   const base = path.dirname(unit.config);
   const outDir = path.resolve(base, typeof options.outDir === "string" ? options.outDir : ".");
-  const rootDirs = (Array.isArray(options.rootDirs) && options.rootDirs.length > 0 ? (options.rootDirs as string[]) : [typeof options.rootDir === "string" ? options.rootDir : "."]).map(
-    dir => path.resolve(base, dir)
-  );
+  const rootDirs = (
+    Array.isArray(options.rootDirs) && options.rootDirs.length > 0
+      ? (options.rootDirs as string[])
+      : [typeof options.rootDir === "string" ? options.rootDir : "."]
+  ).map(dir => path.resolve(base, dir));
   const filesOf = (file: string): string[] =>
-    file.startsWith(outDir + path.sep) ? rootDirs.filter(dir => !file.startsWith(dir + path.sep)).map(dir => path.join(dir, path.relative(outDir, file))) : [];
+    file.startsWith(outDir + path.sep)
+      ? rootDirs.filter(dir => !file.startsWith(dir + path.sep)).map(dir => path.join(dir, path.relative(outDir, file)))
+      : [];
   return {
     rootDirs: rootDirs.length,
     sourcesOf: file => {
@@ -502,10 +544,14 @@ function parsedConfig(ts: IServerTypeScript, unit: ITypeScriptUnit): IUnitConfig
     return held.config;
   }
   const host = configHost(ts) as { readFile(file: string, encoding?: string): string | undefined };
-  const parsed = ts.getParsedCommandLineOfConfigFile(unit.config, {}, {
-    ...host,
-    readFile: (file: string, encoding?: string) => (file === unit.config ? text : host.readFile(file, encoding)),
-  });
+  const parsed = ts.getParsedCommandLineOfConfigFile(
+    unit.config,
+    {},
+    {
+      ...host,
+      readFile: (file: string, encoding?: string) => (file === unit.config ? text : host.readFile(file, encoding)),
+    }
+  );
   const config = { options: parsed?.options ?? {}, fileNames: parsed?.fileNames ?? [] };
   if (text !== undefined) {
     configCache.set(unit.config, { text, config });

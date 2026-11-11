@@ -64,7 +64,14 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
     .then(() =>
       /* Tests run with no environment of their own: nothing ambient can change what they do. The
        * report carries the outcome, so the runner's output is kept for a failure, not streamed. */
-      execute(ctx.processLimit, findExecutable(argv[0], ctx.workDir), invocation, ctx.workDir, {}, { ...report, output: undefined }).then(
+      execute(
+        ctx.processLimit,
+        findExecutable(argv[0], ctx.workDir),
+        invocation,
+        ctx.workDir,
+        {},
+        { ...report, output: undefined }
+      ).then(
         () => undefined,
         (err: Error) => err
       )
@@ -88,7 +95,9 @@ function judgeRun(workDir: string, invocation: string[], error: Error | undefine
     if (error !== undefined) {
       throw error;
     }
-    throw new ExecutionError(`$ ${invocation.join(" ")}\nthe test runner exited successfully but its report is unusable: ${toError(readErr).message}`);
+    throw new ExecutionError(
+      `$ ${invocation.join(" ")}\nthe test runner exited successfully but its report is unusable: ${toError(readErr).message}`
+    );
   }
   if (error !== undefined && report.results.summary.failed === 0) {
     throw error;
@@ -99,5 +108,9 @@ function judgeRun(workDir: string, invocation: string[], error: Error | undefine
 /** @return the action that runs `argv` (the runner's command line, less its report) in `staged`,
  * collecting the coverage report too where the run is `measured`. */
 export function createTestRunAction(staged: FileSet, argv: readonly RunnableArgument[], measured: boolean): BuildAction {
-  return new BuildAction(JAVA_TEST_STEP, { staged }, { argv, outputs: [TEST_REPORT_FILENAME, ...(measured ? [COVERAGE_REPORT_FILENAME] : [])] });
+  return new BuildAction(
+    JAVA_TEST_STEP,
+    { staged },
+    { argv, outputs: [TEST_REPORT_FILENAME, ...(measured ? [COVERAGE_REPORT_FILENAME] : [])] }
+  );
 }

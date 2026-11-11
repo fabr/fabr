@@ -234,7 +234,9 @@ export class NodeDistribution implements Repository, RepositoryReader<SemverVers
     }
     return this.publishedVersions(false).then(versions => {
       const found = lowestSatisfying(versions, parsed);
-      return found ? Computable.resolve<SemverVersion | undefined>(found) : this.publishedVersions(true).then(revalidated => lowestSatisfying(revalidated, parsed));
+      return found
+        ? Computable.resolve<SemverVersion | undefined>(found)
+        : this.publishedVersions(true).then(revalidated => lowestSatisfying(revalidated, parsed));
     });
   }
 
@@ -351,7 +353,6 @@ export class NodeDistribution implements Repository, RepositoryReader<SemverVers
 function createRepository(context: TargetContext): Computable<Repository> {
   return context.getRequiredString("url").then(url => new NodeDistribution(context, url.replace(/\/+$/, "")));
 }
-
 
 /** The implementation JS.fabr's `repository` declaration names. */
 export default { provider: createRepository } satisfies RepositoryImplementation;

@@ -835,7 +835,12 @@ export class BuildCache {
    * yet refetched it this run. A transient failure to fetch serves the held
    * record, saying so against `resource`.
    */
-  public getOrFetchSecret(cacheKey: string, tag: string, resource: string, fetch: () => Computable<ISecretRecord>): Computable<ISecretRecord> {
+  public getOrFetchSecret(
+    cacheKey: string,
+    tag: string,
+    resource: string,
+    fetch: () => Computable<ISecretRecord>
+  ): Computable<ISecretRecord> {
     const key = hashString(`secret:${tag} ${cacheKey}`);
     const running = this.inflightSecrets.get(key);
     if (running) {
@@ -1266,7 +1271,8 @@ export class BuildCache {
           /* A step that reports nothing read is taken as having read all of
            * them, which is the selection mentioning no input: every input then
            * keys whole, and the lookup reconstructs that key with no record. */
-          const narrowed = discoverable === undefined ? undefined : narrowDeps(discoverable, selection ?? new Map(), action?.sourcePathInputs);
+          const narrowed =
+            discoverable === undefined ? undefined : narrowDeps(discoverable, selection ?? new Map(), action?.sourcePathInputs);
           const entryKey = narrowed === undefined ? key : hashString(preciseActionKey(key, narrowed));
           /* The base is what the key was just made of, from the same bag the
            * key's own serialization walks — so the record and the key cannot
@@ -1274,7 +1280,9 @@ export class BuildCache {
            * non-discoverable inputs' rows) and what was ACCESSED (the rows and
            * absences the discoverable deps narrow to). */
           const inputs =
-            action?.trackChangedFiles !== true ? undefined : recordedInputs(action.inputs, Object.keys(discoverable ?? {}), action.sourcePathInputs);
+            action?.trackChangedFiles !== true
+              ? undefined
+              : recordedInputs(action.inputs, Object.keys(discoverable ?? {}), action.sourcePathInputs);
           const discovered = inputs === undefined ? undefined : recordedDiscovered(narrowed);
           /* Entry first, records second, and only for a run that produced one: a
            * red run commits nothing and records nothing, which is what keeps
@@ -1543,7 +1551,9 @@ export class BuildCache {
             ? {}
             : {
                 inputs: this.rowsAsFiles(inputs.rows),
-                inputSourcePaths: new Map(inputs.rows.flatMap(row => (row.extra === undefined ? [] : [[row.name, decodeName(row.extra)]]))),
+                inputSourcePaths: new Map(
+                  inputs.rows.flatMap(row => (row.extra === undefined ? [] : [[row.name, decodeName(row.extra)]]))
+                ),
                 discovered: { files: this.rowsAsFiles(discovered.rows), absent: discovered.absent },
               }),
           incrementalState,
@@ -1558,9 +1568,7 @@ export class BuildCache {
    * in uningested and their blobs are not checked. */
   private rowsAsFiles(rows: ReadonlyArray<IManifestRow>): FileSet {
     return new FileSet(
-      new Map(
-        rows.map(row => [row.name, new BuildFile(this.blobRoot, row.hash, row.name, row.mode, "")])
-      ),
+      new Map(rows.map(row => [row.name, new BuildFile(this.blobRoot, row.hash, row.name, row.mode, "")])),
       undefined,
       CANONICAL
     );
@@ -2789,7 +2797,6 @@ function isTransientFetchError(err: unknown): boolean {
   return false;
 }
 
-
 class BuildFile implements IFile {
   private readonly root: string;
   public name: string;
@@ -2957,7 +2964,11 @@ function isProcessAlive(pid: number): boolean {
  * run tried to ACCESS — and a loose member's rows landing here would read as
  * staged names that are never staged, i.e. as a deletion every build.
  */
-function recordedInputs(inputs: ActionFileInputs, discoverable: ReadonlyArray<string>, sourcePathInputs: ReadonlyArray<string>): string {
+function recordedInputs(
+  inputs: ActionFileInputs,
+  discoverable: ReadonlyArray<string>,
+  sourcePathInputs: ReadonlyArray<string>
+): string {
   const excluded = new Set(discoverable);
   return Object.keys(inputs)
     .sort()
@@ -3053,9 +3064,7 @@ function diffBuildState(
   }
   /* The discovered half, judged against the delivery that arrived. */
   const members =
-    discoverable === undefined
-      ? []
-      : Object.values(discoverable).flatMap(value => (Array.isArray(value) ? value : [value]));
+    discoverable === undefined ? [] : Object.values(discoverable).flatMap(value => (Array.isArray(value) ? value : [value]));
   for (const [name, was] of baseDiscovered.files) {
     const resolved = resolvePackagePath(members, splitDepsPath(name));
     if (resolved === undefined) {
@@ -3154,20 +3163,15 @@ function everythingPaths(members: ReadonlyArray<FileSet>): DepsPath[] {
  * decided a recorded path (a fallback-pool answer, an alias) were converted
  * to this form by the REPORTER — the cache replays, it never resolves.
  */
-function resolvePackagePath(
-  members: ReadonlyArray<FileSet>,
-  path: DepsPath
-): { file: IFile; holder: FileSet } | undefined {
+function resolvePackagePath(members: ReadonlyArray<FileSet>, path: DepsPath): { file: IFile; holder: FileSet } | undefined {
   const leaf = path.at(-1)!;
   const holder =
     path.length === 1
       ? members.find(member => member.name === "" && member.getFile(leaf) !== undefined)
-      : path
-          .slice(1, -1)
-          .reduce<FileSet | undefined>(
-            (prev, file) => (prev instanceof PackageFileSet ? prev.getDependency(file)?.package : undefined),
-            members.find(child => child.name === path[0])
-          );
+      : path.slice(1, -1).reduce<FileSet | undefined>(
+          (prev, file) => (prev instanceof PackageFileSet ? prev.getDependency(file)?.package : undefined),
+          members.find(child => child.name === path[0])
+        );
   const file = holder instanceof FileSet ? holder.getFile(leaf) : undefined;
   return file === undefined ? undefined : { file, holder: holder as FileSet };
 }

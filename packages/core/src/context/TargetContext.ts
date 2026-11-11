@@ -165,7 +165,11 @@ export abstract class TargetContext {
    * {@link getFileProperty} as a requirement is the files of what the
    * property names, and nothing more.
    */
-  public getPackageProperty(name: string, overrides?: Constraints, format?: PackageFormat<unknown, unknown>): Computable<PackageSources> {
+  public getPackageProperty(
+    name: string,
+    overrides?: Constraints,
+    format?: PackageFormat<unknown, unknown>
+  ): Computable<PackageSources> {
     const schema = this.targetDef.properties.get(name) ?? this.targetDef.properties.get("*");
     if (schema !== undefined && schema.type !== PropertyType.Packages) {
       return Computable.reject(
@@ -475,8 +479,16 @@ export abstract class TargetContext {
    * `url` with `fetch` (see BuildCache.getOrFetchSecret), the fetch reported
    * as a task as {@link fetch} reports one.
    */
-  public fetchSecret(cacheKey: string, tag: string, url: string, fetch: () => Computable<ISecretRecord>, report: IFetchReport): Computable<ISecretRecord> {
-    return this.context.execution.buildCache.getOrFetchSecret(cacheKey, tag, url, () => this.runTask({ kind: "fetch", url, ...report }, () => fetch()));
+  public fetchSecret(
+    cacheKey: string,
+    tag: string,
+    url: string,
+    fetch: () => Computable<ISecretRecord>,
+    report: IFetchReport
+  ): Computable<ISecretRecord> {
+    return this.context.execution.buildCache.getOrFetchSecret(cacheKey, tag, url, () =>
+      this.runTask({ kind: "fetch", url, ...report }, () => fetch())
+    );
   }
 
   public getFlags(name: string, overrides?: Constraints): Computable<Flag[]> {
@@ -494,7 +506,9 @@ export abstract class TargetContext {
    * requirement contained and wants the files it selects after all.
    */
   public applyProjections(sources: ReadonlyArray<FileSet | FileSetRef>): Computable<FileSet[]> {
-    return this.context.applyProjections(sources).then(applied => applied.filter((source): source is FileSet => source instanceof FileSet));
+    return this.context
+      .applyProjections(sources)
+      .then(applied => applied.filter((source): source is FileSet => source instanceof FileSet));
   }
 
   /**
@@ -635,8 +649,14 @@ export abstract class TargetContext {
 
   /** Get `runnable` launched through the runnable the global `interpreter`
    *  names, given `interpreterArgs` before the entry. */
-  public launchedBy(runnable: RunnableFileSet, interpreter: string, interpreterArgs?: readonly RunnableArgument[]): Computable<RunnableFileSet> {
-    return this.getGlobalRunnable(interpreter).then(launcher => runnable.launchedBy(launcher, this.execution.buildCache, interpreterArgs));
+  public launchedBy(
+    runnable: RunnableFileSet,
+    interpreter: string,
+    interpreterArgs?: readonly RunnableArgument[]
+  ): Computable<RunnableFileSet> {
+    return this.getGlobalRunnable(interpreter).then(launcher =>
+      runnable.launchedBy(launcher, this.execution.buildCache, interpreterArgs)
+    );
   }
 }
 
@@ -730,7 +750,10 @@ export class DeclaredTargetContext extends TargetContext {
 
   public getPropertyNames(): Computable<string[]> {
     return this.getBody().then(body =>
-      withDefaults([...body.written.keys(), ...body.spliced.keys()].filter(name => name !== "*" && this.targetDef.properties.has(name)), this.targetDef)
+      withDefaults(
+        [...body.written.keys(), ...body.spliced.keys()].filter(name => name !== "*" && this.targetDef.properties.has(name)),
+        this.targetDef
+      )
     );
   }
 
@@ -803,7 +826,12 @@ export class DeclaredTargetContext extends TargetContext {
    * sited where it was written. The framework's own: a rule reads its target's
    * properties through the readers.
    */
-  public aliasedFiles(name: string, reader: Constraints, alias: Constraints | undefined, stack?: IDependencyStack): Computable<SourceRef[]> {
+  public aliasedFiles(
+    name: string,
+    reader: Constraints,
+    alias: Constraints | undefined,
+    stack?: IDependencyStack
+  ): Computable<SourceRef[]> {
     return this.aliasedDecls(name, alias, stack).then(({ decls, context }) => {
       const at = context.inConfiguration(reader.with(alias));
       return Computable.forAll(
@@ -825,7 +853,10 @@ export class DeclaredTargetContext extends TargetContext {
     alias: Constraints | undefined,
     stack?: IDependencyStack
   ): Computable<{ prop?: IPropertyDecl; context: InternalBuildContext }> {
-    return this.aliasedDecls(name, alias, stack).then(({ decls, context }) => ({ prop: soleDecl(decls), context: context.inConfiguration(reader.with(alias)) }));
+    return this.aliasedDecls(name, alias, stack).then(({ decls, context }) => ({
+      prop: soleDecl(decls),
+      context: context.inConfiguration(reader.with(alias)),
+    }));
   }
 
   /** Resolve this target in the configuration of `constraints`, as a reference to it written in a rule's block does. */
@@ -845,14 +876,20 @@ export class DeclaredTargetContext extends TargetContext {
   }
 
   /** Get the declarations of `name` that apply under `alias`, their values substituted there, with the configuration they are looked up in. */
-  private aliasedDecls(name: string, alias: Constraints | undefined, stack?: IDependencyStack): Computable<{ decls: IPropertyDecl[]; context: InternalBuildContext }> {
+  private aliasedDecls(
+    name: string,
+    alias: Constraints | undefined,
+    stack?: IDependencyStack
+  ): Computable<{ decls: IPropertyDecl[]; context: InternalBuildContext }> {
     return this.availableFor(name, alias).then(({ decls, context }) => {
       const at = context.getContextWithOverrides(alias);
       return Computable.forAll(
         decls.map(decl =>
           Computable.forAll(
             decl.values.map(value =>
-              isNameValue(value) ? at.substituteName(value, stack).then((substituted): IValue => ({ ...value, value: substituted })) : Computable.resolve(value)
+              isNameValue(value)
+                ? at.substituteName(value, stack).then((substituted): IValue => ({ ...value, value: substituted }))
+                : Computable.resolve(value)
             ),
             (...values: IValue[]): IPropertyDecl => ({ ...decl, values })
           )
@@ -872,7 +909,11 @@ export class DeclaredTargetContext extends TargetContext {
     return this.getBody().then(body =>
       Computable.forAll(
         [
-          this.context.lookupWildcardProperties([...body.written].filter(([key]) => member(key)).flatMap(([, decls]) => decls), this.stack, overrides),
+          this.context.lookupWildcardProperties(
+            [...body.written].filter(([key]) => member(key)).flatMap(([, decls]) => decls),
+            this.stack,
+            overrides
+          ),
           ...[...body.spliced]
             .filter(([key]) => member(key))
             .map(([, entry]) => entry.context.lookupWildcardProperties([entry.decl], this.stack, overrides)),
@@ -1115,7 +1156,8 @@ export class ScopedTargetContext extends DeclaredTargetContext {
 
   public get scopedName(): string {
     const { matched } = this.scope;
-    const owner = matched instanceof DeclaredTargetContext ? matched.scopedName : `${matched.name}/${matched.taskDescription().label ?? ""}`;
+    const owner =
+      matched instanceof DeclaredTargetContext ? matched.scopedName : `${matched.name}/${matched.taskDescription().label ?? ""}`;
     return `${owner}/${this.label}`;
   }
 
@@ -1132,7 +1174,13 @@ export class ScopedTargetContext extends DeclaredTargetContext {
     /* Described as the target it is built for, with its own name: its verb is
      * its operation's, as any target's is. */
     const { kind, target, requiredBy, subtargetNames } = this.scope.matched.taskDescription();
-    return { kind, target, requiredBy, constraints: this.context.getConstraints(), subtargetNames: [this.label, ...(subtargetNames ?? [])] };
+    return {
+      kind,
+      target,
+      requiredBy,
+      constraints: this.context.getConstraints(),
+      subtargetNames: [this.label, ...(subtargetNames ?? [])],
+    };
   }
 }
 
@@ -1144,7 +1192,7 @@ export class ScopedTargetContext extends DeclaredTargetContext {
  */
 export function enclosingRules(context: TargetContext): RuleBlockDefinition[] {
   const rules: RuleBlockDefinition[] = [];
-  for (let at: TargetContext | undefined = context; at !== undefined; ) {
+  for (let at: TargetContext | undefined = context; at !== undefined;) {
     if (at instanceof ScopedTargetContext) {
       rules.push(at.scope.rule);
       at = at.scope.matched;
@@ -1211,7 +1259,9 @@ function publishRefIn(
 
 /** @return `names`, with those of the properties `targetDef` gives a default added. */
 function withDefaults(names: string[], targetDef: ITargetDefDecl): string[] {
-  return [...new Set([...names, ...[...targetDef.properties].filter(([, schema]) => schema.default !== undefined).map(([name]) => name)])];
+  return [
+    ...new Set([...names, ...[...targetDef.properties].filter(([, schema]) => schema.default !== undefined).map(([name]) => name)]),
+  ];
 }
 
 /** A target's body as spliced, by property name. */

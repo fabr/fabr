@@ -112,7 +112,6 @@ export function writeBackCandidates(sources: ReadonlyArray<SourceRef>): IWriteBa
   return sources.flatMap(source => (source instanceof WriteBackFileSet ? [...source.candidates] : []));
 }
 
-
 /**
  * What a write-back does to the tree, told to whoever owns it.
  *
@@ -185,7 +184,6 @@ function missingAncestors(dir: string, realRoot: string): string[] {
   }
   return missing;
 }
-
 
 /**
  * @return the path within the tree whose real path is `realRoot` that

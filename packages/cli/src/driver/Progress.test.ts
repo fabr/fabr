@@ -33,7 +33,7 @@ import { IPaneContent, TerminalStream } from "./Terminal";
 
 /* The reporter reads only a decl's name, so a partial stub suffices (hence the
  * cast — the AST decl type isn't constructible from here). */
-const target = (name: string): ITargetDecl => ({ name } as unknown as ITargetDecl);
+const target = (name: string): ITargetDecl => ({ name }) as unknown as ITargetDecl;
 
 function building(name: string, label?: string, subtargetNames?: string[]): ITargetBuildTask {
   return {
@@ -131,10 +131,7 @@ describe("ProgressReporter", () => {
       state: "running",
       task: { kind: "fetch", url: "https://example.test/x.tgz", resource: "package", role: "content" },
     });
-    expect(lines).to.deep.equal([
-      "info:Resolving //app dependencies from @npm",
-      "info:Fetching package https://example.test/x.tgz",
-    ]);
+    expect(lines).to.deep.equal(["info:Resolving //app dependencies from @npm", "info:Fetching package https://example.test/x.tgz"]);
   });
 
   it("times a task by how long it ran, and reports a long wait for a slot beside it", () => {
@@ -199,7 +196,11 @@ describe("ProgressReporter", () => {
     send(reporter, { kind: "cycle-start", cycle: 1 });
     tick(300);
     send(reporter, { kind: "cycle-end", cycle: 1, failed: false, built: [] });
-    expect(lines).to.deep.equal(["info:Built app, lib (2.4s)", "info:Changes detected, rebuilding", "info:Already up to date (300ms)"]);
+    expect(lines).to.deep.equal([
+      "info:Built app, lib (2.4s)",
+      "info:Changes detected, rebuilding",
+      "info:Already up to date (300ms)",
+    ]);
   });
 
   it("renders no marker for a failed cycle — the error path reports the failure", () => {
@@ -341,7 +342,13 @@ describe("ProgressReporter", () => {
       const { reporter, rows } = paned();
       const task: TaskDescription = { kind: "fetch", url: "https://example.test/x.tgz", resource: "package", role: "content" };
       send(reporter, { kind: "task-start", id: 1, task, state: "running" });
-      send(reporter, { kind: "task-progress", id: 1, task, state: "running", progress: { measure: "bytes", done: 4_200_000, total: 12_000_000 } });
+      send(reporter, {
+        kind: "task-progress",
+        id: 1,
+        task,
+        state: "running",
+        progress: { measure: "bytes", done: 4_200_000, total: 12_000_000 },
+      });
       expect(rows()).to.deep.equal(["  Fetching package https://example.test/x.tgz|[███▌      ] 35% of 12.0 MB  0ms"]);
     });
 

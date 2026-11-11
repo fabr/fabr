@@ -45,7 +45,9 @@ describe("MavenAuth", () => {
     process.env.FABR_TEST_MAVEN_PASSWORD = "s3cret";
     try {
       const auth = new MavenAuth(parseMavenSettings(SETTINGS, "settings.xml"));
-      expect(auth.headersFor("corp")).to.deep.equal(new Map([["authorization", `Basic ${Buffer.from("deploy:s3cret").toString("base64")}`]]));
+      expect(auth.headersFor("corp")).to.deep.equal(
+        new Map([["authorization", `Basic ${Buffer.from("deploy:s3cret").toString("base64")}`]])
+      );
     } finally {
       delete process.env.FABR_TEST_MAVEN_PASSWORD;
     }

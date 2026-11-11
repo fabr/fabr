@@ -37,9 +37,7 @@ function validationErrors(source: string): string[] {
 describe("validateTarget (targetdef schema)", () => {
   it("a wildcard-only targetdef admits any key, named or reference", () => {
     /* `* = FILES` types every member; nothing is 'unrecognized'. */
-    const errors = validationErrors(
-      "targetdef sync { * = FILES; }\n" + "sync s { anything = a; @npm:pkg:1.0 = b; }\n"
-    );
+    const errors = validationErrors("targetdef sync { * = FILES; }\n" + "sync s { anything = a; @npm:pkg:1.0 = b; }\n");
     expect(errors).to.deep.equal([]);
   });
 
@@ -54,17 +52,13 @@ describe("validateTarget (targetdef schema)", () => {
 
   it("a REQUIRED named property is still enforced when a wildcard is present", () => {
     /* The wildcard admits extra keys but does not satisfy a REQUIRED named one. */
-    const errors = validationErrors(
-      "targetdef sync { registry = STRING REQUIRED; * = FILES; }\n" + "sync s { @npm:pkg:1.0 = b; }\n"
-    );
+    const errors = validationErrors("targetdef sync { registry = STRING REQUIRED; * = FILES; }\n" + "sync s { @npm:pkg:1.0 = b; }\n");
     expect(errors).to.have.lengthOf(1);
     expect(errors[0]).to.match(/Missing required property 'registry'/);
   });
 
   it("still detects a duplicate named property alongside a wildcard", () => {
-    const errors = validationErrors(
-      "targetdef sync { registry = STRING; * = FILES; }\n" + "sync s { registry = a; registry = b; }\n"
-    );
+    const errors = validationErrors("targetdef sync { registry = STRING; * = FILES; }\n" + "sync s { registry = a; registry = b; }\n");
     expect(errors).to.have.lengthOf(1);
     expect(errors[0]).to.match(/Duplicate property 'registry'/);
   });
@@ -73,9 +67,7 @@ describe("validateTarget (targetdef schema)", () => {
     /* `out` is REWRITE, `*` is FILES. A bare glob value is illegal for REWRITE but
      * fine for FILES — so an error proves `out` is typed by its named entry
      * (named-first `?? wildcard`), while a wildcard member accepts the same glob. */
-    const errors = validationErrors(
-      "targetdef mix { out = REWRITE; * = FILES; }\n" + "mix m { out = *.js; member = *.js; }\n"
-    );
+    const errors = validationErrors("targetdef mix { out = REWRITE; * = FILES; }\n" + "mix m { out = *.js; member = *.js; }\n");
     expect(errors).to.have.lengthOf(1);
     expect(errors[0]).to.match(/bare REWRITE value must be a literal constant/);
   });
@@ -235,9 +227,7 @@ describe("default targets", () => {
   });
 
   it("reports a duplicate declaration of the same default target", () => {
-    const errors = validationErrors(
-      "targetdef t { srcs = FILES; }\n" + "default t x { srcs = a; }\n" + "default t x { srcs = b; }\n"
-    );
+    const errors = validationErrors("targetdef t { srcs = FILES; }\n" + "default t x { srcs = a; }\n" + "default t x { srcs = b; }\n");
     expect(errors).to.have.lengthOf(1);
     expect(errors[0]).to.match(/Duplicate declaration of target 'x'/);
   });

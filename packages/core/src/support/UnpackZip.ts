@@ -45,7 +45,9 @@ const S_IFLNK = 0o120000;
 const ZIP_OPTIONS = { lazyEntries: true, autoClose: true, validateEntrySizes: true };
 
 function zipError(err: unknown, entry?: yauzl.Entry): Error {
-  return new FabrError(`${entry === undefined ? "ZIP archive" : `ZIP entry '${entry.fileName}'`} cannot be read: ${toError(err).message}`);
+  return new FabrError(
+    `${entry === undefined ? "ZIP archive" : `ZIP entry '${entry.fileName}'`} cannot be read: ${toError(err).message}`
+  );
 }
 
 /** Open a zip archive: by path where it is on disk, else from memory. */
@@ -56,7 +58,11 @@ function openZip(archive: IFile): Computable<yauzl.ZipFile> {
   if (path !== undefined) {
     return Computable.from<yauzl.ZipFile>((resolve, reject) => yauzl.open(path, ZIP_OPTIONS, opened(resolve, reject)));
   }
-  return archive.getBuffer().then(buffer => Computable.from<yauzl.ZipFile>((resolve, reject) => yauzl.fromBuffer(buffer, ZIP_OPTIONS, opened(resolve, reject))));
+  return archive
+    .getBuffer()
+    .then(buffer =>
+      Computable.from<yauzl.ZipFile>((resolve, reject) => yauzl.fromBuffer(buffer, ZIP_OPTIONS, opened(resolve, reject)))
+    );
 }
 
 /**
@@ -112,7 +118,12 @@ function corrupt(entry: yauzl.Entry): Error {
 
 /** Write one entry to an output of its own, checked against its CRC-32: a
  *  symlink as the {@link SymlinkFile} its content names. */
-function writeEntry(entry: yauzl.Entry, name: string, stream: Readable, createOutput: () => IOutputHandle): Computable<[string, IFile]> {
+function writeEntry(
+  entry: yauzl.Entry,
+  name: string,
+  stream: Readable,
+  createOutput: () => IOutputHandle
+): Computable<[string, IFile]> {
   const mode = unixModeOf(entry);
   if ((mode & S_IFMT) === S_IFLNK) {
     return readStream(stream).then(target => {
@@ -138,7 +149,7 @@ function writeEntry(entry: yauzl.Entry, name: string, stream: Readable, createOu
       if (crc !== entry.crc32) {
         fail(corrupt(entry));
       } else {
-        output.finalize(name, (mode & 0o7777) || 0o644).then(file => resolve([name, file]), fail);
+        output.finalize(name, mode & 0o7777 || 0o644).then(file => resolve([name, file]), fail);
       }
     });
     stream.pipe(output.stream, { end: false });
@@ -151,7 +162,13 @@ function writeEntry(entry: yauzl.Entry, name: string, stream: Readable, createOu
  */
 export function unzipFile(archive: IFile, createOutput: () => IOutputHandle): Computable<FileSet> {
   return openZip(archive)
-    .then(zip => readEntries(zip, () => true, (entry, name, stream) => writeEntry(entry, name, stream, createOutput)))
+    .then(zip =>
+      readEntries(
+        zip,
+        () => true,
+        (entry, name, stream) => writeEntry(entry, name, stream, createOutput)
+      )
+    )
     .then(files => new FileSet(new Map(files)));
 }
 
@@ -193,7 +210,9 @@ export function extractZip(createOutput: () => IOutputHandle): { sink: Writable;
  */
 export function readZipMembers(zip: Buffer, select: (name: string) => boolean): Computable<Map<string, Buffer>> {
   return openZip(new MemoryFile(zip))
-    .then(opened => readEntries(opened, select, (entry, entryName, stream) => writeEntry(entry, entryName, stream, () => new MemoryOutput())))
+    .then(opened =>
+      readEntries(opened, select, (entry, entryName, stream) => writeEntry(entry, entryName, stream, () => new MemoryOutput()))
+    )
     .then(members =>
       Computable.forAll(
         members.map(([name, output]) => output.getBuffer().then((buffer): [string, Buffer] => [name, buffer])),

@@ -97,7 +97,9 @@ function strippedName(written: string | undefined, what: string, strip: number):
   const parts = written.split("/").filter(part => part !== "" && part !== ".");
   const kept = parts.slice(strip);
   if (kept.length === 0) {
-    throw new FabrError(`${what} names '${written}', which has no path left after stripping ${strip} leading component${strip === 1 ? "" : "s"}`);
+    throw new FabrError(
+      `${what} names '${written}', which has no path left after stripping ${strip} leading component${strip === 1 ? "" : "s"}`
+    );
   }
   if (written.startsWith("/") || kept.includes("..")) {
     throw new FabrError(`${what} names '${written}', which is outside the files it applies to`);

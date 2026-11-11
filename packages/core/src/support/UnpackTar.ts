@@ -49,7 +49,10 @@ export function extractTar(createOutput: () => IOutputHandle): { sink: Writable;
   const byName = new Map<string, Computable<IFile>>();
   const emit = (name: string, file: Computable<[string, IFile]>): void => {
     files.push(file);
-    byName.set(name, file.then(([, f]) => f));
+    byName.set(
+      name,
+      file.then(([, f]) => f)
+    );
   };
   extract.on("entry", (headers, entry, next) => {
     entry.on("end", () => next());
@@ -73,7 +76,10 @@ export function extractTar(createOutput: () => IOutputHandle): { sink: Writable;
        * drops the link too. */
       const target = byName.get(normalizeEntryName(headers.linkname) ?? "");
       if (target) {
-        emit(name, target.then(f => [name, f]));
+        emit(
+          name,
+          target.then(f => [name, f])
+        );
       }
       entry.resume();
     } else {

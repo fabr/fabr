@@ -59,7 +59,6 @@ const BODY_TIMEOUT_MS = 120_000;
  */
 const MAX_CONNECTIONS_PER_ORIGIN = 15;
 
-
 /**
  * Requests in flight per origin, by role, whatever protocol the origin speaks:
  * further requests queue until one ends. The socket limit above does not bound
@@ -183,7 +182,12 @@ export function sendRequest(urlstring: string, request: HttpRequest): Computable
 }
 
 /** Send {@link sendRequest}'s request with `headers`, as they stand. */
-function send(urlstring: string, method: string, headers: Record<string, string> | undefined, body: HttpRequest["body"]): Computable<HttpResponse> {
+function send(
+  urlstring: string,
+  method: string,
+  headers: Record<string, string> | undefined,
+  body: HttpRequest["body"]
+): Computable<HttpResponse> {
   return Computable.from<HttpResponse>((resolve, reject) => {
     const unsupported = unsupportedProtocol(urlstring);
     if (unsupported) {
@@ -303,7 +307,14 @@ export function openUrlStream(
   /** What signs the request in, asked again with the challenge where the server answers 401 (see {@link withCredential}). */
   credential?: Credential
 ): Computable<UrlStreamResponse> {
-  return withCredential(credential, "GET", urlstring, headers, signed => streamUrl(urlstring, signed, now, role, digestHeader), () => undefined);
+  return withCredential(
+    credential,
+    "GET",
+    urlstring,
+    headers,
+    signed => streamUrl(urlstring, signed, now, role, digestHeader),
+    () => undefined
+  );
 }
 
 /** Send {@link openUrlStream}'s GET with `headers`, as they stand. */
@@ -314,8 +325,7 @@ function streamUrl(
   role: FetchRole,
   digestHeader: string | undefined
 ): Computable<UrlStreamResponse> {
-  const conditional =
-    headers !== undefined && Object.keys(headers).some(name => /^if-(none-match|modified-since)$/i.test(name));
+  const conditional = headers !== undefined && Object.keys(headers).some(name => /^if-(none-match|modified-since)$/i.test(name));
   return Computable.from<UrlStreamResponse>((resolve, reject) => {
     const unsupported = unsupportedProtocol(urlstring);
     if (unsupported) {
@@ -375,7 +385,10 @@ function withCredential<T>(
     return send(headers);
   }
   const head: IRequestHead = { method, url, headers: new Map(Object.entries(headers ?? {})) };
-  const withAdded = (added: ReadonlyMap<string, string> | undefined): Record<string, string> => ({ ...headers, ...Object.fromEntries(added ?? []) });
+  const withAdded = (added: ReadonlyMap<string, string> | undefined): Record<string, string> => ({
+    ...headers,
+    ...Object.fromEntries(added ?? []),
+  });
   const answer = (challenges: readonly string[], standing: () => Computable<T>): Computable<T> =>
     credential.authorize(head, { challenges }).then(added => (added === undefined ? standing() : send(withAdded(added))));
   return credential.authorize(head).then(added =>
@@ -419,7 +432,14 @@ export function headUrl(
   /** What signs the request in, asked again with the challenge where the server answers 401 (see {@link withCredential}). */
   credential?: Credential
 ): Computable<ICacheControl> {
-  return withCredential(credential, "HEAD", urlstring, headers, signed => headOf(urlstring, signed, digestHeader, now, role), () => undefined);
+  return withCredential(
+    credential,
+    "HEAD",
+    urlstring,
+    headers,
+    signed => headOf(urlstring, signed, digestHeader, now, role),
+    () => undefined
+  );
 }
 
 /** Send {@link headUrl}'s HEAD with `headers`, as they stand. */

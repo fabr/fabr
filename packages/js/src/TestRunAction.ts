@@ -100,7 +100,9 @@ function stageTests(action: BuildAction, dir: string, ensureTree: (files: FileSe
   const argv = toArgv(commandLineConfig(action, "argv"));
   return Computable.forAll([testFilesOf(action), stageInstall(action, dir, ensureTree, work => work())], testFiles => ({
     cwd: COMPILE_OUT_DIR,
-    commands: testFiles.map((file, index) => ({ stages: [{ argv: [findExecutable(argv[0], join(dir, COMPILE_OUT_DIR)), ...invocationOf(argv, file, index)] }] })),
+    commands: testFiles.map((file, index) => ({
+      stages: [{ argv: [findExecutable(argv[0], join(dir, COMPILE_OUT_DIR)), ...invocationOf(argv, file, index)] }],
+    })),
     env: new Map(Object.entries(declaredEnv(action))),
   }));
 }
@@ -157,39 +159,57 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
   const outputs = stringListConfig(action, "outputs");
   const declared = declaredEnv(action);
   const measured = Array.isArray(action.config.coverage_argv)
-    ? measuredFilesOf(action).then(files => new TestCoverage(ctx, report, toArgv(commandLineConfig(action, "coverage_argv")), declared, files))
+    ? measuredFilesOf(action).then(
+        files => new TestCoverage(ctx, report, toArgv(commandLineConfig(action, "coverage_argv")), declared, files)
+      )
     : Computable.resolve(undefined);
   /* Tests run with only the environment their target declares (no ambient vars
    * that could alter their output); a test that must spawn a tool references it
    * by an absolute path (e.g. process.execPath), which needs no PATH. The argv's leading command
    * (the runner's interpreter) is PATH-resolved here, at run time. */
-  return Computable.forAll([testFilesOf(action), ctx.changedFiles(), ctx.incrementalState().then(keptRunsOf), measured], (testFiles, changes, kept, coverage) => {
-    const { rerun, reused } = filesToRun(testFiles, changes, kept, coverage !== undefined);
-    return stageInstall(action, workDir, tree => ctx.ensureTree(tree), work => ctx.admit(report, work))
-      .then(layout => {
-        /* Each file's outcome is tallied as its invocation ends, from the
-         * report it wrote. */
-        const tally = new RunTally(rerun.length, report.progress);
-        return Computable.forAll(
-          /* All issued at once: each execution queues on the funnel, which is
-           * what schedules the files — against each other and against every
-           * other execution in the build. A red file must not abort its
-           * siblings (the report must be complete), so an invocation NEVER
-           * rejects here; its outcome is judged as data below. */
-          rerun.map(file => {
-            const index = testFiles.indexOf(file);
-            return runOneFile(ctx, report, argv, coverage?.environmentOf(index) ?? declared, file, index, layout)
-              .then(run =>
-                coverage === undefined || "error" in run ? run : coverage.lcovOfFile(index).then(lcov => (lcov === undefined ? run : { ...run, coverage: lcov }))
-              )
-              .then(run => tally.add(run));
-          }),
-          (...runs) => concludeRun(workDir, testFiles, runs, reused, report)
+  return Computable.forAll(
+    [testFilesOf(action), ctx.changedFiles(), ctx.incrementalState().then(keptRunsOf), measured],
+    (testFiles, changes, kept, coverage) => {
+      const { rerun, reused } = filesToRun(testFiles, changes, kept, coverage !== undefined);
+      return stageInstall(
+        action,
+        workDir,
+        tree => ctx.ensureTree(tree),
+        work => ctx.admit(report, work)
+      )
+        .then(layout => {
+          /* Each file's outcome is tallied as its invocation ends, from the
+           * report it wrote. */
+          const tally = new RunTally(rerun.length, report.progress);
+          return Computable.forAll(
+            /* All issued at once: each execution queues on the funnel, which is
+             * what schedules the files — against each other and against every
+             * other execution in the build. A red file must not abort its
+             * siblings (the report must be complete), so an invocation NEVER
+             * rejects here; its outcome is judged as data below. */
+            rerun.map(file => {
+              const index = testFiles.indexOf(file);
+              return runOneFile(ctx, report, argv, coverage?.environmentOf(index) ?? declared, file, index, layout)
+                .then(run =>
+                  coverage === undefined || "error" in run
+                    ? run
+                    : coverage.lcovOfFile(index).then(lcov => (lcov === undefined ? run : { ...run, coverage: lcov }))
+                )
+                .then(run => tally.add(run));
+            }),
+            (...runs) => concludeRun(workDir, testFiles, runs, reused, report)
+          );
+        })
+        .then(latest => (coverage === undefined ? Computable.resolve(latest) : coverage.merge(latest).then(() => latest)))
+        .then(latest =>
+          getResultFileSet(workDir, outputs).then(result => ({
+            result,
+            incrementalState: keptStateOf(latest),
+            ...selectionOf(latest),
+          }))
         );
-      })
-      .then(latest => (coverage === undefined ? Computable.resolve(latest) : coverage.merge(latest).then(() => latest)))
-      .then(latest => getResultFileSet(workDir, outputs).then(result => ({ result, incrementalState: keptStateOf(latest), ...selectionOf(latest) })));
-  });
+    }
+  );
 }
 
 /**
@@ -328,14 +348,22 @@ function toKeptRunsDocument(json: unknown): IKeptRunsDocument {
         throw new Error("expected a run's test file");
       }
       const indices = (list: unknown, what: string): number[] | undefined => {
-        if (list !== undefined && (!Array.isArray(list) || list.some(index => typeof index !== "number" || names[index] === undefined))) {
+        if (
+          list !== undefined &&
+          (!Array.isArray(list) || list.some(index => typeof index !== "number" || names[index] === undefined))
+        ) {
           throw new Error(`expected the indices of ${what} ${run.file} read`);
         }
         return list as number[] | undefined;
       };
       const reads = indices(run.reads, "what");
       const deps = indices(run.deps, "the dependency files");
-      return { file: run.file, report: toTestReport(run.report), ...(reads === undefined ? {} : { reads }), ...(deps === undefined ? {} : { deps }) };
+      return {
+        file: run.file,
+        report: toTestReport(run.report),
+        ...(reads === undefined ? {} : { reads }),
+        ...(deps === undefined ? {} : { deps }),
+      };
     }),
   };
 }
@@ -429,7 +457,10 @@ class RunTally {
   private passed = 0;
   private failed = 0;
 
-  constructor(private readonly totalFiles: number, private readonly report?: (progress: TaskProgress) => void) {}
+  constructor(
+    private readonly totalFiles: number,
+    private readonly report?: (progress: TaskProgress) => void
+  ) {}
 
   /** Record one finished invocation, and pass the run through unchanged. */
   public add(run: IFileRun): IFileRun {
@@ -443,7 +474,9 @@ class RunTally {
       totalFiles: this.totalFiles,
       passed: this.passed,
       failed: this.failed,
-      ...(summary === undefined ? {} : { latest: { file: run.file, start: summary.start, stop: summary.stop, passed: summary.passed, failed: summary.failed } }),
+      ...(summary === undefined
+        ? {}
+        : { latest: { file: run.file, start: summary.start, stop: summary.stop, passed: summary.passed, failed: summary.failed } }),
     });
     return run;
   }
@@ -478,7 +511,11 @@ function invocationReads(index: number): string {
  * found a directory within a package (whose presence no file row states); the
  * file is then run again next time and the run is keyed on the whole input.
  */
-export function readsOf(document: string, cwd: string, layout: IPackageLayout): { reads: ReadonlySet<string>; deps: ReadonlySet<string> } | undefined {
+export function readsOf(
+  document: string,
+  cwd: string,
+  layout: IPackageLayout
+): { reads: ReadonlySet<string>; deps: ReadonlySet<string> } | undefined {
   let read: IReadsDocument;
   try {
     read = parseJson(fs.readFileSync(document), document, toReadsDocument);
@@ -548,7 +585,14 @@ function runOneFile(
   const invocation = invocationOf(argv, file, index);
   /* The invocation's output is the step's, shown as any step's is; the
    * report carries the outcomes, and the capture backs the no-report failure. */
-  return execute(ctx.processLimit, findExecutable(argv[0], join(ctx.workDir, COMPILE_OUT_DIR)), invocation, join(ctx.workDir, COMPILE_OUT_DIR), env, taskReport)
+  return execute(
+    ctx.processLimit,
+    findExecutable(argv[0], join(ctx.workDir, COMPILE_OUT_DIR)),
+    invocation,
+    join(ctx.workDir, COMPILE_OUT_DIR),
+    env,
+    taskReport
+  )
     .then(
       () => undefined,
       (err: Error) => err
@@ -598,7 +642,13 @@ function isMissingFile(err: unknown): boolean {
  * Otherwise the reports merge into one, written as {@link TEST_REPORT_FILENAME}
  * red or green; where tests failed, the task is told so.
  */
-function concludeRun(workDir: string, testFiles: string[], runs: IFileRun[], reused: ReadonlyMap<string, IKeptRun>, report: ITaskReport): ILatestRun[] {
+function concludeRun(
+  workDir: string,
+  testFiles: string[],
+  runs: IFileRun[],
+  reused: ReadonlyMap<string, IKeptRun>,
+  report: ITaskReport
+): ILatestRun[] {
   const errors = runs.flatMap(run => ("error" in run ? [run.error] : []));
   if (errors.length > 0) {
     throw MultiError.of(errors);
@@ -640,7 +690,12 @@ function keptRunsDocument(runs: ReadonlyArray<ILatestRun>): string {
     runs: runs.map(run => {
       const reads = indicesOf(run.reads);
       const deps = indicesOf(run.deps);
-      return { file: run.file, report: run.report, ...(reads === undefined ? {} : { reads }), ...(deps === undefined ? {} : { deps }) };
+      return {
+        file: run.file,
+        report: run.report,
+        ...(reads === undefined ? {} : { reads }),
+        ...(deps === undefined ? {} : { deps }),
+      };
     }),
   };
   return JSON.stringify(document);
@@ -687,14 +742,28 @@ export interface ITestRunInputs {
  * @return the action that runs the tests. A generic exec cannot serve: a red
  * run must fail the target while keeping the report.
  */
-export function createTestRunAction({ links = {}, files, packages, layout, self, writable, argv, testFiles, outputs, env, coverage }: ITestRunInputs): BuildAction {
+export function createTestRunAction({
+  links = {},
+  files,
+  packages,
+  layout,
+  self,
+  writable,
+  argv,
+  testFiles,
+  outputs,
+  env,
+  coverage,
+}: ITestRunInputs): BuildAction {
   return new BuildAction(
     JS_TEST_STEP,
     {
       files,
       writable,
       [TEST_FILES_INPUT]: FileSet.layout({ [TEST_FILES_FILE]: MemoryFile.from(JSON.stringify(testFiles)) }),
-      ...(coverage ? { [COVERAGE_INPUT]: FileSet.layout({ [COVERAGE_MEASURED_FILE]: MemoryFile.from(JSON.stringify(coverage.measured)) }) } : {}),
+      ...(coverage
+        ? { [COVERAGE_INPUT]: FileSet.layout({ [COVERAGE_MEASURED_FILE]: MemoryFile.from(JSON.stringify(coverage.measured)) }) }
+        : {}),
     },
     {
       argv,
@@ -710,4 +779,3 @@ export function createTestRunAction({ links = {}, files, packages, layout, self,
     { discoverable: { deps: packages }, trackChangedFiles: true, links }
   );
 }
-

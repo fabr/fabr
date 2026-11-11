@@ -72,7 +72,8 @@ export function shownConstraints(
   ambient: ReadonlySet<string> = AMBIENT_CONSTRAINT_KEYS
 ): Array<[string, string]> {
   return [...constraints].filter(
-    ([key, value]) => !ambient.has(key) && !(key === TARGET && value === constraints.get(HOST)) && !(key === COVERAGE && value === "off")
+    ([key, value]) =>
+      !ambient.has(key) && !(key === TARGET && value === constraints.get(HOST)) && !(key === COVERAGE && value === "off")
   );
 }
 

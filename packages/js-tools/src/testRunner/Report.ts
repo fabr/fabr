@@ -64,9 +64,7 @@ export function reportPathOf(file: string): string {
     const entry = getMapSource(file);
     const reference = entry === undefined ? undefined : referenceOfEntry(entry);
     name =
-      reference !== undefined
-        ? reference.replace(/^\.\//, "")
-        : stripMount(path.relative(installRoot(), sourcePathOf(file) ?? file));
+      reference !== undefined ? reference.replace(/^\.\//, "") : stripMount(path.relative(installRoot(), sourcePathOf(file) ?? file));
     reportPaths.set(file, name);
   }
   return name;
@@ -193,7 +191,12 @@ export function describeSnapshotFailure(cause: Error): IFailureDescription | und
   if (!cause.stack?.includes(SNAPSHOT_FRAME)) {
     return undefined;
   }
-  const { actual, expected, code, cause: reason } = cause as Error & { actual?: unknown; expected?: unknown; code?: string; cause?: { code?: string } };
+  const {
+    actual,
+    expected,
+    code,
+    cause: reason,
+  } = cause as Error & { actual?: unknown; expected?: unknown; code?: string; cause?: { code?: string } };
   if (typeof actual === "string" && typeof expected === "string") {
     return {
       message: "The value does not match its recorded snapshot. Run 'fabr test -u' to record the new value.",

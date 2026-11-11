@@ -67,7 +67,7 @@ export function linkedChildren(links: Links, dir: string): string[] {
  */
 export function installOverlay(target: typeof fs, current: () => Links, masked: (file: string) => boolean = () => false): void {
   const exists = target.existsSync;
-  const redirect = (file: unknown): unknown => (typeof file === "string" ? linkedTarget(current(), file) ?? file : file);
+  const redirect = (file: unknown): unknown => (typeof file === "string" ? (linkedTarget(current(), file) ?? file) : file);
   for (const name of ["readFileSync", "openSync", "existsSync", "statSync", "lstatSync"] as const) {
     const real = target[name] as (...args: unknown[]) => unknown;
     (target as unknown as Record<string, unknown>)[name] = function (this: unknown, file: unknown, ...rest: unknown[]): unknown {
@@ -75,7 +75,12 @@ export function installOverlay(target: typeof fs, current: () => Links, masked: 
         if (name === "existsSync") {
           return false;
         }
-        throw Object.assign(new Error(`ENOENT: no such file or directory, ${name} '${file}'`), { code: "ENOENT", errno: -2, syscall: name, path: file });
+        throw Object.assign(new Error(`ENOENT: no such file or directory, ${name} '${file}'`), {
+          code: "ENOENT",
+          errno: -2,
+          syscall: name,
+          path: file,
+        });
       }
       const redirected = redirect(file);
       if (redirected === file && typeof file === "string" && impliedDirectory(current(), file)) {
@@ -114,7 +119,12 @@ export function installOverlay(target: typeof fs, current: () => Links, masked: 
   /* A linked path's file watches are of its target, so are ended there, and forgotten. */
   const unwatchFile = target.unwatchFile as (...args: unknown[]) => unknown;
   (target as unknown as Record<string, unknown>).unwatchFile = function (this: unknown, file: unknown, listener?: unknown): unknown {
-    const watches = typeof file === "string" ? [...(linkWatchers.get(file) ?? [])].filter(watch => watch.kind === "watchFile" && (listener === undefined || watch.listener === listener)) : [];
+    const watches =
+      typeof file === "string"
+        ? [...(linkWatchers.get(file) ?? [])].filter(
+            watch => watch.kind === "watchFile" && (listener === undefined || watch.listener === listener)
+          )
+        : [];
     if (watches.length === 0) {
       return unwatchFile.call(this, file, listener);
     }
@@ -132,12 +142,14 @@ export function installOverlay(target: typeof fs, current: () => Links, masked: 
     }
     const extra = linkedChildren(current(), dir);
     const name = (entry: string | fs.Dirent): string => (typeof entry === "string" ? entry : entry.name);
-    const unmasked = (entries: Array<string | fs.Dirent>): Array<string | fs.Dirent> => entries.filter(entry => !masked(path.join(dir, name(entry))));
+    const unmasked = (entries: Array<string | fs.Dirent>): Array<string | fs.Dirent> =>
+      entries.filter(entry => !masked(path.join(dir, name(entry))));
     if (extra.length === 0) {
       return unmasked(readdir.call(this, dir, ...rest) as Array<string | fs.Dirent>);
     }
     const options = rest[0];
-    const withTypes = typeof options === "object" && options !== null && (options as { withFileTypes?: boolean }).withFileTypes === true;
+    const withTypes =
+      typeof options === "object" && options !== null && (options as { withFileTypes?: boolean }).withFileTypes === true;
     const real = exists(dir) ? unmasked(readdir.call(this, dir, ...rest) as Array<string | fs.Dirent>) : [];
     const have = new Set(real.map(name));
     const added = extra

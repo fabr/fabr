@@ -26,8 +26,16 @@ describe("splitImageReference", () => {
   it("splits an image's name from its tag and what follows", () => {
     expect(splitImageReference("node", "node")).to.deep.equal({ name: "node" });
     expect(splitImageReference("node:22-bookworm-slim", "x")).to.deep.equal({ name: "node", version: "22-bookworm-slim" });
-    expect(splitImageReference("node:22:etc/os-release", "x")).to.deep.equal({ name: "node", version: "22", rest: { at: 8, separator: ":" } });
-    expect(splitImageReference("node:22/etc/os-release", "x")).to.deep.equal({ name: "node", version: "22", rest: { at: 8, separator: "/" } });
+    expect(splitImageReference("node:22:etc/os-release", "x")).to.deep.equal({
+      name: "node",
+      version: "22",
+      rest: { at: 8, separator: ":" },
+    });
+    expect(splitImageReference("node:22/etc/os-release", "x")).to.deep.equal({
+      name: "node",
+      version: "22",
+      rest: { at: 8, separator: "/" },
+    });
     expect(splitImageReference("myorg/app:1.4", "x")).to.deep.equal({ name: "myorg/app", version: "1.4" });
   });
 
@@ -35,7 +43,11 @@ describe("splitImageReference", () => {
     expect(splitImageReference(`node:${DIGEST}`, "x")).to.deep.equal({ name: "node", version: DIGEST });
     expect(splitImageReference(`node:${DIGEST}:bin/sh`, "x").rest?.separator).to.equal(":");
     /* `sha256` is itself a tag, followed here by what it selects. */
-    expect(splitImageReference("node:sha256:abc", "x")).to.deep.equal({ name: "node", version: "sha256", rest: { at: 12, separator: ":" } });
+    expect(splitImageReference("node:sha256:abc", "x")).to.deep.equal({
+      name: "node",
+      version: "sha256",
+      rest: { at: 12, separator: ":" },
+    });
   });
 
   it("refuses a name or tag the distribution spec does not allow", () => {

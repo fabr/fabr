@@ -156,7 +156,10 @@ export function indexLayer(): { sink: Writable; result: () => ILayerIndex } {
       };
       padding = paddingOf(h.size);
       if (h.type === "file") {
-        body = { remaining: h.size, entry: { header: h, offset: position, hash: createHash(HASH_ALGORITHM), head: [], headLength: 0 } };
+        body = {
+          remaining: h.size,
+          entry: { header: h, offset: position, hash: createHash(HASH_ALGORITHM), head: [], headLength: 0 },
+        };
       } else {
         entries.push(entryOf(h));
         body = { remaining: h.size };
@@ -238,7 +241,9 @@ function entryOf(h: IHeader): ILayerEntry {
     mode: h.mode,
     uid: h.uid,
     gid: h.gid,
-    ...(h.type === "symlink" || h.type === "hardlink" ? { linkname: h.type === "hardlink" ? checkedPath(h.linkname) : h.linkname } : {}),
+    ...(h.type === "symlink" || h.type === "hardlink"
+      ? { linkname: h.type === "hardlink" ? checkedPath(h.linkname) : h.linkname }
+      : {}),
   };
 }
 

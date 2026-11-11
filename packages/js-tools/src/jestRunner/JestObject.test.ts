@@ -32,28 +32,95 @@ import { MockRegistry } from "./Registry";
  * this test failing IS that reminder.
  */
 const JEST_30_SURFACE = [
-  "advanceTimersByTime", "advanceTimersByTimeAsync", "advanceTimersToNextFrame", "advanceTimersToNextTimer",
-  "advanceTimersToNextTimerAsync", "autoMockOff", "autoMockOn", "clearAllMocks", "clearAllTimers",
-  "createMockFromModule", "deepUnmock", "disableAutomock", "doMock", "dontMock", "enableAutomock", "fn",
-  "getRealSystemTime", "getSeed", "getTimerCount", "isEnvironmentTornDown", "isMockFunction", "isolateModules",
-  "isolateModulesAsync", "mock", "mocked", "now", "onGenerateMock", "replaceProperty", "requireActual",
-  "requireMock", "resetAllMocks", "resetModules", "restoreAllMocks", "retryTimes", "runAllImmediates",
-  "runAllTicks", "runAllTimers", "runAllTimersAsync", "runOnlyPendingTimers", "runOnlyPendingTimersAsync",
-  "setMock", "setSystemTime", "setTimeout", "setTimerTickMode", "spyOn", "unmock", "unstable_mockModule",
-  "unstable_unmockModule", "useFakeTimers", "useRealTimers",
+  "advanceTimersByTime",
+  "advanceTimersByTimeAsync",
+  "advanceTimersToNextFrame",
+  "advanceTimersToNextTimer",
+  "advanceTimersToNextTimerAsync",
+  "autoMockOff",
+  "autoMockOn",
+  "clearAllMocks",
+  "clearAllTimers",
+  "createMockFromModule",
+  "deepUnmock",
+  "disableAutomock",
+  "doMock",
+  "dontMock",
+  "enableAutomock",
+  "fn",
+  "getRealSystemTime",
+  "getSeed",
+  "getTimerCount",
+  "isEnvironmentTornDown",
+  "isMockFunction",
+  "isolateModules",
+  "isolateModulesAsync",
+  "mock",
+  "mocked",
+  "now",
+  "onGenerateMock",
+  "replaceProperty",
+  "requireActual",
+  "requireMock",
+  "resetAllMocks",
+  "resetModules",
+  "restoreAllMocks",
+  "retryTimes",
+  "runAllImmediates",
+  "runAllTicks",
+  "runAllTimers",
+  "runAllTimersAsync",
+  "runOnlyPendingTimers",
+  "runOnlyPendingTimersAsync",
+  "setMock",
+  "setSystemTime",
+  "setTimeout",
+  "setTimerTickMode",
+  "spyOn",
+  "unmock",
+  "unstable_mockModule",
+  "unstable_unmockModule",
+  "useFakeTimers",
+  "useRealTimers",
 ];
 
 /* The public methods the backing libraries really have, per release — the input
  * the object is assembled from. `_`-prefixed internals are omitted (numerous
  * and uninteresting); the two members jest 30 added to the timers are what makes
  * 29 and 30 differ. */
-const MOCKER_METHODS = ["generateFromMetadata", "getMetadata", "isMockFunction", "fn", "spyOn", "replaceProperty",
-  "clearAllMocks", "resetAllMocks", "restoreAllMocks", "mocked"];
+const MOCKER_METHODS = [
+  "generateFromMetadata",
+  "getMetadata",
+  "isMockFunction",
+  "fn",
+  "spyOn",
+  "replaceProperty",
+  "clearAllMocks",
+  "resetAllMocks",
+  "restoreAllMocks",
+  "mocked",
+];
 const MOCKER_METHODS_30 = [...MOCKER_METHODS, "clearMocksOnScope"];
-const TIMER_METHODS = ["clearAllTimers", "dispose", "runAllTimers", "runAllTimersAsync", "runOnlyPendingTimers",
-  "runOnlyPendingTimersAsync", "advanceTimersToNextTimer", "advanceTimersToNextTimerAsync", "advanceTimersByTime",
-  "advanceTimersByTimeAsync", "runAllTicks", "useRealTimers", "useFakeTimers", "reset", "setSystemTime",
-  "getRealSystemTime", "now", "getTimerCount"];
+const TIMER_METHODS = [
+  "clearAllTimers",
+  "dispose",
+  "runAllTimers",
+  "runAllTimersAsync",
+  "runOnlyPendingTimers",
+  "runOnlyPendingTimersAsync",
+  "advanceTimersToNextTimer",
+  "advanceTimersToNextTimerAsync",
+  "advanceTimersByTime",
+  "advanceTimersByTimeAsync",
+  "runAllTicks",
+  "useRealTimers",
+  "useFakeTimers",
+  "reset",
+  "setSystemTime",
+  "getRealSystemTime",
+  "now",
+  "getTimerCount",
+];
 const TIMER_METHODS_30 = [...TIMER_METHODS, "advanceTimersToNextFrame", "setTimerTickMode"];
 
 /** Members jest 30 has that jest 29's libraries cannot provide — and which real
@@ -109,7 +176,7 @@ describe("the jest global", () => {
     const jest = jestObject(MOCKER_METHODS_30, TIMER_METHODS_30, calls);
     (jest.advanceTimersByTime as (ms: number) => void)(250);
     (jest.spyOn as (o: unknown, m: unknown) => void)("obj", "method");
-    expect(calls).to.deep.equal(['advanceTimersByTime(250)', 'spyOn("obj","method")']);
+    expect(calls).to.deep.equal(["advanceTimersByTime(250)", 'spyOn("obj","method")']);
   });
 
   it("does not adopt internals or non-API members of the libraries", () => {
@@ -140,9 +207,7 @@ describe("the jest global", () => {
 
   it("makes an unimplemented member throw a fabr message, not 'is not a function'", () => {
     for (const name of ["onGenerateMock", "unstable_mockModule", "runAllImmediates"]) {
-      expect(() => (jestObject()[name] as () => void)(), name).to.throw(
-        /not supported by fabr's jest compatibility layer/
-      );
+      expect(() => (jestObject()[name] as () => void)(), name).to.throw(/not supported by fabr's jest compatibility layer/);
     }
   });
 

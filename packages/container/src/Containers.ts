@@ -65,13 +65,20 @@ const reaped = new Map<string, Computable<void>>();
 export function reapContainers(limit: Semaphore, engine: string, env: Record<string, string>): Computable<void> {
   let done = reaped.get(engine);
   if (done === undefined) {
-    done = executeInternalCapture(limit, engine, ["ps", "-a", "--filter", `name=${PREFIX}`, "--format", "{{.Names}}"], "", env).then(({ status, stdout }) => {
-      const dead = status !== 0 ? [] : stdout.split("\n").filter(name => {
-        const owner = ownerOfContainer(name.trim());
-        return owner !== undefined && isReapable(owner);
-      });
-      return dead.length === 0 ? Computable.resolve(undefined) : executeInternalCapture(limit, engine, ["rm", "-f", ...dead.map(name => name.trim())], "", env).then(() => undefined);
-    });
+    done = executeInternalCapture(limit, engine, ["ps", "-a", "--filter", `name=${PREFIX}`, "--format", "{{.Names}}"], "", env).then(
+      ({ status, stdout }) => {
+        const dead =
+          status !== 0
+            ? []
+            : stdout.split("\n").filter(name => {
+                const owner = ownerOfContainer(name.trim());
+                return owner !== undefined && isReapable(owner);
+              });
+        return dead.length === 0
+          ? Computable.resolve(undefined)
+          : executeInternalCapture(limit, engine, ["rm", "-f", ...dead.map(name => name.trim())], "", env).then(() => undefined);
+      }
+    );
     reaped.set(engine, done);
   }
   return done;

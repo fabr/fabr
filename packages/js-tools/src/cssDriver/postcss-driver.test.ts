@@ -65,8 +65,17 @@ describe("withSourceFirst", () => {
     const found: Array<string | undefined> = [];
     for (let line = 0; line < 4; line++) {
       for (let column = 0; column < 12; column++) {
-        const entry = read.findEntry(line, column) as { originalSource?: string; originalLine?: number; originalColumn?: number; name?: string };
-        found.push(entry.originalSource === undefined ? undefined : `${entry.originalSource}:${entry.originalLine}:${entry.originalColumn}:${entry.name ?? ""}`);
+        const entry = read.findEntry(line, column) as {
+          originalSource?: string;
+          originalLine?: number;
+          originalColumn?: number;
+          name?: string;
+        };
+        found.push(
+          entry.originalSource === undefined
+            ? undefined
+            : `${entry.originalSource}:${entry.originalLine}:${entry.originalColumn}:${entry.name ?? ""}`
+        );
       }
     }
     return found;
@@ -160,7 +169,8 @@ describe("the compose hooks", () => {
     ],
     composable: [],
     srcRoot: "/work/src",
-    outdir: "/work/out", browsers: "baseline 2023"
+    outdir: "/work/out",
+    browsers: "baseline 2023",
   };
   const table = scopeTableOf(options);
 
@@ -245,7 +255,11 @@ describe("postcss-driver, over the real plugin set", () => {
   });
 
   /** Stage `files` under src/, run the driver over `sources` for `browsers`, and read back. */
-  async function run(files: Record<string, string>, sources: IPostcssSource[], browsers = "safari >= 17.2, chrome >= 120"): Promise<(name: string) => string> {
+  async function run(
+    files: Record<string, string>,
+    sources: IPostcssSource[],
+    browsers = "safari >= 17.2, chrome >= 120"
+  ): Promise<(name: string) => string> {
     const srcRoot = path.join(work, "src");
     const outdir = path.join(work, "out");
     for (const [name, text] of Object.entries(files)) {
@@ -288,10 +302,9 @@ describe("postcss-driver, over the real plugin set", () => {
   }
 
   it("scopes a module and writes the typed shim", async () => {
-    const out = await run(
-      { "a/card.module.css": ".card { color: red; }\n.header-bar { color: blue; }\n" },
-      [module("a/card", "k3f1c")]
-    );
+    const out = await run({ "a/card.module.css": ".card { color: red; }\n.header-bar { color: blue; }\n" }, [
+      module("a/card", "k3f1c"),
+    ]);
     assert.match(out("a/card.css"), /\.card_k3f1c \{/);
     assert.match(out("a/card.css"), /\.header-bar_k3f1c \{/);
     /* The shim is TypeScript, and states the map's type as well as its values —
@@ -375,10 +388,9 @@ describe("postcss-driver, over the real plugin set", () => {
      * one this step publishes — `card.module.css.map` is an input here and is
      * never delivered. Reachable from an authored stylesheet, and from every
      * stylesheet once an earlier step annotates its own output. */
-    const out = await run(
-      { "card.module.css": ".card { color: red; }\n/*# sourceMappingURL=card.module.css.map */\n" },
-      [{ path: "card.module.css", css: "card.css", map: "card.css.map", scope: "sC", module: true, shim: "card.css.ts" }]
-    );
+    const out = await run({ "card.module.css": ".card { color: red; }\n/*# sourceMappingURL=card.module.css.map */\n" }, [
+      { path: "card.module.css", css: "card.css", map: "card.css.map", scope: "sC", module: true, shim: "card.css.ts" },
+    ]);
     const css = out("card.css");
     assert.equal(css.includes("card.module.css.map"), false);
     assert.equal(css.match(/sourceMappingURL/g)?.length, 1);
@@ -388,10 +400,9 @@ describe("postcss-driver, over the real plugin set", () => {
   it("ships no annotation at all where it writes no map", async () => {
     /* A release build carries no maps, so an input's annotation would name a
      * file nothing delivers. */
-    const out = await run(
-      { "card.module.css": ".card { color: red; }\n/*# sourceMappingURL=card.module.css.map */\n" },
-      [{ path: "card.module.css", css: "card.css", scope: "sC", module: true, shim: "card.css.ts" }]
-    );
+    const out = await run({ "card.module.css": ".card { color: red; }\n/*# sourceMappingURL=card.module.css.map */\n" }, [
+      { path: "card.module.css", css: "card.css", scope: "sC", module: true, shim: "card.css.ts" },
+    ]);
     assert.equal(out("card.css").includes("sourceMappingURL"), false);
   });
 
@@ -421,9 +432,7 @@ describe("postcss-driver, over the real plugin set", () => {
 
   it("copies a plain stylesheet through unchanged", async () => {
     const text = ".a { color: red; }\n/* keep me */\n";
-    const out = await run({ "b/plain.css": text }, [
-      { path: "b/plain.css", css: "b/plain.css", scope: "sPlain", module: false },
-    ]);
+    const out = await run({ "b/plain.css": text }, [{ path: "b/plain.css", css: "b/plain.css", scope: "sPlain", module: false }]);
     assert.equal(out("b/plain.css"), text);
   });
 
@@ -492,7 +501,8 @@ describe("postcss-driver, over the real plugin set", () => {
       sources: [{ ...module("w/card", "sW"), prev: "w/card.module.css.map", map: "w/card.css.map" }],
       composable: [],
       srcRoot: "src",
-      outdir: "out", browsers: "baseline 2023"
+      outdir: "out",
+      browsers: "baseline 2023",
     };
     fs.writeFileSync(path.join(work, "postcss-manifest.json"), JSON.stringify(options));
     fs.writeFileSync(path.join(work, SOURCE_PATHS_FILE), JSON.stringify({}));
@@ -542,7 +552,12 @@ describe("postcss-driver, over the real plugin set", () => {
     const css = fs.readFileSync(path.join(work, "out", "w", "card.css"), "utf8").split("\n");
     const read = new SourceMap(shipped as unknown as SourceMapPayload);
     const sourceOf = (selector: string): string | undefined =>
-      (read.findEntry(css.findIndex(line => line.startsWith(selector)), 0) as { originalSource?: string }).originalSource;
+      (
+        read.findEntry(
+          css.findIndex(line => line.startsWith(selector)),
+          0
+        ) as { originalSource?: string }
+      ).originalSource;
     assert.match(sourceOf(".card_sW") ?? "", /card\.module\.scss$/);
     assert.match(sourceOf(".partial_sW") ?? "", /_partial\.scss$/);
   });
@@ -559,9 +574,7 @@ describe("postcss-driver, over the real plugin set", () => {
   });
 
   it("names an unchained module's map source as the module itself", async () => {
-    const out = await run({ "w/card.module.css": ".card { color: red; }\n" }, [
-      { ...module("w/card", "sW"), map: "w/card.css.map" },
-    ]);
+    const out = await run({ "w/card.module.css": ".card { color: red; }\n" }, [{ ...module("w/card", "sW"), map: "w/card.css.map" }]);
     const shipped = JSON.parse(out("w/card.css.map")) as { sources: string[] };
     assert.deepEqual(shipped.sources, ["card.module.css"]);
   });

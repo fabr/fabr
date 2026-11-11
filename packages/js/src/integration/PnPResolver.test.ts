@@ -102,7 +102,7 @@ describe("PnpResolver", () => {
   it("answers a package with what its own row binds", () => {
     const resolver = new PnpResolver(
       manifest([
-        ["postprocessing", "ref-pp", { postprocessing: "ref-pp", three: "ref-three" } ],
+        ["postprocessing", "ref-pp", { postprocessing: "ref-pp", three: "ref-three" }],
         ["three", "ref-three", { three: "ref-three" }],
       ]),
       ROOT,
@@ -113,7 +113,10 @@ describe("PnpResolver", () => {
   });
 
   it("locates no package for a path its ignore pattern names, as Yarn's runtime does", () => {
-    const state = { ...manifest([["three", "ref-three", { three: "ref-three" }]], {}, { three: "ref-three" }), ignorePatternData: "^\\.tools(/|$)" };
+    const state = {
+      ...manifest([["three", "ref-three", { three: "ref-three" }]], {}, { three: "ref-three" }),
+      ignorePatternData: "^\\.tools(/|$)",
+    };
     const resolver = new PnpResolver(state, ROOT, []);
     expect(resolver.findPackageLocator(path.join(ROOT, ".tools/node_modules/x/index.js"))).to.equal(null);
     expect(resolver.findPackageLocator(path.join(ROOT, "build/index.js"))).to.deep.equal({ name: null, reference: null });
@@ -140,11 +143,7 @@ describe("PnpResolver", () => {
     expect(resolver.locationOf("@types/three", issuer)).to.equal(path.join(ROOT, ".fabr-tree/ref-types"));
     /* With no pool, the same lookup finds nothing — the fallback is the whole
      * difference. */
-    const strict = new PnpResolver(
-      manifest([["postprocessing", "ref-pp", { postprocessing: "ref-pp" }]], {}, {}),
-      ROOT,
-      []
-    );
+    const strict = new PnpResolver(manifest([["postprocessing", "ref-pp", { postprocessing: "ref-pp" }]], {}, {}), ROOT, []);
     expect(strict.locationOf("@types/three", issuer)).to.equal(undefined);
   });
 
@@ -306,9 +305,7 @@ describe("PnpResolver's containing-package questions", () => {
      * `outer` and `outerly`, and `outer/vendor`, holding `inner`.
      * `outer/` is not one: the only row directly inside it is the source row,
      * which is a place in this build rather than a package in a tree. */
-    expect([...resolver.treeRoots].sort()).to.deep.equal(
-      [withSep(STORE), withSep(path.join(STORE, "outer/vendor"))].sort()
-    );
+    expect([...resolver.treeRoots].sort()).to.deep.equal([withSep(STORE), withSep(path.join(STORE, "outer/vendor"))].sort());
   });
 });
 
@@ -429,8 +426,12 @@ describe("PnpResolver, resolving a specifier in full", () => {
     fs.mkdirSync(path.join(store, "ref-private/dist"), { recursive: true });
     fs.writeFileSync(path.join(store, "ref-private/dist/package.json"), JSON.stringify({ imports: { "#x": "./inner.js" } }));
     const resolver = resolving(["private", "ref-private"]);
-    expect(resolver.resolveSpecifier("#x", path.join(store, "ref-private/dist/i.js"))).to.equal(path.join(store, "ref-private/dist/inner.js"));
-    expect(resolver.resolveSpecifier("#x", path.join(store, "ref-private/lib/i.js"))).to.equal(path.join(store, "ref-private/outer.js"));
+    expect(resolver.resolveSpecifier("#x", path.join(store, "ref-private/dist/i.js"))).to.equal(
+      path.join(store, "ref-private/dist/inner.js")
+    );
+    expect(resolver.resolveSpecifier("#x", path.join(store, "ref-private/lib/i.js"))).to.equal(
+      path.join(store, "ref-private/outer.js")
+    );
   });
 
   it("answers a #specifier for files above any package row from the workspace's own package.json", () => {
@@ -459,7 +460,10 @@ describe("PnpResolver, resolving a specifier in full", () => {
       path.join(store, "ref-private/x.mjs"),
       path.join(store, "ref-private/x.d.ts"),
     ]);
-    expect(resolver.resolveAll("#dep", inside)).to.deep.equal([path.join(store, "ref-helper/h.mjs"), path.join(store, "ref-helper/h.d.ts")]);
+    expect(resolver.resolveAll("#dep", inside)).to.deep.equal([
+      path.join(store, "ref-helper/h.mjs"),
+      path.join(store, "ref-helper/h.d.ts"),
+    ]);
   });
 
   it("names a file by the subpath its package publishes, not by where it sits", () => {

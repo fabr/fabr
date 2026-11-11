@@ -191,7 +191,8 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
          * entry, reached by a member of the catalog). A sub-target is part of
          * its declared target. */
         const direct =
-          (cause instanceof DependencyFailedError && !cause.isPart) || (cause instanceof ReferenceFailedError && cause.target !== err.target);
+          (cause instanceof DependencyFailedError && !cause.isPart) ||
+          (cause instanceof ReferenceFailedError && cause.target !== err.target);
         const hops: IHop[] = direct
           ? [...trail, { message: `required by ${declName(err.target)}`, loc: declPosn(err.target), inferred: true }]
           : trail;
@@ -241,7 +242,12 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
         ? [...this.chainNotes(cause.left.provenance, undefined, cause.key), ...detailNote(cause.left), ...detailNote(cause.right)]
         : [cause.left, cause.right].flatMap(side => [...this.chainNotes(side.provenance, undefined, cause.key), ...detailNote(side)]);
       return owner
-        ? { message: `Failed to build ${failedName(owner)}: ${cause.message}`, loc: declPosn(owner.target), notes, help: helpOf(cause) }
+        ? {
+            message: `Failed to build ${failedName(owner)}: ${cause.message}`,
+            loc: declPosn(owner.target),
+            notes,
+            help: helpOf(cause),
+          }
         : { message: cause.message, notes, help: helpOf(cause) };
     }
     if (cause instanceof TargetNotPackageError) {
@@ -249,7 +255,12 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
       const requirer = cause.requirer instanceof RepositoryRef ? chainSteps(cause.requirer.steps, undefined) : cause.requirer.origin;
       const notes = [...this.chainNotes(requirer), ...this.chainNotes(cause.dependency.origin)];
       return owner
-        ? { message: `Failed to build ${failedName(owner)}: ${cause.message}`, loc: declPosn(owner.target), notes, help: helpOf(cause) }
+        ? {
+            message: `Failed to build ${failedName(owner)}: ${cause.message}`,
+            loc: declPosn(owner.target),
+            notes,
+            help: helpOf(cause),
+          }
         : { message: cause.message, notes, help: helpOf(cause) };
     }
     if (owner) {
@@ -286,7 +297,10 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
       message: cause.message,
       loc: declPosn(closing.value),
       notes,
-      help: shadowed && rest.length === 0 ? [`'${cause.name}' names this target, not the path '${cause.name}' — write './${written}' for the path`] : undefined,
+      help:
+        shadowed && rest.length === 0
+          ? [`'${cause.name}' names this target, not the path '${cause.name}' — write './${written}' for the path`]
+          : undefined,
     };
   }
 
@@ -321,7 +335,11 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
       const anchor = owner
         ? { message: `Failed to build ${failedName(owner)}: ${cause.message}`, loc: declPosn(owner.target) }
         : { message: cause.message };
-      return { ...anchor, notes: [...this.refNotes(cause.refs, cause.delivered), ...cause.builds.flatMap(origin => this.chainNotes(origin))], help };
+      return {
+        ...anchor,
+        notes: [...this.refNotes(cause.refs, cause.delivered), ...cause.builds.flatMap(origin => this.chainNotes(origin))],
+        help,
+      };
     }
     const head = chain as IModelStep;
     return {
@@ -496,9 +514,14 @@ export function reportFailure(log: Log, err: Error): void {
  */
 export function cycleErrorOf(labels: ReadonlyArray<Label>): Error {
   const names = labels.filter((label): label is NameLabel => label instanceof NameLabel);
-  const entered = names.reduce<NameLabel | undefined>((first, each) => (first === undefined || each.order < first.order ? each : first), undefined);
+  const entered = names.reduce<NameLabel | undefined>(
+    (first, each) => (first === undefined || each.order < first.order ? each : first),
+    undefined
+  );
   const start = entered === undefined ? 0 : labels.indexOf(entered);
-  const sites = [...new Map([...labels.slice(start), ...labels.slice(0, start)].flatMap(siteOf).map(site => [site.value, site])).values()];
+  const sites = [
+    ...new Map([...labels.slice(start), ...labels.slice(0, start)].flatMap(siteOf).map(site => [site.value, site])).values(),
+  ];
   const circular = new CircularDependencyError(
     entered?.name ?? sites[0]?.value.value.toString() ?? "a computation",
     sites.reverse(),
@@ -512,6 +535,7 @@ function siteOf(label: Label): IUseSite[] {
   if (label instanceof ReferenceLabel) {
     return [label.site];
   }
-  const written = label instanceof ProvenanceLabel ? label.steps.find((step): step is IModelStep => step.kind === MODEL_PROVENANCE) : undefined;
+  const written =
+    label instanceof ProvenanceLabel ? label.steps.find((step): step is IModelStep => step.kind === MODEL_PROVENANCE) : undefined;
   return written === undefined ? [] : [{ value: written.value, property: written.property, target: written.target }];
 }

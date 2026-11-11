@@ -94,7 +94,6 @@ describe("output naming", () => {
     expect(scopedCssName(sassLoweredName("a/Foo.scss"))).to.equal(loweredCssName("a/Foo.scss"));
     expect(scopedCssName(sassLoweredName("a/Foo.module.css"))).to.equal(loweredCssName("a/Foo.module.css"));
   });
-
 });
 
 describe("cssScopeDigest", () => {
@@ -125,9 +124,7 @@ describe("cssScopeDigest", () => {
   it("spreads across the alphabet rather than clustering", () => {
     /* A reduction done wrong (masking, or a modulo off too few bits) shows up as
      * a stuck leading character across many inputs. */
-    const leading = new Set(
-      Array.from({ length: 200 }, (_, index) => cssScopeDigest("pkg", `a/File${index}.module.scss`).charAt(0))
-    );
+    const leading = new Set(Array.from({ length: 200 }, (_, index) => cssScopeDigest("pkg", `a/File${index}.module.scss`).charAt(0)));
     expect(leading.size).to.be.greaterThan(20);
   });
 });
@@ -256,7 +253,12 @@ describe("buildSassOptions", () => {
 
 describe("buildPostcssOptions", () => {
   it("names every stylesheet, carrying the maps beside them rather than listing them", () => {
-    const options = buildPostcssOptions(["a/Foo.module.css", "a/Foo.module.css.map", "b.css", "b.css.map"], "pkg", "baseline 2023", true);
+    const options = buildPostcssOptions(
+      ["a/Foo.module.css", "a/Foo.module.css.map", "b.css", "b.css.map"],
+      "pkg",
+      "baseline 2023",
+      true
+    );
     expect(options.srcRoot).to.equal(CSS_SRC_ROOT);
     expect(options.outdir).to.equal(CSS_OUTDIR);
     expect(options.sources.map(source => source.path)).to.deep.equal(["a/Foo.module.css", "b.css"]);
@@ -356,7 +358,12 @@ describe("cssImportRewrites", () => {
 
 describe("withDerivations", () => {
   it("states the stylesheet each output was produced from, and nothing for the rest", () => {
-    const sources = new FileSet(new Map([["Styles/app.scss", MemoryFile.from("")], ["Card.module.css", MemoryFile.from("")]]));
+    const sources = new FileSet(
+      new Map([
+        ["Styles/app.scss", MemoryFile.from("")],
+        ["Card.module.css", MemoryFile.from("")],
+      ])
+    );
     const output = new FileSet(
       new Map([
         ["Styles/app.css", MemoryFile.from("")],

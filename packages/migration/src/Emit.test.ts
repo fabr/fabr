@@ -28,12 +28,22 @@ describe("rendering the fabr files", () => {
   it("writes the catalog's entries, then its pins and sanctions by section", () => {
     const catalog = new Catalog(new Map([["@corp", "@corp-registry"]]));
     catalog.entries.set("a", { address: "a", repository: "@npm", packageName: "a", range: "^1.0.0" });
-    catalog.entries.set("f", { address: "f", repository: "@npm", packageName: "f", range: "2.0.0", forced: true, note: "forced: an override" });
+    catalog.entries.set("f", {
+      address: "f",
+      repository: "@npm",
+      packageName: "f",
+      range: "2.0.0",
+      forced: true,
+      note: "forced: an override",
+    });
     catalog.raise("b", "1.4.0", "raise");
     catalog.raise("@types/c", "3.0.0", "floorless");
     catalog.sanction("ms", "2.1.3");
     catalog.sanction("ms", "2.0.0");
-    const text = renderCatalogFile(catalog, { lockfile: "yarn.lock", scopeRegistries: new Map([["@corp", "https://npm.corp.example/"]]) });
+    const text = renderCatalogFile(catalog, {
+      lockfile: "yarn.lock",
+      scopeRegistries: new Map([["@corp", "https://npm.corp.example/"]]),
+    });
     expect(text).to.equal(
       [
         "# Written by fabr-migrate from package.json and yarn.lock.",
@@ -83,7 +93,16 @@ describe("rendering the fabr files", () => {
   it("writes a package's target, one value per line where they do not fit on one", () => {
     const manifest = readManifest(writeProject({ "package.json": { name: "@s/a", version: "1.0.0" } }), "");
     const deps = Array.from({ length: 8 }, (_, at) => `@dep:package-number-${at}`);
-    const text = renderBuildFile({ manifest, target: "@s/a", srcs: ["src:**/*.ts"], tests: [], deps, provided: ["@dep:react"], optionalProvided: [], report: new Report() });
+    const text = renderBuildFile({
+      manifest,
+      target: "@s/a",
+      srcs: ["src:**/*.ts"],
+      tests: [],
+      deps,
+      provided: ["@dep:react"],
+      optionalProvided: [],
+      report: new Report(),
+    });
     expect(text.split("\n")).to.deep.equal([
       "# Written by fabr-migrate from package.json.",
       "js_package @s/a {",

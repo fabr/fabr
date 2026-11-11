@@ -54,14 +54,7 @@ export function sniffMime(head: Buffer): string {
     return MIME_TAR;
   } else if (head[0] === 0x50 && head[1] === 0x4b && head[2] === 0x03 && head[3] === 0x04) {
     return MIME_ZIP;
-  } else if (
-    head[0] === 0xfd &&
-    head[1] === 0x37 &&
-    head[2] === 0x7a &&
-    head[3] === 0x58 &&
-    head[4] === 0x5a &&
-    head[5] === 0x00
-  ) {
+  } else if (head[0] === 0xfd && head[1] === 0x37 && head[2] === 0x7a && head[3] === 0x58 && head[4] === 0x5a && head[5] === 0x00) {
     return MIME_XZ;
   } else {
     return MIME_UNKNOWN;

@@ -319,8 +319,8 @@ function firstOfEach(): (source: Resolved) => boolean {
       source instanceof TargetRef
         ? [source.toString(), ...source.projections.map(({ pattern, prefix }) => `${prefix} ${pattern.toString()}`)].join(":")
         : source instanceof ResolvedNode
-        ? source.content.key
-        : source;
+          ? source.content.key
+          : source;
     if (seen.has(identity)) {
       return false;
     }

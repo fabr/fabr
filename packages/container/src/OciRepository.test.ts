@@ -48,7 +48,9 @@ import { RegistrySignIn } from "./RegistrySignIn";
 /** Pack `files` as an uncompressed tar, as a layer's is once decompressed. */
 function layerTar(files: Record<string, string | SymlinkFile>): Promise<Buffer> {
   const set = new FileSet(
-    new Map<string, IFile>(Object.entries(files).map(([name, content]) => [name, typeof content === "string" ? MemoryFile.from(content) : content]))
+    new Map<string, IFile>(
+      Object.entries(files).map(([name, content]) => [name, typeof content === "string" ? MemoryFile.from(content) : content])
+    )
   );
   return Promise.resolve(packToTarball(set)).then(buffer => gunzipSync(buffer));
 }
@@ -74,23 +76,49 @@ async function startRegistry(options: { declineMounts?: boolean } = {}): Promise
     await layerTar({ "etc/.wh.os-release": "", "usr/share/doc/.wh..wh..opq": "", "usr/share/doc/c": "c", "app/server": "srv" }),
   ];
   const compressed = layers.map(tar => gzipSync(tar));
-  const config = JSON.stringify({ architecture: "amd64", os: "linux", rootfs: { type: "layers", diff_ids: layers.map(sha256) }, config: { Env: ["PATH=/bin"] } });
+  const config = JSON.stringify({
+    architecture: "amd64",
+    os: "linux",
+    rootfs: { type: "layers", diff_ids: layers.map(sha256) },
+    config: { Env: ["PATH=/bin"] },
+  });
   const manifest = JSON.stringify({
     schemaVersion: 2,
     mediaType: "application/vnd.oci.image.manifest.v1+json",
     config: { mediaType: "application/vnd.oci.image.config.v1+json", digest: sha256(config), size: config.length },
-    layers: compressed.map(blob => ({ mediaType: "application/vnd.oci.image.layer.v1.tar+gzip", digest: sha256(blob), size: blob.length })),
+    layers: compressed.map(blob => ({
+      mediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
+      digest: sha256(blob),
+      size: blob.length,
+    })),
   });
   const index = JSON.stringify({
     schemaVersion: 2,
     mediaType: "application/vnd.oci.image.index.v1+json",
     manifests: [
-      { mediaType: "application/vnd.oci.image.manifest.v1+json", digest: sha256(manifest), size: manifest.length, platform: { os: "linux", architecture: "amd64" } },
-      { mediaType: "application/vnd.oci.image.manifest.v1+json", digest: sha256("attestation"), size: 11, platform: { os: "unknown", architecture: "unknown" } },
+      {
+        mediaType: "application/vnd.oci.image.manifest.v1+json",
+        digest: sha256(manifest),
+        size: manifest.length,
+        platform: { os: "linux", architecture: "amd64" },
+      },
+      {
+        mediaType: "application/vnd.oci.image.manifest.v1+json",
+        digest: sha256("attestation"),
+        size: 11,
+        platform: { os: "unknown", architecture: "unknown" },
+      },
     ],
   });
-  const blobs = new Map<string, Buffer | string>([[sha256(config), config], ...compressed.map((blob): [string, Buffer] => [sha256(blob), blob])]);
-  const manifests = new Map<string, string>([["1.0", index], [sha256(index), index], [sha256(manifest), manifest]]);
+  const blobs = new Map<string, Buffer | string>([
+    [sha256(config), config],
+    ...compressed.map((blob): [string, Buffer] => [sha256(blob), blob]),
+  ]);
+  const manifests = new Map<string, string>([
+    ["1.0", index],
+    [sha256(index), index],
+    [sha256(manifest), manifest],
+  ]);
   const requests: string[] = [];
   let origin = "";
   /* What each repository holds: its manifests by tag and digest, and the digests of its blobs. */
@@ -108,7 +136,9 @@ async function startRegistry(options: { declineMounts?: boolean } = {}): Promise
     const url = new URL(req.url!, origin);
     if (url.pathname === "/token") {
       const scopes = url.searchParams.getAll("scope");
-      res.writeHead(200).end(JSON.stringify({ token: scopes.length > 0 && scopes.every(scope => scope.startsWith("repository:")) ? "t" : "wrong" }));
+      res
+        .writeHead(200)
+        .end(JSON.stringify({ token: scopes.length > 0 && scopes.every(scope => scope.startsWith("repository:")) ? "t" : "wrong" }));
       return;
     }
     if (url.pathname === "/v2/" || req.headers.authorization !== "Bearer t") {
@@ -170,15 +200,17 @@ async function startRegistry(options: { declineMounts?: boolean } = {}): Promise
         found === null || held === undefined
           ? undefined
           : found[2] === "manifests"
-          ? held.manifests.get(found[3])
-          : held.blobs.has(found[3])
-          ? blobs.get(found[3])
-          : undefined;
+            ? held.manifests.get(found[3])
+            : held.blobs.has(found[3])
+              ? blobs.get(found[3])
+              : undefined;
       if (body === undefined) {
         res.writeHead(404).end();
         return;
       }
-      res.writeHead(200, found![2] === "manifests" ? { "docker-content-digest": sha256(body) } : {}).end(req.method === "HEAD" ? undefined : body);
+      res
+        .writeHead(200, found![2] === "manifests" ? { "docker-content-digest": sha256(body) } : {})
+        .end(req.method === "HEAD" ? undefined : body);
     });
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -240,7 +272,11 @@ describe("OciRepository", () => {
 
   const imageOf = (name: string, triple = "x86_64-unknown-linux", options?: Array<FetchOptions | undefined>): Promise<unknown> => {
     const context = fetchingContext(triple, options);
-    const repository = new OciRepository(context, new Registry(context, registry.url, new RegistrySignIn(registry.url, () => Computable.resolve(undefined))), "library");
+    const repository = new OciRepository(
+      context,
+      new Registry(context, registry.url, new RegistrySignIn(registry.url, () => Computable.resolve(undefined))),
+      "library"
+    );
     const reference = repository.getRepositoryRef(parseName(name)) as RepositoryRef;
     return Promise.resolve(repository.resolve(reference)).then(node => {
       expect(node).to.be.instanceOf(ResolvedNode);
@@ -278,7 +314,11 @@ describe("OciRepository", () => {
 
   it("publishes an image under a tag, mounting the layers its registry already holds, then finds it synced", async () => {
     const context = fetchingContext("x86_64-unknown-linux");
-    const repository = new OciRepository(context, new Registry(context, registry.url, new RegistrySignIn(registry.url, () => Computable.resolve(undefined))), "library");
+    const repository = new OciRepository(
+      context,
+      new Registry(context, registry.url, new RegistrySignIn(registry.url, () => Computable.resolve(undefined))),
+      "library"
+    );
     const node = await Promise.resolve(repository.resolve(repository.getRepositoryRef(parseName("demo:1.0")) as RepositoryRef));
     const image = (await Promise.resolve(node.content.files())) as ImageFileSet;
     const destination = repository.getRepositoryPublishRef(parseName("myorg/copy:2"));
@@ -299,15 +339,23 @@ describe("OciRepository", () => {
     const declining = await startRegistry({ declineMounts: true });
     try {
       const context = fetchingContext("x86_64-unknown-linux");
-      const repository = new OciRepository(context, new Registry(context, declining.url, new RegistrySignIn(declining.url, () => Computable.resolve(undefined))), "library");
+      const repository = new OciRepository(
+        context,
+        new Registry(context, declining.url, new RegistrySignIn(declining.url, () => Computable.resolve(undefined))),
+        "library"
+      );
       const node = await Promise.resolve(repository.resolve(repository.getRepositoryRef(parseName("demo:1.0")) as RepositoryRef));
       const image = (await Promise.resolve(node.content.files())) as ImageFileSet;
-      const [carrier] = await Promise.resolve(repository.package([{ destination: repository.getRepositoryPublishRef(parseName("myorg/copy:2")), content: image }]));
+      const [carrier] = await Promise.resolve(
+        repository.package([{ destination: repository.getRepositoryPublishRef(parseName("myorg/copy:2")), content: image }])
+      );
       declining.requests.length = 0;
       expect(await Promise.resolve(repository.publish(carrier))).to.equal("published");
       expect(declining.requests.filter(request => request.startsWith("GET /v2/library/demo/blobs/"))).to.have.lengthOf(2);
       /* The token the registry's sign-in holds for reading `library/demo` is reused: no second client signs in. */
-      expect(declining.requests.filter(request => /^GET \/token\?service=test&scope=repository%3Alibrary%2Fdemo%3Apull$/.test(request))).to.deep.equal([]);
+      expect(
+        declining.requests.filter(request => /^GET \/token\?service=test&scope=repository%3Alibrary%2Fdemo%3Apull$/.test(request))
+      ).to.deep.equal([]);
     } finally {
       await declining.close();
     }
@@ -326,12 +374,22 @@ describe("OciRepository", () => {
       );
       const node = await Promise.resolve(source.resolve(source.getRepositoryRef(parseName("demo:1.0")) as RepositoryRef));
       const image = (await Promise.resolve(node.content.files())) as ImageFileSet;
-      expect(image.layers.map(layer => layer.published?.loginUrl)).to.deep.equal(["https://login.example/v1/", "https://login.example/v1/"]);
-      const destination = new OciRepository(context, new Registry(context, target.url, new RegistrySignIn(target.url, () => Computable.resolve(undefined))));
-      const [carrier] = await Promise.resolve(destination.package([{ destination: destination.getRepositoryPublishRef(parseName("myorg/copy:2")), content: image }]));
+      expect(image.layers.map(layer => layer.published?.loginUrl)).to.deep.equal([
+        "https://login.example/v1/",
+        "https://login.example/v1/",
+      ]);
+      const destination = new OciRepository(
+        context,
+        new Registry(context, target.url, new RegistrySignIn(target.url, () => Computable.resolve(undefined)))
+      );
+      const [carrier] = await Promise.resolve(
+        destination.package([{ destination: destination.getRepositoryPublishRef(parseName("myorg/copy:2")), content: image }])
+      );
       expect(await Promise.resolve(destination.publish(carrier))).to.equal("published");
       expect(logins).to.include("https://login.example/v1/");
-      const copied = await Promise.resolve(destination.resolve(destination.getRepositoryRef(parseName("myorg/copy:2")) as RepositoryRef));
+      const copied = await Promise.resolve(
+        destination.resolve(destination.getRepositoryRef(parseName("myorg/copy:2")) as RepositoryRef)
+      );
       expect(await ((await Promise.resolve(copied.content.files())) as ImageFileSet).readFile("app/server")).to.equal("srv");
     } finally {
       await target.close();
@@ -340,11 +398,17 @@ describe("OciRepository", () => {
 
   it("lists an image's tags, page by page, each as the reference to its image", async () => {
     const context = fetchingContext("x86_64-unknown-linux");
-    const repository = new OciRepository(context, new Registry(context, registry.url, new RegistrySignIn(registry.url, () => Computable.resolve(undefined))), "library");
+    const repository = new OciRepository(
+      context,
+      new Registry(context, registry.url, new RegistrySignIn(registry.url, () => Computable.resolve(undefined))),
+      "library"
+    );
     for (const tag of ["2.0", "1.1", "0.9"]) {
       const node = await Promise.resolve(repository.resolve(repository.getRepositoryRef(parseName("demo:1.0")) as RepositoryRef));
       const image = (await Promise.resolve(node.content.files())) as ImageFileSet;
-      const [carrier] = await Promise.resolve(repository.package([{ destination: repository.getRepositoryPublishRef(parseName(`demo:${tag}`)), content: image }]));
+      const [carrier] = await Promise.resolve(
+        repository.package([{ destination: repository.getRepositoryPublishRef(parseName(`demo:${tag}`)), content: image }])
+      );
       await Promise.resolve(repository.publish(carrier));
     }
     const listed = await Promise.resolve(repository.children(repository.getRepositoryRef(parseName("demo")) as PartialRepositoryRef));
@@ -352,14 +416,22 @@ describe("OciRepository", () => {
     const ref = listed.get("1.1") as RepositoryRef;
     expect([ref.name, ref.versionConstraint]).to.deep.equal(["demo", "1.1"]);
     expect(registry.requests.filter(request => request.startsWith("GET /v2/library/demo/tags/list"))).to.have.lengthOf(2);
-    const missing = await Promise.resolve(repository.children(repository.getRepositoryRef(parseName("absent")) as PartialRepositoryRef)).catch((err: Error) => err);
+    const missing = await Promise.resolve(
+      repository.children(repository.getRepositoryRef(parseName("absent")) as PartialRepositoryRef)
+    ).catch((err: Error) => err);
     expect((missing as Error).message).to.match(/has no image absent/);
   });
 
   it("refuses a digest, or a name with no tag, as a coordinate to publish to", () => {
     const context = fetchingContext("x86_64-unknown-linux");
-    const repository = new OciRepository(context, new Registry(context, registry.url, new RegistrySignIn(registry.url, () => Computable.resolve(undefined))), "library");
-    expect(() => repository.getRepositoryPublishRef(parseName(`myorg/app:sha256:${"a".repeat(64)}`))).to.throw(/no image and tag to publish to/);
+    const repository = new OciRepository(
+      context,
+      new Registry(context, registry.url, new RegistrySignIn(registry.url, () => Computable.resolve(undefined))),
+      "library"
+    );
+    expect(() => repository.getRepositoryPublishRef(parseName(`myorg/app:sha256:${"a".repeat(64)}`))).to.throw(
+      /no image and tag to publish to/
+    );
     expect(() => repository.getRepositoryPublishRef(parseName("myorg/app"))).to.throw(/no image and tag to publish to/);
   });
 
@@ -370,7 +442,11 @@ describe("OciRepository", () => {
 
   it("vends a namespace for an image named without a version, and a projection after one", () => {
     const context = fetchingContext("x86_64-unknown-linux");
-    const repository = new OciRepository(context, new Registry(context, registry.url, new RegistrySignIn(registry.url, () => Computable.resolve(undefined))), "library");
+    const repository = new OciRepository(
+      context,
+      new Registry(context, registry.url, new RegistrySignIn(registry.url, () => Computable.resolve(undefined))),
+      "library"
+    );
     expect(repository.getRepositoryRef(parseName("demo")).constructor.name).to.equal("PartialRepositoryRef");
     const projected = repository.getRepositoryRef(parseName("demo:1.0:etc/*")) as RepositoryRef;
     expect(projected.name).to.equal("demo");

@@ -291,7 +291,8 @@ describe("Loader", () => {
   it("adds a plugin's files, which may use a plugin and declare a type the project's files use", async () => {
     const model = await load(
       files({
-        "PROJECT.fabr": FABR_PLUGIN_DEF + "fabr_plugin p { libs = p/P.fabr; }\nfabr_plugin q { libs = Q.fabr; }\nplugin p;\nthing t { x = 1; }\n",
+        "PROJECT.fabr":
+          FABR_PLUGIN_DEF + "fabr_plugin p { libs = p/P.fabr; }\nfabr_plugin q { libs = Q.fabr; }\nplugin p;\nthing t { x = 1; }\n",
         "p/P.fabr": "targetdef thing { x = STRING; }\nplugin q;\ndefault from_p = yes;\n",
         "Q.fabr": "default from_q = yes;\n",
       }),
@@ -315,7 +316,10 @@ describe("Loader", () => {
 
   it("refuses a splice in a plugin's target, whose body is read as written", async () => {
     const { error, logged } = await loadErr(
-      files({ "PROJECT.fabr": FABR_PLUGIN_DEF + "COMMON = { libs = P.fabr; };\nfabr_plugin p { COMMON; libs = P.fabr; }\nplugin p;\n", "P.fabr": "" })
+      files({
+        "PROJECT.fabr": FABR_PLUGIN_DEF + "COMMON = { libs = P.fabr; };\nfabr_plugin p { COMMON; libs = P.fabr; }\nplugin p;\n",
+        "P.fabr": "",
+      })
     );
     expect(error).to.be.an.instanceOf(BuildFilesInvalidError);
     expect(logged.join("\n")).to.match(/A plugin's body is read as written, before anything is built, so it cannot splice 'COMMON'/);
@@ -389,9 +393,15 @@ describe("Loader", () => {
       "p/extra/b.fabr": "default from_b = yes;\n",
     });
     const errors: string[] = [];
-    const model = await loadProject(exec(project, new LogFormatter(LogLevel.Info, msg => errors.push(msg))), "PROJECT.fabr", NO_BASE, undefined, {
-      includeOptionalLibs: true,
-    });
+    const model = await loadProject(
+      exec(project, new LogFormatter(LogLevel.Info, msg => errors.push(msg))),
+      "PROJECT.fabr",
+      NO_BASE,
+      undefined,
+      {
+        includeOptionalLibs: true,
+      }
+    );
     expect(errors).to.deep.equal([]);
     expect(propertyValue(model, "from_a")).to.equal("yes");
     expect(propertyValue(model, "from_b")).to.equal("yes");
@@ -401,13 +411,16 @@ describe("Loader", () => {
   it("refuses an include of a file a plugin does not list as an optional lib, naming the ones it does", async () => {
     const { error, logged } = await loadErr(
       files({
-        "PROJECT.fabr": OPTIONAL_PLUGIN_DEF + "fabr_plugin p { libs = P.fabr; optional_libs = X.fabr; }\nplugin p;\ninclude p:P.fabr;\n",
+        "PROJECT.fabr":
+          OPTIONAL_PLUGIN_DEF + "fabr_plugin p { libs = P.fabr; optional_libs = X.fabr; }\nplugin p;\ninclude p:P.fabr;\n",
         "P.fabr": "",
         "X.fabr": "",
       })
     );
     expect(error).to.be.an.instanceOf(BuildFilesInvalidError);
-    expect(logged.join("\n")).to.match(/Included file not found: 'p' has no optional lib P\.fabr \(it lists X\.fabr\)[\s\S]*PROJECT\.fabr:4:9/);
+    expect(logged.join("\n")).to.match(
+      /Included file not found: 'p' has no optional lib P\.fabr \(it lists X\.fabr\)[\s\S]*PROJECT\.fabr:4:9/
+    );
   });
 
   it("refuses an include of the optional libs of a plugin the project does not use", async () => {
@@ -446,9 +459,7 @@ describe("Loader", () => {
   });
 
   it("rejects the load when an included file has a syntax error", async () => {
-    const { error } = await loadErr(
-      files({ "PROJECT.fabr": "include bad.fabr;\ngood = value;", "bad.fabr": "@@@ not valid\n" })
-    );
+    const { error } = await loadErr(files({ "PROJECT.fabr": "include bad.fabr;\ngood = value;", "bad.fabr": "@@@ not valid\n" }));
     expect(error).to.be.an.instanceOf(BuildFilesInvalidError);
   });
 
@@ -490,7 +501,10 @@ class LiveQuery<T> extends ComputableSource<T> implements LiveSource {
   /** Which refresh is authoritative, so a superseded one cannot settle over a newer. */
   private generation = 0;
 
-  constructor(private readonly tree: LiveTree, private readonly derive: (files: FileSet) => Computable<T>) {
+  constructor(
+    private readonly tree: LiveTree,
+    private readonly derive: (files: FileSet) => Computable<T>
+  ) {
     super();
   }
 
@@ -665,7 +679,10 @@ describe("Loader (watch mode)", () => {
   const PLUGIN_DEF = "targetdef fabr_plugin { srcs = FILES; libs = FILES; }\n";
 
   it("adds a plugin's file appearing under its glob libs", async () => {
-    const tree = new LiveTree({ "PROJECT.fabr": PLUGIN_DEF + "fabr_plugin p { libs = p/*.fabr; }\nplugin p;\n", "p/a.fabr": "default a = 1;\n" });
+    const tree = new LiveTree({
+      "PROJECT.fabr": PLUGIN_DEF + "fabr_plugin p { libs = p/*.fabr; }\nplugin p;\n",
+      "p/a.fabr": "default a = 1;\n",
+    });
     const load = watchLoad(tree);
     await drain();
     expect(propertyValue(latest(load), "a")).to.equal("1");
@@ -677,7 +694,10 @@ describe("Loader (watch mode)", () => {
   });
 
   it("reloads a plugin's file when it is edited", async () => {
-    const tree = new LiveTree({ "PROJECT.fabr": PLUGIN_DEF + "fabr_plugin p { libs = p/a.fabr; }\nplugin p;\n", "p/a.fabr": "default a = 1;\n" });
+    const tree = new LiveTree({
+      "PROJECT.fabr": PLUGIN_DEF + "fabr_plugin p { libs = p/a.fabr; }\nplugin p;\n",
+      "p/a.fabr": "default a = 1;\n",
+    });
     const load = watchLoad(tree);
     await drain();
 
@@ -687,7 +707,10 @@ describe("Loader (watch mode)", () => {
   });
 
   it("keeps a plugin's files when a project file is edited after them", async () => {
-    const tree = new LiveTree({ "PROJECT.fabr": PLUGIN_DEF + "fabr_plugin p { libs = p/a.fabr; }\nplugin p;\nown = 1;\n", "p/a.fabr": "default a = 1;\n" });
+    const tree = new LiveTree({
+      "PROJECT.fabr": PLUGIN_DEF + "fabr_plugin p { libs = p/a.fabr; }\nplugin p;\nown = 1;\n",
+      "p/a.fabr": "default a = 1;\n",
+    });
     const load = watchLoad(tree);
     await drain();
 

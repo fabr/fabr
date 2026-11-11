@@ -71,7 +71,12 @@ export interface IConditionSet {
  * which condition wins, which is what lets a package state its own priorities
  * (`types` before `import` before `default`). `default` always matches.
  */
-export function resolveExports(exports: ExportsValue, subpath: string, conditions: IConditionSet, validate = true): string | undefined {
+export function resolveExports(
+  exports: ExportsValue,
+  subpath: string,
+  conditions: IConditionSet,
+  validate = true
+): string | undefined {
   return resolveExportsAll(exports, subpath, conditions, validate)[0];
 }
 
@@ -109,7 +114,12 @@ export function resolveExportsAll(exports: ExportsValue, subpath: string, condit
  * any other name, through the table. The two are told apart by the `./` prefix,
  * exactly as node tells them apart.
  */
-export function resolveImports(imports: ExportsValue, specifier: string, conditions: IConditionSet, validate = true): string | undefined {
+export function resolveImports(
+  imports: ExportsValue,
+  specifier: string,
+  conditions: IConditionSet,
+  validate = true
+): string | undefined {
   return resolveImportsAll(imports, specifier, conditions, validate)[0];
 }
 

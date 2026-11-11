@@ -221,15 +221,21 @@ export function allowingBuilds<V, C>(domain: VersionDomain<V, C>): VersionDomain
     minimumOf: constraint => (isBuildVersion(constraint) ? BUILDS_ALONE.minimumOf(constraint) : domain.minimumOf(constraint as C)),
     isFloorless: constraint => !isBuildVersion(constraint) && domain.isFloorless(constraint as C),
     compare: (a, b) =>
-      isBuildVersion(a) ? (isBuildVersion(b) ? BUILDS_ALONE.compare(a, b) : 1) : isBuildVersion(b) ? -1 : domain.compare(a as V, b as V),
+      isBuildVersion(a)
+        ? isBuildVersion(b)
+          ? BUILDS_ALONE.compare(a, b)
+          : 1
+        : isBuildVersion(b)
+          ? -1
+          : domain.compare(a as V, b as V),
     /* A build answers the constraint naming it, and a floorless one (`*`),
      * which any selection answers; a range is a demand on the registry. */
     satisfies: (version, constraint) =>
       isBuildVersion(constraint)
         ? isBuildVersion(version) && BUILDS_ALONE.satisfies(version, constraint)
         : isBuildVersion(version)
-        ? domain.isFloorless(constraint as C)
-        : domain.satisfies(version as V, constraint as C),
+          ? domain.isFloorless(constraint as C)
+          : domain.satisfies(version as V, constraint as C),
     versionToString: version => (isBuildVersion(version) ? version : domain.versionToString(version as V)),
     parseVersion: text => (isBuildVersion(text) ? text : domain.parseVersion(text)),
     exactVersion: text => (isBuildVersion(text) ? text : exactVersion?.(text)),

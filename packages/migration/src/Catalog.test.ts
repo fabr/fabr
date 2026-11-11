@@ -48,7 +48,11 @@ describe("building the catalog", () => {
       },
     });
     const { catalog } = buildCatalog(readWorkspace(root), undefined, new Report());
-    expect(written(catalog)).to.deep.equal(['@npm:react-dom:">=16.8.0"', "@npm:react:^18.2.0", "@npm:typescript:^6.0.0 -> typescript-6"]);
+    expect(written(catalog)).to.deep.equal([
+      '@npm:react-dom:">=16.8.0"',
+      "@npm:react:^18.2.0",
+      "@npm:typescript:^6.0.0 -> typescript-6",
+    ]);
   });
 
   it("writes a named pnpm catalog's differing version under an alias", () => {
@@ -84,7 +88,10 @@ describe("building the catalog", () => {
   });
 
   it("resolves a scope's packages from its registry", () => {
-    const root = writeProject({ "package.json": { dependencies: { "@corp/a": "^1.0.0" } }, ".npmrc": "@corp:registry=https://npm.corp.example/\n" });
+    const root = writeProject({
+      "package.json": { dependencies: { "@corp/a": "^1.0.0" } },
+      ".npmrc": "@corp:registry=https://npm.corp.example/\n",
+    });
     const { catalog } = buildCatalog(readWorkspace(root), undefined, new Report());
     expect(written(catalog)).to.deep.equal(["@corp-registry:@corp/a:^1.0.0"]);
   });

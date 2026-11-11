@@ -25,7 +25,16 @@ const lines = (...text: string[]): string => text.join("\n") + "\n";
 describe("parsePatchFile", () => {
   it("reads a git-style change, its names stripped of the a/ and b/ git writes", () => {
     const [change, ...rest] = parsePatchFile(
-      lines("diff --git a/lib/x.js b/lib/x.js", "index 111..222 100644", "--- a/lib/x.js", "+++ b/lib/x.js", "@@ -1,2 +1,2 @@", " one", "-two", "+three"),
+      lines(
+        "diff --git a/lib/x.js b/lib/x.js",
+        "index 111..222 100644",
+        "--- a/lib/x.js",
+        "+++ b/lib/x.js",
+        "@@ -1,2 +1,2 @@",
+        " one",
+        "-two",
+        "+three"
+      ),
       "the patch"
     );
     expect(rest).to.deep.equal([]);
@@ -34,7 +43,10 @@ describe("parsePatchFile", () => {
   });
 
   it("reads a plain unified diff, with no git header", () => {
-    const [change] = parsePatchFile(lines("--- old/x.txt\t2024-01-01", "+++ new/x.txt\t2024-01-02", "@@ -1 +1 @@", "-a", "+b"), "the patch");
+    const [change] = parsePatchFile(
+      lines("--- old/x.txt\t2024-01-01", "+++ new/x.txt\t2024-01-02", "@@ -1 +1 @@", "-a", "+b"),
+      "the patch"
+    );
     expect([change.from, change.to]).to.deep.equal(["x.txt", "x.txt"]);
     expect(change.apply("a\n")).to.equal("b\n");
   });
@@ -43,12 +55,22 @@ describe("parsePatchFile", () => {
     const text = lines("--- a/pkg/lib/x.js", "+++ b/pkg/lib/x.js", "@@ -1 +1 @@", "-a", "+b");
     expect(parsePatchFile(text, "the patch", 0)[0].from).to.equal("a/pkg/lib/x.js");
     expect(parsePatchFile(text, "the patch", 2)[0].from).to.equal("lib/x.js");
-    expect(() => parsePatchFile(text, "the patch", 4)).to.throw("names 'a/pkg/lib/x.js', which has no path left after stripping 4 leading components");
+    expect(() => parsePatchFile(text, "the patch", 4)).to.throw(
+      "names 'a/pkg/lib/x.js', which has no path left after stripping 4 leading components"
+    );
   });
 
   it("reads a created file, with the mode it is given", () => {
     const [change] = parsePatchFile(
-      lines("diff --git a/bin/run b/bin/run", "new file mode 100755", "index 000..111", "--- /dev/null", "+++ b/bin/run", "@@ -0,0 +1 @@", "+#!/bin/sh"),
+      lines(
+        "diff --git a/bin/run b/bin/run",
+        "new file mode 100755",
+        "index 000..111",
+        "--- /dev/null",
+        "+++ b/bin/run",
+        "@@ -0,0 +1 @@",
+        "+#!/bin/sh"
+      ),
       "the patch"
     );
     expect([change.from, change.to, change.mode]).to.deep.equal([undefined, "bin/run", 0o755]);
@@ -57,7 +79,15 @@ describe("parsePatchFile", () => {
 
   it("reads a deleted file", () => {
     const [change] = parsePatchFile(
-      lines("diff --git a/gone.txt b/gone.txt", "deleted file mode 100644", "index 111..000", "--- a/gone.txt", "+++ /dev/null", "@@ -1 +0,0 @@", "-x"),
+      lines(
+        "diff --git a/gone.txt b/gone.txt",
+        "deleted file mode 100644",
+        "index 111..000",
+        "--- a/gone.txt",
+        "+++ /dev/null",
+        "@@ -1 +0,0 @@",
+        "-x"
+      ),
       "the patch"
     );
     expect([change.from, change.to, change.mode]).to.deep.equal(["gone.txt", undefined, undefined]);
@@ -105,7 +135,10 @@ describe("parsePatchFile", () => {
   });
 
   it("carries control characters in a hunk as text", () => {
-    const [change] = parsePatchFile(lines("--- /dev/null", "+++ b/.DS_Store", "@@ -0,0 +1 @@", "+\u0000\u0001Bud1�", "\\ No newline at end of file"), "the patch");
+    const [change] = parsePatchFile(
+      lines("--- /dev/null", "+++ b/.DS_Store", "@@ -0,0 +1 @@", "+\u0000\u0001Bud1�", "\\ No newline at end of file"),
+      "the patch"
+    );
     expect(change.apply("")).to.equal("\u0000\u0001Bud1�");
   });
 
@@ -114,7 +147,9 @@ describe("parsePatchFile", () => {
       lines("--- a/x", "+++ b/x", "@@ -1,2 +1,2 @@", " one", "-two", "+three", "@@ -9,2 +9,2 @@", " nine", "-ten", "+eleven"),
       "patch 'fix.patch'"
     );
-    expect(() => change.apply("one\ntwo\n")).to.throw("patch 'fix.patch' does not apply to 'x': hunk @@ -9,2 +9,2 @@ does not match the file");
+    expect(() => change.apply("one\ntwo\n")).to.throw(
+      "patch 'fix.patch' does not apply to 'x': hunk @@ -9,2 +9,2 @@ does not match the file"
+    );
   });
 
   it("does not match a hunk whose context differs at all", () => {
@@ -123,15 +158,33 @@ describe("parsePatchFile", () => {
   });
 
   it("refuses a binary change, naming the file", () => {
-    const binary = lines("diff --git a/img.png b/img.png", "index 111..222 100644", "GIT binary patch", "literal 4", "Lc$~{{00000", "", "literal 0", "HcmV?d00001", "");
-    expect(() => parsePatchFile(binary, "patch 'fix.patch'")).to.throw("patch 'fix.patch' changes a binary file, which a patch cannot carry (diff --git a/img.png b/img.png)");
-    expect(() => parsePatchFile(lines("diff --git a/i.png b/i.png", "Binary files a/i.png and b/i.png differ"), "the patch")).to.throw("changes a binary file");
+    const binary = lines(
+      "diff --git a/img.png b/img.png",
+      "index 111..222 100644",
+      "GIT binary patch",
+      "literal 4",
+      "Lc$~{{00000",
+      "",
+      "literal 0",
+      "HcmV?d00001",
+      ""
+    );
+    expect(() => parsePatchFile(binary, "patch 'fix.patch'")).to.throw(
+      "patch 'fix.patch' changes a binary file, which a patch cannot carry (diff --git a/img.png b/img.png)"
+    );
+    expect(() => parsePatchFile(lines("diff --git a/i.png b/i.png", "Binary files a/i.png and b/i.png differ"), "the patch")).to.throw(
+      "changes a binary file"
+    );
   });
 
   it("refuses a name that leaves the files it applies to", () => {
     const escaping = lines("--- a/../../etc/passwd", "+++ b/../../etc/passwd", "@@ -1 +1 @@", "-a", "+b");
-    expect(() => parsePatchFile(escaping, "the patch")).to.throw("names 'a/../../etc/passwd', which is outside the files it applies to");
-    expect(() => parsePatchFile(lines("--- /etc/passwd", "+++ /etc/passwd", "@@ -1 +1 @@", "-a", "+b"), "the patch", 0)).to.throw("outside the files it applies to");
+    expect(() => parsePatchFile(escaping, "the patch")).to.throw(
+      "names 'a/../../etc/passwd', which is outside the files it applies to"
+    );
+    expect(() => parsePatchFile(lines("--- /etc/passwd", "+++ /etc/passwd", "@@ -1 +1 @@", "-a", "+b"), "the patch", 0)).to.throw(
+      "outside the files it applies to"
+    );
   });
 
   it("refuses text that is no diff", () => {

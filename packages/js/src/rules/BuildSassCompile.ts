@@ -34,15 +34,7 @@
  * (output: `out/**`).
  */
 
-import {
-  Computable,
-  defineRule,
-  EMPTY_FILESET,
-  FileSet,
-  MemoryFile,
-  RuleResult,
-  TargetContext,
-} from "@fabr-build/core";
+import { Computable, defineRule, EMPTY_FILESET, FileSet, MemoryFile, RuleResult, TargetContext } from "@fabr-build/core";
 import { buildSassOptions, CSS_OUTDIR, CSS_SRC_ROOT, CSS_TOOL_DIR } from "../CSSCompile";
 import { emitsSourceMap } from "../JSPackage";
 import { DEPS_REPORT_FILE, DEPS_REPORT_FLAG, MANIFEST_FLAG, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "@fabr-build/js-tools";
@@ -53,7 +45,10 @@ import { NPM_FORMAT } from "../NPMProtocol";
 /** The `sass_compile` rule. */
 export default defineRule({
   requirements(context) {
-    return { build: { srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps", undefined, NPM_FORMAT) }, result: "files" };
+    return {
+      build: { srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps", undefined, NPM_FORMAT) },
+      result: "files",
+    };
   },
   evaluateMaterialized(context, collected) {
     return buildSassCompile(context, collected);
@@ -66,7 +61,10 @@ function buildSassCompile(context: TargetContext, collected: { srcs: FileSet[]; 
     ({ srcs: srcSets, deps }, compiler, buildType): RuleResult => {
       const srcs = FileSet.unionAll(...srcSets);
       /* Maps ride the same BUILD_TYPE axis as the JavaScript ones. */
-      const options = buildSassOptions([...srcs].map(([name]) => name), emitsSourceMap(buildType));
+      const options = buildSassOptions(
+        [...srcs].map(([name]) => name),
+        emitsSourceMap(buildType)
+      );
       if (options.sources.length === 0) {
         /* Nothing to lower — every source is a partial, or there are none. */
         return EMPTY_FILESET;

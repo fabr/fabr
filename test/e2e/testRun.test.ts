@@ -54,17 +54,16 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
   const project = (body: string): Record<string, string> => ({
     ...STUB_TSC,
     "PROJECT.fabr":
-      "plugin @fabr-build/js;\n\n" +
-      STUB_TSC_CONFIG +
-      "\njs_package thing { srcs = src:**/*.ts; tests = src:**/*.test.ts; }\n",
+      "plugin @fabr-build/js;\n\n" + STUB_TSC_CONFIG + "\njs_package thing { srcs = src:**/*.ts; tests = src:**/*.test.ts; }\n",
     "src/thing.test.ts": `const assert = require("node:assert");\n${body}\n`,
   });
 
   it("fails the command and reports the failing test when a test fails", () => {
-    const result = runFabr(
-      project('describe("thing", () => { it("fails on purpose", () => { assert.equal(1, 2); }); });'),
-      ["-DJS_TARGET=es2020", "test", "thing"]
-    );
+    const result = runFabr(project('describe("thing", () => { it("fails on purpose", () => { assert.equal(1, 2); }); });'), [
+      "-DJS_TARGET=es2020",
+      "test",
+      "thing",
+    ]);
     expect(result.status).to.not.equal(0);
     /* rendered as a test outcome (name + message), not a build failure */
     expect(result.stderr).to.contain("test failed");
@@ -81,7 +80,11 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
     const report = JSON.parse(ctrf.files?.["out/report.json"] ?? "{}");
     expect(report.results.summary).to.include({ tests: 2, passed: 1, failed: 1 });
 
-    const junit = runFabr(files, ["-DJS_TARGET=es2020", "test", "--report=out/junit.xml", "--format", "junit", "thing"], ["out/junit.xml"]);
+    const junit = runFabr(
+      files,
+      ["-DJS_TARGET=es2020", "test", "--report=out/junit.xml", "--format", "junit", "thing"],
+      ["out/junit.xml"]
+    );
     expect(junit.status).to.not.equal(0);
     const xml = junit.files?.["out/junit.xml"] ?? "";
     expect(xml).to.match(/<testsuites [^>]*tests="2" failures="1"/);
@@ -111,7 +114,8 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
       "src/red.test.ts":
         'const assert = require("node:assert");\nrequire("fs").appendFileSync(process.env.MARKER, "red\\n");\n' +
         `describe("red", () => { it("fails on purpose ${process.pid}-${Date.now()}", () => { assert.equal(1, 2); }); });\n`,
-      "src/green.test.ts": 'require("fs").appendFileSync(process.env.MARKER, "green\\n");\ndescribe("green", () => { it("holds", () => {}); });\n',
+      "src/green.test.ts":
+        'require("fs").appendFileSync(process.env.MARKER, "green\\n");\ndescribe("green", () => { it("holds", () => {}); });\n',
     };
     const first = runFabr(files, ["-DJS_TARGET=es2020", "test", "thing"]);
     expect(first.status).to.not.equal(0);
@@ -144,8 +148,10 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
         `\njs_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  test_env = { MARKER = "${marker}"; }\n}\n`,
       "src/a.ts": `exports.a = "${a}";\n`,
       "src/b.ts": `exports.b = "${unique}";\n`,
-      "src/a.test.ts": 'const { a } = require("./a");\nrequire("fs").appendFileSync(process.env.MARKER, "a\\n");\ndescribe("a", () => { it("is", () => {}); });\n',
-      "src/b.test.ts": 'const { b } = require("./b");\nrequire("fs").appendFileSync(process.env.MARKER, "b\\n");\ndescribe("b", () => { it("is", () => {}); });\n',
+      "src/a.test.ts":
+        'const { a } = require("./a");\nrequire("fs").appendFileSync(process.env.MARKER, "a\\n");\ndescribe("a", () => { it("is", () => {}); });\n',
+      "src/b.test.ts":
+        'const { b } = require("./b");\nrequire("fs").appendFileSync(process.env.MARKER, "b\\n");\ndescribe("b", () => { it("is", () => {}); });\n',
       /* What a process it starts reads is beyond any record, so it runs on every change. */
       "src/c.test.ts":
         'require("child_process").execFileSync(process.execPath, ["-e", ""]);\nrequire("fs").appendFileSync(process.env.MARKER, "c\\n");\ndescribe("c", () => { it("is", () => {}); });\n',
@@ -201,7 +207,8 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
         "\njs_package lib { srcs = libsrc:**/*.ts; }\n" +
         `js_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  deps = lib;\n  test_deps = layout/pnp;\n  test_env = { MARKER = "${marker}"; }\n}\n`,
       "libsrc/index.ts": `exports.greeting = "${greeting}";\n`,
-      "src/a.test.ts": 'require("lib");\nrequire("fs").appendFileSync(process.env.MARKER, "a\\n");\ndescribe("a", () => { it("is", () => {}); });\n',
+      "src/a.test.ts":
+        'require("lib");\nrequire("fs").appendFileSync(process.env.MARKER, "a\\n");\ndescribe("a", () => { it("is", () => {}); });\n',
       "src/b.test.ts": 'require("fs").appendFileSync(process.env.MARKER, "b\\n");\ndescribe("b", () => { it("is", () => {}); });\n',
     });
     expect(runFabr(files(unique), ["-DJS_TARGET=es2020", "test", "thing"]).status).to.equal(0);
@@ -226,7 +233,8 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
           `js_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  deps = lib;\n  test_deps = layout/${layout};\n  test_env = { MARKER = "${marker}"; }\n}\n`,
         "libsrc/index.ts": `exports.greeting = "${unique}";\n`,
         "libsrc/other.ts": `exports.other = "${other}";\n`,
-        "src/a.test.ts": 'require("lib");\nrequire("fs").appendFileSync(process.env.MARKER, "a\\n");\ndescribe("a", () => { it("is", () => {}); });\n',
+        "src/a.test.ts":
+          'require("lib");\nrequire("fs").appendFileSync(process.env.MARKER, "a\\n");\ndescribe("a", () => { it("is", () => {}); });\n',
       });
       expect(runFabr(files(unique), ["-DJS_TARGET=es2020", "test", "thing"]).status).to.equal(0);
       expect(ran()).to.deep.equal(["a"]);
@@ -314,7 +322,8 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
       "othersrc/unread.ts": `exports.unread = "${unread}";\n`,
       "midsrc/index.ts": 'exports.v = require("other").v;\n',
       "libsrc/index.ts": 'exports.v = require("other").v;\n',
-      "src/a.test.ts": 'require("lib");\nrequire("fs").appendFileSync(process.env.MARKER, "a\\n");\ndescribe("a", () => { it("is", () => {}); });\n',
+      "src/a.test.ts":
+        'require("lib");\nrequire("fs").appendFileSync(process.env.MARKER, "a\\n");\ndescribe("a", () => { it("is", () => {}); });\n',
     });
     expect(runFabr(files(unique), ["-DJS_TARGET=es2020", "test", "thing"]).status).to.equal(0);
     expect(ran()).to.deep.equal(["a"]);
@@ -338,7 +347,8 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
         `js_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  deps = lib;\n  test_deps = layout/pnp;\n  test_env = { MARKER = "${marker}"; }\n}\n`,
       "libsrc/build/index.ts": `exports.lib = "${unique}";\n`,
       "src/index.ts": `exports.own = "${own}";\n`,
-      "src/a.test.ts": 'require("./index");\nrequire("fs").appendFileSync(process.env.MARKER, "a\\n");\ndescribe("a", () => { it("is", () => {}); });\n',
+      "src/a.test.ts":
+        'require("./index");\nrequire("fs").appendFileSync(process.env.MARKER, "a\\n");\ndescribe("a", () => { it("is", () => {}); });\n',
     });
     expect(runFabr(files(unique), ["-DJS_TARGET=es2020", "test", "thing"]).status).to.equal(0);
     expect(ran()).to.deep.equal(["a"]);
@@ -399,9 +409,7 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
       {
         ...STUB_TSC,
         "PROJECT.fabr":
-          "plugin @fabr-build/js;\n\n" +
-          STUB_TSC_CONFIG +
-          "\njs_package thing { srcs = src:**/*.ts; tests = src:**/*.test.ts; }\n",
+          "plugin @fabr-build/js;\n\n" + STUB_TSC_CONFIG + "\njs_package thing { srcs = src:**/*.ts; tests = src:**/*.test.ts; }\n",
         "src/thing.test.ts": 'require("./nonexistent-module");\ndescribe("thing", () => { it("never runs", () => {}); });\n',
       },
       ["-DJS_TARGET=es2020", "test", "thing"]
@@ -412,10 +420,11 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
   });
 
   it("passes cleanly when the tests pass", () => {
-    const result = runFabr(
-      project('describe("thing", () => { it("holds", () => { assert.equal(1, 1); }); });'),
-      ["-DJS_TARGET=es2020", "test", "thing"]
-    );
+    const result = runFabr(project('describe("thing", () => { it("holds", () => { assert.equal(1, 1); }); });'), [
+      "-DJS_TARGET=es2020",
+      "test",
+      "thing",
+    ]);
     expect(result.status).to.equal(0);
     expect(result.stderr).to.contain("1 test passed");
   });
@@ -443,7 +452,7 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
       'describe("env", () => { it("sees its target\'s variables only", () => {\n' +
       `  assert.equal(process.env.GREETING, "${expected}");\n` +
       '  assert.equal(process.env.NODE_OPTIONS, "--max-old-space-size=512 --no-warnings");\n' +
-      '  assert.equal(process.env.PATH, undefined);\n' +
+      "  assert.equal(process.env.PATH, undefined);\n" +
       "}); });\n";
     const files = {
       ...STUB_TSC,
@@ -451,9 +460,9 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
         "plugin @fabr-build/js;\n\n" +
         STUB_TSC_CONFIG +
         "\njs_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n" +
-        "  test_env = { GREETING = hello; NODE_OPTIONS = \"--max-old-space-size=512 --no-warnings\"; }\n}\n" +
+        '  test_env = { GREETING = hello; NODE_OPTIONS = "--max-old-space-size=512 --no-warnings"; }\n}\n' +
         "js_test standalone {\n  tests = it:**/*.test.ts;\n" +
-        "  env = { GREETING = howdy; NODE_OPTIONS = \"--max-old-space-size=512 --no-warnings\"; }\n}\n",
+        '  env = { GREETING = howdy; NODE_OPTIONS = "--max-old-space-size=512 --no-warnings"; }\n}\n',
       "src/thing.test.ts": test("hello"),
       "it/alone.test.ts": test("howdy"),
     };
@@ -620,11 +629,9 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
       {
         ...STUB_TSC,
         "PROJECT.fabr":
-          "plugin @fabr-build/js;\n\n" +
-          STUB_TSC_CONFIG +
-          "\njs_package thing { srcs = src:**/*.ts; tests = src:**/*.test.ts; }\n",
+          "plugin @fabr-build/js;\n\n" + STUB_TSC_CONFIG + "\njs_package thing { srcs = src:**/*.ts; tests = src:**/*.test.ts; }\n",
         /* `describe` proves the runner's own globals are installed first. */
-        "src/setupTests.ts": 'globalThis.ranSetup = typeof describe;\nglobalThis.Polyfilled = class {};\n',
+        "src/setupTests.ts": "globalThis.ranSetup = typeof describe;\nglobalThis.Polyfilled = class {};\n",
         "src/thing.test.ts":
           'const assert = require("node:assert");\n' +
           'describe("setup", () => { it("ran before the test file", () => {\n' +
@@ -645,10 +652,8 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
       {
         ...STUB_TSC,
         "PROJECT.fabr":
-          "plugin @fabr-build/js;\n\n" +
-          STUB_TSC_CONFIG +
-          "\njs_package thing { srcs = src:**/*.ts; tests = src:**/*.test.ts; }\n",
-        "src/helpers/setupTests.ts": 'globalThis.ranSetup = true;\n',
+          "plugin @fabr-build/js;\n\n" + STUB_TSC_CONFIG + "\njs_package thing { srcs = src:**/*.ts; tests = src:**/*.test.ts; }\n",
+        "src/helpers/setupTests.ts": "globalThis.ranSetup = true;\n",
         "src/thing.test.ts":
           'const assert = require("node:assert");\n' +
           'describe("setup", () => { it("did not run", () => {\n' +
@@ -665,7 +670,8 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
     const files = {
       ...STUB_TSC,
       "PROJECT.fabr": "plugin @fabr-build/js;\n\n" + STUB_TSC_CONFIG + "\njs_test standalone {\n  tests = it:**/*.test.ts;\n}\n",
-      "it/alone.test.ts": 'const assert = require("node:assert");\ndescribe("x", () => { it("passes", () => { assert.ok(true); }); });\n',
+      "it/alone.test.ts":
+        'const assert = require("node:assert");\ndescribe("x", () => { it("passes", () => { assert.ok(true); }); });\n',
     };
     const listed = runFabr(files, ["-DJS_TARGET=es2020", "ls", "standalone"]);
     expect(listed.status, listed.stderr).to.equal(0);

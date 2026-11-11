@@ -344,7 +344,10 @@ export class TarExtract extends Writable {
 
 /** The stream of one entry's content: `onRead` is called when it wants more, `onDestroy` when it is destroyed. */
 class TarEntryContent extends Readable {
-  constructor(private readonly onRead: () => void, private readonly onDestroy: (err: Error | null) => void) {
+  constructor(
+    private readonly onRead: () => void,
+    private readonly onDestroy: (err: Error | null) => void
+  ) {
     super();
   }
 

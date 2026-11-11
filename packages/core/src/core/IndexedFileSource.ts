@@ -90,7 +90,9 @@ export class IndexedFileSource extends FSFileSource {
               /* Confirmation is unconditional in ingest — which branch served
                * the hash must not decide whether an echo is judged. */
               this.confirmIngested(filename, held.hash);
-              return Computable.resolve(new FSFile(this.root, filename, fsStat, held.hash, held.mime, this.reading.read === "snapshot" ? blobPath : undefined));
+              return Computable.resolve(
+                new FSFile(this.root, filename, fsStat, held.hash, held.mime, this.reading.read === "snapshot" ? blobPath : undefined)
+              );
             }
           }
           if (this.reading.read === "in-place") {

@@ -24,7 +24,10 @@ import { pathToFileURL } from "node:url";
 import { startFabrWatch, STUB_TSC, STUB_TSC_CONFIG, type WatchSession } from "./harness";
 
 /** A BSP client over a session's stdio. */
-function bspClient(session: WatchSession, protocol?: "lsp"): {
+function bspClient(
+  session: WatchSession,
+  protocol?: "lsp"
+): {
   request(method: string, params: unknown): Promise<Record<string, unknown>>;
   notify(method: string, params: unknown): void;
   notification(method: string): Promise<Record<string, unknown>>;
@@ -85,10 +88,13 @@ function bspClient(session: WatchSession, protocol?: "lsp"): {
       return taken;
     },
     /* Drop the notifications `method` received so far, once those still in flight have arrived. */
-    drain: method => new Promise(resolve => setTimeout(() => {
-      notified.delete(method);
-      resolve();
-    }, 500)),
+    drain: method =>
+      new Promise(resolve =>
+        setTimeout(() => {
+          notified.delete(method);
+          resolve();
+        }, 500)
+      ),
   };
 }
 
@@ -142,7 +148,13 @@ describe("e2e: build-server", () => {
   beforeAll(async () => {
     session = startFabrWatch(project, ["-DJS_TARGET=es2020", "build-server"]);
     client = bspClient(session);
-    await client.request("build/initialize", { displayName: "test", version: "0", bspVersion: "2.1.0", rootUri: "", capabilities: {} });
+    await client.request("build/initialize", {
+      displayName: "test",
+      version: "0",
+      bspVersion: "2.1.0",
+      rootUri: "",
+      capabilities: {},
+    });
     /* Each target is served as it is described: wait for the eight. */
     for (;;) {
       const served = (await client.request("workspace/buildTargets", {})) as { targets: ITarget[] };
@@ -170,14 +182,22 @@ describe("e2e: build-server", () => {
     expect(app.tags).to.deep.equal(["library"]);
     expect(app.dependencies).to.deep.equal([{ uri: "fabr:lib" }]);
     expect(app.dataKind).to.equal("typescript");
-    expect(app.data).to.deep.equal({ units: { build: "units/build" }, manifest: "package.json", plugin: "@fabr-build/js-tools/tsserverPlugin/TsserverPlugin" });
+    expect(app.data).to.deep.equal({
+      units: { build: "units/build" },
+      manifest: "package.json",
+      plugin: "@fabr-build/js-tools/tsserverPlugin/TsserverPlugin",
+    });
     const tests = targets.get("fabr:app?operation=test")!;
     expect(tests.tags).to.deep.equal(["test"]);
     expect(tests.data.units).to.deep.equal({ test: "units/test" });
   });
 
   it("reports describing as a task: its progress over the targets it describes, and none failed", async () => {
-    const finished = (await client.notification("build/taskFinish")) as { status: number; dataKind: string; data: { failed: string[] } };
+    const finished = (await client.notification("build/taskFinish")) as {
+      status: number;
+      dataKind: string;
+      data: { failed: string[] };
+    };
     expect(finished).to.deep.include({ status: 1, dataKind: "fabr-describe", data: { failed: [] } });
     const progress = (await client.notification("build/taskProgress")) as { progress: number; total: number };
     expect(progress.total).to.be.at.least(targets.size);
@@ -185,7 +205,9 @@ describe("e2e: build-server", () => {
 
   it("lists a unit's sources: the build's without its tests, the tests' with them", async () => {
     const sources = async (uri: string): Promise<string[]> => {
-      const { items } = (await client.request("buildTarget/sources", { targets: [{ uri }] })) as { items: Array<{ sources: Array<{ uri: string }> }> };
+      const { items } = (await client.request("buildTarget/sources", { targets: [{ uri }] })) as {
+        items: Array<{ sources: Array<{ uri: string }> }>;
+      };
       return items[0].sources.map(source => source.uri.replace(/^.*\/app\/src\//, ""));
     };
     expect(await sources("fabr:app")).to.deep.equal(["main.ts"]);
@@ -193,7 +215,13 @@ describe("e2e: build-server", () => {
   });
 
   it("describes each unit over the directory its sources come from, with the compile's own table", () => {
-    expect(read("fabr:app", "units/build/unit.json")).to.deep.equal({ root: "./app/src/", package: "app", generated: [], rewrites: [], resources: [] });
+    expect(read("fabr:app", "units/build/unit.json")).to.deep.equal({
+      root: "./app/src/",
+      package: "app",
+      generated: [],
+      rewrites: [],
+      resources: [],
+    });
     const build = read("fabr:app", "units/build/tsconfig.json");
     expect(build.files).to.deep.equal(["main.ts"]);
     expect(build.exclude).to.deep.equal([]);
@@ -205,7 +233,11 @@ describe("e2e: build-server", () => {
       "main.ts",
     ]);
     expect(read("fabr:app?operation=test", "units/test/unit.json").generated).to.deep.equal(["@types/fabr-test-globals/index.d.ts"]);
-    const rows = new Map(read("fabr:app", "units/build/.pnp.data.json").packageRegistryData as Array<[string | null, Array<[string, { packageLocation: string }]>]>);
+    const rows = new Map(
+      read("fabr:app", "units/build/.pnp.data.json").packageRegistryData as Array<
+        [string | null, Array<[string, { packageLocation: string }]>]
+      >
+    );
     expect([...rows.keys()]).to.include.members([null, "app", "lib"]);
     /* `lib` is described, not built: its row is at its own unit's root. */
     expect(rows.get("lib")![0][1].packageLocation).to.equal("./../../lib/src/");
@@ -218,9 +250,17 @@ describe("e2e: build-server", () => {
   it("describes a plugin as its own target over the package it is built as", async () => {
     const greeter = targets.get("fabr:greeter")!;
     expect(greeter.dependencies).to.deep.equal([]);
-    const { items } = (await client.request("buildTarget/sources", { targets: [{ uri: "fabr:greeter" }] })) as { items: Array<{ sources: Array<{ uri: string }> }> };
+    const { items } = (await client.request("buildTarget/sources", { targets: [{ uri: "fabr:greeter" }] })) as {
+      items: Array<{ sources: Array<{ uri: string }> }>;
+    };
     expect(items[0].sources.map(source => source.uri.replace(/^.*\//, ""))).to.deep.equal(["GREET.fabr"]);
-    expect(read("fabr:greeter", "extends/units/build/unit.json")).to.deep.equal({ root: "./plugin/src/", package: "greeter", generated: [], rewrites: [], resources: [] });
+    expect(read("fabr:greeter", "extends/units/build/unit.json")).to.deep.equal({
+      root: "./plugin/src/",
+      package: "greeter",
+      generated: [],
+      rewrites: [],
+      resources: [],
+    });
   });
 
   it("describes a unit whose sources come from two directories at the directory holding both, as one tree", () => {
@@ -241,7 +281,9 @@ describe("e2e: build-server", () => {
   });
 
   it("installs a package whose sources are all generated in the pool, read from its sources", () => {
-    const table = read("fabr:user", "units/build/.pnp.data.json") as { packageRegistryData: Array<[string | null, Array<[string, { packageLocation: string }]>]> };
+    const table = read("fabr:user", "units/build/.pnp.data.json") as {
+      packageRegistryData: Array<[string | null, Array<[string, { packageLocation: string }]>]>;
+    };
     const location = table.packageRegistryData.find(([name]) => name === "made")![1][0][1].packageLocation;
     expect(location).to.match(/^\.\/\.fabr-tree\/[0-9a-f]+\/$/);
     const tree = path.join(path.dirname(targets.get("fabr:user")!.fabr.description), path.basename(location));
@@ -251,7 +293,9 @@ describe("e2e: build-server", () => {
   });
 
   it("locates a package taken under another name at its own unit", () => {
-    const table = read("fabr:alias", "units/build/.pnp.data.json") as { packageRegistryData: Array<[string | null, Array<[string, { packageLocation: string }]>]> };
+    const table = read("fabr:alias", "units/build/.pnp.data.json") as {
+      packageRegistryData: Array<[string | null, Array<[string, { packageLocation: string }]>]>;
+    };
     expect(table.packageRegistryData.find(([name]) => name === "lib2")![1][0][1].packageLocation).to.equal("./../../lib/src/");
   });
 
@@ -262,7 +306,10 @@ describe("e2e: build-server", () => {
   it("describes a package's manifest from its declared entry points", () => {
     const manifest = read("fabr:lib", "package.json");
     expect(manifest.name).to.equal("lib");
-    expect(manifest.exports).to.deep.equal({ ".": { types: "./index.d.ts", default: "./index.js" }, "./package.json": "./package.json" });
+    expect(manifest.exports).to.deep.equal({
+      ".": { types: "./index.d.ts", default: "./index.js" },
+      "./package.json": "./package.json",
+    });
   });
 
   it("announces the targets a change describes anew", async () => {
@@ -303,12 +350,20 @@ describe("e2e: build-server with a target that fails to describe", () => {
   let session: WatchSession;
   let client: ReturnType<typeof bspClient>;
   const served = async (): Promise<string[]> =>
-    ((await client.request("workspace/buildTargets", {})) as { targets: Array<{ id: { uri: string } }> }).targets.map(target => target.id.uri).sort();
+    ((await client.request("workspace/buildTargets", {})) as { targets: Array<{ id: { uri: string } }> }).targets
+      .map(target => target.id.uri)
+      .sort();
 
   beforeAll(async () => {
     session = startFabrWatch(project, ["-DJS_TARGET=es2020", "build-server"]);
     client = bspClient(session);
-    await client.request("build/initialize", { displayName: "test", version: "0", bspVersion: "2.1.0", rootUri: "", capabilities: {} });
+    await client.request("build/initialize", {
+      displayName: "test",
+      version: "0",
+      bspVersion: "2.1.0",
+      rootUri: "",
+      capabilities: {},
+    });
   });
   afterAll(() => session.stop());
 
@@ -323,14 +378,19 @@ describe("e2e: build-server with a target that fails to describe", () => {
     };
     expect(published.textDocument.uri).to.match(/\/PROJECT\.fabr$/);
     expect(published.buildTarget.uri).to.equal("fabr:made");
-    expect(published.diagnostics.map(diagnostic => diagnostic.range.start.line)).to.deep.equal([STUB_TSC_CONFIG.split("\n").length + 3]);
+    expect(published.diagnostics.map(diagnostic => diagnostic.range.start.line)).to.deep.equal([
+      STUB_TSC_CONFIG.split("\n").length + 3,
+    ]);
     expect(published.diagnostics[0].message).to.match(/^Failed to build gen/);
   });
 
   it("describes both once the failed target is fixed", async () => {
     session.write("gen.sh", "echo 'export const made = 1;'\n");
     expect(await client.notification("build/taskFinish")).to.deep.include({ status: 1, data: { failed: [] } });
-    expect(await client.notification("build/publishDiagnostics")).to.deep.include({ buildTarget: { uri: "fabr:made" }, diagnostics: [] });
+    expect(await client.notification("build/publishDiagnostics")).to.deep.include({
+      buildTarget: { uri: "fabr:made" },
+      diagnostics: [],
+    });
     await client.drain("buildTarget/didChange");
     expect(await served()).to.deep.equal(["fabr:made", "fabr:user"]);
   });
@@ -357,7 +417,13 @@ describe("e2e: build-server with a target that fails after the rest", () => {
   beforeAll(async () => {
     session = startFabrWatch(project, ["-DJS_TARGET=es2020", "build-server"]);
     client = bspClient(session);
-    await client.request("build/initialize", { displayName: "test", version: "0", bspVersion: "2.1.0", rootUri: "", capabilities: {} });
+    await client.request("build/initialize", {
+      displayName: "test",
+      version: "0",
+      bspVersion: "2.1.0",
+      rootUri: "",
+      capabilities: {},
+    });
   });
   afterAll(() => session.stop());
 
@@ -391,20 +457,32 @@ describe("e2e: build-server over a project that never loads", () => {
   it("answers the targets and a build file's names with none", async () => {
     expect(await bsp.request("workspace/buildTargets", {})).to.deep.equal({ targets: [] });
     const uri = pathToFileURL(path.join(fs.realpathSync(session.dir), "PROJECT.fabr")).toString();
-    expect(await lsp.request("textDocument/definition", { textDocument: { uri }, position: { line: 0, character: 1 } })).to.deep.equal([]);
+    expect(await lsp.request("textDocument/definition", { textDocument: { uri }, position: { line: 0, character: 1 } })).to.deep.equal(
+      []
+    );
   });
 });
 
 /* A reload serves the reloaded model's descriptions alone: the model it
  * replaced no longer answers a change to what it read. */
 describe("e2e: build-server across a reload", () => {
-  const config = (dir: string): string => "plugin @fabr-build/js;\n\n" + STUB_TSC_CONFIG + `\njs_package lib { srcs = ./${dir}/src:**/*.ts; }\n`;
-  const project = { ...STUB_TSC, "lib/src/index.ts": "export const a = 1;\n", "lib2/src/index.ts": "export const b = 1;\n", "PROJECT.fabr": config("lib") };
+  const config = (dir: string): string =>
+    "plugin @fabr-build/js;\n\n" + STUB_TSC_CONFIG + `\njs_package lib { srcs = ./${dir}/src:**/*.ts; }\n`;
+  const project = {
+    ...STUB_TSC,
+    "lib/src/index.ts": "export const a = 1;\n",
+    "lib2/src/index.ts": "export const b = 1;\n",
+    "PROJECT.fabr": config("lib"),
+  };
   let session: WatchSession;
   let client: ReturnType<typeof bspClient>;
   const sources = async (): Promise<string[]> => {
-    const answer = (await client.request("buildTarget/sources", { targets: [{ uri: "fabr:lib" }] })) as { items: Array<{ sources: Array<{ uri: string }> }> };
-    return (answer.items[0]?.sources ?? []).map(source => path.relative(fs.realpathSync(session.dir), new URL(source.uri).pathname)).sort();
+    const answer = (await client.request("buildTarget/sources", { targets: [{ uri: "fabr:lib" }] })) as {
+      items: Array<{ sources: Array<{ uri: string }> }>;
+    };
+    return (answer.items[0]?.sources ?? [])
+      .map(source => path.relative(fs.realpathSync(session.dir), new URL(source.uri).pathname))
+      .sort();
   };
   const until = async (holds: (found: string[]) => boolean): Promise<string[]> => {
     for (;;) {
@@ -419,7 +497,13 @@ describe("e2e: build-server across a reload", () => {
   beforeAll(async () => {
     session = startFabrWatch(project, ["-DJS_TARGET=es2020", "build-server"]);
     client = bspClient(session);
-    await client.request("build/initialize", { displayName: "test", version: "0", bspVersion: "2.1.0", rootUri: "", capabilities: {} });
+    await client.request("build/initialize", {
+      displayName: "test",
+      version: "0",
+      bspVersion: "2.1.0",
+      rootUri: "",
+      capabilities: {},
+    });
   });
   afterAll(() => session.stop());
 
@@ -443,14 +527,24 @@ describe("e2e: build-server before a client is initialized", () => {
 
   it("holds what it describes until it has answered the client's build/initialize", async () => {
     session = startFabrWatch(
-      { ...STUB_TSC, "lib/src/index.ts": "export const libValue = 1;\n", "PROJECT.fabr": "plugin @fabr-build/js;\n\n" + STUB_TSC_CONFIG + "\njs_package lib { srcs = ./lib/src:**/*.ts; }\n" },
+      {
+        ...STUB_TSC,
+        "lib/src/index.ts": "export const libValue = 1;\n",
+        "PROJECT.fabr": "plugin @fabr-build/js;\n\n" + STUB_TSC_CONFIG + "\njs_package lib { srcs = ./lib/src:**/*.ts; }\n",
+      },
       ["-DJS_TARGET=es2020", "build-server"]
     );
     await session.waitFor("Watching for changes");
     let received = "";
     session.stdout.on("data", (data: Buffer) => (received += data.toString("utf8")));
     const client = bspClient(session);
-    await client.request("build/initialize", { displayName: "test", version: "0", bspVersion: "2.1.0", rootUri: "", capabilities: {} });
+    await client.request("build/initialize", {
+      displayName: "test",
+      version: "0",
+      bspVersion: "2.1.0",
+      rootUri: "",
+      capabilities: {},
+    });
     await client.notification("build/taskFinish");
     const messages = received
       .split(/Content-Length: *\d+\r\n\r\n/)
@@ -497,14 +591,24 @@ describe("e2e: build-server's language server", () => {
     text = fs.readFileSync(file, "utf8");
     const initialized = await lsp.request("initialize", { processId: null, rootUri: null, capabilities: {} });
     expect(initialized).to.deep.include({
-      capabilities: { textDocumentSync: 1, definitionProvider: true, hoverProvider: true, documentSymbolProvider: true, completionProvider: { triggerCharacters: ["{", "$"] }, codeLensProvider: {} },
+      capabilities: {
+        textDocumentSync: 1,
+        definitionProvider: true,
+        hoverProvider: true,
+        documentSymbolProvider: true,
+        completionProvider: { triggerCharacters: ["{", "$"] },
+        codeLensProvider: {},
+      },
     });
     lsp.notify("initialized", {});
   });
   afterAll(() => session.stop());
 
   it("lists a build file's declarations", async () => {
-    const symbols = (await lsp.request("textDocument/documentSymbol", { textDocument: { uri } })) as unknown as Array<{ name: string; detail?: string }>;
+    const symbols = (await lsp.request("textDocument/documentSymbol", { textDocument: { uri } })) as unknown as Array<{
+      name: string;
+      detail?: string;
+    }>;
     expect(symbols.map(symbol => symbol.name)).to.include.members(["lib", "LIBS", "app"]);
   });
 
@@ -516,18 +620,29 @@ describe("e2e: build-server's language server", () => {
   });
 
   it("offers the properties a target's type declares, where one is named", async () => {
-    const items = (await lsp.request("textDocument/completion", { textDocument: { uri }, position: position("srcs = ./lib/src") })) as unknown as Array<{ label: string }>;
+    const items = (await lsp.request("textDocument/completion", {
+      textDocument: { uri },
+      position: position("srcs = ./lib/src"),
+    })) as unknown as Array<{ label: string }>;
     expect(items.map(item => item.label)).to.include.members(["srcs", "deps", "exports"]);
   });
 
   it("puts a target's operations above it, as commands naming the target, Test only where it has tests", async () => {
     /* Test is offered where the test target is served, as its description settles. */
-    while (!((await bsp.request("workspace/buildTargets", {})) as { targets: Array<{ id: { uri: string } }> }).targets.some(target => target.id.uri === "fabr:app?operation=test")) {
+    while (
+      !((await bsp.request("workspace/buildTargets", {})) as { targets: Array<{ id: { uri: string } }> }).targets.some(
+        target => target.id.uri === "fabr:app?operation=test"
+      )
+    ) {
       await bsp.notification("buildTarget/didChange");
     }
-    const lenses = (await lsp.request("textDocument/codeLens", { textDocument: { uri } })) as unknown as Array<{ command: { title: string; command: string; arguments: string[] } }>;
+    const lenses = (await lsp.request("textDocument/codeLens", { textDocument: { uri } })) as unknown as Array<{
+      command: { title: string; command: string; arguments: string[] };
+    }>;
     const of = (name: string): string[][] =>
-      lenses.filter(lens => lens.command.arguments[0].replace(/\?.*/, "") === `fabr:${name}`).map(lens => [lens.command.title, lens.command.command, lens.command.arguments[0]]);
+      lenses
+        .filter(lens => lens.command.arguments[0].replace(/\?.*/, "") === `fabr:${name}`)
+        .map(lens => [lens.command.title, lens.command.command, lens.command.arguments[0]]);
     expect(of("lib")).to.deep.equal([["Build", "fabr.build", "fabr:lib"]]);
     expect(of("app")).to.deep.equal([
       ["Build", "fabr.build", "fabr:app"],
@@ -536,7 +651,9 @@ describe("e2e: build-server's language server", () => {
   });
 
   it("documents what a reference names", async () => {
-    const hover = (await lsp.request("textDocument/hover", { textDocument: { uri }, position: position("lib;") })) as { contents: { value: string } };
+    const hover = (await lsp.request("textDocument/hover", { textDocument: { uri }, position: position("lib;") })) as {
+      contents: { value: string };
+    };
     expect(hover.contents.value).to.equal("`js_package lib`\n\nThe library.");
   });
 
@@ -554,7 +671,10 @@ describe("e2e: build-server's language server", () => {
   it("publishes the errors of a build file saved broken, and clears them once it is fixed", async () => {
     await lsp.drain("textDocument/publishDiagnostics");
     session.write("PROJECT.fabr", text + "broken {\n");
-    const broken = (await lsp.notification("textDocument/publishDiagnostics")) as { uri: string; diagnostics: Array<{ message: string }> };
+    const broken = (await lsp.notification("textDocument/publishDiagnostics")) as {
+      uri: string;
+      diagnostics: Array<{ message: string }>;
+    };
     expect(broken.uri).to.equal(uri);
     expect(broken.diagnostics.length).to.be.greaterThan(0);
     session.write("PROJECT.fabr", text);
@@ -569,9 +689,7 @@ describe("e2e: build-server building and testing targets", () => {
   const project = {
     ...STUB_TSC,
     "PROJECT.fabr":
-      "plugin @fabr-build/js;\n\n" +
-      STUB_TSC_CONFIG +
-      "\njs_package thing { srcs = src:**/*.ts; tests = src:**/*.test.ts; }\n",
+      "plugin @fabr-build/js;\n\n" + STUB_TSC_CONFIG + "\njs_package thing { srcs = src:**/*.ts; tests = src:**/*.test.ts; }\n",
     "src/index.ts": "export const one = 1;\n",
     "src/thing.test.ts":
       'const assert = require("node:assert");\n' +
@@ -584,20 +702,30 @@ describe("e2e: build-server building and testing targets", () => {
   beforeAll(async () => {
     session = startFabrWatch(project, ["-DJS_TARGET=es2020", "build-server"]);
     client = bspClient(session);
-    await client.request("build/initialize", { displayName: "test", version: "0", bspVersion: "2.1.0", rootUri: "", capabilities: {} });
+    await client.request("build/initialize", {
+      displayName: "test",
+      version: "0",
+      bspVersion: "2.1.0",
+      rootUri: "",
+      capabilities: {},
+    });
     await client.notification("build/taskFinish");
   });
   afterAll(() => session.stop());
 
   it("builds a target a compile request names", async () => {
-    expect(await client.request("buildTarget/compile", { targets: [{ uri: "fabr:thing" }], originId: "c1" })).to.deep.equal({ originId: "c1", statusCode: 1 });
+    expect(await client.request("buildTarget/compile", { targets: [{ uri: "fabr:thing" }], originId: "c1" })).to.deep.equal({
+      originId: "c1",
+      statusCode: 1,
+    });
   });
 
   it("tests a target a test request names, reporting each test's outcome", async () => {
     await client.drain("build/taskFinish");
     const result = await client.request("buildTarget/test", { targets: [{ uri: "fabr:thing?operation=test" }], originId: "t1" });
     expect(result).to.deep.equal({ originId: "t1", statusCode: 2 });
-    const finishes: Array<{ dataKind?: string; data?: { displayName?: string; status?: number; passed?: number; failed?: number } }> = [];
+    const finishes: Array<{ dataKind?: string; data?: { displayName?: string; status?: number; passed?: number; failed?: number } }> =
+      [];
     for (;;) {
       const finish = (await client.notification("build/taskFinish")) as (typeof finishes)[number];
       finishes.push(finish);
@@ -605,7 +733,9 @@ describe("e2e: build-server building and testing targets", () => {
         break;
       }
     }
-    const outcomes = finishes.filter(finish => finish.dataKind === "test-finish").map(finish => [finish.data!.displayName, finish.data!.status]);
+    const outcomes = finishes
+      .filter(finish => finish.dataKind === "test-finish")
+      .map(finish => [finish.data!.displayName, finish.data!.status]);
     expect(outcomes.sort()).to.deep.equal([
       ["fails on purpose", 2],
       ["passes", 1],

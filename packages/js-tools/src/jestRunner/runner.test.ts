@@ -26,7 +26,12 @@ const TEST_FILE = path.resolve("build", "Thing.test.js");
 
 describe("toTestResults", () => {
   const passed = { fullName: "Thing works", status: "passed", duration: 3, failureMessages: [] };
-  const failed = { fullName: "Thing breaks", status: "failed", duration: 1, failureMessages: ["expected 1 to equal 2\n  at Thing.test.ts:4:3"] };
+  const failed = {
+    fullName: "Thing breaks",
+    status: "failed",
+    duration: 1,
+    failureMessages: ["expected 1 to equal 2\n  at Thing.test.ts:4:3"],
+  };
 
   it("reports each test the file ran", () => {
     const results = toTestResults({ testFile: TEST_FILE, stderr: "", result: { testFile: TEST_FILE, results: [passed, failed] } });
@@ -42,7 +47,11 @@ describe("toTestResults", () => {
     const results = toTestResults({
       testFile: TEST_FILE,
       stderr: "",
-      result: { testFile: TEST_FILE, results: [passed, failed], execError: "Error: connection lost\n  at afterAll (Thing.test.ts:20:5)" },
+      result: {
+        testFile: TEST_FILE,
+        results: [passed, failed],
+        execError: "Error: connection lost\n  at afterAll (Thing.test.ts:20:5)",
+      },
     });
     expect(results.map(r => [r.name, r.status])).to.deep.equal([
       ["Thing works", "passed"],
@@ -65,7 +74,11 @@ describe("toTestResults", () => {
   });
 
   it("reports a file that never reported with its stderr as the trace", () => {
-    const results = toTestResults({ testFile: TEST_FILE, stderr: "Segmentation fault\n", crash: "the test process exited on SIGSEGV without reporting" });
+    const results = toTestResults({
+      testFile: TEST_FILE,
+      stderr: "Segmentation fault\n",
+      crash: "the test process exited on SIGSEGV without reporting",
+    });
     expect(results.map(r => [r.status, r.message, r.trace])).to.deep.equal([
       ["failed", "the test process exited on SIGSEGV without reporting", "Segmentation fault"],
     ]);

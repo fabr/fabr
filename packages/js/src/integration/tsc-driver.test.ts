@@ -146,7 +146,7 @@ function stage(
       ...rows.map(
         ([name, reference, dependencies]): [
           string,
-          Array<[string, { packageLocation: string; packageDependencies: Array<[string, PnpDependencyTarget]>; linkType: "HARD" }]>
+          Array<[string, { packageLocation: string; packageDependencies: Array<[string, PnpDependencyTarget]>; linkType: "HARD" }]>,
         ] => [
           name,
           [
@@ -783,7 +783,10 @@ describe("the tsc driver", () => {
       ],
       []
     );
-    fs.writeFileSync(work.root + "/src/index.ts", 'import type { Marker } from "closed/sub";\nexport const which: Marker = "from the sidecar";\n');
+    fs.writeFileSync(
+      work.root + "/src/index.ts",
+      'import type { Marker } from "closed/sub";\nexport const which: Marker = "from the sidecar";\n'
+    );
 
     const { status, output } = compile(work.root);
     expect(status, output).to.equal(0);
@@ -792,7 +795,12 @@ describe("the tsc driver", () => {
   it("applies a package's typesVersions to a subpath import", () => {
     const tv = work.add(
       "tv",
-      { "index.js": "", "sub.js": "", "types/index.d.ts": "export {};\n", "types/sub.d.ts": "export declare const s: 'from typesVersions';\n" },
+      {
+        "index.js": "",
+        "sub.js": "",
+        "types/index.d.ts": "export {};\n",
+        "types/sub.d.ts": "export declare const s: 'from typesVersions';\n",
+      },
       { main: "index.js", typesVersions: { "*": { "*": ["types/*"] } } }
     );
     stage(work.root, [["tv", tv, [["tv", tv]]]], [["tv", tv]], []);
@@ -861,7 +869,11 @@ describe("the tsc driver", () => {
     const modal = work.add(
       "modal",
       { "esm.d.ts": "export type Which = 'import';\n", "cjs.d.ts": "export type Which = 'require';\n", "index.js": "" },
-      { exports: { ".": { import: { types: "./esm.d.ts", default: "./index.js" }, require: { types: "./cjs.d.ts", default: "./index.js" } } } }
+      {
+        exports: {
+          ".": { import: { types: "./esm.d.ts", default: "./index.js" }, require: { types: "./cjs.d.ts", default: "./index.js" } },
+        },
+      }
     );
     stage(work.root, [["modal", modal, [["modal", modal]]]], [["modal", modal]], [], undefined, "esnext");
     fs.writeFileSync(
@@ -875,7 +887,10 @@ describe("the tsc driver", () => {
 
   it("reports an import of a missing file that a declare module pattern would let through", () => {
     stage(work.root, [], [], []);
-    fs.writeFileSync(work.root + "/src/decl.d.ts", 'declare module "*.css";\ndeclare module "*.svg" { const src: string; export default src; }\n');
+    fs.writeFileSync(
+      work.root + "/src/decl.d.ts",
+      'declare module "*.css";\ndeclare module "*.svg" { const src: string; export default src; }\n'
+    );
     fs.writeFileSync(work.root + "/src/present.css", "body{}");
     fs.writeFileSync(work.root + "/src/logo.svg", "<svg/>");
     fs.writeFileSync(
@@ -924,7 +939,10 @@ describe("the tsc driver", () => {
   it("completes an exports target written without an extension", () => {
     const open = work.add(
       "open",
-      { "src/math/utils.js": "exports.clamp = () => 0;\n", "src/math/utils.d.ts": "export declare function clamp(): 'extensionless target';\n" },
+      {
+        "src/math/utils.js": "exports.clamp = () => 0;\n",
+        "src/math/utils.d.ts": "export declare function clamp(): 'extensionless target';\n",
+      },
       { exports: { "./src/*": "./src/*" } }
     );
     stage(work.root, [["open", open, [["open", open]]]], [["open", open]], []);
@@ -1175,7 +1193,7 @@ describe("the tsc driver", () => {
  */
 describe("supportsOption", () => {
   const compiler = (names?: string[]): Parameters<typeof supportsOption>[0] =>
-    ({ version: "0.0.0", optionDeclarations: names?.map(name => ({ name })) } as unknown as Parameters<typeof supportsOption>[0]);
+    ({ version: "0.0.0", optionDeclarations: names?.map(name => ({ name })) }) as unknown as Parameters<typeof supportsOption>[0];
 
   it("asks the compiler what it has, not what its version implies", () => {
     expect(supportsOption(compiler(["strict", CHECK_SIDE_EFFECT_IMPORTS]), CHECK_SIDE_EFFECT_IMPORTS)).to.equal(true);
@@ -1185,7 +1203,6 @@ describe("supportsOption", () => {
   it("answers no where the compiler exposes no table at all", () => {
     expect(supportsOption(compiler(undefined), CHECK_SIDE_EFFECT_IMPORTS)).to.equal(false);
   });
-
 });
 
 describe("resolutionFor", () => {
@@ -1205,7 +1222,9 @@ describe("resolutionFor", () => {
   const RESOLUTION = { Node10: 2, Node16: 3, NodeNext: 99, Bundler: 100 };
   const TARGET = { ES5: 1, ES2015: 2, ES2020: 7 };
   const compiler = (version: string): Parameters<typeof resolutionFor>[0] =>
-    ({ version, ModuleKind: MODULE, ModuleResolutionKind: RESOLUTION, ScriptTarget: TARGET } as unknown as Parameters<typeof resolutionFor>[0]);
+    ({ version, ModuleKind: MODULE, ModuleResolutionKind: RESOLUTION, ScriptTarget: TARGET }) as unknown as Parameters<
+      typeof resolutionFor
+    >[0];
 
   it("gives a CommonJS project node10 before TypeScript 6 and bundler from 6", () => {
     /* The one combination the compilers disagree about: before 6, `bundler`
@@ -1455,7 +1474,10 @@ describe("emitting under a renamed extension", () => {
 describe("naming sources in its maps", () => {
   /** Compile `sources` with source maps on, under a staged table of source
    *  paths, and answer each emitted map's `sources`. */
-  function compileNamed(sources: Record<string, string>, paths: Record<string, string>): { status: number; output: string; sourcesOf: (name: string) => unknown } {
+  function compileNamed(
+    sources: Record<string, string>,
+    paths: Record<string, string>
+  ): { status: number; output: string; sourcesOf: (name: string) => unknown } {
     const work = fixture();
     stage(work.root, [], [], []);
     const configPath = path.join(work.root, "tsconfig.json");
@@ -1489,7 +1511,10 @@ describe("bridging module-system globals across the emit format", () => {
   /** Compile `sources` under `module`, with the ambient declarations a real
    * project gets from `@types/node` supplied as a fixture `globals.d.ts`, and
    * answer what landed in `build/`. */
-  function compileBridged(module: string, sources: Record<string, string>): { status: number; output: string; read: (name: string) => string } {
+  function compileBridged(
+    module: string,
+    sources: Record<string, string>
+  ): { status: number; output: string; read: (name: string) => string } {
     const work = fixture();
     stage(work.root, [], [], [], undefined, module);
     const configPath = path.join(work.root, "tsconfig.json");
@@ -1975,15 +2000,15 @@ describe("import rewriting", () => {
      * is a delivered file the compile emits nothing for, so it is declared as a
      * resource: the compiler never resolves it, and its side-effect import is
      * accepted because the file is there. */
-    fs.writeFileSync(path.join(work.root, "resources.json"), JSON.stringify(generatedShim ? ["theme.css", "Card.css"] : ["theme.css"]));
+    fs.writeFileSync(
+      path.join(work.root, "resources.json"),
+      JSON.stringify(generatedShim ? ["theme.css", "Card.css"] : ["theme.css"])
+    );
     fs.writeFileSync(
       path.join(src, "Card.ts"),
       `import styles from "${stylesheet}";\nimport "./theme.scss";\nexport const cls = ${read};\n`
     );
-    fs.writeFileSync(
-      path.join(work.root, "rewrite-imports.json"),
-      JSON.stringify(importRewrites(cssImportRewrites()))
-    );
+    fs.writeFileSync(path.join(work.root, "rewrite-imports.json"), JSON.stringify(importRewrites(cssImportRewrites())));
     const { status, output } = compile(work.root, ["--rewrite-imports", "rewrite-imports.json", "--resources", "resources.json"]);
     const read2 = (name: string): string => {
       const at = path.join(work.root, "build", name);
@@ -2430,15 +2455,7 @@ describe("the tsc driver's wave", () => {
     stageState(serializeDriverMemo(memo));
     fs.writeFileSync(path.join(work.root, ".fabr-changes"), toChangesDocument({ added: [], changed, deleted }));
     return outcomeOf(
-      compile(work.root, [
-        "--state-dir",
-        STATE_DIR,
-        "--changes",
-        ".fabr-changes",
-        "--deps-report",
-        ".fabr-deps.json",
-        ...argv,
-      ])
+      compile(work.root, ["--state-dir", STATE_DIR, "--changes", ".fabr-changes", "--deps-report", ".fabr-deps.json", ...argv])
     );
   }
 
@@ -2498,10 +2515,14 @@ describe("the tsc driver's wave", () => {
     it("emits a project file a checked source imports, as a whole compile does, with no state directory", () => {
       const config = path.join(work.root, "tsconfig.json");
       const parsed = JSON.parse(fs.readFileSync(config, "utf8")) as { compilerOptions: Record<string, unknown> };
-      fs.writeFileSync(config, JSON.stringify({ ...parsed, compilerOptions: { ...parsed.compilerOptions, resolveJsonModule: true, esModuleInterop: true } }));
+      fs.writeFileSync(
+        config,
+        JSON.stringify({ ...parsed, compilerOptions: { ...parsed.compilerOptions, resolveJsonModule: true, esModuleInterop: true } })
+      );
       sources({
         "data.json": '{ "n": 1 }\n',
-        "util.test.ts": 'import { pad } from "./util";\nimport data from "./data.json";\nexport const padded: string = pad(String(data.n));\n',
+        "util.test.ts":
+          'import { pad } from "./util";\nimport data from "./data.json";\nexport const padded: string = pad(String(data.n));\n',
       });
       const run = compile(work.root, flag);
       expect(run.status, run.output).to.equal(0);
@@ -2801,9 +2822,7 @@ describe("the tsc driver's wave", () => {
     expect(base.status, base.output).to.equal(0);
     /* A declaration file has no body, so what it imports it forwards — and the
      * target is recorded, since no membership check could replay a bare name. */
-    expect(base.memo.get("outer index.d.ts")!.forwarding).to.deep.equal([
-      { specifier: "inner", target: "outer inner index.d.ts" },
-    ]);
+    expect(base.memo.get("outer index.d.ts")!.forwarding).to.deep.equal([{ specifier: "inner", target: "outer inner index.d.ts" }]);
     expect(base.memo.get("outer index.d.ts")!.use, "a declaration has no use side").to.deep.equal([]);
     expect(base.memo.get("src/index.ts")!.use).to.deep.equal([{ specifier: "outer", target: "outer index.d.ts" }]);
 
@@ -3132,7 +3151,12 @@ describe("the tsc driver's planning", () => {
      * type reference directive's package. Those move the global type
      * environment, no edge reaches what that affects, and left in the seeds
      * the name would wave nothing at all. */
-    const plan = planCompile({ changed: ["@typescript/lib-dom package.json"], deleted: [] }, chainMemo(), WORLD.projectFiles, WORLD.sourceRoot);
+    const plan = planCompile(
+      { changed: ["@typescript/lib-dom package.json"], deleted: [] },
+      chainMemo(),
+      WORLD.projectFiles,
+      WORLD.sourceRoot
+    );
     expect(plan.seeds, "no seeds: the wave is everything").to.equal(undefined);
     expect(plan.fresh?.reason).to.contain("nothing bounds");
   });

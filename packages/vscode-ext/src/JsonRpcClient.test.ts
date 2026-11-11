@@ -58,7 +58,9 @@ describe("JSON-RPC client", () => {
     const client = new JsonRpcClient(new PassThrough(), fromServer);
     const seen: string[] = [];
     client.onAnyNotification(method => seen.push(method));
-    fromServer.write("Content-Length: 5\r\n\r\n{bad}" + "Content-Type: none\r\n\r\n" + frame([1]) + frame({ jsonrpc: "2.0", method: "after" }));
+    fromServer.write(
+      "Content-Length: 5\r\n\r\n{bad}" + "Content-Type: none\r\n\r\n" + frame([1]) + frame({ jsonrpc: "2.0", method: "after" })
+    );
     await new Promise(resolve => setImmediate(resolve));
     expect(seen).to.deep.equal(["after"]);
   });
@@ -68,10 +70,11 @@ describe("JSON-RPC client", () => {
     const client = new JsonRpcClient(new PassThrough(), fromServer);
     const waiting = client.request("slow", {});
     fromServer.end();
-    const failed = (request: Promise<unknown>): Promise<string> => request.then(
-      () => "resolved",
-      (err: Error) => err.message
-    );
+    const failed = (request: Promise<unknown>): Promise<string> =>
+      request.then(
+        () => "resolved",
+        (err: Error) => err.message
+      );
     expect(await failed(waiting)).to.equal("the server has ended");
     expect(await failed(client.request("later", {}))).to.equal("the server has ended");
   });

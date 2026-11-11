@@ -69,7 +69,10 @@ describe("e2e: a plugin built in the project", () => {
 
   it("reports a plugin whose resources need its own rules, unstaged, as a cycle", () => {
     const files = project("greeting welcome { text = Welcome; }\n");
-    files["PROJECT.fabr"] = files["PROJECT.fabr"].replace("libs = plugin/lib/GREET.fabr; }", "libs = plugin/lib/GREET.fabr; resources = welcome; }");
+    files["PROJECT.fabr"] = files["PROJECT.fabr"].replace(
+      "libs = plugin/lib/GREET.fabr; }",
+      "libs = plugin/lib/GREET.fabr; resources = welcome; }"
+    );
     const result = runFabr(files, ["cat", "hello:greeting.txt"]);
     expect(result.status).to.not.equal(0);
     expect(result.stderr).to.match(/[Cc]ircular|cycle/);
@@ -158,7 +161,10 @@ describe("e2e: a plugin built in the project", () => {
   });
 
   it("refuses two uses of one plugin under different names", () => {
-    const files = { "PROJECT.fabr": "@boot = @fabr-home:@fabr-build;\nplugin @boot/js;\nplugin @fabr-build/js;\n", "notes.txt": "x\n" };
+    const files = {
+      "PROJECT.fabr": "@boot = @fabr-home:@fabr-build;\nplugin @boot/js;\nplugin @fabr-build/js;\n",
+      "notes.txt": "x\n",
+    };
     const result = runFabr(files, ["cat", "notes.txt"]);
     expect(result.status).to.not.equal(0);
     expect(result.stderr).to.match(/Plugin '@fabr-build\/js' is a second plugin named '@fabr-build\/js'/);
@@ -167,7 +173,9 @@ describe("e2e: a plugin built in the project", () => {
   it("refuses an installed package its package.json does not mark a plugin", () => {
     const result = runFabr({ "PROJECT.fabr": "plugin @fabr-build/js-tools;\n", "notes.txt": "x\n" }, ["cat", "notes.txt"]);
     expect(result.status).to.not.equal(0);
-    expect(result.stderr).to.match(/Package '@fabr-build\/js-tools' is not a fabr plugin: its package.json has no "@fabr-build\/plugin"/);
+    expect(result.stderr).to.match(
+      /Package '@fabr-build\/js-tools' is not a fabr plugin: its package.json has no "@fabr-build\/plugin"/
+    );
   });
 
   it("reports why a plugin's code failed to build where its rule is used", () => {

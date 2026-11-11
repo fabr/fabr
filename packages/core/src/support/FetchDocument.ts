@@ -31,7 +31,13 @@ import { unpackStream } from "./Unpack";
 
 /** What fetches through the build cache: a target's context, as its `fetch`. */
 type CacheFetcher = {
-  fetch(cacheKey: string, tag: string, request: () => Computable<IFetchRequest>, report: IFetchReport, options?: FetchOptions): Computable<FileSet>;
+  fetch(
+    cacheKey: string,
+    tag: string,
+    request: () => Computable<IFetchRequest>,
+    report: IFetchReport,
+    options?: FetchOptions
+  ): Computable<FileSet>;
 };
 
 /** A document to fetch with {@link fetchDocument}. */

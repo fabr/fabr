@@ -56,7 +56,9 @@ export function imageLayout(image: ImageFileSet, name: string): Computable<FileS
     files.set(
       "manifest.json",
       MemoryFile.from(
-        JSON.stringify([{ Config: blobPath(config.digest), RepoTags: [name], Layers: image.layers.map(layer => blobPath(layer.index.diffId)) }])
+        JSON.stringify([
+          { Config: blobPath(config.digest), RepoTags: [name], Layers: image.layers.map(layer => blobPath(layer.index.diffId)) },
+        ])
       )
     );
     return new FileSet(files);
@@ -64,7 +66,9 @@ export function imageLayout(image: ImageFileSet, name: string): Computable<FileS
 }
 
 /** Make `image`'s manifest, its layers uncompressed, and the config it names, each as written. */
-export function manifestOf(image: ImageFileSet): Computable<{ manifest: IDigested<Record<string, unknown>>; config: IDigested<Record<string, unknown>> }> {
+export function manifestOf(
+  image: ImageFileSet
+): Computable<{ manifest: IDigested<Record<string, unknown>>; config: IDigested<Record<string, unknown>> }> {
   const config = digested(image.config.document);
   return Computable.forAll(
     image.layers.map(layer => contentSize(layer.tar)),

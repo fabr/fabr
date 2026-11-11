@@ -562,8 +562,8 @@ export function auditSarif(
       ...(patched !== undefined && namedAmong(advisory, patched.fixes)
         ? { suppressions: [{ kind: "inSource" as const, justification: `fixed by the patched target '${patched.target}'` }] }
         : statement !== undefined
-        ? { suppressions: [{ kind: "external" as const, justification: vexText(statement) }] }
-        : {}),
+          ? { suppressions: [{ kind: "external" as const, justification: vexText(statement) }] }
+          : {}),
       properties: {
         purl: pkg.purl,
         fixed,

@@ -144,10 +144,16 @@ export function describeUnit(setup: ICompileSetup): RuleResult {
   };
   const files = FileSet.layout({
     [UNIT_FILE]: MemoryFile.from(JSON.stringify(summary, null, 2) + "\n"),
-    ...(root === undefined ? {} : { [UNIT_CONFIG_FILE]: MemoryFile.from(JSON.stringify(editorConfig(setup, rootDirs, place), null, 2) + "\n") }),
+    ...(root === undefined
+      ? {}
+      : { [UNIT_CONFIG_FILE]: MemoryFile.from(JSON.stringify(editorConfig(setup, rootDirs, place), null, 2) + "\n") }),
     ...(generated.length === 0
       ? {}
-      : { [GENERATED_DIR]: new FileSet(new Map([...setup.srcs].filter(([name]) => generated.includes(name)).map(([name, file]) => [place(name), file]))) }),
+      : {
+          [GENERATED_DIR]: new FileSet(
+            new Map([...setup.srcs].filter(([name]) => generated.includes(name)).map(([name, file]) => [place(name), file]))
+          ),
+        }),
   });
   return new BuildAction(
     DESCRIBE_UNIT_ACTION,
@@ -284,7 +290,10 @@ function selfPaths(name: string, dirs: readonly string[], files: readonly string
   const below = dirs.filter(dir => dir !== "./");
   const paths = new Map<string, string[]>([[name, dirs.map(dir => `${dir}index`)]]);
   if (below.length > 0) {
-    paths.set(`${name}/*`, below.map(dir => `${dir}*`));
+    paths.set(
+      `${name}/*`,
+      below.map(dir => `${dir}*`)
+    );
   }
   if (dirs.includes("./")) {
     const atRoot = files.filter(file => !below.some(dir => file.startsWith(dir.slice("./".length))));
@@ -292,7 +301,10 @@ function selfPaths(name: string, dirs: readonly string[], files: readonly string
       const isDirectory = atRoot.some(file => file.startsWith(`${entry}/`));
       const stem = isDirectory ? `${entry}/*` : entry.replace(SOURCE_EXTENSION, "");
       if (entry !== "node_modules" && stem !== "index") {
-        paths.set(`${name}/${stem}`, dirs.map(dir => `${dir}${stem}`));
+        paths.set(
+          `${name}/${stem}`,
+          dirs.map(dir => `${dir}${stem}`)
+        );
       }
     }
   }
@@ -337,7 +349,10 @@ const DESCRIBE_UNIT_ACTION: IBuildActionDefinition = {
               const unit = roots[index];
               return unit === undefined ? [] : [[place(manifest.mountOf(pkg)), relativeLocation(root, unit)]];
             }),
-            ...pooled.map((pkg, index): [string, string] => [place(manifest.mountOf(pkg)), `${POOL_LOCATION}${views[index].toManifestHash()}/`]),
+            ...pooled.map((pkg, index): [string, string] => [
+              place(manifest.mountOf(pkg)),
+              `${POOL_LOCATION}${views[index].toManifestHash()}/`,
+            ]),
           ]);
           for (const [, rows] of manifest.state.packageRegistryData) {
             for (const [, info] of rows) {
@@ -396,10 +411,13 @@ function toUnitSummary(json: unknown): Pick<IUnitSummary, "root" | "package"> {
 function ownUnitOf(description: FileSet): Computable<{ dir: string; summary: Pick<IUnitSummary, "root" | "package"> } | undefined> {
   return jsonOf(description, DESCRIPTION_FILE, toDescribedUnits).then(found => {
     const { displayName, dirs } = found ?? { dirs: [] };
-    return Computable.forAll(dirs.map(dir => jsonOf(description, `${dir}/${UNIT_FILE}`, toUnitSummary)), (...summaries) => {
-      const index = summaries.findIndex(summary => summary !== undefined && summary.package === displayName);
-      return index < 0 ? undefined : { dir: dirs[index], summary: summaries[index]! };
-    });
+    return Computable.forAll(
+      dirs.map(dir => jsonOf(description, `${dir}/${UNIT_FILE}`, toUnitSummary)),
+      (...summaries) => {
+        const index = summaries.findIndex(summary => summary !== undefined && summary.package === displayName);
+        return index < 0 ? undefined : { dir: dirs[index], summary: summaries[index]! };
+      }
+    );
   });
 }
 
@@ -411,7 +429,11 @@ function ownUnitOf(description: FileSet): Computable<{ dir: string; summary: Pic
  */
 function unitRootOf(description: FileSet): Computable<string | undefined> {
   const prefix = `${DESCRIPTION_EXTENDS}/`;
-  const extended = new FileSet(new Map([...description].filter(([file]) => file.startsWith(prefix)).map(([file, contents]) => [file.slice(prefix.length), contents])));
+  const extended = new FileSet(
+    new Map(
+      [...description].filter(([file]) => file.startsWith(prefix)).map(([file, contents]) => [file.slice(prefix.length), contents])
+    )
+  );
   return ownUnitOf(description).then(own =>
     own?.summary.root !== undefined || extended.isEmpty() ? own?.summary.root : unitRootOf(extended)
   );
@@ -428,10 +450,16 @@ function installedViewOf(description: FileSet): Computable<FileSet> {
   return ownUnitOf(description).then(own => {
     const prefix = own === undefined ? undefined : `${own.dir}/${GENERATED_DIR}/`;
     const generated = new Map(
-      [...description].filter(([file]) => prefix !== undefined && file.startsWith(prefix)).map(([file, contents]) => [file.slice(prefix!.length), contents])
+      [...description]
+        .filter(([file]) => prefix !== undefined && file.startsWith(prefix))
+        .map(([file, contents]) => [file.slice(prefix!.length), contents])
     );
     const shipped = [...description].filter(
-      ([file]) => file !== DESCRIPTION_FILE && file !== MANIFEST_FILE && !file.startsWith(`${UNITS_DIR}/`) && !file.startsWith(`${DESCRIPTION_EXTENDS}/`)
+      ([file]) =>
+        file !== DESCRIPTION_FILE &&
+        file !== MANIFEST_FILE &&
+        !file.startsWith(`${UNITS_DIR}/`) &&
+        !file.startsWith(`${DESCRIPTION_EXTENDS}/`)
     );
     return jsonOf(description, MANIFEST_FILE, toJsonObject).then(manifest => {
       const view = new Map([...shipped, ...generated]);
@@ -450,7 +478,9 @@ function installedViewOf(description: FileSet): Computable<FileSet> {
  * (`./*.d.ts`) names the sources it matches where they share one extension.
  */
 export function sourceManifest(manifest: Record<string, unknown>, sources: readonly string[]): Record<string, unknown> {
-  const byStem = new Map(sources.filter(source => COMPILED.test(source)).map(source => [source.replace(SOURCE_EXTENSION, ""), source]));
+  const byStem = new Map(
+    sources.filter(source => COMPILED.test(source)).map(source => [source.replace(SOURCE_EXTENSION, ""), source])
+  );
   const compiled = sources.filter(source => COMPILED.test(source));
   const entry = (value: unknown): unknown => {
     if (typeof value === "string" && value.split("*").length === 2) {
@@ -460,7 +490,9 @@ export function sourceManifest(manifest: Record<string, unknown>, sources: reado
         return value;
       }
       const prefix = head.startsWith("./") ? head.slice(2) : head;
-      const extensions = new Set(compiled.filter(source => source.startsWith(prefix)).map(source => SOURCE_EXTENSION.exec(source)![0]));
+      const extensions = new Set(
+        compiled.filter(source => source.startsWith(prefix)).map(source => SOURCE_EXTENSION.exec(source)![0])
+      );
       return extensions.size === 1 ? `${head}*${[...extensions][0]}` : value;
     }
     if (typeof value === "string") {
@@ -476,9 +508,7 @@ export function sourceManifest(manifest: Record<string, unknown>, sources: reado
     }
     return value;
   };
-  return Object.fromEntries(
-    Object.entries(manifest).map(([key, value]) => [key, ENTRY_POINT_FIELDS.has(key) ? entry(value) : value])
-  );
+  return Object.fromEntries(Object.entries(manifest).map(([key, value]) => [key, ENTRY_POINT_FIELDS.has(key) ? entry(value) : value]));
 }
 
 /** The manifest fields naming a package's entry points. */

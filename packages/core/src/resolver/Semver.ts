@@ -100,9 +100,7 @@ export function versionToString(version: SemverVersion): string {
 }
 
 export function compareVersions(a: SemverVersion, b: SemverVersion): number {
-  return (
-    a.major - b.major || a.minor - b.minor || a.patch - b.patch || comparePrerelease(a.prerelease, b.prerelease)
-  );
+  return a.major - b.major || a.minor - b.minor || a.patch - b.patch || comparePrerelease(a.prerelease, b.prerelease);
 }
 
 function parsePrerelease(text: string): Array<string | number> {

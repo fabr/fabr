@@ -92,7 +92,7 @@ export class TarPack extends Readable {
       mode: header.mode ?? (type === "directory" ? 0o755 : 0o644),
       uid: header.uid ?? 0,
       gid: header.gid ?? 0,
-      size: hasContent ? body?.length ?? header.size ?? 0 : 0,
+      size: hasContent ? (body?.length ?? header.size ?? 0) : 0,
       mtime: header.mtime ?? new Date(Math.floor(Date.now() / 1000) * 1000),
       linkname: header.linkname ?? "",
       uname: header.uname ?? "",

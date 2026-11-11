@@ -209,7 +209,13 @@ function overridesOf(rootManifest: Manifest, pnpm: Record<string, unknown> | und
             overrides.push({ source: "package.json overrides", path: path.slice(0, -1), name: owner, spec: value });
           }
         } else {
-          overrides.push({ source: "package.json overrides", path, name: parsed.name, ...(parsed.range ? { range: parsed.range } : {}), spec: value });
+          overrides.push({
+            source: "package.json overrides",
+            path,
+            name: parsed.name,
+            ...(parsed.range ? { range: parsed.range } : {}),
+            spec: value,
+          });
         }
       } else {
         npmOverrides(value, [...path, parsed.name]);

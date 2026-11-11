@@ -29,9 +29,7 @@ describe("e2e: js_package resources", () => {
   const project = {
     ...STUB_TSC,
     "PROJECT.fabr":
-      "plugin @fabr-build/js;\n\n" +
-      STUB_TSC_CONFIG +
-      "\njs_package thing {\n  srcs = src:**/*.ts;\n  resources = prebuilt:**;\n}\n",
+      "plugin @fabr-build/js;\n\n" + STUB_TSC_CONFIG + "\njs_package thing {\n  srcs = src:**/*.ts;\n  resources = prebuilt:**;\n}\n",
     "src/index.ts": "export const x = 1;\n",
     /* Deliberately paired: a prebuilt module and the declarations written for
      * it, the shape generated toolchains emit. */

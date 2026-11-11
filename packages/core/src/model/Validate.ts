@@ -70,19 +70,10 @@ const DIAG_RULE_LOCAL_PARAMETER = Diagnostic.Error<{ name: string; loc: ISourceP
 const DIAG_RULE_PARAMETER_PROPERTY = Diagnostic.Error<{ param: string; property: string; type: string; loc: ISourcePosition }>(
   "'{param}.{property}' reads a property '{type}' does not declare"
 );
-const DIAG_INVALID_REWRITE = new Diagnostic<{ detail: string; loc: ISourcePosition }>(
-  LogLevel.Error,
-  "Invalid rename: {detail}"
-);
-const DIAG_INVALID_MAP = new Diagnostic<{ detail: string; loc: ISourcePosition }>(
-  LogLevel.Error,
-  "Invalid map property: {detail}"
-);
+const DIAG_INVALID_REWRITE = new Diagnostic<{ detail: string; loc: ISourcePosition }>(LogLevel.Error, "Invalid rename: {detail}");
+const DIAG_INVALID_MAP = new Diagnostic<{ detail: string; loc: ISourcePosition }>(LogLevel.Error, "Invalid map property: {detail}");
 const DIAG_INVALID_SPLICE = new Diagnostic<{ detail: string; loc: ISourcePosition }>(LogLevel.Error, "Invalid splice: {detail}");
-const DIAG_INVALID_COMMAND = new Diagnostic<{ detail: string; loc: ISourcePosition }>(
-  LogLevel.Error,
-  "Invalid command: {detail}"
-);
+const DIAG_INVALID_COMMAND = new Diagnostic<{ detail: string; loc: ISourcePosition }>(LogLevel.Error, "Invalid command: {detail}");
 
 /**
  * Check that all properties in the target decl are
@@ -423,7 +414,10 @@ export function validateRuleBlock(
   const schema = rule.type === undefined ? undefined : targetDefOf(rule.type);
   if (schema !== undefined) {
     /* A splice reads only what the matched target has, so writes no name of its own to check. */
-    const values = [block.result, ...[...block.properties, ...block.targets.flatMap(target => target.properties.filter(isPropertyDecl))].flatMap(writtenNames)];
+    const values = [
+      block.result,
+      ...[...block.properties, ...block.targets.flatMap(target => target.properties.filter(isPropertyDecl))].flatMap(writtenNames),
+    ];
     for (const value of values) {
       /* The value read whole (`pkg.x`), and each `${pkg.x}` within it. */
       const read = [

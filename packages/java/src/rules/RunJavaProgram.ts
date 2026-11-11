@@ -35,7 +35,15 @@ import {
   RunnableFileSet,
   TargetContext,
 } from "@fabr-build/core";
-import { checkMainClass, compileOutputOf, COMPILED_CLASSES_DIR, jarMainClass, makeJarRunnable, packageOf, processorsOf } from "../JarPackage";
+import {
+  checkMainClass,
+  compileOutputOf,
+  COMPILED_CLASSES_DIR,
+  jarMainClass,
+  makeJarRunnable,
+  packageOf,
+  processorsOf,
+} from "../JarPackage";
 import { MAVEN_FORMAT } from "../MavenProtocol";
 
 interface ProgramInputs {
@@ -89,9 +97,13 @@ function runnableProgram(
           { label: "Compiling", constraints: BUILD_OVERRIDE }
         )
       );
-  return classes.then(output => compileOutputOf(output, COMPILED_CLASSES_DIR)).then(compiled =>
-    mainClassOf(context, stated, sources, compiled, classpath).then(mainClass => makeJarRunnable(context, classpath, mainClass, { classes: compiled, agents, ...options }))
-  );
+  return classes
+    .then(output => compileOutputOf(output, COMPILED_CLASSES_DIR))
+    .then(compiled =>
+      mainClassOf(context, stated, sources, compiled, classpath).then(mainClass =>
+        makeJarRunnable(context, classpath, mainClass, { classes: compiled, agents, ...options })
+      )
+    );
 }
 
 /**
@@ -99,7 +111,13 @@ function runnableProgram(
  * what it runs; else the class of its sole source; else, with no sources, the
  * `Main-Class` its sole package's jar names.
  */
-function mainClassOf(context: TargetContext, stated: string | undefined, sources: FileSet, classes: FileSet, deps: FileSet[]): Computable<string> {
+function mainClassOf(
+  context: TargetContext,
+  stated: string | undefined,
+  sources: FileSet,
+  classes: FileSet,
+  deps: FileSet[]
+): Computable<string> {
   if (stated !== undefined) {
     return checkMainClass(context.name, stated, classes, deps).then(() => stated);
   }

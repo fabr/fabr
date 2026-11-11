@@ -313,10 +313,7 @@ function packageInfo(
   referenceIn: (pkg: PackageFileSet) => string,
   supplied: ReadonlyArray<[string, PnpDependencyTarget]> = []
 ): IPnpPackageInfo {
-  const own = new Map<string, PnpDependencyTarget>([
-    [pkg.packageName, reference],
-    ...dependencyList(pkg.packages, referenceIn),
-  ]);
+  const own = new Map<string, PnpDependencyTarget>([[pkg.packageName, reference], ...dependencyList(pkg.packages, referenceIn)]);
   for (const [name, target] of supplied) {
     if (!own.has(name)) {
       own.set(name, target);
@@ -346,7 +343,10 @@ function isResolved(pkg: PackageFileSet): boolean {
 
 /** List the packages barred from the fallback pool, in PnP's
  * `[name, [references]]` shape and sorted for byte-stability. */
-function exclusionList(excluded: ReadonlyArray<PackageFileSet>, referenceIn: (pkg: PackageFileSet) => string): Array<[string, string[]]> {
+function exclusionList(
+  excluded: ReadonlyArray<PackageFileSet>,
+  referenceIn: (pkg: PackageFileSet) => string
+): Array<[string, string[]]> {
   const byName = new Map<string, string[]>();
   for (const pkg of excluded) {
     const held = byName.get(pkg.packageName) ?? [];
@@ -400,4 +400,3 @@ function byText<T>(of: (value: T) => string): (a: T, b: T) => number {
 function serialize(state: IPnpSerializedState): string {
   return `${JSON.stringify(state, undefined, 2)}\n`;
 }
-

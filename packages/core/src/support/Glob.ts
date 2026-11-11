@@ -52,7 +52,10 @@ export type BracketMember = { readonly char: string } | { readonly posixClass: s
  * A `]` first in the expression (after any `!` or `^`) is a member, as in bash;
  * a `\` quotes the character after it; `[:name:]` names one of {@link POSIX_CLASSES}.
  */
-export function readBracketExpression(text: string, open: number): { negated: boolean; members: BracketMember[]; end: number } | undefined {
+export function readBracketExpression(
+  text: string,
+  open: number
+): { negated: boolean; members: BracketMember[]; end: number } | undefined {
   let i = open + 1;
   let negated = false;
   if (text[i] === "!" || text[i] === "^") {
@@ -124,7 +127,13 @@ export function globCaptureRegex(glob: string): RegExp {
   if (negated === undefined) {
     return picomatch.makeRe(glob, { dot: true, capture: true });
   }
-  return new RegExp(negated.base(true).source + negated.excluded().map(re => `(?<!${re.source})`).join(""));
+  return new RegExp(
+    negated.base(true).source +
+      negated
+        .excluded()
+        .map(re => `(?<!${re.source})`)
+        .join("")
+  );
 }
 
 /**
@@ -191,8 +200,7 @@ function negationsOf(glob: string): INegations | undefined {
   }
   const placeholder = (i: number): string => `${stem}${i}${stem}`;
   /* A group standing as a whole segment is never empty, as `*` there is not. */
-  const wildcard = (group: INegationGroup): string =>
-    `(?:${group.spansSegments ? "." : "[^/]"}${group.wholeSegment ? "+?" : "*?"})`;
+  const wildcard = (group: INegationGroup): string => `(?:${group.spansSegments ? "." : "[^/]"}${group.wholeSegment ? "+?" : "*?"})`;
   const assemble = (replace: (group: INegationGroup, i: number) => string): string => {
     let text = "";
     let at = 0;
@@ -211,7 +219,12 @@ function negationsOf(glob: string): INegations | undefined {
     base: capture => compile(withWildcards(), capture),
     excluded: () =>
       groups.flatMap((negated, n) =>
-        negated.alternatives.map(alternative => compile(assemble((group, i) => (i === n ? alternative : placeholder(i))), false))
+        negated.alternatives.map(alternative =>
+          compile(
+            assemble((group, i) => (i === n ? alternative : placeholder(i))),
+            false
+          )
+        )
       ),
     withWildcards,
     expand,

@@ -83,7 +83,10 @@ function toTestFinish(params: unknown): { originId: string; finish: ITestFinish 
  * @return what to dispose of when the extension ends, and what refreshes the
  * Testing view's targets once those served change.
  */
-export function registerTargetCommands(projects: ReadonlyMap<string, IServedProject>, output: vscode.OutputChannel): vscode.Disposable & { refresh(): void } {
+export function registerTargetCommands(
+  projects: ReadonlyMap<string, IServedProject>,
+  output: vscode.OutputChannel
+): vscode.Disposable & { refresh(): void } {
   let origins = 0;
   const controller = vscode.tests.createTestController("fabr", "Fabr");
   /* What receives a request's test finishes, by its originId. */
@@ -102,19 +105,28 @@ export function registerTargetCommands(projects: ReadonlyMap<string, IServedProj
     });
   };
   const testTargets = (): Array<{ project: IServedProject; target: IServedTarget }> =>
-    [...projects.values()].flatMap(project => project.targets.filter(target => target.fabr?.operation === "test").map(target => ({ project, target })));
-  const projectOf = (uri: string): IServedProject | undefined => [...projects.values()].find(project => project.targets.some(target => target.id.uri === uri));
+    [...projects.values()].flatMap(project =>
+      project.targets.filter(target => target.fabr?.operation === "test").map(target => ({ project, target }))
+    );
+  const projectOf = (uri: string): IServedProject | undefined =>
+    [...projects.values()].find(project => project.targets.some(target => target.id.uri === uri));
   const choose = async (operation: string, given: unknown): Promise<string | undefined> => {
     if (typeof given === "string") {
       return given;
     }
-    const choices = [...projects.values()].flatMap(project => project.targets.filter(target => target.fabr?.operation === operation)).map(target => target.id.uri);
+    const choices = [...projects.values()]
+      .flatMap(project => project.targets.filter(target => target.fabr?.operation === operation))
+      .map(target => target.id.uri);
     return vscode.window.showQuickPick(choices, { placeHolder: `The target to ${operation}` });
   };
 
   /* Each test target an item of the Testing view, kept as the targets served change. */
   controller.resolveHandler = async () => {
-    controller.items.replace(testTargets().map(({ target }) => controller.createTestItem(target.id.uri, (target as { displayName?: string }).displayName ?? target.id.uri)));
+    controller.items.replace(
+      testTargets().map(({ target }) =>
+        controller.createTestItem(target.id.uri, (target as { displayName?: string }).displayName ?? target.id.uri)
+      )
+    );
   };
   controller.refreshHandler = async () => controller.resolveHandler?.(undefined);
 
@@ -132,7 +144,9 @@ export function registerTargetCommands(projects: ReadonlyMap<string, IServedProj
       run.started(item);
       listening.set(originId, finish => {
         const id = `${item.id}#${finish.location?.uri ?? ""}#${finish.displayName}`;
-        const child = item.children.get(id) ?? controller.createTestItem(id, finish.displayName, finish.location ? vscode.Uri.parse(finish.location.uri) : undefined);
+        const child =
+          item.children.get(id) ??
+          controller.createTestItem(id, finish.displayName, finish.location ? vscode.Uri.parse(finish.location.uri) : undefined);
         item.children.add(child);
         if (finish.status === TEST_FAILED) {
           run.failed(child, new vscode.TestMessage(finish.message ?? "failed"));

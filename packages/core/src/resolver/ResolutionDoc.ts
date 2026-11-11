@@ -171,10 +171,7 @@ export function deserializeResolutionDoc<V>(
     })),
     requirements: new Map((doc.requirements ?? []).map(entry => [entry.node, entry.requires])),
     edges: new Map(
-      (doc.edges ?? []).map((from, at) => [
-        ids[at],
-        new Map(from.map(([name, target]): [string, string] => [name, ids[target]])),
-      ])
+      (doc.edges ?? []).map((from, at) => [ids[at], new Map(from.map(([name, target]): [string, string] => [name, ids[target]]))])
     ),
     rootBindings: (doc.rootBindings ?? []).map(target => target ?? undefined),
   });

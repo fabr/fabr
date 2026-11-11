@@ -133,7 +133,8 @@ const KNOWN_DIVERGENCES: IKnownDivergence[] = [
     reason:
       "a symlinked tree pool's realpath is attributed to the row located through the link: fabr stages the pool " +
       "as one link, and a compiler that does not preserve symlinks names files by their real path",
-    applies: (query, _yarn, _fabr, both) => query.args.some(arg => typeof arg === "string" && poolRealpath(both) !== undefined && arg.startsWith(poolRealpath(both)!)),
+    applies: (query, _yarn, _fabr, both) =>
+      query.args.some(arg => typeof arg === "string" && poolRealpath(both) !== undefined && arg.startsWith(poolRealpath(both)!)),
   },
   {
     reason:
@@ -202,7 +203,8 @@ function pair(root: string, state: IPnpSerializedState): IPair {
 function compare(both: IPair, queries: IQuery[]): string[] {
   const mismatches: string[] = [];
   for (const query of queries) {
-    const call = (api: IPnpApi): unknown => (api as unknown as Record<string, (...args: unknown[]) => unknown>)[query.api](...query.args);
+    const call = (api: IPnpApi): unknown =>
+      (api as unknown as Record<string, (...args: unknown[]) => unknown>)[query.api](...query.args);
     const yarn = outcome(() => silenced(() => call(both.yarn)));
     const fabr = outcome(() => call(both.fabr));
     if (JSON.stringify(yarn) === JSON.stringify(fabr)) {
@@ -320,7 +322,13 @@ function writeAt(root: string, location: string, files: Map<string, string>): vo
   }
 }
 
-type Row = [string | null, string | null, string, Array<[string, PnpDependencyTarget]>, Partial<{ soft: boolean; discard: boolean; peers: string[] }>?];
+type Row = [
+  string | null,
+  string | null,
+  string,
+  Array<[string, PnpDependencyTarget]>,
+  Partial<{ soft: boolean; discard: boolean; peers: string[] }>?,
+];
 
 /** A hand-written manifest: rows as `[name, reference, location, deps, flags]`,
  * each HARD row staged with its fixture files. */
@@ -398,15 +406,40 @@ describe("PnpResolver conforms to Yarn's PnP runtime", () => {
       const state = handWritten(
         root,
         [
-          [null, null, "./", [["app", "1"], ["alias", ["real", "1"]], ["pooled", "1"]]],
-          ["app", "1", "./pkgs/app/", [["app", "1"], ["dep", "1"], ["peer", null], ["alias", ["real", "1"]]]],
+          [
+            null,
+            null,
+            "./",
+            [
+              ["app", "1"],
+              ["alias", ["real", "1"]],
+              ["pooled", "1"],
+            ],
+          ],
+          [
+            "app",
+            "1",
+            "./pkgs/app/",
+            [
+              ["app", "1"],
+              ["dep", "1"],
+              ["peer", null],
+              ["alias", ["real", "1"]],
+            ],
+          ],
           ["dep", "1", "./pkgs/dep/", [["dep", "1"]]],
           ["real", "1", "./pkgs/real/", [["real", "1"]]],
           ["pooled", "1", "./pkgs/pooled/", [["pooled", "1"]]],
           ["loner", "1", "./pkgs/loner/", [["loner", "1"]]],
           ["peer", "1", "./pkgs/peer/", [["peer", "1"]]],
         ],
-        { fallbackPool: [["pooled", "1"], ["peer", "1"]], fallbackExclusionList: [["loner", ["1"]]] }
+        {
+          fallbackPool: [
+            ["pooled", "1"],
+            ["peer", "1"],
+          ],
+          fallbackExclusionList: [["loner", ["1"]]],
+        }
       );
       expectConformant(pair(root, state));
     });
@@ -427,11 +460,36 @@ describe("PnpResolver conforms to Yarn's PnP runtime", () => {
     it("answers nested package locations, discarded rows and named soft rows", () => {
       const root = workspace();
       const state = handWritten(root, [
-        [null, null, "./", [["outer", "1"], ["ws", "1"]]],
-        ["outer", "1", "./pkgs/outer/", [["outer", "1"], ["inner", "1"]]],
+        [
+          null,
+          null,
+          "./",
+          [
+            ["outer", "1"],
+            ["ws", "1"],
+          ],
+        ],
+        [
+          "outer",
+          "1",
+          "./pkgs/outer/",
+          [
+            ["outer", "1"],
+            ["inner", "1"],
+          ],
+        ],
         ["inner", "1", "./pkgs/outer/lib/inner/", [["inner", "1"]]],
         ["hidden", "1", "./pkgs/hidden/", [["hidden", "1"]], { discard: true }],
-        ["ws", "1", "./src/", [["ws", "1"], ["outer", "1"]], { soft: true }],
+        [
+          "ws",
+          "1",
+          "./src/",
+          [
+            ["ws", "1"],
+            ["outer", "1"],
+          ],
+          { soft: true },
+        ],
       ]);
       expectConformant(pair(root, state));
     });
@@ -453,7 +511,15 @@ describe("PnpResolver conforms to Yarn's PnP runtime", () => {
         root,
         [
           [null, null, "./", names.map((name): [string, string] => [name, "1"])],
-          ...names.map((name): Row => [name, "1", `./pkgs/${name}/`, [[name, "1"], ["dep", "1"]]]),
+          ...names.map((name): Row => [
+            name,
+            "1",
+            `./pkgs/${name}/`,
+            [
+              [name, "1"],
+              ["dep", "1"],
+            ],
+          ]),
           ["dep", "1", "./pkgs/dep/", [["dep", "1"]]],
         ],
         {},
@@ -461,7 +527,10 @@ describe("PnpResolver conforms to Yarn's PnP runtime", () => {
       );
       /* A nested package.json scopes the files below it: `#internal` from
        * `lib/deep/x.js` is answered by `lib/`'s map, not the package root's. */
-      fs.writeFileSync(path.join(root, "pkgs/importing/lib/package.json"), JSON.stringify({ imports: { "#internal": "./deep/x.js" } }));
+      fs.writeFileSync(
+        path.join(root, "pkgs/importing/lib/package.json"),
+        JSON.stringify({ imports: { "#internal": "./deep/x.js" } })
+      );
       expectConformant(pair(root, state));
     });
   });
@@ -502,7 +571,10 @@ describe("PnpResolver conforms to Yarn's PnP runtime", () => {
       const wiring = left.packages[0];
       const file = resolver.resolveRequest("shared/index.js", path.join(root, treeMountOf(left), "index.js"));
       expect(file).to.equal(path.join(root, "store", "__virtual__", file!.split("/__virtual__/")[1]));
-      expect(resolver.findPackageLocator(file!)).to.deep.equal({ name: "shared", reference: resolver.findPackageLocator(path.join(root, pnpManifestOf([left, right]).mountOf(wiring)))!.reference });
+      expect(resolver.findPackageLocator(file!)).to.deep.equal({
+        name: "shared",
+        reference: resolver.findPackageLocator(path.join(root, pnpManifestOf([left, right]).mountOf(wiring)))!.reference,
+      });
     });
 
     it("answers seeded random graphs", () => {
@@ -543,7 +615,9 @@ function randomGraph(seed: number): PackageFileSet[] {
     const exists = built.find(pkg => pkg.packageName === name && pkg.version === version);
     built.push(
       exists !== undefined
-        ? new PackageFileSet(new Map([...exists]), name, version, dependenciesOn(...deps)).withOrigin({ kind: PACKAGE_RESOLUTION_PROVENANCE })
+        ? new PackageFileSet(new Map([...exists]), name, version, dependenciesOn(...deps)).withOrigin({
+            kind: PACKAGE_RESOLUTION_PROVENANCE,
+          })
         : delivered(name, version, deps, fields)
     );
   }

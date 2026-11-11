@@ -363,9 +363,13 @@ const DISCOVERED_DEPS_MAGIC = "!discovered-deps 4";
  * in canonical order, so one selection has one spelling (and so one
  * content-addressed record file). */
 export function serializeDiscoveredDeps(selection: DiscoveredDeps): string {
-  const sections = [...selection.keys()]
-    .sort()
-    .flatMap(input => [encodeName(input), ...selection.get(input)!.map(path => ` ${joinDepsPath(path)}`).sort()]);
+  const sections = [...selection.keys()].sort().flatMap(input => [
+    encodeName(input),
+    ...selection
+      .get(input)!
+      .map(path => ` ${joinDepsPath(path)}`)
+      .sort(),
+  ]);
   return [DISCOVERED_DEPS_MAGIC, ...sections, ""].join("\n");
 }
 

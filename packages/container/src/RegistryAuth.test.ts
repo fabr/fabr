@@ -69,7 +69,10 @@ describe("RegistryAuth", () => {
 
   it("asks the store for a registry no file names, by the server it is filed under", async () => {
     const auth = new RegistryAuth([parseAuthFile(JSON.stringify({ credsStore: "fake" }), "config.json")], new Semaphore(1));
-    expect(await Promise.resolve(auth.credentialFor("https://index.docker.io/v1/"))).to.deep.equal({ username: "hub", password: "tok" });
+    expect(await Promise.resolve(auth.credentialFor("https://index.docker.io/v1/"))).to.deep.equal({
+      username: "hub",
+      password: "tok",
+    });
     expect(await Promise.resolve(auth.credentialFor("ghcr.io"))).to.equal(undefined);
   });
 

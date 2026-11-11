@@ -143,7 +143,9 @@ export function lcovOf(coverage: Iterable<ICoverageRecord>): string {
   return sorted
     .map(record => {
       const out = ["TN:", `SF:${record.source}`];
-      const functions = [...record.functions.values()].sort((a, b) => a.line - b.line || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      const functions = [...record.functions.values()].sort(
+        (a, b) => a.line - b.line || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
+      );
       out.push(...functions.map(fn => `FN:${fn.line},${fn.name}`));
       out.push(`FNF:${functions.length}`, `FNH:${functions.filter(fn => fn.count > 0).length}`);
       out.push(...functions.map(fn => `FNDA:${fn.count},${fn.name}`));
@@ -167,7 +169,11 @@ export interface ICoverageTotal {
 }
 
 /** Total the lines, functions and branches of `coverage`. */
-export function coverageTotals(coverage: Iterable<ICoverageRecord>): { lines: ICoverageTotal; functions: ICoverageTotal; branches: ICoverageTotal } {
+export function coverageTotals(coverage: Iterable<ICoverageRecord>): {
+  lines: ICoverageTotal;
+  functions: ICoverageTotal;
+  branches: ICoverageTotal;
+} {
   const lines = { covered: 0, total: 0 };
   const functions = { covered: 0, total: 0 };
   const branches = { covered: 0, total: 0 };
@@ -179,7 +185,10 @@ export function coverageTotals(coverage: Iterable<ICoverageRecord>): { lines: IC
   };
   for (const record of coverage) {
     add(lines, record.lines.values());
-    add(functions, [...record.functions.values()].map(fn => fn.count));
+    add(
+      functions,
+      [...record.functions.values()].map(fn => fn.count)
+    );
     add(branches, record.branches?.values() ?? []);
   }
   return { lines, functions, branches };

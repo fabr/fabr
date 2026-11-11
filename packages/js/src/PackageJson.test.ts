@@ -436,9 +436,7 @@ describe("dependencyBlock", () => {
   });
 
   it("drops an entry whose constraint is not a string", () => {
-    expect([...dependencyBlock({ lodash: "^4.0.0", chai: { version: "5.1.0" }, mocha: 10 })]).to.deep.equal([
-      ["lodash", "^4.0.0"],
-    ]);
+    expect([...dependencyBlock({ lodash: "^4.0.0", chai: { version: "5.1.0" }, mocha: 10 })]).to.deep.equal([["lodash", "^4.0.0"]]);
   });
 });
 
@@ -476,7 +474,10 @@ describe("dependencyRequirement", () => {
   });
 
   it("carries no alias when it renames nothing", () => {
-    expect(dependencyRequirement("wrap-ansi", "npm:wrap-ansi@^7.0.0")).to.deep.equal({ name: "wrap-ansi", versionConstraint: "^7.0.0" });
+    expect(dependencyRequirement("wrap-ansi", "npm:wrap-ansi@^7.0.0")).to.deep.equal({
+      name: "wrap-ansi",
+      versionConstraint: "^7.0.0",
+    });
   });
 
   it("leaves a spec form it doesn't understand alone", () => {

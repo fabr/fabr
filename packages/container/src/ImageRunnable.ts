@@ -17,7 +17,18 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { Computable, FabrError, FileSet, HostLink, hostEnvironment, IFile, MemoryFile, RunnableArgument, RunnableFileSet, TargetContext } from "@fabr-build/core";
+import {
+  Computable,
+  FabrError,
+  FileSet,
+  HostLink,
+  hostEnvironment,
+  IFile,
+  MemoryFile,
+  RunnableArgument,
+  RunnableFileSet,
+  TargetContext,
+} from "@fabr-build/core";
 import { ownerHost, reapContainers } from "./Containers";
 import { ImageFileSet } from "./ImageFileSet";
 import { imageLayout, manifestOf } from "./OciLayout";
@@ -108,25 +119,40 @@ const IMAGE_RUN: IContainerRun = { env: [], hosts: [], args: [] };
  * runs it as `run` says, with the caller's arguments after the image's
  * entrypoint and `run`'s own.
  */
-export function imageRunnable(image: ImageFileSet, name: string, engine: RunnableFileSet, context: TargetContext, run: IContainerRun = IMAGE_RUN): Computable<RunnableFileSet> {
+export function imageRunnable(
+  image: ImageFileSet,
+  name: string,
+  engine: RunnableFileSet,
+  context: TargetContext,
+  run: IContainerRun = IMAGE_RUN
+): Computable<RunnableFileSet> {
   const command = engineCommand(name, engine);
-  return Computable.forAll([reapEngine(context, command), context.getGlobalRunnable(SHELL_GLOBAL)] as const, (_reaped: void, shell: RunnableFileSet) => shell)
-    .then(shell =>
-      manifestOf(image).then(({ config }) => {
-        const tag = `localhost/fabr/${imageName(name)}:${config.digest.substring("sha256:".length, "sha256:".length + 12)}`;
-        return imageLayout(image, tag).then(layout => {
-          const install = FileSet.unionAll(
-            layout.mountedAt(LAYOUT_DIR),
-            engine.mountedAt(ENGINE_DIR),
-            new FileSet(new Map<string, IFile>([[LAUNCHER, new MemoryFile(Buffer.from(LAUNCH_SCRIPT), 0o755)]]))
-          );
-          const options = runOptions(image, run);
-          return RunnableFileSet.forEntry(install, LAUNCHER, [command, ownerHost(), tag, String(options.length), ...options, ...run.args])
-            .withTeardown(shell.toCommandLine(["-c", TEARDOWN_SCRIPT, command]))
-            .launchedBy(shell, context.execution.buildCache);
-        });
-      })
-    );
+  return Computable.forAll(
+    [reapEngine(context, command), context.getGlobalRunnable(SHELL_GLOBAL)] as const,
+    (_reaped: void, shell: RunnableFileSet) => shell
+  ).then(shell =>
+    manifestOf(image).then(({ config }) => {
+      const tag = `localhost/fabr/${imageName(name)}:${config.digest.substring("sha256:".length, "sha256:".length + 12)}`;
+      return imageLayout(image, tag).then(layout => {
+        const install = FileSet.unionAll(
+          layout.mountedAt(LAYOUT_DIR),
+          engine.mountedAt(ENGINE_DIR),
+          new FileSet(new Map<string, IFile>([[LAUNCHER, new MemoryFile(Buffer.from(LAUNCH_SCRIPT), 0o755)]]))
+        );
+        const options = runOptions(image, run);
+        return RunnableFileSet.forEntry(install, LAUNCHER, [
+          command,
+          ownerHost(),
+          tag,
+          String(options.length),
+          ...options,
+          ...run.args,
+        ])
+          .withTeardown(shell.toCommandLine(["-c", TEARDOWN_SCRIPT, command]))
+          .launchedBy(shell, context.execution.buildCache);
+      });
+    })
+  );
 }
 
 /** @return the engine's options for running `image` as `run` says. */
@@ -144,24 +170,37 @@ function runOptions(image: ImageFileSet, run: IContainerRun): string[] {
 function exposedPorts(image: ImageFileSet): string[] {
   const config = image.config.document.config;
   const exposed = config !== null && typeof config === "object" ? (config as Record<string, unknown>).ExposedPorts : undefined;
-  return exposed !== null && typeof exposed === "object" ? Object.keys(exposed).filter(port => /^\d+\/(tcp|udp|sctp)$/.test(port)).sort() : [];
+  return exposed !== null && typeof exposed === "object"
+    ? Object.keys(exposed)
+        .filter(port => /^\d+\/(tcp|udp|sctp)$/.test(port))
+        .sort()
+    : [];
 }
 
 /** Reap the containers dead runs left in the engine `command` runs, where it is a program of this host. */
 function reapEngine(context: TargetContext, command: RunnableArgument): Computable<void> {
-  return command instanceof HostLink ? reapContainers(context.execution.processLimit, command.location, hostEnvironment()) : Computable.resolve(undefined);
+  return command instanceof HostLink
+    ? reapContainers(context.execution.processLimit, command.location, hostEnvironment())
+    : Computable.resolve(undefined);
 }
 
 /** @return the command running `engine`'s one program, its install mounted at {@link ENGINE_DIR}. */
 function engineCommand(name: string, engine: RunnableFileSet): RunnableArgument {
   const line = engine.toCommandLine([], { base: ENGINE_DIR });
   if (line.length !== 1) {
-    throw new FabrError(`CONTAINER_ENGINE, for running ${name}, is no single program`).withHelp("name the program, as in '@host:docker' or '@host:podman'");
+    throw new FabrError(`CONTAINER_ENGINE, for running ${name}, is no single program`).withHelp(
+      "name the program, as in '@host:docker' or '@host:podman'"
+    );
   }
   return line[0];
 }
 
 /** @return `name` as a repository name Docker accepts: lowercase, other characters as `-`. */
 function imageName(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9._/-]+/g, "-").replace(/^[^a-z0-9]+/, "") || "image";
+  return (
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9._/-]+/g, "-")
+      .replace(/^[^a-z0-9]+/, "") || "image"
+  );
 }

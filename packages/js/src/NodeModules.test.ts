@@ -35,14 +35,24 @@ import { assembleNodeModules } from "./NodeModules";
 
 /** A package with a single `index.js` and the given (already-built) deps. */
 function pkg(name: string, deps: PackageFileSet[] = []): PackageFileSet {
-  return new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}`)]]), name, "1.0.0", dependenciesOn(...deps));
+  return new PackageFileSet(
+    new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}`)]]),
+    name,
+    "1.0.0",
+    dependenciesOn(...deps)
+  );
 }
 
 /** A versioned package (content distinct per version) with the given carried
  * deps — for a delivered closure: flat winners on the root, private version
  * overrides nested on their requirers. */
 function vpkg(name: string, version: string, deps: PackageFileSet[] = []): PackageFileSet {
-  return new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}@${version}`)]]), name, version, dependenciesOn(...deps));
+  return new PackageFileSet(
+    new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}@${version}`)]]),
+    name,
+    version,
+    dependenciesOn(...deps)
+  );
 }
 
 /** Snapshot a FileSet's entries into a plain map for synchronous inspection. */
@@ -114,10 +124,7 @@ describe("assembling delivered edge-binding graphs", () => {
           id.substring(id.lastIndexOf("@") + 1)
         );
         instances.set(key, node);
-        builder.wire(
-          node,
-          dependenciesOn(...Object.entries(edges[id] ?? {}).map(([depName, toId]) => instance(depName, toId)))
-        );
+        builder.wire(node, dependenciesOn(...Object.entries(edges[id] ?? {}).map(([depName, toId]) => instance(depName, toId))));
       }
       return node;
     };
@@ -354,11 +361,8 @@ describe("assembling delivered edge-binding graphs", () => {
      * one id is an ordinary fact about two deliveries — and a node's reference
      * is its own signature, so it exists whatever layout does. */
     const batches = disagreeingBatches();
-    const pOf = (root: PackageFileSet): PackageFileSet =>
-      root.getDependency("p")!.package!;
-    expect(referenceOf(pOf(batches[0])), "the two p nodes get distinct references").to.not.equal(
-      referenceOf(pOf(batches[1]))
-    );
+    const pOf = (root: PackageFileSet): PackageFileSet => root.getDependency("p")!.package!;
+    expect(referenceOf(pOf(batches[0])), "the two p nodes get distinct references").to.not.equal(referenceOf(pOf(batches[1])));
   });
 });
 
@@ -379,7 +383,9 @@ describe("assembleNodeModules", () => {
   });
 
   it("names a package with no version by its name alone", () => {
-    const files = entries(assembleNodeModules([new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from("x")]]), "mylib", undefined)]));
+    const files = entries(
+      assembleNodeModules([new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from("x")]]), "mylib", undefined)])
+    );
     expect(files.has(".fabr/mylib/node_modules/mylib/index.js")).to.equal(true);
   });
 
@@ -405,7 +411,9 @@ describe("assembleNodeModules", () => {
 
   it("breaks a tie for an undeclared name by instance name", async () => {
     const files = entries(
-      assembleNodeModules([vpkg("top", "1.0.0", [vpkg("b", "1.0.0", [vpkg("shared", "2.0.0")]), vpkg("a", "1.0.0", [vpkg("shared", "1.0.0")])])])
+      assembleNodeModules([
+        vpkg("top", "1.0.0", [vpkg("b", "1.0.0", [vpkg("shared", "2.0.0")]), vpkg("a", "1.0.0", [vpkg("shared", "1.0.0")])]),
+      ])
     );
     expect((files.get(".fabr/node_modules/shared") as SymlinkFile).target).to.equal("../shared@1.0.0/node_modules/shared");
   });
@@ -437,7 +445,12 @@ describe("assembleNodeModules", () => {
 
   it("rejects two given packages of one id wired differently", () => {
     const carrierOf = (dep: PackageFileSet): PackageFileSet =>
-      new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from("// carrier")]]), "carrier", "1.0.0", dependenciesOn(dep));
+      new PackageFileSet(
+        new Map<string, IFile>([["index.js", MemoryFile.from("// carrier")]]),
+        "carrier",
+        "1.0.0",
+        dependenciesOn(dep)
+      );
     expect(() => assembleNodeModules([carrierOf(vpkg("q", "1.0.0")), carrierOf(vpkg("q", "2.0.0"))])).to.throw(ConflictError);
   });
 });

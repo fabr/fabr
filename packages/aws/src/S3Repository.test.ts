@@ -74,10 +74,17 @@ function startStore(
 ): Promise<IFakeStore> {
   const requests: IFakeStore["requests"] = [];
   const checksums = new Map<string, string>();
-  const etagOf = (key: string): string => (encrypted ? `"kms-${crypto.createHash("sha1").update(objects[key]).digest("hex")}"` : etagOfText(objects[key]));
+  const etagOf = (key: string): string =>
+    encrypted ? `"kms-${crypto.createHash("sha1").update(objects[key]).digest("hex")}"` : etagOfText(objects[key]);
   const server = http.createServer((req, res) => {
     const checksum = req.headers["x-amz-checksum-sha256"] as string | undefined;
-    requests.push({ method: req.method!, path: req.url!, authorization: req.headers.authorization, contentType: req.headers["content-type"], checksum });
+    requests.push({
+      method: req.method!,
+      path: req.url!,
+      authorization: req.headers.authorization,
+      contentType: req.headers["content-type"],
+      checksum,
+    });
     const url = new URL(req.url!, "http://store");
     const [, bucket, ...rest] = url.pathname.split("/");
     if (bucket === "") {
@@ -87,9 +94,11 @@ function startStore(
       }
       const start = Number(url.searchParams.get("continuation-token") ?? "0");
       const next = start + 1 < buckets.length ? `<ContinuationToken>${start + 1}</ContinuationToken>` : "";
-      res.writeHead(200).end(
-        `<ListAllMyBucketsResult><Buckets><Bucket><Name>${buckets[start]}</Name></Bucket></Buckets>${next}</ListAllMyBucketsResult>`
-      );
+      res
+        .writeHead(200)
+        .end(
+          `<ListAllMyBucketsResult><Buckets><Bucket><Name>${buckets[start]}</Name></Bucket></Buckets>${next}</ListAllMyBucketsResult>`
+        );
       return;
     }
     if (bucket !== "acme") {
@@ -111,14 +120,22 @@ function startStore(
       const grouped =
         delimiter === null
           ? []
-          : [...new Set(keys.filter(key => key.substring(prefix.length).includes(delimiter)).map(key => key.substring(0, key.indexOf(delimiter, prefix.length) + 1)))];
+          : [
+              ...new Set(
+                keys
+                  .filter(key => key.substring(prefix.length).includes(delimiter))
+                  .map(key => key.substring(0, key.indexOf(delimiter, prefix.length) + 1))
+              ),
+            ];
       const page = direct.slice(start, start + 1);
       const truncated = start + 1 < direct.length;
-      res.writeHead(200, { "content-type": "application/xml" }).end(
-        `<?xml version="1.0"?><ListBucketResult>${page.map(key => `<Contents><Key>${key}</Key><ETag>${etagOf(key)}</ETag></Contents>`).join("")}` +
-          `${start === 0 ? grouped.map(prefix => `<CommonPrefixes><Prefix>${prefix}</Prefix></CommonPrefixes>`).join("") : ""}` +
-          `<IsTruncated>${truncated}</IsTruncated>${truncated ? `<NextContinuationToken>${start + 1}</NextContinuationToken>` : ""}</ListBucketResult>`
-      );
+      res
+        .writeHead(200, { "content-type": "application/xml" })
+        .end(
+          `<?xml version="1.0"?><ListBucketResult>${page.map(key => `<Contents><Key>${key}</Key><ETag>${etagOf(key)}</ETag></Contents>`).join("")}` +
+            `${start === 0 ? grouped.map(prefix => `<CommonPrefixes><Prefix>${prefix}</Prefix></CommonPrefixes>`).join("") : ""}` +
+            `<IsTruncated>${truncated}</IsTruncated>${truncated ? `<NextContinuationToken>${start + 1}</NextContinuationToken>` : ""}</ListBucketResult>`
+        );
       return;
     }
     const key = rest.map(decodeURIComponent).join("/");
@@ -134,7 +151,11 @@ function startStore(
           return;
         }
         if (checksum !== undefined && checksum !== crypto.createHash("sha256").update(body).digest("base64")) {
-          res.writeHead(400).end("<Error><Code>BadDigest</Code><Message>The SHA256 you specified did not match the calculated checksum.</Message></Error>");
+          res
+            .writeHead(400)
+            .end(
+              "<Error><Code>BadDigest</Code><Message>The SHA256 you specified did not match the calculated checksum.</Message></Error>"
+            );
           return;
         }
         objects[key] = body.toString("utf8");
@@ -194,7 +215,15 @@ function fetchingContext(options: Array<FetchOptions | undefined>): TargetContex
 }
 
 function accountAt(store: IFakeStore, options: Array<FetchOptions | undefined> = []): AwsAccount {
-  return new AwsAccount({ name: "@aws", context: fetchingContext(options), signer: new RequestSigner(undefined), credentials: "profile:default", region: "us-east-1", endpoint: new URL(store.url), repositoryTypes: new Map() });
+  return new AwsAccount({
+    name: "@aws",
+    context: fetchingContext(options),
+    signer: new RequestSigner(undefined),
+    credentials: "profile:default",
+    region: "us-east-1",
+    endpoint: new URL(store.url),
+    repositoryTypes: new Map(),
+  });
 }
 
 /** Vend the reference `name`, written after `separator`, makes in `source`, following a namespace's members as looking it up does. */
@@ -203,7 +232,9 @@ function refIn(source: unknown, name: Name, separator: ":" | "/"): Computable<un
     const literal = name.getLiteralPrefix();
     const end = literal.search(/[:/]/);
     const first = end === -1 ? literal : literal.substring(0, end);
-    return source.get(first, separator).then(member => (end === -1 ? member : refIn(member, name.substring(end + 1), literal[end] as ":" | "/")));
+    return source
+      .get(first, separator)
+      .then(member => (end === -1 ? member : refIn(member, name.substring(end + 1), literal[end] as ":" | "/")));
   }
   const ref = (source as PartialRepositoryRef).getRepositoryRef(name, separator);
   return Computable.resolve(ref);
@@ -219,7 +250,9 @@ function publishRefOf(account: AwsAccount, coordinate: string): Computable<Repos
   const name = parseName(coordinate);
   const literal = name.getLiteralPrefix();
   const end = literal.indexOf(":");
-  return new NamespaceRef(account, "@aws").get(literal.substring(0, end), ":").then(member => (member as PartialRepositoryRef).getRepositoryPublishRef(name.substring(end + 1), ":"));
+  return new NamespaceRef(account, "@aws")
+    .get(literal.substring(0, end), ":")
+    .then(member => (member as PartialRepositoryRef).getRepositoryPublishRef(name.substring(end + 1), ":"));
 }
 
 /** @return the error `outcome` rejects with, or undefined where it resolves. */
@@ -241,10 +274,17 @@ function objectsOf(account: AwsAccount, name: string): Computable<FileSet> {
 }
 
 /** Publish `content` at `coordinate`, written after `@aws:`, as a `sync` would: packaged, then uploaded, recording into `progress` what it reports. */
-function publishTo(account: AwsAccount, coordinate: string, content: FileSet, progress: TaskProgress[] = []): Computable<PublishStatus> {
+function publishTo(
+  account: AwsAccount,
+  coordinate: string,
+  content: FileSet,
+  progress: TaskProgress[] = []
+): Computable<PublishStatus> {
   const report: ITaskReport = { activity: () => undefined, progress: measured => progress.push(measured), fail: () => undefined };
   return publishRefOf(account, coordinate).then(destination =>
-    destination.source.package([{ destination, content }], [destination], new Map()).then(([carrier]) => destination.source.publish(carrier, report))
+    destination.source
+      .package([{ destination, content }], [destination], new Map())
+      .then(([carrier]) => destination.source.publish(carrier, report))
   );
 }
 
@@ -354,7 +394,11 @@ describe("the S3 service of an AWS account", () => {
     const children = await service.children();
     expect([...children.keys()]).to.deep.equal(["acme", "beta", "zeta"]);
     expect((children.get("acme") as PartialRepositoryRef).name).to.equal("acme");
-    expect(store.requests.map(({ path }) => path)).to.deep.equal(["/?max-buckets=10000", "/?continuation-token=1&max-buckets=10000", "/?continuation-token=2&max-buckets=10000"]);
+    expect(store.requests.map(({ path }) => path)).to.deep.equal([
+      "/?max-buckets=10000",
+      "/?continuation-token=1&max-buckets=10000",
+      "/?continuation-token=2&max-buckets=10000",
+    ]);
   });
 
   it("says what listing the buckets needs where the credentials may not", async () => {
@@ -412,7 +456,9 @@ describe("the S3 service of an AWS account", () => {
     );
     expect(await publishTo(account, "s3:acme:site/", content)).to.equal("published");
     const puts = store.requests.filter(({ method }) => method === "PUT");
-    expect(puts.map(({ path, contentType }) => [path, contentType])).to.deep.equal([["/acme/site/index.html", "text/html; charset=utf-8"]]);
+    expect(puts.map(({ path, contentType }) => [path, contentType])).to.deep.equal([
+      ["/acme/site/index.html", "text/html; charset=utf-8"],
+    ]);
     expect(puts[0].authorization).to.match(/^AWS4-HMAC-SHA256 Credential=AKIDTEST\//);
     expect(objects).to.deep.equal({ "site/a.css": "a{}", "site/old.html": "old", "site/index.html": "<p>" });
     expect(await publishTo(account, "s3:acme:site/", content)).to.equal("already-synced");
@@ -484,7 +530,11 @@ describe("the S3 service of an AWS account", () => {
     const content = new FileSet(new Map([["build/tool.tgz", MemoryFile.from("tgz")]]));
     expect(await publishTo(accountAt(store), "s3:acme:tools/tool.tgz", content)).to.equal("published");
     expect(objects).to.deep.equal({ "tools/tool.tgz": "tgz" });
-    expect(store.requests.map(({ method, path }) => `${method} ${path}`)).to.deep.equal(["HEAD /acme", "HEAD /acme/tools/tool.tgz", "PUT /acme/tools/tool.tgz"]);
+    expect(store.requests.map(({ method, path }) => `${method} ${path}`)).to.deep.equal([
+      "HEAD /acme",
+      "HEAD /acme/tools/tool.tgz",
+      "PUT /acme/tools/tool.tgz",
+    ]);
   });
 
   it("says why S3 refused an object", async () => {

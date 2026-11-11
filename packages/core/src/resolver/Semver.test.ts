@@ -39,7 +39,18 @@ describe("Semver", () => {
   });
 
   it("orders versions", () => {
-    const ordered = ["1.0.0-alpha", "1.0.0-alpha.1", "1.0.0-alpha.beta", "1.0.0-beta", "1.0.0-beta.2", "1.0.0", "1.0.1", "1.2.0", "1.2.10", "2.0.0"];
+    const ordered = [
+      "1.0.0-alpha",
+      "1.0.0-alpha.1",
+      "1.0.0-alpha.beta",
+      "1.0.0-beta",
+      "1.0.0-beta.2",
+      "1.0.0",
+      "1.0.1",
+      "1.2.0",
+      "1.2.10",
+      "2.0.0",
+    ];
     for (let i = 0; i < ordered.length - 1; i++) {
       expect(compareVersions(parseVersion(ordered[i]), parseVersion(ordered[i + 1]))).to.be.lessThan(0);
       expect(compareVersions(parseVersion(ordered[i + 1]), parseVersion(ordered[i]))).to.be.greaterThan(0);

@@ -24,7 +24,7 @@ import * as path from "path";
 import { BuildEvent, Constraints, ITargetBuildTask, ITargetDecl } from "@fabr-build/core";
 import { TraceWriter } from "./Trace";
 
-const target = (name: string): ITargetDecl => ({ name } as unknown as ITargetDecl);
+const target = (name: string): ITargetDecl => ({ name }) as unknown as ITargetDecl;
 
 function building(name: string, label?: string): ITargetBuildTask {
   return { kind: "target-build", target: target(name), constraints: Constraints.of({}), requiredBy: [], label };
@@ -97,7 +97,11 @@ describe("TraceWriter", () => {
     send({ kind: "task-end", id: 2, task: building("b"), failed: false });
     send({ kind: "task-end", id: 3, task: building("c"), failed: false });
     writer.write();
-    expect(read().filter(event => event.ph === "X").map(span => `${span.name}@${span.tid}`)).to.deep.equal(["Building a@1", "Building b@1", "Building c@2"]);
+    expect(
+      read()
+        .filter(event => event.ph === "X")
+        .map(span => `${span.name}@${span.tid}`)
+    ).to.deep.equal(["Building a@1", "Building b@1", "Building c@2"]);
   });
 
   it("places a test file's run by the runner's own clock, as an async span on the task's track", () => {
@@ -109,7 +113,14 @@ describe("TraceWriter", () => {
       id: 1,
       task,
       state: "running",
-      progress: { measure: "tests", files: 1, totalFiles: 2, passed: 3, failed: 1, latest: { file: "build/a.test.js", start: 2_000_250, stop: 2_000_750, passed: 3, failed: 1 } },
+      progress: {
+        measure: "tests",
+        files: 1,
+        totalFiles: 2,
+        passed: 3,
+        failed: 1,
+        latest: { file: "build/a.test.js", start: 2_000_250, stop: 2_000_750, passed: 3, failed: 1 },
+      },
     });
     send({ kind: "task-end", id: 1, task, failed: false });
     send({ kind: "cycle-end", cycle: 0, failed: false, built: ["t"] });

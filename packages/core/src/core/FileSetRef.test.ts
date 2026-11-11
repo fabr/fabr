@@ -17,7 +17,6 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-
 import { expect } from "chai";
 import { FileSet } from "./FileSet";
 import { FileSetRef } from "./FileSetRef";

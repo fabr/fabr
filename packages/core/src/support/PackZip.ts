@@ -74,15 +74,14 @@ export function packToZip(files: FileSet, options: ZipOptions = {}): Computable<
  */
 export function writeZip(files: FileSet, output: IOutputHandle, name: string, options: ZipOptions = {}): Computable<IFile> {
   return archiveOf(files, options)
-    .then(
-      archive =>
-        Computable.from<void>((resolve, reject) => {
-          archive.output.on("error", reject);
-          archive.output.on("end", () => resolve());
-          output.stream.on("error", reject);
-          archive.output.pipe(output.stream, { end: false });
-          archive.zip.end();
-        })
+    .then(archive =>
+      Computable.from<void>((resolve, reject) => {
+        archive.output.on("error", reject);
+        archive.output.on("end", () => resolve());
+        output.stream.on("error", reject);
+        archive.output.pipe(output.stream, { end: false });
+        archive.zip.end();
+      })
     )
     .then(
       () => output.finalize(name),
@@ -118,12 +117,16 @@ function archiveOf(files: FileSet, options: ZipOptions): Computable<{ zip: yazl.
       } else {
         const { file } = entry;
         /* Opened only when yazl reaches the entry, so an archive of many files holds one open at a time. */
-        zip.addReadStreamLazy(entry.name, { mtime: ZIP_DATE, mode: ZIP_FILE_TYPE | (file.mode & 0o7777), forceDosTimestamp: true }, done => {
-          contentStream(file).then(
-            stream => done(null, stream.on("error", fail)),
-            (err: Error) => done(err, undefined as unknown as Readable)
-          );
-        });
+        zip.addReadStreamLazy(
+          entry.name,
+          { mtime: ZIP_DATE, mode: ZIP_FILE_TYPE | (file.mode & 0o7777), forceDosTimestamp: true },
+          done => {
+            contentStream(file).then(
+              stream => done(null, stream.on("error", fail)),
+              (err: Error) => done(err, undefined as unknown as Readable)
+            );
+          }
+        );
       }
     }
     return { zip, output };
@@ -145,7 +148,9 @@ function entriesOf(files: FileSet, options: ZipOptions): Computable<ArchiveEntry
       return { kind: "stored", name, content: Buffer.from(linkTarget(name, file, options), "utf8"), mode: ZIP_SYMLINK_MODE };
     }
     if (file.mime === MIME_ZIP) {
-      return file.getBuffer().then(content => ({ kind: "stored" as const, name, content, mode: ZIP_FILE_TYPE | (file.mode & 0o7777) }));
+      return file
+        .getBuffer()
+        .then(content => ({ kind: "stored" as const, name, content, mode: ZIP_FILE_TYPE | (file.mode & 0o7777) }));
     }
     return { kind: "deflated", name, file };
   });
@@ -162,4 +167,3 @@ function linkTarget(name: string, file: SymlinkFile, options: ZipOptions): strin
   }
   return file.target;
 }
-

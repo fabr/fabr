@@ -145,7 +145,11 @@ export function resolveMVS<V, C>(
  * Read before the walk, as a root's own requirements, so the walk starts with
  * every force it is to apply.
  */
-function forcedByBoms<V, C>(roots: readonly Requirement[], domain: VersionDomain<V, C>, registry: RequirementSource<V>): Computable<Map<string, V>> {
+function forcedByBoms<V, C>(
+  roots: readonly Requirement[],
+  domain: VersionDomain<V, C>,
+  registry: RequirementSource<V>
+): Computable<Map<string, V>> {
   const forcedRoots = roots.filter(root => root.override === "force");
   const explicit = new Set(forcedRoots.map(root => requiredAs(root)));
   const versionOf = (req: Requirement): V | undefined => {
@@ -1031,7 +1035,8 @@ function resolvePhase<V, C>(
         }
         forkRaises.set(sig, "pending");
         pending++;
-        registry.lowestAvailable(provokedBy.req.name, constraint)
+        registry
+          .lowestAvailable(provokedBy.req.name, constraint)
           .then(raised => {
             forkRaises.set(sig, raised ?? null);
             if (--pending === 0) {
@@ -1338,15 +1343,15 @@ function resolvePhase<V, C>(
       });
       resolve(
         new MVSResolution(domain.versionToString.bind(domain), {
-        selections,
-        errors: [...round.errors.values()],
-        violations,
-        coerced: round.coerced,
-        shared: round.shared,
-        raises,
-        requirements,
-        edges,
-        rootBindings,
+          selections,
+          errors: [...round.errors.values()],
+          violations,
+          coerced: round.coerced,
+          shared: round.shared,
+          raises,
+          requirements,
+          edges,
+          rootBindings,
         })
       );
     };

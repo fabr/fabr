@@ -36,7 +36,15 @@
 import * as fs from "fs";
 import * as path from "path";
 import { ActionContext, TREE_MOUNT } from "../core/BuildCache";
-import { BuildAction, BuildResult, fileSetInput, IBuildActionDefinition, IStagedStep, stringConfig, stringListConfig } from "../core/BuildAction";
+import {
+  BuildAction,
+  BuildResult,
+  fileSetInput,
+  IBuildActionDefinition,
+  IStagedStep,
+  stringConfig,
+  stringListConfig,
+} from "../core/BuildAction";
 import { Computable } from "../core/Computable";
 import { FabrError, MultiError, toError } from "../core/Errors";
 import { EMPTY_FILESET, FileSet } from "../core/FileSet";
@@ -110,7 +118,19 @@ function patched(context: TargetContext, { srcs, patches }: { srcs: FileSet[]; p
        * to make. The reference to the target that asks for it is given it there. */
       const [only] = srcs;
       return srcs.length === 1 && only instanceof PackageFileSet
-        ? action.withReshape(changed => new PackageFileSet(changed, context.name, only.version, only.dependencies, only.origin, only.provided, undefined, only.usedFor))
+        ? action.withReshape(
+            changed =>
+              new PackageFileSet(
+                changed,
+                context.name,
+                only.version,
+                only.dependencies,
+                only.origin,
+                only.provided,
+                undefined,
+                only.usedFor
+              )
+          )
         : action;
     }
   );
@@ -122,10 +142,12 @@ function runPatch(action: BuildAction, ctx: ActionContext, report: ITaskReport):
   return applyPatches(action, dir, staging => ctx.admit(report, staging))
     .then(() => runCommand(action, ctx, dir, report))
     .then(captured =>
-      ctx.admit(report, () => getResultFileSet(dir, "**")).then(result => {
-        const written = FileSet.unionAll(result, links);
-        return { result: FileSet.unionAll(written, selectedCaptures(captured, written)) };
-      })
+      ctx
+        .admit(report, () => getResultFileSet(dir, "**"))
+        .then(result => {
+          const written = FileSet.unionAll(result, links);
+          return { result: FileSet.unionAll(written, selectedCaptures(captured, written)) };
+        })
     );
 }
 
@@ -139,13 +161,22 @@ function linksOf(action: BuildAction): FileSet {
  * copies, through `admit`, and apply its patches to them in written order.
  * Every failed change is reported together.
  */
-function applyPatches(action: BuildAction, dir: string, admit: (staging: () => Computable<void>) => Computable<void>): Computable<void> {
+function applyPatches(
+  action: BuildAction,
+  dir: string,
+  admit: (staging: () => Computable<void>) => Computable<void>
+): Computable<void> {
   const files = fileSetInput(action, "files");
   const patches = fileSetInput(action, "patches");
   const strip = Number(stringConfig(action, "strip"));
   const links = linksOf(action);
   const regular = new FileSet(new Map([...files].filter(([, file]) => !(file instanceof SymlinkFile))));
-  const texts = stringListConfig(action, "order").map(name => patches.getFile(name)!.readString().then(text => ({ name, text })));
+  const texts = stringListConfig(action, "order").map(name =>
+    patches
+      .getFile(name)!
+      .readString()
+      .then(text => ({ name, text }))
+  );
   return admit(() => {
     fs.mkdirSync(dir, { recursive: true });
     return writeFileSet(dir, regular, { copy: true });
@@ -176,7 +207,11 @@ function applyPatches(action: BuildAction, dir: string, admit: (staging: () => C
  * directory, where its command runs, and the command's tools beside it. Its
  * standard input is read from the cache's tree pool through the link beside
  * `dir`, as the run reads it from the cache rather than the work directory. */
-function stagePatchStep(action: BuildAction, dir: string, ensureTree: (files: FileSet) => Computable<string>): Computable<IStagedStep> {
+function stagePatchStep(
+  action: BuildAction,
+  dir: string,
+  ensureTree: (files: FileSet) => Computable<string>
+): Computable<IStagedStep> {
   const specs = typeof action.config.spec === "string" ? pipelineSpecs(action) : [];
   const cwd = path.join(dir, FILES_DIR);
   const [input] = action.inputs.stdin instanceof FileSet ? [...action.inputs.stdin] : [];
@@ -184,20 +219,24 @@ function stagePatchStep(action: BuildAction, dir: string, ensureTree: (files: Fi
     input === undefined
       ? Computable.resolve(undefined)
       : ensureTree(new FileSet(new Map([input]))).then(tree => path.posix.join("..", TREE_MOUNT, path.basename(tree), input[0]));
-  const tools = typeof action.config.spec === "string" ? writeFileSet(dir, fileSetInput(action, "tools")) : Computable.resolve(undefined);
-  return Computable.forAll([stdin, applyPatches(action, cwd, staging => staging()), tools], (stdinPath: string | undefined): IStagedStep => ({
-    cwd: FILES_DIR,
-    commands:
-      specs.length === 0
-        ? []
-        : [
-            {
-              stages: specs.map(spec => ({ ...spec, argv: [findExecutable(spec.argv[0], cwd), ...spec.argv.slice(1)] })),
-              ...(stdinPath === undefined ? {} : { stdin: stdinPath }),
-            },
-          ],
-    env: envConfig(action),
-  }));
+  const tools =
+    typeof action.config.spec === "string" ? writeFileSet(dir, fileSetInput(action, "tools")) : Computable.resolve(undefined);
+  return Computable.forAll(
+    [stdin, applyPatches(action, cwd, staging => staging()), tools],
+    (stdinPath: string | undefined): IStagedStep => ({
+      cwd: FILES_DIR,
+      commands:
+        specs.length === 0
+          ? []
+          : [
+              {
+                stages: specs.map(spec => ({ ...spec, argv: [findExecutable(spec.argv[0], cwd), ...spec.argv.slice(1)] })),
+                ...(stdinPath === undefined ? {} : { stdin: stdinPath }),
+              },
+            ],
+      env: envConfig(action),
+    })
+  );
 }
 
 /**

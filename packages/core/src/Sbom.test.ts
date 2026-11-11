@@ -151,7 +151,6 @@ function named(title: string, dep: Dependency): ResolvedName {
   return { title, resolved: ResolvedRequirements.of([dep.package!], [dep.reference], NO_CONFLICTS, NO_COLLECTION) };
 }
 
-
 describe("sbom", () => {
   it("describes a package by its closure: each package a component by purl, with its licences, digests and edges", async () => {
     const semver = registry("semver", "7.6.3", [], {
@@ -219,7 +218,10 @@ describe("sbom", () => {
       { reference: new TargetRef({} as TargetSource, "image"), package: image },
     ]);
     const bom = await sbom(
-      { title: "outer", resolved: ResolvedRequirements.of([outer], [new TargetRef({} as TargetSource, "outer")], NO_CONFLICTS, NO_COLLECTION) },
+      {
+        title: "outer",
+        resolved: ResolvedRequirements.of([outer], [new TargetRef({} as TargetSource, "outer")], NO_CONFLICTS, NO_COLLECTION),
+      },
       { version: "1.2.3" }
     );
     expect(bom.dependencies).to.deep.equal([
@@ -287,7 +289,10 @@ describe("sbom", () => {
     };
     const bom = await sbom(name, { version: "1" });
     expect(bom.metadata.component).to.deep.equal({ type: "application", "bom-ref": "@cat", name: "@cat" });
-    expect(bom.components.map(component => component["bom-ref"])).to.deep.equal(["pkg:test/express@4.17.1", "pkg:test/lodash@4.17.15"]);
+    expect(bom.components.map(component => component["bom-ref"])).to.deep.equal([
+      "pkg:test/express@4.17.1",
+      "pkg:test/lodash@4.17.15",
+    ]);
     expect(bom.dependencies[0]).to.deep.equal({ ref: "@cat", dependsOn: ["pkg:test/express@4.17.1"] });
   });
 });

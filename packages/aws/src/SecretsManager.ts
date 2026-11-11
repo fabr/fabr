@@ -103,7 +103,9 @@ export class SecretsManagerSecrets implements Repository, RepositoryLookup {
         `name the secret as it is, without a pattern, as in '${this.written}:prod/db/password'`
       );
     }
-    return new RepositoryRef(this, { name: secret, versionConstraint: undefined }).find(name.substring(secret.startsWith("/") ? 1 : 0));
+    return new RepositoryRef(this, { name: secret, versionConstraint: undefined }).find(
+      name.substring(secret.startsWith("/") ? 1 : 0)
+    );
   }
 
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
@@ -118,7 +120,10 @@ export class SecretsManagerSecrets implements Repository, RepositoryLookup {
     const url = requestUrl(request);
     const cacheKey = `${name} ${credentials} ${region} ${endpoint?.href ?? ""} ${secret}`;
     return context
-      .fetchSecret(cacheKey, SECRET_TAG, `secretsmanager:${secret}`, () => this.fetch(request, url, secret), { resource: "secret", role: "content" })
+      .fetchSecret(cacheKey, SECRET_TAG, `secretsmanager:${secret}`, () => this.fetch(request, url, secret), {
+        resource: "secret",
+        role: "content",
+      })
       .then(record => {
         const origin: ISecretOrigin = { kind: SECRETS_MANAGER_PROVENANCE, account: name, secret };
         const file = new SecretFile(`${this.written}:${secret}`, record.identity, record.value);
@@ -171,6 +176,8 @@ function refusal(text: string, secret: string, account: string): FabrError {
   }
   const refused = new FabrError(`Secrets Manager refused to read '${secret}' (${describeServiceError(error)})`);
   return error.type === "AccessDeniedException"
-    ? refused.withHelp("reading a secret needs secretsmanager:GetSecretValue, and kms:Decrypt on its key where it is encrypted with your own")
+    ? refused.withHelp(
+        "reading a secret needs secretsmanager:GetSecretValue, and kms:Decrypt on its key where it is encrypted with your own"
+      )
     : refused;
 }

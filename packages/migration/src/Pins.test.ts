@@ -27,7 +27,9 @@ const lockfile = (versions: Record<string, string[]>): Lockfile => ({
   versions: new Map(Object.entries(versions).map(([name, held]) => [name, new Set(held)])),
 });
 
-const observation = (facts: Partial<Record<"selected" | "conflicts", Record<string, string[]>>> & { floorless?: string[] }): Observation => ({
+const observation = (
+  facts: Partial<Record<"selected" | "conflicts", Record<string, string[]>>> & { floorless?: string[] }
+): Observation => ({
   selected: new Map(Object.entries(facts.selected ?? {}).map(([name, held]) => [name, new Set(held)])),
   conflicts: new Map(Object.entries(facts.conflicts ?? {}).map(([name, held]) => [name, new Set(held)])),
   floorless: new Set(facts.floorless ?? []),
@@ -40,7 +42,11 @@ const written = (catalog: Catalog): string[] => [...catalog.entries.values()].ma
 describe("proposing pins", () => {
   it("raises a selection below what the lockfile installs in its caret range", () => {
     const catalog = new Catalog();
-    const proposal = proposePins(catalog, observation({ selected: { chalk: ["4.0.0"], ms: ["2.1.3"], z: ["0.3.1"] } }), lockfile({ chalk: ["4.1.2", "5.0.0"], ms: ["2.1.3"], z: ["0.4.0", "0.3.5"] }));
+    const proposal = proposePins(
+      catalog,
+      observation({ selected: { chalk: ["4.0.0"], ms: ["2.1.3"], z: ["0.3.1"] } }),
+      lockfile({ chalk: ["4.1.2", "5.0.0"], ms: ["2.1.3"], z: ["0.4.0", "0.3.5"] })
+    );
     expect(proposal.added).to.equal(2);
     expect(written(catalog)).to.deep.equal(["@npm:chalk:^4.1.2", "@npm:z:^0.3.5"]);
   });
@@ -73,10 +79,16 @@ describe("proposing pins", () => {
 
   it("sanctions conflicting versions where the lockfile installs several, and reports the rest", () => {
     const catalog = new Catalog();
-    const proposal = proposePins(catalog, observation({ conflicts: { ms: ["2.0.0", "2.1.3"], one: ["1.0.0", "2.0.0"] } }), lockfile({ ms: ["2.0.0", "2.1.3"], one: ["2.0.0"] }));
+    const proposal = proposePins(
+      catalog,
+      observation({ conflicts: { ms: ["2.0.0", "2.1.3"], one: ["1.0.0", "2.0.0"] } }),
+      lockfile({ ms: ["2.0.0", "2.1.3"], one: ["2.0.0"] })
+    );
     expect([...catalog.alternates]).to.deep.equal([["ms", new Set(["2.0.0", "2.1.3"])]]);
     expect(proposal.unanswered.map(([, line]) => line)).to.deep.equal(["one: 1.0.0, 2.0.0"]);
-    expect(proposePins(catalog, observation({ conflicts: { ms: ["2.0.0", "2.1.3"] } }), lockfile({ ms: ["2.0.0", "2.1.3"] })).added).to.equal(0);
+    expect(
+      proposePins(catalog, observation({ conflicts: { ms: ["2.0.0", "2.1.3"] } }), lockfile({ ms: ["2.0.0", "2.1.3"] })).added
+    ).to.equal(0);
   });
 
   it("reads an npm purl", () => {

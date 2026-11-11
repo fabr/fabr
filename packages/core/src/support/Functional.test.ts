@@ -68,7 +68,9 @@ describe("mapComputable", () => {
   });
 
   it("takes plain values as well as sources, and an empty list", async () => {
-    expect(await toPromise(mapComputable([1, 2, 3], (n, index) => (n === 2 ? Computable.resolve(n * 10) : n + index)))).to.deep.equal([1, 20, 5]);
+    expect(await toPromise(mapComputable([1, 2, 3], (n, index) => (n === 2 ? Computable.resolve(n * 10) : n + index)))).to.deep.equal([
+      1, 20, 5,
+    ]);
     expect(await toPromise(mapComputable([], () => 1))).to.deep.equal([]);
   });
 

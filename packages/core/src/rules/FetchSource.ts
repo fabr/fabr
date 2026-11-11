@@ -94,9 +94,9 @@ class FetchSource implements FileSource {
     if (matched.length === 0) {
       return reachable ? Computable.resolve(EMPTY_FILESET) : Computable.reject(this.unknownDownload(name));
     }
-    return mapComputable(matched, ({ path, as, member }) => this.download(path, member).then(file => this.delivered(as, file, path, member))).then(
-      sets => FileSet.unionAll(...sets)
-    );
+    return mapComputable(matched, ({ path, as, member }) =>
+      this.download(path, member).then(file => this.delivered(as, file, path, member))
+    ).then(sets => FileSet.unionAll(...sets));
   }
 
   /**
@@ -140,17 +140,16 @@ class FetchSource implements FileSource {
       report: { resource: path, role: "content" },
       name: path,
       source: () => Computable.resolve({ url: member.url, expected: member.digest }),
-    })
-      .then(files => {
-        /* By single file rather than by name: the cache entry is keyed on the
-         * URL, so content first ingested under another declared name serves
-         * this one too. */
-        const file = files.getSingleFile();
-        if (!file) {
-          throw new FabrError(`download '${path}' in ${this.declaredName} did not produce a file`);
-        }
-        return verifiedAgainst(file, member.digest, member.url);
-      });
+    }).then(files => {
+      /* By single file rather than by name: the cache entry is keyed on the
+       * URL, so content first ingested under another declared name serves
+       * this one too. */
+      const file = files.getSingleFile();
+      if (!file) {
+        throw new FabrError(`download '${path}' in ${this.declaredName} did not produce a file`);
+      }
+      return verifiedAgainst(file, member.digest, member.url);
+    });
   }
 }
 
@@ -234,7 +233,9 @@ function readMembers(context: TargetContext): Computable<Map<string, FetchMember
   return context.getWildcardProperties().then(wildcards =>
     Computable.forAll(
       wildcards.map(member =>
-        context.getString(member.decl.name.toBaseString()).then(value => [member.key.toGlobString().replaceAll(":", "/"), value ?? ""] as const)
+        context
+          .getString(member.decl.name.toBaseString())
+          .then(value => [member.key.toGlobString().replaceAll(":", "/"), value ?? ""] as const)
       ),
       (...entries: (readonly [string, string])[]) => {
         const members = new Map<string, FetchMember>();

@@ -55,19 +55,21 @@ function fakeContext(members: Record<string, string>, log: FetchLog, body: strin
     getString: (name: string) => Computable.resolve(members[name]),
     fetch: (_cacheKey: string, _tag: string, request: () => Computable<IFetchRequest>) =>
       request().then(({ url, process }) => {
-      log.urls.push(url);
-      const output = {
-        stream: new Writable({ write: (_chunk, _enc, done): void => done() }),
-        finalize: (name: string): Computable<IFile> => {
-          log.finalized.push(name);
-          return Computable.resolve(storedFile(name, body));
-        },
-        discard: (): Computable<void> => {
-          log.discarded++;
-          return Computable.resolve(undefined);
-        },
-      };
-      return process(typeof body === "string" ? Readable.from([body]) : body, { createOutput: () => output } as unknown as IFetchContext);
+        log.urls.push(url);
+        const output = {
+          stream: new Writable({ write: (_chunk, _enc, done): void => done() }),
+          finalize: (name: string): Computable<IFile> => {
+            log.finalized.push(name);
+            return Computable.resolve(storedFile(name, body));
+          },
+          discard: (): Computable<void> => {
+            log.discarded++;
+            return Computable.resolve(undefined);
+          },
+        };
+        return process(typeof body === "string" ? Readable.from([body]) : body, {
+          createOutput: () => output,
+        } as unknown as IFetchContext);
       }),
   } as unknown as TargetContext;
 }
@@ -105,7 +107,12 @@ function newLog(): FetchLog {
 }
 
 function sourceFor(members: Record<string, string>, log: FetchLog, body?: string | Readable): Computable<FileSource> {
-  return fetchSourceRegistration.provider(fakeContext(members, log, body), undefined, undefined, NO_REQUIREMENTS) as Computable<FileSource>;
+  return fetchSourceRegistration.provider(
+    fakeContext(members, log, body),
+    undefined,
+    undefined,
+    NO_REQUIREMENTS
+  ) as Computable<FileSource>;
 }
 
 describe("fetch source", () => {
@@ -254,7 +261,12 @@ describe("fetch source", () => {
      * bytes with nothing streaming past, so the declaration is re-judged
      * against the store. */
     const hitSource = (members: Record<string, string>, log: FetchLog, cachedBytes: string): Computable<FileSource> =>
-      fetchSourceRegistration.provider(cachedContext(members, log, cachedBytes), undefined, undefined, NO_REQUIREMENTS) as Computable<FileSource>;
+      fetchSourceRegistration.provider(
+        cachedContext(members, log, cachedBytes),
+        undefined,
+        undefined,
+        NO_REQUIREMENTS
+      ) as Computable<FileSource>;
 
     it("serves a hit whose stored content matches the declared digest", async () => {
       const log = newLog();

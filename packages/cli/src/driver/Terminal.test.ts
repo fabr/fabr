@@ -178,7 +178,10 @@ describe("TerminalStream", () => {
        * shrink cannot refill that space — so the bound on the pane is the bound
        * on the hole it leaves. Never a silent cut: 6 of 20 with no sign of the
        * other 14 would read as "that is everything running". */
-      const painted = out.take().split("\n").filter(line => line.length > 0);
+      const painted = out
+        .take()
+        .split("\n")
+        .filter(line => line.length > 0);
       /* Heading + the 6 budgeted rows, the cut line taking the sixth. */
       expect(painted).to.have.length(7);
       expect(painted[0]).to.equal("Running:");

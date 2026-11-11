@@ -110,7 +110,9 @@ export class SsmParameters implements Repository, RepositoryLookup {
         `name the parameter as it is, without a pattern, as in '${this.written}:/app/db/password'`
       );
     }
-    return new RepositoryRef(this, { name: parameter, versionConstraint: undefined }).find(name.substring(parameter.startsWith("/") ? 1 : 0));
+    return new RepositoryRef(this, { name: parameter, versionConstraint: undefined }).find(
+      name.substring(parameter.startsWith("/") ? 1 : 0)
+    );
   }
 
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
@@ -130,7 +132,9 @@ export class SsmParameters implements Repository, RepositoryLookup {
         role: "content",
       })
       .then(record => {
-        const file = record.secret ? new SecretFile(`${this.written}:${parameter}`, record.identity, record.value) : new MemoryFile(record.value);
+        const file = record.secret
+          ? new SecretFile(`${this.written}:${parameter}`, record.identity, record.value)
+          : new MemoryFile(record.value);
         const origin: ISsmOrigin = { kind: SSM_PROVENANCE, account: name, parameter, version: versionOf(record.identity) };
         return new FileSet(new Map([[parameter.replace(/^\//, ""), file]])).withOrigin(origin);
       });
@@ -149,7 +153,11 @@ export class SsmParameters implements Repository, RepositoryLookup {
           throw refusal(response.body.toString("utf8"), parameter, this.account.name);
         }
         const found = parseJson(response.body, `the answer from ${url}`, toParameter);
-        return { identity: `${found.arn}:${found.version}`, secret: found.type === "SecureString", value: Buffer.from(found.value, "utf8") };
+        return {
+          identity: `${found.arn}:${found.version}`,
+          secret: found.type === "SecureString",
+          value: Buffer.from(found.value, "utf8"),
+        };
       });
   }
 }

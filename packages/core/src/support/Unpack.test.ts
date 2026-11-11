@@ -73,7 +73,10 @@ describe("Unpack", () => {
   /** Run `body` with this process's work tree unwritable, so every spool the cache opens fails. */
   async function withFailingSpool(body: () => Promise<void>): Promise<void> {
     const work = path.join(cacheDir, "work");
-    const own = path.join(work, fs.readdirSync(work).find(name => name.endsWith(`-${process.pid}`))!);
+    const own = path.join(
+      work,
+      fs.readdirSync(work).find(name => name.endsWith(`-${process.pid}`))!
+    );
     fs.chmodSync(own, 0o500);
     try {
       await body();
@@ -409,7 +412,12 @@ describe("Unpack", () => {
        * before the next entry begins in the same chunk. */
       const blocks: Buffer[] = [crypto.createHash("sha256").update("seed").digest()];
       while (blocks.length < 10000) {
-        blocks.push(crypto.createHash("sha256").update(blocks[blocks.length - 1]).digest());
+        blocks.push(
+          crypto
+            .createHash("sha256")
+            .update(blocks[blocks.length - 1])
+            .digest()
+        );
       }
       const noise = Buffer.concat(blocks);
       const zip = handZip([
@@ -435,7 +443,15 @@ describe("Unpack", () => {
 
     it("refuses an archive with a name that escapes the tree", async () => {
       const refused = await withTimeout(
-        unpackStream(Readable.from([handZip([{ name: "../evil", content: "x" }, { name: "ok", content: "y" }])]), createOutput)
+        unpackStream(
+          Readable.from([
+            handZip([
+              { name: "../evil", content: "x" },
+              { name: "ok", content: "y" },
+            ]),
+          ]),
+          createOutput
+        )
       ).then(
         () => "",
         (err: Error) => err.message
@@ -444,7 +460,9 @@ describe("Unpack", () => {
     });
 
     it("refuses an entry whose content does not match its CRC-32, and a truncated archive", async () => {
-      const corrupt = await withTimeout(unpackStream(Readable.from([handZip([{ name: "a", content: "x", badCrc: true }])]), createOutput)).then(
+      const corrupt = await withTimeout(
+        unpackStream(Readable.from([handZip([{ name: "a", content: "x", badCrc: true }])]), createOutput)
+      ).then(
         () => "",
         (err: Error) => err.message
       );

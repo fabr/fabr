@@ -63,7 +63,8 @@ export function serviceErrorOf(text: string): IServiceError {
   } catch {
     return { message: text.trim() || "no detail given" };
   }
-  const message = typeof doc.message === "string" ? doc.message : typeof doc.Message === "string" ? doc.Message : text.trim() || "no detail given";
+  const message =
+    typeof doc.message === "string" ? doc.message : typeof doc.Message === "string" ? doc.Message : text.trim() || "no detail given";
   return typeof doc.__type === "string" ? { type: doc.__type.replace(/^.*#/, ""), message } : { message };
 }
 

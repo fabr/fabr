@@ -159,15 +159,29 @@ export class DeclaredRule implements SelectableRule {
   public definition(): Computable<RuleDefinition> {
     const { decl } = this;
     if (isRuleBlock(decl.implementation)) {
-      return Computable.resolve((this.block ??= blockRuleDefinition(new DeclaredBlockRule(this, decl as IRuleDecl & { implementation: IRuleBlock }))));
+      return Computable.resolve(
+        (this.block ??= blockRuleDefinition(new DeclaredBlockRule(this, decl as IRuleDecl & { implementation: IRuleBlock })))
+      );
     }
     const entry = decl.implementation;
     this.loaded ??= loadedImplementation(this.load, entry, "rule").then(implementation => {
-      if (typeof implementation !== "object" || implementation === null || typeof (implementation as RuleImplementation).evaluate !== "function") {
+      if (
+        typeof implementation !== "object" ||
+        implementation === null ||
+        typeof (implementation as RuleImplementation).evaluate !== "function"
+      ) {
         throw new FabrError(`'${entry.value.toString()}' is not a rule implementation (no evaluate)`);
       }
       const { requirements, value, evaluate, describe } = implementation as RuleImplementation;
-      return { type: this.type, properties: this.properties, targetProperties: this.targetProperties, requirements, value, evaluate, describe };
+      return {
+        type: this.type,
+        properties: this.properties,
+        targetProperties: this.targetProperties,
+        requirements,
+        value,
+        evaluate,
+        describe,
+      };
     });
     return this.loaded;
   }
@@ -185,7 +199,9 @@ function loadedImplementation(load: LoadImplementation, implementation: INameVal
     if (isBuildFailure(err)) {
       throw err;
     }
-    throw new FabrError(`The ${what} implementation '${implementation.value.toString()}' could not be loaded: ${toError(err).message}`);
+    throw new FabrError(
+      `The ${what} implementation '${implementation.value.toString()}' could not be loaded: ${toError(err).message}`
+    );
   };
   try {
     return load(implementation).then(loaded => loaded, failed);
@@ -363,7 +379,10 @@ export class ModelBuilder implements BuildModel {
       this.log.log(DIAG_PLUGIN_UNUSABLE, { detail: resolved.message, loc: declPosn(decl) });
       this.unusablePlugins++;
     } else if (this.packages.has(resolved.name)) {
-      this.log.log(DIAG_PLUGIN_UNUSABLE, { detail: `Plugin '${decl.name.toString()}' is a second plugin named '${resolved.name}'`, loc: declPosn(decl) });
+      this.log.log(DIAG_PLUGIN_UNUSABLE, {
+        detail: `Plugin '${decl.name.toString()}' is a second plugin named '${resolved.name}'`,
+        loc: declPosn(decl),
+      });
     } else {
       let code: Computable<string> | undefined;
       this.packages.set(resolved.name, () => (code ??= resolved.code(this)));
@@ -418,7 +437,10 @@ export class ModelBuilder implements BuildModel {
   public finish(): BuildModel {
     const pending = this.pendingPlugins();
     for (const decl of pending) {
-      this.log.log(DIAG_PLUGIN_UNUSABLE, { detail: `Plugin '${decl.name.toString()}' names nothing the project declares`, loc: declPosn(decl) });
+      this.log.log(DIAG_PLUGIN_UNUSABLE, {
+        detail: `Plugin '${decl.name.toString()}' names nothing the project declares`,
+        loc: declPosn(decl),
+      });
     }
     /* Where a plugin declaration resolved to nothing, its error is the one to
      * report: an include of its optional libs may be waiting on it. */
@@ -467,7 +489,9 @@ export class ModelBuilder implements BuildModel {
         continue;
       }
       const def = this.root.getTargetDef(decl.type);
-      const key = decl.targetProperties.map(([name]) => name).find(name => (def?.properties.get(name) ?? def?.properties.get("*"))?.type !== PropertyType.String);
+      const key = decl.targetProperties
+        .map(([name]) => name)
+        .find(name => (def?.properties.get(name) ?? def?.properties.get("*"))?.type !== PropertyType.String);
       if (def === undefined) {
         this.log.log(DIAG_RULE_UNKNOWN_TYPE, { type: decl.type, loc: declPosn(decl) });
       } else if (key !== undefined) {
@@ -475,7 +499,10 @@ export class ModelBuilder implements BuildModel {
       } else {
         continue;
       }
-      this.targetRules.set(decl.type, (this.targetRules.get(decl.type) ?? []).filter(other => other !== rule));
+      this.targetRules.set(
+        decl.type,
+        (this.targetRules.get(decl.type) ?? []).filter(other => other !== rule)
+      );
     }
     for (const decl of this.declaredRepositories.filter(parsed)) {
       if (this.root.getTargetDef(decl.type) === undefined) {
@@ -515,7 +542,6 @@ export class ModelBuilder implements BuildModel {
     const chain = this.root.getTargetDefChain(type).map(def => def.name);
     return (chain.length === 0 ? [type] : chain).map(name => ({ type: name, rules: this.targetRules.get(name) ?? [] }));
   }
-
 
   public getDefaultRules(): SelectableRule[] {
     return this.defaultRules;
@@ -605,7 +631,12 @@ export class ModelBuilder implements BuildModel {
  * loads: for a test, which reads what is wrong from `log` and is given the
  * model whatever it holds.
  */
-export function toBuildModel(files: IBuildFileContents[], log: Log, contributions: PluginContribution[], load?: LoadImplementation): BuildModel {
+export function toBuildModel(
+  files: IBuildFileContents[],
+  log: Log,
+  contributions: PluginContribution[],
+  load?: LoadImplementation
+): BuildModel {
   const model = new ModelBuilder(log, contributions, load);
   model.addFiles(files, { fromPlugin: false });
   try {

@@ -315,7 +315,9 @@ describe("Command", () => {
     expect(options.format).to.equal("junit");
     expect(options.targets).to.deep.equal(["app"]);
     expect(parseCommandLine(["node", "fabr", "test", "--report=out/report.json", "app"]).format).to.equal(undefined);
-    expect(capture(["test", "--report", "x", "--format", "sarif", "app"]).err.join("\n")).to.match(/takes ctrf or junit for the 'test' command/);
+    expect(capture(["test", "--report", "x", "--format", "sarif", "app"]).err.join("\n")).to.match(
+      /takes ctrf or junit for the 'test' command/
+    );
     expect(capture(["test", "--format", "junit", "app"]).err.join("\n")).to.match(/needs '--report FILE'/);
     expect(capture(["build", "--report", "x", "app"]).err.join("\n")).to.match(/not valid/);
   });
@@ -460,7 +462,11 @@ describe("Command", () => {
     });
 
     it("takes a trace flag before or after the target (`fabr lib --trace`)", () => {
-      for (const args of [["lib", "--trace"], ["--trace", "lib"], ["lib", "--trace=out.json"]]) {
+      for (const args of [
+        ["lib", "--trace"],
+        ["--trace", "lib"],
+        ["lib", "--trace=out.json"],
+      ]) {
         const options = parseCommandLine(["node", "fabr", ...args]);
         expect(completeCommandLine(options, operationsOf), args.join(" ")).to.deep.equal({ build: ["lib"], test: [] });
         expect(options.traceFile).to.equal(args.includes("--trace=out.json") ? "out.json" : "fabr-trace.json");
@@ -495,7 +501,11 @@ describe("Command", () => {
       }
 
       it("is a command building every target after it under the operation", () => {
-        expect(planWith("lint", "lib", "suite")).to.deep.equal({ build: [], test: [], operation: { name: "lint", targets: ["lib", "suite"] } });
+        expect(planWith("lint", "lib", "suite")).to.deep.equal({
+          build: [],
+          test: [],
+          operation: { name: "lint", targets: ["lib", "suite"] },
+        });
       });
 
       it("takes the options build takes", () => {
@@ -508,7 +518,10 @@ describe("Command", () => {
       it("is a command over a target of the same name, which `--` reaches", () => {
         const operations = new Map([...OPERATIONS, ["lint", ["build"]]]);
         const options = parseCommandLine(["node", "fabr", "--", "lint"]);
-        expect(completeCommandLine(options, name => operations.get(name) ?? [], declared)).to.deep.equal({ build: ["lint"], test: [] });
+        expect(completeCommandLine(options, name => operations.get(name) ?? [], declared)).to.deep.equal({
+          build: ["lint"],
+          test: [],
+        });
       });
 
       it("is read as a target name where no rule declares it", () => {
@@ -582,7 +595,7 @@ describe("Command", () => {
   });
 
   it("lays every help page out within 80 columns", () => {
-    for (const args of [["-h"], ...["build", "test", "run", "ls", "list-targets", "list-all", "audit"].map((c) => ["help", c])]) {
+    for (const args of [["-h"], ...["build", "test", "run", "ls", "list-targets", "list-all", "audit"].map(c => ["help", c])]) {
       for (const line of capture(args).out.join("\n").split("\n")) {
         expect(line.length, `'${args.join(" ")}': ${line}`).to.be.at.most(80);
       }

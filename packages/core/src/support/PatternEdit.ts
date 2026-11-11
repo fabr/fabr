@@ -67,17 +67,53 @@ export function applyPatternEdit(value: string, edit: PatternEdit): string {
   const length = value.length;
   switch (edit.operator) {
     case "#":
-      return withFirst(ascending(0, length), end => matches(0, end), end => value.slice(end)) ?? value;
+      return (
+        withFirst(
+          ascending(0, length),
+          end => matches(0, end),
+          end => value.slice(end)
+        ) ?? value
+      );
     case "##":
-      return withFirst(descending(length, 0), end => matches(0, end), end => value.slice(end)) ?? value;
+      return (
+        withFirst(
+          descending(length, 0),
+          end => matches(0, end),
+          end => value.slice(end)
+        ) ?? value
+      );
     case "%":
-      return withFirst(descending(length, 0), start => matches(start, length), start => value.slice(0, start)) ?? value;
+      return (
+        withFirst(
+          descending(length, 0),
+          start => matches(start, length),
+          start => value.slice(0, start)
+        ) ?? value
+      );
     case "%%":
-      return withFirst(ascending(0, length), start => matches(start, length), start => value.slice(0, start)) ?? value;
+      return (
+        withFirst(
+          ascending(0, length),
+          start => matches(start, length),
+          start => value.slice(0, start)
+        ) ?? value
+      );
     case "/#":
-      return withFirst(descending(length, 0), end => matches(0, end), end => replacement + value.slice(end)) ?? value;
+      return (
+        withFirst(
+          descending(length, 0),
+          end => matches(0, end),
+          end => replacement + value.slice(end)
+        ) ?? value
+      );
     case "/%":
-      return withFirst(ascending(0, length), start => matches(start, length), start => value.slice(0, start) + replacement) ?? value;
+      return (
+        withFirst(
+          ascending(0, length),
+          start => matches(start, length),
+          start => value.slice(0, start) + replacement
+        ) ?? value
+      );
     case "/": {
       const found = firstMatch(value, 0, matches);
       return found === undefined ? value : value.slice(0, found.start) + replacement + value.slice(found.end);
@@ -99,7 +135,11 @@ export function applyPatternEdit(value: string, edit: PatternEdit): string {
  * bash's `/` replaces. A match of no characters does not count, so an empty
  * pattern replaces nothing.
  */
-function firstMatch(value: string, from: number, matches: (start: number, end: number) => boolean): { start: number; end: number } | undefined {
+function firstMatch(
+  value: string,
+  from: number,
+  matches: (start: number, end: number) => boolean
+): { start: number; end: number } | undefined {
   for (let start = from; start < value.length; start++) {
     for (let end = value.length; end > start; end--) {
       if (matches(start, end)) {
@@ -176,7 +216,9 @@ function bracketExpression(pattern: string, open: number): { source: string; end
   if (bracket === undefined) {
     return undefined;
   }
-  const members = bracket.members.map(member => ("posixClass" in member ? POSIX_CLASSES.get(member.posixClass)! : classMember(member.char))).join("");
+  const members = bracket.members
+    .map(member => ("posixClass" in member ? POSIX_CLASSES.get(member.posixClass)! : classMember(member.char)))
+    .join("");
   return { source: `[${bracket.negated ? "^" : ""}${members}]`, end: bracket.end };
 }
 

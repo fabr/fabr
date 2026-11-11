@@ -50,9 +50,7 @@ const FABR = require.resolve("@fabr-build/cli");
  * sh (the `script` rule) from the standard system dirs. Any inherited PATH (jest)
  * is appended so a non-standard toolchain still resolves. */
 const NODE = process.execPath;
-const CHILD_PATH = [path.dirname(NODE), "/usr/bin", "/bin", process.env.PATH]
-  .filter(Boolean)
-  .join(path.delimiter);
+const CHILD_PATH = [path.dirname(NODE), "/usr/bin", "/bin", process.env.PATH].filter(Boolean).join(path.delimiter);
 
 /* A fixture using the js plugin runs its tools on the node running this suite,
  * rather than downloading the release NODE names: NODE is pointed at a link to
@@ -144,12 +142,7 @@ export interface FabrResult {
  * root — fabr finds the project by walking up, so this exercises what the
  * invocation directory (rather than the project root) governs.
  */
-export function runFabr(
-  files: Record<string, string>,
-  args: string[],
-  readback?: string[],
-  subdir?: string
-): FabrResult {
+export function runFabr(files: Record<string, string>, args: string[], readback?: string[], subdir?: string): FabrResult {
   if (!fs.existsSync(FABR)) {
     throw new Error(`fabr is not built at ${FABR} — run 'yarn build' (the 'yarn dist' gate does this)`);
   }
@@ -249,10 +242,10 @@ export function runFabrClosingStream(
  * watchers whose sessions never completed.
  */
 const REAPER_SCRIPT =
-  "const kids=new Set();let buf=\"\";" +
+  'const kids=new Set();let buf="";' +
   'process.stdin.setEncoding("utf8");' +
   'process.stdin.on("data",d=>{buf+=d;let i;while((i=buf.indexOf("\\n"))>=0){' +
-  "const [cmd,pid]=buf.slice(0,i).split(\" \");buf=buf.slice(i+1);" +
+  'const [cmd,pid]=buf.slice(0,i).split(" ");buf=buf.slice(i+1);' +
   'if(cmd==="WATCH")kids.add(Number(pid));' +
   'if(cmd==="FORGET")kids.delete(Number(pid));}});' +
   "const reap=()=>{" +

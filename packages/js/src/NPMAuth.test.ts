@@ -75,12 +75,22 @@ describe("NPMAuth.getHeadersFor", () => {
   });
 
   it("builds Basic from username + base64 _password", () => {
-    const config = new NPMAuth(new Map([["//reg/:username", "alice"], ["//reg/:_password", b64("hunter2")]]));
+    const config = new NPMAuth(
+      new Map([
+        ["//reg/:username", "alice"],
+        ["//reg/:_password", b64("hunter2")],
+      ])
+    );
     expect(config.getHeadersFor("https://reg/pkg")).to.deep.equal({ Authorization: `Basic ${b64("alice:hunter2")}` });
   });
 
   it("prefers _authToken over the other mechanisms", () => {
-    const config = new NPMAuth(new Map([["//reg/:_authToken", "tok"], ["//reg/:_auth", b64("u:p")]]));
+    const config = new NPMAuth(
+      new Map([
+        ["//reg/:_authToken", "tok"],
+        ["//reg/:_auth", b64("u:p")],
+      ])
+    );
     expect(config.getHeadersFor("https://reg/pkg")).to.deep.equal({ Authorization: "Bearer tok" });
   });
 
@@ -203,9 +213,7 @@ function scriptedServer(
 describe("pollWebAuthToken", () => {
   it("waits out a 202 (honoring retry-after) and resolves the completion token", async () => {
     const server = await scriptedServer((request, index) =>
-      index === 0
-        ? { status: 202, headers: { "retry-after": "0.01" }, body: "{}" }
-        : { status: 200, body: `{"token":"webtok"}` }
+      index === 0 ? { status: 202, headers: { "retry-after": "0.01" }, body: "{}" } : { status: 200, body: `{"token":"webtok"}` }
     );
     try {
       expect(await pollWebAuthToken(`${server.url}/-/v1/done`, { authorization: "Bearer t" })).to.equal("webtok");

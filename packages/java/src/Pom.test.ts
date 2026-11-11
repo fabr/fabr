@@ -119,7 +119,9 @@ async function effective(coordinate: string, text = POMS.get(coordinate)!): Prom
 }
 
 const listed = (pom: EffectivePom, dependencies = pom.dependencies): string[] =>
-  dependencies.map(dependency => `${dependency.groupId}:${dependency.artifactId}:${dependency.version} ${dependency.scope ?? "compile"}`);
+  dependencies.map(
+    dependency => `${dependency.groupId}:${dependency.artifactId}:${dependency.version} ${dependency.scope ?? "compile"}`
+  );
 
 describe("effectivePom", () => {
   it("inherits, interpolates late and fills versions from imported BOMs", async () => {

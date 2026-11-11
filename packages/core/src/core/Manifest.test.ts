@@ -67,10 +67,10 @@ describe("source index dialect", () => {
   });
 
   it("reads the retired unmarked dialect as absent (the magic is the version)", () => {
-    const v1 = serializeSourceIndex(META, rows({ name: "a", hash: "aa", size: 1, mtimeMs: 2, mime: "text/plain", verified: true })).replace(
-      "!source-index 2 ",
-      "!source-index 1 "
-    );
+    const v1 = serializeSourceIndex(
+      META,
+      rows({ name: "a", hash: "aa", size: 1, mtimeMs: 2, mime: "text/plain", verified: true })
+    ).replace("!source-index 2 ", "!source-index 1 ");
     expect(parseSourceIndex(v1)).to.equal(undefined);
   });
 });

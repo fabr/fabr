@@ -53,7 +53,14 @@ import {
   PackageFileSet,
   TargetContext,
 } from "@fabr-build/core";
-import { type IPostcssOptions, type IPostcssSource, isSassSource, type ISassOptions, type ISassSource, sassLoweredName } from "@fabr-build/js-tools";
+import {
+  type IPostcssOptions,
+  type IPostcssSource,
+  isSassSource,
+  type ISassOptions,
+  type ISassSource,
+  sassLoweredName,
+} from "@fabr-build/js-tools";
 
 /** Where the drivers write, and the rules collect, the compiled CSS from. */
 export const CSS_OUTDIR = "out";
@@ -152,7 +159,12 @@ export function sassSourceOutputs(path: string, sourceMaps = false): ISassSource
  * stylesheet that arrived with one (a lowered Sass source) has it as the map
  * its own map composes onto (`prev`).
  */
-export function postcssSourceOutputs(path: string, packageName: string, sourceMaps = false, carriedMaps?: ReadonlySet<string>): IPostcssSource {
+export function postcssSourceOutputs(
+  path: string,
+  packageName: string,
+  sourceMaps = false,
+  carriedMaps?: ReadonlySet<string>
+): IPostcssSource {
   const scope = cssScopeDigest(packageName, path);
   if (isCssModule(path)) {
     const css = scopedCssName(path);
@@ -202,7 +214,10 @@ export function compileCssSources(
   if (css.isEmpty()) {
     return Computable.resolve(EMPTY_FILESET);
   }
-  assertCssOutputsDisjoint([...css].map(([name]) => name), packageName ?? "");
+  assertCssOutputsDisjoint(
+    [...css].map(([name]) => name),
+    packageName ?? ""
+  );
   const groups = css.partition(name => (isSassSource(name) ? "sass" : "plain"));
   const plain = groups.plain ?? EMPTY_FILESET;
   const sassSrcs = groups.sass ?? EMPTY_FILESET;
@@ -365,7 +380,9 @@ export function cssScopeCollision(sources: Array<{ path: string; scope?: string 
  * does — ending with the generic "rename either of them".
  */
 function outputConflictHelp(conflict: ConflictError): string[] {
-  const sides = [conflict.left, conflict.right].map(side => describeProvenance(side.provenance)).filter((path): path is string => path !== undefined);
+  const sides = [conflict.left, conflict.right]
+    .map(side => describeProvenance(side.provenance))
+    .filter((path): path is string => path !== undefined);
   const module = sides.find(isCssModule);
   if (module === undefined) {
     return [`two stylesheets both produce '${conflict.key}' — rename either of them`];
@@ -431,7 +448,9 @@ export function buildPostcssOptions(
   }
   const names = [...fileNames].sort();
   const carriedMaps: ReadonlySet<string> = new Set(names.filter(name => name.endsWith(".map")));
-  const sources = names.filter(name => !name.endsWith(".map")).map(name => postcssSourceOutputs(name, packageName, sourceMaps, carriedMaps));
+  const sources = names
+    .filter(name => !name.endsWith(".map"))
+    .map(name => postcssSourceOutputs(name, packageName, sourceMaps, carriedMaps));
   const conflict = cssOutputConflict(sources, "css_postcss");
   if (conflict !== undefined) {
     throw conflict.withHelp(outputConflictHelp(conflict));

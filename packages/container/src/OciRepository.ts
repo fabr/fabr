@@ -50,7 +50,17 @@ import { imageRunnable } from "./ImageRunnable";
 import { isDigest, splitImageReference } from "./ImageReference";
 import { packageImage, pushImage } from "./ImagePublish";
 import { authFileSignIn } from "./RegistrySignIn";
-import { IDigested, IImageManifest, imageManifestOf, IOciPlatform, indexPlatforms, platformMatches, platformText, Registry, selectManifest } from "./OciProtocol";
+import {
+  IDigested,
+  IImageManifest,
+  imageManifestOf,
+  IOciPlatform,
+  indexPlatforms,
+  platformMatches,
+  platformText,
+  Registry,
+  selectManifest,
+} from "./OciProtocol";
 
 /** Provenance kind for an image fetched from a registry. */
 export const OCI_IMAGE_PROVENANCE = "oci-image";
@@ -138,7 +148,9 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
   public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
     const written = name.toString();
     if (name.getMarker() !== undefined) {
-      throw new FabrError(`'${written}' is an image, not resolved, so an override marker means nothing on it`).withHelp("write the reference without the marker");
+      throw new FabrError(`'${written}' is an image, not resolved, so an override marker means nothing on it`).withHelp(
+        "write the reference without the marker"
+      );
     }
     const literal = name.getLiteralPrefix();
     if (literal === "" && name.isSimpleName()) {
@@ -147,7 +159,9 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
     const { name: image, version, rest } = splitImageReference(literal, written);
     if (version === undefined) {
       if (!name.isSimpleName()) {
-        throw new FabrError(`'${written}' does not name its image literally`).withHelp("an image is named as it is, without a pattern");
+        throw new FabrError(`'${written}' does not name its image literally`).withHelp(
+          "an image is named as it is, without a pattern"
+        );
       }
       return new PartialRepositoryRef(this, image);
     }
@@ -159,14 +173,18 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
   public children({ name }: PartialRepositoryRef): Computable<Map<string, Reference>> {
     if (name === "") {
       return Computable.reject(
-        new FabrError(`${this.context.name} cannot list every image it holds`).withHelp(`name an image to list its tags, as in '${this.context.name}:node'`)
+        new FabrError(`${this.context.name} cannot list every image it holds`).withHelp(
+          `name an image to list its tags, as in '${this.context.name}:node'`
+        )
       );
     }
     return this.registry.tags(this.repositoryOf(name)).then(tags => {
       if (tags === undefined) {
         throw new FabrError(`${this.registry.url} has no image ${name}`);
       }
-      return new Map([...tags].sort(compareText).map((tag): [string, Reference] => [tag, new RepositoryRef(this, { name, versionConstraint: tag })]));
+      return new Map(
+        [...tags].sort(compareText).map((tag): [string, Reference] => [tag, new RepositoryRef(this, { name, versionConstraint: tag })])
+      );
     });
   }
 
@@ -175,7 +193,9 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
     const written = name.toString();
     const { name: image, version, rest } = splitImageReference(name.getLiteralPrefix(), written);
     if (!name.isSimpleName() || version === undefined || isDigest(version) || rest !== undefined) {
-      throw new FabrError(`'${written}' is no image and tag to publish to`).withHelp("name the image and the tag it is published under, as in 'myorg/app:1.4'");
+      throw new FabrError(`'${written}' is no image and tag to publish to`).withHelp(
+        "name the image and the tag it is published under, as in 'myorg/app:1.4'"
+      );
     }
     return new PackagePublishRef(this, { name: image, version });
   }
@@ -209,14 +229,21 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
         wanted: ociPlatformOf(triple),
       };
       return this.manifestFor(request, version).then(manifest => {
-        const origin: IImageOrigin = { kind: OCI_IMAGE_PROVENANCE, image: request.written, digest: manifest.digest, platform: platformText(request.wanted) };
+        const origin: IImageOrigin = {
+          kind: OCI_IMAGE_PROVENANCE,
+          image: request.written,
+          digest: manifest.digest,
+          platform: platformText(request.wanted),
+        };
         const key = `${this.registry.url} ${request.repository}@${manifest.digest}`;
-        const image = (): Computable<ImageFileSet> => this.images.getOrCreate(key, () => this.image(request, manifest, reference.name, origin));
+        const image = (): Computable<ImageFileSet> =>
+          this.images.getOrCreate(key, () => this.image(request, manifest, reference.name, origin));
         /* Under `run`, the image is a program the container engine runs. */
         const files = (): Computable<FileSet> =>
           this.context.operation === "run"
-            ? Computable.forAll([image(), this.context.getGlobalRunnable("CONTAINER_ENGINE")] as const, (pulled: ImageFileSet, engine: RunnableFileSet) =>
-                imageRunnable(pulled, reference.name, engine, this.context)
+            ? Computable.forAll(
+                [image(), this.context.getGlobalRunnable("CONTAINER_ENGINE")] as const,
+                (pulled: ImageFileSet, engine: RunnableFileSet) => imageRunnable(pulled, reference.name, engine, this.context)
               )
             : image();
         return new ResolvedNode(
@@ -258,7 +285,12 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
   }
 
   /** Fetch the config and layers of the image `manifest` is, as `request` asked for it. */
-  private image({ repository, written, wanted }: IImageRequest, { document: manifest, digest }: IDigested<IImageManifest>, name: string, origin: IImageOrigin): Computable<ImageFileSet> {
+  private image(
+    { repository, written, wanted }: IImageRequest,
+    { document: manifest, digest }: IDigested<IImageManifest>,
+    name: string,
+    origin: IImageOrigin
+  ): Computable<ImageFileSet> {
     return this.registry.config(repository, manifest.config).then(config => {
       if (!platformMatches(config.platform, wanted)) {
         throw new FabrError(`${written} is an image for ${platformText(config.platform)}, not ${platformText(wanted)}`).withHelp(
@@ -270,19 +302,17 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
       }
       return Computable.forAll(
         manifest.layers.map((layer, index) =>
-          this.registry.layer(repository, layer, config.diffIds[index]).then(
-            (stored): ILayerRecord => ({
-              ...stored,
-              published: {
-                digest: layer.digest,
-                mediaType: layer.mediaType,
-                size: layer.size,
-                registry: this.registry.url,
-                repository,
-                ...(this.loginUrl === undefined ? {} : { loginUrl: this.loginUrl }),
-              },
-            })
-          )
+          this.registry.layer(repository, layer, config.diffIds[index]).then((stored): ILayerRecord => ({
+            ...stored,
+            published: {
+              digest: layer.digest,
+              mediaType: layer.mediaType,
+              size: layer.size,
+              registry: this.registry.url,
+              repository,
+              ...(this.loginUrl === undefined ? {} : { loginUrl: this.loginUrl }),
+            },
+          }))
         ),
         (...layers: ILayerRecord[]) => ImageFileSet.of(config, layers, name, digest, origin)
       );
@@ -311,11 +341,15 @@ function createRepository(context: TargetContext, url?: string, credential?: Cre
       }
       const base = written.replace(/\/+$/, "");
       const signIn = credential ?? authFileSignIn(context, base, loginUrl?.toString());
-      return new OciRepository(context, new Registry(context, base, signIn), defaultNamespace?.toString(), credential === undefined ? loginUrl?.toString() : undefined);
+      return new OciRepository(
+        context,
+        new Registry(context, base, signIn),
+        defaultNamespace?.toString(),
+        credential === undefined ? loginUrl?.toString() : undefined
+      );
     }
   );
 }
-
 
 /** The implementation CONTAINER.fabr's `repository` declaration names. */
 export default { provider: createRepository } satisfies RepositoryImplementation;

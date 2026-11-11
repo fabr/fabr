@@ -123,9 +123,7 @@ function instanceNames({ byNode }: CollectedPackages): Map<string, string> {
     const wired = wirings.get(pkg.packageId)! > 1 ? `${plain}_${hashString(node).slice(0, 12)}` : plain;
     names.set(
       node,
-      wired.length > INSTANCE_NAME_LIMIT
-        ? `${wired.slice(0, INSTANCE_NAME_LIMIT - 33)}_${hashString(wired).slice(0, 32)}`
-        : wired
+      wired.length > INSTANCE_NAME_LIMIT ? `${wired.slice(0, INSTANCE_NAME_LIMIT - 33)}_${hashString(wired).slice(0, 32)}` : wired
     );
   }
   return names;

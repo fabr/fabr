@@ -190,7 +190,8 @@ export class JsonRpcConnection {
         },
         (err: unknown) => {
           const error = toError(err);
-          const code = error instanceof MethodNotFound ? METHOD_NOT_FOUND : error instanceof InvalidParams ? INVALID_PARAMS : INTERNAL_ERROR;
+          const code =
+            error instanceof MethodNotFound ? METHOD_NOT_FOUND : error instanceof InvalidParams ? INVALID_PARAMS : INTERNAL_ERROR;
           if (isRequest) {
             this.send(protocol, { jsonrpc: "2.0", id: message.id, error: { code, message: error.message } });
           }

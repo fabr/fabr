@@ -112,6 +112,8 @@ export function requestUrl(request: IServiceRequest): string {
 export function onlyTo(origin: string, credential: Credential): Credential {
   return {
     authorize: (request, challenge) =>
-      new URL(request.url).origin === origin ? credential.authorize(request, challenge) : Computable.resolve(challenge === undefined ? new Map() : undefined),
+      new URL(request.url).origin === origin
+        ? credential.authorize(request, challenge)
+        : Computable.resolve(challenge === undefined ? new Map() : undefined),
   };
 }

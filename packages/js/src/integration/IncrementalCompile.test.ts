@@ -181,34 +181,36 @@ class Compile {
      * production would not (or miss something it would — the generated project
      * is in here). */
     return toPromise(
-      this.cache.getOrCreateAction(
-        built,
-        ctx => {
-          this.runs++;
-          lastCompile = this;
-          /* The bound the driver planned is read back off its report — red
-           * runs included, whose report is written before the failure — for
-           * the suite's own account of the mechanism (see {@link engagement}). */
-          return NODE_EXEC_ACTION.run(built, ctx, SILENT_REPORT).then(
-            result => {
-              this.recordBound(ctx.workDir);
-              return result;
-            },
-            (err: unknown) => {
-              this.recordBound(ctx.workDir);
-              throw err;
-            }
-          );
-        },
-        /* The cache builds the context, exactly as it does in a build — so
-         * `force` reaches the step's build state through the same option a
-         * forced build uses, and nothing here hands it a base by hand. */
-        {
-          targetKey: TARGET_KEY,
-          processLimit: new Semaphore(UNBOUNDED),
-          ...options,
-        }
-      ).then(({ files }) => files)
+      this.cache
+        .getOrCreateAction(
+          built,
+          ctx => {
+            this.runs++;
+            lastCompile = this;
+            /* The bound the driver planned is read back off its report — red
+             * runs included, whose report is written before the failure — for
+             * the suite's own account of the mechanism (see {@link engagement}). */
+            return NODE_EXEC_ACTION.run(built, ctx, SILENT_REPORT).then(
+              result => {
+                this.recordBound(ctx.workDir);
+                return result;
+              },
+              (err: unknown) => {
+                this.recordBound(ctx.workDir);
+                throw err;
+              }
+            );
+          },
+          /* The cache builds the context, exactly as it does in a build — so
+           * `force` reaches the step's build state through the same option a
+           * forced build uses, and nothing here hands it a base by hand. */
+          {
+            targetKey: TARGET_KEY,
+            processLimit: new Semaphore(UNBOUNDED),
+            ...options,
+          }
+        )
+        .then(({ files }) => files)
     );
   }
 

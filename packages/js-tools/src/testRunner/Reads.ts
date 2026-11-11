@@ -220,7 +220,13 @@ function wrapLookups(lookups: Map<string, string | null>): void {
 
 /** @return the path `target` names, where it names one. */
 function pathOf(target: unknown): string | undefined {
-  return typeof target === "string" ? target : target instanceof URL ? fileURLToPath(target) : Buffer.isBuffer(target) ? target.toString() : undefined;
+  return typeof target === "string"
+    ? target
+    : target instanceof URL
+      ? fileURLToPath(target)
+      : Buffer.isBuffer(target)
+        ? target.toString()
+        : undefined;
 }
 
 /** Replace `owner[name]` with a function that shows `note` its arguments first,
@@ -371,7 +377,11 @@ export function writeReads(file: string, reads: IRecordedReads | undefined): voi
   const relative = (read: string): string => path.relative(cwd, read).split(path.sep).join("/");
   const files = [...new Set(reads.files.map(relative))].sort();
   const lookups = [...new Map(reads.lookups.map(lookup => [`${lookup.from}\0${lookup.name}`, lookup])).values()]
-    .map((lookup): ILookup => ({ from: relative(lookup.from), name: lookup.name, ...(lookup.to === undefined ? {} : { to: relative(lookup.to) }) }))
+    .map((lookup): ILookup => ({
+      from: relative(lookup.from),
+      name: lookup.name,
+      ...(lookup.to === undefined ? {} : { to: relative(lookup.to) }),
+    }))
     .sort((a, b) => (a.from < b.from ? -1 : a.from > b.from ? 1 : a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   const document: IReadsDocument = { files, lookups };
   fs.writeFileSync(file, JSON.stringify(document));

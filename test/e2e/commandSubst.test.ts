@@ -38,15 +38,13 @@ const TOOL_FILES = {
   "src/multi.js": "process.stdout.write('-I/a\\n\\n  -I/b \\n');\n",
   "src/noisy.js": "process.stdout.write('out');\nprocess.stderr.write('err');\n",
   "src/echoarg.js": "process.stdout.write(process.argv.slice(2).join('|'));\n",
-  "src/upper.js": "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>process.stdout.write(d.trim().toUpperCase()));\n",
+  "src/upper.js":
+    "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>process.stdout.write(d.trim().toUpperCase()));\n",
 };
 
 /** Build a `generate` target whose command is `spec`, and cat what it captured. */
 function generated(spec: string, extra = ""): ReturnType<typeof runFabr> {
-  return runFabr(
-    { "PROJECT.fabr": TOOLS + extra + `generate g { run = ${spec} > out.txt; }\n`, ...TOOL_FILES },
-    ["cat", "g:out.txt"]
-  );
+  return runFabr({ "PROJECT.fabr": TOOLS + extra + `generate g { run = ${spec} > out.txt; }\n`, ...TOOL_FILES }, ["cat", "g:out.txt"]);
 }
 
 describe("e2e: command substitution", () => {
@@ -162,5 +160,4 @@ describe("e2e: command substitution", () => {
     expect(result.status).to.equal(0);
     expect(result.stdout).to.equal("xy");
   });
-
 });

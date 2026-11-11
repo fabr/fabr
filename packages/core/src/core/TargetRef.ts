@@ -124,7 +124,9 @@ export class TargetRef extends Reference {
     const origin = chainSteps(steps, node.origin);
     const stamped = origin === undefined ? node : node.withOrigin(origin);
     const answered =
-      steps.length === 0 ? stamped : stamped.withContent({ ...stamped.content, files: () => answeredBy(stamped.content.files(), steps) });
+      steps.length === 0
+        ? stamped
+        : stamped.withContent({ ...stamped.content, files: () => answeredBy(stamped.content.files(), steps) });
     const miss = this.misses[this.misses.length - 1];
     return renamedAndProjected(answered, { renameTo: this.renameTo, projections: this.projections, miss }, this.toString()) as Unbuilt;
   }

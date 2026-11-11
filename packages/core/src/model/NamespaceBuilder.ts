@@ -63,7 +63,7 @@ function blameFor(entry: NamespaceEntry): INamedDecl | NamespaceNode {
   if (isNamespaceNode(entry)) {
     return entry;
   }
-  return entry.kind === DeclKind.Property ? entry.decls[0] ?? entry.defaults[0] : entry;
+  return entry.kind === DeclKind.Property ? (entry.decls[0] ?? entry.defaults[0]) : entry;
 }
 
 export class NamespaceBuilder {
@@ -123,12 +123,7 @@ export class NamespaceBuilder {
    * repeated key within a tier, an unguarded redeclaration, two targets, a
    * clash with a namespace — is the duplicate it looks like.
    */
-  private addResolvableDecl(
-    node: NamespaceNode,
-    simpleName: string,
-    decl: IResolvableDecl,
-    tier: "decls" | "defaults"
-  ): boolean {
+  private addResolvableDecl(node: NamespaceNode, simpleName: string, decl: IResolvableDecl, tier: "decls" | "defaults"): boolean {
     const existing = node.content.get(simpleName);
     if (decl.kind === DeclKind.Target) {
       if (tier === "defaults") {
@@ -137,7 +132,8 @@ export class NamespaceBuilder {
          * name — target or property — is a duplicate, not an override. */
         const clash =
           node.defaultTargets.get(simpleName) ??
-          (existing !== undefined && (isNamespaceNode(existing) || (existing.kind === DeclKind.Property && existing.defaults.length > 0))
+          (existing !== undefined &&
+          (isNamespaceNode(existing) || (existing.kind === DeclKind.Property && existing.defaults.length > 0))
             ? existing
             : undefined);
         if (clash) {
@@ -152,7 +148,10 @@ export class NamespaceBuilder {
       }
       /* An ordinary target takes the name, superseding a property that has only
        * `default` declarations; anything else there is a conflict. */
-      if (existing !== undefined && !(!isNamespaceNode(existing) && existing.kind === DeclKind.Property && existing.decls.length === 0)) {
+      if (
+        existing !== undefined &&
+        !(!isNamespaceNode(existing) && existing.kind === DeclKind.Property && existing.decls.length === 0)
+      ) {
         this.conflictError(blameFor(existing), decl);
         return false;
       }
@@ -245,7 +244,10 @@ export class NamespaceBuilder {
 
   /** @return the names of the files that declare `name` privately, in name order. */
   public getPrivateFiles(name: string): string[] {
-    return [...this.scopes].filter(([, scope]) => Namespace.of(scope).getDecl(name) !== undefined).map(([file]) => file).sort();
+    return [...this.scopes]
+      .filter(([, scope]) => Namespace.of(scope).getDecl(name) !== undefined)
+      .map(([file]) => file)
+      .sort();
   }
 
   /** @return the namespace of the private names of the file named `file`, or undefined where it declares none. */

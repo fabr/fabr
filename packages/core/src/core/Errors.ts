@@ -86,7 +86,9 @@ export interface Label {
  */
 export class CycleError extends FabrError {
   constructor(public readonly labels: ReadonlyArray<Label>) {
-    super(labels.length > 0 ? `Circular dependency: '${labels[0].name}' depends on itself` : "A computation depends on its own result");
+    super(
+      labels.length > 0 ? `Circular dependency: '${labels[0].name}' depends on itself` : "A computation depends on its own result"
+    );
   }
 }
 
@@ -358,7 +360,8 @@ export class TargetNotPackageError extends FabrError {
       (!("packageName" in requirer)
         ? `'${requirer.repositoryName === undefined ? "" : `${requirer.repositoryName}:`}${requirer.toString()}' is`
         : `${requirer.packageName}${requirer.version === undefined ? "" : `:${requirer.version}`} depends on ` +
-          `${name}${constraint === undefined ? "" : `:${constraint}`}, which is`) + ` provided by the target '${name}', but '${name}' is not a package`
+          `${name}${constraint === undefined ? "" : `:${constraint}`}, which is`) +
+        ` provided by the target '${name}', but '${name}' is not a package`
     );
     this.withHelp(`either build '${name}' as a package, or rename it to avoid the name collision`);
   }
@@ -387,4 +390,3 @@ export class RequirementResolutionError extends FabrError {
     super(cause.message, cause);
   }
 }
-

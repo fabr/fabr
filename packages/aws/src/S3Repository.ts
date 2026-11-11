@@ -148,9 +148,9 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
   public getRepositoryPublishRef(name: Name): S3PublishRef {
     const written = `${this.written}:${name.toString()}`;
     if (!name.isSimpleName() || name.getMarker() !== undefined || name.getRenameTo() !== undefined) {
-      throw new FabrError(`'${written}' is not an S3 address to publish to: it is written as a pattern, a rename or with a marker`).withHelp(
-        publishHelp(this.account.name)
-      );
+      throw new FabrError(
+        `'${written}' is not an S3 address to publish to: it is written as a pattern, a rename or with a marker`
+      ).withHelp(publishHelp(this.account.name));
     }
     const { bucket, separator, at } = this.splitBucket(name);
     const key = checkedPublishKey(separator === undefined ? "" : name.getLiteralPrefix().substring(at), written, this.account.name);
@@ -178,7 +178,9 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
     return this.locate(coordinate.bucket).then(location =>
       this.storedAt(location, coordinate)
         .then(stored =>
-          mapComputable(objects, object => this.holds(location, object, stored.get(object.key)).then(held => (held ? undefined : object)))
+          mapComputable(objects, object =>
+            this.holds(location, object, stored.get(object.key)).then(held => (held ? undefined : object))
+          )
         )
         .then(missing => {
           const toStore = missing.filter((object): object is IStoredObject => object !== undefined);
@@ -189,9 +191,9 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
               sent[index] = bytes;
               report.progress({ measure: "bytes", done: sent.reduce((sum, each) => sum + each, 0), total });
             };
-            return mapComputable(toStore, (object, index) => this.store(location, object, sizes[index], bytes => progress(index, bytes))).then(
-              (): PublishStatus => (toStore.length > 0 ? "published" : "already-synced")
-            );
+            return mapComputable(toStore, (object, index) =>
+              this.store(location, object, sizes[index], bytes => progress(index, bytes))
+            ).then((): PublishStatus => (toStore.length > 0 ? "published" : "already-synced"));
           });
         })
     );
@@ -201,7 +203,10 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
   public children({ name }: PartialRepositoryRef): Computable<Map<string, Reference>> {
     if (name === "") {
       return this.listBuckets().then(
-        buckets => new Map([...buckets].sort(compareText).map((bucket): [string, Reference] => [bucket, new PartialRepositoryRef(this, bucket)]))
+        buckets =>
+          new Map(
+            [...buckets].sort(compareText).map((bucket): [string, Reference] => [bucket, new PartialRepositoryRef(this, bucket)])
+          )
       );
     }
     const within = name;
@@ -265,7 +270,9 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
               );
         return rest.then(more => {
           const all = [...found, ...more];
-          const refused = named.find((fetched): fetched is { absent: HttpStatusError } => "absent" in fetched && fetched.absent.statusCode === 403);
+          const refused = named.find(
+            (fetched): fetched is { absent: HttpStatusError } => "absent" in fetched && fetched.absent.statusCode === 403
+          );
           if (all.length === 0 && refused !== undefined) {
             throw new FabrError(`${refused.absent.url} was not found, or is not readable with ${this.account.name}'s credentials`);
           }
@@ -282,7 +289,9 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
     const end = literal.search(/[:/]/);
     if (end === -1) {
       if (!name.isSimpleName()) {
-        throw new FabrError(`'${written}' does not name its bucket literally`).withHelp("a bucket is named as it is, without a pattern");
+        throw new FabrError(`'${written}' does not name its bucket literally`).withHelp(
+          "a bucket is named as it is, without a pattern"
+        );
       }
       return { bucket: checkedBucket(literal, written), at: literal.length };
     }
@@ -317,7 +326,9 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
         const named = Array.isArray(header) ? header[0] : header;
         if (named === undefined || named === "") {
           throw new FabrError(
-            response.statusCode === 404 ? `S3 has no bucket '${bucket}'` : `cannot find the region of S3 bucket '${bucket}' (${response.statusCode} from ${url})`
+            response.statusCode === 404
+              ? `S3 has no bucket '${bucket}'`
+              : `cannot find the region of S3 bucket '${bucket}' (${response.statusCode} from ${url})`
           );
         }
         return named;
@@ -385,7 +396,9 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
   /** Find what is stored at `coordinate` now, by key: everything under a prefix (`ListObjectsV2`, which gives no checksums), or the one object (`HeadObject`). */
   private storedAt(location: IBucketLocation, coordinate: S3PublishRef): Computable<Map<string, IStoredState>> {
     if (coordinate.isPrefix) {
-      return this.listAll(location, coordinate.key, undefined, true).then(({ objects }) => new Map(objects.map(({ key, etag }) => [key, { etag }])));
+      return this.listAll(location, coordinate.key, undefined, true).then(
+        ({ objects }) => new Map(objects.map(({ key, etag }) => [key, { etag }]))
+      );
     }
     return this.headObject(location, coordinate.key).then(state => new Map(state === undefined ? [] : [[coordinate.key, state]]));
   }
@@ -404,7 +417,10 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
       if (stored.etag === etag) {
         return true;
       }
-      const checksum = stored.checksum !== undefined ? Computable.resolve(stored.checksum) : this.headObject(location, object.key).then(state => state?.checksum);
+      const checksum =
+        stored.checksum !== undefined
+          ? Computable.resolve(stored.checksum)
+          : this.headObject(location, object.key).then(state => state?.checksum);
       return checksum.then(found => found === checksumOf(object.file));
     });
   }
@@ -429,7 +445,12 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
    * S3 against its SHA-256 and kept with it as its checksum. `sent` is told the
    * bytes sent so far.
    */
-  private store(location: IBucketLocation, { key, file }: IStoredObject, size: number, sent: (bytes: number) => void): Computable<void> {
+  private store(
+    location: IBucketLocation,
+    { key, file }: IStoredObject,
+    size: number,
+    sent: (bytes: number) => void
+  ): Computable<void> {
     return contentStream(file).then(content => {
       const body = reportingProgress(content, sent);
       const request = putRequest(
@@ -446,7 +467,9 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
         .then(headers => sendRequest(requestUrl(request), { method: "PUT", headers, body }))
         .then(response => {
           if (response.statusCode < 200 || response.statusCode >= 300) {
-            throw new FabrError(`cannot store s3://${location.bucket}/${key} (${response.statusCode}): ${errorMessageOf(response.body)}`);
+            throw new FabrError(
+              `cannot store s3://${location.bucket}/${key} (${response.statusCode}): ${errorMessageOf(response.body)}`
+            );
           }
         });
     });

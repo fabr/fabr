@@ -31,7 +31,14 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { FileSet, IFile, MemoryFile, PackageFileSet, dependenciesOn } from "@fabr-build/core";
 import type { ISassOptions } from "@fabr-build/js-tools";
-import { DEPS_REPORT_FILE, DEPS_REPORT_FLAG, PNP_DATA_FILE, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG, toRunReport } from "@fabr-build/js-tools";
+import {
+  DEPS_REPORT_FILE,
+  DEPS_REPORT_FLAG,
+  PNP_DATA_FILE,
+  SOURCE_PATHS_FILE,
+  SOURCE_PATHS_FLAG,
+  toRunReport,
+} from "@fabr-build/js-tools";
 import { TREE_MOUNT } from "@fabr-build/core";
 import { pnpManifestOf, treeMountOf } from "../PnPManifest";
 import { relativeToMap, relocateCssSources, SassDriver, sourceMapComment } from "@fabr-build/js-tools";
@@ -83,7 +90,6 @@ describe("sourceMapComment", () => {
   });
 });
 
-
 describe("the Sass driver, resolving package loads through fabr's table", () => {
   let root: string;
 
@@ -101,14 +107,24 @@ describe("the Sass driver, resolving package loads through fabr's table", () => 
   const files = (entries: Record<string, string>): Map<string, IFile> =>
     new Map(Object.entries(entries).map(([name, text]) => [name, MemoryFile.from(text)]));
   const pkg = (name: string, version: string, entries: Record<string, string>, deps: PackageFileSet[] = []): PackageFileSet =>
-    new PackageFileSet(files({ "package.json": JSON.stringify({ name, version }), ...entries }), name, version, dependenciesOn(...deps));
+    new PackageFileSet(
+      files({ "package.json": JSON.stringify({ name, version }), ...entries }),
+      name,
+      version,
+      dependenciesOn(...deps)
+    );
 
   /**
    * Stage a workspace as the step does — the pool's link beside it, each
    * content's tree once, the manifest beside the sources — then lower `source`
    * and answer the CSS and its map's sources.
    */
-  async function lower(deps: PackageFileSet[], source: string, named = false, extra: string[] = []): Promise<{ css: string; sources: string[] }> {
+  async function lower(
+    deps: PackageFileSet[],
+    source: string,
+    named = false,
+    extra: string[] = []
+  ): Promise<{ css: string; sources: string[] }> {
     const manifest = pnpManifestOf(deps);
     const store = path.join(root, "store");
     fs.mkdirSync(store);
@@ -123,7 +139,12 @@ describe("the Sass driver, resolving package loads through fabr's table", () => 
     fs.writeFileSync(path.join(root, PNP_DATA_FILE), manifest.toFile().getBuffer().value as Buffer);
     fs.mkdirSync(path.join(root, "src"));
     fs.writeFileSync(path.join(root, "src", "app.scss"), source);
-    const options: ISassOptions = { sources: [{ path: "app.scss", css: "app.css", map: "app.css.map" }], srcRoot: "src", loadPaths: [], outdir: "out" };
+    const options: ISassOptions = {
+      sources: [{ path: "app.scss", css: "app.css", map: "app.css.map" }],
+      srcRoot: "src",
+      loadPaths: [],
+      outdir: "out",
+    };
     fs.writeFileSync(path.join(root, "options.json"), JSON.stringify(options));
     /* Named: the table the step stages, the stylesheet and every package file. */
     if (named) {
@@ -158,7 +179,8 @@ describe("the Sass driver, resolving package loads through fabr's table", () => 
       "_index.scss": '@forward "./parts/palette";\n',
       "parts/_palette.scss": '@use "tokens";\n.palette-#{tokens.$value} { v: tokens.$value; }\n',
     });
-    const tokens = (value: string, version: string): PackageFileSet => pkg("tokens", version, { "_index.scss": `$value: "${value}";\n` });
+    const tokens = (value: string, version: string): PackageFileSet =>
+      pkg("tokens", version, { "_index.scss": `$value: "${value}";\n` });
     const left = pkg("left", "1.0.0", { "_index.scss": '@forward "theme";\n' }, [
       new PackageFileSet(theme, "theme", "1.0.0", dependenciesOn(tokens("one", "1.0.0"))),
     ]);
@@ -186,7 +208,11 @@ describe("the Sass driver, resolving package loads through fabr's table", () => 
 
   it("takes the stylesheet a package's exports map publishes under the sass condition", async () => {
     const design = pkg("design", "1.0.0", {
-      "package.json": JSON.stringify({ name: "design", version: "1.0.0", exports: { ".": { sass: "./scss/_main.scss", default: "./index.js" } } }),
+      "package.json": JSON.stringify({
+        name: "design",
+        version: "1.0.0",
+        exports: { ".": { sass: "./scss/_main.scss", default: "./index.js" } },
+      }),
       "scss/_main.scss": ".design { v: main; }\n",
       "index.js": "",
     });
@@ -197,8 +223,12 @@ describe("the Sass driver, resolving package loads through fabr's table", () => 
   it("names the real files in the map, never a virtual location", async () => {
     const shared = files({ "package.json": "{}", "_index.scss": '@use "dep";\n.shared { v: dep.$v; }\n' });
     const dep = (version: string): PackageFileSet => pkg("dep", version, { "_index.scss": `$v: "${version}";\n` });
-    const a = pkg("a", "1.0.0", { "_index.scss": '@forward "shared";\n' }, [new PackageFileSet(shared, "shared", "1.0.0", dependenciesOn(dep("1.0.0")))]);
-    const b = pkg("b", "1.0.0", { "_index.scss": '@forward "shared";\n' }, [new PackageFileSet(shared, "shared", "1.0.0", dependenciesOn(dep("2.0.0")))]);
+    const a = pkg("a", "1.0.0", { "_index.scss": '@forward "shared";\n' }, [
+      new PackageFileSet(shared, "shared", "1.0.0", dependenciesOn(dep("1.0.0"))),
+    ]);
+    const b = pkg("b", "1.0.0", { "_index.scss": '@forward "shared";\n' }, [
+      new PackageFileSet(shared, "shared", "1.0.0", dependenciesOn(dep("2.0.0"))),
+    ]);
     const { sources } = await lower([a, b], '@use "a";\n@use "b";\n.app { v: 1; }\n');
     assert.ok(sources.includes("app.scss"), `the source itself is named as the target names it: ${sources.join(", ")}`);
     assert.ok(
@@ -223,8 +253,12 @@ describe("the Sass driver, resolving package loads through fabr's table", () => 
   it("names every source by the reference resolving to it, a virtual location by its package", async () => {
     const shared = files({ "package.json": "{}", "_index.scss": '@use "dep";\n.shared { v: dep.$v; }\n' });
     const dep = (version: string): PackageFileSet => pkg("dep", version, { "_index.scss": `$v: "${version}";\n` });
-    const a = pkg("a", "1.0.0", { "_index.scss": '@forward "shared";\n' }, [new PackageFileSet(shared, "shared", "1.0.0", dependenciesOn(dep("1.0.0")))]);
-    const b = pkg("b", "1.0.0", { "_index.scss": '@forward "shared";\n' }, [new PackageFileSet(shared, "shared", "1.0.0", dependenciesOn(dep("2.0.0")))]);
+    const a = pkg("a", "1.0.0", { "_index.scss": '@forward "shared";\n' }, [
+      new PackageFileSet(shared, "shared", "1.0.0", dependenciesOn(dep("1.0.0"))),
+    ]);
+    const b = pkg("b", "1.0.0", { "_index.scss": '@forward "shared";\n' }, [
+      new PackageFileSet(shared, "shared", "1.0.0", dependenciesOn(dep("2.0.0"))),
+    ]);
     /* `shared`'s two wirings are one stored file, so both name it; `a` and `b`
      * only forward, so map nothing. */
     const { sources } = await lower([a, b], '@use "a";\n@use "b";\n.app { v: 1; }\n', true);

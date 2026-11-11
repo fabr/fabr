@@ -341,5 +341,8 @@ export function toTestResults(file: ICompletedFile): ITestResult[] {
    * stderr standing in where the error carries no detail of its own. */
   const [reason, ...rest] = execError.split("\n");
   const detail = rest.join("\n").trim() || file.stderr.trim();
-  return [...tests, { name: relative, filePath: relative, status: "failed", duration: 0, message: reason, trace: detail || undefined }];
+  return [
+    ...tests,
+    { name: relative, filePath: relative, status: "failed", duration: 0, message: reason, trace: detail || undefined },
+  ];
 }

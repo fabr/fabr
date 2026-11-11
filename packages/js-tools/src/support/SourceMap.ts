@@ -86,7 +86,10 @@ export function withReferencedSources(
     if (typeof entry !== "string" || isAbsoluteEntry(entry)) {
       return entry;
     }
-    const staged = path.relative(root, path.resolve(path.dirname(mapFile), sourceRoot, entry)).split(path.sep).join("/");
+    const staged = path
+      .relative(root, path.resolve(path.dirname(mapFile), sourceRoot, entry))
+      .split(path.sep)
+      .join("/");
     const reference = referenceOf(staged);
     return reference === undefined ? entry : FABR_SCHEME + reference;
   });
@@ -202,5 +205,7 @@ export function getMapSource(compiled: string): string | undefined {
   if (typeof first !== "string") {
     return undefined;
   }
-  return referenceOfEntry(first) !== undefined ? first : path.resolve(path.dirname(compiled), typeof sourceRoot === "string" ? sourceRoot : "", first);
+  return referenceOfEntry(first) !== undefined
+    ? first
+    : path.resolve(path.dirname(compiled), typeof sourceRoot === "string" ? sourceRoot : "", first);
 }

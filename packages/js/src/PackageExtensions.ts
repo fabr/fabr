@@ -80,7 +80,11 @@ export class PackageExtensions {
     const dependencies = dependencyBlock(decls.dependencies);
     const peerDependencies = dependencyBlock(decls.peerDependencies);
     const meta = new Map(Object.entries(isJsonObject(decls.peerDependenciesMeta) ? decls.peerDependenciesMeta : {}));
-    const declared = new Set([...dependencies.keys(), ...peerDependencies.keys(), ...dependencyBlock(decls.optionalDependencies).keys()]);
+    const declared = new Set([
+      ...dependencies.keys(),
+      ...peerDependencies.keys(),
+      ...dependencyBlock(decls.optionalDependencies).keys(),
+    ]);
     for (const extension of matching) {
       for (const [dep, spec] of extension.dependencies) {
         if (!declared.has(dep)) {

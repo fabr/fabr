@@ -252,4 +252,3 @@ export function getTestReport(sources: SourceRef[]): Computable<ITestReport | un
     }
   );
 }
-

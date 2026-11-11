@@ -40,7 +40,16 @@ export interface IImageSettings {
 }
 
 /** The keys of `metadata` OCI defines a label for, each written as `org.opencontainers.image.<key>`. */
-const OCI_LABEL_KEYS: ReadonlySet<string> = new Set(["title", "description", "url", "source", "documentation", "licenses", "vendor", "authors"]);
+const OCI_LABEL_KEYS: ReadonlySet<string> = new Set([
+  "title",
+  "description",
+  "url",
+  "source",
+  "documentation",
+  "licenses",
+  "vendor",
+  "authors",
+]);
 
 /** @return the label `metadata`'s `key` is written as: OCI's own for a key it defines, else the key as written. */
 function labelKey(key: string): string {
@@ -64,7 +73,14 @@ export function imageConfig(
   if (settings.entry === undefined && settings.args.length > 0) {
     throw new FabrError("'args' is set without 'entry'").withHelp("set 'entry' to the program the arguments are given to");
   }
-  const document: Record<string, unknown> = base === undefined ? { architecture: platform.architecture, os: platform.os, ...(platform.variant === undefined ? {} : { variant: platform.variant }) } : { ...base };
+  const document: Record<string, unknown> =
+    base === undefined
+      ? {
+          architecture: platform.architecture,
+          os: platform.os,
+          ...(platform.variant === undefined ? {} : { variant: platform.variant }),
+        }
+      : { ...base };
   const config: Record<string, unknown> = isJsonObject(document.config) ? { ...document.config } : {};
   if (settings.env.length > 0) {
     const env = new Map<string, string>(stringList(config.Env).map(entry => [entry.split("=", 1)[0], entry]));
@@ -99,7 +115,10 @@ export function imageConfig(
   }
   const rootfs = isJsonObject(document.rootfs) ? document.rootfs : {};
   const diffIds = [...stringList(rootfs.diff_ids), ...(diffId === undefined ? [] : [diffId])];
-  const history = [...(Array.isArray(document.history) ? document.history : []), { created: FIXED_CREATED, created_by: createdBy, ...(diffId === undefined ? { empty_layer: true } : {}) }];
+  const history = [
+    ...(Array.isArray(document.history) ? document.history : []),
+    { created: FIXED_CREATED, created_by: createdBy, ...(diffId === undefined ? { empty_layer: true } : {}) },
+  ];
   return { ...document, created: FIXED_CREATED, config, rootfs: { type: "layers", diff_ids: diffIds }, history };
 }
 
@@ -107,7 +126,9 @@ export function imageConfig(
 function portKey(port: string): string {
   const match = /^(\d{1,5})(?:\/(tcp|udp|sctp))?$/.exec(port);
   if (match === null || Number(match[1]) > 65535) {
-    throw new FabrError(`'${port}' is not a port`).withHelp("write a port as its number, as in '8080', or with its protocol, as in '53/udp'");
+    throw new FabrError(`'${port}' is not a port`).withHelp(
+      "write a port as its number, as in '8080', or with its protocol, as in '53/udp'"
+    );
   }
   return `${match[1]}/${match[2] ?? "tcp"}`;
 }

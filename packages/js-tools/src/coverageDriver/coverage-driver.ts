@@ -162,7 +162,9 @@ export async function main(argv: string[]): Promise<void> {
    * data merges before anything is converted. Scripts are matched by their
    * real path, as node names what it loads. */
   const merged = mergeProcessCovs(processes.map(({ result }) => ({ result })));
-  const byFile = new Map(merged.result.filter(script => script.url.startsWith("file:")).map(script => [fileURLToPath(script.url), script]));
+  const byFile = new Map(
+    merged.result.filter(script => script.url.startsWith("file:")).map(script => [fileURLToPath(script.url), script])
+  );
 
   const records = new Map<string, ICoverageRecord>();
   for (const measured of options.measured) {

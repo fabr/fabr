@@ -128,7 +128,11 @@ export function scanSources(dir: string, nested: ReadonlySet<string>, isLocal?: 
         if (!SKIPPED_DIRECTORIES.has(entry.name) && !OUTPUT_DIRECTORIES.has(entry.name) && !nested.has(path.join(dir, child))) {
           walk(child);
         }
-      } else if (entry.isFile() && SOURCE_EXTENSIONS.includes(path.extname(entry.name)) && !(rel === "" && TOOL_CONFIG.test(entry.name))) {
+      } else if (
+        entry.isFile() &&
+        SOURCE_EXTENSIONS.includes(path.extname(entry.name)) &&
+        !(rel === "" && TOOL_CONFIG.test(entry.name))
+      ) {
         files.push(child);
         importsOf(fs.readFileSync(path.join(dir, child), "utf8"), child, isLocal).forEach(name => imports.add(name));
       }

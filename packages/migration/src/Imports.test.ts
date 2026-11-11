@@ -53,8 +53,8 @@ describe("finding a source's imports", () => {
       '// import x from "commented";',
       '/* require("blocked") */',
       'const text = `import y from "templated"`;',
-      'const s = "require(\'quoted\')";',
-      'export const App = () => <div>{s}</div>;',
+      "const s = \"require('quoted')\";",
+      "export const App = () => <div>{s}</div>;",
     ].join("\n");
     expect([...importsOf(text, "App.tsx")]).to.deep.equal(["react"]);
   });
@@ -65,6 +65,8 @@ describe("finding a source's imports", () => {
   });
 
   it("leaves out what the caller says is local", () => {
-    expect([...importsOf('import x from "Models/User"; import y from "y";', "a.ts", specifier => specifier.startsWith("Models"))]).to.deep.equal(["y"]);
+    expect([
+      ...importsOf('import x from "Models/User"; import y from "y";', "a.ts", specifier => specifier.startsWith("Models")),
+    ]).to.deep.equal(["y"]);
   });
 });

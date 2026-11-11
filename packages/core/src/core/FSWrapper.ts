@@ -92,13 +92,18 @@ export function readFileBuffer(filepath: string): Computable<Buffer> {
  * on a case-insensitive filesystem) instead of silently losing one. */
 export function writeFile(filepath: string, data: string | Buffer, opts?: { exclusive?: boolean; mode?: number }): Computable<void> {
   return Computable.from<void>((resolve, reject) => {
-    fs.writeFile(filepath, data, { flag: opts?.exclusive ? "wx" : "w", ...(opts?.mode === undefined ? {} : { mode: opts.mode }) }, err => {
-      if (err) {
-        reject(err);
-      } else {
-        resolve();
+    fs.writeFile(
+      filepath,
+      data,
+      { flag: opts?.exclusive ? "wx" : "w", ...(opts?.mode === undefined ? {} : { mode: opts.mode }) },
+      err => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
       }
-    });
+    );
   });
 }
 
@@ -339,7 +344,9 @@ export function hashString(data: string | Buffer): string {
 /** @return a stream of `file`'s content: read from the pool where it is there, else from memory. */
 export function contentStream(file: IFile): Computable<Readable> {
   const where = file.getAbsPath();
-  return where !== undefined ? Computable.resolve(fs.createReadStream(where)) : file.getBuffer().then(buffer => Readable.from([buffer]));
+  return where !== undefined
+    ? Computable.resolve(fs.createReadStream(where))
+    : file.getBuffer().then(buffer => Readable.from([buffer]));
 }
 
 /** @return the size of `file`'s content in bytes: from the pool where it is there, else from memory. */

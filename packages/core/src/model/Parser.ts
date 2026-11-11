@@ -314,7 +314,6 @@ function isArrowTerminator(ch: number | undefined): boolean {
   return ch === undefined || isWhitespace(ch);
 }
 
-
 /**
  * Extract the doc-comment block from the whitespace/comment `gap` that precedes
  * a token: the *last contiguous* run of `#` comment lines, reached across only
@@ -428,10 +427,7 @@ const DIAG_PARSE_ERROR = new Diagnostic<{ actual: string; expected: string; loc:
   LogLevel.Error,
   "Read {actual} but expected {expected}"
 );
-const DIAG_DUP_CONSTRAINT = new Diagnostic<{ key: string; loc: ISourcePosition }>(
-  LogLevel.Error,
-  "Duplicate constraint key '{key}'"
-);
+const DIAG_DUP_CONSTRAINT = new Diagnostic<{ key: string; loc: ISourcePosition }>(LogLevel.Error, "Duplicate constraint key '{key}'");
 const DIAG_UNEXPECTED_EOF = new Diagnostic<{ expected: string; loc: ISourcePosition }>(
   LogLevel.Error,
   "Unexpected end of file, expected {expected}"
@@ -444,7 +440,10 @@ const DIAG_GLOB_CONSTRAINT = new Diagnostic<{ key: string; loc: ISourcePosition;
   LogLevel.Error,
   "Constraint '{key}' is required as a pattern, but a requirement names an exact configuration"
 );
-const DIAG_GUARDED_SPLICE = new Diagnostic<{ loc: ISourcePosition }>(LogLevel.Error, "A splice of a target's properties takes no guard");
+const DIAG_GUARDED_SPLICE = new Diagnostic<{ loc: ISourcePosition }>(
+  LogLevel.Error,
+  "A splice of a target's properties takes no guard"
+);
 
 const DIAG_SPACED_GUARD = new Diagnostic<{ loc: ISourcePosition; help: string[] }>(
   LogLevel.Error,
@@ -458,10 +457,7 @@ const DIAG_INVALID_SUBSTITUTION = new Diagnostic<{ detail: string; loc: ISourceP
   LogLevel.Error,
   "Invalid substitution: {detail}"
 );
-const DIAG_INVALID_COMMAND = new Diagnostic<{ detail: string; loc: ISourcePosition }>(
-  LogLevel.Error,
-  "Invalid command: {detail}"
-);
+const DIAG_INVALID_COMMAND = new Diagnostic<{ detail: string; loc: ISourcePosition }>(LogLevel.Error, "Invalid command: {detail}");
 const DIAG_INVALID_INCLUDE = new Diagnostic<{ detail: string; loc: ISourcePosition }>(
   LogLevel.Error,
   "Invalid include name: {detail}"
@@ -484,7 +480,7 @@ const DEFAULT_REFUSED = new Set(["targetdef", "private", "repository"]);
 const PRIVATE_REFUSED = new Set(["include", "plugin", "rule", "targetdef", "default", "private", "repository"]);
 /** The declarations a rule's block cannot hold, by their keyword. */
 const RULE_BLOCK_REFUSED = new Set(["include", "plugin", "rule", "targetdef", "default", "private", "repository"]);
-const DIAG_RULE_BLOCK_DECL =new Diagnostic<{ keyword: string; loc: ISourcePosition }>(
+const DIAG_RULE_BLOCK_DECL = new Diagnostic<{ keyword: string; loc: ISourcePosition }>(
   LogLevel.Error,
   "A rule's block declares only targets and properties, not '{keyword}'"
 );
@@ -1233,10 +1229,7 @@ export class BuildParser {
     this.reader.skipUntil(ch => !isDigit(ch));
     const digits = this.reader.substring(start);
     if (digits !== "1" && digits !== "2") {
-      this.commandError(
-        `'${digits === "" ? "&" : "&" + digits}' is not a stream: fabr has stdout (1) and stderr (2)`,
-        opStart
-      );
+      this.commandError(`'${digits === "" ? "&" : "&" + digits}' is not a stream: fabr has stdout (1) and stderr (2)`, opStart);
     }
     return Number(digits);
   }
@@ -1830,7 +1823,11 @@ export class BuildParser {
    * With `readOn` false the closing `>` is the current token on return and the
    * reader is just past it, for a caller that reads what follows by character.
    */
-  private parseConstraintList(firstKey?: { text: string; start: number }, kind: ConstraintKind = "requirement", readOn = true): NameConstraint[] {
+  private parseConstraintList(
+    firstKey?: { text: string; start: number },
+    kind: ConstraintKind = "requirement",
+    readOn = true
+  ): NameConstraint[] {
     const constraints: NameConstraint[] = [];
     const seen = new Set<string>();
     /* Inside the `<...>`, a `>` closes the constraint — never a redirect (see
@@ -1851,7 +1848,12 @@ export class BuildParser {
           /* A rule's guard may name a property of its target, as `pkg.test_framework`. */
           if (
             key.type !== TokenType.IDENTIFIER &&
-            !(kind === "rule" && key.type === TokenType.SIMPLE_NAME && key.text.split(".").length === 2 && key.text.split(".").every(isIdentifier))
+            !(
+              kind === "rule" &&
+              key.type === TokenType.SIMPLE_NAME &&
+              key.text.split(".").length === 2 &&
+              key.text.split(".").every(isIdentifier)
+            )
           ) {
             this.unexpectedTokenError("a constraint key");
           }
@@ -1865,11 +1867,7 @@ export class BuildParser {
         seen.add(keyText);
         this.consumeToken(TokenType.EQUALS);
         const value = this.token;
-        if (
-          value.type !== TokenType.IDENTIFIER &&
-          value.type !== TokenType.SIMPLE_NAME &&
-          value.type !== TokenType.NAME
-        ) {
+        if (value.type !== TokenType.IDENTIFIER && value.type !== TokenType.SIMPLE_NAME && value.type !== TokenType.NAME) {
           this.unexpectedTokenError("a constraint value");
         }
         const valueName = this.tokenToName(value);
@@ -2038,7 +2036,11 @@ export class BuildParser {
             value: this.parseRefSuffix(Name.fromLiteral(keyToken.text)),
             endOffset: this.prevTokenEnd,
           };
-          return this.finishCommandProperty(base, values, this.parseCommand(values, { op: CommandOpKind.Stdin, at: langleAt }, target));
+          return this.finishCommandProperty(
+            base,
+            values,
+            this.parseCommand(values, { op: CommandOpKind.Stdin, at: langleAt }, target)
+          );
         }
         /* A spaced `<` before a non-identifier: an ordinary stdin redirect whose
          * target the command path parses (a SIMPLE_NAME/NAME/reference). */
@@ -2196,11 +2198,7 @@ export class BuildParser {
         const token = this.token;
         if (token.type === TokenType.LANGLE) {
           list.push(...this.parseGuardBlock());
-        } else if (
-          token.type === TokenType.IDENTIFIER ||
-          token.type === TokenType.NAME ||
-          token.type === TokenType.SIMPLE_NAME
-        ) {
+        } else if (token.type === TokenType.IDENTIFIER || token.type === TokenType.NAME || token.type === TokenType.SIMPLE_NAME) {
           /* One key path for every key: a plain property name, and equally a
            * reference in key position — a `sync` member coordinate
            * (`@npm:pkg:ver = srcs`) or a bare-name/path key (`@fabr-build/core`,
@@ -2394,16 +2392,31 @@ export class BuildParser {
       this.unexpectedTokenError("a package entry, a target declaration or a reference");
     }
     this.nextToken();
-    if (first.type === TokenType.IDENTIFIER && (this.token.type === TokenType.IDENTIFIER || this.token.type === TokenType.SIMPLE_NAME)) {
+    if (
+      first.type === TokenType.IDENTIFIER &&
+      (this.token.type === TokenType.IDENTIFIER || this.token.type === TokenType.SIMPLE_NAME)
+    ) {
       const target = this.parseTargetDecl(first.text, first.start);
       return { result: this.syntheticResult(target), targets: [target], properties: [] };
     }
     const value = this.parseRefSuffix(this.tokenToName(first));
-    const result: INameValue = { kind: DeclKind.NameValue, source: this.source, offset: first.start, endOffset: this.prevTokenEnd, value };
+    const result: INameValue = {
+      kind: DeclKind.NameValue,
+      source: this.source,
+      offset: first.start,
+      endOffset: this.prevTokenEnd,
+      value,
+    };
     if (this.token.type === TokenType.LBRACE) {
       return { result, ...this.parseRuleBlockBody() };
     }
-    if (value.hasVarSubst() || value.hasGlob() || !value.hasLevelSeparator() || value.hasConstraints() || value.getRenameTo() !== undefined) {
+    if (
+      value.hasVarSubst() ||
+      value.hasGlob() ||
+      !value.hasLevelSeparator() ||
+      value.hasConstraints() ||
+      value.getRenameTo() !== undefined
+    ) {
       this.log.log(DIAG_INVALID_IMPLEMENTATION, { loc: { ...this.source, offset: first.start } });
       throw new FabrError(PARSE_ERROR);
     }
@@ -2413,7 +2426,13 @@ export class BuildParser {
 
   /** Make the result of a short-form rule: the name of its one target, written where the name is. */
   private syntheticResult(target: ITargetDecl): INameValue {
-    return { kind: DeclKind.NameValue, source: this.source, offset: target.offset, endOffset: target.endOffset ?? target.offset, value: target.name };
+    return {
+      kind: DeclKind.NameValue,
+      source: this.source,
+      offset: target.offset,
+      endOffset: target.endOffset ?? target.offset,
+      value: target.name,
+    };
   }
 
   /**
@@ -2727,9 +2746,7 @@ export class BuildParser {
         /* `<` here is the property's constraint guard (`TSC<TARGET=…> = …`) —
          * part of the key, which the discriminating read above has already
          * stepped past. */
-        this.result.properties.push(
-          this.parsePropertyDecl(this.finishPropertyKey(Name.fromLiteral(token.text)), token.start, doc)
-        );
+        this.result.properties.push(this.parsePropertyDecl(this.finishPropertyKey(Name.fromLiteral(token.text)), token.start, doc));
       } else if (next.type === TokenType.IDENTIFIER || next.type === TokenType.SIMPLE_NAME) {
         if (token.text === "targetdef") {
           this.result.targetdefs.push(this.parseTargetDefDecl(doc));
@@ -2799,10 +2816,7 @@ export function parseName(contents: string): Name {
      * nearly all one token, which is where the lexical errors (an unterminated
      * quote, character class or extglob group) are raised. It must be inside the
      * try, or those escape as a bare PARSE_ERROR with the diagnostic discarded. */
-    const parser = new BuildParser(
-      { fs: EMPTY_FILESET, file: "<command-line>", reader: new StringReader(contents) },
-      captureLog
-    );
+    const parser = new BuildParser({ fs: EMPTY_FILESET, file: "<command-line>", reader: new StringReader(contents) }, captureLog);
     const name = parser.parseName();
     if (messages.length === 0) {
       return name;

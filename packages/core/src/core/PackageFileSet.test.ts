@@ -21,7 +21,14 @@ import { expect } from "chai";
 import { MemoryFile } from "./MemoryFS";
 import { ConflictError, FabrError } from "./Errors";
 import { FileSet, IFile } from "./FileSet";
-import { assertSamePackageNode, flattenFileSetArray, PackageFileSet, PackageGraphBuilder, packageNodeSignature, ResolvedNode } from "./PackageFileSet";
+import {
+  assertSamePackageNode,
+  flattenFileSetArray,
+  PackageFileSet,
+  PackageGraphBuilder,
+  packageNodeSignature,
+  ResolvedNode,
+} from "./PackageFileSet";
 import { Computable } from "./Computable";
 import { dependenciesOn } from "./Repository";
 
@@ -38,7 +45,10 @@ describe("PackageFileSet metadata", () => {
 
 describe("ResolvedNode.withPackageName", () => {
   const node = (declared?: "files" | { package: string }): ResolvedNode =>
-    new ResolvedNode({ key: "k", files: () => Computable.resolve(new FileSet(new Map())), ...(declared === undefined ? {} : { declared }) }, "lib");
+    new ResolvedNode(
+      { key: "k", files: () => Computable.resolve(new FileSet(new Map())), ...(declared === undefined ? {} : { declared }) },
+      "lib"
+    );
 
   it("declares a renamed node whose rule declares nothing the package of its new name", () => {
     expect(node().withPackageName("alias").content.declared).to.deep.equal({ package: "alias" });
@@ -203,7 +213,8 @@ describe("assertSamePackageNode", () => {
   it("accepts two equal wrappings of one package", () => {
     /* Byte-identical, separately constructed — the ordinary shape of one
      * package arriving through two deliveries. */
-    const dep = (): PackageFileSet => new PackageFileSet(files("p"), "p", "1.0.0", dependenciesOn(new PackageFileSet(files("q"), "q", "1.0.0")));
+    const dep = (): PackageFileSet =>
+      new PackageFileSet(files("p"), "p", "1.0.0", dependenciesOn(new PackageFileSet(files("q"), "q", "1.0.0")));
     expect(() => assertSamePackageNode(dep(), dep())).to.not.throw();
   });
 

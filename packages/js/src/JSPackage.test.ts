@@ -67,7 +67,8 @@ const NODE_CONTEXT: ResolutionContext = {
   name: "test",
   operation: "build",
   getGlobalString: () => Computable.resolve("build"),
-  launchedBy: (runnable, interpreter) => (interpreter === "NODE" ? runnable.launchedBy(NODE, POOL) : Computable.reject(new Error(interpreter))),
+  launchedBy: (runnable, interpreter) =>
+    interpreter === "NODE" ? runnable.launchedBy(NODE, POOL) : Computable.reject(new Error(interpreter)),
   memoize: (_tag, _key, create) => create("unused"),
   runTask: (_task, run) => run(SILENT_REPORT),
 };
@@ -84,7 +85,10 @@ function jsxPkg(name: string, providesJsxRuntime: boolean): PackageFileSet {
     name,
     exports: providesJsxRuntime ? { ".": "./index.js", "./jsx-runtime": "./jsx-runtime.js" } : { ".": "./index.js" },
   });
-  const files: Array<[string, IFile]> = [["package.json", MemoryFile.from(json)], ["index.js", MemoryFile.from("")]];
+  const files: Array<[string, IFile]> = [
+    ["package.json", MemoryFile.from(json)],
+    ["index.js", MemoryFile.from("")],
+  ];
   if (providesJsxRuntime) {
     files.push(["jsx-runtime.js", MemoryFile.from("")]);
   }
@@ -136,7 +140,11 @@ describe("hasPackageExport", () => {
        subpath maps SOMEWHERE, not that anything is there — read as a capability
        it would claim the package provides a JSX runtime, a JSON parser, and
        whatever else one thought to ask for. */
-    const catchAll = pkg(JSON.stringify({ exports: { ".": "./index.js", "./*": { require: "./*", import: "./*" } } }), "index.js", "lib/token.js");
+    const catchAll = pkg(
+      JSON.stringify({ exports: { ".": "./index.js", "./*": { require: "./*", import: "./*" } } }),
+      "index.js",
+      "lib/token.js"
+    );
     expect(await settle(hasPackageExport(catchAll, "./jsx-runtime"))).to.equal(false);
     /* The same map still answers for what the package really holds. */
     expect(await settle(hasPackageExport(catchAll, "./lib/token.js"))).to.equal(true);
@@ -150,8 +158,12 @@ describe("hasPackageExport", () => {
   it("answers no without an exports map, or for an unreadable manifest", async () => {
     /* A question *about a dependency*: a manifest fabr can't read exposes no
        subpath — whoever builds that dependency is the one to report it. */
-    expect(await settle(hasPackageExport(pkg(JSON.stringify({ main: "index.js" }), "jsx-runtime.js"), "./jsx-runtime"))).to.equal(false);
-    expect(await settle(hasPackageExport(pkg(JSON.stringify({ exports: "./index.js" }), "jsx-runtime.js"), "./jsx-runtime"))).to.equal(false);
+    expect(await settle(hasPackageExport(pkg(JSON.stringify({ main: "index.js" }), "jsx-runtime.js"), "./jsx-runtime"))).to.equal(
+      false
+    );
+    expect(await settle(hasPackageExport(pkg(JSON.stringify({ exports: "./index.js" }), "jsx-runtime.js"), "./jsx-runtime"))).to.equal(
+      false
+    );
     expect(await settle(hasPackageExport(pkg("not json"), "./jsx-runtime"))).to.equal(false);
     expect(await settle(hasPackageExport(pkg("[]"), "./jsx-runtime"))).to.equal(false);
   });
@@ -276,7 +288,9 @@ describe("resolveSourceMode", () => {
 
   it("relaxes one member of the strict family per flag", () => {
     expect(resolveSourceMode([new Flag("ts/allow_implicit_this", [])])).to.deep.equal({ noImplicitThis: false });
-    expect(resolveSourceMode([new Flag("ts/no_use_unknown_in_catch_variables", [])])).to.deep.equal({ useUnknownInCatchVariables: false });
+    expect(resolveSourceMode([new Flag("ts/no_use_unknown_in_catch_variables", [])])).to.deep.equal({
+      useUnknownInCatchVariables: false,
+    });
     expect(resolveSourceMode([new Flag("ts/no_strict_function_types", [])])).to.deep.equal({ strictFunctionTypes: false });
     expect(resolveSourceMode([new Flag("ts/no_strict_bind_call_apply", [])])).to.deep.equal({ strictBindCallApply: false });
   });
@@ -544,9 +558,7 @@ describe("binByConvention", () => {
   });
 
   it("skips the emitted declaration and map siblings", () => {
-    expect([...binByConvention(contents("bin/fabr.js", "bin/fabr.d.ts", "bin/fabr.js.map"))]).to.deep.equal([
-      ["fabr", "bin/fabr.js"],
-    ]);
+    expect([...binByConvention(contents("bin/fabr.js", "bin/fabr.d.ts", "bin/fabr.js.map"))]).to.deep.equal([["fabr", "bin/fabr.js"]]);
   });
 
   it("reports two bins claiming one command as a conflict, naming both files", () => {

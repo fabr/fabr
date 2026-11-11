@@ -28,7 +28,14 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { FileSet, IFile, MemoryFile, PackageFileSet } from "@fabr-build/core";
-import { DEPS_REPORT_FILE, DEPS_REPORT_FLAG, type IPostcssOptions, PNP_DATA_FILE, PostcssDriver, toRunReport } from "@fabr-build/js-tools";
+import {
+  DEPS_REPORT_FILE,
+  DEPS_REPORT_FLAG,
+  type IPostcssOptions,
+  PNP_DATA_FILE,
+  PostcssDriver,
+  toRunReport,
+} from "@fabr-build/js-tools";
 import { TREE_MOUNT } from "@fabr-build/core";
 import { pnpManifestOf, treeMountOf } from "../PnPManifest";
 
@@ -103,7 +110,10 @@ describe("the postcss driver, composing from a dependency through fabr's table",
   }
 
   it("composes from a dependency's stylesheet", async () => {
-    const out = await scope(ds({ "base.css": ".base { padding: 8px; }\n" }), ".fancy { composes: base from 'ds/base.css'; color: red; }\n");
+    const out = await scope(
+      ds({ "base.css": ".base { padding: 8px; }\n" }),
+      ".fancy { composes: base from 'ds/base.css'; color: red; }\n"
+    );
     /* The dep ships its classes as written; what a compose takes is a scoped
      * PRIVATE copy, inlined into the importer, so the token names that copy. */
     assert.match(out("out/a.css.ts"), /"fancy": "fancy_sA base_sDep"/);

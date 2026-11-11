@@ -109,7 +109,10 @@ export function browserDataOf(agents: ICaniuseAgents, baselineVersions: IBaselin
     const released = Object.entries(agents[id].release_date).filter(
       (entry): entry is [string, number] => entry[1] !== null && isVersionOrRange(entry[0])
     );
-    browsers.set(id, released.map(([version]) => version));
+    browsers.set(
+      id,
+      released.map(([version]) => version)
+    );
     lastRelease = Math.max(lastRelease, ...released.map(([, date]) => date));
   }
   const baseline = new Map<string, Map<string, string>>();
@@ -235,7 +238,9 @@ function validateBrowserRequirement({ name, versionConstraint }: Requirement): v
     throw new FabrError(`Missing version in a browser reference (expected '@browser:${name}:<version>', that version and newer)`);
   }
   if (!isBareVersion(versionConstraint)) {
-    throw new FabrError(`'${versionConstraint}' is not a browser version (expected one like '@browser:${name}:17.2', that version and newer)`);
+    throw new FabrError(
+      `'${versionConstraint}' is not a browser version (expected one like '@browser:${name}:17.2', that version and newer)`
+    );
   }
 }
 
@@ -336,9 +341,7 @@ export class BrowserRepository implements Repository, RepositoryReader<SemverVer
       return Computable.resolve([]);
     }
     const floors = this.data.baseline.get(written) ?? new Map<string, string>();
-    return Computable.resolve(
-      [...floors.keys()].sort().map(browser => ({ name: browser, versionConstraint: floors.get(browser)! }))
-    );
+    return Computable.resolve([...floors.keys()].sort().map(browser => ({ name: browser, versionConstraint: floors.get(browser)! })));
   }
 
   public lowestAvailable(pkg: string, constraint: string): Computable<SemverVersion | undefined> {
@@ -350,7 +353,9 @@ export class BrowserRepository implements Repository, RepositoryReader<SemverVer
     }
     /* Lowest in the domain's order: the newest version that satisfies it. */
     const satisfying = (this.versions.get(pkg) ?? []).filter(version => BROWSER_FORMAT.satisfies(version, parsed));
-    return Computable.resolve(satisfying.length === 0 ? undefined : satisfying.reduce((a, b) => (BROWSER_FORMAT.compare(a, b) <= 0 ? a : b)));
+    return Computable.resolve(
+      satisfying.length === 0 ? undefined : satisfying.reduce((a, b) => (BROWSER_FORMAT.compare(a, b) <= 0 ? a : b))
+    );
   }
 
   public availableVersions(pkg: string): Computable<SemverVersion[] | undefined> {
@@ -409,7 +414,10 @@ function createRepository(context: TargetContext): Computable<Repository> {
           /* eslint-disable @typescript-eslint/no-var-requires */
           const { agents } = require(path.resolve(caniuseDir, "dist/unpacker/agents")) as { agents: ICaniuseAgents };
           const { getCompatibleVersions } = require(path.resolve(mappingDir)) as {
-            getCompatibleVersions(options: { targetYear: number; suppressWarnings: boolean }): Array<{ browser: string; version: string }>;
+            getCompatibleVersions(options: {
+              targetYear: number;
+              suppressWarnings: boolean;
+            }): Array<{ browser: string; version: string }>;
           };
           /* eslint-enable @typescript-eslint/no-var-requires */
           const data = browserDataOf(agents, year => getCompatibleVersions({ targetYear: year, suppressWarnings: true }));

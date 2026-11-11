@@ -38,13 +38,7 @@ import { Constraints } from "./Constraints";
  *   - cycle-end - The end of a build cycle once all tasks have settled.
  *
  */
-export type BuildEvent =
-  | ICycleStartEvent
-  | ICycleEndEvent
-  | ITaskStartEvent
-  | ITaskProgressEvent
-  | ITaskOutputEvent
-  | ITaskEndEvent;
+export type BuildEvent = ICycleStartEvent | ICycleEndEvent | ITaskStartEvent | ITaskProgressEvent | ITaskOutputEvent | ITaskEndEvent;
 
 export type BuildListener = (event: BuildEvent) => void;
 
@@ -227,4 +221,3 @@ export interface IPublishTask {
  * command substitution, or a publish.
  */
 export type TaskDescription = ITargetBuildTask | IRepositoryResolveTask | IFetchTask | ICommandSubstTask | IPublishTask;
-

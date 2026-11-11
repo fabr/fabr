@@ -45,7 +45,15 @@ import {
 import { describeJava } from "../Description";
 import { checkPomMetadata } from "../MavenPublish";
 import { MAVEN_FORMAT } from "../MavenProtocol";
-import { checkMainClass, compileOutputOf, COMPILED_CLASSES_DIR, createJarAction, MANIFEST_NAME, manifestFile, processorsOf } from "../JarPackage";
+import {
+  checkMainClass,
+  compileOutputOf,
+  COMPILED_CLASSES_DIR,
+  createJarAction,
+  MANIFEST_NAME,
+  manifestFile,
+  processorsOf,
+} from "../JarPackage";
 
 interface JarInputs {
   srcs: FileSet[];
@@ -193,7 +201,13 @@ function buildJar(
   const { srcs, resources } = inputs;
   const sources = FileSet.unionAll(...srcs);
   const runtime = [...inputs.dependencies, ...inputs.provided, ...inputs.optional_provided, ...inputs.runtime];
-  const compileDeps = [...inputs.dependencies, ...inputs.provided, ...inputs.optional_provided, ...inputs.compile, ...inputs.compile_deps];
+  const compileDeps = [
+    ...inputs.dependencies,
+    ...inputs.provided,
+    ...inputs.optional_provided,
+    ...inputs.compile,
+    ...inputs.compile_deps,
+  ];
   const classes = sources.isEmpty()
     ? Computable.resolve(EMPTY_FILESET)
     : processorsOf(context).then(processors =>
@@ -203,16 +217,20 @@ function buildJar(
           { label: "Compiling", constraints: BUILD_OVERRIDE }
         )
       );
-  return classes.then(output => compileOutputOf(output, COMPILED_CLASSES_DIR)).then(compiled =>
-    (mainClass === undefined ? Computable.resolve(undefined) : checkMainClass(context.name, mainClass, compiled, runtime)).then(() => {
-    const manifest = manifestFile([
-      ["Manifest-Version", "1.0"],
-      ["Created-By", "fabr"],
-      ...(mainClass === undefined ? [] : [["Main-Class", mainClass] as [string, string]]),
-      ...attributes.written,
-    ]);
-    const contents = FileSet.unionAll(compiled, ...resources, new FileSet(new Map([[MANIFEST_NAME, manifest]])));
-    return createJarAction(contents, jarNameOf(context.name)).withReshape(files => packageOf(context, files, edges, metadata));
-    })
-  );
+  return classes
+    .then(output => compileOutputOf(output, COMPILED_CLASSES_DIR))
+    .then(compiled =>
+      (mainClass === undefined ? Computable.resolve(undefined) : checkMainClass(context.name, mainClass, compiled, runtime)).then(
+        () => {
+          const manifest = manifestFile([
+            ["Manifest-Version", "1.0"],
+            ["Created-By", "fabr"],
+            ...(mainClass === undefined ? [] : [["Main-Class", mainClass] as [string, string]]),
+            ...attributes.written,
+          ]);
+          const contents = FileSet.unionAll(compiled, ...resources, new FileSet(new Map([[MANIFEST_NAME, manifest]])));
+          return createJarAction(contents, jarNameOf(context.name)).withReshape(files => packageOf(context, files, edges, metadata));
+        }
+      )
+    );
 }

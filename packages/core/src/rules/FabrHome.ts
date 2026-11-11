@@ -184,7 +184,10 @@ function installedPackage(
     return readInstalled(files, pkgDir).then(({ manifest, files: own }) => {
       const deps: Array<[string, string]> = [];
       found.set(pkgDir, { name: pkgName, version: manifest.version, files: own, deps });
-      for (const [dep, optional] of [...manifest.required.map(dep => [dep, false] as const), ...manifest.optional.map(dep => [dep, true] as const)]) {
+      for (const [dep, optional] of [
+        ...manifest.required.map(dep => [dep, false] as const),
+        ...manifest.optional.map(dep => [dep, true] as const),
+      ]) {
         const depDir = locate(dep, pkgDir);
         if (depDir === undefined && !optional) {
           throw new FabrError(`${pkgName} requires ${dep}, which is not installed with fabr (looked from ${pkgDir})`);
@@ -242,9 +245,9 @@ export class FabrHomeRepository implements Repository, RepositoryLookup {
    *  namespace of a bare scope. */
   public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
     if (name.getMarker() !== undefined) {
-      throw new FabrError(`'${name.toString()}' is installed with fabr, not resolved, so an override marker means nothing on it`).withHelp(
-        "write the reference without the marker"
-      );
+      throw new FabrError(
+        `'${name.toString()}' is installed with fabr, not resolved, so an override marker means nothing on it`
+      ).withHelp("write the reference without the marker");
     }
     const literal = name.getLiteralPrefix();
     const colon = literal.indexOf(":");
@@ -262,7 +265,9 @@ export class FabrHomeRepository implements Repository, RepositoryLookup {
   public children({ name: namespace }: PartialRepositoryRef): Computable<Map<string, Reference>> {
     if (namespace === "") {
       return Computable.reject(
-        new FabrError("fabr's whole installation cannot be listed").withHelp("name a scope to list its packages, as in '@fabr-home:@fabr-build'")
+        new FabrError("fabr's whole installation cannot be listed").withHelp(
+          "name a scope to list its packages, as in '@fabr-home:@fabr-build'"
+        )
       );
     }
     try {

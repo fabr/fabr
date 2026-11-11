@@ -77,7 +77,10 @@ export function deactivate(): void {
     disposable.dispose();
   }
   for (const relay of relays) {
-    void relay.then(server => server.close(), () => undefined);
+    void relay.then(
+      server => server.close(),
+      () => undefined
+    );
   }
   updateRegistry(REGISTRY, names => names.filter(name => !documents.includes(name)));
 }
@@ -139,7 +142,11 @@ async function layOutAndPoint(output: vscode.OutputChannel): Promise<boolean> {
     output.appendLine(`fabr: VS Code's TypeScript at ${typescript} states no version`);
     return false;
   }
-  const tsdk = layOutTsdk(path.join(HOME, "tsdk"), { tsserver: path.join(typescript, "lib", "tsserver.js"), version, registry: REGISTRY });
+  const tsdk = layOutTsdk(path.join(HOME, "tsdk"), {
+    tsserver: path.join(typescript, "lib", "tsserver.js"),
+    version,
+    registry: REGISTRY,
+  });
   if (!fs.existsSync(REGISTRY)) {
     writeAtomically(REGISTRY, JSON.stringify({ version: DOCUMENT_VERSION, projects: [] }));
   }
@@ -258,7 +265,11 @@ function serveProject(
     byTarget.set(buildTarget.uri, diagnostics.map(toDiagnostic));
     reported.set(textDocument.uri, byTarget);
     /* Several targets report a failure they share: shown once. */
-    const shown = new Map([...byTarget.values()].flat().map(diagnostic => [`${diagnostic.range.start.line}:${diagnostic.range.start.character}:${diagnostic.message}`, diagnostic]));
+    const shown = new Map(
+      [...byTarget.values()]
+        .flat()
+        .map(diagnostic => [`${diagnostic.range.start.line}:${diagnostic.range.start.character}:${diagnostic.message}`, diagnostic])
+    );
     problems.set(vscode.Uri.parse(textDocument.uri), [...shown.values()]);
   });
   client.onNotification("build/taskStart", params => {
@@ -399,7 +410,11 @@ function toPublishDiagnostics(params: unknown): IPublishDiagnostics | undefined 
   if (typeof textDocument.uri !== "string" || typeof buildTarget.uri !== "string") {
     return undefined;
   }
-  return { textDocument: { uri: textDocument.uri }, buildTarget: { uri: buildTarget.uri }, diagnostics: toProtocolDiagnostics(params.diagnostics) };
+  return {
+    textDocument: { uri: textDocument.uri },
+    buildTarget: { uri: buildTarget.uri },
+    diagnostics: toProtocolDiagnostics(params.diagnostics),
+  };
 }
 
 /** What `build/publishDiagnostics` carries. */
@@ -476,7 +491,12 @@ function commandFor(root: string): { argv: string[]; env?: NodeJS.ProcessEnv } {
     part.replace(/^\.\//, `${root}/`)
   );
   const installed = path.join(root, "node_modules", INSTALLED_ENTRY);
-  const entry = configured.length === 1 && SCRIPT.test(configured[0]) ? configured[0] : configured.length === 0 && fs.existsSync(installed) ? installed : undefined;
+  const entry =
+    configured.length === 1 && SCRIPT.test(configured[0])
+      ? configured[0]
+      : configured.length === 0 && fs.existsSync(installed)
+        ? installed
+        : undefined;
   if (entry !== undefined) {
     return { argv: [process.execPath, entry], env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } };
   }

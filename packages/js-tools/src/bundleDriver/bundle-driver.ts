@@ -341,7 +341,12 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
         /* An answer that is no file (a module a package's `browser` field maps to
          * false comes back as its bare name) is esbuild's own to give: it alone
          * knows to make it an empty module. */
-        if (resolved && (!resolved.namespace || resolved.namespace === "file") && resolved.path !== undefined && !path.isAbsolute(resolved.path)) {
+        if (
+          resolved &&
+          (!resolved.namespace || resolved.namespace === "file") &&
+          resolved.path !== undefined &&
+          !path.isAbsolute(resolved.path)
+        ) {
           return null;
         }
         if (resolved) {
@@ -388,11 +393,7 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
  * pre-scoped CSS must be read as) esbuild exports nothing. Compiled sources never
  * get here; this is the same correction for the code the compile did not touch.
  */
-async function redirectStyledImport(
-  build: IPluginBuild,
-  args: IOnResolveArgs,
-  rewritten: string
-): Promise<IOnResolveResult | null> {
+async function redirectStyledImport(build: IPluginBuild, args: IOnResolveArgs, rewritten: string): Promise<IOnResolveResult | null> {
   const resolved = await build.resolve(rewritten, {
     kind: args.kind,
     importer: args.importer,
@@ -623,7 +624,13 @@ export async function main(argv: string[]): Promise<void> {
     const referenceOf =
       named === undefined
         ? undefined
-        : (staged: string): string | undefined => named(path.relative(root, resolveVirtual(path.resolve(root, staged))).split(path.sep).join("/"));
+        : (staged: string): string | undefined =>
+            named(
+              path
+                .relative(root, resolveVirtual(path.resolve(root, staged)))
+                .split(path.sep)
+                .join("/")
+            );
     if (referenceOf !== undefined) {
       nameMapSources(root, options.outdir, referenceOf);
     }
@@ -664,7 +671,10 @@ function nameMapSources(root: string, outdir: string, referenceOf: (staged: stri
  * fabr's drivers list first — which esbuild carries into the bundle's map, else
  * by `referenceOf`. Each input is named once.
  */
-function metafileInputNamer(root: string, referenceOf: ((staged: string) => string | undefined) | undefined): (staged: string) => string {
+function metafileInputNamer(
+  root: string,
+  referenceOf: ((staged: string) => string | undefined) | undefined
+): (staged: string) => string {
   const fileName = (staged: string): string => {
     const source = getMapSource(resolveVirtual(path.resolve(root, staged)));
     return (source === undefined ? undefined : referenceOfEntry(source)) ?? referenceOf?.(staged) ?? staged;
@@ -848,7 +858,10 @@ class PackageNames {
     /* A map may name its source above the package — fabr's compile names each
      * one beside its output directory — so the climb is dropped, leaving the
      * path the package's author wrote it under. */
-    const within = path.relative(root, file).split(path.sep).filter(part => part !== "..");
+    const within = path
+      .relative(root, file)
+      .split(path.sep)
+      .filter(part => part !== "..");
     return `${locator.name}@${this.versionOf(root)}/${within.join("/")}`;
   }
 

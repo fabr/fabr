@@ -51,7 +51,9 @@ interface IHostProgramOrigin extends IProvenanceStep {
   location: string;
 }
 
-registerProvenanceRenderer(HOST_PROGRAM_PROVENANCE, step => [{ message: `found on this host, at ${(step as IHostProgramOrigin).location}` }]);
+registerProvenanceRenderer(HOST_PROGRAM_PROVENANCE, step => [
+  { message: `found on this host, at ${(step as IHostProgramOrigin).location}` },
+]);
 registerProvenanceDescriber(HOST_PROGRAM_PROVENANCE, step => (step as IHostProgramOrigin).location);
 
 /** The repository a `host_searchpath` declaration is. */
@@ -89,7 +91,9 @@ export class HostSearchPathRepository implements Repository, RepositoryLookup {
    * link to it, and whose install is empty: a program of the host is run where
    * it lies. */
   public resolve(reference: RepositoryRef): Computable<FileSet> {
-    return this.resolveFiles(reference).then(files => new RunnableFileSet(EMPTY_FILESET, [], undefined, "", files, EMPTY_FILESET, "caller", undefined, files.origin));
+    return this.resolveFiles(reference).then(
+      files => new RunnableFileSet(EMPTY_FILESET, [], undefined, "", files, EMPTY_FILESET, "caller", undefined, files.origin)
+    );
   }
 
   /** Resolve the program `reference` names to its files: the one link to it, named as the command. */
@@ -120,8 +124,7 @@ function commandOf(name: string): string {
 function hostSearchPathRegistration(): RepositoryRegistration {
   return {
     type: "host_searchpath",
-    provider: (context: TargetContext) =>
-      Computable.resolve(new HostSearchPathRepository(context.execution.hostFileSource)),
+    provider: (context: TargetContext) => Computable.resolve(new HostSearchPathRepository(context.execution.hostFileSource)),
   };
 }
 

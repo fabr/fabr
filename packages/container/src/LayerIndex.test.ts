@@ -27,7 +27,9 @@ import { ILayerIndex, indexLayer } from "./LayerIndex";
 /** Pack `files` as an uncompressed tar, as a layer's is once decompressed. */
 function layerTar(files: Record<string, string | SymlinkFile>, options?: { directories?: boolean }): Promise<Buffer> {
   const set = new FileSet(
-    new Map<string, IFile>(Object.entries(files).map(([name, content]) => [name, typeof content === "string" ? MemoryFile.from(content) : content]))
+    new Map<string, IFile>(
+      Object.entries(files).map(([name, content]) => [name, typeof content === "string" ? MemoryFile.from(content) : content])
+    )
   );
   return Promise.resolve(packToTarball(set, { ...options, hardlinks: true })).then(buffer => gunzipSync(buffer));
 }
@@ -47,7 +49,10 @@ async function indexed(tar: Buffer, chunk = 100): Promise<ILayerIndex> {
 
 describe("indexLayer", () => {
   it("records each entry's metadata, and a file's range, hash and mime", async () => {
-    const tar = await layerTar({ "etc/motd": "hello\n", "bin/sh": new SymlinkFile("busybox"), "bin/ash": "hello\n" }, { directories: true });
+    const tar = await layerTar(
+      { "etc/motd": "hello\n", "bin/sh": new SymlinkFile("busybox"), "bin/ash": "hello\n" },
+      { directories: true }
+    );
     const index = await indexed(tar, 37);
     expect(index.diffId).to.equal(`sha256:${createHash("sha256").update(tar).digest("hex")}`);
     expect(index.entries.map(entry => [entry.path, entry.type])).to.deep.equal([
@@ -74,6 +79,9 @@ describe("indexLayer", () => {
   it("refuses a tar that ends before its end-of-archive marker", async () => {
     const tar = await layerTar({ "a.txt": "a" });
     const failure = await indexed(tar.subarray(0, 512)).catch((err: Error) => err);
-    expect(failure).to.be.instanceOf(Error).with.property("message").that.matches(/ends before/);
+    expect(failure)
+      .to.be.instanceOf(Error)
+      .with.property("message")
+      .that.matches(/ends before/);
   });
 });

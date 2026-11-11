@@ -21,7 +21,16 @@ import { expect } from "chai";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { dependenciesOn, EMPTY_FILESET, FileSet, IChangedFiles, IFile, ITestReport, MemoryFile, PackageFileSet } from "@fabr-build/core";
+import {
+  dependenciesOn,
+  EMPTY_FILESET,
+  FileSet,
+  IChangedFiles,
+  IFile,
+  ITestReport,
+  MemoryFile,
+  PackageFileSet,
+} from "@fabr-build/core";
 import { IPackageLayout, ReadName } from "./Layout";
 import { selectCompiledSetupFile, selectCompiledTestFiles, snapshotWriteBacks } from "./TestPipeline";
 import { filesToRun, readsOf } from "./TestRunAction";
@@ -68,10 +77,11 @@ describe("selectCompiledTestFiles", () => {
 /** A source-tree FileSet: names as declared, each locatable back to `root` —
  * the provenance an FS query attaches (see FSFileSource's source-tree step). */
 function sourceSetOf(root: string, ...names: string[]): FileSet {
-  return new FileSet(
-    new Map<string, IFile>(names.map(name => [name, MemoryFile.from("")])),
-    { kind: "source-tree", root, paths: new Map(names.map(name => [name, name])) } as never
-  );
+  return new FileSet(new Map<string, IFile>(names.map(name => [name, MemoryFile.from("")])), {
+    kind: "source-tree",
+    root,
+    paths: new Map(names.map(name => [name, name])),
+  } as never);
 }
 
 describe("snapshotWriteBacks", () => {
@@ -189,7 +199,11 @@ describe("selectCompiledSetupFile", () => {
 
 describe("filesToRun", () => {
   const report = (failed: number): ITestReport => ({
-    results: { tool: { name: "fixture" }, summary: { tests: 1, passed: 1 - failed, failed, pending: 0, skipped: 0, other: 0, start: 0, stop: 1 }, tests: [] },
+    results: {
+      tool: { name: "fixture" },
+      summary: { tests: 1, passed: 1 - failed, failed, pending: 0, skipped: 0, other: 0, start: 0, stop: 1 },
+      tests: [],
+    },
   });
   const kept = new Map([
     ["a.test.js", { report: report(0), reads: new Set(["build/a.test.js", "build/a.js"]) }],
@@ -209,8 +223,12 @@ describe("filesToRun", () => {
       ["b.test.js", { report: report(0), reads: new Set(["build/b.test.js"]), deps: new Set(["opt package.json"]) }],
     ]);
     expect(filesToRun(files, changes(["lib index.js"]), rows, false).rerun).to.deep.equal(["a.test.js"]);
-    expect(filesToRun(files, changes([], ["opt package.json"]), rows, false).rerun, "the probed package appeared").to.deep.equal(["b.test.js"]);
-    expect(filesToRun(files, changes([], [], ["lib index.js"]), rows, false).rerun, "the package's file went").to.deep.equal(["a.test.js"]);
+    expect(filesToRun(files, changes([], ["opt package.json"]), rows, false).rerun, "the probed package appeared").to.deep.equal([
+      "b.test.js",
+    ]);
+    expect(filesToRun(files, changes([], [], ["lib index.js"]), rows, false).rerun, "the package's file went").to.deep.equal([
+      "a.test.js",
+    ]);
     expect(filesToRun(files, changes(["lib other.js"]), rows, false).rerun).to.deep.equal([]);
   });
 
@@ -232,7 +250,11 @@ describe("filesToRun", () => {
       ["a.test.js", { report: report(1), reads: new Set(["build/a.test.js"]) }],
       ["c.test.js", { report: report(0) }],
     ]);
-    expect(filesToRun([...files, "c.test.js"], changes([]), partial, false).rerun).to.deep.equal(["a.test.js", "b.test.js", "c.test.js"]);
+    expect(filesToRun([...files, "c.test.js"], changes([]), partial, false).rerun).to.deep.equal([
+      "a.test.js",
+      "b.test.js",
+      "c.test.js",
+    ]);
   });
 });
 

@@ -100,7 +100,14 @@ export const COMPILE_KEY = "compile";
  * package with that one's version and requirements.
  */
 export const EXTENDS_KEY = "extends";
-const TRANSITIVE_KEYS: ReadonlySet<string> = new Set([DEPENDENCIES_KEY, PROVIDED_KEY, OPTIONAL_PROVIDED_KEY, RUNTIME_KEY, COMPILE_KEY, EXTENDS_KEY]);
+const TRANSITIVE_KEYS: ReadonlySet<string> = new Set([
+  DEPENDENCIES_KEY,
+  PROVIDED_KEY,
+  OPTIONAL_PROVIDED_KEY,
+  RUNTIME_KEY,
+  COMPILE_KEY,
+  EXTENDS_KEY,
+]);
 
 /**
  * What a requirement settles to once materialized: one read
@@ -282,7 +289,10 @@ export class ResolvedRequirements {
    * the advisories `fixes` names, with what conflicts among their sources alone, in each collection that
    * resolved them.
    */
-  public ofTarget(target: string, { permissive, result, fixes }: Pick<ResolutionSpec, "permissive" | "result" | "fixes">): Computable<ResolvedRequirements> {
+  public ofTarget(
+    target: string,
+    { permissive, result, fixes }: Pick<ResolutionSpec, "permissive" | "result" | "fixes">
+  ): Computable<ResolvedRequirements> {
     const kept = [...this.entries]
       .filter(([name]) => name.startsWith(`${target}.`))
       .map(([name, entry]): [string, ResolvedRequirement] => [name.substring(target.length + 1), entry]);
@@ -291,7 +301,11 @@ export class ResolvedRequirements {
       (...conflicts: Conflicts[]) =>
         new ResolvedRequirements(
           new Map(kept),
-          this.parts.map((part, index) => ({ conflicts: conflicts[index], conflictsAmong: part.conflictsAmong, collection: part.collection })),
+          this.parts.map((part, index) => ({
+            conflicts: conflicts[index],
+            conflictsAmong: part.conflictsAmong,
+            collection: part.collection,
+          })),
           permissive === true,
           result,
           fixes
@@ -335,11 +349,18 @@ function finish(
 ): Computable<Collected> {
   const kept = list.map((source, at) => ({ source, reference: references[at] }));
   const settled: Computable<ReadonlyArray<unknown>> =
-    reading === "contained" ? Computable.resolve(kept.map(({ source }) => source)) : config.applyProjections(kept.map(({ source }) => source));
+    reading === "contained"
+      ? Computable.resolve(kept.map(({ source }) => source))
+      : config.applyProjections(kept.map(({ source }) => source));
   return settled.then(sources => {
     const finished = sources.flatMap((source, at) =>
       source instanceof FileSet || source instanceof FileSetRef
-        ? [{ source: reading === "files" && source instanceof PackageFileSet ? new FileSet(source, source.origin) : source, reference: kept[at].reference }]
+        ? [
+            {
+              source: reading === "files" && source instanceof PackageFileSet ? new FileSet(source, source.origin) : source,
+              reference: kept[at].reference,
+            },
+          ]
         : []
     );
     return { sources: finished.map(({ source }) => source), references: finished.map(({ reference }) => reference) };
@@ -354,7 +375,6 @@ type CollectedSource = FileSet | FileSetRef;
  * A target's collection point, as the framework runs it. A rule does not call
  * these: it states what its target requires and is handed the result.
  */
-
 
 /**
  * Run the resolve half of `target`'s collection point: every requirement read,
@@ -378,7 +398,9 @@ export function resolveRequirements(target: TargetContext, spec: ResolutionSpec)
       const lists = values.map((value): SourceRef[] => (Array.isArray(value) ? value : value.sources));
       const readings = values.map((value): Reading => (Array.isArray(value) ? "files" : value.read));
       /* What a target passes on is packages. */
-      const misread = names.find((name, index) => TRANSITIVE_KEYS.has(requirementName(name)) && readings[index] === "files" && lists[index].length > 0);
+      const misread = names.find(
+        (name, index) => TRANSITIVE_KEYS.has(requirementName(name)) && readings[index] === "files" && lists[index].length > 0
+      );
       if (misread !== undefined) {
         throw new FabrError(`internal: the rule of '${target.name}' reads its '${misread}' requirement for files`).withHelp(
           "what a target passes on is packages: read it with getPackageProperty"
@@ -416,41 +438,45 @@ export function resolveRequirements(target: TargetContext, spec: ResolutionSpec)
           ).then(resolved => group.map(({ at: each }, position) => ({ at: each, resolved: resolved[position] })));
         }),
         (...grouped: Array<Array<{ at: number[]; resolved: ResolvedLists }>>) => grouped.flat()
-      ).then(
-        (parts: Array<{ at: number[]; resolved: ResolvedLists }>) => {
-          const resolvedEntries = new Map<number, ResolvedRequirement>();
-          parts.forEach(({ at, resolved }, part) =>
-            at.forEach((index, position) => {
-              const value = values[index];
-              const entry: ResolvedRequirement = {
-                sources: resolved.lists[position],
-                references: resolved.references[position],
-                reading: readings[index],
-                part,
-              };
-              if (value instanceof PackageSources && value.format !== undefined) {
-                refuseOtherFormats(target, entry, value.format);
-              }
-              resolvedEntries.set(index, entry);
-            })
-          );
-          return new ResolvedRequirements(
-            new Map(names.map((name, index) => [name, resolvedEntries.get(index)!])),
-            parts.map(({ resolved }) => ({ conflicts: resolved.conflicts, conflictsAmong: resolved.conflictsAmong, collection: resolved.collection })),
-            spec.permissive === true,
-            spec.result,
-            spec.fixes
-          );
-        }
-      );
+      ).then((parts: Array<{ at: number[]; resolved: ResolvedLists }>) => {
+        const resolvedEntries = new Map<number, ResolvedRequirement>();
+        parts.forEach(({ at, resolved }, part) =>
+          at.forEach((index, position) => {
+            const value = values[index];
+            const entry: ResolvedRequirement = {
+              sources: resolved.lists[position],
+              references: resolved.references[position],
+              reading: readings[index],
+              part,
+            };
+            if (value instanceof PackageSources && value.format !== undefined) {
+              refuseOtherFormats(target, entry, value.format);
+            }
+            resolvedEntries.set(index, entry);
+          })
+        );
+        return new ResolvedRequirements(
+          new Map(names.map((name, index) => [name, resolvedEntries.get(index)!])),
+          parts.map(({ resolved }) => ({
+            conflicts: resolved.conflicts,
+            conflictsAmong: resolved.conflictsAmong,
+            collection: resolved.collection,
+          })),
+          spec.permissive === true,
+          spec.result,
+          spec.fixes
+        );
+      });
     }
   );
 }
 
-
-
 /** Refuse a package among `entry`'s sources whose format is known and is not `format`, attributed to the reference it was resolved for. */
-function refuseOtherFormats(target: TargetContext, { sources, references }: ResolvedRequirement, format: PackageFormat<unknown, unknown>): void {
+function refuseOtherFormats(
+  target: TargetContext,
+  { sources, references }: ResolvedRequirement,
+  format: PackageFormat<unknown, unknown>
+): void {
   sources.forEach((source, at) => {
     const found = source instanceof ResolvedNode ? source.format : undefined;
     if (!(source instanceof ResolvedNode) || found === undefined || found === format) {
@@ -458,7 +484,11 @@ function refuseOtherFormats(target: TargetContext, { sources, references }: Reso
     }
     const reference = references[at];
     const written =
-      reference === undefined ? source.packageName : reference instanceof RepositoryRef && reference.repositoryName !== undefined ? `${reference.repositoryName}:${reference.toString()}` : reference.toString();
+      reference === undefined
+        ? source.packageName
+        : reference instanceof RepositoryRef && reference.repositoryName !== undefined
+          ? `${reference.repositoryName}:${reference.toString()}`
+          : reference.toString();
     const error = new FabrError(`'${written}' is no ${format.name} package`).withHelp(
       `it is a package of ${found.name}, and '${target.name}' takes ${format.name} packages here`
     );
@@ -544,7 +574,10 @@ export function unmaterialized(
       (described ??= resolved
         .materialize(config, true)
         .then(lists =>
-          Object.assign(Object.create(null), Object.fromEntries([...resolved.sources.keys()].map(name => [name, lists.get(name)?.sources ?? []])))
+          Object.assign(
+            Object.create(null),
+            Object.fromEntries([...resolved.sources.keys()].map(name => [name, lists.get(name)?.sources ?? []]))
+          )
         )) as Computable<MaterializedRequirements<Record<string, RequiredSources>>>,
   };
 }
@@ -560,9 +593,9 @@ function packageEdges(name: string, collected: Collected): Array<Dependency<Pack
     }
     const reference = collected.references[at];
     if (reference === undefined) {
-      throw new FabrError(`'${source.packageId}' among '${name}' was handed over as a package, not resolved for a reference, so it is no edge`).withHelp(
-        `read '${name}' materialized where its packages were given rather than written`
-      );
+      throw new FabrError(
+        `'${source.packageId}' among '${name}' was handed over as a package, not resolved for a reference, so it is no edge`
+      ).withHelp(`read '${name}' materialized where its packages were given rather than written`);
     }
     return [{ reference, package: source }];
   });

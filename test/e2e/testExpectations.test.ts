@@ -94,7 +94,6 @@ function reportOf(failed) {
        * compare against and the only inputs -u may rewrite, and never package
        * content. */
       "  test_expectations = src:**/__snapshots__/*.snap;\n" +
-
       "}\n",
     "runner/run.js": RUNNER,
     "src/thing.test.ts": `exports.value = ${JSON.stringify(value)};\n`,

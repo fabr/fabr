@@ -86,9 +86,7 @@ describe("e2e: watch mode (fabr build -w)", () => {
   it("rebuilds on a source change and exits cleanly on SIGINT", async () => {
     const session = startFabrWatch(
       {
-        "PROJECT.fabr":
-          "script gen_prog { entry = src:gen.sh; }\n" +
-          "generate gen { run = gen_prog; output = out:**; }\n",
+        "PROJECT.fabr": "script gen_prog { entry = src:gen.sh; }\n" + "generate gen { run = gen_prog; output = out:**; }\n",
         "src/gen.sh": 'mkdir -p out\nprintf "V1\\n" > out/msg.txt\n',
       },
       ["build", "-w", "gen"]

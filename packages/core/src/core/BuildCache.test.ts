@@ -24,7 +24,16 @@ import * as path from "path";
 import * as http from "node:http";
 import { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
-import { ActionContext, BuildCache, IBuildState, IFetchRequest, ISecretRecord, isReapable, MINIMUM_FRESHNESS_MS, ownerName } from "./BuildCache";
+import {
+  ActionContext,
+  BuildCache,
+  IBuildState,
+  IFetchRequest,
+  ISecretRecord,
+  isReapable,
+  MINIMUM_FRESHNESS_MS,
+  ownerName,
+} from "./BuildCache";
 import { HttpStatusError } from "./Errors";
 import { PackageFileSet, PackageGraphBuilder } from "./PackageFileSet";
 import { ActionFileInputs, BuildAction, BuildResult, IBuildActionDefinition, preciseActionKey } from "./BuildAction";
@@ -372,7 +381,10 @@ describe("BuildCache", () => {
     }
     expect(failure?.message).to.equal("boom");
     expect(fs.existsSync(dirs[0]), "the failed attempt's work dir is gone").to.equal(false);
-    expect(fs.existsSync(path.join(root, "entries", hashString("failing manifest") + ".manifest")), "and it committed nothing").to.equal(false);
+    expect(
+      fs.existsSync(path.join(root, "entries", hashString("failing manifest") + ".manifest")),
+      "and it committed nothing"
+    ).to.equal(false);
 
     /* The retry gets its own dir rather than whatever the last attempt left —
      * work dirs are named by owner, so there is no shared per-key dir to
@@ -748,7 +760,9 @@ describe("BuildCache discovered dependencies", () => {
      * names they did not. */
     expect(fs.existsSync(path.join(root, "entries", hashString(ANCHOR) + ".manifest"))).to.equal(false);
     const used = narrowDeps(discoverable, selectionOf(discoverable, ["a.h"]));
-    expect(fs.existsSync(path.join(root, "entries", hashString(preciseActionKey(hashString(ANCHOR), used)) + ".manifest"))).to.equal(true);
+    expect(fs.existsSync(path.join(root, "entries", hashString(preciseActionKey(hashString(ANCHOR), used)) + ".manifest"))).to.equal(
+      true
+    );
   });
 
   it("keys a read of each loose member on that member's source paths", () => {
@@ -1386,7 +1400,11 @@ describe("BuildCache build state", () => {
 
   /** A build state as the cache records one: the action's own key material, and
    * the tool's kept files. */
-  const STEP: IBuildActionDefinition = { id: "test:step", version: 1, run: () => Computable.resolve({ result: new FileSet(new Map()) }) };
+  const STEP: IBuildActionDefinition = {
+    id: "test:step",
+    version: 1,
+    run: () => Computable.resolve({ result: new FileSet(new Map()) }),
+  };
   const STATE = {
     inputs: new BuildAction(STEP, { srcs: INPUT_FILES }, {}).actionKey(),
     incrementalState: new FileSet(new Map([["graph", MemoryFile.from(DRIVER_BYTES)]])),
@@ -1743,7 +1761,11 @@ describe("BuildCache non-immutable fetches", () => {
     });
 
   const fetchDoc = (options?: Parameters<BuildCache["getOrFetch"]>[4]): Promise<string> =>
-    toPromise(cache.getOrFetch(origin.url, "test:1", requestOf(origin.url, store), () => UNTRACKED, options).then(files => files.readFile("doc.txt")));
+    toPromise(
+      cache
+        .getOrFetch(origin.url, "test:1", requestOf(origin.url, store), () => UNTRACKED, options)
+        .then(files => files.readFile("doc.txt"))
+    );
 
   beforeEach(async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-mutfetch-test-"));
@@ -1826,7 +1848,9 @@ describe("BuildCache non-immutable fetches", () => {
     clock += STALE;
     expect(
       await toPromise(
-        second.getOrFetch(origin.url, "test:1", requestOf(origin.url, store), () => UNTRACKED, { immutable: false }).then(f => f.readFile("doc.txt"))
+        second
+          .getOrFetch(origin.url, "test:1", requestOf(origin.url, store), () => UNTRACKED, { immutable: false })
+          .then(f => f.readFile("doc.txt"))
       )
     ).to.equal("one");
     /* Served is served: the recency touch keeps a copy the origin cannot
@@ -2116,12 +2140,16 @@ describe("BuildCache secrets store", () => {
   let fetched: number;
 
   /** A fetch answering `value` as version `version` of a secret, counting each time it is made. */
-  const answer = (value: string, version = 1) => (): Computable<ISecretRecord> => {
-    fetched++;
-    return Computable.resolve({ identity: `param:${version}`, secret: true, value: Buffer.from(value) });
-  };
+  const answer =
+    (value: string, version = 1) =>
+    (): Computable<ISecretRecord> => {
+      fetched++;
+      return Computable.resolve({ identity: `param:${version}`, secret: true, value: Buffer.from(value) });
+    };
   const get = (cache: BuildCache, fetch: () => Computable<ISecretRecord>): Promise<string> =>
-    toPromise(cache.getOrFetchSecret("param", "test:1", "ssm:param", fetch).then(record => `${record.identity}=${record.value.toString()}`));
+    toPromise(
+      cache.getOrFetchSecret("param", "test:1", "ssm:param", fetch).then(record => `${record.identity}=${record.value.toString()}`)
+    );
 
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-secrets-test-"));
@@ -2163,9 +2191,9 @@ describe("BuildCache secrets store", () => {
     const stale = new BuildCache(root, { log: (_diag, data) => warnings.push(data) } as Log, () => clock + 2 * MINIMUM_FRESHNESS_MS);
     expect(await get(stale, () => Computable.reject(new HttpStatusError(503, "http://ssm")))).to.equal("param:1=one");
     expect(warnings).to.deep.equal([{ url: "ssm:param", reason: "503 Service Unavailable: http://ssm" }]);
-    const refused = await toPromise(stale.getOrFetchSecret("param", "test:1", "ssm:param", () => Computable.reject(new Error("no such parameter")))).catch(
-      (err: Error) => err.message
-    );
+    const refused = await toPromise(
+      stale.getOrFetchSecret("param", "test:1", "ssm:param", () => Computable.reject(new Error("no such parameter")))
+    ).catch((err: Error) => err.message);
     expect(refused).to.equal("no such parameter");
   });
 
@@ -2180,7 +2208,9 @@ describe("BuildCache secrets store", () => {
     const cache = new BuildCache(root, NULL_LOG);
     const secret = new FileSet(new Map([["ca.key", new SecretFile("@aws:ssm:/ca.key", "param:1", Buffer.from("key"))]]));
     const message = "'ca.key' is a secret (@aws:ssm:/ca.key), so it cannot be stored in the build cache";
-    expect(await toPromise(cache.getOrCreate("secret entry", () => produced(secret))).catch((err: Error) => err.message)).to.equal(message);
+    expect(await toPromise(cache.getOrCreate("secret entry", () => produced(secret))).catch((err: Error) => err.message)).to.equal(
+      message
+    );
     expect(await toPromise(cache.ensureTree(secret)).catch((err: Error) => err.message)).to.equal(message);
   });
 });
@@ -2266,7 +2296,12 @@ describe("BuildCache work tree", () => {
     expect(path.basename(path.dirname(dir))).to.equal(`${hostPrefix()}@k2.1`);
     expect(fs.readFileSync(`${path.dirname(dir)}.hold`, "utf8")).to.equal(String(process.pid));
     /* The dead holder's hold went into this process's own work tree, not beside the slot. */
-    expect(fs.readdirSync(work).filter(name => name.includes(".hold")).sort()).to.deep.equal([`${hostPrefix()}@k2.0.hold`, `${hostPrefix()}@k2.1.hold`]);
+    expect(
+      fs
+        .readdirSync(work)
+        .filter(name => name.includes(".hold"))
+        .sort()
+    ).to.deep.equal([`${hostPrefix()}@k2.0.hold`, `${hostPrefix()}@k2.1.hold`]);
     expect(fs.readdirSync(path.join(work, `${hostPrefix()}-${process.pid}`)).some(name => name.startsWith("hold-"))).to.equal(true);
     cache.releaseKeptWorkDir(dir);
   });
@@ -2590,7 +2625,9 @@ describe("BuildCache garbage collection", () => {
 
   /** Build one entry and return the blob path behind its single file. */
   async function makeEntry(cache: BuildCache, key: string, content: string): Promise<string> {
-    const files = await toPromise(cache.getOrCreate(key, () => produced(new FileSet(new Map([["out.txt", MemoryFile.from(content)]])))));
+    const files = await toPromise(
+      cache.getOrCreate(key, () => produced(new FileSet(new Map([["out.txt", MemoryFile.from(content)]]))))
+    );
     const file = await toPromise(files.get("out.txt"));
     return file!.getAbsPath()!;
   }
@@ -2833,5 +2870,4 @@ describe("BuildCache garbage collection", () => {
     /* The touch is fire-and-forget, so give it a beat. */
     await eventually(() => Date.now() - fs.statSync(manifest).mtimeMs < 60 * 1000, "the manifest touch");
   });
-
 });

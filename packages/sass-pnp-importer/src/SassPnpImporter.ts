@@ -228,9 +228,13 @@ function resolvePackageLoad(
 function resolveThroughExports(api: IPnpApi, name: string, subpath: string, issuer: string): string | null {
   const rounds = [subpath === "" ? ["."] : exportVariants(subpath), exportVariants(subpath === "" ? "index" : `${subpath}/index`)];
   for (const candidates of rounds) {
-    const matches = [...new Set(candidates.flatMap(candidate => published(api, candidate === "." ? name : `${name}/${candidate}`, issuer)))];
+    const matches = [
+      ...new Set(candidates.flatMap(candidate => published(api, candidate === "." ? name : `${name}/${candidate}`, issuer))),
+    ];
     if (matches.length > 1) {
-      throw new Error(`Unable to determine which of multiple potential resolutions found for '${subpath}' in ${name} should be used:\n${list(matches)}`);
+      throw new Error(
+        `Unable to determine which of multiple potential resolutions found for '${subpath}' in ${name} should be used:\n${list(matches)}`
+      );
     }
     if (matches.length === 1) {
       return matches[0];
@@ -242,7 +246,9 @@ function resolveThroughExports(api: IPnpApi, name: string, subpath: string, issu
 /** List the subpaths an exports lookup tries for `subpath`: itself, with each
  * stylesheet extension unless it has one, and each of those as a partial. */
 function exportVariants(subpath: string): string[] {
-  const plain = EXTENSIONS.includes(path.posix.extname(subpath)) ? [subpath] : [subpath, ...EXTENSIONS.map(extension => `${subpath}${extension}`)];
+  const plain = EXTENSIONS.includes(path.posix.extname(subpath))
+    ? [subpath]
+    : [subpath, ...EXTENSIONS.map(extension => `${subpath}${extension}`)];
   if (path.posix.basename(subpath).startsWith("_")) {
     return plain;
   }

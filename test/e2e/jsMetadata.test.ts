@@ -30,9 +30,7 @@ describe("e2e: js_package metadata", () => {
   const projectWith = (metadata: string): Record<string, string> => ({
     ...base,
     "PROJECT.fabr":
-      "plugin @fabr-build/js;\n\n" +
-      STUB_TSC_CONFIG +
-      `\njs_package thing { srcs = src:**/*; metadata = { ${metadata} } }\n`,
+      "plugin @fabr-build/js;\n\n" + STUB_TSC_CONFIG + `\njs_package thing { srcs = src:**/*; metadata = { ${metadata} } }\n`,
   });
 
   it("overlays declared metadata onto the generated package.json", () => {
@@ -100,8 +98,7 @@ describe("e2e: js_package metadata", () => {
   it("encodes sub-maps as objects and block lists as arrays of objects", () => {
     const result = runFabr(
       projectWith(
-        "repository = { type = git; url = https://example.com/r.git; }; " +
-          "maintainers = { name = ann; } { name = bob; };"
+        "repository = { type = git; url = https://example.com/r.git; }; " + "maintainers = { name = ann; } { name = bob; };"
       ),
       ["-DJS_TARGET=es2020", "cat", "thing:package.json"]
     );

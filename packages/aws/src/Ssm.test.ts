@@ -20,7 +20,16 @@
 import * as http from "node:http";
 import { AddressInfo } from "node:net";
 import { expect } from "chai";
-import { Computable, ISecretRecord, MemoryFile, NamespaceRef, parseName, RepositoryRef, SecretFile, TargetContext } from "@fabr-build/core";
+import {
+  Computable,
+  ISecretRecord,
+  MemoryFile,
+  NamespaceRef,
+  parseName,
+  RepositoryRef,
+  SecretFile,
+  TargetContext,
+} from "@fabr-build/core";
 import { AwsAccount } from "./AwsAccount";
 import { RequestSigner } from "./Signing";
 import { parameterRequest, SsmParameters, toParameter } from "./Ssm";
@@ -101,7 +110,11 @@ function accountAt(ssm: IFakeSsm, keys: string[] = []): AwsAccount {
 
 /** Vend the reference `name`, written after `@aws:ssm:`, makes. */
 function refOf(account: AwsAccount, name: string): Computable<RepositoryRef> {
-  return new NamespaceRef(account, "@aws").get("ssm", ":").then(member => (member as { getRepositoryRef(name: unknown, separator: string): RepositoryRef }).getRepositoryRef(parseName(name), ":"));
+  return new NamespaceRef(account, "@aws")
+    .get("ssm", ":")
+    .then(member =>
+      (member as { getRepositoryRef(name: unknown, separator: string): RepositoryRef }).getRepositoryRef(parseName(name), ":")
+    );
 }
 
 /** Read the parameter `name`, written after `@aws:ssm:`, names. */
@@ -157,7 +170,9 @@ describe("the SSM parameters of an AWS account", () => {
     expect((await file.getBuffer()).toString()).to.equal("-----BEGIN PRIVATE KEY-----");
     expect(file.getDisplayName()).to.equal("@aws:ssm:/app/ssl/ca.key");
     expect(file.hash).to.not.equal(new MemoryFile(Buffer.from("-----BEGIN PRIVATE KEY-----")).hash);
-    expect(file.hash).to.equal(new SecretFile("elsewhere", "arn:aws:ssm:us-east-1:111122223333:parameter/app/ssl/ca.key:7", Buffer.from("other")).hash);
+    expect(file.hash).to.equal(
+      new SecretFile("elsewhere", "arn:aws:ssm:us-east-1:111122223333:parameter/app/ssl/ca.key:7", Buffer.from("other")).hash
+    );
     expect(ssm.requests).to.have.length(1);
     expect(ssm.requests[0].target).to.equal("AmazonSSM.GetParameter");
     expect(JSON.parse(ssm.requests[0].body)).to.deep.equal({ Name: "/app/ssl/ca.key", WithDecryption: true });

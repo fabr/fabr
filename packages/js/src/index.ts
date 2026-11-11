@@ -33,11 +33,4 @@
 /* The compile pipeline helpers, for other js rules to build on (in-tree only:
  * cross-plugin extension isn't supported yet — see docs/src/content/docs/developer/plugins.md) */
 export { assembleNodeModules } from "./NodeModules";
-export {
-  classifySources,
-  compileJsSources,
-  IJsSources,
-  JSTarget,
-  parseJSTarget,
-  passthroughFiles,
-} from "./JSPackage";
+export { classifySources, compileJsSources, IJsSources, JSTarget, parseJSTarget, passthroughFiles } from "./JSPackage";

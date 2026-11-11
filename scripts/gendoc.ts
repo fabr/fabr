@@ -229,7 +229,10 @@ const GROUPS: Group[] = [
 
 /** Make a doc-comment safe for one Markdown table cell: one line, pipes escaped. */
 function cell(text: string | undefined | null): string {
-  return (text ?? "").replace(/\s*\n\s*/g, " ").replace(/\|/g, "\\|").trim();
+  return (text ?? "")
+    .replace(/\s*\n\s*/g, " ")
+    .replace(/\|/g, "\\|")
+    .trim();
 }
 
 /** Render a Markdown table: a header row, the rule beneath it, and one row per entry. */
@@ -325,7 +328,13 @@ function renderEntries(entries: Entries, level: number): string[] {
   }
   if (entries.flags.length > 0) {
     out.push(`${section} Flags`, "", "List a flag in a target's `deps` to switch its behaviour for that target.", "");
-    out.push(...table(["Flag", "Description"], entries.flags.map(flag => [`\`${flag.name}\``, cell(flag.description)])), "");
+    out.push(
+      ...table(
+        ["Flag", "Description"],
+        entries.flags.map(flag => [`\`${flag.name}\``, cell(flag.description)])
+      ),
+      ""
+    );
   }
   if (entries.targetdefs.length > 0) {
     out.push(`${section} Targets`, "");
@@ -369,7 +378,12 @@ function render(group: Group, doc: Doc): string {
   if (group.optional !== undefined) {
     out.push(`More target types are in the plugin's optional libraries; see [${group.optional.title}](${group.optional.link}).`, "");
   }
-  out.push(...renderEntries(entriesOf(doc, entry => entry.plugin === group.plugin && entry.include === undefined), 2));
+  out.push(
+    ...renderEntries(
+      entriesOf(doc, entry => entry.plugin === group.plugin && entry.include === undefined),
+      2
+    )
+  );
   return out.join("\n");
 }
 
@@ -378,11 +392,18 @@ function render(group: Group, doc: Doc): string {
 function renderOptional(group: Group, page: Page, doc: Doc): string {
   const out = header(page);
   const all = [...doc.properties, ...doc.flags, ...doc.targetdefs, ...(doc.targets ?? [])];
-  const includes = [...new Set(all.filter(entry => entry.plugin === group.plugin && entry.include !== undefined).map(entry => entry.include!))].sort();
+  const includes = [
+    ...new Set(all.filter(entry => entry.plugin === group.plugin && entry.include !== undefined).map(entry => entry.include!)),
+  ].sort();
   for (const include of includes) {
     out.push(`## \`${include.slice(include.indexOf(":") + 1)}\``, "");
     out.push("```", `include ${include};`, "```", "");
-    out.push(...renderEntries(entriesOf(doc, entry => entry.plugin === group.plugin && entry.include === include), 3));
+    out.push(
+      ...renderEntries(
+        entriesOf(doc, entry => entry.plugin === group.plugin && entry.include === include),
+        3
+      )
+    );
   }
   return out.join("\n");
 }

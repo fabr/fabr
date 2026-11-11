@@ -223,8 +223,8 @@ for (const entry of opts.entries) {
     "inspect-bundler.js": inspectingBundler,
     "main.js": 'console.log("hello");\n',
     "pkg/src/index.ts": 'export const hello = "world";\n',
-    "simplepkg/src/index.ts": 'export const simple = 1;\n',
-    "absent/src/index.ts": 'export const absent = 1;\n',
+    "simplepkg/src/index.ts": "export const simple = 1;\n",
+    "absent/src/index.ts": "export const absent = 1;\n",
   };
 
   it("stages a resolvable manifest and the tree-pool mount, and no node_modules at all", () => {
@@ -314,9 +314,7 @@ for (const entry of opts.entries) {
     expect(result.stdout).to.contain('inject=[".fabr-node-globals.js"]');
     /* The glue must EXPORT the names: an injected module that only imports its
      * shims binds nothing while still costing every byte of them. */
-    expect(result.stdout).to.contain(
-      'glue<<export { Buffer } from "buffer"; export { default as process } from "process"; >>'
-    );
+    expect(result.stdout).to.contain('glue<<export { Buffer } from "buffer"; export { default as process } from "process"; >>');
     /* `global` needs no package, so it rides the define instead. */
     expect(result.stdout).to.contain("global=globalThis");
   });

@@ -38,8 +38,23 @@ const lcov = (source: string, lines: Array<[number, number]>, branches: Array<[s
 describe("coverage merging", () => {
   it("sums lines and functions across documents, by source", () => {
     const coverage = mergeCoverage([
-      parseLcov(lcov("./a.ts", [[1, 1], [2, 0]])),
-      parseLcov(lcov("./a.ts", [[2, 3], [4, 0]], [], 2) + lcov("./b.ts", [[1, 0]], [], 0)),
+      parseLcov(
+        lcov("./a.ts", [
+          [1, 1],
+          [2, 0],
+        ])
+      ),
+      parseLcov(
+        lcov(
+          "./a.ts",
+          [
+            [2, 3],
+            [4, 0],
+          ],
+          [],
+          2
+        ) + lcov("./b.ts", [[1, 0]], [], 0)
+      ),
     ]);
     const a = coverage.get("./a.ts")!;
     expect([...a.lines]).to.deep.equal([
@@ -56,18 +71,52 @@ describe("coverage merging", () => {
   });
 
   it("sums branches numbered alike, and drops a source's branches numbered otherwise", () => {
-    const alike = mergeCoverage([parseLcov(lcov("./a.ts", [[1, 1]], [["1,0,0", 1], ["1,0,1", 0]])), parseLcov(lcov("./a.ts", [[1, 1]], [["1,0,0", 0], ["1,0,1", 2]]))]);
+    const alike = mergeCoverage([
+      parseLcov(
+        lcov(
+          "./a.ts",
+          [[1, 1]],
+          [
+            ["1,0,0", 1],
+            ["1,0,1", 0],
+          ]
+        )
+      ),
+      parseLcov(
+        lcov(
+          "./a.ts",
+          [[1, 1]],
+          [
+            ["1,0,0", 0],
+            ["1,0,1", 2],
+          ]
+        )
+      ),
+    ]);
     expect([...alike.get("./a.ts")!.branches!]).to.deep.equal([
       ["1,0,0", 1],
       ["1,0,1", 2],
     ]);
-    const unlike = mergeCoverage([parseLcov(lcov("./a.ts", [[1, 1]], [["1,0,0", 1]])), parseLcov(lcov("./a.ts", [[1, 1]], [["3,0,0", 1]]))]);
+    const unlike = mergeCoverage([
+      parseLcov(lcov("./a.ts", [[1, 1]], [["1,0,0", 1]])),
+      parseLcov(lcov("./a.ts", [[1, 1]], [["3,0,0", 1]])),
+    ]);
     expect(unlike.get("./a.ts")!.branches).to.equal(undefined);
     expect(unlike.get("./a.ts")!.lines.get(1)).to.equal(2);
   });
 
   it("writes what it reads", () => {
-    const text = lcov("./a.ts", [[1, 1], [2, 0]], [["1,0,0", 1], ["1,0,1", 0]]);
+    const text = lcov(
+      "./a.ts",
+      [
+        [1, 1],
+        [2, 0],
+      ],
+      [
+        ["1,0,0", 1],
+        ["1,0,1", 0],
+      ]
+    );
     expect(lcovOf(mergeCoverage([parseLcov(text)]).values())).to.equal(
       [
         "TN:",

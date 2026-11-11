@@ -31,7 +31,13 @@ import type { ITestReport, ITestResult } from "./TestResult";
 /** The name of the suite holding the tests a report names no file for. */
 const UNFILED_SUITE = "(no file)";
 
-const builder = new XMLBuilder({ ignoreAttributes: false, attributeNamePrefix: "@_", format: true, indentBy: "  ", suppressEmptyNode: true });
+const builder = new XMLBuilder({
+  ignoreAttributes: false,
+  attributeNamePrefix: "@_",
+  format: true,
+  indentBy: "  ",
+  suppressEmptyNode: true,
+});
 
 /** @return `text` with what XML 1.0 cannot hold removed: a terminal's colour codes, and the other control characters. */
 function xmlText(text: string): string {

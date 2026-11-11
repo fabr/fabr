@@ -125,7 +125,9 @@ function validateMavenRequirement({ name, versionConstraint, override, variant }
   }
   if (versionConstraint === undefined) {
     if (override !== undefined) {
-      throw new FabrError(`${name} states no version, so a marker means nothing on it`).withHelp("write the version the marker is for");
+      throw new FabrError(`${name} states no version, so a marker means nothing on it`).withHelp(
+        "write the version the marker is for"
+      );
     }
     return;
   }
@@ -157,14 +159,18 @@ export function parseMavenPublishCoordinate(name: Name): { name: string; version
     const classified = version !== undefined && tail !== undefined && !/[:/]/.test(tail);
     /* Either order may be meant: `g:a:sources:1.0.0`, or Gradle's `g:a:1.0.0:sources`. */
     const [classifier, written] = classified && /^\d/.test(version) && !/^\d/.test(tail) ? [tail, version] : [version, tail];
-    throw new FabrError(`publish coordinate '${literal}' must name a group, an artifact and a version (com.example:app:1.0.0)`).withHelp(
+    throw new FabrError(
+      `publish coordinate '${literal}' must name a group, an artifact and a version (com.example:app:1.0.0)`
+    ).withHelp(
       classified
         ? `a classifier follows the artifact: write '${packageName.replace("/", ":")}/${classifier}:${written}'`
         : "a classifier follows the artifact, as in com.example:app/sources:1.0.0"
     );
   }
   if (variant !== undefined && !isMavenVariant(variant)) {
-    throw new FabrError(`publish coordinate '${literal}' must name a group, an artifact, a classifier where it has one, and a version (com.example:app/sources:1.0.0)`);
+    throw new FabrError(
+      `publish coordinate '${literal}' must name a group, an artifact, a classifier where it has one, and a version (com.example:app/sources:1.0.0)`
+    );
   }
   splitMavenName(packageName);
   if (version.startsWith("[") || version.startsWith("(") || MAVEN_VERSIONS.exactVersion?.(version) === undefined) {

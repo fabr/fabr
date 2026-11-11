@@ -58,7 +58,10 @@ import { MAVEN_FORMAT } from "../MavenProtocol";
 /** The `java_compile` rule. */
 export default defineRule({
   requirements(context) {
-    return { build: { srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps", undefined, MAVEN_FORMAT) }, result: "files" };
+    return {
+      build: { srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps", undefined, MAVEN_FORMAT) },
+      result: "files",
+    };
   },
   evaluateMaterialized(context, inputs) {
     return compileJava(context, inputs);
@@ -86,7 +89,6 @@ const PROCESSOR_PATH_DIR = ".processorpath";
 /** The argument file the compiler reads its arguments from. */
 const ARGUMENTS_FILE = ".fabr-javac.args";
 
-
 function compileJava(context: TargetContext, { srcs, deps }: { srcs: FileSet[]; deps: FileSet[] }): Computable<RuleResult> {
   const sources = FileSet.unionAll(...srcs);
   const notJava = [...sources].map(([name]) => name).filter(name => !name.endsWith(".java"));
@@ -100,38 +102,45 @@ function compileJava(context: TargetContext, { srcs, deps }: { srcs: FileSet[]; 
   const placed = placedJars(sources, jars);
   const processors = processorsOf(context).then(classpathOf);
   return Computable.forAll(
-    [context.getGlobalString("JVM_TARGET"), context.getGlobalRunnable("JAVAC"), context.getGlobalString("BUILD_TYPE"), processors, placed],
+    [
+      context.getGlobalString("JVM_TARGET"),
+      context.getGlobalRunnable("JAVAC"),
+      context.getGlobalString("BUILD_TYPE"),
+      processors,
+      placed,
+    ],
     (jvmTarget, javac, buildType, processorPath, { modulePath, classpath }) => {
-    const release = javaRelease(jvmTarget, deps);
-    const pool = context.execution.buildCache;
-    return pool.ensureTree(javac).then(() => {
-      const argumentsText = [
-        "--release",
-        String(release),
-        "-encoding",
-        "UTF-8",
-        ...(processorPath.length === 0 ? ["-proc:none"] : pathOption("-processorpath", PROCESSOR_PATH_DIR, processorPath)),
-        "-implicit:none",
-        debugInformation(buildType),
-        ...(deps.some(dep => dep instanceof Flag && dep.name === NO_PARAMETERS_FLAG) ? [] : ["-parameters"]),
-        "-d",
-        COMPILED_CLASSES_DIR,
-        "-s",
-        GENERATED_SOURCES_DIR,
-        ...pathOption("--module-path", CLASSPATH_DIR, modulePath),
-        ...pathOption("-classpath", CLASSPATH_DIR, classpath),
-        ...[...sources].map(([name]) => path.posix.join(SOURCE_DIR, name)).sort(),
-      ]
-        .map(quotedArgument)
-        .join("\n");
-      const files = FileSet.unionAll(
-        sources.mountedAt(SOURCE_DIR),
-        stagedJars(CLASSPATH_DIR, jars),
-        stagedJars(PROCESSOR_PATH_DIR, processorPath),
-        new FileSet(new Map<string, IFile>([[ARGUMENTS_FILE, MemoryFile.from(argumentsText)]]))
-      );
-      const argv = javac.toCommandLine([`@${ARGUMENTS_FILE}`], { base: path.posix.join(TREE_MOUNT, javac.toManifestHash()) });
-      return createExecAction(files, argv, [`${COMPILED_CLASSES_DIR}/**`, `${GENERATED_SOURCES_DIR}/**`]);
-    });
-  });
+      const release = javaRelease(jvmTarget, deps);
+      const pool = context.execution.buildCache;
+      return pool.ensureTree(javac).then(() => {
+        const argumentsText = [
+          "--release",
+          String(release),
+          "-encoding",
+          "UTF-8",
+          ...(processorPath.length === 0 ? ["-proc:none"] : pathOption("-processorpath", PROCESSOR_PATH_DIR, processorPath)),
+          "-implicit:none",
+          debugInformation(buildType),
+          ...(deps.some(dep => dep instanceof Flag && dep.name === NO_PARAMETERS_FLAG) ? [] : ["-parameters"]),
+          "-d",
+          COMPILED_CLASSES_DIR,
+          "-s",
+          GENERATED_SOURCES_DIR,
+          ...pathOption("--module-path", CLASSPATH_DIR, modulePath),
+          ...pathOption("-classpath", CLASSPATH_DIR, classpath),
+          ...[...sources].map(([name]) => path.posix.join(SOURCE_DIR, name)).sort(),
+        ]
+          .map(quotedArgument)
+          .join("\n");
+        const files = FileSet.unionAll(
+          sources.mountedAt(SOURCE_DIR),
+          stagedJars(CLASSPATH_DIR, jars),
+          stagedJars(PROCESSOR_PATH_DIR, processorPath),
+          new FileSet(new Map<string, IFile>([[ARGUMENTS_FILE, MemoryFile.from(argumentsText)]]))
+        );
+        const argv = javac.toCommandLine([`@${ARGUMENTS_FILE}`], { base: path.posix.join(TREE_MOUNT, javac.toManifestHash()) });
+        return createExecAction(files, argv, [`${COMPILED_CLASSES_DIR}/**`, `${GENERATED_SOURCES_DIR}/**`]);
+      });
+    }
+  );
 }

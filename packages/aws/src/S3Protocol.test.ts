@@ -19,7 +19,16 @@
 
 import { expect } from "chai";
 import { parseName } from "@fabr-build/core";
-import { bucketsRequest, listRequest, objectRequest, parseBuckets, parseListing, putRequest, regionProbeUrl, selectObjects } from "./S3Protocol";
+import {
+  bucketsRequest,
+  listRequest,
+  objectRequest,
+  parseBuckets,
+  parseListing,
+  putRequest,
+  regionProbeUrl,
+  selectObjects,
+} from "./S3Protocol";
 import { requestUrl } from "./Signing";
 
 describe("selecting objects for a name", () => {
@@ -32,7 +41,10 @@ describe("selecting objects for a name", () => {
   });
 
   it("fetches what precedes each ':' of the literal head, where an archive may sit", () => {
-    expect(selectObjects(parseName("dist/tool.tgz:*:bin/tool"))).to.deep.equal({ objects: ["dist/tool.tgz"], listed: "dist/tool.tgz/" });
+    expect(selectObjects(parseName("dist/tool.tgz:*:bin/tool"))).to.deep.equal({
+      objects: ["dist/tool.tgz"],
+      listed: "dist/tool.tgz/",
+    });
     expect(selectObjects(parseName("tool.tgz:bin/tool"))).to.deep.equal({ objects: ["tool.tgz", "tool.tgz/bin/tool"] });
   });
 
@@ -49,11 +61,15 @@ describe("S3 requests", () => {
   const aws = { bucket: "acme-models", region: "eu-west-2" };
 
   it("names a bucket in the hostname, and its key in the path, encoded", () => {
-    expect(requestUrl(objectRequest(aws, "v3/a model (1).bin"))).to.equal("https://acme-models.s3.eu-west-2.amazonaws.com/v3/a%20model%20%281%29.bin");
+    expect(requestUrl(objectRequest(aws, "v3/a model (1).bin"))).to.equal(
+      "https://acme-models.s3.eu-west-2.amazonaws.com/v3/a%20model%20%281%29.bin"
+    );
   });
 
   it("names a bucket with a '.' in the path, which S3's certificate would not match as a hostname", () => {
-    expect(requestUrl(objectRequest({ bucket: "acme.models", region: "us-east-1" }, "k"))).to.equal("https://s3.us-east-1.amazonaws.com/acme.models/k");
+    expect(requestUrl(objectRequest({ bucket: "acme.models", region: "us-east-1" }, "k"))).to.equal(
+      "https://s3.us-east-1.amazonaws.com/acme.models/k"
+    );
   });
 
   it("addresses an endpoint by path", () => {
@@ -95,17 +111,18 @@ describe("reading a bucket listing", () => {
 <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">${body}</ListBucketResult>`;
 
   it("reads the keys exactly, a space at either end kept", () => {
-    expect(parseListing(listing("<Contents><Key> a&amp;b </Key><Size>3</Size></Contents><IsTruncated>false</IsTruncated>"), "x")).to.deep.equal({
+    expect(
+      parseListing(listing("<Contents><Key> a&amp;b </Key><Size>3</Size></Contents><IsTruncated>false</IsTruncated>"), "x")
+    ).to.deep.equal({
       objects: [{ key: " a&b " }],
       prefixes: [],
     });
   });
 
   it("reads each object's ETag", () => {
-    expect(parseListing(listing('<Contents><Key>a</Key><ETag>"abc"</ETag></Contents><Contents><Key>b</Key></Contents>'), "x").objects).to.deep.equal([
-      { key: "a", etag: '"abc"' },
-      { key: "b" },
-    ]);
+    expect(
+      parseListing(listing('<Contents><Key>a</Key><ETag>"abc"</ETag></Contents><Contents><Key>b</Key></Contents>'), "x").objects
+    ).to.deep.equal([{ key: "a", etag: '"abc"' }, { key: "b" }]);
   });
 
   it("reads the prefixes and the continuation token", () => {
@@ -143,6 +160,8 @@ describe("reading a list of buckets", () => {
   });
 
   it("refuses a document that is not a list of buckets", () => {
-    expect(() => parseBuckets("<ListBucketResult/>", "the list")).to.throw("the list is not a list of buckets: its root element is <ListBucketResult>");
+    expect(() => parseBuckets("<ListBucketResult/>", "the list")).to.throw(
+      "the list is not a list of buckets: its root element is <ListBucketResult>"
+    );
   });
 });

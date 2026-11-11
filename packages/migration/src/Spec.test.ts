@@ -43,7 +43,12 @@ describe("reading a dependency spec", () => {
   });
 
   it("reads yarn's patch spec as the package it patches", () => {
-    expect(parseSpec("a", "patch:a@npm%3A1.2.3#./patches/a.patch")).to.deep.equal({ kind: "registry", packageName: "a", range: "1.2.3", patched: true });
+    expect(parseSpec("a", "patch:a@npm%3A1.2.3#./patches/a.patch")).to.deep.equal({
+      kind: "registry",
+      packageName: "a",
+      range: "1.2.3",
+      patched: true,
+    });
   });
 
   it("says which ranges have no floor", () => {

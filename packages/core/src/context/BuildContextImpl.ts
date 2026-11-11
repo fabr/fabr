@@ -21,7 +21,17 @@ import { ActionContext, ICreateOptions } from "../core/BuildCache";
 import { Computable, ComputableSource } from "../core/Computable";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
 import { FSFileSource } from "../core/FSFileSource";
-import { isRepository, isRepositoryReader, Materialized, ProjectedPackage, renamedAs, Repository, RepositoryRef, Resolved, SourceRef } from "../core/Repository";
+import {
+  isRepository,
+  isRepositoryReader,
+  Materialized,
+  ProjectedPackage,
+  renamedAs,
+  Repository,
+  RepositoryRef,
+  Resolved,
+  SourceRef,
+} from "../core/Repository";
 import { ResolutionContext } from "../resolver/Types";
 import { PERMISSIVE_RESOLUTION } from "./CollectionPoint";
 import { materializeShallow, resolveLists } from "./CollectionPoint";
@@ -86,12 +96,7 @@ import {
   soleDecl,
 } from "../model/AST";
 import { EXPAND_TAG, expandOnce, findWithDescent } from "../support/Expand";
-import {
-  DependencyFailedError,
-  NameResolutionError,
-  NoRuleFoundError,
-  ReferenceFailedError,
-} from "../model/Errors";
+import { DependencyFailedError, NameResolutionError, NoRuleFoundError, ReferenceFailedError } from "../model/Errors";
 import { ConflictError, FabrError, IConflictSide, IConflictSource, toError } from "../core/Errors";
 import { hasTestFailures } from "../support/TestResult";
 import { createPipelineAction, stagePipeline } from "../rules/PipelineAction";
@@ -121,7 +126,14 @@ import {
 } from "./Commands";
 import { ResolvedRequirements } from "./Collection";
 import type { Credential } from "../core/Credential";
-import { AnonymousTargetContext, DeclaredTargetContext, enclosingRules, MemberTargetContext, ScopedTargetContext, TargetContext } from "./TargetContext";
+import {
+  AnonymousTargetContext,
+  DeclaredTargetContext,
+  enclosingRules,
+  MemberTargetContext,
+  ScopedTargetContext,
+  TargetContext,
+} from "./TargetContext";
 
 /** Attach a name's remedies to its error as the `help:` line, if there are any. */
 function withHints<T extends FabrError>(err: T, hints: string[]): T {
@@ -151,7 +163,10 @@ interface IBuildModel {
 }
 
 /** Resolve the requirements the repository type `implementation` states for the declaration `context` evaluates, as a target's are. */
-function requirementsOf(implementation: Computable<RepositoryImplementation>, context: TargetContext): Computable<ResolvedRequirements> {
+function requirementsOf(
+  implementation: Computable<RepositoryImplementation>,
+  context: TargetContext
+): Computable<ResolvedRequirements> {
   return implementation.then(made => resolveRequirements(context, made.requirements?.(context) ?? {}));
 }
 
@@ -178,7 +193,10 @@ function failureOfReference(step: IModelStep, err: Error): Error {
     return new ReferenceFailedError(step.value, step.property, step.target, err);
   }
   if (err instanceof ConflictError) {
-    const chain = (side: IConflictSide): IConflictSource => ({ provenance: { ...step, parent: side.provenance }, detail: side.detail });
+    const chain = (side: IConflictSide): IConflictSource => ({
+      provenance: { ...step, parent: side.provenance },
+      detail: side.detail,
+    });
     return new ConflictError(err.kind, err.key, chain(err.left), chain(err.right));
   }
   return err;
@@ -186,7 +204,12 @@ function failureOfReference(step: IModelStep, err: Error): Error {
 
 registerReferenceStep(MODEL_PROVENANCE, {
   failure: (step, err) => failureOfReference(step as IModelStep, err),
-  label: step => new ReferenceLabel({ value: (step as IModelStep).value, property: (step as IModelStep).property, target: (step as IModelStep).target }),
+  label: step =>
+    new ReferenceLabel({
+      value: (step as IModelStep).value,
+      property: (step as IModelStep).property,
+      target: (step as IModelStep).target,
+    }),
 });
 
 /**
@@ -387,7 +410,9 @@ export class BuildContextImpl implements InternalBuildContext {
       }
     }
     if (containers.length === 0) {
-      return references.some(reference => reference instanceof Computable) ? had(references) : (references as Array<SourceRef | Unbuilt>);
+      return references.some(reference => reference instanceof Computable)
+        ? had(references)
+        : (references as Array<SourceRef | Unbuilt>);
     }
     /* Each container projects separately and stays a separate source: only a consumer that merges
      * content unions it. Each projection is applied now through applyProjection, with no miss of
@@ -414,7 +439,11 @@ export class BuildContextImpl implements InternalBuildContext {
    * the rest is projected on the member once it is made, after the separator
    * it was written with. A pattern naming the member alone is the member.
    */
-  private projectThrough(namespace: NamespaceRef, projection: IProjection, miss: Miss | undefined): Computable<Array<SourceRef | Unbuilt>> {
+  private projectThrough(
+    namespace: NamespaceRef,
+    projection: IProjection,
+    miss: Miss | undefined
+  ): Computable<Array<SourceRef | Unbuilt>> {
     const { pattern, prefix } = projection;
     const literal = pattern.getLiteralPrefix();
     const end = literal.search(/[:/]/);
@@ -459,7 +488,9 @@ export class BuildContextImpl implements InternalBuildContext {
   public runOverrides(extra?: Constraints): Constraints {
     const host = this.getConstraint(HOST);
     const measured = this.getConstraint(COVERAGE) !== undefined;
-    return RUN_OVERRIDE.with(Constraints.of({ ...(measured ? { [COVERAGE]: "off" } : {}), ...(host ? { [TARGET]: host } : {}) })).with(extra);
+    return RUN_OVERRIDE.with(Constraints.of({ ...(measured ? { [COVERAGE]: "off" } : {}), ...(host ? { [TARGET]: host } : {}) })).with(
+      extra
+    );
   }
 
   public getConstraint(name: string): string | undefined {
@@ -499,9 +530,7 @@ export class BuildContextImpl implements InternalBuildContext {
       return Computable.resolve(true);
     }
     return Computable.forAll(
-      guard.map(([key, pattern]) =>
-        this.getProperty(key, stack).then(value => this.patternAdmits(pattern, value, stack))
-      ),
+      guard.map(([key, pattern]) => this.getProperty(key, stack).then(value => this.patternAdmits(pattern, value, stack))),
       (...admitted: boolean[]) => admitted.every(match => match)
     );
   }
@@ -635,7 +664,12 @@ export class BuildContextImpl implements InternalBuildContext {
       const reason = def
         ? `'${name}' names a ${def.kind === DeclKind.Target ? "target" : "namespace"}, not a property`
         : `Unknown property '${name}'`;
-      const nearest = def ? undefined : closestMatch(name, this.model.getProperties().map(prop => prop.name));
+      const nearest = def
+        ? undefined
+        : closestMatch(
+            name,
+            this.model.getProperties().map(prop => prop.name)
+          );
       throw this.unresolvedNameError(name, stack, reason, nearest ? [`did you mean '${nearest}'?`] : []);
     }
     return this.getOptionalProperty(name, stack).then(value => {
@@ -716,7 +750,9 @@ export class BuildContextImpl implements InternalBuildContext {
       if (def?.kind === DeclKind.Target) {
         return this.answer(name, def, () => this.resolveTargetDecl(def, stack));
       } else if (def?.kind === DeclKind.Property) {
-        return this.answer(name, undefined, () => this.resolveProperty(name, def, stack, target => this.resolveTargetDecl(target, stack)));
+        return this.answer(name, undefined, () =>
+          this.resolveProperty(name, def, stack, target => this.resolveTargetDecl(target, stack))
+        );
       } else {
         const hints: string[] = [];
         hints.push(...this.unknownNameHints(name, !useFrameOf(stack)));
@@ -809,9 +845,7 @@ export class BuildContextImpl implements InternalBuildContext {
     stack?: IDependencyStack,
     callerOverrides?: Constraints
   ): Computable<Name[]> {
-    return this.lookupValues(prop, target, stack, "a string", (value, info) =>
-      this.lookupStringValue(value, info, callerOverrides)
-    );
+    return this.lookupValues(prop, target, stack, "a string", (value, info) => this.lookupStringValue(value, info, callerOverrides));
   }
 
   /**
@@ -822,7 +856,9 @@ export class BuildContextImpl implements InternalBuildContext {
    * readers.
    */
   private lookupStringValue(value: INameValue, info: IDependencyStack, callerOverrides?: Constraints): Computable<Name> {
-    return this.getContextWithOverrides(callerOverrides).inFile(value.source.file).substituteNameVars(value.value, info, callerOverrides);
+    return this.getContextWithOverrides(callerOverrides)
+      .inFile(value.source.file)
+      .substituteNameVars(value.value, info, callerOverrides);
   }
 
   public lookupStringProperty(
@@ -868,9 +904,7 @@ export class BuildContextImpl implements InternalBuildContext {
       /* Inline form: one block (Validate enforces this for schema'd properties;
        * re-checked here for shared globals, which never pass a targetdef). */
       if (prop.values.length > 1) {
-        return Computable.reject(
-          new FabrError(`'${prop.name}' must be a single \`{ ... }\` block or bare reference(s), not a mix`)
-        );
+        return Computable.reject(new FabrError(`'${prop.name}' must be a single \`{ ... }\` block or bare reference(s), not a mix`));
       }
       const block = prop.values[0];
       return this.lookupMapBlock(isMapValue(block) ? block.entries : [], target, stack, nextSeen, callerOverrides);
@@ -880,17 +914,11 @@ export class BuildContextImpl implements InternalBuildContext {
      * consuming build's config), merged left-to-right with later winning; each
      * merged entry's origin gains the written reference as a via-hop. */
     return Computable.forAll(
-      prop.values
-        .filter(isNameValue)
-        .map(value =>
-          this.inFile(value.source.file).lookupMapReference(
-            value.value,
-            { property: prop, target, value, next: stack },
-            stack,
-            nextSeen,
-            callerOverrides
-          ).then((map): [PropertyMap, INameValue] => [map, value])
-        ),
+      prop.values.filter(isNameValue).map(value =>
+        this.inFile(value.source.file)
+          .lookupMapReference(value.value, { property: prop, target, value, next: stack }, stack, nextSeen, callerOverrides)
+          .then((map): [PropertyMap, INameValue] => [map, value])
+      ),
       (...maps: [PropertyMap, INameValue][]) => {
         const merged: PropertyMap = new Map();
         for (const [map, value] of maps) {
@@ -1001,13 +1029,17 @@ export class BuildContextImpl implements InternalBuildContext {
       const block = prop.values[0];
       return Computable.forAll(
         (isMapValue(block) ? block.entries : []).map(item =>
-          item.kind === DeclKind.Splice ? this.inFile(item.source.file).splicedEntries(item.ref, stack, nextSeen) : Computable.resolve([{ decl: item, context: this }])
+          item.kind === DeclKind.Splice
+            ? this.inFile(item.source.file).splicedEntries(item.ref, stack, nextSeen)
+            : Computable.resolve([{ decl: item, context: this }])
         ),
         (...lists: ISplicedEntry[][]) => flat(lists)
       );
     }
     return Computable.forAll(
-      prop.values.filter(isNameValue).map(value => this.inFile(value.source.file).splicedEntries(value.value, { property: prop, value, next: stack }, nextSeen)),
+      prop.values
+        .filter(isNameValue)
+        .map(value => this.inFile(value.source.file).splicedEntries(value.value, { property: prop, value, next: stack }, nextSeen)),
       (...lists: ISplicedEntry[][]) => flat(lists)
     );
   }
@@ -1073,22 +1105,24 @@ export class BuildContextImpl implements InternalBuildContext {
     /* A value written as `ref<k=v>` resolves under this context overridden by its
      * requirement, so the referenced target builds under those constraints and the
      * model step (stamped by that context) records them. */
-    return this.inFile(relativeTo?.source.file).lookupContextFor(name, options?.callerOverrides, stack).then(({ context, reference, substitutions }) => {
-      const resolved = context.lookupFileSource(reference, relativeTo, stack, substituted);
-      if (!provenance) {
-        return resolved;
-      }
-      const { value, property, target } = provenance;
-      /* A failure looking the value up is the reference's. A target's own
-       * failure is reported as the reference's when the target is built, by
-       * the step stamped on it. */
-      const step = context.modelStep(value, property, target, substitutions);
-      return resolved
-        .then(sources => sources.map(source => context.withModelStep(source, step)))
-        .catch((err: Error): never => {
-          throw failureOfReference(step, err);
-        });
-    });
+    return this.inFile(relativeTo?.source.file)
+      .lookupContextFor(name, options?.callerOverrides, stack)
+      .then(({ context, reference, substitutions }) => {
+        const resolved = context.lookupFileSource(reference, relativeTo, stack, substituted);
+        if (!provenance) {
+          return resolved;
+        }
+        const { value, property, target } = provenance;
+        /* A failure looking the value up is the reference's. A target's own
+         * failure is reported as the reference's when the target is built, by
+         * the step stamped on it. */
+        const step = context.modelStep(value, property, target, substitutions);
+        return resolved
+          .then(sources => sources.map(source => context.withModelStep(source, step)))
+          .catch((err: Error): never => {
+            throw failureOfReference(step, err);
+          });
+      });
   }
 
   /**
@@ -1114,7 +1148,12 @@ export class BuildContextImpl implements InternalBuildContext {
     });
   }
 
-  public modelStep(value: INameValue, property: IPropertyDecl, target?: ITargetDecl, substitutions?: readonly ISubstitution[]): IModelStep {
+  public modelStep(
+    value: INameValue,
+    property: IPropertyDecl,
+    target?: ITargetDecl,
+    substitutions?: readonly ISubstitution[]
+  ): IModelStep {
     return {
       kind: MODEL_PROVENANCE,
       value,
@@ -1151,7 +1190,12 @@ export class BuildContextImpl implements InternalBuildContext {
 
   /** Look up the sources `name` names. `substituted` says the name as written
    * made substitutions, so it cannot be a marked target's literal name. */
-  private lookupFileSource(name: Name, relativeTo: IDecl | undefined, stack?: IDependencyStack, substituted = false): Computable<SourceRef[]> {
+  private lookupFileSource(
+    name: Name,
+    relativeTo: IDecl | undefined,
+    stack?: IDependencyStack,
+    substituted = false
+  ): Computable<SourceRef[]> {
     return this.substituteNameVars(name, stack).then((substName): SourceRef[] | Computable<SourceRef[]> => {
       /* A `?` or `!` ending what is otherwise the literal name of a target
        * is a marker on the reference (`foo?` / `foo!`), consumed by the
@@ -1172,7 +1216,11 @@ export class BuildContextImpl implements InternalBuildContext {
   }
 
   /** Look up the sources `substName` names, its substitutions already made. */
-  private lookupSubstituted(substName: Name, relativeTo: IDecl | undefined, stack?: IDependencyStack): SourceRef[] | Computable<SourceRef[]> {
+  private lookupSubstituted(
+    substName: Name,
+    relativeTo: IDecl | undefined,
+    stack?: IDependencyStack
+  ): SourceRef[] | Computable<SourceRef[]> {
     if (substName.isEmpty()) {
       return [];
     }
@@ -1212,7 +1260,10 @@ export class BuildContextImpl implements InternalBuildContext {
          * nothing is no more an error than the glob matching nothing. */
         const miss: Miss | undefined =
           relativeTo && !substName.hasGlob()
-            ? selected => (selected ? undefined : new NameResolutionError(substName, declPosn(useFrameOf(stack)?.value ?? relativeTo), useSiteOf(stack)))
+            ? selected =>
+                selected
+                  ? undefined
+                  : new NameResolutionError(substName, declPosn(useFrameOf(stack)?.value ?? relativeTo), useSiteOf(stack))
             : undefined;
         return target.then(reached => project(reached, miss) as SourceRef[] | Computable<SourceRef[]>);
       }
@@ -1417,7 +1468,12 @@ export class BuildContextImpl implements InternalBuildContext {
       }
       /* A chased map/command property is a single value, so it selects like one;
        * a property none of whose declarations applies here is unset. */
-      return this.getAvailableDecls(def, info).then(applicable => ({ prop: soleDecl(applicable), property: true, name, context: this }));
+      return this.getAvailableDecls(def, info).then(applicable => ({
+        prop: soleDecl(applicable),
+        property: true,
+        name,
+        context: this,
+      }));
     });
   }
 
@@ -1459,11 +1515,13 @@ export class BuildContextImpl implements InternalBuildContext {
       const info: IUseFrame = { property: prop, target, value, next: stack };
       const nextSeen = new Set(seen).add(prop);
       /* A property nothing sets here is no command. */
-      return this.inFile(value.source.file).referencedProperty(value.value, info).then(({ prop: ref, property, context }) =>
-        ref
-          ? context.getCommandPipeline(ref, undefined, stack, nextSeen)
-          : Computable.resolve<CommandPipeline>(property ? [] : [{ command: value, args: [] }])
-      );
+      return this.inFile(value.source.file)
+        .referencedProperty(value.value, info)
+        .then(({ prop: ref, property, context }) =>
+          ref
+            ? context.getCommandPipeline(ref, undefined, stack, nextSeen)
+            : Computable.resolve<CommandPipeline>(property ? [] : [{ command: value, args: [] }])
+        );
     }
     const [command, ...args] = names;
     return Computable.resolve([{ command, args }]);
@@ -1482,9 +1540,7 @@ export class BuildContextImpl implements InternalBuildContext {
      * the caller's stack stands as the attribution and only the per-name span is
      * lost, which the written value itself already carries. */
     const position = (value: INameValue): Computable<IPositionedName> =>
-      this.substituteName(value, prop ? { property: prop, target, value, next: stack } : stack).then(
-        name => ({ name, ref: value })
-      );
+      this.substituteName(value, prop ? { property: prop, target, value, next: stack } : stack).then(name => ({ name, ref: value }));
     const positionOpt = (value: INameValue | undefined): Computable<IPositionedName | undefined> =>
       value ? position(value) : Computable.resolve(undefined);
     return Computable.forAll(
@@ -1518,11 +1574,7 @@ export class BuildContextImpl implements InternalBuildContext {
 
   /** Select the rule that builds the target `context` evaluates, of `type`,
    * or throw the error `noRule` makes where none applies. */
-  protected ruleFor(
-    type: string,
-    context: TargetContext,
-    noRule: (selection: IRuleSelection) => Error
-  ): Computable<RuleDefinition> {
+  protected ruleFor(type: string, context: TargetContext, noRule: (selection: IRuleSelection) => Error): Computable<RuleDefinition> {
     return this.selectRule(type, context).then(selection => {
       if (!selection.rule) {
         throw noRule(selection);
@@ -1596,7 +1648,11 @@ export class BuildContextImpl implements InternalBuildContext {
   }
 
   /** Make the resolved target `context` evaluates with `rule`, whose requirements resolve to `requirements`. A failure is the target's. */
-  protected resolvedWith(context: DeclaredTargetContext, rule: RuleDefinition, requirements: Computable<ResolvedRequirements>): Computable<ResolvedTarget> {
+  protected resolvedWith(
+    context: DeclaredTargetContext,
+    rule: RuleDefinition,
+    requirements: Computable<ResolvedRequirements>
+  ): Computable<ResolvedTarget> {
     return requirements
       .then(resolved =>
         DeclaredResolvedTarget.of(
@@ -1622,14 +1678,16 @@ export class BuildContextImpl implements InternalBuildContext {
   public isDeclared(ref: INameValue): Computable<boolean> {
     /* A marker counts only on a name written literally, as in lookupFileSource. */
     const substituted = ref.value.getSubstitutions().length > 0;
-    return this.inFile(ref.source.file).lookupContextFor(ref.value).then(({ context, reference }) => {
-      const name = reference.toString();
-      return (
-        context.constraints.has(name) ||
-        this.lookupDecl(name) !== undefined ||
-        (!substituted && this.markedTarget(reference) !== undefined)
-      );
-    });
+    return this.inFile(ref.source.file)
+      .lookupContextFor(ref.value)
+      .then(({ context, reference }) => {
+        const name = reference.toString();
+        return (
+          context.constraints.has(name) ||
+          this.lookupDecl(name) !== undefined ||
+          (!substituted && this.markedTarget(reference) !== undefined)
+        );
+      });
   }
 
   /**
@@ -1649,9 +1707,9 @@ export class BuildContextImpl implements InternalBuildContext {
   }
 
   public getAction(ref: INameValue, stack?: IDependencyStack): Computable<BuildAction | undefined> {
-    return this.inFile(ref.source.file).lookupContextFor(ref.value, undefined, stack).then(({ context, reference }) =>
-      context.actionOfTarget(reference.toString(), stack)
-    );
+    return this.inFile(ref.source.file)
+      .lookupContextFor(ref.value, undefined, stack)
+      .then(({ context, reference }) => context.actionOfTarget(reference.toString(), stack));
   }
 
   private actionOfTarget(name: string, stack?: IDependencyStack): Computable<BuildAction | undefined> {
@@ -1679,9 +1737,9 @@ export class BuildContextImpl implements InternalBuildContext {
   }
 
   public describe(ref: INameValue, stack?: IDependencyStack): Computable<FileSet | undefined> {
-    return this.inFile(ref.source.file).lookupContextFor(ref.value, undefined, stack).then(({ context, reference }) =>
-      context.describeTarget(reference.toString(), stack)
-    );
+    return this.inFile(ref.source.file)
+      .lookupContextFor(ref.value, undefined, stack)
+      .then(({ context, reference }) => context.describeTarget(reference.toString(), stack));
   }
 
   private describeTarget(name: string, stack?: IDependencyStack): Computable<FileSet | undefined> {
@@ -1695,7 +1753,9 @@ export class BuildContextImpl implements InternalBuildContext {
       }
       /* Where the target was referenced it was resolved, and that is read. */
       const resolved = this.resolvedTargets.get(declName(context.target))?.then(target => target.resolved);
-      return resolved === undefined ? this.describeWith(context, rule) : resolved.then(parts => this.describeWith(context, rule, parts));
+      return resolved === undefined
+        ? this.describeWith(context, rule)
+        : resolved.then(parts => this.describeWith(context, rule, parts));
     });
   }
 
@@ -1714,7 +1774,9 @@ export class BuildContextImpl implements InternalBuildContext {
     return held
       .then(requirements => describe(context, unmaterialized(this, requirements)))
       .then(result => (result instanceof BuildAction ? this.runAction(result, context) : result))
-      .then(result => FileSet.unionAll(...(Array.isArray(result) ? result : [result]).filter((part): part is FileSet => part instanceof FileSet)))
+      .then(result =>
+        FileSet.unionAll(...(Array.isArray(result) ? result : [result]).filter((part): part is FileSet => part instanceof FileSet))
+      )
       .catch(err => {
         throw context.failure(err);
       });
@@ -1723,7 +1785,9 @@ export class BuildContextImpl implements InternalBuildContext {
   public resolve(ref: INameValue, stack?: IDependencyStack): Computable<ResolvedRequirements> {
     return this.inFile(ref.source.file)
       .lookupContextFor(ref.value, undefined, stack)
-      .then(({ context, reference }) => context.repositoryRequirements(reference.toString(), stack) ?? this.resolveDenoted(ref, stack));
+      .then(
+        ({ context, reference }) => context.repositoryRequirements(reference.toString(), stack) ?? this.resolveDenoted(ref, stack)
+      );
   }
 
   /**
@@ -1769,7 +1833,11 @@ export class BuildContextImpl implements InternalBuildContext {
    * target's provenance, and wrap any failure to identify the target. A plural
    * result (a `sync`'s member carriers) yields each element as its own source.
    */
-  protected evaluateTarget(context: TargetContext, rule: RuleDefinition, requirements?: ResolvedRequirements): Computable<SourceRef[]> {
+  protected evaluateTarget(
+    context: TargetContext,
+    rule: RuleDefinition,
+    requirements?: ResolvedRequirements
+  ): Computable<SourceRef[]> {
     return this.applyRule(context, rule, requirements)
       .then(result => (result instanceof BuildAction ? this.runAction(result, context) : result))
       .then(result =>
@@ -1814,7 +1882,11 @@ export class BuildContextImpl implements InternalBuildContext {
     return this.model.hasRepositoryType(type) && this.model.getTargetDef(type) !== undefined;
   }
 
-  public makeRepository(owner: TargetContext, type: string, { name, properties = {}, url, credential }: IRepositoryMember): Computable<Repository> {
+  public makeRepository(
+    owner: TargetContext,
+    type: string,
+    { name, properties = {}, url, credential }: IRepositoryMember
+  ): Computable<Repository> {
     const implementation = this.model.getRepositoryImplementation(type);
     const targetDef = this.model.getTargetDef(type);
     const written = `${owner.name}:${name}`;
@@ -1841,7 +1913,15 @@ export class BuildContextImpl implements InternalBuildContext {
     if (!targetDef) {
       throw new FabrError(`Internal error: sub-target type '${type}' has no registered targetdef`);
     }
-    const context = new AnonymousTargetContext(buildContext, targetDef, inputs, owner.getDeclaredContext(), options?.label, owner.stack, owner);
+    const context = new AnonymousTargetContext(
+      buildContext,
+      targetDef,
+      inputs,
+      owner.getDeclaredContext(),
+      options?.label,
+      owner.stack,
+      owner
+    );
     return buildContext
       .ruleFor(type, context, () => new FabrError(`No rule found for anonymous target type '${type}'`))
       .then(rule => (rule.describe === undefined ? undefined : buildContext.describeWith(context, rule)));
@@ -1858,7 +1938,10 @@ export class BuildContextImpl implements InternalBuildContext {
      * own label — see {@link BuildAction.targetKey} for what the coordinate
      * includes and excludes. */
     const task = context.taskDescription();
-    return this.performAction(action, task, { force: this.forcedBuild(context), targetKey: action.targetKey(context.getDeclaredContext().target, task.label) });
+    return this.performAction(action, task, {
+      force: this.forcedBuild(context),
+      targetKey: action.targetKey(context.getDeclaredContext().target, task.label),
+    });
   }
 
   /**
@@ -1873,23 +1956,31 @@ export class BuildContextImpl implements InternalBuildContext {
   /** Perform `action` through the cache, reporting a miss as `task`: the core of
    * {@link runAction} and {@link runOwnAction}. A caller with no target passes
    * no `targetKey`. */
-  private performAction(action: BuildAction, task: TaskDescription, options: { force?: boolean; retry?: boolean; targetKey?: string }): Computable<FileSet> {
+  private performAction(
+    action: BuildAction,
+    task: TaskDescription,
+    options: { force?: boolean; retry?: boolean; targetKey?: string }
+  ): Computable<FileSet> {
     const execution = this.execution;
     /* The action IS the task reported: this callback runs only on a miss, so a
      * task exists exactly when something is performed, bracketing the step's
      * own chain. A target with several actions reports each. */
-    const create = (ctx: ActionContext): Computable<BuildResult> => execution.runTask(task, report => action.step.run(action, ctx, report));
+    const create = (ctx: ActionContext): Computable<BuildResult> =>
+      execution.runTask(task, report => action.step.run(action, ctx, report));
     /* The cache derives the key (anchor or complete, by the action's shape),
      * the discoverable deps and the change tracking from the action itself. */
     const outcome = execution.buildCache.getOrCreateAction(action, create, { ...options, processLimit: execution.processLimit });
     const reshape = action.reshape;
-    const delivered = (files: FileSet): Computable<FileSet> => (reshape === undefined ? Computable.resolve(files) : Computable.resolve(files).then(reshape));
+    const delivered = (files: FileSet): Computable<FileSet> =>
+      reshape === undefined ? Computable.resolve(files) : Computable.resolve(files).then(reshape);
     /* A red test run served from the cache rather than performed here is
      * performed again, once, where the run asks for that (`--retry-failed`),
      * from its own last run: what it reruns is the step's to decide. */
     return outcome.then(({ files, created }) =>
       execution.retryFailed && !created && !options.retry
-        ? hasTestFailures(files).then(failed => (failed ? this.performAction(action, task, { ...options, retry: true }) : delivered(files)))
+        ? hasTestFailures(files).then(failed =>
+            failed ? this.performAction(action, task, { ...options, retry: true }) : delivered(files)
+          )
         : delivered(files)
     );
   }
@@ -1904,7 +1995,6 @@ export class BuildContextImpl implements InternalBuildContext {
   private forcedBuild(context: TargetContext): boolean {
     return this.execution.isForced(context.getDeclaredContext().target);
   }
-
 }
 
 /** State what `rule` requires of the target `context` builds: nothing, for a
@@ -1956,7 +2046,9 @@ function unmatchedIfAbsent(selected: IPropertyDecl | undefined, name: string, en
 function unmatchedError(name: string, entry: IPropertyEntry): Error {
   const guards = [...entry.decls, ...entry.defaults].map(guardText);
   /* A private declaration has no `default` tier. */
-  const remedy = entry.decls.some(decl => decl.private) ? "add an unguarded declaration" : `add an unguarded declaration, or a 'default ${name} = …;'`;
+  const remedy = entry.decls.some(decl => decl.private)
+    ? "add an unguarded declaration"
+    : `add an unguarded declaration, or a 'default ${name} = …;'`;
   return new FabrError(`'${name}' is declared, but no declaration of it applies to this configuration`).withHelp(
     `it is declared under ${guards.join(", ")} — ${remedy}`
   );
@@ -2120,7 +2212,9 @@ class RuleScope {
     if (held !== undefined) {
       return held;
     }
-    const parent = (this.matched.getDeclaredContext().configurationOf(constraints) as BuildContextImpl).inFile(this.rule.decl.source.file);
+    const parent = (this.matched.getDeclaredContext().configurationOf(constraints) as BuildContextImpl).inFile(
+      this.rule.decl.source.file
+    );
     const config = new ScopedBuildContext(parent.model, constraints, parent.execution, this, parent, unresolved);
     this.configs.push(config);
     return config;
@@ -2180,7 +2274,10 @@ class RuleScope {
   }
 
   /** Get the requirements of the block's target `name`, reached by the result: its part of the matched target's, collected and building as its rule declares (`reached`). */
-  public requirementsOf(name: string, reached: Pick<ResolutionSpec, "permissive" | "result" | "fixes">): Computable<ResolvedRequirements> {
+  public requirementsOf(
+    name: string,
+    reached: Pick<ResolutionSpec, "permissive" | "result" | "fixes">
+  ): Computable<ResolvedRequirements> {
     return this.collection().then(collected => collected.ofTarget(name, reached));
   }
 
@@ -2231,7 +2328,11 @@ class RuleScope {
     return this.resultConfiguration().then(constraints => {
       const at = this.config(constraints, true);
       const named = (sources: ReadonlyArray<SourceRef>): ITargetDecl[] => [
-        ...new Set(sources.flatMap(source => (source instanceof TargetRef && source.source === at.nodes ? (this.rule.localTarget(source.name) ?? []) : []))),
+        ...new Set(
+          sources.flatMap(source =>
+            source instanceof TargetRef && source.source === at.nodes ? (this.rule.localTarget(source.name) ?? []) : []
+          )
+        ),
       ];
       /* Each target read once; its node's value is what it requires. */
       const read = new Map<ITargetDecl, Computable<Requires | undefined>>();
@@ -2270,7 +2371,9 @@ class RuleScope {
           : Computable.forAll(frontier.map(requirementsOf), (...found: Array<Requires | undefined>) => found).then(found => {
               const next = new Map(reached);
               frontier.forEach((target, index) => next.set(target, found[index]));
-              const further = found.flatMap(each => named((each?.entries ?? []).flatMap(([, value]) => sourcesOf(value)))).filter(target => !next.has(target));
+              const further = found
+                .flatMap(each => named((each?.entries ?? []).flatMap(([, value]) => sourcesOf(value))))
+                .filter(target => !next.has(target));
               return reach([...new Set(further)], next);
             });
       const { targets } = this.rule.decl.implementation;
@@ -2317,8 +2420,14 @@ class RuleScope {
           source instanceof RepositoryRef
             ? Computable.resolve([{ reference: source }])
             : source instanceof TargetRef
-            ? source.nodes().then(nodes => nodes.filter((node): node is ResolvedNode => isPackage(node)).map((pkg): Dependency => ({ reference: source, package: pkg })))
-            : Computable.resolve([])
+              ? source
+                  .nodes()
+                  .then(nodes =>
+                    nodes
+                      .filter((node): node is ResolvedNode => isPackage(node))
+                      .map((pkg): Dependency => ({ reference: source, package: pkg }))
+                  )
+              : Computable.resolve([])
         ),
         (...edges: Dependency[][]) => edges.flat()
       );
@@ -2337,14 +2446,21 @@ class RuleScope {
         const material =
           made === undefined || sourcesOf(made).length === 0
             ? Computable.resolve<ReadonlyArray<Resolved>>([])
-            : resolveRequirements(context, { build: new Map([[EXTENDS_KEY, made]]) }).then(resolved => resolved.sources.get(EXTENDS_KEY) ?? []);
+            : resolveRequirements(context, { build: new Map([[EXTENDS_KEY, made]]) }).then(
+                resolved => resolved.sources.get(EXTENDS_KEY) ?? []
+              );
         const transitive = [DEPENDENCIES_KEY, PROVIDED_KEY, OPTIONAL_PROVIDED_KEY];
         const edges = Computable.forAll(
           transitive.map(key => edgesOf(sourcesOf(lists.get(key) ?? []))),
           (...each: Dependency[][]) => new Map(transitive.map((key, index) => [key, each[index]]))
         );
         return Computable.forAll([material, edges] as const, (madeFrom, byName) =>
-          BlockTargetNode.of(context, passedOn(madeFrom, key => byName.get(key) ?? []), target, result)
+          BlockTargetNode.of(
+            context,
+            passedOn(madeFrom, key => byName.get(key) ?? []),
+            target,
+            result
+          )
         );
       })
       .catch(err => {
@@ -2364,9 +2480,16 @@ class RuleScope {
   }
 
   /** Read the matched target's property `name` for files, as `<param>.name` (see {@link DeclaredTargetContext.aliasedFiles}). */
-  public aliasedFiles(name: string, reader: Constraints, alias: Constraints | undefined, stack?: IDependencyStack): Computable<SourceRef[]> {
+  public aliasedFiles(
+    name: string,
+    reader: Constraints,
+    alias: Constraints | undefined,
+    stack?: IDependencyStack
+  ): Computable<SourceRef[]> {
     const { matched } = this;
-    return matched instanceof DeclaredTargetContext ? matched.aliasedFiles(name, reader, alias, stack) : matched.getFileProperty(name, alias);
+    return matched instanceof DeclaredTargetContext
+      ? matched.aliasedFiles(name, reader, alias, stack)
+      : matched.getFileProperty(name, alias);
   }
 
   /** Get the matched target's one declaration of `name`, chased as a map or command property. */
@@ -2378,9 +2501,15 @@ class RuleScope {
   ): Computable<{ prop?: IPropertyDecl; context: BuildContextImpl }> {
     const { matched } = this;
     if (!(matched instanceof DeclaredTargetContext)) {
-      return Computable.reject(new FabrError(`'${this.param}.${name}' is a property of a target a rule's code made, which has no declaration to read as a map or command`));
+      return Computable.reject(
+        new FabrError(
+          `'${this.param}.${name}' is a property of a target a rule's code made, which has no declaration to read as a map or command`
+        )
+      );
     }
-    return matched.aliasedDecl(name, reader, alias, stack).then(({ prop, context }) => ({ prop, context: context as BuildContextImpl }));
+    return matched
+      .aliasedDecl(name, reader, alias, stack)
+      .then(({ prop, context }) => ({ prop, context: context as BuildContextImpl }));
   }
 
   /** Read the matched target's STRING property `name`, with `overrides` applied. */
@@ -2448,7 +2577,9 @@ abstract class ScopedConfiguration extends BuildContextImpl {
   }
 
   public resolveTarget(name: string, stack?: IDependencyStack, callerOverrides?: Constraints): Computable<SourceRef[]> {
-    return this.owns(name) ? super.resolveTarget(name, stack, callerOverrides) : this.parent.resolveTarget(name, stack, callerOverrides);
+    return this.owns(name)
+      ? super.resolveTarget(name, stack, callerOverrides)
+      : this.parent.resolveTarget(name, stack, callerOverrides);
   }
 
   public resolvedTarget(name: string): Computable<ResolvedTarget> {
@@ -2500,7 +2631,9 @@ class ScopedBuildContext extends ScopedConfiguration {
 
   /** Where a reference to one of the block's targets in the unresolved configuration finds its node. */
   public readonly nodes: TargetSource = {
-    resolvedTarget: name => this.blockTargetNodes.get(name) ?? Computable.reject(new FabrError(`internal: '${name}' is referred to before its node is made`)),
+    resolvedTarget: name =>
+      this.blockTargetNodes.get(name) ??
+      Computable.reject(new FabrError(`internal: '${name}' is referred to before its node is made`)),
   };
 
   protected resolveByRule(context: DeclaredTargetContext, rule: RuleDefinition): Computable<SourceRef[]> {
@@ -2510,7 +2643,9 @@ class ScopedBuildContext extends ScopedConfiguration {
     return this.scope.resultConfiguration().then((constraints): Computable<SourceRef[]> => {
       if (!this.hasConstraints(constraints)) {
         /* Outside the result's configuration a target of the block resolves alone. */
-        return this.unresolved ? this.scope.resolveLocalTarget(declName(context.target), this.constraints, context.stack) : super.resolveByRule(context, rule);
+        return this.unresolved
+          ? this.scope.resolveLocalTarget(declName(context.target), this.constraints, context.stack)
+          : super.resolveByRule(context, rule);
       }
       if (this.unresolved) {
         const name = declName(context.target);
@@ -2559,7 +2694,11 @@ class ScopedBuildContext extends ScopedConfiguration {
     }
     const matched = literal.substring(0, first.length + 1);
     const colon = matched.lastIndexOf(":");
-    return { name: first, rest: name.substring(first.length + 1), retainedPrefix: colon === -1 ? matched : matched.substring(colon + 1) };
+    return {
+      name: first,
+      rest: name.substring(first.length + 1),
+      retainedPrefix: colon === -1 ? matched : matched.substring(colon + 1),
+    };
   }
 
   public inFile(file: string | undefined): BuildContextImpl {
@@ -2629,7 +2768,9 @@ class ScopedBuildContext extends ScopedConfiguration {
     const matched = name.getLiteralPathPrefix().substring(0, written.length + 1);
     const colon = matched.lastIndexOf(":");
     const prefix = colon === -1 ? matched : matched.substring(colon + 1);
-    return read.then(sources => this.projectSources(sources, { pattern: rest, prefix }, undefined) as SourceRef[] | Computable<SourceRef[]>);
+    return read.then(
+      sources => this.projectSources(sources, { pattern: rest, prefix }, undefined) as SourceRef[] | Computable<SourceRef[]>
+    );
   }
 
   public lookupNameProperty(
@@ -2663,12 +2804,15 @@ class ScopedBuildContext extends ScopedConfiguration {
     }
     const site = { source: splice.source, offset: splice.offset, endOffset: splice.endOffset };
     return this.scope.matched.getPropertyNames().then(names =>
-      names.map(
-        (name): ISplicedEntry => ({
-          decl: { kind: DeclKind.Property, ...site, name: Name.fromLiteral(name), values: [{ kind: DeclKind.NameValue, ...site, value: Name.fromLiteral(`${this.scope.param}.${name}`) }] },
-          context: this,
-        })
-      )
+      names.map((name): ISplicedEntry => ({
+        decl: {
+          kind: DeclKind.Property,
+          ...site,
+          name: Name.fromLiteral(name),
+          values: [{ kind: DeclKind.NameValue, ...site, value: Name.fromLiteral(`${this.scope.param}.${name}`) }],
+        },
+        context: this,
+      }))
     );
   }
 
@@ -2676,12 +2820,16 @@ class ScopedBuildContext extends ScopedConfiguration {
     const alias = this.scope.wholeAlias(ref);
     if (alias !== undefined) {
       /* The parameter's property, set by the target or not. */
-      return this.scope.aliasedDecl(alias, this.constraints, requirementOf(ref), info).then(({ prop, context }) => ({ prop, property: true, name: ref, context }));
+      return this.scope
+        .aliasedDecl(alias, this.constraints, requirementOf(ref), info)
+        .then(({ prop, context }) => ({ prop, property: true, name: ref, context }));
     }
     /* A property the block does not declare has its values looked up where the file's names are. */
     return super
       .referencedProperty(ref, info)
-      .then(found => (found.prop !== undefined && !this.scope.rule.declaresProperty(found.prop) ? { ...found, context: this.parent } : found));
+      .then(found =>
+        found.prop !== undefined && !this.scope.rule.declaresProperty(found.prop) ? { ...found, context: this.parent } : found
+      );
   }
 }
 
@@ -2732,9 +2880,13 @@ class FileScopedContext extends ScopedConfiguration {
 }
 
 /** Wait for each of `references` that is still to be had, in order. */
-function had(references: ReadonlyArray<SourceRef | Unbuilt | Computable<Array<SourceRef | Unbuilt>>>): Computable<Array<SourceRef | Unbuilt>> {
+function had(
+  references: ReadonlyArray<SourceRef | Unbuilt | Computable<Array<SourceRef | Unbuilt>>>
+): Computable<Array<SourceRef | Unbuilt>> {
   return Computable.forAll(
-    references.map(reference => (reference instanceof Computable ? reference : Computable.resolve<Array<SourceRef | Unbuilt>>([reference]))),
+    references.map(reference =>
+      reference instanceof Computable ? reference : Computable.resolve<Array<SourceRef | Unbuilt>>([reference])
+    ),
     (...held: Array<Array<SourceRef | Unbuilt>>) => held.flat()
   );
 }

@@ -47,12 +47,26 @@ describe("reading a lockfile", () => {
   });
 
   it("reads pnpm 6's keys, peers stripped, and pnpm 5's", () => {
-    const text = ["lockfileVersion: '6.0'", "packages:", "  /a@1.0.0(react@18.2.0):", "    dev: false", "  /b/2.0.0:", "    dev: true"].join("\n");
+    const text = [
+      "lockfileVersion: '6.0'",
+      "packages:",
+      "  /a@1.0.0(react@18.2.0):",
+      "    dev: false",
+      "  /b/2.0.0:",
+      "    dev: true",
+    ].join("\n");
     expect(listed(readPnpmLock(text))).to.deep.equal({ a: ["1.0.0"], b: ["2.0.0"] });
   });
 
   it("reads pnpm 5's keys, the peers after a `_` stripped", () => {
-    const text = ["lockfileVersion: 5.4", "packages:", "  /foo/1.2.3_bar@2.0.0:", "    dev: false", "  /@scope/c/3.0.0_@types+react@18.0.0+d@1.0.0:", "    dev: false"].join("\n");
+    const text = [
+      "lockfileVersion: 5.4",
+      "packages:",
+      "  /foo/1.2.3_bar@2.0.0:",
+      "    dev: false",
+      "  /@scope/c/3.0.0_@types+react@18.0.0+d@1.0.0:",
+      "    dev: false",
+    ].join("\n");
     expect(listed(readPnpmLock(text))).to.deep.equal({ foo: ["1.2.3"], "@scope/c": ["3.0.0"] });
   });
 
@@ -64,7 +78,7 @@ describe("reading a lockfile", () => {
       '  version "1.2.5"',
       '  resolved "https://registry.yarnpkg.com/@scope/a/-/a-1.2.5.tgz"',
       "",
-      'wrap-ansi-cjs@npm:wrap-ansi@^7.0.0:',
+      "wrap-ansi-cjs@npm:wrap-ansi@^7.0.0:",
       '  version "7.0.0"',
     ].join("\n");
     expect(listed(readYarnLock(text))).to.deep.equal({ "@scope/a": ["1.2.5"], "wrap-ansi": ["7.0.0"] });
@@ -117,7 +131,10 @@ describe("reading a lockfile", () => {
   });
 
   it("reads npm 6's nested dependencies", () => {
-    const text = JSON.stringify({ lockfileVersion: 1, dependencies: { a: { version: "1.0.0", dependencies: { b: { version: "npm:c@2.0.0" } } } } });
+    const text = JSON.stringify({
+      lockfileVersion: 1,
+      dependencies: { a: { version: "1.0.0", dependencies: { b: { version: "npm:c@2.0.0" } } } },
+    });
     expect(listed(readNpmLock(text))).to.deep.equal({ a: ["1.0.0"], c: ["2.0.0"] });
   });
 

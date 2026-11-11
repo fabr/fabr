@@ -128,7 +128,10 @@ export function makeJdkRunnable(release: FileSet): RunnableFileSet {
   const bin = `${HOMES.find(prefix => release.getFile(`${prefix}bin/java`) !== undefined || release.getFile(`${prefix}bin/java${EXE}`) !== undefined) ?? ""}bin/`;
   const files = [...release].filter(([, file]) => !(file instanceof SymlinkFile));
   const commands = files
-    .filter(([name, file]) => name.startsWith(bin) && !name.substring(bin.length).includes("/") && (name.endsWith(EXE) || (file.mode & 0o111) !== 0))
+    .filter(
+      ([name, file]) =>
+        name.startsWith(bin) && !name.substring(bin.length).includes("/") && (name.endsWith(EXE) || (file.mode & 0o111) !== 0)
+    )
     .map(([name]): [string, IFile] => {
       const command = name.substring(bin.length);
       return [command.endsWith(EXE) ? command.slice(0, -EXE.length) : command, new SymlinkFile(name)];
@@ -152,9 +155,9 @@ export class JdkDistribution implements Repository, RepositoryLookup {
    *  projection after it, or the namespace of every release. */
   public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
     if (name.getMarker() !== undefined) {
-      throw new FabrError(`'${name.toString()}' names a JDK release, which is looked up, not resolved, so an override marker means nothing on it`).withHelp(
-        "write the reference without the marker"
-      );
+      throw new FabrError(
+        `'${name.toString()}' names a JDK release, which is looked up, not resolved, so an override marker means nothing on it`
+      ).withHelp("write the reference without the marker");
     }
     const written = name.toBaseString();
     if (written === "") {
@@ -181,7 +184,13 @@ export class JdkDistribution implements Repository, RepositoryLookup {
   /** List the releases published for the target platform, newest first, as the API orders them. */
   public children(): Computable<Map<string, Reference>> {
     return this.publishedReleases().then(
-      releases => new Map(releases.map((release): [string, Reference] => [release, new RepositoryRef(this, { name: JDK_PACKAGE, versionConstraint: release })]))
+      releases =>
+        new Map(
+          releases.map((release): [string, Reference] => [
+            release,
+            new RepositoryRef(this, { name: JDK_PACKAGE, versionConstraint: release }),
+          ])
+        )
     );
   }
 
@@ -190,7 +199,9 @@ export class JdkDistribution implements Repository, RepositoryLookup {
     const release = reference.versionConstraint ?? "";
     if (!RELEASE_PATTERN.test(release)) {
       return Computable.reject(
-        new FabrError(`'${release}' does not name a JDK release`).withHelp("name one as `fabr ls @jdk` lists them, as in '@jdk:21.0.12.1+1'")
+        new FabrError(`'${release}' does not name a JDK release`).withHelp(
+          "name one as `fabr ls @jdk` lists them, as in '@jdk:21.0.12.1+1'"
+        )
       );
     }
     return this.platform()
@@ -216,9 +227,19 @@ export class JdkDistribution implements Repository, RepositoryLookup {
       const { os, cpu, libc } = tripleToNpm(triple);
       const architecture = cpu === "x64" ? "x64" : cpu === "arm64" ? "aarch64" : undefined;
       const adoptiumOs =
-        os === "darwin" ? "mac" : os === "linux" ? (libc === "musl" ? "alpine-linux" : "linux") : os === "win32" ? "windows" : undefined;
+        os === "darwin"
+          ? "mac"
+          : os === "linux"
+            ? libc === "musl"
+              ? "alpine-linux"
+              : "linux"
+            : os === "win32"
+              ? "windows"
+              : undefined;
       if (architecture === undefined || adoptiumOs === undefined) {
-        throw new FabrError(`JDK releases are not available for '${triple}'`).withHelp("set JAVA and JAVAC to a JDK for this platform");
+        throw new FabrError(`JDK releases are not available for '${triple}'`).withHelp(
+          "set JAVA and JAVAC to a JDK for this platform"
+        );
       }
       return { os: adoptiumOs, architecture };
     });
@@ -277,7 +298,6 @@ export class JdkDistribution implements Repository, RepositoryLookup {
 function createRepository(context: TargetContext): Computable<Repository> {
   return context.getRequiredString("url").then(url => new JdkDistribution(context, url.replace(/\/+$/, "")));
 }
-
 
 /** The implementation JAVA.fabr's `repository` declaration names. */
 export default { provider: createRepository } satisfies RepositoryImplementation;

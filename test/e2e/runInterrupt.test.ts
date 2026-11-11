@@ -62,7 +62,7 @@ describe("e2e: interrupting a one-shot run", () => {
         "PROJECT.fabr": "script forever { entry = src:forever.sh; }\n",
         /* Records its own pid in the caller's cwd (the project dir — a script
          * runnable launches there) and then never exits on its own. */
-        "src/forever.sh": 'echo $$ > run.pid\necho started 1>&2\nwhile true; do sleep 0.2; done\n',
+        "src/forever.sh": "echo $$ > run.pid\necho started 1>&2\nwhile true; do sleep 0.2; done\n",
       },
       ["run", "forever"],
       { FABR_CACHE_DIR: cache }

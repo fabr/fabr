@@ -33,7 +33,10 @@ import { expect } from "chai";
  * without it an unpublished version stays a hard failure, as for a registry
  * without the hook.
  */
-function mockRegistry(data: Record<string, Record<string, Record<string, string>>>, raisable = false): RequirementSource<SemverVersion> {
+function mockRegistry(
+  data: Record<string, Record<string, Record<string, string>>>,
+  raisable = false
+): RequirementSource<SemverVersion> {
   const registry: RequirementSource<SemverVersion> = {
     getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
       const deps = data[pkg]?.[versionToString(version)];
@@ -1415,14 +1418,14 @@ describe("force overrides", () => {
       result.selections.map(sel => `${sel.name}@${domain.versionToString(sel.version)}`).sort();
 
     it("answers no range on its name: a published version answers it beside the build, as a violation", () => {
-      const result = run(
-        [
-          { name: "A", versionConstraint: "1.0.0" },
-          { name: "lib", versionConstraint: debug },
-        ]
-      );
+      const result = run([
+        { name: "A", versionConstraint: "1.0.0" },
+        { name: "lib", versionConstraint: debug },
+      ]);
       expect(ids(result)).to.deep.equal(["A@1.0.0", "lib@1.0.0", `lib@${debug}`]);
-      expect(result.violations.map(violation => `${violation.versionConstraint} by ${violation.requiredBy}`)).to.deep.equal(["^1.0.0 by A@1.0.0"]);
+      expect(result.violations.map(violation => `${violation.versionConstraint} by ${violation.requiredBy}`)).to.deep.equal([
+        "^1.0.0 by A@1.0.0",
+      ]);
     });
 
     it("keeps the edges of a build whose configuration holds an '@'", () => {
@@ -1434,12 +1437,10 @@ describe("force overrides", () => {
     });
 
     it("answers a floorless requirement on its name, as any selection does", () => {
-      const result = run(
-        [
-          { name: "B", versionConstraint: "1.0.0" },
-          { name: "lib", versionConstraint: debug },
-        ]
-      );
+      const result = run([
+        { name: "B", versionConstraint: "1.0.0" },
+        { name: "lib", versionConstraint: debug },
+      ]);
       expect(ids(result)).to.deep.equal(["B@1.0.0", `lib@${debug}`]);
       expect(result.violations).to.deep.equal([]);
       expect(result.edgesOf(`lib@${debug}`)).to.deep.equal(new Map());
@@ -1447,44 +1448,36 @@ describe("force overrides", () => {
     });
 
     it("answers a range on its name where it is forced", () => {
-      const result = run(
-        [
-          { name: "A", versionConstraint: "1.0.0" },
-          { name: "lib", versionConstraint: debug, override: "force" },
-        ]
-      );
+      const result = run([
+        { name: "A", versionConstraint: "1.0.0" },
+        { name: "lib", versionConstraint: debug, override: "force" },
+      ]);
       expect(ids(result)).to.deep.equal(["A@1.0.0", `lib@${debug}`]);
     });
 
     it("is the only answer to a requirement naming it, so two builds of one name violate", () => {
-      const result = run(
-        [
-          { name: "lib", versionConstraint: debug },
-          { name: "lib", versionConstraint: release },
-        ]
-      );
+      const result = run([
+        { name: "lib", versionConstraint: debug },
+        { name: "lib", versionConstraint: release },
+      ]);
       expect(ids(result)).to.deep.equal([`lib@${debug}`, `lib@${release}`]);
       expect(result.violations.map(violation => violation.versionConstraint)).to.deep.equal([debug]);
     });
 
     it("is unversioned, so it answers no version required of its name", () => {
-      const result = run(
-        [
-          { name: "lib", versionConstraint: debug },
-          { name: "lib", versionConstraint: "1.0.0" },
-        ]
-      );
+      const result = run([
+        { name: "lib", versionConstraint: debug },
+        { name: "lib", versionConstraint: "1.0.0" },
+      ]);
       expect(ids(result)).to.deep.equal(["lib@1.0.0", `lib@${debug}`]);
       expect(result.violations.map(violation => violation.versionConstraint)).to.deep.equal(["1.0.0"]);
     });
 
     it("gives its name to a forced build throughout", () => {
-      const result = run(
-        [
-          { name: "lib", versionConstraint: debug, override: "force" },
-          { name: "lib", versionConstraint: release },
-        ]
-      );
+      const result = run([
+        { name: "lib", versionConstraint: debug, override: "force" },
+        { name: "lib", versionConstraint: release },
+      ]);
       expect(ids(result)).to.deep.equal([`lib@${debug}`]);
       expect(result.coerced.map(edge => edge.versionConstraint)).to.deep.equal([release]);
     });
@@ -1758,7 +1751,12 @@ describe("resolved edges", () => {
       /* The variant's floor and the package's own are floors of one selection. */
       const result = resolve({ A: "1.0.0" }, { ...n, A: { "1.0.0": { "N#x": "^1.0.0", N: "^1.1.0" } } });
       expect(selectionStrings(result).sort()).to.deep.equal(["A@1.0.0", "N@1.1.0"]);
-      expect(result.edgesOf("A@1.0.0")).to.deep.equal(new Map([["N/x", "N@1.1.0"], ["N", "N@1.1.0"]]));
+      expect(result.edgesOf("A@1.0.0")).to.deep.equal(
+        new Map([
+          ["N/x", "N@1.1.0"],
+          ["N", "N@1.1.0"],
+        ])
+      );
     });
 
     it("is an edge of its own beside another variant of one package", () => {
@@ -1770,7 +1768,10 @@ describe("resolved edges", () => {
     it("binds a root to the package's selection, raised by another root", () => {
       const result = resolve({ "N#x": "^1.0.0", N: "^1.1.0" }, n);
       expect(selectionStrings(result)).to.deep.equal(["N@1.1.0"]);
-      expect(result.rootBindings.map(at => (at === undefined ? undefined : selectionStrings(result)[at]))).to.deep.equal(["N@1.1.0", "N@1.1.0"]);
+      expect(result.rootBindings.map(at => (at === undefined ? undefined : selectionStrings(result)[at]))).to.deep.equal([
+        "N@1.1.0",
+        "N@1.1.0",
+      ]);
     });
   });
 
@@ -1807,7 +1808,10 @@ describe("resolved edges", () => {
         "'pad' is required as two different packages: 'left-pad' (by A@1.0.0) and 'right-pad' (by B@1.0.0)",
       ]);
       /* Two roots on one name, likewise. */
-      const roots = resolve({ "left-pad -> pad": "1.0.0", "right-pad -> pad": "1.0.0" }, { "left-pad": { "1.0.0": {} }, "right-pad": { "1.0.0": {} } });
+      const roots = resolve(
+        { "left-pad -> pad": "1.0.0", "right-pad -> pad": "1.0.0" },
+        { "left-pad": { "1.0.0": {} }, "right-pad": { "1.0.0": {} } }
+      );
       expect(roots.errors.map(error => error.message)).to.deep.equal([
         "'pad' is required as two different packages: 'left-pad' (by (root)) and 'right-pad' (by (root))",
       ]);

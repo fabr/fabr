@@ -33,7 +33,13 @@ describe("renameMetafilePaths", () => {
     const renamed = renameMetafilePaths(
       {
         inputs: {
-          "src/index.js": { bytes: 10, imports: [{ path: "src/Route.js", kind: "dynamic-import" }, { path: "react", kind: "import-statement", external: true }] },
+          "src/index.js": {
+            bytes: 10,
+            imports: [
+              { path: "src/Route.js", kind: "dynamic-import" },
+              { path: "react", kind: "import-statement", external: true },
+            ],
+          },
           "src/Route.js": { bytes: 5, imports: [] },
         },
         outputs: {
@@ -44,7 +50,12 @@ describe("renameMetafilePaths", () => {
             imports: [{ path: "bundle-out/chunks/Route-AB12.js", kind: "dynamic-import" }],
             cssBundle: "bundle-out/index.css",
           },
-          "bundle-out/chunks/Route-AB12.js": { bytes: 6, entryPoint: "src/Route.js", inputs: { "src/Route.js": { bytesInOutput: 5 } }, imports: [] },
+          "bundle-out/chunks/Route-AB12.js": {
+            bytes: 6,
+            entryPoint: "src/Route.js",
+            inputs: { "src/Route.js": { bytesInOutput: 5 } },
+            imports: [],
+          },
         },
       },
       "bundle-out",
@@ -67,7 +78,12 @@ describe("renameMetafilePaths", () => {
       {
         inputs: { "../.fabr-tree/aa/index.js": { bytes: 3 }, "../.fabr-tree/__virtual__/1/0/aa/index.js": { bytes: 3 } },
         outputs: {
-          "out/a.js": { inputs: { "../.fabr-tree/aa/index.js": { bytesInOutput: 2 }, "../.fabr-tree/__virtual__/1/0/aa/index.js": { bytesInOutput: 2 } } },
+          "out/a.js": {
+            inputs: {
+              "../.fabr-tree/aa/index.js": { bytesInOutput: 2 },
+              "../.fabr-tree/__virtual__/1/0/aa/index.js": { bytesInOutput: 2 },
+            },
+          },
         },
       },
       "out",

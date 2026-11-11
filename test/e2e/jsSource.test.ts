@@ -27,10 +27,9 @@ import { runFabr, STUB_TSC, STUB_TSC_CONFIG } from "./harness";
 describe("e2e: js_package with plain JS sources", () => {
   const project = {
     ...STUB_TSC,
-    "PROJECT.fabr":
-      "plugin @fabr-build/js;\n\n" + STUB_TSC_CONFIG + "\njs_package thing { srcs = src:**/*; }\n",
+    "PROJECT.fabr": "plugin @fabr-build/js;\n\n" + STUB_TSC_CONFIG + "\njs_package thing { srcs = src:**/*; }\n",
     "src/helper.js": "module.exports.answer = 42;\n",
-    "src/index.ts": 'export const x = 1;\n',
+    "src/index.ts": "export const x = 1;\n",
   };
 
   it("emits a plain .js source into the built package (no longer dropped)", () => {

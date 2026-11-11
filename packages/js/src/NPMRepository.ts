@@ -117,7 +117,9 @@ function uniqueAssignments(assignments: readonly NpmPublishIdentity[]): Map<stri
     byName.set(name, (byName.get(name) ?? new Set()).add(version));
   }
   return new Map(
-    select([...byName], ([name, versions]) => (versions.size === 1 ? ([name, { name, version: [...versions][0] }] as const) : undefined))
+    select([...byName], ([name, versions]) =>
+      versions.size === 1 ? ([name, { name, version: [...versions][0] }] as const) : undefined
+    )
   );
 }
 
@@ -126,7 +128,9 @@ function uniqueAssignments(assignments: readonly NpmPublishIdentity[]): Map<stri
 function uniqueTargets(targets: ReadonlyMap<string, readonly RepositoryPublishRef[]>): Map<string, NpmPublishIdentity> {
   return new Map(
     select([...targets], ([target, coordinates]) => {
-      const npm = packageCoordinates(coordinates).filter(coordinate => isRepositoryReader(coordinate.source) && coordinate.source.format === NPM_FORMAT);
+      const npm = packageCoordinates(coordinates).filter(
+        coordinate => isRepositoryReader(coordinate.source) && coordinate.source.format === NPM_FORMAT
+      );
       const distinct = new Map(npm.map(({ name, version }) => [`${name}@${version}`, { name, version }]));
       return distinct.size === 1 ? ([target, [...distinct.values()][0]] as const) : undefined;
     })
@@ -152,9 +156,7 @@ function packagePath(pkg: string): string {
  * (resolvePackages/packageClosure) with itself as the registry the
  * resolution reads from.
  */
-export class NPMRepository
-  implements Repository, RepositoryWriter, RepositoryReader<SemverVersion, SemverConstraint>
-{
+export class NPMRepository implements Repository, RepositoryWriter, RepositoryReader<SemverVersion, SemverConstraint> {
   public readonly format = NPM_FORMAT;
   private readonly url: string;
   private readonly context: TargetContext;
@@ -215,9 +217,9 @@ export class NPMRepository
   public children({ name: namespace }: PartialRepositoryRef): Computable<Map<string, Reference>> {
     if (namespace === "" || /^@[^/]*$/.test(namespace)) {
       return Computable.reject(
-        new FabrError(`the registry at ${this.url} cannot list every package ${namespace === "" ? "it holds" : `in ${namespace}`}`).withHelp(
-          `name a package to list its versions, as in '${this.name}:${namespace === "" ? "" : `${namespace}/`}<package>'`
-        )
+        new FabrError(
+          `the registry at ${this.url} cannot list every package ${namespace === "" ? "it holds" : `in ${namespace}`}`
+        ).withHelp(`name a package to list its versions, as in '${this.name}:${namespace === "" ? "" : `${namespace}/`}<package>'`)
       );
     }
     return versionChildren(this, this.format, namespace, this.publishedVersions(namespace, true));
@@ -236,7 +238,6 @@ export class NPMRepository
   private npmAuth(): Computable<NPMAuth> {
     return jsPluginContext(this.context.execution).npmAuth();
   }
-
 
   /**
    * Package this registry's members into the npm wire form (pure — the dry-run
@@ -442,8 +443,6 @@ export class NPMRepository
       });
   }
 
-
-
   /**
    * Get the platform we are building for, projected to npm's {os, cpu, libc}
    * vocabulary — read off the TARGET property (a clang/LLVM triple;
@@ -571,8 +570,7 @@ export class NPMRepository
     }
     /* npm-consistent candidates: no prerelease unless the constraint opts in
      * (lowestSatisfying) — the raise must never silently pin an -rc. */
-    const pick = (versions: SemverVersion[] | undefined): SemverVersion | undefined =>
-      versions && lowestSatisfying(versions, parsed);
+    const pick = (versions: SemverVersion[] | undefined): SemverVersion | undefined => versions && lowestSatisfying(versions, parsed);
     return this.publishedVersions(pkg, false).then(versions => {
       const found = pick(versions);
       if (found || versions === undefined) {
@@ -678,13 +676,16 @@ export class NPMRepository
   /** Get an exact package version's metadata: its packument entry, or for a
    *  version that entry cannot fully answer, the version's own document. */
   private getVersionEntry(pkg: string, version: string): Computable<INPMPackageMetadata> {
-    const entry = (versions: ReadonlyMap<string, INPMPackageMetadata> | undefined): INPMPackageMetadata | undefined => versions?.get(version);
-    return this.packument(pkg, false)
-      .then(versions => (entry(versions) !== undefined ? entry(versions) : this.packument(pkg, true).then(entry)))
-      /* The packument only saves requests: where it cannot be read at all, the
-       * version's own document answers as it would have anyway. */
-      .catch(() => undefined)
-      .then(meta => meta ?? this.versionDocument(pkg, version));
+    const entry = (versions: ReadonlyMap<string, INPMPackageMetadata> | undefined): INPMPackageMetadata | undefined =>
+      versions?.get(version);
+    return (
+      this.packument(pkg, false)
+        .then(versions => (entry(versions) !== undefined ? entry(versions) : this.packument(pkg, true).then(entry)))
+        /* The packument only saves requests: where it cannot be read at all, the
+         * version's own document answers as it would have anyway. */
+        .catch(() => undefined)
+        .then(meta => meta ?? this.versionDocument(pkg, version))
+    );
   }
 
   /**
@@ -781,7 +782,6 @@ function createRepository(context: TargetContext, url?: string, credential?: Cre
     }
   );
 }
-
 
 /** The implementation JS.fabr's `repository` declaration names. */
 export default { provider: createRepository } satisfies RepositoryImplementation;

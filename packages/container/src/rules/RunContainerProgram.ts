@@ -35,11 +35,20 @@ export default defineRule({
   evaluateMaterialized(context, { image }) {
     const images = image.filter((source): source is ImageFileSet => source instanceof ImageFileSet);
     if (images.length !== 1 || images.length !== image.length) {
-      throw new FabrError(`${context.name}'s image is not one image`).withHelp("name a 'container_image' target, or an image reference such as '@docker:redis:7-alpine'");
+      throw new FabrError(`${context.name}'s image is not one image`).withHelp(
+        "name a 'container_image' target, or an image reference such as '@docker:redis:7-alpine'"
+      );
     }
     const value = (name: string): Computable<Property | undefined> => context.getProperty(name);
     return Computable.forAll(
-      [value("ports"), context.getMap("env"), value("network"), context.getMap("hosts"), value("args"), context.getGlobalRunnable("CONTAINER_ENGINE")] as const,
+      [
+        value("ports"),
+        context.getMap("env"),
+        value("network"),
+        context.getMap("hosts"),
+        value("args"),
+        context.getGlobalRunnable("CONTAINER_ENGINE"),
+      ] as const,
       (ports, env: PropertyMap, network, hosts: PropertyMap, args, engine: RunnableFileSet): Computable<RunnableFileSet> => {
         const run: IContainerRun = {
           ...(ports === undefined ? {} : { ports: ports.getValues() }),

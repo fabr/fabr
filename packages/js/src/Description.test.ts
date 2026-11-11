@@ -36,7 +36,12 @@ describe("placement", () => {
 
 describe("conventionalEmit", () => {
   it("lays a dual package's two formats out as its build does, a bin in the primary format alone", () => {
-    const sources = new FileSet(new Map([["index.ts", MemoryFile.from("")], ["bin/tool.ts", MemoryFile.from("")]]));
+    const sources = new FileSet(
+      new Map([
+        ["index.ts", MemoryFile.from("")],
+        ["bin/tool.ts", MemoryFile.from("")],
+      ])
+    );
     const emitted = [...conventionalEmit(sources, parseJSTarget("es2022-dual-node"))].map(([name]) => name).sort();
     expect(emitted).to.deep.equal(["bin/tool.d.ts", "bin/tool.js", "index.d.mts", "index.d.ts", "index.js", "index.mjs"]);
   });
@@ -47,12 +52,20 @@ describe("sourceManifest", () => {
     const manifest = {
       name: "made",
       types: "index.d.ts",
-      exports: { ".": { types: "./index.d.ts", default: "./index.js" }, "./*": { types: "./*.d.ts", default: "./*.js" }, "./data.json": "./data.json" },
+      exports: {
+        ".": { types: "./index.d.ts", default: "./index.js" },
+        "./*": { types: "./*.d.ts", default: "./*.js" },
+        "./data.json": "./data.json",
+      },
     };
     expect(sourceManifest(manifest, ["index.ts", "sub.ts", "data.json"])).to.deep.equal({
       name: "made",
       types: "index.ts",
-      exports: { ".": { types: "./index.ts", default: "./index.ts" }, "./*": { types: "./*.ts", default: "./*.ts" }, "./data.json": "./data.json" },
+      exports: {
+        ".": { types: "./index.ts", default: "./index.ts" },
+        "./*": { types: "./*.ts", default: "./*.ts" },
+        "./data.json": "./data.json",
+      },
     });
     /* Sources of two extensions: no one wildcard names them. */
     expect(sourceManifest({ exports: { "./*": "./*.js" } }, ["a.ts", "b.tsx"])).to.deep.equal({ exports: { "./*": "./*.js" } });

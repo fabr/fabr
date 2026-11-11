@@ -49,7 +49,14 @@ import {
   type RequiredSources,
   type ResolvedRequirements,
 } from "@fabr-build/core";
-import { conventionalEmit, type ITypeScriptPayload, layOutUnits, MANIFEST_FILE, TSSERVER_PLUGIN, TYPESCRIPT_DATA_KIND } from "../Description";
+import {
+  conventionalEmit,
+  type ITypeScriptPayload,
+  layOutUnits,
+  MANIFEST_FILE,
+  TSSERVER_PLUGIN,
+  TYPESCRIPT_DATA_KIND,
+} from "../Description";
 import {
   compileContents,
   dualFormatOutputs,
@@ -74,18 +81,20 @@ export default defineRule({
    * provided, so a consumer's collection point binds each to what it uses under
    * that name. The compiler is resolved apart, by js_compile.
    */
-  requirements(context: TargetContext): Computable<ResolutionSpec<{
-    srcs: Computable<SourceRef[]>;
-    resources: Computable<SourceRef[]>;
-    tests: Computable<SourceRef[]>;
-    exports: Computable<SourceRef[]>;
-    dependencies: Computable<PackageSources>;
-    provided: Computable<PackageSources>;
-    optional_provided: Computable<PackageSources>;
-    compile_deps: Computable<PackageSources>;
-    test_resources: Computable<SourceRef[]>;
-    test_expectations: Computable<SourceRef[]>;
-  }>> {
+  requirements(context: TargetContext): Computable<
+    ResolutionSpec<{
+      srcs: Computable<SourceRef[]>;
+      resources: Computable<SourceRef[]>;
+      tests: Computable<SourceRef[]>;
+      exports: Computable<SourceRef[]>;
+      dependencies: Computable<PackageSources>;
+      provided: Computable<PackageSources>;
+      optional_provided: Computable<PackageSources>;
+      compile_deps: Computable<PackageSources>;
+      test_resources: Computable<SourceRef[]>;
+      test_expectations: Computable<SourceRef[]>;
+    }>
+  > {
     return context.getProperty("version").then(version => {
       assertPackageVersion(version?.toString());
       const written = version?.toString();
@@ -158,40 +167,43 @@ function describePackage(
     [context.getGlobalString("JS_TARGET"), context.getProperty("version"), context.getMap("metadata")],
     (target, version, metadata) => {
       const jsTarget = parseJSTarget(target);
-      const constraints = jsTarget.module === "dual" ? Constraints.of({ JS_TARGET: formatJSTarget({ ...jsTarget, module: "esm" }) }) : undefined;
-      return compileContents(context, compileSources, compileDeps, { packageName: context.name, constraints, describe: true }).then(contents => {
-        const manifest = createPackageJson({
-          files: conventionalEmit(compileSources, jsTarget),
-          name: context.name,
-          version: version?.toString(),
-          declared: [],
-          provided: [],
-          optionalProvided: [],
-          jsTarget,
-          metadata,
-          exports: [...exported].map(([sourceName]) => sourceName),
-          rewrites: contents.rewrites,
-        });
-        const laidOut = layOutUnits(new Map([["build", contents.compiled]]));
-        const payload: ITypeScriptPayload = { units: laidOut.units, manifest: MANIFEST_FILE, plugin: TSSERVER_PLUGIN };
-        return describeTarget(context, resolved, {
-          sources: [compileSources],
-          tags: ["library"],
-          languageIds: ["typescript", "javascript"],
-          dataKind: TYPESCRIPT_DATA_KIND,
-          data: payload,
-        }).then(description =>
-          FileSet.unionAll(
-            descriptionFile(description),
-            laidOut.files,
-            FileSet.layout({ [MANIFEST_FILE]: manifest }),
-            /* What the package ships as it is, at its own paths: what a step
-             * reading the package's files (Sass, loading a partial) finds there. */
-            stripPackageJson(contents.passthrough),
-            ...sets.resources
-          )
-        );
-      });
+      const constraints =
+        jsTarget.module === "dual" ? Constraints.of({ JS_TARGET: formatJSTarget({ ...jsTarget, module: "esm" }) }) : undefined;
+      return compileContents(context, compileSources, compileDeps, { packageName: context.name, constraints, describe: true }).then(
+        contents => {
+          const manifest = createPackageJson({
+            files: conventionalEmit(compileSources, jsTarget),
+            name: context.name,
+            version: version?.toString(),
+            declared: [],
+            provided: [],
+            optionalProvided: [],
+            jsTarget,
+            metadata,
+            exports: [...exported].map(([sourceName]) => sourceName),
+            rewrites: contents.rewrites,
+          });
+          const laidOut = layOutUnits(new Map([["build", contents.compiled]]));
+          const payload: ITypeScriptPayload = { units: laidOut.units, manifest: MANIFEST_FILE, plugin: TSSERVER_PLUGIN };
+          return describeTarget(context, resolved, {
+            sources: [compileSources],
+            tags: ["library"],
+            languageIds: ["typescript", "javascript"],
+            dataKind: TYPESCRIPT_DATA_KIND,
+            data: payload,
+          }).then(description =>
+            FileSet.unionAll(
+              descriptionFile(description),
+              laidOut.files,
+              FileSet.layout({ [MANIFEST_FILE]: manifest }),
+              /* What the package ships as it is, at its own paths: what a step
+               * reading the package's files (Sass, loading a partial) finds there. */
+              stripPackageJson(contents.passthrough),
+              ...sets.resources
+            )
+          );
+        }
+      );
     }
   );
 }
@@ -342,84 +354,85 @@ function buildJsPackage(
           return Computable.forAll(
             [seedJson, declaredDeps, declaredProvided, declaredOptional],
             (seed, declared, providedDeclared, optionalDeclared) => {
-            /* Compile against the direct deps: the sources see only these, while
-             * the transitive closure is reachable only by the deps themselves —
-             * the dependency manifest's doing, not a layout's. Provided deps are
-             * on the compile path too (js codes against core's types). */
-            /* Stylesheets in `srcs` are built like any other source, so the
-             * package ships plain CSS rather than Sass — a css-module as its
-             * scoped stylesheet plus the compiled class-map module. One meant to
-             * be `@use`d BY other packages belongs in `resources`, which ships it
-             * verbatim. */
-            /* A dual target is built as TWO compiles, each pinned to a format — one
-             * compile emits one module system. The ES-module format additionally
-             * emits `.mjs`/`.d.mts`, so the two trees ship together at the package
-             * root instead of occupying the same names. */
-            const formatCompile = (format: "commonjs" | "esm"): Computable<ICompiledContents> =>
-              compileContents(context, compileSources, compileDeps, {
-                packageName: context.name,
-                constraints: Constraints.of({ JS_TARGET: formatJSTarget({ ...jsTarget, module: format }) }),
-                moduleExtension: format === "esm" ? ESM_JS_EXTENSION : undefined,
-              });
-            /* Single-format keeps the ambient target verbatim. */
-            const contents = dual
-              ? formatCompile("commonjs")
-              : compileContents(context, compileSources, compileDeps, { packageName: context.name });
-            const esmContents = dual ? formatCompile("esm") : undefined;
-
-            /* Delivery shape: add the generated package.json (in memory — its
-             * entry points depend on the compiled file list) and wrap with
-             * identity + carried deps. This runs on every evaluation (whether the
-             * compile sub-target hit or missed), reconstructing the runtime-only
-             * identity each time. */
-            const deliver = (
-              { compiled, css, passthrough, depOutputs, rewrites }: ICompiledContents,
-              esm?: ICompiledContents
-            ): Computable<FileSource> => {
-              /* A source dep is compiled against, not distributed, so what the
-               * compiler emitted for one is dropped here — a package ships its
-               * own artifacts. The test pipeline keeps them, needing the file to
-               * run. */
-              const own = compiled.minus(depOutputs);
-              /* Two formats, one tree — see dualFormatOutputs. */
-              const formats = esm ? dualFormatOutputs(own, esm.compiled.minus(esm.depOutputs)) : [own];
-              /* `resources` ship exactly as given — never compiled, so a prebuilt
-               * .js keeps its own level and a hand-written .d.ts is the only
-               * declaration for it (no generated one to collide with). Taken from
-               * the primary format alone: both compiles pass the same files through. */
-              const delivered = FileSet.unionAll(...formats, stripPackageJson(passthrough), css, ...resourceSets);
-              /* Guarantee every declared bin opens with an interpreter line so the
-               * installed npm command is launchable — derived from the bin convention,
-               * not a hand-written source shebang (see withBinShebangs). */
-              return withBinShebangs(delivered).then(shebanged => {
-                const packageJson = createPackageJson({
-                  files: shebanged,
-                  seed,
-                  name: context.name,
-                  version: version?.toString(),
-                  declared,
-                  provided: providedDeclared,
-                  optionalProvided: optionalDeclared,
-                  jsTarget,
-                  metadata,
-                  /* Named by their source names: the map is generated from the
-                   * emitted counterparts, so an author declares entry points in
-                   * the terms they wrote them in, never in fabr's emit layout. */
-                  exports: [...exported].map(([sourceName]) => sourceName),
-                  rewrites,
+              /* Compile against the direct deps: the sources see only these, while
+               * the transitive closure is reachable only by the deps themselves —
+               * the dependency manifest's doing, not a layout's. Provided deps are
+               * on the compile path too (js codes against core's types). */
+              /* Stylesheets in `srcs` are built like any other source, so the
+               * package ships plain CSS rather than Sass — a css-module as its
+               * scoped stylesheet plus the compiled class-map module. One meant to
+               * be `@use`d BY other packages belongs in `resources`, which ships it
+               * verbatim. */
+              /* A dual target is built as TWO compiles, each pinned to a format — one
+               * compile emits one module system. The ES-module format additionally
+               * emits `.mjs`/`.d.mts`, so the two trees ship together at the package
+               * root instead of occupying the same names. */
+              const formatCompile = (format: "commonjs" | "esm"): Computable<ICompiledContents> =>
+                compileContents(context, compileSources, compileDeps, {
+                  packageName: context.name,
+                  constraints: Constraints.of({ JS_TARGET: formatJSTarget({ ...jsTarget, module: format }) }),
+                  moduleExtension: format === "esm" ? ESM_JS_EXTENSION : undefined,
                 });
-                const assembled = FileSet.unionAll(shebanged, new FileSet(new Map([["package.json", packageJson]])));
-                return packageOf(context, assembled, version?.toString(), edges);
-              });
-            };
+              /* Single-format keeps the ambient target verbatim. */
+              const contents = dual
+                ? formatCompile("commonjs")
+                : compileContents(context, compileSources, compileDeps, { packageName: context.name });
+              const esmContents = dual ? formatCompile("esm") : undefined;
 
-            /* The compiled/lowered parts are sub-target output; a target with
-             * nothing to build yields empty ones and the package is just its
-             * passthrough files + package.json, assembled in memory. */
-            return esmContents === undefined
-              ? contents.then(primary => deliver(primary))
-              : Computable.forAll([contents, esmContents], (primary, secondary) => deliver(primary, secondary));
-          });
+              /* Delivery shape: add the generated package.json (in memory — its
+               * entry points depend on the compiled file list) and wrap with
+               * identity + carried deps. This runs on every evaluation (whether the
+               * compile sub-target hit or missed), reconstructing the runtime-only
+               * identity each time. */
+              const deliver = (
+                { compiled, css, passthrough, depOutputs, rewrites }: ICompiledContents,
+                esm?: ICompiledContents
+              ): Computable<FileSource> => {
+                /* A source dep is compiled against, not distributed, so what the
+                 * compiler emitted for one is dropped here — a package ships its
+                 * own artifacts. The test pipeline keeps them, needing the file to
+                 * run. */
+                const own = compiled.minus(depOutputs);
+                /* Two formats, one tree — see dualFormatOutputs. */
+                const formats = esm ? dualFormatOutputs(own, esm.compiled.minus(esm.depOutputs)) : [own];
+                /* `resources` ship exactly as given — never compiled, so a prebuilt
+                 * .js keeps its own level and a hand-written .d.ts is the only
+                 * declaration for it (no generated one to collide with). Taken from
+                 * the primary format alone: both compiles pass the same files through. */
+                const delivered = FileSet.unionAll(...formats, stripPackageJson(passthrough), css, ...resourceSets);
+                /* Guarantee every declared bin opens with an interpreter line so the
+                 * installed npm command is launchable — derived from the bin convention,
+                 * not a hand-written source shebang (see withBinShebangs). */
+                return withBinShebangs(delivered).then(shebanged => {
+                  const packageJson = createPackageJson({
+                    files: shebanged,
+                    seed,
+                    name: context.name,
+                    version: version?.toString(),
+                    declared,
+                    provided: providedDeclared,
+                    optionalProvided: optionalDeclared,
+                    jsTarget,
+                    metadata,
+                    /* Named by their source names: the map is generated from the
+                     * emitted counterparts, so an author declares entry points in
+                     * the terms they wrote them in, never in fabr's emit layout. */
+                    exports: [...exported].map(([sourceName]) => sourceName),
+                    rewrites,
+                  });
+                  const assembled = FileSet.unionAll(shebanged, new FileSet(new Map([["package.json", packageJson]])));
+                  return packageOf(context, assembled, version?.toString(), edges);
+                });
+              };
+
+              /* The compiled/lowered parts are sub-target output; a target with
+               * nothing to build yields empty ones and the package is just its
+               * passthrough files + package.json, assembled in memory. */
+              return esmContents === undefined
+                ? contents.then(primary => deliver(primary))
+                : Computable.forAll([contents, esmContents], (primary, secondary) => deliver(primary, secondary));
+            }
+          );
         }
       );
     }

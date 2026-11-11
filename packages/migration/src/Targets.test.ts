@@ -61,12 +61,20 @@ describe("planning a package's target", () => {
 
   it("adds the root's dependencies a package imports undeclared, with their types", () => {
     const { plans, report } = plan({
-      "package.json": { workspaces: ["p/*"], devDependencies: { lodash: "^4.0.0", "@types/lodash": "^4.0.0", "@types/aws-lambda": "^8.0.0", "@types/node": "^20.0.0" } },
+      "package.json": {
+        workspaces: ["p/*"],
+        devDependencies: { lodash: "^4.0.0", "@types/lodash": "^4.0.0", "@types/aws-lambda": "^8.0.0", "@types/node": "^20.0.0" },
+      },
       "p/a/package.json": { name: "a" },
       "p/a/tsconfig.json": '{ "compilerOptions": { "types": ["node"] } }',
       "p/a/src/index.ts": 'import _ from "lodash"; import type { Handler } from "aws-lambda"; import x from "missing";',
     });
-    expect([...plans[0].deps].sort()).to.deep.equal(["@dep:@types/aws-lambda", "@dep:@types/lodash", "@dep:@types/node", "@dep:lodash"]);
+    expect([...plans[0].deps].sort()).to.deep.equal([
+      "@dep:@types/aws-lambda",
+      "@dep:@types/lodash",
+      "@dep:@types/node",
+      "@dep:lodash",
+    ]);
     expect(report).to.include("missing, imported in p/a");
   });
 

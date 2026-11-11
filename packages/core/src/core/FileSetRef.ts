@@ -82,7 +82,7 @@ export class FileSourceRef {
  * built package, or a runnable.
  */
 export class FileSetRef extends FileSourceRef {
-  public declare readonly source: FileSet;
+  declare public readonly source: FileSet;
 
   constructor(source: FileSet, projections: ReadonlyArray<IProjection>, miss?: Miss) {
     super(source, projections, miss);

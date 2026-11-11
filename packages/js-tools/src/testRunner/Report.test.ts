@@ -28,14 +28,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ITestResult } from "@fabr-build/core";
 import { SOURCE_LOCATIONS_FILE } from "../support/SourceMap";
-import {
-  buildReport,
-  describeSnapshotFailure,
-  reportPathOf,
-  snapshotPathOf,
-  sourcePathOf,
-  withStagedSources,
-} from "./Report";
+import { buildReport, describeSnapshotFailure, reportPathOf, snapshotPathOf, sourcePathOf, withStagedSources } from "./Report";
 
 function test(name: string, status: ITestResult["status"], extra?: Partial<ITestResult>): ITestResult {
   return { name, status, duration: 0, ...extra };
@@ -105,18 +98,27 @@ describe("reportPathOf", () => {
 
   it("names a compiled file by its source, relative to the source mount", () => {
     const file = stage("a.test.js", "a.test.ts");
-    assert.equal(withInstallCwd(() => reportPathOf(file)), "a.test.ts");
+    assert.equal(
+      withInstallCwd(() => reportPathOf(file)),
+      "a.test.ts"
+    );
   });
 
   it("keeps the source's own directory", () => {
     const file = stage("sub/b.test.js", "sub/b.test.ts");
-    assert.equal(withInstallCwd(() => reportPathOf(file)), path.join("sub", "b.test.ts"));
+    assert.equal(
+      withInstallCwd(() => reportPathOf(file)),
+      path.join("sub", "b.test.ts")
+    );
   });
 
   it("falls back to the compiled name, still mount-stripped, when there is no map", () => {
     const file = path.join(install, "build", "nomap.test.js");
     fs.writeFileSync(file, "");
-    assert.equal(withInstallCwd(() => reportPathOf(file)), "nomap.test.js");
+    assert.equal(
+      withInstallCwd(() => reportPathOf(file)),
+      "nomap.test.js"
+    );
   });
 
   describe("a map naming its source by reference", () => {
@@ -131,23 +133,40 @@ describe("reportPathOf", () => {
 
     it("names it by the path the reference gives", () => {
       const file = referenced("c.test.js", "fabr:./pkg/src/c.test.ts");
-      assert.equal(withInstallCwd(() => reportPathOf(file)), "pkg/src/c.test.ts");
+      assert.equal(
+        withInstallCwd(() => reportPathOf(file)),
+        "pkg/src/c.test.ts"
+      );
     });
 
     it("finds where the installation stages it, and nothing where it records none", () => {
       const file = referenced("c.test.js", "fabr:./pkg/src/c.test.ts");
-      assert.equal(withInstallCwd(() => sourcePathOf(file)), path.join(install, "src", "c.test.ts"));
+      assert.equal(
+        withInstallCwd(() => sourcePathOf(file)),
+        path.join(install, "src", "c.test.ts")
+      );
       const unstaged = referenced("d.test.js", "fabr:gen:d.test.ts");
-      assert.equal(withInstallCwd(() => sourcePathOf(unstaged)), undefined);
+      assert.equal(
+        withInstallCwd(() => sourcePathOf(unstaged)),
+        undefined
+      );
     });
 
     it("names its snapshots for the source's own file name", () => {
       const file = referenced("e.test.js", "fabr:./pkg/src/e.test.ts");
-      assert.equal(withInstallCwd(() => snapshotPathOf(file)), path.join(install, "build", "__snapshots__", "e.test.ts.snap"));
+      assert.equal(
+        withInstallCwd(() => snapshotPathOf(file)),
+        path.join(install, "build", "__snapshots__", "e.test.ts.snap")
+      );
     });
 
     it("points a stack's frames at where the installation stages their sources", () => {
-      const stack = ["Error: boom", "    at f (fabr:./pkg/src/c.test.ts:2:3)", "    at fabr:./pkg/src/c.test.ts:4:1", "    at g (fabr:gen:d.test.ts:1:1)"].join("\n");
+      const stack = [
+        "Error: boom",
+        "    at f (fabr:./pkg/src/c.test.ts:2:3)",
+        "    at fabr:./pkg/src/c.test.ts:4:1",
+        "    at g (fabr:gen:d.test.ts:1:1)",
+      ].join("\n");
       assert.deepEqual(withInstallCwd(() => withStagedSources(stack)).split("\n"), [
         "Error: boom",
         `    at f (${path.join(install, "src", "c.test.ts")}:2:3)`,
@@ -172,9 +191,11 @@ describe("describeSnapshotFailure", () => {
   });
 
   it("renders a mismatch as a line diff, with fabr's remedy", () => {
-    const failure = describeSnapshotFailure(snapshotError({ expected: '\n{\n  "a": 1,\n  "b": 2\n}\n', actual: '\n{\n  "a": 1,\n  "b": 3\n}\n' }));
+    const failure = describeSnapshotFailure(
+      snapshotError({ expected: '\n{\n  "a": 1,\n  "b": 2\n}\n', actual: '\n{\n  "a": 1,\n  "b": 3\n}\n' })
+    );
     assert.match(failure?.message ?? "", /does not match its recorded snapshot.*'fabr test -u'/);
-    assert.equal(failure?.trace, ['- recorded', '+ actual', '', '  {', '    "a": 1,', '-   "b": 2', '+   "b": 3', '  }'].join("\n"));
+    assert.equal(failure?.trace, ["- recorded", "+ actual", "", "  {", '    "a": 1,', '-   "b": 2', '+   "b": 3', "  }"].join("\n"));
   });
 
   it("diffs lines added and removed around common ones", () => {
@@ -192,7 +213,9 @@ describe("describeSnapshotFailure", () => {
       "Invalid state: Snapshot 'suite > case 4' not found in '/work/__snapshots__/a.test.ts.snap.' Missing snapshots can be generated by rerunning the command with the --test-update-snapshots flag."
     );
     for (const error of [noFile, noEntry]) {
-      assert.deepEqual(describeSnapshotFailure(error), { message: "This test has no recorded snapshot. Run 'fabr test -u' to record one." });
+      assert.deepEqual(describeSnapshotFailure(error), {
+        message: "This test has no recorded snapshot. Run 'fabr test -u' to record one.",
+      });
     }
   });
 
@@ -203,6 +226,9 @@ describe("describeSnapshotFailure", () => {
         "Invalid state: Cannot read snapshot file '/work/a.snap.' Missing snapshots can be generated by rerunning the command with the --test-update-snapshots flag."
       )
     );
-    assert.equal(failure?.message, "Invalid state: Cannot read snapshot file '/work/a.snap.' Run 'fabr test -u' to record them again.");
+    assert.equal(
+      failure?.message,
+      "Invalid state: Cannot read snapshot file '/work/a.snap.' Run 'fabr test -u' to record them again."
+    );
   });
 });

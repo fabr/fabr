@@ -21,7 +21,14 @@ import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { contentOf, isPackage, Package, UsedFor } from "../core/PackageFileSet";
 import { TargetRef } from "../core/TargetRef";
-import { RepositoryCollection, isRepositoryReader, Repository, RepositoryPublishRef, RepositoryRef, SourceRef } from "../core/Repository";
+import {
+  RepositoryCollection,
+  isRepositoryReader,
+  Repository,
+  RepositoryPublishRef,
+  RepositoryRef,
+  SourceRef,
+} from "../core/Repository";
 import { ResolvedCollection, ResolvedMember } from "../resolver/Types";
 import { FileSetRef } from "../core/FileSetRef";
 import { Requirement } from "../resolver/Types";
@@ -98,13 +105,11 @@ export class CatalogRepository implements Repository, RepositoryCollection {
    * collection point, over everything it uses together.
    */
   public member(reference: RepositoryRef, operation: string): Computable<ResolvedMember> {
-    return this.resolved(usedForOf(operation)).then(
-      (catalog): ResolvedMember => ({
-        collection: catalog.collection,
-        entry: this.entryFor(reference, catalog),
-        operation: this.operation,
-      })
-    );
+    return this.resolved(usedForOf(operation)).then((catalog): ResolvedMember => ({
+      collection: catalog.collection,
+      entry: this.entryFor(reference, catalog),
+      operation: this.operation,
+    }));
   }
 
   /** Look up the entry a reference names. An unknown one is a resolution
@@ -230,7 +235,8 @@ function checkEntries(context: TargetContext, sources: ReadonlyArray<SourceRef>)
       "a catalog pins whole packages — project at the point of use instead (`@catalog:pkg:path`)"
     );
   const projected = sources.find(
-    (source): source is RepositoryRef | TargetRef => (source instanceof RepositoryRef || source instanceof TargetRef) && source.projections.length > 0
+    (source): source is RepositoryRef | TargetRef =>
+      (source instanceof RepositoryRef || source instanceof TargetRef) && source.projections.length > 0
   );
   if (projected) {
     throw projectsInto(`'${projected.toString()}'`);
@@ -289,7 +295,10 @@ function catalogOf(catalogName: string, requirements: ResolvedRequirements, requ
         "a catalog entry is a package requirement (`@npm:pkg:1.2.3`) or a target, addressed by its name"
       );
     }
-    entries.set(source.packageName, reference instanceof RepositoryRef ? reference : collection.locals.get(contentOf(source).key) ?? source);
+    entries.set(
+      source.packageName,
+      reference instanceof RepositoryRef ? reference : (collection.locals.get(contentOf(source).key) ?? source)
+    );
   });
   return { entries, collection };
 }
@@ -310,7 +319,11 @@ function createCatalog(
   );
 }
 
-export const catalogRepositoryRegistration: RepositoryRegistration = { type: "catalog", requirements: catalogRequirements, provider: createCatalog };
+export const catalogRepositoryRegistration: RepositoryRegistration = {
+  type: "catalog",
+  requirements: catalogRequirements,
+  provider: createCatalog,
+};
 
 /** The implementation STD.fabr's `repository` declaration names. */
 export default { requirements: catalogRequirements, provider: createCatalog } satisfies RepositoryImplementation;

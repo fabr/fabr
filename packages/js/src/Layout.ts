@@ -18,7 +18,18 @@
  */
 
 import { posix, relative, sep } from "path";
-import { BuildAction, Computable, EMPTY_FILESET, FabrError, FileSet, mapComputable, PackageFileSet, stringConfig, SymlinkFile, walkPackages } from "@fabr-build/core";
+import {
+  BuildAction,
+  Computable,
+  EMPTY_FILESET,
+  FabrError,
+  FileSet,
+  mapComputable,
+  PackageFileSet,
+  stringConfig,
+  SymlinkFile,
+  walkPackages,
+} from "@fabr-build/core";
 import { PNP_DATA_FILE, resolveVirtual, TREE_LINK } from "@fabr-build/js-tools";
 import { assembleNodeModules, INSTANCE_AREA, packageDirectories } from "./NodeModules";
 import { ISelfPackage, pnpManifestOf } from "./PnPManifest";
@@ -77,7 +88,12 @@ export type ReadName = { file: string } | { route: string[]; path: string; packa
  * over the pool's trees, each of which is ensured first. An install the action
  * links in ({@link BuildAction.links}) is no package of either.
  */
-export function layoutPackages(action: BuildAction, dir: string, ensureTree: (files: FileSet) => Computable<string>, mount = "node_modules"): Computable<IPackageLayout> {
+export function layoutPackages(
+  action: BuildAction,
+  dir: string,
+  ensureTree: (files: FileSet) => Computable<string>,
+  mount = "node_modules"
+): Computable<IPackageLayout> {
   const deps = depsInput(action);
   const self = selfPackage(action);
   const routes = routesOf(deps);
@@ -88,8 +104,11 @@ export function layoutPackages(action: BuildAction, dir: string, ensureTree: (fi
     const trees = new Map(manifest.packages.map((pkg): [string, PackageFileSet] => [manifest.mountOf(pkg), pkg]));
     /* Each package's location on this machine: its tree in the pool, or its
      * virtual location over that tree, as the runtime names a module in it. */
-    const located = (pkg: PackageFileSet, tree: string): string => posix.join(posix.dirname(tree), posix.relative(TREE_LINK, manifest.mountOf(pkg)));
-    return mapComputable(manifest.packages, pkg => ensureTree(pkg).then((path): [string, PackageFileSet] => [located(pkg, path), pkg])).then(locations => ({
+    const located = (pkg: PackageFileSet, tree: string): string =>
+      posix.join(posix.dirname(tree), posix.relative(TREE_LINK, manifest.mountOf(pkg)));
+    return mapComputable(manifest.packages, pkg =>
+      ensureTree(pkg).then((path): [string, PackageFileSet] => [located(pkg, path), pkg])
+    ).then(locations => ({
       files,
       trees,
       members,
@@ -97,7 +116,12 @@ export function layoutPackages(action: BuildAction, dir: string, ensureTree: (fi
     }));
   }
   const files = FileSet.layout({ [mount]: [assembleNodeModules(deps), selfLink(self, mount)] });
-  return Computable.resolve({ files, trees: new Map(), members, nameRead: treeReadNamer(dir, mount, packageDirectories(deps), routes, members) });
+  return Computable.resolve({
+    files,
+    trees: new Map(),
+    members,
+    nameRead: treeReadNamer(dir, mount, packageDirectories(deps), routes, members),
+  });
 }
 
 /** Read the action's `layout` config, one of the {@link NodeLayout} tokens. */
@@ -216,8 +240,13 @@ function topLevelName(path: string): { name: string; path: string } | undefined 
  *  virtual location where it has one, else its tree in the pool — is that
  *  package's; a physical path into a tree that only virtual locations name is
  *  the first of them. */
-function poolReadNamer(dir: string, locations: ReadonlyArray<[string, PackageFileSet]>, routes: ReadonlyMap<PackageFileSet, string[]>): IPackageLayout["nameRead"] {
-  const owning = (path: string): [string, PackageFileSet] | undefined => locations.find(([location]) => path.startsWith(location + sep));
+function poolReadNamer(
+  dir: string,
+  locations: ReadonlyArray<[string, PackageFileSet]>,
+  routes: ReadonlyMap<PackageFileSet, string[]>
+): IPackageLayout["nameRead"] {
+  const owning = (path: string): [string, PackageFileSet] | undefined =>
+    locations.find(([location]) => path.startsWith(location + sep));
   return read => {
     const name = workName(dir, read);
     if (name !== undefined) {
@@ -225,11 +254,27 @@ function poolReadNamer(dir: string, locations: ReadonlyArray<[string, PackageFil
     }
     const owner = owning(read);
     if (owner !== undefined) {
-      return within(routes, owner[1], read.slice(owner[0].length + 1).split(sep).join("/"));
+      return within(
+        routes,
+        owner[1],
+        read
+          .slice(owner[0].length + 1)
+          .split(sep)
+          .join("/")
+      );
     }
     const physical = resolveVirtual(read);
     const tree = locations.find(([location]) => physical.startsWith(resolveVirtual(location) + sep));
-    return tree === undefined ? undefined : within(routes, tree[1], physical.slice(resolveVirtual(tree[0]).length + 1).split(sep).join("/"));
+    return tree === undefined
+      ? undefined
+      : within(
+          routes,
+          tree[1],
+          physical
+            .slice(resolveVirtual(tree[0]).length + 1)
+            .split(sep)
+            .join("/")
+        );
   };
 }
 

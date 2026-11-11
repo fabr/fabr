@@ -134,9 +134,7 @@ describe("explainResolutionPath", () => {
   });
 
   it("renders a plain transitive chain", () => {
-    expect(explainResolutionPath(chokidarClosure, "anymatch/index.js")).to.deep.equal([
-      "chokidar@3.5.3 -> anymatch@3.1.2 (~3.1.2)",
-    ]);
+    expect(explainResolutionPath(chokidarClosure, "anymatch/index.js")).to.deep.equal(["chokidar@3.5.3 -> anymatch@3.1.2 (~3.1.2)"]);
   });
 
   it("renders a root package tersely", () => {
@@ -212,7 +210,8 @@ describe("splitNpmReference", () => {
   it("reads a version the lexer saw as a glob, whatever projection follows it", () => {
     /* `*` (an x-range) is a glob character, so the name's literal prefix ends
      * inside the version; the boundary is found over the written text. */
-    const vend = (written: string): RepositoryRef => refOf(vendPackageRef({} as RefSource & Repository, NPM_FORMAT, parseName(written)));
+    const vend = (written: string): RepositoryRef =>
+      refOf(vendPackageRef({} as RefSource & Repository, NPM_FORMAT, parseName(written)));
     const projectionsOf = (ref: RepositoryRef): string[][] => ref.projections.map(p => [p.pattern.toBaseString(), p.prefix]);
     expect(vend("tslib:1.14.1?").toString()).to.equal("tslib:1.14.1?");
     expect(vend("tslib:1.14.1?").override).to.equal("alternate");
@@ -236,7 +235,8 @@ describe("splitNpmReference", () => {
   it("gives a rename facet to exactly one half — the projection when there is one", () => {
     /* Which half holds the facet is what decides whether `-> ` means a package
      * rename or a file rename, so the split must never hand it to both. */
-    const vend = (written: string): RepositoryRef => refOf(vendPackageRef({} as RefSource & Repository, NPM_FORMAT, parseName(written)));
+    const vend = (written: string): RepositoryRef =>
+      refOf(vendPackageRef({} as RefSource & Repository, NPM_FORMAT, parseName(written)));
     const projected = vend("stream-browserify:3.0.0:lib/*.js -> *.mjs");
     expect(projected.renameTo).to.equal(undefined);
     expect(projected.projections[0].pattern.getRenameTo()?.toString()).to.equal("*.mjs");
@@ -279,7 +279,7 @@ describe("platformGateAdmits", () => {
     expect(platformGateAdmits("!win32", "win32")).to.equal(false);
   });
 
-  it("treats a sole \"any\" as no constraint", () => {
+  it('treats a sole "any" as no constraint', () => {
     expect(platformGateAdmits(["any"], "win32")).to.equal(true);
     expect(platformGateAdmits("any", "win32")).to.equal(true);
     expect(platformGateAdmits(["any"], undefined)).to.equal(true);
@@ -357,7 +357,12 @@ describe("unsupportedPlatformReason", () => {
 const METADATA_FILE = "metadata.json";
 const REG = "https://registry.example.org";
 
-function versionMeta(pkg: string, version: string, deps: Record<string, string> = {}, extra: Record<string, unknown> = {}): Record<string, unknown> {
+function versionMeta(
+  pkg: string,
+  version: string,
+  deps: Record<string, string> = {},
+  extra: Record<string, unknown> = {}
+): Record<string, unknown> {
   return {
     name: pkg,
     version,
@@ -374,7 +379,11 @@ function metadataFor(pkg: string, version: string, deps: Record<string, string>,
 /** A packument as the repository caches it: an entry for each of `versions`,
  *  the metadata `docs` gives for it as `[deps, extra]` (as {@link metadataFor}
  *  takes them), or none. */
-function packumentOf(pkg: string, versions: string[], docs: Record<string, [Record<string, string>, Record<string, unknown>?]> = {}): FileSet {
+function packumentOf(
+  pkg: string,
+  versions: string[],
+  docs: Record<string, [Record<string, string>, Record<string, unknown>?]> = {}
+): FileSet {
   const entries = Object.fromEntries(versions.map(version => [version, versionMeta(pkg, version, ...(docs[version] ?? []))]));
   return new FileSet(new Map([["packument.json", MemoryFile.from(JSON.stringify({ versions: entries }))]]));
 }
@@ -459,9 +468,9 @@ function drive(
   refs: RepositoryRef[],
   options?: ResolutionOptions
 ): Computable<FileSet[]> {
-  return collectLists(machineryContexts.get(repo)! as unknown as ResolutionContext, [refs], options).then(([delivered]) => delivered) as Computable<
-    FileSet[]
-  >;
+  return collectLists(machineryContexts.get(repo)! as unknown as ResolutionContext, [refs], options).then(
+    ([delivered]) => delivered
+  ) as Computable<FileSet[]>;
 }
 
 function toPromise<T>(computable: Computable<T>): Promise<T> {
@@ -489,12 +498,22 @@ describe("cyclic dependency closures through resolve + materialize", () => {
      * closed over the SAME instances — the production path of everything the
      * assembler suites drive via hand-built graphs. */
     const served = {
-      [`${REG}/ping/1.0.0`]: metadataFor("ping", "1.0.0", { pong: "^1.0.0" }, {
-        dist: { tarball: `${REG}/tarball/ping.tgz`, integrity: "", shasum: "", signatures: [] },
-      }),
-      [`${REG}/pong/1.0.0`]: metadataFor("pong", "1.0.0", { ping: "^1.0.0" }, {
-        dist: { tarball: `${REG}/tarball/pong.tgz`, integrity: "", shasum: "", signatures: [] },
-      }),
+      [`${REG}/ping/1.0.0`]: metadataFor(
+        "ping",
+        "1.0.0",
+        { pong: "^1.0.0" },
+        {
+          dist: { tarball: `${REG}/tarball/ping.tgz`, integrity: "", shasum: "", signatures: [] },
+        }
+      ),
+      [`${REG}/pong/1.0.0`]: metadataFor(
+        "pong",
+        "1.0.0",
+        { ping: "^1.0.0" },
+        {
+          dist: { tarball: `${REG}/tarball/pong.tgz`, integrity: "", shasum: "", signatures: [] },
+        }
+      ),
       [`${REG}/tarball/ping.tgz`]: packageTarball("ping.marker"),
       [`${REG}/tarball/pong.tgz`]: packageTarball("pong.marker"),
     };
@@ -545,7 +564,10 @@ describe("NPMRepository package extensions", () => {
 
   async function cssOf(extensions: PackageExtensions): Promise<PackageFileSet> {
     const repo = npmRepository(REG, fakeContext("build", served, []), extensions);
-    const refs = [refOf(repo.getRepositoryRef(Name.fromLiteral("widget:1.0.0"))), refOf(repo.getRepositoryRef(Name.fromLiteral("react:18.0.0")))];
+    const refs = [
+      refOf(repo.getRepositoryRef(Name.fromLiteral("widget:1.0.0"))),
+      refOf(repo.getRepositoryRef(Name.fromLiteral("react:18.0.0"))),
+    ];
     const [widget] = await toPromise(drive(repo, refs));
     return (widget as PackageFileSet).packages[0];
   }
@@ -657,7 +679,9 @@ describe("NPMRepository file requests", () => {
    * files or stay pending over the package behind them. */
   const collect = (repo: NPMRepository, refs: RepositoryRef[], extracted = true): Promise<unknown[]> =>
     toPromise(
-      collectLists(machineryContexts.get(repo)! as unknown as ResolutionContext, [refs], undefined, [extracted]).then(([delivered]) => delivered)
+      collectLists(machineryContexts.get(repo)! as unknown as ResolutionContext, [refs], undefined, [extracted]).then(
+        ([delivered]) => delivered
+      )
     );
 
   it("delivers plain files with no resolution, under an ordinary build", async () => {
@@ -756,7 +780,9 @@ describe("NPMRepository packuments", () => {
      * its own document; one already excluded, or any on a target without a
      * libc, is judged from its packument entry. */
     const served = {
-      [`${REG}/app`]: packumentOf("app", ["1.0.0"], { "1.0.0": [{}, { optionalDependencies: { "native-linux": "1.0.0", "native-darwin": "1.0.0" } }] }),
+      [`${REG}/app`]: packumentOf("app", ["1.0.0"], {
+        "1.0.0": [{}, { optionalDependencies: { "native-linux": "1.0.0", "native-darwin": "1.0.0" } }],
+      }),
       [`${REG}/native-linux`]: packumentOf("native-linux", ["1.0.0"], { "1.0.0": [{}, { os: ["linux"], cpu: ["x64"] }] }),
       [`${REG}/native-linux/1.0.0`]: metadataFor("native-linux", "1.0.0", {}, { os: ["linux"], cpu: ["x64"], libc: ["glibc"] }),
       [`${REG}/native-darwin`]: packumentOf("native-darwin", ["1.0.0"], { "1.0.0": [{}, { os: ["darwin"], cpu: ["arm64"] }] }),
@@ -767,7 +793,10 @@ describe("NPMRepository packuments", () => {
       const requirements = await toPromise(repo.getRequirements("app", parseVersion("1.0.0")));
       return { names: requirements.map(req => req.name), fetched: fetched.filter(url => /\/\d+\.\d+\.\d+$/.test(url)) };
     };
-    expect(await requiredOn("x86_64-unknown-linux-gnu")).to.deep.equal({ names: ["native-linux"], fetched: [`${REG}/native-linux/1.0.0`] });
+    expect(await requiredOn("x86_64-unknown-linux-gnu")).to.deep.equal({
+      names: ["native-linux"],
+      fetched: [`${REG}/native-linux/1.0.0`],
+    });
     expect(await requiredOn("arm64-apple-macosx15.0")).to.deep.equal({ names: ["native-darwin"], fetched: [] });
   });
 
@@ -849,7 +878,9 @@ describe("NPMRepository children", () => {
     expect(namespace).to.be.instanceOf(PartialRepositoryRef);
     expect((namespace as PartialRepositoryRef).name).to.equal("left-pad");
     /* The rest of the name completes it. */
-    expect(refOf((namespace as PartialRepositoryRef).getRepositoryRef(parseName("1.6.0"), ":") as RepositoryRef).toString()).to.equal("left-pad:1.6.0");
+    expect(refOf((namespace as PartialRepositoryRef).getRepositoryRef(parseName("1.6.0"), ":") as RepositoryRef).toString()).to.equal(
+      "left-pad:1.6.0"
+    );
     /* A marker or a rename still asks for a package, which needs a version. */
     expect(repo.getRepositoryRef(parseName("left-pad!"))).to.be.instanceOf(RepositoryRef);
     expect(repo.getRepositoryRef(parseName("left-pad -> pad"))).to.be.instanceOf(RepositoryRef);
@@ -916,10 +947,15 @@ describe("NPMRepository metadata memo", () => {
        never auto-installed — npm parity — but is still carried, because the
        requirer has to be able to REACH it when a consumer does provide it. */
     const url = `${REG}/plugin/1.0.0`;
-    const meta = metadataFor("plugin", "1.0.0", { lodash: "^4.0.0" }, {
-      peerDependencies: { eslint: "^9.0.0", typescript: ">=5" },
-      peerDependenciesMeta: { typescript: { optional: true } },
-    });
+    const meta = metadataFor(
+      "plugin",
+      "1.0.0",
+      { lodash: "^4.0.0" },
+      {
+        peerDependencies: { eslint: "^9.0.0", typescript: ">=5" },
+        peerDependenciesMeta: { typescript: { optional: true } },
+      }
+    );
     const globals: Record<string, string> = { [BUILD_OPERATION]: "build", [TARGET]: "arm64-apple-macosx15.0" };
     const context = {
       getGlobalString: (name: string) =>
@@ -1022,7 +1058,10 @@ interface CapturedPut {
   body: string;
 }
 
-function captureServer(status: number, response: string): Promise<{ port: number; captured: () => CapturedPut | undefined; close: () => void }> {
+function captureServer(
+  status: number,
+  response: string
+): Promise<{ port: number; captured: () => CapturedPut | undefined; close: () => void }> {
   return new Promise(resolve => {
     let captured: CapturedPut | undefined;
     const server = http.createServer((req, res) => {
@@ -1054,7 +1093,9 @@ describe("NPMRepository getRepositoryPublishRef", () => {
   });
 
   it("rejects a range where a coordinate must pin an exact version", () => {
-    expect(() => repo.getRepositoryPublishRef(Name.fromLiteral("@fabr/core:^1.0.0"))).to.throw(/'\^1.0.0' is not an exact package version/);
+    expect(() => repo.getRepositoryPublishRef(Name.fromLiteral("@fabr/core:^1.0.0"))).to.throw(
+      /'\^1.0.0' is not an exact package version/
+    );
   });
 
   it("names a truncated version as not a version, not as a range", () => {
@@ -1108,10 +1149,7 @@ describe("NPMRepository publish", () => {
     try {
       /* The credential comes from a project `.npmrc` keyed by the registry
        * (env substitution + per-registry keys are covered in NPMAuth.test). */
-      const repo = new NPMRepository(
-        `http://127.0.0.1:${server.port}`,
-        npmrcContext(`//127.0.0.1:${server.port}/:_authToken=tok123`)
-      );
+      const repo = new NPMRepository(`http://127.0.0.1:${server.port}`, npmrcContext(`//127.0.0.1:${server.port}/:_authToken=tok123`));
       const src = publishFileSet({
         "package.json": JSON.stringify({ name: "demo", version: "0.0.0-dev", dependencies: { "@scope/dep": "*", left: "^1" } }),
         "index.js": "module.exports = 1;\n",
@@ -1263,9 +1301,7 @@ describe("NPMRepository publish", () => {
      * has no line of its own to prefer, and there is no single release-wide
      * version — which one app's consumers would resolve is unknowable. */
     const err = await rejection(() =>
-      toPromise(
-        repo.package([{ destination: app, content }], [app, coord(other, "base:1.0.0"), coord(other, "base:2.0.0")])
-      )
+      toPromise(repo.package([{ destination: app, content }], [app, coord(other, "base:1.0.0"), coord(other, "base:2.0.0")]))
     );
     expect(err.message).to.match(/no version to record for 'base'/);
   });
@@ -1291,7 +1327,9 @@ describe("NPMRepository publish", () => {
     const widgets = coord(repo, "@acme/widgets:1.0.0");
     const core = coord(repo, "@acme/core:1.4.0");
     /* `deps = @acme/core -> core;` builds the alias form, with no version of its own. */
-    const content = publishFileSet({ "package.json": JSON.stringify({ name: "@acme/widgets", dependencies: { core: "npm:@acme/core@*" } }) });
+    const content = publishFileSet({
+      "package.json": JSON.stringify({ name: "@acme/widgets", dependencies: { core: "npm:@acme/core@*" } }),
+    });
     const [carrier] = await repo.package([{ destination: widgets, content }], [widgets, core], new Map([["@acme/core", [core]]]));
     const manifest = JSON.parse(await (await carrier.get("package.json"))!.readString());
     expect(manifest.dependencies.core).to.equal("npm:@acme/core@^1.4.0");
@@ -1301,7 +1339,9 @@ describe("NPMRepository publish", () => {
   it("refuses a dependency on a sibling under another name that the release doesn't publish", async () => {
     const repo = new NPMRepository(REG, npmrcContext());
     const widgets = coord(repo, "@acme/widgets:1.0.0");
-    const content = publishFileSet({ "package.json": JSON.stringify({ name: "@acme/widgets", dependencies: { core: "npm:@acme/core@*" } }) });
+    const content = publishFileSet({
+      "package.json": JSON.stringify({ name: "@acme/widgets", dependencies: { core: "npm:@acme/core@*" } }),
+    });
     const err = await rejection(() => toPromise(repo.package([{ destination: widgets, content }], [widgets], new Map())));
     expect(err.message).to.match(/no version to record for 'core'/);
   });
@@ -1344,7 +1384,9 @@ describe("NPMRepository publish", () => {
 
 /** A registry answering each `METHOD path` from `routes` with its status and
  *  body (404 otherwise), recording every request it receives. */
-function routedServer(routes: Record<string, readonly [number, string]>): Promise<{ port: number; requests: CapturedPut[]; close: () => void }> {
+function routedServer(
+  routes: Record<string, readonly [number, string]>
+): Promise<{ port: number; requests: CapturedPut[]; close: () => void }> {
   return new Promise(resolve => {
     const requests: CapturedPut[] = [];
     const server = http.createServer((req, res) => {
@@ -1357,7 +1399,9 @@ function routedServer(routes: Record<string, readonly [number, string]>): Promis
         res.end(body);
       });
     });
-    server.listen(0, "127.0.0.1", () => resolve({ port: (server.address() as AddressInfo).port, requests, close: () => server.close() }));
+    server.listen(0, "127.0.0.1", () =>
+      resolve({ port: (server.address() as AddressInfo).port, requests, close: () => server.close() })
+    );
   });
 }
 
@@ -1474,7 +1518,12 @@ SZmsJo0cKcK3owM=
     [REKOR]: [
       201,
       JSON.stringify({
-        uuid: { body: Buffer.from('{"kind":"dsse","apiVersion":"0.0.1"}').toString("base64"), integratedTime: 1, logID: "00", logIndex: 7 },
+        uuid: {
+          body: Buffer.from('{"kind":"dsse","apiVersion":"0.0.1"}').toString("base64"),
+          integratedTime: 1,
+          logID: "00",
+          logIndex: 7,
+        },
       }),
     ],
     [PUT]: [201, "{}"],
@@ -1505,16 +1554,27 @@ SZmsJo0cKcK3owM=
       },
     };
     const url = `http://127.0.0.1:${port}`;
-    const repo = new NPMRepository(url, context, options.access === undefined ? "public" : options.access, undefined, undefined, options.provenance ?? true, {
-      fulcioUrl: url,
-      rekorUrl: url,
-    });
+    const repo = new NPMRepository(
+      url,
+      context,
+      options.access === undefined ? "public" : options.access,
+      undefined,
+      undefined,
+      options.provenance ?? true,
+      {
+        fulcioUrl: url,
+        rekorUrl: url,
+      }
+    );
     const destination = coord(repo, "@fabr/core:0.1.0");
     const manifest = { name: "@fabr/core", version: "0", repository: options.repository ?? "https://github.com/fabr/fabr" };
     if (options.repository === "") {
       delete (manifest as { repository?: string }).repository;
     }
-    const [carrier] = await repo.package([{ destination, content: publishFileSet({ "package.json": JSON.stringify(manifest) }) }], [destination]);
+    const [carrier] = await repo.package(
+      [{ destination, content: publishFileSet({ "package.json": JSON.stringify(manifest) }) }],
+      [destination]
+    );
     await toPromise(repo.publish(carrier));
   }
 
@@ -1534,7 +1594,9 @@ SZmsJo0cKcK3owM=
       expect(statement.subject).to.deep.equal([
         { name: "pkg:npm/%40fabr/core@0.1.0", digest: { sha512: crypto.createHash("sha512").update(tarball).digest("hex") } },
       ]);
-      expect(statement.predicate.runDetails.metadata.invocationId).to.equal("https://github.com/fabr/fabr/actions/runs/303/attempts/1");
+      expect(statement.predicate.runDetails.metadata.invocationId).to.equal(
+        "https://github.com/fabr/fabr/actions/runs/303/attempts/1"
+      );
       expect(bundle.verificationMaterial.tlogEntries[0].logIndex).to.equal("7");
     } finally {
       server.close();
@@ -1744,7 +1806,14 @@ describe("override markers", () => {
 
   it("a '?' stating no version contradicts a '!' on the package", async () => {
     const repo = npmRepository(REG, fakeContext("build", served, []));
-    const err = await rejection(() => toPromise(collectLists(machineryContexts.get(repo)! as unknown as ResolutionContext, [refsFor(repo, ["A:1.1.0", "C?"]), refsFor(repo, ["C:2.5.0!"])])));
+    const err = await rejection(() =>
+      toPromise(
+        collectLists(machineryContexts.get(repo)! as unknown as ResolutionContext, [
+          refsFor(repo, ["A:1.1.0", "C?"]),
+          refsFor(repo, ["C:2.5.0!"]),
+        ])
+      )
+    );
     expect(err.message).to.contain("is both forced ('!') and permitted as an alternate ('?')");
   });
 
@@ -1772,7 +1841,12 @@ describe("override markers", () => {
     const packages = delivered.filter((set): set is PackageFileSet => set instanceof PackageFileSet && [...set].length > 0);
     /* Reached only through a built package's carried deps: the carrier's own
      * edge binds the fork, and the principal sits in the closure beside it. */
-    const carrier = new PackageFileSet(new FileSet(new Map([["package.json", MemoryFile.from("{}")]])), "P", "1.0.0", dependenciesOn(...packages));
+    const carrier = new PackageFileSet(
+      new FileSet(new Map([["package.json", MemoryFile.from("{}")]])),
+      "P",
+      "1.0.0",
+      dependenciesOn(...packages)
+    );
     const assembled = new Map(assembleNodeModules([carrier]));
     expect(assembled.has(".fabr/C@2.5.0/node_modules/C/v2.5.0.marker")).to.equal(true);
     expect(assembled.has(".fabr/C@1.5.0/node_modules/C/v1.5.0.marker")).to.equal(true);
@@ -1887,7 +1961,10 @@ describe("override markers", () => {
     /* The packages it names are data on the failure, not only text. */
     const cause = err instanceof RequirementResolutionError ? err.cause : err;
     expect(cause).to.be.instanceOf(ResolutionWalkError);
-    expect((cause as ResolutionWalkError).failures.flatMap(failure => failure.floorless ?? []).map(pkg => pkg.name)).to.deep.equal(["T", "U"]);
+    expect((cause as ResolutionWalkError).failures.flatMap(failure => failure.floorless ?? []).map(pkg => pkg.name)).to.deep.equal([
+      "T",
+      "U",
+    ]);
   });
 
   it("a '?' stating no version supplies no version to a package required only without a lower bound", async () => {
@@ -1982,9 +2059,7 @@ describe("merged layout across a batch", () => {
 
   it("keeps a member on the version its edge binds across a merge with a sibling delivery", async () => {
     const repo = npmRepository(REG, fakeContext("build", served, []));
-    const delivered = await toPromise(
-      drive(repo, refsFor(repo, ["jsdom:1.0.0", "md:1.0.0", "entities:4.0.0?", "entities:6.0.0?"]))
-    );
+    const delivered = await toPromise(drive(repo, refsFor(repo, ["jsdom:1.0.0", "md:1.0.0", "entities:4.0.0?", "entities:6.0.0?"])));
     const packages = delivered.filter(set => set instanceof FileSet);
     /* parse5 carries the copy its edge binds, even though its own delivery
      * hoisted that very version — the batch is what it must survive. */
@@ -2023,7 +2098,11 @@ describe("package rename", () => {
     /* collectLists, not resolveBatch: the rename is applied where
      * every delivery is finished (RepositoryRef.applyTo), which is the
      * collection point's job, not the repository's. */
-    const [delivered] = await toPromise(collectLists(machineryContexts.get(repo)! as unknown as ResolutionContext, [refsFor(repo, ["stream-browserify:3.0.0 -> stream"])]).then(([delivered]) => delivered));
+    const [delivered] = await toPromise(
+      collectLists(machineryContexts.get(repo)! as unknown as ResolutionContext, [
+        refsFor(repo, ["stream-browserify:3.0.0 -> stream"]),
+      ]).then(([delivered]) => delivered)
+    );
     expect((delivered as PackageFileSet).packageName).to.equal("stream");
     /* The mount follows the delivered identity, so a source importing 'stream'
      * resolves the shim — while its own closure keeps its real names. */
@@ -2050,7 +2129,8 @@ describe("package rename", () => {
   });
 });
 
-const npmRefText = (pkg: PackageIdentity, version: string, marker?: "?" | "!"): string => `@npm:${pkg.publishedName ?? pkg.name}:${version}${marker ?? ""}`;
+const npmRefText = (pkg: PackageIdentity, version: string, marker?: "?" | "!"): string =>
+  `@npm:${pkg.publishedName ?? pkg.name}:${version}${marker ?? ""}`;
 
 describe("conflictError (the strict repair report)", () => {
   /* Floor raises are deliberately absent here: a raised floor is the
@@ -2189,13 +2269,16 @@ describe("multi-route domains (repository groups)", () => {
 
   it("dispatches transitive metadata and fetches to the routed member", async () => {
     const fetched: string[] = [];
-    const repo = groupDomain(fakeContext("build", served, fetched), [["@scope/*", PRIV], ["*", REG]]);
+    const repo = groupDomain(fakeContext("build", served, fetched), [
+      ["@scope/*", PRIV],
+      ["*", REG],
+    ]);
     const ref = refOf(repo.getRepositoryRef(Name.fromLiteral("app:1.0.0")));
 
     const [delivered] = await toPromise(drive(repo, [ref]));
     const app = delivered as PackageFileSet;
     expect(app.packageName).to.equal("app");
-    expect((app.packages[0]).packageName).to.equal("@scope/icons");
+    expect(app.packages[0].packageName).to.equal("@scope/icons");
     /* The scoped package's documents came from the private registry. */
     expect(fetched).to.contain(`${PRIV}/@scope%2ficons/1.2.0`);
     expect(fetched).to.contain(`${PRIV}/tarball/icons.tgz`);
@@ -2209,7 +2292,10 @@ describe("multi-route domains (repository groups)", () => {
       memoKeys.push(`${tag} ${key}`);
       return memoize(tag, key, fn);
     };
-    const repo = groupDomain(context, [["@scope/*", PRIV], ["*", REG]]);
+    const repo = groupDomain(context, [
+      ["@scope/*", PRIV],
+      ["*", REG],
+    ]);
     await toPromise(drive(repo, [refOf(repo.getRepositoryRef(Name.fromLiteral("app:1.0.0")))]));
     expect(memoKeys).to.have.lengthOf(1);
     expect(memoKeys[0]).to.contain(NPM_FORMAT.resolutionTag);
@@ -2232,12 +2318,20 @@ describe("multi-route domains (repository groups)", () => {
      * through the group — a mis-partitioned validate would miss it. */
     const gated: Record<string, FileSet | Error> = {
       [`${REG}/app/1.0.0`]: metadataFor("app", "1.0.0", { "@scope/native": "^1.0.0" }, dist(REG, "app")),
-      [`${PRIV}/@scope%2fnative/1.0.0`]: metadataFor("@scope/native", "1.0.0", {}, {
-        ...dist(PRIV, "native"),
-        os: ["linux"],
-      }),
+      [`${PRIV}/@scope%2fnative/1.0.0`]: metadataFor(
+        "@scope/native",
+        "1.0.0",
+        {},
+        {
+          ...dist(PRIV, "native"),
+          os: ["linux"],
+        }
+      ),
     };
-    const repo = groupDomain(fakeContext("build", gated, []), [["@scope/*", PRIV], ["*", REG]]);
+    const repo = groupDomain(fakeContext("build", gated, []), [
+      ["@scope/*", PRIV],
+      ["*", REG],
+    ]);
     const err = await rejection(() => toPromise(drive(repo, [refOf(repo.getRepositoryRef(Name.fromLiteral("app:1.0.0")))])));
     expect(err.message).to.contain("@scope/native@1.0.0 is not supported for the target platform");
   });
@@ -2248,7 +2342,10 @@ describe("multi-route domains (repository groups)", () => {
      * partition-by-destination handles a multi-registry release with no group
      * publish machinery at all. */
     const context = npmrcContext();
-    const repo = groupDomain(context, [["@scope/*", PRIV], ["*", REG]]);
+    const repo = groupDomain(context, [
+      ["@scope/*", PRIV],
+      ["*", REG],
+    ]);
     const scoped = repo.getRepositoryPublishRef(Name.fromLiteral("@scope/x:1.0.0")) as RepositoryPublishRef;
     const pub = repo.getRepositoryPublishRef(Name.fromLiteral("demo:1.2.3")) as RepositoryPublishRef;
     expect(scoped.source).to.be.instanceOf(NPMRepository);
@@ -2262,7 +2359,10 @@ describe("multi-route domains (repository groups)", () => {
 
   it("routes publish coordinates, refusing one no route serves", () => {
     const context = npmrcContext();
-    const repo = groupDomain(context, [["@scope/*", PRIV], ["*", REG]]);
+    const repo = groupDomain(context, [
+      ["@scope/*", PRIV],
+      ["*", REG],
+    ]);
     expect(repo.getRepositoryPublishRef(Name.fromLiteral("@scope/x:1.0.0")).toString()).to.equal("@scope/x:1.0.0");
 
     const closed = groupDomain(context, [["@scope/*", PRIV]]);

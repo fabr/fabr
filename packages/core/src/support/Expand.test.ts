@@ -215,9 +215,17 @@ describe("Expand", () => {
     it("decides archive-ness by content, not name", async () => {
       /* A .tgz-named text file never opens (its sniffed mime says so) — and a
        * real archive opens whatever it is called. */
-      const set = new FileSet(new Map([["fake.tgz", MemoryFile.from("not really")], ["oddly.named", await archive()]]));
+      const set = new FileSet(
+        new Map([
+          ["fake.tgz", MemoryFile.from("not really")],
+          ["oddly.named", await archive()],
+        ])
+      );
       expect((await findWithDescent(set, selector("fake.tgz:**"), "", expandOnce)).isEmpty()).to.equal(true);
-      expect(names(await findWithDescent(set, selector("oddly.named:*:**"), "", expandOnce))).to.deep.equal(["lib/x.js", "package.json"]);
+      expect(names(await findWithDescent(set, selector("oddly.named:*:**"), "", expandOnce))).to.deep.equal([
+        "lib/x.js",
+        "package.json",
+      ]);
     });
 
     it("skips an unexpandable archive a glob probe merely swept", async () => {
@@ -246,7 +254,14 @@ describe("Expand", () => {
     });
 
     it("descends into a zip like a directory", async () => {
-      const zip = await packToZip(new FileSet(new Map([["META-INF/MANIFEST.MF", MemoryFile.from("Main-Class: A\r\n")], ["A.class", MemoryFile.from("x")]])));
+      const zip = await packToZip(
+        new FileSet(
+          new Map([
+            ["META-INF/MANIFEST.MF", MemoryFile.from("Main-Class: A\r\n")],
+            ["A.class", MemoryFile.from("x")],
+          ])
+        )
+      );
       const set = new FileSet(new Map([["lib/a.jar", new MemoryFile(zip)]]));
       const found = await findWithDescent(set, selector("lib/a.jar:META-INF/*"), "", expandOnce);
       expect(names(found)).to.deep.equal(["META-INF/MANIFEST.MF"]);
@@ -262,11 +277,7 @@ describe("Expand", () => {
       try {
         fsNode.writeFileSync(pathNode.join(dir, "a.tgz"), await (await archive()).getBuffer());
         const source = new FSFileSource("/");
-        const pattern = new NameBuilder()
-          .appendLiteralString(`${dir}:a.tgz:`)
-          .appendGlobMetachars("**")
-          .name()
-          .rebase("/");
+        const pattern = new NameBuilder().appendLiteralString(`${dir}:a.tgz:`).appendGlobMetachars("**").name().rebase("/");
         const found = await findWithDescent(source, pattern, "", expandOnce);
         expect(names(found)).to.deep.equal(["amperize-3f2dc4e/lib/x.js", "amperize-3f2dc4e/package.json"]);
       } finally {

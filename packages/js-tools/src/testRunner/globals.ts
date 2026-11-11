@@ -49,6 +49,6 @@ globals.beforeAll ??= nodeTest.before;
 globals.afterAll ??= nodeTest.after;
 
 /* Absent before node 22.3, where there are no snapshot assertions to place. */
-(nodeTest as { snapshot?: { setResolveSnapshotPath(fn: (testPath: string | undefined) => string | undefined): void } }).snapshot?.setResolveSnapshotPath(
-  testPath => (testPath === undefined ? undefined : snapshotPathOf(testPath))
-);
+(
+  nodeTest as { snapshot?: { setResolveSnapshotPath(fn: (testPath: string | undefined) => string | undefined): void } }
+).snapshot?.setResolveSnapshotPath(testPath => (testPath === undefined ? undefined : snapshotPathOf(testPath)));

@@ -28,7 +28,7 @@ describe("e2e: fabr shell", () => {
   const project = {
     "PROJECT.fabr":
       "plugin @fabr-build/js;\n" +
-      "js_script gen { entry = src:gen.js; env = { MODE = \"a b\"; WHO = script; } }\n" +
+      'js_script gen { entry = src:gen.js; env = { MODE = "a b"; WHO = script; } }\n' +
       "generate g {\n  srcs = src:data.txt;\n  run = gen < src:data.txt > out.txt;\n  env = { WHO = target; };\n}\n" +
       "flag ff { }\n",
     "src/gen.js": "require('fs').writeFileSync('out.txt','generated\\n');\n",

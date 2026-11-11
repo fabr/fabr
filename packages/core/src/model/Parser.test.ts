@@ -184,7 +184,12 @@ describe("override markers on a name", () => {
   const marker = (written: string): string | undefined => parseName(written).getMarker();
 
   it("records a `?` or `!` written unquoted at the end", () => {
-    expect([marker("foo?"), marker("foo!"), marker("@npm:x:1.0.0!"), marker("foo")]).to.deep.equal(["alternate", "force", "force", undefined]);
+    expect([marker("foo?"), marker("foo!"), marker("@npm:x:1.0.0!"), marker("foo")]).to.deep.equal([
+      "alternate",
+      "force",
+      "force",
+      undefined,
+    ]);
   });
 
   it("does not record one that is quoted, escaped, or inside the name", () => {
@@ -265,9 +270,7 @@ describe("Parser Tests", () => {
     ]);
     /* `foo/bar` is a SIMPLE_NAME (has a slash), not an identifier, so it can't
      * start a statement (a property name / type must be a plain identifier). */
-    expect(parseInvalid("foo/bar=woo;")).to.deep.equal([
-      diagnosticBlock(1, 1, "Read Name but expected Statement", "foo/bar=woo;"),
-    ]);
+    expect(parseInvalid("foo/bar=woo;")).to.deep.equal([diagnosticBlock(1, 1, "Read Name but expected Statement", "foo/bar=woo;")]);
   });
 
   it("treats tabs and CRLF as insignificant whitespace", () => {
@@ -292,12 +295,7 @@ describe("Parser Tests", () => {
     /* `default` is a keyword; a `/`-bearing name must error positioned at the
      * name, rather than silently parsing as a target of type `default`. */
     expect(parseInvalid("default foo/bar = x;")).to.deep.equal([
-      diagnosticBlock(
-        1,
-        9,
-        "Read Name but expected a property name or target type after 'default'",
-        "default foo/bar = x;"
-      ),
+      diagnosticBlock(1, 9, "Read Name but expected a property name or target type after 'default'", "default foo/bar = x;"),
     ]);
   });
 
@@ -447,12 +445,8 @@ describe("Parser Tests", () => {
   });
 
   it("positions an unterminated-quote error at the opening quote", () => {
-    expect(parseInvalid("A = 'oops;")).to.deep.equal([
-      diagnosticBlock(1, 5, "Unexpected end of file, expected '", "A = 'oops;"),
-    ]);
-    expect(parseInvalid('A = "oops;')).to.deep.equal([
-      diagnosticBlock(1, 5, 'Unexpected end of file, expected "', 'A = "oops;'),
-    ]);
+    expect(parseInvalid("A = 'oops;")).to.deep.equal([diagnosticBlock(1, 5, "Unexpected end of file, expected '", "A = 'oops;")]);
+    expect(parseInvalid('A = "oops;')).to.deep.equal([diagnosticBlock(1, 5, 'Unexpected end of file, expected "', 'A = "oops;')]);
   });
 
   it("Target Decl", () => {
@@ -529,9 +523,7 @@ describe("Parser Tests", () => {
   });
 
   it("Optional final semicolon", () => {
-    expect(
-      summarize(parseValid("npm_dep @npm {\n  deps = chokidar:3.5.3 picomatch:2.3.1 unicode-properties:1.3.1\n}"))
-    ).to.deep.equal(
+    expect(summarize(parseValid("npm_dep @npm {\n  deps = chokidar:3.5.3 picomatch:2.3.1 unicode-properties:1.3.1\n}"))).to.deep.equal(
       summary({
         targets: {
           "@npm": {
@@ -567,9 +559,7 @@ describe("Parser Tests", () => {
 
   it("Targetdef with declared defaults", () => {
     expect(
-      summarize(
-        parseValid("targetdef js_package {\n  value = STRING default some default value;\n  srcs = FILES default *.ts;\n}")
-      )
+      summarize(parseValid("targetdef js_package {\n  value = STRING default some default value;\n  srcs = FILES default *.ts;\n}"))
     ).to.deep.equal(
       summary({
         targetdefs: {
@@ -585,14 +575,11 @@ describe("Parser Tests", () => {
   });
 
   it("Targetdef default taking a map block", () => {
-    const schema = parseValid("targetdef t { defines = MAP default { a = 1; b = 2; } }").targetdefs[0].properties.get(
-      "defines"
-    );
+    const schema = parseValid("targetdef t { defines = MAP default { a = 1; b = 2; } }").targetdefs[0].properties.get("defines");
     const entries = entriesOf(schema?.default?.values[0]) ?? [];
-    expect(entries.filter((item): item is IPropertyDecl => item.kind === DeclKind.Property).map(prop => prop.name.toBaseString())).to.deep.equal([
-      "a",
-      "b",
-    ]);
+    expect(
+      entries.filter((item): item is IPropertyDecl => item.kind === DeclKind.Property).map(prop => prop.name.toBaseString())
+    ).to.deep.equal(["a", "b"]);
   });
 
   it("Targetdef default following the type keywords, terminated by '}' without a ';'", () => {
@@ -690,7 +677,11 @@ describe("Parser Tests", () => {
     expect(summarize(parseValid("plugin @fabr-home:@example/lint;\nplugin @npm:@example/lint:1.2.0;"))).to.deep.equal(
       summary({ plugins: ["@fabr-home:@example/lint", "@npm:@example/lint:1.2.0"] })
     );
-    expect(parseValid("plugin greeter<STAGE=0>;").plugins[0].name.getConstraints().map(([key, value]) => `${key}=${value.toString()}`)).to.deep.equal(["STAGE=0"]);
+    expect(
+      parseValid("plugin greeter<STAGE=0>;")
+        .plugins[0].name.getConstraints()
+        .map(([key, value]) => `${key}=${value.toString()}`)
+    ).to.deep.equal(["STAGE=0"]);
     expect(summarize(parseValid("js_package my-target {\n  srcs = src:*.ts; }"))).to.deep.equal(
       summary({ targets: { "my-target": { type: "js_package", properties: { srcs: ["src:+glob(*)+.ts"] } } } })
     );
@@ -707,9 +698,7 @@ describe("Parser Tests", () => {
         .getConstraints()
         .map(([key]) => key)
     ).to.deep.equal(["a-b"]);
-    expect(parseInvalid("a.b = 1;")).to.deep.equal([
-      diagnosticBlock(1, 1, "Read Name but expected Statement", "a.b = 1;"),
-    ]);
+    expect(parseInvalid("a.b = 1;")).to.deep.equal([diagnosticBlock(1, 1, "Read Name but expected Statement", "a.b = 1;")]);
     expect(parseInvalid("dep = mylib<a.b=1>;")).to.deep.equal([
       diagnosticBlock(1, 13, "Read Name but expected a constraint key", "dep = mylib<a.b=1>;"),
     ]);
@@ -750,9 +739,7 @@ describe("Parser Tests", () => {
 
     it("accepts non-identifier constraint values (versions, requirements)", () => {
       expect(constraintsOf(firstValue("dep = a<V=5.4.5>;"))).to.deep.equal([["V", "5.4.5"]]);
-      expect(constraintsOf(firstValue("dep = a<TSC=@npm:typescript:5.4.5>;"))).to.deep.equal([
-        ["TSC", "@npm:typescript:5.4.5"],
-      ]);
+      expect(constraintsOf(firstValue("dep = a<TSC=@npm:typescript:5.4.5>;"))).to.deep.equal([["TSC", "@npm:typescript:5.4.5"]]);
     });
 
     it("accepts a purely-numeric constraint value (the closing '>' is not an fd redirect)", () => {
@@ -799,9 +786,7 @@ describe("Parser Tests", () => {
     });
 
     it("rejects a constraint with no value", () => {
-      expect(parseInvalid("dep = mylib<A>;")).to.deep.equal([
-        diagnosticBlock(1, 14, "Read '>' but expected '='", "dep = mylib<A>;"),
-      ]);
+      expect(parseInvalid("dep = mylib<A>;")).to.deep.equal([diagnosticBlock(1, 14, "Read '>' but expected '='", "dep = mylib<A>;")]);
     });
 
     it("treats a spaced '< file' with no '=' as a stdin redirect", () => {
@@ -955,12 +940,7 @@ describe("Parser Tests", () => {
 
     it("rejects constraints on the template", () => {
       expect(parseInvalid("out = *.expect -> *.out<A=1>;")).to.deep.equal([
-        diagnosticBlock(
-          1,
-          24,
-          "Invalid rename template: a rename template cannot carry constraints",
-          "out = *.expect -> *.out<A=1>;"
-        ),
+        diagnosticBlock(1, 24, "Invalid rename template: a rename template cannot carry constraints", "out = *.expect -> *.out<A=1>;"),
       ]);
     });
 
@@ -1026,10 +1006,20 @@ describe("Parser Tests", () => {
 
       it("rejects a reference to a wildcard the selector does not have", () => {
         expect(parseInvalid("out = *.a -> $2.b;")).to.deep.equal([
-          diagnosticBlock(1, 11, "Invalid rename template: '$2' is out of range — the selector has 1 wildcard(s)", "out = *.a -> $2.b;"),
+          diagnosticBlock(
+            1,
+            11,
+            "Invalid rename template: '$2' is out of range — the selector has 1 wildcard(s)",
+            "out = *.a -> $2.b;"
+          ),
         ]);
         expect(parseInvalid("out = a.txt -> $1.b;")).to.deep.equal([
-          diagnosticBlock(1, 13, "Invalid rename template: '$1' has no wildcard to replay — the selector has none", "out = a.txt -> $1.b;"),
+          diagnosticBlock(
+            1,
+            13,
+            "Invalid rename template: '$1' has no wildcard to replay — the selector has none",
+            "out = a.txt -> $1.b;"
+          ),
         ]);
       });
 
@@ -1074,23 +1064,13 @@ describe("Parser Tests", () => {
 
     it("rejects a wildcard picomatch does not capture positionally", () => {
       expect(parseInvalid("out = a?.js -> a?.out;")).to.deep.equal([
-        diagnosticBlock(
-          1,
-          13,
-          "Invalid rename template: rename wildcards must be '*' or '**' (found '?')",
-          "out = a?.js -> a?.out;"
-        ),
+        diagnosticBlock(1, 13, "Invalid rename template: rename wildcards must be '*' or '**' (found '?')", "out = a?.js -> a?.out;"),
       ]);
     });
 
     it("rejects a ':' in the template (a pattern, not a reference)", () => {
       expect(parseInvalid("out = *.a -> pkg:*.b;")).to.deep.equal([
-        diagnosticBlock(
-          1,
-          11,
-          "Invalid rename template: a rename template cannot contain ':'",
-          "out = *.a -> pkg:*.b;"
-        ),
+        diagnosticBlock(1, 11, "Invalid rename template: a rename template cannot contain ':'", "out = *.a -> pkg:*.b;"),
       ]);
     });
 
@@ -1245,9 +1225,7 @@ describe("Parser Tests", () => {
     }
 
     it("parses a pipeline with a redirect", () => {
-      expect(sequence("run = list_targetdefs --json | gendoc > out.mdx;")).to.equal(
-        "list_targetdefs --json | gendoc > out.mdx"
-      );
+      expect(sequence("run = list_targetdefs --json | gendoc > out.mdx;")).to.equal("list_targetdefs --json | gendoc > out.mdx");
     });
 
     it("parses stdin, stderr and both redirects", () => {
@@ -1298,7 +1276,12 @@ describe("Parser Tests", () => {
     it("allows a dup mid-pipeline — it captures nothing, it feeds the pipe", () => {
       expect(sequence("run = a 2>&1 | b > out;")).to.equal("a 2>&1 | b > out");
       expect(parseInvalid("run = a > f | b;")).to.deep.equal([
-        diagnosticBlock(1, 13, "Invalid command: only the final stage of a pipeline can capture stdout ('>' / '&>')", "run = a > f | b;"),
+        diagnosticBlock(
+          1,
+          13,
+          "Invalid command: only the final stage of a pipeline can capture stdout ('>' / '&>')",
+          "run = a > f | b;"
+        ),
       ]);
     });
 
@@ -1370,17 +1353,13 @@ describe("Parser Tests", () => {
     });
 
     it("rejects an empty substitution", () => {
-      expect(parseInvalid("V = ``;")).to.deep.equal([
-        diagnosticBlock(1, 5, "Invalid command: empty command substitution", "V = ``;"),
-      ]);
+      expect(parseInvalid("V = ``;")).to.deep.equal([diagnosticBlock(1, 5, "Invalid command: empty command substitution", "V = ``;")]);
     });
 
     it("keeps an abutting <k=v> a constraint on the command, not a stdin redirect", () => {
       /* The constraint binds because it abuts; only a spaced `<` is a redirect. A
        * pipe makes the value a command so we can read the parsed stages. */
-      expect(sequence("run = mytool<BUILD_TYPE=release> --flag | tee;")).to.equal(
-        "mytool<BUILD_TYPE=release> --flag | tee"
-      );
+      expect(sequence("run = mytool<BUILD_TYPE=release> --flag | tee;")).to.equal("mytool<BUILD_TYPE=release> --flag | tee");
     });
 
     it("preserves glob args (expanded over srcs at resolution, not here)", () => {
@@ -1389,7 +1368,12 @@ describe("Parser Tests", () => {
 
     it("still flags an unspaced arrow rather than reading it as a redirect", () => {
       expect(parseInvalid("out = a-> *.b;")).to.deep.equal([
-        diagnosticBlock(1, 9, "Invalid rename template: the '->' arrow must be surrounded by spaces (`sel -> tmpl`)", "out = a-> *.b;"),
+        diagnosticBlock(
+          1,
+          9,
+          "Invalid rename template: the '->' arrow must be surrounded by spaces (`sel -> tmpl`)",
+          "out = a-> *.b;"
+        ),
       ]);
     });
 
@@ -1422,7 +1406,12 @@ describe("Parser Tests", () => {
 
     it("rejects stdout capture on a non-final stage", () => {
       expect(parseInvalid("run = a > x | b;")).to.deep.equal([
-        diagnosticBlock(1, 13, "Invalid command: only the final stage of a pipeline can capture stdout ('>' / '&>')", "run = a > x | b;"),
+        diagnosticBlock(
+          1,
+          13,
+          "Invalid command: only the final stage of a pipeline can capture stdout ('>' / '&>')",
+          "run = a > x | b;"
+        ),
       ]);
     });
 
@@ -1484,7 +1473,8 @@ describe("Parser Tests", () => {
 
     it("parses a nested block and a list of blocks", () => {
       const values = propertiesOf(
-        parseValid("js_bundle b {\n  meta = { repository = { type = git; url = u; }; maintainers = { name = a; } { name = b; }; }\n}").targets[0]
+        parseValid("js_bundle b {\n  meta = { repository = { type = git; url = u; }; maintainers = { name = a; } { name = b; }; }\n}")
+          .targets[0]
       )[0].values;
       const entries = blockEntries(entriesOf(values[0]));
       const repository = entries[0];
@@ -1499,7 +1489,9 @@ describe("Parser Tests", () => {
 
     it("parses a bare reference statement as a splice", () => {
       const items = entriesOf(
-        propertiesOf(parseValid("js_bundle b {\n  meta = {\n    FABR_METADATA;\n    description = CLI package;\n  };\n}").targets[0])[0].values[0]
+        propertiesOf(
+          parseValid("js_bundle b {\n  meta = {\n    FABR_METADATA;\n    description = CLI package;\n  };\n}").targets[0]
+        )[0].values[0]
       );
       expect(items).to.have.lengthOf(2);
       const [splice, entry] = items ?? [];
@@ -1519,7 +1511,11 @@ describe("Parser Tests", () => {
       const entries = blockEntries(
         entriesOf(propertiesOf(parseValid("js_bundle b {\n  defines = { VERSION = ${BUILD_NO}; }\n}").targets[0])[0].values[0])
       );
-      expect(nameOf(entries[0].values[0]).getSubstitutions().map(part => part.value)).to.deep.equal(["BUILD_NO"]);
+      expect(
+        nameOf(entries[0].values[0])
+          .getSubstitutions()
+          .map(part => part.value)
+      ).to.deep.equal(["BUILD_NO"]);
     });
 
     it("parses an empty block", () => {
@@ -1571,7 +1567,9 @@ describe("Parser Tests", () => {
       constraints.map(([key, pattern]) => `${key}=${pattern.toString()}`);
 
     it("parses a rule's type, parameter, guards and implementation", () => {
-      const [rule] = parseValid("rule js_package pkg<BUILD_OPERATION=test, pkg.test_framework=jest> = @fabr-build/js:rules/TestJSPackage;").rules;
+      const [rule] = parseValid(
+        "rule js_package pkg<BUILD_OPERATION=test, pkg.test_framework=jest> = @fabr-build/js:rules/TestJSPackage;"
+      ).rules;
       expect(rule.type).to.equal("js_package");
       expect(rule.param).to.equal("pkg");
       expect(guard(rule.properties)).to.deep.equal(["BUILD_OPERATION=test"]);
@@ -1581,7 +1579,9 @@ describe("Parser Tests", () => {
     });
 
     it("parses a rule with no guard, and a default rule of every type", () => {
-      const rules = parseValid("rule js_compile c = @fabr-build/js:rules/BuildJSCompile;\ndefault rule t<BUILD_OPERATION=files> = @x/y:rules/Files;").rules;
+      const rules = parseValid(
+        "rule js_compile c = @fabr-build/js:rules/BuildJSCompile;\ndefault rule t<BUILD_OPERATION=files> = @x/y:rules/Files;"
+      ).rules;
       expect(rules.map(rule => [rule.type, rule.param, guard(rule.properties)])).to.deep.equal([
         ["js_compile", "c", []],
         [undefined, "t", ["BUILD_OPERATION=files"]],
@@ -1595,7 +1595,10 @@ describe("Parser Tests", () => {
 
     it("parses a repository declaration", () => {
       const [repository] = parseValid("repository npm_repository = @fabr-build/js:NPMRepository;").repositories;
-      expect([repository.type, repository.implementation.value.toString()]).to.deep.equal(["npm_repository", "@fabr-build/js:NPMRepository"]);
+      expect([repository.type, repository.implementation.value.toString()]).to.deep.equal([
+        "npm_repository",
+        "@fabr-build/js:NPMRepository",
+      ]);
     });
 
     it("leaves a property or target named rule or repository as it is", () => {
@@ -1631,11 +1634,13 @@ describe("Parser Tests", () => {
     }
 
     it("parses a short-form rule as a block of its one target, the result its name", () => {
-      const block = blockOf("rule js_package pkg<BUILD_OPERATION=lint> = generate lint {\n  srcs = pkg.srcs;\n  run = eslint > lint.txt;\n}");
+      const block = blockOf(
+        "rule js_package pkg<BUILD_OPERATION=lint> = generate lint {\n  srcs = pkg.srcs;\n  run = eslint > lint.txt;\n}"
+      );
       expect(block.result.value.toString()).to.equal("lint");
-      expect(block.targets.map(target => [target.type, target.name.toString(), propertiesOf(target).map(prop => prop.name.toString())])).to.deep.equal([
-        ["generate", "lint", ["srcs", "run"]],
-      ]);
+      expect(
+        block.targets.map(target => [target.type, target.name.toString(), propertiesOf(target).map(prop => prop.name.toString())])
+      ).to.deep.equal([["generate", "lint", ["srcs", "run"]]]);
       expect(block.properties).to.deep.equal([]);
     });
 
@@ -1650,11 +1655,15 @@ describe("Parser Tests", () => {
 
     it("parses a result requiring a configuration", () => {
       const block = blockOf("rule t x = tool<BUILD_OPERATION=run> { script tool { entry = a.sh; } }");
-      expect(block.result.value.getConstraints().map(([key, value]) => `${key}=${value.toString()}`)).to.deep.equal(["BUILD_OPERATION=run"]);
+      expect(block.result.value.getConstraints().map(([key, value]) => `${key}=${value.toString()}`)).to.deep.equal([
+        "BUILD_OPERATION=run",
+      ]);
     });
 
     it("refuses a declaration a rule's block cannot hold", () => {
-      expect(parseInvalid("rule t x = y { include ./a.fabr; }").join("\n")).to.contain("A rule's block declares only targets and properties, not 'include'");
+      expect(parseInvalid("rule t x = y { include ./a.fabr; }").join("\n")).to.contain(
+        "A rule's block declares only targets and properties, not 'include'"
+      );
       expect(parseInvalid("rule t x = y { default z = 1; }").join("\n")).to.contain("not 'default'");
     });
   });
@@ -1662,7 +1671,10 @@ describe("Parser Tests", () => {
   describe("constraint guards", () => {
     /** The guard on a decl, rendered `KEY=value, …` (empty string if unguarded). */
     function guardText(decl: IPropertyDecl): string {
-      return decl.name.getConstraints().map(([key, value]) => `${key}=${value.toString()}`).join(", ");
+      return decl.name
+        .getConstraints()
+        .map(([key, value]) => `${key}=${value.toString()}`)
+        .join(", ");
     }
 
     it("parses a guard on a target's property key", () => {
@@ -1682,7 +1694,9 @@ describe("Parser Tests", () => {
     });
 
     it("distributes a guard block over the declarations it contains", () => {
-      const target = parseValid("library l {\n  srcs = base.c;\n  <TARGET=*-linux-*> {\n    srcs = epoll.c;\n    deps = libaio;\n  }\n}").targets[0];
+      const target = parseValid(
+        "library l {\n  srcs = base.c;\n  <TARGET=*-linux-*> {\n    srcs = epoll.c;\n    deps = libaio;\n  }\n}"
+      ).targets[0];
       expect(propertiesOf(target).map(prop => prop.name.toBaseString())).to.deep.equal(["srcs", "srcs", "deps"]);
       /* Sugar only: the block leaves no trace beyond the guard on each decl. */
       expect(propertiesOf(target).map(guardText)).to.deep.equal(["", "TARGET=*-linux-*", "TARGET=*-linux-*"]);
@@ -1706,7 +1720,9 @@ describe("Parser Tests", () => {
     });
 
     it("rejects a key guarded by both an enclosing block and a nested one", () => {
-      const errors = parseInvalid("library l {\n  <TARGET=*-linux-*> {\n    <TARGET=*-apple-*> {\n      srcs = kqueue.c;\n    }\n  }\n}");
+      const errors = parseInvalid(
+        "library l {\n  <TARGET=*-linux-*> {\n    <TARGET=*-apple-*> {\n      srcs = kqueue.c;\n    }\n  }\n}"
+      );
       expect(errors).to.have.lengthOf(1);
       expect(errors[0]).to.contain("Constraint 'TARGET' is guarded on twice — by an enclosing block and by this block");
     });

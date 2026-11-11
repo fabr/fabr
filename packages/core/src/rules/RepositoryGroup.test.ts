@@ -30,14 +30,7 @@ import { PartialRepositoryRef } from "../core/PartialRepositoryRef";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { PublishableFileSet } from "../core/PublishableFileSet";
-import {
-  PublishMember,
-  PublishStatus,
-  Repository,
-  RepositoryPublishRef,
-  RepositoryReader,
-  RepositoryRef,
-} from "../core/Repository";
+import { PublishMember, PublishStatus, Repository, RepositoryPublishRef, RepositoryReader, RepositoryRef } from "../core/Repository";
 import { VersionNotFoundError } from "../core/Errors";
 import { TargetContext } from "../context/index";
 import { BuildModel } from "../model/BuildModel";
@@ -193,7 +186,9 @@ function makeFormat(tag: string): PackageFormat<SemverVersion, SemverConstraint>
     resolutionTag: tag,
     splitReference: (name: Name) => {
       const split = splitIdentity(name.toBaseString());
-      return split ? { name: split.identifier, versionConstraint: split.version } : { name: name.toBaseString(), versionConstraint: undefined };
+      return split
+        ? { name: split.identifier, versionConstraint: split.version }
+        : { name: name.toBaseString(), versionConstraint: undefined };
     },
     validateRequirement: ({ name, versionConstraint: version }): void => {
       if (version === undefined) {
@@ -310,10 +305,7 @@ describe("repository_group (through the model)", () => {
   /* One backing registry per declared `test_registry` target, seeded per test. */
   const registries = new Map<string, FakeRegistry>();
   const tables = new Map<string, RegistryTable>();
-  function backingRegistry(
-    context: TargetContext,
-    format: PackageFormat<SemverVersion, SemverConstraint>
-  ): FakeRegistry {
+  function backingRegistry(context: TargetContext, format: PackageFormat<SemverVersion, SemverConstraint>): FakeRegistry {
     const name = context.name;
     let registry = registries.get(name);
     if (!registry) {
@@ -448,9 +440,7 @@ describe("repository_group (through the model)", () => {
 
   it("a closed domain (no catch-all) does not serve an unrouted name", async () => {
     const { model } = build(
-      "test_registry @a { }\n" +
-        "repository_group @deps { @scope/* = @a; }\n" +
-        "test_deps t { deps = @deps:left-pad:1.0.0; }\n"
+      "test_registry @a { }\n" + "repository_group @deps { @scope/* = @a; }\n" + "test_deps t { deps = @deps:left-pad:1.0.0; }\n"
     );
     const message = await failure(model, "t");
     expect(message).to.contain("has no route serving 'left-pad'");
@@ -472,7 +462,9 @@ describe("repository_group (through the model)", () => {
   });
 
   it("rejects a non-prefix pattern key at the route", async () => {
-    const { model } = build(REGISTRIES + "repository_group @deps { \"!(scope)/*\" = @a; * = @b; }\ntest_deps t { deps = @deps:x:1.0.0; }\n");
+    const { model } = build(
+      REGISTRIES + 'repository_group @deps { "!(scope)/*" = @a; * = @b; }\ntest_deps t { deps = @deps:x:1.0.0; }\n'
+    );
     const message = await failure(model, "t");
     expect(message).to.contain("in @deps");
     expect(message).to.contain("not a literal name prefix");
@@ -492,7 +484,9 @@ describe("repository_group (through the model)", () => {
   });
 
   it("rejects a namespace of a repository as a route's value", async () => {
-    const { model } = build(REGISTRIES + "repository_group @deps { @acme/* = @a:@acme; * = @b; }\ntest_deps t { deps = @deps:x:1.0.0; }\n");
+    const { model } = build(
+      REGISTRIES + "repository_group @deps { @acme/* = @a:@acme; * = @b; }\ntest_deps t { deps = @deps:x:1.0.0; }\n"
+    );
     const message = await failure(model, "t");
     expect(message).to.contain("route '@acme/*' in @deps names a namespace of a repository ('@a:@acme'), not a repository");
   });
@@ -501,9 +495,7 @@ describe("repository_group (through the model)", () => {
     /* ':' and '/' are equivalent component separators, so `a:b` and `a/b` are
      * distinct property names (invisible to the duplicate-property check) but
      * one route key — an error, never an order-dependent pick. */
-    const { model } = build(
-      REGISTRIES + "repository_group @deps { a:b = @a; a/b = @b; }\ntest_deps t { deps = @deps:x:1.0.0; }\n"
-    );
+    const { model } = build(REGISTRIES + "repository_group @deps { a:b = @a; a/b = @b; }\ntest_deps t { deps = @deps:x:1.0.0; }\n");
     const message = await failure(model, "t");
     expect(message).to.contain("are the same key ('a/b')");
   });
@@ -521,10 +513,7 @@ describe("repository_group (through the model)", () => {
 
   it("rejects a group as a route target", async () => {
     const { model } = build(
-      REGISTRIES +
-        GROUP +
-        "repository_group @outer { * = @deps; }\n" +
-        "test_deps t { deps = @outer:x:1.0.0; }\n"
+      REGISTRIES + GROUP + "repository_group @outer { * = @deps; }\n" + "test_deps t { deps = @outer:x:1.0.0; }\n"
     );
     const message = await failure(model, "t");
     expect(message).to.contain("route '*' in @outer does not name a package registry");

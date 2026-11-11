@@ -123,9 +123,9 @@ export class AwsAccount extends Namespace {
           .then(headers => sendRequest(url, { method: "POST", headers, body: request.body }))
           .then(response => {
             if (response.statusCode !== 200) {
-              throw new FabrError(`STS refused to say which account ${name}'s credentials sign in to (${response.statusCode})`).withHelp(
-                `declare the account's ID as \`account_id\` on ${name}`
-              );
+              throw new FabrError(
+                `STS refused to say which account ${name}'s credentials sign in to (${response.statusCode})`
+              ).withHelp(`declare the account's ID as \`account_id\` on ${name}`);
             }
             return parseCallerAccount(response.body.toString("utf8"), `the answer from ${url}`);
           });
@@ -211,7 +211,9 @@ export class AwsAccount extends Namespace {
 
   /** List the account's services, each named by a reference to the account written as the service: a service is made only when a name goes through it. */
   public children(ref: NamespaceRef): Computable<Map<string, Reference>> {
-    return Computable.resolve(new Map(SERVICES.map((service): [string, Reference] => [service, new NamespaceRef(this, `${ref.name}:${service}`)])));
+    return Computable.resolve(
+      new Map(SERVICES.map((service): [string, Reference] => [service, new NamespaceRef(this, `${ref.name}:${service}`)]))
+    );
   }
 }
 
@@ -256,10 +258,14 @@ class OwnedResources extends Namespace {
   /** List the services another account's resources are reached through, named as {@link AwsAccount.children} names them. */
   public children(ref: NamespaceRef): Computable<Map<string, Reference>> {
     return Computable.resolve(
-      new Map<string, Reference>([ECR_SERVICE, CODEARTIFACT_SERVICE].map((service): [string, Reference] => [service, new NamespaceRef(this, `${ref.name}:${service}`)]))
+      new Map<string, Reference>(
+        [ECR_SERVICE, CODEARTIFACT_SERVICE].map((service): [string, Reference] => [
+          service,
+          new NamespaceRef(this, `${ref.name}:${service}`),
+        ])
+      )
     );
   }
-
 }
 
 /**
@@ -285,7 +291,11 @@ class CodeArtifactDomains extends Namespace {
 
   /** Get the domain `domain`: a namespace of its repositories. */
   public get(domain: string): Computable<Namespace> {
-    return Computable.resolve<Namespace>(new MemberNamespace(repository => Computable.resolve<Namespace>(new MemberNamespace(format => this.endpoint(domain, repository, format)))));
+    return Computable.resolve<Namespace>(
+      new MemberNamespace(repository =>
+        Computable.resolve<Namespace>(new MemberNamespace(format => this.endpoint(domain, repository, format)))
+      )
+    );
   }
 
   /** Get `repository`'s endpoint for `format` in `domain`, made the first time it is asked for. */
@@ -330,7 +340,13 @@ function createAccount(context: TargetContext): Computable<Namespace> {
       context.getProperty("account_id"),
       context.getGlobalMap(REPOSITORY_TYPES),
     ],
-    (profile: Property | undefined, region: Property | undefined, endpoint: Property | undefined, accountId: Property | undefined, types: PropertyMap) =>
+    (
+      profile: Property | undefined,
+      region: Property | undefined,
+      endpoint: Property | undefined,
+      accountId: Property | undefined,
+      types: PropertyMap
+    ) =>
       new AwsAccount({
         name: context.name,
         context,
@@ -365,7 +381,9 @@ function repositoryTypesOf(map: PropertyMap): ReadonlyMap<string, string> {
 /** Read an account's `account_id`, refusing anything but 12 digits. */
 function accountIdOf(text: string, account: string): string {
   if (!/^\d{12}$/.test(text)) {
-    throw new FabrError(`${account}'s account_id '${text}' is not an AWS account ID`).withHelp("an account ID is 12 digits, as in 123456789012");
+    throw new FabrError(`${account}'s account_id '${text}' is not an AWS account ID`).withHelp(
+      "an account ID is 12 digits, as in 123456789012"
+    );
   }
   return text;
 }
@@ -383,7 +401,6 @@ function endpointOf(text: string, account: string): URL {
   }
   return url;
 }
-
 
 /** The implementation AWS.fabr's `repository` declaration names. */
 export default { provider: createAccount } satisfies RepositoryImplementation;

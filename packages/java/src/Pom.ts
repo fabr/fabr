@@ -283,7 +283,9 @@ export function effectivePom(pom: RawPom, load: PomLoader, what: string, depth =
     const interpolate = interpolator(properties, what);
     /* Inherited declarations come after the POM's own, so its own win a shared key. */
     const declared = chain.flatMap(link => link.dependencies).map(dependency => interpolateDependency(dependency, interpolate));
-    const managed = mergeManaged(...chain.map(link => link.dependencyManagement.map(dependency => interpolateDependency(dependency, interpolate))));
+    const managed = mergeManaged(
+      ...chain.map(link => link.dependencyManagement.map(dependency => interpolateDependency(dependency, interpolate)))
+    );
     const imports = managed.filter(dependency => dependency.scope === "import");
     const own = managed.filter(dependency => dependency.scope !== "import");
     return Computable.forAll(
@@ -302,7 +304,9 @@ export function effectivePom(pom: RawPom, load: PomLoader, what: string, depth =
           const filledVersion = dependency.version ?? managedEntry?.version;
           const filledScope = dependency.scope ?? managedEntry?.scope;
           if (filledVersion === undefined) {
-            throw new FabrError(`${what}: dependency ${dependency.groupId}:${dependency.artifactId} has no version, and none is managed`);
+            throw new FabrError(
+              `${what}: dependency ${dependency.groupId}:${dependency.artifactId} has no version, and none is managed`
+            );
           }
           /* A managed entry's exclusions apply to a dependency that declares none, as Maven's model merger copies them. */
           const exclusions = dependency.exclusions ?? managedEntry?.exclusions ?? [];

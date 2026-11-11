@@ -70,7 +70,15 @@ const CHECKSUMS: ReadonlyArray<[string, string]> = [
 ];
 
 /** POM elements the generator writes itself, which `metadata` cannot give. */
-const GENERATED_ELEMENTS = new Set(["modelVersion", "groupId", "artifactId", "version", "packaging", "dependencies", "dependencyManagement"]);
+const GENERATED_ELEMENTS = new Set([
+  "modelVersion",
+  "groupId",
+  "artifactId",
+  "version",
+  "packaging",
+  "dependencies",
+  "dependencyManagement",
+]);
 
 /** POM elements that only mean something to a build, which a published POM does not carry. */
 const BUILD_ELEMENTS = new Set([
@@ -125,7 +133,15 @@ function xmlDocument(root: Record<string, unknown>): string {
   return `<?xml version="1.0" encoding="UTF-8"?>\n${builder.build(root)}`;
 }
 
-function dependencyElement({ groupId, artifactId, version, type, classifier, scope, optional }: PomDependency): Record<string, unknown> {
+function dependencyElement({
+  groupId,
+  artifactId,
+  version,
+  type,
+  classifier,
+  scope,
+  optional,
+}: PomDependency): Record<string, unknown> {
   return {
     groupId,
     artifactId,
@@ -259,7 +275,11 @@ function parsedVersion(text: string): MavenVersion | undefined {
  */
 export function mergedMetadata(existing: string | undefined, groupId: string, artifactId: string, version: string, now: Date): string {
   const listed =
-    existing === undefined ? [] : xmlChildren(xmlChild(xmlChild(parseXml(existing, "maven-metadata.xml"), "versioning"), "versions"), "version").map(each => each.text);
+    existing === undefined
+      ? []
+      : xmlChildren(xmlChild(xmlChild(parseXml(existing, "maven-metadata.xml"), "versioning"), "versions"), "version").map(
+          each => each.text
+        );
   const entries = [...new Set([...listed, version])].map(text => ({ text, parsed: parsedVersion(text) }));
   const sorted = entries.flatMap(({ parsed }) => (parsed === undefined ? [] : [parsed])).sort((a, b) => MAVEN_VERSIONS.compare(a, b));
   let next = 0;
@@ -280,7 +300,10 @@ export function mergedMetadata(existing: string | undefined, groupId: string, ar
  * `targets`; undefined where it publishes the target nowhere, or at more than
  * one coordinate.
  */
-function coordinateOfTarget(targets: ReadonlyMap<string, readonly RepositoryPublishRef[]>, name: string): PackagePublishRef | undefined {
+function coordinateOfTarget(
+  targets: ReadonlyMap<string, readonly RepositoryPublishRef[]>,
+  name: string
+): PackagePublishRef | undefined {
   const found = packageCoordinates(targets.get(name) ?? []).filter(
     each => isRepositoryReader(each.source) && each.source.format === MAVEN_FORMAT && variantOf(each) === undefined
   );
@@ -290,7 +313,9 @@ function coordinateOfTarget(targets: ReadonlyMap<string, readonly RepositoryPubl
 
 /** Find the one artifact among a member's files: its jar, war or ear. */
 function artifactOf(destination: RepositoryPublishRef, content: FileSet): { file: IFile; extension: string } {
-  const artifacts = [...content].filter(([name]) => !name.includes("/") && ARTIFACT_PACKAGING.has(name.substring(name.lastIndexOf(".") + 1)));
+  const artifacts = [...content].filter(
+    ([name]) => !name.includes("/") && ARTIFACT_PACKAGING.has(name.substring(name.lastIndexOf(".") + 1))
+  );
   if (artifacts.length !== 1) {
     throw new FabrError(
       `cannot publish ${destination.toString()}: its content must hold one jar, war or ear at its root, and holds ${
@@ -322,7 +347,8 @@ function pomDependencyOf(
     /* A dependency passed on to a consumer's runtime alone is runtime-scoped;
      * one passed on to its compile alone is compile-scoped, as Gradle writes
      * `compileOnlyApi`: Maven has no scope for it. */
-    const scope = provided === "expected" ? { scope: "provided" } : pkg.usedFor.get(dependencyName(dep)) === "run" ? { scope: "runtime" } : {};
+    const scope =
+      provided === "expected" ? { scope: "provided" } : pkg.usedFor.get(dependencyName(dep)) === "run" ? { scope: "runtime" } : {};
     const optional = provided === "optional";
     const { reference } = dep;
     if (reference instanceof RepositoryRef) {
@@ -383,7 +409,15 @@ export function packageMavenMember(
       const metadata = content instanceof PackageFileSet ? content.metadata : new Map<string, MetadataValue>();
       checkPomMetadata(destination.toString(), metadata);
       const pom = Buffer.from(
-        pomText({ groupId, artifactId, version, packaging: ARTIFACT_PACKAGING.get(extension)!, metadata, dependencies, dependencyManagement })
+        pomText({
+          groupId,
+          artifactId,
+          version,
+          packaging: ARTIFACT_PACKAGING.get(extension)!,
+          metadata,
+          dependencies,
+          dependencyManagement,
+        })
       );
       const artifactPath = repositoryPath(groupId, artifactId, version, `${artifactId}-${version}.${extension}`);
       const pomPath = repositoryPath(groupId, artifactId, version, `${artifactId}-${version}.pom`);
@@ -455,7 +489,12 @@ export function publishedFilePath(destination: PackagePublishRef, extension = "j
   const variant = variantOf(destination);
   const { classifier, extension: published } = variant === undefined ? { classifier: undefined, extension } : mavenVariantOf(variant);
   const { version } = destination;
-  return repositoryPath(groupId, artifactId, version, `${artifactId}-${version}${classifier === undefined ? "" : `-${classifier}`}.${published}`);
+  return repositoryPath(
+    groupId,
+    artifactId,
+    version,
+    `${artifactId}-${version}${classifier === undefined ? "" : `-${classifier}`}.${published}`
+  );
 }
 
 /**
@@ -465,15 +504,22 @@ export function publishedFilePath(destination: PackagePublishRef, extension = "j
  * jar or zip, and refused for another extension. Its version's artifact must
  * be published by the same release, which uploads it after this.
  */
-export function packageClassifiedMember(member: PublishMember, release: readonly RepositoryPublishRef[]): Computable<PublishableFileSet> {
+export function packageClassifiedMember(
+  member: PublishMember,
+  release: readonly RepositoryPublishRef[]
+): Computable<PublishableFileSet> {
   const { content } = member;
   const destination = packageCoordinateOf(member.destination);
-  if (!packageCoordinates(release).some(each => each.name === destination.name && each.version === destination.version && variantOf(each) === undefined)) {
+  if (
+    !packageCoordinates(release).some(
+      each => each.name === destination.name && each.version === destination.version && variantOf(each) === undefined
+    )
+  ) {
     const { groupId, artifactId } = splitMavenName(destination.name);
     return Computable.reject(
-      new FabrError(`cannot publish ${destination.toString()}: the release publishes no ${groupId}:${artifactId}:${destination.version} for it to be beside`).withHelp(
-        `publish ${groupId}:${artifactId}:${destination.version} in the same sync`
-      )
+      new FabrError(
+        `cannot publish ${destination.toString()}: the release publishes no ${groupId}:${artifactId}:${destination.version} for it to be beside`
+      ).withHelp(`publish ${groupId}:${artifactId}:${destination.version} in the same sync`)
     );
   }
   const { extension } = mavenVariantOf(variantOf(destination)!);
@@ -481,7 +527,9 @@ export function packageClassifiedMember(member: PublishMember, release: readonly
   const single = files.length === 1 && !files[0][0].includes("/") && files[0][0].endsWith(`.${extension}`) ? files[0][1] : undefined;
   if (single === undefined && extension !== "jar" && extension !== "zip") {
     return Computable.reject(
-      new FabrError(`cannot publish ${destination.toString()}: its content must be one .${extension} file, which fabr cannot pack it into`)
+      new FabrError(
+        `cannot publish ${destination.toString()}: its content must be one .${extension} file, which fabr cannot pack it into`
+      )
     );
   }
   const packed = single !== undefined ? Computable.resolve(single) : packToZip(content).then(zip => new MemoryFile(zip) as IFile);

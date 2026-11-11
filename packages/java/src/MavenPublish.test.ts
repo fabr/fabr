@@ -60,7 +60,9 @@ describe("pomText", () => {
         { groupId: "jakarta.servlet", artifactId: "jakarta.servlet-api", version: "6.0.0", scope: "provided", optional: false },
         { groupId: "com.example", artifactId: "extra", version: "2.0", optional: true },
       ],
-      dependencyManagement: [{ groupId: "org.junit", artifactId: "junit-bom", version: "5.11.4", type: "pom", scope: "import", optional: false }],
+      dependencyManagement: [
+        { groupId: "org.junit", artifactId: "junit-bom", version: "5.11.4", type: "pom", scope: "import", optional: false },
+      ],
     });
     expect(pom).to.contain("<groupId>com.example</groupId>\n  <artifactId>app</artifactId>\n  <version>1.0.0</version>\n");
     expect(pom).not.to.contain("<packaging>");
@@ -68,27 +70,53 @@ describe("pomText", () => {
       "      <dependency>\n        <groupId>org.junit</groupId>\n        <artifactId>junit-bom</artifactId>\n        <version>5.11.4</version>\n" +
         "        <type>pom</type>\n        <scope>import</scope>\n      </dependency>\n"
     );
-    expect(pom).to.contain("<artifactId>jakarta.servlet-api</artifactId>\n      <version>6.0.0</version>\n      <scope>provided</scope>\n");
+    expect(pom).to.contain(
+      "<artifactId>jakarta.servlet-api</artifactId>\n      <version>6.0.0</version>\n      <scope>provided</scope>\n"
+    );
     expect(pom).to.contain("<artifactId>extra</artifactId>\n      <version>2.0</version>\n      <optional>true</optional>\n");
   });
 
   it("names a packaging other than jar, and leaves out what a package has none of", () => {
-    const pom = pomText({ groupId: "com.example", artifactId: "shop", version: "1.0", packaging: "war", metadata: new Map(), dependencies: [], dependencyManagement: [] });
+    const pom = pomText({
+      groupId: "com.example",
+      artifactId: "shop",
+      version: "1.0",
+      packaging: "war",
+      metadata: new Map(),
+      dependencies: [],
+      dependencyManagement: [],
+    });
     expect(pom).to.contain("<packaging>war</packaging>");
     expect(pom).not.to.contain("<dependencies>");
     expect(pom).not.to.contain("<dependencyManagement>");
   });
 
   it("escapes what XML would read as markup", () => {
-    expect(pomText({ groupId: "a&b", artifactId: "c<d", version: "1", packaging: "jar", metadata: new Map(), dependencies: [], dependencyManagement: [] })).to.contain(
-      "<groupId>a&amp;b</groupId>\n  <artifactId>c&lt;d</artifactId>"
-    );
+    expect(
+      pomText({
+        groupId: "a&b",
+        artifactId: "c<d",
+        version: "1",
+        packaging: "jar",
+        metadata: new Map(),
+        dependencies: [],
+        dependencyManagement: [],
+      })
+    ).to.contain("<groupId>a&amp;b</groupId>\n  <artifactId>c&lt;d</artifactId>");
   });
 });
 
 describe("POM metadata", () => {
   const pom = (metadata: Map<string, unknown>): string =>
-    pomText({ groupId: "g", artifactId: "a", version: "1", packaging: "jar", metadata: metadata as never, dependencies: [], dependencyManagement: [] });
+    pomText({
+      groupId: "g",
+      artifactId: "a",
+      version: "1",
+      packaging: "jar",
+      metadata: metadata as never,
+      dependencies: [],
+      dependencyManagement: [],
+    });
 
   it("writes a string as an element, a block as nested elements, and a list element around its items", () => {
     const text = pom(
@@ -96,7 +124,13 @@ describe("POM metadata", () => {
         ["name", ["Greeter", "app"]],
         ["scm", new Map([["url", ["https://example.com/g"]]])],
         ["licenses", [new Map([["name", ["Apache-2.0"]]]), new Map([["name", ["MIT"]]])]],
-        ["developers", new Map([["id", ["nk"]], ["roles", ["lead", "dev"]]])],
+        [
+          "developers",
+          new Map([
+            ["id", ["nk"]],
+            ["roles", ["lead", "dev"]],
+          ]),
+        ],
       ])
     );
     expect(text).to.contain("  <name>Greeter app</name>\n");
@@ -111,7 +145,9 @@ describe("POM metadata", () => {
 
   it("refuses an element fabr writes, one only a build reads, and several blocks for an element that is no list", () => {
     expect(() => checkPomMetadata("app", new Map([["version", ["2"]]]))).to.throw(/cannot set <version>: fabr writes it/);
-    expect(() => checkPomMetadata("app", new Map([["build", new Map()]]))).to.throw(/cannot set <build>: a published POM does not carry it/);
+    expect(() => checkPomMetadata("app", new Map([["build", new Map()]]))).to.throw(
+      /cannot set <build>: a published POM does not carry it/
+    );
     expect(() => checkPomMetadata("app", new Map([["scm", [new Map(), new Map()]]]))).to.throw(/gives <scm> several blocks/);
   });
 });
@@ -127,7 +163,13 @@ describe("mergedMetadata", () => {
   });
 
   it("adds a version to those listed, in Maven's order, the highest its latest", () => {
-    const existing = mergedMetadata(mergedMetadata(undefined, "com.example", "app", "1.10.0", now), "com.example", "app", "1.2.0", now);
+    const existing = mergedMetadata(
+      mergedMetadata(undefined, "com.example", "app", "1.10.0", now),
+      "com.example",
+      "app",
+      "1.2.0",
+      now
+    );
     const metadata = mergedMetadata(existing, "com.example", "app", "1.9.0", now);
     expect(metadata).to.contain("<version>1.2.0</version>\n      <version>1.9.0</version>\n      <version>1.10.0</version>");
     expect(metadata).to.contain("<latest>1.10.0</latest>");
@@ -140,7 +182,9 @@ describe("mergedMetadata", () => {
       "<version>2.0.0</version>\n      <version>${odd}</version>\n      <version>1.0.0</version>"
     );
     const metadata = mergedMetadata(existing, "com.example", "app", "1.5.0", now);
-    expect(metadata).to.contain("<version>1.0.0</version>\n      <version>${odd}</version>\n      <version>1.5.0</version>\n      <version>2.0.0</version>");
+    expect(metadata).to.contain(
+      "<version>1.0.0</version>\n      <version>${odd}</version>\n      <version>1.5.0</version>\n      <version>2.0.0</version>"
+    );
     expect(metadata).to.contain("<latest>2.0.0</latest>");
   });
 });
@@ -177,7 +221,8 @@ describe("classified members", () => {
     package: () => Computable.resolve<PublishableFileSet[]>([]),
     publish: () => Computable.resolve<PublishStatus>("published"),
   };
-  const ref = (variant?: string): MavenPublishRef => new MavenPublishRef(writer, { name: "com.example/app", version: "1.0.0", variant }, "@corp");
+  const ref = (variant?: string): MavenPublishRef =>
+    new MavenPublishRef(writer, { name: "com.example/app", version: "1.0.0", variant }, "@corp");
   const files = (entries: Record<string, string>): FileSet =>
     new FileSet(new Map(Object.entries(entries).map(([name, text]) => [name, MemoryFile.from(text)])));
 
@@ -189,7 +234,10 @@ describe("classified members", () => {
   });
 
   it("pack a tree of files as the jar beside the artifact, with its checksums", async () => {
-    const carrier = await packageClassifiedMember({ destination: ref("sources"), content: files({ "com/example/App.java": "class App {}" }) }, [ref(), ref("sources")]);
+    const carrier = await packageClassifiedMember(
+      { destination: ref("sources"), content: files({ "com/example/App.java": "class App {}" }) },
+      [ref(), ref("sources")]
+    );
     expect([...carrier].map(([name]) => name).sort()).to.deep.equal([
       "com/example/app/1.0.0/app-1.0.0-sources.jar",
       "com/example/app/1.0.0/app-1.0.0-sources.jar.md5",
@@ -207,11 +255,20 @@ describe("classified members", () => {
   });
 
   it("pack a tree as a zip, take one file of the extension as it is, and refuse to pack another", async () => {
-    const zipped = await packageClassifiedMember({ destination: ref("bin@zip"), content: files({ "bin/run.sh": "run" }) }, [ref(), ref("bin@zip")]);
+    const zipped = await packageClassifiedMember({ destination: ref("bin@zip"), content: files({ "bin/run.sh": "run" }) }, [
+      ref(),
+      ref("bin@zip"),
+    ]);
     expect([...zipped].map(([name]) => name)).to.include("com/example/app/1.0.0/app-1.0.0-bin.zip");
-    const tarball = await packageClassifiedMember({ destination: ref("bin@tar.gz"), content: files({ "made.tar.gz": "TGZ" }) }, [ref(), ref("bin@tar.gz")]);
+    const tarball = await packageClassifiedMember({ destination: ref("bin@tar.gz"), content: files({ "made.tar.gz": "TGZ" }) }, [
+      ref(),
+      ref("bin@tar.gz"),
+    ]);
     expect(await (await tarball.get("com/example/app/1.0.0/app-1.0.0-bin.tar.gz"))!.readString()).to.equal("TGZ");
-    const refused = await packageClassifiedMember({ destination: ref("bin@tar.gz"), content: files({ "bin/run.sh": "run" }) }, [ref(), ref("bin@tar.gz")]).then(
+    const refused = await packageClassifiedMember({ destination: ref("bin@tar.gz"), content: files({ "bin/run.sh": "run" }) }, [
+      ref(),
+      ref("bin@tar.gz"),
+    ]).then(
       () => undefined,
       err => (err as Error).message
     );
@@ -219,7 +276,10 @@ describe("classified members", () => {
   });
 
   it("take content that is one jar as that jar", async () => {
-    const carrier = await packageClassifiedMember({ destination: ref("javadoc"), content: files({ "made.jar": "JAR" }) }, [ref(), ref("javadoc")]);
+    const carrier = await packageClassifiedMember({ destination: ref("javadoc"), content: files({ "made.jar": "JAR" }) }, [
+      ref(),
+      ref("javadoc"),
+    ]);
     expect(await (await carrier.get("com/example/app/1.0.0/app-1.0.0-javadoc.jar"))!.readString()).to.equal("JAR");
   });
 
@@ -232,7 +292,9 @@ describe("classified members", () => {
       fetchFiles: () => Computable.resolve(new FileSet(new Map())),
       fetch: () => Computable.reject(new Error("not fetched")),
     } as unknown as RepositoryReader<unknown, unknown>;
-    const edge = (name: string): { reference: RepositoryRef } => ({ reference: new RepositoryRef(reader, { name, versionConstraint: "1.0" }) });
+    const edge = (name: string): { reference: RepositoryRef } => ({
+      reference: new RepositoryRef(reader, { name, versionConstraint: "1.0" }),
+    });
     const pkg = new PackageFileSet(
       files({ "app.jar": "JAR" }),
       "com.example/app",
@@ -262,17 +324,27 @@ describe("classified members", () => {
     ]);
     const member = await packageMavenMember({ destination: ref(), content: pkg }, new Map(), new Set(), [ref()]);
     const pom = await (await member.get("com/example/app/1.0.0/app-1.0.0.pom"))!.readString();
-    expect(pom).to.contain("<groupId>com.example</groupId>\n      <artifactId>lib</artifactId>\n      <version>2.0</version>\n    </dependency>");
+    expect(pom).to.contain(
+      "<groupId>com.example</groupId>\n      <artifactId>lib</artifactId>\n      <version>2.0</version>\n    </dependency>"
+    );
   });
 
   it("need their version's artifact in the same release, which is uploaded after them", async () => {
-    const failure = await packageClassifiedMember({ destination: ref("sources"), content: files({ "A.java": "" }) }, [ref("sources")]).then(
+    const failure = await packageClassifiedMember({ destination: ref("sources"), content: files({ "A.java": "" }) }, [
+      ref("sources"),
+    ]).then(
       () => undefined,
       err => (err as Error).message
     );
     expect(failure).to.match(/the release publishes no com\.example:app:1\.0\.0 for it to be beside/);
-    const main = await packageMavenMember({ destination: ref(), content: files({ "app.jar": "JAR" }) }, new Map(), new Set(), [ref(), ref("sources")]);
-    const sources = await packageClassifiedMember({ destination: ref("sources"), content: files({ "A.java": "" }) }, [ref(), ref("sources")]);
+    const main = await packageMavenMember({ destination: ref(), content: files({ "app.jar": "JAR" }) }, new Map(), new Set(), [
+      ref(),
+      ref("sources"),
+    ]);
+    const sources = await packageClassifiedMember({ destination: ref("sources"), content: files({ "A.java": "" }) }, [
+      ref(),
+      ref("sources"),
+    ]);
     expect(main.dependsOn).to.deep.equal([sources.provides]);
   });
 });

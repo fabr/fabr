@@ -315,7 +315,9 @@ function compileEnvironmentWithNodeSchedulers(jsdomMain: string | undefined): vo
 export function packageRootOf(file: string, name: string): string | undefined {
   for (let directory = path.dirname(file); ; directory = path.dirname(directory)) {
     try {
-      if ((JSON.parse(fs.readFileSync(path.join(resolveVirtual(directory), "package.json"), "utf8")) as { name?: unknown }).name === name) {
+      if (
+        (JSON.parse(fs.readFileSync(path.join(resolveVirtual(directory), "package.json"), "utf8")) as { name?: unknown }).name === name
+      ) {
         return directory;
       }
     } catch {

@@ -419,7 +419,6 @@ export interface ICompileTelemetry {
   bound?: { roots: number; project: number };
 }
 
-
 /** Read the telemetry half of a run report, for a test comparing runs; undefined
  * for a run that had none. The document is this driver's own output, so the
  * read is a shape check rather than a validation pass. */

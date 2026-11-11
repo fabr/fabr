@@ -85,7 +85,9 @@ describe("build file language", () => {
 
   it("finds where a reference, a substitution and a target's type are declared", () => {
     const declared = (offset: number): string[] =>
-      (namedAt(model, writtenAt(contents, offset)!, offset)?.declarations ?? []).map(span => TEXT.slice(span.offset, span.endOffset ?? span.offset));
+      (namedAt(model, writtenAt(contents, offset)!, offset)?.declarations ?? []).map(span =>
+        TEXT.slice(span.offset, span.endOffset ?? span.offset)
+      );
     expect(declared(at("lib ${"))).to.deep.equal(["lib"]);
     expect(declared(at("LIBS}"))).to.deep.equal(["LIBS"]);
     expect(declared(at("holder app"))).to.deep.equal(["holder"]);
@@ -94,7 +96,8 @@ describe("build file language", () => {
   });
 
   it("documents a property by its schema, and a reference by its declaration", () => {
-    const documented = (offset: number): IDocumentation | undefined => namedAt(model, writtenAt(contents, offset)!, offset)?.documentation;
+    const documented = (offset: number): IDocumentation | undefined =>
+      namedAt(model, writtenAt(contents, offset)!, offset)?.documentation;
     expect(documented(at("srcs = lib"))).to.deep.equal({ title: "srcs: FILES", within: "holder", comment: "What it holds." });
     expect(documented(at("lib ${"))).to.deep.equal({ title: "holder lib", comment: "The library." });
     expect(documented(at("LIBS}"))).to.deep.equal({ source: "LIBS = lib;", comment: "The packages a test reads." });
@@ -162,7 +165,9 @@ describe("build file language", () => {
       return found + 1;
     };
     const declared = (offset: number): string[] =>
-      (namedAt(ruledModel, writtenAt(ruled, offset)!, offset)?.declarations ?? []).map(span => text.slice(span.offset, span.endOffset ?? span.offset));
+      (namedAt(ruledModel, writtenAt(ruled, offset)!, offset)?.declarations ?? []).map(span =>
+        text.slice(span.offset, span.endOffset ?? span.offset)
+      );
 
     it("finds what is written in it: its type, its parameter, the block's targets and values", () => {
       expect(writtenAt(ruled, find("holder pkg"))?.kind).to.equal("rule-type");
@@ -177,7 +182,11 @@ describe("build file language", () => {
     it("looks a name up in the block first: the parameter, its properties, the block's own names, then the file's", () => {
       expect(declared(find("holder pkg"))).to.deep.equal(["holder"]);
       expect(declared(find("pkg.srcs"))).to.deep.equal(["holder"]);
-      expect(namedAt(ruledModel, writtenAt(ruled, find("pkg.srcs"))!, find("pkg.srcs"))?.documentation).to.deep.equal({ title: "srcs: FILES", within: "holder", comment: "What it holds." });
+      expect(namedAt(ruledModel, writtenAt(ruled, find("pkg.srcs"))!, find("pkg.srcs"))?.documentation).to.deep.equal({
+        title: "srcs: FILES",
+        within: "holder",
+        comment: "What it holds.",
+      });
       expect(declared(find("both ${"))).to.deep.equal(["both"]);
       expect(declared(find("pkg.more}"))).to.deep.equal(["holder"]);
       expect(declared(find("pkg; }", 0))).to.deep.equal(["pkg"]);
@@ -205,7 +214,12 @@ describe("build file language", () => {
     const parts = (needle: string, delta = 1): [string, string[]] | undefined => {
       const offset = TEXT.indexOf(needle) + delta;
       const named = namedAt(model, writtenAt(contents, offset)!, offset);
-      return named && [TEXT.slice(named.origin.offset, named.origin.endOffset), named.declarations.map(span => TEXT.slice(span.offset, span.endOffset ?? span.offset))];
+      return (
+        named && [
+          TEXT.slice(named.origin.offset, named.origin.endOffset),
+          named.declarations.map(span => TEXT.slice(span.offset, span.endOffset ?? span.offset)),
+        ]
+      );
     };
     expect(parts("@dep:@sentry/cli")).to.deep.equal(["@dep", ["@dep"]]);
     expect(parts("@sentry/cli @dep")).to.deep.equal(["@sentry/cli", ["@npm:@sentry/cli:2.0.0"]]);
@@ -216,7 +230,8 @@ describe("build file language", () => {
   });
 
   describe("in a file declaring private names", () => {
-    const priv = "targetdef holder { srcs = FILES; }\n# Private.\nprivate holder lib { srcs = b.txt; }\nprivate MODE = m;\nholder user { srcs = lib ${MODE}; }\n";
+    const priv =
+      "targetdef holder { srcs = FILES; }\n# Private.\nprivate holder lib { srcs = b.txt; }\nprivate MODE = m;\nholder user { srcs = lib ${MODE}; }\n";
     const other = "holder lib { srcs = a.txt; }\nMODE = n;\nholder elsewhere { srcs = lib ${MODE}; }\n";
     const privContents = parseBuildString(EMPTY_FILESET, "PRIV.fabr", priv, log);
     const otherContents = parseBuildString(EMPTY_FILESET, "OTHER.fabr", other, log);
@@ -247,13 +262,19 @@ describe("build file language", () => {
       const maps = "targetdef holder { srcs = FILES; }\nprivate COMMON = { srcs = a.txt; };\n";
       const mapsModel = toBuildModel([parseBuildString(EMPTY_FILESET, "MAPS.fabr", maps, log)], log, []);
       const typed = "private holder x {\n  ";
-      expect(completionsAt(mapsModel, typed, typed.length, "MAPS.fabr").map(completion => completion.label)).to.deep.equal(["srcs", "COMMON"]);
-      expect(completionsAt(mapsModel, typed, typed.length, "ELSEWHERE.fabr").map(completion => completion.label)).to.deep.equal(["srcs"]);
+      expect(completionsAt(mapsModel, typed, typed.length, "MAPS.fabr").map(completion => completion.label)).to.deep.equal([
+        "srcs",
+        "COMMON",
+      ]);
+      expect(completionsAt(mapsModel, typed, typed.length, "ELSEWHERE.fabr").map(completion => completion.label)).to.deep.equal([
+        "srcs",
+      ]);
     });
   });
 
   describe("a substitution's edit", () => {
-    const text = "targetdef holder { srcs = FILES; }\nLIBS = lib;\nholder edited { srcs = ${LIBS%b} ${LIBS#l} ${LIBS/i/o} '#' `ls`; }\n";
+    const text =
+      "targetdef holder { srcs = FILES; }\nLIBS = lib;\nholder edited { srcs = ${LIBS%b} ${LIBS#l} ${LIBS/i/o} '#' `ls`; }\n";
     const edited = parseBuildString(EMPTY_FILESET, "EDIT.fabr", text, log);
     const editedModel = toBuildModel([edited], log, []);
 
@@ -278,7 +299,8 @@ describe("build file language", () => {
   });
 
   it("lists a default target in the outline, and names a guarded key whole however it is spaced", () => {
-    const text = "targetdef holder { srcs = FILES; }\ndefault holder fallback { srcs = a.txt; }\nholder g { srcs<TARGET = x-*> = b.txt; }\n";
+    const text =
+      "targetdef holder { srcs = FILES; }\ndefault holder fallback { srcs = a.txt; }\nholder g { srcs<TARGET = x-*> = b.txt; }\n";
     const guarded = parseBuildString(EMPTY_FILESET, "GUARD.fabr", text, log);
     expect(symbolsOf(guarded).map(({ name, kind }) => [name, kind])).to.deep.equal([
       ["holder", "targetdef"],
@@ -293,12 +315,15 @@ describe("build file language", () => {
   });
 
   it("finds an inherited property's schema in the targetdef that declares it, and a repository's implementation", () => {
-    const text = "targetdef holder { srcs = FILES; }\ntargetdef bigger extends holder { more = FILES; }\nbigger b { srcs = a.txt; more = b.txt; }\nrepository holder = lib:Thing;\nholder lib { srcs = c.txt; }\n";
+    const text =
+      "targetdef holder { srcs = FILES; }\ntargetdef bigger extends holder { more = FILES; }\nbigger b { srcs = a.txt; more = b.txt; }\nrepository holder = lib:Thing;\nholder lib { srcs = c.txt; }\n";
     const inherited = parseBuildString(EMPTY_FILESET, "INHERIT.fabr", text, log);
     const inheritedModel = toBuildModel([inherited], log, []);
     const declared = (needle: string): string[] => {
       const offset = text.indexOf(needle) + 1;
-      return (namedAt(inheritedModel, writtenAt(inherited, offset)!, offset)?.declarations ?? []).map(span => text.slice(span.offset, span.endOffset ?? span.offset));
+      return (namedAt(inheritedModel, writtenAt(inherited, offset)!, offset)?.declarations ?? []).map(span =>
+        text.slice(span.offset, span.endOffset ?? span.offset)
+      );
     };
     expect(declared("srcs = a.txt")).to.deep.equal(["holder"]);
     expect(declared("more = b.txt")).to.deep.equal(["bigger"]);

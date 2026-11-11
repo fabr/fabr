@@ -146,9 +146,9 @@ export function requireEnvironment(env: string, fromDocblock = false): void {
     throw new Error(
       fromDocblock
         ? "This test file asks for a DOM environment (its @jest-environment docblock), but 'jsdom' is not among the target's dependencies.\n" +
-          "Add it to the target's test_deps (e.g. test_deps = @npm:jsdom:26.1.0;)."
+            "Add it to the target's test_deps (e.g. test_deps = @npm:jsdom:26.1.0;)."
         : "These tests need a DOM environment (the target declares the `dom` flag), but 'jsdom' is not among its dependencies.\n" +
-          "Add it to the target's test_deps (e.g. test_deps = dom @npm:jsdom:26.1.0;), or drop the flag if the tests need no DOM."
+            "Add it to the target's test_deps (e.g. test_deps = dom @npm:jsdom:26.1.0;), or drop the flag if the tests need no DOM."
     );
   }
 }
@@ -192,11 +192,7 @@ export function isRunnerModule(filename: string, runnerInstall = RUNNER_INSTALL)
  * hoist transforms.
  */
 export function isCodeUnderTest(root: string, filename: string): boolean {
-  return (
-    filename.startsWith(root + path.sep) &&
-    !filename.includes(`${path.sep}node_modules${path.sep}`) &&
-    !isRunnerModule(filename)
-  );
+  return filename.startsWith(root + path.sep) && !filename.includes(`${path.sep}node_modules${path.sep}`) && !isRunnerModule(filename);
 }
 
 /**

@@ -177,7 +177,10 @@ export function buildCatalog(
       return;
     }
     if (held.packageName !== packageName) {
-      report.add("Dependencies written under one name for two packages (the first is kept)", `${address}: ${held.packageName} and ${packageName} (${from})`);
+      report.add(
+        "Dependencies written under one name for two packages (the first is kept)",
+        `${address}: ${held.packageName} and ${packageName} (${from})`
+      );
       return;
     }
     switch (compareFloors(range, held.range)) {
@@ -236,7 +239,10 @@ export function buildCatalog(
               const defaultSpec = workspace.catalogs.get("default")?.get(name);
               const address = spec.catalog === "default" || defaultSpec === inner ? name : namedCatalogAddress(name, spec.catalog);
               if (address !== name) {
-                report.add("Named pnpm catalogs written as an alias (renamed back where used)", `${address}: ${name} from catalog '${spec.catalog}'`);
+                report.add(
+                  "Named pnpm catalogs written as an alias (renamed back where used)",
+                  `${address}: ${name} from catalog '${spec.catalog}'`
+                );
               }
               offer(address, innerSpec.packageName, innerSpec.range, from);
               addresses.set(keyOf(manifest, name), { address });
@@ -245,7 +251,10 @@ export function buildCatalog(
             case "tag": {
               const range = lockedRange(name);
               if (range === undefined) {
-                report.add("Dependencies not converted", `${name}: '${text}' in ${from} (a dist-tag, and the lockfile installs no version)`);
+                report.add(
+                  "Dependencies not converted",
+                  `${name}: '${text}' in ${from} (a dist-tag, and the lockfile installs no version)`
+                );
               } else {
                 report.add("Dist-tags written as the version the lockfile installs", `${name}: '${text}' -> ${range} in ${from}`);
                 offer(name, name, range, from);
@@ -312,7 +321,11 @@ function applyOverrides(workspace: Workspace, catalog: Catalog, report: Report):
         note: `a floor: '${key}' in ${override.source} is scoped, which fabr cannot write`,
       });
       report.add("Overrides written as a floor (a requirement it excludes is not substituted)", written);
-    } else if (override.path.length === 0 && override.range === undefined && compareFloors(spec.range, catalog.entries.get(override.name)!.range) === "raise") {
+    } else if (
+      override.path.length === 0 &&
+      override.range === undefined &&
+      compareFloors(spec.range, catalog.entries.get(override.name)!.range) === "raise"
+    ) {
       const held = catalog.entries.get(override.name)!;
       catalog.entries.set(override.name, { ...held, range: spec.range, note: `raised to an override's floor in ${override.source}` });
       report.add("Overrides written as a floor (a requirement it excludes is not substituted)", written);

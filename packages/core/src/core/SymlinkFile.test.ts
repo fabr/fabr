@@ -116,7 +116,10 @@ describe("HostLink", () => {
       await writeFileSet(path.join(dir, "staged"), files);
       expect(fs.readlinkSync(path.join(dir, "staged/cc"))).to.equal(program);
       /* A plain symlink spelling the same target text is not one, and stays inside. */
-      await writeFileSet(path.join(dir, "plain"), new FileSet(new Map([["cc", new SymlinkFile(new HostLink("abc123", program).target)]])));
+      await writeFileSet(
+        path.join(dir, "plain"),
+        new FileSet(new Map([["cc", new SymlinkFile(new HostLink("abc123", program).target)]]))
+      );
       expect(fs.existsSync(path.join(dir, "plain/cc"))).to.equal(false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });

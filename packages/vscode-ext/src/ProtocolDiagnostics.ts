@@ -46,7 +46,9 @@ export interface IProtocolRange {
 /** @return `json` as a range, or undefined where it is not one. */
 export function toProtocolRange(json: unknown): IProtocolRange | undefined {
   const position = (value: unknown): { line: number; character: number } | undefined =>
-    isRecord(value) && typeof value.line === "number" && typeof value.character === "number" ? { line: value.line, character: value.character } : undefined;
+    isRecord(value) && typeof value.line === "number" && typeof value.character === "number"
+      ? { line: value.line, character: value.character }
+      : undefined;
   const start = isRecord(json) ? position(json.start) : undefined;
   const end = isRecord(json) ? position(json.end) : undefined;
   return start === undefined || end === undefined ? undefined : { start, end };
@@ -60,13 +62,20 @@ export function toRange(range: IProtocolRange): vscode.Range {
 /** @return `diagnostic` as VS Code's. */
 export function toDiagnostic(diagnostic: IProtocolDiagnostic): vscode.Diagnostic {
   /* The protocols' severities count from 1 (error), VS Code's from 0. */
-  const severity = [vscode.DiagnosticSeverity.Error, vscode.DiagnosticSeverity.Warning, vscode.DiagnosticSeverity.Information, vscode.DiagnosticSeverity.Hint][
-    (diagnostic.severity ?? 1) - 1
-  ];
+  const severity = [
+    vscode.DiagnosticSeverity.Error,
+    vscode.DiagnosticSeverity.Warning,
+    vscode.DiagnosticSeverity.Information,
+    vscode.DiagnosticSeverity.Hint,
+  ][(diagnostic.severity ?? 1) - 1];
   const shown = new vscode.Diagnostic(toRange(diagnostic.range), diagnostic.message, severity ?? vscode.DiagnosticSeverity.Error);
   shown.source = "fabr";
   shown.relatedInformation = diagnostic.relatedInformation?.map(
-    related => new vscode.DiagnosticRelatedInformation(new vscode.Location(vscode.Uri.parse(related.location.uri), toRange(related.location.range)), related.message)
+    related =>
+      new vscode.DiagnosticRelatedInformation(
+        new vscode.Location(vscode.Uri.parse(related.location.uri), toRange(related.location.range)),
+        related.message
+      )
   );
   return shown;
 }
@@ -85,7 +94,10 @@ export function toProtocolDiagnostics(json: unknown): IProtocolDiagnostic[] {
       ? diagnostic.relatedInformation.flatMap(information => {
           const location = isRecord(information) && isRecord(information.location) ? information.location : undefined;
           const at = location === undefined ? undefined : toProtocolRange(location.range);
-          return location !== undefined && at !== undefined && typeof location.uri === "string" && typeof information.message === "string"
+          return location !== undefined &&
+            at !== undefined &&
+            typeof location.uri === "string" &&
+            typeof information.message === "string"
             ? [{ location: { uri: location.uri, range: at }, message: information.message }]
             : [];
         })

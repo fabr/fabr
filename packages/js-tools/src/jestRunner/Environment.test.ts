@@ -21,7 +21,14 @@ import { expect } from "chai";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { answerWithGlobal, environmentFor, hideNodeSchedulers, inheritedMethods, packageRootOf, withNodeSchedulers } from "./Environment";
+import {
+  answerWithGlobal,
+  environmentFor,
+  hideNodeSchedulers,
+  inheritedMethods,
+  packageRootOf,
+  withNodeSchedulers,
+} from "./Environment";
 
 /* installJsdom itself needs a real jsdom, which fabr's own tests do not carry
  * (it comes from the TARGET's test_deps); what is testable here is the part
@@ -143,7 +150,13 @@ describe("environmentFor", () => {
 
 describe("hideNodeSchedulers", () => {
   it("removes node's scheduling globals that the window lacks, as jest's jsdom environment has none", () => {
-    const globals: Record<string, unknown> = { setImmediate() {}, clearImmediate() {}, MessageChannel() {}, MessagePort() {}, setTimeout() {} };
+    const globals: Record<string, unknown> = {
+      setImmediate() {},
+      clearImmediate() {},
+      MessageChannel() {},
+      MessagePort() {},
+      setTimeout() {},
+    };
     hideNodeSchedulers(globals, {});
     expect(Object.keys(globals)).to.deep.equal(["setTimeout"]);
   });

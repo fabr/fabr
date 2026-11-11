@@ -240,7 +240,6 @@ export interface RaisedFloor<V> {
   requiredBy: NodeId;
 }
 
-
 /**
  * A hard resolution error, attributed to the root package whose subtree
  * contains it — the errors' analogue of MetadataFetchError's rootName, so a
@@ -488,7 +487,11 @@ export interface ResolutionContext {
   getGlobalString(name: string): Computable<string>;
   /** Get `runnable` launched through the runnable the global `interpreter`
    *  names, given `interpreterArgs` before the entry (see {@link RunnableFileSet.launchedBy}). */
-  launchedBy(runnable: RunnableFileSet, interpreter: string, interpreterArgs?: readonly RunnableArgument[]): Computable<RunnableFileSet>;
+  launchedBy(
+    runnable: RunnableFileSet,
+    interpreter: string,
+    interpreterArgs?: readonly RunnableArgument[]
+  ): Computable<RunnableFileSet>;
   memoize(tag: string, key: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet>;
   runTask<T>(task: TaskDescription, run: (report: ITaskReport) => Computable<T>): Computable<T>;
 }

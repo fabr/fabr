@@ -95,8 +95,14 @@ describe("FabrHomeRepository", () => {
   });
 
   it("delivers a dependency whose exports publish no package.json, found where it is installed", async () => {
-    install(path.join(root, "node_modules", "helper"), { name: "helper", version: "1.0.0", exports: "./index.mjs" }, { "index.mjs": "helper" });
-    const delivered = (await toPromise(repository().resolve(packageRef(repository(), Name.fromLiteral("@fabr-build/tool"))))) as PackageFileSet;
+    install(
+      path.join(root, "node_modules", "helper"),
+      { name: "helper", version: "1.0.0", exports: "./index.mjs" },
+      { "index.mjs": "helper" }
+    );
+    const delivered = (await toPromise(
+      repository().resolve(packageRef(repository(), Name.fromLiteral("@fabr-build/tool")))
+    )) as PackageFileSet;
     expect(delivered.packages.map(dep => `${dep.packageName}@${dep.version}`)).to.deep.equal(["helper@1.0.0"]);
   });
 
@@ -120,7 +126,10 @@ describe("FabrHomeRepository", () => {
 
   it("delivers copies held in the blob pool, the package itself found where it is installed", async () => {
     const cacheRoot = path.join(root, "cache");
-    const repo = new FabrHomeRepository(new FSFileSource("/", undefined, new BuildCache(cacheRoot, new LogFormatter(LogLevel.Info, () => undefined))), host);
+    const repo = new FabrHomeRepository(
+      new FSFileSource("/", undefined, new BuildCache(cacheRoot, new LogFormatter(LogLevel.Info, () => undefined))),
+      host
+    );
     const delivered = (await toPromise(repo.resolve(packageRef(repo, Name.fromLiteral("@fabr-build/tool"))))) as PackageFileSet;
     for (const [, file] of [...delivered, ...delivered.packages[0]]) {
       expect(file.getAbsPath()?.startsWith(cacheRoot + path.sep)).to.equal(true);
@@ -154,7 +163,9 @@ describe("FabrHomeRepository", () => {
   });
 
   it("lists the packages installed in a scope, and refuses to list the whole installation", async () => {
-    install(path.join(root, "node_modules", "@fabr-build", "core", "node_modules", "@fabr-build", "inner"), { name: "@fabr-build/inner" });
+    install(path.join(root, "node_modules", "@fabr-build", "core", "node_modules", "@fabr-build", "inner"), {
+      name: "@fabr-build/inner",
+    });
     install(path.join(root, "node_modules", "@other", "x"), { name: "@other/x" });
     const repo = repository();
     const children = await toPromise(new PartialRepositoryRef(repo, "@fabr-build").children());
@@ -187,7 +198,12 @@ describe("FabrHomeRepository", () => {
   it("treats a name listed as both a dependency and an optional one as optional, as npm does", async () => {
     install(
       path.join(root, "node_modules", "@fabr-build", "native"),
-      { name: "@fabr-build/native", version: "1.0.0", dependencies: { "native-other-os": "1.0.0" }, optionalDependencies: { "native-other-os": "1.0.0" } },
+      {
+        name: "@fabr-build/native",
+        version: "1.0.0",
+        dependencies: { "native-other-os": "1.0.0" },
+        optionalDependencies: { "native-other-os": "1.0.0" },
+      },
       { "index.js": "native" }
     );
     const repo = repository();

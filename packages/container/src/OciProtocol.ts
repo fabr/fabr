@@ -95,7 +95,8 @@ export interface ILayerDescriptor extends IDescriptor {
 }
 
 /** A manifest document, read: an index over platforms, or an image's manifest. */
-export type ManifestDocument = { readonly kind: "index"; readonly manifests: readonly IIndexEntry[] } | ({ readonly kind: "manifest" } & IImageManifest);
+export type ManifestDocument =
+  { readonly kind: "index"; readonly manifests: readonly IIndexEntry[] } | ({ readonly kind: "manifest" } & IImageManifest);
 
 /** An image's config: its platform, the layers' uncompressed digests, and the run-time settings, kept as written. */
 export interface IImageConfig {
@@ -319,7 +320,8 @@ export class Registry {
           Computable.resolve({
             url,
             credential: this.credential,
-            process: (content: Readable, { createOutput }: IFetchContext) => storeLayer(content, descriptor, diffId, url, createOutput),
+            process: (content: Readable, { createOutput }: IFetchContext) =>
+              storeLayer(content, descriptor, diffId, url, createOutput),
           }),
         { resource: "image layer", role: "content" }
       )
@@ -383,7 +385,10 @@ export class Registry {
   /** Mount the blob `digest` of `from`, on this registry, into `repository`: true where mounted, false where the registry declined. */
   public mountBlob(repository: string, digest: string, from: string): Computable<boolean> {
     const query = new URLSearchParams({ mount: digest, from });
-    return this.send(`/v2/${repository}/blobs/uploads/?${query.toString()}`, { method: "POST", headers: { "content-length": "0" } }).then(response => {
+    return this.send(`/v2/${repository}/blobs/uploads/?${query.toString()}`, {
+      method: "POST",
+      headers: { "content-length": "0" },
+    }).then(response => {
       this.expect(response, [201, 202], `mounting the blob ${digest} into ${repository}`);
       return response.statusCode === 201;
     });
@@ -399,18 +404,21 @@ export class Registry {
       }
       const url = new URL(location, this.url);
       url.searchParams.set("digest", digest);
-      return this.send(
-        url.toString(),
-        { method: "PUT", headers: { "content-type": "application/octet-stream", "content-length": String(size) }, body }
-      ).then(response => this.expect(response, [201], `uploading the blob ${digest} to ${repository}`));
+      return this.send(url.toString(), {
+        method: "PUT",
+        headers: { "content-type": "application/octet-stream", "content-length": String(size) },
+        body,
+      }).then(response => this.expect(response, [201], `uploading the blob ${digest} to ${repository}`));
     });
   }
 
   /** Put `manifest` into `repository` under `tag`. */
   public putManifest(repository: string, tag: string, manifest: Buffer, mediaType: string): Computable<void> {
-    return this.send(`/v2/${repository}/manifests/${tag}`, { method: "PUT", headers: { "content-type": mediaType }, body: manifest }).then(response =>
-      this.expect(response, [201], `putting the manifest ${repository}:${tag}`)
-    );
+    return this.send(`/v2/${repository}/manifests/${tag}`, {
+      method: "PUT",
+      headers: { "content-type": mediaType },
+      body: manifest,
+    }).then(response => this.expect(response, [201], `putting the manifest ${repository}:${tag}`));
   }
 
   /** Send a request to `path` (or a whole URL) on the registry, signed in. */
@@ -442,7 +450,7 @@ function toTags(json: unknown): string[] {
 
 /** @return where a `Link` header's `rel="next"` page is (`</v2/…/tags/list?last=x&n=100>; rel="next"`), or undefined where it names none. */
 export function nextPage(link: string | string[] | undefined): string | undefined {
-  const text = Array.isArray(link) ? link.join(", ") : link ?? "";
+  const text = Array.isArray(link) ? link.join(", ") : (link ?? "");
   return /<([^>]+)>\s*;\s*rel="?next"?/.exec(text)?.[1];
 }
 
@@ -476,7 +484,10 @@ function toLayerEntry(json: unknown): ILayerEntry {
   ) {
     throw new FabrError("a stored layer index has a malformed entry");
   }
-  if (type === "file" && (typeof offset !== "number" || typeof size !== "number" || typeof hash !== "string" || typeof mime !== "string")) {
+  if (
+    type === "file" &&
+    (typeof offset !== "number" || typeof size !== "number" || typeof hash !== "string" || typeof mime !== "string")
+  ) {
     throw new FabrError(`a stored layer index's file '${path}' lacks its range, hash or mime`);
   }
   return {
@@ -501,9 +512,17 @@ function storeLayer(
   url: string,
   createOutput: IFetchContext["createOutput"]
 ): Computable<FileSet> {
-  const { stream, verify } = verifiedStream(content, { algorithm: "sha256", encoding: "hex", value: descriptor.digest.substring("sha256:".length) }, url);
+  const { stream, verify } = verifiedStream(
+    content,
+    { algorithm: "sha256", encoding: "hex", value: descriptor.digest.substring("sha256:".length) },
+    url
+  );
   const decompressed: Transform | Readable =
-    descriptor.compression === "gzip" ? stream.pipe(createGunzip()) : descriptor.compression === "zstd" ? stream.pipe(createZstdDecompress()) : stream;
+    descriptor.compression === "gzip"
+      ? stream.pipe(createGunzip())
+      : descriptor.compression === "zstd"
+        ? stream.pipe(createZstdDecompress())
+        : stream;
   stream.on("error", err => decompressed.destroy(toError(err)));
   const output = createOutput();
   const indexer = indexLayer();
@@ -529,7 +548,15 @@ function storeLayer(
         if (index.diffId !== diffId) {
           throw new FabrError(`${url} decompresses to ${index.diffId}, not the image's ${diffId}`);
         }
-        return output.finalize(LAYER_TAR).then(tar => new FileSet(new Map<string, IFile>([[LAYER_TAR, tar], [LAYER_INDEX, MemoryFile.from(JSON.stringify(index))]])));
+        return output.finalize(LAYER_TAR).then(
+          tar =>
+            new FileSet(
+              new Map<string, IFile>([
+                [LAYER_TAR, tar],
+                [LAYER_INDEX, MemoryFile.from(JSON.stringify(index))],
+              ])
+            )
+        );
       } catch (err) {
         return output.discard().then(() => Computable.reject<FileSet>(toError(err)));
       }

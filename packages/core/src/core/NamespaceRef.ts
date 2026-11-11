@@ -86,7 +86,9 @@ export class NamespaceRef extends Reference {
   public override withRenameTo(renameTo: string): this {
     const written = this.toString();
     throw this.attributed(
-      new FabrError(`'${written}' names a namespace, which cannot be renamed`).withHelp(`rename something in it instead, as in '${written}:<name> -> ${renameTo}'`)
+      new FabrError(`'${written}' names a namespace, which cannot be renamed`).withHelp(
+        `rename something in it instead, as in '${written}:<name> -> ${renameTo}'`
+      )
     );
   }
 
@@ -94,7 +96,9 @@ export class NamespaceRef extends Reference {
   public refused(): Error {
     const written = this.toString();
     return this.attributed(
-      new FabrError(`'${written}' names a namespace, not a package or files`).withHelp(`name what you want in it, as in '${written}:<name>:…'`)
+      new FabrError(`'${written}' names a namespace, not a package or files`).withHelp(
+        `name what you want in it, as in '${written}:<name>:…'`
+      )
     );
   }
 
@@ -109,7 +113,10 @@ export class NamespaceRef extends Reference {
  * stand. What a declaration's value and a namespace's member are both made
  * into.
  */
-export function sourceOf(made: Repository | Namespace | FileSource, written: string): PartialRepositoryRef | NamespaceRef | FileSource {
+export function sourceOf(
+  made: Repository | Namespace | FileSource,
+  written: string
+): PartialRepositoryRef | NamespaceRef | FileSource {
   if (made instanceof Namespace) {
     return new NamespaceRef(made, written);
   }

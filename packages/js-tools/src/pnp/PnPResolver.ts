@@ -33,7 +33,15 @@ import * as fs from "node:fs";
 import Module, { isBuiltin } from "node:module";
 import * as path from "node:path";
 import type { IPnpSerializedState, PnpDependencyTarget } from "./PnPState";
-import { exportedSubpath, exportsSubpath, type ExportsValue, type IConditionSet, resolveExportsAll, resolveImports, resolveImportsAll } from "./PackageExports";
+import {
+  exportedSubpath,
+  exportsSubpath,
+  type ExportsValue,
+  type IConditionSet,
+  resolveExportsAll,
+  resolveImports,
+  resolveImportsAll,
+} from "./PackageExports";
 import {
   type IPackageInformation,
   type IPhysicalPackageLocator,
@@ -201,7 +209,8 @@ export class PnpResolver implements IPnpApi {
    * be given.
    */
   constructor(state: IPnpSerializedState, root: string, conditions: Iterable<string>, options: IPnpResolverOptions = {}) {
-    this.ignored = state.ignorePatternData === null || state.ignorePatternData === undefined ? undefined : new RegExp(state.ignorePatternData);
+    this.ignored =
+      state.ignorePatternData === null || state.ignorePatternData === undefined ? undefined : new RegExp(state.ignorePatternData);
     this.conditions = new Set(conditions);
     this.validate = options.validateExports ?? true;
     this.root = root;
@@ -359,7 +368,9 @@ export class PnpResolver implements IPnpApi {
   private owning(target: string, found: ILocationEntry | undefined): ILocationEntry | undefined {
     const inside = withSeparator(target);
     if (this.virtualized.some(tree => inside.startsWith(tree))) {
-      throw new Error(`pnp: '${target}' is the physical path of a package the manifest locates virtually; no package is located there`);
+      throw new Error(
+        `pnp: '${target}' is the physical path of a package the manifest locates virtually; no package is located there`
+      );
     }
     return found;
   }
@@ -380,7 +391,11 @@ export class PnpResolver implements IPnpApi {
     if (known !== undefined) {
       return known;
     }
-    const locator = this.owning(directory, this.innermostAt(directory, () => true))?.locator ?? this.topLevelKey;
+    const locator =
+      this.owning(
+        directory,
+        this.innermostAt(directory, () => true)
+      )?.locator ?? this.topLevelKey;
     this.locatorByDirectory.set(directory, locator);
     return locator;
   }
@@ -410,7 +425,10 @@ export class PnpResolver implements IPnpApi {
     /* The walk starts at the path itself, so a path that IS a package root —
      * the commonest one the declaration emitter writes — matches its own
      * location rather than only its parent's. */
-    const innermost = this.owning(target, this.innermostAt(target, entry => entry.stored && entry.name !== null));
+    const innermost = this.owning(
+      target,
+      this.innermostAt(target, entry => entry.stored && entry.name !== null)
+    );
     if (innermost === undefined) {
       return undefined;
     }
@@ -500,7 +518,12 @@ export class PnpResolver implements IPnpApi {
     if (bound === undefined) {
       this.resolutions.set(`${requirer}\0${name}`, { from: requirer, name, to: "", via: "absent" });
     } else if (!this.sources.has(bound)) {
-      this.resolutions.set(`${requirer}\0${name}`, { from: requirer, name, to: instanceOfLocator(bound), via: own ? "own" : "fallback" });
+      this.resolutions.set(`${requirer}\0${name}`, {
+        from: requirer,
+        name,
+        to: instanceOfLocator(bound),
+        via: own ? "own" : "fallback",
+      });
     }
   }
 
@@ -598,7 +621,10 @@ export class PnpResolver implements IPnpApi {
     if (known !== undefined || this.instanceNames.has(target)) {
       return known;
     }
-    const innermost = this.owning(target, this.innermostAt(target, entry => entry.stored && entry.name !== null));
+    const innermost = this.owning(
+      target,
+      this.innermostAt(target, entry => entry.stored && entry.name !== null)
+    );
     const name = innermost?.reference === undefined ? undefined : instanceName(innermost, target);
     this.instanceNames.set(target, name);
     return name;
@@ -625,7 +651,10 @@ export class PnpResolver implements IPnpApi {
     if (known !== undefined || this.pathNames.has(target)) {
       return known;
     }
-    const innermost = this.owning(target, this.innermostAt(target, entry => entry.stored && entry.name !== null));
+    const innermost = this.owning(
+      target,
+      this.innermostAt(target, entry => entry.stored && entry.name !== null)
+    );
     const route = innermost === undefined ? undefined : this.routes().get(innermost.locator);
     const relative = innermost === undefined ? "" : path.relative(innermost.prefix, target).split(path.sep).join("/");
     const name = route === undefined ? undefined : joinDepsPath([...route, ...(relative === "" ? [] : [relative])]);
@@ -871,7 +900,10 @@ export class PnpResolver implements IPnpApi {
     if (this.ignored !== undefined && this.ignored.test(path.relative(this.root, target).split(path.sep).join("/"))) {
       return null;
     }
-    const entry = this.owning(target, this.innermostAt(target, () => true));
+    const entry = this.owning(
+      target,
+      this.innermostAt(target, () => true)
+    );
     if (entry === undefined) {
       return null;
     }
@@ -932,16 +964,24 @@ export class PnpResolver implements IPnpApi {
         this.recordResolution(requirer, dependencyName, undefined, false);
         const who = issuerLocator.name === null ? "your application" : issuerLocator.name;
         throw bound === null
-          ? pnpError("MISSING_PEER_DEPENDENCY", `pnp: ${who} tried to access ${dependencyName} (a peer dependency), which nothing provides`, {
-              request,
-              issuer: from,
-              dependencyName,
-            })
-          : pnpError("UNDECLARED_DEPENDENCY", `pnp: ${who} tried to access ${dependencyName}, but it isn't declared in its dependencies`, {
-              request,
-              issuer: from,
-              dependencyName,
-            });
+          ? pnpError(
+              "MISSING_PEER_DEPENDENCY",
+              `pnp: ${who} tried to access ${dependencyName} (a peer dependency), which nothing provides`,
+              {
+                request,
+                issuer: from,
+                dependencyName,
+              }
+            )
+          : pnpError(
+              "UNDECLARED_DEPENDENCY",
+              `pnp: ${who} tried to access ${dependencyName}, but it isn't declared in its dependencies`,
+              {
+                request,
+                issuer: from,
+                dependencyName,
+              }
+            );
       }
       bound = fallback;
     }
@@ -949,7 +989,10 @@ export class PnpResolver implements IPnpApi {
     this.recordResolution(requirer, dependencyName, locatorKey(dependency.name, dependency.reference), own);
     const location = this.informationOf(dependency).packageLocation;
     if (!location) {
-      throw pnpError("MISSING_DEPENDENCY", `pnp: ${dependency.name}@${dependency.reference} has no location`, { request, issuer: from });
+      throw pnpError("MISSING_DEPENDENCY", `pnp: ${dependency.name}@${dependency.reference} has no location`, {
+        request,
+        issuer: from,
+      });
     }
     return path.normalize(subpath ? path.join(location, subpath) : location);
   }
@@ -959,11 +1002,10 @@ export class PnpResolver implements IPnpApi {
     const candidates: string[] = [];
     const found = qualify(unqualified, candidates, extensions);
     if (found === null) {
-      throw pnpError(
-        "QUALIFIED_PATH_RESOLUTION_FAILED",
-        `pnp: none of these could be accessed: ${candidates.join(", ")}`,
-        { unqualifiedPath: unqualified, extensions }
-      );
+      throw pnpError("QUALIFIED_PATH_RESOLUTION_FAILED", `pnp: none of these could be accessed: ${candidates.join(", ")}`, {
+        unqualifiedPath: unqualified,
+        extensions,
+      });
     }
     return path.normalize(found);
   }
@@ -977,7 +1019,8 @@ export class PnpResolver implements IPnpApi {
     if (unqualified === null) {
       return null;
     }
-    const remapped = opts.considerBuiltins === false || !isBuiltin(request) ? this.applyExports(request, unqualified, conditions) : unqualified;
+    const remapped =
+      opts.considerBuiltins === false || !isBuiltin(request) ? this.applyExports(request, unqualified, conditions) : unqualified;
     return this.resolveUnqualified(remapped, { extensions: opts.extensions });
   }
 
@@ -1011,7 +1054,12 @@ export class PnpResolver implements IPnpApi {
     try {
       target = resolveExportsAll(exports, subpath, conditions, this.validate);
     } catch (err: unknown) {
-      throw pnpError("EXPORTS_RESOLUTION_FAILED", err instanceof Error ? err.message : String(err), { subpath }, "ERR_INVALID_PACKAGE_CONFIG");
+      throw pnpError(
+        "EXPORTS_RESOLUTION_FAILED",
+        err instanceof Error ? err.message : String(err),
+        { subpath },
+        "ERR_INVALID_PACKAGE_CONFIG"
+      );
     }
     if (target.length === 0) {
       throw pnpError(
@@ -1025,7 +1073,12 @@ export class PnpResolver implements IPnpApi {
   }
 
   /** Resolve a `#name` request through the issuing package's `imports` map. */
-  private resolvePrivateRequest(request: string, issuer: string, conditions: ReadonlySet<string>, opts: ResolveRequestOptions): string | null {
+  private resolvePrivateRequest(
+    request: string,
+    issuer: string,
+    conditions: ReadonlySet<string>,
+    opts: ResolveRequestOptions
+  ): string | null {
     const location = this.scopeOf(issuer);
     const imports = location === undefined ? undefined : this.manifestAt(location).imports;
     const target = imports === undefined || imports === null ? undefined : resolveImports(imports, request, conditions, this.validate);

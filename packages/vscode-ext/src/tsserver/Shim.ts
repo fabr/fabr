@@ -63,7 +63,10 @@ export function shim(modules: { typescript: unknown }): { create(info: IPluginIn
           : directory === undefined
             ? []
             : registeredProjects().filter(
-                project => project.root === directory || project.root.startsWith(directory + path.sep) || directory.startsWith(project.root + path.sep)
+                project =>
+                  project.root === directory ||
+                  project.root.startsWith(directory + path.sep) ||
+                  directory.startsWith(project.root + path.sep)
               );
       let service = info.languageService;
       for (const project of projects) {
@@ -93,7 +96,9 @@ function implementationOf(project: IProjectDocument, info: IPluginInfo): IPlugin
     implementations.set(project.plugin, implementation);
   }
   if (implementation instanceof Error) {
-    info.project.projectService.logger.info(`fabr: cannot load the plugin for ${project.root} (${project.plugin}): ${implementation.message}`);
+    info.project.projectService.logger.info(
+      `fabr: cannot load the plugin for ${project.root} (${project.plugin}): ${implementation.message}`
+    );
     return undefined;
   }
   return implementation;

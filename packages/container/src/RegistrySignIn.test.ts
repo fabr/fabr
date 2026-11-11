@@ -27,24 +27,33 @@ const REGISTRY = "https://registry.example";
 
 describe("the scopes a registry request needs", () => {
   it("reads the repository from the path, pulling for a read and pushing for a write", () => {
-    expect(scopesOf({ method: "GET", url: `${REGISTRY}/v2/library/node/manifests/22` }, REGISTRY)).to.deep.equal(["repository:library/node:pull"]);
-    expect(scopesOf({ method: "HEAD", url: `${REGISTRY}/v2/acme/app/blobs/sha256:ab` }, REGISTRY)).to.deep.equal(["repository:acme/app:pull"]);
+    expect(scopesOf({ method: "GET", url: `${REGISTRY}/v2/library/node/manifests/22` }, REGISTRY)).to.deep.equal([
+      "repository:library/node:pull",
+    ]);
+    expect(scopesOf({ method: "HEAD", url: `${REGISTRY}/v2/acme/app/blobs/sha256:ab` }, REGISTRY)).to.deep.equal([
+      "repository:acme/app:pull",
+    ]);
     expect(scopesOf({ method: "PUT", url: `${REGISTRY}/v2/acme/app/blobs/uploads/42?digest=sha256:ab` }, REGISTRY)).to.deep.equal([
       "repository:acme/app:pull,push",
     ]);
   });
 
   it("reads a repository whose name holds a request's kind, from the end of the path", () => {
-    expect(scopesOf({ method: "GET", url: `${REGISTRY}/v2/acme/blobs/app/manifests/latest` }, REGISTRY)).to.deep.equal(["repository:acme/blobs/app:pull"]);
-    expect(scopesOf({ method: "GET", url: `${REGISTRY}/v2/acme/manifests/tags/list` }, REGISTRY)).to.deep.equal(["repository:acme/manifests:pull"]);
-    expect(scopesOf({ method: "POST", url: `${REGISTRY}/v2/acme/blobs/app/blobs/uploads/` }, REGISTRY)).to.deep.equal(["repository:acme/blobs/app:pull,push"]);
+    expect(scopesOf({ method: "GET", url: `${REGISTRY}/v2/acme/blobs/app/manifests/latest` }, REGISTRY)).to.deep.equal([
+      "repository:acme/blobs/app:pull",
+    ]);
+    expect(scopesOf({ method: "GET", url: `${REGISTRY}/v2/acme/manifests/tags/list` }, REGISTRY)).to.deep.equal([
+      "repository:acme/manifests:pull",
+    ]);
+    expect(scopesOf({ method: "POST", url: `${REGISTRY}/v2/acme/blobs/app/blobs/uploads/` }, REGISTRY)).to.deep.equal([
+      "repository:acme/blobs/app:pull,push",
+    ]);
   });
 
   it("adds pulling the repository a blob is mounted from", () => {
-    expect(scopesOf({ method: "POST", url: `${REGISTRY}/v2/acme/copy/blobs/uploads/?mount=sha256:ab&from=library/node` }, REGISTRY)).to.deep.equal([
-      "repository:acme/copy:pull,push",
-      "repository:library/node:pull",
-    ]);
+    expect(
+      scopesOf({ method: "POST", url: `${REGISTRY}/v2/acme/copy/blobs/uploads/?mount=sha256:ab&from=library/node` }, REGISTRY)
+    ).to.deep.equal(["repository:acme/copy:pull,push", "repository:library/node:pull"]);
   });
 
   it("needs none for a request to no repository, or to another host", () => {
@@ -55,7 +64,9 @@ describe("the scopes a registry request needs", () => {
 
 describe("reading a registry's challenge", () => {
   it("reads a Bearer challenge's realm, service and scope", () => {
-    expect(parseChallenge('Bearer realm="https://auth.example/token",service="registry.example",scope="repository:a:pull"')).to.deep.equal({
+    expect(
+      parseChallenge('Bearer realm="https://auth.example/token",service="registry.example",scope="repository:a:pull"')
+    ).to.deep.equal({
       scheme: "bearer",
       realm: "https://auth.example/token",
       service: "registry.example",
@@ -85,15 +96,23 @@ describe("signing in to a registry", () => {
   afterEach(() => new Promise<void>(resolve => server.close(() => resolve())));
 
   const anonymous = (): RegistrySignIn => new RegistrySignIn(REGISTRY, () => Computable.resolve(undefined));
-  const head = (url: string): { method: string; url: string; headers: Map<string, string> } => ({ method: "GET", url, headers: new Map() });
+  const head = (url: string): { method: string; url: string; headers: Map<string, string> } => ({
+    method: "GET",
+    url,
+    headers: new Map(),
+  });
   const challenge = (): { challenges: string[] } => ({ challenges: [`Bearer realm="${realm}",service="test"`] });
 
   it("sends nothing until challenged, then a token for the request's scopes", async () => {
     const signIn = anonymous();
     const manifest = head(`${REGISTRY}/v2/library/node/manifests/22`);
     expect(await signIn.authorize(manifest)).to.deep.equal(new Map());
-    expect(await signIn.authorize(manifest, challenge())).to.deep.equal(new Map([["authorization", "Bearer token for repository:library/node:pull"]]));
-    expect(await signIn.authorize(manifest)).to.deep.equal(new Map([["authorization", "Bearer token for repository:library/node:pull"]]));
+    expect(await signIn.authorize(manifest, challenge())).to.deep.equal(
+      new Map([["authorization", "Bearer token for repository:library/node:pull"]])
+    );
+    expect(await signIn.authorize(manifest)).to.deep.equal(
+      new Map([["authorization", "Bearer token for repository:library/node:pull"]])
+    );
     expect(issued).to.deep.equal(["repository:library/node:pull"]);
   });
 

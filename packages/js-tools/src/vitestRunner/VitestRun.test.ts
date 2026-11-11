@@ -28,7 +28,12 @@ const ROOT = path.join(path.sep, "work", "build");
 describe("vitestOptions", () => {
   const reporter = {};
   const options = (extra: object = {}): Record<string, unknown> =>
-    vitestOptions({ report: "r.json", env: "node", update: false, setup: [], files: ["a.test.js", "sub/b.test.js"], ...extra }, ROOT, [], reporter);
+    vitestOptions(
+      { report: "r.json", env: "node", update: false, setup: [], files: ["a.test.js", "sub/b.test.js"], ...extra },
+      ROOT,
+      [],
+      reporter
+    );
 
   it("runs exactly the given files, from no config file, on node's own loader", () => {
     const made = options();
@@ -54,7 +59,10 @@ describe("vitestOptions", () => {
   });
 
   it("resolves a staged setup file against the installation, and leaves a module name alone", () => {
-    expect(options({ setup: ["./setupTests.js", "some-module"] }).setupFiles).to.deep.equal([path.join(ROOT, "setupTests.js"), "some-module"]);
+    expect(options({ setup: ["./setupTests.js", "some-module"] }).setupFiles).to.deep.equal([
+      path.join(ROOT, "setupTests.js"),
+      "some-module",
+    ]);
   });
 
   it("records a test file's snapshots beside it, under __snapshots__", () => {
@@ -64,7 +72,11 @@ describe("vitestOptions", () => {
 });
 
 describe("toTestResults", () => {
-  function test(fullName: string, state: string, extra: { errors?: IReportedError[]; mode?: string; duration?: number } = {}): IReportedTest {
+  function test(
+    fullName: string,
+    state: string,
+    extra: { errors?: IReportedError[]; mode?: string; duration?: number } = {}
+  ): IReportedTest {
     return {
       fullName,
       options: { mode: extra.mode },
@@ -107,7 +119,9 @@ describe("toTestResults", () => {
 
   it("reports a file that failed to load as one failure of the file", () => {
     const results = toTestResults(moduleOf([], [{ message: "boom at load" }]));
-    expect(results).to.deep.equal([{ name: "a.test.js", filePath: "a.test.js", status: "failed", duration: 0, message: "boom at load", trace: undefined }]);
+    expect(results).to.deep.equal([
+      { name: "a.test.js", filePath: "a.test.js", status: "failed", duration: 0, message: "boom at load", trace: undefined },
+    ]);
   });
 
   it("reports a file that registered no tests as a failure, in its own words", () => {

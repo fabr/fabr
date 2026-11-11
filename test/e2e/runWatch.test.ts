@@ -168,7 +168,8 @@ describe("e2e: run watch mode (fabr run -w)", () => {
      * by syncing what changed — so a data file the second removed must be gone
      * from it, and one the third added present. The server lists its install's
      * data files; `$0` is the staged entry. */
-    const server = (version: string): string => `echo "${version} up: $(ls "$(dirname "$0")/data" | tr "\\n" " ")" >&2\nexec sleep 300\n`;
+    const server = (version: string): string =>
+      `echo "${version} up: $(ls "$(dirname "$0")/data" | tr "\\n" " ")" >&2\nexec sleep 300\n`;
     const session = startFabrWatch(
       {
         "PROJECT.fabr": "script server { entry = src:server.sh; deps = src:data/*; }\n",

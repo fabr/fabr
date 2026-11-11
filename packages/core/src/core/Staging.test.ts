@@ -201,7 +201,9 @@ describe("writeFileSet modes", () => {
     await toPromise(writeFileSet(work, files)).catch((e: Error) => (error = e));
     expect(error, "expected a case-collision error").to.be.an.instanceOf(ConflictError);
     /* Both folded names are reported. */
-    expect(error?.message).to.match(/Foo\.txt/).and.to.match(/foo\.txt/);
+    expect(error?.message)
+      .to.match(/Foo\.txt/)
+      .and.to.match(/foo\.txt/);
   });
 });
 

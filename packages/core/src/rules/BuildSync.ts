@@ -50,7 +50,10 @@ export default {
         [...table.values()].map((member): [string, Computable<SyncSources>] => [
           member.content,
           context
-            .getFileProperty(contentKey(member.decl), member.operation === undefined ? BUILD_OVERRIDE : Constraints.of({ [BUILD_OPERATION]: member.operation }))
+            .getFileProperty(
+              contentKey(member.decl),
+              member.operation === undefined ? BUILD_OVERRIDE : Constraints.of({ [BUILD_OPERATION]: member.operation })
+            )
             .then(sources => new SyncSources(sources)),
         ])
       ),
@@ -182,9 +185,7 @@ export class SyncSource implements FileSource {
   public get(name: string): ComputableSource<IFile | undefined> {
     for (const path of this.table.keys()) {
       if (name.startsWith(path + NAME_COMPONENT_SEPARATOR)) {
-        return this.packageMembers([path]).then(([carrier]) =>
-          carrier.get(name.substring(path.length + 1))
-        );
+        return this.packageMembers([path]).then(([carrier]) => carrier.get(name.substring(path.length + 1)));
       }
     }
     return Computable.resolve(undefined);
@@ -239,7 +240,12 @@ export class SyncSource implements FileSource {
     const missing = paths.filter(path => !this.packaged.has(path));
     if (missing.length > 0) {
       const batch = this.packageBatch(missing);
-      missing.forEach((path, i) => this.packaged.set(path, batch.then(carriers => carriers[i])));
+      missing.forEach((path, i) =>
+        this.packaged.set(
+          path,
+          batch.then(carriers => carriers[i])
+        )
+      );
     }
     return Computable.forAll(
       paths.map(path => this.packaged.get(path)!),
@@ -267,29 +273,31 @@ export class SyncSource implements FileSource {
       ),
       (...content: FileSet[][]) => content
     );
-    return Computable.forAll([this.publishedTargets(), materialized], (targets, content) => ({ targets, content })).then(({ targets, content }) => {
-      const batches = new Map<RepositoryWriter, { path: string; index: number }[]>();
-      paths.forEach((path, index) => {
-        const writer = this.member(path).assigned.source;
-        batches.set(writer, [...(batches.get(writer) ?? []), { path, index }]);
-      });
-      const carriers: PublishableFileSet[] = new Array(paths.length);
-      return Computable.forAll(
-        [...batches].map(([writer, batch]) =>
-          writer
-            .package(
-              batch.map(({ path, index }) => ({
-                destination: this.member(path).assigned,
-                content: content[index].length === 1 ? content[index][0] : FileSet.unionAll(...content[index]),
-              })),
-              release,
-              targets
-            )
-            .then(packed => batch.forEach(({ index }, i) => (carriers[index] = packed[i])))
-        ),
-        () => carriers
-      );
-    });
+    return Computable.forAll([this.publishedTargets(), materialized], (targets, content) => ({ targets, content })).then(
+      ({ targets, content }) => {
+        const batches = new Map<RepositoryWriter, { path: string; index: number }[]>();
+        paths.forEach((path, index) => {
+          const writer = this.member(path).assigned.source;
+          batches.set(writer, [...(batches.get(writer) ?? []), { path, index }]);
+        });
+        const carriers: PublishableFileSet[] = new Array(paths.length);
+        return Computable.forAll(
+          [...batches].map(([writer, batch]) =>
+            writer
+              .package(
+                batch.map(({ path, index }) => ({
+                  destination: this.member(path).assigned,
+                  content: content[index].length === 1 ? content[index][0] : FileSet.unionAll(...content[index]),
+                })),
+                release,
+                targets
+              )
+              .then(packed => batch.forEach(({ index }, i) => (carriers[index] = packed[i])))
+          ),
+          () => carriers
+        );
+      }
+    );
   }
 
   /**

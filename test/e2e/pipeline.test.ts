@@ -24,10 +24,7 @@ import { runFabr } from "./harness";
  * streams are wired with `|`, and `>`/`2>`/`&>` capture output as content. Two
  * loose js_script tools — `emit` writes to stdout, `upper` uppercases stdin —
  * exercise redirects and piping through the real CLI. */
-const TOOLS =
-  "plugin @fabr-build/js;\n" +
-  "js_script emit { entry = src:emit.js; }\n" +
-  "js_script upper { entry = src:upper.js; }\n";
+const TOOLS = "plugin @fabr-build/js;\n" + "js_script emit { entry = src:emit.js; }\n" + "js_script upper { entry = src:upper.js; }\n";
 const TOOL_FILES = {
   "src/emit.js": "process.stdout.write('hello\\n');\nprocess.stderr.write('noise');\n",
   "src/upper.js": "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>process.stdout.write(d.toUpperCase()));\n",
@@ -40,10 +37,7 @@ const WRITER_FILES = { "src/writer.js": "require('fs').writeFileSync('made.txt',
 
 describe("e2e: generate command pipelines", () => {
   it("captures a command's stdout as content ('> name')", () => {
-    const result = runFabr(
-      { "PROJECT.fabr": TOOLS + "generate g { run = emit > out.txt; }\n", ...TOOL_FILES },
-      ["cat", "g:out.txt"]
-    );
+    const result = runFabr({ "PROJECT.fabr": TOOLS + "generate g { run = emit > out.txt; }\n", ...TOOL_FILES }, ["cat", "g:out.txt"]);
     expect(result.status).to.equal(0);
     expect(result.stdout).to.equal("hello\n");
   });
@@ -51,7 +45,9 @@ describe("e2e: generate command pipelines", () => {
   it("runs a program of the host as a command", () => {
     const result = runFabr(
       {
-        "PROJECT.fabr": `generate g { run = @host:${process.execPath} -e "process.stdout.write(process.execPath)" > out.txt; }\n` + "generate s { run = @host:/bin/sh -c \"echo shell ran\" > out.txt; }\n",
+        "PROJECT.fabr":
+          `generate g { run = @host:${process.execPath} -e "process.stdout.write(process.execPath)" > out.txt; }\n` +
+          'generate s { run = @host:/bin/sh -c "echo shell ran" > out.txt; }\n',
       },
       ["cat", "g:out.txt", "s:out.txt"]
     );
@@ -61,19 +57,19 @@ describe("e2e: generate command pipelines", () => {
 
   it("pipes one stage's stdout into the next, capturing the result", () => {
     /* The docgen shape: produce | transform > file. */
-    const result = runFabr(
-      { "PROJECT.fabr": TOOLS + "generate g { run = emit | upper > out.txt; }\n", ...TOOL_FILES },
-      ["cat", "g:out.txt"]
-    );
+    const result = runFabr({ "PROJECT.fabr": TOOLS + "generate g { run = emit | upper > out.txt; }\n", ...TOOL_FILES }, [
+      "cat",
+      "g:out.txt",
+    ]);
     expect(result.status).to.equal(0);
     expect(result.stdout).to.equal("HELLO\n");
   });
 
   it("merges stdout and stderr with '&>'", () => {
-    const result = runFabr(
-      { "PROJECT.fabr": TOOLS + "generate g { run = emit &> both.txt; }\n", ...TOOL_FILES },
-      ["cat", "g:both.txt"]
-    );
+    const result = runFabr({ "PROJECT.fabr": TOOLS + "generate g { run = emit &> both.txt; }\n", ...TOOL_FILES }, [
+      "cat",
+      "g:both.txt",
+    ]);
     expect(result.status).to.equal(0);
     /* emit writes 'hello\n' to stdout and 'noise' to stderr; both captured. */
     expect(result.stdout).to.contain("hello");
@@ -119,10 +115,10 @@ describe("e2e: generate command pipelines", () => {
   });
 
   it("substitutes ${vars} in a command name", () => {
-    const result = runFabr(
-      { "PROJECT.fabr": TOOLS + "TOOL = emit;\ngenerate g { run = ${TOOL} > out.txt; }\n", ...TOOL_FILES },
-      ["cat", "g:out.txt"]
-    );
+    const result = runFabr({ "PROJECT.fabr": TOOLS + "TOOL = emit;\ngenerate g { run = ${TOOL} > out.txt; }\n", ...TOOL_FILES }, [
+      "cat",
+      "g:out.txt",
+    ]);
     expect(result.status).to.equal(0);
     expect(result.stdout).to.equal("hello\n");
   });
@@ -131,10 +127,10 @@ describe("e2e: generate command pipelines", () => {
     /* A command is an ordinary written reference resolved through the file core,
      * so a projection into a runnable (and equally an external requirement like
      * `@npm:typia:9.7.1`, or a path) names the tool. */
-    const result = runFabr(
-      { "PROJECT.fabr": TOOLS + "generate g { run = emit:emit.js > out.txt; }\n", ...TOOL_FILES },
-      ["cat", "g:out.txt"]
-    );
+    const result = runFabr({ "PROJECT.fabr": TOOLS + "generate g { run = emit:emit.js > out.txt; }\n", ...TOOL_FILES }, [
+      "cat",
+      "g:out.txt",
+    ]);
     expect(result.status).to.equal(0);
     expect(result.stdout).to.equal("hello\n");
   });
@@ -162,10 +158,10 @@ describe("e2e: generate command pipelines", () => {
   });
 
   it("collects files the command wrote via the 'output' glob", () => {
-    const result = runFabr(
-      { "PROJECT.fabr": WRITER + "generate g { run = writer; output = made.txt; }\n", ...WRITER_FILES },
-      ["cat", "g:made.txt"]
-    );
+    const result = runFabr({ "PROJECT.fabr": WRITER + "generate g { run = writer; output = made.txt; }\n", ...WRITER_FILES }, [
+      "cat",
+      "g:made.txt",
+    ]);
     expect(result.status).to.equal(0);
     expect(result.stdout).to.equal("content\n");
   });
@@ -185,10 +181,10 @@ describe("e2e: generate command pipelines", () => {
     /* The command succeeds but writes made.txt, which `dist:**` never matches:
      * a declared output that collects zero files is a build error, positioned at
      * the target with a help hint — not a green build with no output. */
-    const result = runFabr(
-      { "PROJECT.fabr": WRITER + "generate g { run = writer; output = dist:**; }\n", ...WRITER_FILES },
-      ["build", "g"]
-    );
+    const result = runFabr({ "PROJECT.fabr": WRITER + "generate g { run = writer; output = dist:**; }\n", ...WRITER_FILES }, [
+      "build",
+      "g",
+    ]);
     expect(result.status).to.not.equal(0);
     expect(result.stderr).to.match(/no files matching output pattern 'dist:\*\*'/);
     expect(result.stderr).to.match(/help:/);
@@ -280,10 +276,7 @@ describe("e2e: generate command pipelines", () => {
   });
 
   it("rejects a pipeline operator in a non-COMMAND target property (Validate)", () => {
-    const result = runFabr(
-      { "PROJECT.fabr": "flag f { provides = a | b; }\n" },
-      ["build", "f"]
-    );
+    const result = runFabr({ "PROJECT.fabr": "flag f { provides = a | b; }\n" }, ["build", "f"]);
     expect(result.status).to.not.equal(0);
     expect(result.stderr).to.match(/only valid in a COMMAND property/);
   });
@@ -292,10 +285,7 @@ describe("e2e: generate command pipelines", () => {
     /* A top-level property is not run through Validate; the guard at the name-
      * resolution choke point catches the operator when it is actually read,
      * rather than silently dropping the marker's empty Name to "". */
-    const result = runFabr(
-      { "PROJECT.fabr": "myprop = a | b;\nflag f { provides = ${myprop}; }\n" },
-      ["build", "f"]
-    );
+    const result = runFabr({ "PROJECT.fabr": "myprop = a | b;\nflag f { provides = ${myprop}; }\n" }, ["build", "f"]);
     expect(result.status).to.not.equal(0);
     expect(result.stderr).to.match(/only valid in a COMMAND property/);
   });

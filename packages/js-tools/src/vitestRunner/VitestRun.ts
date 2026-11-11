@@ -150,7 +150,11 @@ export function toRunFailure(error: IReportedError): ITestResult {
  */
 function describeErrors(errors: ReadonlyArray<IReportedError>): { message: string; trace?: string } {
   const [summary = "failed", ...detail] = errors
-    .map(error => [withFabrRemedy(error.message ?? "failed"), error.diff, framesOf(error.stack)].filter(part => part !== undefined && part !== "").join("\n"))
+    .map(error =>
+      [withFabrRemedy(error.message ?? "failed"), error.diff, framesOf(error.stack)]
+        .filter(part => part !== undefined && part !== "")
+        .join("\n")
+    )
     .join("\n\n")
     .split("\n");
   return { message: summary, trace: detail.join("\n").trim() || undefined };

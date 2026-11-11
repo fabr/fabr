@@ -17,7 +17,15 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { FileSource, INameValue, NAME_COMPONENT_SEPARATOR, parseName, StringReader, syntheticValue, WritableSourceTree } from "@fabr-build/core";
+import {
+  FileSource,
+  INameValue,
+  NAME_COMPONENT_SEPARATOR,
+  parseName,
+  StringReader,
+  syntheticValue,
+  WritableSourceTree,
+} from "@fabr-build/core";
 
 /**
  * Where the invocation was run, as a reference given there needs to know it: the

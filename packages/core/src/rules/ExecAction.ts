@@ -88,6 +88,11 @@ function stageExec(action: BuildAction, dir: string): Computable<IStagedStep> {
  * and collects `outputs`: a "dir:glob" pattern, default "**", or several, each
  * file named by the first that selects it.
  */
-export function createExecAction(files: FileSet, argv: readonly RunnableArgument[], outputs: string | string[] = "**", label?: string): BuildAction {
+export function createExecAction(
+  files: FileSet,
+  argv: readonly RunnableArgument[],
+  outputs: string | string[] = "**",
+  label?: string
+): BuildAction {
   return new BuildAction(EXEC_ACTION, { files }, { argv, outputs }, { label });
 }

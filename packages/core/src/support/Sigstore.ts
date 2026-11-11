@@ -61,7 +61,12 @@ export function signDsse(
   return Computable.resolve(undefined)
     .then(() => {
       const proofOfPossession = sign(Buffer.from(identitySubject(identityToken))).toString("base64");
-      return requestCertificate(instance.fulcioUrl, identityToken, publicKey.export({ format: "pem", type: "spki" }).toString(), proofOfPossession);
+      return requestCertificate(
+        instance.fulcioUrl,
+        identityToken,
+        publicKey.export({ format: "pem", type: "spki" }).toString(),
+        proofOfPossession
+      );
     })
     .then(certificate => {
       const bundle = toDSSEBundle({
@@ -101,7 +106,12 @@ export function preAuthEncoding(payloadType: string, payload: Buffer): Buffer {
 
 /** Ask Fulcio at `fulcioUrl` for a certificate binding `publicKey` (PEM) to
  *  the identity `identityToken` names; resolves to the leaf certificate (PEM). */
-function requestCertificate(fulcioUrl: string, identityToken: string, publicKey: string, proofOfPossession: string): Computable<string> {
+function requestCertificate(
+  fulcioUrl: string,
+  identityToken: string,
+  publicKey: string,
+  proofOfPossession: string
+): Computable<string> {
   return post(`${fulcioUrl}/api/v2/signingCert`, {
     credentials: { oidcIdentityToken: identityToken },
     publicKeyRequest: { publicKey: { algorithm: "ECDSA", content: publicKey }, proofOfPossession },
@@ -149,7 +159,8 @@ function toLogEntry(json: unknown): TransparencyLogEntry {
     logId: { keyId: Buffer.from(logID, "hex") },
     integratedTime: integratedTime.toString(),
     kindVersion: { kind: String(kind.kind), version: String(kind.apiVersion) },
-    inclusionPromise: typeof signedEntryTimestamp === "string" ? { signedEntryTimestamp: Buffer.from(signedEntryTimestamp, "base64") } : undefined,
+    inclusionPromise:
+      typeof signedEntryTimestamp === "string" ? { signedEntryTimestamp: Buffer.from(signedEntryTimestamp, "base64") } : undefined,
     inclusionProof: isJsonObject(proof) ? toInclusionProof(proof) : undefined,
     canonicalizedBody: Buffer.from(body, "base64"),
   };

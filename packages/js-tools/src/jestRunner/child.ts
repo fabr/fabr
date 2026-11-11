@@ -77,7 +77,9 @@ export interface IChildResult {
 
 /** jest-mock, as this module constructs it. */
 interface IMockerModule {
-  ModuleMocker: new (global: unknown) => IMocker & IMockerControls & { getMetadata(c: unknown): unknown; generateFromMetadata(m: unknown): unknown };
+  ModuleMocker: new (
+    global: unknown
+  ) => IMocker & IMockerControls & { getMetadata(c: unknown): unknown; generateFromMetadata(m: unknown): unknown };
 }
 
 type CircusResult = IChildTestResult & IFormattableResult;
@@ -107,9 +109,11 @@ export async function runTestFile(request: IChildRequest): Promise<IChildResult>
   installSeams(registry);
   installHoist(request.root);
 
-  const timers = new (jestLibrary("@jest/fake-timers") as {
-    ModernFakeTimers: new (opts: unknown) => IFakeTimers;
-  }).ModernFakeTimers({ global: globalThis, config: { rootDir: request.root, fakeTimers: {} } });
+  const timers = new (
+    jestLibrary("@jest/fake-timers") as {
+      ModernFakeTimers: new (opts: unknown) => IFakeTimers;
+    }
+  ).ModernFakeTimers({ global: globalThis, config: { rootDir: request.root, fakeTimers: {} } });
   const env = { registry, mocker, timers, seed: (globalConfig as { seed?: number }).seed };
   /* The plain `jest` global resolves module specifiers against the test file
    * (there is only one of it). A module that wants its OWN resolution base
@@ -148,7 +152,9 @@ export async function runTestFile(request: IChildRequest): Promise<IChildResult>
       failureMessages: test.failureMessages.length === 0 ? [] : formatFailures(test, projectConfig, globalConfig, request.testFile),
     })),
     execError:
-      result.testExecError === undefined ? undefined : formatExecError(result.testExecError, projectConfig, globalConfig, request.testFile),
+      result.testExecError === undefined
+        ? undefined
+        : formatExecError(result.testExecError, projectConfig, globalConfig, request.testFile),
   };
 }
 
@@ -214,7 +220,7 @@ export function makeJestGlobals(jest: unknown): Record<string, unknown> {
  * would make the parent misread the failure as "this file registered no
  * tests". */
 export function describeThrown(err: unknown): string {
-  return err instanceof Error ? err.stack ?? err.message : `Non-Error thrown: ${inspect(err)}`;
+  return err instanceof Error ? (err.stack ?? err.message) : `Non-Error thrown: ${inspect(err)}`;
 }
 
 if (require.main === module) {

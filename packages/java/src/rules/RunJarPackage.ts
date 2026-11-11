@@ -23,21 +23,40 @@
  * {@link makeJarRunnable}).
  */
 
-import { BUILD_OVERRIDE, Computable, defineRule, FabrError, FileSet, PackageFileSet, RunnableFileSet, TargetContext } from "@fabr-build/core";
+import {
+  BUILD_OVERRIDE,
+  Computable,
+  defineRule,
+  FabrError,
+  FileSet,
+  PackageFileSet,
+  RunnableFileSet,
+  TargetContext,
+} from "@fabr-build/core";
 import { jarMainClass, makeJarRunnable } from "../JarPackage";
 import { MAVEN_FORMAT } from "../MavenProtocol";
 
 /** The `jar_package` rule, under `run`. */
 export default defineRule({
   requirements(context) {
-    return { run: { pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE), agents: context.getPackageProperty("agents", BUILD_OVERRIDE, MAVEN_FORMAT) } };
+    return {
+      run: {
+        pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE),
+        agents: context.getPackageProperty("agents", BUILD_OVERRIDE, MAVEN_FORMAT),
+      },
+    };
   },
   evaluateMaterialized(context, { pkg, agents }) {
     return context.getProperty("main_class").then(mainClass => runnableJar(context, pkg, agents, mainClass?.toString()));
   },
 });
 
-function runnableJar(context: TargetContext, pkg: FileSet[], agents: FileSet[], mainClass: string | undefined): Computable<RunnableFileSet> {
+function runnableJar(
+  context: TargetContext,
+  pkg: FileSet[],
+  agents: FileSet[],
+  mainClass: string | undefined
+): Computable<RunnableFileSet> {
   const built = pkg.find((source): source is PackageFileSet => source instanceof PackageFileSet);
   if (!built) {
     throw new FabrError("internal: jar_package[build] did not yield a package");
@@ -45,7 +64,9 @@ function runnableJar(context: TargetContext, pkg: FileSet[], agents: FileSet[], 
   /* Where main_class is not given, the manifest may name the class (`manifest = { Main-Class = … }`). */
   return (mainClass === undefined ? jarMainClass(built) : Computable.resolve(mainClass)).then(start => {
     if (start === undefined) {
-      throw new FabrError(`${context.name} has no main_class, so it cannot be run`).withHelp("set `main_class` to the class the program starts in");
+      throw new FabrError(`${context.name} has no main_class, so it cannot be run`).withHelp(
+        "set `main_class` to the class the program starts in"
+      );
     }
     return makeJarRunnable(context, [built], start, { agents });
   });

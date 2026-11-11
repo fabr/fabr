@@ -18,13 +18,37 @@
  */
 
 import { expect } from "chai";
-import { IFile, makeRewrite, MemoryFile, PackageFileSet, parseName, RefSource, RepositoryRef, RewriteFn, dependenciesOn } from "@fabr-build/core";
-import { buildBundleOptions, compiledName, computeAssetNames, computeBundleEntries, computeChunkNames, computeExternalNames, IBundleEntrySource, toBundleFormat } from "./JSBundle";
+import {
+  IFile,
+  makeRewrite,
+  MemoryFile,
+  PackageFileSet,
+  parseName,
+  RefSource,
+  RepositoryRef,
+  RewriteFn,
+  dependenciesOn,
+} from "@fabr-build/core";
+import {
+  buildBundleOptions,
+  compiledName,
+  computeAssetNames,
+  computeBundleEntries,
+  computeChunkNames,
+  computeExternalNames,
+  IBundleEntrySource,
+  toBundleFormat,
+} from "./JSBundle";
 import { parseJSTarget } from "./JSPackage";
 
 /** A package with a single index.js and the given (already-built) deps. */
 function pkg(name: string, deps: PackageFileSet[] = []): PackageFileSet {
-  return new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}`)]]), name, "1.0.0", dependenciesOn(...deps));
+  return new PackageFileSet(
+    new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}`)]]),
+    name,
+    "1.0.0",
+    dependenciesOn(...deps)
+  );
 }
 
 const sorted = (names: string[]): string[] => [...names].sort((x, y) => x.localeCompare(y));
@@ -69,12 +93,9 @@ describe("computeExternalNames", () => {
     /* A dep still carried as a reference, written `@npm:wrap-ansi:^7 -> wrap-ansi-cjs`:
      * the host's code requires the local name, so that is what must stay external. */
     const renamed = new RepositoryRef({} as RefSource, { name: "wrap-ansi", versionConstraint: "^7.0.0", renameTo: "wrap-ansi-cjs" });
-    const host = new PackageFileSet(
-      new Map<string, IFile>([["index.js", MemoryFile.from("// host")]]),
-      "host",
-      "1.0.0",
-      [{ reference: renamed }]
-    );
+    const host = new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from("// host")]]), "host", "1.0.0", [
+      { reference: renamed },
+    ]);
     expect(sorted(computeExternalNames([], [host]))).to.deep.equal(["host", "wrap-ansi-cjs"]);
   });
 });
@@ -95,7 +116,8 @@ describe("computeBundleEntries", () => {
   });
 
   it("applies the output rewrite to the default name, which may drop the hash", () => {
-    const rewrite: RewriteFn = name => (name.endsWith(".entry-[hash].js") ? name.replace(/\.entry-\[hash\]\.js$/, ".min.js") : undefined);
+    const rewrite: RewriteFn = name =>
+      name.endsWith(".entry-[hash].js") ? name.replace(/\.entry-\[hash\]\.js$/, ".min.js") : undefined;
     expect(computeBundleEntries([source("src/app.entry.ts")], rewrite)).to.deep.equal({
       entries: [{ in: "src/app.entry.js", out: "src/app.min" }],
       entryNames: "[dir]/[name]",
@@ -133,7 +155,9 @@ describe("computeBundleEntries", () => {
 
   it("refuses entries that need more than one pattern, and a hash named twice", () => {
     const some: RewriteFn = name => (name.startsWith("src/a") ? "a.js" : undefined);
-    expect(() => computeBundleEntries([source("src/a.ts"), source("src/b.ts")], some)).to.throw(/one pattern.*'a\.js' and 'src\/b-\[hash\]\.js' differ/);
+    expect(() => computeBundleEntries([source("src/a.ts"), source("src/b.ts")], some)).to.throw(
+      /one pattern.*'a\.js' and 'src\/b-\[hash\]\.js' differ/
+    );
     const tails: RewriteFn = name => (name.startsWith("src/a") ? "a.[hash].min.js" : "b.[hash].js");
     expect(() => computeBundleEntries([source("src/a.ts"), source("src/b.ts")], tails)).to.throw(/one pattern/);
     const twice: RewriteFn = () => "x.[hash].[hash].js";
@@ -235,19 +259,37 @@ describe("buildBundleOptions", () => {
   });
 
   it("writes the format it is given, splitting only for esm-split", () => {
-    expect(buildBundleOptions(parseJSTarget("es2021-esm-browser"), "esm", "debug", NO_ENTRIES, [], {}, [], CHUNKS, ASSETS).splitting).to.equal(false);
-    const split = buildBundleOptions(parseJSTarget("es2021-esm-browser"), "esm-split", "debug", NO_ENTRIES, [], {}, [], CHUNKS, ASSETS);
+    expect(
+      buildBundleOptions(parseJSTarget("es2021-esm-browser"), "esm", "debug", NO_ENTRIES, [], {}, [], CHUNKS, ASSETS).splitting
+    ).to.equal(false);
+    const split = buildBundleOptions(
+      parseJSTarget("es2021-esm-browser"),
+      "esm-split",
+      "debug",
+      NO_ENTRIES,
+      [],
+      {},
+      [],
+      CHUNKS,
+      ASSETS
+    );
     expect([split.format, split.splitting]).to.deep.equal(["esm", true]);
     /* The format is the bundle's own: a node target can still be written as a script. */
-    expect(buildBundleOptions(parseJSTarget("es2019-commonjs-node"), "iife", "debug", NO_ENTRIES, [], {}, [], CHUNKS, ASSETS).format).to.equal("iife");
+    expect(
+      buildBundleOptions(parseJSTarget("es2019-commonjs-node"), "iife", "debug", NO_ENTRIES, [], {}, [], CHUNKS, ASSETS).format
+    ).to.equal("iife");
   });
 
   it("uses iife for a non-esm browser bundle", () => {
-    expect(buildBundleOptions(parseJSTarget("es6-commonjs-browser"), "iife", "debug", NO_ENTRIES, [], {}, [], CHUNKS, ASSETS).format).to.equal("iife");
+    expect(
+      buildBundleOptions(parseJSTarget("es6-commonjs-browser"), "iife", "debug", NO_ENTRIES, [], {}, [], CHUNKS, ASSETS).format
+    ).to.equal("iife");
   });
 
   it("uses cjs for a non-esm node bundle", () => {
-    expect(buildBundleOptions(parseJSTarget("es2019-commonjs-node"), "cjs", "debug", NO_ENTRIES, [], {}, [], CHUNKS, ASSETS).format).to.equal("cjs");
+    expect(
+      buildBundleOptions(parseJSTarget("es2019-commonjs-node"), "cjs", "debug", NO_ENTRIES, [], {}, [], CHUNKS, ASSETS).format
+    ).to.equal("cjs");
   });
 
   it("minifies and drops the sourcemap for a release build", () => {
@@ -264,14 +306,24 @@ describe("buildBundleOptions", () => {
 
   it("passes defines through as esbuild `define`, omitting the key when empty", () => {
     const defines = { "process.env.NODE_ENV": '"production"', DEBUG: "false" };
-    expect(buildBundleOptions(parseJSTarget("es2021-esm"), "esm", "debug", NO_ENTRIES, [], defines, [], CHUNKS, ASSETS).define).to.deep.equal(defines);
-    expect(buildBundleOptions(parseJSTarget("es2021-esm"), "esm", "debug", NO_ENTRIES, [], {}, [], CHUNKS, ASSETS)).to.not.have.property("define");
+    expect(
+      buildBundleOptions(parseJSTarget("es2021-esm"), "esm", "debug", NO_ENTRIES, [], defines, [], CHUNKS, ASSETS).define
+    ).to.deep.equal(defines);
+    expect(
+      buildBundleOptions(parseJSTarget("es2021-esm"), "esm", "debug", NO_ENTRIES, [], {}, [], CHUNKS, ASSETS)
+    ).to.not.have.property("define");
   });
 
   it("passes inject through as esbuild `inject`, omitting the key when nothing is injected", () => {
     const inject = [".fabr-node-globals.js"];
-    expect(buildBundleOptions(parseJSTarget("es2021-esm"), "esm", "debug", NO_ENTRIES, [], {}, inject, CHUNKS, ASSETS).inject).to.deep.equal(inject);
-    expect(buildBundleOptions(parseJSTarget("es2021-esm"), "esm", "debug", NO_ENTRIES, [], {}, [], CHUNKS, ASSETS)).to.not.have.property("inject");
-    expect(buildBundleOptions(parseJSTarget("es2021-esm"), "esm", "debug", NO_ENTRIES, [], {}, [], CHUNKS, ASSETS)).to.not.have.property("inject");
+    expect(
+      buildBundleOptions(parseJSTarget("es2021-esm"), "esm", "debug", NO_ENTRIES, [], {}, inject, CHUNKS, ASSETS).inject
+    ).to.deep.equal(inject);
+    expect(
+      buildBundleOptions(parseJSTarget("es2021-esm"), "esm", "debug", NO_ENTRIES, [], {}, [], CHUNKS, ASSETS)
+    ).to.not.have.property("inject");
+    expect(
+      buildBundleOptions(parseJSTarget("es2021-esm"), "esm", "debug", NO_ENTRIES, [], {}, [], CHUNKS, ASSETS)
+    ).to.not.have.property("inject");
   });
 });

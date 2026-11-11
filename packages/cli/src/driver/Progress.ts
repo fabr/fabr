@@ -292,7 +292,9 @@ export class ProgressReporter {
     const items = [...this.running.values()];
     /* Incidental tasks (a resolution has a dozen in flight at once) get one row
      * per kind, not one each. */
-    const summaries = this.summaryRows(items.flatMap(item => (incidental(item.task) ? [{ task: item.task, started: item.started }] : [])));
+    const summaries = this.summaryRows(
+      items.flatMap(item => (incidental(item.task) ? [{ task: item.task, started: item.started }] : []))
+    );
     const own = items.filter(item => !incidental(item.task));
     const running = own.filter(item => item.state === "running");
     const waiting = own.length - running.length;
@@ -300,7 +302,10 @@ export class ProgressReporter {
     const room = Math.max(0, budget - summaries.length);
     /* Reserve a row for the tail whenever there will be something to say. */
     const listed = running.length > room || waiting > 0 ? Math.max(0, room - 1) : room;
-    const rows = running.slice(0, listed).map(item => this.row(item)).concat(summaries);
+    const rows = running
+      .slice(0, listed)
+      .map(item => this.row(item))
+      .concat(summaries);
     const tail = this.remainder(running.length - listed, waiting);
     return { heading: this.style(SGR_BOLD, PANE_HEADING), rows: tail ? [...rows, tail] : rows };
   }

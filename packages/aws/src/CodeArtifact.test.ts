@@ -32,13 +32,22 @@ const TYPES = new Map([
 ]);
 
 /* A repository that vends a reference written as it is asked for, standing in for another plugin's. */
-function stubRef(name: string, repositoryName?: string): { name: string; repositoryName?: string; withRepositoryName(written: string): unknown } {
+function stubRef(
+  name: string,
+  repositoryName?: string
+): { name: string; repositoryName?: string; withRepositoryName(written: string): unknown } {
   return { name, repositoryName, withRepositoryName: (written: string) => stubRef(name, written) };
 }
-const STUB = { getRepositoryRef: (name: { toString(): string }) => stubRef(name.toString()), getRepositoryPublishRef: (name: { toString(): string }) => stubRef(name.toString()) };
+const STUB = {
+  getRepositoryRef: (name: { toString(): string }) => stubRef(name.toString()),
+  getRepositoryPublishRef: (name: { toString(): string }) => stubRef(name.toString()),
+};
 
 /** A context recording each repository the account makes: its type, name, url and credential. */
-function makingContext(made: Array<{ type: string; name: string; url?: string; credential?: Credential }>, defined = true): TargetContext {
+function makingContext(
+  made: Array<{ type: string; name: string; url?: string; credential?: Credential }>,
+  defined = true
+): TargetContext {
   return {
     name: "@aws",
     hasRepositoryType: () => defined,
@@ -55,7 +64,9 @@ function refIn(source: unknown, name: Name, separator: ":" | "/"): Computable<un
     const literal = name.getLiteralPrefix();
     const end = literal.search(/[:/]/);
     const first = end === -1 ? literal : literal.substring(0, end);
-    return source.get(first, separator).then(member => (end === -1 ? member : refIn(member, name.substring(end + 1), literal[end] as ":" | "/")));
+    return source
+      .get(first, separator)
+      .then(member => (end === -1 ? member : refIn(member, name.substring(end + 1), literal[end] as ":" | "/")));
   }
   const ref = (source as PartialRepositoryRef).getRepositoryRef(name, separator);
   return Computable.resolve(ref);
@@ -74,8 +85,12 @@ const failureOf = (outcome: unknown): Promise<Error | undefined> =>
 
 describe("CodeArtifact's requests", () => {
   it("names a repository's endpoint for a format by its domain, owner and region", () => {
-    expect(endpointUrl("acme", "111122223333", "eu-west-2", "npm", "shared")).to.equal("https://acme-111122223333.d.codeartifact.eu-west-2.amazonaws.com/npm/shared/");
-    expect(endpointUrl("acme", "111122223333", "us-east-1", "maven", "shared", new URL("http://localhost:4566"))).to.equal("http://localhost:4566/maven/shared/");
+    expect(endpointUrl("acme", "111122223333", "eu-west-2", "npm", "shared")).to.equal(
+      "https://acme-111122223333.d.codeartifact.eu-west-2.amazonaws.com/npm/shared/"
+    );
+    expect(endpointUrl("acme", "111122223333", "us-east-1", "maven", "shared", new URL("http://localhost:4566"))).to.equal(
+      "http://localhost:4566/maven/shared/"
+    );
   });
 
   it("asks for a domain's token by its name and owner", () => {
@@ -128,7 +143,11 @@ describe("a CodeArtifact domain's token", () => {
   const head = { method: "GET", url: "http://x/npm/shared/lodash", headers: new Map<string, string>() };
 
   it("is fetched once with a signed request, and given as npm sends it, or as Maven does", async () => {
-    const token = new CodeArtifactToken({ signer: new RequestSigner(undefined), region: "eu-west-2", endpoint }, "acme", "111122223333");
+    const token = new CodeArtifactToken(
+      { signer: new RequestSigner(undefined), region: "eu-west-2", endpoint },
+      "acme",
+      "111122223333"
+    );
     expect(await formatCredential(token, "npm").authorize(head)).to.deep.equal(new Map([["authorization", "Bearer token-1"]]));
     expect(await formatCredential(token, "maven").authorize(head)).to.deep.equal(
       new Map([["authorization", `Basic ${Buffer.from("aws:token-1").toString("base64")}`]])
@@ -139,7 +158,11 @@ describe("a CodeArtifact domain's token", () => {
   });
 
   it("is fetched again where a repository no longer accepts it, once for requests challenged together", async () => {
-    const token = new CodeArtifactToken({ signer: new RequestSigner(undefined), region: "eu-west-2", endpoint }, "acme", "111122223333");
+    const token = new CodeArtifactToken(
+      { signer: new RequestSigner(undefined), region: "eu-west-2", endpoint },
+      "acme",
+      "111122223333"
+    );
     const npm = formatCredential(token, "npm");
     await npm.authorize(head);
     const challenge = { challenges: ['Bearer realm="codeartifact"'] };
@@ -156,7 +179,11 @@ describe("a credential an account gives", () => {
     const credential = onlyTo("https://acme-1.d.codeartifact.us-east-1.amazonaws.com", {
       authorize: () => Computable.resolve(new Map([["authorization", "Bearer t"]])),
     });
-    const at = (url: string): { method: string; url: string; headers: Map<string, string> } => ({ method: "GET", url, headers: new Map() });
+    const at = (url: string): { method: string; url: string; headers: Map<string, string> } => ({
+      method: "GET",
+      url,
+      headers: new Map(),
+    });
     expect(await credential.authorize(at("https://acme-1.d.codeartifact.us-east-1.amazonaws.com/npm/shared/lodash"))).to.deep.equal(
       new Map([["authorization", "Bearer t"]])
     );
@@ -168,23 +195,49 @@ describe("a credential an account gives", () => {
 describe("an account's CodeArtifact repositories", () => {
   it("are made as the type AWS_REPOSITORY_TYPES names for their format, at their endpoint", async () => {
     const made: Array<{ type: string; name: string; url?: string }> = [];
-    const account = new AwsAccount({ name: "@aws", context: makingContext(made), signer: new RequestSigner(undefined), credentials: "profile:default", region: "eu-west-2", accountId: "123456789012", repositoryTypes: TYPES });
+    const account = new AwsAccount({
+      name: "@aws",
+      context: makingContext(made),
+      signer: new RequestSigner(undefined),
+      credentials: "profile:default",
+      region: "eu-west-2",
+      accountId: "123456789012",
+      repositoryTypes: TYPES,
+    });
     const npm = (await refOf(account, "codeartifact:acme:shared:npm")) as PartialRepositoryRef;
     await refOf(account, "codeartifact:acme:shared:npm:lodash:4.17.21");
     await refOf(account, "codeartifact:acme:shared:maven:org.slf4j:slf4j-api:2.0.13");
     expect(made.map(({ type, name, url }) => ({ type, name, url }))).to.deep.equal([
-      { type: "npm_repository", name: "codeartifact:acme:shared:npm", url: "https://acme-123456789012.d.codeartifact.eu-west-2.amazonaws.com/npm/shared/" },
-      { type: "maven_repository", name: "codeartifact:acme:shared:maven", url: "https://acme-123456789012.d.codeartifact.eu-west-2.amazonaws.com/maven/shared/" },
+      {
+        type: "npm_repository",
+        name: "codeartifact:acme:shared:npm",
+        url: "https://acme-123456789012.d.codeartifact.eu-west-2.amazonaws.com/npm/shared/",
+      },
+      {
+        type: "maven_repository",
+        name: "codeartifact:acme:shared:maven",
+        url: "https://acme-123456789012.d.codeartifact.eu-west-2.amazonaws.com/maven/shared/",
+      },
     ]);
     expect(npm.toString()).to.equal("@aws:codeartifact:acme:shared:npm");
   });
 
   it("are another account's domain's where the owner is named", async () => {
     const made: Array<{ type: string; name: string; url?: string }> = [];
-    const account = new AwsAccount({ name: "@aws", context: makingContext(made), signer: new RequestSigner(undefined), credentials: "profile:default", region: "eu-west-2", repositoryTypes: TYPES });
+    const account = new AwsAccount({
+      name: "@aws",
+      context: makingContext(made),
+      signer: new RequestSigner(undefined),
+      credentials: "profile:default",
+      region: "eu-west-2",
+      repositoryTypes: TYPES,
+    });
     await refOf(account, "111122223333:codeartifact:acme:shared:npm:lodash:4.17.21");
     expect(made.map(({ name, url }) => ({ name, url }))).to.deep.equal([
-      { name: "111122223333:codeartifact:acme:shared:npm", url: "https://acme-111122223333.d.codeartifact.eu-west-2.amazonaws.com/npm/shared/" },
+      {
+        name: "111122223333:codeartifact:acme:shared:npm",
+        url: "https://acme-111122223333.d.codeartifact.eu-west-2.amazonaws.com/npm/shared/",
+      },
     ]);
   });
 
@@ -231,7 +284,15 @@ describe("an account's CodeArtifact repositories", () => {
 
     it("are the domains of the account STS says the credentials sign in to, asked once", async () => {
       const made: Array<{ type: string; name: string; url?: string }> = [];
-      const account = new AwsAccount({ name: "@aws", context: makingContext(made), signer: new RequestSigner(undefined), credentials: "profile:default", region: "eu-west-2", endpoint, repositoryTypes: TYPES });
+      const account = new AwsAccount({
+        name: "@aws",
+        context: makingContext(made),
+        signer: new RequestSigner(undefined),
+        credentials: "profile:default",
+        region: "eu-west-2",
+        endpoint,
+        repositoryTypes: TYPES,
+      });
       await refOf(account, "codeartifact:acme:shared:npm:lodash:4.17.21");
       await refOf(account, "codeartifact:acme:shared:maven:org.slf4j:slf4j-api:2.0.13");
       expect(made.map(({ name }) => name)).to.deep.equal(["codeartifact:acme:shared:npm", "codeartifact:acme:shared:maven"]);
@@ -242,7 +303,15 @@ describe("an account's CodeArtifact repositories", () => {
 
     it("are refused where STS will not say, naming the account", async () => {
       answer = { status: 403, body: "" };
-      const account = new AwsAccount({ name: "@aws", context: makingContext([]), signer: new RequestSigner(undefined), credentials: "profile:default", region: "us-east-1", endpoint, repositoryTypes: TYPES });
+      const account = new AwsAccount({
+        name: "@aws",
+        context: makingContext([]),
+        signer: new RequestSigner(undefined),
+        credentials: "profile:default",
+        region: "us-east-1",
+        endpoint,
+        repositoryTypes: TYPES,
+      });
       expect((await failureOf(refOf(account, "codeartifact:acme:shared:npm:x:1")))?.message).to.equal(
         "STS refused to say which account @aws's credentials sign in to (403)"
       );
@@ -250,7 +319,15 @@ describe("an account's CodeArtifact repositories", () => {
   });
 
   it("are refused for a format AWS_REPOSITORY_TYPES names no type for", async () => {
-    const account = new AwsAccount({ name: "@aws", context: makingContext([]), signer: new RequestSigner(undefined), credentials: "profile:default", region: "us-east-1", accountId: "123456789012", repositoryTypes: TYPES });
+    const account = new AwsAccount({
+      name: "@aws",
+      context: makingContext([]),
+      signer: new RequestSigner(undefined),
+      credentials: "profile:default",
+      region: "us-east-1",
+      accountId: "123456789012",
+      repositoryTypes: TYPES,
+    });
     expect((await failureOf(refOf(account, "codeartifact:acme:shared:pypi:requests:2")))?.message).to.equal(
       "AWS_REPOSITORY_TYPES names no repository type for pypi, which '@aws:codeartifact:acme:shared:pypi' is"
     );
@@ -258,7 +335,14 @@ describe("an account's CodeArtifact repositories", () => {
 
   it("are namespaces until the name reaches a format, refused as packages or files", async () => {
     const made: Array<{ type: string; name: string; url?: string }> = [];
-    const account = new AwsAccount({ name: "@aws", context: makingContext(made), signer: new RequestSigner(undefined), credentials: "profile:default", region: "us-east-1", repositoryTypes: TYPES });
+    const account = new AwsAccount({
+      name: "@aws",
+      context: makingContext(made),
+      signer: new RequestSigner(undefined),
+      credentials: "profile:default",
+      region: "us-east-1",
+      repositoryTypes: TYPES,
+    });
     const shared = (await refOf(account, "codeartifact:acme:shared")) as NamespaceRef;
     expect(shared).to.be.instanceOf(NamespaceRef);
     expect(shared.toString()).to.equal("@aws:codeartifact:acme:shared");

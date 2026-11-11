@@ -18,7 +18,16 @@
  */
 
 import { existsSync, readFileSync } from "fs";
-import { COVERAGE, COVERAGE_ON, parseJson, preferredOperation, TEST_EXPECTATIONS, TEST_NAME_PATTERN, toJsonObject, UPDATE_EXPECTATIONS } from "@fabr-build/core";
+import {
+  COVERAGE,
+  COVERAGE_ON,
+  parseJson,
+  preferredOperation,
+  TEST_EXPECTATIONS,
+  TEST_NAME_PATTERN,
+  toJsonObject,
+  UPDATE_EXPECTATIONS,
+} from "@fabr-build/core";
 import { CommandLineSource } from "./CommandLineSource";
 import { dirname, join } from "path";
 
@@ -121,8 +130,16 @@ const OPTION_SPECS: OptionSpec[] = [
   { flag: "-u", usage: "-u, --update", summary: "Update recorded test expectations (snapshots) from the run" },
   { flag: "-t", usage: "-t PATTERN", summary: "Run only the tests whose names match the regular expression PATTERN" },
   { flag: "--coverage", usage: "--coverage[=DIR]", summary: "Measure code coverage and write DIR/lcov.info, coverage/ by default" },
-  { flag: "--retry-failed", usage: "--retry-failed", summary: "Run again the tests whose last run failed, rather than report it from the cache" },
-  { flag: "--report", usage: "--report FILE", summary: "Write the tests' results to FILE, failures included, as CTRF or with --format junit" },
+  {
+    flag: "--retry-failed",
+    usage: "--retry-failed",
+    summary: "Run again the tests whose last run failed, rather than report it from the cache",
+  },
+  {
+    flag: "--report",
+    usage: "--report FILE",
+    summary: "Write the tests' results to FILE, failures included, as CTRF or with --format junit",
+  },
   {
     flag: "--format",
     usage: "--format FORMAT",
@@ -162,7 +179,7 @@ const UNIVERSAL_OPTIONS: OptionSpec[] = [
   { flag: "-v", usage: "-v, --version", summary: "Print the fabr version and exit" },
 ];
 
-const OPTION_BY_FLAG = new Map(OPTION_SPECS.map((o) => [o.flag, o]));
+const OPTION_BY_FLAG = new Map(OPTION_SPECS.map(o => [o.flag, o]));
 
 const COMMAND_SPECS: CommandSpec[] = [
   {
@@ -196,9 +213,30 @@ const COMMAND_SPECS: CommandSpec[] = [
     accepts: ["-w", ...STEP_OPTIONS, "--trace", "-f"],
     requiresTarget: true,
   },
-  { name: "sync", group: "Building", synopsis: "<target>", summary: "Build a sync target and publish it to its destination", accepts: STEP_OPTIONS, requiresTarget: true },
-  { name: "ls", group: "Inspecting", synopsis: "[-l] <names>", summary: "Build targets and list their files", accepts: ["-l", ...STEP_OPTIONS], requiresTarget: true },
-  { name: "cat", group: "Inspecting", synopsis: "<names>", summary: "Build targets and write their files to stdout", accepts: STEP_OPTIONS, requiresTarget: true },
+  {
+    name: "sync",
+    group: "Building",
+    synopsis: "<target>",
+    summary: "Build a sync target and publish it to its destination",
+    accepts: STEP_OPTIONS,
+    requiresTarget: true,
+  },
+  {
+    name: "ls",
+    group: "Inspecting",
+    synopsis: "[-l] <names>",
+    summary: "Build targets and list their files",
+    accepts: ["-l", ...STEP_OPTIONS],
+    requiresTarget: true,
+  },
+  {
+    name: "cat",
+    group: "Inspecting",
+    synopsis: "<names>",
+    summary: "Build targets and write their files to stdout",
+    accepts: STEP_OPTIONS,
+    requiresTarget: true,
+  },
   {
     name: "cp",
     group: "Inspecting",
@@ -216,7 +254,14 @@ const COMMAND_SPECS: CommandSpec[] = [
     singleTarget: true,
     requiresTarget: true,
   },
-  { name: "deps", group: "Inspecting", synopsis: "<names>", summary: "Print the dependency tree of targets or packages", accepts: STEP_OPTIONS, requiresTarget: true },
+  {
+    name: "deps",
+    group: "Inspecting",
+    synopsis: "<names>",
+    summary: "Print the dependency tree of targets or packages",
+    accepts: STEP_OPTIONS,
+    requiresTarget: true,
+  },
   {
     name: "audit",
     group: "Inspecting",
@@ -241,9 +286,27 @@ const COMMAND_SPECS: CommandSpec[] = [
     summary: "List the project's targets and their operations",
     accepts: ["-l", "--all", "--operation", "--json"],
   },
-  { name: "list-targetdefs", group: "Project", synopsis: "[-l] [--json]", summary: "List the target types and their properties", accepts: ["-l", "--json"] },
-  { name: "list-operations", group: "Project", synopsis: "[--json]", summary: "List the operations the project's rules declare", accepts: ["--json"] },
-  { name: "list-properties", group: "Project", synopsis: "[-l] [--json]", summary: "List the global properties and flags", accepts: ["-l", "--json"] },
+  {
+    name: "list-targetdefs",
+    group: "Project",
+    synopsis: "[-l] [--json]",
+    summary: "List the target types and their properties",
+    accepts: ["-l", "--json"],
+  },
+  {
+    name: "list-operations",
+    group: "Project",
+    synopsis: "[--json]",
+    summary: "List the operations the project's rules declare",
+    accepts: ["--json"],
+  },
+  {
+    name: "list-properties",
+    group: "Project",
+    synopsis: "[-l] [--json]",
+    summary: "List the global properties and flags",
+    accepts: ["-l", "--json"],
+  },
   {
     name: "list-all",
     group: "Project",
@@ -251,17 +314,25 @@ const COMMAND_SPECS: CommandSpec[] = [
     summary: "Write the whole vocabulary as JSON, for tooling",
     accepts: ["--include-optional", "--json"],
   },
-  { name: "build-server", group: "Project", synopsis: "", summary: "Serve targets to an editor (Build Server Protocol)", accepts: ["-q"] },
+  {
+    name: "build-server",
+    group: "Project",
+    synopsis: "",
+    summary: "Serve targets to an editor (Build Server Protocol)",
+    accepts: ["-q"],
+  },
 ];
 
-const COMMAND_BY_NAME = new Map(COMMAND_SPECS.map((c) => [c.name, c]));
+const COMMAND_BY_NAME = new Map(COMMAND_SPECS.map(c => [c.name, c]));
 /** The command words: every command, and `help`. */
 const COMMANDS = new Set([...COMMAND_BY_NAME.keys(), "help"]);
 
 /** The options a command-less line may carry: those every command it can
  * resolve to (build, test, run) accepts. */
 const INFERABLE_OPTIONS = new Set(
-  ["build", "test", "run"].map((name) => COMMAND_BY_NAME.get(name)?.accepts ?? []).reduce((all, each) => all.filter((flag) => each.includes(flag)))
+  ["build", "test", "run"]
+    .map(name => COMMAND_BY_NAME.get(name)?.accepts ?? [])
+    .reduce((all, each) => all.filter(flag => each.includes(flag)))
 );
 
 export interface Options {
@@ -366,7 +437,7 @@ function helpWidth(): number {
 function wrap(text: string | string[], width: number): string[] {
   const lines: string[] = [];
   let line = "";
-  for (const word of (typeof text === "string" ? text.split(" ") : text).filter((w) => w !== "")) {
+  for (const word of (typeof text === "string" ? text.split(" ") : text).filter(w => w !== "")) {
     if (line !== "" && line.length + 1 + word.length > width) {
       lines.push(line);
       line = word;
@@ -380,15 +451,19 @@ function wrap(text: string | string[], width: number): string[] {
 /** Lay out `rows` as an indented two-column list, each description wrapped
  * beside its term, a term too wide for the column on a line of its own. The
  * term column is `column` wide, or as wide as the widest term up to 18. */
-function renderRows(rows: [string, string][], width: number, column = Math.min(Math.max(...rows.map(([term]) => term.length)), 18)): string[] {
+function renderRows(
+  rows: [string, string][],
+  width: number,
+  column = Math.min(Math.max(...rows.map(([term]) => term.length)), 18)
+): string[] {
   const indent = "  ";
   const pad = " ".repeat(indent.length + column + 2);
   return rows.flatMap(([term, text]) => {
     const lines = wrap(text, width - pad.length);
     if (term.length > column) {
-      return [indent + term, ...lines.map((l) => pad + l)];
+      return [indent + term, ...lines.map(l => pad + l)];
     }
-    return [indent + term.padEnd(column) + "  " + (lines[0] ?? ""), ...lines.slice(1).map((l) => pad + l)];
+    return [indent + term.padEnd(column) + "  " + (lines[0] ?? ""), ...lines.slice(1).map(l => pad + l)];
   });
 }
 
@@ -413,33 +488,33 @@ function renderUsageLine(command: string, synopsis: string, width: number): stri
   if (lines.length === 0) {
     return [prefix.trimEnd()];
   }
-  return [prefix + lines[0], ...lines.slice(1).map((l) => " ".repeat(prefix.length) + l)];
+  return [prefix + lines[0], ...lines.slice(1).map(l => " ".repeat(prefix.length) + l)];
 }
 
 /** @return the option rows for `flags`, each described as it is for `command`. */
 function optionRows(flags: Iterable<string>, command?: string): [string, string][] {
   return [...flags]
-    .map((flag) => OPTION_BY_FLAG.get(flag))
+    .map(flag => OPTION_BY_FLAG.get(flag))
     .filter((o): o is OptionSpec => o !== undefined && !o.hidden)
-    .map((o) => [o.usage, (command !== undefined ? o.summaries?.get(command) : undefined) ?? o.summary]);
+    .map(o => [o.usage, (command !== undefined ? o.summaries?.get(command) : undefined) ?? o.summary]);
 }
 
 /** @return the help for fabr as a whole: the commands by group, and the options
  * of the commands a target's operation can select. */
 function generalHelp(): string {
   const width = helpWidth();
-  const groups = [...new Set(COMMAND_SPECS.map((c) => c.group))];
-  const column = Math.max(...COMMAND_SPECS.map((c) => c.name.length));
-  const universal: [string, string][] = UNIVERSAL_OPTIONS.map((o) => [o.usage, o.summary]);
+  const groups = [...new Set(COMMAND_SPECS.map(c => c.group))];
+  const column = Math.max(...COMMAND_SPECS.map(c => c.name.length));
+  const universal: [string, string][] = UNIVERSAL_OPTIONS.map(o => [o.usage, o.summary]);
   return [
     "Usage: fabr [command] [options] <targets>",
     "",
     ...wrap("With no command, each target is built, tested or run, whichever its type supports.", width),
-    ...groups.flatMap((group) => [
+    ...groups.flatMap(group => [
       "",
       `${group}:`,
       ...renderRows(
-        COMMAND_SPECS.filter((c) => c.group === group).map((c) => [c.name, c.summary]),
+        COMMAND_SPECS.filter(c => c.group === group).map(c => [c.name, c.summary]),
         width,
         column
       ),
@@ -461,7 +536,7 @@ function generalHelp(): string {
 /** @return the help for one command: its usage, what it does, and its options. */
 function commandHelp(spec: CommandSpec): string {
   const width = helpWidth();
-  const universal = UNIVERSAL_OPTIONS.filter((o) => o.flag !== "-v").map((o): [string, string] => [o.usage, o.summary]);
+  const universal = UNIVERSAL_OPTIONS.filter(o => o.flag !== "-v").map((o): [string, string] => [o.usage, o.summary]);
   return [
     ...renderUsageLine(spec.name, spec.synopsis, width),
     "",
@@ -545,7 +620,6 @@ function applyOption(arg: string, next: string | undefined, options: Options, se
   } else if (arg === "--json") {
     options.json = true;
     seenFlags.push({ raw: arg, flag: "--json" });
-
   } else if (arg === "--all") {
     options.all = true;
     seenFlags.push({ raw: arg, flag: "--all" });
@@ -725,7 +799,10 @@ export function parseCommandLine(args: string[]): Options {
   }
   const formats = FORMATS.get(options.command) ?? [];
   if (options.format !== undefined && !formats.includes(options.format)) {
-    usageError(`Option '--format' takes ${formats.join(" or ")} for the '${options.command}' command, not '${options.format}'`, options.command);
+    usageError(
+      `Option '--format' takes ${formats.join(" or ")} for the '${options.command}' command, not '${options.format}'`,
+      options.command
+    );
   }
   if (options.command === "test" && options.format !== undefined && options.reportFile === undefined) {
     usageError("Option '--format' needs '--report FILE' for the 'test' command", "test");

@@ -103,9 +103,16 @@ describe("packToZip", () => {
   it("stores a zip archive it holds uncompressed, and deflates the rest", async () => {
     const nested = await packToZip(fileSetOf({ "a.txt": "x".repeat(200) }));
     const zip = await packToZip(
-      new FileSet(new Map<string, IFile>([["BOOT-INF/lib/a.jar", new MemoryFile(nested)], ["b.txt", MemoryFile.from("y".repeat(200))]]))
+      new FileSet(
+        new Map<string, IFile>([
+          ["BOOT-INF/lib/a.jar", new MemoryFile(nested)],
+          ["b.txt", MemoryFile.from("y".repeat(200))],
+        ])
+      )
     );
-    const methods = readZip(zip).filter(entry => entry.content !== undefined).map(entry => [entry.name, entry.method]);
+    const methods = readZip(zip)
+      .filter(entry => entry.content !== undefined)
+      .map(entry => [entry.name, entry.method]);
     /* 0 is stored, 8 deflated. */
     expect(methods).to.deep.equal([
       ["BOOT-INF/lib/a.jar", 0],
@@ -115,7 +122,14 @@ describe("packToZip", () => {
 
   it("writes a stored entry's checksum and size before its data, as ZipInputStream requires", async () => {
     const nested = await packToZip(fileSetOf({ "a.txt": "x" }));
-    const zip = await packToZip(new FileSet(new Map<string, IFile>([["a.jar", new MemoryFile(nested)], ["b.txt", MemoryFile.from("y")]])));
+    const zip = await packToZip(
+      new FileSet(
+        new Map<string, IFile>([
+          ["a.jar", new MemoryFile(nested)],
+          ["b.txt", MemoryFile.from("y")],
+        ])
+      )
+    );
     /* `a.jar` is written first, so its local header opens the archive. Bit 3 of its
      * general-purpose flag says the checksum and sizes follow the data instead. */
     expect(zip.toString("utf8", 30, 30 + zip.readUInt16LE(26))).to.equal("a.jar");
@@ -140,7 +154,12 @@ describe("packToZip", () => {
       ])
     );
     const entries = readZip(await packToZip(files, { symlinks: true }));
-    expect(entries.find(entry => entry.name === "node_modules/a")).to.deep.equal({ name: "node_modules/a", mode: 0o120777, method: 0, content: ".fabr/a" });
+    expect(entries.find(entry => entry.name === "node_modules/a")).to.deep.equal({
+      name: "node_modules/a",
+      mode: 0o120777,
+      method: 0,
+      content: ".fabr/a",
+    });
   });
 
   it("refuses a symlink that leaves the archive", async () => {
@@ -170,14 +189,28 @@ describe("packToZip", () => {
       fs.writeFileSync(onDisk, "from disk");
       const memory = MemoryFile.from("from disk");
       const stored: IFile = Object.assign(Object.create(memory) as IFile, { getAbsPath: () => onDisk });
-      const files = new FileSet(new Map<string, IFile>([["a/disk.txt", stored], ["b.txt", MemoryFile.from("b")]]));
+      const files = new FileSet(
+        new Map<string, IFile>([
+          ["a/disk.txt", stored],
+          ["b.txt", MemoryFile.from("b")],
+        ])
+      );
       const zip = await writeZip(files, cache.getTemporaryWriteStream(), "out.zip");
-      const packed = await packToZip(new FileSet(new Map<string, IFile>([["a/disk.txt", memory], ["b.txt", MemoryFile.from("b")]])));
+      const packed = await packToZip(
+        new FileSet(
+          new Map<string, IFile>([
+            ["a/disk.txt", memory],
+            ["b.txt", MemoryFile.from("b")],
+          ])
+        )
+      );
       expect((await zip.getBuffer()).equals(packed)).to.equal(true);
     });
 
     it("reports a file it cannot read", async () => {
-      const missing: IFile = Object.assign(Object.create(MemoryFile.from("x")) as IFile, { getAbsPath: () => path.join(dir, "missing") });
+      const missing: IFile = Object.assign(Object.create(MemoryFile.from("x")) as IFile, {
+        getAbsPath: () => path.join(dir, "missing"),
+      });
       const files = new FileSet(new Map<string, IFile>([["a.txt", missing]]));
       const written = await writeZip(files, cache.getTemporaryWriteStream(), "out.zip").then(
         () => undefined,

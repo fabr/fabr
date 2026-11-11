@@ -42,7 +42,14 @@ import * as path from "node:path";
 import type { IConditionSet } from "../pnp/PackageExports";
 import { PnpResolver, splitSpecifier, typesPackageName } from "../pnp/PnPResolver";
 import { isVirtual, realpathKeepingVirtual, resolveVirtual } from "../pnp/VirtualPath";
-import { CHANGES_FLAG, DEPS_REPORT_FLAG, IChangeLists, parseChangesDocument, serializeRunReport, STATE_DIR_FLAG } from "../pnp/ReadSet";
+import {
+  CHANGES_FLAG,
+  DEPS_REPORT_FLAG,
+  IChangeLists,
+  parseChangesDocument,
+  serializeRunReport,
+  STATE_DIR_FLAG,
+} from "../pnp/ReadSet";
 import { stagedReferences, withReferencedSources } from "../support/SourceMap";
 import {
   DECLARATION_EXTENSION,
@@ -312,7 +319,11 @@ interface ICompilerHost {
 export interface ITypeScript {
   version: string;
   /** The module specifiers a file's text names, read without a program. */
-  preProcessFile(text: string, readImportFiles?: boolean, detectJavaScriptImports?: boolean): { importedFiles: ReadonlyArray<{ fileName: string }> };
+  preProcessFile(
+    text: string,
+    readImportFiles?: boolean,
+    detectJavaScriptImports?: boolean
+  ): { importedFiles: ReadonlyArray<{ fileName: string }> };
   /** Every compiler option this release knows, for asking whether it has one
    * rather than whether its version implies it. Optional: a compiler that does
    * not expose the table answers "no" to every such question. */
@@ -484,9 +495,9 @@ export function assertDrivableCompiler(version: string): void {
   throw new Error(
     major > MAXIMUM_TYPESCRIPT
       ? `fabr's TypeScript driver drives typescript ${range}, but found ${version}: TypeScript ${major} exposes no compiler API to drive ` +
-        "(its entry point is version information alone) and needs a driver of its own. Pin ${TYPESCRIPT} to a 6.x or 5.x release."
+          "(its entry point is version information alone) and needs a driver of its own. Pin ${TYPESCRIPT} to a 6.x or 5.x release."
       : `fabr's TypeScript driver drives typescript ${range}, but found ${version}: it resolves modules through hooks added in ` +
-        `${MINIMUM_TYPESCRIPT}.0, so an older compiler would find none of the build's dependencies.`
+          `${MINIMUM_TYPESCRIPT}.0, so an older compiler would find none of the build's dependencies.`
   );
 }
 
@@ -525,7 +536,12 @@ export const EXIT_ERRORS = 2;
  * installs on it. */
 export type IResolutionHost = Pick<
   ICompilerHost,
-  "fileExists" | "readFile" | "getCanonicalFileName" | "resolveModuleNameLiterals" | "resolveLibrary" | "resolveTypeReferenceDirectiveReferences"
+  | "fileExists"
+  | "readFile"
+  | "getCanonicalFileName"
+  | "resolveModuleNameLiterals"
+  | "resolveLibrary"
+  | "resolveTypeReferenceDirectiveReferences"
 >;
 
 /**
@@ -785,7 +801,11 @@ export function installResolution(
    * admits only `index.d.cts`. Asking the compiler for the `.js` spelling is
    * what puts the untagged declaration extensions back in its candidate
    * list. */
-  const siblingTypings = (specifier: string, issuer: string, conditions: IConditionSet): IResolvedModuleWithFailedLookupLocations | undefined => {
+  const siblingTypings = (
+    specifier: string,
+    issuer: string,
+    conditions: IConditionSet
+  ): IResolvedModuleWithFailedLookupLocations | undefined => {
     const target = published(specifier, issuer, conditions)[0];
     return target === undefined || !FORMAT_TAGGED.test(target) ? undefined : asModule(target.replace(FORMAT_TAGGED, ".js"), issuer);
   };
@@ -948,7 +968,8 @@ export function installResolution(
     const conditions = conditionsFor(mode);
     const versioned = split === undefined ? undefined : typedAmong(typesVersionsTargets(split, issuer), issuer, options);
     const published = versioned ?? through(specifier, issuer, conditions, loads);
-    const answer = (untyped(published) ? recoverTypings(specifier, split, published, issuer, conditions, loads) : undefined) ?? published ?? {};
+    const answer =
+      (untyped(published) ? recoverTypings(specifier, split, published, issuer, conditions, loads) : undefined) ?? published ?? {};
     answers.set(key, answer);
     return answer;
   };
@@ -964,7 +985,11 @@ export function installResolution(
         ts.getModeForUsageLocation?.(containingSourceFile, literal, options) ?? defaultMode,
         loadsAtRuntime(ts, literal, containingSourceFile)
       );
-      if (answer.resolvedModule === undefined && isSideEffectImport(ts, literal) && resourceFile(literal.text, containingFile) !== undefined) {
+      if (
+        answer.resolvedModule === undefined &&
+        isSideEffectImport(ts, literal) &&
+        resourceFile(literal.text, containingFile) !== undefined
+      ) {
         presentResources.set(containingFile, (presentResources.get(containingFile) ?? new Set()).add(literal.text));
       }
       if (
@@ -977,7 +1002,10 @@ export function installResolution(
         const node = literal as IStringLiteralLike & { getStart(file: unknown): number; end: number };
         const start = node.getStart(containingSourceFile);
         const missing = missingFiles.get(containingFile) ?? new Map();
-        missingFiles.set(containingFile, missing.set(literal.text, { file: containingSourceFile, start, length: node.end - start, specifier: literal.text }));
+        missingFiles.set(
+          containingFile,
+          missing.set(literal.text, { file: containingSourceFile, start, length: node.end - start, specifier: literal.text })
+        );
       }
       return answer;
     });
@@ -1285,7 +1313,7 @@ export function relativizeBuildRoot(text: string, root: string): string {
  * TypeScript orders a union by type id, and ids are handed out as types are
  * first created anywhere in the program — so a full compile and a wave print the
  * same type differently, which breaks determinism and expands the next wave off
- * a spuriously moved shape. Applied to every compile, full and wave alike, so the 
+ * a spuriously moved shape. Applied to every compile, full and wave alike, so the
  * two agree by construction.
  *
  * Type literals only, never an `interface` or a class: inference never
@@ -1827,11 +1855,7 @@ interface ICrossFormatGlobals {
  * fallback rebuilds the program under the same transformers.
  */
 function crossFormatGlobals(ts: ITypeScript, options: CompilerOptions, program: () => IProgram): ICrossFormatGlobals | undefined {
-  const direction = emitsEsModules(ts, options)
-    ? "esm"
-    : effectiveModule(ts, options) === ts.ModuleKind.CommonJS
-      ? "cjs"
-      : undefined;
+  const direction = emitsEsModules(ts, options) ? "esm" : effectiveModule(ts, options) === ts.ModuleKind.CommonJS ? "cjs" : undefined;
   if (direction === undefined) {
     return undefined;
   }
@@ -2259,7 +2283,8 @@ export function main(argv: string[]): number {
   const namer = nodeNamer(root, resolver);
   const emitDirectory = emitDirectoryOf(parsed.options, root);
   const declarationDirectory = argOf(argv, SOURCE_DECLARATIONS_FLAG);
-  const declared = declarationDirectory === undefined ? new Map<string, string>() : sourceDeclarationsOf(root, declarationDirectory, parsed, namer);
+  const declared =
+    declarationDirectory === undefined ? new Map<string, string>() : sourceDeclarationsOf(root, declarationDirectory, parsed, namer);
   const projectNames = new Set(parsed.fileNames.map(namer).filter((name): name is string => name !== undefined));
   const handedOver =
     handover?.changes === undefined || declarationDirectory === undefined
@@ -2340,7 +2365,16 @@ export function main(argv: string[]): number {
    * the same directory, so they name each other identically. */
   const jsExtension = emitExtensionOf(argv);
   const referenceOf = stagedReferences(argv, root);
-  const layout = emitLayoutOf(ts, parsed.options, root, jsExtension, rewrites, installed?.packageSpecifier, installed?.ownSpecifier, installed?.exists);
+  const layout = emitLayoutOf(
+    ts,
+    parsed.options,
+    root,
+    jsExtension,
+    rewrites,
+    installed?.packageSpecifier,
+    installed?.ownSpecifier,
+    installed?.exists
+  );
   if (jsExtension !== undefined && layout?.rewriteExtensions !== true) {
     /* Renaming without rewriting is the exact failure `--emit-extension` refuses
      * `.cjs` for, and it is reachable the other way round too: only an ES-module
@@ -2393,7 +2427,9 @@ export function main(argv: string[]): number {
     /* A map names its sources by the references that resolve to them, so it
      * reads the same wherever the output is installed. */
     const referenced =
-      referenceOf !== undefined && fileName.endsWith(".map") ? withReferencedSources(retargeted, fileName, root, referenceOf) : retargeted;
+      referenceOf !== undefined && fileName.endsWith(".map")
+        ? withReferencedSources(retargeted, fileName, root, referenceOf)
+        : retargeted;
     const written = renamedOutput(fileName, jsExtension);
     graph?.emitted(written, declaration, referenced, writeByteOrderMark);
     host.writeFile(written, referenced, writeByteOrderMark);
@@ -3156,7 +3192,9 @@ function withDeclarationChanges(
       .map(([extension]) => `${sourceRoot}/${stem}${extension}`)
       .filter(source => projectFiles.has(source));
   };
-  const moved = new Set(sourceRoot === undefined ? [] : [...changes.changed, ...changes.deleted].filter(isDeclaration).flatMap(declaredBy));
+  const moved = new Set(
+    sourceRoot === undefined ? [] : [...changes.changed, ...changes.deleted].filter(isDeclaration).flatMap(declaredBy)
+  );
   const changed = changes.changed.filter(name => !isDeclaration(name));
   const deleted = changes.deleted.filter(name => !isDeclaration(name));
   return { changes: { changed: [...new Set([...changed, ...moved])].sort(), deleted }, moved };
@@ -3173,7 +3211,9 @@ function reachesCheckedFiles(plan: ICompilePlan, declared: ReadonlyMap<string, s
   return (
     plan.seeds === undefined ||
     plan.deleted.size > 0 ||
-    [...plan.seeds].some(name => !declared.has(name) || moved.has(name) || !plan.memo.has(name) || plan.memo.get(name)?.global === true)
+    [...plan.seeds].some(
+      name => !declared.has(name) || moved.has(name) || !plan.memo.has(name) || plan.memo.get(name)?.global === true
+    )
   );
 }
 
@@ -3200,7 +3240,12 @@ function checkedFiles(
 }
 
 /** Emit each of `files`, as one result. */
-function emitEach(program: IProgram, files: readonly SourceFile[], write: WriteFile, transformers: ICustomTransformers | undefined): IEmitResult {
+function emitEach(
+  program: IProgram,
+  files: readonly SourceFile[],
+  write: WriteFile,
+  transformers: ICustomTransformers | undefined
+): IEmitResult {
   const results = files.map(file => program.emit(file, write, undefined, false, transformers));
   return { emitSkipped: results.some(result => result.emitSkipped), diagnostics: results.flatMap(result => [...result.diagnostics]) };
 }
@@ -3351,7 +3396,9 @@ function resourceNamesOf(argv: string[], root: string): string[] | undefined {
   try {
     text = fs.readFileSync(file, "utf8");
   } catch (err) {
-    throw new Error(`tsc-driver: cannot read the ${RESOURCES_FLAG} names at '${named}': ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(
+      `tsc-driver: cannot read the ${RESOURCES_FLAG} names at '${named}': ${err instanceof Error ? err.message : String(err)}`
+    );
   }
   const parsed: unknown = JSON.parse(text);
   if (!Array.isArray(parsed) || parsed.some(name => typeof name !== "string")) {
@@ -3380,7 +3427,9 @@ function importRewritesOf(argv: string[], root: string): IImportRewrite[] | unde
   try {
     text = fs.readFileSync(file, "utf8");
   } catch (err) {
-    throw new Error(`tsc-driver: cannot read the ${REWRITES_FLAG} rules at '${named}': ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(
+      `tsc-driver: cannot read the ${REWRITES_FLAG} rules at '${named}': ${err instanceof Error ? err.message : String(err)}`
+    );
   }
   const parsed: unknown = JSON.parse(text);
   if (!Array.isArray(parsed)) {

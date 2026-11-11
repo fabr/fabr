@@ -49,9 +49,9 @@ function startSecretsManager(secrets: Record<string, IFakeSecret>): Promise<IFak
       const { SecretId } = JSON.parse(body) as { SecretId: string };
       const found = secrets[SecretId];
       if (found === undefined) {
-        res.writeHead(400, { "content-type": "application/x-amz-json-1.1" }).end(
-          JSON.stringify({ __type: "ResourceNotFoundException", message: "Secrets Manager can't find the specified secret." })
-        );
+        res
+          .writeHead(400, { "content-type": "application/x-amz-json-1.1" })
+          .end(JSON.stringify({ __type: "ResourceNotFoundException", message: "Secrets Manager can't find the specified secret." }));
         return;
       }
       res.writeHead(200, { "content-type": "application/x-amz-json-1.1" }).end(
@@ -104,7 +104,9 @@ function accountAt(service: IFakeSecretsManager, keys: string[] = []): AwsAccoun
 function refOf(account: AwsAccount, name: string): Computable<RepositoryRef> {
   return new NamespaceRef(account, "@aws")
     .get("secretsmanager", ":")
-    .then(member => (member as { getRepositoryRef(name: unknown, separator: string): RepositoryRef }).getRepositoryRef(parseName(name), ":"));
+    .then(member =>
+      (member as { getRepositoryRef(name: unknown, separator: string): RepositoryRef }).getRepositoryRef(parseName(name), ":")
+    );
 }
 
 /** Read the secret `name`, written after `@aws:secretsmanager:`, names. */
@@ -160,11 +162,17 @@ describe("the Secrets Manager secrets of an AWS account", () => {
     expect((await file.getBuffer()).toString()).to.equal("hunter2");
     expect(file.getDisplayName()).to.equal("@aws:secretsmanager:prod/db/password");
     expect(file.hash).to.equal(
-      new SecretFile("elsewhere", "arn:aws:secretsmanager:us-east-1:111122223333:secret:prod/db/password-AbCdEf 11111111-aaaa-bbbb-cccc-222222222222", Buffer.from("x")).hash
+      new SecretFile(
+        "elsewhere",
+        "arn:aws:secretsmanager:us-east-1:111122223333:secret:prod/db/password-AbCdEf 11111111-aaaa-bbbb-cccc-222222222222",
+        Buffer.from("x")
+      ).hash
     );
     expect(service.requests[0].target).to.equal("secretsmanager.GetSecretValue");
     expect(JSON.parse(service.requests[0].body)).to.deep.equal({ SecretId: "prod/db/password" });
-    expect(service.requests[0].authorization).to.match(/^AWS4-HMAC-SHA256 Credential=AKIDTEST\/\d{8}\/us-east-1\/secretsmanager\/aws4_request, /);
+    expect(service.requests[0].authorization).to.match(
+      /^AWS4-HMAC-SHA256 Credential=AKIDTEST\/\d{8}\/us-east-1\/secretsmanager\/aws4_request, /
+    );
     expect(keys).to.deep.equal([`@aws profile:default us-east-1 ${service.url}/ prod/db/password`]);
   });
 
@@ -194,7 +202,11 @@ describe("Secrets Manager's GetSecretValue", () => {
   });
 
   it("reads the value from an answer, and refuses one holding none", () => {
-    expect(toSecretValue({ ARN: "arn:x", VersionId: "v", SecretString: "s" })).to.deep.equal({ arn: "arn:x", versionId: "v", value: Buffer.from("s") });
+    expect(toSecretValue({ ARN: "arn:x", VersionId: "v", SecretString: "s" })).to.deep.equal({
+      arn: "arn:x",
+      versionId: "v",
+      value: Buffer.from("s"),
+    });
     expect(() => toSecretValue({ ARN: "arn:x", VersionId: "v" })).to.throw("the answer holds no secret value");
     expect(() => toSecretValue({})).to.throw("the answer holds no secret");
   });

@@ -37,14 +37,12 @@ const SERVER = (banner: string): string =>
   `echo "${banner} up" >&2\n` +
   'last=""\n' +
   "while true; do\n" +
-  '  cur=$(cat data.txt 2>/dev/null)\n' +
+  "  cur=$(cat data.txt 2>/dev/null)\n" +
   '  if [ "$cur" != "$last" ]; then echo "CONTENT [$cur]" >&2; last="$cur"; fi\n' +
   "  sleep 0.2\n" +
   "done\n";
 
-const PROJECT =
-  "script server { entry = src:server.sh; }\n" +
-  "serve site { tool = server; files = content:**; }\n";
+const PROJECT = "script server { entry = src:server.sh; }\n" + "serve site { tool = server; files = content:**; }\n";
 
 describe("e2e: serve target under fabr run -w", () => {
   it("syncs content in place without a restart, and restarts on a program change", async () => {
@@ -115,15 +113,15 @@ describe("e2e: serve target under fabr run -w", () => {
   it("launches the server with its 'env' over the inherited environment, and restarts when 'env' changes", async () => {
     /* The server reports a declared variable and whether it still has the PATH
      * `fabr run` itself was started with. */
-    const server =
-      'echo "GREETING [$GREETING] PATH [${PATH:+inherited}]" >&2\n' + "while true; do sleep 0.2; done\n";
+    const server = 'echo "GREETING [$GREETING] PATH [${PATH:+inherited}]" >&2\n' + "while true; do sleep 0.2; done\n";
     const project = (greeting: string): string =>
       "script server { entry = src:server.sh; }\n" +
       `serve site { tool = server; files = content:**; env = { GREETING = ${greeting}; } }\n`;
-    const session = startFabrWatch(
-      { "PROJECT.fabr": project("hello there"), "src/server.sh": server, "content/data.txt": "one" },
-      ["run", "-w", "site"]
-    );
+    const session = startFabrWatch({ "PROJECT.fabr": project("hello there"), "src/server.sh": server, "content/data.txt": "one" }, [
+      "run",
+      "-w",
+      "site",
+    ]);
     try {
       await session.waitFor("GREETING [hello there] PATH [inherited]", { timeoutMs: 60000 });
       await session.waitFor("Watching for changes", { timeoutMs: 60000 });

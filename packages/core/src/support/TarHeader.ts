@@ -47,14 +47,7 @@ export const TAR_BLOCK_SIZE = 512;
 
 /** The kinds of entry a tar header describes. */
 export type TarEntryType =
-  | "file"
-  | "link"
-  | "symlink"
-  | "character-device"
-  | "block-device"
-  | "directory"
-  | "fifo"
-  | "contiguous-file";
+  "file" | "link" | "symlink" | "character-device" | "block-device" | "directory" | "fifo" | "contiguous-file";
 
 /**
  * One entry's header, as read from an archive (see {@link TarExtract}), with

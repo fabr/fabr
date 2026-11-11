@@ -37,7 +37,12 @@ const FILES = {
 };
 
 function fabrAudit(...args: string[]): { stdout: string; stderr: string; status: number } {
-  return runFabr({ "PROJECT.fabr": PROJECT, ...FILES }, ["-DJS_TARGET=es2020", "-DADVISORIES_URL=http://127.0.0.1:9/", "audit", ...args]);
+  return runFabr({ "PROJECT.fabr": PROJECT, ...FILES }, [
+    "-DJS_TARGET=es2020",
+    "-DADVISORIES_URL=http://127.0.0.1:9/",
+    "audit",
+    ...args,
+  ]);
 }
 
 describe("e2e: fabr audit", () => {
@@ -68,7 +73,9 @@ describe("e2e: fabr audit", () => {
         "audit",
         "audit_app",
       ]);
-    const valid = run(JSON.stringify({ statements: [{ vulnerability: "CVE-1", products: ["pkg:npm/lodash"], status: "not_affected" }] }));
+    const valid = run(
+      JSON.stringify({ statements: [{ vulnerability: "CVE-1", products: ["pkg:npm/lodash"], status: "not_affected" }] })
+    );
     expect(valid.status, valid.stderr).to.equal(0);
     expect(valid.stdout).to.equal("No packages to audit\n");
     const invalid = run(JSON.stringify({ statements: [{ vulnerability: "CVE-1", status: "ignored" }] }));

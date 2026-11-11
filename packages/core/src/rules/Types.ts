@@ -270,7 +270,7 @@ type RuleEvaluation<B, R> =
  */
 export function defineRule<
   B extends Record<string, RequiredSources> = NoRequirements,
-  R extends Record<string, RequiredSources> = NoRequirements
+  R extends Record<string, RequiredSources> = NoRequirements,
 >(
   rule: SelectableRule &
     Omit<RuleImplementation, "requirements" | "evaluate" | "describe"> & {
@@ -280,7 +280,7 @@ export function defineRule<
 ): RuleDefinition;
 export function defineRule<
   B extends Record<string, RequiredSources> = NoRequirements,
-  R extends Record<string, RequiredSources> = NoRequirements
+  R extends Record<string, RequiredSources> = NoRequirements,
 >(
   rule: Omit<RuleImplementation, "requirements" | "evaluate" | "describe"> & {
     requirements?: (context: TargetContext) => ResolutionSpec<B, R> | Computable<ResolutionSpec<B, R>>;
@@ -299,7 +299,11 @@ export function defineRule<B extends Record<string, RequiredSources>, R extends 
     evaluateMaterialized === undefined
       ? evaluateResolved
       : (context, requirements) =>
-          requirements.materializeAll().then(materialized => evaluateMaterialized(context, materialized as MaterializedRequirements<Stated<B>> & MaterializedRequirements<Stated<R>>));
+          requirements
+            .materializeAll()
+            .then(materialized =>
+              evaluateMaterialized(context, materialized as MaterializedRequirements<Stated<B>> & MaterializedRequirements<Stated<R>>)
+            );
   return {
     ...definition,
     evaluate: evaluate as RuleImplementation["evaluate"],

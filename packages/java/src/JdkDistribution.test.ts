@@ -24,7 +24,11 @@ import { makeJdkRunnable } from "./JdkDistribution";
 /** A release laid out as `names`, each executable where it is marked `*`. */
 function release(...names: string[]): FileSet {
   return new FileSet(
-    new Map(names.map((name): [string, IFile] => (name.endsWith("*") ? [name.slice(0, -1), new MemoryFile(Buffer.from(name), 0o755)] : [name, MemoryFile.from(name)])))
+    new Map(
+      names.map((name): [string, IFile] =>
+        name.endsWith("*") ? [name.slice(0, -1), new MemoryFile(Buffer.from(name), 0o755)] : [name, MemoryFile.from(name)]
+      )
+    )
   );
 }
 

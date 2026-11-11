@@ -83,7 +83,12 @@ export function parseNpmrc(content: string): Map<string, string> {
       continue;
     }
     const key = line.slice(0, eq).trim();
-    const value = envSubstitute(line.slice(eq + 1).trim().replace(/^["']|["']$/g, ""));
+    const value = envSubstitute(
+      line
+        .slice(eq + 1)
+        .trim()
+        .replace(/^["']|["']$/g, "")
+    );
     entries.set(key, value);
   }
   return entries;
@@ -139,9 +144,12 @@ export class NPMAuth {
    */
   public static load(execution: ExecutionContext): Computable<NPMAuth> {
     return Computable.forAll(
-      [execution.absFileSource.get(userNpmrcPath()).then(f => f?.readString()),
-       execution.sourceFileSource.get(".npmrc").then(f => f?.readString())], 
-       NPMAuth.fromSources);
+      [
+        execution.absFileSource.get(userNpmrcPath()).then(f => f?.readString()),
+        execution.sourceFileSource.get(".npmrc").then(f => f?.readString()),
+      ],
+      NPMAuth.fromSources
+    );
   }
 
   /**
@@ -150,9 +158,7 @@ export class NPMAuth {
    * Any source may be absent.
    */
   public static fromSources(...sources: (string | undefined)[]): NPMAuth {
-    const entries = sources
-      .filter((source): source is string => source !== undefined)
-      .flatMap(source => [...parseNpmrc(source)]);
+    const entries = sources.filter((source): source is string => source !== undefined).flatMap(source => [...parseNpmrc(source)]);
     return new NPMAuth(new Map(entries));
   }
 
@@ -164,7 +170,7 @@ export class NPMAuth {
   /**
    * Get `Authorization` headers (if needed) to send with a request to `url`, from the
    * most specific matching registry's credential */
-  public getHeadersFor(url: string): Record<string,string> {
+  public getHeadersFor(url: string): Record<string, string> {
     let target: string;
     try {
       const parsed = new URL(url);
@@ -209,8 +215,7 @@ export class NPMAuth {
    */
   public otpProvider(registryUrl: string, interaction: UserInteraction | undefined): OtpProvider {
     const session = this.sessionFor(registryUrl);
-    return (challenge, rejected) =>
-      session.obtain(() => this.acquireSecondFactor(challenge, registryUrl, interaction), rejected);
+    return (challenge, rejected) => session.obtain(() => this.acquireSecondFactor(challenge, registryUrl, interaction), rejected);
   }
 
   private sessionFor(registryUrl: string): OtpSession {
@@ -396,9 +401,7 @@ export function pollWebAuthToken(
         }
         return delay(wait).then(poll);
       }
-      throw new FabrError(
-        `browser authentication at ${doneUrl} failed (${response.statusCode}): ${response.body.toString("utf8")}`
-      );
+      throw new FabrError(`browser authentication at ${doneUrl} failed (${response.statusCode}): ${response.body.toString("utf8")}`);
     });
   return poll();
 }

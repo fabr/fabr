@@ -81,34 +81,39 @@ export default defineRule({
     );
   },
   evaluateMaterialized(context, { dependencies: base, files }) {
-    return Computable.forAll([context.getGlobalString(OCI_TARGET), settingsOf(context), context.getMap("env")] as const, (target: string, settings: IImageSettings, env: PropertyMap) => {
-      const image = soleImage(context.name, base);
-      const contents = FileSet.unionAll(...files);
-      const platform = ociPlatformOf(target);
-      const action = (on: ImageFileSet | undefined, made: IImageSettings, engine?: FileSet): BuildAction =>
-        new BuildAction(
-          IMAGE_ACTION,
-          { base: on?.toRecords() ?? EMPTY_FILESET, files: contents, ...(engine === undefined ? {} : { engine }) },
-          {
-            settings: JSON.stringify(made),
-            platform: JSON.stringify(platform),
-            created_by: made.build === undefined ? `fabr container_image ${context.name}` : `/bin/sh -c ${made.build}`,
-          }
-        ).withReshape(output => imageOfRecords(output, context.name));
-      if (settings.build === undefined) {
-        return action(image, settings);
-      }
-      if (image === undefined) {
-        throw new FabrError(`${context.name}'s build command has no image to run in`).withHelp("set 'base' to the image it runs in");
-      }
-      if (contents.size > 0 || setsMoreThanBuild(settings)) {
-        /* The command's layer is a step of its own, so what is set beside it does not run it again. */
+    return Computable.forAll(
+      [context.getGlobalString(OCI_TARGET), settingsOf(context), context.getMap("env")] as const,
+      (target: string, settings: IImageSettings, env: PropertyMap) => {
+        const image = soleImage(context.name, base);
+        const contents = FileSet.unionAll(...files);
+        const platform = ociPlatformOf(target);
+        const action = (on: ImageFileSet | undefined, made: IImageSettings, engine?: FileSet): BuildAction =>
+          new BuildAction(
+            IMAGE_ACTION,
+            { base: on?.toRecords() ?? EMPTY_FILESET, files: contents, ...(engine === undefined ? {} : { engine }) },
+            {
+              settings: JSON.stringify(made),
+              platform: JSON.stringify(platform),
+              created_by: made.build === undefined ? `fabr container_image ${context.name}` : `/bin/sh -c ${made.build}`,
+            }
+          ).withReshape(output => imageOfRecords(output, context.name));
+        if (settings.build === undefined) {
+          return action(image, settings);
+        }
+        if (image === undefined) {
+          throw new FabrError(`${context.name}'s build command has no image to run in`).withHelp("set 'base' to the image it runs in");
+        }
+        if (contents.size > 0 || setsMoreThanBuild(settings)) {
+          /* The command's layer is a step of its own, so what is set beside it does not run it again. */
+          return context
+            .subTarget("container_image", { base: [image], build: settings.build, env }, { label: "Running build" })
+            .then(built => action(built as ImageFileSet, { ...settings, build: undefined }));
+        }
         return context
-          .subTarget("container_image", { base: [image], build: settings.build, env }, { label: "Running build" })
-          .then(built => action(built as ImageFileSet, { ...settings, build: undefined }));
+          .getGlobalRunnable("CONTAINER_ENGINE")
+          .then(engine => action(image, settings, engineProgram(context.name, engine)));
       }
-      return context.getGlobalRunnable("CONTAINER_ENGINE").then(engine => action(image, settings, engineProgram(context.name, engine)));
-    });
+    );
   },
 });
 
@@ -116,7 +121,16 @@ export default defineRule({
 function settingsOf(context: TargetContext): Computable<IImageSettings> {
   const value = (name: string): Computable<Property | undefined> => context.getProperty(name);
   return Computable.forAll(
-    [value("entry"), value("args"), value("workdir"), value("user"), value("ports"), context.getMap("env"), context.getMap("metadata"), value("build")] as const,
+    [
+      value("entry"),
+      value("args"),
+      value("workdir"),
+      value("user"),
+      value("ports"),
+      context.getMap("env"),
+      context.getMap("metadata"),
+      value("build"),
+    ] as const,
     (entry, args, workdir, user, ports, env: PropertyMap, metadata: PropertyMap, build): IImageSettings => ({
       ...(entry === undefined ? {} : { entry: entry.toString() }),
       args: args?.getValues() ?? [],
@@ -132,14 +146,23 @@ function settingsOf(context: TargetContext): Computable<IImageSettings> {
 
 /** @return true if `settings` set anything but the build command and its environment, otherwise false. */
 function setsMoreThanBuild(settings: IImageSettings): boolean {
-  return settings.entry !== undefined || settings.args.length > 0 || settings.workdir !== undefined || settings.user !== undefined || settings.ports.length > 0 || settings.metadata.length > 0;
+  return (
+    settings.entry !== undefined ||
+    settings.args.length > 0 ||
+    settings.workdir !== undefined ||
+    settings.user !== undefined ||
+    settings.ports.length > 0 ||
+    settings.metadata.length > 0
+  );
 }
 
 /** @return the install holding `engine`'s one program, named `engine`. */
 function engineProgram(target: string, engine: RunnableFileSet): FileSet {
   const line = engine.toCommandLine();
   if (line.length !== 1 || !(line[0] instanceof HostLink)) {
-    throw new FabrError(`CONTAINER_ENGINE, for ${target}'s build command, is no program of this host`).withHelp("name the program, as in '@host:docker' or '@host:podman'");
+    throw new FabrError(`CONTAINER_ENGINE, for ${target}'s build command, is no program of this host`).withHelp(
+      "name the program, as in '@host:docker' or '@host:podman'"
+    );
   }
   return new FileSet(new Map<string, IFile>([["engine", line[0]]]));
 }
@@ -150,7 +173,9 @@ function soleImage(target: string, bases: ReadonlyArray<FileSource | Repository 
     return undefined;
   }
   if (bases.length > 1 || !(bases[0] instanceof ImageFileSet)) {
-    throw new FabrError(`${target}'s base must be one image`).withHelp("name an image, as in '@docker:debian:12-slim', or a container_image target");
+    throw new FabrError(`${target}'s base must be one image`).withHelp(
+      "name an image, as in '@docker:debian:12-slim', or a container_image target"
+    );
   }
   return bases[0];
 }
@@ -171,10 +196,10 @@ function baseLibc(target: string, sources: SourceRef[]): Computable<ImageLibc | 
     sources.length > 1
       ? Computable.reject(new FabrError(`${target}'s base must be one image`))
       : source instanceof TargetRef
-      ? source.nodes()
-      : source instanceof RepositoryRef && !isRepositoryReader(source.source) && !isRepositoryCollection(source.source)
-      ? (source.source as RepositoryLookup).resolve(source).then(node => [node])
-      : Computable.resolve([source]);
+        ? source.nodes()
+        : source instanceof RepositoryRef && !isRepositoryReader(source.source) && !isRepositoryCollection(source.source)
+          ? (source.source as RepositoryLookup).resolve(source).then(node => [node])
+          : Computable.resolve([source]);
   return nodes.then(([node]) => libcAlong(node));
 }
 
@@ -200,9 +225,9 @@ export function contentsTriple(target: string, libc: ImageLibc | undefined): str
   }
   const stated = environment.includes("musl") ? "musl" : "gnu";
   if (libc !== undefined && libc !== stated) {
-    throw new FabrError(`${OCI_TARGET} '${target}' states ${stated === "gnu" ? "glibc" : "musl"}, but the base image has ${libc === "gnu" ? "glibc" : "musl"}`).withHelp(
-      `leave the C library out of ${OCI_TARGET} to take the base's, or choose a base built with it`
-    );
+    throw new FabrError(
+      `${OCI_TARGET} '${target}' states ${stated === "gnu" ? "glibc" : "musl"}, but the base image has ${libc === "gnu" ? "glibc" : "musl"}`
+    ).withHelp(`leave the C library out of ${OCI_TARGET} to take the base's, or choose a base built with it`);
   }
   return target;
 }
@@ -213,7 +238,8 @@ function runImage(action: BuildAction, ctx: ActionContext, report: ITaskReport):
   const files = fileSetInput(action, "files");
   const settings = JSON.parse(stringConfig(action, "settings")) as IImageSettings;
   const platform = JSON.parse(stringConfig(action, "platform")) as IOciPlatform;
-  const layers = new Set([...base].map(([name]) => name.split("/").slice(0, 2).join("/")).filter(dir => dir.startsWith("layers/"))).size;
+  const layers = new Set([...base].map(([name]) => name.split("/").slice(0, 2).join("/")).filter(dir => dir.startsWith("layers/")))
+    .size;
   const layer: Computable<IWrittenLayer | undefined> =
     settings.build !== undefined
       ? imageOfRecords(base, "base").then(image =>
@@ -231,8 +257,8 @@ function runImage(action: BuildAction, ctx: ActionContext, report: ITaskReport):
           )
         )
       : files.size === 0
-      ? Computable.resolve(undefined)
-      : ctx.admit(report, () => writeLayer(files, ctx.createOutput(), layerRecordDir(layers)));
+        ? Computable.resolve(undefined)
+        : ctx.admit(report, () => writeLayer(files, ctx.createOutput(), layerRecordDir(layers)));
   const configText = base.getFile(RECORD_CONFIG)?.readString() ?? Computable.resolve(undefined);
   return Computable.forAll([layer, configText] as const, (written: IWrittenLayer | undefined, text: string | undefined) => {
     const config = imageConfig(

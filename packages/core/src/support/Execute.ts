@@ -214,7 +214,7 @@ export function systemErrorText(err: unknown): string {
 export function describeSystemError(err: unknown): string {
   const text = systemErrorText(err);
   const sys = err as Partial<NodeJS.ErrnoException> & { dest?: string };
-  const target = typeof sys.errno === "number" ? sys.dest ?? sys.path : undefined;
+  const target = typeof sys.errno === "number" ? (sys.dest ?? sys.path) : undefined;
   return target ? `${text}: ${target}` : text;
 }
 
@@ -469,7 +469,13 @@ export function admitted<T>(limit: Semaphore, report: ITaskReport, work: () => C
   });
 }
 
-function executeUnbounded(cmd: string, args: string[], cwd: string, env: Record<string, string>, sink?: IOutputSink): Computable<void> {
+function executeUnbounded(
+  cmd: string,
+  args: string[],
+  cwd: string,
+  env: Record<string, string>,
+  sink?: IOutputSink
+): Computable<void> {
   /* A failed spawn emits 'error' then a spurious 'close' (code -2): Computable.from
    * keeps the first (informative ENOENT) rejection and drops the useless "-2". */
   return Computable.from((resolve, reject) => {
@@ -579,7 +585,13 @@ export interface CapturedOutput {
  * cache, not on screen. Its environment is `env` alone. Not hermetic: its
  * answer is cached nowhere, and may differ from one call to the next.
  */
-export function executeInternalCapture(limit: Semaphore, cmd: string, args: string[], input: string, env: Record<string, string>): Computable<CapturedOutput> {
+export function executeInternalCapture(
+  limit: Semaphore,
+  cmd: string,
+  args: string[],
+  input: string,
+  env: Record<string, string>
+): Computable<CapturedOutput> {
   return limit.run(() =>
     Computable.from<CapturedOutput>((resolve, reject) => {
       const proc = spawn(cmd, args, { env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
@@ -588,7 +600,9 @@ export function executeInternalCapture(limit: Semaphore, cmd: string, args: stri
       proc.stdout?.on("data", (data: Buffer) => stdout.push(data));
       proc.stderr?.on("data", (data: Buffer) => stderr.push(data));
       proc.on("error", err => reject(new ExecutionError(`${commandLine(cmd, args)}\nunable to execute: ${systemErrorText(err)}`)));
-      proc.on("close", code => resolve({ status: code, stdout: Buffer.concat(stdout).toString("utf8"), stderr: Buffer.concat(stderr).toString("utf8") }));
+      proc.on("close", code =>
+        resolve({ status: code, stdout: Buffer.concat(stdout).toString("utf8"), stderr: Buffer.concat(stderr).toString("utf8") })
+      );
       /* A program that exits without reading its input closes the pipe under the write. */
       proc.stdin?.on("error", () => undefined);
       proc.stdin?.end(input);
@@ -1007,12 +1021,7 @@ function hasTerminal(): boolean {
  * build step's own (clean) env so the sandbox matches what the build runs under;
  * omitted, the child inherits this process's env (the `fabr run` case).
  */
-export function executeInteractive(
-  cmd: string,
-  args: string[],
-  cwd?: string,
-  env?: Record<string, string>
-): Computable<number> {
+export function executeInteractive(cmd: string, args: string[], cwd?: string, env?: Record<string, string>): Computable<number> {
   /* A failed spawn emits 'error' then 'close': Computable.from keeps the informative
    * rejection and stops 'close' flipping a settled failure into a success. */
   return Computable.from((resolve, reject) => {
@@ -1025,7 +1034,7 @@ export function executeInteractive(
     });
     proc.on("close", (code, signal) => {
       releaseInteractive(proc);
-      resolve(signal ? 128 + (os.constants.signals[signal] ?? 0) : code ?? 0);
+      resolve(signal ? 128 + (os.constants.signals[signal] ?? 0) : (code ?? 0));
     });
   });
 }

@@ -65,7 +65,12 @@ function toPromise<T>(computable: Computable<T>): Promise<T> {
 /** A package at a version, its one file naming it — the layout fixture, where
  * what varies between packages is the version. */
 function pkg(name: string, version = "1.0.0", deps: PackageFileSet[] = []): PackageFileSet {
-  return new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}@${version}`)]]), name, version, dependenciesOn(...deps));
+  return new PackageFileSet(
+    new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}@${version}`)]]),
+    name,
+    version,
+    dependenciesOn(...deps)
+  );
 }
 
 /** A package as something to RESOLVE and READ: typings plus a manifest, at one
@@ -104,10 +109,7 @@ function delivered(
     nodes.set(id, builder.node(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${content(id)}\n`)]]), name, version));
   }
   for (const [id, deps] of Object.entries(graph)) {
-    builder.wire(
-      nodes.get(id)!,
-      dependenciesOn(...Object.values(deps).map(dep => nodes.get(dep)!))
-    );
+    builder.wire(nodes.get(id)!, dependenciesOn(...Object.values(deps).map(dep => nodes.get(dep)!)));
   }
   builder.seal();
   return nodes.get(rootId)!;
@@ -254,16 +256,11 @@ describe("createNodeExecAction layouts", () => {
       new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(body)]]), name, version, dependenciesOn(...deps));
     const shared1 = code("shared", "1.0.0", "module.exports = { Client: class {}, version: 1 };");
     const shared2 = code("shared", "2.0.0", "module.exports = { Client: class {}, version: 2 };");
-    const app = code(
-      "app",
-      "1.0.0",
-      'module.exports = { own: require("shared"), orm: require("orm"), saver: require("saver") };',
-      [
-        shared1,
-        code("orm", "1.0.0", 'module.exports = require("shared");', [shared1]),
-        code("saver", "1.0.0", 'module.exports = require("shared");', [shared2]),
-      ]
-    );
+    const app = code("app", "1.0.0", 'module.exports = { own: require("shared"), orm: require("orm"), saver: require("saver") };', [
+      shared1,
+      code("orm", "1.0.0", 'module.exports = require("shared");', [shared1]),
+      code("saver", "1.0.0", 'module.exports = require("shared");', [shared2]),
+    ]);
     const tool = `const fs = require("fs"), app = require("app");
 fs.mkdirSync("out", { recursive: true });
 fs.writeFileSync("out/observed.json", JSON.stringify({ listing: [
@@ -421,10 +418,12 @@ for (const name of ${JSON.stringify(kept)}) {
       }
     );
     const built = await toPromise(
-      cache.getOrCreateAction(action, ctx => NODE_EXEC_ACTION.run(action, ctx, SILENT_REPORT), {
-        targetKey: RECORD_KEY,
-        processLimit: new Semaphore(UNBOUNDED),
-      }).then(({ files }) => files)
+      cache
+        .getOrCreateAction(action, ctx => NODE_EXEC_ACTION.run(action, ctx, SILENT_REPORT), {
+          targetKey: RECORD_KEY,
+          processLimit: new Semaphore(UNBOUNDED),
+        })
+        .then(({ files }) => files)
     );
     const record = await toPromise(cache.readBuildState(RECORD_KEY));
     return { seen: JSON.parse(await toPromise(built.readFile("seen.json"))) as ISeen, state: record?.incrementalState };

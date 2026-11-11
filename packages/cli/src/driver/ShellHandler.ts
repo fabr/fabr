@@ -18,7 +18,17 @@
  */
 
 import { join } from "node:path";
-import { BuildAction, BuildCache, Computable, Diagnostic, executeInteractive, IStagedCommand, IStagedStep, Log, variableEntry } from "@fabr-build/core";
+import {
+  BuildAction,
+  BuildCache,
+  Computable,
+  Diagnostic,
+  executeInteractive,
+  IStagedCommand,
+  IStagedStep,
+  Log,
+  variableEntry,
+} from "@fabr-build/core";
 import { withTerminalSuspended } from "./Terminal";
 
 const DIAG_SHELL = Diagnostic.Info<{ name: string; dir: string; commands: string }>(

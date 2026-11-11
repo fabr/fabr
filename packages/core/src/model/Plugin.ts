@@ -72,7 +72,7 @@ export function toPluginLibs(json: unknown): PluginLibs {
   const field = toJsonObject(json);
   const listOf = (key: string): string[] => {
     const value = field[key];
-    const list = typeof value === "string" ? [value] : value ?? [];
+    const list = typeof value === "string" ? [value] : (value ?? []);
     if (!Array.isArray(list) || !list.every((lib): lib is string => typeof lib === "string")) {
       throw new FabrError(`"${PLUGIN_MANIFEST_FIELD}".${key} is not a path or a list of them`);
     }
@@ -164,7 +164,11 @@ function checkCoreVersion(name: string, plugin: Record<string, unknown>): void {
   const host = hostFile === undefined ? undefined : readManifest(hostFile);
   const peers = plugin.peerDependencies;
   const range = typeof peers === "object" && peers !== null ? (peers as Record<string, unknown>)[CORE_PACKAGE] : undefined;
-  const err = coreVersionError(name, typeof range === "string" ? range : undefined, typeof host?.version === "string" ? host.version : undefined);
+  const err = coreVersionError(
+    name,
+    typeof range === "string" ? range : undefined,
+    typeof host?.version === "string" ? host.version : undefined
+  );
   if (err !== undefined) {
     throw err;
   }
@@ -180,9 +184,9 @@ function checkCoreVersion(name: string, plugin: Record<string, unknown>): void {
 function packagedPlugin(decl: IPluginDecl, manifest: string): PluginPackage {
   const json = readManifest(manifest);
   if (json[PLUGIN_MANIFEST_FIELD] === undefined) {
-    throw new FabrError(`Package '${decl.name.toString()}' is not a fabr plugin: its package.json has no "${PLUGIN_MANIFEST_FIELD}"`).withHelp(
-      "a plugin built in the project is named by its fabr_plugin target"
-    );
+    throw new FabrError(
+      `Package '${decl.name.toString()}' is not a fabr plugin: its package.json has no "${PLUGIN_MANIFEST_FIELD}"`
+    ).withHelp("a plugin built in the project is named by its fabr_plugin target");
   }
   if (typeof json.name !== "string") {
     throw new FabrError(`${manifest}: a plugin's package.json names it`);
@@ -253,7 +257,9 @@ export function implementationLoader(plugins: ReadonlyMap<string, () => Computab
       if (name !== CORE_PACKAGE) {
         start(file);
       }
-      const module = Module.createRequire(file)(`${String(readManifest(file).name)}/${written.substring(colon + 1)}`) as { default?: unknown };
+      const module = Module.createRequire(file)(`${String(readManifest(file).name)}/${written.substring(colon + 1)}`) as {
+        default?: unknown;
+      };
       if (module.default === undefined) {
         throw new FabrError(`'${written}' has no default export`);
       }
@@ -321,7 +327,9 @@ const DIAG_PLUGIN_DECLARES_PLUGIN = Diagnostic.Error<{ loc: ISourcePosition }>(
  * changes what was read before it.
  */
 export function checkPluginFile(file: IBuildFileContents, log: Log): void {
-  [...file.properties, ...file.targets].filter(decl => !decl.private).forEach(decl => log.log(DIAG_PLUGIN_ORDINARY, { loc: declPosn(decl) }));
+  [...file.properties, ...file.targets]
+    .filter(decl => !decl.private)
+    .forEach(decl => log.log(DIAG_PLUGIN_ORDINARY, { loc: declPosn(decl) }));
   [...file.defaults, ...file.targets.filter(target => target.private)]
     .filter(decl => decl.kind === DeclKind.Target && decl.type === FABR_PLUGIN)
     .forEach(decl => log.log(DIAG_PLUGIN_DECLARES_PLUGIN, { loc: declPosn(decl) }));
@@ -386,7 +394,8 @@ function pluginManifest(model: BuildModel, decl: IPluginDecl, execution: Executi
       if (source instanceof RunnableFileSet) {
         return execution.buildCache.ensureTree(source).then(tree => path.join(tree, source.root, "package.json"));
       }
-      const directory = source instanceof FileSet && source.getFile("package.json") !== undefined ? installedDirectoryOf(source) : undefined;
+      const directory =
+        source instanceof FileSet && source.getFile("package.json") !== undefined ? installedDirectoryOf(source) : undefined;
       if (directory === undefined) {
         throw new FabrError(`Plugin '${decl.name.toString()}' names no package`);
       }
@@ -409,7 +418,11 @@ export function pluginPackageJson(base: IFile | undefined, name: string, { libs,
     throw new FabrError(`the package fabr_plugin '${name}' builds has no ${MANIFEST}`);
   }
   return base.readString().then(text => {
-    const manifest = { ...parseJson(text, MANIFEST, toJsonObject), name, [PLUGIN_MANIFEST_FIELD]: { libs, ...(optionalLibs.length > 0 ? { optional_libs: optionalLibs } : {}) } };
+    const manifest = {
+      ...parseJson(text, MANIFEST, toJsonObject),
+      name,
+      [PLUGIN_MANIFEST_FIELD]: { libs, ...(optionalLibs.length > 0 ? { optional_libs: optionalLibs } : {}) },
+    };
     return MemoryFile.from(JSON.stringify(manifest, undefined, 2) + "\n");
   });
 }

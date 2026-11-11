@@ -66,7 +66,11 @@ interface ActionParts {
 }
 
 function action(parts: ActionParts, step = STEP): BuildAction {
-  return new BuildAction(step, parts.inputs ?? {}, parts.config ?? {}, { discoverable: parts.discoverable, label: "compile", sourcePathInputs: parts.sourcePathInputs });
+  return new BuildAction(step, parts.inputs ?? {}, parts.config ?? {}, {
+    discoverable: parts.discoverable,
+    label: "compile",
+    sourcePathInputs: parts.sourcePathInputs,
+  });
 }
 
 describe("target-key identity", () => {
@@ -128,10 +132,9 @@ describe("target-key identity", () => {
      * the read-trace of exactly that. */
     const srcs = { srcs: sources("one") };
     const key = action({ inputs: srcs, config: { argv: ["tsc"], strict: "on" } }).targetKey(owner);
-    expect(
-      action({ inputs: srcs, config: { argv: ["tsc"], strict: "off" } }).targetKey(owner),
-      "a switch the rule read"
-    ).to.not.equal(key);
+    expect(action({ inputs: srcs, config: { argv: ["tsc"], strict: "off" } }).targetKey(owner), "a switch the rule read").to.not.equal(
+      key
+    );
     expect(
       action({ inputs: srcs, config: { argv: ["tsc", "--target", "es5"], strict: "on" } }).targetKey(owner),
       "a target the rule read"
@@ -154,8 +157,7 @@ describe("target-key identity", () => {
     /* The tsconfig case: the document stages for the tool to read, but it is
      * configuration — each distinct document is its own target key, never a
      * changed file in the next build's diff. */
-    const tsconfig = (module: string): FileSet =>
-      new FileSet(new Map([["tsconfig.json", MemoryFile.from(`{"module":"${module}"}`)]]));
+    const tsconfig = (module: string): FileSet => new FileSet(new Map([["tsconfig.json", MemoryFile.from(`{"module":"${module}"}`)]]));
     const srcs = { srcs: sources("one") };
     const cjs = action({ inputs: srcs, config: { argv: ["tsc"], config: tsconfig("commonjs") } }).targetKey(owner);
     expect(
@@ -182,12 +184,8 @@ describe("the config digest", () => {
     const srcs = { srcs: sources("one") };
     const base = { inputs: srcs, config: { argv: ["tsc"], layout: "pnp" } };
     expect(digest(base), "a string input").to.not.equal(digest({ inputs: srcs, config: { argv: ["tsc"], layout: "flat" } }));
-    expect(digest(base), "a string list").to.not.equal(
-      digest({ inputs: srcs, config: { argv: ["tsc", "--strict"], layout: "pnp" } })
-    );
-    expect(digest(base), "a projection").to.not.equal(
-      digest({ ...base, config: { ...base.config, output: parseName("build:**") } })
-    );
+    expect(digest(base), "a string list").to.not.equal(digest({ inputs: srcs, config: { argv: ["tsc", "--strict"], layout: "pnp" } }));
+    expect(digest(base), "a projection").to.not.equal(digest({ ...base, config: { ...base.config, output: parseName("build:**") } }));
   });
 
   it("reads nothing but the options — per-file inputs and the pool are not identity", () => {
@@ -337,12 +335,17 @@ describe("the action key", () => {
 
   it("keys a linked install by its hash alone, in a section of its own", () => {
     const install = (content: string): FileSet => new FileSet(new Map([["bin/tool.js", MemoryFile.from(content)]]));
-    const linked = (links: Record<string, FileSet>): string => new BuildAction(STEP, { srcs: sources("x") }, {}, { links }).actionKey();
+    const linked = (links: Record<string, FileSet>): string =>
+      new BuildAction(STEP, { srcs: sources("x") }, {}, { links }).actionKey();
     expect(linked({ ".tools": install("one") })).to.contain(`\n# links\n.tools=${install("one").toManifestHash()}`);
     expect(linked({ ".tools": install("one") }), "its content").to.not.equal(linked({ ".tools": install("two") }));
     expect(linked({ ".tools": install("one") }), "its name").to.not.equal(linked({ ".runner": install("one") }));
-    expect(linked({ b: install("one"), a: install("two") }), "in one order").to.equal(linked({ a: install("two"), b: install("one") }));
-    expect(linked({}), "none, and a config member of the name").to.not.equal(new BuildAction(STEP, { srcs: sources("x") }, { links: ".tools" }).actionKey());
+    expect(linked({ b: install("one"), a: install("two") }), "in one order").to.equal(
+      linked({ a: install("two"), b: install("one") })
+    );
+    expect(linked({}), "none, and a config member of the name").to.not.equal(
+      new BuildAction(STEP, { srcs: sources("x") }, { links: ".tools" }).actionKey()
+    );
   });
 
   it("keeps same-named members apart across the two sections", () => {

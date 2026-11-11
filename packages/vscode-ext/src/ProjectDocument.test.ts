@@ -22,7 +22,10 @@ const PLUGIN = "@fabr-build/js-tools/tsserverPlugin/TsserverPlugin";
 
 function table(rows: Array<[string | null, string | null, string]>): string {
   return JSON.stringify({
-    packageRegistryData: rows.map(([name, reference, location]) => [name, [[reference, { packageLocation: location, packageDependencies: [] }]]]),
+    packageRegistryData: rows.map(([name, reference, location]) => [
+      name,
+      [[reference, { packageLocation: location, packageDependencies: [] }]],
+    ]),
   });
 }
 
@@ -41,7 +44,13 @@ const FILES = new Map<string, string>([
   ],
   [`${POOL}/lib-d/units/build/unit.json`, JSON.stringify({ root: "./lib/src/", package: "lib", generated: [] })],
   [`${POOL}/lib-d/units/build/tsconfig.json`, JSON.stringify({ compilerOptions: { rootDir: "." }, files: ["index.ts"] })],
-  [`${POOL}/lib-d/units/build/.pnp.data.json`, table([[null, null, "./"], ["lib", "self", "./"]])],
+  [
+    `${POOL}/lib-d/units/build/.pnp.data.json`,
+    table([
+      [null, null, "./"],
+      ["lib", "self", "./"],
+    ]),
+  ],
 ]);
 
 const target = (name: string): IServedTarget => ({
@@ -100,13 +109,20 @@ describe("project document", () => {
 
   it("shows a unit whose sources come from two directories at the directory holding both, its generated sources where it places them", () => {
     const files = new Map(FILES);
-    files.set(`${POOL}/app-d/units/build/unit.json`, JSON.stringify({ root: "./app/", package: "app", generated: ["src/x.css.d.ts"] }));
+    files.set(
+      `${POOL}/app-d/units/build/unit.json`,
+      JSON.stringify({ root: "./app/", package: "app", generated: ["src/x.css.d.ts"] })
+    );
     const multi = composeProject({
       root: "/p",
       installation: "/fabr",
       storage: "/storage",
       targets: [target("app"), target("lib")],
-      readFile: file => files.get(file) ?? (() => { throw new Error(`no ${file}`); })(),
+      readFile: file =>
+        files.get(file) ??
+        (() => {
+          throw new Error(`no ${file}`);
+        })(),
       resolve: (specifier, from) => `${from}/node_modules/${specifier}.js`,
     });
     const links = multi.document.links as Record<string, string>;
@@ -125,8 +141,17 @@ describe("project document", () => {
       ])
     );
     files.set(`${POOL}/lib-t/units/test/unit.json`, JSON.stringify({ root: "./lib/src/", package: "lib", generated: [] }));
-    files.set(`${POOL}/lib-t/units/test/tsconfig.json`, JSON.stringify({ compilerOptions: { rootDir: "." }, files: ["index.test.ts"] }));
-    files.set(`${POOL}/lib-t/units/test/.pnp.data.json`, table([[null, null, "./"], ["lib", "self", "./"]]));
+    files.set(
+      `${POOL}/lib-t/units/test/tsconfig.json`,
+      JSON.stringify({ compilerOptions: { rootDir: "." }, files: ["index.test.ts"] })
+    );
+    files.set(
+      `${POOL}/lib-t/units/test/.pnp.data.json`,
+      table([
+        [null, null, "./"],
+        ["lib", "self", "./"],
+      ])
+    );
     /* Its unit's name is no matter: the operation it is described under is. */
     const libTests: IServedTarget = {
       id: { uri: "fabr:lib?operation=test" },
@@ -139,19 +164,34 @@ describe("project document", () => {
       installation: "/fabr",
       storage: "/storage",
       targets: [target("app"), libTests],
-      readFile: file => files.get(file) ?? (() => { throw new Error(`no ${file}`); })(),
+      readFile: file =>
+        files.get(file) ??
+        (() => {
+          throw new Error(`no ${file}`);
+        })(),
       resolve: (specifier, from) => `${from}/node_modules/${specifier}.js`,
     });
     const rows = new Map(JSON.parse(composedTests.files.get("/storage/0/.pnp.data.json")!).packageRegistryData);
-    expect((rows.get("lib") as Array<[string, { packageLocation: string }]>)[0][1].packageLocation).to.equal("./../../../cache/tree/lib-tree/");
+    expect((rows.get("lib") as Array<[string, { packageLocation: string }]>)[0][1].packageLocation).to.equal(
+      "./../../../cache/tree/lib-tree/"
+    );
     expect(JSON.parse(composedTests.files.get("/storage/0/tsconfig.json")!).references).to.equal(undefined);
   });
 
   it("shows two units at one root behind a solution config, the build unit first", () => {
     const tests = new Map(FILES);
     tests.set(`${POOL}/app-t/units/test/unit.json`, JSON.stringify({ root: "./app/src/", package: "app", generated: [] }));
-    tests.set(`${POOL}/app-t/units/test/tsconfig.json`, JSON.stringify({ compilerOptions: { rootDir: "." }, files: ["main.ts", "main.test.ts"] }));
-    tests.set(`${POOL}/app-t/units/test/.pnp.data.json`, table([[null, null, "./"], ["app", "self", "./"]]));
+    tests.set(
+      `${POOL}/app-t/units/test/tsconfig.json`,
+      JSON.stringify({ compilerOptions: { rootDir: "." }, files: ["main.ts", "main.test.ts"] })
+    );
+    tests.set(
+      `${POOL}/app-t/units/test/.pnp.data.json`,
+      table([
+        [null, null, "./"],
+        ["app", "self", "./"],
+      ])
+    );
     const testTarget: IServedTarget = {
       id: { uri: "fabr:app?operation=test" },
       dataKind: "typescript",
@@ -164,13 +204,20 @@ describe("project document", () => {
       storage: "/storage",
       /* The test target first: the order of the units at a root is the composition's. */
       targets: [testTarget, target("app"), target("lib")],
-      readFile: file => tests.get(file) ?? (() => { throw new Error(`no ${file}`); })(),
+      readFile: file =>
+        tests.get(file) ??
+        (() => {
+          throw new Error(`no ${file}`);
+        })(),
       resolve: (specifier, from) => `${from}/node_modules/${specifier}.js`,
     });
     expect(both.problems).to.deep.equal([]);
     const links = both.document.links as Record<string, string>;
     const solution = JSON.parse(both.files.get(links["/p/app/src/tsconfig.json"])!);
-    expect(solution).to.deep.equal({ files: [], references: [{ path: "./tsconfig.fabr-0.json" }, { path: "./tsconfig.fabr-1.json" }] });
+    expect(solution).to.deep.equal({
+      files: [],
+      references: [{ path: "./tsconfig.fabr-0.json" }, { path: "./tsconfig.fabr-1.json" }],
+    });
     expect(JSON.parse(both.files.get(links["/p/app/src/tsconfig.fabr-0.json"])!).files).to.deep.equal(["main.ts"]);
     expect(JSON.parse(both.files.get(links["/p/app/src/tsconfig.fabr-1.json"])!).files).to.deep.equal(["main.ts", "main.test.ts"]);
     expect((both.document.units as Array<{ config: string }>).map(unit => unit.config)).to.deep.equal([

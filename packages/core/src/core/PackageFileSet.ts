@@ -99,8 +99,7 @@ export interface Dependency<P extends Package = Package> {
  * target builds is checked against it.
  */
 export type Builds =
-  | { readonly package: string; readonly format?: PackageFormat<unknown, unknown>; readonly version?: string }
-  | "files";
+  { readonly package: string; readonly format?: PackageFormat<unknown, unknown>; readonly version?: string } | "files";
 
 /**
  * The selection a registry's node is: the registry, and the package at the
@@ -225,7 +224,8 @@ export class ResolvedNode implements PackageMetadata {
     const { content } = this;
     /* A rename names a package: what the rule declared is that package,
      * renamed, and where it declared nothing, the package of the new name. */
-    const declared: Builds | undefined = content.declared === "files" ? content.declared : { ...content.declared, package: packageName };
+    const declared: Builds | undefined =
+      content.declared === "files" ? content.declared : { ...content.declared, package: packageName };
     return this.copy({
       packageName,
       content: {
@@ -375,7 +375,16 @@ export class PackageFileSet extends FileSet {
 
   /** @return a copy of this package, of its own class, under `packageName` and `origin`. */
   private remade(packageName: string, origin: IProvenanceStep | undefined): PackageFileSet {
-    return new (this.constructor as PackageClass)(this, packageName, this.version, this.dependencies, origin, this.provided, undefined, this.usedFor);
+    return new (this.constructor as PackageClass)(
+      this,
+      packageName,
+      this.version,
+      this.dependencies,
+      origin,
+      this.provided,
+      undefined,
+      this.usedFor
+    );
   }
 
   public getDependency(name: string): Dependency<PackageFileSet> | undefined {
@@ -448,7 +457,12 @@ function structuralClasses(packages: ReadonlyArray<Package>): Map<Package, strin
     const refined = new Map(
       packages.map(pkg => [
         pkg,
-        hashString(`${color.get(pkg)}|${children(pkg).map(dep => `${dep.packageName}=${color.get(dep)}`).sort().join(",")}`),
+        hashString(
+          `${color.get(pkg)}|${children(pkg)
+            .map(dep => `${dep.packageName}=${color.get(dep)}`)
+            .sort()
+            .join(",")}`
+        ),
       ])
     );
     const refinedGroups = new Set(refined.values()).size;
@@ -584,8 +598,7 @@ function dependencyText(pkg: PackageFileSet): string {
 /** Describe what differs between two instances' dependencies, by the name each is
  * required under. */
 function dependencyDifference(a: PackageFileSet, b: PackageFileSet): string {
-  const byName = (pkg: PackageFileSet): Map<string, string> =>
-    new Map(pkg.packages.map(dep => [dep.packageName, dep.packageId]));
+  const byName = (pkg: PackageFileSet): Map<string, string> => new Map(pkg.packages.map(dep => [dep.packageName, dep.packageId]));
   const left = byName(a);
   const right = byName(b);
   const names = [...new Set([...left.keys(), ...right.keys()])].sort();
@@ -763,7 +776,10 @@ export function describePackages(roots: ReadonlyArray<Package>): Computable<Arra
 }
 
 /** Materialize `roots` and what they reach, describing a target that describes itself where `describe` is set. */
-function materializeGraph(roots: ReadonlyArray<Package>, describe: boolean): Computable<Array<PackageFileSet | ReadonlyArray<SourceRef>>> {
+function materializeGraph(
+  roots: ReadonlyArray<Package>,
+  describe: boolean
+): Computable<Array<PackageFileSet | ReadonlyArray<SourceRef>>> {
   const all = reachableNodes(roots);
   const nodes = all.filter((pkg): pkg is ResolvedNode => pkg instanceof ResolvedNode);
   if (nodes.length === 0) {
@@ -790,7 +806,12 @@ function materializeGraph(roots: ReadonlyArray<Package>, describe: boolean): Com
   const describing = (node: ResolvedNode): boolean => describe && node.content.describe !== undefined;
   return Computable.forAll(
     nodes.map(node =>
-      describing(node) ? node.content.describe!().then(description => description, (): undefined => undefined) : node.content.files()
+      describing(node)
+        ? node.content.describe!().then(
+            description => description,
+            (): undefined => undefined
+          )
+        : node.content.files()
     ),
     (...files: Array<FileSet | ReadonlyArray<SourceRef> | undefined>) => {
       const content = new Map<Package, FileSet | ReadonlyArray<SourceRef>>();
@@ -873,7 +894,7 @@ function materializeGraph(roots: ReadonlyArray<Package>, describe: boolean): Com
           return [];
         });
       }
-      const result = roots.map(root => (failed.has(root) ? [] : plain(root) ?? withFiles(root)));
+      const result = roots.map(root => (failed.has(root) ? [] : (plain(root) ?? withFiles(root))));
       builder.seal();
       return result;
     }

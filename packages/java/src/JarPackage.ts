@@ -135,9 +135,13 @@ export function classpathOf(deps: readonly FileSet[]): Array<[string, IFile]> {
  */
 export function installationOf(deps: readonly FileSet[], provided: readonly FileSet[] = []): FileSet {
   if (provided.some(dep => !(dep instanceof PackageFileSet) && !(dep instanceof Flag))) {
-    throw new FabrError("provided_deps holds files that are no package").withHelp("an installation leaves out packages: list loose files in deps, or not at all");
+    throw new FabrError("provided_deps holds files that are no package").withHelp(
+      "an installation leaves out packages: list loose files in deps, or not at all"
+    );
   }
-  const supplied = new Set(closureOf(provided.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet)).map(pkg => pkg.packageId));
+  const supplied = new Set(
+    closureOf(provided.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet)).map(pkg => pkg.packageId)
+  );
   const packages = closureOf(
     deps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet),
     false
@@ -213,7 +217,10 @@ export function placedJars(
   return isModule
     ? Computable.forAll(
         jars.map(([, file]) => isModularJar(file)),
-        (...modular: boolean[]) => ({ modulePath: jars.filter((_, index) => modular[index]), classpath: jars.filter((_, index) => !modular[index]) })
+        (...modular: boolean[]) => ({
+          modulePath: jars.filter((_, index) => modular[index]),
+          classpath: jars.filter((_, index) => !modular[index]),
+        })
       )
     : Computable.resolve({ modulePath: [], classpath: jars });
 }
@@ -385,7 +392,12 @@ export function makeJarRunnable(
         join: "",
         parts: [
           "-javaagent:",
-          { installFile: path.posix.join(LIB_DIR, agent instanceof PackageFileSet && agent.packageName !== undefined ? `${agent.packageName}/${name}` : name) },
+          {
+            installFile: path.posix.join(
+              LIB_DIR,
+              agent instanceof PackageFileSet && agent.packageName !== undefined ? `${agent.packageName}/${name}` : name
+            ),
+          },
         ],
       }))
   );
@@ -397,17 +409,16 @@ export function makeJarRunnable(
       ? Computable.resolve(false)
       : moduleKindOf(programJar).then(kind => kind === "explicit");
   return modular
-    .then(
-      (isModule): Placement | Computable<Placement> =>
-        isModule
-          ? Computable.forAll(
-              jars.map(([, file]) => isModularJar(file)),
-              (...modules: boolean[]): Placement => ({
-                modulePath: jars.filter((_, index) => modules[index]),
-                classpath: jars.filter((_, index) => !modules[index]),
-              })
-            )
-          : { classpath: jars }
+    .then((isModule): Placement | Computable<Placement> =>
+      isModule
+        ? Computable.forAll(
+            jars.map(([, file]) => isModularJar(file)),
+            (...modules: boolean[]): Placement => ({
+              modulePath: jars.filter((_, index) => modules[index]),
+              classpath: jars.filter((_, index) => !modules[index]),
+            })
+          )
+        : { classpath: jars }
     )
     .then(({ modulePath, classpath }) => {
       const own = !ownClasses ? [] : [`${CLASSES_DIR}/`];
@@ -423,7 +434,12 @@ export function makeJarRunnable(
           ? []
           : [
               "--module-path",
-              { join: path.delimiter, parts: [...(ownClasses ? [CLASSES_DIR] : []), ...modulePath.map(([name]) => name)].map(installFile => ({ installFile })) },
+              {
+                join: path.delimiter,
+                parts: [...(ownClasses ? [CLASSES_DIR] : []), ...modulePath.map(([name]) => name)].map(installFile => ({
+                  installFile,
+                })),
+              },
               "--add-modules",
               "ALL-MODULE-PATH",
             ];
@@ -432,7 +448,12 @@ export function makeJarRunnable(
           new FileSet(new Map([...jars, [LAUNCHER, new MemoryFile(launcher)]])),
           ownClasses ? classes.mountedAt(CLASSES_DIR) : new FileSet(new Map())
         );
-        return context.launchedBy(RunnableFileSet.forEntry(install, LAUNCHER, [...args]), "JAVA", [...jvmArgs, ...agentArgs, ...moduleArgs, "-jar"]);
+        return context.launchedBy(RunnableFileSet.forEntry(install, LAUNCHER, [...args]), "JAVA", [
+          ...jvmArgs,
+          ...agentArgs,
+          ...moduleArgs,
+          "-jar",
+        ]);
       });
     });
 }

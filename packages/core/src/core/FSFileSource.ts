@@ -29,7 +29,14 @@ import { hashFile, hashString, isDirectoryError, isNotFound, readFile, readFileB
 import type { BuildCache } from "./BuildCache";
 import { sniffMime } from "../support/Mime";
 import { FabrError, MultiError, toError } from "./Errors";
-import { IProvenanceStep, namingDigest, registerProvenanceNaming, registerProvenanceRenderer, renamingText, restrictedTo } from "./Provenance";
+import {
+  IProvenanceStep,
+  namingDigest,
+  registerProvenanceNaming,
+  registerProvenanceRenderer,
+  renamingText,
+  restrictedTo,
+} from "./Provenance";
 import { PreparedUpdate, WatchController, WatchEntry } from "./WatchController";
 
 export interface FSFileStats {
@@ -63,7 +70,14 @@ export class FSFile implements IFile {
    */
   private readonly contentPath: string;
 
-  constructor(root: string, name: string, stat: FSFileStats, hash: string, public readonly mime: string, contentPath?: string) {
+  constructor(
+    root: string,
+    name: string,
+    stat: FSFileStats,
+    hash: string,
+    public readonly mime: string,
+    contentPath?: string
+  ) {
     this.root = root;
     this.name = name;
     this.stat = stat;
@@ -205,21 +219,24 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
      * one that lands anyway inert, this just stops it blocking a re-probe. */
     this.rescanning.clear();
     const enumerator = this.enumerator ?? (() => enumerate(this.root, this.name, this.prefix));
-    enumerator().then(({ names, project }) => {
-      if (!this.isCurrent(generation)) {
-        return Computable.resolve(undefined);
-      }
-      /* Events stay buffered while the enumerated files are read. */
-      return this.ingestAll(names).then(read => {
-        if (this.isCurrent(generation)) {
-          this.enumerated(generation, read, project);
+    enumerator().then(
+      ({ names, project }) => {
+        if (!this.isCurrent(generation)) {
+          return Computable.resolve(undefined);
         }
-      });
-    }, err => {
-      if (this.isCurrent(generation)) {
-        this.settle(ComputableState.Error, toError(err));
+        /* Events stay buffered while the enumerated files are read. */
+        return this.ingestAll(names).then(read => {
+          if (this.isCurrent(generation)) {
+            this.enumerated(generation, read, project);
+          }
+        });
+      },
+      err => {
+        if (this.isCurrent(generation)) {
+          this.settle(ComputableState.Error, toError(err));
+        }
       }
-    });
+    );
   }
 
   /** Take the enumeration's reads and projection, replay the events buffered meanwhile,
@@ -387,7 +404,11 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
   private ingestAll(names: ReadonlyArray<string>): Computable<IRead[]> {
     return mapComputable(
       names,
-      (name): Computable<IRead> => this.owner.ingest(name).then((file): IRead => ({ name, file }), (err: unknown): IRead => ({ name, error: toError(err) })),
+      (name): Computable<IRead> =>
+        this.owner.ingest(name).then(
+          (file): IRead => ({ name, file }),
+          (err: unknown): IRead => ({ name, error: toError(err) })
+        ),
       INGEST_CONCURRENCY
     );
   }
@@ -433,7 +454,11 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
     const failed = this.failed;
     return mapComputable(
       pending,
-      ([name, reading]): Computable<IRead> => reading.then((file): IRead => ({ name, file }), (err: unknown): IRead => ({ name, error: toError(err) })),
+      ([name, reading]): Computable<IRead> =>
+        reading.then(
+          (file): IRead => ({ name, file }),
+          (err: unknown): IRead => ({ name, error: toError(err) })
+        ),
       Infinity
     ).then(read => {
       const current = new Map(files);
@@ -456,20 +481,23 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
 
   private deliver(generation: number): void {
     const delivery = ++this.delivery;
-    this.build().then(fileSet => {
-      /* build() is a further async hop, so re-check: a detach/reattach between
-       * enumeration and here must not settle this (stale) result, and neither may an
-       * enumeration whose build a later recompute has already overtaken. */
-      if (!this.isCurrentDelivery(generation, delivery)) {
-        return;
+    this.build().then(
+      fileSet => {
+        /* build() is a further async hop, so re-check: a detach/reattach between
+         * enumeration and here must not settle this (stale) result, and neither may an
+         * enumeration whose build a later recompute has already overtaken. */
+        if (!this.isCurrentDelivery(generation, delivery)) {
+          return;
+        }
+        this.lastManifest = fileSet.toManifest();
+        this.settle(ComputableState.Valid, fileSet);
+      },
+      err => {
+        if (this.isCurrentDelivery(generation, delivery)) {
+          this.settle(ComputableState.Error, toError(err));
+        }
       }
-      this.lastManifest = fileSet.toManifest();
-      this.settle(ComputableState.Valid, fileSet);
-    }, err => {
-      if (this.isCurrentDelivery(generation, delivery)) {
-        this.settle(ComputableState.Error, toError(err));
-      }
-    });
+    );
   }
 
   /** WatchController entry: rebuild from the (dispatcher-updated) files and, unless the
@@ -767,9 +795,10 @@ export class FSFileSource implements FileSource {
      * it either relative (the project entry) or absolute (a resolved include). */
     const target = toPosix(path.relative(this.root, path.resolve(this.root, name)));
     const literal = Name.fromLiteral(target);
-    return this.query(`get ${target}`, () => new TreeQuery(this, this.root, literal, "", () => enumerateFile(this.root, literal))).then(fileSet =>
-      fileSet.getSingleFile()
-    );
+    return this.query(
+      `get ${target}`,
+      () => new TreeQuery(this, this.root, literal, "", () => enumerateFile(this.root, literal))
+    ).then(fileSet => fileSet.getSingleFile());
   }
 }
 
@@ -954,17 +983,13 @@ function enumerate(root: string, name: Name, prefix: string): Computable<{ names
    * balanced). A rename-free name gets the plain subtree glob. The two never
    * overlap (`dir` vs `dir/…`), so `??` is unambiguous. */
   const renameTo = name.getRenameTo();
-  const subtreeName = renameTo
-    ? name.appendGlobstar().withRenameTo(renameTo.appendGlobstar())
-    : name.appendGlobstar();
+  const subtreeName = renameTo ? name.appendGlobstar().withRenameTo(renameTo.appendGlobstar()) : name.appendGlobstar();
   const literal = name.makeProjector(prefix);
   const subtree = subtreeName.makeProjector(prefix);
   const project: Projector = rel => literal(rel) ?? subtree(rel);
   return stat(abs).then(
     fileStat =>
-      fileStat.isFile()
-        ? { names: [toPosix(file)], project }
-        : walk(root, abs, project).then(names => ({ names, project })),
+      fileStat.isFile() ? { names: [toPosix(file)], project } : walk(root, abs, project).then(names => ({ names, project })),
     /* Nothing there yet — an empty set a later create-event fills. */
     () => ({ names: [], project })
   );

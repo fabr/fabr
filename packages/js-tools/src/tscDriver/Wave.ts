@@ -176,7 +176,11 @@ export function runWave(plan: ICompilePlan, host: IWaveHost): IWaveResult {
  * directions count: adding a global declaration and removing one each change
  * what every other file sees.
  */
-function globalExpansion(seeds: ReadonlySet<string>, memo: DriverMemo, host: IWaveHost): { reason: string; cause?: string } | undefined {
+function globalExpansion(
+  seeds: ReadonlySet<string>,
+  memo: DriverMemo,
+  host: IWaveHost
+): { reason: string; cause?: string } | undefined {
   for (const name of seeds) {
     if (memo.get(name)?.global === true) {
       return { reason: "a file that affected global scope changed", cause: name };

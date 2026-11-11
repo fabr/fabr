@@ -154,7 +154,9 @@ function judgeRule(rule: SelectableRule, target: TargetContext, guards: IRuleGua
   return Computable.forAll(
     [
       ...guardOf(rule.properties).map(([key, pattern]) => guards.read(key, stack).then(value => judge(key, false, pattern, value))),
-      ...guardOf(rule.targetProperties).map(([key, pattern]) => target.getProperty(key).then(value => judge(key, true, pattern, value))),
+      ...guardOf(rule.targetProperties).map(([key, pattern]) =>
+        target.getProperty(key).then(value => judge(key, true, pattern, value))
+      ),
     ],
     (...judged: IJudgedKey[]) => judged
   );

@@ -102,7 +102,13 @@ const OPERATIONS = new Map([...CLASSIFIERS].map(([operation, classifier]) => [cl
 
 /** @return the classifiers `value`, a repository's `auto_attach`, lists, refusing any that is not a jar an operation answers with. */
 function autoAttachOf(repository: string, value: { toString(): string } | undefined): string[] {
-  const classifiers = value === undefined ? [] : value.toString().split(/\s+/).filter(word => word !== "");
+  const classifiers =
+    value === undefined
+      ? []
+      : value
+          .toString()
+          .split(/\s+/)
+          .filter(word => word !== "");
   const unknown = classifiers.find(classifier => !OPERATIONS.has(classifier));
   if (unknown !== undefined) {
     throw new FabrError(`${repository}'s auto_attach names '${unknown}', which is not ${[...OPERATIONS.keys()].join(" or ")}`);
@@ -125,7 +131,12 @@ function bomDependencies(pom: EffectivePom): Requirement[] {
   const managed = new Map<string, Requirement>();
   for (const dependency of pom.dependencyManagement) {
     const name = mavenName(dependency.groupId, dependency.artifactId);
-    if (dependency.version === undefined || dependency.classifier !== undefined || (dependency.type ?? "jar") !== "jar" || managed.has(name)) {
+    if (
+      dependency.version === undefined ||
+      dependency.classifier !== undefined ||
+      (dependency.type ?? "jar") !== "jar" ||
+      managed.has(name)
+    ) {
       continue;
     }
     managed.set(name, { name, versionConstraint: constraintOfVersion(dependency.version), bom: true });
@@ -208,9 +219,9 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
   public children({ name }: PartialRepositoryRef): Computable<Map<string, Reference>> {
     if (!name.includes("/")) {
       return Computable.reject(
-        new FabrError(`the repository at ${this.url} cannot list ${name === "" ? "every package it holds" : `the packages in ${name}`}`).withHelp(
-          `name a package to list its versions, as in '${this.name}:${name === "" ? "<group>" : name}:<artifact>'`
-        )
+        new FabrError(
+          `the repository at ${this.url} cannot list ${name === "" ? "every package it holds" : `the packages in ${name}`}`
+        ).withHelp(`name a package to list its versions, as in '${this.name}:${name === "" ? "<group>" : name}:<artifact>'`)
       );
     }
     return versionChildren(this, this.format, name, this.publishedVersions(name, true));
@@ -235,7 +246,11 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
       return [];
     }
     return this.autoAttach.map(classifier => ({
-      destination: new MavenPublishRef(this, { name: destination.name, version: packageCoordinateOf(destination).version, variant: classifier }, destination.repositoryName),
+      destination: new MavenPublishRef(
+        this,
+        { name: destination.name, version: packageCoordinateOf(destination).version, variant: classifier },
+        destination.repositoryName
+      ),
       operation: OPERATIONS.get(classifier)!,
     }));
   }
@@ -251,10 +266,14 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     release: readonly RepositoryPublishRef[],
     targets: ReadonlyMap<string, readonly RepositoryPublishRef[]>
   ): Computable<PublishableFileSet[]> {
-    const coMembers = new Set(members.filter(member => variantOf(member.destination) === undefined).map(member => member.destination.name));
+    const coMembers = new Set(
+      members.filter(member => variantOf(member.destination) === undefined).map(member => member.destination.name)
+    );
     return Computable.forAll(
       members.map(member =>
-        variantOf(member.destination) === undefined ? packageMavenMember(member, targets, coMembers, release) : packageClassifiedMember(member, release)
+        variantOf(member.destination) === undefined
+          ? packageMavenMember(member, targets, coMembers, release)
+          : packageClassifiedMember(member, release)
       ),
       (...carriers: PublishableFileSet[]) => carriers
     );
@@ -273,7 +292,9 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     const { groupId, artifactId } = splitMavenName(name);
     const classified = variantOf(destination) !== undefined;
     /* What marks the member published: a version's POM, or a classified jar itself. */
-    const marker = classified ? publishedFilePath(destination) : repositoryPath(groupId, artifactId, version, `${artifactId}-${version}.pom`);
+    const marker = classified
+      ? publishedFilePath(destination)
+      : repositoryPath(groupId, artifactId, version, `${artifactId}-${version}.pom`);
     return this.request(marker, { method: "GET" }).then(existing => {
       if (existing.statusCode === 200) {
         return Computable.resolve<PublishStatus>("already-synced");
@@ -287,7 +308,13 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
       const { before, last } = uploadOrder(files.keys(), marker);
       const upload = (paths: string[]): Computable<void> =>
         paths.reduce<Computable<void>>(
-          (previous, path) => previous.then(() => files.get(path)!.getBuffer().then(bytes => this.put(path, bytes))),
+          (previous, path) =>
+            previous.then(() =>
+              files
+                .get(path)!
+                .getBuffer()
+                .then(bytes => this.put(path, bytes))
+            ),
           Computable.resolve(undefined)
         );
       return upload(before)
@@ -306,7 +333,9 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
       }
       const existing = response.statusCode === 200 ? response.body.toString("utf8") : undefined;
       const merged = Buffer.from(mergedMetadata(existing, groupId, artifactId, version, new Date()));
-      return [[path, MemoryFile.from(merged.toString("utf8"))] as [string, IFile], ...checksumFiles(path, merged)].reduce<Computable<void>>(
+      return [[path, MemoryFile.from(merged.toString("utf8"))] as [string, IFile], ...checksumFiles(path, merged)].reduce<
+        Computable<void>
+      >(
         (previous, [each, file]) => previous.then(() => file.getBuffer().then(bytes => this.put(each, bytes))),
         Computable.resolve(undefined)
       );
@@ -315,11 +344,13 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
 
   /** `PUT` `bytes` at `path` in the repository. */
   private put(path: string, bytes: Buffer): Computable<void> {
-    return this.request(path, { method: "PUT", headers: { "content-type": "application/octet-stream" }, body: bytes }).then(response => {
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw this.failure("uploading", path, response);
+    return this.request(path, { method: "PUT", headers: { "content-type": "application/octet-stream" }, body: bytes }).then(
+      response => {
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          throw this.failure("uploading", path, response);
+        }
       }
-    });
+    );
   }
 
   /** Make a request to `path` in the repository, signed in. */
@@ -417,7 +448,9 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     const pick = (versions: MavenVersion[] | undefined): MavenVersion | undefined => versions && lowestSatisfying(versions, parsed);
     return this.publishedVersions(name, false).then(versions => {
       const found = pick(versions);
-      return found || versions === undefined ? Computable.resolve<MavenVersion | undefined>(found) : this.publishedVersions(name, true).then(pick);
+      return found || versions === undefined
+        ? Computable.resolve<MavenVersion | undefined>(found)
+        : this.publishedVersions(name, true).then(pick);
     });
   }
 
@@ -480,7 +513,9 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     const coordinate = this.coordinateOf(name, version.text);
     return this.effectivePomOf(name, version.text).then(pom =>
       this.publishedSha1Of(coordinate, this.artifactFileOf(coordinate, pom)).then(sha1 => ({
-        licenses: pom.licenses.flatMap(({ name: text, url }) => (text === undefined ? [] : [{ text, ...(url === undefined ? {} : { url }) }])),
+        licenses: pom.licenses.flatMap(({ name: text, url }) =>
+          text === undefined ? [] : [{ text, ...(url === undefined ? {} : { url }) }]
+        ),
         hashes: sha1 === undefined ? [] : [{ algorithm: "sha1", encoding: "hex" as const, value: sha1 }],
       }))
     );
@@ -541,7 +576,12 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
         key: `${this.identity} ${coordinateText(coordinate)} ${classifier}`,
         tag: "maven:classified:1",
         report: { resource: `${classifier} jar`, role: "content" },
-        source: () => Computable.resolve({ url, expected: { algorithm: "sha1", encoding: "hex" as const, value: sha1 }, credential: this.credential }),
+        source: () =>
+          Computable.resolve({
+            url,
+            expected: { algorithm: "sha1", encoding: "hex" as const, value: sha1 },
+            credential: this.credential,
+          }),
         keep: files => files.remap(entry => (entry === CLASSIFIED_MANIFEST ? undefined : entry)),
       });
     });
@@ -559,16 +599,21 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     const url = `${this.versionUrl(coordinate)}/${file}`;
     return this.sha1Of(url).then(sha1 => {
       if (sha1 === undefined) {
-        throw new FabrError(`${coordinateText(coordinate)} publishes no ${classifier === undefined ? "" : `${classifier} `}${extension}`).withHelp(
-          `${this.url} has no ${file}; require a version of ${name} that publishes one`
-        );
+        throw new FabrError(
+          `${coordinateText(coordinate)} publishes no ${classifier === undefined ? "" : `${classifier} `}${extension}`
+        ).withHelp(`${this.url} has no ${file}; require a version of ${name} that publishes one`);
       }
       return fetchFile(this.context, {
         key: `${this.identity} ${coordinateText(coordinate)} ${variant}`,
         tag: "maven:variant:1",
         report: { resource: file, role: "content" },
         name: file,
-        source: () => Computable.resolve({ url, expected: { algorithm: "sha1", encoding: "hex" as const, value: sha1 }, credential: this.credential }),
+        source: () =>
+          Computable.resolve({
+            url,
+            expected: { algorithm: "sha1", encoding: "hex" as const, value: sha1 },
+            credential: this.credential,
+          }),
       });
     });
   }
@@ -693,11 +738,16 @@ function createRepository(context: TargetContext, url?: string, credential?: Cre
       if (at === undefined) {
         throw new FabrError("Missing required property url");
       }
-      return new MavenRepository(context, at.replace(/\/+$/, ""), id?.toString() ?? context.name, autoAttachOf(context.name, autoAttach), credential);
+      return new MavenRepository(
+        context,
+        at.replace(/\/+$/, ""),
+        id?.toString() ?? context.name,
+        autoAttachOf(context.name, autoAttach),
+        credential
+      );
     }
   );
 }
-
 
 /** The implementation JAVA.fabr's `repository` declaration names. */
 export default { provider: createRepository } satisfies RepositoryImplementation;

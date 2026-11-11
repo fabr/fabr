@@ -137,7 +137,7 @@ describe("SourceFileSource", () => {
      * that owns the tree, which is what lets it recognize its own echo. */
     const src = (root: string): SourceFileSource => new SourceFileSource(root, cache);
     const candidate = (content: string, destination: string): IResolvedWriteBack => ({ file: MemoryFile.from(content), destination });
-  
+
     /* Nothing here asks whether the bytes differ: an unchanged record is never
      * offered in the first place (see snapshotWriteBacks), so every candidate
      * reaching a source is a real change. */
@@ -147,13 +147,13 @@ describe("SourceFileSource", () => {
       expect(await src(sourceRoot).applyWriteBack([candidate("new", dest)])).to.deep.equal([dest]);
       expect(fs.readFileSync(dest, "utf8")).to.equal("new");
     });
-  
+
     it("creates a record that did not exist, directory and all", async () => {
       const dest = path.join(sourceRoot, "src/__snapshots__/a.snap");
       await src(sourceRoot).applyWriteBack([candidate("fresh", dest)]);
       expect(fs.readFileSync(dest, "utf8")).to.equal("fresh");
     });
-  
+
     it("replaces the file rather than writing through it", async () => {
       /* A destination may be hardlinked into the content store (it was staged as
        * an input), and writing through the link would corrupt the shared blob.
@@ -167,7 +167,7 @@ describe("SourceFileSource", () => {
       expect(fs.readFileSync(dest, "utf8")).to.equal("new");
       expect(fs.readFileSync(blob, "utf8")).to.equal("old");
     });
-  
+
     it("refuses a destination outside the project", async () => {
       const project = path.join(sourceRoot, "project");
       fs.mkdirSync(project);
@@ -234,7 +234,12 @@ describe("SourceFileSource", () => {
       controller.armFlush = (): void => {
         arms += 1;
       };
-      return { src: new SourceFileSource(sourceRoot, cache, controller), get arms() { return arms; } };
+      return {
+        src: new SourceFileSource(sourceRoot, cache, controller),
+        get arms() {
+          return arms;
+        },
+      };
     };
 
     const candidate = (content: string, destination: string): IResolvedWriteBack => ({ file: MemoryFile.from(content), destination });

@@ -81,8 +81,18 @@ describe("RunnableFileSet.toCommandLine", () => {
     expect(toArgv(runnable.toCommandLine(["x"]))).to.deep.equal([`${at}/bin/node`, "--flag", "run.js", "fixed", "x"]);
     /* Mounted below the launch directory, the entry moves and the pool does not. */
     expect(toArgv(runnable.toCommandLine([], { base: "tool" }))).to.deep.equal([`${at}/bin/node`, "--flag", "tool/run.js", "fixed"]);
-    expect(toArgv(runnable.toCommandLine([], { base: "../tool", pool: `../${TREE_MOUNT}` }))).to.deep.equal([`../${at}/bin/node`, "--flag", "../tool/run.js", "fixed"]);
-    expect(toArgv(runnable.toCommandLine(), "/staged/work")).to.deep.equal([path.resolve("/staged/work", at, "bin/node"), "--flag", path.resolve("/staged/work", "run.js"), "fixed"]);
+    expect(toArgv(runnable.toCommandLine([], { base: "../tool", pool: `../${TREE_MOUNT}` }))).to.deep.equal([
+      `../${at}/bin/node`,
+      "--flag",
+      "../tool/run.js",
+      "fixed",
+    ]);
+    expect(toArgv(runnable.toCommandLine(), "/staged/work")).to.deep.equal([
+      path.resolve("/staged/work", at, "bin/node"),
+      "--flag",
+      path.resolve("/staged/work", "run.js"),
+      "fixed",
+    ]);
     expect(path.resolve("/staged/work", at)).to.equal(`/staged/.fabr-tree/${hash}`);
   });
 
@@ -171,8 +181,7 @@ describe("toRunnable", () => {
   const runnableWithBin = (): RunnableFileSet =>
     /* forEntry gives a one-bin surface: command "tool" → SymlinkFile("bin/tool"). */
     RunnableFileSet.forEntry(new Map([["bin/tool", MemoryFile.from("x")]]), "bin/tool");
-  const renameToolTo = (to: string): Name =>
-    new NameBuilder().appendLiteralString("tool").name().withRenameTo(Name.fromLiteral(to));
+  const renameToolTo = (to: string): Name => new NameBuilder().appendLiteralString("tool").name().withRenameTo(Name.fromLiteral(to));
 
   it("passes an unprojected runnable through as itself", () => {
     const runnable = runnableWithBin();
@@ -215,7 +224,6 @@ describe("toRunnable", () => {
   });
 });
 
-
 describe("RunnableFileSet.locate", () => {
   const project = (selector: Name): IProjection[] => [{ pattern: selector, prefix: "" }];
   const literal = (text: string): Name => Name.fromLiteral(text);
@@ -230,7 +238,12 @@ describe("RunnableFileSet.locate", () => {
     /* An npm-style surface (makeNpmRunnable): files by path AND a bin by command. */
     const bin = new SymlinkFile("bin/tool");
     const file = MemoryFile.from("x");
-    const surface = new FileSet(new Map<string, IFile>([["tool", bin], ["bin/tool", file]]));
+    const surface = new FileSet(
+      new Map<string, IFile>([
+        ["tool", bin],
+        ["bin/tool", file],
+      ])
+    );
     const runnable = new RunnableFileSet(new Map([["bin/tool", file]]), [], undefined, "", surface);
 
     expect([...runnable.locate(project(literal("bin/tool")))]).to.deep.equal([["bin/tool", "bin/tool"]]);
@@ -278,9 +291,7 @@ describe("RunnableFileSet.select", () => {
 
   it("agrees with locate: same matches, the other reading", () => {
     const runnable = npmStyle();
-    expect([...runnable.select(project("tool"))].map(([name]) => name)).to.deep.equal([
-      ...runnable.locate(project("tool")).values(),
-    ]);
+    expect([...runnable.select(project("tool"))].map(([name]) => name)).to.deep.equal([...runnable.locate(project("tool")).values()]);
   });
 
   it("raises a conflict when two entries land on one name", () => {
@@ -289,10 +300,16 @@ describe("RunnableFileSet.select", () => {
      * the files it actually selects: matching two is FileSet.rename's conflict,
      * never silently keeping whichever file came last. */
     const surface = new FileSet(
-      new Map<string, IFile>([["one.js", MemoryFile.from("1")], ["two.js", MemoryFile.from("2")]])
+      new Map<string, IFile>([
+        ["one.js", MemoryFile.from("1")],
+        ["two.js", MemoryFile.from("2")],
+      ])
     );
     const runnable = new RunnableFileSet(
-      new Map([["one.js", MemoryFile.from("1")], ["two.js", MemoryFile.from("2")]]),
+      new Map([
+        ["one.js", MemoryFile.from("1")],
+        ["two.js", MemoryFile.from("2")],
+      ]),
       [],
       NODE,
       "",
