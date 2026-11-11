@@ -67,6 +67,7 @@ import {
   VersionNotFoundError,
   versionToString,
   IVersionMetadata,
+  RepositoryImplementation,
 } from "@fabr-build/core";
 import {
   expectedTarballDigest,
@@ -680,4 +681,4 @@ function createRepository(context: TargetContext, url?: string, credential?: Cre
 
 
 /** The implementation JS.fabr's `repository` declaration names. */
-export default createRepository;
+export default { provider: createRepository } satisfies RepositoryImplementation;

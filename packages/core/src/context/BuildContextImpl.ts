@@ -53,6 +53,7 @@ import {
   RuleBlockDefinition,
   RuleDefinition,
   RuleResult,
+  RepositoryImplementation,
   RepositoryProvider,
   SelectableRule,
   SubTargetInputs,
@@ -119,6 +120,7 @@ import {
   SUBST_CAPTURE,
 } from "./Commands";
 import { ResolvedRequirements } from "./Collection";
+import type { Credential } from "../core/Credential";
 import { AnonymousTargetContext, DeclaredTargetContext, enclosingRules, MemberTargetContext, ScopedTargetContext, TargetContext } from "./TargetContext";
 
 /** Attach a name's remedies to its error as the `help:` line, if there are any. */
@@ -144,7 +146,24 @@ interface IBuildModel {
   getOperations(type: string): string[];
   /** Get a selected rule with its implementation, loaded where it was declared. */
   getRuleDefinition(rule: SelectableRule): Computable<RuleDefinition>;
-  getRepositoryProvider(type: string): RepositoryProvider | undefined;
+  hasRepositoryType(type: string): boolean;
+  getRepositoryImplementation(type: string): Computable<RepositoryImplementation> | undefined;
+}
+
+/** Resolve the requirements the repository type `implementation` states for the declaration `context` evaluates, as a target's are. */
+function requirementsOf(implementation: Computable<RepositoryImplementation>, context: TargetContext): Computable<ResolvedRequirements> {
+  return implementation.then(made => resolveRequirements(context, made.requirements?.(context) ?? {}));
+}
+
+/** Make what the repository type `implementation` provides for the declaration `context` evaluates, given its `requirements`. */
+function provided(
+  implementation: Computable<RepositoryImplementation>,
+  context: TargetContext,
+  requirements: Computable<ResolvedRequirements>,
+  url?: string,
+  credential?: Credential
+): ReturnType<RepositoryProvider> {
+  return implementation.then(made => requirements.then(resolved => made.provider(context, url, credential, resolved)));
 }
 
 /**
@@ -186,6 +205,8 @@ export class BuildContextImpl implements InternalBuildContext {
   /** The rule-built targets of this configuration, resolved, by name. A
    * target's entry in `targetCache` is the reference to it. */
   private readonly resolvedTargets = new Map<string, Computable<ResolvedTarget>>();
+  /** What the requirements of each repository declaration resolved, by its name, as it is resolved. */
+  private readonly resolvedRepositories = new Map<string, Computable<ResolvedRequirements>>();
 
   constructor(model: IBuildModel, constraints: Constraints, execution: ExecutionContext) {
     this.model = model;
@@ -1527,10 +1548,12 @@ export class BuildContextImpl implements InternalBuildContext {
     /* Repositories are not rule-built targets: the provider constructs the
      * instance lazily, interned per context via the target cache. No build
      * events, no build-cache entries of its own. */
-    const provider = this.model.getRepositoryProvider(target.type);
-    if (provider) {
+    const implementation = this.model.getRepositoryImplementation(target.type);
+    if (implementation) {
       const context = this.targetContextFor(target, stack);
-      return provider(context).then(
+      const requirements = requirementsOf(implementation, context);
+      this.resolvedRepositories.set(declName(target), requirements);
+      return provided(implementation, context, requirements).then(
         (provided): SourceRef[] => [sourceOf(provided, context.name)],
         err => {
           throw new DependencyFailedError(target, err);
@@ -1622,7 +1645,7 @@ export class BuildContextImpl implements InternalBuildContext {
     const unmarked = name.withoutMarker();
     const text = unmarked.toBaseString();
     const decl = text === "" ? undefined : this.lookupDecl(text);
-    return decl?.kind === DeclKind.Target && this.model.getRepositoryProvider(decl.type) === undefined ? { override, unmarked } : undefined;
+    return decl?.kind === DeclKind.Target && !this.model.hasRepositoryType(decl.type) ? { override, unmarked } : undefined;
   }
 
   public getAction(ref: INameValue, stack?: IDependencyStack): Computable<BuildAction | undefined> {
@@ -1698,12 +1721,31 @@ export class BuildContextImpl implements InternalBuildContext {
   }
 
   public resolve(ref: INameValue, stack?: IDependencyStack): Computable<ResolvedRequirements> {
+    return this.inFile(ref.source.file)
+      .lookupContextFor(ref.value, undefined, stack)
+      .then(({ context, reference }) => context.repositoryRequirements(reference.toString(), stack) ?? this.resolveDenoted(ref, stack));
+  }
+
+  /**
+   * Resolve the requirements of the repository `name` declares, as its
+   * declaration resolves them, if it declares one.
+   */
+  private repositoryRequirements(name: string, stack?: IDependencyStack): Computable<ResolvedRequirements> | undefined {
+    const decl = this.lookupDecl(name);
+    if (decl?.kind !== DeclKind.Target || !this.model.hasRepositoryType(decl.type)) {
+      return undefined;
+    }
+    return this.resolveTarget(name, stack).then(() => this.resolvedRepositories.get(declName(decl))!);
+  }
+
+  /** Resolve what `ref` denotes, as one unnamed requirement. */
+  private resolveDenoted(ref: INameValue, stack?: IDependencyStack): Computable<ResolvedRequirements> {
     return this.lookupFileValue(ref.value, stack, { relativeTo: ref }).then(sources =>
       /* The lot is one requirement, unnamed, resolved as one collection: a
        * target among it as its node, with each entry the reference it was
        * resolved for. */
-      resolveLists(this.resolutionContext(), [sources]).then(({ lists: [resolved], references: [written], conflicts }) =>
-        ResolvedRequirements.of(resolved, written, conflicts)
+      resolveLists(this.resolutionContext(), [sources]).then(({ lists: [resolved], references: [written], conflicts, collection }) =>
+        ResolvedRequirements.of(resolved, written, conflicts, collection)
       )
     );
   }
@@ -1769,18 +1811,18 @@ export class BuildContextImpl implements InternalBuildContext {
   }
 
   public hasRepositoryType(type: string): boolean {
-    return this.model.getRepositoryProvider(type) !== undefined && this.model.getTargetDef(type) !== undefined;
+    return this.model.hasRepositoryType(type) && this.model.getTargetDef(type) !== undefined;
   }
 
   public makeRepository(owner: TargetContext, type: string, { name, properties = {}, url, credential }: IRepositoryMember): Computable<Repository> {
-    const provider = this.model.getRepositoryProvider(type);
+    const implementation = this.model.getRepositoryImplementation(type);
     const targetDef = this.model.getTargetDef(type);
     const written = `${owner.name}:${name}`;
-    if (provider === undefined || targetDef === undefined) {
+    if (implementation === undefined || targetDef === undefined) {
       return Computable.reject(new FabrError(`'${written}' is a ${type}, which no plugin in use defines`));
     }
     const context = new MemberTargetContext(this, targetDef, properties, owner.getDeclaredContext(), name, owner.stack, owner);
-    return provider(context, url, credential).then(made => {
+    return provided(implementation, context, requirementsOf(implementation, context), url, credential).then(made => {
       if (!isRepository(made)) {
         throw new FabrError(`internal: '${written}' is a ${type}, which makes no repository`);
       }

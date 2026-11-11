@@ -30,6 +30,7 @@ import {
   Namespace,
   sendRequest,
   TargetContext,
+  RepositoryImplementation,
 } from "@fabr-build/core";
 import { CODEARTIFACT_SERVICE, CodeArtifactToken, endpointUrl, formatCredential } from "./CodeArtifact";
 import { ECR_SERVICE, EcrSignIn, registryUrl } from "./Ecr";
@@ -366,7 +367,7 @@ function endpointOf(text: string, account: string): URL {
 
 
 /** The implementation AWS.fabr's `repository` declaration names. */
-export default createAccount;
+export default { provider: createAccount } satisfies RepositoryImplementation;
 
 /** A namespace whose members `member` gets. */
 class MemberNamespace extends Namespace {

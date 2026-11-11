@@ -1165,7 +1165,13 @@ function resolveBuilt(
   files?: ReadonlySet<RepositoryRef>,
   instances?: ReadonlySet<RepositoryRef | Package>,
   markers?: Markers
-): Computable<{ resolved: Resolved[]; counts: number[]; conflicts: Conflicts; conflictsAmong: ResolvedLists["conflictsAmong"] }> {
+): Computable<{
+  resolved: Resolved[];
+  counts: number[];
+  conflicts: Conflicts;
+  conflictsAmong: ResolvedLists["conflictsAmong"];
+  collection: ResolvedCollection;
+}> {
   const sources = lists.flat();
   const given = context.given;
   const taken =
@@ -1187,6 +1193,7 @@ function resolveBuilt(
         counts,
         conflicts,
         conflictsAmong: (shipped: ReadonlyArray<Resolved>) => conflictsOf(context, collection, finished, shipped),
+        collection,
       }));
     });
   });
@@ -1507,6 +1514,23 @@ export function resolveLists(
   /** The lists read for {@link ListFiles files} alone. */
   reads?: ReadonlyArray<ListFiles | undefined>
 ): Computable<ResolvedLists> {
+  return resolveListsFor(context, [context.operation], lists, extracted, instantiated, reads).then(([resolved]) => resolved);
+}
+
+/**
+ * Resolve the same source lists as {@link resolveLists} does, once for each
+ * of `operations`, a collection per operation, aligned with them. Where two
+ * operations resolve the lists alike ({@link resolvedAlike}), they share one
+ * collection.
+ */
+export function resolveListsFor(
+  context: ResolutionContext,
+  operations: ReadonlyArray<string>,
+  lists: SourceRef[][],
+  extracted?: ReadonlyArray<boolean>,
+  instantiated?: ReadonlyArray<boolean>,
+  reads?: ReadonlyArray<ListFiles | undefined>
+): Computable<ResolvedLists[]> {
   /* A target is wired in as a node, with what it passes on. One whose files
    * alone a list takes stays a reference: it joins no resolution, and is
    * built when the list is given its content. Each entry opened from a
@@ -1531,22 +1555,61 @@ export function resolveLists(
     ),
     (...opened: Opened[][]) => opened
   ).then(opened => {
-    /* The nodes as this collection's side reads them, each still resolved for its reference. */
-    const sided = sidedNodes(
-      opened.flat().map(({ source }) => source),
-      context.operation,
-      markers
-    );
-    let at = 0;
-    return resolveBuiltLists(
-      context,
-      opened.map(list => list.map(({ reference }) => ({ source: sided[at++], reference }))),
-      extracted,
-      instantiated,
-      reads,
-      markers
+    const flat = opened.flat().map(({ source }) => source);
+    /* The nodes as each operation's side reads them, each still resolved for its reference. */
+    const sides = operations.map(operation => sidedNodes(flat, operation, markers));
+    const resolve = (at: number): Computable<ResolvedLists> => {
+      let index = 0;
+      const sided = sides[at];
+      return resolveBuiltLists(
+        withOperation(context, operations[at]),
+        opened.map(list => list.map(({ reference }) => ({ source: sided[index++], reference }))),
+        extracted,
+        instantiated,
+        reads,
+        markers
+      );
+    };
+    const [first] = operations;
+    const held = resolve(0);
+    return Computable.forAll(
+      operations.map((operation, at) =>
+        at === 0
+          ? held
+          : sides[at] !== flat || sides[0] !== flat
+          ? resolve(at)
+          : resolvedAlike(flat, first, operation).then(alike => (alike ? held : resolve(at)))
+      ),
+      (...resolved: ResolvedLists[]) => resolved
     );
   });
+}
+
+/**
+ * Find whether a collection of `sources`, which neither operation's side
+ * changes ({@link sidedNodes}), resolves alike for operations `a` and `b`:
+ * @return true if every registry its requests are addressed to has one
+ * environment for both ({@link RepositoryReader.environmentKey}, which keys
+ * a resolution) and it asks no catalog for a member, otherwise false.
+ */
+function resolvedAlike(sources: Array<SourceRef | Unbuilt>, a: string, b: string): Computable<boolean> {
+  const requests = gatherRequirements(sources).requests.filter(request => !resolvedApart(request));
+  if (requests.some(({ reference }) => isRepositoryCollection(reference.source))) {
+    return Computable.resolve(false);
+  }
+  const registries = [
+    ...new Set(
+      requests
+        .map(({ reference }) => reference.source)
+        .filter((source): source is RepositoryReader<unknown, unknown> => isRepositoryReader(source) && !isFilesOperation(source.operation))
+    ),
+  ];
+  return Computable.forAll(
+    registries.map(registry =>
+      Computable.forAll([registry.environmentKey(a), registry.environmentKey(b)], (left: string, right: string) => left === right)
+    ),
+    (...agree: boolean[]) => agree.every(each => each)
+  );
 }
 
 /** One source of a list as opened for resolution, and the written reference
@@ -1569,6 +1632,8 @@ export interface ResolvedLists {
   /** Find what conflicts among `shipped`, some of what the collection
    * resolved, used together without the rest. */
   conflictsAmong(shipped: ReadonlyArray<Resolved>): Computable<Conflicts>;
+  /** The collection the lists were resolved as. */
+  readonly collection: ResolvedCollection;
 }
 
 /**
@@ -1605,7 +1670,7 @@ function resolveBuiltLists(
     ...(instantiated === undefined ? [] : instanceRequests(lists.filter((_, index) => instantiated[index]).flat())),
     ...forFiles.filter(isPackage).filter(pkg => !packaged.has(pkg)),
   ]);
-  return resolveBuilt(context, lists, files, instances, markers).then(({ resolved, counts, conflicts, conflictsAmong }) => {
+  return resolveBuilt(context, lists, files, instances, markers).then(({ resolved, counts, conflicts, conflictsAmong, collection }) => {
     /* A source resolves to one entry, or to none: a `?` alternate. */
     const partitioned: Resolved[][] = [];
     const references: Array<Array<Reference | undefined>> = [];
@@ -1618,7 +1683,7 @@ function resolveBuiltLists(
       source += list.length;
       index += length;
     }
-    return { lists: partitioned, references, conflicts, conflictsAmong };
+    return { lists: partitioned, references, conflicts, conflictsAmong, collection };
   });
 }
 

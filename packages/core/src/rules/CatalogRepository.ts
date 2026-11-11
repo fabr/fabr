@@ -19,25 +19,25 @@
 
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
-import { contentOf, isPackage, Package, ResolvedNode, UsedFor } from "../core/PackageFileSet";
-import { TargetRef, Unbuilt } from "../core/TargetRef";
-import { RepositoryCollection, ProjectedPackage, isRepositoryReader, Repository, RepositoryPublishRef, RepositoryRef, SourceRef } from "../core/Repository";
-import { ResolvedCollection, ResolvedMember, Resolution } from "../resolver/Types";
+import { contentOf, isPackage, Package, UsedFor } from "../core/PackageFileSet";
+import { TargetRef } from "../core/TargetRef";
+import { RepositoryCollection, isRepositoryReader, Repository, RepositoryPublishRef, RepositoryRef, SourceRef } from "../core/Repository";
+import { ResolvedCollection, ResolvedMember } from "../resolver/Types";
 import { FileSetRef } from "../core/FileSetRef";
 import { Requirement } from "../resolver/Types";
-import { chainSteps, describeProvenance } from "../core/Provenance";
-import { ConflictError, FabrError, IConflictSource, RequirementResolutionError } from "../core/Errors";
+import { describeProvenance } from "../core/Provenance";
+import { FabrError, RequirementResolutionError } from "../core/Errors";
+import type { Credential } from "../core/Credential";
+import { isIncompleteRef } from "../core/NamespaceRef";
 import { Name } from "../core/Name";
 import { compareText } from "../support/Functional";
 import type { Reference } from "../core/Reference";
 import type { PartialRepositoryRef } from "../core/PartialRepositoryRef";
-/* A catalog is a collection point of its own, the one outside context/, so it
- * takes these from the module rather than the package's API. */
-import { consumeMarker, Markers, resolveCollection, sidedNodes, usedForOf, withOperation } from "../context/CollectionPoint";
-import { TargetContext } from "../context/index";
+import { usedForOf } from "../context/CollectionPoint";
+import { ResolutionSpec, ResolvedRequirements, TargetContext } from "../context/index";
 import { BUILD_OVERRIDE } from "../model/Constraints";
 import { declaredRequirement, knownAs } from "../resolver/PackageResolver";
-import { RepositoryRegistration } from "./Types";
+import { RepositoryImplementation, RepositoryRegistration } from "./Types";
 
 /**
  * A catalog entry: the reference written in `deps`, or the package node of a
@@ -68,12 +68,12 @@ interface ResolvedCatalog {
  * consumer gets the same versions.
  *
  * Mechanically it is a {@link Repository} whose read face answers from a
- * **table** rather than a registry. The joint resolution is the catalog's own
- * collection point (resolveCatalog, under `build`), made once for each of a
- * consumer's collections that asks (`build` and `run`, as a rule's two
- * collections are resolved apart), and every consuming reference rides the
- * normal RepositoryRef path, grouped by this instance at the consumer's
- * collection point and answered from the table.
+ * **table** rather than a registry. Its `deps` are its requirements, resolved
+ * as a target's are, under `build`, once for each of a consumer's collections
+ * (`build` and `run`, as a rule's two collections are resolved apart; one
+ * collection where the two resolve alike), and every consuming reference
+ * rides the normal RepositoryRef path, grouped by this instance at the
+ * consumer's collection point and answered from the table.
  */
 export class CatalogRepository implements Repository, RepositoryCollection {
   constructor(
@@ -81,24 +81,13 @@ export class CatalogRepository implements Repository, RepositoryCollection {
     /* The operation of the configuration this instance was made in (interned
      * per BuildContext like any repository). */
     private readonly operation: string,
-    /* Resolve the entries for one of a consumer's collections, each target
-     * among them held as its node, unbuilt: declaring or consulting a catalog
-     * fetches no member and builds nothing. */
-    private readonly resolve: (side: UsedFor) => Computable<ResolvedCatalog>
+    /* The entries as each of a consumer's collections resolved them. */
+    private readonly sides: ReadonlyMap<UsedFor, ResolvedCatalog>
   ) {}
 
-  /** The entries as each collection resolved them, once and shared. */
-  private readonly sides = new Map<UsedFor, Computable<ResolvedCatalog>>();
-
-  /** Get the entries as the collection `side` resolves them: resolved on first demand, once. */
+  /** Get the entries as the collection `side` resolved them. */
   private resolved(side: UsedFor = "build"): Computable<ResolvedCatalog> {
-    const held = this.sides.get(side);
-    if (held !== undefined) {
-      return held;
-    }
-    const made = this.resolve(side);
-    this.sides.set(side, made);
-    return made;
+    return Computable.resolve(this.sides.get(side)!);
   }
 
   /**
@@ -207,152 +196,121 @@ export class CatalogRepository implements Repository, RepositoryCollection {
   }
 }
 
-/** Attribute one catalog entry by provenance + concrete detail (for a
- * same-name conflict): a reference by what was written, a locally built
- * package by itself. */
-function conflictSide(entry: CatalogEntry): IConflictSource {
-  return isPackage(entry)
-    ? { provenance: entry.origin, detail: entry.version }
-    : { provenance: chainSteps(entry.steps, undefined), detail: entry.name };
-}
+/** The requirement each of a consumer's collections is answered from. */
+const SIDE_REQUIREMENTS = new Map<UsedFor, string>([
+  ["build", "deps"],
+  ["run", "run_deps"],
+]);
 
-/** Prepare the catalog's entries as sources to resolve: a target among
- * them as its node, resolved and not built, with its marker recorded in
- * `markers`. */
-function entryNodes(sources: SourceRef[], markers: Markers): Computable<Array<SourceRef | Unbuilt>> {
-  return Computable.forAll(
-    sources.map(source =>
-      source instanceof TargetRef
-        ? source.nodes().then(nodes => consumeMarker(source, nodes, markers))
-        : Computable.resolve<Array<SourceRef | Unbuilt>>([source])
-    ),
-    (...entries: Array<SourceRef | Unbuilt>[]) => entries.flat()
-  );
+/**
+ * State the catalog's requirements: its `deps`, read under `build` whatever
+ * the catalog is consumed under, for each of a consumer's collections, each
+ * entry checked as written first.
+ */
+function catalogRequirements(context: TargetContext): ResolutionSpec {
+  const deps = context.getPackageProperty("deps", BUILD_OVERRIDE).then(read => {
+    checkEntries(context, read.sources);
+    return read;
+  });
+  return { build: { [SIDE_REQUIREMENTS.get("build")!]: deps }, run: { [SIDE_REQUIREMENTS.get("run")!]: deps } };
 }
 
 /**
- * Resolve the catalog's `deps` jointly under `build`, whatever the catalog is
- * consumed under, for the consumer's collection `side`, and key each entry by
- * the name it is addressed by: its package name, or the alias a written rename
- * gives it. No member is fetched and nothing is built: an entry that is a
- * target is its node, unbuilt, with what its rule states it passes on. Of
- * entries claiming one name, a forced one (`!`) is the member; otherwise they
- * are a conflict.
+ * Refuse an entry the catalog cannot pin, as written: one projecting into a
+ * package, one naming no package, and a reference to a repository that does
+ * not resolve versions, or to another catalog's member.
  */
-function resolveCatalog(context: TargetContext, side: UsedFor): Computable<ResolvedCatalog> {
-  const markers: Markers = new Map();
-  return context
-    .getFileProperty("deps", BUILD_OVERRIDE)
-    .then(sources => entryNodes(sources, markers))
-    .then(sources => sidedNodes(sources, side, markers))
-    .then(sources => {
-      const references = sources.filter((source): source is RepositoryRef => source instanceof RepositoryRef);
-      /* A catalog pins whole packages: an entry projecting *into* one would
-       * resolve to plain files, not a PackageFileSet — reject it outright (its
-       * projected content is never computed just to fail), whether it is an
-       * external requirement (`@npm:pkg:1.0.0:lib/*`, a projected reference) or
-       * a built target (`mylib:build/*`, a projection-pending local entry). */
-      const projectsInto = (what: string): Error =>
-        new FabrError(`Catalog entry ${what} projects into a package`).withHelp(
-          "a catalog pins whole packages — project at the point of use instead (`@catalog:pkg:path`)"
-        );
-      const projected = references.find(reference => reference.projections.length > 0);
-      if (projected) {
-        throw projectsInto(`'${projected.toString()}'`);
-      }
-      const pendingLocal = sources.find(
-        (source): source is FileSetRef | ProjectedPackage => source instanceof FileSetRef || source instanceof ProjectedPackage
-      );
-      if (pendingLocal) {
-        const base = pendingLocal instanceof ProjectedPackage ? pendingLocal.base : pendingLocal.source;
-        throw projectsInto(isPackage(base) ? `'${base.packageName}'` : "of a local target");
-      }
-      /* Anything neither a requirement nor content pins nothing — a bare
-       * repository name (`deps = @npm;`) or a fetch table. Silence here would
-       * leave the catalog quietly empty of the entry. */
-      const inert = sources.find(source => !(source instanceof RepositoryRef) && !(source instanceof FileSet) && !isPackage(source));
-      if (inert) {
-        throw new FabrError(`Catalog ${context.name} has an entry that names no packages`).withHelp(
-          "each entry must name specific packages — an external requirement (`@npm:pkg:1.2.3`) or a built package target; a bare repository reference pins nothing"
-        );
-      }
-      /* A catalog pins package VERSIONS, so its entries must come from a
-       * repository that resolves them. A member of another catalog is rejected:
-       * each catalog is its own joint resolution. */
-      const unresolvable = references.find(reference => !isRepositoryReader(reference.source));
-      if (unresolvable) {
-        const entry = unresolvable.toString();
-        throw new RequirementResolutionError(
-          references.filter(reference => reference.source === unresolvable.source),
-          unresolvable.source instanceof CatalogRepository
-            ? new FabrError(`Catalog entry '${entry}' is a member of another catalog`).withHelp(
-                "a catalog cannot pin another catalog's members — pin the package directly here, or reference the other catalog's member at the point of use"
-              )
-            : new FabrError(`Catalog entry '${entry}' comes from a repository that does not resolve package versions`).withHelp(
-                "a catalog pins versions of registry packages; reference the repository's content directly instead"
-              )
-        );
-      }
-      const local = sources
-        .filter((source): source is FileSet | ResolvedNode => source instanceof FileSet || source instanceof ResolvedNode)
-        .map((content): Package => {
-          if (!isPackage(content)) {
-            const from = describeProvenance(content.origin);
-            throw new FabrError(`Catalog ${context.name} has an entry with no name to address it by${from ? ` (${from})` : ""}`).withHelp(
-              "a catalog entry is a package requirement (`@npm:pkg:1.2.3`) or a target, addressed by its name"
-            );
-          }
-          return content;
-        });
-      const collection = resolveCollection(withOperation(context, side), [...references, ...local], undefined, undefined, markers);
-      const written = new Set(references);
-      /* A catalog is one collection point: every resolution is made before its
-       * entries are keyed. */
-      const builds = collection.builds === undefined ? [] : [collection.builds.resolution];
-      return Computable.forAll(
-        [...new Set([...collection.resolutions.values(), ...builds])].map(resolution => resolution()),
-        (...resolutions: Resolution[]) => {
-          /* Key the entries by the name each is delivered as: the references
-           * the catalog wrote, found among a resolution's roots, and its
-           * targets. The other roots are references its targets carry, and
-           * name no member. Of entries under one name, a forced one (`!`)
-           * wins, as in the resolution. An alternate (`?`) is no root, hence no
-           * entry, and one build written twice is one entry. */
-          const candidates = new Map<string, CatalogEntry[]>();
-          const add = (name: string, entry: CatalogEntry): void => {
-            const held = candidates.get(name) ?? [];
-            if (!held.some(other => other === entry || (isPackage(other) && isPackage(entry) && contentOf(other).key === contentOf(entry).key))) {
-              candidates.set(name, [...held, entry]);
-            }
-          };
-          for (const resolution of resolutions) {
-            for (const root of resolution.roots) {
-              if (written.has(root.reference)) {
-                add(root.name, root.reference);
-              }
-            }
-          }
-          local.forEach(pkg => add(pkg.packageName, pkg));
-          const forced = (entry: CatalogEntry): boolean => (isPackage(entry) ? markers.get(entry) === "force" : entry.override === "force");
-          const entries = new Map<string, CatalogEntry>();
-          for (const [name, held] of candidates) {
-            const [first, second] = held.some(forced) ? held.filter(forced) : held;
-            if (second !== undefined) {
-              throw new ConflictError("catalog entries", name, conflictSide(first), conflictSide(second));
-            }
-            entries.set(name, first);
-          }
-          return { entries, collection };
-        }
-      );
-    });
+function checkEntries(context: TargetContext, sources: ReadonlyArray<SourceRef>): void {
+  /* A catalog pins whole packages: an entry projecting *into* one would
+   * resolve to plain files, not a package — reject it outright, whether it is
+   * an external requirement (`@npm:pkg:1.0.0:lib/*`, a projected reference)
+   * or a built target (`mylib:build/*`). */
+  const projectsInto = (what: string): Error =>
+    new FabrError(`Catalog entry ${what} projects into a package`).withHelp(
+      "a catalog pins whole packages — project at the point of use instead (`@catalog:pkg:path`)"
+    );
+  const projected = sources.find(
+    (source): source is RepositoryRef | TargetRef => (source instanceof RepositoryRef || source instanceof TargetRef) && source.projections.length > 0
+  );
+  if (projected) {
+    throw projectsInto(`'${projected.toString()}'`);
+  }
+  const pendingLocal = sources.find((source): source is FileSetRef => source instanceof FileSetRef);
+  if (pendingLocal) {
+    throw projectsInto(isPackage(pendingLocal.source) ? `'${pendingLocal.source.packageName}'` : "of a local target");
+  }
+  /* A catalog pins package VERSIONS, so its entries must come from a
+   * repository that resolves them. A member of another catalog is rejected:
+   * each catalog is its own joint resolution. */
+  const references = sources.filter((source): source is RepositoryRef => source instanceof RepositoryRef);
+  const unresolvable = references.find(reference => !isRepositoryReader(reference.source));
+  if (unresolvable) {
+    const entry = unresolvable.toString();
+    throw new RequirementResolutionError(
+      references.filter(reference => reference.source === unresolvable.source),
+      unresolvable.source instanceof CatalogRepository
+        ? new FabrError(`Catalog entry '${entry}' is a member of another catalog`).withHelp(
+            "a catalog cannot pin another catalog's members — pin the package directly here, or reference the other catalog's member at the point of use"
+          )
+        : new FabrError(`Catalog entry '${entry}' comes from a repository that does not resolve package versions`).withHelp(
+            "a catalog pins versions of registry packages; reference the repository's content directly instead"
+          )
+    );
+  }
+  /* Anything neither a requirement nor a target nor a package pins nothing:
+   * a fetch table, say. Silence here would leave the catalog quietly empty of
+   * the entry. */
+  const inert = sources.find(
+    source => !(source instanceof RepositoryRef) && !(source instanceof TargetRef) && !isIncompleteRef(source) && !isPackage(source)
+  );
+  if (inert) {
+    throw new FabrError(`Catalog ${context.name} has an entry that names no packages`).withHelp(
+      "each entry must name specific packages — an external requirement (`@npm:pkg:1.2.3`) or a built package target; a bare repository reference pins nothing"
+    );
+  }
 }
 
-function createCatalog(context: TargetContext): Computable<Repository> {
-  return Computable.resolve(new CatalogRepository(context.name, context.operation, side => resolveCatalog(context, side)));
+/**
+ * Key the entries of the catalog's requirement `requirement`, resolved, by the
+ * name each is delivered as: its package name, or the alias a written rename
+ * gives it. An entry is the reference written, or for a package of the
+ * project the package as the collection holds it, unbuilt. An alternate (`?`)
+ * is no entry, and one build written twice is one entry.
+ */
+function catalogOf(catalogName: string, requirements: ResolvedRequirements, requirement: string): ResolvedCatalog {
+  const collection = requirements.collectionOf(requirement);
+  const references = requirements.references.get(requirement) ?? [];
+  const entries = new Map<string, CatalogEntry>();
+  (requirements.sources.get(requirement) ?? []).forEach((source, at) => {
+    const reference = references[at];
+    if (!isPackage(source)) {
+      const from = source instanceof FileSet ? describeProvenance(source.origin) : undefined;
+      throw new FabrError(`Catalog ${catalogName} has an entry with no name to address it by${from ? ` (${from})` : ""}`).withHelp(
+        "a catalog entry is a package requirement (`@npm:pkg:1.2.3`) or a target, addressed by its name"
+      );
+    }
+    entries.set(source.packageName, reference instanceof RepositoryRef ? reference : collection.locals.get(contentOf(source).key) ?? source);
+  });
+  return { entries, collection };
 }
 
-export const catalogRepositoryRegistration: RepositoryRegistration = { type: "catalog", provider: createCatalog };
+function createCatalog(
+  context: TargetContext,
+  _url: string | undefined,
+  _credential: Credential | undefined,
+  requirements: ResolvedRequirements
+): Computable<Repository> {
+  return Computable.resolve(undefined).then(
+    () =>
+      new CatalogRepository(
+        context.name,
+        context.operation,
+        new Map([...SIDE_REQUIREMENTS].map(([side, requirement]) => [side, catalogOf(context.name, requirements, requirement)]))
+      )
+  );
+}
+
+export const catalogRepositoryRegistration: RepositoryRegistration = { type: "catalog", requirements: catalogRequirements, provider: createCatalog };
 
 /** The implementation STD.fabr's `repository` declaration names. */
-export default createCatalog;
+export default { requirements: catalogRequirements, provider: createCatalog } satisfies RepositoryImplementation;

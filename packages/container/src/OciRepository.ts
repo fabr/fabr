@@ -43,6 +43,7 @@ import {
   ResolvedNode,
   RunnableFileSet,
   TargetContext,
+  RepositoryImplementation,
 } from "@fabr-build/core";
 import { ImageFileSet, ILayerRecord } from "./ImageFileSet";
 import { imageRunnable } from "./ImageRunnable";
@@ -317,4 +318,4 @@ function createRepository(context: TargetContext, url?: string, credential?: Cre
 
 
 /** The implementation CONTAINER.fabr's `repository` declaration names. */
-export default createRepository;
+export default { provider: createRepository } satisfies RepositoryImplementation;

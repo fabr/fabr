@@ -26,6 +26,10 @@ import { FileSet, FileSource, IFile } from "../core/FileSet";
 import { Name, NameBuilder } from "../core/Name";
 import { TargetContext } from "../context/index";
 import { FETCH_PROVENANCE, fetchSourceRegistration } from "./FetchSource";
+import { ResolvedRequirements } from "../context/Collection";
+
+/** The requirements of a repository whose type states none. */
+const NO_REQUIREMENTS = new ResolvedRequirements(new Map(), [], false);
 
 const BODY = "tarball bytes";
 const sri = (content = BODY): string => `sha256-${crypto.createHash("sha256").update(content).digest("base64")}`;
@@ -101,7 +105,7 @@ function newLog(): FetchLog {
 }
 
 function sourceFor(members: Record<string, string>, log: FetchLog, body?: string | Readable): Computable<FileSource> {
-  return fetchSourceRegistration.provider(fakeContext(members, log, body)) as Computable<FileSource>;
+  return fetchSourceRegistration.provider(fakeContext(members, log, body), undefined, undefined, NO_REQUIREMENTS) as Computable<FileSource>;
 }
 
 describe("fetch source", () => {
@@ -250,7 +254,7 @@ describe("fetch source", () => {
      * bytes with nothing streaming past, so the declaration is re-judged
      * against the store. */
     const hitSource = (members: Record<string, string>, log: FetchLog, cachedBytes: string): Computable<FileSource> =>
-      fetchSourceRegistration.provider(cachedContext(members, log, cachedBytes)) as Computable<FileSource>;
+      fetchSourceRegistration.provider(cachedContext(members, log, cachedBytes), undefined, undefined, NO_REQUIREMENTS) as Computable<FileSource>;
 
     it("serves a hit whose stored content matches the declared digest", async () => {
       const log = newLog();

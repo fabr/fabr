@@ -89,6 +89,9 @@ import chaiAsPromised from "chai-as-promised";
 import { BuildCache } from "../core/BuildCache";
 import { catalogRepositoryRegistration } from "../rules/CatalogRepository";
 
+/** The requirements of a repository whose type states none. */
+const NO_REQUIREMENTS = new ResolvedRequirements(new Map(), [], false);
+
 chai.use(chaiAsPromised);
 
 /* The model never writes to it, but ExecutionContext requires a log; these
@@ -641,7 +644,7 @@ class TestRegistry implements Repository, RepositoryReader<SemverVersion, Semver
  * cache, and each test's model is a fresh registry. */
 let registries = 0;
 /* Core's catalog, under a type of its own here. */
-registerRepositoryProvider("test_catalog", context => catalogRepositoryRegistration.provider(context));
+testRepos.push({ ...catalogRepositoryRegistration, type: "test_catalog" });
 registerRepositoryProvider("test_registry", context => Computable.resolve(new TestRegistry(`${context.name}#${++registries}`, context.operation, context.name)));
 
 /* A registry whose references must state a version, as npm's must: a name with
@@ -4960,7 +4963,7 @@ describe("declared rules and repositories", () => {
   it("makes a declared repository type's instances with its implementation", async () => {
     const loaded: string[] = [];
     const provider: RepositoryProvider = () => Computable.resolve(new FileSet(new Map([["out.txt", MemoryFile.from("repo")]])));
-    const model = declaredModel("targetdef dr { }\nrepository dr = @p/q:Repo;\ndr @r { }\n", new Map([["@p/q:Repo", provider]]), loaded);
+    const model = declaredModel("targetdef dr { }\nrepository dr = @p/q:Repo;\ndr @r { }\n", new Map([["@p/q:Repo", { provider }]]), loaded);
     expect(model.getTargets().map(target => target.name)).to.not.include("@r");
     expect(await built(model, "@r")).to.equal("repo");
     expect(loaded).to.deep.equal(["@p/q:Repo"]);
@@ -4972,8 +4975,8 @@ describe("declared rules and repositories", () => {
       given.push(url, credential);
       return Computable.resolve(new FileSet(new Map()));
     };
-    const model = declaredModel("targetdef dr { }\nrepository dr = @p/q:Repo;\n", new Map([["@p/q:Repo", provider]]), []);
-    await model.getRepositoryProvider("dr")!({} as TargetContext, "https://made.example", MEMBER_CREDENTIAL);
+    const model = declaredModel("targetdef dr { }\nrepository dr = @p/q:Repo;\n", new Map([["@p/q:Repo", { provider }]]), []);
+    await model.getRepositoryImplementation("dr")!.then(made => made.provider({} as TargetContext, "https://made.example", MEMBER_CREDENTIAL, NO_REQUIREMENTS));
     expect(given).to.deep.equal(["https://made.example", MEMBER_CREDENTIAL]);
   });
 });

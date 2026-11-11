@@ -271,20 +271,7 @@ export interface RequiredSource {
 export function requiredSources(target: ResolvedTarget): { parts: ResolvedTarget[]; required: RequiredSource[] } {
   const parts: ResolvedTarget[] = [];
   const required: RequiredSource[] = [];
-  const seen = new Set<unknown>();
-  const first = (source: Resolved): boolean => {
-    const identity =
-      source instanceof TargetRef
-        ? [source.toString(), ...source.projections.map(({ pattern, prefix }) => `${prefix} ${pattern.toString()}`)].join(":")
-        : source instanceof ResolvedNode
-        ? source.content.key
-        : source;
-    if (seen.has(identity)) {
-      return false;
-    }
-    seen.add(identity);
-    return true;
-  };
+  const first = firstOfEach();
   const walk = (part: ResolvedTarget): void => {
     parts.push(part);
     for (const [requirement, sources] of part.resolved.sources) {
@@ -306,6 +293,42 @@ export function requiredSources(target: ResolvedTarget): { parts: ResolvedTarget
   return { parts, required };
 }
 
+/**
+ * List the sources among `resolved`, the requirements of a declaration that
+ * is no target (a catalog's), each once, as {@link requiredSources} lists a
+ * target's.
+ */
+export function declaredSources(resolved: ResolvedRequirements): Array<Omit<RequiredSource, "part">> {
+  const first = firstOfEach();
+  return [...resolved.sources].flatMap(([requirement, sources]) => {
+    const references = resolved.references.get(requirement) ?? [];
+    return sources.flatMap((source, at) => (first(source) ? [{ requirement, source, reference: references[at] }] : []));
+  });
+}
+
+/** @return true if `resolved` is what a name denotes ({@link ResolvedRequirements.of}), otherwise false: it is a declaration's requirements. */
+export function isDenoted(resolved: ResolvedRequirements): boolean {
+  return resolved.sources.has("");
+}
+
+/** Make a test of whether a source is the first of its kind seen: the copies of one node by their content key, a reference to a target by what it names. */
+function firstOfEach(): (source: Resolved) => boolean {
+  const seen = new Set<unknown>();
+  return source => {
+    const identity =
+      source instanceof TargetRef
+        ? [source.toString(), ...source.projections.map(({ pattern, prefix }) => `${prefix} ${pattern.toString()}`)].join(":")
+        : source instanceof ResolvedNode
+        ? source.content.key
+        : source;
+    if (seen.has(identity)) {
+      return false;
+    }
+    seen.add(identity);
+    return true;
+  };
+}
+
 /** List the edges to the packages among `sources`, each with the reference it
  * was resolved for (aligned with `sources`). */
 export function edgesOf(sources: ReadonlyArray<Resolved>, references: ReadonlyArray<Reference | undefined>): Dependency[] {
@@ -317,10 +340,19 @@ export function edgesOf(sources: ReadonlyArray<Resolved>, references: ReadonlyAr
 
 /**
  * List the edges a name's dependencies start from: for one target, the
- * packages among what it requires ({@link requiredSources}); for anything
- * else, the packages among what the name denotes.
+ * packages among what it requires ({@link requiredSources}); for a
+ * declaration's requirements, the packages among them ({@link
+ * declaredSources}); for anything else, the packages among what the name
+ * denotes.
  */
 export function rootEdges(resolved: ResolvedRequirements): Dependency[] {
+  if (!isDenoted(resolved)) {
+    const required = declaredSources(resolved);
+    return edgesOf(
+      required.map(each => each.source),
+      required.map(each => each.reference)
+    );
+  }
   const [only] = resolved.denoted;
   if (resolved.denoted.length === 1 && only instanceof ResolvedTarget) {
     return requiredEdges(only);

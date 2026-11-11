@@ -29,7 +29,8 @@ const PROJECT =
   STUB_TSC_CONFIG +
   "\njs_package sbom_base { srcs = base:**; }\n" +
   "js_package sbom_lib { srcs = lib:**; deps = sbom_base; }\n" +
-  "js_package sbom_app { srcs = app:**; deps = sbom_lib sbom_base; version = 1.2.3; }\n";
+  "js_package sbom_app { srcs = app:**; deps = sbom_lib sbom_base; version = 1.2.3; }\n" +
+  "catalog @sbom_cat { deps = sbom_lib; }\n";
 const FILES = {
   ...STUB_TSC,
   "base/index.ts": 'exports.base = "sbom e2e base";\n',
@@ -71,6 +72,18 @@ describe("e2e: fabr sbom", () => {
     const bom = JSON.parse(result.stdout);
     expect(bom.dependencies).to.deep.equal([
       { ref: "sbom_tool", dependsOn: ["sbom_lib"] },
+      { ref: "sbom_base", dependsOn: [] },
+      { ref: "sbom_lib", dependsOn: ["sbom_base"] },
+    ]);
+  });
+
+  it("describes a catalog by its name, with what it pins as the packages it requires", () => {
+    const result = runFabr({ "PROJECT.fabr": PROJECT, ...FILES }, ["sbom", "@sbom_cat"]);
+    expect(result.status, result.stderr).to.equal(0);
+    const bom = JSON.parse(result.stdout);
+    expect(bom.metadata.component).to.deep.equal({ type: "application", "bom-ref": "@sbom_cat", name: "@sbom_cat" });
+    expect(bom.dependencies).to.deep.equal([
+      { ref: "@sbom_cat", dependsOn: ["sbom_lib"] },
       { ref: "sbom_base", dependsOn: [] },
       { ref: "sbom_lib", dependsOn: ["sbom_base"] },
     ]);

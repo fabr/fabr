@@ -31,7 +31,7 @@ import { IModelStep, MODEL_PROVENANCE } from "./model/ModelProvenance";
 import { PackageFormat } from "./resolver/PackageFormat";
 import { IResolutionOrigin, PACKAGE_RESOLUTION_PROVENANCE } from "./resolver/ResolutionProvenance";
 import { NO_CONFLICTS } from "./resolver/StrictCollection";
-import { Selected } from "./resolver/Types";
+import { ResolvedCollection, Selected } from "./resolver/Types";
 import { toVexStatements } from "./support/OpenVex";
 import { sarifLocation } from "./support/Sarif";
 import { StringReader } from "./support/StringReader";
@@ -49,6 +49,9 @@ import {
   toQueryResults,
 } from "./Audit";
 import { ResolvedName } from "./Fabr";
+
+/** A collection for requirements made by hand, which nothing here asks of. */
+const NO_COLLECTION = {} as ResolvedCollection;
 
 /** A format whose purls are `pkg:test/<name>@<version>` and whose versions are
  * dotted numbers; nothing here resolves with it. */
@@ -131,7 +134,7 @@ class PatchedTarget extends ResolvedTarget {
     );
     this.resolved = new ResolvedRequirements(
       new Map([["extends", { sources: [pkg], references: [from.reference], reading: "packages", part: 0 }]]) as never,
-      [{ conflicts: NO_CONFLICTS, conflictsAmong: () => Computable.resolve(NO_CONFLICTS) }],
+      [{ conflicts: NO_CONFLICTS, conflictsAmong: () => Computable.resolve(NO_CONFLICTS), collection: NO_COLLECTION }],
       false,
       undefined,
       fixes
@@ -167,7 +170,7 @@ class RequiringTarget extends ResolvedTarget {
           },
         ])
       ) as never,
-      [...requirements].map(() => ({ conflicts: NO_CONFLICTS, conflictsAmong: () => Computable.resolve(NO_CONFLICTS) })),
+      [...requirements].map(() => ({ conflicts: NO_CONFLICTS, conflictsAmong: () => Computable.resolve(NO_CONFLICTS), collection: NO_COLLECTION })),
       false,
       undefined,
       fixes
@@ -192,7 +195,7 @@ function runTarget(deps: Dependency[]): ResolvedName {
     "app",
     new Map([["build", [{ reference: new TargetRef({} as TargetSource, "app"), package: build }]]])
   );
-  return { title: "app", resolved: ResolvedRequirements.of([run], [new TargetRef({} as TargetSource, "app")], NO_CONFLICTS) };
+  return { title: "app", resolved: ResolvedRequirements.of([run], [new TargetRef({} as TargetSource, "app")], NO_CONFLICTS, NO_COLLECTION) };
 }
 
 /** The patched target `name` made from `from`, fixing `fixes`, as the edge the reference to it makes. */
@@ -207,7 +210,8 @@ function named(title: string, deps: Dependency[]): ResolvedName {
     resolved: ResolvedRequirements.of(
       deps.map(dep => dep.package!),
       deps.map(dep => dep.reference),
-      NO_CONFLICTS
+      NO_CONFLICTS,
+      NO_COLLECTION
     ),
   };
 }
@@ -250,6 +254,7 @@ const MINIMIST: Advisory = {
   ],
 };
 
+
 describe("auditedPackages", () => {
   it("lists each registry package once, at its exact version, with the first path per tree and the count of its other edges", async () => {
     const lodash = registry("lodash", "4.17.15");
@@ -271,6 +276,27 @@ describe("auditedPackages", () => {
         ],
       },
       { ...audited("yargs", "17.0.0"), paths: [{ path: ["app", "yargs@17.0.0"], others: 0 }] },
+    ]);
+  });
+
+  it("walks a declaration's requirements (a catalog's) as it walks a target's, each package once across its sides", async () => {
+    const lodash = registry("lodash", "4.17.15");
+    const express = registry("express", "4.17.1", [lodash]);
+    const side = { sources: [express.package!], references: [express.reference], reading: "packages", part: 0 };
+    const catalog: ResolvedName = {
+      title: "@cat",
+      resolved: new ResolvedRequirements(
+        new Map([
+          ["deps", side],
+          ["run_deps", side],
+        ]) as never,
+        [{ conflicts: NO_CONFLICTS, conflictsAmong: () => Computable.resolve(NO_CONFLICTS), collection: NO_COLLECTION }],
+        false
+      ),
+    };
+    expect(await auditedPackages([catalog])).to.deep.equal([
+      { ...audited("express", "4.17.1"), paths: [{ path: ["@cat", "express@4.17.1"], others: 0 }] },
+      { ...audited("lodash", "4.17.15"), paths: [{ path: ["@cat", "express@4.17.1", "lodash@4.17.15"], others: 0 }] },
     ]);
   });
 

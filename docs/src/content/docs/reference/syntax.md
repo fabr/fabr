@@ -110,7 +110,8 @@ write `./name` for the directory.
 A registry or catalog named on its own, as in `deps = @npm;`, names no package or files, and is an
 error (`'@npm' names a repository, not a package or files`). Name what you want from it:
 `@npm:lodash:4.17.21`. The [`ls` command](/reference/command-line/#ls) is the exception, listing
-what some repositories contain.
+what some repositories contain, as is [`deps`](/reference/command-line/#deps) of a catalog, which
+shows what the catalog pins.
 
 ### Globbing
 

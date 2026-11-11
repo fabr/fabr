@@ -65,6 +65,7 @@ import {
   versionChildren,
   VersionNotFoundError,
   IVersionMetadata,
+  RepositoryImplementation,
 } from "@fabr-build/core";
 import { MAVEN_FORMAT, mavenName, mavenVariantOf, parseMavenPublishCoordinate, splitMavenName } from "./MavenProtocol";
 import { javaPluginContext, MavenAuth } from "./MavenAuth";
@@ -699,7 +700,7 @@ function createRepository(context: TargetContext, url?: string, credential?: Cre
 
 
 /** The implementation JAVA.fabr's `repository` declaration names. */
-export default createRepository;
+export default { provider: createRepository } satisfies RepositoryImplementation;
 
 /** @return the usage a resolution for `operation` asks of a package: its
  * API to compile against under `build`, its runtime otherwise, and either

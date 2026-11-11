@@ -33,6 +33,7 @@ import {
   ResolutionSpec,
   PropertyMap,
   RequiredSources,
+  ResolvedRequirements,
   TargetContext,
   Unmaterialized,
 } from "../context/index";
@@ -91,12 +92,15 @@ export type RuleResult = FileSource | FileSource[] | BuildAction;
  * repository a namespace makes (see TargetContext.makeRepository) is also
  * given the namespace's `url` and `credential`, each where it has one: a
  * property the declaration writes comes first, and the credential ahead of
- * any the repository's ecosystem would find for itself.
+ * any the repository's ecosystem would find for itself. `requirements` are
+ * what its type's {@link RepositoryImplementation.requirements} state, resolved
+ * (none where it states none).
  */
 export type RepositoryProvider = (
   context: TargetContext,
-  url?: string,
-  credential?: Credential
+  url: string | undefined,
+  credential: Credential | undefined,
+  requirements: ResolvedRequirements
 ) => Computable<Repository | Namespace | FileSource>;
 
 /**
@@ -303,10 +307,24 @@ export function defineRule<B extends Record<string, RequiredSources>, R extends 
   };
 }
 
-/** A repository type contributed to a build. */
-export interface RepositoryRegistration {
-  type: string;
+/**
+ * The implementation of a repository type: what the module a `repository`
+ * declaration names exports by default.
+ */
+export interface RepositoryImplementation {
+  /**
+   * State what a declaration of the type requires, as a rule's `requirements`
+   * states what its target requires: the reads, unmaterialized, resolved as the
+   * declaration's collection points (one per side) before the provider is
+   * given them.
+   */
+  requirements?(context: TargetContext): ResolutionSpec;
   provider: RepositoryProvider;
+}
+
+/** A repository type contributed to a build. */
+export interface RepositoryRegistration extends RepositoryImplementation {
+  type: string;
 }
 
 /**

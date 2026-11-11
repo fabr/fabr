@@ -61,6 +61,7 @@ import {
   versionToString,
   PartialRepositoryRef,
   stripArchiveRoot,
+  RepositoryImplementation,
 } from "@fabr-build/core";
 
 /** Where the Node.js project publishes builds nodejs.org/dist does not carry
@@ -353,4 +354,4 @@ function createRepository(context: TargetContext): Computable<Repository> {
 
 
 /** The implementation JS.fabr's `repository` declaration names. */
-export default createRepository;
+export default { provider: createRepository } satisfies RepositoryImplementation;

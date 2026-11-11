@@ -55,6 +55,7 @@ import {
   TargetContext,
   toJsonObject,
   tripleToNpm,
+  RepositoryImplementation,
 } from "@fabr-build/core";
 
 /** The one package a JDK distribution holds. */
@@ -279,4 +280,4 @@ function createRepository(context: TargetContext): Computable<Repository> {
 
 
 /** The implementation JAVA.fabr's `repository` declaration names. */
-export default createRepository;
+export default { provider: createRepository } satisfies RepositoryImplementation;

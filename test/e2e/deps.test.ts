@@ -147,6 +147,15 @@ describe("e2e: fabr deps", () => {
     expect(result.stderr).to.not.contain("Compiling");
   });
 
+  it("shows a catalog by its requirements, building nothing", () => {
+    const result = deps("@deps_cat");
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stdout).to.equal(
+      ["@deps_cat", "deps", "└── deps_lib<JS_TARGET=es2020>", "    └── deps_base<JS_TARGET=es2020>", ""].join("\n")
+    );
+    expect(result.stderr).to.not.contain("Compiling");
+  });
+
   it("marks the versions that conflict, without failing, where a build refuses them", () => {
     /* Each line names the configuration a target is built in, so the two
      * builds of deps_base read apart on the lines as in the note. */

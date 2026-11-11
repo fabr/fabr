@@ -67,7 +67,9 @@ export interface BuildContext {
    * back as its node ({@link ResolvedTarget}, which holds what it requires by
    * name), or as a projection over it where the reference selects its files;
    * an external requirement or a catalog member as its package, with its
-   * dependencies bound.
+   * dependencies bound; each as one unnamed requirement. A repository
+   * declaration's name (a catalog's) comes back as the declaration's own
+   * requirements, by name.
    */
   resolve(ref: INameValue): Computable<ResolvedRequirements>;
 

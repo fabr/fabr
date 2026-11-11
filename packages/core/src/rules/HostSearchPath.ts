@@ -42,7 +42,7 @@ import { RunnableFileSet } from "../core/RunnableFileSet";
 import { HostLink } from "../core/SymlinkFile";
 import { findExecutable } from "../support/Execute";
 import type { TargetContext } from "../context/index";
-import { RepositoryRegistration } from "./Types";
+import { RepositoryImplementation, RepositoryRegistration } from "./Types";
 
 const HOST_PROGRAM_PROVENANCE = "host-program";
 
@@ -134,4 +134,4 @@ function hostSearchPathRegistration(): RepositoryRegistration {
 }
 
 /** The implementation STD.fabr's `repository` declaration names. */
-export default hostSearchPathRegistration().provider;
+export default { provider: hostSearchPathRegistration().provider } satisfies RepositoryImplementation;

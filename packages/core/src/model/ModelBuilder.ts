@@ -50,7 +50,7 @@ import {
   RuleBlockDefinition,
   RuleDefinition,
   PluginContribution,
-  RepositoryProvider,
+  RepositoryImplementation,
   SelectableRule,
   RuleImplementation,
 } from "../rules/Types";
@@ -200,20 +200,19 @@ function isBuildFailure(err: unknown): err is Error {
 }
 
 /**
- * Make the provider of a repository type `decl` declares: its implementation,
- * loaded the first time an instance is constructed, is the provider.
+ * Make the loader of the implementation of the repository type `decl`
+ * declares: loaded the first time it is asked for, once.
  */
-function declaredProvider(decl: IRepositoryDecl, load: LoadImplementation): RepositoryProvider {
-  let provider: Computable<RepositoryProvider> | undefined;
-  return (context, url, credential) => {
-    provider ??= loadedImplementation(load, decl.implementation, "repository").then(implementation => {
-      if (typeof implementation !== "function") {
-        throw new FabrError(`'${decl.implementation.value.toString()}' is not a repository implementation (not a function)`);
+function declaredImplementation(decl: IRepositoryDecl, load: LoadImplementation): () => Computable<RepositoryImplementation> {
+  let loaded: Computable<RepositoryImplementation> | undefined;
+  return () =>
+    (loaded ??= loadedImplementation(load, decl.implementation, "repository").then(implementation => {
+      const made = implementation as Partial<RepositoryImplementation> | undefined;
+      if (typeof made?.provider !== "function" || (made.requirements !== undefined && typeof made.requirements !== "function")) {
+        throw new FabrError(`'${decl.implementation.value.toString()}' is not a repository implementation (no provider function)`);
       }
-      return implementation as RepositoryProvider;
-    });
-    return provider.then(made => made(context, url, credential));
-  };
+      return made as RepositoryImplementation;
+    }));
 }
 
 /**
@@ -233,7 +232,7 @@ export class ModelBuilder implements BuildModel {
    */
   private readonly targetRules: Map<string, SelectableRule[]> = new Map();
   private readonly defaultRules: SelectableRule[] = [];
-  private readonly repositories: Map<string, RepositoryProvider> = new Map();
+  private readonly repositories: Map<string, () => Computable<RepositoryImplementation>> = new Map();
   /** The rules the contributions list, checked against their types by {@link validate}. */
   private readonly contributedRules: RuleDefinition[] = [];
   /** The rules and repository types the files declare, checked against their types by {@link validate}. */
@@ -299,7 +298,8 @@ export class ModelBuilder implements BuildModel {
         if (this.repositories.has(repository.type)) {
           throw new FabrError(`Duplicate repository type '${repository.type}' registered by more than one plugin`);
         }
-        this.repositories.set(repository.type, repository.provider);
+        const implementation = Computable.resolve<RepositoryImplementation>(repository);
+        this.repositories.set(repository.type, () => implementation);
       }
     }
   }
@@ -340,7 +340,7 @@ export class ModelBuilder implements BuildModel {
           this.log.log(DIAG_REPOSITORY_DUPLICATE, { type: decl.type, loc: declPosn(decl) });
         } else {
           this.declaredRepositories.push(decl);
-          this.repositories.set(decl.type, declaredProvider(decl, this.load));
+          this.repositories.set(decl.type, declaredImplementation(decl, this.load));
         }
       }
     }
@@ -525,8 +525,12 @@ export class ModelBuilder implements BuildModel {
     return rule instanceof DeclaredRule ? rule.definition() : Computable.resolve(rule as RuleDefinition);
   }
 
-  public getRepositoryProvider(type: string): RepositoryProvider | undefined {
-    return this.repositories.get(type);
+  public hasRepositoryType(type: string): boolean {
+    return this.repositories.has(type);
+  }
+
+  public getRepositoryImplementation(type: string): Computable<RepositoryImplementation> | undefined {
+    return this.repositories.get(type)?.();
   }
 
   public getTargetDefs(): ITargetDefDecl[] {

@@ -42,7 +42,7 @@ import type { Reference } from "../core/Reference";
 import { compareText } from "../support/Functional";
 import { isJsonObject, readJsonFile, toJsonObject } from "../support/Json";
 import type { TargetContext } from "../context/index";
-import { RepositoryRegistration } from "./Types";
+import { RepositoryImplementation, RepositoryRegistration } from "./Types";
 
 /** Where lookups of the packages installed with fabr start: fabr's own code,
  *  from which the plugin loader finds plugins too. */
@@ -308,4 +308,4 @@ function fabrHomeRegistration(): RepositoryRegistration {
 }
 
 /** The implementation STD.fabr's `repository` declaration names. */
-export default fabrHomeRegistration().provider;
+export default { provider: fabrHomeRegistration().provider } satisfies RepositoryImplementation;

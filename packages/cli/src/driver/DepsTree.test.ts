@@ -32,6 +32,7 @@ import {
   RefSource,
   RepositoryRef,
   NO_CONFLICTS,
+  ResolvedCollection,
   ResolvedNode,
   ResolvedRequirements,
   ResolvedTarget,
@@ -40,6 +41,9 @@ import {
   WalkedEdge,
 } from "@fabr-build/core";
 import { renderAudit, renderDependencyTrees, sectionsOf } from "./DepsTree";
+
+/** A collection for requirements made by hand, which nothing here asks of. */
+const NO_COLLECTION = {} as ResolvedCollection;
 
 /** A reference as a registry would vend it; nothing here resolves one. */
 function reference(name: string, versionConstraint?: string): RepositoryRef {
@@ -322,7 +326,7 @@ class RequiringTarget extends ResolvedTarget {
           { sources: deps.map(dep => dep.package!), references: deps.map(dep => dep.reference), reading: "packages", part: 0 },
         ],
       ]) as never,
-      [{ conflicts: NO_CONFLICTS, conflictsAmong: () => Computable.resolve(NO_CONFLICTS) }],
+      [{ conflicts: NO_CONFLICTS, conflictsAmong: () => Computable.resolve(NO_CONFLICTS), collection: NO_COLLECTION }],
       false
     );
   }
@@ -340,7 +344,7 @@ describe("sectionsOf", () => {
   it("shows a target under another operation by what its own build requires", () => {
     const build = new RequiringTarget("app", "app", "deps", [delivered("lodash", "4.17.21", "^4.17.0")]);
     const run = new RequiringTarget("app", "app", "build", [{ reference: target("app"), package: build }]);
-    const tree = sectionsOf("app", ResolvedRequirements.of([run], [target("app")], NO_CONFLICTS));
+    const tree = sectionsOf("app", ResolvedRequirements.of([run], [target("app")], NO_CONFLICTS, NO_COLLECTION));
     expect([...tree.parts].map(([section, deps]) => [section, deps.map(({ edge }) => edge.package?.packageName)])).to.deep.equal([
       ["required by its rule", ["lodash"]],
     ]);

@@ -1277,7 +1277,8 @@ function resolvedName(config: BuildContext, ref: INameValue, title: string): Com
 
 /**
  * Print the dependency tree of each name (`fabr deps`) to stdout: what a target
- * requires, resolved and not built, or what any other name resolves to. A
+ * or a catalog requires, resolved and not built, or what any other name
+ * resolves to. A
  * target is resolved under `build`, or under its type's sole operation where
  * the type has no build rule, unless the name requires another
  * (`pkg<BUILD_OPERATION=test>`).

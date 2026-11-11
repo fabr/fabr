@@ -24,7 +24,7 @@ import { FabrError } from "./core/Errors";
 import { isPackage, Package, ResolvedNode } from "./core/PackageFileSet";
 import { ILicense, IVersionMetadata } from "./core/Repository";
 import { ResolvedTarget } from "./context/index";
-import { madeFrom, ResolvedName, walkedEdges, WalkedEdge, walkReadingFiles } from "./Fabr";
+import { isDenoted, madeFrom, nameEdges, ResolvedName, walkedEdges, WalkedEdge, walkReadingFiles } from "./Fabr";
 import { builtInProject } from "./model/Target";
 import { purlOf } from "./resolver/ResolutionProvenance";
 import { compareText } from "./support/Functional";
@@ -172,22 +172,30 @@ function pedigreeOf(from: Package, fixes: ReadonlyArray<string>): NonNullable<IC
 /**
  * Make the bill of materials of what `name` resolves to: one target, whose
  * build is the component described and whose rule's requirements are its
- * dependencies, or one package, with its closure. A target read for its files
- * (a program a `container_image` holds) is a component its reader depends on,
- * with everything it requires. A name resolving to several
- * things is refused: a bill describes one. `tool` names the fabr that wrote it.
+ * dependencies; a declaration's requirements (a catalog's), the declaration
+ * described by its name with them as its dependencies; or one package, with
+ * its closure. A target read for its files (a program a `container_image`
+ * holds) is a component its reader depends on, with everything it requires. A
+ * name resolving to several things is refused: a bill describes one. `tool`
+ * names the fabr that wrote it.
  */
 export function sbom(name: ResolvedName, tool: { version: string }): Computable<ICycloneDxBom> {
   const { title, resolved } = name;
+  /* A declaration's requirements (a catalog's) describe the declaration, by its name. */
+  const declared = !isDenoted(resolved);
   const [only] = resolved.denoted;
-  if (resolved.denoted.length !== 1 || !isPackage(only)) {
+  if (!declared && (resolved.denoted.length !== 1 || !isPackage(only))) {
     throw new FabrError(
       `'${title}' resolves to ${
         resolved.denoted.length === 1 ? "something that is not a package" : `${resolved.denoted.length} things`
       }; a bill of materials describes one package or target`
     );
   }
-  const root = { type: only instanceof ResolvedTarget ? "application" : "library", "bom-ref": referenceOf(only) } as const;
+  const described = declared ? undefined : (only as Package);
+  const root = {
+    type: described === undefined || described instanceof ResolvedTarget ? "application" : "library",
+    "bom-ref": described === undefined ? title : referenceOf(described),
+  } as const;
   const bill = walkReadingFiles(readFor => {
     /* Every package reached, once, by its reference, with the packages its edges bind. */
     const reached = new Map<string, { pkg: Package; dependsOn: Set<string> }>();
@@ -204,7 +212,9 @@ export function sbom(name: ResolvedName, tool: { version: string }): Computable<
         }
         return [ref];
       });
-    const rootDependsOn = new Set(walk(walkedEdges(only, only instanceof ResolvedTarget, readFor)));
+    const rootDependsOn = new Set(
+      walk(described === undefined ? nameEdges(resolved, readFor) : walkedEdges(described, described instanceof ResolvedTarget, readFor))
+    );
     return { reached, rootDependsOn };
   });
   const document = (
@@ -215,7 +225,7 @@ export function sbom(name: ResolvedName, tool: { version: string }): Computable<
     const metadata = (pkg: Package): Computable<IVersionMetadata | undefined> =>
       pkg instanceof ResolvedNode && pkg.content.metadata !== undefined ? pkg.content.metadata() : Computable.resolve(undefined);
     return Computable.forAll(
-      [metadata(only), ...refs.map(ref => metadata(reached.get(ref)!.pkg))],
+      [described === undefined ? Computable.resolve(undefined) : metadata(described), ...refs.map(ref => metadata(reached.get(ref)!.pkg))],
       (...published: Array<IVersionMetadata | undefined>) => {
         const component = (
           ref: string,
@@ -246,7 +256,8 @@ export function sbom(name: ResolvedName, tool: { version: string }): Computable<
           version: 1,
           metadata: {
             tools: { components: [{ type: "application", "bom-ref": "fabr", name: "fabr", version: tool.version }] },
-            component: component(root["bom-ref"], only, rootMeta, root.type),
+            component:
+              described === undefined ? { type: root.type, "bom-ref": root["bom-ref"], name: title } : component(root["bom-ref"], described, rootMeta, root.type),
           },
           components: refs.map((ref, at) => component(ref, reached.get(ref)!.pkg, rest[at], "library")),
           dependencies: [

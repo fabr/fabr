@@ -50,6 +50,7 @@ import {
   toJsonObject,
   vendPackageRef,
   VersionNotFoundError,
+  RepositoryImplementation,
 } from "@fabr-build/core";
 import * as path from "path";
 
@@ -434,4 +435,4 @@ function namedPackage(files: FileSet): Computable<{ name: string; version: strin
 }
 
 /** The implementation JS.fabr's `repository` declaration names. */
-export default createRepository;
+export default { provider: createRepository } satisfies RepositoryImplementation;

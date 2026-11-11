@@ -27,7 +27,7 @@ import { IProvenanceStep, registerProvenanceDescriber, registerProvenanceRendere
 import { ExpectedDigest, isIntegrity, parseIntegrity } from "../support/Integrity";
 import { fetchFile } from "../support/FetchDocument";
 import { TargetContext } from "../context/index";
-import { RepositoryRegistration } from "./Types";
+import { RepositoryImplementation, RepositoryRegistration } from "./Types";
 import { mapComputable } from "../support/Functional";
 
 /**
@@ -300,4 +300,4 @@ function createFetchSource(context: TargetContext): Computable<FileSource> {
 export const fetchSourceRegistration: RepositoryRegistration = { type: "fetch", provider: createFetchSource };
 
 /** The implementation STD.fabr's `repository` declaration names. */
-export default createFetchSource;
+export default { provider: createFetchSource } satisfies RepositoryImplementation;

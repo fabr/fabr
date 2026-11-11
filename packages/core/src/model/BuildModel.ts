@@ -23,7 +23,7 @@ import { BuildContext } from "../context/index";
 import { Constraints } from "./Constraints";
 import { ExecutionContext } from "./ExecutionContext";
 import { Name } from "../core/Name";
-import { TargetRules, RepositoryProvider, RuleDefinition, SelectableRule } from "../rules/Types";
+import { TargetRules, RepositoryImplementation, RuleDefinition, SelectableRule } from "../rules/Types";
 import { Computable } from "../core/Computable";
 import type { PluginPackage } from "./Plugin";
 
@@ -43,7 +43,11 @@ export interface BuildModel {
   /** Get `rule` with its implementation: a declared rule's is loaded the first time. */
   getRuleDefinition(rule: SelectableRule): Computable<RuleDefinition>;
 
-  getRepositoryProvider(type: string): RepositoryProvider | undefined;
+  /** @return true if `type` is a repository type, otherwise false. */
+  hasRepositoryType(type: string): boolean;
+
+  /** Get the implementation of the repository type `type`, if it is one: a declared type's is loaded the first time. */
+  getRepositoryImplementation(type: string): Computable<RepositoryImplementation> | undefined;
 
   /** @return every declared targetdef (the build vocabulary), in declaration
    * order — for diagnostic listing (`fabr list-targetdefs`). */

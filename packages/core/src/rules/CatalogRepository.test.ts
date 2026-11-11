@@ -76,11 +76,15 @@ function writtenOnCommandLine(name: string): INameValue {
 const emptyCatalog = new CatalogRepository(
   "@cat",
   "build",
-  () =>
-    Computable.resolve({
-      entries: new Map(),
-      collection: { requests: new Map(), resolutions: new Map(), locals: new Map(), members: new Map(), instances: new Set(), resolvedMembers: new Map() },
-    })
+  new Map([
+    [
+      "build",
+      {
+        entries: new Map(),
+        collection: { requests: new Map(), resolutions: new Map(), locals: new Map(), members: new Map(), instances: new Set(), resolvedMembers: new Map() },
+      },
+    ],
+  ])
 );
 
 describe("CatalogRepository.getRepositoryRef", () => {
@@ -169,6 +173,8 @@ describe("CatalogRepository (through the model)", () => {
   /* One backing registry per declared `package_repo` target, resolvable by name
    * so a test can inspect the exact instance the catalog used. */
   const backings = new Map<string, BackingRepo>();
+  /** Whether the backing registries resolve a package apart under each operation, as Maven does. */
+  let sidedEnvironments = false;
   let instances = 0;
   function backing(name: string): BackingRepo {
     let repo = backings.get(name);
@@ -206,8 +212,8 @@ describe("CatalogRepository (through the model)", () => {
       throw new Error(`package_repo is not a publish destination ('${name.toString()}')`);
     }
 
-    public environmentKey(): Computable<string> {
-      return Computable.resolve("cattest-env");
+    public environmentKey(operation?: string): Computable<string> {
+      return Computable.resolve(sidedEnvironments ? `cattest-env ${operation ?? ""}` : "cattest-env");
     }
 
     /* Members are pinned and delivered as packages: a catalog resolves
@@ -566,6 +572,7 @@ describe("CatalogRepository (through the model)", () => {
 
   function build(source: string): BuildModel {
     backings.clear();
+    sidedEnvironments = false;
     requirementTable.clear();
     patchTexts.clear();
     scriptTexts.clear();
@@ -644,6 +651,27 @@ describe("CatalogRepository (through the model)", () => {
     expect([...(doc as FileSet)].map(([name]) => name)).to.deep.equal(["foo/doc.html"]);
     expect(doc).not.to.be.instanceOf(PackageFileSet);
     expect(backings.get("@backing")!.fetched).to.deep.equal(["foo@1.2.0 doc"]);
+  });
+
+  describe("a catalog's two collections", () => {
+    /** Get the collection the catalog answers `foo` from for a consumer's `side`. */
+    async function collectionFor(model: BuildModel, side: string): Promise<unknown> {
+      const [ref] = await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("@cat"));
+      const catalog = (ref as PartialRepositoryRef).repository as CatalogRepository;
+      return (await catalog.member(catalog.getRepositoryRef(Name.fromLiteral("foo")), side)).collection;
+    }
+
+    it("is one collection where its registries resolve the entries alike for both", async () => {
+      const model = build("package_repo @backing { }\n" + "catalog @cat { deps = @backing:foo; }\n");
+      expect(await collectionFor(model, "build")).to.equal(await collectionFor(model, "run"));
+      expect(backings.get("@backing")!.requested).to.deep.equal(["foo"]);
+    });
+
+    it("is two where a registry resolves them apart under each operation", async () => {
+      const model = build("package_repo @backing { }\n" + "catalog @cat { deps = @backing:foo; }\n");
+      sidedEnvironments = true;
+      expect(await collectionFor(model, "build")).to.not.equal(await collectionFor(model, "run"));
+    });
   });
 
   describe("judging a strict subset by what it ships", () => {
@@ -983,8 +1011,8 @@ describe("CatalogRepository (through the model)", () => {
   });
 
   it("reports two entries claiming one ALIAS as a conflict (the address, not the package)", async () => {
-    /* One name is one package: the registry's joint resolution refuses it,
-     * attributed to the entries that wrote it. */
+    /* One name is one package: the list is refused as any collection's is,
+     * both entries attributed. */
     const model = build(
       "package_repo @backing { }\n" +
         "catalog @cat { deps = @backing:foo -> shared @backing:bar -> shared; }\n" +
@@ -994,10 +1022,10 @@ describe("CatalogRepository (through the model)", () => {
       await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       expect.fail("expected the duplicate alias to conflict");
     } catch (err) {
-      const failure = findCause(err, RequirementResolutionError);
-      expect(failure, "a RequirementResolutionError in the cause chain").to.not.be.undefined;
-      expect(failure!.message).to.contain("'shared' is required as two different packages");
-      expect(failure!.refs.map(ref => ref.toString()).sort()).to.deep.equal(["bar:1.0.0 -> shared", "foo:1.0.0 -> shared"]);
+      const conflict = findCause(err, ConflictError);
+      expect(conflict, "a ConflictError in the cause chain").to.not.be.undefined;
+      expect(conflict!.key).to.equal("shared");
+      expect(conflict!.message).to.contain("'shared' is required here as two different packages");
     }
   });
 
@@ -1874,12 +1902,11 @@ describe("CatalogRepository (through the model)", () => {
       expect(entries()).to.deep.equal(["lib@*", "foo@1.0.0"]);
     });
 
-    it("settles a catalog's own collision by the marker: the forced target is the member", async () => {
+    it("refuses a catalog's two entries of one name, a forced target among them, as any list does", async () => {
       const model = build(
         "package_repo @backing { }\n" + "test_built notes { }\n" + "catalog @cat { deps = @backing:notes:1.0.0 notes!; }\n" + "test_deps a { deps = @cat:notes; }\n"
       );
-      expect(await refusal(model)).to.equal(undefined);
-      expect(entries()).to.deep.equal(["notes@*"]);
+      expect(await refusal(model)).to.equal("'notes' is required here as two different packages (from '@backing:notes:1.0.0' and 'notes!')");
     });
 
     it("leaves an alternate out of a catalog's members", async () => {
@@ -2005,10 +2032,9 @@ describe("CatalogRepository (through the model)", () => {
         expect(await refusal(model)).to.equal("'foo' is forced ('!') at two different versions (foo, foo<MODE=2.0.0>) — pick one");
       });
 
-      it("settles a catalog's entry: the forced build is the member", async () => {
+      it("refuses a catalog's two builds of one name, one forced, as any list does", async () => {
         const model = build(VERSIONS + "catalog @cat { deps = foo<MODE=2.0.0> foo!; }\n" + "test_deps a { deps = @cat:foo; }\n");
-        expect(await refusal(model)).to.equal(undefined);
-        expect(entries()).to.deep.equal(["foo@1.0.0"]);
+        expect(await refusal(model)).to.equal("'foo' is required here as two different packages (from 'foo<MODE=2.0.0>' and 'foo!')");
       });
 
       it("leaves a catalog's other build the member where one is an alternate", async () => {
@@ -2936,8 +2962,8 @@ describe("CatalogRepository (through the model)", () => {
   });
 
   it("rejects an entry that names no packages (a bare repository reference)", async () => {
-    /* `deps = @backing;` resolves to the repository itself — it pins nothing,
-     * and silence would leave the catalog quietly missing the entry. */
+    /* `deps = @backing;` resolves to the repository itself, which a
+     * collection refuses: it names no package. */
     const model = build(
       "package_repo @backing { }\n" +
         "catalog @cat { deps = @backing; }\n" +
@@ -2951,14 +2977,14 @@ describe("CatalogRepository (through the model)", () => {
       for (let current: unknown = err; current instanceof Error; current = (current as { cause?: unknown }).cause) {
         message = current.message;
       }
-      expect(message).to.contain("names no packages");
+      expect(message).to.contain("'@backing' names a repository, not a package or files");
     }
   });
 
   it("reports two entries claiming one package name (from different sources) as a two-sided conflict", async () => {
     /* Two repositories each resolve a package named 'dup' — a genuine conflict
-     * (not two versions of one package), reported as the general ConflictError
-     * with both written entries attributed. */
+     * (not two versions of one package), refused as any list requiring two
+     * packages of one name is, with both written entries attributed. */
     const model = build(
       "package_repo @backing { }\n" +
         "package_repo @other { }\n" +
@@ -2971,12 +2997,12 @@ describe("CatalogRepository (through the model)", () => {
     } catch (err) {
       const conflict = findCause(err, ConflictError);
       expect(conflict, "a ConflictError in the cause chain").to.not.be.undefined;
-      expect(conflict!.kind).to.equal("catalog entries");
+      expect(conflict!.kind).to.equal("packages");
       expect(conflict!.key).to.equal("dup");
       /* both sides attributed back to where each was written */
       expect(conflict!.left.provenance).to.not.be.undefined;
       expect(conflict!.right.provenance).to.not.be.undefined;
-      expect(conflict!.message).to.contain("Conflicting catalog entries for dup");
+      expect(conflict!.message).to.contain("'dup' is required here as two different packages");
     }
   });
 });

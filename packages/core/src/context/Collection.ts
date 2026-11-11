@@ -23,8 +23,9 @@ import { FabrError, RequirementResolutionError, toError } from "../core/Errors";
 import { FileSet } from "../core/FileSet";
 import { FileSetRef } from "../core/FileSetRef";
 import { Materialized, RepositoryRef, SourceRef } from "../core/Repository";
-import { checked, materializeLists, ResolvedLists, resolveLists, withOperation } from "./CollectionPoint";
+import { checked, materializeLists, ResolvedLists, resolveListsFor } from "./CollectionPoint";
 import { Conflicts } from "../resolver/StrictCollection";
+import type { ResolvedCollection } from "../resolver/Types";
 import { Builds, PackageFileSet, Dependency, ResolvedNode } from "../core/PackageFileSet";
 import type { PackageFormat } from "../resolver/PackageFormat";
 import { Resolved } from "../core/Repository";
@@ -190,6 +191,8 @@ interface ResolvedRequirement {
 
 /** One collection of a target's requirements, as it was resolved. */
 interface ResolvedCollectionPart {
+  /** The collection, as the resolver holds it. */
+  readonly collection: ResolvedCollection;
   /** The versions that conflict in the collection, found as it was resolved. */
   readonly conflicts: Conflicts;
   /** Find what conflicts among some of what the collection resolved, used
@@ -225,11 +228,16 @@ export class ResolvedRequirements {
   }
 
   /** Make the requirements of one unnamed list: what a name denotes, resolved
-   * as one collection. */
-  public static of(sources: Resolved[], references: Array<Reference | undefined>, conflicts: Conflicts): ResolvedRequirements {
+   * as one collection, `collection`. */
+  public static of(
+    sources: Resolved[],
+    references: Array<Reference | undefined>,
+    conflicts: Conflicts,
+    collection: ResolvedCollection
+  ): ResolvedRequirements {
     return new ResolvedRequirements(
       new Map([["", { sources, references, reading: "packages", part: 0 }]]),
-      [{ conflicts, conflictsAmong: () => Computable.resolve(conflicts) }],
+      [{ conflicts, conflictsAmong: () => Computable.resolve(conflicts), collection }],
       false
     );
   }
@@ -238,6 +246,15 @@ export class ResolvedRequirements {
    * what a name denotes ({@link of}). */
   public get denoted(): ReadonlyArray<Resolved> {
     return this.sources.get("") ?? [];
+  }
+
+  /** Get the collection the requirement `name` was resolved in. */
+  public collectionOf(name: string): ResolvedCollection {
+    const entry = this.entries.get(name);
+    if (entry === undefined) {
+      throw new FabrError(`internal: '${name}' is not one of the requirements`);
+    }
+    return this.parts[entry.part].collection;
   }
 
   /** Check that the target may be built with what the collection resolved:
@@ -274,7 +291,7 @@ export class ResolvedRequirements {
       (...conflicts: Conflicts[]) =>
         new ResolvedRequirements(
           new Map(kept),
-          this.parts.map((part, index) => ({ conflicts: conflicts[index], conflictsAmong: part.conflictsAmong })),
+          this.parts.map((part, index) => ({ conflicts: conflicts[index], conflictsAmong: part.conflictsAmong, collection: part.collection })),
           permissive === true,
           result,
           fixes
@@ -367,19 +384,40 @@ export function resolveRequirements(target: TargetContext, spec: ResolutionSpec)
           "what a target passes on is packages: read it with getPackageProperty"
         );
       }
-      const operations = [...new Set(entries.map(([, , operation]) => operation))];
+      /* The requirements of each operation, as one collection; operations
+       * whose requirements are the same reads are resolved together, sharing
+       * their collection where they resolve it alike. */
+      const sides = [...new Set(entries.map(([, , operation]) => operation))].map(operation => ({
+        operation,
+        at: names.flatMap((_, index) => (entries[index][2] === operation ? [index] : [])),
+      }));
+      const sameReads = (left: number[], right: number[]): boolean =>
+        left.length === right.length &&
+        left.every((index, position) => values[index] === values[right[position]] && readings[index] === readings[right[position]]);
+      const groups: Array<typeof sides> = [];
+      sides.forEach(side => {
+        const group = groups.find(([first]) => sameReads(first.at, side.at));
+        if (group === undefined) {
+          groups.push([side]);
+        } else {
+          group.push(side);
+        }
+      });
       return Computable.forAll(
-        operations.map(operation => {
-          const at = names.flatMap((_, index) => (entries[index][2] === operation ? [index] : []));
-          return resolveLists(
-            withOperation(target, operation),
+        groups.map(group => {
+          const [{ at }] = group;
+          return resolveListsFor(
+            target,
+            group.map(({ operation }) => operation),
             at.map(index => lists[index]),
             at.map(index => readings[index] !== "contained"),
             at.map(index => requirementName(names[index]) === EXTENDS_KEY),
             at.map(index => (readings[index] === "files" || readings[index] === "sync" ? "files" : undefined))
-          ).then(resolved => ({ at, resolved }));
+          ).then(resolved => group.map(({ at: each }, position) => ({ at: each, resolved: resolved[position] })));
         }),
-        (...parts: Array<{ at: number[]; resolved: ResolvedLists }>) => {
+        (...grouped: Array<Array<{ at: number[]; resolved: ResolvedLists }>>) => grouped.flat()
+      ).then(
+        (parts: Array<{ at: number[]; resolved: ResolvedLists }>) => {
           const resolvedEntries = new Map<number, ResolvedRequirement>();
           parts.forEach(({ at, resolved }, part) =>
             at.forEach((index, position) => {
@@ -398,7 +436,7 @@ export function resolveRequirements(target: TargetContext, spec: ResolutionSpec)
           );
           return new ResolvedRequirements(
             new Map(names.map((name, index) => [name, resolvedEntries.get(index)!])),
-            parts.map(({ resolved }) => ({ conflicts: resolved.conflicts, conflictsAmong: resolved.conflictsAmong })),
+            parts.map(({ resolved }) => ({ conflicts: resolved.conflicts, conflictsAmong: resolved.conflictsAmong, collection: resolved.collection })),
             spec.permissive === true,
             spec.result,
             spec.fixes

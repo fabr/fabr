@@ -296,6 +296,14 @@ fabr deps @npm:glob:10.0.0
 fabr deps @dep:chai          # a catalog member, at the versions the catalog pins
 ```
 
+A catalog named on its own is shown by what it pins: its `deps`, resolved together as the catalog
+resolves them, with the versions that conflict among them marked. A project's consumers of the
+catalog are checked against those conflicts only where they use the versions together.
+
+```sh
+fabr deps @dep
+```
+
 `deps` builds none of the targets it lists and downloads no packages from a registry: it reads
 what each target declares and resolves versions exactly as a build would, which needs only each
 package's registry metadata. The properties that take packages are shown: a target named in one is
@@ -383,6 +391,9 @@ among what its build requires as a component, and the dependency graph between t
 fabr sbom myapp > myapp.cdx.json
 fabr sbom @npm:express:4.19.2
 ```
+
+A catalog named on its own is described by its name, the packages it pins being what it requires.
+`audit` checks those packages too, so `fabr audit @dep` checks every version a catalog pins.
 
 The packages are the ones `deps` prints, resolved the same way and with nothing built. Each package
 a registry publishes is named by its [package URL](https://github.com/package-url/purl-spec) and

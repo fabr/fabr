@@ -27,8 +27,12 @@ import { ResolvedRequirements, ResolvedTarget } from "./context/index";
 import { PackageFormat } from "./resolver/PackageFormat";
 import { IResolutionOrigin, PACKAGE_RESOLUTION_PROVENANCE } from "./resolver/ResolutionProvenance";
 import { NO_CONFLICTS } from "./resolver/StrictCollection";
+import { ResolvedCollection } from "./resolver/Types";
 import { ResolvedName } from "./Fabr";
 import { cycloneDxHash, cycloneDxLicense, cycloneDxNaming, sbom } from "./Sbom";
+
+/** A collection for requirements made by hand, which nothing here asks of. */
+const NO_COLLECTION = {} as ResolvedCollection;
 
 /** A format whose purls are `pkg:test/<name>@<version>`; nothing here resolves with it. */
 const TEST_FORMAT = { purl: (name: string, version: string) => `pkg:test/${name}@${version}` } as unknown as PackageFormat<
@@ -90,7 +94,7 @@ class PatchedTarget extends ResolvedTarget {
     );
     this.resolved = new ResolvedRequirements(
       new Map([["extends", { sources: [pkg], references: [from.reference], reading: "packages", part: 0 }]]) as never,
-      [{ conflicts: NO_CONFLICTS, conflictsAmong: () => Computable.resolve(NO_CONFLICTS) }],
+      [{ conflicts: NO_CONFLICTS, conflictsAmong: () => Computable.resolve(NO_CONFLICTS), collection: NO_COLLECTION }],
       false,
       undefined,
       fixes
@@ -128,7 +132,7 @@ class RequiringTarget extends ResolvedTarget {
           },
         ],
       ]) as never,
-      [{ conflicts: NO_CONFLICTS, conflictsAmong: () => Computable.resolve(NO_CONFLICTS) }],
+      [{ conflicts: NO_CONFLICTS, conflictsAmong: () => Computable.resolve(NO_CONFLICTS), collection: NO_COLLECTION }],
       false
     );
   }
@@ -144,8 +148,9 @@ class RequiringTarget extends ResolvedTarget {
 
 /** What `title` resolved to: the one package `dep` is the edge to. */
 function named(title: string, dep: Dependency): ResolvedName {
-  return { title, resolved: ResolvedRequirements.of([dep.package!], [dep.reference], NO_CONFLICTS) };
+  return { title, resolved: ResolvedRequirements.of([dep.package!], [dep.reference], NO_CONFLICTS, NO_COLLECTION) };
 }
+
 
 describe("sbom", () => {
   it("describes a package by its closure: each package a component by purl, with its licences, digests and edges", async () => {
@@ -214,7 +219,7 @@ describe("sbom", () => {
       { reference: new TargetRef({} as TargetSource, "image"), package: image },
     ]);
     const bom = await sbom(
-      { title: "outer", resolved: ResolvedRequirements.of([outer], [new TargetRef({} as TargetSource, "outer")], NO_CONFLICTS) },
+      { title: "outer", resolved: ResolvedRequirements.of([outer], [new TargetRef({} as TargetSource, "outer")], NO_CONFLICTS, NO_COLLECTION) },
       { version: "1.2.3" }
     );
     expect(bom.dependencies).to.deep.equal([
@@ -260,9 +265,30 @@ describe("sbom", () => {
     const b = registry("b", "1.0.0");
     const name: ResolvedName = {
       title: "BOTH",
-      resolved: ResolvedRequirements.of([a.package!, b.package!], [a.reference, b.reference], NO_CONFLICTS),
+      resolved: ResolvedRequirements.of([a.package!, b.package!], [a.reference, b.reference], NO_CONFLICTS, NO_COLLECTION),
     };
     expect(() => sbom(name, { version: "1" })).to.throw(/'BOTH' resolves to 2 things/);
+  });
+
+  it("describes a declaration's requirements (a catalog's) as the declaration, by its name", async () => {
+    const lodash = registry("lodash", "4.17.15");
+    const express = registry("express", "4.17.1", [lodash]);
+    const side = { sources: [express.package!], references: [express.reference], reading: "packages", part: 0 };
+    const name: ResolvedName = {
+      title: "@cat",
+      resolved: new ResolvedRequirements(
+        new Map([
+          ["deps", side],
+          ["run_deps", side],
+        ]) as never,
+        [{ conflicts: NO_CONFLICTS, conflictsAmong: () => Computable.resolve(NO_CONFLICTS), collection: NO_COLLECTION }],
+        false
+      ),
+    };
+    const bom = await sbom(name, { version: "1" });
+    expect(bom.metadata.component).to.deep.equal({ type: "application", "bom-ref": "@cat", name: "@cat" });
+    expect(bom.components.map(component => component["bom-ref"])).to.deep.equal(["pkg:test/express@4.17.1", "pkg:test/lodash@4.17.15"]);
+    expect(bom.dependencies[0]).to.deep.equal({ ref: "@cat", dependsOn: ["pkg:test/express@4.17.1"] });
   });
 });
 

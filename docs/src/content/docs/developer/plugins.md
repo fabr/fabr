@@ -554,7 +554,23 @@ type (`npm_repository @npm { … }`):
 repository npm_repository = @fabr-build/js:NPMRepository;
 ```
 
-The implementation is the module's default export, a `provider` function. It is called once per
+The implementation is the module's default export, an object holding a `provider` function and,
+optionally, `requirements`:
+
+```ts
+export default { requirements, provider } satisfies RepositoryImplementation;
+```
+
+`requirements(context)` states what a declaration of the type requires, exactly as a rule's
+`requirements` states what its target requires (see [Rules](#rules)): a `ResolutionSpec` of the
+declaration's property reads, unmaterialized, on its `build` and `run` sides. Fabr resolves them as
+the declaration's collection points, and the provider is given them, resolved, as its fourth
+argument. A `catalog` is the example: its `deps` are its requirements, read for both sides, and
+`fabr deps @dep` shows them as it shows a target's. Where both sides make the same reads and every
+registry among them resolves alike under both operations (npm, unlike Maven), the two are one
+collection, resolved once. A type that states no requirements is given none.
+
+The provider is called once per
 build configuration that uses the repository, with the declaration's `TargetContext`: its property
 readers, `memoize(tag, key, fn)` to cache the result of a resolution, `fetch(cacheKey, tag,
 request, report, options?)` to download through fabr's cache, and `runTask` to report progress. It

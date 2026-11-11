@@ -38,7 +38,7 @@ import { contentPackageMember } from "./ContentPackage";
 import { PartialRepositoryRef } from "../core/PartialRepositoryRef";
 import { NamespaceRef } from "../core/NamespaceRef";
 import type { Reference } from "../core/Reference";
-import { RepositoryRegistration } from "./Types";
+import { RepositoryImplementation, RepositoryRegistration } from "./Types";
 
 /**
  * A parsed route key: a literal package-name prefix, matched by whole leading
@@ -530,4 +530,4 @@ function routeValue(groupName: string, routeName: string, sources: readonly Sour
 export const repositoryGroupRegistration: RepositoryRegistration = { type: "repository_group", provider: createRepositoryGroup };
 
 /** The implementation STD.fabr's `repository` declaration names. */
-export default createRepositoryGroup;
+export default { provider: createRepositoryGroup } satisfies RepositoryImplementation;

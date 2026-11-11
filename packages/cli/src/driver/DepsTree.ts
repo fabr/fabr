@@ -42,7 +42,9 @@ import {
   TARGET_PROVENANCE,
   Advisory,
   compareText,
+  declaredSources,
   edgesOf,
+  isDenoted,
   requiredSources,
   AuditReport,
   fixedVersions,
@@ -125,7 +127,7 @@ function requiredAsWritten(
   const sections = new Map<string, WalkedEdge[]>();
   for (const { part, source, reference } of required) {
     const decl = declOf(part.origin);
-    const property = decl === undefined ? undefined : propertyOf(reference ?? source, decl);
+    const property = decl === undefined ? undefined : propertyOf(reference ?? source, step => step.target === decl);
     const section = property === undefined ? `required by ${decl?.type ?? "its"} rule` : declName(property);
     /* A target read for its files is shown as the target, wholly part of this one. */
     const edges: WalkedEdge[] =
@@ -135,6 +137,22 @@ function requiredAsWritten(
     sections.set(section, [...(sections.get(section) ?? []), ...edges]);
   }
   return { parts: sections, conflicts: Conflicts.union(parts.map(part => part.resolved.conflicts)) };
+}
+
+/**
+ * Split a declaration's requirements, `resolved`, into sections by the
+ * property of the declaration each source was read from (`deps`), else by the
+ * requirement it is among. Each source is shown once.
+ */
+function declaredAsWritten(resolved: ResolvedRequirements): { parts: Map<string, WalkedEdge[]>; conflicts: Conflicts } {
+  const sections = new Map<string, WalkedEdge[]>();
+  for (const { requirement, source, reference } of declaredSources(resolved)) {
+    const property = propertyOf(reference ?? source, step => step.target !== undefined);
+    const section = property === undefined ? requirement : declName(property);
+    const edges = edgesOf([source], [reference]).map(edge => ({ edge, whole: false }));
+    sections.set(section, [...(sections.get(section) ?? []), ...edges]);
+  }
+  return { parts: sections, conflicts: resolved.conflicts };
 }
 
 /** Get the declaration of the target whose node `origin` is the provenance of, if it is a target's. */
@@ -147,10 +165,9 @@ function declOf(origin: IProvenanceStep | undefined): ITargetDecl | undefined {
   return undefined;
 }
 
-/** Get the property of `decl` that `source` was read from, if it was read from one: the declaration on its first model step written in `decl`. */
-function propertyOf(source: unknown, decl: ITargetDecl): IPropertyDecl | undefined {
-  const inTarget = (step: IProvenanceStep): step is IModelStep =>
-    step.kind === MODEL_PROVENANCE && (step as IModelStep).target === decl;
+/** Get the property `source` was read from, if it was read from one: the declaration on its first model step that `writtenIn` accepts. */
+function propertyOf(source: unknown, writtenIn: (step: IModelStep) => boolean): IPropertyDecl | undefined {
+  const inTarget = (step: IProvenanceStep): step is IModelStep => step.kind === MODEL_PROVENANCE && writtenIn(step as IModelStep);
   if (source instanceof Reference) {
     return source.steps.find(inTarget)?.property;
   }
@@ -164,7 +181,8 @@ function propertyOf(source: unknown, decl: ITargetDecl): IPropertyDecl | undefin
 
 /**
  * Split what a name resolved to into the tree's sections. One target is shown
- * by what it requires, a section per requirement, with what conflicts there; a
+ * by what it requires, a section per requirement, with what conflicts there,
+ * and a declaration's own requirements (a catalog's) likewise; a
  * target it reads for its files (resolved in `readFiles`) as that target.
  * Anything else (an external requirement, a catalog member, a global naming
  * several things) is shown as what it names, in one unnamed section, with each
@@ -175,6 +193,9 @@ export function sectionsOf(
   resolved: ResolvedRequirements,
   readFiles: ReadonlyMap<ResolvedTarget, ReadonlyArray<Dependency>> = new Map()
 ): DependencyTree {
+  if (!isDenoted(resolved)) {
+    return { title, ...declaredAsWritten(resolved), readFiles };
+  }
   const denoted = resolved.denoted;
   const [only] = denoted;
   if (denoted.length === 1 && only instanceof ResolvedTarget) {
