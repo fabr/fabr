@@ -26,6 +26,7 @@ import { RepositoryPublishRef, RepositoryWriter, SourceRef } from "../core/Repos
 import { soleWholeTarget } from "../core/TargetRef";
 import { refuseNamespaces } from "../core/NamespaceRef";
 import { PublishableFileSet } from "../core/PublishableFileSet";
+import { refuseSecrets } from "../core/SecretFile";
 import { Name, NAME_COMPONENT_SEPARATOR, NAME_LEVEL_SEPARATOR } from "../core/Name";
 import { FabrError, helpOf, toError } from "../core/Errors";
 import { declPosn, IPropertyDecl } from "../model/AST";
@@ -257,7 +258,13 @@ export class SyncSource implements FileSource {
   private packageBatch(paths: string[]): Computable<PublishableFileSet[]> {
     const release = [...this.table.values()].map(member => member.assigned);
     const materialized = Computable.forAll(
-      paths.map(path => this.content.materialize(this.member(path).content).then(sources => refuseNamespaces(sources))),
+      paths.map(path =>
+        this.content.materialize(this.member(path).content).then(sources => {
+          const files = refuseNamespaces(sources);
+          files.forEach(set => refuseSecrets(set, `published (sync member '${path}')`));
+          return files;
+        })
+      ),
       (...content: FileSet[][]) => content
     );
     return Computable.forAll([this.publishedTargets(), materialized], (targets, content) => ({ targets, content })).then(({ targets, content }) => {

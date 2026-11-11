@@ -21,6 +21,8 @@ them. The plugin supports three services:
 | Service | Named as | Read and written by |
 |---|---|---|
 | [Amazon S3](/reference/aws/s3/) | `@aws:s3:<bucket>:<key>` | the AWS plugin |
+| [SSM Parameter Store](/reference/aws/ssm/) | `@aws:ssm:<parameter>` | the AWS plugin |
+| [AWS Secrets Manager](/reference/aws/secretsmanager/) | `@aws:secretsmanager:<secret>` | the AWS plugin |
 | [Amazon ECR](/reference/aws/ecr/) | `@aws:ecr:<repository>:<tag>` | the container plugin |
 | [AWS CodeArtifact](/reference/aws/codeartifact/) | `@aws:codeartifact:<domain>:<repository>:<format>:…` | the plugin for the format's packages |
 
@@ -30,6 +32,8 @@ types](#repository-types).
 
 Each service's page lists the permissions the account's credentials need for it, and gives them as
 an IAM policy to start from: [S3](/reference/aws/s3/#permissions),
+[SSM Parameter Store](/reference/aws/ssm/#permissions),
+[Secrets Manager](/reference/aws/secretsmanager/#permissions),
 [ECR](/reference/aws/ecr/#permissions), [CodeArtifact](/reference/aws/codeartifact/#permissions).
 
 ## Coming from the AWS CLI or SDKs
@@ -190,8 +194,8 @@ name in `profile` or `AWS_PROFILE` against `~/.aws/config` (`[profile build]`) a
 `~/.aws/credentials` (`[build]`). Otherwise sign in (`aws sso login --profile <profile>`) or set
 the access-key variables.
 
-**`@aws has no service 'ec2'`**: a name under an account starts with the service: `s3`, `ecr` or
-`codeartifact`, or another account's ID.
+**`@aws has no service 'ec2'`**: a name under an account starts with the service: `s3`, `ssm`,
+`secretsmanager`, `ecr` or `codeartifact`, or another account's ID.
 
 **`'@aws:ecr' needs the repository type oci_repository, which no plugin in use defines`**: add the
 plugin that defines the type, here `plugin @fabr-build/container;`. See [Repository

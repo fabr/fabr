@@ -186,7 +186,7 @@ export function writeFileSet(targetDir: string, files: FileSet, options?: { copy
        * context: a copy (`fabr cp`) exports at its real mode (writable, durable
        * user space), while a staged file matches the read-only 0o444/0o555 of the
        * hardlinked blobs beside it (exec-if-executable, so a generated tool runs). */
-      const mode = options?.copy ? file.mode & 0o7777 : readOnlyPermissions(file.mode);
+      const mode = options?.copy ? file.mode & 0o7777 : stagedPermissions(file.mode);
       return stage(
         file
           .getBuffer()
@@ -196,6 +196,12 @@ export function writeFileSet(targetDir: string, files: FileSet, options?: { copy
       );
     }).then(() => undefined);
   }
+}
+
+/** Get the read-only mode an in-memory file of `mode` is staged with: the blobs' modes, or readable by its owner alone where `mode` grants nothing to anyone else (a secret). */
+function stagedPermissions(mode: number): number {
+  const readOnly = readOnlyPermissions(mode);
+  return (mode & 0o077) === 0 ? readOnly & 0o700 : readOnly;
 }
 
 /** Make a staged entry with its resolved destination and that destination's parent,
@@ -289,7 +295,7 @@ export function syncFileSet(targetDir: string, before: FileSet, after: FileSet):
         file
           .getBuffer()
           .then(buffer => writeFile(temp, buffer))
-          .then(() => fs.chmodSync(temp, readOnlyPermissions(file.mode)))
+          .then(() => fs.chmodSync(temp, stagedPermissions(file.mode)))
       );
     });
     /* Unlink the gone files (concurrent with the writes — disjoint names); their

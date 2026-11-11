@@ -133,7 +133,7 @@ describe("signing in to ECR", () => {
         return Computable.resolve(STUB_REGISTRY);
       },
     } as unknown as TargetContext;
-    const account = new AwsAccount({ name: "@aws", repositoryTypes: TYPES, context, signer: new RequestSigner(undefined), region: "us-east-1", endpoint });
+    const account = new AwsAccount({ name: "@aws", repositoryTypes: TYPES, context, signer: new RequestSigner(undefined), credentials: "profile:default", region: "us-east-1", endpoint });
     await refOf(account, "ecr");
     await refOf(account, "ecr:app:1");
     expect(made).to.deep.equal([{ type: "oci_repository", name: "ecr", url: endpoint.href }]);
@@ -150,7 +150,7 @@ describe("signing in to ECR", () => {
         return Computable.resolve(STUB_REGISTRY);
       },
     } as unknown as TargetContext;
-    const account = new AwsAccount({ name: "@aws", repositoryTypes: TYPES, context, signer: new RequestSigner(undefined), region: "eu-west-2", accountId: "123456789012" });
+    const account = new AwsAccount({ name: "@aws", repositoryTypes: TYPES, context, signer: new RequestSigner(undefined), credentials: "profile:default", region: "eu-west-2", accountId: "123456789012" });
     await refOf(account, "ecr");
     expect(made).to.deep.equal(["https://123456789012.dkr.ecr.eu-west-2.amazonaws.com"]);
     expect(signed).to.have.lengthOf(0);
@@ -169,7 +169,7 @@ describe("signing in to ECR", () => {
 describe("an account's ECR registry", () => {
   it("is refused, naming the plugin to add, where no plugin in use defines oci_repository", async () => {
     const context = { name: "@aws", hasRepositoryType: () => false } as unknown as TargetContext;
-    const account = new AwsAccount({ name: "@aws", repositoryTypes: TYPES, context, signer: new RequestSigner(undefined), region: "us-east-1" });
+    const account = new AwsAccount({ name: "@aws", repositoryTypes: TYPES, context, signer: new RequestSigner(undefined), credentials: "profile:default", region: "us-east-1" });
     const err = await refOf(account, "ecr:app:1").then(
       () => undefined,
       e => e as Error
@@ -187,7 +187,7 @@ describe("an account's ECR registry", () => {
         return Computable.resolve(STUB_REGISTRY);
       },
     } as unknown as TargetContext;
-    const account = new AwsAccount({ name: "@aws", repositoryTypes: TYPES, context, signer: new RequestSigner(undefined), region: "eu-west-2" });
+    const account = new AwsAccount({ name: "@aws", repositoryTypes: TYPES, context, signer: new RequestSigner(undefined), credentials: "profile:default", region: "eu-west-2" });
     const registry = (await refOf(account, "111122223333:ecr")) as PartialRepositoryRef;
     await refOf(account, "111122223333:ecr:app:1");
     expect(made).to.deep.equal([{ name: "111122223333:ecr", url: "https://111122223333.dkr.ecr.eu-west-2.amazonaws.com" }]);

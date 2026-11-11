@@ -35,6 +35,8 @@ import {
 import { CODEARTIFACT_SERVICE, CodeArtifactToken, endpointUrl, formatCredential } from "./CodeArtifact";
 import { ECR_SERVICE, EcrSignIn, registryUrl } from "./Ecr";
 import { S3_SERVICE, S3Repository } from "./S3Repository";
+import { SECRETS_MANAGER_SERVICE, SecretsManagerSecrets } from "./SecretsManager";
+import { SSM_SERVICE, SsmParameters } from "./Ssm";
 import { onlyTo, RequestSigner, requestUrl } from "./Signing";
 import { identityRequest, parseCallerAccount, STS_SERVICE } from "./Sts";
 import { DEFAULT_REGION, IAccountSettings } from "./Types";
@@ -53,6 +55,8 @@ const REPOSITORY_TYPES = "AWS_REPOSITORY_TYPES";
  */
 export class AwsAccount extends Namespace {
   private readonly s3: S3Repository;
+  private readonly ssm: SsmParameters;
+  private readonly secretsManager: SecretsManagerSecrets;
   /** What signs in to every ECR registry the account reaches: one token serves each in its region. */
   private readonly ecrSignIn: EcrSignIn;
   /** Each ECR registry, by its owner's ID (empty for the account's own), once it is named. */
@@ -67,6 +71,8 @@ export class AwsAccount extends Namespace {
   constructor(private readonly settings: IAccountSettings) {
     super();
     this.s3 = new S3Repository(settings);
+    this.ssm = new SsmParameters(settings);
+    this.secretsManager = new SecretsManagerSecrets(settings);
     this.ecrSignIn = new EcrSignIn(settings);
   }
 
@@ -181,6 +187,12 @@ export class AwsAccount extends Namespace {
     if (name === S3_SERVICE) {
       return Computable.resolve<Repository>(this.s3);
     }
+    if (name === SSM_SERVICE) {
+      return Computable.resolve<Repository>(this.ssm);
+    }
+    if (name === SECRETS_MANAGER_SERVICE) {
+      return Computable.resolve<Repository>(this.secretsManager);
+    }
     if (name === ECR_SERVICE) {
       return this.registry();
     }
@@ -204,7 +216,7 @@ export class AwsAccount extends Namespace {
 }
 
 /** The services an account holds. */
-const SERVICES = [S3_SERVICE, ECR_SERVICE, CODEARTIFACT_SERVICE];
+const SERVICES = [S3_SERVICE, SSM_SERVICE, SECRETS_MANAGER_SERVICE, ECR_SERVICE, CODEARTIFACT_SERVICE];
 
 /** @return true if `name` is an AWS account ID, otherwise false: 12 digits, which no service's name is. */
 function isAccountId(name: string): boolean {
@@ -323,12 +335,19 @@ function createAccount(context: TargetContext): Computable<Namespace> {
         name: context.name,
         context,
         signer: new RequestSigner(profile?.toString()),
+        credentials: credentialsOf(profile?.toString()),
         region: region?.toString() ?? DEFAULT_REGION,
         endpoint: endpoint === undefined ? undefined : endpointOf(endpoint.toString(), context.name),
         accountId: accountId === undefined ? undefined : accountIdOf(accountId.toString(), context.name),
         repositoryTypes: repositoryTypesOf(types),
       })
   );
+}
+
+/** Name the credentials an account with `profile` signs with, as the AWS CLI finds them: the access key's ID the environment gives, or the profile. */
+function credentialsOf(profile: string | undefined): string {
+  const key = process.env.AWS_ACCESS_KEY_ID;
+  return key !== undefined && key !== "" ? `key:${key}` : `profile:${profile ?? process.env.AWS_PROFILE ?? "default"}`;
 }
 
 /** Read {@link REPOSITORY_TYPES}: each AWS service's or CodeArtifact format's repository type, one word. */

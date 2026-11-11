@@ -79,6 +79,7 @@ import {
 import { PackageFileSet } from "./PackageFileSet";
 import { mapComputable, mapObject } from "../support/Functional";
 import { registerTempTree, removeTempTree, writeFileSet } from "./Staging";
+import { refuseSecrets } from "./SecretFile";
 import { HostLink, SymlinkFile } from "./SymlinkFile";
 import { computableFind } from "./WorkList";
 import { admitted, IOutputHandle, ITaskReport, type TaskTracker } from "../support/Execute";
@@ -86,6 +87,7 @@ import { Semaphore } from "../support/Semaphore";
 import { Diagnostic, Log } from "../support/Log";
 import type { Credential } from "./Credential";
 import { SNIFF_LENGTH, sniffMime } from "../support/Mime";
+import { parseJson, toJsonObject } from "../support/Json";
 
 /** What a download asks for, made only where the cache holds no answer. */
 export interface IFetchRequest {
@@ -374,6 +376,10 @@ export class BuildCache {
    * key, holding the previous build's input manifest, a link to the entry it
    * produced, and the tool's own kept state (see {@link writeBuildState}). */
   private readonly incrementalRoot: string;
+  /** The secrets store: one file per record fetched with {@link getOrFetchSecret},
+   * whose content must not enter the shared pools (a secret). The directory and
+   * its files are readable by this user alone. */
+  private readonly secretsRoot: string;
   /** Clock for freshness decisions (injectable for tests); cache policy only,
    * never a build input. */
   private readonly now: () => number;
@@ -385,6 +391,8 @@ export class BuildCache {
    * what keeps them distinct from another process's; the +rename is what makes
    * each appear in the store atomically). */
   private tempCounter = 0;
+  /** Secret records currently being fetched, by hashed key: a second demand joins the first. */
+  private readonly inflightSecrets = new Map<string, Computable<ISecretRecord>>();
   /** Entries currently being created, by hashed key: a second demand joins the
    * first rather than starting its own build. This process only — two runs
    * sharing a cache duplicate the effort, each in its own work tree. */
@@ -447,6 +455,7 @@ export class BuildCache {
     this.projectsRoot = path.resolve(cachePath, "projects");
     this.incrementalRoot = path.resolve(cachePath, "incremental");
     this.gcRoot = path.resolve(cachePath, "gc");
+    this.secretsRoot = path.resolve(cachePath, "secrets");
     this.log = log;
     this.now = now;
     this.refresh = refresh;
@@ -810,6 +819,68 @@ export class BuildCache {
    * yet revalidated this run under {@link refresh}, otherwise false. */
   private mustRefresh(key: string, entry: ICacheEntry): boolean {
     return this.refresh && entry.meta !== undefined && !this.refreshed.has(key);
+  }
+
+  /*
+   * ── Secrets store ───────────────────────────────────────────
+   * Records whose content must not enter the shared pools, each a file of its
+   * own named by its key, readable by this user alone. Kept fresh for
+   * MINIMUM_FRESHNESS_MS and trimmed once past it.
+   */
+
+  /**
+   * Get the record `cacheKey` and `tag` name (see {@link getOrFetch}) from the
+   * secrets store, or fetch it with `fetch` where the store holds none, the one
+   * it holds is over {@link MINIMUM_FRESHNESS_MS} old, or `--refresh` has not
+   * yet refetched it this run. A transient failure to fetch serves the held
+   * record, saying so against `resource`.
+   */
+  public getOrFetchSecret(cacheKey: string, tag: string, resource: string, fetch: () => Computable<ISecretRecord>): Computable<ISecretRecord> {
+    const key = hashString(`secret:${tag} ${cacheKey}`);
+    const running = this.inflightSecrets.get(key);
+    if (running) {
+      return running;
+    }
+    const file = path.resolve(this.secretsRoot, key);
+    const held = readSecretRecord(file);
+    if (held !== undefined && this.now() - held.mtimeMs < MINIMUM_FRESHNESS_MS && !(this.refresh && !this.refreshed.has(key))) {
+      return Computable.resolve(held.record);
+    }
+    if (this.refresh) {
+      this.refreshed.add(key);
+    }
+    const result = settledFrom(
+      fetch().then(
+        record => this.writeSecretRecord(file, record).then(() => record),
+        err => {
+          if (held !== undefined && isTransientFetchError(err)) {
+            this.log.log(DIAG_SERVING_STALE, { url: resource, reason: err instanceof Error ? err.message : String(err) });
+            return held.record;
+          }
+          throw err;
+        }
+      )
+    );
+    this.inflightSecrets.set(key, result);
+    result.finally(() => this.inflightSecrets.delete(key));
+    return result;
+  }
+
+  /** Write `record` to `file` in the secrets store, atomically, readable by this user alone. */
+  private writeSecretRecord(file: string, record: ISecretRecord): Computable<void> {
+    let tmp: string;
+    try {
+      fs.mkdirSync(this.secretsRoot, { recursive: true, mode: SECRETS_DIR_MODE });
+      fs.chmodSync(this.secretsRoot, SECRETS_DIR_MODE);
+      tmp = this.tempPath("secret");
+    } catch (err) {
+      return Computable.reject(toError(err));
+    }
+    const text = JSON.stringify({ identity: record.identity, secret: record.secret, value: record.value.toString("base64") });
+    /* Stamped with the cache's clock, which is what freshness and the trim read it against. */
+    return writeFile(tmp, text, { mode: SECRET_RECORD_MODE })
+      .then(() => updateFileTime(tmp, new Date(this.now())))
+      .then(() => rename(tmp, file));
   }
 
   /**
@@ -1826,6 +1897,11 @@ export class BuildCache {
    * blob-backed BuildFiles. The work dir can be discarded afterwards.
    */
   private storeContent(files: FileSet): Computable<FileSet> {
+    try {
+      refuseSecrets(files, "stored in the build cache");
+    } catch (err) {
+      return Computable.reject(toError(err));
+    }
     return mapComputable(files, ([name, file]): [string, IFile] | Computable<[string, IFile]> => {
       if (file instanceof SymlinkFile) {
         /* A symlink carries its target inline in the manifest, not a blob, so it
@@ -2209,7 +2285,8 @@ export class BuildCache {
    * manifest at the root;
    * likewise expired incremental
    * records, discovered-deps records (and then-empty anchors), tree dirs and
-   * unheld kept work dirs; and reap dead-pid work trees. A root-level name the layout doesn't
+   * unheld kept work dirs; secret records past {@link MINIMUM_FRESHNESS_MS};
+   * and reap dead-pid work trees. A root-level name the layout doesn't
    * recognize is left alone — another fabr version's store, or a shared
    * directory's contents, are not this layout's to delete.
    */
@@ -2257,6 +2334,12 @@ export class BuildCache {
         return;
       }
       await this.removeIfPast(path.resolve(this.treeRoot, tree.name), GC_MAX_AGE_MS);
+    }
+    for (const record of await readdir(this.secretsRoot).catch(() => [] as fs.Dirent[])) {
+      if (shouldAbort()) {
+        return;
+      }
+      await this.removeIfPast(path.resolve(this.secretsRoot, record.name), MINIMUM_FRESHNESS_MS);
     }
     await this.expireKeptWorkDirs(shouldAbort);
     this.reapWorkTrees();
@@ -2654,6 +2737,40 @@ function delay(ms: number): Computable<void> {
  * it. A definite answer (another 4xx) or a failure of the content itself
  * (integrity, a corrupt archive) is not.
  */
+/** The secrets store's directory mode: this user alone may list or enter it. */
+const SECRETS_DIR_MODE = 0o700;
+/** A secret record's mode: this user alone may read or write it. */
+const SECRET_RECORD_MODE = 0o600;
+
+/**
+ * A record kept in the secrets store ({@link BuildCache.getOrFetchSecret}):
+ * its content, what identifies that content at its source without being
+ * derived from it (a parameter's ARN and version), and whether its source says
+ * the content is secret.
+ */
+export interface ISecretRecord {
+  readonly identity: string;
+  readonly secret: boolean;
+  readonly value: Buffer;
+}
+
+/** Read the secret record at `file`, with when it was written, or undefined where there is none or it is damaged. */
+function readSecretRecord(file: string): { record: ISecretRecord; mtimeMs: number } | undefined {
+  try {
+    const mtimeMs = fs.statSync(file).mtimeMs;
+    const record = parseJson(fs.readFileSync(file, "utf8"), file, json => {
+      const { identity, secret, value } = toJsonObject(json);
+      if (typeof identity !== "string" || typeof secret !== "boolean" || typeof value !== "string") {
+        throw new Error("not a secret record");
+      }
+      return { identity, secret, value: Buffer.from(value, "base64") };
+    });
+    return { record, mtimeMs };
+  } catch {
+    return undefined;
+  }
+}
+
 function isTransientFetchError(err: unknown): boolean {
   if (err instanceof HttpStatusError) {
     return err.statusCode >= 500 || err.statusCode === 408 || err.statusCode === 429;

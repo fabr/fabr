@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { FetchOptions, IFetchRequest } from "../core/BuildCache";
+import { FetchOptions, IFetchRequest, ISecretRecord } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
 import { ITaskReport } from "../support/Execute";
 import { FileSet, FileSource } from "../core/FileSet";
@@ -467,6 +467,16 @@ export abstract class TargetContext {
       url => run => this.runTask({ kind: "fetch", url, ...report }, run),
       { ...options, role: report.role }
     );
+  }
+
+  /**
+   * Get the record `cacheKey` and `tag` name from the cache's secrets store, for
+   * content that must not enter the shared pools (a secret), or fetch it from
+   * `url` with `fetch` (see BuildCache.getOrFetchSecret), the fetch reported
+   * as a task as {@link fetch} reports one.
+   */
+  public fetchSecret(cacheKey: string, tag: string, url: string, fetch: () => Computable<ISecretRecord>, report: IFetchReport): Computable<ISecretRecord> {
+    return this.context.execution.buildCache.getOrFetchSecret(cacheKey, tag, url, () => this.runTask({ kind: "fetch", url, ...report }, () => fetch()));
   }
 
   public getFlags(name: string, overrides?: Constraints): Computable<Flag[]> {

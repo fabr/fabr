@@ -24,7 +24,8 @@ import * as path from "path";
 import * as http from "node:http";
 import { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
-import { ActionContext, BuildCache, IBuildState, IFetchRequest, isReapable, MINIMUM_FRESHNESS_MS, ownerName } from "./BuildCache";
+import { ActionContext, BuildCache, IBuildState, IFetchRequest, ISecretRecord, isReapable, MINIMUM_FRESHNESS_MS, ownerName } from "./BuildCache";
+import { HttpStatusError } from "./Errors";
 import { PackageFileSet, PackageGraphBuilder } from "./PackageFileSet";
 import { ActionFileInputs, BuildAction, BuildResult, IBuildActionDefinition, preciseActionKey } from "./BuildAction";
 import { narrowDeps } from "./BuildCache";
@@ -36,6 +37,7 @@ import { DEFAULT_FILE_MODE, FileSet, IFile } from "./FileSet";
 import { hashString } from "./FSWrapper";
 import { FSFile } from "./FSFileSource";
 import { MemoryFile } from "./MemoryFS";
+import { SecretFile } from "./SecretFile";
 import { SymlinkFile } from "./SymlinkFile";
 import { Log } from "../support/Log";
 import { expect } from "chai";
@@ -2105,6 +2107,81 @@ describe("BuildCache non-immutable fetches", () => {
     clock += 1_000_000_000; /* far past any origin-declared lifetime */
     expect(await fetchDoc()).to.equal("one");
     expect(origin.requests).to.have.lengthOf(1);
+  });
+});
+
+describe("BuildCache secrets store", () => {
+  let root: string;
+  let clock: number;
+  let fetched: number;
+
+  /** A fetch answering `value` as version `version` of a secret, counting each time it is made. */
+  const answer = (value: string, version = 1) => (): Computable<ISecretRecord> => {
+    fetched++;
+    return Computable.resolve({ identity: `param:${version}`, secret: true, value: Buffer.from(value) });
+  };
+  const get = (cache: BuildCache, fetch: () => Computable<ISecretRecord>): Promise<string> =>
+    toPromise(cache.getOrFetchSecret("param", "test:1", "ssm:param", fetch).then(record => `${record.identity}=${record.value.toString()}`));
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-secrets-test-"));
+    clock = 1_000_000;
+    fetched = 0;
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("keeps a record for a day, readable by this user alone, then fetches it again", async () => {
+    const cache = new BuildCache(root, NULL_LOG, () => clock);
+    expect(await get(cache, answer("one"))).to.equal("param:1=one");
+    expect(fs.statSync(path.join(root, "secrets")).mode & 0o777).to.equal(0o700);
+    const [record] = fs.readdirSync(path.join(root, "secrets"));
+    expect(fs.statSync(path.join(root, "secrets", record)).mode & 0o777).to.equal(0o600);
+    /* Nothing of it is in the shared pools. */
+    expect(fs.existsSync(path.join(root, "blob"))).to.equal(false);
+    const later = new BuildCache(root, NULL_LOG, () => clock + MINIMUM_FRESHNESS_MS - 1_000);
+    expect(await get(later, answer("two", 2))).to.equal("param:1=one");
+    expect(fetched).to.equal(1);
+    const stale = new BuildCache(root, NULL_LOG, () => clock + MINIMUM_FRESHNESS_MS + 1_000);
+    expect(await get(stale, answer("two", 2))).to.equal("param:2=two");
+    expect(fetched).to.equal(2);
+  });
+
+  it("fetches a fresh record again once per run under refresh", async () => {
+    await get(new BuildCache(root, NULL_LOG, () => clock), answer("one"));
+    const refreshing = new BuildCache(root, NULL_LOG, () => clock, true);
+    expect(await get(refreshing, answer("two", 2))).to.equal("param:2=two");
+    expect(await get(refreshing, answer("three", 3))).to.equal("param:2=two");
+    expect(fetched).to.equal(2);
+  });
+
+  it("serves the held record where fetching it fails transiently, and not where it is refused", async () => {
+    await get(new BuildCache(root, NULL_LOG, () => clock), answer("one"));
+    const warnings: unknown[] = [];
+    const stale = new BuildCache(root, { log: (_diag, data) => warnings.push(data) } as Log, () => clock + 2 * MINIMUM_FRESHNESS_MS);
+    expect(await get(stale, () => Computable.reject(new HttpStatusError(503, "http://ssm")))).to.equal("param:1=one");
+    expect(warnings).to.deep.equal([{ url: "ssm:param", reason: "503 Service Unavailable: http://ssm" }]);
+    const refused = await toPromise(stale.getOrFetchSecret("param", "test:1", "ssm:param", () => Computable.reject(new Error("no such parameter")))).catch(
+      (err: Error) => err.message
+    );
+    expect(refused).to.equal("no such parameter");
+  });
+
+  it("trims a record past its day", async () => {
+    await get(new BuildCache(root, NULL_LOG, () => clock), answer("one"));
+    const later = new BuildCache(root, NULL_LOG, () => clock + 2 * MINIMUM_FRESHNESS_MS + 1_000);
+    await toPromise(later.maybeCollectGarbage());
+    expect(fs.readdirSync(path.join(root, "secrets"))).to.deep.equal([]);
+  });
+
+  it("refuses to store a secret in an entry or a tree", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const secret = new FileSet(new Map([["ca.key", new SecretFile("@aws:ssm:/ca.key", "param:1", Buffer.from("key"))]]));
+    const message = "'ca.key' is a secret (@aws:ssm:/ca.key), so it cannot be stored in the build cache";
+    expect(await toPromise(cache.getOrCreate("secret entry", () => produced(secret))).catch((err: Error) => err.message)).to.equal(message);
+    expect(await toPromise(cache.ensureTree(secret)).catch((err: Error) => err.message)).to.equal(message);
   });
 });
 

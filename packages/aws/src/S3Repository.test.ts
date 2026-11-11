@@ -194,7 +194,7 @@ function fetchingContext(options: Array<FetchOptions | undefined>): TargetContex
 }
 
 function accountAt(store: IFakeStore, options: Array<FetchOptions | undefined> = []): AwsAccount {
-  return new AwsAccount({ name: "@aws", context: fetchingContext(options), signer: new RequestSigner(undefined), region: "us-east-1", endpoint: new URL(store.url), repositoryTypes: new Map() });
+  return new AwsAccount({ name: "@aws", context: fetchingContext(options), signer: new RequestSigner(undefined), credentials: "profile:default", region: "us-east-1", endpoint: new URL(store.url), repositoryTypes: new Map() });
 }
 
 /** Vend the reference `name`, written after `separator`, makes in `source`, following a namespace's members as looking it up does. */
@@ -498,7 +498,7 @@ describe("the S3 service of an AWS account", () => {
 
   it("lists its services", async () => {
     const children = await new NamespaceRef(accountAt(store), "@aws").children();
-    expect([...children.keys()]).to.deep.equal(["s3", "ecr", "codeartifact"]);
+    expect([...children.keys()]).to.deep.equal(["s3", "ssm", "secretsmanager", "ecr", "codeartifact"]);
     expect(children.get("ecr")?.toString()).to.equal("@aws:ecr");
   });
 });

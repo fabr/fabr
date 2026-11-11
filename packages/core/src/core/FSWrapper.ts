@@ -90,9 +90,9 @@ export function readFileBuffer(filepath: string): Computable<Buffer> {
  * overwriting an existing file — the `wx` flag — so a caller can let the
  * filesystem reject a clobber (e.g. two staged names that collide only in case
  * on a case-insensitive filesystem) instead of silently losing one. */
-export function writeFile(filepath: string, data: string | Buffer, opts?: { exclusive?: boolean }): Computable<void> {
+export function writeFile(filepath: string, data: string | Buffer, opts?: { exclusive?: boolean; mode?: number }): Computable<void> {
   return Computable.from<void>((resolve, reject) => {
-    fs.writeFile(filepath, data, { flag: opts?.exclusive ? "wx" : "w" }, err => {
+    fs.writeFile(filepath, data, { flag: opts?.exclusive ? "wx" : "w", ...(opts?.mode === undefined ? {} : { mode: opts.mode }) }, err => {
       if (err) {
         reject(err);
       } else {

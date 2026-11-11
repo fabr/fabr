@@ -29,6 +29,8 @@ export interface IAccountSettings {
   readonly name: string;
   readonly context: TargetContext;
   readonly signer: RequestSigner;
+  /** What identifies the credentials `signer` signs with: the profile, and the access key's ID where the environment gives one. Part of the key of what is kept from a read with them. */
+  readonly credentials: string;
   /** The region of the account's regional services. */
   readonly region: string;
   readonly endpoint?: URL;

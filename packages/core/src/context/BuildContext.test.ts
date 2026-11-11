@@ -24,6 +24,7 @@ import * as nodePath from "node:path";
 import { Computable } from "../core/Computable";
 import { EMPTY_FILESET, FileSet, FileSource } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
+import { SecretFile } from "../core/SecretFile";
 import {
   ProjectedPackage,
   PublishMember,
@@ -522,6 +523,14 @@ class TestRepo implements Repository, RepositoryLookup {
   }
 }
 registerRepositoryProvider("test_repo", context => Computable.resolve(new TestRepo(context.name)));
+
+/* Repository double whose every reference reads one secret file, `key`. */
+class TestSecretRepo extends TestRepo {
+  public override resolve(reference: RepositoryRef): Computable<FileSet> {
+    return Computable.resolve(new FileSet(new Map([["key", new SecretFile(`vault:${reference.name}`, `${reference.name}:1`, Buffer.from("hidden"))]])));
+  }
+}
+registerRepositoryProvider("test_secret_repo", context => Computable.resolve(new TestSecretRepo(context.name)));
 
 /* A lookup that defers its fetch: it answers each reference with the node of a
  * package named for the repository and the reference, at the version `1`, and
@@ -2047,6 +2056,21 @@ describe("BuildContext", () => {
       ["c1", ["pub:alpha:1.0.0"]],
       ["c2", ["pub:beta:2.0.0"]],
     ]);
+  });
+
+  it("Refuses to publish a secret", async () => {
+    const config = releaseConfig(
+      "build",
+      "targetdef test_pub { }\ntargetdef test_secret_repo { }\ntargetdef sync { * = FILES; }\ntest_pub pub { }\ntest_secret_repo vault { }\nsync release { pub:alpha:1.0.0 = vault:ca; }\n"
+    );
+    let err: unknown;
+    try {
+      const [release] = await config.materialize(writtenOnCommandLine("release"));
+      await (release as SyncSource).members();
+    } catch (e) {
+      err = e;
+    }
+    expect(String(err)).to.contain("'key' is a secret (vault:ca), so it cannot be published (sync member 'pub/alpha/1.0.0')");
   });
 
   it("Packages only the members a reference names", async () => {

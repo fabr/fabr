@@ -46,6 +46,7 @@ export * from "./core/RunnableFileSet";
 export * from "./core/PublishableFileSet";
 export * from "./core/Flag";
 export * from "./core/MemoryFS";
+export * from "./core/SecretFile";
 export * from "./core/SymlinkFile";
 export * from "./core/Errors";
 export * from "./core/Provenance";

@@ -24,6 +24,7 @@ import { Computable } from "./Computable";
 import { ConflictError } from "./Errors";
 import { CANONICAL, FileSet } from "./FileSet";
 import { MemoryFile } from "./MemoryFS";
+import { SecretFile } from "./SecretFile";
 import { Name, NameBuilder } from "./Name";
 import { getResultFileSet, syncFileSet, writeFileSet } from "./Staging";
 import { expect } from "chai";
@@ -150,6 +151,15 @@ describe("writeFileSet modes", () => {
     await toPromise(writeFileSet(work, files));
     expect(fs.statSync(path.join(work, "bin/gen.sh")).mode & 0o111, "exec bit not applied").to.not.equal(0);
     expect(fs.statSync(path.join(work, "plain.txt")).mode & 0o111, "stray exec bit").to.equal(0);
+  });
+
+  it("stages a secret readable by its owner alone, and copies it out writable by its owner alone", async () => {
+    const files = new FileSet(new Map([["ca.key", new SecretFile("@aws:ssm:/ca.key", "param:1", Buffer.from("key"))]]));
+    await toPromise(writeFileSet(path.join(work, "staged"), files));
+    expect(fs.statSync(path.join(work, "staged/ca.key")).mode & 0o777).to.equal(0o400);
+    await toPromise(writeFileSet(path.join(work, "copied"), files, { copy: true }));
+    expect(fs.statSync(path.join(work, "copied/ca.key")).mode & 0o777).to.equal(0o600);
+    expect(fs.readFileSync(path.join(work, "copied/ca.key"), "utf8")).to.equal("key");
   });
 
   it("fails cleanly (does not clobber) when a staged path already exists", async () => {
