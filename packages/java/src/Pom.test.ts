@@ -215,6 +215,19 @@ describe("effectivePom", () => {
     );
     expect(refused).to.match(/property 'v' refers to itself/);
   });
+
+  it("refuses a property that expands beyond any real value, without expanding it", async () => {
+    /* Each property doubles the one before: p40 would be 2^40 characters. */
+    const doubling = Array.from({ length: 40 }, (_, i) => `<p${i + 1}>\${p${i}}\${p${i}}</p${i + 1}>`).join("");
+    const bomb = `<project><groupId>g</groupId><artifactId>a</artifactId><version>1</version>
+      <properties><p0>x</p0>${doubling}</properties>
+      <dependencies><dependency><groupId>x</groupId><artifactId>y</artifactId><version>\${p40}</version></dependency></dependencies></project>`;
+    const refused = await effective("g:a:1", bomb).then(
+      () => undefined,
+      (err: Error) => err.message
+    );
+    expect(refused).to.match(/property 'p\d+' expands to more than 65536 characters/);
+  });
 });
 
 describe("parsePom", () => {

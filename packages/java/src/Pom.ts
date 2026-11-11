@@ -85,6 +85,9 @@ export type PomLoader = (coordinate: PomCoordinate) => Computable<RawPom>;
 /* How deep a parent chain or import nesting may go before it is taken for a cycle. */
 const MAX_DEPTH = 32;
 
+/* The most characters a field may expand to through its properties; far beyond any real coordinate or version. */
+const MAX_EXPANDED_LENGTH = 64 * 1024;
+
 function readDependency(element: XmlElement, what: string): PomDependency {
   const groupId = xmlText(element, "groupId");
   const artifactId = xmlText(element, "artifactId");
@@ -187,11 +190,15 @@ function parentChain(pom: RawPom, load: PomLoader, what: string, depth = 0): Com
 /**
  * Make an interpolator over `properties` and the project's own coordinates:
  * `${name}` is replaced by its value, itself interpolated. A reference to
- * nothing known (`${env.HOME}`, `${java.version}`) is left as written.
+ * nothing known (`${env.HOME}`, `${java.version}`) is left as written. Each
+ * property is expanded once, and a text expanding beyond
+ * {@link MAX_EXPANDED_LENGTH} is refused.
  */
 function interpolator(properties: ReadonlyMap<string, string>, what: string): (text: string) => string {
-  const expand = (text: string, seen: ReadonlySet<string>): string =>
-    text.replace(/\$\{([^}]+)\}/g, (whole, name: string) => {
+  const expanded = new Map<string, string>();
+  const expand = (text: string, seen: ReadonlySet<string>): string => {
+    let length = text.length;
+    return text.replace(/\$\{([^}]+)\}/g, (whole, name: string) => {
       const value = properties.get(name);
       if (value === undefined) {
         return whole;
@@ -199,8 +206,18 @@ function interpolator(properties: ReadonlyMap<string, string>, what: string): (t
       if (seen.has(name)) {
         throw new FabrError(`${what}: property '${name}' refers to itself`);
       }
-      return expand(value, new Set([...seen, name]));
+      let result = expanded.get(name);
+      if (result === undefined) {
+        result = expand(value, new Set([...seen, name]));
+        expanded.set(name, result);
+      }
+      length += result.length - whole.length;
+      if (length > MAX_EXPANDED_LENGTH) {
+        throw new FabrError(`${what}: property '${name}' expands to more than ${MAX_EXPANDED_LENGTH} characters`);
+      }
+      return result;
     });
+  };
   return text => expand(text, new Set());
 }
 
