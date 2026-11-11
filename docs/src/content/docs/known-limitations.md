@@ -1,6 +1,6 @@
 ---
 title: Known limitations
-description: Current limitations and rough edges in fabr you should be aware of — shell scripts' host tools, optional npm dependencies, and cache concurrency.
+description: Current limitations and rough edges in fabr you should be aware of — the programs shell scripts start, optional npm dependencies, and cache concurrency.
 ---
 
 Fabr builds, tests and runs real JavaScript, TypeScript and Java projects, itself included, but it
@@ -13,25 +13,24 @@ sections of the [Java reference](/reference/java/dependencies/#not-supported) pa
 
 | Limitation | Effect |
 |---|---|
-| [Shell scripts use the `sh` on your machine](#shell-scripts-run-on-the-sh-on-your-machine) | A different `sh`, or a different program a script runs, can change results without fabr noticing. |
+| [Programs a shell script starts are not tracked](#programs-a-shell-script-starts-are-not-tracked) | A different version of a program a script runs can change results without fabr noticing. |
 | [Optional dependencies required as `*` are dropped](#optional-npm-dependencies-required-only-as--are-left-out-silently) | Such a dependency is missing, with no warning. |
 | [No lock between fabr processes](#concurrent-fabr-processes-duplicate-work-rather-than-sharing-it) | Two builds at once may each do the same work; deleting the cache under `fabr run` removes the running program. |
 
-## Shell scripts run on the `sh` on your machine
+## Programs a shell script starts are not tracked
 
 Fabr intends a build to depend only on its
-[declared inputs](/introduction/#the-same-result-every-time). JavaScript programs meet that: they
-run on the Node.js release that the [`NODE` setting](/reference/js/dependencies/#the-nodejs-version)
-names, which fabr downloads and tracks like any other input. A [`script`](/reference/standard-rules/#script)
-target is the exception. It runs under the `sh` that fabr finds on your `PATH`, and what fabr records
-about it is only its name: not where it was found, and not which shell or version it is. The same
-goes for any program the script starts.
+[declared inputs](/introduction/#the-same-result-every-time). A [`script`](/reference/standard-rules/#script)
+target runs under your machine's `/bin/sh`, which fabr identifies by its contents, as it does any
+[program on your machine](/guides/tools/#programs-on-your-machine). The programs the script starts
+by name are the exception: fabr records nothing about them.
 
-So **a different `sh`, or a different version of a program a script runs, can change a result
-without invalidating the cache.** Fabr reuses results built with the old one.
+So **a different version of a program a script runs can change a result without invalidating the
+cache.** Fabr reuses results built with the old one.
 
 **Workaround:** write the step as a `js_script` where you can, so that it runs on the Node.js
-release `NODE` names. Otherwise, keep the shell and the programs scripts use the same on machines
+release [`NODE`](/reference/js/dependencies/#the-nodejs-version) names, or name each program as a
+command of its own (`@host:protoc`). Otherwise, keep the programs scripts use the same on machines
 that should produce the same results, and delete the cache after changing them.
 
 ## Optional npm dependencies required only as `*` are left out silently

@@ -140,9 +140,9 @@ produce the same output. Three things follow.
   rather than using the `node` or `java` on your `PATH`, so switching what your machine has
   installed doesn't change a build.
 
-One gap remains: the `sh` that runs `script` targets, and the programs a script starts, are found
-on your machine and aren't part of that guarantee. See
-[Known limitations](/known-limitations/#shell-scripts-run-on-the-sh-on-your-machine).
+One gap remains: the programs a `script` target starts are found on your machine and aren't part
+of that guarantee. See
+[Known limitations](/known-limitations/#programs-a-shell-script-starts-are-not-tracked).
 
 ## Terms used in these docs
 

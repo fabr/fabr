@@ -137,11 +137,11 @@ function setsMoreThanBuild(settings: IImageSettings): boolean {
 
 /** @return the install holding `engine`'s one program, named `engine`. */
 function engineProgram(target: string, engine: RunnableFileSet): FileSet {
-  const files = [...engine].map(([, file]) => file);
-  if (files.length !== 1 || !(files[0] instanceof HostLink)) {
+  const line = engine.toCommandLine();
+  if (line.length !== 1 || !(line[0] instanceof HostLink)) {
     throw new FabrError(`CONTAINER_ENGINE, for ${target}'s build command, is no program of this host`).withHelp("name the program, as in '@host:docker' or '@host:podman'");
   }
-  return new FileSet(new Map<string, IFile>([["engine", files[0]]]));
+  return new FileSet(new Map<string, IFile>([["engine", line[0]]]));
 }
 
 /** @return the image `bases` holds, or undefined where it holds none; anything else is an error. */

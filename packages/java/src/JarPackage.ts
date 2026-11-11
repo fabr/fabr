@@ -47,7 +47,6 @@ import {
   readZipMembers,
   writeZip,
   ResolutionContext,
-  ArgumentPart,
   RunnableArgument,
   RunnableFileSet,
   stringConfig,
@@ -382,10 +381,13 @@ export function makeJarRunnable(
   const agentArgs: RunnableArgument[] = agents.flatMap(agent =>
     [...agent]
       .filter(([name]) => name.endsWith(".jar"))
-      .map(([name]): RunnableArgument => [
-        "-javaagent:",
-        { installPath: path.posix.join(LIB_DIR, agent instanceof PackageFileSet && agent.packageName !== undefined ? `${agent.packageName}/${name}` : name) },
-      ])
+      .map(([name]): RunnableArgument => ({
+        join: "",
+        parts: [
+          "-javaagent:",
+          { installFile: path.posix.join(LIB_DIR, agent instanceof PackageFileSet && agent.packageName !== undefined ? `${agent.packageName}/${name}` : name) },
+        ],
+      }))
   );
   const ownClasses = classes !== undefined && !classes.isEmpty();
   const programJar = jars[0]?.[1];
@@ -421,9 +423,7 @@ export function makeJarRunnable(
           ? []
           : [
               "--module-path",
-              [...(ownClasses ? [CLASSES_DIR] : []), ...modulePath.map(([name]) => name)].flatMap((installPath, index): ArgumentPart[] =>
-                index === 0 ? [{ installPath }] : [path.delimiter, { installPath }]
-              ),
+              { join: path.delimiter, parts: [...(ownClasses ? [CLASSES_DIR] : []), ...modulePath.map(([name]) => name)].map(installFile => ({ installFile })) },
               "--add-modules",
               "ALL-MODULE-PATH",
             ];

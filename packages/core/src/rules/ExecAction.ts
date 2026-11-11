@@ -29,9 +29,11 @@ import {
   fileSetInput,
   IBuildActionDefinition,
   IStagedStep,
+  commandLineConfig,
   stringConfig,
   stringListConfig,
 } from "../core/BuildAction";
+import { RunnableArgument, toArgv } from "../core/RunnableFileSet";
 
 /**
  * The generic `exec` build action core ships for rules to compose: stage a
@@ -54,7 +56,7 @@ export function outputsConfig(action: BuildAction): string | string[] {
 
 function runExec(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
   const files = FileSet.unionAll(fileSetInput(action, "files"), configFiles(action));
-  const argv = stringListConfig(action, "argv");
+  const argv = toArgv(commandLineConfig(action, "argv"));
   const outputs = outputsConfig(action);
   return (
     ctx
@@ -70,10 +72,10 @@ function runExec(action: BuildAction, ctx: ActionContext, report: ITaskReport): 
 /* The version tracks what the step DOES; a change to the action-key text's
  * shape (see BuildAction.actionKey) already invalidates mechanically and needs
  * no bump here. */
-export const EXEC_ACTION: IBuildActionDefinition = { id: "core:exec", version: 3, run: runExec, stage: stageExec };
+export const EXEC_ACTION: IBuildActionDefinition = { id: "core:exec", version: 4, run: runExec, stage: stageExec };
 
 function stageExec(action: BuildAction, dir: string): Computable<IStagedStep> {
-  const argv = stringListConfig(action, "argv");
+  const argv = toArgv(commandLineConfig(action, "argv"));
   return writeFileSet(dir, FileSet.unionAll(fileSetInput(action, "files"), configFiles(action))).then(() => ({
     cwd: ".",
     commands: [{ stages: [{ argv: [findExecutable(argv[0], dir), ...argv.slice(1)] }] }],
@@ -86,6 +88,6 @@ function stageExec(action: BuildAction, dir: string): Computable<IStagedStep> {
  * and collects `outputs`: a "dir:glob" pattern, default "**", or several, each
  * file named by the first that selects it.
  */
-export function createExecAction(files: FileSet, argv: string[], outputs: string | string[] = "**", label?: string): BuildAction {
+export function createExecAction(files: FileSet, argv: readonly RunnableArgument[], outputs: string | string[] = "**", label?: string): BuildAction {
   return new BuildAction(EXEC_ACTION, { files }, { argv, outputs }, { label });
 }

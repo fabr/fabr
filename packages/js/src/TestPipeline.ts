@@ -77,6 +77,7 @@ import {
   PropertyMap,
   ResolutionSpec,
   RuleResult,
+  RunnableArgument,
   RunnableFileSet,
   SourceRef,
   TargetContext,
@@ -754,7 +755,7 @@ function measuredRun(
   { driver, packages }: { driver: RunnableFileSet; packages: PackageFileSet[] },
   compiled: FileSet,
   testInfrastructure: ReadonlySet<string>
-): { links: Record<string, FileSet>; argv: string[]; measured: string[] } {
+): { links: Record<string, FileSet>; argv: RunnableArgument[]; measured: string[] } {
   const own = [...compiled]
     .map(([name]) => name)
     .filter(name => COMPILED_SCRIPT.test(name) && !testInfrastructure.has(name))

@@ -170,7 +170,7 @@ targetdef zip {
 targetdef script {
     # Other files the script needs, placed alongside it under their own names.
     deps = FILES;
-    # The script file, which is run with `sh`.
+    # The script file, which is run with the host's `/bin/sh`.
     entry = REQUIRED FILES;
     # Arguments passed to the script ahead of any given when it is run.
     args = STRING;
@@ -284,6 +284,11 @@ targetdef host_searchpath {
 }
 
 host_searchpath @host { }
+
+#
+# The shell a `script` and other shell commands fabr writes run with.
+#
+default SHELL = @host:/bin/sh;
 
 #
 # A named switch. A target turns a flag on by listing it in its `deps`, and the

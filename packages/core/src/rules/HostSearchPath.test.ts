@@ -23,11 +23,13 @@ import * as os from "os";
 import * as path from "path";
 import { BuildCache } from "../core/BuildCache";
 import { ComputableSource } from "../core/Computable";
-import { FileSet } from "../core/FileSet";
+import { EMPTY_FILESET, FileSet } from "../core/FileSet";
+import { BuildAction } from "../core/BuildAction";
+import { createPipelineAction, stagePipeline } from "./PipelineAction";
 import { hashString } from "../core/FSWrapper";
 import { hostFiles } from "../model/ExecutionContext";
 import { RepositoryRef } from "../core/Repository";
-import { RunnableFileSet } from "../core/RunnableFileSet";
+import { manifestArguments, RunnableFileSet, toArgv } from "../core/RunnableFileSet";
 import { HostLink } from "../core/SymlinkFile";
 import { parseName } from "../model/Parser";
 import { HostSearchPathRepository } from "./HostSearchPath";
@@ -59,20 +61,44 @@ describe("HostSearchPathRepository", () => {
 
   const referenceTo = (name: string): RepositoryRef => repository.getRepositoryRef(parseName(name)) as RepositoryRef;
 
-  it("resolves a program found on PATH to a runnable linking to it", async () => {
+  it("resolves a program found on PATH to a runnable run where it lies", async () => {
     const resolved = await toPromise(repository.resolve(referenceTo("tool")));
     expect(resolved).to.be.instanceOf(RunnableFileSet);
-    const link = resolved.getFile("tool");
+    const runnable = resolved as RunnableFileSet;
+    /* Nothing is installed: the program is the entry, at its own location. */
+    expect(runnable.size).to.equal(0);
+    const link = runnable.surface.getFile("tool");
     expect(link).to.be.instanceOf(HostLink);
     expect((link as HostLink).location).to.equal(path.join(dir, "tool"));
     expect((link as HostLink).contentHash).to.equal(hashString("#!/bin/sh\necho tool\n"));
-    expect((resolved as RunnableFileSet).toCommandLine(["x"])).to.deep.equal(["./tool", "x"]);
+    expect(runnable.toCommandLine(["x"], { base: "tools" })).to.deep.equal([link, "x"]);
+    expect(toArgv(runnable.toCommandLine(["x"]))).to.deep.equal([path.join(dir, "tool"), "x"]);
   });
 
   it("resolves a program by its absolute path, named as its last part", async () => {
-    const resolved = await toPromise(repository.resolve(referenceTo(path.join(dir, "tool"))));
-    expect((resolved.getFile("tool") as HostLink).location).to.equal(path.join(dir, "tool"));
-    expect((resolved as RunnableFileSet).toCommandLine([])).to.deep.equal(["./tool"]);
+    const resolved = (await toPromise(repository.resolve(referenceTo(path.join(dir, "tool"))))) as RunnableFileSet;
+    expect((resolved.surface.getFile("tool") as HostLink).location).to.equal(path.join(dir, "tool"));
+    expect(toArgv(resolved.toCommandLine([]))).to.deep.equal([path.join(dir, "tool")]);
+  });
+
+  it("keys a program by its content and command, not where it was found", async () => {
+    const other = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-host-repo-other-")));
+    try {
+      fs.symlinkSync(dir, path.join(other, "linked"));
+      const here = (await toPromise(repository.resolve(referenceTo("tool")))) as RunnableFileSet;
+      const there = (await toPromise(repository.resolve(referenceTo(path.join(other, "linked", "tool"))))) as RunnableFileSet;
+      expect(toArgv(there.toCommandLine())).to.deep.equal([path.join(other, "linked", "tool")]);
+      expect(manifestArguments(there.toCommandLine(["-x"]))).to.equal(manifestArguments(here.toCommandLine(["-x"])));
+      /* Run as a command, the program keys one action wherever it was found. */
+      const actionOf = (runnable: RunnableFileSet): BuildAction => {
+        const { files, specs } = stagePipeline([{ runnable, args: ["-x"], stdout: "out" }], EMPTY_FILESET);
+        return createPipelineAction(files, specs, undefined, undefined);
+      };
+      expect(actionOf(there).actionKey()).to.equal(actionOf(here).actionKey());
+      expect(actionOf(here).actionKey()).not.to.include(dir);
+    } finally {
+      fs.rmSync(other, { recursive: true, force: true });
+    }
   });
 
   it("resolves its files to the one link, named as the command", async () => {

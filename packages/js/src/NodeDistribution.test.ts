@@ -43,6 +43,7 @@ import {
   TargetContext,
   VersionNotFoundError,
   parseVersion,
+  toArgv,
 } from "@fabr-build/core";
 import { NODE_FORMAT, NodeDistribution } from "./NodeDistribution";
 
@@ -194,7 +195,7 @@ describe("NodeDistribution", () => {
     const pkg = await toPromise(distribution(served).fetch("node", parseVersion("24.22.1")));
     const runnable = await toPromise(NODE_FORMAT.makeRunnable(pkg, undefined as never));
     const node = runnable.selectEntry([{ pattern: Name.fromLiteral("bin/node"), prefix: "" }]);
-    expect(node?.toCommandLine(["--version"])).to.deep.equal(["bin/node", "--version"]);
+    expect(node && toArgv(node.toCommandLine(["--version"]))).to.deep.equal(["bin/node", "--version"]);
     expect(new Map(runnable.surface).has("bin/npm")).to.equal(false);
     expect(new Map(runnable).get("bin/npm")).to.be.instanceOf(SymlinkFile);
   });

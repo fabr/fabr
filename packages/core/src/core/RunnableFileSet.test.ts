@@ -22,44 +22,48 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { FileSet, IFile } from "./FileSet";
-import { SymlinkFile } from "./SymlinkFile";
+import { HostLink, SymlinkFile } from "./SymlinkFile";
 import { FileSetRef } from "./FileSetRef";
 import { IProjection } from "./Reference";
 import { MemoryFile } from "./MemoryFS";
 import { Name, NameBuilder } from "./Name";
 import { parseName } from "../model/Parser";
-import { RunnableFileSet, startLaunch, toRunnable } from "./RunnableFileSet";
+import { manifestArguments, RunnableFileSet, startLaunch, toArgv, toRunnable } from "./RunnableFileSet";
 import { Computable } from "./Computable";
 import { ownerName, TREE_MOUNT } from "./BuildCache";
 
+const NODE = new HostLink("node-hash", "/opt/node/bin/node");
+
 describe("RunnableFileSet", () => {
   it("carries its launch descriptor and is a FileSet", () => {
-    const runnable = RunnableFileSet.forEntry(new Map([["run.js", MemoryFile.from("x")]]), "run.js", ["--flag"], "node");
+    const runnable = RunnableFileSet.forEntry(new Map([["run.js", MemoryFile.from("x")]]), "run.js", ["--flag"], NODE);
     expect(runnable).to.be.instanceOf(FileSet);
     expect(runnable.args).to.deep.equal(["--flag"]);
-    expect(runnable.interpreter).to.equal("node");
+    expect(runnable.interpreter).to.equal(NODE);
     expect(runnable.size).to.equal(1);
-    expect(runnable.toCommandLine()).to.deep.equal(["node", "run.js", "--flag"]);
+    expect(runnable.toCommandLine()).to.deep.equal([NODE, { installFile: "run.js" }, "--flag"]);
+    expect(toArgv(runnable.toCommandLine())).to.deep.equal(["/opt/node/bin/node", "run.js", "--flag"]);
   });
 });
 
 describe("RunnableFileSet.toCommandLine", () => {
   it("places interpreter, entry, fixed args, then caller args", () => {
-    const runnable = RunnableFileSet.forEntry(new Map(), "run.js", ["fixed"], "node");
-    expect(runnable.toCommandLine(["extra"])).to.deep.equal(["node", "run.js", "fixed", "extra"]);
+    const runnable = RunnableFileSet.forEntry(new Map(), "run.js", ["fixed"], NODE);
+    expect(toArgv(runnable.toCommandLine(["extra"]))).to.deep.equal(["/opt/node/bin/node", "run.js", "fixed", "extra"]);
   });
 
   it("makes the entry itself the command when there is no interpreter", () => {
     const runnable = RunnableFileSet.forEntry(new Map(), "bin/tool", ["fixed"]);
-    expect(runnable.toCommandLine(["extra"])).to.deep.equal(["bin/tool", "fixed", "extra"]);
+    expect(toArgv(runnable.toCommandLine(["extra"]))).to.deep.equal(["bin/tool", "fixed", "extra"]);
+    expect(toArgv(RunnableFileSet.forEntry(new Map(), "tool").toCommandLine())).to.deep.equal(["./tool"]);
   });
 
-  it("anchors the entry against the install dir (for a cwd-independent launch)", () => {
-    const withInterp = RunnableFileSet.forEntry(new Map(), "run.js", [], "node");
-    expect(withInterp.toCommandLine([], { anchor: "/staged" })).to.deep.equal(["node", path.resolve("/staged", "run.js")]);
+  it("anchors the install files against the install dir (for a cwd-independent launch)", () => {
+    const withInterp = RunnableFileSet.forEntry(new Map(), "run.js", [], NODE);
+    expect(toArgv(withInterp.toCommandLine(), "/staged")).to.deep.equal(["/opt/node/bin/node", path.resolve("/staged", "run.js")]);
     /* interpreter-less: the anchored (absolute) entry becomes argv[0] itself. */
     const bare = RunnableFileSet.forEntry(new Map(), "bin/tool", []);
-    expect(bare.toCommandLine([], { anchor: "/staged" })).to.deep.equal([path.resolve("/staged", "bin/tool")]);
+    expect(toArgv(bare.toCommandLine(), "/staged")).to.deep.equal([path.resolve("/staged", "bin/tool")]);
   });
 
   it("runs through a runnable interpreter, reached by its hash in the tree pool beside the launch directory", async () => {
@@ -74,12 +78,27 @@ describe("RunnableFileSet.toCommandLine", () => {
     expect(ensured).to.deep.equal([hash]);
     /* The install carries nothing of the pool's. */
     expect([...runnable]).to.deep.equal([]);
-    expect(runnable.toCommandLine(["x"])).to.deep.equal([`${at}/bin/node`, "--flag", "run.js", "fixed", "x"]);
+    expect(toArgv(runnable.toCommandLine(["x"]))).to.deep.equal([`${at}/bin/node`, "--flag", "run.js", "fixed", "x"]);
     /* Mounted below the launch directory, the entry moves and the pool does not. */
-    expect(runnable.toCommandLine([], { base: "tool" })).to.deep.equal([`${at}/bin/node`, "--flag", "tool/run.js", "fixed"]);
-    expect(runnable.toCommandLine([], { base: "../tool", pool: `../${TREE_MOUNT}` })).to.deep.equal([`../${at}/bin/node`, "--flag", "../tool/run.js", "fixed"]);
-    expect(runnable.toCommandLine([], { anchor: "/staged/work" })).to.deep.equal([path.resolve("/staged/work", at, "bin/node"), "--flag", path.resolve("/staged/work", "run.js"), "fixed"]);
+    expect(toArgv(runnable.toCommandLine([], { base: "tool" }))).to.deep.equal([`${at}/bin/node`, "--flag", "tool/run.js", "fixed"]);
+    expect(toArgv(runnable.toCommandLine([], { base: "../tool", pool: `../${TREE_MOUNT}` }))).to.deep.equal([`../${at}/bin/node`, "--flag", "../tool/run.js", "fixed"]);
+    expect(toArgv(runnable.toCommandLine(), "/staged/work")).to.deep.equal([path.resolve("/staged/work", at, "bin/node"), "--flag", path.resolve("/staged/work", "run.js"), "fixed"]);
     expect(path.resolve("/staged/work", at)).to.equal(`/staged/.fabr-tree/${hash}`);
+  });
+
+  it("runs through a program of the host where it lies, writing nothing to the tree pool", async () => {
+    const host = new RunnableFileSet([], [], undefined, "", new FileSet(new Map<string, IFile>([["node", NODE]])));
+    const ensured: string[] = [];
+    const pool = { ensureTree: (files: FileSet) => (ensured.push(files.toManifestHash()), Computable.resolve("unused")) };
+    const runnable = await new Promise<RunnableFileSet>((resolve, reject) =>
+      RunnableFileSet.forEntry(new Map(), "run.js", ["fixed"]).launchedBy(host, pool).then(resolve, reject)
+    );
+    expect(ensured).to.deep.equal([]);
+    expect(runnable.interpreter).to.equal(NODE);
+    expect(toArgv(runnable.toCommandLine(["x"], { base: "tool" }))).to.deep.equal(["/opt/node/bin/node", "tool/run.js", "fixed", "x"]);
+    /* A program of the host as the entry is the command, wherever the install is. */
+    expect(host.toCommandLine(["-e", "1"], { base: "tool" })).to.deep.equal([NODE, "-e", "1"]);
+    expect(toArgv(host.toCommandLine(["-e", "1"]), "/staged")).to.deep.equal(["/opt/node/bin/node", "-e", "1"]);
   });
 });
 
@@ -87,26 +106,64 @@ describe("RunnableFileSet arguments naming install files", () => {
   it("names an install file wherever the install is reached, the program's own options before its entry", async () => {
     const java = RunnableFileSet.forEntry(new Map([["bin/java", MemoryFile.from("java")]]), "bin/java");
     const pool = { ensureTree: () => Computable.resolve("unused") };
+    const modulePath = { join: ":", parts: [{ installFile: "lib/a.jar" }, { installFile: "lib/b.jar" }] };
     const program = await new Promise<RunnableFileSet>((resolve, reject) =>
-      RunnableFileSet.forEntry(new Map(), "launcher.jar", [["--config=", { installPath: "etc/app.conf" }]])
-        .launchedBy(java, pool, [["--module-path=", { installPath: "lib/a.jar" }, ":", { installPath: "lib/b.jar" }], "-jar"])
+      RunnableFileSet.forEntry(new Map(), "launcher.jar", [{ join: "", parts: ["--config=", { installFile: "etc/app.conf" }] }])
+        .launchedBy(java, pool, [{ join: "", parts: ["--module-path=", modulePath] }, "-jar"])
         .then(resolve, reject)
     );
     const at = `${TREE_MOUNT}/${java.toManifestHash()}`;
-    expect(program.toCommandLine([], { base: "tool" })).to.deep.equal([
+    expect(toArgv(program.toCommandLine([], { base: "tool" }))).to.deep.equal([
       `${at}/bin/java`,
       "--module-path=tool/lib/a.jar:tool/lib/b.jar",
       "-jar",
       "tool/launcher.jar",
       "--config=tool/etc/app.conf",
     ]);
-    expect(program.toCommandLine([], { anchor: "/staged" })).to.deep.equal([
+    expect(toArgv(program.toCommandLine(), "/staged")).to.deep.equal([
       path.resolve("/staged", at, "bin/java"),
       `--module-path=${path.resolve("/staged/lib/a.jar")}:${path.resolve("/staged/lib/b.jar")}`,
       "-jar",
       path.resolve("/staged", "launcher.jar"),
       `--config=${path.resolve("/staged/etc/app.conf")}`,
     ]);
+  });
+});
+
+describe("manifestArguments and toArgv", () => {
+  const cc = new HostLink("cc-hash", "/usr/bin/cc");
+  const args = [
+    "-c",
+    cc,
+    { installFile: "lib/a.jar" },
+    { join: "=", parts: ["--path", { join: ":", parts: [{ installFile: "x" }, cc, "y"] }] },
+  ];
+
+  it("writes each kind of argument as key text, naming a program of the host by content and command", () => {
+    expect(manifestArguments(args)).to.equal(
+      JSON.stringify([
+        "-c",
+        { host: "cc-hash", command: "cc" },
+        { installFile: "lib/a.jar" },
+        { join: "=", parts: ["--path", { join: ":", parts: [{ installFile: "x" }, { host: "cc-hash", command: "cc" }, "y"] }] },
+      ])
+    );
+  });
+
+  it("writes no host path into the key text", () => {
+    expect(manifestArguments(args)).not.to.include("/usr/bin");
+    expect(manifestArguments([new HostLink("cc-hash", "/opt/other/cc")])).to.equal(manifestArguments([cc]));
+  });
+
+  it("tells apart the commands one program is run as, and text from what it might spell", () => {
+    expect(manifestArguments([new HostLink("cc-hash", "/usr/bin/c++")])).not.to.equal(manifestArguments([cc]));
+    expect(manifestArguments([JSON.stringify({ installFile: "x" })])).not.to.equal(manifestArguments([{ installFile: "x" }]));
+    expect(manifestArguments([{ join: "", parts: ["a", "b"] }])).not.to.equal(manifestArguments(["ab"]));
+  });
+
+  it("writes each kind of argument as command-line text", () => {
+    expect(toArgv(args)).to.deep.equal(["-c", "/usr/bin/cc", "lib/a.jar", "--path=x:/usr/bin/cc:y"]);
+    expect(toArgv(args, "/staged")).to.deep.equal(["-c", "/usr/bin/cc", "/staged/lib/a.jar", "--path=/staged/x:/usr/bin/cc:y"]);
   });
 });
 
@@ -133,7 +190,7 @@ describe("toRunnable", () => {
      * untouched by the rename. */
     const selected = toRunnable(ref);
     expect(selected).to.be.instanceOf(RunnableFileSet);
-    expect(selected!.toCommandLine()).to.deep.equal(["bin/tool"]);
+    expect(toArgv(selected!.toCommandLine())).to.deep.equal(["bin/tool"]);
   });
 
   it("yields no runnable when the projection matched nothing — the lenient miss", () => {
@@ -154,7 +211,7 @@ describe("toRunnable", () => {
     );
 
     expect(ref.projections).to.have.lengthOf(2);
-    expect(toRunnable(ref)!.toCommandLine()).to.deep.equal(["bin/tool"]);
+    expect(toArgv(toRunnable(ref)!.toCommandLine())).to.deep.equal(["bin/tool"]);
   });
 });
 
@@ -205,7 +262,7 @@ describe("RunnableFileSet.select", () => {
         ["bin/tool", file],
       ])
     );
-    return new RunnableFileSet(new Map([["node_modules/thing/bin/tool", file]]), [], "node", "node_modules/thing", surface);
+    return new RunnableFileSet(new Map([["node_modules/thing/bin/tool", file]]), [], NODE, "node_modules/thing", surface);
   };
 
   it("selects through the launch surface, yielding the file a bin targets", () => {
@@ -237,7 +294,7 @@ describe("RunnableFileSet.select", () => {
     const runnable = new RunnableFileSet(
       new Map([["one.js", MemoryFile.from("1")], ["two.js", MemoryFile.from("2")]]),
       [],
-      "node",
+      NODE,
       "",
       surface
     );

@@ -151,10 +151,10 @@ Two things qualify that:
   publishes or deploys, a cache that an untrusted job could have saved. On GitHub, a pull request
   from a fork can't write to the base branch's cache; with other systems and self-hosted runners,
   check how caches are scoped, or publish from a job that starts with an empty cache.
-- **`sh` isn't tracked by version.** A [`script`](/reference/standard-rules/#script) target runs
-  on the runner's `sh`, and a cache restored into a job with a different shell, or different
-  programs for a script to start, serves results built with the old ones. See
-  [Known limitations](/known-limitations/#shell-scripts-run-on-the-sh-on-your-machine).
+- **The programs a script starts aren't tracked.** A [`script`](/reference/standard-rules/#script)
+  target finds them on the runner, and a cache restored into a job with different ones serves
+  results built with the old ones. See
+  [Known limitations](/known-limitations/#programs-a-shell-script-starts-are-not-tracked).
 
 ### Size
 

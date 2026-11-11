@@ -48,6 +48,17 @@ describe("e2e: generate command pipelines", () => {
     expect(result.stdout).to.equal("hello\n");
   });
 
+  it("runs a program of the host as a command", () => {
+    const result = runFabr(
+      {
+        "PROJECT.fabr": `generate g { run = @host:${process.execPath} -e "process.stdout.write(process.execPath)" > out.txt; }\n` + "generate s { run = @host:/bin/sh -c \"echo shell ran\" > out.txt; }\n",
+      },
+      ["cat", "g:out.txt", "s:out.txt"]
+    );
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stdout).to.equal(`${process.execPath}shell ran\n`);
+  });
+
   it("pipes one stage's stdout into the next, capturing the result", () => {
     /* The docgen shape: produce | transform > file. */
     const result = runFabr(

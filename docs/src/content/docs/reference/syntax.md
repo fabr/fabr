@@ -624,7 +624,9 @@ A build for Linux gets the common sources and the Linux ones; a build for macOS 
 sources, the macOS ones and `fsevents`.
 
 - **A guard's value is a pattern**, matched against the setting's value. Several settings in one
-  guard must all match: `<TARGET=*-linux-*, BUILD_TYPE=release>`.
+  guard must all match: `<TARGET=*-linux-*, BUILD_TYPE=release>`. A [`!(…)`](#globbing) group
+  matches every value except those it lists, so `srcs<TARGET=!(*-linux-*)> = src:portable/**/*.ts;`
+  applies to every build but a Linux one.
 - **Every declaration that matches applies.** For a property that lists files, the matching
   declarations are combined. There is no "most specific guard wins".
 - **A property with a single value can have only one match.** Two guarded declarations of `version`
@@ -901,7 +903,10 @@ rule version_module v<BUILD_OPERATION=build> = generate gen { run = stamp ${v.ve
   declares the targets and properties it may name, guarded ones included and nothing else. The
   block's names are looked up before the file's, and only within the rule.
 - **`= <type> <name> { <properties> }`** is the short form of a block declaring that one target,
-  its name the reference.
+  its name the reference. The name can't carry a [constraint](#constraints), so the short form
+  can't change its target's configuration: the target is built in the configuration the rule was
+  selected in. Write the long form, `= <name><KEY=value> { <type> <name> { … } }`, to build it in
+  another.
 - **The parameter** (`pkg`) stands for the target being built: `pkg.<property>` reads one of its
   properties, as a value or as `${pkg.<property>}`, `pkg` alone is a reference to the target, and
   `${pkg}` is its name.

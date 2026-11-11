@@ -28,10 +28,12 @@ import {
   ILaunch,
   killProcessGroup,
   Log,
+  manifestArguments,
   RunnableFileSet,
   spawnInteractive,
   startLaunch,
   syncFileSet,
+  toArgv,
   writeFileSet,
 } from "@fabr-build/core";
 import { ChildProcess } from "node:child_process";
@@ -94,7 +96,7 @@ function stageInstall(cache: BuildCache, dir: string, runnable: RunnableFileSet,
  * staged dir, so its entry stays install-relative (as the exec build step); a
  * caller-cwd runnable runs in the user's directory with the entry made absolute. */
 function launchArgv(runnable: RunnableFileSet, callerArgs: string[], dir: string): string[] {
-  return runnable.launchCwd === "install" ? runnable.toCommandLine(callerArgs) : runnable.toCommandLine(callerArgs, { anchor: dir });
+  return toArgv(runnable.toCommandLine(callerArgs), runnable.launchCwd === "install" ? undefined : dir);
 }
 
 /** Choose the launch cwd override: the staged dir for an install-anchored runnable,
@@ -223,10 +225,10 @@ export class RunSupervisor {
    * completion, not success: failures are logged here and never reject, so a
    * caller can sequence after it (the driver's cycle-completion marker). */
   public update(runnable: RunnableFileSet): Computable<void> {
-    /* Key on the install-relative argv (no anchor), identical across staged
-     * dirs — so an args/entry-only change relaunches, a mere restage doesn't. */
+    /* Key on the command line's key text, identical across staged dirs — so an
+     * args/entry-only change relaunches, a mere restage doesn't. */
     const variables = [...runnable.env].map(([name, value]) => `${name}=${value}`).join("\0");
-    const programKey = `${runnable.programManifest()}\n$ ${runnable.toCommandLine(this.callerArgs).join("\0")}\n${variables}`;
+    const programKey = `${runnable.programManifest()}\n$ ${manifestArguments(runnable.toCommandLine(this.callerArgs))}\n${variables}`;
     if (programKey === this.target?.programKey) {
       return this.updateContent(runnable);
     }

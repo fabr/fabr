@@ -37,7 +37,7 @@ target, and `fabr run` builds it and starts it:
 
 | Type | The program | Runs on |
 |---|---|---|
-| [`script`](/reference/standard-rules/#script) | A shell script, with the files it needs | `sh` |
+| [`script`](/reference/standard-rules/#script) | A shell script, with the files it needs | Your machine's `/bin/sh` |
 | [`js_script`](/reference/js/targets/#js_script) | A JavaScript or TypeScript file, or an npm package's command-line program, with the packages it imports | The Node.js release fabr downloads |
 | [`java_program`](/reference/java/running/#java_program) | Java sources or a jar, with what it requires | The JDK fabr downloads |
 
@@ -54,7 +54,8 @@ script hello {
 }
 ```
 
-- `entry` is the script, run with `sh`.
+- `entry` is the script, run with the shell the `SHELL` setting names: by default your machine's
+  `/bin/sh` (`SHELL = @host:/bin/sh;`, see [Programs on your machine](#programs-on-your-machine)).
 - `deps` are other files the script needs, such as a file it sources. They are installed with the
   script under the names their references give them, so `tools/lib.sh` sits beside
   `tools/hello.sh` and the script finds it relative to itself, as `. "$(dirname "$0")/lib.sh"`.
@@ -382,8 +383,9 @@ generate app_config {
 }
 ```
 
-Fabr identifies the program by its contents, so a different build of `sed` reruns the steps that
-used it. It doesn't track anything the program reads or runs in turn — a compiler's headers and
+Fabr identifies the program by its contents and the name it is run as, so a different build of
+`sed` reruns the steps that used it, and the same `sed` found in another directory reuses their
+results. It runs the program where it is installed, by that path. It doesn't track anything the program reads or runs in turn — a compiler's headers and
 linker, a configuration file in your home directory — so a change there alone reruns nothing. Prefer
 a tool fabr downloads, such as an npm package or a [`java_program`](/reference/java/running/#java_program),
 wherever there is one, and use `@host` for what only the machine provides. The program runs with the

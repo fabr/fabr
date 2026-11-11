@@ -48,7 +48,7 @@ export default defineRule({
           hosts: stringEntries(context.name, "hosts", hosts),
           args: args?.getValues() ?? [],
         };
-        return imageRunnable(images[0], context.name, engine, context.execution.processLimit, run);
+        return imageRunnable(images[0], context.name, engine, context, run);
       }
     );
   },

@@ -35,10 +35,12 @@ import type { ITargetDecl } from "../model/AST";
 import type { ITaskReport, StageSpec } from "../support/Execute";
 import { compareText, mapComputable } from "../support/Functional";
 import { FabrError } from "./Errors";
+import { manifestArguments, type RunnableArgument } from "./RunnableFileSet";
 
 /**
  * Configuration handed to a build step — *how* the build is performed, as
- * against `inputs`, the content it is performed on: argv, patterns, switches, a
+ * against `inputs`, the content it is performed on: a command line (a list of
+ * {@link RunnableArgument}s, keyed by {@link manifestArguments}), patterns, switches, a
  * `Name` where a step consumes a projection (received live on a miss and
  * applied with `makeProjector`), and file-shaped configuration (a generated
  * tsconfig) as a FileSet, staged for the tool to read.
@@ -49,7 +51,7 @@ import { FabrError } from "./Errors";
  * a member here that varies with source content makes every edit a fresh
  * target key.
  */
-export type ActionConfigValue = string | string[] | Name | FileSet;
+export type ActionConfigValue = string | readonly RunnableArgument[] | Name | FileSet;
 export type ActionConfig = Record<string, ActionConfigValue>;
 
 /** What a build step's `run` — and so a cache `create` callback — hands back. */
@@ -295,7 +297,16 @@ export function stringListConfig(action: BuildAction, name: string): string[] {
   if (!Array.isArray(value) || value.some(element => typeof element !== "string")) {
     throw new FabrError(`Config '${name}' must be a list of strings`);
   }
-  return value;
+  return value as string[];
+}
+
+/** Take the named config member, which must be a command line. */
+export function commandLineConfig(action: BuildAction, name: string): readonly RunnableArgument[] {
+  const value = action.config[name];
+  if (!Array.isArray(value)) {
+    throw new FabrError(`Config '${name}' must be a command line`);
+  }
+  return value as readonly RunnableArgument[];
 }
 
 /** Take the named config member, which must be a string (or absent, given a fallback). */
@@ -350,13 +361,13 @@ function manifestConfigValue(value: ActionConfigValue): string {
   if (typeof value === "string") {
     return JSON.stringify(value);
   }
-  if (Array.isArray(value)) {
-    return "[" + value.map(element => JSON.stringify(element)).join(",") + "]";
-  }
   if (value instanceof FileSet) {
     return manifestFileInput(value, false);
   }
-  return JSON.stringify(value.toGlobString());
+  if (value instanceof Name) {
+    return JSON.stringify(value.toGlobString());
+  }
+  return manifestArguments(value);
 }
 
 /**

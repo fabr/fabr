@@ -33,6 +33,7 @@ import {
   SymlinkFile,
   TREE_MOUNT,
   dependenciesOn,
+  toArgv,
 } from "@fabr-build/core";
 import {
   binByConvention,
@@ -420,7 +421,7 @@ describe("makeNpmRunnable", () => {
       "1.0.0"
     );
     const runnable = await settle(makeNpmRunnable(NODE_CONTEXT, pkg));
-    expect(runnable.toCommandLine(["x"], { base: "tool" })).to.deep.equal([
+    expect(toArgv(runnable.toCommandLine(["x"], { base: "tool" }))).to.deep.equal([
       `${TREE_MOUNT}/${NODE.toManifestHash()}/bin/node`,
       "tool/node_modules/tool/bin/tool.js",
       "x",

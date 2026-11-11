@@ -23,6 +23,7 @@ import { Dependency, isPackage, PackageFileSet, ResolvedNode, packageNodeSignatu
 import { TargetRef, Unbuilt } from "../core/TargetRef";
 import { ResolvedTarget } from "../context/ResolvedTarget";
 import { RunnableFileSet } from "../core/RunnableFileSet";
+import { HostLink } from "../core/SymlinkFile";
 import { CatalogRepository, catalogRepositoryRegistration } from "./CatalogRepository";
 import patched from "./BuildPatched";
 import { Repository, RepositoryRef } from "../core/Repository";
@@ -166,7 +167,7 @@ describe("CatalogRepository (through the model)", () => {
     },
     makeRunnable: (pkg: PackageFileSet) => {
       ran.push(pkg.packageName);
-      return Computable.resolve(RunnableFileSet.forEntry(pkg, `${pkg.packageName}/data.txt`, [], "node"));
+      return Computable.resolve(RunnableFileSet.forEntry(pkg, `${pkg.packageName}/data.txt`, [], new HostLink("node", process.execPath)));
     },
   };
 
@@ -401,7 +402,7 @@ describe("CatalogRepository (through the model)", () => {
           new FileSet(new Map([[`${context.name}.sh`, MemoryFile.from(scriptTexts.get(context.name) ?? "")]])),
           `${context.name}.sh`,
           [],
-          "/bin/sh"
+          new HostLink("sh", "/bin/sh")
         )
       ),
   };

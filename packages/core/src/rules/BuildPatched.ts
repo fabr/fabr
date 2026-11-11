@@ -45,9 +45,9 @@ import { getResultFileSet, writeFileSet } from "../core/Staging";
 import { SymlinkFile } from "../core/SymlinkFile";
 import { MaterializedCommandPipeline, TargetContext, toEnvironment } from "../context/index";
 import { Property } from "../model/Property";
-import { executePipeline, findExecutable, ITaskReport, StageSpec } from "../support/Execute";
+import { executePipeline, findExecutable, ITaskReport } from "../support/Execute";
 import { FilePatch, parsePatchFile } from "../support/Patch";
-import { envConfig, envEntries, selectedCaptures, stagePipeline, stdinBytes } from "./PipelineAction";
+import { envConfig, envEntries, pipelineConfig, pipelineSpecs, selectedCaptures, stagePipeline, stdinBytes } from "./PipelineAction";
 import { defineRule, RuleResult } from "./Types";
 
 /** The `patched` rule. */
@@ -101,7 +101,7 @@ function patched(context: TargetContext, { srcs, patches }: { srcs: FileSet[]; p
         {
           order,
           strip: String(STRIP),
-          ...(command === undefined ? {} : { spec: JSON.stringify(command.specs) }),
+          ...(command === undefined ? {} : pipelineConfig(command.specs)),
           ...(env.size > 0 ? { env: envEntries(env) } : {}),
         }
       );
@@ -177,7 +177,7 @@ function applyPatches(action: BuildAction, dir: string, admit: (staging: () => C
  * standard input is read from the cache's tree pool through the link beside
  * `dir`, as the run reads it from the cache rather than the work directory. */
 function stagePatchStep(action: BuildAction, dir: string, ensureTree: (files: FileSet) => Computable<string>): Computable<IStagedStep> {
-  const specs: StageSpec[] = typeof action.config.spec === "string" ? JSON.parse(action.config.spec) : [];
+  const specs = typeof action.config.spec === "string" ? pipelineSpecs(action) : [];
   const cwd = path.join(dir, FILES_DIR);
   const [input] = action.inputs.stdin instanceof FileSet ? [...action.inputs.stdin] : [];
   const stdin =
@@ -209,7 +209,7 @@ function runCommand(action: BuildAction, ctx: ActionContext, dir: string, report
   if (typeof action.config.spec !== "string") {
     return Computable.resolve(EMPTY_FILESET);
   }
-  const specs: StageSpec[] = JSON.parse(action.config.spec);
+  const specs = pipelineSpecs(action);
   const stdin = action.inputs.stdin instanceof FileSet ? action.inputs.stdin : undefined;
   return ctx
     .admit(report, () => writeFileSet(ctx.workDir, fileSetInput(action, "tools")))
@@ -259,4 +259,4 @@ function applyChange(root: string, links: FileSet, change: FilePatch, patch: str
   }
 }
 
-export const PATCH_ACTION: IBuildActionDefinition = { id: "core:patch", version: 2, run: runPatch, stage: stagePatchStep };
+export const PATCH_ACTION: IBuildActionDefinition = { id: "core:patch", version: 3, run: runPatch, stage: stagePatchStep };

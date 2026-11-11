@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { FileSet, IFile, MemoryFile, parseName } from "@fabr-build/core";
+import { FileSet, IFile, MemoryFile, parseName, toArgv } from "@fabr-build/core";
 import { makeJdkRunnable } from "./JdkDistribution";
 
 /** A release laid out as `names`, each executable where it is marked `*`. */
@@ -31,7 +31,7 @@ function release(...names: string[]): FileSet {
 /** @return the install path `fabr run`'s `@jdk:<v>:<command>` would launch. */
 function entryOf(files: FileSet, command: string): string {
   const selected = makeJdkRunnable(files).selectEntry([{ pattern: parseName(command), prefix: "" }]);
-  return selected!.toCommandLine()[0];
+  return toArgv(selected!.toCommandLine())[0];
 }
 
 describe("makeJdkRunnable", () => {

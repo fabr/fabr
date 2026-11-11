@@ -86,8 +86,9 @@ const HOST_LINK_SCHEME = "fabr-host:";
  * Its identity — hash, `target`, hence every action key it rides in — is the
  * program's content hash, never its location on this machine: a different
  * build of the program is a different key, and the same program found at
- * another path is the same one. `location` is where it resolves when STAGED,
- * and is no part of that identity.
+ * another path is the same one. `location` is where the program is run from
+ * (a command line names it there, see `toArgv`), and where a link is staged to
+ * when the program is read as a file; it is no part of that identity.
  *
  * **In-memory only, and that is a security property.** Staging lets this class
  * out of the tree being written, so being one must not be something content can
@@ -98,7 +99,7 @@ export class HostLink extends SymlinkFile {
   constructor(
     /** The content hash of the program `location` names. */
     public readonly contentHash: string,
-    /** The program's real path on this machine. */
+    /** The program's absolute path on this machine, as PATH lookup or the reference named it. */
     public readonly location: string
   ) {
     super(`${HOST_LINK_SCHEME}${contentHash}`);

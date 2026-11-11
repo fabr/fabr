@@ -22,8 +22,18 @@ import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import { Name } from "../core/Name";
 import { executePipeline, findExecutable, ITaskReport, StageSpec, StageStreams, variableEntry } from "../support/Execute";
-import { RunnableFileSet } from "../core/RunnableFileSet";
-import { BuildAction, BuildResult, configFiles, fileSetInput, IBuildActionDefinition, IStagedStep, stringConfig } from "../core/BuildAction";
+import { RunnableArgument, RunnableFileSet, toArgv } from "../core/RunnableFileSet";
+import {
+  ActionConfig,
+  BuildAction,
+  BuildResult,
+  commandLineConfig,
+  configFiles,
+  fileSetInput,
+  IBuildActionDefinition,
+  IStagedStep,
+  stringConfig,
+} from "../core/BuildAction";
 import { ActionContext, IChangedFiles, toChangesDocument, TREE_MOUNT } from "../core/BuildCache";
 
 /**
@@ -41,7 +51,7 @@ import { ActionContext, IChangedFiles, toChangesDocument, TREE_MOUNT } from "../
  */
 function runPipeline(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
   const files = FileSet.unionAll(fileSetInput(action, "files"), configFiles(action));
-  const specs: StageSpec[] = JSON.parse(stringConfig(action, "spec"));
+  const specs = pipelineSpecs(action);
   /* `output` is a projection Name (selector + optional `-> tmpl` rename), or
    * absent for a pure-redirect genrule that collects only its captures. */
   const output = action.config.output instanceof Name ? action.config.output : undefined;
@@ -147,7 +157,29 @@ export function stdinBytes(stdin: FileSet | undefined): Computable<Buffer | unde
 
 /* The version tracks what the step does and what its serialized stage spec
  * means; either changing is a bump. */
-export const PIPELINE_ACTION: IBuildActionDefinition = { id: "core:command-pipeline", version: 5, run: runPipeline, stage: stagePipelineStep };
+export const PIPELINE_ACTION: IBuildActionDefinition = { id: "core:command-pipeline", version: 6, run: runPipeline, stage: stagePipelineStep };
+
+/** One stage of a pipeline as an action holds it: its command line, the
+ * streams it captures, and the variables its runnable is launched with. */
+export interface IPipelineStage extends StageStreams {
+  argv: readonly RunnableArgument[];
+  env?: string[];
+}
+
+/** @return the config members holding `stages`: `spec`, each stage but its
+ * command line, and each command line as `argv.<n>`. */
+export function pipelineConfig(stages: readonly IPipelineStage[]): ActionConfig {
+  return {
+    spec: JSON.stringify(stages.map(stage => ({ ...stage, argv: undefined }))),
+    ...Object.fromEntries(stages.map((stage, index) => [`argv.${index}`, stage.argv])),
+  };
+}
+
+/** Read the stages {@link pipelineConfig} wrote, each command line as the text it is run as. */
+export function pipelineSpecs(action: BuildAction): StageSpec[] {
+  const stages: Omit<IPipelineStage, "argv">[] = JSON.parse(stringConfig(action, "spec"));
+  return stages.map((stage, index) => ({ ...stage, argv: toArgv(commandLineConfig(action, `argv.${index}`)) }));
+}
 
 /** @return the variables a command runs with, as the `env` config member holds them. */
 export function envEntries(env: ReadonlyMap<string, string>): string[] {
@@ -163,7 +195,7 @@ export function envConfig(action: BuildAction): Map<string, string> {
  * cache's tree pool through the link beside `dir`, as the run reads it from the
  * cache rather than the work directory. */
 function stagePipelineStep(action: BuildAction, dir: string, ensureTree: (files: FileSet) => Computable<string>): Computable<IStagedStep> {
-  const specs: StageSpec[] = JSON.parse(stringConfig(action, "spec"));
+  const specs = pipelineSpecs(action);
   const [input] = action.inputs.stdin instanceof FileSet ? [...action.inputs.stdin] : [];
   const stdin = input === undefined ? Computable.resolve(undefined) : ensureTree(new FileSet(new Map([input]))).then(tree => path.posix.join(TREE_MOUNT, path.basename(tree), input[0]));
   return Computable.forAll([stdin, writeFileSet(dir, FileSet.unionAll(fileSetInput(action, "files"), configFiles(action)))], stdinPath => ({
@@ -206,13 +238,13 @@ export function stagePipeline(
   stages: ReadonlyArray<RunnableStage>,
   srcs: FileSet,
   options: { apart?: boolean; cwd?: string } = {}
-): { files: FileSet; specs: StageSpec[] } {
+): { files: FileSet; specs: IPipelineStage[] } {
   const single = stages.length === 1 && options.apart !== true;
   const cwd = options.cwd ?? ".";
   /* The tree pool, which a runnable interpreter is launched from, as a path from where the commands run. */
   const pool = path.posix.join(path.posix.relative(cwd, "."), TREE_MOUNT);
   const mounts: FileSet[] = [];
-  const specs: StageSpec[] = stages.map((stage, i) => {
+  const specs: IPipelineStage[] = stages.map((stage, i) => {
     const dir = single ? undefined : `.fabr-cmd-${i}`;
     mounts.push(dir === undefined ? stage.runnable : FileSet.layout({ [dir]: stage.runnable }));
     return {
@@ -241,7 +273,7 @@ export interface IKeptState {
  * keeps between runs. */
 export function createPipelineAction(
   files: FileSet,
-  specs: StageSpec[],
+  specs: IPipelineStage[],
   stdin: FileSet | undefined,
   output: Name | undefined,
   label?: string,
@@ -252,7 +284,7 @@ export function createPipelineAction(
     PIPELINE_ACTION,
     { files, ...(stdin ? { stdin } : {}) },
     {
-      spec: JSON.stringify(specs),
+      ...pipelineConfig(specs),
       ...(output ? { output } : {}),
       ...(env.size > 0 ? { env: envEntries(env) } : {}),
       ...(kept.incremental ? { incremental: kept.incremental } : {}),

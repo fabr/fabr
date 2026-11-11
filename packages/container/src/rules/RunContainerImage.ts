@@ -36,6 +36,6 @@ export default defineRule({
     }
     return context
       .getGlobalRunnable("CONTAINER_ENGINE")
-      .then((engine: RunnableFileSet): Computable<RunnableFileSet> => imageRunnable(built, context.name, engine, context.execution.processLimit));
+      .then((engine: RunnableFileSet): Computable<RunnableFileSet> => imageRunnable(built, context.name, engine, context));
   },
 });

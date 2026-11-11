@@ -46,7 +46,9 @@ import { ResolvedTarget } from "./ResolvedTarget";
 import { PublishableFileSet } from "../core/PublishableFileSet";
 import sync, { SyncSource } from "../rules/BuildSync";
 import files from "../rules/DefaultFilesRule";
-import { RunnableFileSet } from "../core/RunnableFileSet";
+import { RunnableArgument, RunnableFileSet } from "../core/RunnableFileSet";
+import { HostLink } from "../core/SymlinkFile";
+import hostSearchPath from "../rules/HostSearchPath";
 import { makeRewrite, Name } from "../core/Name";
 import { renderProvenance } from "../core/Provenance";
 import { ConflictError, CycleError, FabrError, helpOf, MultiError, RequirementResolutionError, toError } from "../core/Errors";
@@ -409,7 +411,7 @@ testRules.push(
 registerRule("test_tool", {}, context => context.getRunnableProperty("tool").then(() => EMPTY_FILESET));
 registerRule("test_globalrunnable", {}, context => context.getGlobalRunnable("TOOLGLOBAL").then(() => EMPTY_FILESET));
 /* Records the command line of the tool a global names. */
-let lastCommandLine: string[] | undefined;
+let lastCommandLine: RunnableArgument[] | undefined;
 registerRule("test_toolline", {}, context =>
   context.getGlobalRunnable("TOOLGLOBAL").then(tool => {
     lastCommandLine = tool.toCommandLine(["x"]);
@@ -595,7 +597,7 @@ const REGISTRY_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
   readContentPackage: () => {
     throw new Error("not used");
   },
-  makeRunnable: pkg => Computable.resolve(RunnableFileSet.forEntry(pkg, `${pkg.packageName}/data.txt`, [], "node")),
+  makeRunnable: pkg => Computable.resolve(RunnableFileSet.forEntry(pkg, `${pkg.packageName}/data.txt`, [], new HostLink("node", process.execPath))),
 };
 const registryRequirements = new Map<string, Requirement[]>();
 /* Every `<pkg>@<version> <operation>` a TestRegistry was asked the requirements of. */
@@ -3045,7 +3047,7 @@ describe("BuildContext", () => {
       const model = toBuildModel([parseBuildString(source, "TEST.fabr", input, testLog)], testLog, testContributions);
       lastCommandLine = undefined;
       await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("t"));
-      expect(lastCommandLine).to.deep.equal(["bin/tool", "x"]);
+      expect(lastCommandLine).to.deep.equal([{ installFile: "bin/tool" }, "x"]);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -3658,11 +3660,12 @@ describe("contributed-lib-relative FILES", () => {
        * canonical path space and named relative to the dir alias. */
       const input =
         "targetdef script { deps = PACKAGES; entry = REQUIRED FILES; args = STRING; }\n" +
+        "targetdef host_searchpath { }\nhost_searchpath @host { }\nSHELL = @host:/bin/sh;\n" +
         "script @plug/drv { entry = ../tool/run.sh; deps = ../tool/*.js; }\n";
       const model = toBuildModel(
         [parseBuildString(new FSFileSource("/"), nodePath.join(tmp, "lib", "LIB.fabr"), input, logger)],
         logger,
-        [{ rules: [scriptRunRule] }]
+        [{ rules: [scriptRunRule], repositories: [{ type: "host_searchpath", provider: hostSearchPath.provider }] }]
       );
       expect(errors).to.deep.equal([]);
       const sources = await model

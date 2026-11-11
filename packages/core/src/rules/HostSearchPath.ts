@@ -29,11 +29,10 @@
  * change there alone is not seen.
  */
 
-import * as fs from "node:fs";
 import * as path from "node:path";
 import { Computable } from "../core/Computable";
 import { FabrError, toError } from "../core/Errors";
-import { FileSet, FileSource, IFile } from "../core/FileSet";
+import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
 import { Name } from "../core/Name";
 import { PartialRepositoryRef } from "../core/PartialRepositoryRef";
 import { IProvenanceStep, registerProvenanceDescriber, registerProvenanceRenderer } from "../core/Provenance";
@@ -54,15 +53,6 @@ interface IHostProgramOrigin extends IProvenanceStep {
 
 registerProvenanceRenderer(HOST_PROGRAM_PROVENANCE, step => [{ message: `found on this host, at ${(step as IHostProgramOrigin).location}` }]);
 registerProvenanceDescriber(HOST_PROGRAM_PROVENANCE, step => (step as IHostProgramOrigin).location);
-
-/** @return the real path of `location`, or `location` itself where it cannot be resolved. */
-function realPathOf(location: string): string {
-  try {
-    return fs.realpathSync(location);
-  } catch {
-    return location;
-  }
-}
 
 /** The repository a `host_searchpath` declaration is. */
 export class HostSearchPathRepository implements Repository, RepositoryLookup {
@@ -95,9 +85,11 @@ export class HostSearchPathRepository implements Repository, RepositoryLookup {
     throw new FabrError(`this host's programs are not a publish destination (cannot sync to '${name.toString()}')`);
   }
 
-  /** Resolve the program `reference` names to a runnable: the link to it, as its entry. */
+  /** Resolve the program `reference` names to a runnable whose entry is the
+   * link to it, and whose install is empty: a program of the host is run where
+   * it lies. */
   public resolve(reference: RepositoryRef): Computable<FileSet> {
-    return this.resolveFiles(reference).then(files => RunnableFileSet.forEntry(files, commandOf(reference.name)));
+    return this.resolveFiles(reference).then(files => new RunnableFileSet(EMPTY_FILESET, [], undefined, "", files, EMPTY_FILESET, "caller", undefined, files.origin));
   }
 
   /** Resolve the program `reference` names to its files: the one link to it, named as the command. */
@@ -111,7 +103,7 @@ export class HostSearchPathRepository implements Repository, RepositoryLookup {
           throw new FabrError(`'${name}' was found at ${found}, which is no longer there`);
         }
         const origin: IHostProgramOrigin = { kind: HOST_PROGRAM_PROVENANCE, location: found };
-        return new FileSet(new Map<string, IFile>([[commandOf(name), new HostLink(file.hash, realPathOf(found))]]), origin);
+        return new FileSet(new Map<string, IFile>([[commandOf(name), new HostLink(file.hash, path.resolve(found))]]), origin);
       });
     } catch (err) {
       return Computable.reject(toError(err));

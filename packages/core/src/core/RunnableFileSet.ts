@@ -24,13 +24,90 @@ import { FileSetRef } from "./FileSetRef";
 import { IProjection } from "./Reference";
 import { IProvenanceStep } from "./Provenance";
 import type { Repository } from "./Repository";
-import { SymlinkFile } from "./SymlinkFile";
+import { HostLink, SymlinkFile } from "./SymlinkFile";
 import { FabrError } from "./Errors";
 import { Computable } from "./Computable";
 import { ownerName, TREE_MOUNT } from "./BuildCache";
 import { registerExitTeardown } from "../support/Execute";
 
 const NO_ENV: ReadonlyMap<string, string> = new Map();
+
+/**
+ * A fixed argument of a runnable: text; a program of the host, named on the
+ * command line by where it lies; a file of the runnable's install, by its
+ * install path; or parts joined into one argument by `join` (`--module-path=`
+ * and the jars, joined by `path.delimiter`).
+ *
+ * A command line made of these is written two ways: as key text
+ * ({@link manifestArguments}), which names a host program by its content and
+ * command, and as the text a process is started with ({@link toArgv}).
+ */
+export type RunnableArgument =
+  | string
+  | HostLink
+  | { readonly installFile: string }
+  | { readonly join: string; readonly parts: readonly RunnableArgument[] };
+
+/** @return `arg` with each install file in it named within `base`. */
+function placedIn(base: string, arg: RunnableArgument): RunnableArgument {
+  if (typeof arg === "string" || arg instanceof HostLink || base === "") {
+    return arg;
+  }
+  if ("installFile" in arg) {
+    return { installFile: path.posix.join(base, arg.installFile) };
+  }
+  return { join: arg.join, parts: arg.parts.map(part => placedIn(base, part)) };
+}
+
+/** @return the key text of `arg`, as {@link manifestArguments} writes it. */
+function argumentKey(arg: RunnableArgument): unknown {
+  if (typeof arg === "string") {
+    return arg;
+  }
+  if (arg instanceof HostLink) {
+    return { host: arg.contentHash, command: path.basename(arg.location) };
+  }
+  if ("installFile" in arg) {
+    return { installFile: arg.installFile };
+  }
+  return { join: arg.join, parts: arg.parts.map(argumentKey) };
+}
+
+/**
+ * Write `args` as key text: text as itself, an install file by its path, a
+ * program of the host by its content hash and the command it is run as (never
+ * where it lies), and a joined argument as its separator and parts.
+ */
+export function manifestArguments(args: readonly RunnableArgument[]): string {
+  return JSON.stringify(args.map(argumentKey));
+}
+
+/**
+ * Make the command line `args` are run as: a program of the host at its
+ * location, an install file at its path (resolved against `anchor`, the
+ * directory the command line is relative to, where one is given), and a
+ * joined argument as its parts joined. An install file as the command is
+ * given a `./` where it has no `/`, which would otherwise search PATH.
+ */
+export function toArgv(args: readonly RunnableArgument[], anchor?: string): string[] {
+  const text = (arg: RunnableArgument): string => {
+    if (typeof arg === "string") {
+      return arg;
+    }
+    if (arg instanceof HostLink) {
+      return arg.location;
+    }
+    if ("installFile" in arg) {
+      return anchor === undefined ? arg.installFile : path.resolve(anchor, arg.installFile);
+    }
+    return arg.parts.map(text).join(arg.join);
+  };
+  return args.map((arg, index) => {
+    const written = text(arg);
+    const isInstallFile = index === 0 && typeof arg === "object" && !(arg instanceof HostLink) && "installFile" in arg;
+    return isInstallFile && !written.includes("/") ? `./${written}` : written;
+  });
+}
 
 /**
  * A FileSet that is *runnable*: the assembled, ready-to-launch install of a
@@ -63,30 +140,15 @@ const NO_ENV: ReadonlyMap<string, string> = new Map();
  * bin keeps its name). `RunnableFileSet.forEntry` builds the common single
  * definite-entry runnable (a `js_script`/`script`), as a one-symlink surface.
  */
-/** A part of an argument: text, or a file of the runnable's install, by its install path. */
-export type ArgumentPart = string | { readonly installPath: string };
-
-/** A fixed argument of a runnable: text, or parts joined into one argument (`--module-path=` and the jars). */
-export type RunnableArgument = string | readonly ArgumentPart[];
-
-/**
- * @return `args` as command-line text, each install path named within
- * `installDir`: the install's directory, as the command line reaches it.
- */
-function resolveArguments(args: readonly RunnableArgument[], installDir: string): string[] {
-  const part = (piece: ArgumentPart): string => (typeof piece === "string" ? piece : path.join(installDir, piece.installPath));
-  return args.map(arg => (typeof arg === "string" ? arg : arg.map(part).join("")));
-}
-
 export class RunnableFileSet extends FileSet {
   constructor(
     files: Iterable<[string, IFile]>,
     /** Fixed leading args, before any the caller appends. */
     public readonly args: readonly RunnableArgument[] = [],
-    /** What runs the entry: a bare command found on PATH (`sh`), or a runnable
-     * (`NODE`), reached through the cache's tree pool (see {@link launchedBy}).
-     * Omitted → the entry is itself executable. */
-    public readonly interpreter?: string | RunnableFileSet,
+    /** What runs the entry: a program of the host, run where it lies, or a
+     * runnable (`NODE`), reached through the cache's tree pool (see
+     * {@link launchedBy}). Omitted → the entry is itself executable. */
+    public readonly interpreter?: RunnableFileSet | HostLink,
     /** The primary package's mount within the install (e.g. `node_modules/@fabr-build/cli`); a `surface` file resolves to `root`/name. */
     public readonly root: string = "",
     /** The launch surface: package files (by path) + a SymlinkFile per bin (by command → install path). `locate`/`select` search this. */
@@ -121,7 +183,7 @@ export class RunnableFileSet extends FileSet {
     files: Iterable<[string, IFile]>,
     entry: string,
     args: readonly RunnableArgument[] = [],
-    interpreter?: string | RunnableFileSet
+    interpreter?: RunnableFileSet | HostLink
   ): RunnableFileSet {
     const surface = new FileSet(new Map<string, IFile>([[path.posix.basename(entry), new SymlinkFile(entry)]]));
     return new RunnableFileSet(files, args, interpreter, "", surface);
@@ -132,11 +194,12 @@ export class RunnableFileSet extends FileSet {
   }
 
   /**
-   * Get this runnable launched through `interpreter`, which is written once to
-   * `pool`'s tree pool and reached through the pool's link beside the launch
-   * directory ({@link toCommandLine}'s `pool`). Its content is in any key this
-   * runnable's command line is: the command line names it by hash.
-   * `interpreterArgs` go after the interpreter's own args, before this
+   * Get this runnable launched through `interpreter`. A program of the host
+   * (an interpreter whose whole command line is one) is run where it lies;
+   * any other interpreter is written once to `pool`'s tree pool and reached
+   * through the pool's link beside the launch directory ({@link toCommandLine}'s
+   * `pool`). Either way its content is in any key this runnable's command line
+   * is. `interpreterArgs` go after the interpreter's own args, before this
    * runnable's entry (`java -jar <entry>`), naming files of this runnable's
    * install as its own args do.
    */
@@ -145,22 +208,25 @@ export class RunnableFileSet extends FileSet {
     pool: { ensureTree(files: FileSet): Computable<string> },
     interpreterArgs: readonly RunnableArgument[] = []
   ): Computable<RunnableFileSet> {
-    return pool.ensureTree(interpreter).then(
-      () =>
-        new RunnableFileSet(
-          this,
-          this.args,
-          interpreter,
-          this.root,
-          this.surface,
-          this.served,
-          this.launchCwd,
-          this.env,
-          this.origin,
-          [...this.interpreterArgs, ...interpreterArgs],
-          this.teardown
-        )
-    );
+    const launched = (by: RunnableFileSet | HostLink): RunnableFileSet =>
+      new RunnableFileSet(
+        this,
+        this.args,
+        by,
+        this.root,
+        this.surface,
+        this.served,
+        this.launchCwd,
+        this.env,
+        this.origin,
+        [...this.interpreterArgs, ...interpreterArgs],
+        this.teardown
+      );
+    const line = interpreter.toCommandLine();
+    if (line.length === 1 && line[0] instanceof HostLink) {
+      return Computable.resolve(launched(line[0]));
+    }
+    return pool.ensureTree(interpreter).then(() => launched(interpreter));
   }
 
   /** Get this runnable offering a different launch surface — how a projection is
@@ -246,44 +312,44 @@ export class RunnableFileSet extends FileSet {
     }
     const [entry] = [...located.keys()];
     /* A one-symlink surface: the selected install path, addressed by its own
-     * basename. The default-entry rules then resolve it with no special case —
-     * a selected runnable and a `forEntry` one are the same shape. */
-    return this.withSurface(new FileSet(new Map<string, IFile>([[path.posix.basename(entry), new SymlinkFile(entry)]])));
+     * basename, or the program of the host selected. The default-entry rules
+     * then resolve it with no special case — a selected runnable and a
+     * `forEntry` one are the same shape. */
+    const host = [...this.surface].find(([, file]) => file instanceof HostLink && file.target === entry);
+    return this.withSurface(new FileSet(new Map<string, IFile>([host ?? [path.posix.basename(entry), new SymlinkFile(entry)]])));
   }
 
   /**
    * Reduce this runnable to a command line: the interpreter (if any) as the
    * command, then the launch entry, the runnable's own fixed args, then the
-   * caller's. Pure — no filesystem or PATH access; the caller resolves argv[0]
+   * caller's, which are taken as they are. Pure — no filesystem or PATH
+   * access; the caller makes it text with {@link toArgv}, resolves argv[0]
    * with findExecutable, relative to the directory it launches in, and spawns.
-   * `base` prepends a (relative) mount prefix to the entry — for a tool staged
-   * under a subdir of the launch cwd (e.g. a compiler mounted apart from the
-   * workspace it operates on). `anchor` (the staged install dir) instead makes
-   * the entry absolute, for launching with a cwd *other* than the install (fabr
-   * run, in the user's directory); with neither, the entry stays
-   * install-relative (the exec step, cwd == install). A runnable interpreter
-   * is its own command line, placed in the tree pool, taking this one's entry
-   * and arguments as its caller's. `pool` is where the pool is, as a path from
-   * the launch directory (or from `anchor`): {@link TREE_MOUNT} by default, for
-   * a launch in a step's working directory.
+   * An entry that is a program of the host is that program. Any other names a
+   * file of the install, relative to the launch directory: `base` is where the
+   * install is staged within it — for a tool staged under a subdir of the
+   * launch cwd (e.g. a compiler mounted apart from the workspace it operates
+   * on) — and with none, the install is the launch directory itself (the exec
+   * step). A runnable interpreter is its own command line, placed in the tree
+   * pool, taking this one's entry and arguments as its caller's. `pool` is
+   * where the pool is, as a path from the launch directory: {@link TREE_MOUNT}
+   * by default, for a launch in a step's working directory.
    * @throws if no single entry resolves — the "which entry?" error, deferred to
    * launch so a projection has the chance to pick one.
    */
-  public toCommandLine(callerArgs: string[] = [], opts?: { anchor?: string; base?: string; pool?: string }): string[] {
-    const based = (installPath: string): string => (opts?.base ? path.posix.join(opts.base, installPath) : installPath);
-    const entry = based(this.resolveEntry());
-    const installDir = opts?.anchor ? path.resolve(opts.anchor, opts.base ?? "") : (opts?.base ?? "");
-    const own = [opts?.anchor ? path.resolve(opts.anchor, entry) : entry, ...resolveArguments(this.args, installDir), ...callerArgs];
-    const line = [...resolveArguments(this.interpreterArgs, installDir), ...own];
+  public toCommandLine(callerArgs: readonly RunnableArgument[] = [], opts?: { base?: string; pool?: string }): RunnableArgument[] {
+    const base = opts?.base ?? "";
+    const entry = this.resolveEntry();
+    const own = [
+      entry instanceof HostLink ? entry : { installFile: base === "" ? entry : path.posix.join(base, entry) },
+      ...this.args.map(arg => placedIn(base, arg)),
+      ...callerArgs,
+    ];
+    const line = [...this.interpreterArgs.map(arg => placedIn(base, arg)), ...own];
     if (this.interpreter instanceof RunnableFileSet) {
-      return this.interpreter.toCommandLine(line, { ...opts, base: path.posix.join(opts?.pool ?? TREE_MOUNT, this.interpreter.toManifestHash()) });
+      return this.interpreter.toCommandLine(line, { base: path.posix.join(opts?.pool ?? TREE_MOUNT, this.interpreter.toManifestHash()), pool: opts?.pool });
     }
-    if (this.interpreter !== undefined) {
-      return [this.interpreter, ...line];
-    }
-    /* The entry is the command: a bare name would be searched for on PATH. */
-    const [command, ...rest] = own;
-    return [command.includes("/") ? command : `./${command}`, ...rest];
+    return this.interpreter === undefined ? own : [this.interpreter, ...line];
   }
 
   /**
@@ -353,12 +419,14 @@ export class RunnableFileSet extends FileSet {
     return byPath;
   }
 
-  /** Get the launch entry (install path): the sole candidate after dedup, else the "which entry?" error. */
-  private resolveEntry(): string {
+  /** Get the launch entry: the sole candidate after dedup — its install path,
+   * or the program of the host it is — else the "which entry?" error. */
+  private resolveEntry(): string | HostLink {
     const byPath = this.installPaths(this.defaultCandidates());
-    const paths = [...byPath.keys()];
-    if (paths.length === 1) {
-      return paths[0];
+    if (byPath.size === 1) {
+      const [[target, name]] = byPath;
+      const file = this.surface.getFile(name);
+      return file instanceof HostLink ? file : target;
     }
     throw this.ambiguityError([...byPath.values()]);
   }
@@ -457,7 +525,7 @@ export function startLaunch(runnable: RunnableFileSet, installDir: string, env: 
     return { env, end: () => undefined };
   }
   const launchEnv = { ...(env ?? hostEnvironment()), FABR_LAUNCH: `${ownerName()}-${++launches}` };
-  const [command, ...args] = resolveArguments(runnable.teardown, installDir);
+  const [command, ...args] = toArgv(runnable.teardown, installDir);
   let ended = false;
   const end = (): void => {
     if (!ended) {

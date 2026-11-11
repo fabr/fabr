@@ -23,6 +23,7 @@
  * contributed to the install at its resolved name and launched with the shell;
  * `deps` stage any further support files (their filesets union flat — no
  * package mounting, this is just files); `args` are fixed leading arguments.
+ * The shell is the runnable the global `SHELL` names.
  * It yields a `RunnableFileSet` — the staged files plus how to launch them —
  * for `fabr run` or a `generate` command to invoke. It does not itself
  * execute: running a runnable and collecting its output is `generate`'s job.
@@ -31,7 +32,8 @@
 import { BUILD_OVERRIDE } from "../model/Constraints";
 import { FileSet } from "../core/FileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
-import { defineRule, RuleResult } from "./Types";
+import { defineRule } from "./Types";
+import { Property } from "../model/Property";
 import { FabrError } from "../core/Errors";
 
 /** The `script` rule, under `run`. */
@@ -49,12 +51,17 @@ export default defineRule({
     };
   },
   evaluateMaterialized(context, { deps, entry }) {
-    return context.getProperty("args").then(args => runnableScript(deps, entry, args?.getValues() ?? []));
+    return context
+      .getProperty("args")
+      .then((args: Property | undefined) => context.launchedBy(runnableScript(deps, entry, args?.getValues() ?? []), SHELL_GLOBAL));
   },
 });
 
+/** The global naming the shell a script is run with. */
+const SHELL_GLOBAL = "SHELL";
+
 /** Make the runnable of the script `entry`, with `deps` beside it, run with `args`. */
-function runnableScript(deps: FileSet[], entry: FileSet[], args: string[]): RuleResult {
+function runnableScript(deps: FileSet[], entry: FileSet[], args: string[]): RunnableFileSet {
   /* The entry is the script file itself — exactly one. (A shell script has no
    * notion of a package bin; a packaged tool is js_script's job.) */
   const entrySet = FileSet.unionAll(...entry);
@@ -67,5 +74,5 @@ function runnableScript(deps: FileSet[], entry: FileSet[], args: string[]): Rule
     );
   }
   const install = FileSet.unionAll(...deps, entrySet);
-  return RunnableFileSet.forEntry(install, names[0], args, "sh");
+  return RunnableFileSet.forEntry(install, names[0], args);
 }

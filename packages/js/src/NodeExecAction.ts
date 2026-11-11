@@ -36,7 +36,8 @@ import {
   outputsConfig,
   readJsonFile,
   stringConfig,
-  stringListConfig,
+  commandLineConfig,
+  RunnableArgument,
   writeFileSet,
 } from "@fabr-build/core";
 import { layoutPackages, NodeLayout, NODE_MODULES, selfConfig } from "./Layout";
@@ -98,7 +99,7 @@ export const NODE_EXEC_ACTION: IBuildActionDefinition = {
     const withPackages = optionalConfig(action, "packageSourcePaths") !== undefined;
     const files = FileSet.unionAll(fileSetInput(action, "files"), configFiles(action));
     const depsReportName = optionalConfig(action, "depsReport");
-    const exec = (staged: FileSet, argv: string[], incremental?: Incremental, handover?: Handover): Computable<BuildResult> =>
+    const exec = (staged: FileSet, argv: readonly RunnableArgument[], incremental?: Incremental, handover?: Handover): Computable<BuildResult> =>
       /* An incremental run with a base starts from the last green build's
        * output: the base entry's files are staged under the emit directory —
        * and the driver's own kept files back into its state directory — as
@@ -125,14 +126,14 @@ export const NODE_EXEC_ACTION: IBuildActionDefinition = {
         .then(result =>
           depsReportName === undefined && incremental === undefined ? result : withBookkeeping(result, depsReportName, incremental)
         );
-    const argv = stringListConfig(action, "argv");
+    const argv = commandLineConfig(action, "argv");
     /* The packages are laid out as the rule asked: a tree staged at the mount,
      * or nothing at all — each a tree in the cache's pool, and what each of
      * them SEES a row in the table staged beside the sources. Materializing
      * them is this step's work like any other layout's, so a hit does not touch
      * the pool. */
     const packages = layoutPackages(action, ctx.workDir, tree => ctx.ensureTree(tree), stringConfig(action, "mount"));
-    const execLaid = (argv: string[], incremental?: Incremental, handover?: Handover): Computable<BuildResult> =>
+    const execLaid = (argv: readonly RunnableArgument[], incremental?: Incremental, handover?: Handover): Computable<BuildResult> =>
       packages.then(layout =>
         exec(
           /* A tree layout carries its packages' source paths with its files; a
@@ -226,7 +227,7 @@ export const NODE_EXEC_ACTION: IBuildActionDefinition = {
 export function createNodeExecAction(
   files: FileSet,
   deps: FileSet[],
-  argv: string[],
+  argv: readonly RunnableArgument[],
   outputs: string,
   options: {
     mount?: string;

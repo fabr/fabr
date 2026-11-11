@@ -30,6 +30,7 @@ import {
   ActionContext,
   BuildAction,
   BuildResult,
+  commandLineConfig,
   Computable,
   COVERAGE_REPORT_FILENAME,
   DiscoveredDeps,
@@ -56,12 +57,14 @@ import {
   parseJson,
   parseLcov,
   readJsonFile,
+  RunnableArgument,
   splitDepsPath,
   stringListConfig,
   TaskProgress,
   variableEntry,
   TEST_REPORT_FILENAME,
   testFailureOf,
+  toArgv,
   toError,
   toJsonObject,
   toStringList,
@@ -85,7 +88,7 @@ import { IPackageLayout, layoutPackages, NodeLayout, ReadName, selfConfig } from
  */
 /* Bump the version when what the step stages, keeps between runs or reports
  * as its reads changes. */
-const JS_TEST_STEP: IBuildActionDefinition = { id: "js:test-run", version: 9, run: runTests, stage: stageTests };
+const JS_TEST_STEP: IBuildActionDefinition = { id: "js:test-run", version: 10, run: runTests, stage: stageTests };
 
 /** Read the `env` config member, the variables the test processes run with: each written `NAME=value`, a name holding no `=`. */
 function declaredEnv(action: BuildAction): Record<string, string> {
@@ -94,7 +97,7 @@ function declaredEnv(action: BuildAction): Record<string, string> {
 
 /** Stage the installation as {@link runTests} does, and describe its per-file invocations of the runner. */
 function stageTests(action: BuildAction, dir: string, ensureTree: (files: FileSet) => Computable<string>): Computable<IStagedStep> {
-  const argv = stringListConfig(action, "argv");
+  const argv = toArgv(commandLineConfig(action, "argv"));
   return Computable.forAll([testFilesOf(action), stageInstall(action, dir, ensureTree, work => work())], testFiles => ({
     cwd: COMPILE_OUT_DIR,
     commands: testFiles.map((file, index) => ({ stages: [{ argv: [findExecutable(argv[0], join(dir, COMPILE_OUT_DIR)), ...invocationOf(argv, file, index)] }] })),
@@ -150,12 +153,11 @@ function invocationOf(argv: string[], file: string, index: number): string[] {
 
 function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
   const workDir = ctx.workDir;
-  const argv = stringListConfig(action, "argv");
+  const argv = toArgv(commandLineConfig(action, "argv"));
   const outputs = stringListConfig(action, "outputs");
   const declared = declaredEnv(action);
-  const coverageArgv = action.config.coverage_argv;
-  const measured = Array.isArray(coverageArgv)
-    ? measuredFilesOf(action).then(files => new TestCoverage(ctx, report, coverageArgv, declared, files))
+  const measured = Array.isArray(action.config.coverage_argv)
+    ? measuredFilesOf(action).then(files => new TestCoverage(ctx, report, toArgv(commandLineConfig(action, "coverage_argv")), declared, files))
     : Computable.resolve(undefined);
   /* Tests run with only the environment their target declares (no ambient vars
    * that could alter their output); a test that must spawn a tool references it
@@ -668,7 +670,7 @@ export interface ITestRunInputs {
   writable: FileSet;
   /** The runner invocation, without report or files: the step invokes it once
    * per `testFiles` entry, appending a per-invocation report name and the file. */
-  argv: string[];
+  argv: readonly RunnableArgument[];
   testFiles: string[];
   /** The selectors for what the run leaves behind: the report, plus any
    * refreshed expectation files. */
@@ -678,7 +680,7 @@ export interface ITestRunInputs {
   /** Where the run is measured for coverage: the coverage driver's command
    * line, run from the install root, and the files it measures, by their
    * install names. */
-  coverage?: { argv: string[]; measured: string[] };
+  coverage?: { argv: readonly RunnableArgument[]; measured: string[] };
 }
 
 /**

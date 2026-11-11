@@ -27,6 +27,7 @@ import {
   COVERAGE_REPORT_FILENAME,
   execute,
   ExecutionError,
+  commandLineConfig,
   FileSet,
   fileSetInput,
   findExecutable,
@@ -35,9 +36,11 @@ import {
   ITaskReport,
   ITestReport,
   parseJson,
+  RunnableArgument,
   stringListConfig,
   TEST_REPORT_FILENAME,
   testFailureOf,
+  toArgv,
   toError,
   toTestReport,
   writeFileSet,
@@ -50,11 +53,11 @@ import {
  * green one, and enters the cache: its report says what failed, and its task
  * ends as failed. A run that wrote no report fails with the runner's own output.
  */
-const JAVA_TEST_STEP: IBuildActionDefinition = { id: "java:test-run", version: 3, run: runTests };
+const JAVA_TEST_STEP: IBuildActionDefinition = { id: "java:test-run", version: 4, run: runTests };
 
 function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
   const staged = fileSetInput(action, "staged");
-  const argv = stringListConfig(action, "argv");
+  const argv = toArgv(commandLineConfig(action, "argv"));
   const invocation = [...argv.slice(1), `--report=${TEST_REPORT_FILENAME}`];
   return ctx
     .admit(report, () => writeFileSet(ctx.workDir, staged))
@@ -95,6 +98,6 @@ function judgeRun(workDir: string, invocation: string[], error: Error | undefine
 
 /** @return the action that runs `argv` (the runner's command line, less its report) in `staged`,
  * collecting the coverage report too where the run is `measured`. */
-export function createTestRunAction(staged: FileSet, argv: string[], measured: boolean): BuildAction {
+export function createTestRunAction(staged: FileSet, argv: readonly RunnableArgument[], measured: boolean): BuildAction {
   return new BuildAction(JAVA_TEST_STEP, { staged }, { argv, outputs: [TEST_REPORT_FILENAME, ...(measured ? [COVERAGE_REPORT_FILENAME] : [])] });
 }
