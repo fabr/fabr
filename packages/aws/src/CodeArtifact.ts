@@ -24,13 +24,13 @@
  */
 
 import {
-  Computable,
   Credential,
   FabrError,
   IAuthChallenge,
   IRequestHead,
   isJsonObject,
   parseJson,
+  RenewableToken,
   sendRequest,
 } from "@fabr-build/core";
 import { IServiceRequest, requestUrl } from "./Signing";
@@ -89,42 +89,25 @@ export function toCodeArtifactToken(json: unknown): string {
 }
 
 /**
- * A domain's token, as CodeArtifact's `GetAuthorizationToken` gives it, signed
- * with the account's credentials: fetched once, and again where a repository
- * no longer accepts it, once however many requests meet that together.
+ * Make a domain's token, as CodeArtifact's `GetAuthorizationToken` gives it,
+ * signed with the account's credentials.
  */
-export class CodeArtifactToken {
-  private token?: Computable<string>;
-
-  constructor(
-    private readonly account: IServiceSettings,
-    private readonly domain: string,
-    private readonly owner: string
-  ) {}
-
-  /** Get the token held, fetching it the first time, or again where `renew` and none is being fetched. */
-  public current(renew = false): Computable<string> {
-    if (this.token === undefined || (renew && this.token.isSettled())) {
-      this.token = this.fetch();
-    }
-    return this.token;
-  }
-
-  private fetch(): Computable<string> {
-    const request = tokenRequest(this.domain, this.owner, this.account.region, this.account.endpoint);
+export function codeArtifactToken(account: IServiceSettings, domain: string, owner: string): RenewableToken<string> {
+  return new RenewableToken(() => {
+    const request = tokenRequest(domain, owner, account.region, account.endpoint);
     const url = requestUrl(request);
-    return this.account.signer
-      .sign(request, CODEARTIFACT_SERVICE, this.account.region)
+    return account.signer
+      .sign(request, CODEARTIFACT_SERVICE, account.region)
       .then(headers => sendRequest(url, { method: "POST", headers, body: request.body }))
       .then(response => {
         if (response.statusCode !== 200) {
-          throw new FabrError(`CodeArtifact refused a token for the domain ${this.domain} (${response.statusCode})`).withHelp(
+          throw new FabrError(`CodeArtifact refused a token for the domain ${domain} (${response.statusCode})`).withHelp(
             "signing in to CodeArtifact needs the codeartifact:GetAuthorizationToken and sts:GetServiceBearerToken permissions"
           );
         }
         return parseJson(response.body, `token from ${url}`, toCodeArtifactToken);
       });
-  }
+  });
 }
 
 /**
@@ -132,11 +115,11 @@ export class CodeArtifactToken {
  * the domain's token as `format`'s clients send it, a bearer token for npm,
  * else basic authentication as the user `aws`.
  */
-export function formatCredential(token: CodeArtifactToken, format: string): Credential {
+export function formatCredential(token: RenewableToken<string>, format: string): Credential {
   return {
     authorize: (_request: IRequestHead, challenge?: IAuthChallenge) =>
       token
-        .current(challenge !== undefined)
+        .forRequest(challenge)
         .then(
           value =>
             new Map([

@@ -25,6 +25,7 @@ import {
   IRequestHead,
   isJsonObject,
   parseJson,
+  RenewableToken,
   sendRequest,
   TargetContext,
 } from "@fabr-build/core";
@@ -41,7 +42,7 @@ import { containerPluginContext, IRegistryCredential } from "./RegistryAuth";
  */
 export class RegistrySignIn implements Credential {
   /** The token for each set of scopes, by the scopes joined. */
-  private readonly tokens = new Map<string, Computable<string>>();
+  private readonly tokens = new Map<string, RenewableToken<string>>();
   /** The registry's `Bearer` challenge, once it has made one. */
   private realm?: IBearerChallenge;
   /** The `Basic` header, once the registry has asked for one. */
@@ -57,9 +58,8 @@ export class RegistrySignIn implements Credential {
   public authorize(request: IRequestHead, challenge?: IAuthChallenge): Computable<ReadonlyMap<string, string> | undefined> {
     if (challenge === undefined) {
       const scopes = scopesOf(request, this.registry);
-      const held = this.tokens.get(scopes.join(" "));
-      if (held !== undefined || (this.realm !== undefined && scopes.length > 0)) {
-        return bearer(held ?? this.fetchToken(this.realm!, scopes));
+      if (this.tokens.has(scopes.join(" ")) || (this.realm !== undefined && scopes.length > 0)) {
+        return bearer(this.tokenFor(scopes).current());
       }
       return Computable.resolve(this.basic === undefined ? new Map() : new Map([["authorization", this.basic]]));
     }
@@ -80,14 +80,17 @@ export class RegistrySignIn implements Credential {
     }
     this.realm = asked;
     const scopes = asked.scope === undefined ? scopesOf(request, this.registry) : asked.scope.split(" ");
-    const fetching = this.tokens.get(scopes.join(" "));
-    return bearer(fetching !== undefined && !fetching.isSettled() ? fetching : this.fetchToken(asked, scopes));
+    return bearer(this.tokenFor(scopes).forRequest(challenge));
   }
 
-  /** Fetch a token for `scopes`, and hold it for them. */
-  private fetchToken(challenge: IBearerChallenge, scopes: readonly string[]): Computable<string> {
-    const token = this.credentialOf().then(credential => this.token(challenge, scopes, credential));
-    this.tokens.set(scopes.join(" "), token);
+  /** Get the token held for `scopes`, fetched from the realm the registry last named. */
+  private tokenFor(scopes: readonly string[]): RenewableToken<string> {
+    const key = scopes.join(" ");
+    let token = this.tokens.get(key);
+    if (token === undefined) {
+      token = new RenewableToken(() => this.credentialOf().then(credential => this.token(this.realm!, scopes, credential)));
+      this.tokens.set(key, token);
+    }
     return token;
   }
 
@@ -97,9 +100,18 @@ export class RegistrySignIn implements Credential {
     scopes: readonly string[],
     credential: IRegistryCredential | undefined
   ): Computable<string> {
-    const query = new URLSearchParams(challenge.service === undefined ? [] : [["service", challenge.service]]);
-    scopes.forEach(scope => query.append("scope", scope));
-    const url = `${challenge.realm}?${query.toString()}`;
+    const realm = new URL(challenge.realm);
+    /* The credential is sent no less securely than the registry's own requests. */
+    if (credential !== undefined && realm.protocol !== "https:" && !(realm.protocol === "http:" && new URL(this.registry).protocol === "http:")) {
+      return Computable.reject(
+        new FabrError(`${this.registry} asks to be signed in at ${challenge.realm}, which is not https, so its credential is not sent`)
+      );
+    }
+    if (challenge.service !== undefined) {
+      realm.searchParams.append("service", challenge.service);
+    }
+    scopes.forEach(scope => realm.searchParams.append("scope", scope));
+    const url = realm.toString();
     return sendRequest(url, {
       method: "GET",
       headers: credential === undefined ? {} : { authorization: basicAuthorization(credential) },

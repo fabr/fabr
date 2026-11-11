@@ -26,6 +26,7 @@ import {
   IProvenanceStep,
   MemoryCache,
   Name,
+  onlyTo,
   PartialRepositoryRef,
   Property,
   registerProvenanceDescriber,
@@ -340,7 +341,7 @@ function createRepository(context: TargetContext, url?: string, credential?: Cre
         throw new FabrError("Missing required property url");
       }
       const base = written.replace(/\/+$/, "");
-      const signIn = credential ?? authFileSignIn(context, base, loginUrl?.toString());
+      const signIn = registrySignIn(context, base, loginUrl?.toString(), credential);
       return new OciRepository(
         context,
         new Registry(context, base, signIn),
@@ -352,4 +353,13 @@ function createRepository(context: TargetContext, url?: string, credential?: Cre
 }
 
 /** The implementation CONTAINER.fabr's `repository` declaration names. */
+/**
+ * Make what signs in the requests to the registry at `base`: `credential`, or
+ * the auth files' login for `loginUrl`, applied to the registry's own origin
+ * alone, so a blob read or an upload elsewhere carries nothing of it.
+ */
+export function registrySignIn(context: TargetContext, base: string, loginUrl?: string, credential?: Credential): Credential {
+  return onlyTo(new URL(base).origin, credential ?? authFileSignIn(context, base, loginUrl));
+}
+
 export default { provider: createRepository } satisfies RepositoryImplementation;

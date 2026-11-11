@@ -25,7 +25,7 @@
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import { Hash } from "@smithy/hash-node";
 import { SignatureV4 } from "@smithy/signature-v4";
-import { compareText, Computable, Credential, FabrError, toError } from "@fabr-build/core";
+import { compareText, Computable, FabrError, toError } from "@fabr-build/core";
 
 /** A request to a service, before it is signed. */
 export interface IServiceRequest {
@@ -106,14 +106,4 @@ export function requestUrl(request: IServiceRequest): string {
     .map(([key, value]) => `${uriEncode(key)}=${uriEncode(value)}`)
     .join("&");
   return `${request.protocol}//${host}${request.path}${query === "" ? "" : `?${query}`}`;
-}
-
-/** Make the credential signing in, as `credential` does, the requests to `origin` alone: any other request carries nothing of it. */
-export function onlyTo(origin: string, credential: Credential): Credential {
-  return {
-    authorize: (request, challenge) =>
-      new URL(request.url).origin === origin
-        ? credential.authorize(request, challenge)
-        : Computable.resolve(challenge === undefined ? new Map() : undefined),
-  };
 }

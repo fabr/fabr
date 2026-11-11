@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import type { Computable } from "./Computable";
+import { Computable } from "./Computable";
 
 /** A request as a credential sees it: what is sent, before the credential's own headers. */
 export interface IRequestHead {
@@ -44,4 +44,51 @@ export interface Credential {
    * answered 401, giving the headers to retry with, or undefined to give up.
    */
   authorize(request: IRequestHead, challenge?: IAuthChallenge): Computable<ReadonlyMap<string, string> | undefined>;
+}
+
+/** Make the credential signing in, as `credential` does, the requests to `origin` alone: any other request carries nothing of it. */
+export function onlyTo(origin: string, credential: Credential): Credential {
+  return {
+    authorize: (request, challenge) =>
+      new URL(request.url).origin === origin
+        ? credential.authorize(request, challenge)
+        : Computable.resolve(challenge === undefined ? new Map() : undefined),
+  };
+}
+
+/**
+ * A token fetched when first needed and held, shared by every request that
+ * asks while it is being fetched, and fetched again where a challenge says the
+ * one held is no longer accepted, or where its fetch failed.
+ */
+export class RenewableToken<T> {
+  /** The token's fetch, and whether it failed. */
+  private held?: { token: Computable<T>; attempt: { failed: boolean } };
+
+  constructor(private readonly fetch: () => Computable<T>) {}
+
+  /** Get the token held, fetching it the first time or where its fetch failed. */
+  public current(): Computable<T> {
+    return this.held === undefined || this.held.attempt.failed ? this.renewed() : this.held.token;
+  }
+
+  /** Get the token for a request: the one held, or, answering `challenge`, a
+   *  fresh one, unless a fetch is already under way. */
+  public forRequest(challenge?: IAuthChallenge): Computable<T> {
+    if (challenge === undefined || (this.held !== undefined && !this.held.token.isSettled())) {
+      return this.current();
+    }
+    return this.renewed();
+  }
+
+  /** Fetch the token again, and hold the fetch. */
+  private renewed(): Computable<T> {
+    const attempt = { failed: false };
+    const token = this.fetch().catch((err: Error) => {
+      attempt.failed = true;
+      throw err;
+    });
+    this.held = { token, attempt };
+    return token;
+  }
 }

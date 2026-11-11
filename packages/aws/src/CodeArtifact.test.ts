@@ -22,8 +22,8 @@ import { AddressInfo } from "node:net";
 import { expect } from "chai";
 import { Computable, Credential, Name, NamespaceRef, PartialRepositoryRef, parseName, TargetContext } from "@fabr-build/core";
 import { AwsAccount } from "./AwsAccount";
-import { CodeArtifactToken, endpointUrl, formatCredential, tokenRequest, toCodeArtifactToken } from "./CodeArtifact";
-import { onlyTo, RequestSigner, requestUrl } from "./Signing";
+import { codeArtifactToken, endpointUrl, formatCredential, tokenRequest, toCodeArtifactToken } from "./CodeArtifact";
+import { RequestSigner, requestUrl } from "./Signing";
 
 const TYPES = new Map([
   ["ecr", "oci_repository"],
@@ -109,15 +109,23 @@ describe("a CodeArtifact domain's token", () => {
   let server: http.Server;
   let endpoint: URL;
   const asked: Array<{ url: string; authorization: string }> = [];
+  /* How many token requests to refuse before answering. */
+  let refusals = 0;
   const saved = { id: process.env.AWS_ACCESS_KEY_ID, secret: process.env.AWS_SECRET_ACCESS_KEY };
 
   beforeEach(async () => {
     process.env.AWS_ACCESS_KEY_ID = "AKIDTEST";
     process.env.AWS_SECRET_ACCESS_KEY = "secret";
     asked.length = 0;
+    refusals = 0;
     server = http.createServer((req, res) => {
       req.resume();
       req.on("end", () => {
+        if (refusals > 0) {
+          refusals--;
+          res.writeHead(400).end("{}");
+          return;
+        }
         asked.push({ url: req.url!, authorization: req.headers.authorization ?? "" });
         res.writeHead(200).end(JSON.stringify({ authorizationToken: `token-${asked.length}` }));
       });
@@ -143,7 +151,7 @@ describe("a CodeArtifact domain's token", () => {
   const head = { method: "GET", url: "http://x/npm/shared/lodash", headers: new Map<string, string>() };
 
   it("is fetched once with a signed request, and given as npm sends it, or as Maven does", async () => {
-    const token = new CodeArtifactToken(
+    const token = codeArtifactToken(
       { signer: new RequestSigner(undefined), region: "eu-west-2", endpoint },
       "acme",
       "111122223333"
@@ -158,7 +166,7 @@ describe("a CodeArtifact domain's token", () => {
   });
 
   it("is fetched again where a repository no longer accepts it, once for requests challenged together", async () => {
-    const token = new CodeArtifactToken(
+    const token = codeArtifactToken(
       { signer: new RequestSigner(undefined), region: "eu-west-2", endpoint },
       "acme",
       "111122223333"
@@ -172,23 +180,23 @@ describe("a CodeArtifact domain's token", () => {
     ]);
     expect(asked).to.have.lengthOf(2);
   });
-});
 
-describe("a credential an account gives", () => {
-  it("signs in requests to its repository's origin alone", async () => {
-    const credential = onlyTo("https://acme-1.d.codeartifact.us-east-1.amazonaws.com", {
-      authorize: () => Computable.resolve(new Map([["authorization", "Bearer t"]])),
-    });
-    const at = (url: string): { method: string; url: string; headers: Map<string, string> } => ({
-      method: "GET",
-      url,
-      headers: new Map(),
-    });
-    expect(await credential.authorize(at("https://acme-1.d.codeartifact.us-east-1.amazonaws.com/npm/shared/lodash"))).to.deep.equal(
-      new Map([["authorization", "Bearer t"]])
+  it("is fetched again where fetching it failed", async () => {
+    const token = codeArtifactToken(
+      { signer: new RequestSigner(undefined), region: "eu-west-2", endpoint },
+      "acme",
+      "111122223333"
     );
-    expect(await credential.authorize(at("https://cdn.example/lodash.tgz"))).to.deep.equal(new Map());
-    expect(await credential.authorize(at("https://cdn.example/lodash.tgz"), { challenges: [] })).to.equal(undefined);
+    const npm = formatCredential(token, "npm");
+    refusals = 1;
+    const failed = await Promise.resolve(npm.authorize(head)).then(
+      () => undefined,
+      (err: Error) => err
+    );
+    expect(failed).to.be.instanceOf(Error);
+    expect(await npm.authorize(head)).to.deep.equal(new Map([["authorization", "Bearer token-1"]]));
+    expect(await npm.authorize(head)).to.deep.equal(new Map([["authorization", "Bearer token-1"]]));
+    expect(asked).to.have.lengthOf(1);
   });
 });
 

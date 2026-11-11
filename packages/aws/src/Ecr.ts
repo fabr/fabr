@@ -30,6 +30,7 @@ import {
   IRequestHead,
   isJsonObject,
   parseJson,
+  RenewableToken,
   sendRequest,
 } from "@fabr-build/core";
 import { describeServiceError, jsonRequest, serviceErrorOf } from "./JsonProtocol";
@@ -52,20 +53,18 @@ interface IEcrToken {
  * many requests meet that together.
  */
 export class EcrSignIn implements Credential {
-  private token?: Computable<IEcrToken>;
+  /** The password, fetched when first needed. */
+  private readonly token = new RenewableToken(() => this.fetch());
 
   constructor(private readonly account: IServiceSettings) {}
 
-  /** Get the token held, fetching it the first time. */
+  /** Get the token held, fetching it the first time or where its fetch failed. */
   public current(): Computable<IEcrToken> {
-    this.token ??= this.fetch();
-    return this.token;
+    return this.token.current();
   }
 
   public authorize(_request: IRequestHead, challenge?: IAuthChallenge): Computable<ReadonlyMap<string, string> | undefined> {
-    const token =
-      challenge === undefined || (this.token !== undefined && !this.token.isSettled()) ? this.current() : (this.token = this.fetch());
-    return token.then(({ authorization }) => new Map([["authorization", `Basic ${authorization}`]]));
+    return this.token.forRequest(challenge).then(({ authorization }) => new Map([["authorization", `Basic ${authorization}`]]));
   }
 
   /** Fetch a token from ECR's `GetAuthorizationToken`, signed with the account's credentials. */

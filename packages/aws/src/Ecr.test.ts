@@ -91,15 +91,23 @@ describe("signing in to ECR", () => {
   let endpoint: URL;
   /* The tokens handed out, and what each request for one was signed with. */
   const signed: string[] = [];
+  /* How many token requests to refuse before answering. */
+  let refusals = 0;
   const saved = { id: process.env.AWS_ACCESS_KEY_ID, secret: process.env.AWS_SECRET_ACCESS_KEY };
 
   beforeEach(async () => {
     process.env.AWS_ACCESS_KEY_ID = "AKIDTEST";
     process.env.AWS_SECRET_ACCESS_KEY = "secret";
     signed.length = 0;
+    refusals = 0;
     server = http.createServer((req, res) => {
       req.resume();
       req.on("end", () => {
+        if (refusals > 0) {
+          refusals--;
+          res.writeHead(400).end("{}");
+          return;
+        }
         signed.push(req.headers.authorization ?? "");
         const password = Buffer.from(`AWS:password-${signed.length}`).toString("base64");
         res.writeHead(200).end(
@@ -195,6 +203,19 @@ describe("signing in to ECR", () => {
     const [first, second] = await Promise.all([signIn.authorize(head, challenge), signIn.authorize(head, challenge)]);
     expect([first, second]).to.deep.equal([basic(2), basic(2)]);
     expect(signed).to.have.lengthOf(2);
+  });
+
+  it("fetches the password again where fetching it failed", async () => {
+    const signIn = new EcrSignIn({ signer: new RequestSigner(undefined), region: "us-east-1", endpoint });
+    refusals = 1;
+    const failed = await Promise.resolve(signIn.authorize(head)).then(
+      () => undefined,
+      (err: Error) => err
+    );
+    expect(failed).to.be.instanceOf(Error);
+    expect(await signIn.authorize(head)).to.deep.equal(basic(1));
+    expect(await signIn.authorize(head)).to.deep.equal(basic(1));
+    expect(signed).to.have.lengthOf(1);
   });
 });
 

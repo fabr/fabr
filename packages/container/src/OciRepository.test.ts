@@ -41,7 +41,7 @@ import {
   TargetContext,
 } from "@fabr-build/core";
 import { ImageFileSet } from "./ImageFileSet";
-import { OciRepository, ociPlatformOf } from "./OciRepository";
+import { OciRepository, ociPlatformOf, registrySignIn } from "./OciRepository";
 import { Registry } from "./OciProtocol";
 import { RegistrySignIn } from "./RegistrySignIn";
 
@@ -438,6 +438,15 @@ describe("OciRepository", () => {
   it("names the platforms an image has where none is the one asked for", async () => {
     const failure = await imageOf("demo:1.0", "aarch64-unknown-linux").catch((err: Error) => err);
     expect((failure as Error).message).to.match(/has no image for linux\/arm64/);
+  });
+
+  it("signs in the registry's own requests alone, never a blob or an upload on another origin", async () => {
+    const credential = { authorize: (): Computable<ReadonlyMap<string, string>> => Computable.resolve(new Map([["authorization", "Basic c"]])) };
+    const signIn = registrySignIn(fetchingContext("x86_64-unknown-linux"), "https://registry.example", undefined, credential);
+    const at = (url: string): { method: string; url: string; headers: Map<string, string> } => ({ method: "PUT", url, headers: new Map() });
+    expect(await signIn.authorize(at("https://registry.example/v2/app/blobs/uploads/1"))).to.deep.equal(new Map([["authorization", "Basic c"]]));
+    expect(await signIn.authorize(at("https://storage.example/upload/1"))).to.deep.equal(new Map());
+    expect(await signIn.authorize(at("https://storage.example/upload/1"), { challenges: ["Basic"] })).to.equal(undefined);
   });
 
   it("vends a namespace for an image named without a version, and a projection after one", () => {

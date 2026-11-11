@@ -81,10 +81,18 @@ describe("signing in to a registry", () => {
   let server: http.Server;
   let realm = "";
   const issued: string[] = [];
+  /* How many token requests to refuse before answering. */
+  let refusals = 0;
 
   beforeEach(async () => {
     issued.length = 0;
+    refusals = 0;
     server = http.createServer((req, res) => {
+      if (refusals > 0) {
+        refusals--;
+        res.writeHead(400).end();
+        return;
+      }
       const scopes = new URL(req.url!, "http://x").searchParams.getAll("scope").join(" ");
       issued.push(scopes);
       res.writeHead(200).end(JSON.stringify({ token: `token for ${scopes}` }));
@@ -137,6 +145,40 @@ describe("signing in to a registry", () => {
     await signIn.authorize(manifest, challenge());
     await signIn.authorize(manifest, challenge());
     expect(issued).to.deep.equal(["repository:library/node:pull", "repository:library/node:pull"]);
+  });
+
+  it("fetches the token again where fetching it failed", async () => {
+    const signIn = anonymous();
+    const manifest = head(`${REGISTRY}/v2/library/node/manifests/22`);
+    refusals = 1;
+    const failed = await Promise.resolve(signIn.authorize(manifest, challenge())).then(
+      () => undefined,
+      (err: Error) => err
+    );
+    expect(failed).to.be.instanceOf(Error);
+    expect(await signIn.authorize(manifest)).to.deep.equal(
+      new Map([["authorization", "Bearer token for repository:library/node:pull"]])
+    );
+    expect(issued).to.deep.equal(["repository:library/node:pull"]);
+  });
+
+  it("sends the credential to an https realm, or an http one for an http registry, and no other", async () => {
+    const credential = (): Computable<{ username: string; password: string }> => Computable.resolve({ username: "u", password: "p" });
+    const manifest = (registry: string): { method: string; url: string; headers: Map<string, string> } =>
+      head(`${registry}/v2/library/node/manifests/22`);
+    /* The fixture's realm is http: refused for an https registry... */
+    const secure = new RegistrySignIn(REGISTRY, credential);
+    const refused = await Promise.resolve(secure.authorize(manifest(REGISTRY), challenge())).then(
+      () => undefined,
+      (err: Error) => err.message
+    );
+    expect(refused).to.match(/which is not https, so its credential is not sent/);
+    expect(issued).to.deep.equal([]);
+    /* ...and sent for an http one. */
+    const plain = new RegistrySignIn("http://registry.example", credential);
+    expect(await plain.authorize(manifest("http://registry.example"), challenge())).to.deep.equal(
+      new Map([["authorization", "Bearer token for repository:library/node:pull"]])
+    );
   });
 
   it("answers a Basic challenge with the registry's credential, and gives up without one", async () => {

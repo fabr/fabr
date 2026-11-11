@@ -23,21 +23,23 @@ import {
   FabrError,
   mapEntryError,
   NamespaceRef,
+  onlyTo,
   Property,
   PropertyMap,
   Reference,
+  RenewableToken,
   Repository,
   Namespace,
   sendRequest,
   TargetContext,
   RepositoryImplementation,
 } from "@fabr-build/core";
-import { CODEARTIFACT_SERVICE, CodeArtifactToken, endpointUrl, formatCredential } from "./CodeArtifact";
+import { CODEARTIFACT_SERVICE, codeArtifactToken, endpointUrl, formatCredential } from "./CodeArtifact";
 import { ECR_SERVICE, EcrSignIn, registryUrl } from "./Ecr";
 import { S3_SERVICE, S3Repository } from "./S3Repository";
 import { SECRETS_MANAGER_SERVICE, SecretsManagerSecrets } from "./SecretsManager";
 import { SSM_SERVICE, SsmParameters } from "./Ssm";
-import { onlyTo, RequestSigner, requestUrl } from "./Signing";
+import { RequestSigner, requestUrl } from "./Signing";
 import { identityRequest, parseCallerAccount, STS_SERVICE } from "./Sts";
 import { DEFAULT_REGION, IAccountSettings } from "./Types";
 
@@ -279,7 +281,7 @@ class CodeArtifactDomains extends Namespace {
   /** Each repository's endpoint, by `domain:repository:format`, once named. */
   private readonly endpoints = new Map<string, Computable<Repository>>();
   /** Each domain's token, by domain. */
-  private readonly tokens = new Map<string, CodeArtifactToken>();
+  private readonly tokens = new Map<string, RenewableToken<string>>();
 
   constructor(
     private readonly account: AwsAccount,
@@ -321,7 +323,7 @@ class CodeArtifactDomains extends Namespace {
     return owner.then(id => {
       let token = this.tokens.get(domain);
       if (token === undefined) {
-        token = new CodeArtifactToken(settings, domain, id);
+        token = codeArtifactToken(settings, domain, id);
         this.tokens.set(domain, token);
       }
       const url = endpointUrl(domain, id, settings.region, format, repository, settings.endpoint);
