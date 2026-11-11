@@ -499,6 +499,26 @@ describe("Parser Tests", () => {
     expect(errors).to.have.length(1);
   });
 
+  it("recovers past a lexical error met while recovering, reporting it once", () => {
+    const parse = (src: string): { names: string[]; errors: string[] } => {
+      const errors: string[] = [];
+      const result = parseBuildString(EMPTY_FILESET, "PROJECT.fabr", src, new LogFormatter(LogLevel.Info, m => errors.push(m)));
+      return { names: [...result.properties, ...result.targets].map(decl => decl.name.toBaseString()), errors };
+    };
+    /* The first redirect aborts the statement; the second is lexed by recovery. */
+    const redirects = parse("a = 1 2>&3 x 2>&4;\nb = 2;");
+    expect(redirects.names).to.deep.equal(["b"]);
+    expect(redirects.errors).to.have.length(2);
+    /* The same within a target body, and for an extglob error. */
+    const body = parse("js_package foo {\n  a = = 1 2>&4;\n  b = = @(x !(y));\n  c = ok;\n}\nd = ok;");
+    expect(body.names).to.deep.equal(["d", "foo"]);
+    expect(body.errors).to.have.length(4);
+    /* A lexical error in the file's first token. */
+    const first = parse("@(x = 1;\nb = 2;");
+    expect(first.names).to.deep.equal(["b"]);
+    expect(first.errors).to.have.length(1);
+  });
+
   it("recovers within a target body — one diagnostic per error, no top-level leak", () => {
     const count = (src: string): number => {
       const errors: string[] = [];

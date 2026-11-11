@@ -598,7 +598,13 @@ function checkRenameWildcards(selector: Name, template: Name): string | undefine
   return undefined;
 }
 
-const PARSE_ERROR = "Parse Error";
+/** Thrown once an error has been reported, to abandon what is being parsed;
+ *  caught by recovery, which resumes at the next statement or property. */
+class ParseAbort extends FabrError {
+  constructor() {
+    super("Parse Error");
+  }
+}
 
 /**
  * Parse a single build file at a time (without resolving anything).
@@ -646,7 +652,7 @@ export class BuildParser {
       rules: [],
       repositories: [],
     };
-    this.nextToken();
+    this.skipToken();
   }
 
   /* Single quotes consume everything until the next single quote (which is
@@ -828,7 +834,7 @@ export class BuildParser {
 
   private invalidSubstitution(detail: string, offset: number): never {
     this.log.log(DIAG_INVALID_SUBSTITUTION, { detail, loc: { ...this.source, offset } });
-    throw new FabrError(PARSE_ERROR);
+    throw new ParseAbort();
   }
 
   /* Reports what was read by character where `expected` should be, as
@@ -841,7 +847,7 @@ export class BuildParser {
       actual: actual ?? (ch === undefined ? TOKEN_NAME_MAP[TokenType.EOF] : `'${String.fromCodePoint(ch)}'`),
       expected,
     });
-    throw new FabrError(PARSE_ERROR);
+    throw new ParseAbort();
   }
 
   private readCharClass(builder?: NameBuilder): void {
@@ -1085,6 +1091,28 @@ export class BuildParser {
     return Name.fromLiteral("");
   }
 
+  /**
+   * Advance to the next token where an error may be met but not raised: while
+   * recovering, and priming the first token. A lexical error is reported and the
+   * token is an `ERROR` token past it, which the grammar refuses without
+   * reporting again (see {@link unexpectedTokenError}).
+   */
+  private skipToken(): Token {
+    const from = this.reader.currentOffset();
+    try {
+      return this.nextToken();
+    } catch (error) {
+      if (!(error instanceof ParseAbort)) {
+        throw error;
+      }
+      if (this.reader.currentOffset() === from) {
+        this.reader.next();
+      }
+      this.token = { type: TokenType.ERROR, start: from };
+      return this.token;
+    }
+  }
+
   private nextToken(): Token {
     const start = this.reader.currentOffset();
     /* The reader sits just past the previous token, so this is its end —
@@ -1312,7 +1340,7 @@ export class BuildParser {
     const name = this.parseReference();
     if (name.hasVarSubst() || name.hasGlob() || name.getRenameTo() !== undefined) {
       this.log.log(DIAG_INVALID_PLUGIN, { loc: { ...this.source, offset: token.start } });
-      throw new FabrError(PARSE_ERROR);
+      throw new ParseAbort();
     }
     const endOffset = this.prevTokenEnd;
     this.consumeIfToken(TokenType.SEMI);
@@ -1386,7 +1414,7 @@ export class BuildParser {
 
   private commandError(detail: string, offset: number): never {
     this.log.log(DIAG_INVALID_COMMAND, { detail, loc: { ...this.source, offset } });
-    throw new FabrError(PARSE_ERROR);
+    throw new ParseAbort();
   }
 
   /**
@@ -1783,7 +1811,7 @@ export class BuildParser {
    * template itself having already been consumed. */
   private renameTemplateError(detail: string, at: number = this.token.start): never {
     this.log.log(DIAG_RENAME_TEMPLATE, { detail, loc: { ...this.source, offset: at } });
-    throw new FabrError(PARSE_ERROR);
+    throw new ParseAbort();
   }
 
   /** Reported at the outermost unclosed extglob leader (`at` is its offset), so
@@ -1793,13 +1821,13 @@ export class BuildParser {
       leader: this.reader.substring(at, at + 2),
       loc: { ...this.source, offset: at },
     });
-    throw new FabrError(PARSE_ERROR);
+    throw new ParseAbort();
   }
 
   /** Reported at a `!(` written inside another extglob group (`at` is its offset). */
   private nestedNegationError(at: number): never {
     this.log.log(DIAG_NESTED_NEGATION, { loc: { ...this.source, offset: at } });
-    throw new FabrError(PARSE_ERROR);
+    throw new ParseAbort();
   }
 
   /**
@@ -1895,7 +1923,7 @@ export class BuildParser {
 
   private duplicateConstraintError(key: string, offset: number): never {
     this.log.log(DIAG_DUP_CONSTRAINT, { key, loc: { ...this.source, offset } });
-    throw new FabrError(PARSE_ERROR);
+    throw new ParseAbort();
   }
 
   /** A pattern where a use-position requirement wants an exact value — nearly
@@ -1907,7 +1935,7 @@ export class BuildParser {
       loc: { ...this.source, offset },
       help: [`did you mean a guard on the property — '<property><${key}=…> = <value>'?`],
     });
-    throw new FabrError(PARSE_ERROR);
+    throw new ParseAbort();
   }
 
   /**
@@ -1934,7 +1962,7 @@ export class BuildParser {
         loc: { ...this.source, offset: this.token.start },
         help: ["write it against the name, as 'srcs<TARGET=*-linux-*> = …'"],
       });
-      throw new FabrError(PARSE_ERROR);
+      throw new ParseAbort();
     }
     return key;
   }
@@ -1981,7 +2009,7 @@ export class BuildParser {
     for (const [key] of own) {
       if (block.some(([blockKey]) => blockKey === key)) {
         this.log.log(DIAG_GUARD_CONFLICT, { key, site, loc: { ...this.source, offset } });
-        throw new FabrError(PARSE_ERROR);
+        throw new ParseAbort();
       }
     }
     return [...block, ...own];
@@ -2094,7 +2122,7 @@ export class BuildParser {
   private parseMapBlock(): IMapItemDecl[] {
     if (this.blockDepth >= MAX_BLOCK_DEPTH) {
       this.log.log(DIAG_NESTING_TOO_DEEP, { loc: { ...this.source, offset: this.token.start } });
-      throw new FabrError(PARSE_ERROR);
+      throw new ParseAbort();
     }
     this.blockDepth++;
     /* A map block is a VALUE, not a body of declarations: an enclosing guard
@@ -2121,7 +2149,7 @@ export class BuildParser {
   private parseGuardBlock(): IPropertyDecl[] {
     if (this.blockDepth >= MAX_BLOCK_DEPTH) {
       this.log.log(DIAG_NESTING_TOO_DEEP, { loc: { ...this.source, offset: this.token.start } });
-      throw new FabrError(PARSE_ERROR);
+      throw new ParseAbort();
     }
     const at = this.token.start;
     this.nextToken(); /* consume '<' */
@@ -2171,7 +2199,7 @@ export class BuildParser {
           this.unexpectedTokenError("'=' or ';'");
         }
       } catch (error) {
-        if (!(error instanceof Error) || error.message !== PARSE_ERROR) {
+        if (!(error instanceof ParseAbort)) {
           throw error;
         }
         /* Recover within the block (as parsePropertyList does for a target body),
@@ -2211,7 +2239,7 @@ export class BuildParser {
           if (this.token.type === TokenType.SEMI) {
             if (!splices || key.getConstraints().length > 0) {
               this.log.log(DIAG_GUARDED_SPLICE, { loc: { ...this.source, offset: start } });
-              throw new FabrError(PARSE_ERROR);
+              throw new ParseAbort();
             }
             this.nextToken();
             list.push({ kind: DeclKind.Splice, source: this.source, offset: start, endOffset: keyEnd, ref: key });
@@ -2226,7 +2254,7 @@ export class BuildParser {
           this.unexpectedTokenError("Identifier, reference, or '}'");
         }
       } catch (error) {
-        if (!(error instanceof Error) || error.message !== PARSE_ERROR) {
+        if (!(error instanceof ParseAbort)) {
           throw error;
         }
         /* Recover *within* this body: skip to the next `;` (resume with the next
@@ -2258,12 +2286,12 @@ export class BuildParser {
           break;
         case TokenType.SEMI:
           if (depth === 0) {
-            this.nextToken(); /* consume the `;`, resume at the next property */
+            this.skipToken(); /* consume the `;`, resume at the next property */
             return;
           }
           break;
       }
-      this.nextToken();
+      this.skipToken();
     }
   }
 
@@ -2355,7 +2383,7 @@ export class BuildParser {
           targetProperties.push([key.substring(param.text.length + 1), pattern]);
         } else if (key.includes(".")) {
           this.log.log(DIAG_RULE_GUARD_KEY, { key, param: param.text, loc: { ...this.source, offset: param.start } });
-          throw new FabrError(PARSE_ERROR);
+          throw new ParseAbort();
         } else {
           properties.push([key, pattern]);
         }
@@ -2418,7 +2446,7 @@ export class BuildParser {
       value.getRenameTo() !== undefined
     ) {
       this.log.log(DIAG_INVALID_IMPLEMENTATION, { loc: { ...this.source, offset: first.start } });
-      throw new FabrError(PARSE_ERROR);
+      throw new ParseAbort();
     }
     this.consumeToken(TokenType.SEMI);
     return result;
@@ -2455,7 +2483,7 @@ export class BuildParser {
             properties.push(this.parsePropertyDecl(this.finishPropertyKey(Name.fromLiteral(token.text)), token.start, doc));
           } else if (RULE_BLOCK_REFUSED.has(token.text)) {
             this.log.log(DIAG_RULE_BLOCK_DECL, { keyword: token.text, loc: { ...this.source, offset: token.start } });
-            throw new FabrError(PARSE_ERROR);
+            throw new ParseAbort();
           } else if (next.type === TokenType.IDENTIFIER || next.type === TokenType.SIMPLE_NAME) {
             targets.push(this.parseTargetDecl(token.text, token.start, doc));
           } else {
@@ -2465,7 +2493,7 @@ export class BuildParser {
           this.unexpectedTokenError("a target or property declaration, or '}'");
         }
       } catch (error) {
-        if (!(error instanceof Error) || error.message !== PARSE_ERROR) {
+        if (!(error instanceof ParseAbort)) {
           throw error;
         }
         this.recoverInBody();
@@ -2501,7 +2529,7 @@ export class BuildParser {
     const value = this.tokenToName(token);
     if (value.hasVarSubst() || value.hasGlob() || !value.hasLevelSeparator()) {
       this.log.log(DIAG_INVALID_IMPLEMENTATION, { loc: { ...this.source, offset: token.start } });
-      throw new FabrError(PARSE_ERROR);
+      throw new ParseAbort();
     }
     this.nextToken();
     const endOffset = this.prevTokenEnd;
@@ -2668,13 +2696,16 @@ export class BuildParser {
    * (`default targetdef`, whose lookahead has already advanced past it).
    */
   private unexpectedTokenError(expected: string, at: number = this.token.start): never {
-    /* Report an error */
+    /* An ERROR token's lexical error was reported as it was read. */
+    if (this.token.type === TokenType.ERROR) {
+      throw new ParseAbort();
+    }
     this.log.log(DIAG_PARSE_ERROR, {
       loc: { ...this.source, offset: at },
       actual: TOKEN_NAME_MAP[this.token.type],
       expected,
     });
-    throw new FabrError(PARSE_ERROR);
+    throw new ParseAbort();
   }
 
   private unexpectedEndOfFile(expected: string, offset: number = this.token.start): never {
@@ -2682,17 +2713,17 @@ export class BuildParser {
       loc: { ...this.source, offset },
       expected,
     });
-    throw new FabrError(PARSE_ERROR);
+    throw new ParseAbort();
   }
 
   private invalidIncludeName(detail: string): never {
     this.log.log(DIAG_INVALID_INCLUDE, { detail, loc: { ...this.source, offset: this.token.start } });
-    throw new FabrError(PARSE_ERROR);
+    throw new ParseAbort();
   }
 
   private absoluteIncludeName(): never {
     this.log.log(DIAG_ABSOLUTE_INCLUDE, { loc: { ...this.source, offset: this.token.start } });
-    throw new FabrError(PARSE_ERROR);
+    throw new ParseAbort();
   }
 
   /**
@@ -2772,7 +2803,7 @@ export class BuildParser {
   private recoverFromError(): void {
     let last = this.token.type;
     while (last !== TokenType.EOF) {
-      const next = this.nextToken();
+      const next = this.skipToken();
       if ((last === TokenType.SEMI || last === TokenType.RBRACE) && next.type === TokenType.IDENTIFIER) {
         break;
       }
@@ -2785,7 +2816,7 @@ export class BuildParser {
       try {
         this.parseStatement();
       } catch (error) {
-        if (!(error instanceof Error) || error.message !== PARSE_ERROR) {
+        if (!(error instanceof ParseAbort)) {
           throw error;
         } else {
           this.recoverFromError();
@@ -2812,17 +2843,16 @@ export function parseName(contents: string): Name {
   const messages: string[] = [];
   const captureLog: Log = { log: (diagnostic, params) => messages.push(diagnostic.message(params)) };
   try {
-    /* The constructor primes the first token, so it lexes — and a name is very
-     * nearly all one token, which is where the lexical errors (an unterminated
-     * quote, character class or extglob group) are raised. It must be inside the
-     * try, or those escape as a bare PARSE_ERROR with the diagnostic discarded. */
+    /* A name is very nearly all one token, which the constructor primes: a
+     * lexical error there (an unterminated quote, character class or extglob
+     * group) is captured as it is read, and the name parsed is then empty. */
     const parser = new BuildParser({ fs: EMPTY_FILESET, file: "<command-line>", reader: new StringReader(contents) }, captureLog);
     const name = parser.parseName();
     if (messages.length === 0) {
       return name;
     }
   } catch (err) {
-    if (!(err instanceof Error) || err.message !== PARSE_ERROR) {
+    if (!(err instanceof ParseAbort)) {
       throw err;
     }
   }
