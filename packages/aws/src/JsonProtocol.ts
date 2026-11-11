@@ -72,3 +72,26 @@ export function serviceErrorOf(text: string): IServiceError {
 export function describeServiceError({ type, message }: IServiceError): string {
   return type === undefined ? message : `${type}: ${message}`;
 }
+
+/** The error types with which AWS answers a request it is throttling, as the AWS SDK lists them (`THROTTLING_ERROR_CODES`). */
+const THROTTLING_ERRORS = new Set([
+  "BandwidthLimitExceeded",
+  "EC2ThrottledException",
+  "LimitExceededException",
+  "PriorRequestNotComplete",
+  "ProvisionedThroughputExceededException",
+  "RequestLimitExceeded",
+  "RequestThrottled",
+  "RequestThrottledException",
+  "SlowDown",
+  "ThrottledException",
+  "Throttling",
+  "ThrottlingException",
+  "TooManyRequestsException",
+  "TransactionInProgressException",
+]);
+
+/** @return true if `error` says the request was throttled, to be tried again later, otherwise false. */
+export function isThrottling(error: IServiceError): boolean {
+  return error.type !== undefined && THROTTLING_ERRORS.has(error.type);
+}

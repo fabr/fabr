@@ -22,6 +22,7 @@ import { AddressInfo } from "node:net";
 import { expect } from "chai";
 import {
   Computable,
+  HttpStatusError,
   ISecretRecord,
   MemoryFile,
   NamespaceRef,
@@ -47,6 +48,9 @@ interface IFakeParameter {
   readonly version: number;
 }
 
+/** The parameter whose every read is answered as throttled. */
+const THROTTLED = "/app/throttled";
+
 function startSsm(parameters: Record<string, IFakeParameter>): Promise<IFakeSsm> {
   const requests: IFakeSsm["requests"] = [];
   const server = http.createServer((req, res) => {
@@ -56,6 +60,12 @@ function startSsm(parameters: Record<string, IFakeParameter>): Promise<IFakeSsm>
       const body = Buffer.concat(chunks).toString("utf8");
       requests.push({ target: req.headers["x-amz-target"] as string | undefined, body, authorization: req.headers.authorization });
       const { Name } = JSON.parse(body) as { Name: string };
+      if (Name === THROTTLED) {
+        res
+          .writeHead(400, { "content-type": "application/x-amz-json-1.1" })
+          .end(JSON.stringify({ __type: "com.amazonaws.ssm#ThrottlingException", message: "Rate exceeded" }));
+        return;
+      }
       const found = parameters[Name];
       if (found === undefined) {
         res.writeHead(400, { "content-type": "application/x-amz-json-1.1" }).end(JSON.stringify({ __type: "ParameterNotFound" }));
@@ -190,6 +200,12 @@ describe("the SSM parameters of an AWS account", () => {
   it("refuses a parameter SSM does not have", async () => {
     const err = await failureOf(read(accountAt(ssm), "/app/missing"));
     expect(err?.message).to.equal("SSM has no parameter '/app/missing' in @aws's account and region");
+  });
+
+  it("answers a throttled read as HTTP's too many requests, which is retried, not as a refusal", async () => {
+    const err = await failureOf(read(accountAt(ssm), THROTTLED));
+    expect(err).to.be.instanceOf(HttpStatusError);
+    expect((err as HttpStatusError).statusCode).to.equal(429);
   });
 
   it("refuses a name that is a pattern", async () => {

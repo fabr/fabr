@@ -42,7 +42,7 @@ import {
   SecretFile,
   sendRequest,
 } from "@fabr-build/core";
-import { describeServiceError, jsonRequest, serviceErrorOf } from "./JsonProtocol";
+import { describeServiceError, isThrottling, jsonRequest, serviceErrorOf } from "./JsonProtocol";
 import { IServiceRequest, requestUrl } from "./Signing";
 import { IAccountSettings } from "./Types";
 
@@ -150,7 +150,12 @@ export class SsmParameters implements Repository, RepositoryLookup {
           throw new HttpStatusError(response.statusCode, url);
         }
         if (response.statusCode !== 200) {
-          throw refusal(response.body.toString("utf8"), parameter, this.account.name);
+          const text = response.body.toString("utf8");
+          /* Throttling is answered as a 400; it is HTTP's "too many requests", which is retried. */
+          if (isThrottling(serviceErrorOf(text))) {
+            throw new HttpStatusError(429, url);
+          }
+          throw refusal(text, parameter, this.account.name);
         }
         const found = parseJson(response.body, `the answer from ${url}`, toParameter);
         return {

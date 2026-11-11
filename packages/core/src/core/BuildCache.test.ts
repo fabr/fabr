@@ -2197,6 +2197,24 @@ describe("BuildCache secrets store", () => {
     expect(refused).to.equal("no such parameter");
   });
 
+  it("retries a fetch that fails transiently where no record is held, and not one that is refused", async () => {
+    const cache = new BuildCache(root, NULL_LOG, () => clock);
+    let calls = 0;
+    const throttledOnce = (): Computable<ISecretRecord> =>
+      calls++ === 0 ? Computable.reject(new HttpStatusError(429, "http://ssm")) : answer("one")();
+    expect(await get(cache, throttledOnce)).to.equal("param:1=one");
+    expect(calls).to.equal(2);
+    let refusals = 0;
+    const refused = await toPromise(
+      cache.getOrFetchSecret("other", "test:1", "ssm:other", () => {
+        refusals++;
+        return Computable.reject(new Error("no such parameter"));
+      })
+    ).catch((err: Error) => err.message);
+    expect(refused).to.equal("no such parameter");
+    expect(refusals).to.equal(1);
+  });
+
   it("trims a record past its day", async () => {
     await get(new BuildCache(root, NULL_LOG, () => clock), answer("one"));
     const later = new BuildCache(root, NULL_LOG, () => clock + 2 * MINIMUM_FRESHNESS_MS + 1_000);

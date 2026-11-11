@@ -854,8 +854,9 @@ export class BuildCache {
     if (this.refresh) {
       this.refreshed.add(key);
     }
+    /* Retried where there is no held record to serve instead, as a fetch is. */
     const result = settledFrom(
-      fetch().then(
+      (held === undefined ? retryingTransient(fetch) : fetch()).then(
         record => this.writeSecretRecord(file, record).then(() => record),
         err => {
           if (held !== undefined && isTransientFetchError(err)) {
@@ -949,26 +950,21 @@ export class BuildCache {
           )
         : get();
     /* A whole attempt is retried — request and body together — so a transfer
-     * that failed part-way starts again from nothing, through the same commit. */
-    const retrying = (retry: number): Computable<FileSet> =>
-      attempt().catch(err => {
-        /* A held copy is served at once rather than waited for: retries are
-         * for a fetch with nothing to fall back on. */
-        if (!entry && retry < FETCH_RETRY_DELAYS_MS.length && isTransientFetchError(err)) {
-          return delay(FETCH_RETRY_DELAYS_MS[retry]).then(() => retrying(retry + 1));
-        }
-        if (entry && isTransientFetchError(err)) {
-          /* Stale-if-error (RFC 9111), never silently and only for a transient
-           * failure — a definite 4xx answer propagates instead. Served is
-           * served: the recency touch keeps a copy the origin cannot currently
-           * replace from ageing into the very trim that would delete it. */
-          this.log.log(DIAG_SERVING_STALE, { url, reason: err instanceof Error ? err.message : String(err) });
-          this.noteEntryServed(key);
-          return entry.files;
-        }
-        throw err;
-      });
-    return retrying(0);
+     * that failed part-way starts again from nothing, through the same commit.
+     * A held copy is served at once rather than waited for: retries are for a
+     * fetch with nothing to fall back on. */
+    return (entry ? attempt() : retryingTransient(attempt)).catch(err => {
+      if (entry && isTransientFetchError(err)) {
+        /* Stale-if-error (RFC 9111), never silently and only for a transient
+         * failure — a definite 4xx answer propagates instead. Served is
+         * served: the recency touch keeps a copy the origin cannot currently
+         * replace from ageing into the very trim that would delete it. */
+        this.log.log(DIAG_SERVING_STALE, { url, reason: err instanceof Error ? err.message : String(err) });
+        this.noteEntryServed(key);
+        return entry.files;
+      }
+      throw err;
+    });
   }
 
   /*
@@ -2734,6 +2730,16 @@ const TRANSIENT_ERROR_CODES = new Set([
 function delay(ms: number): Computable<void> {
   return Computable.from<void>(resolve => {
     setTimeout(() => resolve(), ms);
+  });
+}
+
+/** Make `attempt`, and again after each of {@link FETCH_RETRY_DELAYS_MS} while it fails transiently. */
+function retryingTransient<T>(attempt: () => Computable<T>, retry = 0): Computable<T> {
+  return attempt().catch(err => {
+    if (retry < FETCH_RETRY_DELAYS_MS.length && isTransientFetchError(err)) {
+      return delay(FETCH_RETRY_DELAYS_MS[retry]).then(() => retryingTransient(attempt, retry + 1));
+    }
+    throw err;
   });
 }
 

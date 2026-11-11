@@ -20,7 +20,16 @@
 import * as http from "node:http";
 import { AddressInfo } from "node:net";
 import { expect } from "chai";
-import { Computable, ISecretRecord, NamespaceRef, parseName, RepositoryRef, SecretFile, TargetContext } from "@fabr-build/core";
+import {
+  Computable,
+  HttpStatusError,
+  ISecretRecord,
+  NamespaceRef,
+  parseName,
+  RepositoryRef,
+  SecretFile,
+  TargetContext,
+} from "@fabr-build/core";
 import { AwsAccount } from "./AwsAccount";
 import { SecretsManagerSecrets, secretValueRequest, toSecretValue } from "./SecretsManager";
 import { RequestSigner } from "./Signing";
@@ -38,6 +47,9 @@ interface IFakeSecret {
   readonly versionId: string;
 }
 
+/** The secret whose every read is answered as throttled. */
+const THROTTLED = "prod/throttled";
+
 function startSecretsManager(secrets: Record<string, IFakeSecret>): Promise<IFakeSecretsManager> {
   const requests: IFakeSecretsManager["requests"] = [];
   const server = http.createServer((req, res) => {
@@ -47,6 +59,12 @@ function startSecretsManager(secrets: Record<string, IFakeSecret>): Promise<IFak
       const body = Buffer.concat(chunks).toString("utf8");
       requests.push({ target: req.headers["x-amz-target"] as string | undefined, body, authorization: req.headers.authorization });
       const { SecretId } = JSON.parse(body) as { SecretId: string };
+      if (SecretId === THROTTLED) {
+        res
+          .writeHead(400, { "content-type": "application/x-amz-json-1.1" })
+          .end(JSON.stringify({ __type: "ThrottlingException", message: "Rate exceeded" }));
+        return;
+      }
       const found = secrets[SecretId];
       if (found === undefined) {
         res
@@ -185,6 +203,12 @@ describe("the Secrets Manager secrets of an AWS account", () => {
   it("refuses a secret Secrets Manager does not have", async () => {
     const err = await failureOf(read(accountAt(service), "prod/missing"));
     expect(err?.message).to.equal("Secrets Manager has no secret 'prod/missing' in @aws's account and region");
+  });
+
+  it("answers a throttled read as HTTP's too many requests, which is retried, not as a refusal", async () => {
+    const err = await failureOf(read(accountAt(service), THROTTLED));
+    expect(err).to.be.instanceOf(HttpStatusError);
+    expect((err as HttpStatusError).statusCode).to.equal(429);
   });
 
   it("refuses a name that is a pattern", async () => {

@@ -151,11 +151,7 @@ describe("a CodeArtifact domain's token", () => {
   const head = { method: "GET", url: "http://x/npm/shared/lodash", headers: new Map<string, string>() };
 
   it("is fetched once with a signed request, and given as npm sends it, or as Maven does", async () => {
-    const token = codeArtifactToken(
-      { signer: new RequestSigner(undefined), region: "eu-west-2", endpoint },
-      "acme",
-      "111122223333"
-    );
+    const token = codeArtifactToken({ signer: new RequestSigner(undefined), region: "eu-west-2", endpoint }, "acme", "111122223333");
     expect(await formatCredential(token, "npm").authorize(head)).to.deep.equal(new Map([["authorization", "Bearer token-1"]]));
     expect(await formatCredential(token, "maven").authorize(head)).to.deep.equal(
       new Map([["authorization", `Basic ${Buffer.from("aws:token-1").toString("base64")}`]])
@@ -166,11 +162,7 @@ describe("a CodeArtifact domain's token", () => {
   });
 
   it("is fetched again where a repository no longer accepts it, once for requests challenged together", async () => {
-    const token = codeArtifactToken(
-      { signer: new RequestSigner(undefined), region: "eu-west-2", endpoint },
-      "acme",
-      "111122223333"
-    );
+    const token = codeArtifactToken({ signer: new RequestSigner(undefined), region: "eu-west-2", endpoint }, "acme", "111122223333");
     const npm = formatCredential(token, "npm");
     await npm.authorize(head);
     const challenge = { challenges: ['Bearer realm="codeartifact"'] };
@@ -182,11 +174,7 @@ describe("a CodeArtifact domain's token", () => {
   });
 
   it("is fetched again where fetching it failed", async () => {
-    const token = codeArtifactToken(
-      { signer: new RequestSigner(undefined), region: "eu-west-2", endpoint },
-      "acme",
-      "111122223333"
-    );
+    const token = codeArtifactToken({ signer: new RequestSigner(undefined), region: "eu-west-2", endpoint }, "acme", "111122223333");
     const npm = formatCredential(token, "npm");
     refusals = 1;
     const failed = await Promise.resolve(npm.authorize(head)).then(
