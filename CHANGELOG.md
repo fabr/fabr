@@ -48,9 +48,12 @@ still reports non-zero exit code with failures.
 - `default private …` and `default repository …`, a rule guard naming no property (`pkg<pkg.=x>`) and a target-body splice of anything but a plain name are errors.
 - Restructure command-line help.
 - Breaking: a `?` version marker also raises every requirement its version satisfies to that version.
+- Add secret files: never stored in the build cache, staged readable by their owner alone, refused by `sync`.
 
 @fabr-build/aws:
 - Add s3 download support.
+- Add SSM Parameter Store reads (`@aws:ssm:<name>`); a SecureString is a secret, kept for a day in the cache's secrets store.
+- Add Secrets Manager reads (`@aws:secretsmanager:<name>`), each value a secret.
 
 @fabr-build/container:
 - New container image support.
