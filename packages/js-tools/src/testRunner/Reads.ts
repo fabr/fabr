@@ -95,6 +95,11 @@ export interface IRecordedReads {
  * or probed through `fs` since, by its real path, and every package looked up
  * by a bare specifier; or undefined where the process has since started
  * another process or a worker thread.
+ *
+ * Must be called before any module imports `node:fs`, `node:fs/promises`,
+ * `node:child_process` or `node:worker_threads` as an ES module: such an
+ * import's named bindings are copied when it is first made, so one made
+ * earlier keeps the unwrapped functions and its reads go unrecorded.
  */
 export function recordReads(): () => IRecordedReads | undefined {
   const current: IRecording = { loaded: new Set(), read: new Set(), lookups: new Map(), untracked: false };
@@ -324,6 +329,8 @@ function wrapLoaders(loaded: Set<string>): void {
  * Record what this process reads into `directory`, as a file named for its
  * pid that is written when it exits: how a runner whose tests run in processes
  * it does not start itself learns what they read (see {@link readsRecordedIn}).
+ * Loaded as a `--require` preload, so that it runs before anything the process
+ * imports (see {@link recordReads}).
  */
 export function recordReadsInto(directory: string): void {
   const reads = recordReads();
