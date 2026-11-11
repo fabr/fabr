@@ -664,9 +664,15 @@ function applyOption(arg: string, next: string | undefined, options: Options, se
     /* Sugar for the -D pathway, as -u is: a measured build is a build input. */
     options.properties.set(COVERAGE, COVERAGE_ON);
     options.coverageDir = arg === "--coverage" ? DEFAULT_COVERAGE_DIR : arg.slice("--coverage=".length);
+    if (!options.coverageDir) {
+      usageError("Option '--coverage=' requires a directory", command);
+    }
     seenFlags.push({ raw: arg, flag: "--coverage" });
   } else if (arg === "--trace" || arg.startsWith("--trace=")) {
     options.traceFile = arg === "--trace" ? DEFAULT_TRACE_FILE : arg.slice("--trace=".length);
+    if (!options.traceFile) {
+      usageError("Option '--trace=' requires a file", command);
+    }
     seenFlags.push({ raw: arg, flag: "--trace" });
   } else if (arg === "-q" || arg === "--quiet") {
     options.quiet = true;

@@ -1188,11 +1188,12 @@ const IDENTITY = (value: unknown): unknown => value;
 const NO_DEPENDANTS: ReadonlyArray<ComputableSource<unknown>> = [];
 
 /**
- * Report an error that reached a {@link ComputableSource.once} tail with no `onError`:
- * the tail is the error's observer, so with no handler it must surface the error rather
- * than swallow it. Reported directly (not deferred like
- * {@link ComputableSource.checkUnhandledError}): the tail's handlers are fixed when it is
- * built, so there is no late-handler window for the deferral to allow for.
+ * Report an error that reached a {@link ComputableSource.once} tail with no `onError`,
+ * or that a {@link ComputableHandle}'s `onSettled` threw: the observer is the error's
+ * last reader, so with no handler it must surface the error rather than swallow it.
+ * Reported directly (not deferred like {@link ComputableSource.checkUnhandledError}):
+ * the observer's handlers are fixed when it is built, so there is no late-handler
+ * window for the deferral to allow for.
  */
 function reportUnobserved(err: Error): void {
   ComputableSource.onUnhandledError?.(err);
@@ -1231,11 +1232,17 @@ class Sink<T> extends ComputableSource<never> {
   }
 
   /** Fires on each settlement of the seated chain — a settle OR a
-   * revalidate-unchanged, which a `then` tail cannot see. */
+   * revalidate-unchanged, which a `then` tail cannot see. A throw from
+   * `onSettled` is reported as unobserved, as a {@link ComputableSource.once}
+   * tail's is, never into the seated chain's settle. */
   protected override maybeRecompute(): void {
     const source = this.seated;
     if (source?.isSettled()) {
-      this.onSettled?.(source);
+      try {
+        this.onSettled?.(source);
+      } catch (err) {
+        reportUnobserved(toError(err));
+      }
     }
   }
 

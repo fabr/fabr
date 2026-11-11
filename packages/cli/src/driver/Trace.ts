@@ -19,7 +19,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { BuildEvent, BuildListener, ITestFileRun, TaskDescription, TaskState } from "@fabr-build/core";
+import { BuildEvent, BuildListener, ITestFileRun, TaskDescription, TaskState, toError } from "@fabr-build/core";
 import { context, describe as describeTask } from "./Progress";
 
 /**
@@ -76,6 +76,8 @@ export class TraceWriter {
   /** Whether the file has been begun, and whether an event has been written to it. */
   private begun = false;
   private written = false;
+  /** Whether writing the file failed, after which nothing more is written. */
+  private failed = false;
   private readonly open = new Map<number, IOpenTask>();
   /** Each track's task, by lane; undefined where the track is free. */
   private readonly lanes: Array<number | undefined> = [];
@@ -84,12 +86,16 @@ export class TraceWriter {
   private readonly epochOffset: number;
   private fileRuns = 0;
 
+  private readonly onError: (err: Error) => void;
+
   /** `now` is a millisecond clock, `epoch` the epoch time it reads as now: both
-   *  for a test; the defaults are the process's monotonic clock and `Date.now`. */
+   *  for a test; the defaults are the process's monotonic clock and `Date.now`.
+   *  `onError` is told, once, that writing the file failed. */
   constructor(
     private readonly file: string,
-    options: { now?: () => number; epoch?: () => number } = {}
+    options: { now?: () => number; epoch?: () => number; onError?: (err: Error) => void } = {}
   ) {
+    this.onError = options.onError ?? ((): void => {});
     this.now = options.now ?? ((): number => performance.now());
     this.epochOffset = (options.epoch ?? ((): number => Date.now()))() - this.now();
     this.events.push({ name: "process_name", cat: "__metadata", ph: "M", ts: 0, pid: PID, tid: CYCLE_TID, args: { name: "fabr" } });
@@ -107,7 +113,7 @@ export class TraceWriter {
     const unfinished = [...this.open.entries()].map(([id, open]) => this.taskSpan(id, open, now, { unfinished: true }));
     this.events.push(...unfinished);
     this.flush();
-    fs.appendFileSync(this.file, "\n]\n");
+    this.writing(() => fs.appendFileSync(this.file, "\n]\n"));
   }
 
   /** Write the events not yet written after those that were, beginning the file the first time. */
@@ -115,14 +121,30 @@ export class TraceWriter {
     const text = this.events.map(event => JSON.stringify(event)).join(",\n");
     const any = this.events.length > 0;
     this.events = [];
-    if (!this.begun) {
-      fs.mkdirSync(path.dirname(this.file), { recursive: true });
-      fs.writeFileSync(this.file, `[\n${text}`);
-      this.begun = true;
-      this.written = any;
-    } else if (any) {
-      fs.appendFileSync(this.file, `${this.written ? ",\n" : ""}${text}`);
-      this.written = true;
+    this.writing(() => {
+      if (!this.begun) {
+        fs.mkdirSync(path.dirname(this.file), { recursive: true });
+        fs.writeFileSync(this.file, `[\n${text}`);
+        this.begun = true;
+        this.written = any;
+      } else if (any) {
+        fs.appendFileSync(this.file, `${this.written ? ",\n" : ""}${text}`);
+        this.written = true;
+      }
+    });
+  }
+
+  /** Write to the file with `write`, unless writing has failed; a failure is
+   *  reported and stops the writing, since a build listener must not throw. */
+  private writing(write: () => void): void {
+    if (this.failed) {
+      return;
+    }
+    try {
+      write();
+    } catch (err) {
+      this.failed = true;
+      this.onError(toError(err));
     }
   }
 

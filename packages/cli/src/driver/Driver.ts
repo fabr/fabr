@@ -124,7 +124,8 @@ const DIAG_COVERAGE = Diagnostic.Info<{ lines: string; functions: string; branch
   "Coverage: lines {lines}, functions {functions}, branches {branches}"
 );
 const DIAG_COVERAGE_WRITTEN = Diagnostic.Info<{ file: string }>("Coverage report written to {file}");
-const DIAG_TEST_REPORT_WRITTEN = Diagnostic.Info<{ file: string }>("Test report written to {file}");
+const DIAG_TRACE_UNWRITTEN = Diagnostic.Warn<{ file: string; message: string }>("Could not write the trace to {file}: {message}");
+const DIAG_TEST_REPORT_WRITTEN =Diagnostic.Info<{ file: string }>("Test report written to {file}");
 const DIAG_COVERAGE_NONE = Diagnostic.Warn<Record<string, never>>("No test target measured any coverage");
 /* A measured source no reference reaches (generated during the build): it has
  * no place in the project to report it against. */
@@ -833,7 +834,10 @@ async function runWith(options: Options, operation: Operation, watch = false, se
     if (options.traceFile !== undefined) {
       /* Each cycle's events are added at its end; the trace is finished from
        * an exit hook, since process.exit runs no continuation. */
-      const trace = new TraceWriter(path.resolve(process.cwd(), options.traceFile));
+      const traceFile = path.resolve(process.cwd(), options.traceFile);
+      const trace = new TraceWriter(traceFile, {
+        onError: err => log.log(DIAG_TRACE_UNWRITTEN, { file: traceFile, message: err.message }),
+      });
       execution.onBuildEvent(trace.buildListener);
       process.on("exit", () => trace.write());
     }

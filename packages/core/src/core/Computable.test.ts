@@ -1047,6 +1047,23 @@ describe("ComputableHandle", () => {
     expect(thenRuns).to.deep.equal([10, 20]);
   });
 
+  it("reports a throw from onSettled as unobserved, leaving the seated chain and its other dependants alone", () => {
+    const leaf = new TestSource<number>();
+    const derived = leaf.then(v => v * 10);
+    new ComputableHandle<number>(() => {
+      throw new Error("observer failed");
+    }).seat(derived);
+    /* A dependant after the handle's sink in the notification order. */
+    const seen: number[] = [];
+    derived.then(v => seen.push(v));
+
+    leaf.set(1);
+    expect(derived.state).to.equal(ComputableState.Valid);
+    expect(derived.value).to.equal(10);
+    expect(seen).to.deep.equal([10]);
+    expect(reported.map(err => err.message)).to.deep.equal(["observer failed"]);
+  });
+
   it("onSettled observes from seating onward, and stops on release or reseat", () => {
     const a = new TestSource<number>();
     const b = new TestSource<number>();
@@ -1364,6 +1381,31 @@ describe("Computable.detached and dependency cycles", () => {
     expect(top.isSettled()).to.equal(true);
     expect(String(top.value)).to.contain("depends on its own result");
     expect(r.isSettled()).to.equal(true);
+  });
+
+  it("decides a cycle whose nodes are observed by a handle whose onSettled throws", () => {
+    const previous = ComputableSource.onUnhandledError;
+    const reported: Error[] = [];
+    ComputableSource.onUnhandledError = err => reported.push(err);
+    try {
+      const { s1, s2, top, r } = flipped();
+      for (const node of [top, r]) {
+        new ComputableHandle<unknown>(() => {
+          throw new Error("observer failed");
+        }).seat(node);
+      }
+      s1.invalidate();
+      s2.invalidate();
+      s2.set(2);
+      s1.set(1);
+      expect(top.isSettled()).to.equal(true);
+      expect(String(top.value)).to.contain("depends on its own result");
+      expect(r.isSettled()).to.equal(true);
+      expect(reported.length).to.be.greaterThan(0);
+      expect(reported.every(err => err.message === "observer failed")).to.equal(true);
+    } finally {
+      ComputableSource.onUnhandledError = previous;
+    }
   });
 
   it("computes when first depended on, not when made", () => {

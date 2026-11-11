@@ -152,6 +152,18 @@ describe("TraceWriter", () => {
     expect(read()).to.have.lengthOf(5);
   });
 
+  it("reports a file it cannot write once, and writes nothing more, without throwing", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-trace-"));
+    const errors: Error[] = [];
+    /* The file named is a directory. */
+    const writer = new TraceWriter(dir, { onError: err => errors.push(err) });
+    writer.buildListener({ kind: "cycle-end", cycle: 0, failed: false, built: [] });
+    writer.buildListener({ kind: "cycle-end", cycle: 1, failed: false, built: [] });
+    writer.write();
+    expect(errors).to.have.lengthOf(1);
+    expect(errors[0].message).to.match(/EISDIR/);
+  });
+
   it("writes a task still open as an unfinished span to now", () => {
     const { tick, read, send, writer } = tracer();
     send({ kind: "task-start", id: 1, task: building("a"), state: "running" });

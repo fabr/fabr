@@ -251,6 +251,11 @@ describe("Command", () => {
     expect(capture(["build", "--coverage", "foo"]).err.join("\n")).to.match(/'--coverage' is not valid for the 'build'/);
   });
 
+  it("refuses an empty --coverage= or --trace=", () => {
+    expect(capture(["test", "--coverage=", "foo"]).err.join("\n")).to.match(/'--coverage=' requires a directory/);
+    expect(capture(["build", "--trace=", "foo"]).err.join("\n")).to.match(/'--trace=' requires a file/);
+  });
+
   it("selects tests by name with -t, its pattern the next argument and not a target", () => {
     const parsed = parseCommandLine(["node", "fabr", "test", "-t", "dates parse", "foo"]);
     expect(parsed.properties.get("TEST_NAME_PATTERN")).to.equal("dates parse");
