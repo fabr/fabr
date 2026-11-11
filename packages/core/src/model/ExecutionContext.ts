@@ -27,6 +27,7 @@ import type { WatchController } from "../core/WatchController";
 import { activityCounter, ITaskReport } from "../support/Execute";
 import { Log } from "../support/Log";
 import { Semaphore } from "../support/Semaphore";
+import type { ISlsaBuild } from "../support/Slsa";
 import { declName, ITargetDecl } from "./AST";
 import { BuildEvent, BuildListener, TaskDescription, TaskProgress, TaskState } from "./BuildEvents";
 
@@ -62,6 +63,9 @@ export interface UserInteraction {
 export interface IdentityProvider {
   /** Get a freshly issued identity token (a JWT) for `audience`. */
   token(audience: string): Computable<string>;
+  /** The build the job is, which a provenance statement records; absent for a
+   *  job whose provenance isn't stated. */
+  readonly build?: ISlsaBuild;
 }
 
 /**

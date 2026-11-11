@@ -68,6 +68,13 @@ import {
   versionToString,
   IVersionMetadata,
   RepositoryImplementation,
+  provenanceStatement,
+  INTOTO_PAYLOAD_TYPE,
+  ISigstoreInstance,
+  PUBLIC_SIGSTORE,
+  SerializedBundle,
+  SIGSTORE_AUDIENCE,
+  signDsse,
 } from "@fabr-build/core";
 import {
   expectedTarballDigest,
@@ -80,6 +87,7 @@ import {
   toPackumentVersions,
   PublishAccess,
   exchangeIdentity,
+  packageVisibility,
   publishToRegistry,
   toPublishAccess,
   tarballBasename,
@@ -90,6 +98,7 @@ import { declaredDependencies, memberDependencies, rewriteManifest, unresolvable
 import { installedPackageExtensions, PackageExtensions } from "./PackageExtensions";
 import { NPMAuth } from "./NPMAuth";
 import { jsPluginContext } from "./JSPluginContext";
+import * as crypto from "node:crypto";
 
 const METADATA_FILE = "metadata.json";
 const PACKUMENT_FILE = "packument.json";
@@ -164,12 +173,28 @@ export class NPMRepository
   /** What signs the registry's requests in: the one it is made with, else `.npmrc`'s for each request's url. */
   private readonly credential: Credential;
 
-  constructor(url: string, context: TargetContext, access: PublishAccess = null, extensions?: PackageExtensions, credential?: Credential) {
+  /** Whether a publish carries a provenance statement where the registry accepts one. */
+  private readonly provenance: boolean;
+
+  /** The Sigstore instance provenance statements are signed with. */
+  private readonly sigstore: ISigstoreInstance;
+
+  constructor(
+    url: string,
+    context: TargetContext,
+    access: PublishAccess = null,
+    extensions?: PackageExtensions,
+    credential?: Credential,
+    provenance = true,
+    sigstore: ISigstoreInstance = PUBLIC_SIGSTORE
+  ) {
     this.url = url.replace(/\/+$/, "");
     this.context = context;
     this.access = access;
     this.extensions = extensions === undefined ? installedPackageExtensions : () => extensions;
     this.credential = credential ?? NPMAuth.credential(() => this.npmAuth());
+    this.provenance = provenance;
+    this.sigstore = sigstore;
   }
 
   /** The registry's stable identity — its url — for the resolution memo key. */
@@ -325,7 +350,9 @@ export class NPMRepository
    * is resolved here — the repository owns its own authentication: where the
    * run has a CI identity, the token the registry exchanges it for (trusted
    * publishing), else, or where the registry refuses the exchange, the
-   * per-registry `.npmrc`'s (with `${VAR}` substitution).
+   * per-registry `.npmrc`'s (with `${VAR}` substitution). A provenance
+   * statement is attached where the registry accepts one (see
+   * {@link provenanceOf}).
    */
   public publish(artifact: PublishableFileSet): Computable<PublishStatus> {
     const { name, version } = packageCoordinateOf(artifact.destination);
@@ -341,22 +368,28 @@ export class NPMRepository
         offered && "token" in offered
           ? Computable.resolve(new Map([["authorization", `Bearer ${offered.token}`]]))
           : this.credential.authorize({ method: "PUT", url: this.url, headers: new Map() });
-      return Computable.forAll([tgz.getBuffer(), manifest.readString(), signedIn], (data, manifestJson, headers) => ({
-        data,
-        manifestJson,
-        auth,
-        headers,
-        refused: offered && "refused" in offered ? offered.refused : undefined,
-      }));
-    }).then(({ data, manifestJson, auth, headers, refused }) =>
+      return Computable.forAll([tgz.getBuffer(), manifest.readString(), signedIn], (data, manifestJson, headers) => {
+        const authHeaders = Object.fromEntries(headers ?? []);
+        const manifest = JSON.parse(manifestJson) as Record<string, unknown>;
+        return this.provenanceOf(name, version, data, manifest, authHeaders).then(provenance => ({
+          data,
+          manifest,
+          auth,
+          authHeaders,
+          provenance,
+          refused: offered && "refused" in offered ? offered.refused : undefined,
+        }));
+      });
+    }).then(({ data, manifest, auth, authHeaders, provenance, refused }) =>
       publishToRegistry(
         this.url,
         { name, version },
         data,
-        JSON.parse(manifestJson),
-        Object.fromEntries(headers ?? []),
+        manifest,
+        authHeaders,
         this.access,
-        auth.otpProvider(this.url, this.context.execution.interaction)
+        auth.otpProvider(this.url, this.context.execution.interaction),
+        provenance
       ).catch(err => {
         if (refused !== undefined && err instanceof FabrError) {
           err.withHelp(
@@ -368,6 +401,48 @@ export class NPMRepository
       })
     );
   }
+  /**
+   * Sign a provenance statement for the tarball `data` of `name@version`, where
+   * the registry accepts one for this publish: this repository asks for one,
+   * the job states its build, its source repository is public, and the package
+   * is public, or new and published public. Undefined where it does not apply;
+   * any failure once it applies is an error.
+   */
+  private provenanceOf(
+    name: string,
+    version: string,
+    data: Buffer,
+    manifest: Record<string, unknown>,
+    headers: Record<string, string>
+  ): Computable<SerializedBundle | undefined> {
+    const provider = this.context.execution.identityProvider;
+    const build = provider?.build;
+    if (!this.provenance || !provider || !build) {
+      return Computable.resolve(undefined);
+    }
+    return build
+      .isPublicSource()
+      .then(isPublic => (isPublic ? packageVisibility(this.url, name, headers) : false))
+      .then(visible => {
+        if (visible === false || (visible === undefined && this.access !== "public")) {
+          return undefined;
+        }
+        if (manifest.repository === undefined) {
+          throw new FabrError(`cannot publish ${name}@${version} with provenance: its package.json names no repository`).withHelp(
+            `add the repository to the target's metadata (\`metadata = { repository = ${build.sourceRepository}; }\`), ` +
+              `or turn provenance off for ${this.name} (\`provenance = off;\`)`
+          );
+        }
+        const subject = {
+          name: NPM_FORMAT.purl!(name, version),
+          digest: { sha512: crypto.createHash("sha512").update(data).digest("hex") },
+        };
+        const statement = Buffer.from(JSON.stringify(provenanceStatement(subject, build)));
+        return provider.token(SIGSTORE_AUDIENCE).then(token => signDsse(statement, INTOTO_PAYLOAD_TYPE, token, this.sigstore));
+      });
+  }
+
+
 
   /**
    * Get the platform we are building for, projected to npm's {os, cpu, libc}
@@ -692,13 +767,19 @@ export class NPMRepository
 
 /** Make the repository an `npm_repository` declaration declares, or a namespace makes with `url` and `credential`: its own `url` first, and a `credential` in place of `.npmrc`'s. */
 function createRepository(context: TargetContext, url?: string, credential?: Credential): Computable<Repository> {
-  return Computable.forAll([context.getProperty("url"), context.getString("access")], (declared, access) => {
-    const at = declared?.toString() ?? url;
-    if (at === undefined) {
-      throw new FabrError("Missing required property url");
+  return Computable.forAll(
+    [context.getProperty("url"), context.getString("access"), context.getString("provenance")],
+    (declared, access, provenance) => {
+      const at = declared?.toString() ?? url;
+      if (at === undefined) {
+        throw new FabrError("Missing required property url");
+      }
+      if (provenance !== undefined && provenance !== "on" && provenance !== "off") {
+        throw new FabrError(`invalid provenance value ${JSON.stringify(provenance)} (expected "on" or "off")`);
+      }
+      return new NPMRepository(at, context, toPublishAccess(access), undefined, credential, provenance !== "off");
     }
-    return new NPMRepository(at, context, toPublishAccess(access), undefined, credential);
-  });
+  );
 }
 
 

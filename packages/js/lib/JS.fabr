@@ -453,6 +453,9 @@ targetdef npm_repository {
     # The access requested when a package is first published: `public`, or
     # `private` (`restricted` means the same).
     access = STRING;
+    # Whether a publish from CI carries a signed provenance statement where the
+    # registry accepts one: `on` (the default) or `off`.
+    provenance = STRING;
 }
 
 #

@@ -17,6 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import * as crypto from "node:crypto";
 import * as http from "node:http";
 import * as zlib from "node:zlib";
 import { Readable } from "node:stream";
@@ -1343,7 +1344,7 @@ describe("NPMRepository publish", () => {
 
 /** A registry answering each `METHOD path` from `routes` with its status and
  *  body (404 otherwise), recording every request it receives. */
-function routedServer(routes: Record<string, [number, string]>): Promise<{ port: number; requests: CapturedPut[]; close: () => void }> {
+function routedServer(routes: Record<string, readonly [number, string]>): Promise<{ port: number; requests: CapturedPut[]; close: () => void }> {
   return new Promise(resolve => {
     const requests: CapturedPut[] = [];
     const server = http.createServer((req, res) => {
@@ -1444,6 +1445,148 @@ describe("NPMRepository trusted publishing", () => {
       const reported = `${err.message}\n${helpText(err)}`;
       expect(reported).to.not.contain("exchanged");
       expect(reported).to.not.contain("id-token");
+    } finally {
+      server.close();
+    }
+  });
+});
+
+describe("NPMRepository provenance", () => {
+  const EXCHANGE = "POST /-/npm/v1/oidc/token/exchange/package/@fabr%2fcore";
+  const VISIBILITY = "GET /-/package/@fabr%2fcore/visibility";
+  const FULCIO = "POST /api/v2/signingCert";
+  const REKOR = "POST /api/v1/log/entries";
+  const PUT = "PUT /@fabr%2fcore";
+  /** A certificate for the fake Fulcio to issue. */
+  const CERTIFICATE = `-----BEGIN CERTIFICATE-----
+MIIBJzCBzgIJAJfJvFEElpo7MAoGCCqGSM49BAMCMBsxGTAXBgNVBAMMEGZhYnIt
+dGVzdC1mdWxjaW8wIBcNMjYxMTExMDI0MzAxWhgPMjEyNjEwMTgwMjQzMDFaMBsx
+GTAXBgNVBAMMEGZhYnItdGVzdC1mdWxjaW8wWTATBgcqhkjOPQIBBggqhkjOPQMB
+BwNCAASixLPyPpMtg39bfwejfBKj1fZfJH4IYZh8DuVlD4eeBDQ/QjcYynjEQnvu
+i5oBWk0tSGCd0oy2JZXic3fOO7uuMAoGCCqGSM49BAMCA0gAMEUCIQD8lycWVf8S
+07g74WFv3ck8l+7FcyjjHWIjU6S31EwhtAIgZPDNsOQR9elPe7TNMzUFq6SzylrL
+SZmsJo0cKcK3owM=
+-----END CERTIFICATE-----
+`;
+  const SIGNING_ROUTES: Record<string, readonly [number, string]> = {
+    [EXCHANGE]: [201, '{"token":"exchanged"}'],
+    [FULCIO]: [201, JSON.stringify({ signedCertificateEmbeddedSct: { chain: { certificates: [CERTIFICATE] } } })],
+    [REKOR]: [
+      201,
+      JSON.stringify({
+        uuid: { body: Buffer.from('{"kind":"dsse","apiVersion":"0.0.1"}').toString("base64"), integratedTime: 1, logID: "00", logIndex: 7 },
+      }),
+    ],
+    [PUT]: [201, "{}"],
+  };
+
+  /** Make an unsigned JWT whose payload is `claims`. */
+  function jwt(claims: Record<string, unknown>): string {
+    const part = (value: unknown): string => Buffer.from(JSON.stringify(value)).toString("base64url");
+    return `${part({ alg: "RS256" })}.${part(claims)}.signature`;
+  }
+
+  /** Publish @fabr/core@0.1.0 from a CI job building a repository of
+   *  `visibility`, to the registry on `port`, which serves Sigstore too. */
+  async function publishFromRun(
+    port: number,
+    options: { visibility?: string; access?: "public" | "restricted" | null; provenance?: boolean; repository?: string } = {}
+  ): Promise<void> {
+    const context = npmrcContext();
+    const sigstoreToken = jwt({ sub: "repo:fabr/fabr:ref:refs/tags/v0.1.0" });
+    context.execution.identityProvider = {
+      token: (audience: string) => Computable.resolve(audience === "sigstore" ? sigstoreToken : "id-token"),
+      build: {
+        statementType: "https://in-toto.io/Statement/v1",
+        predicateType: "https://slsa.dev/provenance/v1",
+        predicate: { runDetails: { metadata: { invocationId: "https://github.com/fabr/fabr/actions/runs/303/attempts/1" } } },
+        sourceRepository: "https://github.com/fabr/fabr",
+        isPublicSource: () => Computable.resolve((options.visibility ?? "public") === "public"),
+      },
+    };
+    const url = `http://127.0.0.1:${port}`;
+    const repo = new NPMRepository(url, context, options.access === undefined ? "public" : options.access, undefined, undefined, options.provenance ?? true, {
+      fulcioUrl: url,
+      rekorUrl: url,
+    });
+    const destination = coord(repo, "@fabr/core:0.1.0");
+    const manifest = { name: "@fabr/core", version: "0", repository: options.repository ?? "https://github.com/fabr/fabr" };
+    if (options.repository === "") {
+      delete (manifest as { repository?: string }).repository;
+    }
+    const [carrier] = await repo.package([{ destination, content: publishFileSet({ "package.json": JSON.stringify(manifest) }) }], [destination]);
+    await toPromise(repo.publish(carrier));
+  }
+
+  function envelopeOf(server: { requests: CapturedPut[] }): { _attachments: Record<string, { content_type: string; data: string }> } {
+    return JSON.parse(server.requests.find(r => r.method === "PUT")!.body);
+  }
+
+  it("attaches a signed statement of the run to a public package", async () => {
+    const server = await routedServer({ ...SIGNING_ROUTES, [VISIBILITY]: [200, '{"public":true}'] });
+    try {
+      await publishFromRun(server.port);
+      const attachment = envelopeOf(server)._attachments["@fabr/core-0.1.0.sigstore"];
+      expect(attachment.content_type).to.equal("application/vnd.dev.sigstore.bundle.v0.3+json");
+      const bundle = JSON.parse(attachment.data);
+      const statement = JSON.parse(Buffer.from(bundle.dsseEnvelope.payload, "base64").toString());
+      const tarball = Buffer.from(envelopeOf(server)._attachments["@fabr/core-0.1.0.tgz"].data, "base64");
+      expect(statement.subject).to.deep.equal([
+        { name: "pkg:npm/%40fabr/core@0.1.0", digest: { sha512: crypto.createHash("sha512").update(tarball).digest("hex") } },
+      ]);
+      expect(statement.predicate.runDetails.metadata.invocationId).to.equal("https://github.com/fabr/fabr/actions/runs/303/attempts/1");
+      expect(bundle.verificationMaterial.tlogEntries[0].logIndex).to.equal("7");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("attaches one to a new package published public", async () => {
+    const server = await routedServer(SIGNING_ROUTES);
+    try {
+      await publishFromRun(server.port);
+      expect(envelopeOf(server)._attachments["@fabr/core-0.1.0.sigstore"]).to.not.equal(undefined);
+    } finally {
+      server.close();
+    }
+  });
+
+  for (const [what, options, routes] of [
+    ["from a private repository", { visibility: "private" }, {}],
+    ["for a package that is not public", {}, { [VISIBILITY]: [200, '{"public":false}'] }],
+    ["for a new package not published public", { access: null }, {}],
+    ["where the repository turns it off", { provenance: false }, { [VISIBILITY]: [200, '{"public":true}'] }],
+  ] as const) {
+    it(`publishes without a statement ${what}`, async () => {
+      const server = await routedServer({ ...SIGNING_ROUTES, ...routes });
+      try {
+        await publishFromRun(server.port, options);
+        expect(Object.keys(envelopeOf(server)._attachments)).to.deep.equal(["@fabr/core-0.1.0.tgz"]);
+        expect(server.requests.map(r => r.url)).to.not.include("/api/v2/signingCert");
+      } finally {
+        server.close();
+      }
+    });
+  }
+
+  it("fails without publishing where signing fails", async () => {
+    const server = await routedServer({ ...SIGNING_ROUTES, [VISIBILITY]: [200, '{"public":true}'], [REKOR]: [503, "unavailable"] });
+    try {
+      const err = await rejection(() => publishFromRun(server.port));
+      expect(err.message).to.match(/^Rekor at .* failed \(503\)/);
+      expect(server.requests.map(r => r.method)).to.not.include("PUT");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("fails without publishing where the package names no repository", async () => {
+    const server = await routedServer({ ...SIGNING_ROUTES, [VISIBILITY]: [200, '{"public":true}'] });
+    try {
+      const err = await rejection(() => publishFromRun(server.port, { repository: "" }));
+      expect(err.message).to.equal("cannot publish @fabr/core@0.1.0 with provenance: its package.json names no repository");
+      expect(helpText(err)).to.contain("metadata = { repository = https://github.com/fabr/fabr; }");
+      expect(server.requests.map(r => r.method)).to.not.include("PUT");
     } finally {
       server.close();
     }

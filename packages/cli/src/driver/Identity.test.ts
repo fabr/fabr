@@ -25,7 +25,10 @@ import { identityProviderOf } from "./Identity";
 
 /** Serve GitHub's token request endpoint, answering every request with
  *  `status` and `body` and recording each request's url and authorization. */
-function tokenServer(status: number, body: string): Promise<{ url: string; requests: { url?: string; auth?: string }[]; close: () => void }> {
+function tokenServer(
+  status: number,
+  body: string
+): Promise<{ url: string; requests: { url?: string; auth?: string }[]; close: () => void }> {
   return new Promise(resolve => {
     const requests: { url?: string; auth?: string }[] = [];
     const server = http.createServer((req, res) => {
@@ -43,13 +46,17 @@ function tokenServer(status: number, body: string): Promise<{ url: string; reque
 describe("identityProviderOf", () => {
   it("is absent where the job was given no identity", () => {
     expect(identityProviderOf({})).to.equal(undefined);
-    expect(identityProviderOf({ ACTIONS_ID_TOKEN_REQUEST_URL: "http://127.0.0.1/token" })).to.equal(undefined);
+    expect(identityProviderOf({ GITHUB_ACTIONS: "true", ACTIONS_ID_TOKEN_REQUEST_URL: "http://127.0.0.1/token" })).to.equal(undefined);
   });
 
   it("asks GitHub for a token for the audience, signed in with the request token", async () => {
     const server = await tokenServer(200, '{"value":"jwt"}');
     try {
-      const identity = identityProviderOf({ ACTIONS_ID_TOKEN_REQUEST_URL: server.url, ACTIONS_ID_TOKEN_REQUEST_TOKEN: "request-token" })!;
+      const identity = identityProviderOf({
+        GITHUB_ACTIONS: "true",
+        ACTIONS_ID_TOKEN_REQUEST_URL: server.url,
+        ACTIONS_ID_TOKEN_REQUEST_TOKEN: "request-token",
+      })!;
       expect(await identity.token("npm:registry.npmjs.org")).to.equal("jwt");
       expect(server.requests).to.deep.equal([
         { url: "/token?api-version=2.0&audience=npm%3Aregistry.npmjs.org", auth: "Bearer request-token" },
@@ -62,7 +69,11 @@ describe("identityProviderOf", () => {
   it("fails without reporting the request token where GitHub issues none", async () => {
     const server = await tokenServer(403, '{"message":"request-token is not allowed"}');
     try {
-      const identity = identityProviderOf({ ACTIONS_ID_TOKEN_REQUEST_URL: server.url, ACTIONS_ID_TOKEN_REQUEST_TOKEN: "request-token" })!;
+      const identity = identityProviderOf({
+        GITHUB_ACTIONS: "true",
+        ACTIONS_ID_TOKEN_REQUEST_URL: server.url,
+        ACTIONS_ID_TOKEN_REQUEST_TOKEN: "request-token",
+      })!;
       const err = await Promise.resolve(identity.token("npm:registry.npmjs.org")).then(
         () => undefined,
         (e: Error) => e
@@ -80,7 +91,12 @@ describe("identityProviderOf", () => {
   }
 
   function failure(token: () => Computable<string>): Promise<Error | undefined> {
-    return new Promise(resolve => token().then(() => resolve(undefined), (e: Error) => resolve(e)));
+    return new Promise(resolve =>
+      token().then(
+        () => resolve(undefined),
+        (e: Error) => resolve(e)
+      )
+    );
   }
 
   it("answers with the token in NPM_ID_TOKEN for an audience it names", async () => {
@@ -93,7 +109,9 @@ describe("identityProviderOf", () => {
   it("refuses an audience the token in NPM_ID_TOKEN was not issued for, without reporting the token", async () => {
     const token = jwt({ aud: "npm:registry.npmjs.org" });
     const err = await failure(() => identityProviderOf({ NPM_ID_TOKEN: token })!.token("sigstore"));
-    expect(err?.message).to.equal("the job's identity token in NPM_ID_TOKEN is for 'npm:registry.npmjs.org', not 'sigstore'");
+    expect(err?.message).to.equal(
+      "none of the job's identity tokens is for 'sigstore' (NPM_ID_TOKEN is for 'npm:registry.npmjs.org')"
+    );
     expect(err?.message).to.not.contain(token);
   });
 
@@ -106,6 +124,7 @@ describe("identityProviderOf", () => {
     const server = await tokenServer(200, '{"value":"github-jwt"}');
     try {
       const identity = identityProviderOf({
+        GITHUB_ACTIONS: "true",
         ACTIONS_ID_TOKEN_REQUEST_URL: server.url,
         ACTIONS_ID_TOKEN_REQUEST_TOKEN: "request-token",
         NPM_ID_TOKEN: jwt({ aud: "npm:registry.npmjs.org" }),
@@ -114,5 +133,45 @@ describe("identityProviderOf", () => {
     } finally {
       server.close();
     }
+  });
+
+  it("states the build of a GitHub workflow run, and of a GitLab job given a token for Sigstore", () => {
+    const github = identityProviderOf({
+      GITHUB_ACTIONS: "true",
+      ACTIONS_ID_TOKEN_REQUEST_URL: "http://127.0.0.1/token",
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN: "t",
+      GITHUB_SERVER_URL: "https://github.com",
+      GITHUB_REPOSITORY: "acme/widgets",
+      GITHUB_REPOSITORY_ID: "1",
+      GITHUB_REPOSITORY_OWNER_ID: "2",
+      GITHUB_WORKFLOW_REF: "acme/widgets/.github/workflows/r.yml@refs/heads/main",
+      GITHUB_EVENT_NAME: "push",
+      GITHUB_REF: "refs/heads/main",
+      GITHUB_SHA: "abc",
+      GITHUB_RUN_ID: "3",
+      GITHUB_RUN_ATTEMPT: "1",
+      RUNNER_ENVIRONMENT: "github-hosted",
+    })!;
+    expect(github.build?.sourceRepository).to.equal("https://github.com/acme/widgets");
+    const gitlab = identityProviderOf({
+      GITLAB_CI: "true",
+      NPM_ID_TOKEN: "n",
+      SIGSTORE_ID_TOKEN: "s",
+      CI_PROJECT_URL: "https://gitlab.com/acme/widgets",
+      CI_RUNNER_ID: "1",
+      CI_COMMIT_SHA: "abc",
+      CI_JOB_NAME: "publish",
+      CI_JOB_URL: "https://gitlab.com/acme/widgets/-/jobs/1",
+    })!;
+    expect(gitlab.build?.sourceRepository).to.equal("https://gitlab.com/acme/widgets");
+    expect(identityProviderOf({ NPM_ID_TOKEN: "n" })!.build).to.equal(undefined);
+  });
+
+  it("answers each audience with the given token issued for it", async () => {
+    const npm = jwt({ aud: "npm:registry.npmjs.org" });
+    const sigstore = jwt({ aud: "sigstore" });
+    const provider = identityProviderOf({ NPM_ID_TOKEN: npm, SIGSTORE_ID_TOKEN: sigstore })!;
+    expect(await provider.token("npm:registry.npmjs.org")).to.equal(npm);
+    expect(await provider.token("sigstore")).to.equal(sigstore);
   });
 });

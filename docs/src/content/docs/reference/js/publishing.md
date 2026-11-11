@@ -37,7 +37,7 @@ fabr sync release     # publish it
 | `prepublishOnly`, `prepack` scripts | Not run. Building is what `fabr` does. |
 | `npm publish --dry-run`, `npm pack` | `fabr build` on the `sync` target, then `fabr ls`, `cat` or `cp`. |
 | `npm publish --tag next` | Not supported: every publish is tagged `latest`. |
-| `npm publish --provenance` | Not supported. |
+| `npm publish --provenance` | Automatic from GitHub Actions and GitLab; see [Provenance](#provenance). |
 | `NPM_TOKEN` in `.npmrc` | The same; see [Credentials](#credentials). |
 | Trusted publishing from GitHub Actions, GitLab or CircleCI | The same; see [Trusted publishing](#trusted-publishing). |
 | Workspace packages published together | Several entries in one `sync`; dependencies between them get the right versions. |
@@ -352,6 +352,56 @@ the job's identity token can't be had, the package isn't published.
 - **npm doesn't accept trusted publishing from self-hosted runners.** Use a token there.
 - Outside a job with an identity, fabr publishes with the `.npmrc` credential as usual.
 
+### Provenance
+
+From a GitHub Actions workflow granted `id-token: write`, or a GitLab CI/CD job given an identity
+token for Sigstore, each package is published with a signed
+[provenance statement](https://docs.npmjs.com/generating-provenance-statements): it says the
+package's tarball was built by this workflow run or job, from this repository at this commit. It is
+signed with [Sigstore](https://www.sigstore.dev/) and recorded in its public transparency log, and
+npm shows it on the package's page.
+
+A package is published with one wherever npm accepts it, which is where:
+
+- the repository is public, and
+- the package is public, or is new and published with `access = public` (as `@npm` is).
+
+Elsewhere it is published without one. Where a package gets one, it must also name its repository,
+matching the workflow's, in its `metadata`:
+
+```
+js_package @acme/widgets {
+  metadata = { repository = https://github.com/acme/widgets; }
+}
+```
+
+If signing fails, the package isn't published. To publish without provenance where it would apply,
+set `provenance = off;` on the registry:
+
+```
+npm_repository @npm-unsigned {
+  url = https://registry.npmjs.org/;
+  access = public;
+  provenance = off;
+}
+```
+
+On GitLab, give the job a token for Sigstore in `SIGSTORE_ID_TOKEN`, beside the one for npm:
+
+```yaml
+# .gitlab-ci.yml
+publish:
+  id_tokens:
+    NPM_ID_TOKEN:
+      aud: "npm:registry.npmjs.org"
+    SIGSTORE_ID_TOKEN:
+      aud: "sigstore"
+  script:
+    - fabr sync release
+```
+
+npm doesn't accept provenance from CircleCI.
+
 ### Other registries, and private packages
 
 `@npm` publishes to the public npm registry, with public access. To publish somewhere else, or
@@ -368,13 +418,13 @@ sync release {
 }
 ```
 
-`access` is `public` or `private`. One `sync` can publish to several registries.
+`access` is `public` or `private`, and `provenance` is `on` (the default) or `off`. One `sync`
+can publish to several registries.
 
 ## Not supported
 
 - **Dist-tags.** Every publish becomes `latest`. Publishing a prerelease or a patch to an old
   release line moves `latest` to it.
-- **Provenance attestations.**
 - **A one-time password from a flag or environment variable.** Use a token that doesn't need one.
 
 ## Troubleshooting
@@ -389,6 +439,8 @@ sync release {
 | `'x' is named in exports, but produces nothing importable in the built package` | An `exports` entry such as a `.d.ts` file | List a source that compiles to JavaScript. |
 | `publishing … failed (401)` or `(403)` | No credential for the registry, or one that can't publish this package | Check the `.npmrc` entry and that the environment variable it names is set. |
 | `trusted publishing was refused for x` | No trusted publisher is configured for the package, or it names another repository or workflow | Configure the workflow or pipeline as the package's trusted publisher, or give a credential in `.npmrc`. |
-| `the job's identity token in NPM_ID_TOKEN is for '…', not 'npm:…'` | The token was issued for another audience | Issue it with the audience the message names. |
+| `cannot publish x with provenance: its package.json names no repository` | The package would be published with provenance, which npm accepts only from the repository the package names | Add `repository` to the target's `metadata`, or set `provenance = off;` on the registry. |
+| `Fulcio at … failed`, `Rekor at … failed` | Signing the provenance statement failed; the package wasn't published | Run the release again. |
+| `none of the job's identity tokens is for '…'` | No token the job was given was issued for that audience | Issue one with the audience the message names. |
 | `requires a second factor (2FA), and this run has no terminal` | A token that needs a one-time password, used in CI | Use a token that publishes unattended. |
 | The published package has `.js.map` files containing sources | The `sync` entry doesn't require a release build | Write `<BUILD_TYPE=release>` on the entry's target. |

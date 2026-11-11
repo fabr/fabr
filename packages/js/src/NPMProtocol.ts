@@ -53,6 +53,7 @@ import {
   ILicense,
   IVersionMetadata,
   IdentityProvider,
+  SerializedBundle,
 } from "@fabr-build/core";
 import { otpChallengeOf, OtpProvider } from "./NPMAuth";
 import { makeNpmRunnable } from "./JSPackage";
@@ -325,6 +326,32 @@ export function exchangeIdentity(registryUrl: string, name: string, provider: Id
     });
 }
 
+/** Make the envelope attachment carrying a provenance bundle: its JSON as text. */
+function provenanceAttachment(bundle: SerializedBundle): { content_type: string; data: string; length: number } {
+  const data = JSON.stringify(bundle);
+  return { content_type: bundle.mediaType, data, length: data.length };
+}
+
+/**
+ * Look up whether the package `name` on the registry at `registryUrl` is
+ * public, asking with `headers`' credential; undefined where the registry has
+ * no such package.
+ */
+export function packageVisibility(registryUrl: string, name: string, headers: Record<string, string>): Computable<boolean | undefined> {
+  return sendRequest(`${registryUrl}/-/package/${name.replace(/\//g, "%2f")}/visibility`, {
+    method: "GET",
+    headers: { ...headers, accept: "application/json" },
+  }).then(({ statusCode, body }) => {
+    if (statusCode === 404) {
+      return undefined;
+    }
+    if (statusCode < 200 || statusCode >= 300) {
+      throw new FabrError(`reading the visibility of ${name} at ${registryUrl} failed (${statusCode}): ${registryMessage(body)}`);
+    }
+    return parseJson(body, `visibility of ${name} from ${registryUrl}`, json => toJsonObject(json).public === true);
+  });
+}
+
 /** Convert the exchange's response, `{ "token": "<token>" }`, to the token. */
 function toExchangedToken(json: unknown): string {
   const token = toJsonObject(json).token;
@@ -362,7 +389,8 @@ function registryMessage(body: Buffer): string {
  * name with the given credential. Returns whether the upload happened or the
  * version was already present (a 409 — sync is declarative, so already-there is
  * success, reported distinctly); any other non-2xx surfaces the registry's error
- * body. A second-factor challenge (a 2FA account) is answered through `otp`,
+ * body. `provenance`, a signed provenance statement for the tarball, is
+ * attached beside it. A second-factor challenge (a 2FA account) is answered through `otp`,
  * and the PUT retried with the produced one-time password — twice at most,
  * so a stale cached token gets one fresh re-acquisition and a genuinely
  * refused one fails rather than looping.
@@ -374,7 +402,8 @@ export function publishToRegistry(
   manifest: Record<string, unknown>,
   authHeaders: Record<string, string>,
   access: PublishAccess = null,
-  otp?: OtpProvider
+  otp?: OtpProvider,
+  provenance?: SerializedBundle
 ): Computable<"published" | "already-synced"> {
   const { name, version } = coordinate;
   const tarballName = tarballBasename(name, version);
@@ -401,6 +430,7 @@ export function publishToRegistry(
         data: tarball.toString("base64"),
         length: tarball.length,
       },
+      ...(provenance ? { [`${name}-${version}.sigstore`]: provenanceAttachment(provenance) } : {}),
     },
   };
   const escapedName = name.replace(/\//g, "%2f");
