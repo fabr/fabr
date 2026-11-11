@@ -139,6 +139,8 @@ export default defineConfig({
           items: [
             { label: "Accounts and credentials", link: "/reference/aws/accounts/" },
             { label: "Amazon S3", link: "/reference/aws/s3/" },
+            { label: "SSM Parameter Store", link: "/reference/aws/ssm/" },
+            { label: "AWS Secrets Manager", link: "/reference/aws/secretsmanager/" },
             { label: "Amazon ECR", link: "/reference/aws/ecr/" },
             { label: "AWS CodeArtifact", link: "/reference/aws/codeartifact/" },
             ...generated("AWS reference"),

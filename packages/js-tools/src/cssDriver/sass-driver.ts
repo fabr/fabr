@@ -53,6 +53,7 @@ import {
   relativeToMap,
   relocateCssSources,
   sourceMapComment,
+  withSourceFirst,
   writeDepsReport,
   writeOut,
 } from "./Support";
@@ -129,12 +130,14 @@ async function processFile(source: ISassSource, options: ISassOptions, tools: IS
     /* Named as the TARGET names them, and annotated: this step's output is a
      * deliverable tree in its own right, not a form only the next step can
      * read. Sass reports its sources as absolute `file://` URLs, which relocate
-     * against the staged root like any other. */
+     * against the staged root like any other. Sass lists them as the output
+     * first reaches each, so the stylesheet compiled is put first. */
     const where = { root: process.cwd(), srcRoot: options.srcRoot, mapDir: path.dirname(path.join(options.outdir, source.css)) };
+    const ordered = withSourceFirst(map, path.resolve(where.root, inputPath), where.root, where.mapDir);
     const finished =
       tools.referenceOf === undefined
-        ? relativeToMap(relocateCssSources(map, where), source.map)
-        : referencedCssSources(map, source.map, where, tools.referenceOf);
+        ? relativeToMap(relocateCssSources(ordered, where), source.map)
+        : referencedCssSources(ordered, source.map, where, tools.referenceOf);
     writeOut(options.outdir, source.map, JSON.stringify(finished));
     writeOut(options.outdir, source.css, css + sourceMapComment(source.map));
     return;

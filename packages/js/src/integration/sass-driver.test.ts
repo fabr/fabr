@@ -214,6 +214,12 @@ describe("the Sass driver, resolving package loads through fabr's table", () => 
     );
   });
 
+  it("lists the stylesheet compiled first, though its output first reaches a package's", async () => {
+    const design = pkg("design", "1.0.0", { "_index.scss": ".design { v: 1; }\n" });
+    const { sources } = await lower([design], '@use "design";\n.app { v: 1; }\n', true);
+    assert.deepEqual(sources, ["fabr:./app/app.scss", "fabr:@npm:design:1.0.0:_index.scss"]);
+  });
+
   it("names every source by the reference resolving to it, a virtual location by its package", async () => {
     const shared = files({ "package.json": "{}", "_index.scss": '@use "dep";\n.shared { v: dep.$v; }\n' });
     const dep = (version: string): PackageFileSet => pkg("dep", version, { "_index.scss": `$v: "${version}";\n` });

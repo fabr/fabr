@@ -660,8 +660,9 @@ function nameMapSources(root: string, outdir: string, referenceOf: (staged: stri
 /**
  * Make the namer of the bundle's inputs, as esbuild spells them (relative to
  * `root`), each named as a map entry is (see {@link nameMapSources}): by the
- * reference its own map names first, which esbuild carries into the bundle's
- * map, else by `referenceOf`. Each input is named once.
+ * reference its own map names first — the file a compile made it from, which
+ * fabr's drivers list first — which esbuild carries into the bundle's map, else
+ * by `referenceOf`. Each input is named once.
  */
 function metafileInputNamer(root: string, referenceOf: ((staged: string) => string | undefined) | undefined): (staged: string) => string {
   const fileName = (staged: string): string => {

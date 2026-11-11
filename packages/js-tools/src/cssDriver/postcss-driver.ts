@@ -72,7 +72,9 @@ import {
   relativeToMap,
   relocateCssSources,
   sassLoweredName,
+  sourceIdentity,
   withoutAnnotations,
+  withSourceFirst,
   writeDepsReport,
   writeOut,
 } from "./Support";
@@ -318,10 +320,20 @@ async function processFile(source: IPostcssSource, options: IPostcssOptions, too
     /* Chained, the input is an intermediate whose name never ships; unchained,
      * the input IS the authored source and keeps its name. */
     const ownInput = prev === undefined ? undefined : { path: source.path, rename: source.css };
+    /* postcss lists the sources as the output first reaches each, so the
+     * stylesheet compiled is put first: the one the input map lists first, or
+     * unchained, the input itself. */
+    const compiled =
+      chained === undefined
+        ? path.resolve(where.root, inputPath)
+        : chained.sources[0] === undefined
+          ? undefined
+          : sourceIdentity(chained.sources[0], where.root, path.dirname(path.join(options.srcRoot, source.prev!)));
+    const ordered = compiled === undefined ? outMap : withSourceFirst(outMap, compiled, where.root, where.mapDir);
     const finished =
       tools.referenceOf === undefined
-        ? relativeToMap(relocateCssSources(outMap, where, ownInput), source.map)
-        : referencedCssSources(outMap, source.map, where, tools.referenceOf, ownInput);
+        ? relativeToMap(relocateCssSources(ordered, where, ownInput), source.map)
+        : referencedCssSources(ordered, source.map, where, tools.referenceOf, ownInput);
     writeOut(options.outdir, source.map, JSON.stringify(finished));
   }
   /* With no map of its own to name, postcss is not asked for an annotation and

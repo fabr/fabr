@@ -181,7 +181,8 @@ export function referenceOfEntry(entry: string): string | undefined {
 }
 
 /**
- * Get the source a compiled file's own map (`<compiled>.map`) names first: a
+ * Get the source a compiled file's own map (`<compiled>.map`) names first —
+ * the file it was compiled from, where fabr's drivers wrote the map — as a
  * fabr reference as written, or a relative entry resolved against the map's
  * `sourceRoot`, absolute. Undefined where there is no readable map or it names
  * no source.

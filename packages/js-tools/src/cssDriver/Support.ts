@@ -189,6 +189,103 @@ export function referencedCssSources(
   };
 }
 
+/**
+ * @return how a map entry is identified wherever the map is read: an absolute
+ * URL other than a file's (a fabr reference, carried or not) as it is written,
+ * and a `file://` URL or a path relative to `mapDir` as the absolute path it
+ * names.
+ */
+export function sourceIdentity(entry: string, root: string, mapDir: string): string {
+  if (entry.startsWith("file://")) {
+    return fileURLToPath(entry);
+  }
+  return /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(entry) ? entry : path.resolve(root, mapDir, entry);
+}
+
+/**
+ * @return the map with the source `entry` identifies (see {@link
+ * sourceIdentity}, its entries read against `mapDir`) moved to the front of its
+ * sources, its embedded contents and the source indices of its mappings
+ * renumbered to match; the map as it is where it names no such source, or names
+ * it first. A css driver writes the stylesheet it compiled first, so that a
+ * reader of the map finds it there.
+ */
+export function withSourceFirst(map: IRawSourceMap, entry: string, root: string, mapDir: string): IRawSourceMap {
+  const at = map.sources.findIndex(source => source !== "<no source>" && sourceIdentity(source, root, mapDir) === entry);
+  if (at <= 0 || typeof map.mappings !== "string") {
+    return map;
+  }
+  const moved = <T>(list: T[]): T[] => [list[at], ...list.slice(0, at), ...list.slice(at + 1)];
+  const renumbered = (index: number): number => (index === at ? 0 : index < at ? index + 1 : index);
+  /* A segment's source index is a delta from the previous segment's, across
+   * lines; every other field is unchanged by renumbering sources. */
+  let source = 0;
+  let written = 0;
+  const mappings = map.mappings
+    .split(";")
+    .map(line =>
+      line
+        .split(",")
+        .map(segment => {
+          if (segment === "") {
+            return segment;
+          }
+          const fields = decodeVlqs(segment);
+          if (fields.length >= 4) {
+            source += fields[1];
+            const index = renumbered(source);
+            fields[1] = index - written;
+            written = index;
+          }
+          return fields.map(encodeVlq).join("");
+        })
+        .join(",")
+    )
+    .join(";");
+  return {
+    ...map,
+    sources: moved(map.sources),
+    ...(map.sourcesContent === undefined ? {} : { sourcesContent: moved(map.sourcesContent) }),
+    mappings,
+  };
+}
+
+const BASE64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/** Decode a mappings segment's base64 VLQ fields. */
+function decodeVlqs(segment: string): number[] {
+  const values: number[] = [];
+  let value = 0;
+  let shift = 0;
+  for (const char of segment) {
+    const digit = BASE64.indexOf(char);
+    if (digit < 0) {
+      throw new Error(`'${segment}' is not a source map segment`);
+    }
+    value += (digit & 31) << shift;
+    if (digit & 32) {
+      shift += 5;
+    } else {
+      values.push(value & 1 ? -(value >>> 1) : value >>> 1);
+      value = 0;
+      shift = 0;
+    }
+  }
+  return values;
+}
+
+/** Encode one mappings field as base64 VLQ. */
+function encodeVlq(value: number): string {
+  let rest = value < 0 ? (-value << 1) | 1 : value << 1;
+  let text = "";
+  do {
+    const digit = rest & 31;
+    rest >>>= 5;
+    text += BASE64[rest > 0 ? digit | 32 : digit];
+  } while (rest > 0);
+  return text;
+}
+
 /** @return the path with POSIX separators. */
 function toPosix(name: string): string {
   return name.split(path.sep).join("/");

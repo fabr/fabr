@@ -27,7 +27,8 @@ import * as path from "node:path";
 import postcss from "postcss";
 import type { IPostcssOptions, IPostcssSource } from "./Options";
 import { cssModuleShim, main, resolveComposePath, scopedNameOf, scopeFailure, scopeTableOf } from "./postcss-driver";
-import { relocateCssSources } from "./Support";
+import { relocateCssSources, withSourceFirst } from "./Support";
+import { SourceMap, type SourceMapPayload } from "node:module";
 import { SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "../support/SourceMap";
 
 describe("cssModuleShim", () => {
@@ -46,6 +47,41 @@ describe("cssModuleShim", () => {
     const one = cssModuleShim("x.css", { b: "b_1", a: "a_1" });
     const two = cssModuleShim("x.css", { a: "a_1", b: "b_1" });
     assert.equal(one, two);
+  });
+});
+
+describe("withSourceFirst", () => {
+  /* Three sources, the compiled one last: segments over several lines, one
+   * with a name, one with no source at all. */
+  const map = {
+    version: 3,
+    sources: ["file:///w/_a.scss", "file:///w/_b.scss", "file:///w/card.scss"],
+    sourcesContent: ["a", "b", "card"],
+    names: ["n"],
+    mappings: "AAAA,KCCA;AACAA,EAAE;ACAA,G;ADEA",
+  };
+  const positions = (raw: typeof map): Array<string | undefined> => {
+    const read = new SourceMap(raw as unknown as SourceMapPayload);
+    const found: Array<string | undefined> = [];
+    for (let line = 0; line < 4; line++) {
+      for (let column = 0; column < 12; column++) {
+        const entry = read.findEntry(line, column) as { originalSource?: string; originalLine?: number; originalColumn?: number; name?: string };
+        found.push(entry.originalSource === undefined ? undefined : `${entry.originalSource}:${entry.originalLine}:${entry.originalColumn}:${entry.name ?? ""}`);
+      }
+    }
+    return found;
+  };
+
+  it("puts the compiled source first and keeps every position mapped where it was", () => {
+    const moved = withSourceFirst(map, "/w/card.scss", "/", "/");
+    assert.deepEqual(moved.sources, ["file:///w/card.scss", "file:///w/_a.scss", "file:///w/_b.scss"]);
+    assert.deepEqual(moved.sourcesContent, ["card", "a", "b"]);
+    assert.deepEqual(positions(moved as typeof map), positions(map));
+  });
+
+  it("leaves a map that lists it first, or not at all, as it is", () => {
+    assert.equal(withSourceFirst(map, "/w/_a.scss", "/", "/"), map);
+    assert.equal(withSourceFirst(map, "/w/other.scss", "/", "/"), map);
   });
 });
 
@@ -469,6 +505,57 @@ describe("postcss-driver, over the real plugin set", () => {
     }
     const shipped = JSON.parse(fs.readFileSync(path.join(work, "out", "w", "card.css.map"), "utf8")) as { sources: string[] };
     assert.deepEqual([...shipped.sources].sort(), ["card.css", "fabr:./app/w/card.module.scss"]);
+  });
+
+  it("lists the stylesheet compiled first, however the output first reaches its partials", async () => {
+    /* As the sass step writes it: the stylesheet first among the sources,
+     * though a partial's rule comes ahead of its own — which postcss, listing
+     * the sources as its output first reaches each, would put first. */
+    const prev = {
+      version: 3,
+      sources: ["fabr:./app/w/card.module.scss", "fabr:./app/w/_partial.scss"],
+      names: [],
+      mappings: "ACAA;ADAA",
+    };
+    fs.mkdirSync(path.join(work, "src", "w"), { recursive: true });
+    fs.writeFileSync(path.join(work, "src", "w", "card.module.css"), ".partial { color: blue; }\n.card { color: red; }\n");
+    fs.writeFileSync(path.join(work, "src", "w", "card.module.css.map"), JSON.stringify(prev));
+    const options: IPostcssOptions = {
+      sources: [{ ...module("w/card", "sW"), prev: "w/card.module.css.map", map: "w/card.css.map" }],
+      composable: [],
+      srcRoot: "src",
+      outdir: "out",
+      browsers: "baseline 2023",
+    };
+    fs.writeFileSync(path.join(work, "postcss-manifest.json"), JSON.stringify(options));
+    fs.writeFileSync(path.join(work, SOURCE_PATHS_FILE), JSON.stringify({}));
+    const cwd = process.cwd();
+    try {
+      process.chdir(work);
+      await main(["--manifest=postcss-manifest.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE]);
+    } finally {
+      process.chdir(cwd);
+    }
+    const shipped = JSON.parse(fs.readFileSync(path.join(work, "out", "w", "card.css.map"), "utf8")) as { sources: string[] };
+    assert.equal(shipped.sources[0], "fabr:./app/w/card.module.scss", shipped.sources.join(", "));
+    /* Each rule still maps to the file it came from. */
+    const css = fs.readFileSync(path.join(work, "out", "w", "card.css"), "utf8").split("\n");
+    const read = new SourceMap(shipped as unknown as SourceMapPayload);
+    const sourceOf = (selector: string): string | undefined =>
+      (read.findEntry(css.findIndex(line => line.startsWith(selector)), 0) as { originalSource?: string }).originalSource;
+    assert.match(sourceOf(".card_sW") ?? "", /card\.module\.scss$/);
+    assert.match(sourceOf(".partial_sW") ?? "", /_partial\.scss$/);
+  });
+
+  it("lists the stylesheet compiled first where its input map names it by path", async () => {
+    const out = await run(
+      {
+        "w/theme.css": ".partial { margin: 0; }\n.page { margin: 0; }\n",
+        "w/theme.css.map": JSON.stringify({ version: 3, sources: ["theme.scss", "_partial.scss"], mappings: "ACAA;ADAA" }),
+      },
+      [{ path: "w/theme.css", css: "w/theme.css", prev: "w/theme.css.map", map: "w/theme.css.map", scope: "sTheme", module: false }]
+    );
+    assert.deepEqual((JSON.parse(out("w/theme.css.map")) as { sources: string[] }).sources[0], "theme.scss");
   });
 
   it("names an unchained module's map source as the module itself", async () => {
