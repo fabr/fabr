@@ -40,6 +40,7 @@ import {
   HttpResponse,
   IFile,
   MemoryCache,
+  onlyTo,
   MemoryFile,
   Name,
   PartialRepositoryRef,
@@ -194,7 +195,11 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     /** What signs the repository's requests in: the one it is made with, else its server's from `settings.xml`. */
     credential?: Credential
   ) {
-    this.credential = credential ?? MavenAuth.credential(() => javaPluginContext(this.context.execution).mavenAuth(), serverId);
+    /* Signed in where the repository is alone, whatever URL a request is ever made to. */
+    this.credential = onlyTo(
+      new URL(url).origin,
+      credential ?? MavenAuth.credential(() => javaPluginContext(this.context.execution).mavenAuth(), serverId)
+    );
   }
 
   private readonly credential: Credential;
