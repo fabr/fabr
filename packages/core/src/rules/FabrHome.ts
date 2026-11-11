@@ -308,7 +308,7 @@ export class FabrHomeRepository implements Repository, RepositoryLookup {
 function fabrHomeRegistration(): RepositoryRegistration {
   return {
     type: "fabr_home",
-    provider: (context: TargetContext) => Computable.resolve(new FabrHomeRepository(context.execution.absFileSource, INSTALLED_FROM)),
+    provider: (context: TargetContext) => Computable.resolve(new FabrHomeRepository(context.execution.installedFileSource, INSTALLED_FROM)),
   };
 }
 

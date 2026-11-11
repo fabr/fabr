@@ -122,7 +122,7 @@ export class Fabr {
       cache,
       options.log,
       this.sourceFileSource,
-      new FSFileSource("/", undefined, cache),
+      new FSFileSource("/"),
       cycle,
       this.hostFileSource
     );

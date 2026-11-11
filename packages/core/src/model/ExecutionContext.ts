@@ -22,6 +22,7 @@ import { BuildCache } from "../core/BuildCache";
 import { Computable, ComputableHandle, ComputableSource, ComputableState } from "../core/Computable";
 import { toError } from "../core/Errors";
 import { FileSource } from "../core/FileSet";
+import { FSFileSource } from "../core/FSFileSource";
 import { IndexedFileSource } from "../core/IndexedFileSource";
 import type { WatchController } from "../core/WatchController";
 import { activityCounter, ITaskReport } from "../support/Execute";
@@ -134,9 +135,16 @@ export class ExecutionContext {
   /**
    * A FileSource for reading files by absolute path, for general host filesystem
    * access — the loader's plugin/core lib `.fabr` files, and absolute config a
-   * repository consults (e.g. a user `~/.npmrc`). Not watched.
+   * repository consults (e.g. a user `~/.npmrc`). Not watched, and nothing read
+   * through it is copied into the cache: what it reads may be credentials.
    */
   public readonly absFileSource: FileSource;
+  /**
+   * A FileSource for the files of fabr's own installation by absolute path, each
+   * read as a copy in the blob pool, so an installed package can be staged like
+   * anything else the cache holds (`fabr_home`). Not watched.
+   */
+  public readonly installedFileSource: FileSource;
   /**
    * A FileSource for the host's files by absolute path, read where they lie and
    * identified by content — the programs `@host` names. Watched where the run
@@ -224,12 +232,14 @@ export class ExecutionContext {
     /* Shared with the watch controller (which advances it); defaulted so a
      * non-watch construction — including tests — gets its own. */
     cycle: BuildCycle = new BuildCycle(),
-    hostFileSource: FileSource = hostFiles(buildCache)
+    hostFileSource: FileSource = hostFiles(buildCache),
+    installedFileSource: FileSource = new FSFileSource("/", undefined, buildCache)
   ) {
     this.buildCache = buildCache;
     this.log = log;
     this.sourceFileSource = sourceFileSource;
     this.absFileSource = absFileSource;
+    this.installedFileSource = installedFileSource;
     this.cycle = cycle;
     this.hostFileSource = hostFileSource;
     /* Subscribed first, so the built-target record is current by the time any
