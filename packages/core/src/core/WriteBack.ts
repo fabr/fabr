@@ -43,7 +43,6 @@ import { writeFile } from "./FSWrapper";
 import { stageWrite } from "./Staging";
 import { IProvenanceStep } from "./Provenance";
 import type { SourceRef } from "./Repository";
-import { FabrError } from "./Errors";
 
 /**
  * One offered write, as the rule that produced it can honestly state it: the
@@ -155,11 +154,11 @@ let tempCounter = 0;
  * write touches through `observer` (see {@link IWriteBackObserver}), ahead of
  * any event explaining it.
  *
- * The driver drives this — nothing in the build graph may.
+ * The driver drives this — nothing in the build graph may. The caller has
+ * found the destination's name in the tree ({@link treeNameOf}) and names it under the tree's root.
  */
 export function writeBackFile(write: IResolvedWriteBack, realRoot: string, observer: IWriteBackObserver): Computable<string> {
   const destination = path.resolve(write.destination);
-  assertContained(destination, realRoot);
   return write.file.getBuffer().then(buffer => {
     observer.content(destination, buffer);
     /* Temp sibling + rename (stageWrite): atomic for a concurrent reader, and it
@@ -189,19 +188,14 @@ function missingAncestors(dir: string, realRoot: string): string[] {
 
 
 /**
- * Assert a write-back destination stays inside the project. The candidate's path
- * comes from a source file's own recorded location, so this can only fire on a
- * genuinely out-of-tree input (a reference reaching outside the project root) —
- * but this is the boundary where a bad path becomes damage to the user's disk,
- * so it is checked regardless of producer. Judged against the REAL root and
+ * @return the path within the tree whose real path is `realRoot` that
+ * `destination` names, or undefined where it lies outside that tree. Judged
  * through the destination's real parent directory: a purely lexical comparison
  * would be defeated by a symlinked component anywhere along the way.
  */
-function assertContained(destination: string, realRoot: string): void {
-  const real = path.join(realParent(path.dirname(destination)), path.basename(destination));
-  if (!real.startsWith(realRoot + path.sep)) {
-    throw new FabrError(`Refusing to write '${destination}': it is outside the project directory '${realRoot}'`);
-  }
+export function treeNameOf(destination: string, realRoot: string): string | undefined {
+  const real = path.join(realParent(path.dirname(path.resolve(destination))), path.basename(destination));
+  return real.startsWith(realRoot + path.sep) ? path.relative(realRoot, real) : undefined;
 }
 
 /** Resolve `dir` through symlinks, tolerating that its deeper components may

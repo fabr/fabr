@@ -184,6 +184,47 @@ describe("SourceFileSource", () => {
     });
   });
 
+  describe("writeFile", () => {
+    it("writes a destination outside the tree plainly, directory and all", async () => {
+      const project = path.join(sourceRoot, "project");
+      fs.mkdirSync(project);
+      const outside = path.join(sourceRoot, "reports/lcov.info");
+      await new SourceFileSource(project, cache).writeFile(outside, MemoryFile.from("report"));
+      expect(fs.readFileSync(outside, "utf8")).to.equal("report");
+    });
+
+    it("writes plainly through a link in the tree that leads outside it, to a directory not made yet", async () => {
+      /* Lexically inside the tree, really outside: routed by where it really is,
+       * so it is written, not refused as a write-back would be. */
+      const project = path.join(sourceRoot, "project");
+      const elsewhere = path.join(sourceRoot, "elsewhere");
+      fs.mkdirSync(project);
+      fs.mkdirSync(elsewhere);
+      fs.symlinkSync(elsewhere, path.join(project, "out"));
+      await new SourceFileSource(project, cache).writeFile(path.join(project, "out/cov/lcov.info"), MemoryFile.from("report"));
+      expect(fs.readFileSync(path.join(elsewhere, "cov/lcov.info"), "utf8")).to.equal("report");
+    });
+
+    it("writes a destination inside the tree, reached through a link to it, as its own write", async () => {
+      /* Lexically outside the tree, really inside: under watch the write is
+       * recognized as the source's own, so it arms no rebuild. */
+      const controller = new WatchController(10);
+      let arms = 0;
+      controller.armFlush = (): void => {
+        arms += 1;
+      };
+      const project = path.join(sourceRoot, "project");
+      fs.mkdirSync(project);
+      const alias = path.join(sourceRoot, "alias");
+      fs.symlinkSync(project, alias);
+      const src = new SourceFileSource(project, cache, controller);
+      await src.writeFile(path.join(alias, "cov/lcov.info"), MemoryFile.from("report"));
+      expect(fs.readFileSync(path.join(project, "cov/lcov.info"), "utf8")).to.equal("report");
+      expect(src["isExpectedChange"]("cov/lcov.info")).to.equal(true);
+      expect(arms).to.equal(0);
+    });
+  });
+
   describe("its own writes, under watch", () => {
     /** A source whose `armFlush` is observable — the one thing a refuted
      * expectation does. */

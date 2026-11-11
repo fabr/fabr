@@ -27,7 +27,7 @@ import { FileSet, FileSource, IFile } from "./FileSet";
 import { IndexedFileSource } from "./IndexedFileSource";
 import { Name } from "./Name";
 import { WatchController } from "./WatchController";
-import { IResolvedWriteBack, IWriteBackObserver, writeBackFile } from "./WriteBack";
+import { IResolvedWriteBack, IWriteBackObserver, treeNameOf, writeBackFile } from "./WriteBack";
 import { mapComputable } from "../support/Functional";
 import { FabrError } from "./Errors";
 
@@ -124,7 +124,33 @@ export class SourceFileSource extends IndexedFileSource {
     /* Resolved once: `root` may be a symlinked form (macOS /var -> /private/var)
      * and containment is judged against the real path. */
     const realRoot = fs.realpathSync(path.resolve(this.root));
-    return mapComputable(writes, write => this.writeOne(write, realRoot));
+    return mapComputable(writes, write => {
+      const name = treeNameOf(write.destination, realRoot);
+      if (name === undefined) {
+        /* A candidate's path comes from a source file's own recorded location, so
+         * this fires only on a genuinely out-of-tree input; it is checked here
+         * regardless, as the boundary where a bad path becomes damage to the disk. */
+        return Computable.reject(new FabrError(`Refusing to write '${write.destination}': it is outside the project directory '${realRoot}'`));
+      }
+      return this.writeOne({ file: write.file, destination: path.resolve(this.root, name) }, realRoot);
+    });
+  }
+
+  /**
+   * Write `file` to `destination`, a path the user chose (a report): through
+   * {@link applyWriteBack}'s echo recognition where it lies inside the tree, as a
+   * plain write anywhere else.
+   */
+  public writeFile(destination: string, file: IFile): Computable<void> {
+    const realRoot = fs.realpathSync(path.resolve(this.root));
+    const name = treeNameOf(destination, realRoot);
+    if (name !== undefined) {
+      return this.writeOne({ file, destination: path.resolve(this.root, name) }, realRoot).then(() => undefined);
+    }
+    return file.getBuffer().then(buffer => {
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      fs.writeFileSync(destination, buffer);
+    });
   }
 
   private writeOne(write: IResolvedWriteBack, realRoot: string): Computable<string> {
@@ -205,7 +231,7 @@ export class SourceFileSource extends IndexedFileSource {
  * of a root: a FileSet is a FileSource too and is rooted nowhere on disk, and
  * a containment bound should never come from downcasting a general interface.
  */
-export type WritableSourceTree = FileSource & Pick<SourceFileSource, "root" | "locate" | "applyWriteBack">;
+export type WritableSourceTree = FileSource & Pick<SourceFileSource, "root" | "locate" | "applyWriteBack" | "writeFile">;
 
 /** Name a destination as this source does (tree-relative, posix), or undefined
  * if it lies outside the tree — which {@link SourceFileSource.applyWriteBack}

@@ -432,7 +432,7 @@ function writeTestReport(
   const present = reports.filter((report): report is ITestReport => report !== undefined);
   const report = present.length === 0 ? emptyTestReport() : present.length === 1 ? present[0] : mergeTestReports(present);
   const text = format === "junit" ? toJUnitXml(report) : `${JSON.stringify(report, null, 2)}\n`;
-  return writeReportFile(execution, site, path.resolve(file), MemoryFile.from(text)).then(() =>
+  return site.sourceFileSource.writeFile(path.resolve(file), MemoryFile.from(text)).then(() =>
     execution.log.log(DIAG_TEST_REPORT_WRITTEN, { file })
   );
 }
@@ -447,25 +447,6 @@ function emptyTestReport(): ITestReport {
       tests: [],
     },
   };
-}
-
-/**
- * Write a report the run produced to `destination`. Where it lies in the
- * project's tree it is written through the source tree, as an expectation
- * update is, so a watching run recognises the write as its own.
- */
-function writeReportFile(execution: ExecutionContext, site: IInvocationSite, destination: string, file: IFile): Computable<void> {
-  const sources = site.sourceFileSource;
-  const root = fs.realpathSync(sources.root);
-  const dir = path.dirname(destination);
-  const inTree = !path.relative(root, fs.existsSync(dir) ? fs.realpathSync(dir) : dir).startsWith("..");
-  if (inTree) {
-    return sources.applyWriteBack([{ file, destination }]).then(() => undefined);
-  }
-  fs.mkdirSync(dir, { recursive: true });
-  return file.getBuffer().then(buffer => {
-    fs.writeFileSync(destination, buffer);
-  });
 }
 
 /** Format a coverage total as the summary shows it: the percentage, then the counts. */
@@ -511,7 +492,7 @@ function reportCoverage(execution: ExecutionContext, site: IInvocationSite, dir:
         functions: coverageText(totals.functions),
         branches: coverageText(totals.branches),
       });
-      return writeReportFile(execution, site, destination, MemoryFile.from(lcovOf(placed))).then(() =>
+      return site.sourceFileSource.writeFile(destination, MemoryFile.from(lcovOf(placed))).then(() =>
         execution.log.log(DIAG_COVERAGE_WRITTEN, { file: path.join(dir, COVERAGE_REPORT_FILENAME) })
       );
     }

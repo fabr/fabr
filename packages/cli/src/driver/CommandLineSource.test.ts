@@ -32,6 +32,7 @@ const SOURCE_TREE: WritableSourceTree = {
   root: "/project",
   locate: () => undefined,
   applyWriteBack: () => Computable.resolve([]),
+  writeFile: () => Computable.resolve(undefined),
 };
 
 /** An invocation run in `invocationDir` of a project whose source tree is empty. */
