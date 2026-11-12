@@ -19,6 +19,7 @@
 
 import { Computable } from "../core/Computable";
 import { FabrError, MetadataFetchError, toError, VersionNotFoundError } from "../core/Errors";
+import { compareText } from "../support/Functional";
 import { constraintOf, dependencyNameOf, excludedBy, requiredAs, versionConstraintText } from "./Requirement";
 import { edgeBinding, MVSResolution, nodeId as idOf } from "./MVSResolution";
 import {
@@ -203,16 +204,6 @@ function statedConstraint(req: Requirement): string {
     throw new FabrError(`internal: '${req.name}' states no version, so has no floor to raise`);
   }
   return req.versionConstraint;
-}
-
-/** Compare strings in code-unit order, for the canonical orderings a
- * persisted resolution needs (its lists must not carry the walk's arrival
- * order). */
-function compareText(a: string, b: string): number {
-  if (a < b) {
-    return -1;
-  }
-  return a > b ? 1 : 0;
 }
 
 /** One requirement's demand for a node: the requirement itself and who

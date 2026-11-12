@@ -26,6 +26,7 @@ import {
   resolveExportsAll,
   resolveImports,
   resolveImportsAll,
+  toExportsValue,
 } from "./PackageExports";
 
 /** The conditions a typechecking compile satisfies, which is the set every
@@ -366,5 +367,17 @@ describe("exportedSubpath", () => {
     const exports: ExportsValue = { ".": { import: "./esm.js", types: "./index.d.ts" } };
     expect(exportedSubpath(exports, "./index.d.ts", new Set(["import", "types"]))).to.equal(".");
     expect(exportedSubpath(exports, "./esm.js", new Set(["import", "types"]))).to.equal(".");
+  });
+});
+
+describe("toExportsValue", () => {
+  it("keeps a map's shape, reading a target of another JSON type as null", () => {
+    expect(toExportsValue({ ".": { import: "./a.js", require: 3 }, "./b": [true, "./b.js"], "./c": null })).to.deep.equal({
+      ".": { import: "./a.js", require: null },
+      "./b": [null, "./b.js"],
+      "./c": null,
+    });
+    expect(toExportsValue("./main.js")).to.equal("./main.js");
+    expect(toExportsValue(false)).to.equal(null);
   });
 });

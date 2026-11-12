@@ -25,7 +25,6 @@ import {
   Computable,
   FabrError,
   FileSet,
-  HttpStatusError,
   IProvenanceStep,
   isJsonObject,
   ISecretRecord,
@@ -38,9 +37,8 @@ import {
   RepositoryPublishRef,
   RepositoryRef,
   SecretFile,
-  sendRequest,
 } from "@fabr-build/core";
-import { describeServiceError, isThrottling, jsonRequest, serviceErrorOf } from "./JsonProtocol";
+import { describeServiceError, jsonRequest, postServiceRequest, serviceErrorOf } from "./JsonProtocol";
 import { IServiceRequest, requestUrl } from "./Signing";
 import { IAccountSettings } from "./Types";
 
@@ -61,11 +59,10 @@ interface ISecretOrigin extends IProvenanceStep {
   readonly secret: string;
 }
 
-registerProvenanceRenderer(SECRETS_MANAGER_PROVENANCE, step => {
-  const origin = step as ISecretOrigin;
+registerProvenanceRenderer<ISecretOrigin>(SECRETS_MANAGER_PROVENANCE, origin => {
   return [{ message: `read from Secrets Manager secret ${origin.secret} with ${origin.account}` }];
 });
-registerProvenanceDescriber(SECRETS_MANAGER_PROVENANCE, step => `secretsmanager:${(step as ISecretOrigin).secret}`);
+registerProvenanceDescriber<ISecretOrigin>(SECRETS_MANAGER_PROVENANCE, step => `secretsmanager:${step.secret}`);
 
 /** What `GetSecretValue` answers with, as far as it is read: the value is its text, or its bytes where it is binary. */
 export interface ISecretValue {
@@ -133,24 +130,12 @@ export class SecretsManagerSecrets implements Repository, RepositoryLookup {
 
   /** Fetch the current value of `secret` with `GetSecretValue`. */
   private fetch(request: IServiceRequest & { readonly body: string }, url: string, secret: string): Computable<ISecretRecord> {
-    return this.account.signer
-      .sign(request, SECRETS_MANAGER_SERVICE, this.account.region)
-      .then(headers => sendRequest(url, { method: "POST", headers, body: request.body }))
-      .then(response => {
-        if (response.statusCode >= 500) {
-          throw new HttpStatusError(response.statusCode, url);
-        }
-        if (response.statusCode !== 200) {
-          const text = response.body.toString("utf8");
-          /* Throttling is answered as a 400; it is HTTP's "too many requests", which is retried. */
-          if (isThrottling(serviceErrorOf(text))) {
-            throw new HttpStatusError(429, url);
-          }
-          throw refusal(text, secret, this.account.name);
-        }
-        const found = parseJson(response.body, `the answer from ${url}`, toSecretValue);
-        return { identity: `${found.arn} ${found.versionId}`, secret: true, value: found.value };
-      });
+    return postServiceRequest(this.account, SECRETS_MANAGER_SERVICE, request, url, text =>
+      refusal(text, secret, this.account.name)
+    ).then(body => {
+      const found = parseJson(body, `the answer from ${url}`, toSecretValue);
+      return { identity: `${found.arn} ${found.versionId}`, secret: true, value: found.value };
+    });
   }
 }
 

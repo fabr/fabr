@@ -50,6 +50,7 @@ import {
   serializeRunReport,
   STATE_DIR_FLAG,
 } from "../pnp/ReadSet";
+import { isJsonObject } from "../support/Json";
 import { stagedReferences, withReferencedSources } from "../support/SourceMap";
 import {
   DECLARATION_EXTENSION,
@@ -835,7 +836,7 @@ export function installResolution(
     } catch {
       return [];
     }
-    if (!isRecord(manifest) || (manifest.exports !== undefined && manifest.exports !== null)) {
+    if (!isJsonObject(manifest) || (manifest.exports !== undefined && manifest.exports !== null)) {
       return [];
     }
     const paths = selectedTypesVersion(ts, manifest.typesVersions);
@@ -1180,20 +1181,16 @@ function versionedTypesKeyApplies(ts: ITypeScript, condition: string): boolean {
   return condition.startsWith("types@") && compilerSatisfies(ts, condition.slice("types@".length));
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /** @return the `typesVersions` path map the running compiler selects — the
  * first entry whose version range it satisfies — or undefined when none applies
  * or the field is not a map. */
 function selectedTypesVersion(ts: ITypeScript, typesVersions: unknown): Map<string, string[]> | undefined {
-  if (!isRecord(typesVersions)) {
+  if (!isJsonObject(typesVersions)) {
     return undefined;
   }
   for (const [range, paths] of Object.entries(typesVersions)) {
     if (compilerSatisfies(ts, range)) {
-      return isRecord(paths)
+      return isJsonObject(paths)
         ? new Map(
             Object.entries(paths).map(([pattern, substitutions]): [string, string[]] => [
               pattern,

@@ -51,10 +51,10 @@ interface IHostProgramOrigin extends IProvenanceStep {
   location: string;
 }
 
-registerProvenanceRenderer(HOST_PROGRAM_PROVENANCE, step => [
-  { message: `found on this host, at ${(step as IHostProgramOrigin).location}` },
+registerProvenanceRenderer<IHostProgramOrigin>(HOST_PROGRAM_PROVENANCE, step => [
+  { message: `found on this host, at ${step.location}` },
 ]);
-registerProvenanceDescriber(HOST_PROGRAM_PROVENANCE, step => (step as IHostProgramOrigin).location);
+registerProvenanceDescriber<IHostProgramOrigin>(HOST_PROGRAM_PROVENANCE, step => step.location);
 
 /** The repository a `host_searchpath` declaration is. */
 export class HostSearchPathRepository implements Repository, RepositoryLookup {

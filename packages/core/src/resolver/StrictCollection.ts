@@ -265,6 +265,19 @@ interface DomainConflicts {
   report(finished: ReadonlyMap<RepositoryRef, unknown>): Computable<Error | undefined>;
 }
 
+/** @return the versions written as sanctioned for each package, across `resolutions`. */
+function writtenAcross<V, C>(resolutions: ReadonlyArray<CheckedResolution<V, C>>): Map<string, Set<string>> {
+  const written = new Map<string, Set<string>>();
+  for (const resolution of resolutions) {
+    for (const [pkg, versions] of resolution.written) {
+      const held = written.get(pkg) ?? new Set<string>();
+      written.set(pkg, held);
+      versions.forEach(version => held.add(version));
+    }
+  }
+  return written;
+}
+
 /** Find what conflicts among the resolutions of one domain, given what ships
  * (`packages`). */
 function checkDomain<V, C>(group: CheckedResolution<V, C>[], packages: ReadonlyArray<Package>): DomainConflicts {
@@ -290,23 +303,13 @@ function checkDomain<V, C>(group: CheckedResolution<V, C>[], packages: ReadonlyA
       );
     }
   }
-  const written = new Map<string, Set<string>>();
-  for (const resolution of group) {
-    for (const [pkg, versions] of resolution.written) {
-      written.set(pkg, new Set([...(written.get(pkg) ?? []), ...versions]));
-    }
-  }
+  const written = writtenAcross(group);
   /* What sanctions a package shipped at several versions: the collection's
    * own written versions, together with one catalog's — a catalog's entries
    * settle its own selections, and vouch for no other catalog's. */
   const own = group.filter(resolution => !resolution.catalog);
   const catalogs = group.filter(resolution => resolution.catalog);
-  const ownWritten = new Map<string, Set<string>>();
-  for (const resolution of own) {
-    for (const [pkg, versions] of resolution.written) {
-      ownWritten.set(pkg, new Set([...(ownWritten.get(pkg) ?? []), ...versions]));
-    }
-  }
+  const ownWritten = writtenAcross(own);
   const ownEveryVersion = new Set(own.flatMap(resolution => [...resolution.everyVersion]));
   const coveredBy = (pkg: string, together?: CheckedResolution<V, C>): boolean =>
     ownEveryVersion.has(pkg) ||

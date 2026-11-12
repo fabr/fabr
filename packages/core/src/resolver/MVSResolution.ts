@@ -48,7 +48,12 @@ import {
  * definition, because those tables are joined by it.
  */
 export function nodeId<V, C>(domain: VersionDomain<V, C>, pkg: PackageName, version: V): NodeId {
-  return `${pkg}@${domain.versionToString(version)}`;
+  return nodeIdOf(pkg, domain.versionToString(version));
+}
+
+/** Make the {@link nodeId} of package `pkg` at the version spelled `versionText`. */
+export function nodeIdOf(pkg: PackageName, versionText: string): NodeId {
+  return `${pkg}@${versionText}`;
 }
 
 /**

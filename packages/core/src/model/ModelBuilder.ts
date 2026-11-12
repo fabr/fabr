@@ -165,14 +165,7 @@ export class DeclaredRule implements SelectableRule {
     }
     const entry = decl.implementation;
     this.loaded ??= loadedImplementation(this.load, entry, "rule").then(implementation => {
-      if (
-        typeof implementation !== "object" ||
-        implementation === null ||
-        typeof (implementation as RuleImplementation).evaluate !== "function"
-      ) {
-        throw new FabrError(`'${entry.value.toString()}' is not a rule implementation (no evaluate)`);
-      }
-      const { requirements, value, evaluate, describe } = implementation as RuleImplementation;
+      const { requirements, value, evaluate, describe } = toRuleImplementation(implementation, entry);
       return {
         type: this.type,
         properties: this.properties,
@@ -185,6 +178,30 @@ export class DeclaredRule implements SelectableRule {
     });
     return this.loaded;
   }
+}
+
+/** Convert a loaded module's default export to a rule implementation, refusing
+ * one whose members are not what a rule's are. */
+function toRuleImplementation(implementation: unknown, entry: INameValue): RuleImplementation {
+  const refuse = (why: string): never => {
+    throw new FabrError(`'${entry.value.toString()}' is not a rule implementation (${why})`);
+  };
+  if (typeof implementation !== "object" || implementation === null) {
+    return refuse("not an object");
+  }
+  const members: Partial<Record<keyof RuleImplementation, unknown>> = implementation;
+  if (typeof members.evaluate !== "function") {
+    refuse("no evaluate");
+  }
+  for (const member of ["requirements", "describe"] as const) {
+    if (members[member] !== undefined && typeof members[member] !== "function") {
+      refuse(`its ${member} is not a function`);
+    }
+  }
+  if (members.value !== undefined && members.value !== true) {
+    refuse("its value is not true");
+  }
+  return implementation as RuleImplementation;
 }
 
 /** @return a guard, as a rule's record of patterns. */

@@ -24,7 +24,7 @@
 
 import * as fs from "fs";
 import * as net from "net";
-import { type IMessage, type JsonRpcClient, sendMessage, takeFrame, toMessage } from "./JsonRpcClient";
+import { type JsonRpcClient, readMessages, sendMessage } from "./JsonRpcClient";
 
 /**
  * Serve `client`'s server at the socket `socket`, `initialized` the result of
@@ -79,20 +79,5 @@ export function relayBuildServer(client: JsonRpcClient, initialized: unknown, so
       server.off("error", failed);
       resolve(server);
     });
-  });
-}
-
-/** Call `receive` with each message read from `input`, a frame that holds none skipped. */
-function readMessages(input: net.Socket, receive: (message: IMessage) => void): void {
-  let buffer = Buffer.alloc(0);
-  input.on("data", (data: Buffer) => {
-    buffer = Buffer.concat([buffer, data]);
-    for (let frame = takeFrame(buffer); frame !== undefined; frame = takeFrame(buffer)) {
-      buffer = frame.rest;
-      const message = toMessage(frame.json);
-      if (message !== undefined) {
-        receive(message);
-      }
-    }
   });
 }

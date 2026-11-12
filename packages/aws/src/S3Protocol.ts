@@ -210,6 +210,11 @@ export function readDocument(
   let found: string | undefined;
   let content: string[] = [];
   parser.onerror = err => fail(err.message.split("\n")[0]);
+  parser.ondoctype = doctype => {
+    if (doctype.includes("[")) {
+      fail("a DOCTYPE with an internal subset is not supported");
+    }
+  };
   parser.onopentag = tag => {
     const name = tag.name.substring(tag.name.indexOf(":") + 1);
     found ??= name;

@@ -26,7 +26,6 @@ import {
   Computable,
   FabrError,
   FileSet,
-  HttpStatusError,
   ISecretRecord,
   IProvenanceStep,
   isJsonObject,
@@ -40,9 +39,8 @@ import {
   RepositoryPublishRef,
   RepositoryRef,
   SecretFile,
-  sendRequest,
 } from "@fabr-build/core";
-import { describeServiceError, isThrottling, jsonRequest, serviceErrorOf } from "./JsonProtocol";
+import { describeServiceError, jsonRequest, postServiceRequest, serviceErrorOf } from "./JsonProtocol";
 import { IServiceRequest, requestUrl } from "./Signing";
 import { IAccountSettings } from "./Types";
 
@@ -64,11 +62,10 @@ interface ISsmOrigin extends IProvenanceStep {
   readonly version: number;
 }
 
-registerProvenanceRenderer(SSM_PROVENANCE, step => {
-  const origin = step as ISsmOrigin;
+registerProvenanceRenderer<ISsmOrigin>(SSM_PROVENANCE, origin => {
   return [{ message: `read from SSM parameter ${origin.parameter} (version ${origin.version}) with ${origin.account}` }];
 });
-registerProvenanceDescriber(SSM_PROVENANCE, step => `ssm:${(step as ISsmOrigin).parameter}`);
+registerProvenanceDescriber<ISsmOrigin>(SSM_PROVENANCE, step => `ssm:${step.parameter}`);
 
 /** What `GetParameter` answers with, as far as it is read. */
 export interface IParameter {
@@ -142,28 +139,16 @@ export class SsmParameters implements Repository, RepositoryLookup {
 
   /** Fetch `parameter` with `GetParameter`, decrypted where it is a `SecureString`. */
   private fetch(request: IServiceRequest & { readonly body: string }, url: string, parameter: string): Computable<ISecretRecord> {
-    return this.account.signer
-      .sign(request, SSM_SERVICE, this.account.region)
-      .then(headers => sendRequest(url, { method: "POST", headers, body: request.body }))
-      .then(response => {
-        if (response.statusCode >= 500) {
-          throw new HttpStatusError(response.statusCode, url);
-        }
-        if (response.statusCode !== 200) {
-          const text = response.body.toString("utf8");
-          /* Throttling is answered as a 400; it is HTTP's "too many requests", which is retried. */
-          if (isThrottling(serviceErrorOf(text))) {
-            throw new HttpStatusError(429, url);
-          }
-          throw refusal(text, parameter, this.account.name);
-        }
-        const found = parseJson(response.body, `the answer from ${url}`, toParameter);
+    return postServiceRequest(this.account, SSM_SERVICE, request, url, text => refusal(text, parameter, this.account.name)).then(
+      body => {
+        const found = parseJson(body, `the answer from ${url}`, toParameter);
         return {
           identity: `${found.arn}:${found.version}`,
           secret: found.type === "SecureString",
           value: Buffer.from(found.value, "utf8"),
         };
-      });
+      }
+    );
   }
 }
 

@@ -36,11 +36,10 @@ export interface ITargetOrigin extends IProvenanceStep {
  * nothing beneath names it otherwise: a file it passed through unchanged keeps
  * its own. The name is the target's in any configuration — a configuration
  * that changes what is built changes its inputs. */
-registerProvenanceNaming(TARGET_PROVENANCE, {
-  sourcePath: (step, path, below) => below(path) ?? `${declName((step as ITargetOrigin).decl)}:${path}`,
-  digest: (step, names, below) =>
-    namingDigest(TARGET_PROVENANCE, JSON.stringify(declName((step as ITargetOrigin).decl)), below(names)),
-  prefix: (step, below) => wholeContentPrefix(step, declName((step as ITargetOrigin).decl), below),
+registerProvenanceNaming<ITargetOrigin>(TARGET_PROVENANCE, {
+  sourcePath: (step, path, below) => below(path) ?? `${declName(step.decl)}:${path}`,
+  digest: (step, names, below) => namingDigest(TARGET_PROVENANCE, JSON.stringify(declName(step.decl)), below(names)),
+  prefix: (step, below) => wholeContentPrefix(step, declName(step.decl), below),
 });
 
 /** @return true if the content `origin` explains was built in the project,

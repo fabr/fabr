@@ -508,37 +508,32 @@ export function parseMetadataResponse(data: string | Buffer, key: string): INPMP
   return parseJson(data, `response from NPM repository for '${key}'`, toVersionMetadata);
 }
 
-/** The fields of a version's metadata fabr reads — what a packument entry is
- *  kept as (of `dist`, only {@link READ_DIST_FIELDS}). */
-const READ_FIELDS = [
-  "name",
-  "version",
-  "dist",
-  "dependencies",
-  "optionalDependencies",
-  "peerDependencies",
-  "peerDependenciesMeta",
-  "os",
-  "cpu",
-  "libc",
-] as const;
-
-/** The fields of a version's `dist` fabr reads: where its tarball is, and the
- * digests it must match. */
-const READ_DIST_FIELDS = ["tarball", "integrity", "shasum"] as const;
-
-/** @return `meta` with only the fields fabr reads. */
+/** @return `meta` with only the fields fabr reads of a version's metadata:
+ * what a packument entry is kept as. Of `dist`, only where the tarball is and
+ * the digests it must match are kept. */
 function readFieldsOf(meta: INPMPackageMetadata): INPMPackageMetadata {
-  const fields = meta as unknown as Record<string, unknown>;
-  const dist = meta.dist as unknown as Record<string, unknown>;
-  const kept = Object.fromEntries(READ_FIELDS.filter(field => fields[field] !== undefined).map(field => [field, fields[field]]));
-  kept.dist = Object.fromEntries(READ_DIST_FIELDS.filter(field => dist[field] !== undefined).map(field => [field, dist[field]]));
-  return kept as unknown as INPMPackageMetadata;
+  const { name, version, dist, dependencies, optionalDependencies, peerDependencies, peerDependenciesMeta, os, cpu, libc } = meta;
+  const { tarball, integrity, shasum } = dist;
+  const read: Omit<INPMPackageMetadata, "name" | "version" | "dist"> = {
+    dependencies,
+    optionalDependencies,
+    peerDependencies,
+    peerDependenciesMeta,
+    os,
+    cpu,
+    libc,
+  };
+  return {
+    name,
+    version,
+    dist: { tarball, ...(integrity === undefined ? {} : { integrity }), ...(shasum === undefined ? {} : { shasum }) },
+    ...Object.fromEntries(Object.entries(read).filter(([, value]) => value !== undefined)),
+  };
 }
 
 /**
  * Convert a packument to its published versions, each as the metadata fabr
- * reads of it (only {@link READ_FIELDS}): what an abbreviated packument
+ * reads of it (see {@link readFieldsOf}): what an abbreviated packument
  * answers, by version. An entry that is not usable version metadata is left
  * out, so the version is looked up on its own instead. A document with no
  * `versions` map is not a packument (an error body, or the wrong URL).
@@ -591,15 +586,14 @@ function toVersionMetadata(json: unknown): INPMPackageMetadata {
  * verified, and this is the one place a document's shape is judged (before it
  * can be cached). */
 function isVersionMetadata(response: Record<string, unknown>): response is INPMPackageMetadata & Record<string, unknown> {
-  const meta = response as unknown as INPMPackageMetadata;
+  const { name, version, dist } = response;
   return (
-    typeof meta.name === "string" &&
-    typeof meta.version === "string" &&
-    typeof meta.dist === "object" &&
-    meta.dist !== null &&
-    typeof meta.dist.tarball === "string" &&
-    isOptionalString(meta.dist.integrity) &&
-    isOptionalString(meta.dist.shasum)
+    typeof name === "string" &&
+    typeof version === "string" &&
+    isJsonObject(dist) &&
+    typeof dist.tarball === "string" &&
+    isOptionalString(dist.integrity) &&
+    isOptionalString(dist.shasum)
   );
 }
 

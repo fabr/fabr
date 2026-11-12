@@ -49,10 +49,8 @@ export interface IFabrHomeOrigin extends IProvenanceStep {
   directory: string;
 }
 
-registerProvenanceRenderer(FABR_HOME_PROVENANCE, step => [
-  { message: `installed with fabr, at ${(step as IFabrHomeOrigin).directory}` },
-]);
-registerProvenanceDescriber(FABR_HOME_PROVENANCE, step => (step as IFabrHomeOrigin).directory);
+registerProvenanceRenderer<IFabrHomeOrigin>(FABR_HOME_PROVENANCE, step => [{ message: `installed with fabr, at ${step.directory}` }]);
+registerProvenanceDescriber<IFabrHomeOrigin>(FABR_HOME_PROVENANCE, step => step.directory);
 
 /** @return the directory the package `files` is installed at, where it was read from fabr's
  *  installation, otherwise undefined. Its files are copies in the blob pool; this is where

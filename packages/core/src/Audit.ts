@@ -145,20 +145,19 @@ function walkNamesReading(
         const subject = patched?.from ?? (builtInProject(pkg.origin) ? undefined : pkg);
         const version = subject?.version;
         const purl = subject === undefined || version === undefined ? undefined : purlOf(subject.origin, subject.packageName, version);
-        const format = purl === undefined ? undefined : formatOf(subject!.origin);
-        const found =
-          purl === undefined || version === undefined || format === undefined
-            ? undefined
-            : { path: here, others: 0, ...(written === undefined ? {} : { site: written }) };
-        reached.set(pkg, found);
-        if (found !== undefined) {
+        const format = subject === undefined || purl === undefined ? undefined : formatOf(subject.origin);
+        if (subject === undefined || version === undefined || purl === undefined || format === undefined) {
+          reached.set(pkg, undefined);
+        } else {
+          const found = { path: here, others: 0, ...(written === undefined ? {} : { site: written }) };
+          reached.set(pkg, found);
           /* A target made from the package is a package of its own. */
-          const key = patched === undefined ? purl! : `${purl!} ${pkg.packageName}`;
+          const key = patched === undefined ? purl : `${purl} ${pkg.packageName}`;
           const entry = audited.get(key) ?? {
-            purl: purl!,
-            packageName: subject!.packageName,
-            version: version!,
-            format: format!,
+            purl,
+            packageName: subject.packageName,
+            version,
+            format,
             paths: [],
             ...(patched === undefined ? {} : { patchedBy: { target: pkg.packageName, fixes: patched.fixes } }),
           };
@@ -424,7 +423,7 @@ function auditPackages(
           packages,
           findings: advisories
             .map((advisory, at): Finding => {
-              const reached = packages.filter(pkg => answered.get(pkg.purl)!.includes(ids[at]));
+              const reached = packages.filter(pkg => (answered.get(pkg.purl) ?? []).includes(ids[at]));
               const known = [advisory.id, ...advisory.aliases];
               const decided = reached
                 .filter(pkg => !fixes(pkg, advisory))

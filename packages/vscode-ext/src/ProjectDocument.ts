@@ -56,6 +56,91 @@ interface IUnitSummary {
   generated: string[];
 }
 
+/** The part of a unit's `.pnp.data.json` composing reads and rewrites; the rest is kept as it is. */
+interface IPnpTable {
+  packageRegistryData: Array<[string | null, Array<[string | null, { packageLocation: string }]>]>;
+}
+
+/** Convert a target's `typescript` data. */
+function toTypeScriptPayload(json: unknown): ITypeScriptPayload {
+  const payload = toObject(json, "the target's data");
+  const { units, manifest, plugin } = payload;
+  if (!isObject(units) || Object.values(units).some(dir => typeof dir !== "string")) {
+    throw new Error("the target's data names no units");
+  }
+  if (typeof plugin !== "string" || (manifest !== undefined && typeof manifest !== "string")) {
+    throw new Error("the target's data names no plugin");
+  }
+  return { units: units as Record<string, string>, plugin, ...(manifest === undefined ? {} : { manifest }) };
+}
+
+/** Convert a unit's `unit.json`. */
+function toUnitSummary(json: unknown): IUnitSummary {
+  const { root, rewrites, resources, package: name, generated } = toObject(json, "unit.json");
+  const optionalString = (value: unknown): value is string | undefined => value === undefined || typeof value === "string";
+  if (
+    !optionalString(root) ||
+    !optionalString(name) ||
+    !isStrings(generated) ||
+    (resources !== undefined && !isStrings(resources)) ||
+    (rewrites !== undefined &&
+      (!Array.isArray(rewrites) ||
+        rewrites.some(
+          rewrite => !isObject(rewrite) || typeof rewrite.pattern !== "string" || typeof rewrite.replacement !== "string"
+        )))
+  ) {
+    throw new Error("unit.json is not a unit's summary");
+  }
+  return {
+    ...(root === undefined ? {} : { root }),
+    ...(rewrites === undefined ? {} : { rewrites: rewrites as IUnitSummary["rewrites"] }),
+    ...(resources === undefined ? {} : { resources }),
+    ...(name === undefined ? {} : { package: name }),
+    generated,
+  };
+}
+
+/** Convert a unit's `.pnp.data.json`, checking the rows composing reads. */
+function toPnpTable(json: unknown): IPnpTable {
+  const table = toObject(json, ".pnp.data.json");
+  const nameOrNull = (value: unknown): boolean => value === null || typeof value === "string";
+  const rows = table.packageRegistryData;
+  if (
+    !Array.isArray(rows) ||
+    rows.some(
+      row =>
+        !Array.isArray(row) ||
+        !nameOrNull(row[0]) ||
+        !Array.isArray(row[1]) ||
+        row[1].some(
+          (entry: unknown) =>
+            !Array.isArray(entry) || !nameOrNull(entry[0]) || !isObject(entry[1]) || typeof entry[1].packageLocation !== "string"
+        )
+    )
+  ) {
+    throw new Error(".pnp.data.json holds no package registry");
+  }
+  return table as unknown as IPnpTable;
+}
+
+/** Convert a document that must be a JSON object, named `what` in an error. */
+function toObject(json: unknown, what: string): Record<string, unknown> {
+  if (!isObject(json)) {
+    throw new Error(`${what} is not a JSON object`);
+  }
+  return json;
+}
+
+/** @return true if `value` is a JSON object, otherwise false. */
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** @return true if `value` is a list of strings, otherwise false. */
+function isStrings(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(item => typeof item === "string");
+}
+
 /** The prefix of a pool tree's location, as a unit's table writes it. */
 const POOL_PREFIX = "./.fabr-tree/";
 
@@ -72,7 +157,7 @@ interface IUnit {
   pool: string;
   summary: IUnitSummary;
   config: Record<string, unknown>;
-  table: { packageRegistryData: Array<[string | null, Array<[string | null, { packageLocation: string }]>]> };
+  table: IPnpTable;
   manifest?: string;
   plugin: string;
 }
@@ -105,11 +190,17 @@ export function composeProject(input: {
     if (target.dataKind !== "typescript" || description === undefined) {
       continue;
     }
-    const payload = target.data as ITypeScriptPayload;
+    let payload: ITypeScriptPayload;
+    try {
+      payload = toTypeScriptPayload(target.data);
+    } catch (err) {
+      problems.push(`${target.id.uri}: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
     for (const [name, dir] of Object.entries(payload.units)) {
       const base = path.join(description, dir);
       try {
-        const summary = JSON.parse(input.readFile(path.join(base, "unit.json"))) as IUnitSummary;
+        const summary = toUnitSummary(JSON.parse(input.readFile(path.join(base, "unit.json"))));
         if (summary.root === undefined) {
           continue;
         }
@@ -122,8 +213,8 @@ export function composeProject(input: {
           description: base,
           pool: path.dirname(description),
           summary,
-          config: JSON.parse(input.readFile(path.join(base, "tsconfig.json"))),
-          table: JSON.parse(input.readFile(path.join(base, ".pnp.data.json"))),
+          config: toObject(JSON.parse(input.readFile(path.join(base, "tsconfig.json"))), "tsconfig.json"),
+          table: toPnpTable(JSON.parse(input.readFile(path.join(base, ".pnp.data.json")))),
           ...(payload.manifest === undefined ? {} : { manifest: path.join(description, payload.manifest) }),
           plugin: payload.plugin,
         });

@@ -26,7 +26,7 @@ import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { materializeTargets, TargetRef, Unbuilt } from "../core/TargetRef";
 import type { Reference } from "../core/Reference";
-import { isIncompleteRef } from "../core/NamespaceRef";
+import { isIncompleteRef, refuseNamespaces } from "../core/NamespaceRef";
 import {
   contentOf,
   Dependency,
@@ -133,6 +133,8 @@ export function packageIn(source: Resolved | SourceRef | Unbuilt): Package | und
 
 /** Replace the package of `source` with `pkg`, or with the files a target
  * built where it built no package. */
+function withPackage(source: Resolved | SourceRef | Unbuilt, pkg: FileSet): Materialized;
+function withPackage(source: Resolved | SourceRef | Unbuilt, pkg: Package | FileSet): Resolved;
 function withPackage(source: Resolved | SourceRef | Unbuilt, pkg: Package | FileSet): Resolved {
   if (source instanceof ProjectedPackage || source instanceof FileSetRef) {
     return pkg instanceof FileSet
@@ -172,6 +174,42 @@ function packagesAmong(sources: ReadonlyArray<Resolved>): Package[] {
   return sources.flatMap(source => packageIn(source) ?? []);
 }
 
+/** @return a resolved source that needs nothing fetched or built as content:
+ * a projection pending over a package in hand selects from its files. */
+function inHand(source: Resolved): Materialized {
+  if (source instanceof ProjectedPackage && source.base instanceof PackageFileSet) {
+    return withPackage(source, source.base);
+  }
+  if (
+    source instanceof TargetRef ||
+    source instanceof PendingFiles ||
+    source instanceof ResolvedNode ||
+    source instanceof ProjectedPackage
+  ) {
+    throw new FabrError("internal: a source that must be fetched or built was taken as content");
+  }
+  return source;
+}
+
+/** @return what `answers` holds for `key`, materialized beside it. */
+function answerFor<K, V>(answers: ReadonlyMap<K, V>, key: K): V {
+  const answer = answers.get(key);
+  if (answer === undefined) {
+    throw new FabrError("internal: a target or a file request was materialized with nothing for it");
+  }
+  return answer;
+}
+
+/** @return what a target built, as content: a build answers with no reference left to resolve. */
+function builtContent(sources: ReadonlyArray<SourceRef>): Materialized[] {
+  return refuseNamespaces(sources).map(source => {
+    if (source instanceof RepositoryRef || source instanceof TargetRef) {
+      throw new FabrError(`internal: a target's build answered with the reference '${source.toString()}'`);
+    }
+    return source;
+  });
+}
+
 /**
  * Materialize resolved lists: give each package among them, and each it
  * reaches, its files, replace each target still unbuilt by what it builds to,
@@ -193,7 +231,7 @@ export function materializeLists(
   const pending = lists.flat().filter((source): source is PendingFiles => source instanceof PendingFiles);
   if (targets.length === 0 && pending.length === 0 && !reachableNodes(packages).some(pkg => pkg instanceof ResolvedNode)) {
     return Computable.resolve({
-      lists: lists as Materialized[][],
+      lists: lists.map(list => list.map(inHand)),
       references: lists.map((list, index) => list.map((_, at) => referenceOf(index, at))),
     });
   }
@@ -221,28 +259,28 @@ export function materializeLists(
           }
         })
       );
-      const delivered = new Map<TargetRef, SourceRef[]>(targets.map((target, index) => [target, built[index]]));
+      const delivered = new Map<TargetRef, Materialized[]>(targets.map((target, index) => [target, builtContent(built[index])]));
       const files = new Map<PendingFiles, FileSet | FileSetRef>(pending.map((request, index) => [request, fetched[index]]));
       const materialized = lists.map(list =>
         list.map((source): Materialized[] => {
           if (source instanceof TargetRef) {
-            return delivered.get(source) as Materialized[];
+            return answerFor(delivered, source);
           }
           if (source instanceof PendingFiles) {
-            return [files.get(source)!];
+            return [answerFor(files, source)];
           }
           const pkg = packageIn(source);
-          const made = pkg === undefined ? undefined : held.get(pkg)!;
+          const made = pkg === undefined ? undefined : held.get(pkg);
           if (made === undefined) {
-            return [source as Materialized];
+            return [inHand(source)];
           }
           /* A target that built no package is its sources, each its own
            * entry; a projection over it selects from them together. */
           return made instanceof PackageFileSet
-            ? [withPackage(source, made) as Materialized]
+            ? [withPackage(source, made)]
             : source === pkg
-              ? (made as Materialized[])
-              : [withPackage(source, asOneSet(made)) as Materialized];
+              ? builtContent(made)
+              : [withPackage(source, asOneSet(made))];
         })
       );
       return {

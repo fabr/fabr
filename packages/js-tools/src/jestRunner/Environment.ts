@@ -31,10 +31,10 @@
  * other dependency.
  */
 
-import * as fs from "node:fs";
 import { Module } from "node:module";
 import * as path from "node:path";
-import { resolveVirtual } from "../pnp/VirtualPath";
+import { readManifest } from "../pnp/PnPResolver";
+import { isJsonObject } from "../support/Json";
 import { userModule, userModuleFile } from "./Tools";
 
 interface IJsdomWindow {
@@ -65,6 +65,14 @@ export interface IFileEnvironment {
 
 const ENVIRONMENT_PACKAGE_PREFIX = "jest-environment-";
 
+/** Convert the parsed options of an `@jest-environment-options` docblock. */
+function environmentOptions(json: unknown): Record<string, unknown> {
+  if (!isJsonObject(json)) {
+    throw new TypeError(`@jest-environment-options must be a JSON object, got ${JSON.stringify(json)}`);
+  }
+  return json;
+}
+
 /**
  * Choose the environment a test file runs in: its `@jest-environment` pragma if
  * it has one, else `fallback` (the invocation's `--env`), with its
@@ -80,7 +88,8 @@ export function environmentFor(pragmas: DocblockPragmas, fallback: string): IFil
     throw new TypeError(`You can only define a single test environment through docblocks, got "${written.join(", ")}"`);
   }
   const rawOptions = pragmas["jest-environment-options"];
-  const options = typeof rawOptions === "string" ? (JSON.parse(rawOptions) as Record<string, unknown>) : {};
+  /* JSON.parse's own SyntaxError, as jest reports one. */
+  const options = typeof rawOptions === "string" ? environmentOptions(JSON.parse(rawOptions)) : {};
   if (!written) {
     return { env: fallback, options };
   }
@@ -314,14 +323,9 @@ function compileEnvironmentWithNodeSchedulers(jsdomMain: string | undefined): vo
  * location where the directory is a PnP virtual one. */
 export function packageRootOf(file: string, name: string): string | undefined {
   for (let directory = path.dirname(file); ; directory = path.dirname(directory)) {
-    try {
-      if (
-        (JSON.parse(fs.readFileSync(path.join(resolveVirtual(directory), "package.json"), "utf8")) as { name?: unknown }).name === name
-      ) {
-        return directory;
-      }
-    } catch {
-      /* No manifest here, or not one that names anything: keep looking. */
+    /* No manifest here, or not one that names it: keep looking. */
+    if (readManifest(directory)?.name === name) {
+      return directory;
     }
     if (path.dirname(directory) === directory) {
       return undefined;

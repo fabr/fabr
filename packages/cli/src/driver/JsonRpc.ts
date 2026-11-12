@@ -77,6 +77,11 @@ export type Handler = (method: string, params: unknown) => unknown;
  */
 export class JsonRpcConnection {
   private buffer = Buffer.alloc(0);
+  /** Data read since `buffer` was last joined, and its length with `buffer`'s. */
+  private chunks: Buffer[] = [];
+  private readLength = 0;
+  /** The length `buffer` must reach to hold the frame it begins, where its headers say. */
+  private wanted = 0;
   private readonly handlers = new Map<Protocol, Handler>();
   /** Each protocol's notifications sent before its client's initialize was answered, sent once it is. */
   private readonly held = new Map<Protocol, unknown[]>([
@@ -97,7 +102,14 @@ export class JsonRpcConnection {
   /** Read messages from `input` until it ends, then call `onEnd`. */
   public listen(input: NodeJS.ReadableStream, onEnd: () => void): void {
     input.on("data", (data: Buffer) => {
-      this.buffer = Buffer.concat([this.buffer, data]);
+      this.chunks.push(data);
+      this.readLength += data.length;
+      if (this.readLength < this.wanted) {
+        return;
+      }
+      this.buffer = Buffer.concat([this.buffer, ...this.chunks]);
+      this.chunks = [];
+      this.wanted = 0;
       for (let next = this.next(); next !== undefined; next = this.next()) {
         this.heard.add(next.protocol);
         if ("message" in next) {
@@ -107,6 +119,7 @@ export class JsonRpcConnection {
           this.send(next.protocol, { jsonrpc: "2.0", id: null, error: { code: next.code, message: next.reason } });
         }
       }
+      this.readLength = this.buffer.length;
     });
     input.on("end", onEnd);
   }
@@ -147,6 +160,7 @@ export class JsonRpcConnection {
     const start = blank + 4;
     const end = start + Number(length[1]);
     if (this.buffer.length < end) {
+      this.wanted = end;
       return undefined;
     }
     const body = this.buffer.subarray(start, end);

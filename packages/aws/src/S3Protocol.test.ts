@@ -142,6 +142,11 @@ describe("reading a bucket listing", () => {
     );
   });
 
+  it("refuses a DOCTYPE with an internal subset", () => {
+    const text = '<?xml version="1.0"?><!DOCTYPE ListBucketResult [<!ENTITY a "x">]><ListBucketResult></ListBucketResult>';
+    expect(() => parseListing(text, "the listing")).to.throw("a DOCTYPE with an internal subset is not supported");
+  });
+
   it("refuses a truncated listing with no token to go on from", () => {
     expect(() => parseListing(listing("<IsTruncated>true</IsTruncated>"), "the listing")).to.throw("gives no continuation token");
   });

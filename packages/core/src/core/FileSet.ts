@@ -691,8 +691,7 @@ function holdersOf(merge: IMergeOrigin, path: string): Array<{ source: IMergeSou
   return holders;
 }
 
-registerProvenanceRenderer(FILESET_MERGE_PROVENANCE, (step, context): IDiagnosticNote[] => {
-  const merge = step as IMergeOrigin;
+registerProvenanceRenderer<IMergeOrigin>(FILESET_MERGE_PROVENANCE, (merge, context): IDiagnosticNote[] => {
   if (context.path !== undefined) {
     const found = contributorOf(merge, context.path);
     if (found?.fileset.origin !== undefined) {
@@ -704,11 +703,11 @@ registerProvenanceRenderer(FILESET_MERGE_PROVENANCE, (step, context): IDiagnosti
 
 /* A merge repositions content, so it must rebase before delegating — the same
  * "strip the mount prefix, find the holder, recurse" walk the renderer does. */
-registerProvenanceNaming(FILESET_MERGE_PROVENANCE, {
+registerProvenanceNaming<IMergeOrigin>(FILESET_MERGE_PROVENANCE, {
   /* The least of the holders' answers, for the same reason as the source path's. */
   derivedFrom: (step, path) => {
     let least: string | undefined;
-    for (const { source, rel } of holdersOf(step as IMergeOrigin, path)) {
+    for (const { source, rel } of holdersOf(step, path)) {
       const from = source.fileset.derivedFromOf(rel);
       if (from !== undefined && (least === undefined || from < least)) {
         least = from;
@@ -721,7 +720,7 @@ registerProvenanceNaming(FILESET_MERGE_PROVENANCE, {
    * order the union was given them in. */
   sourcePath: (step, path) => {
     let least: string | undefined;
-    for (const { source, rel } of holdersOf(step as IMergeOrigin, path)) {
+    for (const { source, rel } of holdersOf(step, path)) {
       const sourcePath = source.fileset.sourcePathOf(rel);
       if (sourcePath !== undefined && (least === undefined || sourcePath < least)) {
         least = sourcePath;
@@ -733,8 +732,7 @@ registerProvenanceNaming(FILESET_MERGE_PROVENANCE, {
    * same reason. Where another contributor's mount overlaps its own, which of
    * them answers for a name depends on the names each holds, so those are
    * recorded too. */
-  digest: (step, names) => {
-    const merge = step as IMergeOrigin;
+  digest: (merge, names) => {
     if (names === undefined || names.length === merge.size) {
       return mergeDigestOf(merge.sources.filter(source => source.fileset.size > 0));
     }

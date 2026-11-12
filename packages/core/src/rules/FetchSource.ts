@@ -166,13 +166,11 @@ interface IFetchOrigin extends IProvenanceStep {
   readonly url: string;
 }
 
-registerProvenanceRenderer(FETCH_PROVENANCE, step => {
-  const fetch = step as IFetchOrigin;
+registerProvenanceRenderer<IFetchOrigin>(FETCH_PROVENANCE, fetch => {
   return [{ message: `download '${fetch.member}' in ${fetch.source}, fetched from ${fetch.url}` }];
 });
 
-registerProvenanceDescriber(FETCH_PROVENANCE, step => {
-  const fetch = step as IFetchOrigin;
+registerProvenanceDescriber<IFetchOrigin>(FETCH_PROVENANCE, fetch => {
   return `${fetch.source}:${fetch.member}`;
 });
 

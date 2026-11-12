@@ -841,14 +841,12 @@ interface ISourceTreeOrigin extends IProvenanceStep {
   readonly paths: ReadonlyMap<string, string>;
 }
 
-registerProvenanceNaming(SOURCE_TREE_PROVENANCE, {
-  sourcePath: (step, name) => {
-    const { sourcePathPrefix, paths } = step as ISourceTreeOrigin;
+registerProvenanceNaming<ISourceTreeOrigin>(SOURCE_TREE_PROVENANCE, {
+  sourcePath: ({ sourcePathPrefix, paths }, name) => {
     const rel = paths.get(name);
     return rel === undefined || sourcePathPrefix === undefined ? undefined : `${sourcePathPrefix}${rel}`;
   },
-  digest: (step, names) => {
-    const { sourcePathPrefix, paths } = step as ISourceTreeOrigin;
+  digest: ({ sourcePathPrefix, paths }, names) => {
     return sourcePathPrefix === undefined
       ? ""
       : namingDigest(SOURCE_TREE_PROVENANCE, `${JSON.stringify(sourcePathPrefix)} ${renamingText(restrictedTo(paths, names))}`, "");

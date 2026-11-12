@@ -92,11 +92,10 @@ interface IS3Origin extends IProvenanceStep {
   readonly url: string;
 }
 
-registerProvenanceRenderer(S3_PROVENANCE, step => {
-  const origin = step as IS3Origin;
+registerProvenanceRenderer<IS3Origin>(S3_PROVENANCE, origin => {
   return [{ message: `fetched from ${origin.url} with ${origin.account}` }];
 });
-registerProvenanceDescriber(S3_PROVENANCE, step => (step as IS3Origin).url);
+registerProvenanceDescriber<IS3Origin>(S3_PROVENANCE, step => step.url);
 
 /** Bumped when what is stored under an object's or a listing's key changes shape. */
 const OBJECT_TAG = "aws:s3:object:1";

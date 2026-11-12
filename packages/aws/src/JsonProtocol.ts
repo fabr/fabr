@@ -23,8 +23,9 @@
  * the error document a refusal answers with.
  */
 
-import { parseJson, toJsonObject } from "@fabr-build/core";
+import { Computable, HttpStatusError, parseJson, sendRequest, toJsonObject } from "@fabr-build/core";
 import { IServiceRequest } from "./Signing";
+import { IServiceSettings } from "./Types";
 
 /**
  * Make a request for the operation `target` with `body`: to `endpoint` where
@@ -94,4 +95,35 @@ const THROTTLING_ERRORS = new Set([
 /** @return true if `error` says the request was throttled, to be tried again later, otherwise false. */
 export function isThrottling(error: IServiceError): boolean {
   return error.type !== undefined && THROTTLING_ERRORS.has(error.type);
+}
+
+/**
+ * Sign `request` for `service` and send it to `url`, answering with the body of
+ * a 200. A 5xx, or a throttling error type, rejects as a transient HTTP status,
+ * which is retried; any other answer rejects with `refuse` of its text.
+ */
+export function postServiceRequest(
+  settings: IServiceSettings,
+  service: string,
+  request: IServiceRequest & { readonly body: string },
+  url: string,
+  refuse: (text: string) => Error
+): Computable<Buffer> {
+  return settings.signer
+    .sign(request, service, settings.region)
+    .then(headers => sendRequest(url, { method: "POST", headers, body: request.body }))
+    .then(response => {
+      if (response.statusCode >= 500) {
+        throw new HttpStatusError(response.statusCode, url);
+      }
+      if (response.statusCode !== 200) {
+        const text = response.body.toString("utf8");
+        /* Throttling is answered as a 400; it is HTTP's "too many requests", which is retried. */
+        if (isThrottling(serviceErrorOf(text))) {
+          throw new HttpStatusError(429, url);
+        }
+        throw refuse(text);
+      }
+      return response.body;
+    });
 }

@@ -24,6 +24,7 @@ import { edgeBinding, nodeId, MVSResolution } from "./MVSResolution";
 import { parseVersion, SEMVER, SemverConstraint, SemverVersion, versionToString } from "./Semver";
 import { MetadataFetchError, VersionNotFoundError } from "../core/Errors";
 import { RequirementSource, Requirement, Selected, VersionDomain } from "./Types";
+import { serializeResolutionDoc, toResolutionDoc } from "./ResolutionDoc";
 import { expect } from "chai";
 
 /**
@@ -1898,5 +1899,28 @@ describe("resolved edges", () => {
     /* And the walk agrees with the resolver's own marking, attach edges included. */
     const marked = result.selections.filter(sel => sel.reachableFrom?.includes(0)).map(sel => nodeId(SEMVER, sel.name, sel.version));
     expect([...walked].sort()).to.deep.equal([...marked].sort());
+  });
+});
+
+describe("persisted resolution documents", () => {
+  const data = {
+    app: { "1.0.0": { lib: "^1.0.0", util: "^2.0.0" } },
+    lib: { "1.0.0": { util: "^2.0.0" }, "1.2.0": { util: "^2.1.0" } },
+    util: { "2.0.0": {}, "2.1.0": {} },
+  };
+
+  it("converts what was serialized to the same document", () => {
+    const roots = rootRequirements({ app: "1.0.0", lib: "1.2.0" });
+    const doc = serializeResolutionDoc(roots, resolve({ app: "1.0.0", lib: "1.2.0" }, data), versionToString);
+    const written = JSON.parse(JSON.stringify(doc));
+    expect(toResolutionDoc(written)).to.deep.equal(written);
+  });
+
+  it("refuses a damaged document", () => {
+    const doc = serializeResolutionDoc(rootRequirements({ app: "1.0.0" }), resolve({ app: "1.0.0" }, data), versionToString);
+    const parsed = JSON.parse(JSON.stringify(doc));
+    expect(() => toResolutionDoc({ ...parsed, selections: [{ name: "app" }] })).to.throw("selections[0].version is not a string");
+    expect(() => toResolutionDoc({ ...parsed, edges: [[["lib", 99]]] })).to.throw("edges[0][0] names selection 99");
+    expect(() => toResolutionDoc([])).to.throw("the document is not an object");
   });
 });

@@ -47,7 +47,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { SourceMap } from "node:module";
-import { PNP_DATA_FILE, PnpResolver } from "../pnp/PnPResolver";
+import { PNP_DATA_FILE, PnpResolver, readManifest } from "../pnp/PnPResolver";
 import { resolveVirtual } from "../pnp/VirtualPath";
 import { getMapSource, referenceOfEntry, stagedReferences, withReferencedSources } from "../support/SourceMap";
 import { BUNDLE_METAFILE, type IBundleOptions } from "./BundleOptions";
@@ -250,13 +250,9 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
     if (known !== undefined) {
       return known;
     }
-    let matters = true;
-    try {
-      const json = JSON.parse(fs.readFileSync(path.join(resolveVirtual(location), "package.json"), "utf8")) as { exports?: unknown };
-      matters = json.exports !== undefined && json.exports !== null && mentionsKind(json.exports);
-    } catch {
-      /* Unreadable: assume it matters. */
-    }
+    /* Unreadable: assume it matters. */
+    const json = readManifest(location);
+    const matters = json === undefined || (json.exports !== undefined && json.exports !== null && mentionsKind(json.exports));
     kindMatters.set(location, matters);
     return matters;
   }
@@ -868,12 +864,8 @@ class PackageNames {
   private versionOf(root: string): string {
     let version = this.versions.get(root);
     if (version === undefined) {
-      try {
-        const manifest = JSON.parse(fs.readFileSync(path.join(resolveVirtual(root), "package.json"), "utf8")) as { version?: unknown };
-        version = typeof manifest.version === "string" ? manifest.version : "?";
-      } catch {
-        version = "?";
-      }
+      const manifest = readManifest(root);
+      version = typeof manifest?.version === "string" ? manifest.version : "?";
       this.versions.set(root, version);
     }
     return version;

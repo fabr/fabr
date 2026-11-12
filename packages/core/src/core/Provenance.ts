@@ -94,12 +94,13 @@ export interface IRenderContext {
  * Render one provenance step as structured diagnostic notes (each optionally
  * anchored at a source span).
  */
-export type ProvenanceRenderer = (step: IProvenanceStep, context: IRenderContext) => IDiagnosticNote[];
+export type ProvenanceRenderer<S extends IProvenanceStep = IProvenanceStep> = (step: S, context: IRenderContext) => IDiagnosticNote[];
 
 const PROVENANCE_RENDERERS = new Map<string, ProvenanceRenderer>();
 
-export function registerProvenanceRenderer(kind: string, renderer: ProvenanceRenderer): void {
-  PROVENANCE_RENDERERS.set(kind, renderer);
+/** Register how to render the steps of `kind`, each of which is an `S`. */
+export function registerProvenanceRenderer<S extends IProvenanceStep>(kind: string, renderer: ProvenanceRenderer<S>): void {
+  PROVENANCE_RENDERERS.set(kind, renderer as ProvenanceRenderer);
 }
 
 /**
@@ -175,12 +176,13 @@ export function referenceStep(step: IProvenanceStep): IReferenceStep | undefined
  * written as" — for attributing content in one-line messages, as opposed to
  * the full multi-line rendering.
  */
-export type ProvenanceDescriber = (step: IProvenanceStep) => string;
+export type ProvenanceDescriber<S extends IProvenanceStep = IProvenanceStep> = (step: S) => string;
 
 const PROVENANCE_DESCRIBERS = new Map<string, ProvenanceDescriber>();
 
-export function registerProvenanceDescriber(kind: string, describer: ProvenanceDescriber): void {
-  PROVENANCE_DESCRIBERS.set(kind, describer);
+/** Register how to describe the steps of `kind`, each of which is an `S`. */
+export function registerProvenanceDescriber<S extends IProvenanceStep>(kind: string, describer: ProvenanceDescriber<S>): void {
+  PROVENANCE_DESCRIBERS.set(kind, describer as ProvenanceDescriber);
 }
 
 /**
@@ -203,7 +205,7 @@ export function describeProvenance(step: IProvenanceStep | undefined): string | 
  * `@npm:react:18.2.0:index.js`) — and what those names depend on. Registered
  * together, since an action's key records the second in place of the first.
  */
-export interface IProvenanceNaming {
+export interface IProvenanceNaming<S extends IProvenanceStep = IProvenanceStep> {
   /**
    * Get the source path of the file named `path` within the content the step
    * explains. `below` asks the steps beneath this one (its `parent` chain) for
@@ -212,7 +214,7 @@ export interface IProvenanceNaming {
    * below does, so a file that passed through unchanged keeps the source path
    * it had.
    */
-  sourcePath(step: IProvenanceStep, path: string, below: (path: string) => string | undefined): string | undefined;
+  sourcePath(step: S, path: string, below: (path: string) => string | undefined): string | undefined;
   /**
    * Get what the step's answers for `names` depend on, besides the names, as
    * text: the same text wherever the answers for those names are the same.
@@ -220,30 +222,27 @@ export interface IProvenanceNaming {
    * beneath's, for the names they have there. Empty where the step and those
    * beneath name nothing.
    */
-  digest(
-    step: IProvenanceStep,
-    names: ReadonlyArray<string> | undefined,
-    below: (names: ReadonlyArray<string> | undefined) => string
-  ): string;
+  digest(step: S, names: ReadonlyArray<string> | undefined, below: (names: ReadonlyArray<string> | undefined) => string): string;
   /**
    * Get the prefix every file's source path is formed from, `<prefix><name>`,
    * where one prefix names every file of the content the step explains;
    * undefined otherwise, and wherever the kind cannot say. `below` gives the
    * steps beneath's.
    */
-  prefix?(step: IProvenanceStep, below: () => string | undefined): string | undefined;
+  prefix?(step: S, below: () => string | undefined): string | undefined;
   /**
    * Get what the file named `path` within the content the step explains was
    * produced from (a {@link IDerivedStep}'s `from`), asking `below` as
    * {@link sourcePath} does; a kind leaving it out passes the name through.
    */
-  derivedFrom?(step: IProvenanceStep, path: string, below: (path: string) => string | undefined): string | undefined;
+  derivedFrom?(step: S, path: string, below: (path: string) => string | undefined): string | undefined;
 }
 
 const PROVENANCE_NAMINGS = new Map<string, IProvenanceNaming>();
 
-export function registerProvenanceNaming(kind: string, naming: IProvenanceNaming): void {
-  PROVENANCE_NAMINGS.set(kind, naming);
+/** Register how the steps of `kind`, each of which is an `S`, name source paths. */
+export function registerProvenanceNaming<S extends IProvenanceStep>(kind: string, naming: IProvenanceNaming<S>): void {
+  PROVENANCE_NAMINGS.set(kind, naming as IProvenanceNaming);
 }
 
 /**
@@ -378,11 +377,10 @@ export interface ISourcePathStep extends IProvenanceStep {
   readonly sourcePath: string;
 }
 
-registerProvenanceNaming(SOURCE_PATH_PROVENANCE, {
-  sourcePath: (step, path, below) => below(path) ?? `${(step as ISourcePathStep).sourcePath}:${path}`,
-  digest: (step, names, below) =>
-    namingDigest(SOURCE_PATH_PROVENANCE, JSON.stringify((step as ISourcePathStep).sourcePath), below(names)),
-  prefix: (step, below) => wholeContentPrefix(step, (step as ISourcePathStep).sourcePath, below),
+registerProvenanceNaming<ISourcePathStep>(SOURCE_PATH_PROVENANCE, {
+  sourcePath: (step, path, below) => below(path) ?? `${step.sourcePath}:${path}`,
+  digest: (step, names, below) => namingDigest(SOURCE_PATH_PROVENANCE, JSON.stringify(step.sourcePath), below(names)),
+  prefix: (step, below) => wholeContentPrefix(step, step.sourcePath, below),
 });
 /* Explains nothing a diagnostic needs: the steps beneath say why the content
  * is here. */
@@ -401,11 +399,10 @@ export interface IRenameStep extends IProvenanceStep {
   readonly from: ReadonlyMap<string, string>;
 }
 
-registerProvenanceNaming(RENAME_PROVENANCE, {
-  sourcePath: (step, path, below) => below((step as IRenameStep).from.get(path) ?? path),
-  derivedFrom: (step, path, below) => below((step as IRenameStep).from.get(path) ?? path),
-  digest: (step, names, below) => {
-    const { from } = step as IRenameStep;
+registerProvenanceNaming<IRenameStep>(RENAME_PROVENANCE, {
+  sourcePath: (step, path, below) => below(step.from.get(path) ?? path),
+  derivedFrom: (step, path, below) => below(step.from.get(path) ?? path),
+  digest: ({ from }, names, below) => {
     const below_ = below(names?.map(name => from.get(name) ?? name));
     return below_ === "" ? "" : namingDigest(RENAME_PROVENANCE, renamingText(restrictedTo(from, names)), below_);
   },
@@ -413,14 +410,13 @@ registerProvenanceNaming(RENAME_PROVENANCE, {
 registerProvenanceRenderer(RENAME_PROVENANCE, () => []);
 
 /* Names no source path of its own: a produced file has none. */
-registerProvenanceNaming(DERIVED_PROVENANCE, {
+registerProvenanceNaming<IDerivedStep>(DERIVED_PROVENANCE, {
   sourcePath: (_step, path, below) => below(path),
   digest: (_step, names, below) => below(names),
-  derivedFrom: step => (step as IDerivedStep).from,
+  derivedFrom: step => step.from,
 });
 
-registerProvenanceRenderer(DERIVED_PROVENANCE, (step, context): IDiagnosticNote[] => {
-  const derived = step as IDerivedStep;
+registerProvenanceRenderer<IDerivedStep>(DERIVED_PROVENANCE, (derived, context): IDiagnosticNote[] => {
   /* The mapping is the point, so it is stated whenever there IS one: a name
    * that arrived by being renamed reads as a puzzle until the rename is on the
    * page. Where the step did not rename it, saying so twice would be noise —
@@ -439,4 +435,4 @@ registerProvenanceRenderer(DERIVED_PROVENANCE, (step, context): IDiagnosticNote[
   ];
 });
 
-registerProvenanceDescriber(DERIVED_PROVENANCE, step => (step as IDerivedStep).from);
+registerProvenanceDescriber<IDerivedStep>(DERIVED_PROVENANCE, step => step.from);

@@ -70,7 +70,8 @@ import {
   violationKeys,
   exactConstraintOf,
 } from "./Requirement";
-import { deserializeResolutionDoc, IResolutionDoc, serializeResolutionDoc } from "./ResolutionDoc";
+import { deserializeResolutionDoc, serializeResolutionDoc, toResolutionDoc } from "./ResolutionDoc";
+import { parseJson } from "../support/Json";
 import { nodeId, MVSResolution } from "./MVSResolution";
 import { IResolutionOrigin, PACKAGE_RESOLUTION_PROVENANCE } from "./ResolutionProvenance";
 import type { CheckedResolution, ResolvedBatch } from "./StrictCollection";
@@ -1733,7 +1734,7 @@ function getJointResolution<V, C>(
           )
         )
         .then(files => files.readFile(RESOLUTION_FILE))
-        .then(data => deserializeResolutionDoc(JSON.parse(data) as IResolutionDoc, domain))
+        .then(data => deserializeResolutionDoc(parseJson(data, `the resolution memo ${RESOLUTION_FILE}`, toResolutionDoc), domain))
     );
   });
 }

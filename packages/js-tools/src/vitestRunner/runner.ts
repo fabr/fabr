@@ -36,6 +36,7 @@ import { createRequire } from "node:module";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ITestResult } from "@fabr-build/core";
+import { parseJson, toJsonObject } from "../support/Json";
 import { buildReport, endAfterReport } from "../testRunner/Report";
 import { childPreloads, IRunnerOptions, parseRunnerArgs } from "../testRunner/RunTests";
 import { installPnpRuntime } from "../pnp/Runtime";
@@ -71,7 +72,8 @@ async function loadVitest(root: string): Promise<IVitestNode> {
       "These tests run under vitest, but 'vitest' is not among the target's dependencies.\nAdd it to the target's test_deps."
     );
   }
-  const { version } = JSON.parse(fs.readFileSync(manifest, "utf8")) as { version?: string };
+  const written = parseJson(fs.readFileSync(manifest, "utf8"), manifest, toJsonObject).version;
+  const version = typeof written === "string" ? written : undefined;
   const [major, minor] = (version ?? "").split(".").map(Number);
   if (!(major > MINIMUM_VITEST[0] || (major === MINIMUM_VITEST[0] && minor >= MINIMUM_VITEST[1]))) {
     throw new Error(

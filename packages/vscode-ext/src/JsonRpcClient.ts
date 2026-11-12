@@ -47,6 +47,13 @@ export function toMessage(json: unknown): IMessage | undefined {
   };
 }
 
+/** @return the offset at which the first frame in `buffer` ends, where its
+ * headers are whole and state its length, otherwise undefined. */
+function frameEnd(buffer: Buffer, blank: number): number | undefined {
+  const length = /^content-length: *(\d+)$/im.exec(buffer.subarray(0, blank).toString("latin1"));
+  return length === null ? undefined : blank + 4 + Number(length[1]);
+}
+
 /**
  * Read the first frame in `buffer`, framed by a `Content-Length` header as LSP
  * frames one.
@@ -57,18 +64,16 @@ export function toMessage(json: unknown): IMessage | undefined {
  * to the end of its headers, with no body, so a malformed frame never stops
  * the reading.
  */
-export function takeFrame(buffer: Buffer): { rest: Buffer; protocol?: string; json?: unknown } | undefined {
+function takeFrame(buffer: Buffer): { rest: Buffer; protocol?: string; json?: unknown } | undefined {
   const blank = buffer.indexOf("\r\n\r\n");
   if (blank < 0) {
     return undefined;
   }
-  const headers = buffer.subarray(0, blank).toString("latin1");
-  const protocol = /^fabr-protocol: *(\S+)$/im.exec(headers)?.[1];
-  const length = /^content-length: *(\d+)$/im.exec(headers);
-  if (length === null) {
+  const protocol = /^fabr-protocol: *(\S+)$/im.exec(buffer.subarray(0, blank).toString("latin1"))?.[1];
+  const end = frameEnd(buffer, blank);
+  if (end === undefined) {
     return { rest: buffer.subarray(blank + 4), protocol };
   }
-  const end = blank + 4 + Number(length[1]);
   if (buffer.length < end) {
     return undefined;
   }
@@ -81,6 +86,37 @@ export function takeFrame(buffer: Buffer): { rest: Buffer; protocol?: string; js
 }
 
 /**
+ * Call `receive` with each message read from `input` and the `fabr-protocol`
+ * its frame names, a frame that holds none skipped. The data is joined into one
+ * buffer only once a frame can be whole.
+ */
+export function readMessages(input: NodeJS.ReadableStream, receive: (message: IMessage, protocol?: string) => void): void {
+  let buffer = Buffer.alloc(0);
+  let chunks: Buffer[] = [];
+  let held = 0;
+  let wanted = 0;
+  input.on("data", (data: Buffer) => {
+    chunks.push(data);
+    held += data.length;
+    if (held < wanted) {
+      return;
+    }
+    buffer = Buffer.concat([buffer, ...chunks]);
+    chunks = [];
+    for (let frame = takeFrame(buffer); frame !== undefined; frame = takeFrame(buffer)) {
+      buffer = frame.rest;
+      const message = toMessage(frame.json);
+      if (message !== undefined) {
+        receive(message, frame.protocol);
+      }
+    }
+    held = buffer.length;
+    const blank = buffer.indexOf("\r\n\r\n");
+    wanted = blank < 0 ? 0 : (frameEnd(buffer, blank) ?? 0);
+  });
+}
+
+/**
  * A JSON-RPC client over a server's stdio, each message framed by a
  * `Content-Length` header as LSP frames one, of one of the protocols the
  * server carries: BSP's, whose frames are untagged, or
@@ -88,7 +124,6 @@ export function takeFrame(buffer: Buffer): { rest: Buffer; protocol?: string; js
  * its own protocol's frames alone, so several can share one server's streams.
  */
 export class JsonRpcClient {
-  private buffer = Buffer.alloc(0);
   private id = 0;
   private readonly pending = new Map<number, { resolve(result: unknown): void; reject(err: Error): void }>();
   private readonly handlers = new Map<string, Array<(params: unknown) => void>>();
@@ -101,12 +136,9 @@ export class JsonRpcClient {
     input: NodeJS.ReadableStream,
     private readonly protocol?: string
   ) {
-    input.on("data", (data: Buffer) => {
-      this.buffer = Buffer.concat([this.buffer, data]);
-      for (let next = this.next(); next !== undefined; next = this.next()) {
-        if (next.message !== undefined && next.protocol === this.protocol) {
-          this.receive(next.message);
-        }
+    readMessages(input, (message, protocol) => {
+      if (protocol === this.protocol) {
+        this.receive(message);
       }
     });
     input.on("close", () => this.end());
@@ -155,16 +187,6 @@ export class JsonRpcClient {
         this.anyHandlers.splice(at, 1);
       }
     };
-  }
-
-  /** @return the next frame in the buffer, taken from it, as {@link takeFrame} reads one. */
-  private next(): { protocol?: string; message?: IMessage } | undefined {
-    const frame = takeFrame(this.buffer);
-    if (frame === undefined) {
-      return undefined;
-    }
-    this.buffer = frame.rest;
-    return { protocol: frame.protocol, message: toMessage(frame.json) };
   }
 
   private receive(message: IMessage): void {

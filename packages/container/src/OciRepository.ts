@@ -75,11 +75,10 @@ interface IImageOrigin extends IProvenanceStep {
   readonly platform: string;
 }
 
-registerProvenanceRenderer(OCI_IMAGE_PROVENANCE, step => {
-  const origin = step as IImageOrigin;
+registerProvenanceRenderer<IImageOrigin>(OCI_IMAGE_PROVENANCE, origin => {
   return [{ message: `image ${origin.image} (${origin.digest}, ${origin.platform})` }];
 });
-registerProvenanceDescriber(OCI_IMAGE_PROVENANCE, step => `${(step as IImageOrigin).image}@${(step as IImageOrigin).digest}`);
+registerProvenanceDescriber<IImageOrigin>(OCI_IMAGE_PROVENANCE, step => `${step.image}@${step.digest}`);
 
 /** The configuration property naming the platform images are built for and looked up at. */
 export const OCI_TARGET = "OCI_TARGET";

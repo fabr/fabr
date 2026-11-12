@@ -32,6 +32,7 @@
 import * as fs from "node:fs";
 import Module, { isBuiltin } from "node:module";
 import * as path from "node:path";
+import { parseJson, toJsonObject } from "../support/Json";
 import type { IPnpSerializedState, PnpDependencyTarget } from "./PnPState";
 import {
   exportedSubpath,
@@ -41,6 +42,7 @@ import {
   resolveExportsAll,
   resolveImports,
   resolveImportsAll,
+  toExportsValue,
 } from "./PackageExports";
 import {
   type IPackageInformation,
@@ -866,7 +868,7 @@ export class PnpResolver implements IPnpApi {
     if (held !== undefined) {
       return held;
     }
-    const read = readManifest(location);
+    const read = readExportMaps(location);
     this.manifests.set(location, read);
     return read;
   }
@@ -1135,12 +1137,7 @@ function qualify(unqualified: string, candidates: string[], extensions: string[]
     return realpathKeepingVirtual(unqualified);
   }
   if (stat?.isDirectory() === true) {
-    let main: unknown;
-    try {
-      main = (JSON.parse(fs.readFileSync(path.join(resolveVirtual(unqualified), "package.json"), "utf8")) as { main?: unknown }).main;
-    } catch {
-      main = undefined;
-    }
+    const main = readManifest(unqualified)?.main;
     const next = typeof main === "string" && main !== "" ? path.resolve(unqualified, main) : undefined;
     if (next !== undefined && next !== unqualified) {
       const found = qualify(next, candidates, extensions);
@@ -1183,17 +1180,28 @@ interface IPackageManifest {
   readonly imports?: ExportsValue;
 }
 
-/** @return the manifest at `location`, empty when there is none to read. An
- * unreadable or unparseable one is the same answer as none: whoever BUILT that
- * package reports what is wrong with it, and a resolver that threw here would
- * fail every compile that merely has the package in its table. */
-function readManifest(location: string): IPackageManifest {
+/** @return the `package.json` of the package directory `location` (virtual
+ * or physical), or undefined where there is none, or it cannot be read, or it
+ * is not a JSON object. An unreadable manifest is the same answer as none:
+ * whoever BUILT that package reports what is wrong with it, and a reader that
+ * threw here would fail every compile that merely has the package in reach. */
+export function readManifest(location: string): Record<string, unknown> | undefined {
   try {
-    const json = JSON.parse(fs.readFileSync(path.join(resolveVirtual(location), "package.json"), "utf8")) as IPackageManifest;
-    return { exports: json.exports, imports: json.imports };
+    const text = fs.readFileSync(path.join(resolveVirtual(location), "package.json"), "utf8");
+    return parseJson(text, `${location}/package.json`, toJsonObject);
   } catch {
-    return {};
+    return undefined;
   }
+}
+
+/** @return the `exports` and `imports` of the package at `location`, empty
+ * where it declares neither or has no manifest to read. */
+function readExportMaps(location: string): IPackageManifest {
+  const manifest = readManifest(location);
+  return {
+    ...(manifest?.exports === undefined ? {} : { exports: toExportsValue(manifest.exports) }),
+    ...(manifest?.imports === undefined ? {} : { imports: toExportsValue(manifest.imports) }),
+  };
 }
 
 /** Run a manifest-driven lookup, naming the package in anything it reports: an

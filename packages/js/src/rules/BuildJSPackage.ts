@@ -46,7 +46,6 @@ import {
   describeTarget,
   descriptionFile,
   type MaterializedRequirements,
-  type RequiredSources,
   type ResolvedRequirements,
 } from "@fabr-build/core";
 import {
@@ -70,6 +69,20 @@ import {
 import { NPM_FORMAT } from "../NPMProtocol";
 import { createPackageJson } from "../PackageJson";
 
+/** The requirements of a package's build. */
+type PackageRequirements = {
+  srcs: Computable<SourceRef[]>;
+  resources: Computable<SourceRef[]>;
+  tests: Computable<SourceRef[]>;
+  exports: Computable<SourceRef[]>;
+  dependencies: Computable<PackageSources>;
+  provided: Computable<PackageSources>;
+  optional_provided: Computable<PackageSources>;
+  compile_deps: Computable<PackageSources>;
+  test_resources: Computable<SourceRef[]>;
+  test_expectations: Computable<SourceRef[]>;
+};
+
 /** The `js_package` rule, under `build`. */
 export default defineRule({
   /**
@@ -81,20 +94,7 @@ export default defineRule({
    * provided, so a consumer's collection point binds each to what it uses under
    * that name. The compiler is resolved apart, by js_compile.
    */
-  requirements(context: TargetContext): Computable<
-    ResolutionSpec<{
-      srcs: Computable<SourceRef[]>;
-      resources: Computable<SourceRef[]>;
-      tests: Computable<SourceRef[]>;
-      exports: Computable<SourceRef[]>;
-      dependencies: Computable<PackageSources>;
-      provided: Computable<PackageSources>;
-      optional_provided: Computable<PackageSources>;
-      compile_deps: Computable<PackageSources>;
-      test_resources: Computable<SourceRef[]>;
-      test_expectations: Computable<SourceRef[]>;
-    }>
-  > {
+  requirements(context: TargetContext): Computable<ResolutionSpec<PackageRequirements>> {
     return context.getProperty("version").then(version => {
       assertPackageVersion(version?.toString());
       const written = version?.toString();
@@ -151,11 +151,10 @@ export default defineRule({
  */
 function describePackage(
   context: TargetContext,
-  gathered: MaterializedRequirements<Record<string, RequiredSources>>,
+  sets: MaterializedRequirements<PackageRequirements>,
   testDeps: FileSet[],
   resolved: ResolvedRequirements
 ): Computable<RuleResult> {
-  const sets = gathered as unknown as Record<string, FileSet[]>;
   const { exported, compileSources, compileDeps } = packageCompileInputs({
     srcs: sets.srcs,
     tests: sets.tests,

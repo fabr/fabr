@@ -521,7 +521,9 @@ function readIfPresent(file: string): string | undefined {
 /** @return the paths `text`, a project's document, serves, or "" where it names none. */
 function linksOf(text: string | undefined): string {
   try {
-    return Object.keys((JSON.parse(text ?? "{}") as { links?: Record<string, string> }).links ?? {}).join("\n");
+    const document: unknown = JSON.parse(text ?? "{}");
+    const links = typeof document === "object" && document !== null ? (document as { links?: unknown }).links : undefined;
+    return typeof links === "object" && links !== null ? Object.keys(links).join("\n") : "";
   } catch {
     return "";
   }

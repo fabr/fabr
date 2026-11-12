@@ -178,6 +178,28 @@ describe("project document", () => {
     expect(JSON.parse(composedTests.files.get("/storage/0/tsconfig.json")!).references).to.equal(undefined);
   });
 
+  it("reports a target or a unit whose description is not one fabr writes, and composes the rest", () => {
+    const damaged = new Map(FILES);
+    damaged.set(`${POOL}/lib-d/units/build/unit.json`, JSON.stringify({ root: "./lib/src/", package: "lib" }));
+    const odd: IServedTarget = { ...target("odd"), data: { units: { build: 3 }, plugin: PLUGIN } };
+    const result = composeProject({
+      root: "/p",
+      installation: "/fabr",
+      storage: "/storage",
+      targets: [target("app"), target("lib"), odd],
+      readFile: file =>
+        damaged.get(file) ??
+        (() => {
+          throw new Error(`no ${file}`);
+        })(),
+      resolve: (specifier, from) => `${from}/node_modules/${specifier}.js`,
+    });
+    expect(result.problems).to.deep.equal([
+      "fabr:lib build: unit.json is not a unit's summary",
+      "fabr:odd: the target's data names no units",
+    ]);
+  });
+
   it("shows two units at one root behind a solution config, the build unit first", () => {
     const tests = new Map(FILES);
     tests.set(`${POOL}/app-t/units/test/unit.json`, JSON.stringify({ root: "./app/src/", package: "app", generated: [] }));

@@ -28,6 +28,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEPS_REPORT_FLAG, IResolutionEdge, serializeRunReport } from "../pnp/ReadSet";
 import { resolveVirtual } from "../pnp/VirtualPath";
+import { toJsonObject } from "../support/Json";
 
 /** @return true if a name is a Sass source (one the driver compiles; a plain
  * `.css` passes through), otherwise false. */
@@ -50,6 +51,26 @@ export interface IRawSourceMap {
   sources: string[];
   sourcesContent?: Array<string | null>;
   [member: string]: unknown;
+}
+
+/** Convert a parsed source map to the slice the drivers read. */
+export function toRawSourceMap(json: unknown): IRawSourceMap {
+  const map = toJsonObject(json);
+  const { sources, sourcesContent } = map;
+  if (!Array.isArray(sources) || sources.some(source => typeof source !== "string")) {
+    throw new Error("'sources' is not a list of strings");
+  }
+  if (
+    sourcesContent !== undefined &&
+    (!Array.isArray(sourcesContent) || sourcesContent.some(content => content !== null && typeof content !== "string"))
+  ) {
+    throw new Error("'sourcesContent' is not a list of strings");
+  }
+  return {
+    ...map,
+    sources: sources as string[],
+    ...(sourcesContent === undefined ? {} : { sourcesContent: sourcesContent as Array<string | null> }),
+  };
 }
 
 /** Write a file, creating parent directories as needed. */

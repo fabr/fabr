@@ -223,14 +223,11 @@ export function sbom(name: ResolvedName, tool: { version: string }): Computable<
     reached: ReadonlyMap<string, { pkg: Package; dependsOn: Set<string> }>,
     rootDependsOn: ReadonlySet<string>
   ): Computable<ICycloneDxBom> => {
-    const refs = [...reached.keys()].sort(compareText);
+    const entries = [...reached].sort(([a], [b]) => compareText(a, b));
     const metadata = (pkg: Package): Computable<IVersionMetadata | undefined> =>
       pkg instanceof ResolvedNode && pkg.content.metadata !== undefined ? pkg.content.metadata() : Computable.resolve(undefined);
     return Computable.forAll(
-      [
-        described === undefined ? Computable.resolve(undefined) : metadata(described),
-        ...refs.map(ref => metadata(reached.get(ref)!.pkg)),
-      ],
+      [described === undefined ? Computable.resolve(undefined) : metadata(described), ...entries.map(([, { pkg }]) => metadata(pkg))],
       (...published: Array<IVersionMetadata | undefined>) => {
         const component = (
           ref: string,
@@ -266,10 +263,10 @@ export function sbom(name: ResolvedName, tool: { version: string }): Computable<
                 ? { type: root.type, "bom-ref": root["bom-ref"], name: title }
                 : component(root["bom-ref"], described, rootMeta, root.type),
           },
-          components: refs.map((ref, at) => component(ref, reached.get(ref)!.pkg, rest[at], "library")),
+          components: entries.map(([ref, { pkg }], at) => component(ref, pkg, rest[at], "library")),
           dependencies: [
             { ref: root["bom-ref"], dependsOn: [...rootDependsOn].sort(compareText) },
-            ...refs.map(ref => ({ ref, dependsOn: [...reached.get(ref)!.dependsOn].sort(compareText) })),
+            ...entries.map(([ref, { dependsOn }]) => ({ ref, dependsOn: [...dependsOn].sort(compareText) })),
           ],
         };
       }

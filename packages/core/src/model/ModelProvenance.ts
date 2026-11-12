@@ -52,15 +52,15 @@ export interface ISubstitution {
   origin?: IPropertyDecl;
 }
 
-registerProvenanceRenderer(MODEL_PROVENANCE, (step, context) => renderModelStep(step as IModelStep, context));
-registerProvenanceRenderer(TARGET_PROVENANCE, step => {
-  const target = (step as ITargetOrigin).decl;
+registerProvenanceRenderer<IModelStep>(MODEL_PROVENANCE, renderModelStep);
+registerProvenanceRenderer<ITargetOrigin>(TARGET_PROVENANCE, step => {
+  const target = step.decl;
   return [{ message: `built by ${target.type} '${target.name}'`, loc: declPosn(target) }];
 });
 
 /* Short attribution ("the name it was written as") for one-line messages */
-registerProvenanceDescriber(MODEL_PROVENANCE, step => (step as IModelStep).value.value.toString());
-registerProvenanceDescriber(TARGET_PROVENANCE, step => declName((step as ITargetOrigin).decl));
+registerProvenanceDescriber<IModelStep>(MODEL_PROVENANCE, step => step.value.value.toString());
+registerProvenanceDescriber<ITargetOrigin>(TARGET_PROVENANCE, step => declName(step.decl));
 
 function renderModelStep(step: IModelStep, context: IRenderContext): IDiagnosticNote[] {
   const verb = context.stepIndex === 0 ? "from" : "via";

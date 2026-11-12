@@ -134,8 +134,7 @@ export function explainResolutionPath<V>(origin: IResolutionOrigin<V>, path: str
   ];
 }
 
-registerProvenanceRenderer(PACKAGE_RESOLUTION_PROVENANCE, (step, context) => {
-  const origin = step as IResolutionOrigin<unknown>;
+registerProvenanceRenderer<IResolutionOrigin<unknown>>(PACKAGE_RESOLUTION_PROVENANCE, (origin, context) => {
   const lines = context.path === undefined ? [`resolved from ${written(origin.root)}`] : explainResolutionPath(origin, context.path);
   return lines.map(message => ({ message }));
 });

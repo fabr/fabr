@@ -5160,6 +5160,25 @@ describe("declared rules and repositories", () => {
     );
   });
 
+  it("fails a target whose rule's implementation is not one, naming what is wrong with it", async () => {
+    const reasons = await Promise.all(
+      [{}, { evaluate: () => undefined, describe: "x" }, { evaluate: () => undefined, value: 1 }].map(implementation =>
+        built(
+          declaredModel("targetdef dt { }\nrule dt t = @p/q:rules/R;\ndt a { }\n", new Map([["@p/q:rules/R", implementation]]), []),
+          "a"
+        ).then(
+          () => "",
+          (err: DependencyFailedError) => err.cause.message
+        )
+      )
+    );
+    expect(reasons).to.deep.equal([
+      "'@p/q:rules/R' is not a rule implementation (no evaluate)",
+      "'@p/q:rules/R' is not a rule implementation (its describe is not a function)",
+      "'@p/q:rules/R' is not a rule implementation (its value is not true)",
+    ]);
+  });
+
   it("makes a declared repository type's instances with its implementation", async () => {
     const loaded: string[] = [];
     const provider: RepositoryProvider = () => Computable.resolve(new FileSet(new Map([["out.txt", MemoryFile.from("repo")]])));

@@ -146,6 +146,11 @@ describe("environmentFor", () => {
     expect(environmentFor({ "jest-environment-options": ["{}", "{}"] }, "node").options).to.deep.equal({});
     expect(() => environmentFor({ "jest-environment-options": "{url:" }, "node")).to.throw(SyntaxError);
   });
+
+  it("fails on environment options that are not an object", () => {
+    expect(() => environmentFor({ "jest-environment-options": "null" }, "node")).to.throw(TypeError, "must be a JSON object");
+    expect(() => environmentFor({ "jest-environment-options": "[]" }, "node")).to.throw(TypeError, "must be a JSON object");
+  });
 });
 
 describe("hideNodeSchedulers", () => {

@@ -46,6 +46,22 @@
  * exposed", and so stops the search rather than falling through. */
 export type ExportsValue = string | null | readonly ExportsValue[] | { readonly [key: string]: ExportsValue };
 
+/** Convert a manifest's `exports` or `imports` field: a target of any other
+ * JSON type, which node refuses as an invalid target, is read as `null`, which
+ * resolves nothing. */
+export function toExportsValue(json: unknown): ExportsValue {
+  if (typeof json === "string" || json === null) {
+    return json;
+  }
+  if (Array.isArray(json)) {
+    return json.map(toExportsValue);
+  }
+  if (typeof json === "object") {
+    return Object.fromEntries(Object.entries(json).map(([key, value]) => [key, toExportsValue(value)]));
+  }
+  return null;
+}
+
 /** @return `rest` spelled as an `exports` map spells a subpath: `.` for the
  * package itself, `./x` for anything below it. */
 export function exportsSubpath(rest: string): string {

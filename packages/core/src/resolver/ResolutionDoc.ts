@@ -17,7 +17,9 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { MVSResolution } from "./MVSResolution";
+import { FabrError } from "../core/Errors";
+import { isJsonObject, toStringList } from "../support/Json";
+import { MVSResolution, nodeIdOf } from "./MVSResolution";
 import { IRequirementEdge, Requirement, Selected, Violation } from "./Types";
 
 /** Serialized form of one selection in a persisted resolution document */
@@ -119,17 +121,159 @@ export function serializeResolutionDoc<V>(
     requirements: [...result.requirements].map(([node, requires]) => ({ node, requires })),
     edges: result.selections.map(sel => {
       const from = result.edges.get(nodeKey(sel, versionToString)) ?? new Map<string, string>();
-      return [...from].map(([name, target]): [string, number] => [name, index.get(target)!]);
+      return [...from].map(([name, target]): [string, number] => {
+        const at = index.get(target);
+        if (at === undefined) {
+          throw new Error(`resolution edge ${nodeKey(sel, versionToString)} -> ${target} names no selection`);
+        }
+        return [name, at];
+      });
     }),
     rootBindings: result.rootBindings.map(target => target ?? null),
   };
 }
 
-/** Make the `pkg@version` id every per-node table in a resolution is joined by
- * (the resolver's own `nodeId`, restated here to keep this module free of
- * the domain). */
+/** Make the id every per-node table in a resolution is joined by, for `selection`. */
 function nodeKey<V>(selection: Selected<V>, versionToString: (version: V) => string): string {
-  return `${selection.name}@${versionToString(selection.version)}`;
+  return nodeIdOf(selection.name, versionToString(selection.version));
+}
+
+/** Convert a persisted resolution document, refusing one that is damaged or of another shape. */
+export function toResolutionDoc(json: unknown): IResolutionDoc {
+  const doc = objectOf(json, "the document");
+  const optionalList = <T>(field: string, convert: (item: unknown, what: string) => T): T[] | undefined =>
+    doc[field] === undefined ? undefined : listOf(doc[field], field, convert);
+  const converted: IResolutionDoc = {
+    roots: listOf(doc.roots, "roots", toRequirement),
+    selections: listOf(doc.selections, "selections", toResolutionEntry),
+    violations: listOf(doc.violations ?? [], "violations", toViolationEntry),
+    ...optional("coerced", optionalList("coerced", toViolationEntry)),
+    ...optional("shared", optionalList("shared", toViolationEntry)),
+    raises: listOf(doc.raises ?? [], "raises", (item, what) => {
+      const raise = objectOf(item, what);
+      return {
+        name: stringOf(raise.name, `${what}.name`),
+        versionConstraint: stringOf(raise.versionConstraint, `${what}.versionConstraint`),
+        declared: stringOf(raise.declared, `${what}.declared`),
+        raised: stringOf(raise.raised, `${what}.raised`),
+        requiredBy: stringOf(raise.requiredBy, `${what}.requiredBy`),
+      };
+    }),
+    requirements: listOf(doc.requirements ?? [], "requirements", (item, what) => {
+      const entry = objectOf(item, what);
+      return { node: stringOf(entry.node, `${what}.node`), requires: listOf(entry.requires, `${what}.requires`, toRequirement) };
+    }),
+    edges: listOf(doc.edges ?? [], "edges", (from, what) =>
+      listOf(from, what, (pair, at): [string, number] => {
+        if (!Array.isArray(pair) || pair.length !== 2) {
+          throw new FabrError(`${at} is not a [name, index] pair`);
+        }
+        return [stringOf(pair[0], `${at}[0]`), indexOf(pair[1], `${at}[1]`)];
+      })
+    ),
+    rootBindings: listOf(doc.rootBindings ?? [], "rootBindings", (item, what) => (item === null ? null : indexOf(item, what))),
+  };
+  const selected = (at: number | null, what: string): void => {
+    if (at !== null && at >= converted.selections.length) {
+      throw new FabrError(`${what} names selection ${at}, of ${converted.selections.length}`);
+    }
+  };
+  if (converted.edges.length > converted.selections.length) {
+    throw new FabrError(`edges has ${converted.edges.length} entries, for ${converted.selections.length} selections`);
+  }
+  converted.edges.forEach((from, at) => from.forEach(([, target], index) => selected(target, `edges[${at}][${index}]`)));
+  converted.rootBindings.forEach((target, at) => selected(target, `rootBindings[${at}]`));
+  return converted;
+}
+
+function toResolutionEntry(json: unknown, what: string): IResolutionEntry {
+  const entry = objectOf(json, what);
+  return {
+    name: stringOf(entry.name, `${what}.name`),
+    ...optional("publishedName", optionalString(entry.publishedName, `${what}.publishedName`)),
+    version: stringOf(entry.version, `${what}.version`),
+    ...optional("selectedBy", entry.selectedBy === undefined ? undefined : toRequirementEdge(entry.selectedBy, `${what}.selectedBy`)),
+    ...optional("reachedVia", entry.reachedVia === undefined ? undefined : toRequirementEdge(entry.reachedVia, `${what}.reachedVia`)),
+    ...optional("fork", entry.fork === undefined ? undefined : indexOf(entry.fork, `${what}.fork`)),
+  };
+}
+
+function toRequirementEdge(json: unknown, what: string): IRequirementEdge {
+  const edge = objectOf(json, what);
+  return {
+    requiredBy: stringOf(edge.requiredBy, `${what}.requiredBy`),
+    versionConstraint: optionalString(edge.versionConstraint, `${what}.versionConstraint`),
+  };
+}
+
+function toViolationEntry(json: unknown, what: string): IViolationEntry {
+  const entry = objectOf(json, what);
+  return {
+    name: stringOf(entry.name, `${what}.name`),
+    versionConstraint: stringOf(entry.versionConstraint, `${what}.versionConstraint`),
+    requiredBy: stringOf(entry.requiredBy, `${what}.requiredBy`),
+    selected: stringOf(entry.selected, `${what}.selected`),
+  };
+}
+
+function toRequirement(json: unknown, what: string): Requirement {
+  const req = objectOf(json, what);
+  const oneOf = <T extends string>(value: unknown, field: string, allowed: readonly T[]): T | undefined => {
+    if (value === undefined || allowed.includes(value as T)) {
+      return value as T | undefined;
+    }
+    throw new FabrError(`${what}.${field} is not one of ${allowed.join(", ")}`);
+  };
+  if (req.bom !== undefined && req.bom !== true) {
+    throw new FabrError(`${what}.bom is not true`);
+  }
+  return {
+    name: stringOf(req.name, `${what}.name`),
+    versionConstraint: optionalString(req.versionConstraint, `${what}.versionConstraint`),
+    ...optional("override", oneOf(req.override, "override", ["alternate", "force"] as const)),
+    ...optional("renameTo", optionalString(req.renameTo, `${what}.renameTo`)),
+    ...optional("variant", optionalString(req.variant, `${what}.variant`)),
+    ...optional("excludes", req.excludes === undefined ? undefined : toStringList(req.excludes)),
+    ...optional("provided", oneOf(req.provided, "provided", ["expected", "optional"] as const)),
+    ...optional("bom", req.bom === true ? (true as const) : undefined),
+  };
+}
+
+/** @return `{ [field]: value }`, or nothing where `value` is undefined. */
+function optional<K extends string, T>(field: K, value: T | undefined): { [P in K]?: T } {
+  return (value === undefined ? {} : { [field]: value }) as { [P in K]?: T };
+}
+
+function objectOf(json: unknown, what: string): Record<string, unknown> {
+  if (!isJsonObject(json)) {
+    throw new FabrError(`${what} is not an object`);
+  }
+  return json;
+}
+
+function listOf<T>(json: unknown, what: string, convert: (item: unknown, what: string) => T): T[] {
+  if (!Array.isArray(json)) {
+    throw new FabrError(`${what} is not a list`);
+  }
+  return json.map((item, at) => convert(item, `${what}[${at}]`));
+}
+
+function stringOf(json: unknown, what: string): string {
+  if (typeof json !== "string") {
+    throw new FabrError(`${what} is not a string`);
+  }
+  return json;
+}
+
+function optionalString(json: unknown, what: string): string | undefined {
+  return json === undefined ? undefined : stringOf(json, what);
+}
+
+function indexOf(json: unknown, what: string): number {
+  if (typeof json !== "number" || !Number.isInteger(json) || json < 0) {
+    throw new FabrError(`${what} is not an index`);
+  }
+  return json;
 }
 
 /** Deserialize a resolution document into the loaded resolution — a
@@ -142,7 +286,7 @@ export function deserializeResolutionDoc<V>(
   const parseVersion = (text: string): V => domain.parseVersion(text);
   /* Edge targets are positional (see IResolutionDoc.edges); the ids they mean
    * are read straight off the serialized selections, no version parsing. */
-  const ids = doc.selections.map(entry => `${entry.name}@${entry.version}`);
+  const ids = doc.selections.map(entry => nodeIdOf(entry.name, entry.version));
   const violation = (entry: IViolationEntry): Violation<V> => ({
     name: entry.name,
     versionConstraint: entry.versionConstraint,

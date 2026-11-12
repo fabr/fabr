@@ -63,6 +63,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { IPostcssOptions, IPostcssSource } from "./Options";
 import { PnpResolver } from "../pnp/PnPResolver";
+import { parseJson } from "../support/Json";
 import { stagedReferences } from "../support/SourceMap";
 import {
   annotationName,
@@ -73,6 +74,7 @@ import {
   relocateCssSources,
   sassLoweredName,
   sourceIdentity,
+  toRawSourceMap,
   withoutAnnotations,
   withSourceFirst,
   writeDepsReport,
@@ -267,7 +269,7 @@ async function processFile(source: IPostcssSource, options: IPostcssOptions, too
   const prev =
     !wantsMap || source.prev === undefined
       ? undefined
-      : (JSON.parse(fs.readFileSync(path.join(options.srcRoot, source.prev), "utf8")) as IRawSourceMap);
+      : parseJson(fs.readFileSync(path.join(options.srcRoot, source.prev), "utf8"), source.prev, toRawSourceMap);
   /* postcss would mangle the input map's fabr references while composing it
    * (see carriedReferences), so they cross it carried. */
   const chained = prev === undefined || tools.referenceOf === undefined ? prev : carriedReferences(prev);

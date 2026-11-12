@@ -38,6 +38,7 @@
 import { createRequire } from "node:module";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { parseJson, toJsonObject } from "../support/Json";
 import { atLeastNode } from "../testRunner/RunTests";
 
 /** jest releases this layer is written against. Checked at startup: the layer
@@ -120,8 +121,12 @@ export function assertSupportedHost(): void {
 
 function jestVersion(): string | undefined {
   try {
-    const manifest = JSON.parse(fs.readFileSync(fromRunner.resolve("jest/package.json"), "utf8")) as { version?: string };
-    return manifest.version;
+    const { version } = parseJson(
+      fs.readFileSync(fromRunner.resolve("jest/package.json"), "utf8"),
+      "jest's package.json",
+      toJsonObject
+    );
+    return typeof version === "string" ? version : undefined;
   } catch {
     return undefined;
   }
