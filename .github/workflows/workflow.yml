@@ -14,3 +14,6 @@ jobs:
        - name: Check formatting
          if: ${{ !cancelled() }}
          run: ./fabr build prettier_check
+       - name: Lint
+         if: ${{ !cancelled() }}
+         run: ./fabr build eslint_check
