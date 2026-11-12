@@ -42,31 +42,31 @@ import { PreparedUpdate, WatchController, WatchEntry } from "./WatchController";
 export interface FSFileStats {
   size: number;
   mtime: Date;
-  /** POSIX mode bits as `fs.Stats` reports them. Optional because some
-   * producers supply a partial stat; absent ⇒ {@link DEFAULT_FILE_MODE}. */
+  /** POSIX mode bits as `fs.Stats` reports them; absent where a producer
+   * gives a partial stat, read as {@link DEFAULT_FILE_MODE}. */
   mode?: number;
 }
 
 /**
  * @return the mode a file with `stat` has, as git records one: 0o755 where its
  * owner may execute it, else {@link DEFAULT_FILE_MODE}. The mode is key
- * material, and its other bits vary with the umask of whatever wrote the file.
+ * material, so the other bits, which vary with the writer's umask, are dropped.
  */
 export function fileModeOf(stat: FSFileStats): number {
   return stat.mode !== undefined && (stat.mode & 0o100) !== 0 ? 0o755 : DEFAULT_FILE_MODE;
 }
 
+/** A file read from a directory on disk. */
 export class FSFile implements IFile {
   private readonly root: string;
   public stat: FSFileStats;
   public name: string;
   public hash: string;
   /**
-   * The absolute path the file's *content* is read from. Defaults to the file's
-   * own location under `root`, but a blob-backed source file (see
-   * {@link SourceFileSource}) points this at its immutable content-addressed
-   * snapshot, so reads and staging never touch the live source path while the
-   * name/root — and thus {@link getDisplayName} — still identify the source.
+   * The absolute path the content is read from: the file's own path under
+   * `root`, or the copy in the blob pool of a file its source copied there
+   * (as {@link SourceFileSource} does), while `name` and `root`, and so
+   * {@link getDisplayName}, still name the file read.
    */
   private readonly contentPath: string;
 
@@ -111,17 +111,16 @@ export class FSFile implements IFile {
 }
 
 /**
- * A reactive query over the source tree: a {@link ComputableSource} that IS both the
- * graph node and its FS-side registration. It **attaches** (registers with the source
- * and enumerates the current tree) on its first dependant and **detaches** (unregisters)
- * on its last — so a watch is held exactly while its result is needed, and a reload's
- * orphaned query cleans up with no sweep. When the source has a {@link WatchController}
- * the query is *live*: the source hands each raw change to {@link applyEvent}, and if it
- * was ours we update our files and it asks the controller to re-settle (skipped when the
- * content-manifest is unchanged — a touch). Without a controller register/dispatch are
- * no-ops, so it is a one-shot enumeration that simply never sees an event. Always yields
- * a {@link FileSet}; `get` projects the single file via {@link FileSet.getSingleFile}
- * (a single-file `get` is just a query over a literal, non-glob path).
+ * A query for the files a name selects from a directory tree: a raw
+ * {@link ComputableSource} holding them as a {@link FileSet}, each named by
+ * the name's projection. It attaches on its first dependant, registering with
+ * its source and reading the tree, and detaches on its last, unregistering.
+ * Where the source has a {@link WatchController} the query stays current: the
+ * source passes it each filesystem change ({@link applyEvent}), and a query
+ * the change concerns has the controller settle it again ({@link recompute}),
+ * unless its files are unchanged (a touch). Without one, it reads the tree
+ * once per attach. {@link FSFileSource.get} is a query over a literal path,
+ * read as a single file.
  */
 export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
   /* The query's files as last read, by tree-relative path. */
@@ -129,39 +128,32 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
   /* The paths whose last read failed, with the error a build reports for each. */
   private readonly failed = new Map<string, Error>();
   /* The reads a change event started that have not yet landed in `files`/`failed`;
-   * a build waits for these alone. */
+   * a build waits for these. */
   private readonly pending = new Map<string, Computable<FSFile | undefined>>();
-  /* The name's projection: decides membership (a matched path maps to a name,
-   * undefined drops it) AND names the result — one derivation for enumeration,
-   * live-change filtering and result naming alike. Built once the tree is
-   * enumerated (a bare directory expands to its contents there). */
+  /* The name's projection: a tree path to its result name, or undefined where
+   * the path is no member. Set when the enumeration lands (a bare directory
+   * expands to its contents there). */
   private project: Projector = () => undefined;
+  /* The manifest of the FileSet last settled: a recompute finding the same
+   * settles nothing. */
   private lastManifest: string | undefined;
-  /* The subscription is live from the moment we register (before enumeration
-   * completes), and enumeration is async — so events can arrive while `project`
-   * is still unknown. We buffer them here and replay them once enumeration lands,
-   * rather than dropping them (which would lose a create in that window, or let
-   * the stale enumeration snapshot resurrect a file deleted in it). */
+  /* True from attach until the enumeration has read the tree. Events arriving
+   * meanwhile are held in `pendingEvents` and applied when it lands. */
   private enumerating = true;
   private readonly pendingEvents: [string, boolean][] = [];
-  /* Bumped each attach; captured by that attach's async enumeration so a result
-   * that lands after the query has detached (last dependant left) or reattached
-   * (a newer enumeration is now authoritative) is discarded — see attach. */
+  /* Bumped on each attach. Async work captures it, and drops its result where
+   * the query has since detached or attached again (see isCurrent). */
   private attachGeneration = 0;
-  /* Bumped whenever a new delivery starts — an attach's enumeration, or a watch
-   * recompute. Both build asynchronously, each waiting on the reads pending when it
-   * began, and the two can overlap (an event during the enumeration's own build), so
-   * they can finish in either order: only the latest may settle, or an earlier one
-   * landing afterwards would undo the newer result. Deliberately NOT
-   * folded into attachGeneration, which answers a different question — whose
-   * *mutations* of files/project are still wanted. A recompute bumping that would
-   * make the enumeration about to populate the map discard its own work. */
+  /* Bumped as each build of the FileSet starts: an attach's enumeration, or a
+   * recompute. Builds can overlap and finish in either order, and only the
+   * latest may settle. Keep it apart from attachGeneration: a recompute
+   * bumping that would make an enumeration in flight drop its own work. */
   private delivery = 0;
-  /* The subtree this query walks — the static leading path of its name. An event
-   * outside it can bring in nothing we want, which is what prunes the directory
-   * probe in applyDelta to the paths where it could pay off. */
+  /* The subtree this query walks, its name's static leading path: a change
+   * outside it can add nothing, so only one inside is probed for a new
+   * directory (see applyCreate). */
   private readonly base: string;
-  /* Paths with a directory rescan in flight, so a burst of events over the same new
+  /* Paths with a directory rescan in flight, so a burst of events over one new
    * directory walks it once (see startRescan). */
   private readonly rescanning = new Set<string>();
   /* The key its source holds it under while it is in use (see FSFileSource.query). */
@@ -179,44 +171,36 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
     private readonly root: string,
     private readonly name: Name,
     private readonly prefix: string,
-    /* The enumeration to (re)run per attach: undefined means the standard tree
-     * enumeration (see attach); `get` passes {@link enumerateFile} for its
-     * exact-file semantics, and tests inject one to drive the async enumeration
-     * window deterministically. */
+    /* The enumeration run on each attach: by default the tree walk
+     * ({@link enumerate}); `get` passes {@link enumerateFile}, and a test may
+     * pass its own. */
     private readonly enumerator?: () => Computable<{ names: string[]; project: Projector }>
   ) {
     super();
-    /* staticPath preserves a trailing slash when the name's literal prefix ends in one
-     * (`src/**` → `src/`); shed it, since withinBase appends its own separator. */
+    /* staticPath keeps a trailing slash (`src/**` → `src/`); drop it, since
+     * withinBase adds its own. */
     this.base = staticPath(name).replace(/\/+$/, "");
   }
 
+  /** Become Unresolved, clear what was held, register with the source and
+   * read the tree. The first value settles once the enumeration's files are
+   * read, with the events that arrived meanwhile applied; a failed
+   * enumeration settles its error. */
   protected override attach(): void {
-    /* super.attach() moves us Detached -> Unresolved, i.e. pending — so a reattach
-     * won't briefly serve the stale value while we re-enumerate the current tree
-     * (picking up anything changed while unsubscribed) and settle. */
     super.attach();
-    /* Capture this attach's generation. Enumeration is async, so its result can
-     * land after we have since detached (last dependant left — a superseded watch
-     * evaluation orphaning its subgraph) or reattached (a newer enumeration is now
-     * authoritative). A superseded result must not mutate the shared
-     * file/projection state under a newer attach — the base settle guard can't
-     * cover that (the node is attached again), only the generation can; see
-     * isCurrent for the split. */
     const generation = ++this.attachGeneration;
     this.owner.registerQuery(this);
     this.owner.holdQuery(this);
     this.files.clear();
     this.failed.clear();
     this.pending.clear();
-    /* Detaching left us serving no value, so the memo of what we last delivered is
-     * void too: this attach must deliver afresh, and a recompute meanwhile must not
-     * mistake the current tree for "already delivered". */
+    /* Nothing settled survives a detach, so a recompute must not take the
+     * tree as already settled. */
     this.lastManifest = undefined;
     this.enumerating = true;
     this.pendingEvents.length = 0;
-    /* A fresh enumeration supersedes any probe in flight; the generation check makes
-     * one that lands anyway inert, this just stops it blocking a re-probe. */
+    /* A probe still in flight is dropped when it lands (see isCurrent);
+     * clearing lets its path be probed again. */
     this.rescanning.clear();
     const enumerator = this.enumerator ?? (() => enumerate(this.root, this.name, this.prefix));
     enumerator().then(
@@ -240,14 +224,13 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
   }
 
   /** Take the enumeration's reads and projection, replay the events buffered meanwhile,
-   * and deliver the first value. */
+   * and settle the first value. */
   private enumerated(generation: number, read: ReadonlyArray<IRead>, project: Projector): void {
     this.store(read);
     this.project = project;
     this.enumerating = false;
-    /* Replay events that arrived during the enumeration window against the
-     * now-known projection, before the first settle, so the delivered set is
-     * current (buffered creates added, buffered deletes removed). */
+    /* Apply the events held during the enumeration before the first settle,
+     * so the first value is current. */
     for (const [rel, removed] of this.pendingEvents) {
       this.applyDelta(rel, removed);
     }
@@ -266,15 +249,10 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
     return released;
   }
 
-  /** @return true if the attach that captured `generation` is still the live
-   * one, otherwise false. The
-   * generation check is the load-bearing half for a *reattached* query — the node
-   * is attached again, so the base settle guard passes; only the generation tells
-   * a superseded enumeration from the authoritative one, keeping it from
-   * clobbering the newer attach's file/projection state. The Detached check
-   * short-circuits the work for an orphan that never reattached: its settle would
-   * be dropped at the base anyway (settle is inert while Detached), but there is
-   * no point ingesting/hashing files for a dead node. */
+  /** @return true if the attach that captured `generation` is the current
+   * one and the query is attached, otherwise false. Check it before async work
+   * changes the query's state: after a detach and attach again, the base's
+   * settle guard lets a stale result land. */
   private isCurrent(generation: number): boolean {
     return generation === this.attachGeneration && this.state !== ComputableState.Detached;
   }
@@ -286,13 +264,11 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
     return this.isCurrent(generation) && delivery === this.delivery;
   }
 
-  /** Apply a filesystem change: if `rel` is one of ours, update the file map and return
-   * true (so the source schedules our re-settle); otherwise ignore it and return false. */
+  /** Apply a filesystem change at `rel` (a deletion where `removed`). @return
+   * true if it changed the query's files, for the source to report to the
+   * controller, otherwise false. During the enumeration the event is held,
+   * applied when the enumeration lands, and false returned. */
   public applyEvent(rel: string, removed: boolean): boolean {
-    /* Until the enumeration has listed and read its files, buffer the event to
-     * replay once it lands (see attach), rather than dropping it. Return false so
-     * the source schedules no re-settle now; the enumeration's own deliver()
-     * settles the up-to-date set. */
     if (this.enumerating) {
       this.pendingEvents.push([rel, removed]);
       return false;
@@ -301,17 +277,16 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
   }
 
   /**
-   * Apply a change against the (known) projection: true iff it changed our files *now*.
+   * Apply a change against the known projection. @return true if it changed
+   * the query's files now, otherwise false.
    *
-   * An event may name a directory rather than a file — macOS reports a directory rename
-   * as one delete of the old path and one create of the new, with no per-child events at
-   * all — so neither half can be judged by the projection alone (a file-membership
-   * predicate, which a directory path fails). A removal instead consults what we HOLD,
-   * and a create additionally probes for a subtree to walk.
-   *
-   * A removal is checked against the disk: where the path is still there (a replace
-   * whose events arrived merged or out of order) it is dropped and then read again as
-   * a create, so the query holds what the tree holds now.
+   * An event may name a directory: macOS reports `mv a b` of a directory as
+   * one delete of `a` and one create of `b`, with no event for the files
+   * inside. So a removal drops whatever the query holds at or under the path
+   * ({@link dropSubtree}), and a create also probes the path for a directory
+   * to walk ({@link startRescan}). Where a removed path is still on disk (a
+   * replace whose events arrived merged or out of order), it is then read
+   * again as a create.
    */
   private applyDelta(rel: string, removed: boolean): boolean {
     if (removed) {
@@ -321,12 +296,11 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
     return this.applyCreate(rel);
   }
 
-  /** Apply a create or change at `rel`: @return true if it changed our files now, otherwise false. */
+  /** Apply a create or change at `rel`. @return true if it changed the query's files now, otherwise false. */
   private applyCreate(rel: string): boolean {
-    /* Both arms fire, deliberately. A bare-directory reference matches its own path, so
-     * `mv elsewhere src` takes the literal arm — which ingests to `undefined`, a
-     * directory being no file — and the subtree it just gained is found only by the
-     * rescan. */
+    /* Do both: a bare-directory name matches its own path, so after `mv
+     * elsewhere src` the read of `src` finds no file (a directory reads as
+     * undefined), and only the rescan finds what it holds. */
     const matched = this.project(rel) !== undefined;
     if (matched) {
       this.startRead(rel);
@@ -337,10 +311,9 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
     return matched;
   }
 
-  /** Drop `rel` and everything held beneath it, returning whether anything went. A
-   * directory names no file, so membership here is what we hold rather than what the
-   * projection admits — which is also what lets one event cover a whole subtree (a
-   * rename's outgoing half, or an `rm -rf`). */
+  /** Drop `rel` and everything held under it, from the files, the failed
+   * reads and the pending reads, whatever the projection admits. @return true
+   * if anything was dropped, otherwise false. */
   private dropSubtree(rel: string): boolean {
     const prefix = rel + "/";
     let dropped = false;
@@ -362,15 +335,11 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
   }
 
   /**
-   * Probe a created path for a subtree and walk it — the only way to discover the files
-   * a renamed-in directory now holds, since no per-child events are coming. Reports the
-   * way every other change does: start each file's read, then ask the controller to
-   * re-settle, so the result still lands through one debounced, batched flush rather than a second
-   * settling path of its own (the enumeration self-delivers only because at attach time
-   * there is no value yet, and no batch to join).
-   *
-   * Guarded by the attach generation, like the enumeration: it mutates shared state, so
-   * a result landing under a newer attach must be discarded (see isCurrent).
+   * Probe a created path for a directory, and walk it for the files the
+   * projection admits: start each one's read, and report the change through
+   * {@link FSFileSource.notifyQueryChanged}, so the controller's next batch
+   * applies it. A path is probed once at a time, and a result landing after
+   * a detach or a later attach is dropped (see isCurrent).
    */
   private startRescan(rel: string): void {
     if (this.rescanning.has(rel)) {
@@ -387,8 +356,8 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
           if (names.length === 0 || !this.isCurrent(generation)) {
             return;
           }
-          /* Each read is pending until it lands, so a later event on one of these
-           * paths replaces or drops it as it would any other read. */
+          /* Pending until it lands, so a later event on the path replaces or
+           * drops it. */
           names.forEach(name => this.startRead(name));
           this.owner.notifyQueryChanged(this, names);
         },
@@ -426,9 +395,8 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
     }
   }
 
-  /** Start reading `rel` now, its result held as pending until it lands in the files: a
-   * change event or a rescan reads its file at once, so the source judges it as it
-   * arrives, and a later event on the path supersedes it. */
+  /** Start reading `rel`, holding the read as pending until it lands in the
+   * files; a later event on the path replaces it. */
   private startRead(rel: string): void {
     const generation = this.attachGeneration;
     const reading = this.owner.ingest(rel);
@@ -447,7 +415,8 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
     }
   }
 
-  /** Make the query's FileSet from its files, once the reads pending now have landed. */
+  /** Make the query's FileSet from its files, once the reads pending now have
+   * landed. Rejects with the failed reads' errors combined. */
   private build(): Computable<FileSet> {
     const pending = [...this.pending];
     const files = this.files;
@@ -479,13 +448,12 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
     });
   }
 
+  /** Build the FileSet and settle it, unless the query has since detached,
+   * attached again or started a later build. */
   private deliver(generation: number): void {
     const delivery = ++this.delivery;
     this.build().then(
       fileSet => {
-        /* build() is a further async hop, so re-check: a detach/reattach between
-         * enumeration and here must not settle this (stale) result, and neither may an
-         * enumeration whose build a later recompute has already overtaken. */
         if (!this.isCurrentDelivery(generation, delivery)) {
           return;
         }
@@ -500,13 +468,13 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
     );
   }
 
-  /** WatchController entry: rebuild from the (dispatcher-updated) files and, unless the
-   * content is unchanged (a touch), prepare the batched re-settle. */
+  /** Build the FileSet from the files as events left them, for the
+   * controller's batch. @return the update settling it, or null where the
+   * files are the ones last settled, the enumeration is still running, or the
+   * query has since detached, attached again or started a later build. The
+   * update re-checks the last of these when applied. */
   public recompute(): Computable<PreparedUpdate | null> {
-    /* Mid-enumeration `files` is empty by construction (attach cleared it) and the
-     * projection is unknown, so a build here would report the tree as empty. Nothing to
-     * do: the enumeration's own delivery settles the current set, replaying any events
-     * buffered meanwhile — which is also why applyEvent claims nothing in this window. */
+    /* The enumeration settles the current files itself. */
     if (this.enumerating) {
       return Computable.resolve(null);
     }
@@ -520,20 +488,16 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
       if (manifest === this.lastManifest) {
         return null;
       }
-      /* Advance the memo only when we actually commit the value (in settle), not
-       * here in the prepare phase — so a batch that drops this update (a sibling
-       * failed) leaves lastManifest matching the still-settled value, and the
-       * next recompute sees the change rather than skipping it as unchanged. */
+      /* Advance lastManifest only in settle: a batch that drops this update
+       * leaves it matching the value still settled. */
       return {
         invalidate: () => {
           if (this.isCurrentDelivery(generation, delivery)) {
             this.invalidate();
           }
         },
-        /* Re-checked because the controller applies this *later*, once the whole batch
-         * has been prepared: a detach/reattach or a newer build since means this set is
-         * stale. The memo must not advance either, or the change it describes would look
-         * already-delivered and the next recompute would skip it. */
+        /* The controller applies this once the whole batch is prepared:
+         * re-check, and leave lastManifest alone where this build is stale. */
         settle: () => {
           if (!this.isCurrentDelivery(generation, delivery)) {
             return;
@@ -547,44 +511,39 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
 }
 
 /**
- * A FileSource over a directory on the real filesystem, enumerated on demand
- * (and live under a WatchController).
+ * A FileSource over a directory on disk. `find` and `get` answer with a
+ * {@link TreeQuery}, one per question, shared while in use, and kept current
+ * under a WatchController.
  */
 export class FSFileSource implements FileSource {
-  /** The tree this source serves, as an absolute path. Public because a name's
-   * namespace is root-relative (find/get normalize against it), so a caller
-   * aligning a pattern with this source's namespace rebases against it (see
-   * Name.rebase and the resolver's filesystem arm). */
+  /** The directory this source serves, absolute. Names are relative to it,
+   * so a caller aligning a pattern with this source rebases against it
+   * (Name.rebase). */
   public readonly root: string;
   /**
-   * When present, `find` results are *live*: the source's @parcel/watcher
-   * subscriptions ({@link subscriptions}) re-settle them as files change (batched
-   * through the controller). Absent → one-shot enumeration, no watching. Fixed
-   * at construction, so a source is watching-or-not for its whole life.
+   * Where present, queries are kept current through the source's
+   * subscriptions ({@link subscriptions}), batched by the controller; absent,
+   * each attach reads the tree once. Fixed for the source's life.
    */
   protected readonly watchController?: WatchController;
-  /* The query each distinct name and prefix asked of `find` resolves to, and the one
-   * each path asked of `get` does: one per question, shared by everything that asks it
-   * while it is in use, and forgotten when it detaches. A caller asking while the query
-   * is in use gets its current files, not a fresh walk of the tree. */
+  /* The query for each name and prefix asked of `find`, and each path asked
+   * of `get`: shared by everything that asks while it is attached, and
+   * forgotten when it detaches. */
   private readonly queries = new Map<string, TreeQuery>();
   /**
    * The filesystem subscriptions, one per directory {@link watchedDirectoryOf}
-   * names (relative to the root, `""` for the root itself), each made on the
-   * first watched query that needs it. For an ordinary source that is one
-   * subscription for the whole tree — not one per `find` — so watching scales
-   * and a single edit is not multiplied across overlapping globs.
+   * names (relative to the root, `""` for the root itself), each made for the
+   * first watched query that needs it. An ordinary source has one, for the
+   * whole tree.
    */
   private readonly subscriptions = new Map<string, Promise<parcelWatcher.AsyncSubscription>>();
-  /** The live queries the single subscription dispatches to — one per watched
-   * `find`/`get`. Each adds itself here when it attaches and removes itself when
-   * it detaches (see {@link TreeQuery}); one subscription, not one per query. */
+  /** The attached queries of a watching source, each given every filesystem
+   * change. */
   private readonly registrations = new Set<TreeQuery>();
 
   /**
-   * When present, every file this source reads is copied into this blob pool as it
-   * is hashed, and is read from that copy from then on: content the source does not
-   * own (an installed package) is then held like anything else the cache holds.
+   * Where present, every file this source reads is copied into this blob pool
+   * as it is hashed, and read from the copy from then on.
    * {@link SourceFileSource} copies in its own way and passes none.
    */
   private readonly pool?: BuildCache;
@@ -601,13 +560,11 @@ export class FSFileSource implements FileSource {
     return undefined;
   }
 
+  /** Get the query for the files `name` selects, each named by its
+   * projection with `prefix` ({@link Name.makeProjector}). */
   public find(name: Name, prefix = ""): ComputableSource<FileSet> {
-    /* The name owns the projection (glob + alias-relative / rename naming);
-     * this only supplies the tree to walk. The query is first expressed in
-     * this source's namespace — results are named root-relative (see walk),
-     * so an absolute head (a contributed lib file's reference) must shed the
-     * root or the compiled matcher and the walked names would live in
-     * different domains. The same normalization `get` applies to its path. */
+    /* Rebase onto the root first: results are named relative to it (see
+     * walk), so an absolute name must drop the root, as `get` does. */
     const rebased = name.rebase(this.root);
     return this.query(`find ${prefix}\0${rebased.toGlobString()}`, () => new TreeQuery(this, this.root, rebased, prefix));
   }
@@ -659,13 +616,12 @@ export class FSFileSource implements FileSource {
   }
 
   /**
-   * @return true if a change at `rel` is one fabr itself just made, and so must
-   * not arm a rebuild of its own, otherwise false. `removed` distinguishes a deletion, which needs
-   * its own judgment: a removed file can never be re-read, so the usual
-   * confirm-by-content backstop (ingest) will not run for it. Always false for
-   * a plain filesystem source — nothing writes through one;
-   * {@link SourceFileSource}, which owns the user's tree and is the only thing
-   * that writes back into it, overrides.
+   * @return true if a change at `rel` is one fabr itself just made, and so
+   * must start no batch of its own, otherwise false. `removed` marks a
+   * deletion, which nothing reads again to confirm (see {@link ingest}), so
+   * the judgment must settle it. Always false here;
+   * {@link SourceFileSource}, which writes back into the project's tree,
+   * overrides it.
    */
   protected isExpectedChange(rel: string, removed = false): boolean {
     void rel;
@@ -679,16 +635,11 @@ export class FSFileSource implements FileSource {
   }
 
   /**
-   * Report that a query changed itself, outside the dispatch of a filesystem event —
-   * a directory rescan finding files no event will ever mention (see
-   * {@link TreeQuery.applyEvent}). The controller lives here, not on the query, so this
-   * is how a query reaches it; a no-op when not watching.
-   *
-   * `found` names what the query picked up, so that a rescan of a directory
-   * fabr itself created is deferred like the events for its contents were: the
-   * rescan is the one path where a change reaches the controller without having
-   * passed the dispatch that judges it. Deferred only when EVERY name is ours —
-   * one file we did not write makes the whole rescan a real change.
+   * Report to the controller that `query` changed outside the dispatch of a
+   * filesystem event, as a directory rescan does; a no-op when not watching.
+   * The change is deferred (see WatchController.notifyChanged) where every
+   * name in `found`, the files picked up, is a change fabr made itself
+   * ({@link isExpectedChange}).
    */
   public notifyQueryChanged(query: TreeQuery, found?: readonly string[]): void {
     const defer = found !== undefined && found.length > 0 && found.every(name => this.isExpectedChange(name));
@@ -696,19 +647,19 @@ export class FSFileSource implements FileSource {
   }
 
   /**
-   * Ensure the subscription to `dir` (relative to the root) exists, then hand each
-   * filesystem change to every registered query ({@link TreeQuery.applyEvent}),
-   * scheduling a (debounced) re-settle for each that claims it. Requires
-   * @parcel/watcher 2.5.0 or later: earlier versions can deadlock natively when the
-   * kqueue fallback races a failing FSEvents start.
+   * Ensure the subscription to `dir` (relative to the root) exists, handing
+   * each filesystem change to every registered query
+   * ({@link TreeQuery.applyEvent}) and reporting each query it changed to the
+   * controller. Requires @parcel/watcher 2.5.0 or later: earlier versions can
+   * deadlock natively when the kqueue fallback races a failing FSEvents start.
    */
   private ensureSubscription(controller: WatchController, dir: string): void {
     if (this.subscriptions.has(dir)) {
       return;
     }
-    /* @parcel/watcher reports canonical realpaths, but the directory may be named
-     * through a symlink (macOS /var -> /private/var), so relativise against its
-     * real path and rebase onto its name here, or nothing matches. */
+    /* @parcel/watcher reports real paths, but the directory may be named
+     * through a symlink (macOS /var -> /private/var): take each event relative
+     * to the real path, then onto `dir`. */
     const realDir = fs.realpathSync(path.resolve(this.root, dir));
     const handler: parcelWatcher.SubscribeCallback = (err, events) => {
       if (err) {
@@ -718,12 +669,10 @@ export class FSFileSource implements FileSource {
       for (const event of events) {
         const inner = path.relative(realDir, event.path);
         const rel = toPosix(dir === "" ? inner : inner === "" ? dir : path.join(dir, inner));
-        /* A change fabr itself just made is recorded but not armed — see
-         * notifyChanged's `defer`. Judged on the PATH here because this dispatch
-         * is synchronous; the content is confirmed later, when the ingest that
-         * re-reads the file computes its hash (see SourceFileSource) — except
-         * for a deletion, where there is nothing left to read and the judgment
-         * itself must settle it. */
+        /* A change fabr made itself is deferred (see notifyChanged's
+         * `defer`). It is judged on the path here, the dispatch being
+         * synchronous; its content is confirmed when ingest reads the file
+         * again (see SourceFileSource), except for a deletion. */
         const defer = this.isExpectedChange(rel, event.type === "delete");
         for (const query of this.registrations) {
           if (query.applyEvent(rel, event.type === "delete")) {
@@ -743,9 +692,8 @@ export class FSFileSource implements FileSource {
     controller.track(() => {
       this.subscriptions.delete(dir);
       this.registrations.clear();
-      /* Returned (not fire-and-forget) so the controller awaits the native
-       * unsubscribe before the process exits — an abrupt exit while the kqueue
-       * watcher thread is live crashes with SIGABRT. */
+      /* Return the promise: close waits for the native unsubscribe, since an
+       * exit while the kqueue watcher thread runs crashes (SIGABRT). */
       return subscription.then(
         sub => sub.unsubscribe(),
         () => undefined
@@ -753,9 +701,10 @@ export class FSFileSource implements FileSource {
     });
   }
 
-  /** Turn a tree-relative path into a tracked FSFile. Public because a {@link TreeQuery}
-   * (a separate class) calls it to seed and update its file map; overridable so a subclass
-   * ({@link SourceFileSource}) can blob-back the content. */
+  /** Read the file at tree path `filename` into an FSFile, hashing it, and
+   * copying it into the pool where there is one. Resolves to undefined where
+   * no file is there: the path is gone or names a directory. Called by
+   * {@link TreeQuery}; {@link SourceFileSource} overrides it. */
   public ingest(filename: string): Computable<FSFile | undefined> {
     const filepath = path.resolve(this.root, filename);
     const pool = this.pool;
@@ -771,11 +720,8 @@ export class FSFileSource implements FileSource {
             })
           );
     return ingested.catch(err => {
-      /* Gone since the event fired (the save-rename dance), or the path is a
-       * directory (a not-yet-existing reference whose entry itself surfaced as
-       * an event — see enumerate's not-found branch): either way it is not a
-       * file, so treat it as absent — a later create/change event re-adds real
-       * files — never a hard error. */
+      /* Gone since the event (a save by rename), or a directory: no file. A
+       * later event adds a file that appears. */
       if (isNotFound(err) || isDirectoryError(err)) {
         return undefined;
       }
@@ -783,16 +729,11 @@ export class FSFileSource implements FileSource {
     });
   }
 
+  /** Get the file at `name`, relative to the root or absolute, or undefined
+   * where there is none: a query over the literal path ({@link enumerateFile}),
+   * never expanding a directory there. Under watch it follows the path, so an
+   * edit settles it again and a file created there later fills it. */
   public get(name: string): ComputableSource<IFile | undefined> {
-    /* A single-file get is a query over the literal path with **exact-file**
-     * enumeration ({@link enumerateFile}): the path as a file, or nothing — a
-     * directory at the path is NOT expanded to its contents (the contract says
-     * "a single direct file by exact name", and a subtree walk would also make a
-     * mere existence probe hash a whole tree). Still a live TreeQuery: when
-     * watching, a `.fabr` edit thus cascades (through the loader's memoized
-     * parse) into a model reload, and a file created at the path later fills the
-     * query. The name is normalised to a root-relative path, since callers pass
-     * it either relative (the project entry) or absolute (a resolved include). */
     const target = toPosix(path.relative(this.root, path.resolve(this.root, name)));
     const literal = Name.fromLiteral(target);
     return this.query(
@@ -823,12 +764,12 @@ export const FS = {
 type Projector = (input: string) => string | undefined;
 
 /**
- * Content read straight out of a source tree: per result name, the path under
- * the tree it was read from (the query's projection is not invertible —
- * `pkg/src:**\/*.ts` strips a prefix, a rename template rewrites outright — so
- * the correspondence is recorded as it is made). For the project's own tree it
- * names each file's source path, `./<path>`, which is also how a write-back
- * finds where an updated version of the file belongs.
+ * The provenance step of content read from a directory tree: for each result
+ * name, the path under the tree it was read from, recorded as the projection
+ * names it (a projection cannot be inverted: `pkg/src:**\/*.ts` strips a
+ * prefix, a rename rewrites). For the project's own tree it gives each file's
+ * source path, `./<path>`, which a write-back uses to find where the file
+ * belongs.
  */
 export const SOURCE_TREE_PROVENANCE = "source-tree";
 
@@ -853,10 +794,8 @@ registerProvenanceNaming<ISourceTreeOrigin>(SOURCE_TREE_PROVENANCE, {
   },
 });
 
-/* Renders nothing: the step exists to name files, and every diagnostic that would
- * want the path already shows it (an FS file's display name IS its source
- * path). Registered all the same, so the chain doesn't render a bare
- * "(source-tree)" placeholder for a step that has nothing to add. */
+/* Renders nothing, a file's display name being its path already; registered
+ * so the chain shows no "(source-tree)" placeholder. */
 registerProvenanceRenderer(SOURCE_TREE_PROVENANCE, () => []);
 
 /** How many of a query's files are read at once when it reads many together. */
@@ -870,8 +809,7 @@ interface IRead {
 }
 
 /** Make a FileSet of a query's files, each named by the query's projection, carrying
- * the source-tree provenance that maps those names back to where they were read from.
- * Shared by the one-shot and live `find` paths. */
+ * the source-tree provenance that maps those names back to where they were read from. */
 function buildFileSet(files: ReadonlyMap<string, FSFile>, project: Projector, sourcePathPrefix: string | undefined): FileSet {
   const content = new Map<string, IFile>();
   const paths = new Map<string, string>();
@@ -889,20 +827,18 @@ function buildFileSet(files: ReadonlyMap<string, FSFile>, project: Projector, so
 const WATCH_OPTIONS: parcelWatcher.Options = { ignore: ["**/node_modules/**", "**/.git/**"] };
 
 /**
- * Native watch backend to try when the platform default fails to *start*. macOS
- * FSEvents can refuse to start a stream (resource pressure, sandboxing, a wedged
- * fseventsd) — kqueue is a reliable, if per-fd heavier, fallback. Other platforms'
- * defaults (inotify, ReadDirectoryChangesW) are dependable enough not to need one.
- * (@parcel/watcher's bundled types omit "kqueue" though the native binding supports
- * it, hence the cast.)
+ * The native watch backend tried where the platform default fails to start:
+ * kqueue on macOS, where FSEvents can refuse to start a stream; none
+ * elsewhere. (@parcel/watcher's types omit "kqueue", which its binding
+ * supports, hence the cast.)
  */
 const FALLBACK_BACKEND: parcelWatcher.BackendType | undefined =
   process.platform === "darwin" ? ("kqueue" as unknown as parcelWatcher.BackendType) : undefined;
 
 /**
- * Subscribe to the tree, falling back to {@link FALLBACK_BACKEND} if the default
- * backend fails to start. @parcel/watcher does not auto-fall-back — a start failure
- * rejects the returned promise — so we retry once with the alternate backend.
+ * Subscribe to `dir`, retrying once with {@link FALLBACK_BACKEND} where the
+ * default backend fails to start (@parcel/watcher rejects rather than falling
+ * back itself), and calling `onFallback` then.
  */
 function subscribeWithFallback(
   dir: string,
@@ -925,18 +861,14 @@ function toPosix(p: string): string {
 }
 
 /**
- * The name's static leading path (its `:` alias separator is a path separator on
- * disk): the whole path for a literal name, the walk base for a glob. The
- * naming/membership rule stays on the {@link Name.makeProjector} projection.
- * Exported as the PATH interpretation of a name — what containment must judge
- * (see SourceFileSource.find): the facets and any glob remainder never reach
- * the walk base, so they play no part in where a query can land.
- *
- * The path is normalized (`.`/`..` resolved, separator runs collapsed): result
- * names live in canonical path space — the walk names files by their
- * normalized disk-relative path — so the single-file echo (`toPosix(staticPath)`)
- * and the containment judgment must be canonical too, or a literal name written
- * with a climb (`lib/../tool/run.sh`) would disagree with its own projection.
+ * @return the name's static leading path, its `:` read as a path separator:
+ * the whole path for a literal name, the directory to walk for a glob.
+ * Normalized (`.` and `..` resolved, repeated slashes collapsed), as the walk
+ * names files, so a literal name written with a climb (`lib/../tool/run.sh`)
+ * agrees with its projection. A containment check judges this path (see
+ * SourceFileSource.find): it is all of the name that decides where a query
+ * reads. Which files are members, and their names, is the projection's
+ * ({@link Name.makeProjector}).
  */
 export function staticPath(name: Name): string {
   const literal = name.getLiteralPathPrefix().replaceAll(":", "/");
@@ -958,28 +890,17 @@ function enumerate(root: string, name: Name, prefix: string): Computable<{ names
   if (name.hasGlob()) {
     return walkGlob(root, name, prefix);
   }
-  /* A non-glob reference names either the path itself (when it's a file) or, when
-   * it's a directory, everything beneath it — and which one holds can change over
-   * the query's life, or be unknown when the path doesn't exist yet. So the
-   * membership test is the SAME union in every case — the path, OR anything under
-   * it — making live matching independent of the FS state at enumeration time;
-   * `stat` only seeds the *initial* contents. A directory that matches the literal
-   * side (its own create/modify event) ingests to `undefined` — a directory is
-   * not a file — and drops out (see FSFileSource.ingest), so the set is exactly
-   * the path-as-file or the directory's files, whichever appears on disk. This is
-   * also what lets a bare reference to a not-yet-existing directory fill when its
-   * children are later created. */
+  /* A non-glob name selects the path as a file or, where it is a directory,
+   * every file under it; which holds can change, and the path may not exist
+   * yet. So membership is always both, and `stat` only chooses what is read
+   * now. A directory matched as the path itself reads as no file and drops
+   * out (see FSFileSource.ingest). */
   const file = staticPath(name);
   const abs = path.resolve(root, file);
-  /* The two membership cases each honor a `-> tmpl` rename. `literal` covers the
-   * path-is-a-file case: `makeProjector` renames the single file it names (a
-   * non-glob name's rename is a literal 0-wildcard template — the parser rejects a
-   * mismatch). `subtree` covers the path-is-a-directory case: just as a bare `dir`
-   * expands to `dir/**`, a bare `dir -> out` expands structure-preservingly to
-   * `dir/** -> out/**`, so each file keeps its relative path under the new root
-   * (append the globstar to selector AND template to keep the wildcard counts
-   * balanced). A rename-free name gets the plain subtree glob. The two never
-   * overlap (`dir` vs `dir/…`), so `??` is unambiguous. */
+  /* Each case keeps a `-> tmpl` rename: `literal` renames the one file, and
+   * `subtree` expands `dir -> out` to `dir/** -> out/**`, appending the
+   * globstar to selector and template alike so the wildcard counts match. The
+   * two never overlap (`dir` against `dir/…`). */
   const renameTo = name.getRenameTo();
   const subtreeName = renameTo ? name.appendGlobstar().withRenameTo(renameTo.appendGlobstar()) : name.appendGlobstar();
   const literal = name.makeProjector(prefix);
@@ -994,11 +915,10 @@ function enumerate(root: string, name: Name, prefix: string): Computable<{ names
 }
 
 /**
- * Enumerate exactly the literal file for {@link FSFileSource.get}: the path when it
- * is a regular file, else nothing — no directory expansion, no walk. The
- * projection admits only the path itself, so under watch the query stays exactly
- * a probe of that one path: a file created there later fills it, a directory
- * appearing there ingests to `undefined` (a directory is no file) and stays out.
+ * Enumerate the literal file for {@link FSFileSource.get}: the path where it
+ * is a regular file, else nothing. The projection admits only the path itself,
+ * so under watch a file created there later fills the query, and a directory
+ * there reads as no file.
  */
 function enumerateFile(root: string, name: Name): Computable<{ names: string[]; project: Projector }> {
   const file = staticPath(name);
@@ -1019,12 +939,10 @@ function walkGlob(root: string, name: Name, prefix: string): Computable<{ names:
 
 function walk(root: string, dir: string, project: Projector): Computable<string[]> {
   const names: string[] = [];
-  /* Symlinked entries, resolved after the walk: a symlink is neither file nor
-   * directory to `readdir`, but every other path into the tree follows it (the
-   * literal `stat`, and `ingest` — hence a watch event on the same path), so
-   * excluding it here would make membership depend on history. A symlinked
-   * *directory* is still not descended into (walkTree's own isDirectory test),
-   * which is what keeps the walk finite. */
+  /* Symlinked entries, kept after the walk where they resolve to a file:
+   * `readdir` reports a symlink as neither file nor directory, but `stat` and
+   * `ingest` follow it. A symlinked directory is not descended into
+   * (walkTree's isDirectory test), which keeps the walk finite. */
   const links: string[] = [];
   return walkTree(
     dir,
@@ -1043,8 +961,8 @@ function walk(root: string, dir: string, project: Projector): Computable<string[
   ).then(() => (links.length === 0 ? names : resolveLinks(root, names, links)));
 }
 
-/** Keep the symlinks that resolve to regular files (a dangling link, or one to a
- * directory, is not a file and drops out — exactly as `ingest` would judge it). */
+/** Add to `names` the `links` that resolve to regular files; a dangling link,
+ * or one to a directory, drops out, as `ingest` judges it. */
 function resolveLinks(root: string, names: string[], links: string[]): Computable<string[]> {
   return mapComputable(links, rel =>
     stat(path.resolve(root, rel)).then(

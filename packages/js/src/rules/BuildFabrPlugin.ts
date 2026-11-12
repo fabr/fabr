@@ -18,11 +18,12 @@
  */
 
 /**
- * The `fabr_plugin` target as a package: the `js_package` it is, with its
- * `.fabr` files (`libs` and `optional_libs`) added, at that package's name,
- * version and requirements. Its `package.json` is the `js_package`'s, named as
- * the plugin and listing the `.fabr` files under `"@fabr-build/plugin"`, which
- * marks it a plugin. This is the plugin as it is published and installed.
+ * The fabr_plugin[build] rule: build the plugin as the `js_package` it is,
+ * with its `.fabr` files (`libs` and `optional_libs`) added at their paths,
+ * keeping that package's name, version and requirements. Its `package.json` is
+ * the `js_package`'s, named as the plugin and listing the `.fabr` files under
+ * `"@fabr-build/plugin"`, which marks it a plugin. The result is the plugin as
+ * it is published and installed.
  */
 
 import {
@@ -45,10 +46,10 @@ import jsPackage from "./BuildJSPackage";
 
 const MANIFEST = "package.json";
 
-/** The `fabr_plugin` rule, under `build`: the plugin built as the `js_package` it is, with its `.fabr` files laid in and its `package.json` naming them. */
+/** The `fabr_plugin` rule, under `build`. */
 export default defineRule({
   requirements(context) {
-    /* js_package states its requirements as a Computable of named records. */
+    /* js_package's `requirements` returns a Computable of named records. */
     const stated = jsPackage.requirements!(context) as Computable<ResolutionSpec<Record<string, RequiredSources>>>;
     return stated.then(spec => ({
       ...spec,

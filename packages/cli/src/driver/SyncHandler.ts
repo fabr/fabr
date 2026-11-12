@@ -26,17 +26,18 @@ const DIAG_PUBLISH_SKIPPED = Diagnostic.Warn<{ destination: string; blockedBy: s
 );
 
 /**
- * Publish a release's members — a plain walk, in the given order: the sync rule
- * already yields its carriers deps-first (BuildSync's publishOrder), so each
- * member uploads (`destination.source.publish`, the destination's own
- * mechanics, reported as its own task) only after every member it depends on. Best-effort: a member whose
- * upload fails does not abort the rest, but its dependants are skipped rather
- * than published dangling (matched via the carriers' `provides`/`dependsOn`
- * tokens), and any member that didn't land makes the overall sync a failure so
- * the process exits non-zero. Uploads run sequentially.
+ * Publish a release's members one at a time, in the order given, each through
+ * its destination (`destination.source.publish`) as a task of its own. The
+ * order must put each member after the members it depends on, as the sync
+ * rule's carriers come.
+ *
+ * A failed upload is logged and the rest go on. A member whose `dependsOn`
+ * names a token `provides`d by a member that failed or was skipped is skipped,
+ * with a warning. Settles once every member has been tried, rejecting with a
+ * FabrError counting the members not published where any was not.
  */
 export function publishSync(execution: ExecutionContext, members: ReadonlyArray<PublishableFileSet>): Computable<void> {
-  const unavailable = new Set<string>(); /* tokens provided by members that failed or were skipped */
+  const unavailable = new Set<string>(); /* The tokens provided by members that failed or were skipped. */
   let failures = 0;
   const markUnavailable = (member: PublishableFileSet): void => {
     failures++;

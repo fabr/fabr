@@ -29,8 +29,8 @@ import { resolveBarePackage } from "../resolver/PackageResolver";
 import { RepositoryReader } from "../core/Repository";
 
 /**
- * Make the {@link RepositoryReader} serving ONE declared package from content — what
- * a `repository_group` **content route** constructs:
+ * Make the {@link RepositoryReader} for a `repository_group` content route:
+ * one package, `name`, served from the files `source` names.
  *
  * ```
  * fetch @dl { amperize.tgz = "https://codeload.github.com/…/<sha>" "sha256-…"; }
@@ -41,24 +41,21 @@ import { RepositoryReader } from "../core/Repository";
  * }
  * ```
  *
- * The route's value is the package; everything package-shaped about it is
- * derived from ONE pure question asked of the ecosystem's format —
- * {@link PackageFormat.readContentPackage}, the manifest read, taken lazily
- * (the content is only materialized when a resolution actually consults this
- * member). The registry mechanics around the answer are ecosystem-free:
- * exactly one version available (a range requirement anywhere in the graph
- * raises to it via the ordinary floor-raise, or fails loudly naming it), its
- * requirements joining the domain's joint resolution like anyone else's, and
- * the resolved dependency edges wired by the delivery driver exactly as for a
- * registry-served package. Read-only by construction: no publish vend
- * (getRepositoryPublishRef), so a publish coordinate routed here is refused
- * by the group's pass-through.
+ * The package's version and requirements are what `format`'s
+ * {@link PackageFormat.readContentPackage} reads from the manifest in the
+ * content, which is materialized only when a resolution first asks the
+ * reader for something. The reader publishes exactly that one version: a
+ * requirement on `name` whose lower bound is another version is answered with
+ * it where its constraint allows (`lowestAvailable`), and is otherwise a
+ * VersionNotFoundError naming the version there is. Its requirements are
+ * resolved with the rest of the resolution's, as a published package's are.
  *
- * The environment key IS the resolution-relevant projection of the content —
- * the declared version and requirements, canonically serialized and hashed —
- * so an edit that changes them invalidates the domain's resolution memo, and
- * nothing else does (a description tweak re-resolves nothing; delivery reads
- * the actual content each run regardless).
+ * `environmentKey` is a hash of the version and requirements the manifest
+ * declares, so a resolution memo changes only where they do.
+ *
+ * Errors reading the content are reported against the route (`content route
+ * '<name>' in <group>`): content that is no file set, no usable manifest, or a
+ * manifest naming a package other than `name`.
  */
 export function contentPackageMember<V, C>(
   format: PackageFormat<V, C>,
@@ -66,7 +63,7 @@ export function contentPackageMember<V, C>(
   name: string,
   source: SourceRef
 ): RepositoryReader<V, C> {
-  /* Where this route was declared, for error attribution. */
+  /* The route, as errors name it. */
   const site = `content route '${name}' in ${context.name}`;
 
   let loaded: Computable<{ files: FileSet; content: IContentPackage<V> }> | undefined;
@@ -88,20 +85,18 @@ export function contentPackageMember<V, C>(
         });
       })
       .catch(err => {
-        /* Re-position a content/manifest error at the declaring route. */
+        /* Report the error against the route. */
         const cause = toError(err);
         throw new FabrError(`${site}: ${cause.message}`, cause);
       }));
 
   const member: RepositoryReader<V, C> = {
     format,
-    /* For the resolution memo key: WHICH member serves the name. The content's
-     * resolution-relevant identity rides environmentKey — it is not knowable
-     * synchronously. */
+    /* Which route this is, for the resolution memo key; what its content
+     * declares is in environmentKey. */
     identity: `content:${name}`,
 
-    /* Same authority as environmentKey's facts: the context this route was
-     * declared under. */
+    /* The operation of the configuration the route was declared in. */
     operation: context.operation,
 
     fetchFiles: (reference): Computable<FileSet> => Computable.resolve(undefined).then(() => resolveBarePackage(member, reference)),
@@ -120,9 +115,9 @@ export function contentPackageMember<V, C>(
     getRequirements: (pkg, version) =>
       load().then(({ content }) => {
         if (pkg !== name || format.compare(version, content.version) !== 0) {
-          /* Typed as unpublished, not failed: the resolver's floor-raise then
-           * consults lowestAvailable, which answers with the one version there
-           * is — so a range requirement lands on the declared content. */
+          /* Reject as unpublished: the resolver then asks lowestAvailable,
+           * which answers with the declared version where the constraint
+           * allows it. */
           return Computable.reject(
             new VersionNotFoundError(
               pkg,
@@ -135,9 +130,8 @@ export function contentPackageMember<V, C>(
         return Computable.resolve(content.requirements);
       }),
 
-    /* The floor-raise hook: a constraint whose literal minimum is not the
-     * declared version raises to it iff it satisfies the range. An unparseable
-     * constraint is no raise, not an error (advisory path). */
+    /* Answer with the declared version where it satisfies `constraint`. An
+     * unparseable constraint is answered with nothing, not an error. */
     lowestAvailable: (_pkg, constraint) => {
       let parsed: C;
       try {

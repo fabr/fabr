@@ -50,8 +50,7 @@ import {
 } from "./Errors";
 import { compareText } from "../support/Functional";
 
-/** All failures render through one template: describe() produces the final
- * message, and the structured detail (span, label, notes, help) rides along. */
+/** The diagnostic every failure is reported as, its message and detail made by describing the failure. */
 const DIAG_FAILURE = Diagnostic.Error<{ message: string }>("{message}");
 
 type IDiagnostic = { message: string } & IDiagnosticDetail;
@@ -65,10 +64,8 @@ const NO_RULE_VERBS = new Map([
 ]);
 
 /**
- * Converts a build failure (tree) into human-readable diagnostics on the log:
- * owns every detail of how an error report reads. {@link reportFailure} uses
- * the default {@link DiagnosticErrorFormatter}; an alternative presentation
- * (JSON, IDE integration) implements the same interface.
+ * A presentation of a build failure (a tree of errors) as diagnostics on a log.
+ * {@link reportFailure} uses the default, {@link DiagnosticErrorFormatter}.
  */
 export interface ErrorFormatter {
   report(log: Log, err: Error): void;
@@ -80,6 +77,7 @@ interface IHop extends IDiagnosticNote {
   inferred?: true;
 }
 
+/** One chain of "required by" hops that reached a failure, outermost first. */
 interface Trail {
   notes: IHop[];
   /** The outermost requirer (the requested target this trail descends from). */
@@ -87,10 +85,9 @@ interface Trail {
 }
 
 /**
- * The diagnostics of one report, deduplicated by rendered content: the same
- * root cause can surface as distinct error instances from several collection
- * points, and can be reached through several dependant chains — it gets one
- * diagnostic carrying every distinct requirer trail, not one copy per path.
+ * The diagnostics of one report: one per distinct message, location and notes,
+ * however many errors produced it, each with every distinct trail that reached
+ * it.
  */
 class PendingReport {
   private readonly pending = new Map<string, { diagnostic: IDiagnostic; trails: Trail[] }>();
@@ -119,8 +116,7 @@ class PendingReport {
           shortestByRoot.set(root, notes);
         }
       }
-      /* Trails accumulate outermost-first during descent; the report reads
-       * outward from the failure, so each renders nearest dependant first */
+      /* A trail is held outermost first; render it nearest requirer first. */
       const trailNotes = [...shortestByRoot.values()].flatMap(trail => [...trail].reverse());
       /* A trail hop can restate a note the cause already made (a cycle's own
        * "required by" hops are also the trail that reached it) — say it once. */
@@ -132,21 +128,23 @@ class PendingReport {
 }
 
 /**
- * The default presentation: each root cause is reported once, anchored at the
- * written reference that induced it where one is known (falling back to the
- * failing target's declaration), with the chain of dependants that required
- * it rendered as "required by <target> <property>" notes underlining each
- * written reference.
+ * The default presentation of a failure. Each root cause is reported once,
+ * however many paths reach it, located at the written reference that led to it
+ * where one is known and otherwise at the failing target's declaration. The
+ * targets that required it follow as "required by <target> <property>" notes,
+ * each at the reference written, keeping the shortest trail from each
+ * requested target. A target's execution failures are reported together as
+ * one diagnostic. A BuildFilesInvalidError reports nothing: its errors were
+ * reported while the project was loaded.
  */
 export class DiagnosticErrorFormatter implements ErrorFormatter {
-  /** Ambient constraint keys (host facts, BUILD_OPERATION), elided from every
-   * constraint display exactly as progress lines elide them. */
+  /** The constraint keys left out of every constraint shown (host facts,
+   * BUILD_OPERATION), as progress lines leave them out. */
   constructor(private readonly ambientConstraintKeys: ReadonlySet<string> = AMBIENT_CONSTRAINT_KEYS) {}
 
   public report(log: Log, err: Error): void {
-    /* The build files were invalid: each error was already reported as its own
-     * positioned diagnostic while loading, and this error only marks the run as
-     * failed. Nothing to render — the driver's "Build failed" line follows. */
+    /* Each error in the build files was reported while loading; this one only
+     * marks the run failed. */
     if (err instanceof BuildFilesInvalidError) {
       return;
     }
@@ -156,13 +154,12 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
   }
 
   /**
-   * Traverse the failure tree: fan out aggregates, turn each written-reference
-   * crossing into a "required by" hop on the trail, descend through dependant
-   * failures (`owner` is the nearest enclosing failed target, the anchor for
-   * causes that carry no position of their own), and describe each root cause.
-   * `root` names the outermost requirer (the requested target the current trail
-   * descends from), captured at the first hop — the report keeps one trail per
-   * root, so alternate longer paths to an already-shown root are dropped.
+   * Walk the failure tree `err`, adding each root cause to `report` with the
+   * trail that reached it. Each aggregate's errors are walked in turn; each
+   * written reference crossed adds a "required by" hop to `trail`. `owner` is
+   * the nearest enclosing failed target, where a cause with no location of its
+   * own is reported. `root` is the outermost requirer of the trail, set at its
+   * first hop.
    */
   private walk(
     report: PendingReport,
@@ -180,16 +177,15 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
       this.walk(report, err.cause, [...trail, hop], owner, err.target ? (root ?? declName(err.target)) : root);
     } else if (err instanceof DependencyFailedError) {
       const causes = err.cause instanceof MultiError ? err.cause.errors : [err.cause];
-      /* Mechanical failures of the target's execution report as one group */
+      /* The target's execution failures are reported as one diagnostic. */
       const execution = causes.filter(cause => cause instanceof ExecutionError);
       for (const cause of causes.filter(cause => !(cause instanceof ExecutionError))) {
-        /* A dependency reached without a written reference of the target's own
-         * gets a hop against the requiring declaration. That is a rule
-         * resolving a target directly, a GLOBAL the target reached (one its rule
-         * read, or one a property of its named), whose value says nothing of who
-         * wanted it, or a reference another declaration wrote (a catalog's
-         * entry, reached by a member of the catalog). A sub-target is part of
-         * its declared target. */
+        /* A cause the target reached without a written reference of its own
+         * gets a hop at the target's declaration: a rule resolving a target
+         * directly, a global the target reached (one its rule read, or one a
+         * property of its named), or a reference another declaration wrote (a
+         * catalog's entry, reached by a member of the catalog). A sub-target's
+         * failure is part of its declared target's and gets none. */
         const direct =
           (cause instanceof DependencyFailedError && !cause.isPart) ||
           (cause instanceof ReferenceFailedError && cause.target !== err.target);
@@ -222,22 +218,14 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
       return { message: cause.message + site, loc: cause.position, help: helpOf(cause) };
     }
     if (cause instanceof ConflictError) {
-      /* Both contributors that claim `key`, each traced to where it was written;
-       * the concrete detail keeps identical-provenance conflicts diagnosable.
-       * The two sides render whether or not the conflict arose inside a target
-       * build (an ownerless one has no enclosing DependencyFailedError). */
-      /* When both sides trace to the same source (a case-collision within one
-       * package — both names have the same origin, keyed on the same path), the
-       * two chains are identical: render it once and list both files, rather than
-       * repeating the whole breadcrumb per side. */
-      /* Only where a chain was rendered: the note places the file WITHIN that
-       * chain, and with no chain to place it in it just restates what the
-       * message already said. */
+      /* Notes trace each side claiming `key` to where it was written. Where both
+       * sides have one provenance (a case collision within one package), the
+       * chain is rendered once, followed by both sides' details. A side's
+       * `detail` is noted ("at <detail>") only where its chain is rendered. */
       const detailNote = (side: typeof cause.left): IDiagnosticNote[] =>
         side.detail !== undefined && side.provenance !== undefined ? [{ message: `at ${side.detail}` }] : [];
       const sameSource = cause.left.provenance !== undefined && cause.left.provenance === cause.right.provenance;
-      /* No label passed, so a side with no provenance contributes no note at
-       * all (the message already names both sides). */
+      /* A side with no provenance adds no note. */
       const notes = sameSource
         ? [...this.chainNotes(cause.left.provenance, undefined, cause.key), ...detailNote(cause.left), ...detailNote(cause.right)]
         : [cause.left, cause.right].flatMap(side => [...this.chainNotes(side.provenance, undefined, cause.key), ...detailNote(side)]);
@@ -270,14 +258,12 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
   }
 
   /**
-   * Describe a name that resolves to itself: anchored at the reference that closed the
-   * cycle — the mistake — with the rest of the loop following as the usual
-   * "required by" notes. A self-reference has no such hop, so it instead points
-   * at the declaration the name reached: the evidence that it resolved to a
-   * target, which the like-named path it reads as would not be (and which need
-   * not be anywhere near the reference). A projection makes that name shadowing
-   * (`js_package base { srcs = base:*.ts; }`), so it also gets the `./` spelling
-   * that reaches the path as help.
+   * Describe a dependency cycle, located at the reference that closed it, with
+   * the rest of the cycle as "required by" notes. A name that resolves to
+   * itself has no other hop, so its note points at the declaration the name
+   * reached instead; where the reference projects from that name
+   * (`js_package base { srcs = base:*.ts; }`), the help gives the `./` spelling
+   * that names the path.
    */
   private describeCircular(cause: CircularDependencyError): IDiagnostic {
     const [closing, ...rest] = cause.cycle;
@@ -304,9 +290,9 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
     };
   }
 
-  /** Describe a target whose type no rule matched: anchored at the declaration, the verb
-   * from the operation in effect, only the override constraints shown. What the
-   * type *does* support is the remedy, named as the command that would do it. */
+  /** Describe a target no rule of its type applies to: located at its
+   * declaration, the verb from the operation in effect, only the constraints not
+   * ambient shown, with {@link noRuleHelp}'s help. */
   private describeNoRule(cause: NoRuleFoundError): IDiagnostic {
     const operation = operationOf(cause.constraints);
     const verb = NO_RULE_VERBS.get(operation) ?? `perform '${operation}' on`;
@@ -320,11 +306,12 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
   }
 
   /**
-   * Describe a requirement that failed to resolve, anchored at the reference behind it
-   * when that reference was written in the failing target itself; otherwise —
-   * a reference carried in from a dependency, or none written at all — at the
-   * failing target, with every culprit reference as a note saying where it was
-   * written.
+   * Describe a requirement that failed to resolve. Where its first reference
+   * was written in the failing target (or none is failing), it is located at
+   * that reference, with the reference's substitutions and provenance as notes.
+   * Otherwise (a reference carried in from a dependency, or none written) it is
+   * located at the failing target, with every reference's provenance as notes.
+   * The provenance of each build the error names is noted too.
    */
   private describeRequirement(cause: RequirementResolutionError, owner: DependencyFailedError | undefined): IDiagnostic {
     const help = helpOf(cause);
@@ -366,7 +353,8 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
     return { message, loc: declPosn(err.target) };
   }
 
-  /** Render a provenance chain as notes, or a no-origin fallback line. */
+  /** Render a provenance chain as notes; where it renders none and `label` is
+   * given, a note that `label` has no origin information. */
   private chainNotes(chain: IProvenanceStep | undefined, label?: string, path?: string): IDiagnosticNote[] {
     const notes = renderProvenance(chain, { path, elideConstraintKeys: this.ambientConstraintKeys });
     if (notes.length === 0 && label !== undefined) {
@@ -375,8 +363,8 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
     return notes;
   }
 
-  /** Render the full provenance chain of each culpable reference as notes,
-   * from where what it delivered came from where `delivered` records that. */
+  /** Render the provenance chain of each reference as notes: the chain
+   * `delivered` records for what it resolved to, else the reference's own steps. */
   private refNotes(refs: ReadonlyArray<Reference>, delivered: ReadonlyMap<Reference, IProvenanceStep> = new Map()): IDiagnosticNote[] {
     return refs.flatMap(ref => this.chainNotes(delivered.get(ref) ?? chainSteps(ref.steps, undefined), ref.toString()));
   }
@@ -475,10 +463,10 @@ function describeCause(cause: Error, owner: string): string {
 const DEFAULT_FORMATTER: ErrorFormatter = new DiagnosticErrorFormatter();
 
 /**
- * Summarize in one line why `err` happened, for a mark beside the work that failed
- * (the failure report stays the full account): the innermost cause's message,
- * or for a failed command its exit status; several failures by the first and a
- * count. Undefined for an error with nothing to say.
+ * Summarize in one line why `err` happened, for a mark beside the work that
+ * failed: the innermost cause's message (an execution error's last line), or
+ * for a failed command how it ended; several failures by the first and a
+ * count. @return undefined for an error with nothing to say.
  */
 export function errorSummary(err: Error): string | undefined {
   if (err instanceof MultiError) {
@@ -500,8 +488,8 @@ export function errorSummary(err: Error): string | undefined {
 }
 
 /** Report a failed evaluation through `log`, rendered by the default
- *  {@link DiagnosticErrorFormatter} — the one error-reporting path, shared by
- *  the driver's catch sites and the facade's watch channel. */
+ *  {@link DiagnosticErrorFormatter}. The driver and the facade's watcher
+ *  report failures through it. */
 export function reportFailure(log: Log, err: Error): void {
   DEFAULT_FORMATTER.report(log, err);
 }

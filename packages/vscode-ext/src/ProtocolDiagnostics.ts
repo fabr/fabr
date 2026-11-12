@@ -80,7 +80,7 @@ export function toDiagnostic(diagnostic: IProtocolDiagnostic): vscode.Diagnostic
   return shown;
 }
 
-/** @return `json`, a list of diagnostics, as diagnostics: one that is no diagnostic is left out, and anything but a list is none. */
+/** @return the diagnostics in `json`, leaving out any entry (or related information) that is not one; none where `json` is not a list. */
 export function toProtocolDiagnostics(json: unknown): IProtocolDiagnostic[] {
   if (!Array.isArray(json)) {
     return [];

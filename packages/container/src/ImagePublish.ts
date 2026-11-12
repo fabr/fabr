@@ -63,12 +63,14 @@ interface ILayerSource {
 }
 
 /**
- * Package a member for its registry: its image's manifest, layers compressed,
- * and its config. A layer fetched from a registry keeps the form it was
- * published in, and is had from there when pushed; a layer built here is
- * gzip-compressed, the same bytes for the same layer anywhere, cached by its
- * `diff_id`. The carrier holds the manifest, the config, the compressed layers
- * built here, and where the others are had from.
+ * Package a member for its registry, as the `PublishableFileSet` (the carrier)
+ * `pushImage` pushes: the image's manifest, its config, the compressed layers
+ * built here, and where each other layer is fetched from.
+ *
+ * A layer fetched from a registry keeps the form it was published in, and is
+ * fetched from there when pushed. A layer built here is gzip-compressed, the
+ * same bytes for the same layer on any machine, cached by its `diff_id`.
+ * Throws where the member's content is not an image.
  */
 export function packageImage(context: TargetContext, member: PublishMember): Computable<PublishableFileSet> {
   const image = member.content;
@@ -131,9 +133,9 @@ function publishedLayer(
 }
 
 /**
- * Gzip `tar` into `out` at a fixed level, the header's OS byte fixed (`unix`),
- * so the bytes depend on the layer alone and not on the machine; its time is
- * already none.
+ * Gzip `tar` into `out` at a fixed level, with the header's OS byte fixed
+ * (`unix`), so the bytes depend on the layer alone; node's gzip header carries
+ * no time.
  */
 function compressLayer(tar: IFile, out: string): Computable<void> {
   return contentStream(tar).then(source =>
@@ -162,11 +164,12 @@ function compressLayer(tar: IFile, out: string): Computable<void> {
 }
 
 /**
- * Push a carrier `packageImage` made to `registry`, under the repository and
- * tag its destination names: each blob the repository lacks mounted from the
- * repository it was published to where that is on the same registry, else
- * uploaded (a layer published elsewhere had from there), then the manifest.
- * Already synced where the tag names that manifest.
+ * Push a carrier `packageImage` made to `repository` on `registry`, under the
+ * tag its destination names: each blob the repository lacks, then the
+ * manifest. A blob is mounted from the repository it was published to where
+ * that is on the same registry, else uploaded (a layer published on another
+ * registry is streamed from there).
+ * @return "already-synced" where the tag already names the manifest, else "published".
  */
 export function pushImage(
   context: TargetContext,

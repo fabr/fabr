@@ -47,8 +47,9 @@ export interface CatalogEntry {
   readonly pin?: Pin;
 }
 
-/** The pins a migration adds for a package no manifest declares: a raised
- * floor, or a version for a package required only without a lower bound. */
+/** The kinds of pin a migration adds for a package no manifest declares: a
+ * lower bound raised to what the lockfile installs (`raise`), or a version for
+ * a package required only without a lower bound (`floorless`). */
 export type Pin = "raise" | "floorless";
 
 /** The catalog of a project: its entries by address, and the versions of each
@@ -69,10 +70,13 @@ export class Catalog {
     return (scope === undefined ? undefined : this.scopeRegistries.get(scope)) ?? NPM;
   }
 
-  /** Make `packageName`'s entry at least `version`, keeping a `~` the entry was
-   * written with, and `note` it; add one, a `pin`, where the catalog has none.
+  /**
+   * Set the range of `packageName`'s entry to `^version` (`~version` where the
+   * entry's range is written with `~`), with `note`. Where the catalog has no
+   * entry, add one marked `pin`; an entry a manifest declared stays unmarked.
    * A forced entry is left as it is.
-   * @return true if the entry changed, otherwise false. */
+   * @return true if the entry changed, otherwise false.
+   */
   public raise(packageName: string, version: string, pin: Pin, note?: string): boolean {
     const held = this.entries.get(packageName);
     const prefix = held?.range.trim().startsWith("~") ? "~" : "^";
@@ -105,9 +109,13 @@ export function entryReference(entry: CatalogEntry): string {
   return `${entry.repository}:${entry.packageName}:${rangeText(entry.range)}${entry.forced ? "!" : ""}${rename}`;
 }
 
-/** @return "raise" where `incoming`'s floor is higher than `held`'s within one
- * major, "differ" where they are of different majors, and "" otherwise
- * (equal, lower, floorless, or a prerelease floor, which never wins). */
+/**
+ * Compare the lower bounds of the ranges `incoming` and `held`.
+ * @return "raise" where `incoming`'s is higher than `held`'s in the same
+ * major, or `held` has none; "differ" where the two are in different majors;
+ * otherwise "" (equal or lower, `incoming` has no lower bound or a prerelease
+ * one, or either is no semver range).
+ */
 export function compareFloors(incoming: string, held: string): "raise" | "differ" | "" {
   const a = constraintOf(incoming);
   const b = constraintOf(held);
@@ -128,13 +136,12 @@ export function compareFloors(incoming: string, held: string): "raise" | "differ
   return compareVersions(fa, fb) > 0 ? "raise" : "";
 }
 
-/** @return the highest of `versions`. */
+/** @return the highest of `versions`, or undefined where there are none. */
 export function highest(versions: Iterable<string>): string | undefined {
   return [...versions].sort((a, b) => compareVersions(parseVersion(a), parseVersion(b))).pop();
 }
 
-/** @return the name a package writes a named pnpm catalog's version of `name`
- * under, where it differs from the default catalog's. */
+/** @return the address of a named pnpm catalog's version of `name`, for where it differs from the default catalog's: `<name>-<catalog>`. */
 function namedCatalogAddress(name: string, catalog: string): string {
   return `${name}-${catalog}`;
 }
@@ -145,11 +152,30 @@ export interface CatalogAddress {
 }
 
 /**
- * Build the catalog of `workspace` from what its manifests declare (the root's
- * first, then each workspace package's), its pnpm catalogs and its overrides, and say
- * where each package's registry dependencies are in it. `addressOf(manifest,
- * name)` is undefined for a dependency the catalog holds no entry for, which
- * is reported here.
+ * Build the catalog of `workspace` from what its manifests declare, its pnpm
+ * catalogs and its overrides, and say where each manifest's registry
+ * dependencies are in it.
+ *
+ * Manifests are read the root's first, then each workspace package's, every
+ * block but `peerDependencies` before any peers; a dependency a manifest has
+ * already given an address is not read again, and a workspace package's own
+ * name is skipped. By spec:
+ * - a registry spec makes an entry under the dependency's name;
+ * - a `catalog:` spec makes an entry from the pnpm catalog's spec, under the
+ *   dependency's name, or `<name>-<catalog>` for a named catalog whose spec
+ *   differs from the default catalog's;
+ * - a dist-tag makes an entry at `^` the highest version the lockfile
+ *   installs;
+ * - a peer makes no entry where one exists under its name.
+ *
+ * Where two manifests name one address, a higher lower bound in the same major
+ * replaces a lower; different majors, or two packages under one address, keep
+ * the first. Overrides are then applied (see {@link applyOverrides}).
+ *
+ * `addressOf(manifest, name)` is undefined for a dependency the catalog holds
+ * no entry for. Everything not converted as written (a patch, a named catalog,
+ * a dist-tag, a disagreement, a spec that is not from a registry) is reported
+ * to `report`.
  */
 export function buildCatalog(
   workspace: Workspace,
@@ -168,8 +194,8 @@ export function buildCatalog(
     return version === undefined ? undefined : `^${version}`;
   };
 
-  /* Record an entry a manifest states under its address, a higher floor in
-   * one major replacing a lower. */
+  /* Record an entry a manifest states under its address, a higher lower bound
+   * in the same major replacing a lower. */
   const offer = (address: string, packageName: string, range: string, from: string): void => {
     const held = catalog.entries.get(address);
     if (held === undefined) {
@@ -198,8 +224,8 @@ export function buildCatalog(
 
   const keyOf = (manifest: Manifest, name: string): string => `${manifest.dir}\0${name}`;
   const manifests = [workspace.rootManifest, ...workspace.packages.filter(manifest => manifest !== workspace.rootManifest)];
-  /* Peers state the range a consumer must supply, usually wide: they make an
-   * entry only where nothing else names the package. */
+  /* Read peers in a second pass: a peer makes an entry only where nothing
+   * else names the package. */
   for (const peers of [false, true]) {
     for (const manifest of manifests) {
       const from = manifest.dir === "" ? "package.json" : `${manifest.dir}/package.json`;
@@ -208,8 +234,8 @@ export function buildCatalog(
           continue;
         }
         for (const [name, text] of [...(manifest.blocks.get(block) ?? [])].sort(([a], [b]) => compareText(a, b))) {
-          /* A workspace package's name is that package, however its spec is written: a
-           * package manager links the workspace's own packages. */
+          /* Skip a workspace package's name however its spec is written: package
+           * managers link the workspace's own packages. */
           if (addresses.has(keyOf(manifest, name)) || packageNames.has(name)) {
             continue;
           }
@@ -276,12 +302,17 @@ export function buildCatalog(
 }
 
 /**
- * Apply the project's overrides to `catalog`. An override is a substitution,
- * fabr's `!`, and is written as one where it says the same thing: it is not
- * scoped to a path or a range, its value is an exact version, and it is the
- * only override of its package. Any other is a floor on the package: its
- * entry where the catalog has none, else, unscoped, a raise of the entry's
- * floor; any other override is reported and left out.
+ * Apply the project's overrides to `catalog`, reporting each that is not
+ * written as a forced entry:
+ * - one not scoped to a path or a range, whose value is an exact version and
+ *   which is the only override of its package, becomes a forced (`!`) entry,
+ *   replacing any entry of the package;
+ * - any other, where the package has no entry, becomes its entry, at the
+ *   override's range;
+ * - an unscoped one whose lower bound raises the entry's (see
+ *   {@link compareFloors}) replaces the entry's range;
+ * - the rest, and any whose value is not a registry spec for its package
+ *   (npm's `$name` read as the root's spec for `name`), are left out.
  */
 function applyOverrides(workspace: Workspace, catalog: Catalog, report: Report): void {
   const count = new Map<string, number>();

@@ -34,62 +34,53 @@ import { BuildEvent, BuildListener, TaskDescription } from "./BuildEvents";
 import { TaskProgress, TaskState } from "../support/Tasks";
 
 /**
- * The driver's terminal, for the rare interaction a protocol genuinely requires
- * mid-run (an npm publish demanding a second factor). Present on the
- * ExecutionContext only when fabr is attached to an interactive terminal;
- * absent under redirection/CI, which a caller treats as "non-interactive" and
- * turns into a typed error naming the unattended alternatives. Model and rule
- * code never reads or renders the terminal itself — it asks through this
- * surface, and the driver owns how the asking looks.
+ * The driver's terminal, for an interaction a protocol requires mid-run (an
+ * npm publish asking for a second factor). Present on the ExecutionContext
+ * only when fabr is attached to an interactive terminal; a caller that finds
+ * it absent fails with an error naming the unattended alternatives.
  */
 export interface UserInteraction {
   /** Ask a one-line question on the terminal; resolves to the line entered. */
   prompt(question: string): Computable<string>;
   /**
-   * Send the user's browser to `url` for a ceremony performed there,
-   * announced with `purpose`. The URL itself is always displayed, so a failed
-   * launch — or a remote session with no local browser — still leaves it
-   * actionable. Resolves once the browser has been dispatched; the ceremony's
-   * completion is observed by the caller (e.g. by polling), not here.
+   * Open the user's browser at `url`, announced with `purpose`; the URL is
+   * displayed too. Resolves once the browser has been launched: the caller
+   * finds out itself when the user has finished there (e.g. by polling).
    */
   openUrl(url: string, purpose: string): Computable<void>;
 }
 
 /**
- * What issues tokens naming the CI job fabr runs in (GitHub Actions, GitLab,
- * CircleCI: OIDC ID tokens), which a destination exchanges for a short-lived
- * credential in place of a stored one. Present on the ExecutionContext only
- * where the job has an identity. Read by publish steps alone, never by a
- * build; a token must reach no cache key, log line or error.
+ * The issuer of OIDC identity tokens naming the CI job fabr runs in (GitHub
+ * Actions, GitLab, CircleCI), which a publish destination exchanges for a
+ * short-lived credential. Present on the ExecutionContext only where the job
+ * has an identity. Only publish steps read it; a token must reach no cache
+ * key, log line or error.
  */
 export interface IdentityProvider {
   /** Get a freshly issued identity token (a JWT) for `audience`. */
   token(audience: string): Computable<string>;
-  /** The build the job is, which a provenance statement records; absent for a
-   *  job whose provenance isn't stated. */
+  /** The job's build, as a provenance statement records it; absent where the
+   *  job states none. */
   readonly build?: ISlsaBuild;
 }
 
 /**
- * A typed handle a plugin uses to stash its own per-run state on the
- * ExecutionContext — the plugin equivalent of core simply holding a field here.
- * One key per plugin; `T` is the plugin's context object. Identity is by object
- * (the `name` is debug-only), so two keys never collide even with the same name.
- * A plugin declares one as a module constant and reads its state back through
- * {@link ExecutionContext.getOrCreatePluginContext}.
+ * A key a plugin keeps its per-run state under on the ExecutionContext, read
+ * with {@link ExecutionContext.getOrCreatePluginContext}; `T` is the state's
+ * type. Keys compare by identity (`name` is for debugging), so a plugin
+ * declares one as a module constant.
  */
 export class PluginKey<T> {
   constructor(public readonly name: string) {}
-  /* Makes T load-bearing at the type level (never assigned). */
+  /* Ties T to the type; never assigned. */
   declare private readonly _type: T;
 }
 
 /**
- * The monotonic build-cycle counter, shared by the watch controller (which
- * advances it once per applied batch, before the graph re-settles) and the
- * execution (which turns each advance into a `cycle-start` event). The
- * controller is built first, with the source FS the execution then holds, so
- * both are wired to one instance.
+ * The build-cycle counter, starting at 0. The watch controller advances it
+ * once per batch of changes it applies, and the ExecutionContext sharing it
+ * emits a `cycle-start` for each advance.
  */
 export class BuildCycle {
   private count = 0;
@@ -99,130 +90,107 @@ export class BuildCycle {
     return this.count;
   }
 
-  /** Advance to the next build cycle (watch mode, before re-settling the
-   *  graph), notifying observers with the new cycle's number. */
+  /** Advance to the next build cycle, notifying observers with its number. */
   public advance(): void {
     this.count++;
     this.observers.forEach(observer => observer(this.count));
   }
 
-  /** Observe each advance — how the execution turns the watch controller's
-   *  cycle boundary into a `cycle-start` build event. */
+  /** Call `observer` with the new cycle's number on each advance. */
   public onAdvance(observer: (cycle: number) => void): void {
     this.observers.push(observer);
   }
 }
 
 /**
- * The fixed runtime surroundings of a build run, as distinct from the model
- * (which is purely the declarations as written): the build cache to run
- * against, the driver's diagnostic log, and its build-event listeners.
- * Constructed by the driver and threaded through getConfig(), so every
- * BuildContext of a run — including the constraint-override configs spawned
- * during evaluation — shares the one instance.
+ * The runtime surroundings of a build run, shared by every BuildContext of
+ * the run (it is passed to `BuildModel.getConfig`): the build cache, the file
+ * sources, the driver's log, the build-event listeners, the process limit and
+ * the per-run settings the driver makes (forced targets, `retryFailed`, the
+ * terminal and CI identity).
  *
- * The `log` is here as a run-surrounding the *driver* reads (status lines, the
- * failure tree); the model still only ever emits BuildEvents and never logs —
- * reporting stays the driver's job.
+ * The `log` is for the driver to write to; model code emits BuildEvents and
+ * typed errors, and never logs.
  */
 export class ExecutionContext {
   public readonly buildCache: BuildCache;
   public readonly log: Log;
-  /**
-   * The project's source tree (the tree containing PROJECT.fabr), watched when
-   * watch mode is enabled.
-   */
+  /** The project's source tree (the tree containing PROJECT.fabr), watched in
+   *  watch mode. */
   public readonly sourceFileSource: FileSource;
   /**
-   * A FileSource for reading files by absolute path, for general host filesystem
-   * access — the loader's plugin/core lib `.fabr` files, and absolute config a
-   * repository consults (e.g. a user `~/.npmrc`). Not watched, and nothing read
-   * through it is copied into the cache: what it reads may be credentials.
+   * A FileSource reading files by absolute path: the loader's plugin and core
+   * `.fabr` files, and configuration a repository reads (a user `~/.npmrc`).
+   * Not watched. Nothing read through it is copied into the cache, as it may
+   * read credentials.
    */
   public readonly absFileSource: FileSource;
   /**
-   * A FileSource for the files of fabr's own installation by absolute path, each
-   * read as a copy in the blob pool, so an installed package can be staged like
-   * anything else the cache holds (`fabr_home`). Not watched.
+   * A FileSource reading the files of fabr's own installation by absolute path
+   * (`fabr_home`), each copied into the cache's blob pool so it can be staged.
+   * Not watched.
    */
   public readonly installedFileSource: FileSource;
   /**
-   * A FileSource for the host's files by absolute path, read where they lie and
-   * identified by content — the programs `@host` names. Watched where the run
-   * watches, a directory at a time.
+   * A FileSource reading the host's files by absolute path where they lie,
+   * identified by content: the programs `@host` names. Watched in watch mode,
+   * a directory at a time.
    */
   public readonly hostFileSource: FileSource;
   /** The build-cycle counter, shared with the watch controller (which advances it). */
   private readonly cycle: BuildCycle;
-  /** The build-event subscribers (the driver's renderer, and the execution's
-   *  own built-target record). */
+  /** The build-event subscribers, in subscription order. */
   private readonly listeners: BuildListener[] = [];
-  /** Whether any subscriber asked for `task-output` events; with none, a step
-   *  is given no output sink and captures instead. */
+  /** True if any subscriber asked for `task-output` events; with none, a
+   *  task is given no output sink. */
   private wantsOutput = false;
-  /** Identities for {@link runTask}; per-run, so a listener may key its own
-   *  per-task state (a start time, a pane row) by them. */
+  /** The next task id {@link runTask} gives out; ids are unique per run. */
   private nextTaskId = 1;
   /**
-   * The targets this run must rebuild even when their outputs are already
-   * cached (the driver's `-f`) — for timing a build step whose inputs have not
-   * changed. Held by *declaration*, so it says exactly what the command line
-   * named: a target's own sub-targets are forced with it (they are its work,
-   * asked through their declared owner — see `BuildContextImpl.runAction`),
-   * its dependencies are not, and neither is decided by inference. Nothing is
-   * forced by default.
+   * The declarations of the targets this run rebuilds even where their
+   * outputs are cached (the driver's `-f`). A forced target's sub-targets are
+   * forced with it (`BuildContextImpl.runAction` asks of their declared
+   * owner); its dependencies are not.
    */
   private readonly forcedTargets = new Set<ITargetDecl>();
 
-  /** Mark a target as one to rebuild rather than serve from cache. The mark is
-   * on the DECL, so it covers every target that decl produces, under every
-   * constraint set. */
+  /** Mark `target` to be rebuilt rather than served from the cache, under
+   *  every constraint set. */
   public forceTarget(target: ITargetDecl): void {
     this.forcedTargets.add(target);
   }
 
+  /** @return true if `target` is marked to be rebuilt, otherwise false. */
   public isForced(target: ITargetDecl): boolean {
     return this.forcedTargets.has(target);
   }
 
   /**
-   * Whether a red test run served from the cache is performed again rather
-   * than served (the driver's `--retry-failed`): once, from its own last run,
-   * so a step that keeps per-test-file state reruns only what failed or
-   * changed; its outcome is committed like any other. What succeeds stays a
-   * cache hit.
+   * True if a failed test run found in the cache is performed again rather
+   * than served (the driver's `--retry-failed`). It is retried once, from its
+   * own last run, so a step keeping per-test-file state reruns only what
+   * failed or changed; the outcome is committed like any other.
    */
   public retryFailed = false;
-  /** The interactive terminal, when there is one — see {@link UserInteraction}.
-   * Set by the driver only when attached to a tty; its absence is the
-   * "non-interactive run" signal. */
+  /** The interactive terminal, set by the driver only when attached to a tty
+   *  (see {@link UserInteraction}). */
   public interaction?: UserInteraction;
   /** The CI job's identity provider, when the job has an identity — see
    * {@link IdentityProvider}. Set by the driver. */
   public identityProvider?: IdentityProvider;
   /**
-   * Bounds how much of the run's work runs at once — the run-wide execution
-   * budget, shared by every BuildContext of the run.
-   *
-   * The unit admitted is the *process execution*, acquired around exactly the
-   * process lifetime by `execute`/`executePipeline` — a command pipeline's
-   * stages are pipe-wired and must co-run, so a pipeline is ONE unit (admitting
-   * its stages individually could wedge it half-started) — and a step's own
-   * staging and collection, admitted through `ActionContext.admit`. Admissions
-   * are never nested: a step holds no slot while waiting for another, so there
-   * is no hold-and-wait, and a step may fan out as many executions as it likes
-   * (the per-file test run). Cache hits and the resolution memos sharing that
-   * cache queue for nothing.
+   * The run-wide limit on work running at once, one slot per CPU. A slot is
+   * held for a process's lifetime by `execute`/`executePipeline` (a whole
+   * pipeline takes one slot, since its stages must run together), and for a
+   * step's staging and collection through `ActionContext.admit`. Never hold a
+   * slot while acquiring another: that could deadlock. Cache hits take none.
    */
   public readonly processLimit = new Semaphore(availableParallelism());
-  /** Per-run state a plugin keeps here, keyed by its {@link PluginKey}. Lazily
-   *  populated on first access (see {@link getOrCreatePluginContext}). */
+  /** The per-run state plugins keep here, by {@link PluginKey}. */
   private readonly pluginContexts = new Map<PluginKey<unknown>, unknown>();
-  /** The top-level (directly-requested) targets that had tasks performed for
-   * them since the last {@link endCycle}, reported on the cycle-end event. A
-   * dependency's build is attributed to the outermost requester on its demand
-   * chain, so the set answers "which of the run's requests did this cycle do
-   * work for". Fed by {@link recordBuiltTarget}. */
+  /** The names of the directly requested targets that had tasks performed for
+   *  them since the last {@link endCycle}, reported on the cycle-end event; a
+   *  dependency's task counts for the outermost target that required it. */
   private readonly builtTargets = new Set<string>();
 
   constructor(
@@ -230,8 +198,7 @@ export class ExecutionContext {
     log: Log,
     sourceFileSource: FileSource,
     absFileSource: FileSource,
-    /* Shared with the watch controller (which advances it); defaulted so a
-     * non-watch construction — including tests — gets its own. */
+    /* Shared with the watch controller, which advances it. */
     cycle: BuildCycle = new BuildCycle(),
     hostFileSource: FileSource = hostFiles(buildCache),
     installedFileSource: FileSource = new FSFileSource("/", undefined, buildCache)
@@ -243,28 +210,27 @@ export class ExecutionContext {
     this.installedFileSource = installedFileSource;
     this.cycle = cycle;
     this.hostFileSource = hostFileSource;
-    /* Subscribed first, so the built-target record is current by the time any
-     * later listener sees the same event. */
+    /* Subscribed first, so the record is current when any other listener
+     * sees the event. */
     this.onBuildEvent(event => this.recordBuiltTarget(event));
     this.cycle.onAdvance(count => this.emit({ kind: "cycle-start", cycle: count }));
   }
 
   /**
-   * Designate `evaluation` as the run's evaluation: each of its settlements
-   * ends the current cycle. Called once per run ({@link Fabr.evaluate}); were a
-   * second chain ever observed, {@link endCycle}'s guard keeps a cycle from
-   * being reported twice.
+   * Designate `evaluation` as the run's evaluation: each of its settlements,
+   * changed or not, ends the current cycle with a cycle-end. Called once per
+   * run, by {@link Fabr.evaluate}; a cycle is never ended twice.
    */
   public observeEvaluation(evaluation: ComputableSource<unknown>): void {
     /* The chain's dependant list keeps the sink alive; nothing to store. */
     new ComputableHandle(source => this.endCycle(source.state === ComputableState.Error)).seat(evaluation);
   }
 
-  /** The last cycle a cycle-end was emitted for — the once-per-cycle guard. */
+  /** The last cycle a cycle-end was emitted for. */
   private lastEndedCycle = -1;
 
-  /** Emit the cycle-end for the current cycle, carrying everything built since
-   *  the last report. */
+  /** Emit the cycle-end for the current cycle, unless already emitted, with
+   *  the targets built since the last one. */
   private endCycle(failed: boolean): void {
     const cycle = this.cycle.current;
     if (cycle === this.lastEndedCycle) {
@@ -277,26 +243,27 @@ export class ExecutionContext {
   }
 
   /**
-   * Subscribe to the build event stream. `output: true` additionally requests
-   * `task-output` events; with no output subscriber (`-q`, a headless run) a
-   * step captures its subprocess output and reports it only on failure.
+   * Subscribe `listener` to the build-event stream. `output: true` also asks
+   * for `task-output` events; with no subscriber asking, a step's process
+   * output is shown only in a failure. The listener must not throw: an
+   * exception propagates into whatever emitted the event.
    */
-  /* Listeners must not throw: an exception propagates into whatever emission
-   * point fired (a task's create path, the watch flush). */
   public onBuildEvent(listener: BuildListener, options?: { output?: boolean }): void {
     this.listeners.push(listener);
     this.wantsOutput ||= options?.output === true;
   }
 
   /**
-   * Perform `run` as one tracked task: emits task-start now and task-end when
-   * the returned chain settles, either way. `run` receives the task's
-   * {@link ITaskReport} for streaming its output, phases, and progress.
+   * Perform `run` as one task described by `task`: emits task-start now and
+   * task-end when the returned chain settles or `run` throws. `run` is given
+   * the task's {@link ITaskReport}, for its output, its slot activity, its
+   * progress and a failure of its own (`fail`), which ends the task failed
+   * while its result still resolves.
    */
   public runTask<T>(task: TaskDescription, run: (report: ITaskReport) => Computable<T>): Computable<T> {
     const id = this.nextTaskId++;
-    /* Each task-progress carries the latest of both halves, so any single
-     * status event is the task's whole condition. */
+    /* Each task-progress carries both the current state and the latest
+     * measure. */
     let state: TaskState = "running";
     let latest: TaskProgress | undefined;
     let failure: Error | undefined;
@@ -318,8 +285,8 @@ export class ExecutionContext {
     this.emit({ kind: "task-start", id, task, state });
     const end = (failed: boolean, error?: unknown): void =>
       this.emit({ kind: "task-end", id, task, failed, ...(failed ? { error: toError(error) } : {}) });
-    /* A synchronous throw must still end the task, or the start dangles (a
-     * phantom "running" row for the rest of a watch session). */
+    /* End the task on a synchronous throw too, or its start is never
+     * paired. */
     let chain: Computable<T>;
     try {
       chain = run(report);
@@ -339,15 +306,13 @@ export class ExecutionContext {
     );
   }
 
-  /** Get this run's state for `key`, or undefined if no plugin has established it
-   *  yet. Use {@link getOrCreatePluginContext} to read-or-initialize in one step. */
+  /** Get this run's state for `key`, or undefined if none has been made. */
   public getPluginContext<T>(key: PluginKey<T>): T | undefined {
     return this.pluginContexts.get(key as PluginKey<unknown>) as T | undefined;
   }
 
-  /** Get this run's state for `key`, creating it on first access via `create` (so a
-   *  plugin's per-run state — e.g. a parsed `.npmrc` — is built once and shared by
-   *  all its instances across the run's BuildContexts). */
+  /** Get this run's state for `key`, made with `create` on first access and
+   *  shared by every BuildContext of the run. */
   public getOrCreatePluginContext<T>(key: PluginKey<T>, create: () => T): T {
     let context = this.getPluginContext(key);
     if (context === undefined) {
@@ -362,12 +327,11 @@ export class ExecutionContext {
     this.listeners.forEach(listener => listener(event));
   }
 
-  /** Record the top-level target a task serves: the building target itself
-   *  when directly requested, else the outermost requester on its demand chain
-   *  (`requiredBy` is nearest-first, so its last element). */
+  /** Record the directly requested target a target-build task serves: the
+   *  target itself, or the last of its `requiredBy` (nearest first). */
   private recordBuiltTarget(event: BuildEvent): void {
-    /* A labelled sub-task re-adds its owner (its description spreads the
-     * owner's target/requiredBy); the Set absorbs the duplicate. */
+    /* A sub-target's task names its owner's target, which may already be in
+     * the set. */
     if (event.kind === "task-start" && event.task.kind === "target-build") {
       const { target, requiredBy } = event.task;
       this.builtTargets.add(declName(requiredBy.length > 0 ? requiredBy[requiredBy.length - 1] : target));

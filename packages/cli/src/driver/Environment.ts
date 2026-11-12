@@ -26,10 +26,10 @@ import { FabrError, HOST, hostTriple, PROJECT_FILENAME } from "@fabr-build/core"
 export const BUILD_CACHE_ENV = "FABR_CACHE_DIR";
 
 /**
- * Walk up the source tree until we find the PROJECT.fabr file
- * that marks the top of the project.
- * @returns The absolute directory name.
- * @throws Error if the file is not found.
+ * Find the project root: the nearest directory, from the cwd up, holding a
+ * readable PROJECT.fabr.
+ * @returns its absolute path.
+ * @throws FabrError where no directory up to the filesystem root holds one.
  */
 export async function getSourceRoot(): Promise<string> {
   let dir = process.cwd();
@@ -40,8 +40,7 @@ export async function getSourceRoot(): Promise<string> {
     } catch {
       const parent = path.dirname(dir);
       if (parent === dir) {
-        /* Reached the filesystem root without finding a project marker: report
-         * the actual situation, not the raw `access` ENOENT on `/PROJECT.fabr`. */
+        /* Reached the filesystem root without finding a project marker. */
         throw new FabrError(`No ${PROJECT_FILENAME} found in ${process.cwd()} or any parent directory — is this a fabr project?`);
       } else {
         dir = parent;
@@ -51,10 +50,10 @@ export async function getSourceRoot(): Promise<string> {
 }
 
 /**
- * @return the root of our build cache (which may or may not exist at this point),
- * always absolute: a relative `FABR_CACHE_DIR` is anchored to the invocation cwd
- * once, here, since the store's paths outlive the cwd (a launched program runs
- * in its own directory).
+ * @return the build cache's root directory, which may not exist yet:
+ * `FABR_CACHE_DIR` where set, else `fabr` under the platform's cache directory.
+ * Always absolute (a relative `FABR_CACHE_DIR` is resolved against the cwd), so
+ * it stays valid for a program fabr launches in another directory.
  */
 export function getBuildCacheRoot(): string {
   const explicitDir = process.env[BUILD_CACHE_ENV];
@@ -66,8 +65,9 @@ export function getBuildCacheRoot(): string {
 }
 
 /**
- * @return the location in which we should store 'cache' application data,
- * following platform conventions where possible.
+ * @return the platform's directory for application cache data:
+ * `~/Library/Caches` on macOS, `LOCALAPPDATA` (or `APPDATA`) on Windows, else `XDG_CACHE_HOME`
+ * or `~/.cache`.
  */
 function getBaseCacheDir(): string {
   switch (os.platform()) {
@@ -82,10 +82,8 @@ function getBaseCacheDir(): string {
 }
 
 /**
- * Get the host machine facts injected as ambient constraints at every getConfig site.
- * A single HOST platform triple (`arm64-apple-macosx15.0`, …) — TARGET defaults to
- * it (STD.fabr) and consumers gate on TARGET; the npm/native mapping lives in
- * core's Platform helper.
+ * Get the constraints describing the host machine, which the driver gives every
+ * configuration: `HOST`, its platform triple (`arm64-apple-macosx15.0`).
  */
 export function getHostProperties(): Record<string, string> {
   return {

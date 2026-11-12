@@ -23,30 +23,20 @@ import { Constraints } from "./Constraints";
 import type { IFetchTask, IRepositoryResolveTask, TaskProgress, TaskState } from "../support/Tasks";
 
 /**
- * A BuildEvent generated to report build progress.
- *
- * Event types:
- *   - cycle-start - The beginning of a build cycle. For one-shot builds, there
- *      will be exactly one cycle; For watched builds, a new cycle is initiated
- *      when changes are detected (but note only one cycle will ever be active
- *      at a time.
- *   - task-start - The beginning of an individual build task, which may be
- *      an execution, a fetch, or a resolve step. Any number of tasks may be
- *      in flight at once, and can be distinguished by the task id.
- *   - task-progress - An update to the state of an individual build task.
- *   - task-output - Output text reported from the build task
- *   - task-end - The completion of an individual build task (successfully or not)
- *   - cycle-end - The end of a build cycle once all tasks have settled.
- *
+ * An event reporting build progress, delivered to the listeners subscribed
+ * with `ExecutionContext.onBuildEvent`. A run is a series of cycles, one at a
+ * time; any number of tasks may be in flight within a cycle, told apart by
+ * their `id`.
  */
 export type BuildEvent = ICycleStartEvent | ICycleEndEvent | ITaskStartEvent | ITaskProgressEvent | ITaskOutputEvent | ITaskEndEvent;
 
+/** A subscriber to the build-event stream. It must not throw. */
 export type BuildListener = (event: BuildEvent) => void;
 
 /**
- * A new build cycle opening: Either the initial graph build on startup
- * (cycle 0) or the watch controller is about to apply a batch of
- * changes, and the work that follows belongs to cycle `cycle`.
+ * Cycle started - fires when watch mode is about to apply a batch of changes;
+ * the work that follows belongs to `cycle`. The first cycle (0) has no
+ * cycle-start: the stream begins in it.
  */
 export interface ICycleStartEvent {
   kind: "cycle-start";
@@ -55,27 +45,33 @@ export interface ICycleStartEvent {
 
 /**
  * Cycle ended - fires when all builds within the cycle are settled (and before
- * any subsequent new cycle begins)
+ * any subsequent new cycle begins). Fires once per cycle, even where nothing
+ * changed; a cycle superseded before it settles gets none.
  */
 export interface ICycleEndEvent {
   kind: "cycle-end";
   cycle: number;
+  /** True if the run's evaluation settled with an error. */
   failed: boolean;
+  /** The directly requested targets that had a task performed for them this
+   *  cycle (a dependency's task counts for the target that required it). */
   built: string[];
 }
 
 /**
- * Base task event.
+ * The fields every task event carries.
  */
 export interface ITaskEvent {
+  /** The task's identity, unique within the run; two tasks may share a
+   *  description. */
   id: number;
   task: TaskDescription;
 }
 
 /**
- * Task started - fired when work begins on a task: an action on its cache-miss
- * path, a fetch, or a resolve. `state` is always "running" here; a task that
- * then queues for an execution slot reports "waiting" through task-progress.
+ * Task started - fires when work begins on a task: a build action on a cache
+ * miss, a fetch, a resolve or a publish. `state` is always "running" here; a
+ * task that then queues for an execution slot reports "waiting" in task-progress.
  */
 export interface ITaskStartEvent extends ITaskEvent {
   kind: "task-start";
@@ -83,9 +79,9 @@ export interface ITaskStartEvent extends ITaskEvent {
 }
 
 /**
- * Task state update - fired whenever the task's state changes (running or
+ * Task progress - fires whenever the task's state changes (running or
  * waiting), and whenever it reports a new progress measure (bytes fetched,
- * tests run).
+ * tests run). Each event carries both the state and the latest measure.
  */
 export interface ITaskProgressEvent extends ITaskEvent {
   kind: "task-progress";
@@ -94,32 +90,33 @@ export interface ITaskProgressEvent extends ITaskEvent {
 }
 
 /**
- * Task output - fired when a task generates text output (typically from execution).
+ * Task output - fires per line of output from a task's processes; only when a
+ * listener subscribed with `output: true`.
  */
 export interface ITaskOutputEvent extends ITaskEvent {
   kind: "task-output";
   line: string;
-  /** Which of the child's streams it came from. Carried because only the child
-   *  can say, and nothing downstream can recover it — never as a severity (see
-   *  {@link OutputStream}). */
+  /** The process stream the line came from; not a severity. */
   stream: OutputStream;
 }
 
 /**
- * Task ended - fired when a task completes and its results have been collected.
+ * Task ended - fires when a task completes, successfully or not.
  */
 export interface ITaskEndEvent extends ITaskEvent {
   kind: "task-end";
+  /** True if the task's work rejected, or it reported a failure of its own (a
+   *  red test run). */
   failed: boolean;
-  /** The error that ended a failed task — for a mark beside the task to say
-   *  why. The failure itself is reported by rejection, not by this event. */
+  /** The error that ended a failed task, for a one-line summary beside it;
+   *  the failure itself is reported by the evaluation's rejection. */
   error?: Error;
 }
 
 /**
- * A target being built (on a build-cache miss) — either a declared target or
- * an anonymous sub-target of one. Rendered as "Building X" for a declared
- * target, or e.g. "Compiling X" for a labelled sub-target.
+ * A target being built on a cache miss: a declared target or a sub-target of
+ * one. Rendered as "Building X" for a declared target, or e.g. "Compiling X"
+ * for a labelled sub-target.
  */
 export interface ITargetBuildTask {
   kind: "target-build";
@@ -130,8 +127,8 @@ export interface ITargetBuildTask {
   /** The targets that required this one, nearest requester first; empty for a
    *  directly-requested target. */
   requiredBy: ITargetDecl[];
-  /** For an anonymous sub-target: the action verb used as its display verb
-   *  ("Compiling"); absent for a declared target. */
+  /** For a labelled sub-target, the participle to render it with
+   *  ("Compiling"); absent otherwise. */
   label?: string;
   /** For a target of a rule's block, or one made for it: the name the block
    *  gives it and those of the block targets it is built for, innermost first
@@ -140,10 +137,8 @@ export interface ITargetBuildTask {
 }
 
 /**
- * A `` `cmd` `` substitution being run (on a cache miss). Unlike every other
- * build action this belongs to no target — it may be written in a global, which
- * has none — so it describes itself by the command as written rather than
- * borrowing a target's name.
+ * A `` `cmd` `` substitution being run on a cache miss. It belongs to no
+ * target (it may be written in a global), so it is named by its command.
  */
 export interface ICommandSubstTask {
   kind: "command-subst";
@@ -161,7 +156,7 @@ export interface IPublishTask {
 }
 
 /**
- * What a task *is*: a build action, a repository resolution, a download, a
- * command substitution, or a publish.
+ * The description of a task: a target build, a repository resolution, a
+ * download, a command substitution, or a publish.
  */
 export type TaskDescription = ITargetBuildTask | IRepositoryResolveTask | IFetchTask | ICommandSubstTask | IPublishTask;

@@ -48,10 +48,10 @@ import {
 
 /**
  * The step that runs a Java test suite: stage the install, run the runner once
- * on every test class, and collect its CTRF report, and the coverage report
- * of a measured run beside it. A run whose tests failed is a result like a
- * green one, and enters the cache: its report says what failed, and its task
- * ends as failed. A run that wrote no report fails with the runner's own output.
+ * over every test class, and collect its CTRF report, with the coverage report
+ * of a measured run beside it. A run whose tests failed is still a result and
+ * is cached: its report says what failed, and its task ends as failed. A run
+ * that wrote no usable report fails with the runner's own output.
  */
 const JAVA_TEST_STEP: IBuildActionDefinition = { id: "java:test-run", version: 4, run: runTests };
 
@@ -62,8 +62,8 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
   return ctx
     .admit(report, () => writeFileSet(ctx.workDir, staged))
     .then(() =>
-      /* Tests run with no environment of their own: nothing ambient can change what they do. The
-       * report carries the outcome, so the runner's output is kept for a failure, not streamed. */
+      /* Run with an empty environment. Keep the runner's output for a failure rather than
+       * streaming it: the report carries the outcome. */
       execute(
         ctx.processLimit,
         findExecutable(argv[0], ctx.workDir),
@@ -86,7 +86,12 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
     .then(result => ({ result }));
 }
 
-/** @return the run's report, or throw where the run went wrong in a way its report does not explain. */
+/**
+ * @return the run's report. Throws the run's own `error` where the run failed
+ * and its report is unreadable or records no failed test, and an
+ * ExecutionError naming `invocation` where the run succeeded but its report is
+ * unreadable.
+ */
 function judgeRun(workDir: string, invocation: string[], error: Error | undefined): ITestReport {
   let report: ITestReport;
   try {

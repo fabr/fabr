@@ -18,12 +18,11 @@
  */
 
 /**
- * The js_package[run] rule: make a package runnable via its declared bins. It
- * *depends on* js_package[build] (resolves this package under build, cached —
- * never repeating its work), then mounts it (and its resolved dep closure) as
- * node_modules and launches a declared bin under node — so `fabr run @some/pkg`
- * runs its CLI: the sole bin by default, else the one a projection picks
- * (`fabr run pkg:cmd`).
+ * The js_package[run] rule: make the package that js_package[build] builds
+ * runnable by the bins its `package.json` declares (every executable directly
+ * under `bin/`). The package and every package it requires are installed as
+ * `node_modules` and the bin is launched under node: the sole bin, or the one
+ * a projection names (`fabr run pkg:cmd`).
  */
 
 import { BUILD_OVERRIDE, FabrError, PackageFileSet, defineRule } from "@fabr-build/core";
@@ -31,11 +30,8 @@ import { makeNpmRunnable } from "../JSPackage";
 
 /** The `js_package` rule, under `run`. */
 export default defineRule({
-  /* The requirement is this package under build (the ambient operation here is
-   * run), so its carried deps resolve at this collection point: a carried @types
-   * dep needing @types/node is satisfied by the package's own explicit
-   * @types/node dep, in the same batch. The package is made runnable via its
-   * generated package.json bin, the same path an external `@npm:` package takes. */
+  /* Require this package under `build`, in this target's `run` collection, so
+   * the packages it requires resolve together there. */
   requirements(context) {
     return { run: { pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE) } };
   },

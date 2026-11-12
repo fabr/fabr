@@ -103,11 +103,10 @@ export interface Log {
 }
 
 /**
- * A Log decorator that forwards every diagnostic unchanged while counting the
- * error-level ones. A batch phase that reports diagnostics *instead of* throwing
- * (parsing recovers to collect several errors; sema/validation collates
- * best-effort) can then be detected as failed by its caller — wrap the log for
- * the phase, then check {@link errorCount} to decide whether to proceed.
+ * A Log that forwards every diagnostic to `inner` and counts the error-level
+ * ones. Wrap the log for a phase that reports errors rather than throwing
+ * (parsing, validation), then check {@link errorCount} to decide whether to
+ * go on.
  */
 export class ErrorTrackingLog implements Log {
   private errors = 0;
@@ -168,9 +167,8 @@ function codePointWidth(cp: number): number {
 }
 
 /**
- * Count the columns `text` occupies on a terminal — NOT `String.length`, which
- * counts UTF-16 code units. Expects plain text: strip escapes first
- * ({@link stripAnsi}).
+ * Count the columns `text` occupies on a terminal (not `String.length`, which
+ * counts UTF-16 code units). Strip escapes from it first ({@link stripAnsi}).
  */
 export function displayWidth(text: string): number {
   let width = 0;
@@ -181,9 +179,9 @@ export function displayWidth(text: string): number {
 }
 
 /**
- * Cut `text` to its longest prefix occupying at most `columns` columns, at a
- * code-point boundary with zero-width followers kept beside their base, so a
- * surrogate pair is never split and a combining mark never orphaned.
+ * Cut `text` to its longest prefix occupying at most `columns` columns,
+ * cutting only between code points and never between a character and a
+ * zero-width one after it.
  */
 export function cutToWidth(text: string, columns: number): string {
   let width = 0;
@@ -222,12 +220,9 @@ export class LogFormatter implements Log {
       return;
     }
     const message = diagnostic.message(params);
-    /* A diagnostic with neither a resolvable primary position nor any secondary
-     * detail stays a plain one-liner (progress and status lines depend on this
-     * form). But notes/help are meaningful even without a primary span — e.g. a
-     * conflict raised outside any target build (the driver's own cat/ls/run
-     * `unionAll`) has two attributed sides but no owning declaration to anchor —
-     * so render the block whenever there is detail to show. */
+    /* A diagnostic with neither a resolvable position nor notes or help is a
+     * plain `level:message` line (progress and status lines rely on this);
+     * anything else is a block, a positionless one still showing its notes. */
     const positioned = params.loc?.reader.resolvePosition(params.loc.offset);
     const hasDetail = (params.notes?.length ?? 0) > 0 || (params.help?.length ?? 0) > 0;
     if (!positioned && !hasDetail) {
@@ -237,31 +232,27 @@ export class LogFormatter implements Log {
     this.emit(this.renderBlock(level, message, params));
   }
 
-  /** Message content may itself carry ANSI codes (captured tool output runs
-   * with color forced — see Execute); when this formatter isn't painting,
-   * embedded codes are stripped too, so non-TTY output is genuinely plain. */
+  /** Write `text`, stripping any ANSI escapes in it (captured tool output
+   * carries them) when this formatter is not painting. */
   private emit(text: string): void {
     this.out(this.color ? text : stripAnsi(text));
   }
 
   /**
-   * Render a positioned diagnostic as a block: severity headline, `-->`
-   * location, gutter with the excerpt and an underline (labelled if the
-   * caller supplied a label), then each note (with its own excerpt block when
-   * positioned) and each help line. Multi-line messages put their first line
-   * on the headline; the remainder (e.g. captured command output) follows the
-   * primary excerpt verbatim.
+   * Render a diagnostic as a block: the severity headline, then, where `loc`
+   * resolves, the `-->` location and the excerpt with its underline (and
+   * label), then each note (with its own excerpt where it has a location) and
+   * each help line. A multi-line message puts its first line on the headline
+   * and the rest (captured command output) after the excerpt, verbatim.
    */
   private renderBlock(level: LogLevel, message: string, detail: IDiagnosticDetail): string {
     const sevSgr = level === LogLevel.Error ? SGR_ERROR : level === LogLevel.Warn ? SGR_WARN : SGR_INFO;
-    /* The gutter is sized by the widest line number the block excerpts */
+    /* The gutter is as wide as the widest line number the block excerpts */
     const locs = [detail.loc, ...(detail.notes ?? []).map(note => note.loc)];
     const width = Math.max(...locs.map(loc => String(loc?.reader.resolvePosition(loc.offset)?.line ?? 0).length));
     const lines: string[] = [];
     const [headline, ...restLines] = message.split("\n");
     lines.push(`${this.paint(sevSgr, getLogLevelName(level))}${this.paint(SGR_BOLD, `: ${headline}`)}`);
-    /* A block with no resolvable primary span (a locless diagnostic carried here
-     * only for its notes) skips the `-->`/underline and heads straight into them. */
     if (detail.loc?.reader.resolvePosition(detail.loc.offset)) {
       this.pushSpan(lines, width, detail.loc, detail.label, sevSgr);
     }
@@ -290,8 +281,8 @@ export class LogFormatter implements Log {
     lines.push(`${" ".repeat(width)}${this.paint(SGR_GUTTER, "-->")} ${loc.file}:${pos.line}:${pos.column}`);
     lines.push(bar);
     lines.push(`${this.paint(SGR_GUTTER, `${String(pos.line).padStart(width)} |`)} ${pos.lineText}`);
-    /* Underline the span where an extent is known (clamped to the excerpt
-     * line), else a single caret at the position */
+    /* Underline the span where its end is known (to the end of the excerpt
+     * line, where it ends on a later one), else a single caret */
     let extent = 1;
     if (loc.endOffset !== undefined && loc.endOffset > loc.offset) {
       const end = loc.reader.resolvePosition(loc.endOffset);

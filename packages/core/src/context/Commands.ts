@@ -58,8 +58,8 @@ export interface ICommandStageLookup {
   stdin?: IPositionedName;
   stdout?: IPositionedName;
   stderr?: IPositionedName;
-  /** Carried straight through from the parse — a dup names streams, not names,
-   * so there is nothing in it to substitute or position. */
+  /** The stream both of the stage's output streams are sent to (`2>&1` is
+   * `"out"`), as parsed. */
   mergedTo?: StreamName;
 }
 
@@ -108,14 +108,14 @@ export function collectRunnable(
     .then(finished => asRunnable(finished, name));
 }
 
-/** Pick the runnable out of materialized sources, or throw naming the
- * property or global that was expected to yield one. Plain files with no
- * runnable among them are one, launched directly: its entry the sole file. */
+/** Pick the runnable out of materialized sources. Where they are all plain
+ * files, none a package, their union is a runnable with no entry of its own
+ * (launched by its sole file). Throws, naming the property or global `name`,
+ * where neither gives a runnable. */
 function asRunnable(sources: ReadonlyArray<FileSource | Repository | FileSetRef>, name: string): RunnableFileSet {
   for (const source of sources) {
-    /* A projected runnable arrives pending; demanding a launcher is exactly the
-     * point it collapses (a projection that matched nothing yields no runnable,
-     * so it reports as "not a runnable" like any other non-runnable value). */
+    /* A projection over a runnable is still pending here; toRunnable applies
+     * it. One that matched nothing gives no runnable. */
     const runnable = toRunnable(source);
     if (runnable) {
       return runnable;
@@ -152,10 +152,9 @@ export function captureStages(stages: MaterializedCommandStage[]): MaterializedC
 }
 
 /**
- * Normalize a command's output to substituted text: trailing whitespace
- * trimmed, then every internal whitespace run collapsed to a single space.
- *
- * This is what a shell's word splitting produces: `"a\n\nb\n"` becomes `"a b"`.
+ * Convert a command's output to the text it substitutes: leading and trailing
+ * whitespace trimmed, and each whitespace run inside collapsed to one space,
+ * as a shell's word splitting does (`"a\n\nb\n"` becomes `"a b"`).
  */
 export function normalizeCommandOutput(text: string): string {
   return text.trim().replace(/\s+/g, " ");

@@ -98,9 +98,11 @@ export function isThrottling(error: IServiceError): boolean {
 }
 
 /**
- * Sign `request` for `service` and send it to `url`, answering with the body of
- * a 200. A 5xx, or a throttling error type, rejects as a transient HTTP status,
- * which is retried; any other answer rejects with `refuse` of its text.
+ * Sign `request` for `service` and send it to `url`, resolving to the body of
+ * a 200. A 5xx rejects with an `HttpStatusError` of that status, and a
+ * throttling error (see {@link isThrottling}) with one of 429, both of which a
+ * fetch retries as transient; any other answer rejects with `refuse` of its
+ * text.
  */
 export function postServiceRequest(
   settings: IServiceSettings,
@@ -118,7 +120,7 @@ export function postServiceRequest(
       }
       if (response.statusCode !== 200) {
         const text = response.body.toString("utf8");
-        /* Throttling is answered as a 400; it is HTTP's "too many requests", which is retried. */
+        /* AWS answers throttling with a 400: reject it as a 429, "too many requests". */
         if (isThrottling(serviceErrorOf(text))) {
           throw new HttpStatusError(429, url);
         }

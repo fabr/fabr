@@ -127,13 +127,13 @@ const DIAG_COVERAGE_WRITTEN = Diagnostic.Info<{ file: string }>("Coverage report
 const DIAG_TRACE_UNWRITTEN = Diagnostic.Warn<{ file: string; message: string }>("Could not write the trace to {file}: {message}");
 const DIAG_TEST_REPORT_WRITTEN = Diagnostic.Info<{ file: string }>("Test report written to {file}");
 const DIAG_COVERAGE_NONE = Diagnostic.Warn<Record<string, never>>("No test target measured any coverage");
-/* A measured source no reference reaches (generated during the build): it has
- * no place in the project to report it against. */
+/* Measured sources the project's tree cannot locate (generated during the
+ * build), which the report leaves out. */
 const DIAG_COVERAGE_UNPLACEABLE = Diagnostic.Warn<{ count: number; examples: string }>(
   "Left {count} generated source(s) out of the coverage report, having no source path: {examples}"
 );
-/* A declared fix the advisory database does not bear out: the claim is stale
- * (the package moved on) or misspelt. */
+/* A target declares it fixes an advisory that does not affect the package it
+ * is made from (a stale or misspelt id). */
 const DIAG_AUDIT_UNMATCHED_FIX = Diagnostic.Warn<{ target: string; id: string; pkg: string }>(
   "'{target}' declares it fixes {id}, which is not an advisory affecting {pkg}"
 );
@@ -144,41 +144,28 @@ const DIAG_WATCHING = Diagnostic.Info<Record<string, never>>("Watching for chang
 const DIAG_UNHANDLED = Diagnostic.Warn<{ message: string }>("Unhandled error: {message}");
 const DIAG_COPIED = Diagnostic.Info<{ count: number; dest: string }>("Copied {count} file(s) to {dest}");
 const DIAG_EXPECTATION_UPDATED = Diagnostic.Info<{ file: string }>("Updated {file}");
-/* A refreshed record with nowhere to go. Warned rather than passed over: the run
- * is green and reports no update, so without this the next `check` run fails on
- * the same stale record with nothing to say why `-u` did not help. */
+/* A refreshed record whose test has no place in the source tree, which is
+ * not written. */
 const DIAG_EXPECTATION_UNPLACEABLE = Diagnostic.Warn<{ test: string }>(
   "Refreshed the recorded expectation for {test}, but it is not a source-tree file — there is nowhere to write it back to"
 );
-/* Two targets offered DIFFERENT refreshed content for one destination (their
- * runs genuinely disagree — e.g. environment-dependent output). First offer
- * wins; warned because silently picking one would make the loser's next check
- * run fail with nothing to say why updating didn't help. */
+/* Two test runs offered different refreshed content for one destination
+ * (environment-dependent output, say); the first offer is written. */
 const DIAG_EXPECTATION_CONFLICT = Diagnostic.Warn<{ file: string }>(
   "Conflicting updates for {file} from different test runs; keeping the first"
 );
 
-/** How long a signalled watch process's teardown may take before the shutdown
- * deadline force-exits — generous for a native watcher unsubscribe, short
- * enough that a stuck teardown can't hang a test runner or CI. */
+/** How long a signalled watch process's teardown may take before the process
+ * is made to exit (status 1). */
 const SHUTDOWN_GRACE_MS = 5000;
 
 /**
- * Swallow EPIPE on fabr's own stdout/stderr. A consumer closing the pipe early (`fabr cat … | head`, `… | jq -e`) makes the
- * next write to our stdout/stderr emit an `EPIPE` `'error'`; with no listener
- * Node turns that into a raw uncaught-exception stack — exactly the crash
- * presentation the driver otherwise never shows. Core swallows EPIPE for the
- * *child* pipes it spawns, but nothing covers fabr's own streams.
- *
- * We *swallow* it but do NOT exit from here: the command's own
- * control flow still runs to its `flushAndExit(code)`, so the exit status stays
- * the real outcome. Exiting 0 on any EPIPE would be wrong — a *failing* build
- * whose diagnostics pipe broke (`fabr build 2>&1 | head`) hits EPIPE on stderr
- * mid-report, and a blanket exit-0 would report that failure as success. Once a
- * consumer is gone, further writes to that stream keep erroring harmlessly (all
- * swallowed) and the trailing zero-length writes' callbacks still fire, so the
- * flush-and-exit path neither crashes nor hangs. Any non-EPIPE stream error is
- * genuinely unexpected and rethrown.
+ * Ignore EPIPE errors on fabr's own stdout and stderr, which a consumer closing
+ * the pipe early causes (`fabr cat … | head`); rethrow any other stream error.
+ * Do not exit here: the command still runs to its own {@link flushAndExit}, so
+ * the exit status is its outcome (a failing build whose stderr pipe broke still
+ * exits 1). Later writes to the closed stream fail the same way, and their
+ * callbacks still fire.
  */
 function ignorePipeErrors(): void {
   const onError = (err: NodeJS.ErrnoException): void => {
@@ -191,11 +178,10 @@ function ignorePipeErrors(): void {
 }
 
 /**
- * Exit with `code`, but only after stdout/stderr have drained. `process.exit()`
- * on its own discards whatever is still buffered in those streams when they are
- * pipes rather than TTYs — truncating a piped `fabr cat`. A trailing zero-length
- * write's callback fires once everything queued ahead of it has flushed, so we
- * exit from there.
+ * Exit with `code` once stdout and stderr have drained: `process.exit()` alone
+ * discards what is still buffered for a pipe (truncating a piped `fabr cat`).
+ * Exits from the callback of a zero-length write to each stream, which fires
+ * once everything queued ahead of it has flushed.
  */
 function flushAndExit(code: number): void {
   let pending = 2;
@@ -208,34 +194,31 @@ function flushAndExit(code: number): void {
   process.stderr.write("", done);
 }
 
-/** What to do with the loaded model — the per-command work, run inside the
- * harness's lifecycle. The run's surroundings (log, cache, progress) ride on
- * `execution`; the command (and so `options`) is closed over by the caller. The
- * `site` is where the invocation was run — known only once the project has been
- * located, so the harness supplies it rather than the parse: it is what a name
- * given on the command line is written in (see {@link CommandLineSource}). */
+/** A command's work on the loaded model, run by {@link runWith}. `execution`
+ * holds the run's log, cache and progress; `site` is where the invocation was
+ * run, which a name given on the command line is written in. Resolves a
+ * {@link Takeover} where the command takes over the process afterwards. */
 export type Operation = (model: BuildModel, execution: ExecutionContext, site: IInvocationSite) => Computable<void | Takeover>;
 
-/** What a verb's evaluation resolves to where its work is no evaluation: what
- *  to do once the evaluation has settled and its cycle closed — launch `fabr
- *  run`'s interactive program, ask `fabr audit`'s advisory database. Resolves
- *  the run's exit status; the harness exits with it once the post-run
- *  housekeeping (the cache trim) has run. */
+/** What a command does once its evaluation has settled and its cycle closed:
+ *  launch `fabr run`'s program, query `fabr audit`'s advisory database.
+ *  Resolves the run's exit status, which {@link runWith} exits with after the
+ *  cache trim. */
 export type Takeover = () => Computable<number>;
 
 /**
- * Run the CLI: dispatch the command to a tiny operation (each closing over
- * `options`) and run it in the harness. The `BUILD_OPERATION` constraint is the
- * command itself (explicit `-DBUILD_OPERATION=...` takes precedence); `ls`/`cat`/
- * `cp` are driver verbs, not operations — they materialize the whole name (target +
- * `:`/glob projection) through the model under the `files` operation (see
- * {@link resolveNames}), while the build verbs take a bare target name.
+ * Run the CLI: run `options.command`, as an {@link Operation} over the loaded
+ * model, through {@link runWith}. `build`, `test` and `run` take target names,
+ * built under `BUILD_OPERATION` set to the command (a `-DBUILD_OPERATION` takes
+ * precedence); `ls`, `cat` and `cp` materialize each whole name (a target and
+ * its projection, `pkg:build/*.js`) under the `files` operation
+ * ({@link resolveNames}). A line with no command is finished once the model is
+ * loaded ({@link runInferred}).
  */
 export function runFabr(options: Options): Promise<void> {
   ignorePipeErrors();
-  /* Watch is meaningful for the build-graph verbs and for `run` (relaunch the
-   * program on change — a dev server over built artifacts); ls/cat are one-shot
-   * queries and sync is a one-shot publish. */
+  /* `-w` applies to build, test and run (relaunching the program on change);
+   * every other command runs once. */
   const watch =
     options.mode === Mode.Watch && (options.command === "build" || options.command === "test" || options.command === "run");
   switch (options.command) {
@@ -270,15 +253,15 @@ export function runFabr(options: Options): Promise<void> {
     case "build-server": {
       /* One server for the run, across every model a reload makes. */
       return getSourceRoot().then(root => {
-        /* Ended as a signal ends it, so the watch shuts down its watchers first. */
+        /* End the run as a signal does, so the watchers shut down first. */
         const end = (): void => void process.kill(process.pid, "SIGTERM");
         const connection = new JsonRpcConnection(process.stdout);
         const server = new BspServer(root, connection, end);
         const language = new LanguageServer(root, connection, uri => server.isServed(uri));
         connection.listen(process.stdin, end);
-        /* The driver's own log, which a describe failure is reported to (set
-         * by the run's setup, before the operation runs): the run's also
-         * collects the diagnostics of loading the build files. */
+        /* The driver's own log, which a describe failure is reported to, set
+         * by the run's setup before the operation runs. The run's log, made
+         * from it, also collects the diagnostics of loading the build files. */
         let reporting: Log | undefined;
         return runWith(
           options,
@@ -335,15 +318,15 @@ export function runFabr(options: Options): Promise<void> {
 }
 
 /**
- * A watched run's supervisors, by target. They belong to the RUN, not to a
- * model: an operation is evaluated again for every model load (a build file
- * edited under watch), and a supervisor made per evaluation would know nothing
- * of the program the previous one launched — a second copy would start beside
- * the first instead of replacing it.
+ * A watched run's supervisors, by target, kept for the whole run. Keep them
+ * outside the operation: it is evaluated again on each model load (a build file
+ * edited under watch), and must reach the supervisor of the program already
+ * running, or a second copy would start beside it.
  */
 class Supervisors {
   private readonly byTarget = new Map<string, RunSupervisor>();
 
+  /** Get the supervisor of `target`, made on first ask. */
   public of(execution: ExecutionContext, key: string, target: string, args: string[]): RunSupervisor {
     let supervisor = this.byTarget.get(target);
     if (supervisor === undefined) {
@@ -354,7 +337,8 @@ class Supervisors {
   }
 }
 
-/** Run `fabr build <targets>`, or build them under another `operation` (`fabr lint <targets>`): the core operation; the marker rides cycle-end. */
+/** Build `names` under `operation` (`fabr build`, or an operation a rule
+ *  declares: `fabr lint app`) through core's {@link buildOperation}. */
 function runBuild(
   model: BuildModel,
   options: Options,
@@ -385,11 +369,11 @@ function runsOnly(model: BuildModel, name: string): boolean {
   return operations.includes("run") && !operations.some(operation => operation === "build" || operation === "*");
 }
 
-/** Run `fabr test <targets>`: the core operation, with the summaries, the
- * reports and the expectation write-backs composed onto its results, so they
- * run again whenever a watch cycle changes those. A test target's result is its
- * report, failures included; the run fails where any test failed, after the
- * reports are written, and expectations are written back only where none did. */
+/** Run `fabr test <targets>` through core's {@link testOperation}, then, each
+ * time a watch cycle changes the results: log each target's summary, write
+ * `--report`'s file, write refreshed expectations back where no test failed,
+ * and report coverage. Fails where any test failed, after the reports are
+ * written, or where `-t` matched no test. */
 function runTest(
   model: BuildModel,
   options: Options,
@@ -456,12 +440,13 @@ function coverageText({ covered, total }: ICoverageTotal): string {
 }
 
 /**
- * Merge the coverage every test result carries, summarise it, and write it as
+ * Merge the coverage every test result carries, log its totals, and write it as
  * `<dir>/lcov.info`, naming each source by its path in the project. A record
- * whose source has no source path is left out, with a warning.
+ * whose source the project's tree cannot locate is left out, with a warning;
+ * where no result carries coverage, a warning is logged and nothing written.
  *
- * Written through the source tree where `dir` lies in it, as an expectation
- * update is, so a watching run recognises the write as its own.
+ * Written through the source tree, as an expectation update is, so a watching
+ * run recognises a write inside the tree as its own.
  */
 function reportCoverage(execution: ExecutionContext, site: IInvocationSite, dir: string, results: SourceRef[][]): Computable<void> {
   return Computable.forAll(
@@ -501,34 +486,28 @@ function reportCoverage(execution: ExecutionContext, site: IInvocationSite, dir:
 }
 
 /**
- * Write refreshed test expectations (snapshots) back into the source tree.
+ * Write the refreshed test expectations (snapshots) the results offer back into
+ * the source tree; call it only after a green run. Each offered file lands
+ * beside the source of the input it belongs to, at its path relative to that
+ * input. An offer whose input has no place in the source tree is skipped, with
+ * a warning. Identical offers for one destination are written once; where two
+ * differ, the first is written and the conflict warned about. Each file
+ * written is logged.
  *
- * The gate is the CANDIDATES' existence, not a re-read of any flag: a check
- * run offers none by construction (its outputs never collect the records), so
- * candidates exist exactly when the effective `TEST_EXPECTATIONS` was
- * `update` — however it was spelled (`-u`, `-D`, or a declared global in the
- * build file; the pipeline reads the model's value, so re-checking only the
- * CLI's spelling here would silently discard a declared update's offers). The
- * write still happens here, in the driver, after the build has settled green
- * — nothing inside the build graph may touch the user's tree.
+ * Only a run under `TEST_EXPECTATIONS=update`, however it was set, offers
+ * anything, so no flag is checked here.
  */
 function applyExpectationUpdates(execution: ExecutionContext, site: IInvocationSite, results: SourceRef[][]): Computable<void> {
-  /* Resolving each candidate's input to a place on disk is the driver's half of
-   * the arrangement: the rule offered content named relative to an input it
-   * belongs beside. An input with no source-tree location (a generated test) is
-   * where the offer runs out, and is warned (see DIAG_EXPECTATION_UNPLACEABLE). */
+  /* The writes, by destination. */
   const writes = new Map<string, IResolvedWriteBack>();
   for (const { files, belongsTo, origin } of results.flatMap(sources => writeBackCandidates(sources))) {
-    /* The offer names its content in the inputs' own namespace and says, as one
-     * rename projection, how such a name names the input it belongs to. Applying
-     * it and locating that input is all the driver does — it needs no notion of
-     * what the content IS. */
+    /* `files` are named as the inputs are; `belongsTo` maps each name to the
+     * input it belongs to. */
     const belongs = belongsTo.makeProjector();
     for (const [name, file] of files) {
       const input = belongs(name);
       if (input === undefined) {
-        /* The offer's own rewrite does not name this file's input — a rule
-         * contradicting itself, so say which file rather than swallow it. */
+        /* `belongsTo` names no input for this file: warn, naming the file. */
         execution.log.log(DIAG_EXPECTATION_UNPLACEABLE, { test: name });
         continue;
       }
@@ -538,12 +517,10 @@ function applyExpectationUpdates(execution: ExecutionContext, site: IInvocationS
         execution.log.log(DIAG_EXPECTATION_UNPLACEABLE, { test: input });
         continue;
       }
-      /* The file's own name relative to the input's directory is where it goes,
-       * so a record lands beside the test exactly as it sits beside it here.
-       * Deduplicated by destination: two targets covering the same tree (a
-       * js_test beside a js_package) each offer the same record, and parallel
-       * writes to one path would collide on the temp sibling. Identical
-       * content collapses silently; divergent content is a real conflict. */
+      /* The file goes at its path relative to the input's directory, beside the
+       * input's source. Deduplicate by destination: two targets covering one
+       * tree (a js_test beside a js_package) offer the same record, and two
+       * writes to one path would collide on the temp sibling. */
       const destination = path.join(path.dirname(source), path.relative(path.dirname(input), name));
       const existing = writes.get(destination);
       if (existing === undefined) {
@@ -556,10 +533,9 @@ function applyExpectationUpdates(execution: ExecutionContext, site: IInvocationS
   if (writes.size === 0) {
     return Computable.resolve(undefined);
   }
-  /* Written through the SOURCE, not straight to the filesystem: it owns the
-   * tree, so it is the only thing that can recognize the resulting watch event
-   * as its own and keep the write from rebuilding the very target that produced
-   * it. The decision is still made here — only after a green build. */
+  /* Write through the source tree, not straight to the filesystem, so a
+   * watching run recognises the resulting events as its own and does not
+   * rebuild the target that produced them. */
   return site.sourceFileSource.applyWriteBack([...writes.values()]).then((written: string[]) => {
     for (const destination of written) {
       execution.log.log(DIAG_EXPECTATION_UPDATED, { file: path.relative(site.sourceFileSource.root, destination) });
@@ -568,15 +544,12 @@ function applyExpectationUpdates(execution: ExecutionContext, site: IInvocationS
 }
 
 /**
- * Run a command-less invocation (`fabr docs_serve`): each named target takes the
- * operation its type supports, which needs the loaded model — so the command
- * line is finished here ({@link completeCommandLine}) rather than at parse
- * time. Each group then does exactly what the explicit verb would, and they
- * are *siblings*, not a chain: under watch they must stay independently
- * reactive (a rebuild re-settles its own group; hanging the run downstream of
- * a build would re-enter its factory, and so its supervisor, per cycle). Only
- * a one-shot run sequences after the rest, because it takes over the process
- * and exits with the program's status — nothing after it would run.
+ * Run a command-less invocation (`fabr docs_serve`): finish the command line
+ * now that the model is loaded ({@link completeCommandLine}), then build, test
+ * and run each group of targets as the explicit command would. Under watch the
+ * groups run side by side, each re-settling on its own; keep them so, not
+ * chained one after another. A one-shot run's program comes after the rest, as
+ * the run's {@link Takeover}.
  */
 function runInferred(
   model: BuildModel,
@@ -606,10 +579,8 @@ function runInferred(
   if (watch) {
     return Computable.forAll([...groups, program()], () => undefined);
   }
-  /* One-shot: the groups build first, then the run target — all one
-   * evaluation; the program launch rides out as its takeover. (The marker
-   * prints before the launch — the command-less form is build-flavoured, and
-   * a one-line summary ahead of the program is its status report.) */
+  /* One-shot: build the groups, then the run target, in one evaluation; the
+   * program's launch is its takeover, after the status marker. */
   return Computable.forAll(groups, () => undefined).then(program);
 }
 
@@ -633,12 +604,13 @@ function operationsOf(model: BuildModel, name: string): string[] {
 }
 
 /**
- * `fabr run <target> [args…]`: build the target under `run` to get its runnable,
- * then launch it. One-shot mode stages + runs interactively and exits with the
- * program's own code. Watch mode instead hands each (re)settled runnable to a
- * persistent {@link RunSupervisor} that relaunches the program when the built
- * install changes; the re-settle happens inside this `.then`, which the value
- * cutoff re-fires per change (whereas the surrounding void result does not).
+ * Run `fabr run <target> [args…]`: build the target under `run`, for the host,
+ * and launch the program. One-shot, resolve a {@link Takeover} that stages the
+ * program and runs it interactively, its exit status the run's. Under watch,
+ * hand each runnable the evaluation settles to to the target's
+ * {@link RunSupervisor}, which relaunches the program, or updates the content
+ * it serves, as the build changes. Rejects where the name matches no files or
+ * is not runnable.
  */
 function runProgram(
   model: BuildModel,
@@ -660,44 +632,42 @@ function runProgram(
    * `run` materialize resolves its closure permissively, as a rule's `tool` is. */
   return config.materialize(options.commandLine.refFor(target, site)).then<void | Takeover>(materialized => {
     const sources = refuseNamespaces(materialized);
-    /* A projected runnable (`fabr run pkg:tsc`) arrives pending — this is the
-     * point a launcher is demanded, so it collapses here. */
+    /* A projected runnable (`fabr run pkg:tsc`) arrives with its projection
+     * pending: collapse it to its launcher. */
     const runnable = sources.map(toRunnable).find(Boolean);
     if (!runnable) {
-      /* No runnable: a projection that matched nothing (empty) is the shared
-       * "matched no files" error — same as cat/ls; genuine content that just
-       * isn't runnable is the distinct case. */
+      /* A projection that matched nothing is the "matched no files" error, as
+       * for cat and ls; content that is not runnable is another. */
       const files = FileSet.unionAll(...sources.filter((s): s is FileSet => s instanceof FileSet));
       throw files.isEmpty()
         ? matchedNoFiles(target)
         : new FabrError(`'${target}' is not runnable (it has no BUILD_OPERATION=run result)`);
     }
     if (supervisor) {
-      /* The supervisor's reaction is inside the observed chain, so the watch
-       * observer — where the cycle ends and the marker renders — fires only
-       * after it lands: the marker stays the cycle's terminal line. */
+      /* Return the supervisor's update within the evaluation, so the cycle's
+       * end, and its marker, come after it. */
       return supervisor.update(runnable);
     }
-    /* One-shot: the launch is not evaluation — it is what happens after the
-     * evaluation settles (and its cycle closes), so it is handed back as the
-     * run's takeover rather than performed in-chain. */
+    /* One-shot: launch once the evaluation has settled and its cycle closed,
+     * as the run's takeover. */
     const takeover: Takeover = () => runInteractive(execution.buildCache, key, runnable, args);
     return takeover;
   });
 }
 
-/** Key the program `fabr run` launches, as the cache keeps its installs: the
- * project, the name run and the `-D` properties it runs with. */
+/** Make the key the cache keeps the installs of a program `fabr run` launches
+ * under: a hash of the project root, the name run and the properties set on the
+ * command line. */
 function programKey(site: IInvocationSite, options: Options, target: string): string {
   const properties = [...options.properties].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
   return hashString(JSON.stringify([fs.realpathSync(site.sourceFileSource.root), target, properties]));
 }
 
 /**
- * `fabr shell <target>`: resolve the target's build action WITHOUT running it,
- * then stage its sandbox and open a shell in it (see {@link shellInto}). Builds
- * under `build` like the real step, so the inputs that fill the sandbox are the
- * real ones. Exits with the shell's own code.
+ * Run `fabr shell <target>`: get the target's build action under `build`,
+ * without running it, and resolve a {@link Takeover} that stages its sandbox
+ * and opens a shell in it ({@link shellInto}), the shell's exit status the
+ * run's.
  */
 function shellTarget(
   model: BuildModel,
@@ -707,22 +677,20 @@ function shellTarget(
 ): Computable<void | Takeover> {
   const config = configFor(model, options, execution, "build");
   return config.getAction(options.commandLine.refFor(options.targets[0], site)).then<void | Takeover>(action => {
-    /* The shell owns the process once launched — a takeover, like run's
-     * program, so the evaluation settles (and its cycle closes) first. */
+    /* A takeover, like run's program: the shell starts once the evaluation
+     * has settled. */
     const takeover: Takeover = () => shellInto(execution.buildCache, options.targets[0], action, execution.log);
     return takeover;
   });
 }
 
 /**
- * `fabr sync <name>…`: package the named wire artifacts under `build`, then
- * upload them. Each name is materialized whole (as ls/cat materialize theirs), so it may
- * name a release — every member of it, packaged in publish order — or reach into
- * one for a single member (`release/@npm/x/1.0.0`), which packages that member
- * alone; a release is a namespace, so both are ordinary references into it.
- * Packaging is the pure/cacheable half (the same as a dry-run); the upload is
- * the driver-level side effect, made through each destination's own publish,
- * which reads its credential (never a build input). Not watchable — publishing is a one-shot.
+ * Run `fabr sync <name>…`: materialize each whole name under `build` and
+ * publish its members, each through its destination's own publish
+ * ({@link publishSync}). A name may be a release, all of whose members are
+ * published in publish order, or a member within one
+ * (`release/@npm/x/1.0.0`), published alone; a name that is neither is an
+ * error.
  */
 function syncTargets(model: BuildModel, options: Options, execution: ExecutionContext, site: IInvocationSite): Computable<void> {
   const config = configFor(model, options, execution, "build");
@@ -737,8 +705,9 @@ function syncTargets(model: BuildModel, options: Options, execution: ExecutionCo
   );
 }
 
-/** List the publishable members one materialized name yields: a whole release (its
- *  namespace, packaged deps-first) or the individual carriers named. */
+/** @return the members to publish of one materialized name: those of each
+ *  release among `sources`, dependencies first, then the members it names
+ *  directly. Throws where it holds neither. */
 function membersOf(sources: SourceRef[], name: string): Computable<PublishableFileSet[]> {
   const releases = sources.filter((source): source is SyncSource => source instanceof SyncSource);
   const carriers = sources.filter((source): source is PublishableFileSet => source instanceof PublishableFileSet);
@@ -760,37 +729,38 @@ interface IRunSetup {
 }
 
 /**
- * Run the driver lifecycle harness: establish the run's surroundings (stderr log,
- * cache, source tree, progress-reporting ExecutionContext), load the project,
- * then hand the model to `operation` — exiting 0 on success and rendering the
- * failure tree (exit 1) on error. Reaching a drained event loop without an
- * explicit exit is a stall bug, reported loudly (exit 2).
+ * Run one command: set up the run (the stderr log and progress display, the
+ * {@link Fabr} facade with its cache and source tree, the trace, the terminal
+ * interaction and the CI identity), load the project and evaluate `operation`
+ * on it. `setup` adds what the command observes of the run's log and
+ * execution.
+ *
+ * One-shot, it exits 0 on success, or with the status of the operation's
+ * {@link Takeover} once that has run, the cache trim done first. A failure,
+ * including one setting up the run (no project found), renders the failure
+ * tree and exits 1. A drained event loop with no exit is reported as an
+ * internal error (exit 2). With `watch`, {@link runWatched} takes over and
+ * never exits on its own.
  */
 async function runWith(options: Options, operation: Operation, watch = false, setup: IRunSetup = {}): Promise<void> {
-  /* Diagnostics and progress go to stderr; command data (ls listings, cat
-   * file contents) goes to stdout, so a build can be filtered from its output.
-   * Color is a render-time decision only (NO_COLOR is any non-empty value):
-   * captured tool output arrives colored regardless and is stripped when off. */
+  /* Diagnostics and progress go to stderr, a command's data (ls listings, cat
+   * contents) to stdout. Colour stderr on a tty unless NO_COLOR is set to
+   * anything non-empty; when off, colour in captured tool output is stripped. */
   const color = process.stderr.isTTY === true && !process.env.NO_COLOR;
-  /* One component owns stderr: everything fabr renders — diagnostics, and the
-   * build steps' output the pump forwards — is written through it, so the live
-   * pane can erase and repaint around each block. Without a tty there is no
-   * pane and it is a direct write (the pane is a derived view of what the log
-   * already records, so its absence loses nothing). */
-  /* `-q` drops the pane as well as the streamed output — and (see
-   * ProgressReporter) does NOT get the start lines in its place.
-   * `--no-progress` drops only the pane: the log is then exactly what it is
-   * without a tty. */
+  /* Write everything fabr renders to stderr (diagnostics, and the build steps'
+   * forwarded output) through one TerminalStream, so its live pane can erase
+   * and repaint around each block. The pane shows on a tty, unless `-q` (which
+   * also drops the streamed step output) or `--no-progress`. */
   const terminal = new TerminalStream(process.stderr, process.stderr.isTTY === true && !options.quiet && options.progress);
   const log = new LogFormatter(LogLevel.Info, line => terminal.write(line), color);
-  /* Published for the code that hands the terminal over rather than writes to
-   * it (a prompt, an interactive child) — see withTerminalSuspended. */
+  /* For the code that hands the terminal over rather than writes to it (a
+   * prompt, an interactive child): see withTerminalSuspended. */
   setActiveTerminal(terminal);
 
   Computable.onUnhandledError = err => log.log(DIAG_UNHANDLED, { message: err.message });
 
-  /* In watch mode a drained event loop is the normal idle state (the watchers
-   * keep the process alive), so the stall guard would misfire. */
+  /* Guard against a stall one-shot only: under watch a drained event loop is
+   * the normal idle state. */
   if (!watch) {
     process.on("beforeExit", () => {
       log.log(DIAG_ERROR, { message: "Internal error: the build stalled without completing" });
@@ -800,8 +770,6 @@ async function runWith(options: Options, operation: Operation, watch = false, se
 
   try {
     const sourceRoot = await getSourceRoot();
-    /* The run itself lives in core; the driver hands it the paths its
-     * environment policy chose. */
     const fabr = new Fabr({
       sourceRoot,
       cacheRoot: getBuildCacheRoot(),
@@ -841,10 +809,9 @@ async function runWith(options: Options, operation: Operation, watch = false, se
       execution.onBuildEvent(trace.buildListener);
       process.on("exit", () => trace.write());
     }
-    /* A terminal to ask on (an npm publish's second-factor ceremony) — only
-     * when both the answer channel (stdin) and the question channel (stderr,
-     * the diagnostic stream) are ttys; its absence is the "non-interactive
-     * run" signal callers turn into a typed error. */
+    /* A terminal to ask on (an npm publish's second factor), only where stdin
+     * and stderr are both ttys. Without one, a caller that must ask fails with
+     * an error. */
     if (process.stdin.isTTY === true && process.stderr.isTTY === true) {
       execution.interaction = new TerminalInteraction(log);
     }
@@ -854,20 +821,16 @@ async function runWith(options: Options, operation: Operation, watch = false, se
       return runWatched(operation, fabr, site, log);
     }
 
-    /* One-shot runs must route termination signals through process.exit rather
-     * than the default disposition: build steps run detached in their own
-     * process groups (see Execute.ts), so the terminal's Ctrl-C does not
-     * reach them — the exit hooks (Execute's group sweep, the run
-     * supervisor's cleanup) are what stop in-flight work, and a default-killed
-     * process runs no hooks. Codes follow the 128+signal convention. (The watch
-     * path already routes its signals through process.exit in runWatched.)
+    /* One-shot, route termination signals through process.exit, with status
+     * 128+signal: build steps run in their own process groups (Execute.ts) and
+     * do not see the terminal's Ctrl-C, so the exit hooks (Execute's group
+     * sweep, the run supervisor's cleanup) are what stop them, and a process
+     * killed by a signal's default action runs none. (runWatched routes its
+     * own.)
      *
-     * An interactive program (`fabr run`, `fabr shell`) is the exception: while
-     * one is running it, not fabr, owns the terminal, so the signal is offered
-     * to it first and fabr waits for it to end the run in its own time —
-     * exiting here would kill it mid-shutdown, or (a signal directed at fabr
-     * alone, as a supervisor or CI job sends) leave it orphaned with its staged
-     * install. A second signal is not offered, so it falls through and exits. */
+     * While an interactive program (`fabr run`, `fabr shell`) runs, the signal
+     * is offered to it first, and fabr waits for it to end the run. A second
+     * signal is not offered, and exits. */
     for (const [signal, code] of [
       ["SIGINT", 130],
       ["SIGTERM", 143],
@@ -883,16 +846,13 @@ async function runWith(options: Options, operation: Operation, watch = false, se
     return fabr
       .evaluate(model => operation(model, execution, site))
       .then(takeover => {
-        /* The evaluation has settled and its cycle closed; a takeover verb now
-         * gets the process, resolving its program's exit status. */
+        /* The evaluation has settled and its cycle closed: hand the process to
+         * the takeover, if any, for its exit status. */
         return takeover ? takeover() : Computable.resolve(0);
       })
       .then(code =>
-        /* The daily cache trim runs at the very end of the run — after a
-         * takeover's child has exited, before the process does. Awaited here
-         * because only the driver can hold the exit for it (the watch-mode
-         * trigger is the facade's own); it never outranks the run's outcome
-         * and skips itself when not due. */
+        /* Run the daily cache trim last, after a takeover's program has
+         * exited; it skips itself when not due. */
         fabr.maybeCollectGarbage().then(() => flushAndExit(code))
       )
       .catch(err => {
@@ -901,10 +861,8 @@ async function runWith(options: Options, operation: Operation, watch = false, se
         flushAndExit(1);
       });
   } catch (err) {
-    /* A failure while *setting up* the run — before the build graph exists (no
-     * project at/above cwd, an unusable cache dir) — is outside the evaluation
-     * chain's own `.catch`, so it would otherwise escape as a raw unhandled
-     * rejection. Report it like any other failure and exit. */
+    /* A failure setting up the run, before the evaluation (no project at or
+     * above the cwd, an unusable cache directory): report it like any other. */
     reportFailure(log, toError(err));
     log.log(DIAG_FAILED, { work: failedWork(options.command) });
     flushAndExit(1);
@@ -916,11 +874,9 @@ function failedWork(command: string): string {
   return command === "audit" ? "Audit" : "Build";
 }
 
-/** @return true if this verb's runs render the per-cycle status marker ("Built
- * X" / "Already up to date"), otherwise false: the build/test verbs do, `run`
- * only under watch (a one-shot run's marker is status noise ahead of the
- * program's own output); the query and side-effect verbs never — their outcome
- * is their own output. */
+/** @return true if runs of `command` render the per-cycle status marker
+ * ("Built X" / "Already up to date"), otherwise false: build and test do, and
+ * run only under watch. */
 function showsMarkers(command: string, watch: boolean): boolean {
   if (command === "run") {
     return watch;
@@ -929,38 +885,34 @@ function showsMarkers(command: string, watch: boolean): boolean {
 }
 
 /**
- * Run the watch lifecycle: put the source tree into watch mode, run the operation
- * once to establish the live graph, then keep re-reporting as the operation's
- * Computable re-settles on each (debounced) change. Unlike the one-shot path it
- * never exits on completion — a failed build reports and keeps watching, a
- * subsequent fix re-settles the graph to green — and it tears the watchers down
- * on SIGINT. The returned promise never resolves; the process is
- * kept alive by the persistent watchers and ends only via the signal handler.
+ * Run `operation` under watch: evaluate it, then report each time the
+ * evaluation settles again after a change. A new failure is rendered and the
+ * run keeps watching; "Watching for changes" is logged at the start, after each
+ * new failure, and on recovering from one. SIGINT, SIGTERM and SIGHUP close the
+ * watchers and exit (status 0, or 1 where teardown overruns
+ * {@link SHUTDOWN_GRACE_MS}). The returned promise never resolves.
  */
 function runWatched(operation: Operation, fabr: Fabr, site: IInvocationSite, log: Log): Promise<void> {
   const controller = fabr.controller!;
   const shutdown = (): void => {
-    /* Hard deadline first: teardown must never be able to pin a signalled watch
-     * process alive (a hung native unsubscribe, a stuck closer) — exit 1 marks
-     * the unclean teardown. Unref'd so the deadline itself never holds the loop. */
+    /* Exit 1 where teardown has not finished in time (a hung native
+     * unsubscribe). Unref'd, so the deadline itself never holds the loop. */
     setTimeout(() => process.exit(1), SHUTDOWN_GRACE_MS).unref();
-    /* Await teardown before exiting: unsubscribe stops a native watcher thread,
-     * and exiting mid-flight crashes the kqueue backend (SIGABRT). The explicit
-     * process.exit then fires the 'exit' hooks — including a RunSupervisor's
-     * synchronous child cleanup — which a *default* signal disposition would
-     * skip entirely, orphaning the launched program and leaking its staged dir. */
+    /* Await teardown before exiting: unsubscribe stops a native watcher
+     * thread, and exiting mid-flight crashes the kqueue backend (SIGABRT). The
+     * explicit process.exit then runs the 'exit' hooks, a RunSupervisor's child
+     * cleanup among them, which a signal's default action would skip. */
     void controller.close().finally(() => process.exit(0));
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
   process.on("SIGHUP", shutdown);
 
-  /* The run's evaluation, observed for *settlement* rather than for a value
-   * change — a rebuild that converges to identical values (or the same
-   * failure) settles without notifying any `then`, but a handle's onSettled
-   * still fires, once per applied batch. The execution observes it first (the
-   * cycle-end and its marker); this second handle renders what the stream
-   * doesn't carry: the failure tree, and the watching announcements. */
+  /* Observe the evaluation's settling, not its value: a rebuild that comes to
+   * the same value, or the same failure, notifies no `then`, but a handle's
+   * onSettled fires once per applied batch. The execution observes it too (the
+   * cycle-end and its marker); this handle renders the failure tree and the
+   * watching announcements. */
   const outcome = fabr
     .evaluate(model => operation(model, fabr.execution, site))
     .then(
@@ -980,7 +932,7 @@ function runWatched(operation: Operation, fabr: Fabr, site: IInvocationSite, log
         log.log(DIAG_WATCHING, {});
       }
     } else if (!announced || lastFailure !== undefined) {
-      /* Announced once, and again on a red-to-green transition. */
+      /* Announce once, and again on recovering from a failure. */
       log.log(DIAG_WATCHING, {});
     }
     announced = true;
@@ -990,6 +942,8 @@ function runWatched(operation: Operation, fabr: Fabr, site: IInvocationSite, log
   return new Promise<void>(() => {});
 }
 
+/** Get the configuration for `operation`: the host's properties,
+ *  `BUILD_OPERATION`, and the command line's properties, which take precedence. */
 function configFor(model: BuildModel, options: Options, execution: ExecutionContext, operation: string): BuildContext {
   return model.getConfig(
     Constraints.of({ ...getHostProperties(), [BUILD_OPERATION]: operation, ...Object.fromEntries(options.properties) }),
@@ -1004,12 +958,12 @@ function markForced(model: BuildModel, options: Options, execution: ExecutionCon
   }
 }
 
-/** Materialize each whole name (target + projection) under the `files`
- * operation, which ls/cat want: an `@npm:` reference delivers the package's own
- * files with no dependency closure, while a declared target still builds (files
- * falls back to build). Each name is read as the reference written on the
+/** Materialize each whole name given (a target and its projection) under the
+ * `files` operation, each source opened out to its files ({@link openedOut}):
+ * an `@npm:` reference gives the package's own files, without its
+ * dependencies, and a declared target is built. Each is read as written on the
  * command line ({@link CommandLineSource}), so a bare path names files as it
- * would in a build file. */
+ * would in a build file there. A namespace is refused. */
 function resolveNames(
   model: BuildModel,
   options: Options,
@@ -1027,9 +981,9 @@ function openedAll(sources: SourceRef[]): Computable<SourceRef[]> {
   return Computable.forAll(sources.map(openedOut), (...opened: SourceRef[]) => opened);
 }
 
-/** Materialize what `ls` lists of each name, as as {@link resolveNames} does:
- * its files, or the children of the namespace it names (a repository's, such as
- * `@npm:glob`'s versions). */
+/** Materialize what `ls` lists of each name, as {@link resolveNames} does: its
+ * files, or the children of the one namespace it names (`@npm:glob`'s
+ * versions). */
 function listedNames(
   model: BuildModel,
   options: Options,
@@ -1045,22 +999,15 @@ function listedNames(
   );
 }
 
-/** Everything, as a selector — what a name that stops at a source rather than
- *  projecting into it asks for (see {@link openedOut}). */
+/** The selector `**`, which {@link openedOut} asks a source for. */
 const ALL_FILES = parseName("**");
 
 /**
- * Open out one materialized source to the files behind it, for the verbs that
- * only ever want files.
- * A FileSet already IS its files; a source that instead serves them on its own
- * terms — a `sync` release namespace, a `fetch` table — is asked for all of
- * them, which is the same thing `<name>/**` asks for explicitly. Without this a
- * name stopping at such a source resolves to something none of ls/cat/cp can
- * read, and silently lists nothing.
- *
- * Not applied to every source: a RunnableFileSet reads a projection as *entry
- * selection*, so asking it for `**` would narrow the program rather than list
- * the install.
+ * Open out one materialized source to its files, for the commands that want
+ * files: a FileSet, or anything that is no FileSource, as it is; any other
+ * FileSource (a `sync` release namespace, a `fetch` table) asked for all its
+ * files, as `<name>/**` would. A FileSet is left as it is because a
+ * RunnableFileSet reads a projection as selecting its entry.
  */
 function openedOut(source: SourceRef): Computable<SourceRef> {
   if (source instanceof FileSet || !isFileSource(source)) {
@@ -1070,17 +1017,14 @@ function openedOut(source: SourceRef): Computable<SourceRef> {
 }
 
 /**
- * Write the raw contents of each materialized name's files to stdout (`fabr
- * cat`) — the name (`pkg:build/*.js`) has already been materialized through the
- * model, so its projection/glob is applied; a name that matches nothing is an
- * error. Content is data, so it goes straight to stdout.
+ * Write the contents of each materialized name's files to stdout (`fabr cat`):
+ * in argument order, then source order within a name, then file name order
+ * within a source. A name matching no files is an error, raised before
+ * anything is written.
  */
 function catTarget(options: Options, results: SourceRef[][]): Computable<void> {
-  /* Resolve every name to its files up front — synchronously, so a name matching
-   * nothing fails before a single byte is written (no partial output). The order
-   * is fixed here: argument order across names, then source order within a name
-   * (a multi-source target — a sync's members — cats each source in turn, as if
-   * each were named), sorted by filename within each source. */
+  /* Collect every name's files first, synchronously, so a name matching
+   * nothing fails before anything is written. */
   const files: IFile[] = [];
   results.forEach((sources, i) => {
     const sets = sources.filter((source): source is FileSet => source instanceof FileSet);
@@ -1093,11 +1037,9 @@ function catTarget(options: Options, results: SourceRef[][]): Computable<void> {
       }
     }
   });
-  /* Stream each file's contents to stdout in that order, one at a time — reading
-   * the next only after the previous is *flushed*, so the whole set is never held
-   * in memory at once (`cat` may dump large artifacts). The write callback fires
-   * once the chunk has been handled by the stream, so resolving from it honors a
-   * slow consumer's backpressure rather than queueing everything ahead. */
+  /* Write the files one at a time, reading the next only once the last is
+   * flushed, so the set is never held in memory at once and a slow consumer
+   * applies backpressure. */
   return mapComputable(files, file => file.getBuffer().then(buffer => writeStdout(Uint8Array.from(buffer))), 1).then(() => undefined);
 }
 
@@ -1110,18 +1052,14 @@ function writeStdout(bytes: Uint8Array): Computable<void> {
 }
 
 /**
- * Run `fabr cp <source…> <dest>`: materialize each source name to its files
- * (exactly as `cat` does — projections/globs already applied), then copy them
- * into the destination directory following **`cp`'s own file-vs-directory rule**
- * ({@link remapCopyTargetName}): a source that names a directory/container (a target,
- * package, or namespace) becomes a subdirectory named after that reference
- * (`fabr cp @scope/core out` → `out/core/…`, `cp -r core out/` → `out/core/`),
- * while a source that names a single file or a glob copies flat. `dest` is a
- * plain filesystem path resolved against the invocation cwd (not a model name),
- * created if absent. The copy is **additive** (files already in `dest` are left
- * untouched) and breaks the cache hardlink (`copy: true`), so the copies are
- * independent of fabr's cache. A source matching no files is an error, raised
- * before a byte is written.
+ * Run `fabr cp <source…> <dest>`: copy the files of each source name,
+ * materialized as `cat`'s are, into `dest`, a filesystem path resolved against
+ * the cwd and created if absent. Each is named by `cp`'s rule for a file or a
+ * directory ({@link remapCopyTargetName}): a name of a target, package or
+ * directory copies into a subdirectory named after it (`fabr cp @scope/core
+ * out` to `out/core/…`), a single file or a glob flat. Files already in `dest`
+ * are left alone, and the copies are real copies, not links into the cache. A
+ * source matching no files is an error, raised before anything is written.
  */
 function copyTarget(options: Options, execution: ExecutionContext, results: SourceRef[][]): Computable<void> {
   const sets: FileSet[] = results.flatMap((sources, i) => {
@@ -1141,41 +1079,27 @@ function copyTarget(options: Options, execution: ExecutionContext, results: Sour
 }
 
 /**
- * Apply `cp`'s file-vs-directory rule to one source: return how each of its resolved files
- * is named under `dest` (the identity where the resolved name is kept). `cp` is a pure file
- * operation — exactly `cp -R`, never package-aware — so this follows the source
- * **reference as written**, never the resolved package's own identity
- * (`cp -R node_modules/@scope/package out` yields `out/package`, and by the same
- * rule `@npm:esbuild:0.28.1` yields `out/0.28.1` — the reference's final component
- * whatever it happens to be):
- * - a **trailing `/`** or a **final glob** (`pkg:build/*.js`) → flat: the contents / the
- *   matched files land directly under dest (`cp dir/ out`, `cp build/*.js out`). The
- *   selector's own literal directories are the path cp copies *from*, so they come off the
- *   names — the shell would have expanded the glob and handed cp each file individually,
- *   and cp names a file source by its basename. What the wildcards matched is kept, so a
- *   recursive glob preserves structure below the base (`cp -R build/. out`).
+ * Make the naming of one `cp` source's files under the destination, as
+ * `cp -R` names what it copies: by the reference as written, never by the
+ * package it resolves to (`@npm:esbuild:0.28.1` copies to `0.28.1/`).
+ * - A name with a rename (`-> tmpl`) keeps the names the rename gave.
+ * - A name ending in a glob (`pkg:build/*.js`) or a `/` copies flat: each file
+ *   without the name's literal leading directories ({@link selectorBase}),
+ *   keeping what the wildcards matched (`build/**` keeps the structure below
+ *   `build/`).
+ * - A name whose one file has the name's last component as its basename
+ *   (`files:a.txt`) copies to that basename.
+ * - Any other name copies under its last component (`cp -r dir out` to
+ *   `out/dir/`), read without the `<k=v>` constraints
+ *   (`mylib<BUILD_TYPE=release>` copies under `mylib`).
  *
- * Whether the path was written with a `:` or a `/` makes no difference to any of this: the
- * separator decides what the resolved files are *named* (`:` strips what precedes it), but
- * cp copies from the path as written either way, so both land the same files in the same
- * places.
- * - a source that **directly names a single file** → flat (the file keeps its
- *   name — `cp file out` → `out/file`);
- * - otherwise it **names a directory/container** → nested under its final path
- *   component (`cp -r dir out` → `out/dir/`).
- * The final component is taken from the *parsed* name so its `<k=v>` / `-> tmpl`
- * facets are stripped first (`mylib<BUILD_TYPE=release>` nests under `mylib`, not
- * the literal facet text — a requirement constrains the build, it is not part of the
- * name). "Directly names a file" wraps unless the source is a **lone delivered
- * file whose basename is that leaf** (`files:a.txt` → `a.txt`, flat).
+ * Writing a path with `:` or `/` makes no difference to where its files land.
  */
 function remapCopyTargetName(name: string, sets: FileSet[]): (fileName: string) => string {
-  /* Parse then drop the constraint facet, so what we inspect is the resolvable name alone. */
+  /* Drop the `<k=v>` constraints: only the name is inspected. */
   const parsed = parseName(name).withConstraints([]);
-  /* An explicit `-> tmpl` IS the naming: the resolved files already carry the names it
-   * produced, so cp adds no default of its own. Without this a rename that keeps — or
-   * reintroduces — the selector's literal prefix would have it stripped straight back off
-   * below, quietly overriding what was asked for. */
+  /* A rename gave the files their names: keep them, without stripping the
+   * selector's literal prefix. */
   if (parsed.getRenameTo() !== undefined) {
     return fileName => fileName;
   }
@@ -1187,23 +1111,18 @@ function remapCopyTargetName(name: string, sets: FileSet[]): (fileName: string) 
     return base === "" ? filename => filename : fileName => fileName.slice(base.length);
   }
   const isLoneFile = fileNames.length === 1 && fileNames[0].split("/").pop() === leaf;
-  /* A named file lands under its basename, as cp names any file source — so the directories
-   * it was reached through come off whether they were written with `:` or `/`. */
+  /* A named file lands under its basename, whether the directories it was
+   * reached through were written with `:` or `/`. */
   return isLoneFile ? () => leaf : fileName => `${leaf}/${fileName}`;
 }
 
 /**
- * Find the directory prefix a flat source's resolved files carry from the selector, and which
- * `cp` therefore strips — the name's own literal leading path
- * ({@link Name.getLiteralPathPrefix}, which ends at the last separator before the first
- * wildcard and treats `:` and `/` alike).
- *
- * How much of that prefix the *names* carry depends on how the reference was spelled —
- * `pkg:build/*.js` resolves to `build/a.js`, `pkg/build/*.js` to `pkg/build/a.js` — so
- * take the longest trailing run of its segments the names really start with. Both then
- * strip to `a.js`, which is what makes the two spellings copy identically. A wildcard
- * with nothing literal before it leaves no prefix, so such a source keeps its whole
- * matched structure.
+ * Get the directory prefix `cp` strips from a flat source's file names: the
+ * longest trailing run of segments of the name's literal leading path
+ * ({@link Name.getLiteralPathPrefix}, `:` and `/` alike) that every one of
+ * `names` starts with, or `""` where there is none. So `pkg:build/*.js` (files
+ * named `build/a.js`) and `pkg/build/*.js` (`pkg/build/a.js`) both strip to
+ * `a.js`.
  */
 function selectorBase(selector: Name, names: string[]): string {
   const dirs = selector.getLiteralPathPrefix().split(/[/:]/).filter(Boolean);
@@ -1213,23 +1132,17 @@ function selectorBase(selector: Name, names: string[]): string {
 }
 
 /**
- * Make the shared "you named something that resolves to nothing" error — a
- * reference whose projection/glob matched no files. Raised uniformly for `cat`,
- * `cp`, and a `fabr run` whose entry projection missed, so a missing file reports the same
- * way however it was named.
+ * Make the error for a name whose projection matched no files, which `cat`,
+ * `cp` and a `fabr run` whose entry missed all raise.
  */
 function matchedNoFiles(name: string): Error {
   return new FabrError(`'${name}' matched no files`);
 }
 
 /**
- * Print the `fabr ls` listing, which is the outcome: each built target's
- * contents (sorted by name), or a namespace's children, with a `target:` header
- * when more than one target was requested. A target is by definition a built
- * thing, so its results are FileSets already — enumerated per source,
- * blank-line separated (a multi-source target lists each source as if each were
- * named, never unioned into one flat set). Listing output is the command's
- * data, so it goes straight to stdout rather than through the diagnostic log.
+ * Print the `fabr ls` listing to stdout: each name's files sorted by name, each
+ * source apart, separated by a blank line, or the children of the namespace it
+ * names; each under a `name:` header where more than one name was given.
  */
 function listTargets(options: Options, results: Array<Map<string, Reference> | SourceRef[]>): Computable<void> {
   return Computable.forAll(
@@ -1265,10 +1178,8 @@ function resolvedName(config: BuildContext, ref: INameValue, title: string): Com
 /**
  * Print the dependency tree of each name (`fabr deps`) to stdout: what a target
  * or a catalog requires, resolved and not built, or what any other name
- * resolves to. A
- * target is resolved under `build`, or under its type's sole operation where
- * the type has no build rule, unless the name requires another
- * (`pkg<BUILD_OPERATION=test>`).
+ * resolves to. A target is resolved under the operation {@link resolvedNames}
+ * chooses, unless the name requires another (`pkg<BUILD_OPERATION=test>`).
  */
 function printDependencies(model: BuildModel, options: Options, execution: ExecutionContext, site: IInvocationSite): Computable<void> {
   return resolvedNames(model, options, execution, site)
@@ -1350,14 +1261,14 @@ function vexStatements(config: BuildContext, options: Options, site: IInvocation
 
 /**
  * Check the dependencies of each name (`fabr audit`) against the advisory
- * database `ADVISORIES_URL` names: what `fabr deps` prints, resolved and not
- * built, each registry package among them asked about at its exact version
- * (core's {@link audit}).
- * The report goes to stdout, as text or with `--format sarif` as SARIF, and the run
- * exits 1 where any advisory affects a package, one a patched target fixes or
- * a statement of `ADVISORIES_SUPPRESSION_FILE`'s suppresses aside. The database is asked after
- * the evaluation settles, as a program is launched: it is no part of the
- * build.
+ * database `ADVISORIES_URL` names (core's {@link audit}): each registry package
+ * `fabr deps` shows, resolved and not built, at its exact version. Resolves a
+ * {@link Takeover}, run once the evaluation has settled, which queries the
+ * database, writes the report to stdout (text, or SARIF with `--format
+ * sarif`), warns of each declared fix that matches no advisory, and resolves
+ * the exit status: 1 where any advisory affects a package, other than one a
+ * patched target fixes or a statement of `ADVISORIES_SUPPRESSION_FILE`'s
+ * documents suppresses, otherwise 0.
  */
 function auditDependencies(
   model: BuildModel,
@@ -1372,9 +1283,8 @@ function auditDependencies(
       () =>
         audit(names, osvServer(advisories.toString()), statements).then(report => {
           if (options.format === "sarif") {
-            /* A reference is located only where it was written in the project's
-             * own tree: a plugin's file and the command line have no place
-             * under the tree's root. */
+            /* Locate a reference only where it was written in the project's
+             * own tree, not in a plugin's file or on the command line. */
             const locate = (site: ISourceSpan): ISarifLocation | undefined =>
               site.fs === execution.sourceFileSource ? sarifLocation(site) : undefined;
             console.log(JSON.stringify(auditSarif(report, { version: getVersion() }, locate), undefined, 2));
@@ -1392,27 +1302,22 @@ function auditDependencies(
 }
 
 /**
- * `fabr list-targets`: print the targets declared in the project (name, type and
- * the operations its type has rules for), recursively across namespaces. A model
- * query — it builds nothing. Repository instances are excluded (they are not
- * buildable targets), and by default so are system-contributed targets (declared
- * in core's or a plugin's lib files — e.g. fabr's own driver tools): the listing
- * is *your* targets. `--all` lifts that. Each name given is a target's name or a
- * glob over target names: a name always shows its target (naming it is explicit
- * interest) and is an error where nothing has it, while a pattern matches under
- * the same `--all` rule as no name at all, and may match nothing.
- * `--operation` keeps the targets whose type has a rule for one of the given
- * operations. The operations are the type's, so a rule guarded on a target's own
- * properties counts for every target of its type. `-l` adds each target's source
- * location; `--json` emits the structured form, each target carrying its
- * `operations` and `origin` (`system` or `project`). Output is the command's
- * data, so it goes to stdout.
+ * Print the declared targets (`fabr list-targets`) to stdout, by name, across
+ * every namespace: each with its type and the operations its type has rules for
+ * (so a rule guarded on a target's own properties counts for every target of
+ * the type). Building nothing. Repositories are left out, and, without
+ * `--all`, so are the targets core's and the plugins' files declare.
+ *
+ * A name given lists its target whatever `--all` says, and is an error where no
+ * target has it (with a hint where it is private to a file); a glob lists the
+ * targets it matches under the `--all` rule, and may match none.
+ * `--operation` keeps the targets whose type has a rule for one of those
+ * operations; `-l` adds where each is declared; `--json` writes `{ targets }`,
+ * each with its `operations`, `origin` (`system` or `project`) and `location`.
  */
 function listDeclaredTargets(model: BuildModel, options: Options, execution: ExecutionContext): Computable<void> {
-  /* A system decl is one whose build file was loaded from outside the project
-   * tree — core's or a plugin's contributed lib file, which the loader reads
-   * through the absFileSource (project files read through the source tree), so
-   * the identity of the decl's fs is the whole test. */
+  /* A system declaration is one read through absFileSource, from outside the
+   * project tree: core's or a plugin's file. */
   const isSystem = (decl: ITargetDecl): boolean => decl.source.fs === execution.absFileSource;
   const named = new Set(options.targets.filter(name => !isGlob(name)));
   const patterns = options.targets.filter(isGlob).map(globMatcher);
@@ -1469,25 +1374,18 @@ function formatDeclLocation(decl: ITargetDecl | ITargetDefDecl | IPropertyDecl):
 }
 
 /**
- * `fabr list-targetdefs`: print the available target types — the build
- * vocabulary contributed by core and the project's active plugins — each with
- * the operations it supports (`build`/`test`/`run`, from its registered rules)
- * and its declared properties (name, type, whether REQUIRED). A model query:
- * it builds nothing. An optional list of names filters to just those types;
- * `-l` appends each type's source location — its contributing lib file (core's
- * STD.fabr or a plugin's), which is where the type is defined and documented.
- * `--json` emits the full structured form — operations, source location, and
- * the doc-comment descriptions — for docs generation. Output is the command's
- * data, so it goes to stdout.
+ * Print the target types (`fabr list-targetdefs`) to stdout, in declaration
+ * order: each with the operations its rules support and its properties (name,
+ * type, whether REQUIRED, default). Building nothing. Names given select those
+ * types, and one no type has is an error. `-l` adds where each type is
+ * declared; `--json` writes the structured form, descriptions included
+ * ({@link targetDefJson}).
  */
 function listTargetDefs(model: BuildModel, options: Options): Computable<void> {
   const wanted = new Set(options.targets);
-  /* Declaration order (as written in the lib files), not alphabetical: the
-   * author curates the reading order by placement — e.g. the compile primitives
-   * are declared last so they document last. Same order feeds `list-all`/docs. */
+  /* Declaration order, as the lib files place them; list-all uses the same. */
   const defs = model.getTargetDefs().filter(def => wanted.size === 0 || wanted.has(def.name));
-  /* A named-but-unknown type is a user error (a typo), not an empty success —
-   * report every name that matched no targetdef. */
+  /* A name no targetdef has is an error, naming each. */
   const missing = [...wanted].filter(name => !defs.some(def => def.name === name));
   if (missing.length > 0) {
     throw new FabrError(`No such target type: ${missing.join(", ")}`);
@@ -1514,9 +1412,9 @@ function listTargetDefs(model: BuildModel, options: Options): Computable<void> {
 }
 
 /**
- * `fabr list-operations`: print each operation a rule names, with the target
- * types it has rules for, in name order. A model query — it builds nothing.
- * `--json` emits `{ operations: [{ name, types }] }`.
+ * Print each operation a rule names (`fabr list-operations`) to stdout, in name
+ * order, with the target types it has rules for. Building nothing. `--json`
+ * writes `{ operations: [{ name, types }] }`.
  */
 function listOperations(model: BuildModel, options: Options): Computable<void> {
   const types = new Map<string, string[]>();
@@ -1538,13 +1436,10 @@ function listOperations(model: BuildModel, options: Options): Computable<void> {
 }
 
 /**
- * `fabr list-properties`: print the global configuration surface — the documented
- * config properties (`BUILD_TYPE`, `JS_TARGET`, …) with their defaults, and the
- * `flag` switches (`ts/no_strict`, …). These are what you *configure*, as opposed
- * to the target *types* (`list-targetdefs`) and target *instances* (`list-targets`);
- * flags happen to be `flag` targets, but they read as configuration, so they are
- * listed here. A model query — it builds nothing. `--json` emits the structured
- * form (value, source location, doc comment) for docs generation.
+ * Print the documented global properties (`fabr list-properties`: `BUILD_TYPE`,
+ * `JS_TARGET`, …) with their values, then the `flag` targets (`ts/no_strict`,
+ * …), to stdout. Building nothing. `-l` adds where each is declared; `--json`
+ * writes `{ properties, flags }`, each with its location and description.
  */
 function listProperties(model: BuildModel, options: Options): Computable<void> {
   const properties = configPropertiesJson(model);
@@ -1566,11 +1461,10 @@ function listProperties(model: BuildModel, options: Options): Computable<void> {
 }
 
 /**
- * `fabr list-all`: the whole build vocabulary in one machine-readable document —
- * target types, config properties, and flags together (`{ targetdefs, properties,
- * flags }`). The union of `list-targetdefs` and `list-properties`, so a single
- * consumer (docs generation) reads everything from one invocation rather than
- * stitching several. Always JSON — it exists for tooling, not human listing.
+ * Write the whole vocabulary (`fabr list-all`) to stdout as one JSON document,
+ * for tooling such as docs generation: `{ targetdefs, properties, flags,
+ * targets }`, the last the documented declared targets
+ * ({@link providedTargetsJson}).
  */
 function listAll(model: BuildModel): Computable<void> {
   const defs = model.getTargetDefs(); /* declaration order — see listTargetDefs */
@@ -1589,13 +1483,9 @@ function listAll(model: BuildModel): Computable<void> {
   return Computable.resolve(undefined);
 }
 
-/** @return the ready-made *declared* targets the loaded libraries provide — a
- * repository (`@npm`), a driver tool — with each decl's written properties, so
- * docs can reconstruct the declaration verbatim. Declaration order (like
- * targetdefs — the file's own narrative order is the documentation order).
- * Only documented ones (a doc comment is what makes a lib target part of the
- * public vocabulary rather than plumbing); `flag` targets have their own
- * section. */
+/** @return the declared targets carrying a doc comment, other than flags (a
+ * repository such as `@npm`, a driver tool), in declaration order, each with
+ * its written properties, location and description. */
 function providedTargetsJson(model: BuildModel): Record<string, unknown>[] {
   return model
     .getDeclaredTargets()
@@ -1632,9 +1522,8 @@ function targetDefJson(model: BuildModel, def: ITargetDefDecl): Record<string, u
   };
 }
 
-/** One entry of the config listing (a documented global property, or a flag
- * target — which has no value of its own); the same entries are also printed
- * as text. */
+/** One entry of the properties listing: a documented global property, or a
+ * flag target. */
 interface IConfigEntry extends IContribution {
   name: string;
   location: string;
@@ -1714,8 +1603,8 @@ function renderTargetDefHeader(def: ITargetDefDecl, operations: string[]): strin
 
 /**
  * @return the listing lines for a namespace's children: each name, in the order
- * listed, a child that is itself a namespace marked with a trailing `/`. A
- * child is a name, not content, so the long form shows the same.
+ * listed, a child that is itself a namespace marked with a trailing `/`. `-l`
+ * lists the same.
  */
 function renderChildren(children: Map<string, Reference>): string[] {
   return [...children].map(([name, child]) => (isIncompleteRef(child) ? `${name}/` : name));

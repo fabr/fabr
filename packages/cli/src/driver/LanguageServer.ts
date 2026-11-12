@@ -75,14 +75,14 @@ const LENSES = [
 /** LSP's `CompletionItemKind`s, for each kind of completion a build file offers. */
 const COMPLETION_KINDS: Record<ICompletion["kind"], number> = { property: 10, target: 9, type: 7, keyword: 14 };
 
-/** A log that reports nothing: a document's parse is read for its structure, its errors being the load's to report. */
+/** A log that reports nothing, for a parse read only for its structure. */
 const SILENT: Log = { log: () => undefined };
 
 /** The server of the LSP half of a connection: the documents the editor has open, and the model it answers from. */
 export class LanguageServer {
   private model?: BuildModel;
   private modelLoaded: () => void = () => undefined;
-  /** Settled once the first model is loaded, or the first cycle ends without one: what a request answered from the model waits for until then. */
+  /** Settled once the first model is loaded, or the first cycle ends without one; a request answered from the model waits for it. */
   private readonly firstModel = new Promise<void>(resolve => (this.modelLoaded = resolve));
   /** Each open document's text, by URI. */
   private readonly documents = new Map<string, string>();
@@ -114,7 +114,7 @@ export class LanguageServer {
     return { log: (diagnostic, params) => collectingLog(this.sourceRoot, log, this.reported).log(diagnostic, params) };
   }
 
-  /** Publish the diagnostics of each of `execution`'s cycles as it ends, and answer the requests waiting for a model, from none where none has loaded, once one has ended. Subscribes once, however often called. */
+  /** Publish the diagnostics of each of `execution`'s cycles as it ends, and once a cycle has ended, answer the requests waiting for a model (from none where none has loaded). Subscribes once per execution. */
   public attach(execution: ExecutionContext): void {
     if (this.execution === execution) {
       return;
@@ -162,7 +162,7 @@ export class LanguageServer {
     }
   }
 
-  /** Record the text the editor holds of the document `uri`, publishing its parse's diagnostics where it differs from the saved file. */
+  /** Record the text the editor holds of the document `uri` (undefined once it is closed), and publish the document's diagnostics. */
   private typedText(uri: string, text: string | undefined): void {
     if (text === undefined) {
       this.documents.delete(uri);
@@ -197,7 +197,7 @@ export class LanguageServer {
           serverInfo: { name: "fabr", version: getVersion() },
         };
       case "initialized":
-        /* What the last load reported, published before the client was there to hear it. */
+        /* Publish what the last load reported before the client was listening. */
         [...this.loaded.keys()].forEach(uri => this.publishDocument(uri));
         return null;
       case "shutdown":

@@ -48,45 +48,37 @@ import { RepositoryImplementation, RepositoryRegistration } from "./Types";
 
 /**
  * A catalog entry: the reference written in `deps`, or the package node of a
- * target written there, unbuilt. Either is taken from the catalog's resolution
- * by the collection point that names it, with the references it carries bound
- * by that resolution.
+ * target written there, unbuilt. A consumer that names the entry takes it from
+ * the catalog's resolution, its requirements bound as that resolution bound
+ * them.
  */
 type CatalogEntry = RepositoryRef | Package;
 
-/** The catalog's entries by the name each is delivered as, and the collection they
- * were resolved in. */
+/** The catalog's entries, by the name each is addressed as, and the collection
+ * they were resolved in. */
 interface ResolvedCatalog {
   readonly entries: ReadonlyMap<string, CatalogEntry>;
   readonly collection: ResolvedCollection;
 }
 
 /**
- * A **catalog** is an explicit, named, opt-in shared collection point. It pins a
- * fixed set of requirements (its `deps` property) and resolves them **jointly
- * and once**, as the single minimal-version selection over all of the
- * catalog's roots. Each resolved root is exposed by the name it is delivered
- * as: its package name, or the name a written rename gives it
- * (`@npm:typescript:6.0.0-beta -> typescript-6`). The address must be unique,
- * not the package behind it, so two versions of one package can sit side by
- * side in a catalog. The catalog delivers nothing itself: a reference
- * `@cat:pkg` names a member, and the consumer's collection point takes its
- * node, wired to the catalog's selection, into its own graph, so every
- * consumer gets the same versions.
+ * The repository a `catalog` declaration is: a named set of requirements (its
+ * `deps`) resolved together, which every consumer takes its versions from.
+ * `deps` are the catalog's requirements, read under `build` and resolved as a
+ * target's are, once for each of a consumer's two collections (`build` and
+ * `run`; once for both where they resolve alike).
  *
- * Mechanically it is a {@link Repository} whose read face answers from a
- * **table** rather than a registry. Its `deps` are its requirements, resolved
- * as a target's are, under `build`, once for each of a consumer's collections
- * (`build` and `run`, as a rule's two collections are resolved apart; one
- * collection where the two resolve alike), and every consuming reference
- * rides the normal RepositoryRef path, grouped by this instance at the
- * consumer's collection point and answered from the table.
+ * Each entry is addressed by its package name, or the name a written rename
+ * gives it (`@npm:typescript:6.0.0-beta -> typescript-6`), so two versions of
+ * one package may be entries under two names. A reference `@cat:pkg` names an
+ * entry; the catalog fetches and builds nothing, and the consumer's collection
+ * point takes the entry's node, with the catalog's selections, into its own
+ * graph.
  */
 export class CatalogRepository implements Repository, RepositoryCollection {
   constructor(
     private readonly catalogName: string,
-    /* The operation of the configuration this instance was made in (interned
-     * per BuildContext like any repository). */
+    /* The operation of the configuration this instance was made in. */
     private readonly operation: string,
     /* The entries as each of a consumer's collections resolved them. */
     private readonly sides: ReadonlyMap<UsedFor, ResolvedCatalog>
@@ -98,11 +90,10 @@ export class CatalogRepository implements Repository, RepositoryCollection {
   }
 
   /**
-   * Look up the ONE member `reference` names in the catalog's resolution for
-   * the consumer's collection resolved for `operation`, with the operation of
-   * this instance's configuration, which says what it is answered with.
-   * Whether what a consumer takes is acceptable is judged at that consumer's
-   * collection point, over everything it uses together.
+   * Look up the member `reference` names, in the catalog's resolution for a
+   * consumer's collection resolved for `operation`. The result carries this
+   * instance's operation, which says what the member is answered as (a
+   * package, its files, or a program). Rejects as {@link entryFor} throws.
    */
   public member(reference: RepositoryRef, operation: string): Computable<ResolvedMember> {
     return this.resolved(usedForOf(operation)).then((catalog): ResolvedMember => ({
@@ -112,9 +103,8 @@ export class CatalogRepository implements Repository, RepositoryCollection {
     }));
   }
 
-  /** Look up the entry a reference names. An unknown one is a resolution
-   *  failure, as for any repository lacking a requirement, attributed to the
-   *  reference that wrote it. */
+  /** Look up the entry `reference` names. Throws a RequirementResolutionError,
+   *  naming the reference and listing the entries, where there is none. */
   private entryFor(reference: RepositoryRef, { entries }: ResolvedCatalog): CatalogEntry {
     const name = reference.name;
     const entry = entries.get(name);
@@ -130,16 +120,14 @@ export class CatalogRepository implements Repository, RepositoryCollection {
   }
 
   /**
-   * Get the requirement a member was **declared** with in the catalog's `deps` — NOT
-   * the version the joint resolution pinned it to. An external member's is
-   * what its reference states (`@npm:pkg:1.2.3`); a member built in the project
-   * states no version here, having none until it is built, and whoever holds
-   * the built package supplies it.
-   *
-   * The **address** is the name the requirer knows it by — a member pinned under
-   * another name (`@dep:typescript-6`) is imported under that name — so it is
-   * recorded as the requirement's `renameTo` where it differs from the package's
-   * own name. (A rename written on `ref` itself outranks it, applied by the caller.)
+   * Get the requirement the member `ref` names was written with in `deps`, for
+   * a manifest, not the version the catalog selected: for a registry
+   * reference, what it states (`@npm:pkg:1.2.3`); for a target, as
+   * {@link declaredRequirement} reads it. The member's address is set as the
+   * requirement's `renameTo` where it differs from the package's name
+   * (`@dep:typescript-6` is imported as `typescript-6`); a rename written on
+   * `ref` itself is the caller's to apply over it.
+   * @return the requirement, or undefined where `ref` names no member.
    */
   public declaredRequirement(ref: RepositoryRef): Computable<Requirement | undefined> {
     const name = ref.name;
@@ -152,16 +140,13 @@ export class CatalogRepository implements Repository, RepositoryCollection {
   }
 
   /**
-   * Vend the reference to a member. The member name is the whole literal up to
-   * a projection `:` (versions live in the catalog, not the reference), so a `/`
-   * inside a scoped name (`@types/node`) is part of the key, not a boundary. A
-   * trailing `:tail` projects into the pinned package. A `?` or `!` ending the
-   * alias is the reference's marker; after a projection it is part of the
-   * pattern.
+   * Vend the reference to a member. The member's address is the literal up to
+   * the first `:`, so a `/` in a scoped name (`@types/node`) is part of it; a
+   * `:tail` after it projects into the member. A `?` or `!` ending the address
+   * is the reference's marker; after a projection it is part of the pattern.
    */
   public getRepositoryRef(name: Name): RepositoryRef {
-    /* A `?` or `!` ending the reference is a marker only on the alias alone;
-     * after a projection it is the last character of the pattern. */
+    /* A projection: any `?` or `!` is the pattern's. */
     const lit = name.getLiteralPrefix();
     const colon = lit.indexOf(":");
     if (colon !== -1) {
@@ -177,9 +162,8 @@ export class CatalogRepository implements Repository, RepositoryCollection {
     });
   }
 
-  /** List the catalog's members by the address each is pinned under, in
-   *  code-unit order. Nothing is fetched or built: the catalog's resolution is
-   *  all it reads. */
+  /** List the catalog's members by address, in code-unit order, fetching and
+   *  building nothing. Rejects for any namespace but the whole catalog. */
   public children({ name: namespace }: PartialRepositoryRef): Computable<Map<string, Reference>> {
     if (namespace !== "") {
       return Computable.reject(new FabrError(`Catalog ${this.catalogName} has no namespace '${namespace}'`));
@@ -194,14 +178,13 @@ export class CatalogRepository implements Repository, RepositoryCollection {
     );
   }
 
-  /** Refuse a publish: a catalog pins versions for reading; it is not a place
-   *  content goes. */
+  /** Throw: a catalog is no publish destination. */
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
     throw new FabrError(`a catalog is not a publish destination (cannot sync to '${name.toString()}')`);
   }
 }
 
-/** The requirement each of a consumer's collections is answered from. */
+/** The catalog's requirement each of a consumer's collections is answered from, by collection. */
 const SIDE_REQUIREMENTS = new Map<UsedFor, string>([
   ["build", "deps"],
   ["run", "run_deps"],
@@ -221,15 +204,13 @@ function catalogRequirements(context: TargetContext): ResolutionSpec {
 }
 
 /**
- * Refuse an entry the catalog cannot pin, as written: one projecting into a
- * package, one naming no package, and a reference to a repository that does
- * not resolve versions, or to another catalog's member.
+ * Throw for an entry the catalog cannot hold, as written: one projecting into a
+ * package, a reference to a repository that does not resolve versions or to
+ * another catalog's member, and one naming no package (a fetch table).
  */
 function checkEntries(context: TargetContext, sources: ReadonlyArray<SourceRef>): void {
-  /* A catalog pins whole packages: an entry projecting *into* one would
-   * resolve to plain files, not a package — reject it outright, whether it is
-   * an external requirement (`@npm:pkg:1.0.0:lib/*`, a projected reference)
-   * or a built target (`mylib:build/*`). */
+  /* An entry projecting into a package (`@npm:pkg:1.0.0:lib/*`,
+   * `mylib:build/*`) would be plain files, not a package. */
   const projectsInto = (what: string): Error =>
     new FabrError(`Catalog entry ${what} projects into a package`).withHelp(
       "a catalog pins whole packages — project at the point of use instead (`@catalog:pkg:path`)"
@@ -245,9 +226,8 @@ function checkEntries(context: TargetContext, sources: ReadonlyArray<SourceRef>)
   if (pendingLocal) {
     throw projectsInto(isPackage(pendingLocal.source) ? `'${pendingLocal.source.packageName}'` : "of a local target");
   }
-  /* A catalog pins package VERSIONS, so its entries must come from a
-   * repository that resolves them. A member of another catalog is rejected:
-   * each catalog is its own joint resolution. */
+  /* A registry reference must be to a repository that resolves versions; a
+   * member of another catalog is refused. */
   const references = sources.filter((source): source is RepositoryRef => source instanceof RepositoryRef);
   const unresolvable = references.find(reference => !isRepositoryReader(reference.source));
   if (unresolvable) {
@@ -263,9 +243,8 @@ function checkEntries(context: TargetContext, sources: ReadonlyArray<SourceRef>)
           )
     );
   }
-  /* Anything neither a requirement nor a target nor a package pins nothing:
-   * a fetch table, say. Silence here would leave the catalog quietly empty of
-   * the entry. */
+  /* Anything neither a requirement, a target nor a package (a fetch table)
+   * names no package. */
   const inert = sources.find(
     source => !(source instanceof RepositoryRef) && !(source instanceof TargetRef) && !isIncompleteRef(source) && !isPackage(source)
   );
@@ -278,10 +257,11 @@ function checkEntries(context: TargetContext, sources: ReadonlyArray<SourceRef>)
 
 /**
  * Key the entries of the catalog's requirement `requirement`, resolved, by the
- * name each is delivered as: its package name, or the alias a written rename
- * gives it. An entry is the reference written, or for a package of the
- * project the package as the collection holds it, unbuilt. An alternate (`?`)
- * is no entry, and one build written twice is one entry.
+ * name each is addressed as: its package name, or the alias a written rename
+ * gives it. An entry is the reference written, or for a package built in the
+ * project, the package as the collection holds it, unbuilt. An alternate
+ * (`?`) is no entry, and one build written twice is one entry. Throws for an
+ * entry that resolved to something other than a package.
  */
 function catalogOf(catalogName: string, requirements: ResolvedRequirements, requirement: string): ResolvedCatalog {
   const collection = requirements.collectionOf(requirement);
@@ -303,6 +283,7 @@ function catalogOf(catalogName: string, requirements: ResolvedRequirements, requ
   return { entries, collection };
 }
 
+/** Make the catalog a `catalog` declaration is, from its resolved requirements. */
 function createCatalog(
   context: TargetContext,
   _url: string | undefined,

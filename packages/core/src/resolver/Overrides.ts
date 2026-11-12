@@ -18,11 +18,9 @@
  */
 
 /**
- * The judgment of a user's **overrides**, ecosystem-generic: what the `?`/`!`
- * markers on written requirements sanction, and whether a delivery's versions
- * stay within it. A repository contributes only its `VersionDomain`;
- * everything here is shared by any ecosystem that resolves through the MVS
- * core. (The parser reads the markers; Requirement.ts writes their spelling.)
+ * The versions written requirements permit a strict collection to ship
+ * together (their `?` markers and exact versions), and checks of a violation
+ * against selections, for any {@link VersionDomain}.
  */
 
 import { requiredAs, versionText } from "./Requirement";
@@ -30,10 +28,9 @@ import { PackageName, Requirement, Selected, VersionDomain, Violation } from "./
 
 /**
  * Get the canonical (`versionToString`) form of a written exact version, or
- * undefined when the text is a range (or the domain has no exact-version
- * notion). Every sanction set must store this form: the sanction judgment
- * compares against `versionToString(selection)`, so a non-canonical spelling
- * (`v1.4.2`, `1.4.2+build`) recorded verbatim could never match.
+ * undefined where the text is a range or the domain has no `exactVersion`.
+ * Store sanctioned versions in this form: they are compared with
+ * `versionToString` of a selection, which `v1.4.2` would never match.
  */
 function canonicalExactVersion<V, C>(domain: VersionDomain<V, C>, text: string | undefined): string | undefined {
   if (text === undefined) {
@@ -43,19 +40,19 @@ function canonicalExactVersion<V, C>(domain: VersionDomain<V, C>, text: string |
   return exact === undefined ? undefined : domain.versionToString(exact);
 }
 
-/** The `?` sanctions written in a batch. */
+/** The versions the `?` requirements of a batch permit. */
 export interface Sanctions {
-  /** pkg → the canonical exact versions whose forks a strict collection may accept. */
+  /** The canonical versions permitted, by package. */
   readonly versions: Map<PackageName, Set<string>>;
-  /** The packages a `?` stating no version sanctions at every version. */
+  /** The packages a `?` stating no version permits at every version. */
   readonly everyVersion: Set<PackageName>;
 }
 
 /**
- * Collect the `?` sanctions written in a batch, rejecting the contradictory
- * marker combinations — a package both forced and alternated, or forced at two
- * different versions — via `fail`, which the caller supplies so the error is
- * attributed to the written references.
+ * Collect the versions the `?` requirements of a batch permit. Calls `fail`
+ * with the package and a message where a package is both forced (`!`) and
+ * permitted (`?`), or forced at two different versions; the caller
+ * attributes the error to the written references.
  */
 export function collectSanctions<V, C>(
   domain: VersionDomain<V, C>,
@@ -72,7 +69,6 @@ export function collectSanctions<V, C>(
       everyVersion.add(requiredAs(req));
     } else {
       const versions = alternates.get(requiredAs(req)) ?? new Set();
-      /* Canonical form: the sanction judgment compares versionToString. */
       alternates.set(requiredAs(req), versions.add(canonicalExactVersion(domain, req.versionConstraint) ?? req.versionConstraint));
     }
   }
@@ -85,8 +81,6 @@ export function collectSanctions<V, C>(
       `'${requiredAs(contradicted)}' is both forced ('!') and permitted as an alternate ('?') — pick one`
     );
   }
-  /* Two forces at different versions are equally contradictory — the
-   * resolver would have to pick one silently. */
   const forcedAt = new Map<PackageName, string>();
   for (const req of requirements) {
     if (req.override !== "force" || req.versionConstraint === undefined) {
@@ -107,11 +101,10 @@ export function collectSanctions<V, C>(
 }
 
 /**
- * Collect the versions the user explicitly WROTE per package — `?` sanctions
- * plus exact unmarked pins (the catalog form; recognized via the domain's
- * `exactVersion`, so a range stays a floor, not a written version), all in
- * canonical `versionToString` form. This is the right-hand side of the
- * sanction rule: a strict delivery ships only version sets ⊆ what was written.
+ * Collect the versions written per package, in canonical form: those of
+ * `alternates`, and the exact versions among `demanded` (a range is not
+ * one). A strict collection ships several versions of a package only where
+ * each is written.
  */
 export function writtenVersions<V, C>(
   domain: VersionDomain<V, C>,
@@ -134,10 +127,9 @@ export function writtenVersions<V, C>(
 }
 
 /**
- * @return true if any selection of the violated package — principal or fork —
- * satisfies the violated constraint, otherwise false: the test for whether the
- * resolver could repair the edge at all. Nothing published satisfies an
- * unrepaired one, so no delivery mode (and no sanction) can honor it.
+ * @return true if any of `selections` of the violated package, fork or not,
+ * satisfies the violated constraint, otherwise false: false where no fork
+ * repairs the violation.
  */
 export function satisfiedByAnySelection<V, C>(
   domain: VersionDomain<V, C>,
@@ -148,8 +140,7 @@ export function satisfiedByAnySelection<V, C>(
   try {
     constraint = domain.parseConstraint(violation.versionConstraint);
   } catch {
-    /* Unparseable constraints are hard errors at resolve; a violation's
-     * constraint always parsed there. */
+    /* Unreachable: a violation's constraint parsed when it was found. */
     return false;
   }
   return selections.some(sel => sel.name === violation.name && domain.satisfies(sel.version, constraint));
@@ -157,9 +148,7 @@ export function satisfiedByAnySelection<V, C>(
 
 /**
  * @return true if any of `selections` is a version of the violated package
- * that fails the violated constraint, otherwise false — the violation as it
- * stands among these selections rather than against the resolution's
- * principal.
+ * that fails the violated constraint, otherwise false.
  */
 export function violatedAmong<V, C>(
   domain: VersionDomain<V, C>,

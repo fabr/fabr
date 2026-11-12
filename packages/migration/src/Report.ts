@@ -17,12 +17,14 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-/** The judgments a migration could not make, and what it did in their place,
- * grouped under a heading each. */
+/**
+ * The judgments a migration could not make, and what it did in their place,
+ * as lines grouped under headings.
+ */
 export class Report {
   private readonly sections = new Map<string, Set<string>>();
 
-  /** Add `line` under `heading` (once, however often it is added). */
+  /** Add `line` under `heading`; a line already there is not added again. */
   public add(heading: string, line: string): void {
     const lines = this.sections.get(heading) ?? new Set();
     this.sections.set(heading, lines.add(line));

@@ -18,17 +18,14 @@
  */
 
 /**
- * One test file, in its own process: assemble the jest environment, then hand
- * jest-circus the facades and let it run the file.
+ * Run one test file in this process: install its environment, the mock
+ * registry, the hoist and the `jest` object, then run the file with
+ * jest-circus.
  *
- * A process per file is the isolation `jest.mock` requires (it is file-scoped
- * by construction): `process.env`, native state, leaked handles and heap are
- * all separate per file.
- *
- * Run in-process by runner.ts for a single-file invocation, or as a forked
- * child for a list, the result then going back over the IPC channel. Anything that kills the process before that — a module
- * that fails to load, a broken preload — leaves no message, and the parent
- * reports the file as failed using the stderr it captured.
+ * runner.ts runs a single-file invocation in its own process, and forks this
+ * module as a child for each file of a list, which sends its result back over
+ * the IPC channel. A child that dies before sending one (a module that fails to
+ * load, a broken preload) is reported as failed with the stderr it wrote.
  */
 
 import * as fs from "node:fs";
@@ -43,7 +40,7 @@ import { jestLibrary, requireEnvironment } from "./Tools";
 import { makeJestConfig } from "./Config";
 import { formatExecError, formatFailures, IExecError, IFormattableResult } from "./Failures";
 
-/** What the parent tells a child to do. */
+/** The test file a child runs, and how. */
 export interface IChildRequest {
   testFile: string;
   root: string;
@@ -54,10 +51,8 @@ export interface IChildRequest {
   setup: string[];
 }
 
-/** One test's outcome, as circus reports it — narrowed to what the report needs.
- * `failureMessages` are FORMATTED here (see Failures.ts) rather than in the
- * parent: presenting them needs the run's jest config, which only exists in the
- * child. */
+/** One test's outcome, as circus reports it, with its `failureMessages`
+ * formatted (see Failures.ts), which needs the child's jest config. */
 export interface IChildTestResult {
   fullName: string;
   status: string;
@@ -68,10 +63,10 @@ export interface IChildTestResult {
 export interface IChildResult {
   testFile: string;
   results: IChildTestResult[];
-  /** A failure of the FILE rather than of a test in it, formatted: circus could
-   * not get as far as running it, or an error was raised outside any test (an
-   * unhandled rejection, a failed `afterAll`), in which case `results` holds
-   * the tests that did run. */
+  /** A failure of the file rather than of a test in it, formatted: the file
+   * could not be run, or an error was raised outside any test (an unhandled
+   * rejection, a failed `afterAll`), `results` then holding the tests that
+   * ran. */
   execError?: string;
 }
 
@@ -93,6 +88,13 @@ type TestFramework = (
   sendMessageToJest?: unknown
 ) => Promise<{ testResults: CircusResult[]; testExecError?: IExecError }>;
 
+/**
+ * Run `request`'s test file in this process, its environment chosen by
+ * {@link fileEnvironment}.
+ * @return each test's outcome, its failures formatted, and the file's own
+ *   failure as `execError`. Rejects where the environment cannot be provided
+ *   or circus itself fails.
+ */
 export async function runTestFile(request: IChildRequest): Promise<IChildResult> {
   const environment = fileEnvironment(request);
   requireEnvironment(environment.env, environment.env !== request.env);
@@ -102,8 +104,8 @@ export async function runTestFile(request: IChildRequest): Promise<IChildResult>
 
   const { globalConfig, projectConfig } = await makeJestConfig(request);
 
-  /* fabr's half: the module registry, the load-time hoist, and the `jest`
-   * object — none of which circus provides. */
+  /* The module registry, the load-time hoist and the `jest` object, which
+   * circus does not provide. */
   const mocker = new (jestLibrary("jest-mock") as IMockerModule).ModuleMocker(globalThis);
   const registry = new MockRegistry(request.root, mocker);
   installSeams(registry);
@@ -115,12 +117,10 @@ export async function runTestFile(request: IChildRequest): Promise<IChildResult>
     }
   ).ModernFakeTimers({ global: globalThis, config: { rootDir: request.root, fakeTimers: {} } });
   const env = { registry, mocker, timers, seed: (globalConfig as { seed?: number }).seed };
-  /* The plain `jest` global resolves module specifiers against the test file
-   * (there is only one of it). A module that wants its OWN resolution base
-   * imports from '@jest/globals', which the registry serves per caller — and
-   * which is also what the hoisted `jest.mock` calls reach for. Registration
-   * and require-time lookup must resolve a specifier from the same base, or
-   * the mock silently never applies. */
+  /* The `jest` global resolves module specifiers relative to the test file;
+   * `@jest/globals`, which the hoisted `jest.mock` calls require, serves each
+   * module a `jest` resolving relative to it. A mock registered from another
+   * base than the requires it should catch is never served. */
   const jest = makeJestObject(env, { filename: request.testFile });
   (globalThis as Record<string, unknown>).jest = jest;
   registry.jestGlobalsFor = (caller: ILoaderModule | undefined) =>
@@ -140,9 +140,9 @@ export async function runTestFile(request: IChildRequest): Promise<IChildResult>
       request.testFile
     );
   } finally {
-    /* A file whose last test leaves fake timers active must not fake the clock
-     * (or clearTimeout) for the reporting that follows — circus tears nothing
-     * down here (the environment facade owns no fakeTimers), so the run does. */
+    /* Restore real timers, which circus does not (the environment facade has
+     * no fakeTimers), so a file whose last test leaves fake timers installed
+     * does not fake the clock for the reporting that follows. */
     timers.dispose();
   }
   return {
@@ -164,10 +164,10 @@ interface IDocblockModule {
 }
 
 /**
- * Choose the environment this file runs in — `request.env` unless the file's leading
+ * Choose the environment the file runs in: `request.env` unless its leading
  * docblock says otherwise (see environmentFor). The docblock is read from the
- * SOURCE the test was compiled from, as jest reads it, falling back to the
- * compiled file where the source is not staged.
+ * source the test was compiled from, as jest reads it, else from the compiled
+ * file where the source is not staged.
  */
 function fileEnvironment(request: IChildRequest): IFileEnvironment {
   const docblock = jestLibrary("jest-docblock") as IDocblockModule;
@@ -176,9 +176,8 @@ function fileEnvironment(request: IChildRequest): IFileEnvironment {
   return environmentFor(docblock.parse(docblock.extract(text)), request.env);
 }
 
-/** `@jest/globals`' exports besides `jest` itself: the framework surface circus
- * installs on the global object (plus `expect`), re-served under the module's
- * name so an explicit `import { describe } from "@jest/globals"` works. */
+/** `@jest/globals`' exports besides `jest`: the globals circus installs, read
+ * off the global object. */
 const FRAMEWORK_GLOBALS = [
   "expect",
   "describe",
@@ -196,12 +195,10 @@ const FRAMEWORK_GLOBALS = [
 ];
 
 /**
- * Make the `@jest/globals` namespace for one caller. `jest` is the caller's own (its
- * module specifiers resolve against that caller); everything else is read off
- * the global object at serve time — a module can only import `@jest/globals`
- * while circus is loading it, which is after circus installed the globals. A
- * missing member means that ordering broke (or an unsupported circus), which
- * must fail here rather than surface as a silently-undefined import.
+ * Make the `@jest/globals` namespace for one module: `jest`, the module's own
+ * `jest` object, and each of {@link FRAMEWORK_GLOBALS} as the global object
+ * holds it. Throws where one of those is not installed yet, which circus does
+ * before it loads any module.
  */
 export function makeJestGlobals(jest: unknown): Record<string, unknown> {
   const globals = globalThis as Record<string, unknown>;
@@ -215,10 +212,8 @@ export function makeJestGlobals(jest: unknown): Record<string, unknown> {
   return namespace;
 }
 
-/** Describe a thrown value, which need not be an Error: a string or object
- * rejection must still be reported as what it was — an undefined execError
- * would make the parent misread the failure as "this file registered no
- * tests". */
+/** Describe a thrown value, which need not be an Error: an Error by its stack
+ * (else its message), anything else as `Non-Error thrown: <inspected>`. */
 export function describeThrown(err: unknown): string {
   return err instanceof Error ? (err.stack ?? err.message) : `Non-Error thrown: ${inspect(err)}`;
 }
@@ -227,12 +222,9 @@ if (require.main === module) {
   process.on("message", (request: IChildRequest) => {
     runTestFile(request)
       .catch((err: unknown): IChildResult => ({ testFile: request.testFile, results: [], execError: describeThrown(err) }))
-      /* The tests are done; anything they leaked must not keep the process
-       * alive (the complement of node:test's forceExit). Whatever they SPAWNED
-       * is reaped by the host's process-group sweep at the action boundary.
-       * `process.send` is asynchronous — exit from its completion callback,
-       * never on the next line, or a result larger than the pipe buffer is
-       * truncated by the exit and a green file reports as a crash. */
+      /* End the process once the result is sent, whatever the tests left
+       * running. Exit from `process.send`'s callback: exiting sooner truncates
+       * a result larger than the pipe buffer. */
       .then(result => {
         if (process.send === undefined) {
           process.exit(1);

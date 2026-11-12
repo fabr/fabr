@@ -40,18 +40,16 @@ function openCommandFor(url: string): { command: string; args: string[] } {
 }
 
 /**
- * The driver's {@link UserInteraction}: questions are asked on the controlling
- * terminal (stdin for the answer, stderr for the text — stderr is fabr's
- * diagnostic stream, so a build with redirected stdout still converses), and
- * URLs are announced through the log and dispatched to the platform's opener.
- * Constructed only when fabr is attached to a tty.
+ * The terminal's {@link UserInteraction}: a question is written to stderr and
+ * its answer read from stdin, and a URL is logged and passed to the platform's
+ * opener. Construct one only when fabr is attached to a tty.
  */
 export class TerminalInteraction implements UserInteraction {
   constructor(private readonly log: Log) {}
 
   public prompt(question: string): Computable<string> {
-    /* readline writes the question and echoes the answer to stderr directly:
-     * fabr's own display steps aside until the line is in. */
+    /* readline writes the question and echoes the answer to stderr itself, so
+     * suspend fabr's terminal display until the line is in. */
     return withTerminalSuspended(() => this.ask(question));
   }
 
@@ -74,9 +72,9 @@ export class TerminalInteraction implements UserInteraction {
   }
 
   public openUrl(url: string, purpose: string): Computable<void> {
-    /* The URL is always shown: over ssh (or if the opener fails) the browser
-     * never appears, and the printed URL is the fallback the user follows by
-     * hand — so a launch failure is not an error. */
+    /* Always log the URL: where no browser appears (over ssh, or where the
+     * opener fails) the user follows it by hand. A failure to launch the
+     * opener is ignored. */
     this.log.log(DIAG_OPEN_URL, { purpose, url });
     const { command, args } = openCommandFor(url);
     const child = spawn(command, args, { stdio: "ignore", detached: true });

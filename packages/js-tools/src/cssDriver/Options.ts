@@ -20,10 +20,8 @@
 /* The css drivers' options documents: what the sass_compile and css_postcss
  * rules write and the drivers read. */
 
-/**
- * One Sass source and every name the sass step produces for it. The driver
- * reads this and writes exactly these paths — it derives none of them.
- */
+/** One Sass source and every name the sass step produces for it. The driver
+ * writes exactly these paths and derives none of its own. */
 export interface ISassSource {
   /** The styled source, relative to the options' `srcRoot`. */
   path: string;
@@ -35,11 +33,8 @@ export interface ISassSource {
   map?: string;
 }
 
-/**
- * The options document fabr writes for the Sass driver — a plain, tool-free
- * description of the lowering. Serialized to JSON, so it stays
- * content-addressed with no host paths.
- */
+/** The options document fabr writes for the Sass driver, as JSON. Holds no
+ * host paths. */
 export interface ISassOptions {
   /** Every source to lower, with its output names. Partials are staged but
    * never listed. */
@@ -53,10 +48,8 @@ export interface ISassOptions {
   outdir: string;
 }
 
-/**
- * One stylesheet input and every name the postcss step produces for it. The
- * driver reads this and writes exactly these paths — it derives none of them.
- */
+/** One stylesheet input and every name the postcss step produces for it. The
+ * driver writes exactly these paths and derives none of its own. */
 export interface IPostcssSource {
   /** The stylesheet input, relative to the options' `srcRoot` — plain CSS: a
    * lowered Sass source (`.module.` marker intact) or an authored `.css`. */
@@ -72,8 +65,8 @@ export interface IPostcssSource {
    * classes are named with this.
    */
   scope: string;
-  /** Whether this stylesheet's OWN output is scoped and carries a class map —
-   * the `.module.` marker, read once here rather than from the name again. */
+  /** Whether this stylesheet's own output is scoped and carries a class map:
+   * its name has the `.module.` marker. */
   module: boolean;
   /** The JS shim carrying the class-name map (css-modules only). */
   shim?: string;
@@ -86,10 +79,8 @@ export interface IPostcssSource {
   map?: string;
 }
 
-/**
- * The options document fabr writes for the postcss driver. Serialized to JSON,
- * so it stays content-addressed with no host paths.
- */
+/** The options document fabr writes for the postcss driver, as JSON. Holds no
+ * host paths. */
 export interface IPostcssOptions {
   /** Every stylesheet to process, with its output names. */
   sources: IPostcssSource[];

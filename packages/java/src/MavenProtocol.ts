@@ -48,9 +48,13 @@ export function splitMavenName(name: string): { groupId: string; artifactId: str
 }
 
 /**
- * Split a written reference (after `@mvn:`) into the package, its version,
- * and any projection after the version. The group and artifact are separated
- * by `/` or `:`; the version runs to the next `:` or `/`.
+ * Split a written reference (after `@mvn:`) into the package, its variant,
+ * its version, and any projection after the version. The group and artifact
+ * are separated by whichever of `/` and `:` comes first; the artifact runs to
+ * the next `:`, and may carry a variant (see {@link splitClassifier}); the
+ * version runs to the next `:` or `/`. A reference with no separator is a
+ * package name as written, and one with no version states none. Throws where
+ * a marker (`?`, `!`) ends a version that a projection follows.
  */
 function splitMavenReference(name: Name): Requirement & { projection?: IProjection } {
   const written = name.toBaseString();
@@ -116,8 +120,11 @@ function isMavenVariant(variant: string): boolean {
   return /^([A-Za-z0-9][A-Za-z0-9._-]*)?(@[A-Za-z0-9][A-Za-z0-9.]*)?$/.test(variant) && variant !== "";
 }
 
-/** Check a Maven reference: a `group/artifact` name, and a valid version or
- *  range, or none, for a BOM to give; an override marker needs an exact version. */
+/**
+ * Check a Maven reference: a `group/artifact` name, a well-formed variant, and
+ * a valid version or range, or none (a BOM gives it the version). A marker
+ * (`?`, `!`) needs an exact version. Throws on the first problem.
+ */
 function validateMavenRequirement({ name, versionConstraint, override, variant }: Requirement): void {
   splitMavenName(name);
   if (variant !== undefined && !isMavenVariant(variant)) {
@@ -145,16 +152,20 @@ function validateMavenRequirement({ name, versionConstraint, override, variant }
 
 /**
  * Parse a publish coordinate, `<group>:<artifact>:<version>` (or
- * `<group>/<artifact>:<version>`), whose version is exact, or with a variant
- * after the artifact, `<group>:<artifact>/<classifier>[@<extension>]:<version>`
- * or `<group>:<artifact>@<extension>:<version>`: a file published beside the
+ * `<group>/<artifact>:<version>`), or with a variant after the artifact,
+ * `<group>:<artifact>/<classifier>[@<extension>]:<version>` or
+ * `<group>:<artifact>@<extension>:<version>`: a file published beside the
  * version's artifact (`-sources.jar`, `-bin.zip`).
+ *
+ * Throws where the coordinate has no version or a part after it, where the
+ * variant is malformed, where the version is a range or not exact, and for a
+ * `-SNAPSHOT` version.
  */
 export function parseMavenPublishCoordinate(name: Name): { name: string; version: string; variant?: string } {
   const { name: packageName, versionConstraint: version, projection, variant } = splitMavenReference(name);
   const literal = name.toString();
   if (version === undefined || projection !== undefined) {
-    /* A fourth part is read as a classifier elsewhere: say how fabr writes one. */
+    /* A fourth part is a classifier in Maven's and Gradle's coordinates: say how fabr writes one. */
     const tail = projection?.prefix === "" ? projection.pattern.getSimpleName() : undefined;
     const classified = version !== undefined && tail !== undefined && !/[:/]/.test(tail);
     /* Either order may be meant: `g:a:sources:1.0.0`, or Gradle's `g:a:1.0.0:sources`. */
@@ -184,6 +195,7 @@ export function parseMavenPublishCoordinate(name: Name): { name: string; version
   return { name: packageName, version, ...(variant === undefined ? {} : { variant }) };
 }
 
+/** The Maven package format. */
 export const MAVEN_FORMAT: PackageFormat<MavenVersion, MavenConstraint> = {
   ...MAVEN_VERSIONS,
   name: "Maven",

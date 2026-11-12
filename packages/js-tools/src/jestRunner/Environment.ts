@@ -18,17 +18,10 @@
  */
 
 /**
- * Test environments. `node` is free — the process *is* the environment. `jsdom`
- * installs a DOM into that process's globals.
- *
- * `jest-environment-jsdom` is not used: its job is to construct a global object
- * for a vm context, and there is no vm context here. What it does that matters
- * is copied instead — in particular the *shadowing* of node's own overlapping
- * globals, which is load-bearing rather than cosmetic (see below).
- *
- * jsdom comes from the TARGET's `test_deps`, not from the runner's mount: the
- * DOM implementation and its version are the project's choice, exactly like any
- * other dependency.
+ * Test environments. `node` is the test process as it is; `jsdom` installs a
+ * DOM into the process's globals, as `jest-environment-jsdom` installs one
+ * into a vm context's (which is not used). jsdom is loaded from the target's
+ * `test_deps`.
  */
 
 import { Module } from "node:module";
@@ -79,8 +72,9 @@ function environmentOptions(json: unknown): Record<string, unknown> {
  * `@jest-environment-options` parsed as JSON.
  *
  * The pragma names `node` or `jsdom`, bare or by jest's package name
- * (`jest-environment-jsdom`). Any other environment is an error: this runner
- * hosts no environment modules. A pragma written twice is jest's own error.
+ * (`jest-environment-jsdom`). Throws for any other environment, for a pragma
+ * written twice (jest's TypeError), and for options that are not a JSON
+ * object.
  */
 export function environmentFor(pragmas: DocblockPragmas, fallback: string): IFileEnvironment {
   const written = pragmas["jest-environment"];
@@ -104,18 +98,10 @@ export function environmentFor(pragmas: DocblockPragmas, fallback: string): IFil
 }
 
 /**
- * Globals node provides that jsdom ALSO provides, which must be replaced by
- * jsdom's rather than left alone.
- *
- * Leaving node's in place looks harmless and is not: a test that constructs a
- * node-realm `Event` and dispatches it at a jsdom `EventTarget` hits a realm
- * mismatch and fails in a way that has nothing to do with the test. The list is
- * jest's own (`@jest/environment-jsdom-abstract`'s curated overrides) rather
- * than one discovered failure by failure — plus `navigator` and `WebSocket`,
- * which node itself now ships (21 and 22.4 respectively) and which a
- * browser-targeted test must see as jsdom's: its `navigator` carries the DOM's
- * userAgent (and is what jsdom's own APIs consult), and a node-realm WebSocket
- * is the same realm mismatch as a node-realm Event.
+ * Globals both node and jsdom provide, which are replaced by jsdom's: a
+ * node `Event` dispatched at a jsdom `EventTarget`, say, is refused. The list
+ * is `@jest/environment-jsdom-abstract`'s, plus `navigator` and `WebSocket`,
+ * which node provides from 21 and 22.4.
  */
 const SHADOWED_NODE_GLOBALS = new Set([
   "AbortController",
@@ -149,8 +135,7 @@ const SHADOWED_NODE_GLOBALS = new Set([
   "WritableStream",
 ]);
 
-/** Globals that must stay node's: replacing them would break the runner itself
- * or the module system the tests load through. */
+/** Globals that stay node's: the runner and the module loader use them. */
 const KEEP_NODE = new Set([
   "global",
   "globalThis",
@@ -166,27 +151,23 @@ const KEEP_NODE = new Set([
 ]);
 
 /**
- * Scheduling globals node provides and jsdom does not, which jest's jsdom
- * environment therefore lacks. Code that picks its scheduler by what exists
- * (React's picks `setImmediate`, then `MessageChannel`, then `setTimeout`) must
- * find what it finds under jest: on a node-only queue its work is ordered
- * against a test's timers differently from run to run.
+ * Scheduling globals node provides, which jest's jsdom environment lacks and
+ * which are removed where jsdom does not provide them. Code that picks its
+ * scheduler by what exists (React's tries `setImmediate`, then
+ * `MessageChannel`, then `setTimeout`) then picks what it picks under jest.
  */
 const NODE_ONLY_SCHEDULERS = ["setImmediate", "clearImmediate", "MessageChannel", "MessagePort"];
 
 /**
- * `window`'s self-references. In a top-level browsing context every one of them
- * IS the window, and since the global object is the window here too (see
- * {@link installJsdom}) they all name the global.
+ * `window`'s self-references, each made to name the global object (see
+ * {@link installJsdom}).
  */
 const SELF_REFERENCES = ["window", "self", "parent", "top", "frames"];
 
 /**
- * List the window methods that live on a PROTOTYPE rather than on the window
- * instance, and so must be bound: jsdom's own properties are closures over
- * their window, but an inherited method reads the `this` it was called on —
- * which, called as a bare global, is the global object and not the window.
- * Discovered by walking the chain, so a jsdom that inherits more keeps working.
+ * List the window's methods inherited through its prototype chain, which are
+ * not shadowed by its own properties. Each reads its `this`, so it must be
+ * bound to the window to be called as a bare global.
  */
 export function inheritedMethods(window: IJsdomWindow): string[] {
   const own = new Set(Object.getOwnPropertyNames(window));
@@ -202,34 +183,27 @@ export function inheritedMethods(window: IJsdomWindow): string[] {
 }
 
 /**
- * Install a DOM into this process's globals. Everything jsdom's window exposes
- * becomes a global (that is what "a browser environment" means to the code
- * under test).
+ * Install a DOM into this process's globals, making the global object the
+ * window, as under jest (where jsdom's window is the vm context's global): so
+ * `window.getComputedStyle = jest.fn()` is seen through the bare global, and
+ * `global.X = …` as `window.X`.
  *
- * **`window` is then made the global object itself**, not jsdom's window —
- * which is the single most load-bearing line here. Under jest the two are
- * literally one object (its environment hands the vm context jsdom's window as
- * its global), so a suite may set `window.getComputedStyle = jest.fn()` in a
- * `beforeEach` and have the code under test see it through the bare global;
- * with two distinct objects that assignment would silently go nowhere, and the
- * test would fail somewhere else entirely. The same identity is what makes
- * `Object.defineProperty(window, …)` — the standard way to stub `devicePixelRatio`,
- * `matchMedia`, `location` — work, and what makes a `global.X = …` in a setup
- * file visible as `window.X`.
- *
- * jsdom's own window object stays behind it: the copied properties are its
- * closures, and the inherited methods are bound to it, so everything still
- * operates on the one real DOM.
+ * Each of the window's own properties becomes a global where node has none of
+ * that name or it is in {@link SHADOWED_NODE_GLOBALS}, bar
+ * {@link KEEP_NODE}'s; accessors are copied as accessors. The inherited methods
+ * are bound to jsdom's window, which stays the DOM they act on. `window`,
+ * `self`, `parent`, `top`, `frames`, `document.defaultView`, a UI event's
+ * `view` and a message event's `source` all answer the global object, and
+ * `location` is a writable property of it (see {@link patchLocation}).
  *
  * `options` are jest's `testEnvironmentOptions` for jsdom, applied as
  * `jest-environment-jsdom` applies them: `html` is the document, `userAgent`
  * the resource loader's, and all of them are passed to the `JSDOM` constructor
- * over the defaults.
+ * over the defaults. Throws where jsdom is not installed.
  */
 export function installJsdom(options: Record<string, unknown> = {}): void {
   compileEnvironmentWithNodeSchedulers(userModuleFile("jsdom"));
-  /* The runner has already checked that jsdom is installed (see
-   * requireEnvironment), where the failure can be reported properly. */
+  /* requireEnvironment has reported a missing jsdom already. */
   const jsdom = userModule("jsdom") as IJsdomModule | undefined;
   if (jsdom?.JSDOM === undefined) {
     throw new Error("'jsdom' is not installed in this test environment");
@@ -252,9 +226,9 @@ export function installJsdom(options: Record<string, unknown> = {}): void {
     }
   }
   hideNodeSchedulers(globals, window);
-  /* jsdom's own symbol-keyed members (its implementation link among them), so
-   * that jsdom takes the global object for its window wherever it checks for a
-   * Window: an event's `view`, say. */
+  /* jsdom's symbol-keyed members (its implementation link among them), so
+   * that jsdom takes the global object for a Window: as an event's `view`,
+   * say. */
   for (const key of Object.getOwnPropertySymbols(window)) {
     Object.defineProperty(globals, key, { ...Object.getOwnPropertyDescriptor(window, key), configurable: true });
   }
@@ -264,26 +238,25 @@ export function installJsdom(options: Record<string, unknown> = {}): void {
       globals[key] = method.bind(window);
     }
   }
-  /* Defined rather than assigned: the copy above will have installed jsdom's
-   * own self-referential accessors, which are getters. */
+  /* Defined, not assigned: the copy above installed jsdom's getters for
+   * these. */
   for (const name of SELF_REFERENCES) {
     Object.defineProperty(globals, name, { value: globals, writable: true, configurable: true });
   }
-  /* `document.defaultView` is the same self-reference by another route, and
-   * code that reaches the window through its document (testing-library does)
-   * must land on the same object as `window` or the identity above is only half
-   * true. jsdom's internals take their window from their own state, not from
-   * this accessor, so nothing inside it is disturbed. */
+  /* Code that reaches the window through its document (testing-library does)
+   * gets the global object too. jsdom's internals do not read this
+   * accessor. */
   Object.defineProperty(window.document as object, "defaultView", { get: () => globals, configurable: true });
-  /* The other routes by which jsdom hands its window back: every UI event's
-   * (mouse, keyboard, focus) and every message event's. */
+  /* The other properties through which jsdom hands its window out: a UI
+   * event's (mouse, keyboard, focus) and a message event's. */
   const prototypeOf = (name: string): object | undefined => (window[name] as { prototype?: object } | undefined)?.prototype;
   answerWithGlobal(prototypeOf("UIEvent"), "view", window, globals);
   answerWithGlobal(prototypeOf("MessageEvent"), "source", window, globals);
   patchLocation(window);
 }
 
-/** Where node's scheduling functions are kept for the environment's own modules. */
+/** The `Symbol.for` key of the global holding node's `setImmediate` and
+ * `clearImmediate` for jsdom's modules. */
 const NODE_SCHEDULERS = "fabr.jest.nodeSchedulers";
 
 interface ICompilingModule {
@@ -293,10 +266,10 @@ interface ICompilingModule {
 
 /**
  * Compile jsdom's modules, and every module one of them is the first to load,
- * with node's `setImmediate` and `clearImmediate` as bindings of their own.
- * Under jest these modules run outside the test's sandbox, where node's globals
- * are; here they share the test's global object, which has neither (see
- * {@link hideNodeSchedulers}). Must be installed before jsdom is loaded.
+ * with node's `setImmediate` and `clearImmediate` bound in them, though
+ * {@link hideNodeSchedulers} removes both from the global object. Under jest
+ * these modules run outside the test's vm context, where node's globals are.
+ * Call before jsdom is loaded; does nothing where jsdom is not found.
  */
 function compileEnvironmentWithNodeSchedulers(jsdomMain: string | undefined): void {
   const root = jsdomMain === undefined ? undefined : packageRootOf(jsdomMain, "jsdom");
@@ -375,9 +348,8 @@ export function answerWithGlobal(prototype: object | undefined, name: string, wi
   });
 }
 
-/** Copy one of the window's properties onto the global object, preserving
- * accessors (a getter that reads window state must keep reading it, not be
- * snapshotted to its current value). */
+/** Copy one of the window's properties onto the global object, an accessor as
+ * an accessor. */
 function define(globals: Record<string, unknown>, name: string, window: IJsdomWindow, key: string): void {
   const descriptor = Object.getOwnPropertyDescriptor(window, key);
   if (descriptor === undefined) {
@@ -386,21 +358,15 @@ function define(globals: Record<string, unknown>, name: string, window: IJsdomWi
   try {
     Object.defineProperty(globals, name, { ...descriptor, configurable: true });
   } catch {
-    /* A non-configurable global of node's own (rare) simply stays node's. */
+    /* A non-configurable global of node's stays node's. */
   }
 }
 
 /**
- * Make `location` replaceable — the thing jsdom-based suites routinely need
- * (stubbing the URL, asserting on a redirect).
- *
- * On jsdom's own window it is not: jsdom implements it as WebIDL
- * `[Unforgeable]`, i.e. non-configurable, so `Object.defineProperty(window,
- * "location", …)` throws — under jest too, which is why such suites need a
- * patched environment there. Here the global object is a real node global and
- * not jsdom's window, so its `location` is an ordinary configurable property
- * that a test can redefine; jsdom's window keeps its own, unforgeable, and its
- * internals go on reading that one.
+ * Make the global object's `location` (jsdom's) a writable, configurable
+ * property, so a test can redefine it with `Object.defineProperty(window,
+ * "location", …)`, which under jest throws (jsdom's own is `[Unforgeable]`).
+ * jsdom's window keeps its own, which jsdom reads.
  */
 function patchLocation(window: IJsdomWindow): void {
   Object.defineProperty(globalThis, "location", { value: window.location, writable: true, configurable: true });

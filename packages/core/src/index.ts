@@ -17,12 +17,9 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-/* Core's rules (flag, files, script[run], serve[run], generate, patched, sync),
- * repository types (catalog, fetch, repository_group, fabr_home) and
- * lib/STD.fabr are its contribution to every load, assembled by
- * `coreContribution()` (model/Loader). Language-specific rules live in their own
- * packages (@fabr-build/js et al) and contribute through their plugin's
- * `activate()`. */
+/* The package's public API. Core's own rules and repository types are
+ * declared in lib/STD.fabr, which `coreContribution()` (model/Loader) adds to
+ * every load; each plugin's rules are declared in its own `.fabr` files. */
 
 export * from "./core/Constants";
 export * from "./Audit";

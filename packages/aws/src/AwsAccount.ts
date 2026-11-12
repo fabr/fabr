@@ -211,7 +211,7 @@ export class AwsAccount extends Namespace {
     );
   }
 
-  /** List the account's services, each named by a reference to the account written as the service: a service is made only when a name goes through it. */
+  /** List the account's services, each as a `NamespaceRef` to the account named `<account>:<service>`; a service is made only when a name goes through it. */
   public children(ref: NamespaceRef): Computable<Map<string, Reference>> {
     return Computable.resolve(
       new Map(SERVICES.map((service): [string, Reference] => [service, new NamespaceRef(this, `${ref.name}:${service}`)]))
@@ -222,7 +222,7 @@ export class AwsAccount extends Namespace {
 /** The services an account holds. */
 const SERVICES = [S3_SERVICE, SSM_SERVICE, SECRETS_MANAGER_SERVICE, ECR_SERVICE, CODEARTIFACT_SERVICE];
 
-/** @return true if `name` is an AWS account ID, otherwise false: 12 digits, which no service's name is. */
+/** @return true if `name` is an AWS account ID (12 digits), otherwise false. */
 function isAccountId(name: string): boolean {
   return /^\d{12}$/.test(name);
 }

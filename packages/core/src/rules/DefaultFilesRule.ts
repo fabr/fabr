@@ -35,29 +35,18 @@ export default defineRule({
 });
 
 /**
- * Hand back a target's files, as the generic `files` rule: declared as a
- * default (all-types) rule, so it is selected for any target under
- * BUILD_OPERATION=files that has no more specific rule of its own. "files"
- * means "give me the output files and no more" — it is a weaker form of
- * `build`, so this simply re-evaluates the same target under
- * BUILD_OPERATION=build and hands back its files. The value of the distinct
- * operation is not here but at the leaves: a consumer that reads `files` off
- * its context (an `@npm:` repository, say) can deliver strictly less — a
- * package's own files with no dependency closure — when only the files are
- * wanted.
+ * Get a target's files, as the default rule under the `files` operation: build
+ * the target itself under `build` and return what it built as plain files.
+ * Each file source the build yields is returned as its own source, unflattened
+ * (a `sync` release namespace stays itself); a package or runnable is returned
+ * as a plain FileSet of its files, with no name, version or dependencies; any
+ * source that is not a FileSource is left out.
  *
- * What `files` may skip is *work*, never content: the names a reference resolves
- * to must not depend on the operation it was written under. So every file source
- * the build yielded passes through, whatever shape it takes — several sources
- * stay several, and a source that serves its content on its own terms (a `sync`
- * release namespace, packaging members on demand) passes through as itself
- * rather than being flattened. Only the deferred kinds drop out. A package is
- * delivered as its files: it has no identity here and requires nothing.
+ * A target whose type has no rule for `build` but a rule for exactly one other
+ * operation is built under that one instead: a `serve` or other program as the
+ * install it would run, a test as its results (the report, coverage).
  *
- * A target whose type has no rule for `build` but one other operation is read
- * under that one, as plain files: a `serve` or another program definer as its
- * program's install (what it would run, not started), a test as its results
- * (the report, coverage).
+ * Throws where the build yields no file source.
  */
 function deliverFiles(context: TargetContext): Computable<RuleResult> {
   return context.buildSelfWithOverrides(filesOperation(context)).then(sources => {

@@ -92,7 +92,10 @@ import type { PropertyMap } from "./PropertyMap";
  * and shared here.
  */
 export abstract class TargetContext {
+  /** The configuration the target is evaluated in. */
   protected readonly context: InternalBuildContext;
+  /** The chain of requesters that led to this target, which work it starts
+   * is attributed to. */
   public readonly stack?: IDependencyStack;
   /** The schema of the target's type, whose declared defaults answer for a
    * property the target supplies no value for. */
@@ -128,8 +131,8 @@ export abstract class TargetContext {
     return this.targetDef.properties.get(name)?.default;
   }
 
-  /** The name of the (declared) target being built — what a rule refers to
-   * itself as; for an anonymous sub-target, its declared owner's name. */
+  /** The name of the target being built, as messages name it: for an
+   * anonymous sub-target, its declared owner's name. */
   public abstract get name(): string;
 
   /** The name the target is declared under in its configuration: what its own configuration resolves it by. */
@@ -149,22 +152,31 @@ export abstract class TargetContext {
     return operationOf(this.context.getConstraints());
   }
 
-  /** Get a STRING property's value, looked up from the target's declaration or
-   * taken from a sub-target's inputs; undefined where it is unwritten and has no
-   * default. */
+  /**
+   * Get a STRING property's value, looked up from the target's declaration
+   * under `overrides`, or taken from a sub-target's inputs. Undefined where
+   * the property is unwritten and has no default. Rejects where more than one
+   * of its declarations applies.
+   */
   public abstract getProperty(name: string, overrides?: Constraints): Computable<Property | undefined>;
 
-  /** Get the sources a FILES property names, unmaterialized: looked up from the
-   * target's declaration, or taken from a sub-target's inputs, which are
-   * already content. */
+  /**
+   * Get the sources a FILES or PACKAGES property names, unmaterialized: looked
+   * up from the target's declaration under `overrides`, every declaration
+   * that applies contributing, or taken from a sub-target's inputs, which are
+   * already content. Targets among them are resolved and not built. Empty
+   * where the property is unwritten and has no default. Returned from a rule's
+   * `requirements`, they are read for their files alone.
+   */
   public abstract getFileProperty(name: string, overrides?: Constraints): Computable<SourceRef[]>;
 
   /**
-   * Read a PACKAGES property as packages (see {@link PackageSources}): for a
-   * requirement on packages, where a target is the package of its name and
-   * the lot is resolved together, each package in `format` where it is given.
-   * {@link getFileProperty} as a requirement is the files of what the
-   * property names, and nothing more.
+   * Read a PACKAGES property as packages ({@link PackageSources}), for a
+   * rule's `requirements` to return: a target among them is the package of
+   * its name, and the lot is resolved together with the target's other
+   * packages. Where `format` is given, a package of another known format is
+   * refused when the requirements are resolved. Rejects where the targetdef
+   * does not declare the property PACKAGES.
    */
   public getPackageProperty(
     name: string,
@@ -183,8 +195,9 @@ export abstract class TargetContext {
   }
 
   /**
-   * Read a FILES property as contained (see {@link ContainedSources}): the
-   * collection point leaves its projections pending, for a rule that places the
+   * Read a FILES property as contained ({@link ContainedSources}), for a
+   * rule's `requirements` to return: materialized, a source keeps its
+   * projections pending, as a {@link FileSetRef}, for a rule that places the
    * container and locates entries within it ({@link FileSetRef.locate}).
    */
   public getContainedFileProperty(name: string, overrides?: Constraints): Computable<ContainedSources> {
@@ -192,11 +205,10 @@ export abstract class TargetContext {
   }
 
   /**
-   * Read a property for the loose files it names: the files in hand, with a
-   * target, a package and a repository's reference left out, unbuilt. Read
-   * from `evaluate`: nothing it names is then a requirement of the target, so
-   * a target it names may depend on this one. (Among a rule's requirements,
-   * the targets a property names are resolved where it is read.)
+   * Get the loose files a property names: the files in hand, with a target,
+   * a package and a repository's reference left out, unbuilt. Read from
+   * `evaluate`, it makes nothing a requirement of the target, so a target it
+   * names may depend on this one.
    */
   public getLooseFileProperty(name: string, overrides?: Constraints): Computable<FileSet[]> {
     return this.getFileProperty(name, overrides).then(sources =>
@@ -205,21 +217,25 @@ export abstract class TargetContext {
   }
 
   /**
-   * Get a REWRITE property's values: each a `sel -> tmpl` rename or a bare
-   * constant, in written order. `makeRewrite` turns them into a first-match-wins
-   * mapping function. A caller may instead hand them to a build step's driver
-   * as rules ({@link Name.toRenameRule}).
+   * Get a REWRITE property's values, substituted: each a `sel -> tmpl` rename
+   * or a bare constant, in written order, every declaration that applies
+   * contributing. Empty where the property is unwritten and has no default.
+   * `makeRewrite` turns them into a first-match-wins mapping function; a
+   * caller may instead hand them to a build step's driver as rules
+   * ({@link Name.toRenameRule}).
    */
   public abstract getRewriteRules(name: string, overrides?: Constraints): Computable<Name[]>;
 
   /** Look up a projection property's one selector (with any `-> tmpl` rename,
    * such as `generate`'s `output`), substituted, for a step to apply with
-   * {@link Name.makeProjector}. Undefined where the property is unwritten. More
-   * than one value is an error. */
+   * {@link Name.makeProjector}. Undefined where the property is unwritten and
+   * has no default. Rejects where it has more than one value, or more than one
+   * of its declarations applies. */
   public abstract getProjection(name: string, overrides?: Constraints): Computable<Name | undefined>;
 
   /** Look up a MAP property's value (see {@link InternalBuildContext.lookupMap}).
-   * An unwritten property yields an empty map. */
+   * An unwritten property with no default yields an empty map. Rejects where
+   * more than one of its declarations applies. */
   public abstract getMap(name: string, overrides?: Constraints): Computable<PropertyMap>;
 
   /** Get the names of the properties of its type this target has a value for: those it is given, and those its type gives a default. */
@@ -237,13 +253,13 @@ export abstract class TargetContext {
   public abstract getDeclaredContext(): DeclaredTargetContext;
 
   /** Stamp the target's provenance onto a FileSet it yields: the declared
-   * target's TARGET_PROVENANCE step. An anonymous target adds none, since its
+   * target's TARGET_PROVENANCE step. An anonymous target adds none: its
    * declared owner's stamp covers the composed result. */
   public abstract stampProvenance(result: FileSet): FileSet;
 
-  /** Wrap a failure into this target's error boundary — a DependencyFailedError
-   * identifying the declared target (an anonymous sub-target additionally
-   * carries its action-verb label, for "Compiling X failed" rendering). */
+  /** Wrap `err` as this target's failure: a DependencyFailedError naming the
+   * declared target, and for a sub-target its action-verb label, so that it
+   * reads "Compiling X failed". */
   public abstract failure(err: Error): DependencyFailedError;
 
   /** Look up the wildcard (reference-keyed) properties written in this target's
@@ -268,11 +284,13 @@ export abstract class TargetContext {
   }
 
   /**
-   * Materialize a COMMAND property's pipeline for a `generate` rule: each
-   * stage's command as a runnable, its arguments with globs expanded over `srcs`
-   * (a glob matching nothing is an error), its `< source` as a single-file set
-   * and its redirections as the names of the files they capture. Empty where the
-   * property is unwritten.
+   * Materialize a COMMAND property's pipeline for a rule that runs it (as
+   * `generate` does): each stage's command as a runnable resolved under
+   * {@link runOverrides}, its arguments with globs expanded over the names in
+   * `srcs`, its `< source` as a single-file set and its redirections as the
+   * names of the files they capture. Empty where the property is unwritten.
+   * Rejects where a glob argument matches nothing, a `< source` is not exactly
+   * one file, or a command names no runnable.
    */
   public getCommandProperty(name: string, srcs: FileSet): Computable<MaterializedCommandPipeline> {
     return this.getCommandStages(name).then(stages =>
@@ -298,9 +316,9 @@ export abstract class TargetContext {
     );
   }
 
-  /** Expand a stage's args over the staged `srcs`: a glob arg matches file names
-   * in `srcs` (failglob — an empty match is a positioned error); a literal arg
-   * passes through. */
+  /** Expand a stage's args over the staged `srcs`: a glob arg becomes the file
+   * names in `srcs` it matches, sorted, and rejects with a positioned error
+   * where it matches none (bash's `failglob`); a literal arg passes through. */
   private expandArgs(args: IPositionedName[], srcs: FileSet): Computable<string[]> {
     return Computable.forAll(
       args.map(arg => {
@@ -373,12 +391,13 @@ export abstract class TargetContext {
    * Look up a write coordinate, such as a `sync` member's
    * `@npm:@fabr-build/core:0.1.0`, as a publish reference. A write coordinate
    * names where content goes, and need not exist in the repository yet. The
-   * repository's name is split off by the prefix match a read uses, and the
-   * repository vends a reference for the rest
-   * ({@link Repository.getRepositoryPublishRef}), which throws without fetching
-   * anything where the address is malformed or the repository is not a publish
-   * destination. `name` must already be substituted, as
-   * {@link getWildcardProperties} gives a `sync`'s keys.
+   * repository's name is split off by the prefix match a read uses, through
+   * any namespace's members, and the repository makes a reference for the rest
+   * ({@link Repository.getRepositoryPublishRef}), fetching nothing. Rejects
+   * where `name` names no repository or only a namespace, the address is
+   * malformed, or the repository is not a publish destination. `name` must
+   * already be substituted, as {@link getWildcardProperties} gives a `sync`'s
+   * keys.
    */
   public lookupPublishRef(name: Name): Computable<RepositoryPublishRef> {
     const match = this.ownConfiguration.getPrefixTargetIfExists(name, this.stack);
@@ -388,6 +407,8 @@ export abstract class TargetContext {
     return match.target.then(sources => publishRefIn(sources, match.rest, writtenSeparator(match.retainedPrefix), match.name, name));
   }
 
+  /** Get a STRING property's value, as {@link getProperty} does. Rejects where
+   * it is unwritten and has no default. */
   public getRequiredProperty(name: string, overrides?: Constraints): Computable<Property> {
     return this.getProperty(name, overrides).then(prop => {
       if (!prop) {
@@ -397,6 +418,8 @@ export abstract class TargetContext {
     });
   }
 
+  /** Get a STRING property's value as a string, its values joined by spaces.
+   * Rejects where it is unwritten and has no default. */
   public getRequiredString(name: string, overrides?: Constraints): Computable<string> {
     return this.getRequiredProperty(name, overrides).then(prop => prop.toString());
   }
@@ -408,9 +431,10 @@ export abstract class TargetContext {
   }
 
   /**
-   * Memoize the result of pure resolution work (a joint version selection) in
-   * the build cache, under `memo:<tag> <key>`. The tag is a stable
-   * `name:version`, whose version is bumped when the computation's behaviour
+   * Get the entry the build cache holds under `memo:<tag> <key>`, making it
+   * with `create` (given a work directory) if it is not there: for pure
+   * resolution work, such as a joint version selection. `tag` is a stable
+   * `name:version`; bump its version when the computation's behaviour
    * changes. A memo is never reported as a task.
    */
   public memoize(tag: string, key: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet> {
@@ -420,12 +444,12 @@ export abstract class TargetContext {
   /**
    * Materialize sources as {@link getFileProperty} returns them: targets among
    * them are built, references resolved and fetched, and pending projections
-   * applied (descending into archives); content passes through. A
-   * `repository_group` content route reads the source it serves this way, while
-   * it is resolved. They are a collection of their own, strict unless
-   * `options` says otherwise (a tool's packages, resolved permissively), and
-   * resolved for `operation`, this target's own unless given (`run` for a
-   * tool's packages, which are resolved to be run).
+   * applied (descending into archives); content passes through. The sources
+   * are resolved as a collection of their own, for `operation` (this target's
+   * own unless given), strictly unless `options` says otherwise. Rejects where
+   * a strict collection's versions conflict, or a source fails to resolve or
+   * build. A `repository_group` content route reads the source it serves this
+   * way, while it is resolved.
    */
   public materializeSources(
     sources: SourceRef[],
@@ -438,10 +462,11 @@ export abstract class TargetContext {
   }
 
   /**
-   * The run's fixed surroundings — the build cache, log, source/absolute
-   * FileSources (for config a repository consults, e.g. a `.npmrc` read through
-   * the source FS so it participates in watch-mode invalidation), and per-plugin
-   * state. Shared by every InternalBuildContext of the run.
+   * The run's fixed surroundings, shared by every configuration of the run:
+   * the build cache, the log, the project's and the absolute-path file sources
+   * (read a file a repository consults, such as a `.npmrc`, through the
+   * project's, so that a change to it is seen under watch), and per-plugin
+   * state.
    */
   public get execution(): ExecutionContext {
     return this.context.execution;
@@ -449,12 +474,13 @@ export abstract class TargetContext {
 
   /**
    * Download what `cacheKey` identifies through the build cache (see
-   * BuildCache.getOrFetch), making `request` only on a miss. A download, never
-   * a cache hit, is reported as a task. `report` says what is
-   * fetched: a noun for the resource, and whether it is a content or an index
-   * read ({@link IFetchReport}). Nothing in it reaches the cache key or the
-   * request. `options.immutable = false` marks a mutable pointer document (see
-   * FetchOptions), which is cached under HTTP caching rules and revalidated.
+   * BuildCache.getOrFetch), making `request` only on a miss, and return the
+   * downloaded file. A download is reported as a task; a cache hit is not.
+   * `report` says what is fetched: a noun for the resource, and whether it is
+   * a content or an index read ({@link IFetchReport}); nothing in it reaches
+   * the cache key or the request. `options.immutable = false` marks a mutable
+   * pointer document (see FetchOptions), which is cached under HTTP caching
+   * rules and revalidated. Rejects where the download fails.
    */
   public fetch(
     cacheKey: string,
@@ -492,6 +518,7 @@ export abstract class TargetContext {
     );
   }
 
+  /** Get the flags among the sources a FILES or PACKAGES property names. */
   public getFlags(name: string, overrides?: Constraints): Computable<Flag[]> {
     return this.getFileProperty(name, overrides).then(sources => sources.filter(source => source instanceof Flag) as Flag[]);
   }
@@ -515,17 +542,18 @@ export abstract class TargetContext {
   /**
    * Get the requirement each of `sources` declares, for writing a manifest: what
    * the written reference states, not the version resolution selected (see
-   * declaredRequirement). The result is parallel to `sources`, undefined where a
-   * source declares nothing.
+   * declaredRequirement). The result is aligned with `sources`, undefined where
+   * a source declares nothing.
    */
   public collectDeclaredRequirements(sources: ReadonlyArray<SourceRef | Dependency>): Computable<(Requirement | undefined)[]> {
     return Computable.forAll(sources.map(declaredRequirement), (...requirements) => requirements);
   }
 
   /**
-   * Build an anonymous target of `type` from `inputs` and return its output,
-   * which must be one FileSet. The sub-target's rule reads `inputs` through the
-   * same accessors as any target's (see {@link InternalBuildContext.buildSubTarget}).
+   * Build an anonymous target of `type` from `inputs` and return its output
+   * (see {@link InternalBuildContext.buildSubTarget}). The sub-target's rule
+   * reads `inputs` through the same accessors as any target's. Rejects where
+   * the build fails or its output is not exactly one FileSet.
    */
   public subTarget(
     type: string,
@@ -541,9 +569,9 @@ export abstract class TargetContext {
   }
 
   /**
-   * Describe the sub-target `subTarget` would build (see
-   * {@link RuleImplementation.describe}), or undefined if its rule describes
-   * nothing.
+   * Describe the sub-target {@link subTarget} would build (see
+   * {@link RuleImplementation.describe}): the description's files, or
+   * undefined where its rule describes nothing.
    */
   public describeSubTarget(
     type: string,
@@ -555,12 +583,12 @@ export abstract class TargetContext {
 
   /**
    * Make a repository of `type`, a repository type any plugin in use defines,
-   * that this repository's namespace holds as `member.name`: how a namespace
-   * (an AWS account's `@aws:ecr`) offers another plugin's repository without
-   * importing it. The repository is made as a declaration of its type would
-   * be, its properties `member.properties`, and is given `member.url` and
-   * `member.credential`. Named `<this>:<member>` in messages. Rejects where no
-   * plugin in use defines `type`.
+   * that this repository's namespace holds as `member.name`, as an AWS
+   * account's `@aws:ecr` is another plugin's repository. The repository is
+   * made as a declaration of its type would be, its properties
+   * `member.properties`, and is given `member.url` and `member.credential`.
+   * Named `<this>:<member>` in messages. Rejects where no plugin in use
+   * defines `type`.
    */
   public makeRepository(type: string, member: IRepositoryMember): Computable<Repository> {
     return this.context.makeRepository(this, type, member);
@@ -577,10 +605,15 @@ export abstract class TargetContext {
     return this.context.execution.runTask(task, run);
   }
 
+  /** Get the global STRING property `name`'s value as a string, its values
+   * joined by spaces (see {@link getGlobalProperty}). */
   public getGlobalString(name: string, overrides?: Constraints): Computable<string> {
     return this.getGlobalProperty(name, overrides).then(prop => prop.toString());
   }
 
+  /** Get the global STRING property `name`'s value in this configuration
+   * under `overrides`. Rejects where `name` is a target, or nothing declares
+   * it and no constraint supplies it. */
   public getGlobalProperty(name: string, overrides?: Constraints): Computable<Property> {
     return this.context.getProperty(name, this.stack, overrides);
   }
@@ -592,10 +625,10 @@ export abstract class TargetContext {
   }
 
   /**
-   * Build this same target under `overrides`: how an operation-specific rule
-   * gets its own target's result under another operation (the `files` rule
-   * asking for `[build]`). The hop carries this target's
-   * `stack`, so this target is named as the requester.
+   * Build this same target under `overrides` and return what it builds: how an
+   * operation-specific rule gets its own target's result under another
+   * operation (the `files` rule asking for `[build]`). The request carries
+   * this target's `stack`, so this target is named as the requester.
    */
   public buildSelfWithOverrides(overrides: Constraints): Computable<SourceRef[]> {
     return this.ownConfiguration.resolveTarget(this.declaredName, this.stack, overrides).then(materializeTargets);
@@ -613,10 +646,10 @@ export abstract class TargetContext {
   /**
    * Materialize a global that names a runnable tool (`TSC_DRIVER`) as its host
    * runnable, under {@link runOverrides}: the global counterpart of
-   * {@link getRunnableProperty}.
+   * {@link getRunnableProperty}. Rejects where the global names no runnable.
    */
   public getGlobalRunnable(name: string): Computable<RunnableFileSet> {
-    /* A tool is collected on its own, apart from the rule's requirements, so
+    /* A tool is a collection of its own, apart from the rule's requirements:
      * its versions are not resolved together with what it builds. */
     return this.context
       .resolveTarget(name, this.stack, this.runOverrides())
@@ -626,24 +659,24 @@ export abstract class TargetContext {
   /**
    * Materialize a FILES property that names a runnable tool (`serve`'s `tool`)
    * as its host runnable, under {@link runOverrides}. The caller launches it
-   * with `toCommandLine`.
+   * with `toCommandLine`. Rejects where the property names no runnable.
    */
   public getRunnableProperty(name: string): Computable<RunnableFileSet> {
     return this.getFileProperty(name, this.runOverrides()).then(sources => collectRunnable(this.context, this, sources, name));
   }
 
-  /**
-   * Read a global (build-config) FILES property's unmaterialized sources — the global
-   * counterpart of {@link getFileProperty}, with any repository references still
-   * inert, for a rule's `requirements` to name, so that they resolve
-   * jointly with the target's other requirements. Overrides ride as callerOverrides (caller
-   * precedence over a requirement on the global's value).
-   */
   /** Get the global MAP property `name`'s value. Rejects where nothing declares `name`. */
   public getGlobalMap(name: string, overrides?: Constraints): Computable<PropertyMap> {
     return this.context.lookupGlobalMap(name, this.stack, overrides);
   }
 
+  /**
+   * Get the sources the global `name` names, unmaterialized: the global
+   * counterpart of {@link getFileProperty}, for a rule's `requirements` to
+   * return, so that they resolve together with the target's other
+   * requirements. `overrides` outrank a `<k=v>` written on the global's
+   * value. Rejects where nothing declares `name` and no constraint supplies it.
+   */
   public getGlobalFileProperty(name: string, overrides?: Constraints): Computable<SourceRef[]> {
     return this.context.resolveTarget(name, this.stack, overrides);
   }
@@ -901,11 +934,11 @@ export class DeclaredTargetContext extends TargetContext {
   }
 
   public getWildcardProperties(overrides?: Constraints): Computable<{ key: Name; decl: IPropertyDecl }[]> {
-    /* EVERY property the targetdef does not explicitly declare is a member —
-     * a reference-shaped name and a bare identifier (`lodash = @npm;`) alike,
-     * each read back as the member's substituted `key`. The schema's `*` entry
-     * is the wildcard TYPE declaration, not a property named `*`, so a literal
-     * `*` member (a group's catch-all route) is a member like any other. */
+    /* Every property the targetdef does not declare by name is a member, a
+     * reference-shaped name and a bare identifier (`lodash = @npm;`) alike.
+     * The schema's `*` entry declares the members' type, not a property named
+     * `*`, so a literal `*` member (a group's catch-all route) is a member
+     * too. */
     const member = (key: string): boolean => key === "*" || !this.targetDef.properties.has(key);
     return this.getBody().then(body =>
       Computable.forAll(
@@ -1051,10 +1084,9 @@ export class AnonymousTargetContext extends TargetContext {
     return Computable.resolve(value instanceof Name ? [value] : (value as Name[]));
   }
 
-  /** Get a sub-target's projection input, if the caller supplied a Name in the bag
-   * (a bare selector or a `-> tmpl` rename), else the type's declared default.
-   * A bag entry that is not a Name declares none — and takes no default, having
-   * been supplied. */
+  /** Get a sub-target's projection input: the Name the caller supplies (a bare
+   * selector or a `-> tmpl` rename), else the type's declared default. An
+   * input that is not a Name gives undefined, and the default is not taken. */
   public getProjection(name: string, overrides?: Constraints): Computable<Name | undefined> {
     const value = this.inputs[name];
     if (value === undefined) {
@@ -1064,9 +1096,9 @@ export class AnonymousTargetContext extends TargetContext {
     return Computable.resolve(value instanceof Name ? value : undefined);
   }
 
-  /** Get a sub-target's map input: the resolved map the caller supplies — entry
-   * origins and all, when it is one a declared target read — else the type's
-   * declared default. */
+  /** Get a sub-target's map input: the resolved map the caller supplies, with
+   * its entries' origins where a declared target read it, else the type's
+   * declared default. An input that is not a map gives an empty map. */
   public getMap(name: string, overrides?: Constraints): Computable<PropertyMap> {
     const value = this.inputs[name];
     if (value === undefined) {

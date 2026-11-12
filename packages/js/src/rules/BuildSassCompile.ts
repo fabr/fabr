@@ -18,20 +18,14 @@
  */
 
 /**
- * The sass_compile rule: lower a Sass source tree to plain CSS, a
- * self-contained target `{ srcs = FILES; deps = PACKAGES }`. `srcs` are the Sass
- * sources (.scss/.sass, modules included — the `.module.` marker rides through
- * to the output name, since lowering is not scoping); `deps` are scss packages
- * Sass `@use`/`@import` resolve into through the PnP table the step stages.
- * Beside each stylesheet the step
- * writes its source map (when the build carries them) and nothing else;
- * scoping and shims are the css_postcss step's, which consumes this step's
- * output. The compiler is a build *tool*, independent of what it lowers,
- * so it is resolved apart as the SASS_DRIVER runnable (fabr's own Sass
- * driver, declared in JS.fabr) and mounted under a tool dir
- * (its deps must not collide with — nor be visible to — the styled tree). The
- * driver runs with cwd at the working root and yields the `js:exec` action
- * (output: `out/**`).
+ * The sass_compile rule: compile each Sass source in `srcs` (`.scss`, `.sass`)
+ * to a `.css` file of the same name (`x.module.scss` to `x.module.css`), with
+ * its source map in builds that have them (`BUILD_TYPE`). Partials (`_x.scss`)
+ * produce nothing. `deps` are the packages whose stylesheets the sources load
+ * with `@use` or `@import`, reached through a PnP table the step writes. The
+ * compiler is the `SASS_DRIVER` program, staged under its own directory so its
+ * packages are not visible to the sources. The rule yields a `js:exec` action
+ * collecting `out/**`.
  */
 
 import { Computable, defineRule, EMPTY_FILESET, FileSet, MemoryFile, RuleResult, TargetContext } from "@fabr-build/core";
@@ -60,13 +54,13 @@ function buildSassCompile(context: TargetContext, collected: { srcs: FileSet[]; 
     [Computable.resolve(collected), context.getGlobalRunnable("SASS_DRIVER"), context.getGlobalString("BUILD_TYPE")],
     ({ srcs: srcSets, deps }, compiler, buildType): RuleResult => {
       const srcs = FileSet.unionAll(...srcSets);
-      /* Maps ride the same BUILD_TYPE axis as the JavaScript ones. */
+      /* Source maps follow BUILD_TYPE, as the JavaScript ones do. */
       const options = buildSassOptions(
         [...srcs].map(([name]) => name),
         emitsSourceMap(buildType)
       );
       if (options.sources.length === 0) {
-        /* Nothing to lower — every source is a partial, or there are none. */
+        /* Nothing to compile: every source is a partial, or there are none. */
         return EMPTY_FILESET;
       }
       const workspace = {
@@ -74,17 +68,17 @@ function buildSassCompile(context: TargetContext, collected: { srcs: FileSet[]; 
         [CSS_TOOL_DIR]: compiler,
         "sass-manifest.json": MemoryFile.from(JSON.stringify(options)),
       };
-      /* The driver launches from its own mount (its deps resolve there); cwd is
-       * the working root, so the manifest and src/out roots resolve against it. */
-      /* Its maps name each source by the reference resolving to it, from the
-       * table the step stages: the stylesheets and the packages they reach. */
+      /* The driver launches from its own directory (its packages resolve
+       * there), with its cwd at the working root, which the manifest's paths
+       * are relative to. Its maps name each source by its source path, from
+       * the table the step stages for the stylesheets and the packages they
+       * reach. */
       const argv = compiler.toCommandLine(
         [`${MANIFEST_FLAG}sass-manifest.json`, SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE, DEPS_REPORT_FLAG, DEPS_REPORT_FILE],
         { base: CSS_TOOL_DIR }
       );
-      /* Nothing is mounted: the stylesheets' dependency closure is a table the
-       * step generates beside them on a miss, which the driver's importer
-       * reads. */
+      /* The packages are not installed: on a miss the step writes a PnP table
+       * of them beside the sources, which the driver's importer reads. */
       return createNodeExecAction(FileSet.layout(workspace), deps, argv, `${CSS_OUTDIR}:**`, {
         layout: PNP,
         label: "compile-sass",

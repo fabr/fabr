@@ -184,12 +184,12 @@ function newestOf(constraint: SemverConstraint): SemverVersion | undefined {
 const NEWEST = SEMVER.parseVersion(`${Number.MAX_SAFE_INTEGER}.0.0`);
 
 /**
- * The format of browser references: `<browser>:<version>`, a claim that the
- * output must run on that version and everything newer. A browser's selected
- * version is the OLDEST the output must run on, so the domain orders versions
- * newest first: a claim is a floor in that order (`safari:12` is satisfied by
- * any oldest-supported version at or below 12), and a resolution's selection —
- * the greatest of the floors — is the oldest of the claims. `baseline:2023`
+ * The format of browser references: `<browser>:<version>`, requiring that the
+ * output run on that version and every newer one. A browser's selected
+ * version is the oldest the output must run on, so the format orders versions
+ * newest first: a reference is a lower bound in that order (`safari:12` is
+ * satisfied by any version at or below 12), and the selection, the highest
+ * lower bound in that order, is the oldest version referenced. `baseline:2023`
  * and `safari:12` together select Safari 12.
  *
  * Versions are semver underneath, written as Can I Use writes them.
@@ -285,8 +285,9 @@ export class BrowserRepository implements Repository, RepositoryReader<SemverVer
 
   /**
    * @param data the browsers and Baseline years it holds.
-   * @param dataVersion what names the data: a resolution made from other data
-   *   is not reused for this.
+   * @param dataVersion the name of the data, part of the repository's
+   *   identity, so a resolution made from other data is not reused.
+
    */
   constructor(
     private readonly context: Pick<TargetContext, "name" | "operation">,

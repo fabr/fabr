@@ -24,8 +24,8 @@ import { defineRule } from "./Types";
 import { Flag } from "../core/Flag";
 
 /**
- * The `flag` rule: a flag is a value, made where its target is resolved, and is
- * never built or cached.
+ * The `flag` rule: a flag is a value, made where its target is resolved, never
+ * built or cached.
  */
 export default defineRule({
   value: true,
@@ -35,8 +35,9 @@ export default defineRule({
 });
 
 /**
- * Create the Flag a `flag` target names: an inert marker that rides the
- * dependency graph for rules to interpret (platform modes and the like).
+ * Make the Flag a `flag` target is: a marker of the target's name among the
+ * sources of a property that names it, which a rule reads back with
+ * `getFlags`, implying the flags its `provides` names.
  */
 function createFlag(context: TargetContext): Computable<FileSource> {
   const name = context.name;

@@ -44,7 +44,7 @@ const DIAG_BUILD_COMPLETE = Diagnostic.Info<{ targets: string; duration: string 
 const DIAG_UP_TO_DATE = Diagnostic.Info<{ duration: string }>("Already up to date {duration}");
 const DIAG_CHANGES_DETECTED = Diagnostic.Info<Record<string, never>>("Changes detected, rebuilding");
 
-/** Progress verbs for the well-known operations; anything else renders as
+/** The progress verbs of the well-known operations; any other renders as
  *  "Running <operation> on <target>". */
 const OPERATION_VERBS = new Map([
   ["build", "Building"],
@@ -52,42 +52,37 @@ const OPERATION_VERBS = new Map([
   ["run", "Running"],
 ]);
 
-/** Marks a finished task in the log. The completion line repeats the start
- *  line's verb verbatim (a sub-target's label is display text a rule author
- *  chose, with no derivable past form). */
+/** The marks of a finished task's line in the log, which repeats the start
+ *  line's text after the mark. */
 const MARK_OK = "✓";
 const MARK_FAILED = "✗";
 
-/** The shortest wait for a slot a completion line reports: below it, the wait
- *  is the funnel's ordinary hand-off, not the machine being busy. */
+/** The shortest wait for a process slot a completion line reports. */
 const SHOWN_WAIT_MS = 1000;
 
 /** The pane's heading, above the rows. */
 const PANE_HEADING = "Running:";
 
-/* SGR codes for the palette. Colour is decided once, by the driver (a tty and
- * no NO_COLOR), and applied here; the log formatter strips any that survive
- * when it isn't painting, so this can't leak escapes into a redirected log. */
+/* SGR codes for the palette, applied where the reporter is given `color`. */
 const SGR_OK = "32";
 const SGR_FAILED = "31";
 const SGR_DIM = "2";
 const SGR_BOLD = "1";
 
 /**
- * @return a human duration: sub-second task in whole milliseconds (where the
- * difference between 30ms and 300ms is the interesting part), longer task in
- * tenths of a second.
+ * @return `ms` as a human duration: whole milliseconds below a second, else
+ * seconds to one decimal place.
  */
 export function formatDuration(ms: number): string {
   return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 
-/** Decimal units, as a registry and a browser both report a download. */
+/** Decimal size units. */
 const BYTE_UNITS = ["B", "kB", "MB", "GB", "TB"];
 
 /**
- * @return a human size: whole bytes below a kilobyte, else one decimal place in
- * the largest unit that leaves a number under 1000.
+ * @return `bytes` as a human size: whole bytes below a kilobyte, else one
+ * decimal place in the largest unit that leaves a number under 1000.
  */
 export function formatBytes(bytes: number): string {
   let size = bytes;
@@ -105,56 +100,53 @@ interface IOutputLine {
   line: string;
 }
 
-/** A task in flight: what it is, when we first heard of it, what it is
- *  doing and since when, how long it has spent waiting before that, how far
- *  along it has last said it is, and — with a pane — the output it is holding
- *  until it ends. */
+/** A task started and not yet ended, as the reporter saw it. */
 interface IRunningTask {
   task: TaskDescription;
+  /** When the reporter saw it start. */
   started: number;
+  /** Its state, and when it entered it. */
   state: TaskState;
   since: number;
+  /** The time it spent waiting before `since`. */
   waited: number;
+  /** The last measure it reported. */
   progress?: TaskProgress;
+  /** The output lines held until it ends, where output is held. */
   held: IOutputLine[];
 }
 
 /**
- * Renders the model's task events: a line when a task starts, a line
- * with its duration when it ends, and — on a terminal — a pane of what is in
- * flight right now.
+ * A build listener that renders the build events to the log and, given a
+ * terminal with a pane, to the pane. It logs:
+ * - a line as a task starts, where there is no pane and the run is not quiet;
+ * - a line as a task ends, with its mark, how long it ran, how long it waited
+ *   for a process slot where that was at least {@link SHOWN_WAIT_MS}, and a
+ *   failure's one-line reason; the task's context (constraints and the targets
+ *   that required it) is on this line where there was no start line;
+ * - each line of a task's output, prefixed with whom it is attributed to and
+ *   the stream it came on. With a pane, a task's lines are held until it ends
+ *   and logged after its end line, or dropped where its error is a
+ *   CommandFailedError, which carries them;
+ * - where `markers` (the default), "Changes detected, rebuilding" as a cycle
+ *   starts and "Built …" or "Already up to date" as a cycle ends without
+ *   failing.
  *
- * The two lines are the record; the pane is a derived view of the tasks that
- * have started and not yet ended. That is what makes it droppable: with no terminal
- * to paint on, the same events produce the same log.
+ * Incidental tasks ({@link incidental}) log no start or end line.
  */
 export class ProgressReporter {
   private readonly running = new Map<number, IRunningTask>();
   private readonly log: Log;
   private readonly terminal?: TerminalStream;
-  /** Injected so tests are not at the mercy of the wall clock. */
+  /** The clock, in milliseconds; a test supplies its own. */
   private readonly now: () => number;
-  /** Paint text in an SGR colour, or leave it plain — decided once, here. */
+  /** Paint text in an SGR colour, or leave it plain. */
   private readonly style: (code: string, text: string) => string;
-  /**
-   * Whether a task announces itself as it *starts*. With a pane, what
-   * is running is already on screen, and the start line would only repeat it a
-   * few hundred milliseconds before the completion line supersedes it; without
-   * one it is the sole indication that anything is happening — *unless* the run
-   * asked for quiet, which gets no start lines in the pane's place either.
-   */
+  /** Whether a task's start is logged: where there is no pane and the run is not quiet. */
   private readonly announceStart: boolean;
-  /**
-   * Whether a step's output is held until the step ends rather than logged as
-   * it arrives: with a pane, what is running is on screen, and output logged
-   * live from several steps at once would interleave. A step that succeeds has
-   * its output logged as one block under its completion line; one that failed
-   * running a command has it in its error (a CommandFailedError), reported
-   * in context there.
-   */
+  /** Whether a task's output is held until it ends: where there is a pane. */
   private readonly holdOutput: boolean;
-  /** Whether cycle-end events render the status marker ("Built X" / "Already
-   *  up to date") — the driver's per-verb policy. */
+  /** Whether cycles log their start and outcome lines. */
   private readonly markers: boolean;
   /** When the current cycle began, as this reporter saw it: its construction
    *  for the first cycle, which has no cycle-start, else the cycle-start. */
@@ -172,12 +164,11 @@ export class ProgressReporter {
     this.holdOutput = this.terminal?.hasPane ?? false;
     this.markers = options.markers ?? true;
     this.cycleStarted = this.now();
-    /* The pane is *pulled*: its rows carry elapsed times and download sizes,
-     * which advance with the clock rather than with events, so it must be
-     * rendered at paint time and not handed over as text. */
+    /* The terminal asks for the pane's content at each paint. */
     this.terminal?.setPaneSource(budget => this.paneContent(budget));
   }
 
+  /** The listener to subscribe to the run's build events. */
   public get buildListener(): BuildListener {
     return event => this.onBuildEvent(event);
   }
@@ -206,9 +197,8 @@ export class ProgressReporter {
         }
         running.state = event.state;
         running.progress = event.progress;
-        /* A state change re-rows the pane now; a measure-only update waits for
-         * the tick — it fires per chunk of a download, and the ~100ms pull is
-         * both a readable display rate and a bound on the work it can cause. */
+        /* Repaint now for a state change only: a measure arrives per chunk of
+         * a download, and is shown at the terminal's next tick. */
         if (!stateChanged) {
           return;
         }
@@ -216,12 +206,8 @@ export class ProgressReporter {
       }
 
       case "task-output": {
-        /* One output line, prefixed with the target it came from and the stream
-         * it arrived on. The prefix is attribution, not presentation, so it
-         * applies held or not. Both streams are named, symmetrically: tools
-         * disagree about which one a diagnostic belongs on (tsc writes its
-         * errors to stdout), so marking only `err` would imply a severity the
-         * stream does not carry. */
+        /* Prefix the line with whom it is attributed to and the stream it
+         * came on (`out` or `err`, both named alike), held or not. */
         const output = { prefix: this.style(SGR_DIM, `${attribution(event.task)} ${event.stream}|`), line: event.line };
         const running = this.holdOutput ? this.running.get(event.id) : undefined;
         if (running) {
@@ -234,16 +220,14 @@ export class ProgressReporter {
 
       case "cycle-start":
         this.cycleStarted = this.now();
-        /* Only a watch run's later cycles start with an event: the line opens
-         * the round whose record arrives on the cycle-end. */
+        /* Only a watch run's later cycles have a cycle-start. */
         if (this.markers) {
           this.log.log(DIAG_CHANGES_DETECTED, {});
         }
         return;
 
       case "cycle-end":
-        /* The per-cycle status marker. A failed cycle renders none — the
-         * driver's error path reports the failure itself. */
+        /* A failed cycle logs no marker: the driver reports the failure. */
         if (this.markers && !event.failed) {
           const duration = this.style(SGR_DIM, `(${formatDuration(this.now() - this.cycleStarted)})`);
           if (event.built.length > 0) {
@@ -255,16 +239,14 @@ export class ProgressReporter {
         return;
 
       case "task-end": {
-        /* The map supplies the one thing the event cannot: when we first saw
-         * the task (durations are the observer's own measurement). */
+        /* The task's times are measured from when the reporter saw it start. */
         const started = this.running.get(event.id);
         this.running.delete(event.id);
         if (started && !incidental(event.task)) {
           this.log.log(DIAG_TASK_DONE, {
             mark: this.style(event.failed ? SGR_FAILED : SGR_OK, event.failed ? MARK_FAILED : MARK_OK),
             what: describe(event.task),
-            /* Whichever line introduces the item carries its context: with a
-             * pane there was no start line to have carried it. */
+            /* The context goes on whichever line is the task's first. */
             chain: this.announceStart ? "" : context(event.task),
             duration: this.style(SGR_DIM, `(${this.formatTimes(started)})`),
             reason: failureReason(event.error),
@@ -280,18 +262,14 @@ export class ProgressReporter {
   }
 
   /**
-   * Build the pane, within the row budget the terminal allows: a row per task
-   * actually running, in start order (so a row never moves while it is up), and
-   * one line for the remainder.
-   *
-   * A wide graph starts every action at once, so on a big build most of what
-   * has begun is queued rather than happening; that is counted, not listed, so
-   * the pane's size is a function of the screen rather than of the graph.
+   * Make the pane's content within `budget` rows: a row per task in the
+   * running state, in start order, as many as fit beside the others; a row per
+   * kind of incidental task in flight; and a last row counting the running
+   * tasks not listed and the tasks waiting for a slot, where there are any.
    */
   private paneContent(budget: number): IPaneContent {
     const items = [...this.running.values()];
-    /* Incidental tasks (a resolution has a dozen in flight at once) get one row
-     * per kind, not one each. */
+    /* Incidental tasks get one row per kind of resource fetched. */
     const summaries = this.summaryRows(
       items.flatMap(item => (incidental(item.task) ? [{ task: item.task, started: item.started }] : []))
     );
@@ -300,7 +278,7 @@ export class ProgressReporter {
     const waiting = own.length - running.length;
 
     const room = Math.max(0, budget - summaries.length);
-    /* Reserve a row for the tail whenever there will be something to say. */
+    /* Reserve a row for the count where there will be one. */
     const listed = running.length > room || waiting > 0 ? Math.max(0, room - 1) : room;
     const rows = running
       .slice(0, listed)
@@ -310,8 +288,8 @@ export class ProgressReporter {
     return { heading: this.style(SGR_BOLD, PANE_HEADING), rows: tail ? [...rows, tail] : rows };
   }
 
-  /** Make the one line for what didn't get a row — or nothing at all when
-   *  everything in flight is on screen. */
+  /** Make the row counting the running tasks not listed and the tasks
+   *  waiting, or undefined where there are none. */
   private remainder(unlisted: number, waiting: number): IPaneRow | undefined {
     const parts = [
       [unlisted, "running"],
@@ -322,9 +300,8 @@ export class ProgressReporter {
     return parts.length === 0 ? undefined : { left: this.style(SGR_DIM, `  … ${parts.join(", ")}`), right: "" };
   }
 
-  /** Summarise incidental tasks — always fetches (see {@link incidental}) — as
-   *  one row per resource kind ("Fetching metadata (12)"), timed from the oldest still
-   *  running. */
+  /** Summarise incidental tasks, which are fetches, as one row per resource
+   *  kind ("Fetching metadata (12)"), timed from the oldest still running. */
   private summaryRows(items: Array<{ task: IFetchTask; started: number }>): IPaneRow[] {
     const kinds = new Map<string, number[]>();
     for (const { task, started } of items) {
@@ -372,8 +349,8 @@ export class ProgressReporter {
 }
 
 /**
- * Format how far along a task is, in whichever terms it measures itself: a
- * download in bytes, a test run in files done and what they found.
+ * Format how far along a task is, in the terms it measures itself in: a
+ * download in bytes, a test run in files done and their outcomes.
  */
 function formatProgress(progress: TaskProgress): string {
   return progress.measure === "bytes"
@@ -391,9 +368,8 @@ function formatTestRun(files: number, totalFiles: number, passed: number, failed
 }
 
 /**
- * Format a download's progress: a bar, its percentage and the size it is heading for
- * where the origin declared one, else the bare bytes so far (a chunked
- * response has no total to be a fraction of).
+ * Format a download's progress: a bar, its percentage and the total size
+ * where `total` is known and non-zero, else the bytes so far.
  */
 export function formatTransfer(done: number, total?: number): string {
   if (total === undefined || total === 0) {
@@ -403,16 +379,15 @@ export function formatTransfer(done: number, total?: number): string {
   return `${formatBar(fraction)} ${Math.round(fraction * 100)}% of ${formatBytes(total)}`;
 }
 
-/** Cells in a progress bar; it shares a line with the task's name. */
+/** The cells in a progress bar. */
 const BAR_WIDTH = 10;
 
 /** Left-to-right partial blocks, for the cell the bar is part-way through. */
 const BAR_EIGHTHS = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
 
 /**
- * Draw a `fraction` (0..1) as a bar of {@link BAR_WIDTH} cells. The boundary cell is
- * drawn to the nearest eighth, so a slow download is visibly moving between
- * whole cells rather than appearing stalled for a tenth of its length.
+ * Draw a `fraction` (0..1) as a bar of {@link BAR_WIDTH} cells, the cell it
+ * ends in drawn to the nearest eighth.
  */
 function formatBar(fraction: number): string {
   const eighths = Math.round(Math.max(0, Math.min(1, fraction)) * BAR_WIDTH * 8);
@@ -422,29 +397,26 @@ function formatBar(fraction: number): string {
 }
 
 /**
- * Describe what a task IS, in one phrase — the same text in the start line, the
- * completion line and the pane row, so the three are recognizably one thing.
- * Free of the surrounding context (which required it, under what constraints):
- * that is {@link context}, added to the line that introduces the item.
+ * Describe a task in one phrase, the text of its start line, end line and
+ * pane row ("Building app", "Compiling app", "Fetching metadata <url>"). The
+ * constraints and the targets that required it are {@link context}'s.
  */
 export function describe(task: TaskDescription): string {
   switch (task.kind) {
     case "target-build": {
-      /* A sub-target carries its action verb as `label` ("Compiling"); anything
-       * else derives its verb from the operation. */
+      /* A sub-target's verb is its `label` ("Compiling"); any other's comes
+       * from the operation. */
       const operation = operationOf(task.constraints);
       const verb = task.label ?? OPERATION_VERBS.get(operation) ?? `Running ${operation} on`;
       return `${verb} ${[...(task.subtargetNames ?? []), declName(task.target)].join(" for ")}`;
     }
     case "repository-resolve":
-      /* Named by whose requirements they are (the consuming target, or the
-       * catalog), not by the batch of package names. */
+      /* Named by whose requirements they are: the consuming target, or the catalog. */
       return `Resolving ${task.consumer} dependencies from ${task.repository}`;
     case "fetch":
       return `Fetching ${task.resource} ${task.url}`;
     case "command-subst":
-      /* A substitution belongs to no target, so it names itself by the command
-       * as written. */
+      /* A substitution belongs to no target: named by its command as written. */
       return `Running \`${task.command}\``;
     case "publish":
       return `Publishing ${task.destination}`;
@@ -452,20 +424,17 @@ export function describe(task: TaskDescription): string {
 }
 
 /**
- * @return true if the task is incidental — the CLI's policy for a task that goes
- * unrecorded in the log — otherwise false. A registry index read is a step
- * within a task already being reported (a resolution makes dozens
- * of them), so it is shown in the pane while it runs and never logged. The
- * event states the fact (a fetch's `role`); this is the decision made from it.
- * Only a fetch is ever incidental, which the narrowing carries to the summary
- * rows.
+ * @return true if the task is incidental, otherwise false: a fetch whose
+ * `role` is `index` (a registry index read). An incidental task is summarised
+ * in the pane and never logged.
  */
 export function incidental(task: TaskDescription): task is IFetchTask {
   return task.kind === "fetch" && task.role === "index";
 }
 
-/** Render the context a start line adds to {@link describe}: the explicit constraints
- *  the target builds under, and the chain of targets that required it. */
+/** Render the context a task's first line adds to {@link describe}: the
+ *  explicit constraints the target builds under, and the chain of targets that
+ *  required it. */
 export function context(task: TaskDescription): string {
   if (task.kind !== "target-build") {
     return "";
@@ -474,9 +443,8 @@ export function context(task: TaskDescription): string {
   return renderConstraints(task.constraints) + requiredBy;
 }
 
-/** Name whom a step's output lines are attributed to: the declared target the
- *  task belongs to. Not the sub-target label — two steps of one target are both that
- *  target's output, and the prefix is there to say *whose* line this is. */
+/** Name whom a task's output lines are attributed to: for a target's task,
+ *  the declared target, whichever of its sub-targets the task is for. */
 function attribution(task: TaskDescription): string {
   switch (task.kind) {
     case "target-build":
@@ -501,8 +469,7 @@ function failureReason(error: Error | undefined): string {
 
 /**
  * @return a ` [k=v, ...]` annotation of the explicit constraints a target is
- * building under (the ambient keys elided), or "" when there are none — so a
- * default build shows none.
+ * building under ({@link shownConstraints}), or "" when there are none.
  */
 function renderConstraints(constraints: Constraints): string {
   const shown = shownConstraints(constraints);

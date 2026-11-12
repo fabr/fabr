@@ -48,7 +48,7 @@ const STATUS_OK = 1;
 /** BSP's `TestStatus` of a test that failed. */
 const TEST_FAILED = 2;
 
-/** What a test's `test-finish` reports. */
+/** A test's outcome, as the data of a `test-finish` task finish reports it. */
 interface ITestFinish {
   displayName: string;
   status: number;
@@ -56,7 +56,7 @@ interface ITestFinish {
   location?: { uri: string };
 }
 
-/** @return the request `params`, a `build/taskFinish`'s, belongs to and the test finish they report, or undefined where they report none. */
+/** @return the `originId` of `params`, a `build/taskFinish`'s, and the test finish it reports, or undefined where it reports none. */
 function toTestFinish(params: unknown): { originId: string; finish: ITestFinish } | undefined {
   if (!isRecord(params) || typeof params.originId !== "string" || params.dataKind !== "test-finish" || !isRecord(params.data)) {
     return undefined;
@@ -78,7 +78,8 @@ function toTestFinish(params: unknown): { originId: string; finish: ITestFinish 
 
 /**
  * Register the Build and Test commands and the Testing view over `projects`,
- * the projects being served, by root.
+ * the projects being served, by root. A test request that fails is written to
+ * `output`, its target's item reported as failed.
  *
  * @return what to dispose of when the extension ends, and what refreshes the
  * Testing view's targets once those served change.
@@ -91,6 +92,7 @@ export function registerTargetCommands(
   const controller = vscode.tests.createTestController("fabr", "Fabr");
   /* What receives a request's test finishes, by its originId. */
   const listening = new Map<string, (finish: ITestFinish) => void>();
+  /* The clients whose `build/taskFinish` notifications are listened to. */
   const listened = new Set<JsonRpcClient>();
   const listen = (client: JsonRpcClient): void => {
     if (listened.has(client)) {

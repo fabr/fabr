@@ -18,10 +18,10 @@
  */
 
 /**
- * Zip archives, read by random access with `yauzl`: a zip records each
- * entry's mode, and whether it is a symlink, only in its central directory at
- * the end, so an archive is read once it is whole, from the file holding it.
- * An archive that arrives as a stream is first written out in full.
+ * Zip archives, read by random access with `yauzl`. A zip records each entry's
+ * mode, and whether it is a symlink, only in its central directory at the end,
+ * so an archive is read only once it is whole: one that arrives as a stream is
+ * first written out in full.
  */
 
 import { Readable, Writable } from "stream";
@@ -67,8 +67,10 @@ function openZip(archive: IFile): Computable<yauzl.ZipFile> {
 
 /**
  * Read each entry of `zip` that `select` admits (by its normalized name), one
- * at a time, with `read`. Directories are passed over; an entry named outside
- * the tree, or encrypted, refuses the archive.
+ * at a time, with `read`. Directories, and entries whose names escape the tree,
+ * are passed over unread; keep that check, since the archive is untrusted.
+ * Rejects where an admitted entry is encrypted, or the archive or an entry
+ * cannot be read.
  */
 function readEntries<T>(
   zip: yauzl.ZipFile,
@@ -116,8 +118,9 @@ function corrupt(entry: yauzl.Entry): Error {
   return new FabrError(`ZIP entry '${entry.fileName}' is corrupt: its content does not match its CRC-32`);
 }
 
-/** Write one entry to an output of its own, checked against its CRC-32: a
- *  symlink as the {@link SymlinkFile} its content names. */
+/** Write one entry to an output of its own, with its recorded mode (0o644
+ *  where none), or make a symlink entry the {@link SymlinkFile} its content
+ *  names. Rejects where the content does not match its CRC-32. */
 function writeEntry(
   entry: yauzl.Entry,
   name: string,
@@ -136,7 +139,7 @@ function writeEntry(
   const output = createOutput();
   return Computable.from<[string, IFile]>((resolve, reject) => {
     let crc = 0;
-    /* Reported once the output is gone, so nothing of the entry is left behind. */
+    /* Discard the output before rejecting. */
     const fail = (err: Error): void => {
       output.discard().then(() => reject(err));
     };
@@ -223,8 +226,8 @@ export function readZipMembers(zip: Buffer, select: (name: string) => boolean): 
 
 /**
  * Read one member of a zip archive held in memory (a jar's
- * `META-INF/MANIFEST.MF`), passing over the rest unread: undefined where it
- * has no such member.
+ * `META-INF/MANIFEST.MF`), passing over the rest unread.
+ * @return the member's content, or undefined where the archive has none of that name.
  */
 export function readZipMember(zip: Buffer, name: string): Computable<Buffer | undefined> {
   return readZipMembers(zip, entry => entry === name).then(members => members.get(name));

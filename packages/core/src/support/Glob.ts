@@ -82,18 +82,13 @@ export function readBracketExpression(
   return undefined;
 }
 
-/** A compiled glob: true iff the given (forward-slash) path matches. */
+/** A compiled glob: a function returning true if a `/`-separated path matches, otherwise false. */
 export type GlobMatcher = (path: string) => boolean;
 
 /**
- * Compile a glob into a path matcher — the single home for fabr's glob options.
- *
- * fabr treats dotfiles as ordinary files: a directory expansion (`src` →
- * `src/**`) means *every* file beneath it, and a build step's dotfile outputs
- * must survive result collection. picomatch excludes dotfiles by default, so
- * `dot` is set here and every matcher in the engine goes through this function.
- *
- * A `!(…)` group is a subtraction over the whole pattern (see
+ * Compile a glob into a path matcher. A wildcard matches dotfiles as it matches
+ * any other file (picomatch's `dot`); compile every glob through this, so all
+ * match alike. A `!(…)` group is a subtraction over the whole pattern (see
  * {@link negationsOf}): `A!(X)B` matches what `A*B` matches and `AXB` does not.
  */
 export function globMatcher(glob: string): GlobMatcher {
@@ -107,20 +102,14 @@ export function globMatcher(glob: string): GlobMatcher {
 }
 
 /**
- * Compile a glob into an anchored *capturing* regex, for the rename projection
- * (`sel -> tmpl`): each `*`/`**` becomes a capture group, so a match substitutes
- * into a `$1`/`$2`-style template via `String.replace` (see Name.makeRenamer). A
- * zero-segment globstar leaves its group unmatched, which `replace` substitutes
- * as `""` — Name.makeRenamer then cleans up the stray slash.
+ * Compile a glob into an anchored regex with a capture group per `*` and `**`,
+ * in order, for a rename projection (`sel -> tmpl`, see `Name.makeRenamer`). A
+ * `**` matching no segment leaves its group unmatched, which `String.replace`
+ * substitutes as `""`. A `!(…)` group captures nothing.
  *
- * The caller guarantees (via the parser) that a rename glob whose template has
- * slots to fill uses only `*`/`**` wildcards — `?` and `[...]` are rejected,
- * because picomatch captures them inconsistently (`?` not at all, a class as a
- * group), which would desync the positional `$n` references. With only `*`/`**`
- * present picomatch emits exactly one group per wildcard in order. A
- * wildcard-free template references no group, so its selector is unrestricted
- * and this is then used purely as a matcher. A `!(…)` group captures nothing:
- * what it subtracts is checked by lookbehinds after the end anchor.
+ * The groups line up with the wildcards only where the glob has no `?` or
+ * `[…]` (picomatch captures those inconsistently): the parser refuses them in
+ * a selector whose template takes captures.
  */
 export function globCaptureRegex(glob: string): RegExp {
   const negated = negationsOf(glob);
@@ -137,12 +126,10 @@ export function globCaptureRegex(glob: string): RegExp {
 }
 
 /**
- * Compile a fixed leading path prefix into an anchored regex, for stripping that
- * prefix from result names (the colon-form naming rule: `src:**` names results
- * relative to `src`). Uses the same dotfile policy as {@link globMatcher}, so a
- * globbed prefix strips the same dotfile directories the search side matches.
- * A `!(…)` group strips as the wildcard it stands for: the selection has already
- * subtracted what it excludes.
+ * Compile a leading path prefix into an anchored regex, for stripping it from
+ * result names (`src:**` names its results relative to `src`). Dotfiles match
+ * as in {@link globMatcher}. A `!(…)` group matches as the wildcard it stands
+ * for, without its subtraction.
  */
 export function globPrefixRegex(prefix: string): RegExp {
   const negated = negationsOf(prefix);
@@ -176,13 +163,13 @@ interface INegationGroup {
 /**
  * Find the `!(…)` groups of a glob and make the subtraction they stand for.
  *
- * A group is a wildcard in the pattern it sits in — one path segment's worth
- * (`*`), or any text at all, `/` included, where its contents hold a `/`; like
- * `*`, never empty where it stands as a whole segment — and
- * each of its alternatives, written in its place, is a pattern the path must not
- * match. So `**\/!(foo/bar)/**\/!(*.ts)` matches what `**\/*\/**\/*` matches,
- * less `**\/foo/bar/**\/*` and `**\/*\/**\/*.ts`. A group inside another group is
- * refused (the parser refuses one written in a build file first).
+ * A group is a wildcard in the pattern it sits in: within one path segment
+ * (`*`), or any text, `/` included, where an alternative holds a `/`; like
+ * `*`, never empty where it stands as a whole segment. Each of its
+ * alternatives, written in its place, is a pattern the path must not match. So
+ * `**\/!(foo/bar)/**\/!(*.ts)` matches what `**\/*\/**\/*` matches, less
+ * `**\/foo/bar/**\/*` and `**\/*\/**\/*.ts`. Throws where a `!(…)` group is
+ * inside another group (the parser refuses one written in a build file first).
  *
  * @return undefined for a glob with no `!(…)` group.
  */

@@ -18,20 +18,11 @@
  */
 
 /*
- * Registry **authentication**, all of it in one place. {@link NPMAuth} is the
- * run's auth authority (one shared instance, memoized on the js plugin
- * context), combining:
- *  - the configured credential — the auth-relevant `.npmrc` contents (project +
- *    user files, `${VAR}` substitution, "the Authorization header for this URL"
- *    by longest nerf-dart prefix match; registry/scope config like
- *    `@scope:registry` is not read);
- *  - answering the second-factor challenge a 2FA account's write receives
- *    (the browser/passkey ceremony via {@link pollWebAuthToken}, or a terminal
- *    prompt), with one answer per registry reused across the run's publishes
- *    ({@link OtpSession}).
- * The wire-level challenge shape lives here too ({@link otpChallengeOf}); the
- * publish operation itself (envelope, PUT, challenge-retry loop) stays in
- * NPMProtocol.ts, with the challenge-answering injected as an {@link OtpProvider}.
+ * npm registry authentication: the credentials `.npmrc` configures (see
+ * {@link NPMAuth}), and answering the second-factor challenge a publish from a
+ * 2FA account receives, by browser or terminal prompt ({@link OtpSession},
+ * {@link otpChallengeOf}). The publish request itself is in NPMProtocol.ts,
+ * which is given the challenge answering as an {@link OtpProvider}.
  */
 
 import * as os from "node:os";
@@ -49,7 +40,8 @@ import {
   UserInteraction,
 } from "@fabr-build/core";
 
-/** The npm auth mechanisms configurable per registry, in precedence order. */
+/** The credentials `.npmrc` configures for one registry, in the order
+ * {@link NPMAuth.getHeadersFor} prefers them. */
 interface RegistryAuth {
   authToken?: string;
   /** Base64 `user:pass`, sent as-is. */
@@ -59,17 +51,17 @@ interface RegistryAuth {
   password?: string;
 }
 
-/** Substitute `${VAR}` with the environment value (empty when unset), as npm does
- *  — so `_authToken=${NPM_TOKEN}` picks up the CI token, and an unset var yields no
- *  credential rather than a literal `${…}`. */
+/** Substitute each `${VAR}` with the environment variable's value, or nothing
+ *  where it is unset, as npm does (`_authToken=${NPM_TOKEN}`). */
 function envSubstitute(value: string): string {
   return value.replace(/\$\{([^}]+)\}/g, (_match, name: string) => process.env[name] ?? "");
 }
 
 /**
- * Parse a `.npmrc` body into its key→value entries: `key = value` lines, skipping
- * blanks, `#`/`;` comments and `[section]` headers; surrounding quotes stripped and
- * `${VAR}` substituted (the ini shape npm uses).
+ * Parse a `.npmrc` body into its entries by key: each `key = value` line, the
+ * value's surrounding quotes stripped and each `${VAR}` substituted. Blank
+ * lines, `#` and `;` comments, `[section]` headers and lines with no `=` are
+ * skipped; a later entry of a key replaces an earlier one.
  */
 export function parseNpmrc(content: string): Map<string, string> {
   const entries = new Map<string, string>();
@@ -94,23 +86,30 @@ export function parseNpmrc(content: string): Map<string, string> {
   return entries;
 }
 
-/** @return the absolute path of the user `~/.npmrc` — read through a
- *  FileSource (the execution's absolute source), not a raw `fs` read. */
+/** @return the absolute path of the user's `~/.npmrc`. Read it through the
+ *  execution's `absFileSource`, not `fs`. */
 export function userNpmrcPath(): string {
   return path.join(os.homedir(), ".npmrc");
 }
 
+/**
+ * The registry credentials a run's `.npmrc` files configure, and the
+ * second-factor sessions of its publishes. Only the `//host/path/:` keys
+ * (`_authToken`, `_auth`, `username`, `_password`) are read; registry and
+ * scope settings such as `@scope:registry` are not.
+ */
 export class NPMAuth {
-  /** registry key (`//host/path/`) → its auth fields. */
+  /** Each registry's credentials, by its slash-terminated `//host/path/` key. */
   private readonly registries: Map<string, RegistryAuth>;
-  /** registry URL → its second-factor session (created on first challenge). */
+  /** Each registry's second-factor session, by registry URL, made on its first
+   * challenge. */
   private readonly otpSessions = new Map<string, OtpSession>();
 
   constructor(entries: Map<string, string>) {
     this.registries = new Map();
     const authOf = (prefix: string): RegistryAuth => {
-      /* npm's nerf-dart keys are slash-terminated; normalize so prefix matching
-       * respects path boundaries (`//host/npm` must not credential `//host/npm-other`). */
+      /* End every key with `/`, so a key matches a URL only at a path boundary:
+       * `//host/npm` must not match `//host/npm-other`. */
       const key = prefix.endsWith("/") ? prefix : `${prefix}/`;
       let auth = this.registries.get(key);
       if (!auth) {
@@ -136,11 +135,10 @@ export class NPMAuth {
   }
 
   /**
-   * Load the combined config for a run: the project `.npmrc` (read through the
-   * source FS, so it participates in watch-mode invalidation) and the user
-   * `~/.npmrc` (absolute FS, unwatched), project overriding user. Reads straight
-   * off the {@link ExecutionContext}'s FileSources, so it is shared per run rather
-   * than per repository instance (see the js plugin context).
+   * Load a run's credentials: the user's `~/.npmrc` (through `absFileSource`,
+   * unwatched) and the project's `.npmrc` (through `sourceFileSource`, so a
+   * change to it is seen under watch), an entry of the project's replacing the
+   * user's. Either file may be absent.
    */
   public static load(execution: ExecutionContext): Computable<NPMAuth> {
     return Computable.forAll(
@@ -153,9 +151,9 @@ export class NPMAuth {
   }
 
   /**
-   * Combine `.npmrc` sources given in **increasing precedence** — a duplicate key
-   * from a later source wins (so pass user before project, per npm precedence).
-   * Any source may be absent.
+   * Combine `.npmrc` bodies given in increasing precedence: a key in a later
+   * body replaces the same key in an earlier one, so pass the user's before the
+   * project's, as npm reads them. An absent body is skipped.
    */
   public static fromSources(...sources: (string | undefined)[]): NPMAuth {
     const entries = sources.filter((source): source is string => source !== undefined).flatMap(source => [...parseNpmrc(source)]);
@@ -168,8 +166,12 @@ export class NPMAuth {
   }
 
   /**
-   * Get `Authorization` headers (if needed) to send with a request to `url`, from the
-   * most specific matching registry's credential */
+   * Get the `Authorization` header to send with a request to `url`, from the
+   * registry whose key is the longest prefix of the URL's `//host/path/`: its
+   * `_authToken` as a bearer token, else `_auth` as basic, else `username` and
+   * the base64 `_password` as basic. Empty where no key matches, the matching
+   * one has no usable credential, or `url` does not parse.
+   */
   public getHeadersFor(url: string): Record<string, string> {
     let target: string;
     try {
@@ -178,8 +180,8 @@ export class NPMAuth {
     } catch {
       return {};
     }
-    /* Match a slash-terminated target against slash-terminated prefixes, so a
-     * prefix only matches at a path boundary — not `//host/npm` ⊃ `//host/npm-x`. */
+    /* End the target with `/`, as every key is, so a key matches only at a path
+     * boundary. */
     const scoped = target.endsWith("/") ? target : `${target}/`;
     let best: RegistryAuth | undefined;
     let bestLength = -1;
@@ -207,11 +209,11 @@ export class NPMAuth {
   }
 
   /**
-   * Answer a write's second-factor challenges for `registryUrl` — the
-   * {@link OtpProvider} a publish injects into its retry loop. Answers go
-   * through the registry's {@link OtpSession}, so the run's several publishes
-   * ask the human once, re-acquiring only when the registry refuses a reused
-   * token.
+   * Make the {@link OtpProvider} answering second-factor challenges from
+   * `registryUrl` for a publish. Answers come from the registry's
+   * {@link OtpSession}, shared by every publish of the run to that registry.
+   * With no `interaction`, answering a challenge fails, with help naming the
+   * credentials that publish without one.
    */
   public otpProvider(registryUrl: string, interaction: UserInteraction | undefined): OtpProvider {
     const session = this.sessionFor(registryUrl);
@@ -229,12 +231,10 @@ export class NPMAuth {
   }
 
   /**
-   * Ask the human for one second-factor answer: a passkey/security-key account
-   * gets the browser ceremony (open the challenge's authUrl, poll its doneUrl
-   * for the outcome token — single-use), an authenticator-code account a
-   * terminal prompt (reusable within the code's window). Without a terminal
-   * there is nobody to ask — a typed error names the unattended alternatives
-   * instead.
+   * Ask the user for one second-factor answer. A challenge with `authUrl` and
+   * `doneUrl` opens `authUrl` in the browser and polls `doneUrl` for the token,
+   * which is single-use; any other challenge prompts for a one-time password,
+   * which is reusable. Throws where there is no `interaction`.
    */
   private acquireSecondFactor(
     challenge: OtpChallenge,
@@ -263,25 +263,22 @@ export class NPMAuth {
 }
 
 /**
- * A registry's demand for a second factor on a write (npm's `EOTP`): a 401
- * whose `www-authenticate` names `otp` (any case — npmjs sends `OTP`), or —
- * for registries that omit the header — whose body mentions a one-time pass.
- * When the account's second factor is browser-based (a passkey/security key)
- * the body additionally carries the ceremony's `authUrl`/`doneUrl` pair; a
- * bare challenge means a typed-in OTP (an authenticator code) is expected.
+ * A registry's demand for a second factor on a write (npm's `EOTP`). For an
+ * account whose second factor is a passkey or security key it carries
+ * `authUrl` and `doneUrl`; without them a typed one-time password is expected.
  */
 export interface OtpChallenge {
-  /** Browser page that performs the authentication ceremony (WebAuthn). */
+  /** The browser page that authenticates the user (WebAuthn). */
   authUrl?: string;
-  /** Endpoint to poll for the ceremony's outcome token; see {@link pollWebAuthToken}. */
+  /** The URL polled for the token once the user has authenticated; see
+   * {@link pollWebAuthToken}. */
   doneUrl?: string;
 }
 
 /**
- * Produce the one-time password to answer an {@link OtpChallenge} with — by
- * browser ceremony, prompt, or a cached token from an earlier answer in the
- * same run. `rejected` is a token the registry just refused, so a provider
- * serving cached tokens knows to discard that one and acquire afresh.
+ * Get the one-time password to answer an {@link OtpChallenge} with. `rejected`
+ * is a password the registry just refused, which a provider holding it must
+ * not give again.
  */
 export type OtpProvider = (challenge: OtpChallenge, rejected?: string) => Computable<string>;
 
@@ -296,7 +293,8 @@ function isHttpUrl(value: unknown): value is string {
   }
 }
 
-/** Read the `authUrl`/`doneUrl` pair of a web-auth challenge body; throws if absent. */
+/** Read the `authUrl` and `doneUrl` of a challenge body, throwing where either
+ * is not an http(s) URL. */
 function toWebAuthUrls(json: unknown): { authUrl: string; doneUrl: string } {
   const doc = toJsonObject(json);
   const { authUrl, doneUrl } = doc;
@@ -307,9 +305,10 @@ function toWebAuthUrls(json: unknown): { authUrl: string; doneUrl: string } {
 }
 
 /**
- * Interpret a write response as a second-factor challenge, if it is one.
- * Anything else — including an ordinary bad-credential 401 — is not the
- * challenge's business and returns undefined for the caller's normal handling.
+ * Read a write's response as a second-factor challenge: a 401 whose
+ * `www-authenticate` names `otp` in any case (npmjs sends `OTP`), or whose body
+ * mentions a "one-time pass" (for a registry that omits the header). Returns
+ * undefined for any other response, a 401 for a bad credential included.
  */
 export function otpChallengeOf(response: HttpResponse): OtpChallenge | undefined {
   if (response.statusCode !== 401) {
@@ -323,19 +322,18 @@ export function otpChallengeOf(response: HttpResponse): OtpChallenge | undefined
   try {
     return parseJson(body, "second-factor challenge", toWebAuthUrls);
   } catch {
-    /* A challenge without ceremony URLs (a typed-OTP account, or a non-JSON
-     * body) is still a challenge — just one with nothing to open. */
+    /* No URLs, or a body that is not JSON: a challenge for a typed one-time
+     * password. */
     return {};
   }
 }
 
 /**
- * Rewrite npmjs's canonical registry host in a web-auth `doneUrl` to the
- * registry origin the write used (preserving any path prefix the registry is
- * mounted under): the `doneUrl` names the canonical host even when the write
- * went to a proxy/mirror that forwards its responses, and polling the
- * canonical host would miss the session. Any other host is intentional and
- * left alone. Mirrors npm-profile's behavior.
+ * Rewrite a `doneUrl` naming `registry.npmjs.org` to the protocol and host of
+ * `registryUrl`, adding the registry's path prefix where the path lacks it, as
+ * npm-profile does: a proxy forwarding npmjs's answer leaves its host in the
+ * URL. A `doneUrl` naming any other host, or the registry's own, is returned
+ * as it is.
  */
 export function replaceDoneUrlOrigin(doneUrl: string, registryUrl: string): string {
   const done = new URL(doneUrl);
@@ -355,9 +353,8 @@ export function replaceDoneUrlOrigin(doneUrl: string, registryUrl: string): stri
   return done.href;
 }
 
-/** {@link pollWebAuthToken}'s wait when the registry sends no `retry-after`
- * (npm-profile re-polls immediately then, trusting the registry always sends
- * one; a floor keeps a misbehaving registry from being hammered). */
+/** {@link pollWebAuthToken}'s wait where the registry sends no `retry-after`.
+ * npm-profile polls again at once. */
 const WEB_AUTH_POLL_MS = 1000;
 const WEB_AUTH_TIMEOUT_MS = 300_000;
 
@@ -365,7 +362,8 @@ function delay(ms: number): Computable<void> {
   return Computable.from(resolve => setTimeout(() => resolve(undefined), ms));
 }
 
-/** Read the `{token}` of a completed web-auth ceremony; throws if absent. */
+/** Read the `token` of a completed browser authentication, throwing where it
+ * is absent or empty. */
 function toWebAuthToken(json: unknown): string {
   const token = toJsonObject(json).token;
   if (typeof token !== "string" || token.length === 0) {
@@ -375,12 +373,11 @@ function toWebAuthToken(json: unknown): string {
 }
 
 /**
- * Wait out a browser authentication ceremony: poll the challenge's `doneUrl`
- * (with the same credential as the write, per the reference client) until the
- * registry reports it complete — 200 with `{token}`, the one-time password the
- * original write is then retried with. A 202 means still pending, re-polled
- * after its `retry-after` (seconds); the ceremony is bounded so an abandoned
- * browser tab fails the publish rather than hanging it forever.
+ * Wait for a browser authentication to finish: poll `doneUrl` with the write's
+ * credential, as npm does, until it answers 200 with `{token}`, the one-time
+ * password to send the write again with. A 202 is polled again after its
+ * `retry-after` seconds, or {@link WEB_AUTH_POLL_MS}. Rejects on any other
+ * status, or where the next poll would pass `timeoutMs`.
  */
 export function pollWebAuthToken(
   doneUrl: string,
@@ -407,11 +404,10 @@ export function pollWebAuthToken(
 }
 
 /**
- * One acquired second-factor answer, with its lifetime: a typed authenticator
- * code is `reusable` (the registry accepts it for the rest of its ~30s window,
- * so a multi-package sync types it once — npm CLI parity), while a web
- * ceremony's token is single-use (npmjs refuses its second use) and must be
- * acquired per challenged write.
+ * One second-factor answer. A typed one-time password is `reusable`: the
+ * registry accepts it for the rest of its window (about 30s), and the npm CLI
+ * reuses it likewise. A browser authentication's token is not: npmjs refuses
+ * its second use.
  */
 export interface AcquiredOtp {
   password: string;
@@ -419,24 +415,20 @@ export interface AcquiredOtp {
 }
 
 /**
- * A registry's second-factor answers for the run. A reusable answer (a typed
- * OTP) is cached for the run's other publishes to the same registry; a
- * single-use one (a browser ceremony token) is never cached — each challenged
- * write runs its own ceremony against its own challenge's fresh URLs (caching
- * one would burn the retry on a dead token and leave only the refusal's bare
- * challenge to re-acquire from). Concurrent publishes hitting the challenge
- * together still join one in-flight acquisition rather than each opening a
- * browser tab.
+ * A registry's second-factor answers for the run. A reusable answer is kept
+ * for the run's other publishes to the registry; a single-use one is not, so
+ * each challenged write asks again. Requests made while an answer is being
+ * acquired share that acquisition.
  */
 export class OtpSession {
   private cached?: string;
   private pending?: Computable<string>;
 
   /**
-   * Get the session's current answer, acquiring one via `acquire` when there
-   * is none. `rejected` is a password the registry just refused: if it is the
-   * cached one, it is discarded and a fresh acquisition started (a *freshly*
-   * acquired refusal is not retried here — the caller bounds its attempts).
+   * Get the session's answer, acquiring one through `acquire` where none is
+   * kept or in progress. `rejected` is a password the registry just refused:
+   * if it is the kept one it is dropped and another acquired. The caller
+   * bounds how often it asks.
    */
   public obtain(acquire: () => Computable<AcquiredOtp>, rejected?: string): Computable<string> {
     if (rejected !== undefined && this.cached === rejected) {
@@ -446,10 +438,8 @@ export class OtpSession {
     if (this.cached !== undefined) {
       return Computable.resolve(this.cached);
     }
-    /* A settled chain here is spent: a failed acquisition, or a single-use
-     * success already consumed by whoever joined it (a reusable success fills
-     * `cached`, which short-circuits above) — drop it so this caller acquires
-     * afresh instead of joining the past. */
+    /* A settled acquisition here failed, or gave a single-use answer already
+     * used: acquire another. */
     if (this.pending?.isSettled()) {
       this.pending = undefined;
     }

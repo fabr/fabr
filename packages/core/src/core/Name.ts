@@ -23,12 +23,16 @@ import { PatternEdit, renderPatternEdit } from "../support/PatternEdit";
 import type { CommandPipeline } from "../model/AST";
 import { FabrError } from "./Errors";
 
+/** The kind of a {@link NamePart}. */
 export enum NamePartKind {
+  /** Text taken as written. */
   Literal,
+  /** A run of glob metacharacters. */
   Glob,
+  /** A `${NAME}` variable substitution. */
   VarSubst,
   /**
-   * A `$1`-style back-reference to a numbered wildcard.
+   * A `$1`-style back-reference to a numbered wildcard, in a rename template.
    */
   Backref,
   /**
@@ -38,14 +42,13 @@ export enum NamePartKind {
   CommandSubst,
 }
 
-/** @return true if a part's text is supplied from *outside* the name — a
- * variable to look up or a command to run — otherwise false. The two differ only
- * in how that text is obtained, which is the lookup's business and not the
- * name's, so everything here treats them alike. */
+/** @return true if a part's text is supplied from outside the name, by a
+ * variable to look up or a command to run, otherwise false. */
 function isSubstituted(part: NamePart): boolean {
   return part.kind === NamePartKind.VarSubst || part.kind === NamePartKind.CommandSubst;
 }
 
+/** One part of a {@link Name}. */
 export interface NamePart {
   kind: NamePartKind;
   /** The written form: a literal's text, a variable's name, a back-reference's
@@ -69,29 +72,25 @@ export interface NamePart {
   edit?: PatternEdit;
 }
 
-/**
- * name/path components are separated by slash (yes even on windows)
- */
+/** The separator between a name's path components: `/`, on every platform. */
 export const NAME_COMPONENT_SEPARATOR = "/";
+/** The separator between an alias and what is named within it: `:`. */
 export const NAME_LEVEL_SEPARATOR = ":";
 
-/** Either separator, for splitting into path components: `/` and the `:` alias
- * boundary are both path separators on disk (see makeProjector). */
+/** Either separator, for splitting into path components: on disk, a `:` is a
+ * path separator too (see makeProjector). */
 const SEPARATOR = /[/:]/;
 
 /**
- * Normalize the literal head of a slash-form selector (resolve `.`/`..`,
- * collapse separator runs) without touching anything at or after the first
- * glob metachar. Matching happens in canonical path space — walked and
- * FileSet names arrive normalized — so a selector's static head must be
- * canonical too, or a written climb (`docs/../scripts/*.ts`) matches nothing.
- * A `..` that survives at the front (climbing past the namespace root) or
- * sits after a glob is left as written: it can never match a canonical input,
- * which is the honest outcome for a query naming outside its namespace.
+ * Normalize the literal head of a slash-form selector, up to the last `/`
+ * before its first glob metacharacter: resolve `.` and `..`, and collapse runs
+ * of `/`. The names matched against arrive normalized, so an unnormalized head
+ * (`docs/../scripts/*.ts`) would match nothing. A `..` left at the front
+ * (above the root) or after a glob stays as written, and matches nothing.
  */
 function normalizeHead(pathForm: string): string {
-  /* Lexical normalization stops at the first glob metacharacter: `normalize`
-   * would fold a `..` through a `*` segment, changing what it names. */
+  /* Stop before the first glob metacharacter: `normalize` would fold a `..`
+   * through a `*` segment, changing what it names. */
   const meta = pathForm.search(GLOB_METACHAR);
   const cut = meta === -1 ? pathForm.length : pathForm.lastIndexOf(NAME_COMPONENT_SEPARATOR, meta) + 1;
   if (cut === 0) {
@@ -102,44 +101,40 @@ function normalizeHead(pathForm: string): string {
 }
 
 /**
- * A single constraint written in a `<KEY=value>` facet: the key is a scalar
- * config identifier, the value a Name (so it may itself carry a `${subst}`).
- * Kept in written order (see Name.constraints). What it *means* is decided by
- * position — a **requirement** on a reference, a **guard** on a declaration's
- * key — so this carries only what was written.
+ * One constraint written in a `<KEY=value>` facet: a scalar configuration key
+ * and its value, a Name (which may carry a `${subst}`). On a reference it is a
+ * requirement; on a declaration's key, a guard.
  */
 export type NameConstraint = readonly [key: string, value: Name];
 
 /**
- * A string expression, potentially consisting of literal, wildcard, and variable substitution parts
+ * A written name: its parts (literal text, glob runs, substitutions and
+ * back-references), and two facets kept apart from the parts, the `<k=v>`
+ * constraints and the `-> tmpl` rename target. A name is immutable.
  */
 export class Name {
   private parts: NamePart[];
   /**
-   * The configuration this reference requires (`ref<KEY=value, ...>`), or — on
-   * a declaration's key — the configuration that guards it,
-   * in written order, or empty. Kept apart from `parts` (which hold only the
-   * resolvable base+projection literal): a FILES consumer applies these as a
-   * config override when resolving the reference, while `toString` re-renders
-   * them so a value used as a plain string round-trips to its original text.
-   * Ordered (not a map) precisely so that round-trip is faithful.
+   * The constraints written on the name (`ref<KEY=value, ...>`), in written
+   * order, or empty: on a reference, the configuration it requires; on a
+   * declaration's key, the configuration that guards it. `toString` renders
+   * them as written.
    */
   private readonly constraints: readonly NameConstraint[];
   /**
-   * The rename target written on this reference (the `tmpl` of `sel -> tmpl`), or
-   * undefined. Like {@link constraints} it rides *alongside* `parts` (which hold
-   * only the resolvable selector): a FILES consumer replays this pattern over the
-   * selector's captures to rename the selected files ({@link replay}), while
-   * `toString` re-renders it so a value used as a plain string round-trips. Its
-   * own `parts` are the target's literal text and `*`/`**` replay slots; it never
-   * itself carries a rename target or constraints (parser-enforced).
+   * The rename target written on the name (the `tmpl` of `sel -> tmpl`), or
+   * undefined. Its parts are literal text, substitutions, `*`/`**` slots and
+   * `$n` back-references, and the selector's captures fill them to rename
+   * what it selects ({@link makeRenamer}). The parser gives it no rename
+   * target or constraints of its own.
    */
   private readonly renameTo: Name | undefined;
   /**
-   * Whether the name's last character is a `?` or `!` written unquoted at the
-   * end of a reference: the one place an override marker can be written. The
-   * character stays in `parts`, so the name reads as written; whether it is a
-   * marker is for whoever looks the name up to decide ({@link getMarker}).
+   * True where the name's last character is a `?` or `!` written unquoted at
+   * the end of a reference, the one place an override marker can be written.
+   * The character stays in `parts`, so the name reads as written; whoever
+   * looks the name up decides whether to read it as a marker
+   * ({@link getMarker}).
    */
   private readonly marked: boolean;
 
@@ -182,16 +177,13 @@ export class Name {
     return new Name(rest === "" ? parts : [...parts, { ...last, value: rest }], this.constraints, this.renameTo);
   }
 
-  /**
-   * Construct and return a new name from a simple literal string.
-   */
+  /** Make a name of one literal part, `str`. */
   static fromLiteral(str: string): Name {
     return new Name([{ kind: NamePartKind.Literal, value: str }]);
   }
 
   /**
-   * @return a copy of this name carrying the given constraints (replacing
-   * any it already had). The parts are unchanged — constraints ride alongside.
+   * @return a copy of this name carrying `constraints` in place of its own.
    */
   public withConstraints(constraints: readonly NameConstraint[]): Name {
     return new Name(this.parts, constraints, this.renameTo, this.marked);
@@ -205,10 +197,8 @@ export class Name {
   }
 
   /**
-   * @return a copy of this name carrying the given rename target (replacing any
-   * it already had; `undefined` clears it). The parts (the selector) are
-   * unchanged. Accepting `undefined` lets a caller re-attach an optional target
-   * onto a selector unconditionally.
+   * @return a copy of this name carrying `renameTo` in place of its own rename
+   * target (`undefined` clears it).
    */
   public withRenameTo(renameTo: Name | undefined): Name {
     return new Name(this.parts, this.constraints, renameTo, this.marked);
@@ -220,26 +210,23 @@ export class Name {
   }
 
   /**
-   * Get the glob wildcard units of this name in written order — one entry per
-   * `*`/`**`/`?`/`[...]` run (a maximal run of glob metacharacters). Read by the
-   * parser to enforce the rename rules: a rename glob's units must all be `*` or
-   * `**` (so picomatch captures line up positionally with the template's slots),
-   * and the selector's and template's unit counts must match for a positional
-   * template — both waived for a wildcard-free template, which replays nothing,
-   * and the count rule for a `$n` template, which says which wildcard it takes. A plain (non-rename) selector
-   * is unrestricted, so this is only consulted on rename surfaces.
+   * Get the glob parts of this name in written order, each a maximal run of
+   * glob metacharacters (`*`, `**`, `?`, `[...]`). The parser checks a rename
+   * with them: its selector and template may use only `*` and `**`, and a
+   * template that replays positionally must have as many as its selector. A
+   * wildcard-free template is exempt from both rules, and a `$n` template from
+   * the count.
    */
   public getGlobUnits(): string[] {
     return this.parts.filter(part => part.kind === NamePartKind.Glob).map(part => part.value);
   }
 
   /**
-   * Render this rename target as a `String.replace` **replacement string**: each `*`/`**`
-   * slot becomes its positional capture reference (`$1`, `$2`, …), literal text
-   * verbatim (with `$` escaped so it isn't read as a group reference). Paired with
-   * the selector's {@link globCaptureRegex} by {@link makeRenamer}. Assumes
-   * substitution has run and (as the parser guarantees) that a positional
-   * template's slot count matches the selector's wildcard count.
+   * Render this rename template as a `String.replace` replacement string: each
+   * `*`/`**` becomes the next capture reference (`$1`, `$2`, …), a `$n`
+   * back-reference stays `$n`, and literal text is copied with `$` escaped.
+   * Pairs with the selector's {@link globCaptureRegex} (see
+   * {@link makeRenamer}). Call it after substitution.
    */
   public toReplacement(): string {
     let slot = 0;
@@ -247,16 +234,14 @@ export class Name {
       .map(part => {
         switch (part.kind) {
           case NamePartKind.Glob:
-            /* A bare wildcard takes the next capture in order — the positional
-             * form, which is `$1…$n` written out. */
+            /* A bare wildcard takes the next capture in order. */
             return `$${++slot}`;
           case NamePartKind.Backref:
             return `$${part.value}`;
           default:
-            /* A literal `$` must be doubled so `replace` reads it as text, not a
-             * group ref. The function replacer inserts its result verbatim — a
-             * plain string `"$$"` would instead be read as an escape for a
-             * single `$` (a no-op). */
+            /* Double a literal `$` so `replace` reads it as text. Return `"$$"`
+             * from a function: given as a string, `"$$"` is itself read as one
+             * `$`. */
             return part.value.replaceAll("$", () => "$$");
         }
       })
@@ -264,14 +249,9 @@ export class Name {
   }
 
   /**
-   * Read this name as a **rename template**: any `$1`-style substitution becomes
-   * a capture back-reference ({@link NamePartKind.Backref}) instead of a
-   * variable read.
-   *
-   * The reinterpretation happens here, at the one place a template is parsed,
-   * rather than in the lexer — so `$1` keeps its ordinary meaning (a property
-   * named `1`, which cannot be declared, hence an unknown-property error)
-   * everywhere else, and no other reading of a name has to know captures exist.
+   * Read this name as a rename template: each substitution of a number (`$1`)
+   * becomes a back-reference to that wildcard ({@link NamePartKind.Backref})
+   * instead of a variable read. Elsewhere, `$1` reads a property named `1`.
    */
   public asRenameTemplate(): Name {
     if (!this.parts.some(part => part.kind === NamePartKind.VarSubst && /^[0-9]+$/.test(part.value))) {
@@ -290,14 +270,12 @@ export class Name {
   }
 
   /**
-   * Compile this rename for a consumer that cannot run fabr's glob language: a
-   * regular expression source and a `$n` replacement, needing only `RegExp` and
-   * `String.replace`. {@link makeRenamer} is this plus the application.
-   *
-   * `excludes`, where present, is an input the pattern matches but the rename
-   * must NOT be applied to — an aliased selector's own base, which a trailing
-   * globstar admits. A caller that cannot honour it must refuse the rule rather
-   * than carry it without.
+   * Compile this name as a selector, renamed by `renameTo`, into a rule a
+   * consumer can run with only `RegExp` and `String.replace`: a regular
+   * expression source and its `$n` replacement ({@link makeRenamer} applies
+   * it). `excludes`, where present, is an input the pattern matches that must
+   * not be renamed: the selector's own alias path, which a trailing `**`
+   * matches. A consumer that cannot honour `excludes` must refuse the rule.
    */
   public toRenameRule(renameTo: Name): { pattern: string; replacement: string; excludes?: string } {
     const selector = this.renderParts(true);
@@ -311,36 +289,28 @@ export class Name {
   }
 
   /**
-   * Compile a renamer using this name as the *selector* and `renameTo` as the
-   * template: a function mapping a path to its renamed form, or undefined for a
-   * non-match (so a caller can drop unselected files). A rename is just a
-   * capturing-regex replace — the selector's `*`/`**` groups substitute into the
-   * template's positional `$1`/`$2`. The selector matches on this name's own glob
-   * (its `parts`, not its facets), so it works whether the selector is a whole
-   * REWRITE value or the post-`:` projection remainder. Assumes substitution has
-   * run, and that the wildcard counts agree — which the parser guarantees for
-   * every name it attaches the facet to. A **wildcard-free** template needs no
-   * agreement (it fills no slot): every selected file maps to that one name, so
-   * whether the rename is legal is the caller's collision rule, not this one's —
-   * {@link FileSet.rename} conflicts unless the selection is a single file.
+   * Make a renamer with this name as the selector and `renameTo` as the
+   * template: a function from a path to its renamed form, or undefined where
+   * the selector does not select it. The selector's `*`/`**` captures fill the
+   * template's slots, in order or as its `$n` say. The selector is this name's
+   * parts, matched as a path (every `:` read as `/`, the literal head
+   * normalized; see {@link makeProjector}); its alias path itself is not
+   * selected. A template with no wildcard renames every match to one name,
+   * which {@link FileSet.rename} reports as a conflict where two different
+   * files are selected. Call it after substitution.
    */
   public makeRenamer(renameTo: Name): (path: string) => string | undefined {
-    /* Match on the path (every `:`→`/`, head-normalized — see makeProjector) so
-     * a colon-form selector matches the slash paths on disk / in a package; the
-     * rename target owns result names, so the alias segments are matched but
-     * never carried into them. (A no-op for a colon-free selector — every
-     * REWRITE / single-`:` ref; it bites only a multi-`:` reference like
-     * `d:sub:*.x -> *.y`.) */
+    /* Every `:` is read as `/`, so a colon-form selector matches slash paths;
+     * the alias segments are matched, and only the template names the result
+     * (`d:sub:*.x -> *.y`). */
     const { pattern, replacement, excludes } = this.toRenameRule(renameTo);
     const re = new RegExp(pattern);
-    /* `x:** -> tmpl` renames the files *under* x, never x, mirroring
-     * makeProjector's plain arm: a globstar admits its own base, which would
-     * otherwise emit the base file under the template's collapsed
-     * (empty-capture) name. */
-    /* An unmatched globstar group substitutes as "" (native to `replace`), which
-     * can leave a doubled or edge slash (a root-level recursive prefix); fabr
-     * names are relative paths, so collapse runs of `/` and trim the ends — this
-     * makes a recursive rename structure-preserving at every depth, root too. */
+    /* `x:** -> tmpl` renames the files under x, never x: a globstar matches its
+     * own base, which would otherwise come out under the template with an
+     * empty capture. */
+    /* An unmatched globstar group substitutes as "", which can leave a doubled
+     * or edge slash; collapse runs of `/` and trim the ends, so a recursive
+     * rename keeps the tree's shape at every depth, the root included. */
     return (input: string) => {
       if (!re.test(input) || (excludes !== undefined && path.posix.relative(excludes, input) === "")) {
         return undefined;
@@ -353,19 +323,18 @@ export class Name {
   }
 
   /**
-   * Compile this name into a **projection**: a function mapping an input path to
-   * its result name, or undefined for a non-match (drop it). This is the whole
-   * of what a projection *means*, owned by the name so a `find` is just applying
-   * it to a dataset. With a `sel -> tmpl` facet it is the rename ({@link
-   * makeRenamer}). Otherwise it selects by glob and rewrites the match under
-   * `prefix` (the degenerate rename — "prefix-strip is just a rename"). Either
-   * way it honors the written-name rule: the alias separator `:` is a path
-   * separator on disk / within a package (`src:**` matches `src/…`) and is the
-   * **naming root** — a result is named by its path relative to the alias (all
-   * of it, up to the last `:`); a slash-form name (no `:`) retains its full
-   * path. Matching happens in canonical path space: inputs (walked or FileSet
-   * names) arrive normalized, so the selector's literal head is normalized
-   * before compiling ({@link normalizeHead}). Assumes substitution has run.
+   * Make the projection this name denotes: a function from an input path to
+   * its result name, or undefined where the input is not selected. With a
+   * rename target it is the rename ({@link makeRenamer}). Otherwise it selects
+   * by glob, every `:` read as a path separator, and names each match
+   * `prefix` followed by:
+   * - for a name with a `:`, its path relative to the alias, everything before
+   *   the last `:` (`src:**` selects `src/a.ts` as `a.ts`); the alias path
+   *   itself is not selected;
+   * - for a name without one, its whole path.
+   *
+   * Inputs arrive normalized, so the selector's literal head is normalized
+   * before it is compiled ({@link normalizeHead}). Call it after substitution.
    */
   public makeProjector(prefix = ""): (input: string) => string | undefined {
     if (this.renameTo) {
@@ -373,25 +342,21 @@ export class Name {
     }
     const selector = this.toGlobString();
     const matcher = globMatcher(normalizeHead(selector.replaceAll(NAME_LEVEL_SEPARATOR, NAME_COMPONENT_SEPARATOR)));
-    /* The alias PATH is compared against real input paths (`relative`), so it
-     * must be the unescaped rendering — the escaped selector exists only for
-     * the matcher, and a literal alias containing `(`/`)`/`!`/`|` renders
-     * escaped there. Only the glob-alias arm, which compiles a pattern, wants
-     * the escaped form. */
+    /* Compare the alias path with input paths unescaped: a literal alias
+     * containing `(`/`)`/`!`/`|` renders escaped for the matcher. Only the
+     * glob-alias arm, which compiles a pattern, wants the escaped form. */
     const aliasPath = this.aliasAsPath(false);
     if (aliasPath === undefined) {
       return input => (matcher(input) ? prefix + input : undefined);
     }
     if (!isGlob(aliasPath)) {
-      /* Literal alias: name each result relative to the alias dir (relative()
-       * normalizes its operands itself). A remainder that climbs out of the
-       * alias (`lib:../tools/*.js`) names as its climbed path (`../tools/y.js`),
-       * which FileSet name canonicalization then flattens to its tail — the
-       * familiar prefix-strip is the non-climbing degenerate case of this rule.
-       * The alias path ITSELF is excluded (its relative name would be the empty
-       * string): a globstar remainder matches its own base (`a/**` admits `a`),
-       * but `x:**` means the files *under* x, never x — which is what keeps a
-       * projection into an archive from also emitting the archive file. */
+      /* Literal alias: name each result relative to the alias directory. A
+       * remainder climbing out of the alias (`lib:../tools/*.js`) is named by
+       * its climbed path (`../tools/y.js`), which FileSet name canonicalization
+       * flattens to its tail. Leave out the alias path itself (relative name
+       * ""): a globstar remainder matches its own base (`a/**` matches `a`),
+       * but `x:**` means the files under x, so a projection into an archive
+       * does not also select the archive. */
       return input => {
         if (!matcher(input)) {
           return undefined;
@@ -400,19 +365,18 @@ export class Name {
         return rel === "" ? undefined : prefix + rel;
       };
     }
-    /* Glob alias (`pkg*:lib/*`): no concrete dir to name relative to, so strip
-     * the matched alias textually. A remainder climbing under a glob alias has
-     * no coherent naming and never matches (its `..` survives in the pattern). */
+    /* Glob alias (`pkg*:lib/*`): there is no directory to name relative to, so
+     * strip the matched alias as text. A remainder climbing out of a glob alias
+     * never matches (its `..` stays in the pattern). */
     const strip = globPrefixRegex(this.aliasAsPath(true)! + NAME_COMPONENT_SEPARATOR);
     return input => (matcher(input) ? prefix + input.replace(strip, "") : undefined);
   }
 
   /**
-   * Get the alias portion (everything before the last `:`) as a slash path, or
-   * undefined for a slash-form name. `escape` selects the rendering: escaped
-   * feeds a pattern compiler ({@link globPrefixRegex}); unescaped is the path
-   * itself, for comparison against real input paths — the two disagree
-   * whenever a literal component contains glob punctuation.
+   * Get the alias (everything before the last `:`) as a slash path, or
+   * undefined for a name with no `:`. With `escape`, its literal parts are
+   * escaped, for a pattern compiler ({@link globPrefixRegex}); without, it is
+   * the path itself, for comparing with input paths.
    */
   private aliasAsPath(escape: boolean): string | undefined {
     const rendered = this.renderParts(escape);
@@ -421,17 +385,16 @@ export class Name {
   }
 
   /**
-   * @return a copy naming everything at or below this path: appends a `**`
-   * globstar, inserting a `/` unless the name already ends at a separator (`/` or
-   * the `:` alias boundary). For a bare directory reference — `src` → `src/**`,
-   * `src:` → `src:**` — so the same {@link makeProjector} rules then apply.
+   * @return a copy naming everything at or below this path: a `**` appended,
+   * after a `/` unless the name already ends in `/` or `:` (`src` gives
+   * `src/**`, `src:` gives `src:**`). For a bare directory reference, so the
+   * {@link makeProjector} rules then apply. The copy carries no constraints or
+   * rename target.
    */
   public appendGlobstar(): Name {
-    /* The SELECTOR's last character decides — the facets must not reach this.
-     * `enumerate` appends the globstar while the name still carries its `-> tmpl`
-     * (it re-attaches an expanded target afterwards), so reading a facet-bearing
-     * rendering would test the template's tail: `stuff -> out/` would see the
-     * template's `/` and append `**` with no separator. */
+    /* Test the parts' last character, not a rendering with facets: `enumerate`
+     * calls this while the name still carries its `-> tmpl`, and
+     * `stuff -> out/` ends in the template's `/`. */
     const written = this.renderParts(false);
     const last = written.charAt(written.length - 1);
     const sep = last === NAME_COMPONENT_SEPARATOR || last === NAME_LEVEL_SEPARATOR ? "" : NAME_COMPONENT_SEPARATOR;
@@ -445,12 +408,9 @@ export class Name {
   }
 
   /**
-   * Split the selector into its path components, at every separator (`/`
-   * and the `:` alias boundary alike — a `:` is a path separator on disk),
-   * each component a Name of its own parts (globs and unsubstituted `${var}`s
-   * preserved). Pure tokenization — no facets ride the components, and a
-   * consumer joins/interprets them on its own terms (archive descent folds
-   * them back into boundary probes; see Expand's descentPrefixes).
+   * Split the name's parts into path components, at every `/` and `:`, each
+   * component a Name of its own parts (globs and unsubstituted `${var}`s
+   * kept). The components carry no facets.
    */
   public components(): Name[] {
     const result: Name[] = [];
@@ -477,11 +437,10 @@ export class Name {
   }
 
   /**
-   * Get the cumulative slash-joined prefixes of {@link components}: `prefixes[i]`
-   * is components 0…i rejoined with `/` — the reference's leading path at each
-   * depth, ready to match against in-namespace names (the boundary probes of
-   * archive descent; a fetch repository's member selection). Facet-free, like
-   * the components ({@link concat} carries none).
+   * Get the leading paths of this name at each depth: `prefixes[i]` is
+   * {@link components} 0…i joined with `/`, without facets. Archive descent
+   * matches them to find an archive the name enters; a fetch repository, to
+   * select its members.
    */
   public componentPrefixes(): Name[] {
     const prefixes: Name[] = [];
@@ -493,12 +452,12 @@ export class Name {
   }
 
   /**
-   * @return this name with `other` appended, merging adjacent same-kind parts at
-   * the seam (so a literal base and a literal projection tail collapse to one
-   * literal prefix, keeping prefix-matching intact). Used to reassemble a
-   * reference split by an intervening `<...>` (`pkg` + `:build/*.js`). Constraints
-   * are taken from neither operand — the caller attaches them. The override
-   * marker is `other`'s, since it ends the name.
+   * @return this name with `other` appended, adjacent parts of one kind merged
+   * (bar variable substitutions), so a literal base and a literal tail make one
+   * literal head. Used to rejoin a reference split by a `<...>` (`pkg` +
+   * `:build/*.js`). The result carries no constraints or rename target (the
+   * caller attaches them), and `other`'s override marker, since it ends the
+   * name.
    */
   public concat(other: Name): Name {
     const merged: NamePart[] = [];
@@ -517,10 +476,12 @@ export class Name {
     return this.constraints.length > 0;
   }
 
+  /** @return true if the name is one literal part, otherwise false. */
   public isSimpleName(): boolean {
     return this.parts.length === 1 && this.parts[0].kind === NamePartKind.Literal;
   }
 
+  /** @return true if the name is the empty literal, otherwise false. */
   public isEmpty(): boolean {
     return this.parts.length === 1 && this.parts[0].value === "";
   }
@@ -536,10 +497,9 @@ export class Name {
     return this.parts.some(part => part.kind === NamePartKind.Glob);
   }
 
-  /** @return true if any literal part contains the `:` level separator,
-   * otherwise false — used by the parser to reject it in a rename template and
-   * by Validate in a REWRITE selector, where the pattern is matched/replayed
-   * against package-relative names, not references. */
+  /** @return true if any literal part contains a `:`, otherwise false. The
+   * parser refuses one in a rename template, and Validate in a REWRITE
+   * selector, both matched against file names rather than references. */
   public hasLevelSeparator(): boolean {
     return this.parts.some(part => part.kind === NamePartKind.Literal && part.value.includes(NAME_LEVEL_SEPARATOR));
   }
@@ -549,35 +509,28 @@ export class Name {
   }
 
   /**
-   * Every part of this name whose text comes from outside it — variables and
-   * command substitutions alike — including those inside its constraint values
-   * and rename target. The caller resolves each however that kind requires (a
-   * property lookup, a command run) and hands the results back to
-   * {@link substitute}, which is what lets one pass settle both.
+   * Get every part of this name whose text comes from outside it, variables and
+   * command substitutions alike, including those in its constraint values and
+   * rename target. The caller resolves each (a property lookup, a command run)
+   * and hands the results to {@link substitute}, keyed by part.
    */
   public getSubstitutions(): NamePart[] {
     const own = this.parts.filter(isSubstituted);
-    /* Constraint values may themselves substitute (`<K=${X}>`), which must be
-     * resolved before the constraints are applied. */
+    /* Constraint values may substitute too (`<K=${X}>`). */
     const withConstraints = this.constraints.reduce<NamePart[]>((parts, [, value]) => parts.concat(value.getSubstitutions()), own);
     /* The rename target may substitute too (`-> *.${BUILD_NO}.js`). */
     return this.renameTo ? withConstraints.concat(this.renameTo.getSubstitutions()) : withConstraints;
   }
 
   /**
-   * Replace every substituted part with its resolved text, collapsing it to a
-   * Literal — so nothing downstream of substitution knows a variable or a
-   * command was ever there.
-   *
-   * Keyed by **part identity**, not by written form: {@link getSubstitutions}
-   * hands back the very objects this walks (through constraint values and the
-   * rename target too), so there is no key space to collide in — a variable
-   * named `X` and a command written `X` are simply different parts.
+   * Replace every substituted part, in the parts, the constraint values and
+   * the rename target, with its resolved text as a literal. `resolved` is
+   * keyed by the part objects {@link getSubstitutions} returned, so a variable
+   * `X` and a command written `X` are different keys.
    */
   public substitute(resolved: ReadonlyMap<NamePart, string>): Name {
-    /* Only adjacent LITERALS coalesce — a substituted part becomes ordinary text
-     * in its neighbours. Any other kind keeps its own part: two adjacent
-     * backrefs (`$1$2`) merged would read as the one backref `$12`. */
+    /* Merge adjacent literals only: two adjacent back-references (`$1$2`)
+     * merged would read as `$12`. */
     const parts = this.parts.reduce<NamePart[]>((rest, part) => {
       const newPart = isSubstituted(part) ? { kind: NamePartKind.Literal, value: resolved.get(part)! } : part;
       if (rest.length > 0 && newPart.kind === NamePartKind.Literal && rest[rest.length - 1].kind === NamePartKind.Literal) {
@@ -588,29 +541,26 @@ export class Name {
       return rest;
     }, []);
 
-    /* Constraint values are substituted too (they share the name's resolution),
-     * so `<K=${X}>` resolves before the constraints are applied / rendered. */
     const constraints = this.constraints.map<NameConstraint>(([key, value]) => [key, value.substitute(resolved)]);
-    /* The rename target substitutes as well (`-> *.${BUILD_NO}.js`), collapsed to
-     * literal parts here so replay never sees a VarSubst. */
     const renameTo = this.renameTo?.substitute(resolved);
     return new Name(parts, constraints, renameTo, this.marked);
   }
 
   /**
-   * If the name starts with a literal component return that component, otherwise return
-   * the empty string.
+   * @return the name's first part where it is a literal, otherwise the empty
+   * string.
    */
   public getLiteralPrefix(): string {
     return this.parts[0].kind === NamePartKind.Literal ? this.parts[0].value : "";
   }
 
   /**
-   * @return a new name with the initial literal prefix matching the given value removed,
-   * including any trailing '/' character.
-   *  e.g. given the Name ("mylib/lib/*") and value "mylib", will yield the Name "lib/*"
-   * If the prefix does not match, returns an unmodified copy of the name
-   * @param prefix
+   * @return a new name with `prefix` removed from the start of its first
+   * literal part, with a `/` that follows it: the Name "mylib/lib/*" and
+   * "mylib" give "lib/*". `prefix` is matched as text, not as whole
+   * components. Where the first part does not start with `prefix`, the parts
+   * are unchanged. Either way, the result carries no constraints, rename
+   * target or marker.
    */
   public withoutPrefix(prefix: string): Name {
     const [head, ...parts] = this.parts;
@@ -623,14 +573,12 @@ export class Name {
   }
 
   /**
-   * @return the tail of this name from `start` — an offset into its written
-   * text ({@link toBaseString}) that must fall in a literal part, as a `:` or
-   * `/` boundary always does — carrying the rename target and override marker
-   * but NOT the constraints. The sole use is splitting a reference into target +
-   * projection (getPrefixMatch, a repository's getRepositoryRef): the tail IS
-   * the projection, so a `-> tmpl` rename (final naming) rides onto it, while
-   * the constraints stay behind on the target it constrains (and is consumed
-   * at target resolution).
+   * @return the tail of this name from `start`, an offset into its written text
+   * ({@link toBaseString}), with the rename target and override marker but not
+   * the constraints. Used to split a reference into what it names and the
+   * projection after it: the rename belongs to the projection, and the
+   * constraints to what they constrain. Throws where `start` falls inside a
+   * part that is not a literal (a `:` or `/` boundary is always in one).
    */
   public substring(start: number): Name {
     const parts: NamePart[] = [];
@@ -655,14 +603,11 @@ export class Name {
   }
 
   /**
-   * @return a new name with the given initial literal prefix added to the name.
-   * A pure structural re-rooting of the path (used by {@link relativeTo}): the
-   * constraint and `-> tmpl` rename facets ride along unchanged, so a
-   * file-relative reference keeps them (`./x.fabr -> PROJECT.fabr` re-rooted
-   * against its including file still renames). A leading `./` on the head is
-   * dropped at the seam so the joined path is `dir/x`, not `dir/./x` — the
-   * latter's interior `/./` is not glob-normalized (picomatch strips only a
-   * *leading* `./`), which would make a re-rooted glob match nothing.
+   * @return a new name with the literal `prefix` put before it, its facets and
+   * marker kept (`./x.fabr -> PROJECT.fabr` re-rooted still renames). A
+   * leading `./` is dropped at the join, giving `dir/x` rather than
+   * `dir/./x`: picomatch strips only a leading `./`, so a glob with an
+   * interior `/./` would match nothing.
    */
   public withPrefix(prefix: string): Name {
     if (this.parts[0].kind === NamePartKind.Literal) {
@@ -675,24 +620,16 @@ export class Name {
   }
 
   /**
-   * @return a new name re-rooted at the dirname of `filename`, joined as a `:`
-   * alias: the dir *locates* the files (an alias is a path separator on disk)
-   * but is stripped from result names by `find`'s own projection — the
-   * colon-form rule, which the written-name rule then falls out of with no
-   * post-find renaming. A slash-form written name keeps its full written path
-   * (only the dir strips); a colon-form name strips its own alias too (the
-   * strip runs to the LAST `:`); a `../` climb in the written path flattens
-   * to its tail under FileSet name canonicalization.
-   * e.g. given the Name "mylib/lib/*" and filename "src/lib/BUILD.fabr",
-   * returns the Name "src/lib:mylib/lib/*", whose results are named
-   * "mylib/lib/…".
+   * @return this name re-rooted at the directory of `filename`, joined as an
+   * alias (`dir:name`): the directory locates the files and, like any alias,
+   * is left out of result names. So a slash-form name keeps its whole written
+   * path, a colon-form name loses its own alias too (names run from the last
+   * `:`), and a `../` climb flattens to its tail under FileSet name
+   * canonicalization. The Name "mylib/lib/*" and "src/lib/BUILD.fabr" give
+   * "src/lib:mylib/lib/*", whose results are named "mylib/lib/…".
    *
-   * If the filename does not have a dirname (e.g. "foo", a root-level build
-   * file), the original name is returned unmodified — the degenerate no-prefix
-   * case, uniform with the above.
-   *
-   * Note: Does not attempt to interpret "." or ".."
-   * @param filename
+   * Where `filename` has no directory, or is directly under `/`, the name is
+   * returned as it is. Does not interpret "." or "..".
    */
   public relativeTo(filename: string): Name {
     const idx = filename.lastIndexOf(NAME_COMPONENT_SEPARATOR);
@@ -704,14 +641,11 @@ export class Name {
   }
 
   /**
-   * @return this name re-expressed in the namespace of a source rooted at
-   * `root`: an absolute literal head under `root` sheds the root prefix — a
-   * source's names are root-relative (see FSFileSource: `find` results are
-   * named `relative(root, ·)`, and `get` applies this same normalization to
-   * its path argument). Anything else returns unchanged: a relative name
-   * already is in the namespace, and an absolute head *outside* `root` cannot
-   * name anything in this source — left as written, it matches nothing. The
-   * facets ride along untouched.
+   * @return this name in the namespace of a source rooted at `root`, whose
+   * names are relative to it (as FSFileSource's are): an absolute literal head
+   * under `root` loses the root prefix. Any other name is returned as it is: a
+   * relative name is already in the namespace, and an absolute one outside
+   * `root` matches nothing. The facets and marker are kept.
    */
   public rebase(root: string): Name {
     const head = this.parts[0];
@@ -727,13 +661,12 @@ export class Name {
   }
 
   /**
-   * As getLiteralPrefix, but excludes the final path component if it contains a
-   * non-literal part — keeping the separator (':' or '/') that terminates the
-   * retained prefix, so the caller can tell a projection from a path boundary.
-   * If the name does not have a literal path prefix, returns the empty string.
-   *
-   * e.g. "src/bar/foo*.ts" => "src/bar/", "pkg:*.js" => "pkg:"
-   * (a fully-literal name has no trailing separator: "src/bar" => "src/bar")
+   * @return as getLiteralPrefix, but without the last path component where a
+   * non-literal part follows, keeping the `:` or `/` that ends what is kept,
+   * so a caller can tell a projection from a path boundary; the empty string
+   * where no separator precedes the first non-literal part. "src/bar/foo*.ts"
+   * gives "src/bar/", "pkg:*.js" gives "pkg:", and an all-literal name gives
+   * itself ("src/bar").
    */
   public getLiteralPathPrefix(): string {
     if (this.parts[0].kind !== NamePartKind.Literal) {
@@ -752,17 +685,16 @@ export class Name {
   }
 
   /**
-   * Render just the resolvable selector (`parts`). `escape` controls what happens
-   * to a *literal* part: escaped (the glob string a matcher compiles — see
-   * {@link toGlobString}) or verbatim (the text the name denotes — see
-   * {@link toString}). Glob parts render verbatim either way. Excludes the
-   * `<...>` / `-> ` facets, which the two public renderings append.
+   * Render the name's parts, without its facets. With `escape`, literal parts
+   * are escaped, as for a matcher ({@link toGlobString}); without, they are
+   * verbatim ({@link toString}). Glob parts render verbatim either way.
    */
   private renderParts(escape: boolean): string {
     return this.parts.map(part => Name.renderPart(part, escape)).join("");
   }
 
-  /** One part as written; a literal's glob characters escaped if `escape`. */
+  /** Render one part as written, a literal's glob characters escaped if
+   * `escape`. */
   private static renderPart(part: NamePart, escape: boolean): string {
     switch (part.kind) {
       case NamePartKind.Literal:
@@ -788,82 +720,66 @@ export class Name {
   private withFacets(selector: string, render: (name: Name) => string): string {
     let result = selector;
     if (this.constraints.length > 0) {
-      /* Re-render the constraints so a value used as a plain string reproduces its
-       * original text (`foo<a=b, c=d>`). */
       const written = this.constraints.map(([key, value]) => `${key}=${render(value)}`).join(", ");
       result = `${result}<${written}>`;
     }
     if (this.renameTo !== undefined) {
-      /* Canonical spaced arrow, mirroring the constraint round-trip (a STRING
-       * consumer sees `sel -> tmpl`; byte-exact input is recovered by quoting). */
+      /* Always render the arrow spaced: `sel -> tmpl`. */
       result = `${result} -> ${render(this.renameTo)}`;
     }
     return result;
   }
 
   /**
-   * @return this name **as written**: literal parts verbatim, glob metacharacters
-   * live, facets appended. This is the name's *text* — what it denotes as a
+   * @return this name as written: literal parts verbatim, glob metacharacters
+   * as they are, facets appended. This is the name's text: what it means as a
    * value (a STRING property, a command argument, a constraint value, a
-   * destination coordinate) and what to show a user in a diagnostic.
-   *
-   * It is deliberately the default rendering, because implicit conversion
-   * (`${name}`, string coercion) reaches for it: the failure mode of forgetting
-   * to ask for the other one is visible text where a pattern was wanted, rather
-   * than escape characters silently entering a payload. Anything compiling a
-   * matcher wants {@link toGlobString}.
-   *
-   * Note this does NOT round-trip through the parser: a literal that contains
-   * metacharacters (a quoted `'!(a)'`) renders as the syntax it isn't. Identity —
-   * a cache key — must therefore use {@link toGlobString}.
+   * destination coordinate), and what a diagnostic shows. It does not parse
+   * back to the same name: a literal containing metacharacters (a quoted
+   * `'!(a)'`) renders as the syntax it is not. Use {@link toGlobString} for a
+   * matcher and for identity (a cache key).
    */
   public toString(): string {
     return this.withFacets(this.renderParts(false), name => name.toString());
   }
 
   /**
-   * @return the name **itself**, as written, with its facets left off: the
-   * `<k=v>` constraints and any `-> tmpl` rename say what to do *about* this
-   * name (which configuration it applies in, what to call what it selects) and
-   * are not part of what it names.
-   *
-   * This is what to key an index by, and what to compare against a name written
-   * somewhere else — so a property declared once per platform is looked up under
-   * the one name, while {@link toString} (facets included) is what tells its
-   * declarations apart. Renders as {@link toString} does, not as {@link
-   * toGlobString}: both sides of such a comparison are as-written text.
+   * @return the name as written without its facets, which say what to do about
+   * the name (the configuration it applies in, what to call what it selects)
+   * rather than what it names. Key an index by it, and compare it with a name
+   * written elsewhere: a property declared once per platform is looked up
+   * under the one name, while {@link toString}, facets included, tells its
+   * declarations apart. Renders as {@link toString} does.
    */
   public toBaseString(): string {
     return this.renderParts(false);
   }
 
   /**
-   * @return a string suitable for use with a globbing implementation: literal
-   * metacharacters escaped so they match themselves, glob parts live. Also the
-   * name's canonical (lossless, re-parseable) form, hence its identity — so a
-   * manifest/cache key renders with this and never with {@link toString}.
+   * @return the name for a glob matcher: literal metacharacters escaped so they
+   * match themselves, glob parts as they are, facets appended. It is also the
+   * name's canonical form, which parses back to the same name, so a manifest or
+   * cache key renders with this, never with {@link toString}.
    */
   public toGlobString(): string {
     return this.withFacets(this.renderParts(true), name => name.toGlobString());
   }
 }
 
-/** A literal `/`, for rejoining components into slash-form prefixes
- * ({@link Name.componentPrefixes}). Lives below the class: its initializer
- * constructs a Name at module load. */
+/** A literal `/`, for joining components ({@link Name.componentPrefixes}).
+ * Declared after the class, whose constructor its initializer calls. */
 const SLASH = Name.fromLiteral(NAME_COMPONENT_SEPARATOR);
 
-/** A looked-up REWRITE property: a path to its renamed form, or undefined if no
- * value in the property matched (rule policy decides what that means). */
+/** A looked-up REWRITE property: a path to its renamed form, or undefined
+ * where no value in the property matched (what that means is the rule's). */
 export type RewriteFn = (name: string) => string | undefined;
 
 /**
- * Compose a {@link RewriteFn} from a REWRITE property's (already substituted)
- * values, first-match-wins in written order: a `sel -> tmpl` value renames
- * selected paths (replaying captures into the rename target), a bare value is a
- * constant every path maps to (multi-entry misuse surfaces later as a rename
- * collision). Pure name logic — the only lookup a REWRITE needs is the
- * variable substitution the caller runs before handing the Names here.
+ * Make a {@link RewriteFn} from a REWRITE property's values, already
+ * substituted, the first in written order that matches a path giving its
+ * name: a `sel -> tmpl` value renames the paths it selects, and a bare value
+ * is a constant every path maps to (two files given one name conflict where
+ * the result is renamed).
  */
 export function makeRewrite(names: Name[]): RewriteFn {
   const rules = names.map(name => {
@@ -885,6 +801,8 @@ export function makeRewrite(names: Name[]): RewriteFn {
   };
 }
 
+/** A builder of a Name part by part, as the parser reads it: adjacent parts
+ * of one kind are merged, bar substitutions. */
 export class NameBuilder {
   private parts: NamePart[] = [];
   private last: NamePart | undefined = undefined;
@@ -924,13 +842,10 @@ export class NameBuilder {
   }
 
   /**
-   * Add the characters from an unquoted string - glob metachars are live and
-   * backslash sequences are interpreted as for double-quoted strings
-   * (which - note is intentionally different from shell escaping)
-   * Recognized metachars are '*', '?', '[]', and the extglob groups
-   * '?()', '*()', '+()', '@()' and '!()' — whose leader, '|' separators and
-   * closing ')' are each their own glob run, the interior scanned as ordinary
-   * name text so wildcards and substitutions work inside a group.
+   * Add glob metacharacters, live in the pattern: `*`, `?`, `[...]`, or a piece
+   * of an extglob group (`?(`, `*(`, `+(`, `@(` or `!(`, a `|` separator, the
+   * closing `)`). The parser adds a group's interior as ordinary name text, so
+   * wildcards and substitutions work inside a group.
    * @param str
    */
   public appendGlobMetachars(str: string): this {
@@ -959,9 +874,8 @@ export class NameBuilder {
    */
   public appendCommandSubst(text: string, command: CommandPipeline): this {
     this.parts.push({ kind: NamePartKind.CommandSubst, value: text, command });
-    /* Never a merge candidate, in either direction: two adjacent substitutions
-     * are two commands, and concatenating their source texts would make them one
-     * (unrunnable) command — so clear `last` rather than pointing it here. */
+    /* Merge nothing into a command substitution, nor it into a neighbour: two
+     * adjacent ones are two commands. Clear `last` rather than point it here. */
     this.last = undefined;
     return this;
   }
@@ -971,6 +885,7 @@ export class NameBuilder {
     this.last = undefined;
   }
 
+  /** @return the name built so far, and start a new one. */
   public name(): Name {
     const result = new Name(this.parts);
     this.reset();
@@ -978,6 +893,8 @@ export class NameBuilder {
   }
 }
 
+/** Unescape a double-quoted string's backslash sequences: `\0`-led octal,
+ * `\xHH`, `\a` to `\v`, and any other character as itself. */
 function unescapeDoubleQuotedString(str: string): string {
   return str.replaceAll(/\\(0[0-7]*|x[0-9a-fA-F][0-9a-fA-F]|.)/g, (_, p1: string) => {
     if (p1[0] === "0") {
@@ -1011,16 +928,13 @@ function unescapeDoubleQuotedString(str: string): string {
 
 /**
  * Escape every character a matcher would otherwise read as syntax, so a literal
- * part matches itself — quoted text, and a `${VAR}` value (which substitutes to
- * a literal, never a glob).
+ * part (quoted text, a `${VAR}` value) matches itself.
  *
- * The extglob punctuation is escaped even though `(`/`)`/`|` are inert to
- * picomatch outside a group: a quoted `'!(a)'` must name that file, and escaping
- * the `!` alone leaves `(a)` a group. `!` matters on its own account — leading,
- * picomatch reads it as whole-pattern negation, where bash (and fabr) treat a
- * bare `!` as an ordinary character. The extglob *leaders* need no escape here:
- * `?`/`*` are covered as wildcards, and `+`/`@` are only ever special before a
- * `(` that this escapes.
+ * `(`, `)` and `|` are escaped too, though picomatch reads them only in a
+ * group: a quoted `'!(a)'` must name that file, and escaping only the `!`
+ * would leave `(a)` a group. A leading `!` is negation to picomatch and an
+ * ordinary character to fabr. `+` and `@` need no escape: they lead a group
+ * only before a `(`, which is escaped.
  */
 function escapeGlob(str: string): string {
   return str.replaceAll(/([\][\\*?()!|])/g, "\\$1");

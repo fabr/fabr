@@ -18,19 +18,20 @@
  */
 
 /**
- * The js_bundle[build] rule: bundle a source tree into a self-contained
- * artifact with esbuild. srcs is what goes into the bundle (packages are
- * reached through the staged PnP table and inlined; loose files land at the
- * working root); deps is
- * runtime-provided and externalized by identity; entry names the source(s) to
- * bundle; output optionally renames each entry's result.
+ * The js_bundle[build] rule: bundle each file `entry` names into
+ * self-contained JavaScript with esbuild. The loose source files in `srcs` and
+ * `entry` are first compiled through js_compile, as ES modules, against the
+ * packages in `srcs` and `deps`. The packages in `srcs`, and a package `entry`
+ * is a projection over, are included in the bundle, reached through a PnP
+ * table; imports of the packages in `deps` are left in the output. `output`
+ * renames the output files and `defines` are the constants esbuild
+ * substitutes. The output's module format is `JS_BUNDLE_FORMAT`, its platform
+ * follows `JS_TARGET`, and `BUILD_TYPE` decides minifying and source maps. The
+ * `js/node_globals` flag provides node's globals in a browser bundle.
  *
- * srcs, entry and deps resolve as one collection (so they can't version-fork
- * across the bundle boundary). The bundler is a build *tool*, independent of what
- * it bundles, so it is resolved apart as the JS_BUNDLER runnable (fabr's own
- * esbuild driver, declared in JS.fabr) and mounted under a
- * tool dir, its deps neither colliding with nor visible to the sources. The
- * bundle is a terminal artifact, delivered as a plain FileSet.
+ * `srcs`, `entry` and `deps` resolve as one collection. The bundler is the
+ * `JS_BUNDLER` program, staged under its own directory so its packages are not
+ * visible to the sources. The result is plain files.
  */
 
 import {
@@ -74,9 +75,9 @@ import { NPM_FORMAT } from "../NPMProtocol";
 /** The `js_bundle` rule. */
 export default defineRule({
   /**
-   * State the bundle's contents, read under the bundle's input `JS_TARGET` and
-   * resolved as one collection. The bundler is a build tool, independent of what it compiles, so
-   * it is resolved apart.
+   * State `srcs`, `entry` and `deps`, read under the bundle's input `JS_TARGET`
+   * (see bundleInputTarget), as one collection. The bundler is resolved apart
+   * from them, in evaluation.
    */
   requirements(
     context: TargetContext
@@ -100,26 +101,22 @@ export default defineRule({
   },
 });
 
-/** Where the esbuild toolchain + driver mount — disjoint from the workspace's
- * own node_modules so the tool's deps neither collide with nor are visible to
- * the sources being bundled. */
+/** Where the bundler's install is staged, apart from the sources so its packages
+ * neither collide with nor are visible to theirs. */
 const TOOL_DIR = ".fabr-esbuild";
 
 /** The generated module behind `js/node_globals`, staged at the working root and
- * named as esbuild's `inject`. Node's globals are ordinary module exports in the
- * browser shims, and esbuild fills a free identifier from an injected module's
- * export of the SAME NAME — so the file is exactly that renaming, and it must
- * export: an injected module that only imports is dead weight that binds
- * nothing. The shim packages are the target's to mount (see JS.fabr); if one is
- * missing this is where the bundler says so.
- *
- * `global` is absent deliberately — it needs no package, so it rides the
- * `define` instead ({@link NODE_GLOBAL_DEFINES}) and costs nothing. */
+ * named in esbuild's `inject`. esbuild fills a free identifier from an injected
+ * module's export of the same name, so the module re-exports `Buffer` and
+ * `process` from their browser shim packages, which the target must include (see
+ * JS.fabr); the bundler reports a missing one here. It must export: an injected
+ * module that only imports binds nothing. `global` needs no package and is a
+ * define instead ({@link NODE_GLOBAL_DEFINES}). */
 const NODE_GLOBALS_MODULE = ".fabr-node-globals.js";
 const NODE_GLOBALS_GLUE = 'export { Buffer } from "buffer";\nexport { default as process } from "process";\n';
 
-/** The half of node's globals that is a plain expression rather than a module.
- * An explicit `defines` entry wins — this is a default, not a policy. */
+/** The node global that is a plain expression, not a module export. An entry
+ * the target's `defines` states takes precedence. */
 const NODE_GLOBAL_DEFINES: Record<string, string> = { global: "globalThis" };
 
 /** The generated module behind `import.meta.url` in a CommonJS bundle for node,
@@ -128,9 +125,9 @@ const NODE_GLOBAL_DEFINES: Record<string, string> = { global: "globalThis" };
 const IMPORT_META_MODULE = ".fabr-import-meta.js";
 const IMPORT_META_GLUE = 'export const import_meta_url = require("url").pathToFileURL(__filename).href;\n';
 
-/** `import.meta`'s members as a CommonJS module for node has them. A bundle's
+/** `import.meta`'s members as a CommonJS module for node has them: a bundle's
  * inputs are compiled as ES modules, and esbuild empties `import.meta` in a
- * CommonJS bundle. An explicit `defines` entry wins — this is a default, not a policy. */
+ * CommonJS bundle. An entry the target's `defines` states takes precedence. */
 const IMPORT_META_DEFINES: Record<string, string> = {
   "import.meta.dirname": "__dirname",
   "import.meta.filename": "__filename",
@@ -138,53 +135,48 @@ const IMPORT_META_DEFINES: Record<string, string> = {
 };
 
 /**
- * The target a bundle's inputs are built and compiled for: ESM, whatever the
- * bundle itself ships as. Only ESM carries the import graph a bundler needs —
- * `require` hands back a namespace built at run time, so every export of a
- * required module must survive and tree-shaking becomes impossible.
- *
- * The mirror of the test compile's swap to `commonjs`, and set the same way:
- * component-wise (the ES version and environment are the target's own),
- * unconditionally, so a target already emitting ESM re-spells the same target
- * and shares the one compile by cache key. It equally answers `dual`, which no
- * single compile can emit.
- *
- * What it does NOT decide is the shipped format: that is JS_BUNDLE_FORMAT, read
- * in the bundle's own configuration, so a browser bundle still lands as an iife.
+ * @return the constraints a bundle's inputs are built and compiled under:
+ * `JS_TARGET` with its module format set to ESM, its ES level and environment
+ * kept, so esbuild has a static import graph to tree-shake. The format is set
+ * even where it is already ESM, so the compile is shared with the target's own
+ * one; this also replaces `dual`, which no single compile can emit. The format
+ * the bundle is written in is `JS_BUNDLE_FORMAT`, read in the bundle's own
+ * configuration.
  */
 function bundleInputTarget(jsTarget: JSTarget): Constraints {
   return Constraints.of({ JS_TARGET: formatJSTarget({ ...jsTarget, module: "esm" }) });
 }
 
-/** The resolved inputs a bundle is staged from: the target config plus the
- * collected contents (srcs/deps) and the bundler runnable. */
+/** The inputs a bundle is staged from: its configuration, its materialized
+ * requirements and the bundler. */
 interface IBundleInputs {
   jsTarget: JSTarget;
   /** The form the bundle is written in (JS_BUNDLE_FORMAT). */
   bundleFormat: BundleFormat;
   buildType: string;
   rewrite: RewriteFn;
-  /** Compile-time constant substitutions (the `defines` MAP): each value is
-   * esbuild `define` code text, verbatim as written (a string constant is
-   * shell-quoted in source, `'"production"'`, exactly as esbuild's own CLI). */
+  /** Compile-time constant substitutions for esbuild's `define` (the `defines`
+   * MAP): each value is JavaScript source text as written, so a string constant
+   * is written quoted, `'"production"'`, as for esbuild's own CLI. */
   defines: Record<string, string>;
-  /** Whether to bind node's runtime globals for this bundle: the `js/node_globals`
-   * flag among srcs/deps, AND a browser target — a node bundle already has them. */
+  /** True to provide node's globals: the `js/node_globals` flag among `srcs` or
+   * `deps`, in a bundle for a browser. */
   nodeGlobals: boolean;
-  /** Whether to give `import.meta` its CommonJS equivalents: a `cjs` bundle for node. */
+  /** True to give `import.meta` its CommonJS equivalents: a `cjs` bundle for node. */
   importMeta: boolean;
-  /** The entry as delivered: a plain fileset is staged at the bundle root, while
-   * a projection over a package stays pending — the package mounts and the entry
-   * is located inside it (see composeBundle). */
+  /** The entry as materialized: a plain file set is staged at the bundle root,
+   * and a projection over a package stays pending, to be located inside the
+   * package (see composeBundle). */
   entry: Array<FileSet | FileSetRef>;
   srcs: FileSet[];
   deps: FileSet[];
   bundler: RunnableFileSet;
 }
 
-/** Stage the working dir and yield the bundle action. `code` and `css` are the
- * built sources — esbuild reaches both through the JS import graph, so it keeps
- * ownership of CSS concat/order/split and of css-modules scoping. */
+/** Stage the working directory and yield the bundle action, or throw where
+ * there are no `entrySources`. `code` and `css` are the compiled loose sources;
+ * esbuild reaches both through the JS import graph, so it orders, joins and
+ * splits the CSS and scopes css-modules. */
 function stageBundle(
   inputs: IBundleInputs,
   srcPackages: PackageFileSet[],
@@ -217,15 +209,15 @@ function stageBundle(
     ...(nodeGlobals ? { [NODE_GLOBALS_MODULE]: MemoryFile.from(NODE_GLOBALS_GLUE) } : {}),
     ...(importMeta ? { [IMPORT_META_MODULE]: MemoryFile.from(IMPORT_META_GLUE) } : {}),
   };
-  /* The bundler launches from its own mount (its deps resolve there); cwd is
-   * the working root, so the options manifest and outdir resolve against it. */
-  /* Its maps name each source by the reference resolving to it, from the table
-   * the step stages: the bundle's own sources and the packages it bundles. */
+  /* The bundler launches from its own directory (its packages resolve there),
+   * with its cwd at the working root, which the options document's paths are
+   * relative to. Its maps name each source by its source path, from the table
+   * the step stages for the bundle's own sources and the packages it bundles. */
   const argv = bundler.toCommandLine(["--options=bundle-options.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE], { base: TOOL_DIR });
-  /* The bundled packages go over unassembled and unmaterialized: esbuild reads
-   * the PnP table natively, so the step generates it (and the trees it names)
-   * on a miss. The entry paths in the options document already name those trees
-   * — a pure function of content, so naming one costs nothing here. */
+  /* The bundled packages are passed as they are: esbuild reads the PnP table,
+   * which the step writes, with the trees it names, on a miss. The entry paths
+   * in the options document already name those trees, which depend only on
+   * the packages' content. */
   return createNodeExecAction(FileSet.unionAll(code, css, FileSet.layout(workspace)), srcPackages, argv, `${BUNDLE_OUTDIR}:**`, {
     layout: PNP,
     label: "bundle",
@@ -234,19 +226,19 @@ function stageBundle(
   });
 }
 
-/** An entry that is a projection over a package is CONTAINED: the package mounts
- * like any other bundled input and the entry is located inside it, so its
- * relative imports resolve among its siblings and its self-references are
- * ordinary bare specifiers. */
+/** @return true if `source` is a projection over a package, otherwise false. Such
+ * an entry is contained: the package is included like any other bundled input
+ * and the entry located inside it, so its relative imports resolve among its
+ * siblings and its self-imports are ordinary bare specifiers. */
 function isContainedEntry(source: FileSet | FileSetRef): source is FileSetRef & { source: PackageFileSet } {
   return source instanceof FileSetRef && source.source instanceof PackageFileSet;
 }
 
 /**
- * Where a loose entry ended up in the staged tree. js_compile names its own
- * output (`.ts`→`.js`, but also `.mts`→`.mjs`/`.cts`→`.cjs`), and an
- * untranspiled `.js` passes through under its own name — so the entry is found
- * by stem in what was actually staged, never re-derived from the source name.
+ * @return the name a loose entry was staged under: the JavaScript file with the
+ * entry's stem. js_compile names its own output (`.ts`→`.js`, `.mts`→`.mjs`,
+ * `.cts`→`.cjs`) and a `.js` passes through, so find it in what was staged;
+ * never derive it from the source name. Throws where there is none.
  */
 function stagedEntry(staged: FileSet, name: string): string {
   const stem = stripExtension(name);
@@ -257,62 +249,56 @@ function stagedEntry(staged: FileSet, name: string): string {
   return match[0];
 }
 
-/** One package per name, in order of first appearance. Which copy survives is
- * immaterial: a package named twice came twice from the one collection point,
- * so it is the same instance. */
+/** @return one package per name, in order of first appearance. A package named
+ * twice came twice from the one collection, so either copy is the same
+ * instance. */
 function uniqueByName(packages: PackageFileSet[]): PackageFileSet[] {
   return [...new Map(packages.map(pkg => [pkg.packageName, pkg] as const)).values()];
 }
 
-/** Build the loose sources and stage the bundle. Packages among `srcs` are
- * already built: esbuild reaches them through the PnP table and inlines them.
- * The loose
- * files are compiled first (`compileContents`) and esbuild links the output, so
- * a bundled source is type-checked and gets the target's source-mode flags and
- * JSX runtime like any other. `transpileJs` is off: esbuild downlevels plain
- * JavaScript itself.
+/** Compile the loose sources and stage the bundle. The loose files in `srcs` and
+ * `entry` are compiled first (`compileContents`), type-checked and with the
+ * target's source-mode flags and JSX runtime, and esbuild bundles the output;
+ * `transpileJs` is off, since esbuild downlevels plain JavaScript itself. The
+ * packages in `srcs` are already built, and esbuild reaches them through the
+ * PnP table.
  *
- * An entry need not also be listed in `srcs` — union dedups; a same path
- * resolving to *different* files across `entry`/`srcs` is a real conflict
- * `unionAll` asserts. scss `@use` of shared partials resolves against the src
- * packages, through the table the css step's importer reads. */
+ * An entry need not also be in `srcs`; one path naming different files in
+ * `entry` and `srcs` is a ConflictError. A Sass `@use` of a shared partial
+ * resolves among the packages in `srcs`, through the table the css step's
+ * importer reads. */
 function composeBundle(context: TargetContext, inputs: IBundleInputs): Computable<RuleResult> {
   const containedEntries = inputs.entry.filter(isContainedEntry);
-  /* Everything else is a loose entry, staged at the bundle root and built with
-   * the rest of the sources. `entry` was read contained, so a projection over a
-   * NON-package (a plain delivered fileset) also arrives pending — it has no
-   * container to be kept in, so applyProjections extracts it. A plain fileset
-   * passes through untouched. */
+  /* Every other entry is loose, staged at the bundle root and compiled with the
+   * other sources. `entry` was read contained, so a projection over a plain
+   * file set also arrives pending, and applyProjections selects its files; a
+   * plain file set passes through as it is. */
   const looseSources = inputs.entry.filter(set => !isContainedEntry(set));
 
-  /* Naming a package as `entry` mounts it — a bundle entry that isn't bundled
-   * would be meaningless — so the entry containers join the srcs packages. Both
-   * came from the one collection point, so a package named twice is the same
-   * instance and dedups by name. */
+  /* A package `entry` is a projection over is included in the bundle, so it
+   * joins the packages in `srcs`, one per name. */
   const srcPackages = uniqueByName([
     ...inputs.srcs.filter((set): set is PackageFileSet => set instanceof PackageFileSet),
     ...containedEntries.map(ref => ref.source),
   ]);
 
-  /* A contained entry keeps its place inside its mount; a loose one is wherever
-   * the build put it, so it is looked up rather than guessed — hence after. */
-  /* Where the bundle's manifest (over exactly these packages) places each. */
+  /* A contained entry is located inside its package's location in the PnP
+   * table; a loose one is looked up after the compile, in what it staged. */
+  /* Where the bundle's PnP table, over exactly these packages, places each. */
   const layout = containedEntries.length === 0 ? undefined : pnpManifestOf(srcPackages);
   const containedSources = containedEntries.flatMap(ref =>
-    /* ref.locate (not source.locate) so a literal entry naming nothing in the
-     * package is the written-reference error, not a silently-missing entry. */
+    /* Use ref.locate, not source.locate, so a literal entry naming nothing in
+     * the package is reported as the written reference's error. */
     [...ref.locate()].map(([path, name]) => ({ path: `${layout!.mountOf(ref.source)}/${path}`, name }))
   );
 
   return context.applyProjections(looseSources).then(looseEntries => {
     const rootTree = FileSet.unionAll(...inputs.srcs.filter(set => !(set instanceof PackageFileSet)), ...looseEntries);
-    /* Both halves of what the sources may import: `srcs` packages are bundled in,
-     * `deps` are externalized at link time — but the compile needs both, and the
-     * source-mode flags from either list (see bundleFlags), which it reads from
-     * its deps. */
-    /* Compiled for the same target the referenced inputs were built under, not
-     * for the ambient one: these loose sources are bundled together with those,
-     * and one compile emits one module system whatever the bundle ships as. */
+    /* Compile against both the packages in `srcs` (bundled in) and `deps`
+     * (left as imports), with the source-mode flags from either list (see
+     * buildWithInputs), which the compile reads from its deps. */
+    /* Compile for the bundle's input target, which the packages in `srcs` were
+     * built under, not for JS_TARGET as it is. */
     const srcFlags = inputs.srcs.filter((set): set is Flag => set instanceof Flag);
     return compileContents(context, rootTree, [...srcPackages, ...srcFlags, ...inputs.deps], {
       transpileJs: false,
@@ -351,25 +337,21 @@ function buildWithInputs(
   buildType: string,
   { srcs, entry, deps }: IBundleContents
 ): Computable<RuleResult> {
-  /* The source-mode flags declared on this bundle, from either list they may
-   * be written in: `srcs`, where a bundle's own code arrives, or `deps`, where
-   * flags conventionally sit. A flag materializes to nothing in both. */
+  /* The source-mode flags on this bundle, from `srcs` or `deps`. */
   const flags = [...srcs, ...deps].filter((set): set is Flag => set instanceof Flag);
   return Computable.forAll(
     [context.getGlobalRunnable("JS_BUNDLER"), context.getRewriteRules("output").then(makeRewrite), context.getMap("defines")],
     (bundler, rewrite, defineMap) => {
-      /* `js/node_globals` binds node's globals for a BROWSER bundle only: a node
-       * bundle is already given them, and the flag is a fact about the sources,
-       * so one tree bundling both ways declares it once and pays only where it
-       * is needed. */
+      /* `js/node_globals` provides node's globals in a browser bundle only: a
+       * node bundle already has them. */
       const nodeGlobals = usesNodeGlobals(flags) && jsTarget.environment === "browser";
       const importMeta = bundleFormat === "cjs" && jsTarget.environment === "node";
-      /* esbuild `define` takes code text per identifier; a map value is that
-       * text verbatim (esbuild's own contract — no probing). Sub-maps have no
-       * meaning as code text, so defines is flat by contract. */
+      /* esbuild's `define` takes code text per identifier, and a map value is
+       * that text as written. A sub-map is no code text, so `defines` is
+       * flat. */
       const defines: Record<string, string> = Object.create(null);
-      /* Seeded before the declared entries, so an explicit `defines` for one of
-       * these wins rather than colliding. */
+      /* Seeded before the declared entries, so an explicit `defines` entry for
+       * one of these replaces it. */
       if (nodeGlobals) {
         Object.assign(defines, NODE_GLOBAL_DEFINES);
       }

@@ -15,11 +15,11 @@
  */
 
 /**
- * What an editor is told of a JavaScript target, as the target's rules
- * `describe` it: each compilation unit — its config over the real directory
- * the compile's sources come from, and its PnP table, the compile's own, with
- * its packages put in the tree pool, where the table locates them — and a
- * package's manifest, made from its declared entry points without building it.
+ * The description of a JavaScript target for an editor, as the target's rules
+ * `describe` it: each compilation unit (its summary, its editor config over the
+ * real directory the compile's sources come from, and its PnP table, whose
+ * packages are trees of the cache's pool) and, for a package, its manifest,
+ * made from its declared entry points without building it.
  *
  * A unit's description is a tree of {@link UNIT_FILE}, {@link UNIT_CONFIG_FILE},
  * the table (`.pnp.data.json`) and, under {@link GENERATED_DIR}, the sources
@@ -126,11 +126,10 @@ export function layOutUnits(units: ReadonlyMap<string, FileSet>): { units: Recor
 }
 
 /**
- * Make the description of the unit `setup` compiles: where its sources come
- * from, read off their source paths, its editor config, and its table, made
- * by a step that puts the unit's fetched packages in the tree pool and
- * locates each package described in place of its build (a
- * `DescribedPackage`) at its own unit's root.
+ * Make the description of the unit `setup` compiles: its summary, with where
+ * its sources come from read off their source paths; its editor config, where
+ * they have a root in the project; the sources no project file holds; and its
+ * table, made by {@link DESCRIBE_UNIT_ACTION}.
  */
 export function describeUnit(setup: ICompileSetup): RuleResult {
   const { root, rootDirs, generated } = sourceRoot(setup.srcs);
@@ -259,8 +258,8 @@ function editorConfig(setup: ICompileSetup, rootDirs: readonly string[], place: 
     compilerOptions: {
       ...options,
       rootDir: ".",
-      /* The editor's compiler is VS Code's own, of TypeScript 6 or later, which
-       * pairs `bundler` with either module format. */
+      /* The editor's compiler is VS Code's own, TypeScript 6 or later, which
+       * accepts `bundler` with either module format. */
       moduleResolution: "bundler",
       typeRoots: [],
       ...(dirs.length > 1 ? { rootDirs: dirs } : {}),
@@ -283,8 +282,8 @@ function editorConfig(setup: ICompileSetup, rootDirs: readonly string[], place: 
  * @return the `paths` naming the package `name`'s own files, `files` placed in
  * `dirs`, as the package imports itself: a directory beneath the root by a
  * wildcard, and the root by each of its entries, a subdirectory by a wildcard
- * and a file by its name — a wildcard at the root would also name the
- * `node_modules` the plugin reaches packages through.
+ * and a file by its name. Never map the root by a wildcard: it would also name
+ * the `node_modules` the plugin reaches packages through.
  */
 function selfPaths(name: string, dirs: readonly string[], files: readonly string[]): Record<string, string[]> {
   const below = dirs.filter(dir => dir !== "./");
@@ -320,12 +319,18 @@ const COMPILED = /\.(?:[cm]?ts|tsx|[cm]?js|jsx)$/;
 /** Where a unit's table locates a tree of the cache's pool: `./.fabr-tree/<tree>/`, however a step reaches the pool. */
 const POOL_LOCATION = "./.fabr-tree/";
 
-/** Write a table's location of a pool tree, as a step's working directory reaches it, as a unit's table does. */
+/** Rewrite a table location under the step's pool mount ({@link TREE_MOUNT}) as
+ * a unit's table names it ({@link POOL_LOCATION}); any other location as it is. */
 function inPool(location: string): string {
   return location.startsWith(`${TREE_MOUNT}/`) ? POOL_LOCATION + location.substring(TREE_MOUNT.length + 1) : location;
 }
 
-/** The step that puts a unit's fetched packages in the tree pool and makes its table. */
+/**
+ * The step that makes a unit's table: it puts the unit's fetched packages in
+ * the tree pool, and locates each described package (a `DescribedPackage`) at
+ * its own unit's root, relative to this unit's, or, where it has none, at its
+ * installed view ({@link installedViewOf}), put in the pool too.
+ */
 const DESCRIBE_UNIT_ACTION: IBuildActionDefinition = {
   id: "js:describe-unit",
   version: 4,

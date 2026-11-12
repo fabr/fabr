@@ -18,30 +18,21 @@
  */
 
 /**
- * A failed test, as jest would print it.
- *
- * Circus reports a failure twice over: `failureMessages` is the RAW
- * `error.stack`, and the presentable form — matcher diff, code frame, and a
- * stack with jest's own frames and node's internals removed — is produced
- * separately by `jest-message-util`, which jest's own reporters call. Taking the
- * raw one gets a wall of jestAdapterInit frames around the one line that
- * matters, so fabr calls the same formatter jest does.
+ * Failures rendered as jest prints them, by `jest-message-util`: the matcher
+ * diff, a code frame, and the stack without jest's frames or node's internals.
+ * circus's `failureMessages` hold only the raw `error.stack`.
  *
  * Each frame naming a source by reference is first pointed at where the source
- * is staged, which is the file jest's code frame reads.
- *
- * Two adjustments, both because the surrounding report is fabr's and not jest's:
- * the `● suite › test` header is dropped (the report already names the test on
- * the line above), and jest's own four-space body indent is removed (the report
- * indents the detail itself, and two indents read as one deep one).
+ * is staged, the file jest's code frame reads. The result drops jest's
+ * `● suite › test` header and its body indent, which the report supplies.
  */
 
 import { withStagedSources } from "../testRunner/Report";
 import { jestLibrary } from "./Tools";
 
-/** What the formatter reads off an assertion result. Circus supplies all of it;
- * `failureDetails` carries the live error objects behind `failureMessages`,
- * which is how a matcher's structured diff survives to be rendered. */
+/** The fields of circus's assertion result the formatter reads.
+ * `failureDetails` holds the error objects behind `failureMessages`, from which
+ * a matcher's diff is rendered. */
 export interface IFormattableResult {
   title: string;
   ancestorTitles: string[];
@@ -49,7 +40,7 @@ export interface IFormattableResult {
   failureDetails?: unknown[];
 }
 
-/** An error circus reports against the FILE rather than a test in it (jest's
+/** An error circus reports against the file rather than a test in it (jest's
  * `SerializableError`): an unhandled rejection, a failed `afterAll`. Circus
  * leaves `message` empty and puts the errors' text in `stack`. */
 export interface IExecError {
@@ -63,32 +54,31 @@ interface IMessageUtil {
 }
 
 /**
- * Format `test`'s failures as presentable text, one entry per raw failure
- * message — so the caller keeps the same shape it had, only readable. A message the
- * formatter declines to handle is passed through as it arrived.
+ * Format `test`'s failures as jest prints them, one entry per raw failure
+ * message. A message the formatter declines (returns null) or throws on is
+ * returned raw.
  */
 export function formatFailures(test: IFormattableResult, projectConfig: unknown, globalConfig: unknown, testPath: string): string[] {
   const util = jestLibrary("jest-message-util") as IMessageUtil;
   return test.failureMessages.map((raw, index) => {
-    /* One at a time: formatResultsErrors renders every failure it is given into
-     * a single string, and these have to stay separable. */
+    /* One at a time: formatResultsErrors joins every failure it is given into
+     * one string. */
     const single = { ...test, failureMessages: [withStagedSources(raw)], failureDetails: [test.failureDetails?.[index]] };
     try {
       const formatted = util.formatResultsErrors([single], projectConfig, globalConfig, testPath);
       return formatted === null ? raw : presentable(formatted);
     } catch {
-      /* The formatter is jest's, over a result shape jest built — but it is not
-       * worth losing a failure over, and the raw message still says what broke. */
+      /* Keep the raw message. */
       return raw;
     }
   });
 }
 
 /**
- * Format an error raised outside any test as presentable text, as jest prints a
- * suite's execution error: the errors' text, then the stack with jest's own
- * frames removed. An error the formatter declines to render is reported by its
- * text as it arrived.
+ * Format an error raised outside any test as jest prints a suite's execution
+ * error: the errors' text, then the stack without jest's frames. Where the
+ * formatter throws or renders nothing, returns the error's stack, else its
+ * message, else "Test suite failed to run".
  */
 export function formatExecError(error: IExecError, projectConfig: unknown, globalConfig: unknown, testPath: string): string {
   const util = jestLibrary("jest-message-util") as IMessageUtil;
@@ -102,11 +92,8 @@ export function formatExecError(error: IExecError, projectConfig: unknown, globa
 }
 
 /**
- * Shape jest's rendered failure as the report should carry it: without the
- * `  ● suite › test` header (the report names the test itself) and without
- * jest's own body indent (the report indents the detail, and two indents read
- * as one deep one). Exported for its own tests — the rest of this module needs
- * jest present to say anything at all.
+ * Remove the `  ● suite › test` header, the common indent and trailing
+ * whitespace from a failure jest rendered. Exported for tests.
  */
 export function presentable(formatted: string): string {
   return dedent(withoutTitle(formatted));
@@ -118,9 +105,8 @@ function withoutTitle(formatted: string): string {
   return body === -1 ? formatted : formatted.substring(body + 2);
 }
 
-/** Remove the indent jest's own console rendering adds, so the report's indent
- * is the only one. Uniform across the whole block, so relative structure (the
- * deeper indent on stack frames) is preserved. */
+/** Remove the indent common to every non-blank line, keeping deeper indents
+ * (stack frames) relative to it, and trailing whitespace. */
 function dedent(text: string): string {
   const lines = text.replace(/\s+$/, "").split("\n");
   const indent = Math.min(...lines.filter(line => line.trim() !== "").map(line => /^ */.exec(line)?.[0].length ?? 0));

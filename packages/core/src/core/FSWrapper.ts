@@ -42,22 +42,20 @@ export function stat(filename: string): Computable<fs.Stats> {
   });
 }
 
-/** @return true if an fs error means the path simply isn't there (vanished, or
- * never existed) rather than a genuine IO failure, otherwise false — so a caller
- * can treat a file that disappeared mid-event as absent instead of erroring. */
+/** @return true if `err` is an ENOENT (the path is not there: it vanished, or
+ * never existed), otherwise false. */
 export function isNotFound(err: unknown): boolean {
   return (err as NodeJS.ErrnoException | null)?.code === "ENOENT";
 }
 
-/** @return true if `err` is an EISDIR — the path is a directory where a file
- * operation (open/read) expected a regular file — otherwise false. */
+/** @return true if `err` is an EISDIR (the path is a directory where a file
+ * operation expected a regular file), otherwise false. */
 export function isDirectoryError(err: unknown): boolean {
   return (err as NodeJS.ErrnoException | null)?.code === "EISDIR";
 }
 
-/** @return true if `err` is an ENOTDIR — a path component that had to be a
- * directory is a file, so nothing below it can be read, now or ever under that
- * layout — otherwise false. */
+/** @return true if `err` is an ENOTDIR (a path component that must be a
+ * directory is a file, so nothing below it can be read), otherwise false. */
 export function isNotDirectoryError(err: unknown): boolean {
   return (err as NodeJS.ErrnoException | null)?.code === "ENOTDIR";
 }
@@ -86,10 +84,9 @@ export function readFileBuffer(filepath: string): Computable<Buffer> {
   });
 }
 
-/** Write a file. With `exclusive`, the write fails (EEXIST) rather than
- * overwriting an existing file — the `wx` flag — so a caller can let the
- * filesystem reject a clobber (e.g. two staged names that collide only in case
- * on a case-insensitive filesystem) instead of silently losing one. */
+/** Write a file. With `exclusive` (the `wx` flag), the write fails with EEXIST
+ * where the file exists, so two staged names that collide only in case on a
+ * case-insensitive filesystem fail instead of one replacing the other. */
 export function writeFile(filepath: string, data: string | Buffer, opts?: { exclusive?: boolean; mode?: number }): Computable<void> {
   return Computable.from<void>((resolve, reject) => {
     fs.writeFile(
@@ -108,12 +105,11 @@ export function writeFile(filepath: string, data: string | Buffer, opts?: { excl
 }
 
 /**
- * Write `content` at `target` atomically: written to `tempPath`, then renamed
- * into place, replacing any existing file — a crash mid-write can never leave
- * a truncated document. `tempPath` must be on `target`'s filesystem (the
- * caller owns temp placement) and never survives a failure; the failure
- * rethrows, so a best-effort caller layers its own catch. Creates `target`'s
- * directory as needed.
+ * Write `content` at `target` atomically: to `tempPath`, then renamed into
+ * place, replacing any existing file, so a crash mid-write leaves no truncated
+ * file. Creates `target`'s directory as needed. `tempPath` must be on
+ * `target`'s filesystem. On failure `tempPath` is removed and the error
+ * rethrown.
  */
 export function writeFileAtomic(target: string, content: string, tempPath: string): Computable<void> {
   return mkdir(path.dirname(target))
@@ -215,12 +211,9 @@ export function walkTree(
 
 /**
  * Create a directory and any missing parents (`mkdir -p`), succeeding if it
- * already exists.
- *
- * Async deliberately, even though a one-off `mkdirSync` reads more simply:
- * staging a tree creates thousands of these, and a synchronous one blocks the
- * event loop — which here is also the scheduler, so nothing else in the build
- * can start while a tree is being staged.
+ * already exists. Use it rather than `mkdirSync` where many are made (staging
+ * a tree): a synchronous one blocks the event loop, and with it every other
+ * step of the build.
  */
 export function mkdir(dirpath: string): Computable<void> {
   return Computable.from<void>((resolve, reject) => {
@@ -259,13 +252,11 @@ export function realpath(filepath: string): Computable<string> {
   });
 }
 
-/** Get the read-only permission bits for a content-addressed file: 0o444, or 0o555
- * when `mode` is executable. Cache blobs and any file staged to mirror one (a
- * hardlink into the pool, or an in-memory file materialized alongside them) use
- * this — read-only so a launched tool can't write through into a shared blob,
- * executable-if-executable so a staged tool still runs. Never writable, never
- * setuid. The file's *real* mode is preserved separately (IFile.mode / the cache
- * manifest) and reapplied on export to user space (`fabr cp`, tar pack). */
+/** Get the read-only permission bits for a content-addressed file: 0o444, or
+ * 0o555 where `mode` is executable; never writable, never setuid. Cache blobs
+ * and files staged beside them use these, so a launched tool cannot write
+ * into a shared blob. The file's own mode is kept in IFile.mode (and the cache
+ * manifest) and applied on export (`fabr cp`, packing a tar). */
 export function readOnlyPermissions(mode: number): number {
   return mode & 0o111 ? 0o555 : 0o444;
 }
@@ -282,10 +273,9 @@ export function hardlink(target: string, filepath: string): Computable<void> {
   });
 }
 
-/** Copy a file's contents to a new path — an independent duplicate, unlike
- * {@link hardlink} which shares the inode. Used when the destination is durable
- * user-space (e.g. `fabr cp`), where a hardlink into the content-addressed cache
- * would let an edit of the copy write through to the shared cache blob. */
+/** Copy a file's contents to a new path, an independent copy where
+ * {@link hardlink} shares the inode. Use it for a destination the user owns
+ * (`fabr cp`), where an edit through a hardlink would change the cache blob. */
 export function copyFile(target: string, filepath: string): Computable<void> {
   return Computable.from<void>((resolve, reject) => {
     fs.copyFile(target, filepath, err => {
@@ -297,9 +287,8 @@ export function copyFile(target: string, filepath: string): Computable<void> {
     });
   });
 }
-/** A file's content identity and classification, from one read: the hash, and
- * the mime sniffed from the same bytes (see IFile.mime — classification rides
- * every read the identity already requires, so it is never a read of its own). */
+/** A file's content hash and its mime (see IFile.mime), sniffed from the same
+ * read. */
 export interface HashedContent {
   readonly hash: string;
   readonly mime: string;
@@ -341,7 +330,7 @@ export function hashString(data: string | Buffer): string {
   return crypto.createHash(HASH_ALGORITHM).update(data).digest("hex");
 }
 
-/** @return a stream of `file`'s content: read from the pool where it is there, else from memory. */
+/** @return a stream of `file`'s content: read from disk where the file has a path, else from memory. */
 export function contentStream(file: IFile): Computable<Readable> {
   const where = file.getAbsPath();
   return where !== undefined
@@ -349,7 +338,7 @@ export function contentStream(file: IFile): Computable<Readable> {
     : file.getBuffer().then(buffer => Readable.from([buffer]));
 }
 
-/** @return the size of `file`'s content in bytes: from the pool where it is there, else from memory. */
+/** @return the size of `file`'s content in bytes: from disk where the file has a path, else from memory. */
 export function contentSize(file: IFile): Computable<number> {
   const where = file.getAbsPath();
   return where !== undefined ? stat(where).then(stats => stats.size) : file.getBuffer().then(buffer => buffer.length);

@@ -22,9 +22,9 @@ import { Readable, Transform } from "stream";
 import { IntegrityError, toError } from "../core/Errors";
 
 /**
- * Subresource Integrity (https://www.w3.org/TR/SRI/) — `<algorithm>-<base64>`,
- * the digest form npm's `dist.integrity`, Bazel's `integrity =` and Nix all
- * use. Ordered strongest-first: a value listing several takes the strongest.
+ * The Subresource Integrity (https://www.w3.org/TR/SRI/) algorithms fabr
+ * checks, strongest first. An SRI digest is `<algorithm>-<base64>`, as npm's
+ * `dist.integrity` writes one.
  */
 export const SRI_ALGORITHMS = ["sha512", "sha384", "sha256"] as const;
 
@@ -34,39 +34,33 @@ export interface ExpectedDigest {
   readonly algorithm: string;
   readonly encoding: "base64" | "hex";
   readonly value: string;
-  /** Further acceptable digests of the same algorithm — SRI allows several
-   *  entries per algorithm, and content matching ANY of them passes (a value
-   *  covering more than one published variant of a resource). */
+  /** Further digests of the same algorithm, any of which content may match
+   *  instead (SRI allows several per algorithm). */
   readonly alternates?: readonly string[];
 }
 
-/** @return true if the token is shaped like an SRI digest, otherwise false.
- *  Distinguishes an integrity value from a URL without relying on the order the
- *  two were written in. */
+/** @return true if `value` begins as an SRI digest of an algorithm in
+ *  {@link SRI_ALGORITHMS}, otherwise false. */
 export function isIntegrity(value: string): boolean {
   return SRI_ALGORITHMS.some(algorithm => value.startsWith(`${algorithm}-`));
 }
 
 /**
- * Parse the strongest digest an SRI string states, or undefined if it states none in
- * an algorithm we know. A value may list several space-separated entries; a
- * hash fabr cannot compute is not an error here (the caller decides whether
- * "nothing checkable" is acceptable — npm metadata often carries only the
- * legacy sha1 `dist.shasum`, whereas a written declaration should insist).
+ * Parse the strongest digest an SRI string states, of its space-separated
+ * entries. Entries of other algorithms are ignored.
+ * @return the digest, or undefined where no entry is of an algorithm in
+ *   {@link SRI_ALGORITHMS}: whether that is an error is the caller's to judge.
  */
 export function parseIntegrity(integrity: string): ExpectedDigest | undefined {
   const entries = integrity.trim().split(/\s+/);
   for (const algorithm of SRI_ALGORITHMS) {
-    /* Every entry of the strongest stated algorithm (content matching any one
-     * passes), each with its optional `?options` suffix stripped — the spec's
-     * `<alg>-<base64>?<options>` form; no options are defined, so they are
-     * ignored. */
+    /* Every entry of the strongest algorithm stated, each without its
+     * `?<options>` suffix (SRI defines no options). */
     const values = entries
       .filter(entry => entry.startsWith(`${algorithm}-`))
       .map(entry => entry.slice(algorithm.length + 1).replace(/\?.*$/, ""));
     if (values.length > 0) {
-      /* `alternates` only when present: the common one-digest shape stays a
-       * three-field record (deep-equality consumers see no phantom field). */
+      /* Set `alternates` only where there are some. */
       return { algorithm, encoding: "base64", value: values[0], ...(values.length > 1 ? { alternates: values.slice(1) } : {}) };
     }
   }
@@ -74,14 +68,12 @@ export function parseIntegrity(integrity: string): ExpectedDigest | undefined {
 }
 
 /**
- * Prepare verification of a stream against `expected`: a pass-through that
- * hashes as bytes flow, plus a `verify` to call once the stream has been fully
- * consumed. Hashing on the way past is what lets the check gate a *cache
- * commit* — run `verify` inside the fetch `process` callback and a mismatched
- * download never becomes an entry. An undefined `expected` yields an identity
- * pass-through and a no-op verify (nothing promised, nothing to check).
- *
- * `resource` names the thing being checked in the error (a URL, ordinarily).
+ * Make a check of a stream against `expected`: `hashing`, a pass-through that
+ * hashes the bytes going through it, and `verify`, to call once they all have,
+ * which throws an {@link IntegrityError} naming `resource` (a URL) where they
+ * do not match. Call `verify` in a fetch's `process` callback so a download
+ * that does not match is never cached. Where `expected` is undefined, `verify`
+ * checks nothing.
  */
 export function verifyingStream(expected: ExpectedDigest | undefined, resource: string): { hashing: Transform; verify: () => void } {
   const hash = expected ? crypto.createHash(expected.algorithm) : undefined;
@@ -105,11 +97,10 @@ export function verifyingStream(expected: ExpectedDigest | undefined, resource: 
 }
 
 /**
- * Check a download's `content` against `expected` as it streams: `stream`
- * carries the bytes on, and `verify`, called once they have all passed (and
- * before anything is committed), throws {@link IntegrityError} if they do not
- * match. A failure of `content` mid-transfer fails `stream`, so a dropped
- * response fails the attempt rather than raising an unhandled error.
+ * Check a download's `content` against `expected` as it streams (see
+ * {@link verifyingStream}): `stream` carries the bytes on, and fails where
+ * `content` fails, and `verify` is to be called once they have all passed,
+ * before anything is kept.
  */
 export function verifiedStream(
   content: Readable,

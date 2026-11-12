@@ -39,8 +39,7 @@ function guardOf(record: Record<string, string> | undefined): NameConstraint[] {
   return Object.entries(record ?? {}).map(([key, pattern]): NameConstraint => [key, rulePattern(pattern)]);
 }
 
-/** Parsed once per distinct pattern: a rule's guards are read on every
- * selection. */
+/** Each rule guard pattern parsed, by its text, kept for every selection. */
 const rulePatterns = new Map<string, Name>();
 function rulePattern(written: string): Name {
   let pattern = rulePatterns.get(written);
@@ -52,10 +51,11 @@ function rulePattern(written: string): Name {
 }
 
 /**
- * Pick the rule to select among those whose guards admit a target: the one naming
- * the most keys, over both of its guards, a rule naming none being the
- * wildcard. Undefined if `applicable` is empty; two equally specific rules are
- * an error. `ruleSet` names the candidates in that error.
+ * Pick the most specific of `applicable`, the rules whose guards admit a
+ * target: the one naming the most keys over both of its guards (a rule naming
+ * none admits every target). @return undefined where `applicable` is empty.
+ * Throws where two rules tie as most specific; `ruleSet` names the rules' set
+ * in that error.
  */
 function mostSpecificRule<R extends SelectableRule>(applicable: R[], ruleSet: string): R | undefined {
   if (applicable.length === 0) {
@@ -81,11 +81,12 @@ function mostSpecificRule<R extends SelectableRule>(applicable: R[], ruleSet: st
   return best;
 }
 
-/** How a rule's guard on the configuration is read: a key's value there, and
- * whether a pattern matches a value. */
+/** The reads a rule's `properties` guard is judged with against the
+ * configuration. */
 export interface IRuleGuards {
   /** Read the property `key`, undefined where it has no value. */
   read(key: string, stack?: IDependencyStack): Computable<Property | undefined>;
+  /** @return true if `pattern` matches `value`, otherwise false. */
   admits(pattern: Name, value: Property, stack?: IDependencyStack): Computable<boolean>;
 }
 
@@ -98,9 +99,10 @@ export interface IRuleGuards {
  * with any is selected (see {@link mostSpecificRule}); `defaults` (the
  * all-types rules) are consulted only where none of them applies.
  *
- * A key with no value makes the rule inapplicable. A selection that fails is
- * the target's failure. How each rule tried was judged comes back with it,
- * for saying why none applied.
+ * A key with no value makes the rule inapplicable. The result also holds how
+ * each rule of the target's types was judged (`candidates`), for saying why
+ * none applied. Rejects with the target's failure (`TargetContext.failure`)
+ * where a read fails or two rules tie as most specific.
  */
 export function selectRule<R extends SelectableRule>(
   targetRules: TargetRules<R>[],

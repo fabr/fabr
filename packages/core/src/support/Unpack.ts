@@ -28,26 +28,28 @@ import { FabrError } from "../core/Errors";
 import { extractTar } from "./UnpackTar";
 import { extractZip } from "./UnpackZip";
 
-/* Cap on nested compression layers: a real package is a single gzip layer over
- * a tar (`.tgz`), so anything beyond a small bound is a malformed or hostile
- * archive (an unbounded gzip-of-gzip nesting from a compromised registry). The
- * cumulative decompressed-size ceiling — the real bomb defense — is future work. */
+/* The most compression layers (gzip or xz) an archive may nest. Keep the
+ * bound: an archive is untrusted, and one nesting layer upon layer is
+ * malformed or hostile. Nothing bounds the total decompressed size. */
 const MAX_COMPRESSION_LAYERS = 4;
 
 /**
- * Unpack an archive stream into a {@link FileSet}, streaming each entry directly
- * into the content-addressed store via `createOutput` — no scratch directory. So
- * an archive name never places bytes at an on-disk path: tar-slip is structurally
- * impossible, and two entries differing only in case survive as distinct blobs
- * (rejected only if actually staged to a case-folding filesystem — see
- * writeFileSet). An absolute entry name is made relative (leading `/` stripped,
- * standard tar behavior); a `../` traversal that escapes the tree is dropped.
+ * Unpack an archive stream into a {@link FileSet}: a tar or zip archive, under
+ * any number of gzip or xz layers up to {@link MAX_COMPRESSION_LAYERS}, judged
+ * by its leading bytes.
+ *
+ * Each file is written to an output of its own from `createOutput` (a zip is
+ * first written whole to one, then read from it); an entry's name never
+ * places bytes at a path on disk. An absolute entry name is made relative; an
+ * entry whose name escapes the tree with `../` is dropped. Two names differing
+ * only in case stay two files.
+ *
+ * Rejects where the archive is of no known kind, nests too many compression
+ * layers, or fails to read or write.
  */
 export function unpackStream(ins: Readable, createOutput: () => IOutputHandle): Computable<FileSet> {
-  /* This is fed the live network response, so any hop can fail (a header
-   * truncated below SNIFF_LENGTH, a mid-stream connection drop, a write
-   * error) via several independent listeners: Computable.from keeps the first
-   * outcome so a later terminal event can't re-settle. */
+  /* Several listeners may report a failure (a short header, a dropped
+   * connection, a write error); Computable.from keeps the first outcome. */
   return Computable.from((resolve, reject) => {
     let depth = 0;
     function handleHeader(data: Buffer): Writable | null {
@@ -62,9 +64,7 @@ export function unpackStream(ins: Readable, createOutput: () => IOutputHandle): 
           return zip;
         }
         case MIME_XZ: {
-          /* `.tar.xz` — the shape most native toolchains publish. A compression
-           * layer like gzip's, re-sniffed the same way and counted against the
-           * same bound. */
+          /* A compression layer like gzip's (`.tar.xz`), counted against the same bound. */
           if (++depth > MAX_COMPRESSION_LAYERS) {
             reject(new FabrError(`Archive nests more than ${MAX_COMPRESSION_LAYERS} compression layers`));
             return null;
@@ -93,6 +93,9 @@ export function unpackStream(ins: Readable, createOutput: () => IOutputHandle): 
   });
 }
 
+/** Buffer the first `headerSize` bytes of `ins` (fewer where it ends first),
+ * hand them to `cb`, and pipe the whole stream into the sink `cb` returns, or
+ * destroy it where `cb` returns null. Failures are reported to `onError`. */
 function magicByteStream(
   ins: Readable,
   headerSize: number,
@@ -103,13 +106,12 @@ function magicByteStream(
   let bufferSize = 0;
 
   function headerEnd(): void {
-    /* Input stream ended early. Well, try anway */
+    /* The input ended before a whole header: judge what arrived. */
     invokeCallback();
   }
 
   function headerError(err: Error): void {
-    /* Input stream failed before we had a full header — settle the build rather
-     * than hanging forever on a Computable that never resolves. */
+    /* The input failed before a whole header arrived. */
     onError(err);
   }
 
@@ -132,9 +134,8 @@ function magicByteStream(
     } else {
       outs.write(head);
       ins.pipe(outs);
-      /* Past the header, the pipe is live: a mid-stream input drop or an output
-       * (decompressor/tar-parse) failure must reject, not throw an uncaught
-       * 'error' that takes down the process. */
+      /* Report a failure of either side through `onError`: an unhandled
+       * 'error' event would end the process. */
       ins.on("error", err => outs.destroy(err));
       outs.on("error", onError);
     }

@@ -121,9 +121,10 @@ function autoAttachOf(repository: string, value: { toString(): string } | undefi
 const CLASSIFIED_MANIFEST = "META-INF/MANIFEST.MF";
 
 /**
- * @return the BOM dependencies of a `pom`-packaged package: each jar its
- * effective `dependencyManagement` gives a version, once per package. A
- * package of any other packaging manages only its own build, and has none.
+ * @return the BOM dependencies of a `pom`-packaged package: each unclassified
+ * jar its effective `dependencyManagement` gives a version, the first entry
+ * for each package. A package of any other packaging has none: its
+ * `dependencyManagement` applies to its own build only.
  */
 function bomDependencies(pom: EffectivePom): Requirement[] {
   if (pom.packaging !== "pom") {
@@ -177,6 +178,7 @@ function lowestSatisfying(versions: readonly MavenVersion[], constraint: MavenCo
   return satisfying.find(version => MAVEN_VERSIONS.isStable?.(version) !== false) ?? satisfying[0];
 }
 
+/** A `maven_repository`: reads packages from, and publishes them to, the Maven repository at `url`. */
 export class MavenRepository implements Repository, RepositoryReader<MavenVersion, MavenConstraint>, RepositoryWriter {
   public readonly format = MAVEN_FORMAT;
   private readonly versions = new MemoryCache<string, MavenVersion[] | undefined>();
@@ -195,7 +197,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     /** What signs the repository's requests in: the one it is made with, else its server's from `settings.xml`. */
     credential?: Credential
   ) {
-    /* Signed in where the repository is alone, whatever URL a request is ever made to. */
+    /* Send the credential to the repository's own origin only, whatever URL a request is made to. */
     this.credential = onlyTo(
       new URL(url).origin,
       credential ?? MavenAuth.credential(() => javaPluginContext(this.context.execution).mavenAuth(), serverId)
@@ -363,6 +365,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     return sendRequest(`${this.url}/${path}`, { ...request, credential: this.credential });
   }
 
+  /** Make the error for a failed request, with the response's body as its detail. */
   private failure(doing: string, path: string, response: HttpResponse): FabrError {
     const detail = response.body.toString("utf8").trim();
     return new FabrError(`${doing} ${this.url}/${path} failed (${response.statusCode})${detail === "" ? "" : `: ${detail}`}`);
@@ -443,6 +446,11 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     ]);
   }
 
+  /**
+   * Get the lowest published version satisfying `constraint`, preferring a
+   * stable one, reading the version list again where the one held has none.
+   * Undefined for a malformed constraint, or a package the repository lacks.
+   */
   public lowestAvailable(name: string, constraint: string): Computable<MavenVersion | undefined> {
     let parsed: MavenConstraint;
     try {
@@ -459,6 +467,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     });
   }
 
+  /** List a package's published versions, or undefined where the repository lacks it. */
   public availableVersions(name: string): Computable<MavenVersion[] | undefined> {
     return this.publishedVersions(name, false);
   }
@@ -468,10 +477,12 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
   }
 
   /**
-   * Fetch a package's artifact, checked against its `.sha1`. A `pom`-packaged
-   * package has one only where a jar is published beside its POM, as a
-   * dependency on it fetches the jar whatever the POM's packaging says;
-   * otherwise (a BOM, an aggregator) it has none.
+   * Fetch a package's files: where its POM says a `.module` describes it, the
+   * files of its `java-runtime` variant; otherwise its artifact, checked
+   * against its `.sha1`. A `pom`-packaged package has an artifact only where a
+   * jar is published beside its POM, which a Maven dependency on it fetches
+   * whatever the packaging says; otherwise (a BOM, an aggregator) it has no
+   * files.
    */
   public fetch(name: string, version: MavenVersion): Computable<PackageFileSet> {
     return this.variantOf(name, version.text, "java-runtime").then(variant =>
@@ -481,9 +492,10 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
 
   /**
    * Fetch the files of a package's variant, each where its `.module` places it,
-   * checked against the `.sha1` the repository publishes beside it: the hashes
-   * a `.module` states are not always the published files' (Jackson's are
-   * stale). A variant another module holds has none of its own.
+   * checked against the `.sha1` the repository publishes beside it. Do not
+   * check against the hashes the `.module` states: they are not always the
+   * published files' (Jackson's are stale). A variant another module holds has
+   * no files of its own.
    */
   private fetchVariantFiles(name: string, version: MavenVersion, variant: GradleVariant): Computable<PackageFileSet> {
     const coordinate = this.coordinateOf(name, version.text);
@@ -661,7 +673,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     try {
       parseMavenVersion(coordinate.version);
     } catch {
-      /* What is no Maven version (a range's floor just above a version) is published nowhere. */
+      /* What is no Maven version (the lowest version of `(1.0,…`, written `(1.0`) is published nowhere. */
       return Computable.resolve(undefined);
     }
     const url = `${this.versionUrl(coordinate)}/${coordinate.artifactId}-${coordinate.version}.pom`;
@@ -680,8 +692,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
   /**
    * Read the `.sha1` the repository publishes beside `file`, a file of the
    * published version `coordinate`, or undefined where it publishes none. The
-   * answer is kept in the build cache, absence included: what a published
-   * version publishes does not change.
+   * answer, absence included, is kept in the build cache and never re-read.
    */
   private publishedSha1Of(coordinate: PomCoordinate, file: string): Computable<string | undefined> {
     return this.context

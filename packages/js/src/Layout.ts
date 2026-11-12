@@ -35,14 +35,16 @@ import { assembleNodeModules, INSTANCE_AREA, packageDirectories } from "./NodeMo
 import { ISelfPackage, pnpManifestOf } from "./PnPManifest";
 
 /**
- * How a tool reaches its dependencies. Two peers, one choice per rule:
+ * The `layout` config tokens: how a step's tool reaches its packages. Each rule
+ * chooses one.
  *
- * - `pnp` — no tree at all: each package is materialized once in the cache's
- *   tree pool and a generated PnP table says what resolves to what; a step
- *   stages only its own sources. Used by every tool fabr can hand a table to.
- * - `node_modules` — a real tree at the mount point ({@link assembleNodeModules}):
- *   the direct deps visible at the top, each package resolving its own. What a
- *   tool that resolves through the filesystem needs.
+ * - `pnp`: no tree is staged. Each package is a tree in the cache's tree pool,
+ *   and a generated PnP table says what each import resolves to; the step
+ *   stages only its own files and the table. For a tool fabr can hand a PnP
+ *   table to.
+ * - `node_modules`: a `node_modules` tree staged at the mount
+ *   ({@link assembleNodeModules}), the direct deps linked at its top. For a tool
+ *   that resolves packages through the filesystem.
  */
 export const PNP = "pnp";
 export const NODE_MODULES = "node_modules";
@@ -50,30 +52,30 @@ export const NODE_MODULES = "node_modules";
 /** The layout tokens, for a caller that validates one. */
 export type NodeLayout = typeof PNP | typeof NODE_MODULES;
 
-/**
- * The action's packages laid out for a step, as its `layout` config says, with
- * every tree the layout addresses made in the pool.
- */
+/** The action's packages laid out for a step, as its `layout` config says. */
 export interface IPackageLayout {
   /** What the layout stages beside the step's own files: the `node_modules`
    *  tree at its mount, or the PnP table. */
   readonly files: FileSet;
-  /** The trees the layout addresses in the pool rather than stages, by where
-   *  each lies relative to the working directory — none under `node_modules`,
+  /** The packages the PnP table names in the tree pool, by each one's
+   *  location relative to the working directory; empty for `node_modules`,
    *  whose packages are among {@link files}. */
   readonly trees: ReadonlyMap<string, PackageFileSet>;
-  /** The packages among the action's `deps` themselves: what the layout
-   *  answers a lookup by name with where the requirer's own edges do not. */
+  /** The packages among the action's `deps` themselves: what a lookup by name
+   *  falls back to where the requirer's own dependencies do not answer it. */
   readonly members: ReadonlyArray<PackageFileSet>;
   /**
-   * Name a read of the staged work as the action's key does: a path under the
-   * working directory that is no package's by its name there; a path within a
-   * package by the package's canonical route and the path within it, the
-   * package absent where the path names one the layout has no package for (a
-   * probe of a `node_modules/<name>` that is not there); and a path outside
-   * the working directory that is no package's (a linked install's real path,
-   * the interpreter) not at all. Reads are the paths a tool records them by,
-   * real or virtual; a virtual path names the wiring it belongs to.
+   * Name a path the tool read (absolute, real or virtual, as the tool records
+   * it) as the action's key names it:
+   * - a path within a package: `{route, path, package}`, the package's
+   *   canonical route (the dependency names the key's walk first reaches it by)
+   *   and the path within it. Under `node_modules`, a path under
+   *   `node_modules/<name>/` where no direct dep has that name gives the route
+   *   `[<name>]` with no `package` (a probe for a package that is not there).
+   * - any other path under the working directory: `{file}`, its name there.
+   * - anything else, including a path outside the working directory that is
+   *   no package's (a linked install, the interpreter) and a path into the
+   *   tree's hidden links: undefined.
    */
   nameRead(read: string): ReadName | undefined;
 }
@@ -83,10 +85,12 @@ export type ReadName = { file: string } | { route: string[]; path: string; packa
 
 /**
  * Lay out the action's `deps` as its `layout` config says, for the step working
- * in `dir`: a `node_modules` tree at `mount` (with the package the sources
- * themselves are linked at its name, where the action says one), or a PnP table
- * over the pool's trees, each of which is ensured first. An install the action
- * links in ({@link BuildAction.links}) is no package of either.
+ * in `dir`: a `node_modules` tree at `mount` (with a link from the sources'
+ * own package name to the sources, where the action's config names one), or a
+ * PnP table over the tree pool, each package's tree made with `ensureTree`
+ * first. An install the action links in ({@link BuildAction.links}) is left out
+ * of either. Throws where the `layout` config is neither token or `deps` is not
+ * a list.
  */
 export function layoutPackages(
   action: BuildAction,
@@ -133,8 +137,8 @@ function layoutConfig(action: BuildAction): NodeLayout {
   return layout;
 }
 
-/** Read the `deps` input: the packages the tool reaches — the
- *  action's discoverable input where the tool reports what it read of them. */
+/** Read the action's `deps` input, discoverable or not: the packages the tool
+ *  reaches. */
 export function depsInput(action: BuildAction): FileSet[] {
   const value = action.discoverable?.deps ?? action.inputs.deps;
   if (!Array.isArray(value)) {
@@ -148,8 +152,8 @@ export function selfConfig(self: ISelfPackage | undefined): Record<string, strin
   return self === undefined ? {} : { selfName: self.name, selfLocation: self.location };
 }
 
-/** Read the `self` config back: the package identity the staged sources
- *  themselves carry, where they are a package's. */
+/** Read back the config {@link selfConfig} wrote: the package name and
+ *  location of the staged sources, where they are a package's. */
 function selfPackage(action: BuildAction): ISelfPackage | undefined {
   const name = action.config.selfName;
   const location = action.config.selfLocation;
@@ -157,9 +161,9 @@ function selfPackage(action: BuildAction): ISelfPackage | undefined {
 }
 
 /**
- * @return the sources' own entry in a `node_modules` tree: a link from their package's
- * name to where they lie, so they resolve their own name as their consumers do.
- * Nothing where the sources are no package's.
+ * @return the sources' own entry in a `node_modules` tree: a link from their
+ * package's name to where they lie, so an import of their own name resolves
+ * to them. Empty where the sources are no package's.
  */
 function selfLink(self: ISelfPackage | undefined, mount: string): FileSet {
   if (self === undefined) {
@@ -178,8 +182,8 @@ function linkPattern(action: BuildAction): string | undefined {
   return names.length === 0 ? undefined : `^(${names.map(name => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(/|$)`;
 }
 
-/** @return the canonical route of each package reachable from `deps`: the first the
- *  key's own walk reaches it by, as a deps row names it. */
+/** @return the canonical route of each package reachable from `deps`: the
+ *  dependency names {@link walkPackages} first reaches it by. */
 function routesOf(deps: FileSet[]): Map<PackageFileSet, string[]> {
   const routes = new Map<PackageFileSet, string[]>();
   walkPackages(deps, (pkg, route) => {
@@ -191,11 +195,11 @@ function routesOf(deps: FileSet[]): Map<PackageFileSet, string[]> {
 }
 
 /**
- * Name reads of a `node_modules` layout: a path under a package's instance
- * directory is that package's (a link's target is what a module load records,
- * the real path); a path under the mount's own `<name>/` is the direct member
- * of that name, or a package the layout does not have where there is none; a
- * path under the mount anywhere else (its hidden links) is nothing.
+ * Make {@link IPackageLayout.nameRead} for a `node_modules` layout. A path under
+ * a package's instance directory is that package's (a module load records the
+ * link's target, the real path). A path under the mount's top-level `<name>/`
+ * is the direct dep of that name, or `[<name>]` with no package where there is
+ * none. A path anywhere else under the mount (the hidden links) is undefined.
  */
 function treeReadNamer(
   dir: string,
@@ -236,10 +240,10 @@ function topLevelName(path: string): { name: string; path: string } | undefined 
   return { name: segments.slice(0, depth).join("/"), path: segments.slice(depth).join("/") };
 }
 
-/** Name reads of a PnP layout: a path within a package's location — its
- *  virtual location where it has one, else its tree in the pool — is that
- *  package's; a physical path into a tree that only virtual locations name is
- *  the first of them. */
+/** Make {@link IPackageLayout.nameRead} for a PnP layout. A path within a
+ *  package's location (its virtual location where it has one, else its tree in
+ *  the pool) is that package's. A physical path into a tree that only virtual
+ *  locations name is the package at the first of them. */
 function poolReadNamer(
   dir: string,
   locations: ReadonlyArray<[string, PackageFileSet]>,
@@ -278,6 +282,7 @@ function poolReadNamer(
   };
 }
 
+/** Name `path` within `pkg` by the package's route; undefined where `pkg` has none. */
 function within(routes: ReadonlyMap<PackageFileSet, string[]>, pkg: PackageFileSet, path: string): ReadName | undefined {
   const route = routes.get(pkg);
   return route === undefined ? undefined : { route, path, package: pkg };

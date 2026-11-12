@@ -30,9 +30,9 @@ const SECRET_FILE_MODE = 0o600;
  * A file whose content is secret because the place it was read from says so
  * (an SSM `SecureString`). It is held in memory, staged readable by its owner
  * alone, and never stored in the build cache or published. Its `hash` is a
- * digest of its source's `identity` — what it is and which version — never of
- * its content, so a cache key holding it says nothing about the value and stays
- * the same while the source's version does.
+ * digest of its source's `identity` (what it is and which version), never of
+ * its content: a cache key holding it reveals nothing of the value, and changes
+ * when the source's version does.
  */
 export class SecretFile implements IFile {
   public readonly hash: string;

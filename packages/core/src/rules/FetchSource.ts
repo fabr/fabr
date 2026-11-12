@@ -31,8 +31,8 @@ import { RepositoryImplementation, RepositoryRegistration } from "./Types";
 import { mapComputable } from "../support/Functional";
 
 /**
- * A `fetch` table is a declared set of downloads — a name, a URL, and the
- * integrity digest the content must match:
+ * The file source a `fetch` declaration is: a table of downloads, each a name,
+ * a URL, and the integrity digest the content must match:
  *
  * ```
  * fetch @dl {
@@ -40,37 +40,31 @@ import { mapComputable } from "../support/Functional";
  * }
  * ```
  *
- * It is a plain {@link FileSource} — a namespace whose NAMES are the declared
- * member table and whose CONTENTS download on demand — not a repository: it
- * vends no references and joins no resolution (nothing to version-select).
- * `@dl:amperize.tgz` is the downloaded file (usable as-is), and
- * `@dl:amperize.tgz:*:**` projects into it exactly as `./amperize.tgz:*:**`
- * would over a local copy: the projection walker's descent probes ({@link
- * FetchSource.get}) land on the member, download it, and expand it — nothing
- * here knows what an archive is.
+ * Its names are the table's members; it is no repository, and nothing in it
+ * is resolved. `@dl:amperize.tgz` is the downloaded file, and
+ * `@dl:amperize.tgz:*:**` projects into it as `./amperize.tgz:*:**` would into
+ * a local copy: the projection's lookup ({@link FetchSource.get}) lands on the
+ * member, which is downloaded, and expands it as any archive is expanded.
  *
- * A member is fetched only when a projection names it (the table is a pin, not
- * a download list), and every delivered file is ingested on arrival — hash
- * verified against the declared digest, mime sniffed — because the walker
- * judges descent from the file's properties.
+ * A member is downloaded only when a reference names it, and is checked
+ * against its declared digest each time it is handed back, from the cache or
+ * not.
  */
 class FetchSource implements FileSource {
   constructor(
     /** The declared name of the fetch table (`@dl`) — for messages. */
     private readonly declaredName: string,
-    /** Member path (slash form) -> its declaration. */
+    /** Each member's declaration, by its path (slash form). */
     private readonly members: Map<string, FetchMember>,
     private readonly context: TargetContext
   ) {}
 
   /**
-   * Download the member files the pattern selects — those and only those —
-   * each named by the pattern's own projection (so the written-name rule and
-   * `-> tmpl` renames apply as over any container). A pattern that reaches
-   * *into* a member is descent's business and matches nothing here, but the
-   * table being a closed namespace tells "nothing yet" apart from "nothing
-   * ever": a pattern that neither names a member nor could descend into one
-   * is an unknown download, failed with the declared table.
+   * Download the members `name` selects, each named by the pattern's
+   * projection (a `-> tmpl` rename applied), and return them as one set. A
+   * pattern that selects no member but reaches into one returns the empty
+   * set, the projection expanding the member itself; one that does neither
+   * rejects, listing the members the table declares.
    */
   public find(name: Name, prefix = ""): ComputableSource<FileSet> {
     const projector = name.makeProjector(prefix);
@@ -82,9 +76,8 @@ class FetchSource implements FileSource {
       if (as !== undefined) {
         matched.push({ path, as, member });
       } else {
-        /* The pattern's component-prefix at this member's own depth: when it
-         * matches, the pattern reaches INTO the member — the walker's descent
-         * probes will land on it — so an empty direct result is not a miss. */
+        /* Where the pattern's leading components at this member's depth match
+         * the member, the pattern reaches into it. */
         const probe = prefixes[path.split("/").length - 1];
         if (probe !== undefined && probe.makeProjector()(path) !== undefined) {
           reachable = true;
@@ -100,11 +93,9 @@ class FetchSource implements FileSource {
   }
 
   /**
-   * Look up a member exactly — how a descent probe lands on a download before
-   * expanding into it. Downloads on demand, like {@link find}; a path that is
-   * not a member is simply undefined (probes are speculative — whether an
-   * unmatched name is an error is the projection's judgment, made over the
-   * whole walk).
+   * Look up the member `name` exactly, downloading it as {@link find} does.
+   * @return the member's file, or undefined where `name` is no member (whether
+   * that is an error is the projection's to judge).
    */
   public get(name: string): ComputableSource<IFile | undefined> {
     const member = this.members.get(name);
@@ -114,14 +105,13 @@ class FetchSource implements FileSource {
     return this.download(name, member);
   }
 
-  /** Make one fetched member a FileSet, its origin stamped: where this content
-   * came from is the download's own knowledge, recorded at ingest (a
-   * FileSource stamps origin on what it yields). */
+  /** Make a FileSet of one downloaded member, named `as`, with its `fetch` provenance. */
   private delivered(as: string, file: IFile, path: string, member: FetchMember): FileSet {
     const origin: IFetchOrigin = { kind: FETCH_PROVENANCE, source: this.declaredName, member: path, url: member.url };
     return new FileSet(new Map([[as, file]]), origin);
   }
 
+  /** Make the error for a pattern naming no member, listing the members there are. */
   private unknownDownload(name: Name): Error {
     return new FabrError(`${this.declaredName} has no download matching '${name.toString()}'`).withHelp(
       this.members.size > 0 ? `it declares: ${[...this.members.keys()].sort().join(", ")}` : "it declares no downloads"
@@ -129,9 +119,10 @@ class FetchSource implements FileSource {
   }
 
   /**
-   * Fetch one member, verifying its digest as the bytes stream past so a
-   * mismatch throws before the cache entry commits. The result is the file
-   * itself — never unpacked (see the class comment).
+   * Fetch one member, cached by its URL, and return the file as downloaded
+   * (never unpacked). The digest is checked as the bytes arrive, so a
+   * mismatch is never cached, and again on the file returned
+   * ({@link verifiedAgainst}). Rejects with an IntegrityError on a mismatch.
    */
   private download(path: string, member: FetchMember): Computable<IFile> {
     return fetchFile(this.context, {
@@ -141,9 +132,8 @@ class FetchSource implements FileSource {
       name: path,
       source: () => Computable.resolve({ url: member.url, expected: member.digest }),
     }).then(files => {
-      /* By single file rather than by name: the cache entry is keyed on the
-       * URL, so content first ingested under another declared name serves
-       * this one too. */
+      /* Take the entry's one file whatever its name: the entry is keyed by
+       * URL, so it may have been stored under another member's name. */
       const file = files.getSingleFile();
       if (!file) {
         throw new FabrError(`download '${path}' in ${this.declaredName} did not produce a file`);
@@ -153,10 +143,11 @@ class FetchSource implements FileSource {
   }
 }
 
-/** Provenance kind for a delivered download: which table member the content
+/** The provenance kind of a download: which member of which table the content
  * is, and the URL it was fetched from. */
 export const FETCH_PROVENANCE = "fetch";
 
+/** A {@link FETCH_PROVENANCE} step. */
 interface IFetchOrigin extends IProvenanceStep {
   readonly kind: typeof FETCH_PROVENANCE;
   /** The declared name of the fetch table (`@dl`). */
@@ -180,17 +171,15 @@ interface FetchMember {
   readonly digest: ExpectedDigest;
 }
 
-/** Bumped when what is stored under a fetch key changes shape. */
+/** The cache tag of a download: bump it when what is stored under a fetch key changes shape. */
 const FETCH_TAG = "fetch:1";
 
 /**
- * Judge a delivered file against the declared digest. The streaming check in
- * {@link FetchSource.download} gates only the cache *commit*: a cache hit (or a
- * second member sharing the URL under a different digest) serves stored bytes
- * with no fetch to stream through, so the declaration is re-judged against the
- * store here — an edited digest fails identically warm or cold. Free in the
- * declared-sha256 case (the store's own algorithm — a hash compare); any other
- * algorithm reads the content back through a hasher.
+ * Check `file` against `digest`, so a cached file (or one stored for another
+ * member with the same URL) is checked as a fresh download is. A digest in the
+ * store's own algorithm is compared with the file's hash; any other reads the
+ * content back through a hasher.
+ * @return `file`; throws or rejects with an IntegrityError where it does not match.
  */
 function verifiedAgainst(file: IFile, digest: ExpectedDigest, url: string): Computable<IFile> {
   if (digest.algorithm === HASH_ALGORITHM) {
@@ -209,25 +198,23 @@ function verifiedAgainst(file: IFile, digest: ExpectedDigest, url: string): Comp
   });
 }
 
-/** Re-encode the store's hex hash to the declaration's encoding, so the
- *  mismatch message shows both sides in the form the user wrote. */
+/** @return the store's hex hash in `encoding`, the declared digest's, for a mismatch message. */
 function encodeDigest(hexHash: string, encoding: "base64" | "hex"): string {
   return encoding === "hex" ? hexHash : Buffer.from(hexHash, "hex").toString("base64");
 }
 
 /**
- * Read the declared table. Each member is a STRING property whose values are its
- * URL and its integrity digest, told apart **by shape** rather than by position:
- * an SRI value is `<algorithm>-<base64>` and a URL has a scheme, so the two
- * cannot be confused and their order does not matter. The digest is required:
- * a URL is not immutable by itself (a git SHA in the path makes it so, but only
- * the author knows that).
+ * Read the table a `fetch` declaration declares. Each member is a STRING
+ * property whose values are its URL and its integrity digest, in either order:
+ * an SRI value (`<algorithm>-<base64>`) is the digest, the other the URL. Both
+ * are required. Rejects as {@link readMember} and {@link rejectShadowedMembers}
+ * throw.
  */
 function readMembers(context: TargetContext): Computable<Map<string, FetchMember>> {
-  /* Members via the wildcard surface: every non-declared property, its key
-   * variable-substituted — so a member may be named `${VARIANT}.tgz` — while
-   * the VALUE resolves under the written property name. Keys are held in
-   * slash form: a member is a file in the set, so its name is a path. */
+  /* Every property the targetdef does not declare is a member, its key
+   * substituted (so a member may be named `${VARIANT}.tgz`) and its value read
+   * under the property name as written. Keys are held in slash form, as file
+   * paths. */
   return context.getWildcardProperties().then(wildcards =>
     Computable.forAll(
       wildcards.map(member =>
@@ -248,11 +235,9 @@ function readMembers(context: TargetContext): Computable<Map<string, FetchMember
 }
 
 /**
- * Refuse a member name that is a path prefix of another member — the same rule
- * that keeps a target name from conflicting with an implicit namespace: with
- * both `a` and `a/b.tgz` declared, a reference `@dl:a/b.tgz` would be
- * ambiguous between the deeper member and a projection *into* member `a`.
- * Rejected at declaration so the ambiguity is impossible by construction.
+ * Throw where a member's path is a path prefix of another's: with both `a` and
+ * `a/b.tgz` declared, `@dl:a/b.tgz` could name the deeper member or a
+ * projection into `a`.
  */
 function rejectShadowedMembers(declaredName: string, paths: string[]): void {
   const sorted = [...paths].sort();
@@ -265,6 +250,7 @@ function rejectShadowedMembers(declaredName: string, paths: string[]): void {
   }
 }
 
+/** Read one member's value, its URL and digest. Throws where it has other than one of each. */
 function readMember(declaredName: string, memberName: string, value: string): FetchMember {
   const values = value
     .trim()
@@ -285,13 +271,13 @@ function readMember(declaredName: string, memberName: string, value: string): Fe
   }
   const digest = parseIntegrity(integrity[0]);
   if (!digest) {
-    /* isIntegrity matched, so the algorithm is one we know — unreachable unless
-     * the two disagree. */
+    /* Reached only where isIntegrity and parseIntegrity disagree. */
     throw new FabrError(`${where} has an unreadable integrity digest '${integrity[0]}'`);
   }
   return { url: urls[0], digest };
 }
 
+/** Make the file source of the `fetch` declaration `context` reads. */
 function createFetchSource(context: TargetContext): Computable<FileSource> {
   return readMembers(context).then(members => new FetchSource(context.name, members, context));
 }

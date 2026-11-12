@@ -842,7 +842,7 @@ function typingContext(text: string, offset: number): TypingContext {
     }
     if (char === "$" && text[i + 1] === "{") {
       /* A substitution's name, then perhaps a requirement and an edit (`#p`,
-       * `%p`, `/a/b`), which is no comment. */
+       * `%p`, `/a/b`); a `#` in it starts no comment. */
       const end = skipTo(i + 1, "}", true);
       if (end === undefined) {
         return /^\s*[\w.-]*$/.test(text.slice(i + 2, offset)) ? { kind: "substitution" } : { kind: "other" };

@@ -236,7 +236,8 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
    * Fetch the objects `reference` can select, named by their keys: the object
    * its first projection names literally, or everything under the literal head
    * of its pattern (see {@link selectObjects}). Its projections then select from
-   * them, as from any repository's files.
+   * them, as from any repository's files. Rejects where `reference` names only
+   * a bucket, or where nothing is found and a fetch was refused with a 403.
    */
   public resolve(reference: RepositoryRef): Computable<FileSet> {
     const bucket = reference.name;
@@ -300,8 +301,9 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
 
   /**
    * Find where requests for `bucket` go: its region in AWS, or the account's
-   * endpoint. Asked once per run, which is also where a bucket that does not
-   * exist is refused (an object's 404 cannot say whether its bucket is missing).
+   * endpoint. Asked once per run per bucket; a bucket that does not exist is
+   * refused here, since S3's 404 for an object does not say whether its bucket
+   * exists.
    */
   private locate(bucket: string): Computable<IBucketLocation> {
     const { endpoint, region } = this.account;

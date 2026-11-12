@@ -25,129 +25,101 @@ import type { RefSource, RepositoryReader, RepositoryRef } from "../core/Reposit
 import type { IRepositoryResolveTask } from "../support/Tasks";
 import type { ITaskReport } from "../support/Execute";
 
-/** A bare package name — the per-name slot minimal version selection selects
- * over, and the namespace a {@link Requirement} demands from. */
+/** A package's name, which a {@link Requirement} names and the resolver
+ * selects one version of (besides any forks). */
 export type PackageName = string;
 
 /**
- * The identity of one concrete selected package version — `name@version` (the
- * resolver's `nodeId` form): the key every per-node table in a resolution is
- * joined by. A `requiredBy` holds one, or {@link ROOT_REQUIRER} for a root
- * requirement.
+ * A selected package version, written `name@version` (`nodeId`): the key of
+ * every per-version table of a resolution. A `requiredBy` holds one, or
+ * {@link ROOT_REQUIRER} for a root requirement.
  */
 export type NodeId = string;
 
-/** The name a requirer resolves a dependency by: normally the dependency's own
- * {@link PackageName}, but the local name of a renamed requirement
- * ({@link Requirement.renameTo}) — hence the name a consumer mounts it under. */
+/** The name a requirer knows a dependency by, and the name it is installed
+ * under: the package's own name, or a requirement's
+ * {@link Requirement.renameTo}. */
 export type DependencyName = string;
 
 /**
- * A requirement on a package: the package, the versions of it that answer,
- * any override marker written on that, the name it is to be known by where
- * that is not the package's own, and whether something else is expected to
- * supply it.
- *
- * It names a package within ONE repository, whose format interprets
- * `versionConstraint`; a reference ({@link RepositoryRef}) is a requirement
+ * A requirement on a package within one repository, whose format reads
+ * `versionConstraint`. A reference ({@link RepositoryRef}) is a requirement
  * addressed to a named repository.
  */
 export interface Requirement {
   readonly name: PackageName;
-  /** The version or range wanted, in the syntax of the repository's format.
-   * Absent where what names the package states none: a catalog member, or a
-   * package that has no version. Any version of the package then answers. */
+  /** The version or range wanted, in the format's syntax. Undefined where
+   * none is stated (a catalog member, an unversioned package): any version
+   * then satisfies it. */
   readonly versionConstraint: string | undefined;
   /**
-   * A user-written override marker on an exact version (`@npm:pkg:1.4.2?` /
-   * `@npm:pkg:2.0.0!`; `versionConstraint` carries the bare version):
+   * The marker written on the requirement (`@npm:pkg:2.0.0!`,
+   * `@npm:pkg:1.4.2?`); `versionConstraint` holds the version without it.
    *
-   * - `"force"` (`!`) — full substitution, npm-`overrides` semantics: every
-   *   requirement on the package, from any requirer, is replaced by exactly
-   *   this version at resolve time. Ranges the forced version does not
-   *   satisfy are recorded as `MVSResolution.coerced` — data, never
-   *   violations. Participates in resolution (and its memo identity).
-   * - `"alternate"` (`?`) — a sanction and a floor for others' requirements,
-   *   never an ordinary demand: it mounts nothing of its own, and raises the
-   *   floor of every requirement on the package that its version satisfies
-   *   (MVSResolver's `floorOf`), so a package nothing else requires gets
-   *   nothing. Where the converged tree requires the package solely
-   *   floorlessly, the written version supplies the selection (MVSResolver's
-   *   attach-last branch). Written with no version (`@npm:debug?`), it
-   *   sanctions every version of the package and raises and supplies none.
-   *   Included in the canonical roots and the resolution memo key (its
-   *   `requirementKey` carries the marker); the sanction itself is
-   *   judged by the consumer at delivery.
+   * - `"force"` (`!`): every requirement on the package, from any requirer,
+   *   is answered by exactly this version, as npm's `overrides` do. Those
+   *   the version does not satisfy are listed in `MVSResolution.coerced`,
+   *   not as violations.
+   * - `"alternate"` (`?`): the version may be shipped beside others of the
+   *   package in a strict collection. It demands nothing and installs
+   *   nothing: it raises the lower bound of every requirement on the package
+   *   that it satisfies, and supplies the selection where the package is
+   *   otherwise required only without a lower bound. Written with no version
+   *   (`@npm:debug?`), it permits every version and raises and supplies none.
+   *   It is a root of the resolution, and part of its memo key.
    */
   readonly override?: "alternate" | "force";
   /**
-   * The name whoever requires the package knows it by, when that differs from
-   * the package's own (`@npm:typescript:6.0.3 -> typescript-6`; npm's
-   * `"wrap-ansi-cjs": "npm:wrap-ansi@^7.0.0"`, Cargo's `package =` rename).
-   * Purely local: a renamed requirement takes part in the joint selection
-   * exactly as an ordinary one, under its resultant name (`requiredAs`): the
-   * renamed package is a package of that name, selected and installed apart
-   * from the one it is a copy of, which only the registry is asked for.
+   * The name the requirer knows the package by, where it differs from the
+   * package's own (`@npm:typescript:6.0.3 -> typescript-6`; npm's
+   * `"wrap-ansi-cjs": "npm:wrap-ansi@^7.0.0"`). The package is selected and
+   * installed under this name (`requiredAs`), apart from the package of its
+   * own name; the registry is asked for it by `name`.
    */
   readonly renameTo?: DependencyName;
   /**
-   * The variant of the selected version the requirement installs, where it is
-   * not the version's own content: a Maven classifier (`linux-x86_64`). The
-   * package is selected under its name as any requirement on it is, so every
-   * variant of it is of one version; the variant is installed as a package of
-   * its own, named `<name>/<variant>`, requiring the package itself.
+   * The variant of the selected version this requirement is for: a Maven
+   * classifier and/or extension (`linux-x86_64`). The
+   * package's version is selected as for any requirement on it, so all its
+   * variants share one version; the variant is installed as a package named
+   * `<name>/<variant>` that requires the package itself.
    */
   readonly variant?: string;
   /**
    * The packages left out of what this requirement brings in, by name, `*`
    * matching any run of characters but `/` (`org.slf4j/*`): Maven's
-   * `<exclusions>`. A package is left out of what a package reached through
-   * this requirement requires, unless another path reaches it without
-   * excluding it.
+   * `<exclusions>`. A package so named is left out unless some path reaches
+   * it without excluding it.
    */
   readonly excludes?: readonly string[];
   /**
-   * The consumer's tree provides this package — the peer relationship, fabr's
-   * `provided_deps` (which npm manifests spell `peerDependencies`, an
-   * "optional" one also listed in `peerDependenciesMeta`). Either way the
-   * requirement is attach-first: primarily a constraint on whatever the tree
-   * selects for `name`, satisfied by any selection in range — which is what
-   * keeps a wide multi-major peer range (chai '>= 2.1.2 < 5') from demanding
-   * the range's floor beside an already-satisfying selection. The value is the
-   * strength of the expectation, i.e. what happens when the converged tree
-   * provides nothing:
+   * Set where the consumer is to provide the package: fabr's `provided_deps`,
+   * npm's `peerDependencies`. The requirement binds to whatever version the
+   * resolution selects for the package, and demands its lower bound only as
+   * follows:
    *
-   * - `"expected"` — the failed expectation is repaired: the requirement fires
-   *   as an ordinary demand for its own minimum (npm's peer auto-install as a
-   *   last resort).
-   * - `"optional"` — never a demand: nothing is installed, ever, and the edge
-   *   simply does not bind. It is still a requirement, recorded so that the
-   *   requirer can REACH the package when a consumer does provide it
-   *   (`zustand` optionally peering on `react`).
+   * - `"expected"`: where nothing else selects the package once the walk is
+   *   done, as npm installs a missing peer.
+   * - `"optional"` (npm's `peerDependenciesMeta`): never. Nothing is installed
+   *   for it; it binds only where the package is otherwise selected.
    */
   readonly provided?: "expected" | "optional";
   /**
-   * A BOM's dependency (Maven's `dependencyManagement`, Gradle's `platform`):
-   * a floor on the package where something else requires it, which never
-   * requires the package itself. Where the resolution requires the package,
-   * by any other edge, floored or not, this one's minimum joins the selection
-   * as an ordinary demand; where nothing does, it does nothing. It is no edge
-   * of its requirer: nothing is laid out, bound or judged through it.
+   * Set on a BOM's dependency (Maven's `dependencyManagement`, Gradle's
+   * `platform`): its lower bound is demanded only where another requirement
+   * requires the package, with or without a lower bound. It is not a
+   * dependency of its requirer: nothing is installed, bound or checked
+   * through it.
    */
   readonly bom?: true;
 }
 
-/**
- * The distinguished `requiredBy` value identifying a root requirement (one
- * passed directly to the resolver, rather than declared by a package).
- */
+/** The `requiredBy` of a root requirement, one passed to the resolver rather
+ * than declared by a package. */
 export const ROOT_REQUIRER = "(root)";
 
-/**
- * A requirement edge in the dependency graph, for provenance: the node that
- * declared the requirement ("name@version", or ROOT_REQUIRER for a root
- * requirement) and the constraint it declared.
- */
+/** A requirement as provenance records it: who declared it, and its
+ * constraint. */
 export interface IRequirementEdge {
   requiredBy: NodeId;
   /** The version constraint the requirement states, if it states one. */
@@ -155,22 +127,18 @@ export interface IRequirementEdge {
 }
 
 /**
- * A concrete package version chosen by a resolver.
+ * A package version the resolver selected.
  *
- * The two provenance edges answer the questions a user asks of a resolution:
- * reachedVia answers "why is this package in my build at all" (following the
- * chain of reachedVia.requiredBy nodes leads back to a root), and selectedBy
- * answers "why this version" (the requirement whose lower bound won).
- * Note that under minimal version selection the winning requirement may have
- * been declared by a version that was itself later superseded — the raised
- * version legitimately remains — so selectedBy.requiredBy is not always a
- * selected node.
+ * `selectedBy` is the requirement whose lower bound selected the version. Its
+ * `requiredBy` may be a version that is not itself selected, one a higher
+ * requirement displaced. `reachedVia` is the requirement through which the
+ * result's walk first reached the selection; following `requiredBy` through
+ * each one's `reachedVia` leads back to a root.
  */
 export interface Selected<V> {
-  /** The package's name — the one it is required as (`requiredAs`), hence
-   * installed as; a renamed package is a package of that name. The key of
-   * every per-name table, and what a violation's and a floor raise's `name`
-   * are. */
+  /** The name the package is required as (`requiredAs`), and installed as:
+   * a rename's name where the requirement renames it. A violation's and a
+   * raise's `name` is this. */
   name: PackageName;
   /** The name the registry publishes the package under, where it is not
    * `name`: what its requirements and content are fetched by. */
@@ -179,44 +147,32 @@ export interface Selected<V> {
   selectedBy?: IRequirementEdge;
   reachedVia?: IRequirementEdge;
   /**
-   * Indices into the resolution's root list identifying which root
-   * requirements (transitively) reach this selection.
-   *
-   * Resolver-internal and NOT persisted: it is the marking pass's own working
-   * state, used to prune superseded nodes and to scope each root's binding. A
-   * consumer carving the resolution into per-root subsets walks the edges
-   * forward instead (`MVSResolution.reachable`); this index answers the opposite
-   * question ("which roots reach me").
+   * The indices, in the resolver's list of roots, of the roots that reach this
+   * selection. Set by the resolver, which finds each root's binding from it;
+   * not persisted. To find what a root reaches, use
+   * `MVSResolution.reachable`.
    */
   reachableFrom?: number[];
   /**
-   * Absent (or 0) for the **principal** selection — the one version per
-   * package name the flat delivery ships. A positive index marks a **fork**: a
-   * further selection of the same package repairing the violated requirement
-   * edges the principal cannot satisfy (jointly-unsatisfiable constraints),
-   * deliverable only by nesting it privately under its requirers. A strict
-   * (linked) delivery refuses reachable forks; a sealed one nests them.
-   * Indices are canonical per package (ascending version order), carrying no
-   * meaning beyond distinctness.
+   * Undefined (or 0) for a package's selection without a fork. A positive
+   * number marks a fork: a further selection of the package, for requirements
+   * the selection without a fork does not satisfy. Forks are numbered from 1
+   * per package in ascending version order.
    */
   fork?: number;
 }
 
-/** A selected package by name: what a reference to it is written from (see
- * {@link Selected.name} and {@link Selected.publishedName}). */
+/** A selected package's names, which a reference to it is written from. */
 export type PackageIdentity = Pick<Selected<unknown>, "name" | "publishedName">;
 
 /**
- * An upper-bound violation found after selection: `requiredBy` declared
- * `versionConstraint` on `name`, and the principal selection of the package does not
- * satisfy it (jointly-unsatisfiable constraints — an exact transitive pin
- * against a higher floor, or ranges confined to different majors). Reported as
- * data: the consumer decides whether it is an error (a linked delivery) or is
- * repaired by the fork selection the resolver packed its edge into (a sealed
- * tool delivery, which nests the fork privately). A violation no fork repairs
- * — nothing published satisfies its constraint — is undeliverable in every
- * mode; a consumer detects that by checking the selections (no selection of
- * `name` satisfies `versionConstraint` — `satisfiedByAnySelection`).
+ * A requirement the selection does not satisfy: `requiredBy` declared
+ * `versionConstraint` on `name`, and `selected` is the version it was checked
+ * against (the package's selection without a fork, or the fork it binds to
+ * where it has only forks).
+ * The same shape lists `MVSResolution.violations`, `coerced` and `shared`.
+ * Where nothing published satisfies the constraint, no fork satisfies it
+ * either (`satisfiedByAnySelection` is false).
  */
 export interface Violation<V> {
   name: PackageName;
@@ -226,11 +182,10 @@ export interface Violation<V> {
 }
 
 /**
- * A floor-raise repair: `versionConstraint`'s declared minimum was never published, so
- * the lowest *published* satisfying version was selected in its place (via the
- * registry's {@link RequirementSource.lowestAvailable} hook). Only raises whose
- * raised version made the result are reported — a raise superseded by a higher
- * requirement's floor never shaped it.
+ * A raised lower bound: `requiredBy` declared `versionConstraint` on `name`,
+ * whose lower bound `declared` was never published, and `raised`, the lowest
+ * published version satisfying it ({@link RequirementSource.lowestAvailable}),
+ * was demanded instead. Listed only where `raised` is selected.
  */
 export interface RaisedFloor<V> {
   name: PackageName;
@@ -241,179 +196,131 @@ export interface RaisedFloor<V> {
 }
 
 /**
- * A hard resolution error, attributed to the root package whose subtree
- * contains it — the errors' analogue of MetadataFetchError's rootName, so a
- * repository can map the failure back to the written reference(s) requiring
- * that root rather than reporting it against the whole collection point.
+ * An error in one requirement of a resolution, attributed to the root through
+ * which it was reached, so that a repository can report it against the
+ * written references requiring that root.
  */
 export interface IResolutionError {
   message: string;
-  /** The root requirement whose subtree reached the error; the erring
-   * requirement's own package when it is itself a root. */
+  /** The package of the root through which the requirement in error was
+   * reached; the requirement's own package where it is a root. */
   rootName: string;
-  /** For a required-only-floorless error: the package that lacks any versioned
-   * requirement (the remedy — an explicit requirement — names it). A consumer
-   * groups the per-edge errors by this key: one missing pin is one fact,
-   * however many requirers hit it. */
+  /** For a package required only without a lower bound: that package. A
+   * consumer groups such errors by it into one. */
   name?: string;
   /** With `name`: the name the registry publishes that package under, where
    * it is required under another (see {@link Selected.publishedName}). */
   publishedName?: string;
-  /** The node that declared the erring requirement (for the grouped render). */
+  /** With `name`: the node that declared the requirement. */
   requiredBy?: string;
-  /** For the grouped required-only-floorless error: every package it names. */
+  /** For the grouped error over packages required only without a lower
+   * bound: every such package. */
   floorless?: ReadonlyArray<PackageIdentity>;
-  /** Remedy line(s) a consumer attached (a concrete pin suggestion), rendered
-   * as the diagnostic's `help`. */
+  /** Remedy lines a consumer attached (a version to require), shown as the
+   * diagnostic's `help`. */
   help?: string[];
 }
 
 /**
- * Defines how versions and version constraints behave for one package ecosystem
- * (semver for npm, maven versioning, PEP 440, etc).
- *
- * V is the (opaque to the resolver) parsed version type; C the parsed constraint type.
+ * The versions and version constraints of one package ecosystem (semver for
+ * npm, Maven's versions). `V` is its parsed version, and `C` its parsed
+ * constraint, both opaque to the resolver.
  */
 export interface VersionDomain<V, C> {
   /**
-   * Parse a constraint string as it appears in package metadata.
-   * @throws if the constraint is syntactically invalid or uses features the
-   *   domain does not support.
+   * Parse a constraint as written in package metadata.
+   * @throws if the constraint is malformed or uses a feature the domain does
+   *   not support.
    */
   parseConstraint(text: string): C;
 
-  /**
-   * The constraint of a requirement that states no version: every version
-   * satisfies it, and it is {@link isFloorless floorless}.
-   */
+  /** The constraint of a requirement that states no version: every version
+   * satisfies it, and it has no lower bound ({@link isFloorless}). */
   readonly unconstrained: C;
 
-  /**
-   * Total order on versions. Returns negative/zero/positive in the usual manner.
-   */
+  /** Compare two versions: negative, zero or positive, in a total order. */
   compare(a: V, b: V): number;
 
-  /**
-   * The minimum version admitted by the constraint. This is what makes MVS
-   * deterministic: constraints are interpreted as lower bounds, so the result
-   * can never be affected by newer versions being published.
-   */
+  /** Get the lowest version the constraint admits: the version a requirement
+   * with it demands. */
   minimumOf(constraint: C): V;
 
   /**
-   * @return true if the constraint expresses no lower bound (its minimum is
-   * the zero version): npm's '*' (ubiquitous among DefinitelyTyped
-   * inter-package deps), and equally an upper-bound-only range ('<4.1.0'),
-   * whose zero floor is fabricated by parsing rather than requested. Under
-   * minimal version selection a requirement's contribution IS its declared
-   * minimum, and a floorless requirement declares none — so it contributes no
-   * selection of its own (demanding the fabricated floor would select, and try
-   * to fetch, a version nothing asked for) and is satisfied by whichever
-   * version(s) of the package the floored requirements select; {@link
-   * satisfies} still enforces any upper bound, reported as an ordinary
-   * violation. A package required ONLY floorless cannot be selected
-   * deterministically (the resolver never consults the registry's version
-   * list) and is reported as an error whose remedy is an explicit requirement.
+   * @return true if the constraint has no lower bound (its minimum is the zero
+   * version), otherwise false: npm's `*`, or an upper-bound-only range such as
+   * `<4.1.0`. A requirement with such a constraint demands no version; it is
+   * met by whatever the other requirements select, its upper bound still
+   * checked. A package required only so is an error.
    */
   isFloorless(constraint: C): boolean;
 
   /**
-   * What a provided requirement outside the range of the selection it binds
-   * comes to. It is never repaired by a fork — a private copy is the opposite
-   * of provided — so the mismatch is either `"tolerate"`d (bound anyway and
-   * recorded as `MVSResolution.shared`) or `"refuse"`d (a violation). An
-   * ecosystem with provided requirements states which; absent refuses.
+   * How a provided requirement that its package's selection does not satisfy
+   * is listed: `"tolerate"` binds it anyway and lists it in
+   * `MVSResolution.shared`; `"refuse"`, or undefined, lists it as a violation.
+   * It never gets a fork.
    */
   readonly providedMismatch?: "tolerate" | "refuse";
 
-  /**
-   * True where every installation of the ecosystem is flat — one version of each
-   * package, as on a JVM classpath — so a violated edge is never repaired by a
-   * fork and stays a violation for the strict check to judge.
-   */
+  /** True where every installation holds one version of each package (a JVM
+   * classpath): an unsatisfied requirement gets no fork, and stays a
+   * violation. */
   readonly flat?: boolean;
 
-  /**
-   * @return true if the version fully satisfies the constraint (including any
-   * upper bounds, which minimumOf ignores). Used to detect conflicts after
-   * selection.
-   */
+  /** @return true if the version satisfies the constraint, upper bound
+   * included, otherwise false. */
   satisfies(version: V, constraint: C): boolean;
 
-  /**
-   * Canonical string form of a version (for cache keys and diagnostics).
-   */
+  /** Write a version in its canonical form, as keys and messages show it. */
   versionToString(version: V): string;
 
-  /**
-   * Parse the canonical form produced by {@link versionToString} — the other
-   * half of the round-trip pair (e.g. reading versions back out of a persisted
-   * resolution document). Throws on anything else.
-   */
+  /** Parse a version's canonical form ({@link versionToString}), as a
+   * persisted resolution holds it. Throws on anything else. */
   parseVersion(text: string): V;
 
-  /**
-   * The exact version `text` names, when it is a single concrete version
-   * rather than a range — undefined otherwise. What override markers demand
-   * of their version (`pkg:1.4.2?`), and what lets an unmarked pin count as a
-   * written version in sanction judgment. Optional: a domain without it
-   * treats no constraint as exact.
-   */
+  /** Get the version `text` names where it is one exact version, otherwise
+   * undefined. A domain without it treats no constraint as exact. */
   exactVersion?(text: string): V | undefined;
 
-  /**
-   * Write the constraint that admits exactly `version`. Optional: a domain
-   * without it is one whose version text is that constraint (semver).
-   */
+  /** Write the constraint that admits exactly `version`. A domain without it
+   * writes a version as that constraint (semver). */
   exactConstraint?(version: V): string;
 
-  /**
-   * @return true if the version is suggestion-eligible (not a prerelease),
-   * otherwise false: the repair suggester proposes only stable versions.
-   * Optional: a domain without it treats every version as stable.
-   */
+  /** @return true if the version is not a prerelease, otherwise false; only
+   * such versions are suggested as remedies. A domain without it treats every
+   * version as stable. */
   isStable?(version: V): boolean;
 }
 
 /**
- * What the resolution walk reads: the requirements a name@version declares, and
- * the floor-raise hook — resolveMVS's whole view of a registry (the full
- * registry surface, core/Repository's `RepositoryReader`, extends this). All
- * answers are expected to be immutable documents (a given name@version never
- * changes its declared requirements), which is what makes resolution results
- * cacheable.
+ * The registry as `resolveMVS` reads it; `RepositoryReader` extends it. The
+ * requirements of a version must never change, since resolutions are cached.
  */
 export interface RequirementSource<V> {
   /**
-   * @return the requirements declared by name@version (e.g. the dependencies
-   * from its package.json). Rejects with a VersionNotFoundError (core/Errors)
-   * when name@version was never published — the signal for the floor-raise
-   * repair, distinguished from transport failures. `operation` is the
-   * `BUILD_OPERATION` the requirements are resolved for, where a format
-   * distinguishes them (Maven: a compile under `build`, a program or test
-   * under `run` and `test`); undefined asks for every requirement.
+   * Get the requirements `name` at `version` declares. Rejects with a
+   * VersionNotFoundError where that version was never published, and with
+   * another error where the registry fails. `operation` is the
+   * `BUILD_OPERATION` they are resolved for, where the format tells them apart
+   * (Maven: a compile under `build`, a program or test under `run` and
+   * `test`); undefined asks for every requirement.
    */
   getRequirements(name: string, version: V, operation?: string): Computable<Requirement[]>;
 
   /**
-   * Floor-raise hook: the lowest *published* version of `name` satisfying
-   * `versionConstraint`, consulted when its own minimum is not published;
-   * undefined when nothing published satisfies (a genuine failure). Reads a
-   * mutable version list, so the result is deterministic only modulo registry
-   * append — the one sanctioned relaxation, confined to broken floors. A
-   * registry without this hook keeps unpublished floors as hard failures.
+   * Get the lowest published version of `name` satisfying
+   * `versionConstraint`, or undefined where none does. Asked where the
+   * constraint's lower bound was never published. The answer can change as
+   * versions are published. Without it, an unpublished lower bound fails the
+   * resolution.
    */
   lowestAvailable?(name: string, versionConstraint: string): Computable<V | undefined>;
 }
 
 /**
- * One resolved root of a {@link Resolution}: the input reference and the name it
- * is *delivered* as — the one thing a caller can read out of an otherwise-opaque
- * Resolution, so it can key/address entries (a catalog keys its members by this)
- * *without* fetching them. `name` is the identity the repository addresses
- * entries by (npm: the package name), or — when the reference writes a rename —
- * the name that rename gives the delivery (see `renamedAs`), so an
- * addressing key and the package it addresses can never disagree.
+ * A root of a {@link Resolution}: a reference, and the name its package is
+ * handed back under: the package's name, or the rename the reference writes
+ * (`renamedAs`). A catalog keys its members by `name` without fetching them.
  */
 export interface ResolvedRoot {
   readonly reference: RepositoryRef;
@@ -421,19 +328,19 @@ export interface ResolvedRoot {
 }
 
 /**
- * The result of resolving a registry's batch (`resolvePackages`): versions and
- * dependency tree, nothing fetched. Opaque except for `roots`; the selection
- * and tree live in a private subtype, read back by `packageClosure`.
+ * A registry's batch resolved (`resolvePackages`): versions and dependencies
+ * selected, nothing fetched. Only `roots` is public; `packageClosure` reads
+ * the rest.
  */
 export interface Resolution {
   readonly roots: ReadonlyArray<ResolvedRoot>;
 }
 
 /**
- * A selection a collection takes as it stands — a catalog's, reached through
- * a bound edge — and so pins its own resolution to: the package at exactly
- * that version. `via` is what the collection reached it through: a catalog
- * member's reference, or a build whose edges a catalog bound.
+ * A registry's selection that a collection reaches already bound (a
+ * catalog's), and so requires at exactly that version in its own batch for
+ * that registry. `via` is what the collection reached it through: a catalog
+ * member's reference, or a build whose bound requirements lead to it.
  */
 export interface Pin {
   readonly selection: RegistrySelection;
@@ -441,49 +348,42 @@ export interface Pin {
 }
 
 /**
- * One reference a collection point resolves, and what is wanted of it:
+ * A reference a collection point resolves, and what is wanted of it:
  *
- * - `"package"` — the package it names, resolved jointly with the rest of its
- *   repository's batch: a requirement of the collection's own, so what is
- *   written on it — an exact pin, a `?`, a `!` — is the collection's;
- * - `"carried"` — the package a built package among the sources requires by
- *   it: an edge of that package's node in the resolution, bound like any
- *   package's requirement, with nothing written on it the collection's;
- * - `"files"` — the files its projection selects, on their own: it joins no
- *   resolution, pins nothing and brings no closure (see `fileRequests`);
- * - `"instance"` — the package it names, on its own: it joins no resolution and
- *   pins nothing, and the package carries the requirements it declares as
- *   references to the same repository, for the collection point it reaches to
- *   resolve (see `instanceRequests`).
+ * - `"package"`: the package, resolved with the rest of its repository's
+ *   batch as the collection's own requirement: any exact version, `?` or
+ *   `!` written on it is the collection's.
+ * - `"carried"`: the package a build among the sources requires by it,
+ *   resolved as that build's requirement; nothing written on it is the
+ *   collection's.
+ * - `"files"`: the files its projection selects, alone: it joins no
+ *   resolution and brings none of its dependencies (`fileRequests`).
+ * - `"instance"`: the package at the reference's lower bound, joining no
+ *   resolution, its own requirements carried as references to the same
+ *   repository for a later collection point to resolve
+ *   (`instanceRequests`).
  */
 export interface PackageRequest {
   readonly reference: RepositoryRef;
   readonly as: "package" | "carried" | "files" | "instance";
 }
 
-/**
- * What the resolution layer needs from the CONSUMING collection point — the
- * operation the references are consumed under (a global-config read), the
- * resolve-phase memo store, and progress reporting. Every TargetContext
- * satisfies it structurally; the repositories themselves contribute only
- * per-name answers (their captured contexts stay their own business, for
- * their own transports).
- */
+/** The consuming collection point, as resolution reads it. A TargetContext
+ * is one. */
 export interface ResolutionContext {
-  /** Whose collection point this is — the consuming target's name, or a
-   *  catalog's. Reported as the subject of the resolution work. */
+  /** The consuming target's name, or a catalog's: the subject progress
+   *  reports name. */
   readonly name: string;
   /**
-   * The packages this context was given already bound — a sub-target's
-   * inputs, which its creator collected. One among the sources of a
-   * collection here is delivered as it stands, like an
-   * instance (`instanceRequests`): its edges were resolved where it came
-   * from, with requirements this context does not hold.
+   * The packages a sub-target was given among its inputs, already resolved
+   * by its creator. A collection here takes one of them as it stands, like
+   * an instance: its requirements stay bound as its creator bound them.
    */
   readonly given?: ReadonlySet<PackageFileSet>;
   /** The `BUILD_OPERATION` this collection's requirements are resolved for:
    *  the operation of the consumer's configuration. */
   readonly operation: string;
+  /** Get the global `name`'s value as text. */
   getGlobalString(name: string): Computable<string>;
   /** Get `runnable` launched through the runnable the global `interpreter`
    *  names, given `interpreterArgs` before the entry (see {@link RunnableFileSet.launchedBy}). */
@@ -492,25 +392,31 @@ export interface ResolutionContext {
     interpreter: string,
     interpreterArgs?: readonly RunnableArgument[]
   ): Computable<RunnableFileSet>;
+  /** Get the result of `create` from the build cache under `memo:<tag>
+   *  <key>`, running it in a work directory only where it is not there. */
   memoize(tag: string, key: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet>;
+  /** Run `run` as one task reported to the build's progress. */
   runTask<T>(task: IRepositoryResolveTask, run: (report: ITaskReport) => Computable<T>): Computable<T>;
 }
 
 /**
- * A collection point's sources **resolved**: every reference they hold
- * or carry, as it is asked of its repository, and each registry's joint
- * resolution of its batch — computed when first wanted, once, and fetching
- * nothing. Any subset of the sources is delivered from it
- * (`resolveSources`) under the one selection.
+ * A collection point's sources resolved: what is asked of each reference they
+ * hold or carry, and each registry's resolution of its batch, made once when
+ * first wanted, fetching nothing. `resolveSources` resolves any subset of the
+ * sources from it, under the same selections.
  */
 export interface ResolvedCollection {
+  /** The request for each reference, by reference. */
   readonly requests: ReadonlyMap<RepositoryRef, PackageRequest>;
+  /** Each registry's resolution of its batch; the instances of one registry
+   * in one environment share one. */
   readonly resolutions: ReadonlyMap<RefSource, () => Computable<Resolution>>;
   /**
    * The resolution the packages built in the project are bound from, and its
-   * registry: that of the registry whose package a `!` gave a build's name to,
-   * else any registry's (each holds every build), else a resolution of the
-   * builds alone. Absent where the sources hold or reach no build.
+   * registry: that of the registry a forced (`!`) reference to a build's
+   * name is addressed to, else the first registry's (each holds every build),
+   * else one of the builds alone. Undefined where the sources hold or reach
+   * no build.
    */
   readonly builds?: { readonly registry?: RepositoryReader<unknown, unknown>; readonly resolution: () => Computable<Resolution> };
   /** The packages built in the project that the sources hold or reach, by
@@ -523,20 +429,18 @@ export interface ResolvedCollection {
    * name. A package of that name there is replaced by it.
    */
   readonly members: ReadonlyMap<string, Package>;
-  /** The packages among the sources taken as instances
-   * (`instanceRequests`): delivered as they stand, and no candidate. */
+  /** The packages among the sources taken as they stand
+   * (`instanceRequests`), which no resolution selects. */
   readonly instances: ReadonlySet<Package>;
-  /** Each catalog member among the requests, resolved as its catalog did,
-   * by reference: made once, when first asked for. Undefined where the
+  /** Each catalog member among the requests, by reference, resolved as its
+   * catalog resolved it, made when first asked for. Undefined where the
    * member is answered by its files alone. */
   readonly resolvedMembers: Map<RepositoryRef, Computable<Package | undefined>>;
 }
 
-/**
- * A member of a collection a repository resolved, as
- * `RepositoryCollection.member` answers it. The collection point that
- * asked delivers it.
- */
+/** A member of a collection a repository resolved, as
+ * `RepositoryCollection.member` answers it, which the collection point that
+ * asked takes into its own resolution (`resolveMember`). */
 export interface ResolvedMember {
   readonly collection: ResolvedCollection;
   /** The member, as a source of that collection. */

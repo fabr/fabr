@@ -26,10 +26,10 @@ import { isRepository } from "./Repository";
 import type { Repository } from "./Repository";
 
 /**
- * A namespace (an AWS account's services): each of its names is made the
- * first time it is asked for, and is what a declaration's value could be — a
- * repository, a further namespace, or files. It answers no name itself: a
- * name goes on from the member its first part names.
+ * A namespace (an AWS account's services): each of its members is made the
+ * first time it is asked for, and is a repository, a further namespace, or
+ * files, as a declaration's value can be. A name in it is looked up in the
+ * member its first part names.
  */
 export abstract class Namespace {
   /** Get what `name` names here, made the first time it is asked for. Rejects where it names nothing. */
@@ -59,9 +59,10 @@ export class NamespaceRef extends Reference {
   }
 
   /**
-   * Get the source `name`, written after `separator`, names in the namespace,
-   * once it is made, written `<this><separator><name>` (see
-   * {@link sourceOf}).
+   * Get the member `name` names in the namespace, made the first time it is
+   * asked for, as a source written `<this name><separator><name>` (see
+   * {@link sourceOf}). Rejects, attributed to this reference, where `name`
+   * names nothing.
    */
   public get(name: string, separator: string): Computable<PartialRepositoryRef | NamespaceRef | FileSource> {
     const written = `${this.name}${separator}${name}`;
@@ -82,7 +83,8 @@ export class NamespaceRef extends Reference {
     return this.name;
   }
 
-  /** A namespace has no name a `-> name` could be about. */
+  /** Refuse a rename: a namespace has no name to rename. Throws, attributed
+   * to this reference. */
   public override withRenameTo(renameTo: string): this {
     const written = this.toString();
     throw this.attributed(
@@ -110,8 +112,7 @@ export class NamespaceRef extends Reference {
 /**
  * Make the source `made` is, written `written`: a reference to a repository
  * ({@link PartialRepositoryRef}) or to a namespace, or the files as they
- * stand. What a declaration's value and a namespace's member are both made
- * into.
+ * stand. Used for a declaration's value and a namespace's member alike.
  */
 export function sourceOf(
   made: Repository | Namespace | FileSource,
@@ -131,7 +132,8 @@ export function isIncompleteRef(source: unknown): source is IncompleteRef {
   return source instanceof PartialRepositoryRef || source instanceof NamespaceRef;
 }
 
-/** Take `sources` as content, refusing an {@link IncompleteRef} among them. */
+/** Get `sources` as content. Throws the refusal of the first
+ * {@link IncompleteRef} among them. */
 export function refuseNamespaces<T>(sources: ReadonlyArray<T | IncompleteRef>): T[] {
   const refused = sources.find(isIncompleteRef);
   if (refused !== undefined) {

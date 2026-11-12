@@ -37,23 +37,29 @@ import {
 import { ActionContext, IChangedFiles, toChangesDocument, TREE_MOUNT } from "./BuildCache";
 
 /**
- * Run the `command-pipeline` build action: stage the combined install (see
- * {@link stagePipeline}: a single stage's runnable at the root over `srcs`,
- * each stage of a pipeline under its own `.fabr-cmd-<n>/`), run the
- * stages as a pipeline (stdout→stdin wired, first stage fed the `stdin` file if
- * present), and collect the result: the redirect captures (streamed straight to
- * the content store, each named content) where there is no `output`, else what
- * `output` selects from the captures and the files the tools wrote together. One
- * cacheable unit, keyed by the staged content + the stage specs (see
- * {@link createPipelineAction}). Where the action keeps state ({@link IKeptState})
- * and its target has a successful run before, what that run kept is staged back
- * and the changes document written, before the command runs.
+ * Run the `command-pipeline` build step: stage the action's `files` and config
+ * files into the work dir (laid out by {@link stagePipeline}), run the stages
+ * as one pipeline, each stage's standard output feeding the next stage's
+ * input and the first stage reading the `stdin` input where there is one, and
+ * return what it produced.
+ *
+ * The result is the redirect captures, each under the name it was redirected
+ * to, where the action has no `output`; with `output`, it is what `output`
+ * selects from the captures and the files the commands wrote, together
+ * ({@link outputOf}). Where the action keeps state ({@link IKeptState}) and
+ * its target has a successful run before this one, the files that run kept are
+ * staged back (writable) and the changes document written at `changes` before
+ * the command runs; the files `incremental` selects afterwards are returned
+ * as the run's incremental state, where there are any.
+ *
+ * Rejects where a stage fails (see executePipeline), where `output` selects
+ * nothing, or where two files are collected under one name.
  */
 function runPipeline(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
   const files = FileSet.unionAll(fileSetInput(action, "files"), configFiles(action));
   const specs = pipelineSpecs(action);
-  /* `output` is a projection Name (selector + optional `-> tmpl` rename), or
-   * absent for a pure-redirect genrule that collects only its captures. */
+  /* A projection (a selector, optionally with a `-> tmpl` rename), or absent
+   * to collect only the redirect captures. */
   const output = action.config.output instanceof Name ? action.config.output : undefined;
   const stdin = action.inputs.stdin instanceof FileSet ? action.inputs.stdin : undefined;
   const env = envConfig(action);
@@ -94,13 +100,11 @@ function runPipeline(action: BuildAction, ctx: ActionContext, report: ITaskRepor
 }
 
 /**
- * Collect what `output` selects, from everything the command produced — a
- * redirect names a file in the sandbox as surely as a tool writing one does —
- * through the one projector, so its `dir:` strip and `-> tmpl` rename apply to
- * both alike; a redirect it does not select is not collected, and one named
- * like a selected written file is a conflict. Selecting nothing is an error, not
- * a silent empty success: almost always a wrong selector or a tool that wrote
- * elsewhere.
+ * Collect what `output` selects from both the redirect captures and the files
+ * the command wrote (`written`, already selected), each named as `output`
+ * projects it. Throws a {@link ConflictError} where a capture is selected
+ * under the name of a written file, and an error where nothing is selected at
+ * all.
  */
 function outputOf(captured: FileSet, written: FileSet, output: Name): FileSet {
   const collected = FileSet.unionAll(written, selectedCaptures(captured, written, output));
@@ -113,9 +117,10 @@ function outputOf(captured: FileSet, written: FileSet, output: Name): FileSet {
 }
 
 /**
- * Make what a run with a successful one before it is handed: the files that run kept,
- * where they were, and the changes document at `changes`. Undefined where there
- * is no such run, so the command finds neither and runs cold.
+ * Make the files staged back for a run that has a successful one before it:
+ * the files that run kept (`state`), at their names, and the changes document
+ * at `changes`, where given. Undefined where there is no such run (`changed`
+ * undefined), so the command finds neither.
  */
 function keptBase(changed: IChangedFiles | undefined, state: FileSet | undefined, changes: string | undefined): FileSet | undefined {
   if (changed === undefined) {
@@ -147,8 +152,8 @@ export function selectedCaptures(captured: FileSet, written: FileSet, output?: N
   return captured.rename(project);
 }
 
-/** @return the first (only) file's bytes of a single-file stdin fileset, or
- * undefined if no stdin was supplied. */
+/** @return the bytes of the first file of `stdin` (a single-file set), or
+ * undefined where there is no stdin or it is empty. */
 export function stdinBytes(stdin: FileSet | undefined): Computable<Buffer | undefined> {
   if (!stdin) {
     return Computable.resolve(undefined);
@@ -157,8 +162,8 @@ export function stdinBytes(stdin: FileSet | undefined): Computable<Buffer | unde
   return files.length === 0 ? Computable.resolve(undefined) : files[0][1].getBuffer();
 }
 
-/* The version tracks what the step does and what its serialized stage spec
- * means; either changing is a bump. */
+/* Bump the version when what the step does, or what its serialized stage
+ * spec means, changes. */
 export const PIPELINE_ACTION: IBuildActionDefinition = {
   id: "core:command-pipeline",
   version: 6,
@@ -198,9 +203,9 @@ export function envConfig(action: BuildAction): Map<string, string> {
   return new Map((Array.isArray(action.config.env) ? action.config.env : []).map(variableEntry));
 }
 
-/** Stage the pipeline's files into `dir`. Its standard input is read from the
- * cache's tree pool through the link beside `dir`, as the run reads it from the
- * cache rather than the work directory. */
+/** Stage the pipeline's files into `dir` for `fabr shell`, and describe the
+ * pipeline to run there. Its standard input is a path into the cache's tree
+ * pool, through the link beside `dir`. */
 function stagePipelineStep(
   action: BuildAction,
   dir: string,
@@ -227,29 +232,28 @@ function stagePipelineStep(
   );
 }
 
-/** One stage as {@link stagePipeline} needs it: the runnable to launch plus its
- * argv and stream destinations. Structurally the build context's
- * `MaterializedCommandStage` (context/Commands.ts), spelt without naming it:
- * context/ imports this module, so it cannot import context's types back. */
+/** One stage as {@link stagePipeline} takes it: the runnable to launch, its
+ * arguments and where its streams go. The same shape as context/Commands.ts's
+ * `MaterializedCommandStage`, which this module cannot import (context/
+ * imports it). */
 export interface RunnableStage extends StageStreams {
   runnable: RunnableFileSet;
   args: string[];
 }
 
 /**
- * Stage a resolved pipeline: mount each stage's runnable and turn it into a run
- * spec. A **single-stage** command mounts the tool *at the root*, over `srcs` (the
- * npx-in-project layout: the tool's `node_modules` sits adjacent to the sources,
- * so a source importing the tool resolves). A **multi-stage** pipeline instead
- * mounts each stage under its own `.fabr-cmd-<n>/` so the tools don't share a
- * `node_modules`; the streams connect them, and no source imports a pipe stage's
- * modules.
+ * Lay out a resolved pipeline: return the files to stage (`srcs` and each
+ * stage's runnable) and each stage's run spec. A single-stage command's
+ * runnable is laid out at the root over `srcs`, so its `node_modules` sits
+ * beside the sources and a source importing the tool resolves it. Each stage
+ * of a longer pipeline goes under its own `.fabr-cmd-<n>/`, so the tools do
+ * not share a `node_modules`. A runnable that collides with `srcs` is a
+ * {@link ConflictError}.
  *
- * Shared by `generate` and by command substitution, which differ only in what
- * they collect afterwards — the mounting rule is the same either way. `apart`
- * mounts a single stage under `.fabr-cmd-0/` too, for a command over files that
- * import nothing of its tools (`patched`'s); `cwd` is where the commands run,
- * relative to where the stages are mounted.
+ * `apart` lays out a single stage under `.fabr-cmd-0/` too, for a command over
+ * files that import nothing of its tool (`patched`'s). `cwd` is where the
+ * commands run, relative to the root of the layout; each command line is made
+ * relative to it.
  */
 export function stagePipeline(
   stages: ReadonlyArray<RunnableStage>,
@@ -283,11 +287,11 @@ export interface IKeptState {
   changes?: string;
 }
 
-/** @return a command-pipeline action from the combined staged fileset, the
- * resolved per-stage specs, an optional single-file stdin, the `output`
- * projection (absent to collect only the redirect captures), the task label,
- * the variables every stage runs with (its whole environment), and what it
- * keeps between runs. */
+/** @return a command-pipeline action over `files` (as {@link stagePipeline}
+ * lays them out) running `specs`, with an optional single-file `stdin`, the
+ * `output` projection (absent to collect only the redirect captures), a
+ * display label, the variables every stage runs with (its whole environment),
+ * and what it keeps between runs. */
 export function createPipelineAction(
   files: FileSet,
   specs: IPipelineStage[],

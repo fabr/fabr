@@ -20,11 +20,11 @@
 import * as os from "node:os";
 
 /**
- * Project a triple to the node/npm {os, cpu, libc} vocabulary the npm os/cpu/libc
- * gate matches against. Lenient about vendor presence and 2/3/4-part forms: it
- * reads the arch off the first field and detects the OS family / libc from the
- * remaining fields, rather than imposing a strict positional parse (the verbatim
- * string is what native consumers want; this is only the lossy npm view).
+ * Map a platform triple to npm's `os`, `cpu` and `libc` values, the ones a
+ * package's `os`/`cpu`/`libc` fields are matched against. The arch is read off
+ * the first field; the OS and libc are recognized in any later field, so a
+ * triple with or without a vendor, of two to four fields, is read alike. A
+ * field nothing recognizes leaves its value undefined.
  */
 export function tripleToNpm(triple: string): NpmPlatform {
   const parts = triple.split("-");
@@ -33,26 +33,23 @@ export function tripleToNpm(triple: string): NpmPlatform {
   if (parts.some(p => p === "darwin" || p.startsWith("macosx") || p === "apple" || p.startsWith("ios"))) {
     os = "darwin";
   } else if (parts.some(p => p.startsWith("android"))) {
-    /* An android triple names linux too (`aarch64-linux-android`, and the eabi
-     * form `…-androideabi`), but npm gates android packages on `os:"android"`,
-     * not linux — so it must win the match. */
+    /* Test android before linux: an android triple names linux too
+     * (`aarch64-linux-android`), and npm calls its os `android`. */
     os = "android";
   } else if (parts.includes("linux")) {
     os = "linux";
   } else if (parts.some(p => p.startsWith("windows") || p === "win32" || p === "mingw32" || p === "msvc")) {
     os = "win32";
   }
-  /* libc is the linux abi field only; darwin/windows/android have no npm libc
-   * notion (android's bionic isn't in npm's glibc/musl vocabulary). */
+  /* npm states a libc for linux alone (android's bionic is neither of its values). */
   const libc = os === "linux" ? (parts.some(p => p.includes("musl")) ? "musl" : "glibc") : undefined;
   return { os, cpu, libc };
 }
 
-/** Triple arch field → node arch vocabulary (covers both canonical GNU/LLVM
- * spellings and the node-verbatim forms {@link hostTriple} emits by fallback).
- * Every `process.arch` value must appear (mapping to itself where no GNU
- * spelling shares it), since the fallback triple is `<process.arch>-<platform>`
- * and an unrecognized arch field silently drops npm's `cpu` gate. */
+/** The node arch (`process.arch`) of each triple arch field, in GNU/LLVM
+ * spellings and node's own. Keep every `process.arch` value in it, mapped to
+ * itself where no other spelling is: {@link hostTriple}'s fallback triple
+ * begins with one, and an arch missing here leaves `cpu` undefined. */
 const ARCH_TO_NODE: Record<string, string> = {
   x86_64: "x64",
   amd64: "x64",
@@ -82,7 +79,7 @@ const ARCH_TO_NODE: Record<string, string> = {
   loong64: "loong64",
 };
 
-/** node/npm platform vocabulary: process.platform / process.arch, plus libc. */
+/** A platform as npm names one: `process.platform` and `process.arch` values, and a libc. */
 export interface NpmPlatform {
   /** process.platform vocabulary: darwin, linux, win32, android (undefined if unrecognized). */
   os?: string;
@@ -93,10 +90,11 @@ export interface NpmPlatform {
 }
 
 /**
- * Compute the platform triple for the machine fabr is currently running on — the value of
- * the injected HOST fact (and the default for TARGET). Built from
- * process.arch/platform (+ the Darwin kernel version and libc detection); no
- * subprocess. Falls back to `<arch>-<platform>` for platforms we don't spell.
+ * Get the platform triple of the machine fabr is running on (the value of
+ * `HOST`), from `process.arch` and `process.platform`, the Darwin kernel
+ * version and the linux libc, without starting a process: such as
+ * `aarch64-apple-macosx15.0`, `x86_64-linux-gnu` or `x86_64-pc-windows-msvc`.
+ * Any other platform is `<process.arch>-<process.platform>`.
  */
 export function hostTriple(): string {
   const arch = process.arch;
@@ -112,7 +110,7 @@ export function hostTriple(): string {
   }
 }
 
-/** Map a node arch to the triple arch field, per OS (GNU spells arm64 `aarch64`; Apple `arm64`). */
+/** Map a node arch to a triple's arch field: arm64 is `aarch64` where `gnuStyle`, else `arm64` (Apple's). */
 function nodeArchToTriple(arch: string, gnuStyle: boolean): string {
   switch (arch) {
     case "x64":
@@ -129,11 +127,10 @@ function nodeArchToTriple(arch: string, gnuStyle: boolean): string {
 }
 
 /**
- * Map a Darwin kernel version (`os.release()`, e.g. `24.6.0`) to the macOS product
- * version the `macosx…` triple component wants. Kernel major 20+ is macOS 11+
- * (major = kernel − 9); 5..19 is the 10.x era (10.<kernel − 4>). For macOS 11+
- * the minor is always `.0` — a deployment floor, since the kernel major only pins the product
- * major (avoiding a `sw_vers` subprocess).
+ * Map a Darwin kernel version (`os.release()`, such as `24.6.0`) to the macOS
+ * version a `macosx…` triple field names: kernel 20 and later is macOS
+ * `<kernel − 9>.0` (the minor always 0), kernel 5 to 19 is `10.<kernel − 4>`,
+ * and anything else `10.0`.
  */
 function darwinToMacOS(release: string): string {
   const kernelMajor = parseInt(release.split(".")[0], 10);
@@ -149,11 +146,9 @@ function darwinToMacOS(release: string): string {
 }
 
 /**
- * Detect the host libc as a triple abi token (`gnu` / `musl`), synchronously and
- * without a subprocess: Node's diagnostic report header carries
- * `glibcVersionRuntime` on glibc builds and omits it on musl (verified: `'2.41'`
- * on glibc Linux, absent on darwin). Only meaningful on linux; the conservative
- * default if the report is unavailable is `gnu`.
+ * Detect the linux host's libc as a triple field: `gnu` where node's diagnostic
+ * report header states `glibcVersionRuntime`, else `musl`, so also `musl`
+ * where `process.report` is absent. `gnu` where making the report throws.
  */
 function detectLinuxLibc(): string {
   try {

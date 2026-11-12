@@ -30,17 +30,14 @@ import { purlOf } from "./resolver/ResolutionProvenance";
 import { compareText } from "./support/Functional";
 import { ExpectedDigest } from "./support/Integrity";
 
-/**
- * The software bill of materials of what a name resolves to, as CycloneDX
- * (https://cyclonedx.org, version 1.6): the thing described and every package
- * among its dependencies as a component, named by purl where its ecosystem has
- * one, with the licence and digests its registry publishes, and the dependency
- * graph between them. The render-free operation behind `fabr sbom`: a driver
- * resolves the name and hands it to {@link sbom}. Nothing is fetched or built
- * but each registry's metadata, and the document is a function of the
- * resolution alone: it carries no timestamp or serial number.
+/*
+ * The software bill of materials behind `fabr sbom`, as CycloneDX
+ * (https://cyclonedx.org, version 1.6), without its rendering: a driver
+ * resolves the name and passes it to {@link sbom}. Nothing is fetched or built
+ * but each registry's version metadata.
  */
 
+/** A CycloneDX licence entry: one licence, or an SPDX licence expression. */
 export interface ICycloneDxLicense {
   license?: { id?: string; name?: string; url?: string };
   expression?: string;
@@ -136,9 +133,9 @@ export function cycloneDxNaming(purl: string): { group?: string; name: string } 
   return parts.length > 1 ? { group: parts.slice(0, -1).join("/"), name } : { name };
 }
 
-/** @return the name of `pkg` in the document: its purl, else its name and
- * version, a build's with the configuration that tells it from the target's
- * other builds. */
+/** @return the bom-ref of `pkg` in the document: its purl, else its name and
+ * version, a build's with its configuration where that is not the ambient
+ * one. */
 function referenceOf(pkg: Package): string {
   const purl = pkg.version === undefined || builtInProject(pkg.origin) ? undefined : purlOf(pkg.origin, pkg.packageName, pkg.version);
   if (purl !== undefined) {
@@ -155,7 +152,8 @@ function referenceOf(pkg: Package): string {
  * that fixes the advisories `fixes`. */
 function pedigreeOf(from: Package, fixes: ReadonlyArray<string>): NonNullable<ICycloneDxComponent["pedigree"]> {
   const ref = referenceOf(from);
-  /* No bom-ref: the package itself may be a component of the document too. */
+  /* Give the ancestor no bom-ref: the package may be a component of the
+   * document too, and a bom-ref must be unique. */
   const ancestor: Omit<ICycloneDxComponent, "bom-ref"> = {
     type: "library",
     ...(ref.startsWith("pkg:") ? cycloneDxNaming(ref) : { name: from.packageName }),
@@ -170,18 +168,34 @@ function pedigreeOf(from: Package, fixes: ReadonlyArray<string>): NonNullable<IC
 }
 
 /**
- * Make the bill of materials of what `name` resolves to: one target, whose
- * build is the component described and whose rule's requirements are its
- * dependencies; a declaration's requirements (a catalog's), the declaration
- * described by its name with them as its dependencies; or one package, with
- * its closure. A target read for its files (a program a `container_image`
- * holds) is a component its reader depends on, with everything it requires. A
- * name resolving to several things is refused: a bill describes one. `tool`
- * names the fabr that wrote it.
+ * Make the CycloneDX bill of materials of what `name` resolves to. The
+ * component described (`metadata.component`) is one of:
+ * - one target, an `application`, whose dependencies are the packages among
+ *   everything its rule requires;
+ * - a declaration's requirements (a catalog's), described by the name as
+ *   written, whose dependencies are the packages among them;
+ * - one package, a `library`, whose dependencies are its own.
+ *
+ * Every other package reached is listed once in `components`, sorted by its
+ * `bom-ref`: its purl where it is a registry package, otherwise its name, a
+ * build's configuration where it is not the ambient one, and its version
+ * (`app<BUILD_TYPE=release>@1.0.0`).
+ * Each is walked through what it passes on, and a target read for its files
+ * (a program a `container_image` holds) through everything it requires.
+ * A component carries the licences and digests its registry's version
+ * metadata gives, and a target made from a registry package
+ * ({@link madeFrom}) a `pedigree` naming that package and the advisories its
+ * build fixes. `dependencies` gives each component's direct dependencies.
+ * The document has no timestamp or serial number; `tool.version` is the
+ * version of fabr that wrote it.
+ *
+ * Throws a FabrError where `name` resolves to more than one thing or to
+ * something that is not a package; rejects where reading a registry's
+ * metadata fails.
  */
 export function sbom(name: ResolvedName, tool: { version: string }): Computable<ICycloneDxBom> {
   const { title, resolved } = name;
-  /* A declaration's requirements (a catalog's) describe the declaration, by its name. */
+  /* A declaration's requirements (a catalog's) are described by the declaration's name. */
   const declared = !isDenoted(resolved);
   const [only] = resolved.denoted;
   if (!declared && (resolved.denoted.length !== 1 || !isPackage(only))) {
@@ -197,7 +211,7 @@ export function sbom(name: ResolvedName, tool: { version: string }): Computable<
     "bom-ref": described === undefined ? title : referenceOf(described),
   } as const;
   const bill = walkReadingFiles(readFor => {
-    /* Every package reached, once, by its reference, with the packages its edges bind. */
+    /* Every package reached, by its bom-ref, with the bom-refs of the packages it depends on. */
     const reached = new Map<string, { pkg: Package; dependsOn: Set<string> }>();
     const walk = (edges: ReadonlyArray<WalkedEdge>): string[] =>
       edges.flatMap(({ edge: { package: pkg }, whole }) => {

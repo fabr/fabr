@@ -18,35 +18,24 @@
  */
 
 /**
- * The fabr test runner: a thin harness over node:test. Fabr owns the
- * orchestration — it invokes this entry point with the test files to run and
- * collects the structured report — while the test files themselves use
- * node:test's native describe/it plus whatever assertion/mock libraries the
- * target declares as ordinary dependencies.
+ * The native test runner (`fabr-test-runner`): node:test, driven by the runner
+ * core (RunTests.ts), with globals.ts preloaded into each test process.
  *
- * Usage: node runner.js [--report=<path>] [--env=node] [--update-snapshots]
- *                       [--name-pattern=<regex>] [--setup=<module|./staged path>]... <test-file>...
+ * Usage: fabr-test-runner [--report=<path>] [--env=node] [--update-snapshots]
+ *                         [--name-pattern=<regex>] [--setup=<module|./staged path>]...
+ *                         [--pnp=<file>] [--reads=<file>] <test-file>...
  * Exit code 0 if everything passed; 1 if any test failed. The report document
  * (see Report.ts) is written to the given path in either case.
- *
- * This is the base flavour: the runner core (RunTests.ts) plus a preload that
- * installs the describe/it globals and nothing else. The jest (../jestRunner)
- * and vitest (../vitestRunner) flavours drive their own frameworks and share
- * only the invocation parsing and the report.
  */
 
 import * as path from "node:path";
 import { atLeastNode, IRunnerOptions, parseRunnerArgs, runTestFiles } from "./RunTests";
 
-/** node:test's snapshot assertions are stable, and need no flag, from here. */
+/** The node version from which node:test's snapshot assertions need no flag. */
 const SNAPSHOT_NODE = [23, 4] as const;
 
-/**
- * Refuse an environment this flavour does not provide. It runs tests in the
- * node process it is given, so `node` is the only one it can honestly claim — a target declaring
- * the `dom` flag needs a runner that installs a DOM (the jest and vitest
- * flavours do).
- */
+/** Refuse every environment but `node`: this flavour installs no DOM (the jest
+ * and vitest flavours do). */
 function requireSupportedEnvironment(options: IRunnerOptions): void {
   if (options.env !== "node") {
     throw new Error(
@@ -57,6 +46,8 @@ function requireSupportedEnvironment(options: IRunnerOptions): void {
   }
 }
 
+/** Run the test files the invocation names. Throws for an environment other
+ * than `node`, and for `--update-snapshots` before node 23.4. */
 export function main(argv: string[]): void {
   const options = parseRunnerArgs(argv);
   requireSupportedEnvironment(options);
@@ -65,7 +56,5 @@ export function main(argv: string[]): void {
       `Recorded snapshots need node ${SNAPSHOT_NODE.join(".")} or later (this is ${process.versions.node}), so there is nothing to update`
     );
   }
-  /* Each test file runs in its own child process; the test-globals shim
-   * (describe/it/...) is preloaded into each. */
   runTestFiles(options, [path.join(__dirname, "globals.js")]);
 }

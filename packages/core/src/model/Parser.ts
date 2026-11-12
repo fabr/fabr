@@ -53,26 +53,20 @@ import { EMPTY_FILESET, FileSource } from "../core/FileSet";
 import { FabrError } from "../core/Errors";
 
 /**
- * The three name tiers form a widening ladder, classified purely by the
- * characters a bare token contains — narrowest first:
+ * A token's type. A bare name token is one of three tiers, by the characters it
+ * contains, narrowest first:
  *
  * - `IDENTIFIER` — `@`/`_`/alphanumeric, plus interior `-` (`@fabr-build`,
- *   `my-target`). The tier for things the grammar NAMES atomically: keywords,
- *   property names, constraint keys, target *types*.
+ *   `my-target`): keywords, property names, constraint keys, target types.
  * - `SIMPLE_NAME` — IDENTIFIER plus interior `/` and `.` (`@fabr-build/js`,
- *   `lib/utils`, `lodash.merge`). The tier for a *declared name* or
- *   a simple path — anything the grammar accepts as its own name — and the base
- *   of a reference that carries no `:`.
- * - `NAME` — anything wider: contains `:` (a reference/projection separator, so
- *   `@npm:pkg:1.2.3`) or a glob char (`* ? [`). This is the "reference-ish" tier;
- *   a declared name is deliberately NOT allowed to reach it (`foo:bar` as a target
- *   name would collide with projecting `bar` out of target `foo`).
+ *   `lib/utils`, `lodash.merge`): a declared name, a simple path, or a
+ *   reference with no `:`.
+ * - `NAME` — anything else: text with a `:` (`@npm:pkg:1.2.3`), a glob
+ *   character (`* ? [`), quoting or a substitution. A declared name may not be
+ *   a NAME: `foo:bar` would read as projecting `bar` out of target `foo`.
  *
- * The tiers classify only the BARE token. A reference's `<constraint>` /
- * `-> rename` facets are their own tokens (`LANGLE`/`ARROW`) that
- * {@link Parser.parseReference} layers onto a base of any of these three tiers —
- * so "a full reference = base + facets" is a parse-level structure, not a
- * property of the base token's tier.
+ * A reference's `<k=v>` and `-> rename` are separate tokens (`LANGLE`, `ARROW`),
+ * which {@link BuildParser.parseReference} adds to a base token of any tier.
  */
 enum TokenType {
   EOF = 0,
@@ -87,18 +81,16 @@ enum TokenType {
   COMMA,
   SEMI,
   ARROW,
-  /* Command-pipeline operators (a `COMMAND` property value). `<` stdin and `>`
-   * stdout reuse LANGLE/RANGLE (disambiguated from a `<k=v>` constraint by not
-   * abutting); these are the forms that need their own token: the pipe, and the
-   * fd-prefixed redirects `2>`/`1>`/`&>` (recognized by an abutting `2`/`1`/`&`),
-   * and the `N>&M` dup, which takes no target and so cannot be `N>` plus a word. */
+  /* Command-pipeline operators. Stdin `<` and stdout `>` are LANGLE/RANGLE (a
+   * `<` that does not abut a name is no `<k=v>`); these have their own tokens:
+   * the pipe, the redirects `1>`/`2>`/`&>` (a `1`/`2`/`&` abutting `>`), and
+   * the `N>&M` dup, which takes no target. */
   PIPE,
   REDIR_STDOUT,
   REDIR_STDERR,
   REDIR_BOTH,
   REDIR_DUP,
-  /** The `` ` `` bounding a command substitution — a token so the sub-parse can
-   * stop on it, never a name character. */
+  /** The `` ` `` closing a command substitution. */
   BACKTICK,
   ERROR = -1,
 }
@@ -137,10 +129,8 @@ const CHAR_PERCENT = "%".codePointAt(0);
 
 interface TokenBase {
   start: number;
-  /** The doc-comment block immediately preceding this token (the last contiguous
-   * run of `#` comment lines before it, marker-stripped), or undefined if none.
-   * Decl parsers read it off the token that begins a declaration to attach its
-   * documentation. */
+  /** The doc comment before this token ({@link extractDocComment}), if any.
+   * Declaration parsers read it off a declaration's first token. */
   docComment?: string;
 }
 
@@ -196,10 +186,8 @@ const REDIR_FD_TOKEN: Record<string, TokenType.REDIR_STDOUT | TokenType.REDIR_ST
   "&": TokenType.REDIR_BOTH,
 };
 
-/** A pipeline operator recognised while parsing a property value. `Stdin`/`Stdout`
- * are the spaced `<`/`>`; `Stderr`/`Both` the `2>`/`&>` folds; `Pipe` the stage
- * separator. Parser-internal — the folded {@link ICommandValue} names its streams
- * directly, so this kind never escapes the parser. */
+/** A command-pipeline operator: `Pipe` the `|` between stages, `Stdin` `<`,
+ * `Stdout` `>` or `1>`, `Stderr` `2>`, `Both` `&>`, `Dup` `N>&M`. */
 const enum CommandOpKind {
   Pipe,
   Stdin,
@@ -209,15 +197,14 @@ const enum CommandOpKind {
   Dup,
 }
 
-/** @return true if an operator takes a following target name, otherwise false.
- * A dup (`2>&1`) is the one redirect that does not — it names a stream, not a
- * destination. */
+/** @return true if an operator is followed by a target name (every redirect
+ * but a dup, `2>&1`), otherwise false. */
 function takesTarget(op: CommandOpKind): boolean {
   return op !== CommandOpKind.Pipe && op !== CommandOpKind.Dup;
 }
 
-/** A pipeline operator with its source offset (for positioned errors), plus — for
- * a dup — the fds it names (`{from: 2, to: 1}` for `2>&1`). */
+/** A pipeline operator, its source offset, and for a dup the fds it names
+ * (`{from: 2, to: 1}` for `2>&1`). */
 type CommandOp = { op: CommandOpKind; at: number; from?: number; to?: number };
 
 const OP_SYMBOL: Record<CommandOpKind, string> = {
@@ -229,37 +216,35 @@ const OP_SYMBOL: Record<CommandOpKind, string> = {
   [CommandOpKind.Dup]: "N>&M",
 };
 
-/** The "missing target" message for a dangling redirect operator, naming it. */
+/** @return the error message for a redirect operator with no target. */
 function missingTarget(op: CommandOpKind): string {
   return `redirect '${OP_SYMBOL[op]}' must be followed by a target name`;
 }
 
 /**
- * Where one of a stage's output streams goes: a captured content name, or — with
- * no `file` — the stream's default (the pipe to the next stage / the pipeline's
- * own output, and the diagnostic sink respectively).
+ * Where one of a stage's output streams goes: the name its output is captured
+ * as, or, with no `file`, the stream's default (for stdout the next stage or
+ * the pipeline's output, for stderr the diagnostic output).
  *
- * **Object identity is the mechanism**, not a detail: a dup points one stream at
- * *the same object* as the other, so a later capture replacing that object leaves
- * the dup on the old one (shell's `2>&1 > f`), and `err === out` at the end of the
- * stage is exactly "these two share one destination".
+ * Object identity matters: a dup makes both streams refer to one `Dest`, and a
+ * later capture replaces one side's object, leaving the other where the dup put
+ * it (`2>&1 > f`). Two streams share a destination exactly when `err === out`.
  */
 type Dest = { file?: INameValue };
 
-/** A stage's output fds while its redirects are being applied left to right.
- * `out` and `err` start as two *distinct* defaults — both undirected, but not the
- * same destination, which is what makes a subsequent dup observable. */
+/** A stage's output fds while its redirects are applied, left to right. `out`
+ * and `err` start as two distinct objects, both with no `file`. */
 interface StageFds {
   out: Dest;
   err: Dest;
-  /** Which stream a dup made the survivor, if one has been written. Only
-   * meaningful while `out` and `err` are still the same object — a later capture
-   * on the survivor's side splits them again and strands this. */
+  /** The stream the other was merged into by a dup or `&>`. Read it only
+   * while `out` and `err` are still one object: a later capture separates them
+   * and leaves this stale. */
   mergedTo?: StreamName;
 }
 
-/** A stage under construction: its names, plus the fd table not yet flattened
- * onto them (see {@link flattenStage}). */
+/** A stage under construction, with the fd table {@link flattenStage} writes
+ * onto it. */
 interface PendingStage {
   stage: ICommandStage;
   fds: StageFds;
@@ -269,19 +254,16 @@ function newStageFds(): StageFds {
   return { out: {}, err: {} };
 }
 
-/** How each stream is named in a diagnostic (the fd table's own terms are `out`
- * and `err`; a user wrote `>` and `2>`). */
+/** Each stream's name in a diagnostic. */
 const STREAM_LABEL: Record<StreamName, string> = { out: "stdout", err: "stderr" };
 
 /**
- * Collapse the fd table onto the stage: whichever captures were named, plus the
- * surviving stream when the two ended up sharing one destination — the point at
- * which `&> n` and `> n 2>&1` become indistinguishable, as they should.
+ * Write the fd table onto the stage: `stdout` and `stderr` from the captures,
+ * and `mergedTo` where the two streams share one destination, the merged
+ * stream's capture left out. `&> n` and `> n 2>&1` give the same stage.
  *
- * The share is judged by identity *now*, not by whether a dup was written: a
- * capture after the dup (`2>&1 > f`) replaced one side's destination and split
- * them again, which is exactly shell's ordering rule and leaves `mergedTo`
- * stranded — so it is only read when the two still agree.
+ * Whether they share is read from `out === err` at the end of the stage, so a
+ * capture after a dup (`2>&1 > f`, stderr left on its default) is no merge.
  */
 function flattenStage({ stage, fds }: PendingStage): ICommandStage {
   const mergedTo = fds.err === fds.out ? fds.mergedTo : undefined;
@@ -303,8 +285,7 @@ function isOptionalLibName(name: Name): boolean {
 
 function isWhitespace(ch: number): boolean {
   // unicode-properties' isWhiteSpace covers space and the Unicode Zs category
-  // but NOT the ASCII control whitespace (TAB, LF, VT, FF, CR = 0x09–0x0D), so
-  // this is the full POSIX [[:space:]] set: tab-indented and CRLF files parse.
+  // but not TAB, LF, VT, FF and CR (0x09–0x0D), which are added here.
   return (ch >= 0x09 && ch <= 0x0d) || isWhiteSpaceChar(ch);
 }
 
@@ -315,17 +296,18 @@ function isArrowTerminator(ch: number | undefined): boolean {
 }
 
 /**
- * Extract the doc-comment block from the whitespace/comment `gap` that precedes
- * a token: the *last contiguous* run of `#` comment lines, reached across only
- * blank lines between it and the token. So a comment block directly above a
- * declaration — or one separated from it by blank lines — attaches, while an
- * earlier banner or note (itself blank-line-separated from the block) does not.
- * Each line is stripped of its leading whitespace, `#` marker and one following
- * space; blank marker lines at the block's edges are trimmed. Returns the prose
- * (lines joined with newlines) or undefined if the gap holds no comment block.
- * A trailing comment sharing a declaration's line (`x = y; # note`) is
- * indistinguishable from a standalone one here and would mis-attach; the lib
- * files place doc comments on their own lines, so this is not a concern.
+ * Extract the doc comment from the whitespace and comments (`gap`) before a
+ * token: the last contiguous run of `#` comment lines in it, with only blank
+ * lines between it and the token. An earlier block, separated from that one by
+ * a blank line, is not part of it. Each line loses its leading whitespace, its
+ * `#` marker and one following space; blank `#` lines at either end are
+ * dropped.
+ *
+ * Gotcha: a trailing comment on the line before (`x = y; # note`) is taken as
+ * the next token's doc comment too.
+ *
+ * @return the comment's lines joined with newlines, or undefined where the gap
+ * holds no comment.
  */
 function extractDocComment(gap: string): string | undefined {
   const lines = gap.split("\n");
@@ -356,11 +338,9 @@ function isFirstIdentChar(ch: number): boolean {
   return isAlphabetic(ch) || ch === CHAR_UNDERSCORE || ch === CHAR_AT;
 }
 
-/* The interior char classes behind the {@link TokenType} name tiers. IDENTIFIER
- * and SIMPLE_NAME both start like an identifier; their extras (`-`, and `/ .`)
- * are interior-only, so a leading `.`/`-`/`/` (a relative include `./x`, a
- * version `1.2.3`) stays a NAME. `:` is NOT a SIMPLE_NAME char — it bumps a token
- * to the NAME tier (see the {@link TokenType} doc). */
+/* The characters after the first of an IDENTIFIER and a SIMPLE_NAME (see
+ * {@link TokenType}). Both start like an identifier, so a name starting with
+ * `.`, `-`, `/` or a digit (`./x`, `1.2.3`) is a NAME, as is any with a `:`. */
 function isIdentChar(ch: number): boolean {
   return isFirstIdentChar(ch) || isDigit(ch) || ch === CHAR_DASH;
 }
@@ -393,9 +373,8 @@ function isIdentifier(text?: string): text is string {
   return true;
 }
 
-/** @return true if `text` is a SIMPLE_NAME (starts like an identifier, body is
- * identifier chars plus `/` and `.` — a superset of {@link isIdentifier}),
- * otherwise false. */
+/** @return true if `text` is a SIMPLE_NAME (an identifier's characters plus
+ * interior `/` and `.`), otherwise false. */
 function isSimpleName(text: string): boolean {
   const first = text.codePointAt(0);
   if (first === undefined || !isFirstIdentChar(first)) return false;
@@ -405,21 +384,15 @@ function isSimpleName(text: string): boolean {
   return true;
 }
 
-/**
- * How deep `{ ... }` blocks may nest — the block grammar being the parser's one
- * unbounded recursion (a map value is a block, whose entries are values). Far
- * above anything a real build file reaches: it only decides that a pathological
- * file gets a positioned diagnostic rather than a stack-overflow RangeError.
- */
+/** The deepest `{ ... }` blocks may nest; deeper is reported as an error. */
 const MAX_BLOCK_DEPTH = 100;
 
 /**
- * Which side of the `<k=v>` constraint facet is being parsed. Position decides
- * what it means: on a *use* (a reference) it is a **requirement** — the
- * configuration that reference must be built under, so its values are exact; on
- * a *decl* (a property key) it is a **guard** — the configuration the
- * declaration participates in, so its values are patterns. A **rule**'s guard is
- * a guard whose keys may also name its target's properties.
+ * The kind of a `<k=v>` list. On a reference it is a `"requirement"`: the
+ * configuration the reference is built under, its values exact. On a property
+ * key it is a `"guard"`: the configurations the declaration applies in, its
+ * values patterns. A `"rule"` guard is a guard whose keys may also name a
+ * property of the rule's target (`pkg.test_framework`).
  */
 type ConstraintKind = "requirement" | "guard" | "rule";
 
@@ -474,9 +447,9 @@ const DIAG_INVALID_IMPLEMENTATION = new Diagnostic<{ loc: ISourcePosition }>(
   LogLevel.Error,
   "An implementation names an entry of a package, as 'package:entry' (no glob patterns or variables)"
 );
-/** The declarations that cannot be private, by their keyword. */
 /** The keywords whose declarations cannot be written `default` (`default rule` is read before these). */
 const DEFAULT_REFUSED = new Set(["targetdef", "private", "repository"]);
+/** The declarations that cannot be private, by their keyword. */
 const PRIVATE_REFUSED = new Set(["include", "plugin", "rule", "targetdef", "default", "private", "repository"]);
 /** The declarations a rule's block cannot hold, by their keyword. */
 const RULE_BLOCK_REFUSED = new Set(["include", "plugin", "rule", "targetdef", "default", "private", "repository"]);
@@ -517,29 +490,13 @@ const DIAG_NESTED_NEGATION = new Diagnostic<{ loc: ISourcePosition }>(
   "A '!(…)' group cannot be inside another extglob group"
 );
 
-/** @return true if a name IS the bare `*` wildcard — one glob unit of `*` and no
- * literal text — otherwise false, as for a quoted `'*'`, which is that literal
- * character. */
+/** @return true if a name is the bare `*` wildcard, otherwise false (as for a
+ * quoted `'*'`, the literal character). */
 function isWildcardKey(name: Name): boolean {
   const units = name.getGlobUnits();
   return units.length === 1 && units[0] === "*" && name.toString() === "*";
 }
 
-/**
- * Check that the template's wildcards can be replayed from the selector's: the
- * same number on both sides, and `*`/`**` only (a `?`/`[...]` run captures
- * inconsistently, so it cannot fill a slot). A template replaying by number
- * (`$1`) need not match counts, but each index must name a selector wildcard,
- * and the positional and numbered forms may not be mixed.
- *
- * A **wildcard-free template** is exempt from both rules: it names one file
- * outright, replaying nothing, so the selector may be any pattern. It is
- * accepted even where it selects several files — collapsing distinct files onto
- * one name is the ordinary rename conflict, judged at `find` against the actual
- * file set ({@link FileSet.rename}), not a property of the written name.
- *
- * @return error message on failure, otherwise undefined.
- */
 /**
  * @return `selector`'s glob units with its `!(…)` groups left out: a group subtracts
  * from what the selector matches and captures nothing for a template to replay.
@@ -566,6 +523,19 @@ function unitsOutsideNegations(selector: Name): string[] {
   return units;
 }
 
+/**
+ * Check that a rename template's wildcards can be filled from the selector's.
+ * Both sides may use only `*` and `**`, a `!(…)` group in the selector not
+ * counted. A positional template has as many wildcards as the selector; a
+ * numbered one (`$1`) may use them in any number and order, each index naming
+ * one the selector has. The two forms may not be mixed.
+ *
+ * A template with no wildcards is exempt, and its selector may be any pattern;
+ * where it selects several different files, `FileSet.rename` reports the
+ * conflict.
+ *
+ * @return the error message, or undefined where the template is valid.
+ */
 function checkRenameWildcards(selector: Name, template: Name): string | undefined {
   const templateUnits = template.getGlobUnits();
   const captures = template.getBackrefIndices();
@@ -578,9 +548,8 @@ function checkRenameWildcards(selector: Name, template: Name): string | undefine
     return `rename wildcards must be '*' or '**' (found '${bad}')`;
   }
   if (captures.length > 0) {
-    /* Numbered back-references say which wildcard they replay, so counts need
-     * not match: a template may reuse one (`v$1/node-v$1`), reorder them, or
-     * leave some unused. Only that each names a wildcard the selector has. */
+    /* A numbered template may reuse a wildcard (`v$1/node-v$1`), reorder them
+     * or leave some unused; each index must name one the selector has. */
     if (templateUnits.length > 0) {
       return "a rename template replays wildcards either positionally ('*') or by number ('$1'), not both";
     }
@@ -599,39 +568,32 @@ function checkRenameWildcards(selector: Name, template: Name): string | undefine
 }
 
 /** Thrown once an error has been reported, to abandon what is being parsed;
- *  caught by recovery, which resumes at the next statement or property. */
+ * recovery catches it and resumes at the next statement or property. */
 class ParseAbort extends FabrError {
   constructor() {
     super("Parse Error");
   }
 }
 
-/**
- * Parse a single build file at a time (without resolving anything).
- *
- * Note this combines lexer + parser.
- */
+/** The lexer and parser of one build file. It resolves nothing. */
 export class BuildParser {
   private reader: StringReader;
   private log: Log;
   private token: Token;
-  /**
-   * Whether the current token immediately abuts the previous one (no intervening
-   * whitespace). Used to keep a constrained/projected reference atomic: a `<...>`
-   * constraint requirement or a `:projection` tail only binds to a ref if it hugs it.
-   */
+  /** True where the current token follows the previous one with no whitespace
+   * between. A `<k=v>` or a `:projection` tail binds to a reference only where
+   * it abuts it. */
   private tokenAbutsPrev = false;
-  /** End offset (exclusive) of the most recently consumed token */
+  /** The end offset (exclusive) of the most recently consumed token. */
   private prevTokenEnd = 0;
-  /** Suppress the fd-redirect token fold (`1>`, `2>`) while lexing inside a `<k=v>`
-   * constraint: there a `>` closes the constraint, so a numeric value like
-   * `<X=1>` must lex as value `1` + `>`, not the redirect `1>`. */
+  /** Set while lexing a `<k=v>` list, where `1>`/`2>` are not redirects: `<X=1>`
+   * is the value `1` and the closing `>`. */
   private suppressRedirect = false;
   /** Current `{ ... }` block nesting, bounded by {@link MAX_BLOCK_DEPTH}. */
   private blockDepth = 0;
-  /** Whether we are lexing inside a `` `cmd` `` substitution, where a backtick
-   * closes it rather than opening a nested one (there is no nesting). A counter
-   * only so it restores correctly; it never exceeds 1. */
+  /** Non-zero while lexing inside a `` `cmd` `` substitution, where a backtick
+   * closes it (substitutions do not nest). A counter so that it restores
+   * correctly; it never exceeds 1. */
   private commandSubstDepth = 0;
 
   private source: IBuildFile;
@@ -655,10 +617,9 @@ export class BuildParser {
     this.skipToken();
   }
 
-  /* Single quotes consume everything until the next single quote (which is
-   * consumed too); a newline inside them is part of the text, as in double
-   * quotes.
-   * @param builder NameBuilder to receive the quoted content
+  /** Read a single-quoted string, through its closing quote: everything
+   * between the quotes is literal text, newlines included.
+   * @param builder receives the quoted text
    */
   private readSingleQuotedString(builder?: NameBuilder): void {
     const quoteStart = this.reader.currentOffset();
@@ -672,8 +633,9 @@ export class BuildParser {
     this.reader.next(); /* Consume the closing quote */
   }
 
-  /* Double quotes can contain variables (which can contain double quotes).
-   * Consumes everything up to and including the closing quote. */
+  /** Read a double-quoted string, through its closing quote. A backslash
+   * escapes the next character; `$` and `${…}` substitutions, and command
+   * substitutions outside one, are read inside it. */
   private readDoubleQuotedString(builder?: NameBuilder): void {
     const quoteStart = this.reader.currentOffset();
     this.reader.consume(CHAR_DQUOTE);
@@ -690,11 +652,8 @@ export class BuildParser {
           posn = this.reader.currentOffset();
           break;
         case CHAR_BACKTICK:
-          /* A double-quoted string has interior structure, so a substitution
-           * works inside one exactly as `${...}` does. Inside a substitution's
-           * own quoted word it stays a literal character instead — there is no
-           * nesting, and the quote reader is what consumes the region whole, so
-           * such a backtick can never be mistaken for the closing one. */
+          /* A command substitution, as in a bare name. Inside a substitution's
+           * own quoted word a backtick is a literal character. */
           if (this.commandSubstDepth === 0) {
             builder?.appendEscapedString(this.reader.substring(posn));
             this.readCommandSubst(builder);
@@ -713,8 +672,8 @@ export class BuildParser {
     this.reader.next(); /* Consume the closing quote */
   }
 
-  /* Reads a variable substitution ('$NAME' or '${NAME}'), consuming the whole
-   * construct: on return the reader is at the first character after it. */
+  /** Read a variable substitution (`$NAME` or `${…}`), leaving the reader at
+   * the first character after it. */
   private readSubstVar(builder?: NameBuilder): void {
     const next = this.reader.consume(CHAR_DOLLAR);
     if (next !== CHAR_LBRACE) {
@@ -722,7 +681,7 @@ export class BuildParser {
       this.reader.skipUntil(ch => !isAlphabetic(ch) && !isDigit(ch) && ch !== CHAR_UNDERSCORE);
       const str = this.reader.substring(posn);
       if (str.length === 0) {
-        /* Terminal '$' is just treated as a literal $ */
+        /* A `$` with no name after it is a literal `$`. */
         builder?.appendLiteralString("$");
       } else {
         builder?.appendSubstVar(str);
@@ -732,13 +691,16 @@ export class BuildParser {
     }
   }
 
-  /* Reads the `{NAME}`, `{NAME<k=v>}` or `{NAME…edit}` of a braced
-   * substitution, the reader at its `{`; on return the reader is just past the
-   * closing `}`. The name and the edit after it are read by character, since a
-   * name token would take an operator in (`/`, `*`) and a `#` would start a
-   * comment; the requirement between them is read as tokens, the same grammar as
-   * a reference's `<k=v>`. Whitespace around the name is ignored. The token state
-   * belongs to the token whose scan this is part of, so it is restored. */
+  /**
+   * Read the `{NAME}`, `{NAME<k=v>}` or `{NAME…edit}` of a braced substitution,
+   * from its `{` to just past its `}`. The name is a property name or
+   * `<name>.<name>`, whitespace around it ignored. The name and the edit are
+   * read by character (a name token would take in `/` and `*`, and a `#` would
+   * start a comment); the `<k=v>` is read as tokens, as on a reference.
+   *
+   * This runs inside the scan of an enclosing token, so the token state is
+   * restored on return.
+   */
   private readBracedSubstVar(builder?: NameBuilder): void {
     const outer = { token: this.token, abuts: this.tokenAbutsPrev, prevEnd: this.prevTokenEnd };
     this.reader.next(); /* the '{' */
@@ -747,7 +709,7 @@ export class BuildParser {
       const nameStart = this.reader.currentOffset();
       this.reader.skipUntil(ch => !isIdentChar(ch) && ch !== CHAR_DOT);
       const name = this.reader.substring(nameStart);
-      /* A property name, or a property of one (`pkg.version`, a rule's parameter's). */
+      /* A property name, or a property of one (`pkg.version`, of a rule's parameter). */
       const parts = name.split(".");
       if (!isIdentifier(name) && !(parts.length === 2 && parts.every(isIdentifier))) {
         this.unexpectedCharacterError("a property name", nameStart, name === "" ? undefined : "Name");
@@ -772,12 +734,11 @@ export class BuildParser {
     }
   }
 
-  /* Reads the edit after a substitution's name — bash's `#pattern`, `##pattern`,
+  /** Read the edit after a substitution's name, bash's `#pattern`, `##pattern`,
    * `%pattern`, `%%pattern`, and `/pattern/replacement` with `/`, `//`, `/#` or
-   * `/%` — leaving the reader at the closing `}`. A pattern or replacement runs
-   * to the `}` (a replacing edit's pattern to the `/` before its replacement
-   * too), a backslash quoting the next character, as in bash. A `$` or backtick
-   * in either is refused: a substitution inside an edit is not supported. */
+   * `/%`, leaving the reader at the closing `}`. A pattern runs to the `}`, or a
+   * replacing edit's to the `/` before its replacement; a backslash quotes the
+   * next character. A `$` or backtick in either is reported as an error. */
   private readPatternEdit(): PatternEdit {
     const start = this.reader.currentOffset();
     const first = this.reader.current();
@@ -810,8 +771,8 @@ export class BuildParser {
     return { operator, pattern, replacement: this.readEditText([CHAR_RBRACE]) };
   }
 
-  /* Reads an edit's pattern or replacement as written, to the first of `ends`
-   * not quoted by a backslash; the reader is left at that character. */
+  /** Read an edit's pattern or replacement as written, up to the first of
+   * `ends` not quoted by a backslash, leaving the reader at that character. */
   private readEditText(ends: ReadonlyArray<number | undefined>): string {
     const start = this.reader.currentOffset();
     let quoted = false;
@@ -837,9 +798,8 @@ export class BuildParser {
     throw new ParseAbort();
   }
 
-  /* Reports what was read by character where `expected` should be, as
-   * {@link unexpectedTokenError} does for a token: the character at the reader
-   * (or EOF), unless `actual` names what was read instead. */
+  /** Report that `expected` was wanted at `at`, naming what was read as
+   * `actual`, else the character at the reader (or EOF), and throw. */
   private unexpectedCharacterError(expected: string, at: number, actual?: string): never {
     const ch = this.reader.current();
     this.log.log(DIAG_PARSE_ERROR, {
@@ -850,18 +810,16 @@ export class BuildParser {
     throw new ParseAbort();
   }
 
+  /** Read a `[...]` character class, through its `]`, as glob text. */
   private readCharClass(builder?: NameBuilder): void {
     const start = this.reader.currentOffset();
     const next = this.reader.consume(CHAR_LSQUARE);
     if (next === CHAR_RSQUARE) {
       this.reader.next(); /* a ']' right after '[' (or '[^') is a literal member */
     }
-    /* Scan to the closing ']'. The contents are literal characters — there is no
-     * variable substitution inside a class (a '$' here matches a literal '$').
-     * The one structured element is a POSIX class ('[:alpha:]', '[.coll.]',
-     * '[=e=]'): consume it whole so its inner ':]' / '.]' / '=]' isn't mistaken
-     * for the class close. The whole span is handed to picomatch, which supports
-     * these forms. */
+    /* Scan to the closing ']'. The contents are literal (a '$' matches '$'),
+     * bar a POSIX class ('[:alpha:]', '[.coll.]', '[=e=]'), skipped whole so its
+     * ':]' / '.]' / '=]' does not close the class. */
     const last = this.reader.scanUntil(ch => {
       if (ch === CHAR_LSQUARE) {
         const len = this.posixClassLength();
@@ -879,11 +837,10 @@ export class BuildParser {
     builder?.appendGlobMetachars(this.reader.substring(start));
   }
 
-  /* Pure lookahead: if the reader is at the '[' of a well-formed POSIX class
-   * element ('[:name:]', '[.coll.]', '[=equiv=]'), return its full length
-   * including both brackets, else 0. A form is well-formed only if its own
-   * closing '<kind>]' is reached before a bare ']' (the enclosing class close)
-   * or end-of-input — so a stray '[' inside a class stays a literal member. */
+  /** @return the length, brackets included, of the POSIX class element
+   * ('[:name:]', '[.coll.]', '[=equiv=]') starting at the reader, or 0 where
+   * none does (its closing '<kind>]' must come before any ']'). Reads ahead
+   * without moving the reader. */
   private posixClassLength(): number {
     const kind = this.reader.peekAt(1);
     if (kind !== CHAR_COLON && kind !== CHAR_DOT && kind !== CHAR_EQUALS) {
@@ -900,13 +857,24 @@ export class BuildParser {
     }
   }
 
+  /**
+   * Read a name token, up to whitespace or one of `, = { } ; < > #` (and,
+   * inside a command substitution, a backtick). Quoted strings, backslash
+   * escapes, `$` and command substitutions, wildcards, character classes and
+   * extglob groups (`!(…)`, `@(…)`, `*(…)`, `?(…)`, `+(…)`) are read as parts of
+   * the name.
+   *
+   * @return an IDENTIFIER or SIMPLE_NAME token for plain text of that tier,
+   * otherwise a NAME token holding the Name, its override marker set where it
+   * ends in an unquoted `?` or `!` after another character. An extglob group
+   * left open, or a `!(` inside another group, is reported and thrown.
+   */
   private readNameOrIdentifier(): Token {
     const start = this.reader.currentOffset();
     const nameBuilder = new NameBuilder();
     let maybeIdent = true;
-    /* Open extglob groups (`!(`, `@(` …): their depth, and the offset of the
-     * outermost one, for the unterminated diagnostic. Only inside a group are
-     * `)` and `|` structural — at depth 0 both are ordinary name characters. */
+    /* The depth of open extglob groups, and the offset of the outermost one
+     * for the unterminated-group error. */
     let extglobDepth = 0;
     let extglobStart = 0;
     /* Whether the name ends in an override marker: a `?` or `!` written
@@ -917,13 +885,12 @@ export class BuildParser {
       isWhitespace(ch) ||
       [CHAR_COMMA, CHAR_EQUALS, CHAR_LBRACE, CHAR_RBRACE, CHAR_SEMI, CHAR_LANGLE, CHAR_RANGLE, CHAR_HASH].includes(ch) ||
       (ch === CHAR_BACKTICK && this.commandSubstDepth > 0);
-    /* Expect current character is not whitespace or a special character.
-     * Quoted strings, substitutions and character classes consume themselves
-     * whole (the scan only advances past characters they leave in place). */
+    /* The reader is at a character that starts a name. Quoted strings,
+     * substitutions and character classes are read whole by their readers; the
+     * scan moves past what they leave. */
     let posn = this.reader.currentOffset();
-    /* Emit an extglob leader — the two characters `X(` as one glob run — and
-     * enter the group. The interior is scanned normally, so wildcards, quoted
-     * strings and `${...}` substitutions all work inside one, as in bash. */
+    /* Append an extglob leader, `X(`, as glob text and enter the group. Its
+     * interior is scanned as the rest of the name is. */
     const openExtglob = (leader: number): void => {
       if (leader === CHAR_BANG && extglobDepth > 0) {
         this.nestedNegationError(this.reader.currentOffset());
@@ -967,9 +934,8 @@ export class BuildParser {
           posn = this.reader.currentOffset();
           break;
         case CHAR_BACKTICK:
-          /* Inside a substitution's own words a backtick ENDS the word (and the
-           * command): fabr has no nested substitution (and no `\`` escape for
-           * one), so the innermost backtick is always a close, never an open. */
+          /* Inside a substitution's words a backtick ends the word and the
+           * substitution; substitutions do not nest. */
           if (this.commandSubstDepth > 0) {
             return true;
           }
@@ -980,9 +946,8 @@ export class BuildParser {
           break;
         case CHAR_STAR:
         case CHAR_QUESTION:
-          /* `*` and `?` are wildcards on their own, extglob leaders before a `(`
-           * (`*(a|b)`, `?(a|b)`) — the `**(` case reads as `*` then `*(`, as in
-           * bash. */
+          /* A wildcard, or an extglob leader before a `(` (`*(a|b)`, `?(a|b)`);
+           * `**(` reads as `*` then `*(`. */
           if (this.reader.peekAt(1) === CHAR_LPAREN) {
             openExtglob(ch);
             break;
@@ -996,10 +961,9 @@ export class BuildParser {
         case CHAR_BANG:
         case CHAR_PLUS:
         case CHAR_AT:
-          /* Extglob leaders only when a `(` abuts. Everywhere else all three are
-           * ordinary name characters (`@npm:pkg`, a `1.0.0+build` version) — a
-           * bare `!` in particular is literal, as in bash, NOT the whole-pattern
-           * negation picomatch would otherwise read it as (see escapeGlob). */
+          /* An extglob leader where a `(` abuts; otherwise a literal character
+           * (`@npm:pkg`, `1.0.0+build`). A leading `!` is literal too, not
+           * picomatch's whole-pattern negation (see escapeGlob in Name.ts). */
           if (this.reader.peekAt(1) === CHAR_LPAREN) {
             openExtglob(ch);
           } else if (ch === CHAR_BANG && this.reader.currentOffset() > start && endsName(this.reader.peekAt(1))) {
@@ -1009,9 +973,8 @@ export class BuildParser {
           break;
         case CHAR_RPAREN:
         case CHAR_PIPE:
-          /* Structural only inside an extglob group: `)` closes it and `|`
-           * separates its alternatives. At depth 0 both are literal name
-           * characters, so an unparenthesized `a|b` still names that file. */
+          /* Inside an extglob group `)` closes it and `|` separates its
+           * alternatives; outside one both are literal (`a|b` names that file). */
           if (extglobDepth === 0) {
             break;
           }
@@ -1043,17 +1006,15 @@ export class BuildParser {
     });
 
     /* A group left open at the end of the name is an error, as an unterminated
-     * `[...]` class is (bash would degrade `!(a` to plain text); quoting is the
-     * way to name such a file. */
+     * `[...]` class is; such a file name must be quoted. */
     if (extglobDepth > 0) {
       this.unterminatedExtglobError(extglobStart);
     }
 
     const rest = this.reader.substring(posn);
     if (maybeIdent) {
-      /* Nothing was added to the nameBuilder (a pure literal), so classify the
-       * whole string by its narrowest tier: a bare identifier, else a simple
-       * name (adds `/`, `-`, `.`), else a NAME (anything with `:` etc.). */
+      /* Plain literal text: an IDENTIFIER or SIMPLE_NAME where it is one, else
+       * a NAME. */
       if (isIdentifier(rest)) {
         return { type: TokenType.IDENTIFIER, text: rest, start };
       } else if (isSimpleName(rest)) {
@@ -1067,21 +1028,20 @@ export class BuildParser {
   }
 
   /**
-   * Parse the whole source as a single name expression — glob metachars,
-   * quotes and substitutions handled exactly as in a build file. Used for
-   * command-line names (`fabr cat pkg:build/*.js`), so the CLI reuses the model's
-   * reference semantics rather than re-implementing the `:` / glob split.
+   * Parse the whole source as one reference, read as in a build file (a
+   * command-line name, `fabr cat pkg:build/*.js`). Text left after the
+   * reference is reported as an error.
+   *
+   * @return the reference, or the empty name for empty input or input starting
+   * with an operator.
    */
   public parseName(): Name {
     /* The constructor already primed the first token */
     const token = this.token;
     if (token.type === TokenType.NAME || token.type === TokenType.IDENTIFIER || token.type === TokenType.SIMPLE_NAME) {
-      /* Reuse the build-file reference grammar so a CLI name carries the same
-       * `<k=v>` constraints and `:projection` semantics. */
       const name = this.parseReference();
-      /* A CLI name is the whole input: trailing tokens (e.g. a space before a
-       * `<...>` requirement, which then doesn't abut and would be silently dropped)
-       * are an error, not ignored. */
+      /* The whole input is one name: report anything after it, such as a
+       * `<...>` with a space before it, which does not bind. */
       if (this.token.type !== TokenType.EOF) {
         this.unexpectedTokenError("end of input");
       }
@@ -1092,10 +1052,10 @@ export class BuildParser {
   }
 
   /**
-   * Advance to the next token where an error may be met but not raised: while
-   * recovering, and priming the first token. A lexical error is reported and the
-   * token is an `ERROR` token past it, which the grammar refuses without
-   * reporting again (see {@link unexpectedTokenError}).
+   * Advance to the next token without throwing, for recovery and for reading
+   * the first token. A lexical error is reported and the token becomes an
+   * `ERROR` token past it, which {@link unexpectedTokenError} refuses without
+   * reporting again.
    */
   private skipToken(): Token {
     const from = this.reader.currentOffset();
@@ -1113,13 +1073,14 @@ export class BuildParser {
     }
   }
 
+  /** Read the next token into `this.token`, skipping whitespace and `#`
+   * comments, and attach the doc comment from the gap before it. */
   private nextToken(): Token {
     const start = this.reader.currentOffset();
-    /* The reader sits just past the previous token, so this is its end —
-     * kept for span extents (a value's endOffset) */
+    /* The reader is just past the previous token, so this is its end. */
     this.prevTokenEnd = start;
 
-    /* Skip over whitespace and comments */
+    /* Skip whitespace and comments. */
     let inComment = false;
     let sawComment = false;
     const ch = this.reader.skipUntil(ch => {
@@ -1137,12 +1098,9 @@ export class BuildParser {
       }
     });
 
-    /* `start` was captured at the end of the previous token (before any
-     * whitespace here); the real token begins here, past the skipped gap. If the
-     * two coincide, this token abuts the previous with no gap. Operators and EOF
-     * must be positioned at `tokenStart`, not `start` — otherwise a diagnostic
-     * anchored on them points at the start of the *preceding whitespace* rather
-     * than the token (name tokens already recapture this in readNameOrIdentifier). */
+    /* The token starts here, past the gap; it abuts the previous token where
+     * there was none. Position each token at `tokenStart`, not `start`, which is
+     * the start of the whitespace before it. */
     const tokenStart = this.reader.currentOffset();
     this.tokenAbutsPrev = tokenStart === start;
 
@@ -1183,11 +1141,9 @@ export class BuildParser {
         this.token = { type: TokenType.PIPE, start: tokenStart };
         break;
       case CHAR_BACKTICK:
-        /* Only a *closing* backtick is a token of its own. An opening one starts
-         * a name — possibly a name that is nothing else (`V = \`node --version\`;`)
-         * — so it must reach the name scan, which recurses into the substitution.
-         * Depth tells the two apart: inside a substitution there is nothing to
-         * open, only the close to stop on. */
+        /* Inside a substitution a backtick closes it and is a token of its own.
+         * Outside one it opens a substitution, which is part of a name
+         * (`V = \`node --version\`;`), read by the name scan. */
         if (this.commandSubstDepth > 0) {
           this.reader.next();
           this.token = { type: TokenType.BACKTICK, start: tokenStart };
@@ -1196,12 +1152,10 @@ export class BuildParser {
         this.token = this.readNameOrIdentifier();
         break;
       case CHAR_DASH:
-        /* A whitespace-delimited `->` is the rename ARROW (`sel -> tmpl`); a `-`
-         * anywhere else stays a name char. The leading gap is guaranteed (this
-         * runs at a token start), so we only require `>` to abut and a
-         * whitespace/EOF terminator after it. `sel-> x` never reaches here — the
-         * NAME read swallows `-` and stops at `>` (RANGLE), a parse error the
-         * value parser flags with a spacing hint. */
+        /* A `->` followed by whitespace or the end is the rename ARROW
+         * (`sel -> tmpl`); any other `-` starts a name. In `sel-> x` the name
+         * takes the `-` and the `>` is a RANGLE, which the value parser reports
+         * with a spacing hint. */
         if (this.reader.peekAt(1) === CHAR_RANGLE && isArrowTerminator(this.reader.peekAt(2))) {
           this.reader.next(); /* the '-' */
           this.reader.next(); /* the '>' */
@@ -1211,30 +1165,24 @@ export class BuildParser {
         this.token = this.readNameOrIdentifier();
         break;
       default:
-        /* It's a NAME */
+        /* A name. */
         this.token = this.readNameOrIdentifier();
     }
-    /* Fold an fd-prefixed redirect: a bare `1`/`2`/`&` word immediately followed
-     * (no space — the name read stopped at the `>`) by `>` is one redirect
-     * operator (`2>`, `&>`), not a word then `>`. A spaced `2 >` stays a `2`
-     * argument plus a `>` redirect, as in a shell. Only meaningful in a command
-     * value; Validate rejects a redirect elsewhere. */
+    /* A bare `1`/`2`/`&` word with a `>` abutting it is one redirect token
+     * (`2>`, `&>`); a spaced `2 >` is the word `2` and a `>`. Validate refuses a
+     * redirect outside a command value. */
     const fd = this.redirectFdText();
     if (!this.suppressRedirect && fd !== undefined && this.reader.current() === CHAR_RANGLE) {
       this.reader.next(); /* the '>' */
       this.token = { type: REDIR_FD_TOKEN[fd], start: this.token.start };
-      /* `N>&M` is a dup — stream N takes stream M's current destination — not `N>`
-       * with a target named `&M`: it takes no target at all, so it must be folded
-       * here rather than left for the redirect parser to read a word. Recognized
-       * generally (so `1>&2` reads as the dup it is, rather than failing on a
-       * baffling target name) and validated to fabr's two fds in `readDupFd`. */
+      /* `N>&M` is a dup (stream N takes stream M's current destination), one
+       * token with no target; `readDupFd` checks that M is 1 or 2. */
       const from = fd === "1" ? 1 : fd === "2" ? 2 : undefined;
       if (from !== undefined && this.reader.current() === CHAR_AMP) {
         this.token = { type: TokenType.REDIR_DUP, start: this.token.start, from, to: this.readDupFd(this.token.start) };
       }
     }
-    /* Attach any doc-comment block from the gap just skipped to this token, so a
-     * decl parser can read the documentation written above the declaration. */
+    /* Attach the doc comment from the gap just skipped. */
     if (sawComment) {
       const docComment = extractDocComment(this.reader.substring(start, tokenStart));
       if (docComment !== undefined) {
@@ -1245,11 +1193,10 @@ export class BuildParser {
   }
 
   /**
-   * Read the `&M` half of a dup redirect (`2>&1`), the reader sitting on the `&`:
-   * consume it and the fd digits. Fabr's process model has exactly two streams,
-   * so only 1 and 2 are fds — anything else (`2>&3`, `2>&`, `2>&x`) is a
-   * positioned error naming what is available, rather than a silent mis-parse
-   * into a redirect targeting a file called `&3`.
+   * Read the `&M` of a dup redirect (`2>&1`), the reader at the `&`.
+   *
+   * @return M, which must be 1 or 2 (stdout or stderr); anything else (`2>&3`,
+   * `2>&`, `2>&x`) is reported, positioned at `opStart`.
    */
   private readDupFd(opStart: number): number {
     this.reader.next(); /* the '&' */
@@ -1281,39 +1228,36 @@ export class BuildParser {
   /**
    * IncludeDecl ::= 'include' NAME ';'
    *
-   * The name is a path relative to the including file, which may **glob**
-   * (`include rules/*.fabr;`) — naming every file that matches; a pattern
-   * matching none is an error, as a missing path is. Or it is one of a
-   * plugin's `optional_libs`, `<package>:<path>`, which may glob likewise. Variables are not: which files make up the model must be readable
-   * from the build files themselves, never from a value that varies by config.
+   * The name is a path relative to the including file, or a plugin's optional
+   * lib, `<package>:<path>`. Either may be a glob (`include rules/*.fabr;`),
+   * naming every file it matches. An absolute path, a variable, or any other
+   * `:` is reported as an error.
    */
   private parseIncludeDecl(): IIncludeDecl {
     const token = this.token;
     if (token.type === TokenType.IDENTIFIER || token.type === TokenType.SIMPLE_NAME || token.type === TokenType.NAME) {
       const name = typeof token.text === "string" ? Name.fromLiteral(token.text) : token.text;
-      /* Lexically, either platform's absolute form — a .fabr file must parse the
-       * same everywhere, so this doesn't ride the host's path.isAbsolute. Ahead of
-       * the reference-syntax check below, so a Windows path is reported as the
-       * absolute path it is rather than for its drive-letter colon. */
+      /* Either platform's absolute form, by text and not the host's
+       * `path.isAbsolute`, so a file parses alike everywhere. Checked before the
+       * `:` test, so a Windows path is reported as absolute. */
       const head = name.getLiteralPrefix();
       if (head.startsWith("/") || /^[A-Za-z]:[\\/]/.test(head)) {
         this.absoluteIncludeName();
       } else if (name.hasVarSubst()) {
         this.invalidIncludeName("variables are not permitted");
       } else if (name.hasLevelSeparator() && !isOptionalLibName(name)) {
-        /* A bare name token carries no `<...>`/`-> ` facet (only parseReference
-         * layers those on), so `:` is the whole of reference syntax reachable here. */
+        /* A single name token has no `<...>` or `-> `, so a `:` is the only
+         * reference syntax it can hold. */
         this.invalidIncludeName("an include names a path, or a plugin's optional lib as <package>:<path>");
       } else if (!name.hasGlob() && name.getSimpleName() === undefined) {
-        /* The decl's own invariant: a name that does not glob is a single literal,
-         * so the loader reads "plain path or pattern?" off `getSimpleName()` alone.
-         * Only an escaped metacharacter can split a glob-free name into parts. */
+        /* A name that does not glob must be one literal: the loader tells a path
+         * from a pattern by `getSimpleName()`. Only an escaped metacharacter can
+         * split a glob-free name into parts. */
         this.invalidIncludeName("not a path");
       } else {
         const offset = token.start;
         this.nextToken();
-        /* The reader now sits just past the name, which is its extent — a glob
-         * has no single literal whose length would give it. */
+        /* The reader is just past the name, so this is its end. */
         const endOffset = this.prevTokenEnd;
         this.consumeIfToken(TokenType.SEMI);
         return {
@@ -1348,13 +1292,12 @@ export class BuildParser {
   }
 
   /**
-   * Consume and return the command-pipeline operator at the current position, as
-   * its {@link CommandOpKind} (with source offset), else undefined. `<`/`>`
-   * reuse LANGLE/RANGLE (a spaced `<` is not a `<k=v>` constraint, which binds
-   * only when abutting); `2>`/`&>` arrive as their own folded tokens. A `>`
-   * preceded by `-` is the mis-spaced rename arrow, not a redirect — reported
-   * with the spacing hint. An operator may appear in any value; it makes the
-   * property a command, which Validate restricts to COMMAND properties.
+   * Consume the command-pipeline operator at the current token.
+   *
+   * @return the operator and its offset, or undefined where the token is none.
+   * A `>` right after a `-` is reported as a mis-spaced rename arrow. An
+   * operator makes the property a command, which Validate allows only on a
+   * COMMAND property.
    */
   private tryCommandOp(): CommandOp | undefined {
     let op: CommandOpKind;
@@ -1393,10 +1336,8 @@ export class BuildParser {
     return { op, at };
   }
 
-  /** @return true if the current token begins a command operator (peek, no
-   * consume), otherwise false. The arg loop uses it to stop before an operator
-   * without swallowing it (and without the `-`-before-`>` rename hint
-   * {@link tryCommandOp} applies). */
+  /** @return true if the current token is a command operator, otherwise false.
+   * Consumes nothing and reports nothing. */
   private atCommandOp(): boolean {
     switch (this.token.type) {
       case TokenType.PIPE:
@@ -1419,30 +1360,28 @@ export class BuildParser {
 
   /**
    * Command  ::= Stage ('|' Stage)*
-   * Stage    ::= Word+ Redirect*
-   * Redirect ::= ('<' | '>' | '2>' | '&>') Word | '2>&1'
+   * Stage    ::= Word (Word | Redirect)*
+   * Redirect ::= ('<' | '>' | '1>' | '2>' | '&>') Word | N '>&' M     (N, M: 1 or 2)
    *
-   * Parse a command pipeline in one pass, building the stages directly. `stage0`
-   * is the words {@link parsePropertyDecl} already collected before the first
-   * operator (this stage's command + args); `firstOp` that operator (already
-   * consumed). `|` starts the next stage, a redirect binds the following word.
-   * Cross-stage rules are enforced where they occur — a non-final stage capturing
-   * stdout is caught at the `|` that ends it, a non-first stage taking stdin at
-   * the `<`. A `{ ... }` block is not a command word.
+   * Parse a command pipeline from its first operator. `stage0` is the words
+   * already read before it (the first stage's command and arguments), `firstOp`
+   * the operator, already consumed, and `firstTarget` that operator's target
+   * where the caller has read it too. Reported as errors: a stage other than the
+   * last capturing stdout, a stage other than the first taking stdin, a stream
+   * redirected twice ({@link applyRedirect}), a missing command or target, and a
+   * `{ ... }` block as a word.
+   *
+   * @return the stages, each with its redirects applied.
    */
   private parseCommand(stage0: IValue[], firstOp: CommandOp, firstTarget?: INameValue): ICommandStage[] {
     const stages: ICommandStage[] = [];
     let pending = this.firstStage(stage0, firstOp);
     let op: CommandOp | undefined = firstOp;
-    /* `firstTarget` supplies the target of `firstOp` when the value loop already
-     * read it (the left-factored spaced-`<` redirect path: the shared IDENTIFIER
-     * prefix was consumed to discriminate constraint-vs-redirect). Only the first
-     * op consumes it; later ops parse their own target. */
+    /* `firstTarget` is used by the first operator only. */
     while (op !== undefined) {
       if (op.op === CommandOpKind.Pipe) {
-        /* Only a *capture* is barred mid-pipeline: `2>&1` sets no destination of
-         * its own (it hands stderr to the pipe, which is meaningful), so it is
-         * judged by out's file, not by whether stderr was touched. */
+        /* Only a capture of stdout is refused before a `|`; `2>&1` there sends
+         * stderr into the pipe. */
         if (pending.fds.out.file !== undefined) {
           this.commandError("only the final stage of a pipeline can capture stdout ('>' / '&>')", op.at);
         }
@@ -1455,8 +1394,8 @@ export class BuildParser {
         }
       }
       firstTarget = undefined;
-      /* Trailing words up to the next operator (or the property's end) are the
-       * current stage's args — args may follow a redirect (`cmd a > out b`). */
+      /* Words up to the next operator are the stage's arguments, after a
+       * redirect too (`cmd a > out b`). */
       while (!this.atCommandOp() && !this.atCommandEnd()) {
         pending.stage.args.push(this.parseWord());
       }
@@ -1466,9 +1405,8 @@ export class BuildParser {
     return stages;
   }
 
-  /** Build stage 0 from the words already collected before the first operator: the
-   * first is the command, the rest args. Empty (a leading operator) or a block
-   * word is a positioned error. */
+  /** Make the first stage from the words read before the first operator: the
+   * command, then its arguments. No words, or a block among them, is reported. */
   private firstStage(words: IValue[], firstOp: CommandOp): PendingStage {
     if (words.length === 0) {
       this.commandError(
@@ -1481,41 +1419,34 @@ export class BuildParser {
   }
 
   /**
-   * A `` `cmd args` `` substitution, the reader sitting on the opening backtick:
-   * parse the command pipeline it contains and append it to `builder` as one
-   * {@link NamePartKind.CommandSubst} part, carrying both its source text (the
-   * key its result is substituted under) and the parsed pipeline.
+   * Read a `` `cmd args` `` substitution, the reader at the opening backtick,
+   * and append it to `builder` as one command-substitution part: the text
+   * between the backticks, as written, and the pipeline parsed from it.
    *
-   * Called from the middle of {@link readNameOrIdentifier}'s character scan, so
-   * the two layers have to hand off cleanly in both directions. Going in, the
-   * token layer is primed with {@link nextToken}. Coming out, the loop stops
-   * **on** the closing backtick token without consuming past it — the reader is
-   * then positioned exactly after that backtick, which is where the character
-   * scan must resume. (Consuming one token further would leave the reader beyond
-   * a lookahead token the caller never asked for.) `this.token` is left holding
-   * the backtick, which the caller's own `nextToken` overwrites on return.
+   * This runs inside {@link readNameOrIdentifier}'s character scan. It parses by
+   * token and stops on the closing backtick token without reading past it, so
+   * the reader is just after the backtick, where the scan resumes; `this.token`
+   * is left holding the backtick until the caller's next `nextToken`.
    */
   private readCommandSubst(builder?: NameBuilder): void {
     const open = this.reader.currentOffset();
     this.reader.next(); /* the opening backtick — consumed here, not lexed */
     this.commandSubstDepth++;
     try {
-      this.nextToken(); /* primes the first word of the command */
+      this.nextToken(); /* the command's first word */
       const pipeline = this.parseCommandSubstPipeline(open);
-      /* The text between the backticks, exactly as written: what the part renders
-       * as, and the key its resolved value is looked up under — so two
-       * identically-written commands are one command. */
+      /* The text between the backticks, as written: what the part renders as,
+       * and the key its result is looked up under. */
       builder?.appendCommandSubst(this.reader.substring(open + 1, this.token.start), pipeline);
     } finally {
       this.commandSubstDepth--;
     }
   }
 
-  /** Parse the pipeline inside a substitution: the first stage's words, then — if an
-   * operator follows — the ordinary {@link parseCommand}. Whichever path parsed
-   * it, the token it stopped on must be the closing backtick: any other
-   * terminator (the property's own `;`, a `}`, EOF) means the substitution was
-   * never closed, and accepting it would swallow the enclosing declaration. */
+  /** Parse the pipeline inside a substitution: the first stage's words, then
+   * {@link parseCommand} where an operator follows. Ending on anything but the
+   * closing backtick (a `;`, a `}`, EOF) is reported as unterminated, and no
+   * words as empty. */
   private parseCommandSubstPipeline(open: number): CommandPipeline {
     const words: IValue[] = [];
     while (!this.atCommandOp() && !this.atCommandEnd()) {
@@ -1539,8 +1470,8 @@ export class BuildParser {
     return [{ command: this.asWord(command), args: args.map(word => this.asWord(word)) }];
   }
 
-  /** @return true if the current token ends a command — the property's own
-   * terminators, plus the backtick that closes a substitution — otherwise false. */
+  /** @return true if the current token ends a command (`;`, `}`, EOF, or inside a
+   * substitution its closing backtick), otherwise false. */
   private atCommandEnd(): boolean {
     return (
       this.token.type === TokenType.SEMI ||
@@ -1550,14 +1481,13 @@ export class BuildParser {
     );
   }
 
-  /** Parse one command word (a name-value reference); the caller guarantees a
-   * word is present. */
+  /** Parse one command word; the current token must start one. */
   private parseWord(): INameValue {
     return this.asWord(this.parseValue());
   }
 
-  /** Parse a required word — a `|`'s next command or a redirect's target —
-   * erroring, positioned at the operator, when none follows. */
+  /** Parse the word an operator needs, a `|`'s next command or a redirect's
+   * target, reporting at the operator where none follows. */
   private parseRequiredWord(op: CommandOp): INameValue {
     if (this.atCommandOp() || this.atCommandEnd()) {
       this.commandError(op.op === CommandOpKind.Pipe ? "empty command (nothing beside '|')" : missingTarget(op.op), op.at);
@@ -1565,7 +1495,7 @@ export class BuildParser {
     return this.parseWord();
   }
 
-  /** Narrow a parsed value to a command word — a `{ ... }` block is not one. */
+  /** @return `value` as a command word, reporting a `{ ... }` block. */
   private asWord(value: IValue): INameValue {
     if (!isNameValue(value)) {
       this.commandError("a `{ ... }` block is not a command", value.offset);
@@ -1574,19 +1504,17 @@ export class BuildParser {
   }
 
   /**
-   * Apply one redirect to the stage's fd table, in written order. A capture
-   * *replaces* the stream's destination with a fresh {@link Dest}, so an earlier
-   * dup keeps pointing at the old one (`2>&1 > f` leaves stderr on the default
-   * sink, as in a shell); a dup instead *aliases* the two, which is what
-   * {@link flattenStage} reads back as "one destination".
+   * Apply one redirect to the stage. A capture gives its stream a new
+   * {@link Dest}, so an earlier dup is left on the old one (`2>&1 > f` leaves
+   * stderr on its default, as in a shell); a dup makes its `from` stream share
+   * the other's `Dest`; `&>` makes both share a new one.
    *
-   * Redirecting a stream twice is an error (not a shell's last-one-wins). A dup
-   * counts as redirecting its `from` stream, and self-dup (`2>&2`) is the no-op
-   * it says.
+   * A stream redirected twice is reported as an error, a dup counting as a
+   * redirect of its `from` stream. A dup of a stream to itself (`2>&2`) does
+   * nothing.
    */
   private applyRedirect({ stage, fds }: PendingStage, op: CommandOp, target: INameValue | undefined): void {
-    /* Whether a stream has been given a destination of its own — a capture, or a
-     * dup that pointed it somewhere else. */
+    /* True if a stream was captured, or pointed at the other by a dup. */
     const directed = (fd: Dest, other: Dest): boolean => fd.file !== undefined || fd === other;
     switch (op.op) {
       case CommandOpKind.Stdin:
@@ -1632,11 +1560,12 @@ export class BuildParser {
     }
   }
 
+  /** Parse one value: a reference, or a `{ … }` block. */
   private parseValue(): IValue {
     const token = this.token;
     if (token.type === TokenType.LBRACE) {
-      /* A `{ key = value; ... }` block value (a map, or one element of a list of
-       * maps). Schema-blind: Validate enforces where blocks may appear. */
+      /* A `{ key = value; ... }` block (a map, or one of a list of maps).
+       * Validate checks where a block may appear. */
       const offset = token.start;
       const entries = this.parseMapBlock();
       return {
@@ -1650,8 +1579,7 @@ export class BuildParser {
     if (token.type === TokenType.NAME || token.type === TokenType.IDENTIFIER || token.type === TokenType.SIMPLE_NAME) {
       const offset = token.start;
       const value = this.parseReference();
-      /* parseReference leaves the current token positioned after the
-       * reference, so the end of its last consumed token is the value's end */
+      /* The end of the reference's last token is the value's end. */
       return {
         kind: DeclKind.NameValue,
         source: this.source,
@@ -1660,8 +1588,8 @@ export class BuildParser {
         value,
       };
     } else if (token.type === TokenType.RANGLE) {
-      /* A bare `>` in value position is almost always a mis-spaced rename arrow
-       * (`sel-> x`, where the NAME read swallowed the `-` and stopped at `>`). */
+      /* A `>` here is taken as a mis-spaced rename arrow (`sel-> x`, the `-` read
+       * into the name). */
       this.renameTemplateError("the '->' arrow must be surrounded by spaces (`sel -> tmpl`)");
     } else {
       this.unexpectedTokenError("Name, ';', or '}'");
@@ -1673,8 +1601,8 @@ export class BuildParser {
     return typeof token.text === "string" ? Name.fromLiteral(token.text) : token.text;
   }
 
-  /** @return the current token's literal text if it is a bare `1`/`2`/`&` — the
-   * fd prefixes a `>` may fold with into a redirect operator — else undefined. */
+  /** @return the current token's text if it is a bare `1`, `2` or `&` (which an
+   * abutting `>` makes a redirect), else undefined. */
   private redirectFdText(): string | undefined {
     const token = this.token;
     let text: string | undefined;
@@ -1695,13 +1623,14 @@ export class BuildParser {
   }
 
   /**
-   * Reference ::= Ref Constraints?  (an abutting ':projection' tail rejoined)
+   * Reference ::= Ref Constraints? Tail? ( '->' Template )?
    *
-   * Assumes the current token is the base ref (NAME/IDENTIFIER/SIMPLE_NAME);
-   * consumes it, any *hugging* `<k=v, ...>` constraint requirement, and — since a `<...>`
-   * splits what would otherwise be one reference token — any hugging `:projection`
-   * tail, reassembling them into one Name. Leaves the current token positioned
-   * after the reference. A `<...>`/`:tail` separated by whitespace does not bind.
+   * Parse a reference from its base token (NAME, IDENTIFIER or SIMPLE_NAME), with
+   * an abutting `<k=v, …>`, the abutting `:projection`, `/path` or marker after it
+   * ({@link applyConstraintsAndRename}), and a `-> template` rename, into one
+   * Name. A `<...>` or tail with whitespace before it is not part of the
+   * reference. `kind` says what the `<k=v>` is. Leaves the current token after
+   * the reference.
    */
   private parseReference(kind: ConstraintKind = "requirement"): Name {
     const name = this.tokenToName(this.token as NameToken | IdentToken);
@@ -1710,18 +1639,17 @@ export class BuildParser {
   }
 
   /**
-   * Parse the optional suffix after a reference's base token: an abutting `<k=v>`
-   * constraint requirement and/or a `-> template` rename. Factored out so the
-   * left-factored spaced-`<` path (a detached constraint on a preceding value,
-   * or a redirect target reference) reuses the exact same tail handling.
+   * Parse what follows a reference's base token, already consumed: an abutting
+   * `<k=v>` with what follows it, or a `-> template` rename.
+   *
+   * @return `name` with them applied.
    */
   private parseRefSuffix(name: Name, kind: ConstraintKind = "requirement"): Name {
     if (this.token.type === TokenType.LANGLE && this.tokenAbutsPrev) {
       this.nextToken(); /* consume '<' */
       return this.applyConstraintsAndRename(name, this.parseConstraintList(undefined, kind));
     }
-    /* `Reference (ARROW Template)?` — the rename half. The arrow is spaced, so it
-     * binds regardless of any preceding `<...>`/`:proj`. */
+    /* The rename; the arrow is spaced, so it never abuts. */
     if (this.token.type === TokenType.ARROW) {
       name = this.withRename(name);
     }
@@ -1729,13 +1657,12 @@ export class BuildParser {
   }
 
   /**
-   * Attach a `-> template` rename to `name`, having checked the template can be
-   * replayed against it ({@link checkRenameWildcards}) and is a pattern rather than a
-   * reference (no `:`). Assumes the current token is the ARROW.
+   * Attach a `-> template` rename to `name`, the current token the ARROW. A
+   * template with a `:`, or whose wildcards cannot be filled from `name`'s
+   * ({@link checkRenameWildcards}), is reported at the arrow.
    *
-   * These rules read only the written name, so they are enforced here, where
-   * every rename passes through — including a CLI reference
-   * (`fabr cat 'x:*.a -> *.b.*'`), which has no schema and no Validate pass.
+   * Keep these checks here: every rename is parsed through this, a CLI reference
+   * (`fabr cat 'x:*.a -> *.b.*'`) included, which no Validate pass sees.
    */
   private withRename(name: Name): Name {
     const arrow = this.token.start;
@@ -1750,16 +1677,15 @@ export class BuildParser {
     return name.withRenameTo(template);
   }
 
-  /** Attach a parsed constraint list to `name` (rejoining any hugging projection
-   * tail — a `<...>` splits what would be one reference token, so a tail like
-   * `:build/*.js` arrives as a separate, abutting token), then apply a trailing
-   * `-> rename`. Shared by the abutting `ref<k=v>` and detached `ref <k=v>` paths. */
+  /**
+   * Attach a parsed `<k=v>` list to `name`, then a `-> rename` where one follows.
+   * A token abutting the `>` that starts with `:` or `/` (`pkg<k=v>:build/*.js`)
+   * is joined to the name, and a bare `!` or `?` is its marker. Used for an
+   * abutting `ref<k=v>` and a spaced `ref <k=v>` alike.
+   */
   private applyConstraintsAndRename(name: Name, constraints: NameConstraint[]): Name {
     const tail = this.tokenAbutsPrev ? this.peekRefToken() : undefined;
-    /* A `<...>` splits a reference before its projection, so a `:`/`/`-led tail
-     * (`pkg<k=v>:build/*.js`, `pkg<k=v>/lib/x`) rejoins. Arbitrary abutting text
-     * (`foo<k=v>bar`) is NOT a projection — leave it unconsumed so it errors or
-     * parses separately, rather than silently gluing into `foobar<k=v>`. */
+    /* Other abutting text (`foo<k=v>bar`) is not joined: leave it unconsumed. */
     if (tail) {
       const tailName = this.tokenToName(tail);
       const tailLiteral = tailName.getLiteralPrefix();
@@ -1783,11 +1709,10 @@ export class BuildParser {
   /**
    * Template ::= IDENTIFIER | SIMPLE_NAME | NAME
    *
-   * Assumes the current token is the ARROW; consumes it and the single template
-   * token. A template is a name pattern, never a reference: an abutting `<...>`
-   * (constraints), a chained `-> ` (second arrow), or a missing template are
-   * errors here. Its content rules are {@link withRename}'s, bar the ones that
-   * need the property's schema type (those stay in Validate).
+   * Parse a rename template, the current token the ARROW: the arrow and one name
+   * token. A missing template, an abutting `<...>` and a second arrow are
+   * reported. {@link withRename} checks its content; the rules that need the
+   * property's type are Validate's.
    */
   private parseRenameTemplate(): Name {
     this.consumeToken(TokenType.ARROW);
@@ -1806,16 +1731,15 @@ export class BuildParser {
     return template;
   }
 
-  /** `at` defaults to the current token — the offending one for the structural
-   * errors; a content error is reported at the `-> ` the rename hangs off, the
-   * template itself having already been consumed. */
+  /** Report an invalid rename template at `at` (default the current token) and
+   * throw. */
   private renameTemplateError(detail: string, at: number = this.token.start): never {
     this.log.log(DIAG_RENAME_TEMPLATE, { detail, loc: { ...this.source, offset: at } });
     throw new ParseAbort();
   }
 
-  /** Reported at the outermost unclosed extglob leader (`at` is its offset), so
-   * the underline points at the `!(` rather than at the end of the name. */
+  /** Report an unterminated extglob group at its outermost leader (`at`) and
+   * throw. */
   private unterminatedExtglobError(at: number): never {
     this.log.log(DIAG_UNTERMINATED_EXTGLOB, {
       leader: this.reader.substring(at, at + 2),
@@ -1824,7 +1748,7 @@ export class BuildParser {
     throw new ParseAbort();
   }
 
-  /** Reported at a `!(` written inside another extglob group (`at` is its offset). */
+  /** Report a `!(` inside another extglob group, at its offset `at`, and throw. */
   private nestedNegationError(at: number): never {
     this.log.log(DIAG_NESTED_NEGATION, { loc: { ...this.source, offset: at } });
     throw new ParseAbort();
@@ -1834,22 +1758,18 @@ export class BuildParser {
    * Constraints ::= '<' Constraint ( ',' Constraint )* ','? '>'
    * Constraint  ::= IDENTIFIER '=' ( IDENTIFIER | SIMPLE_NAME | NAME )
    *
-   * Parse a `<k=v, …>` constraint body — the opening `<` already consumed —
-   * through the closing `>`. An empty `<>`, a non-identifier key, and a repeated
-   * key are all errors. `kind` says which side of the facet this is: a
-   * `"requirement"` (use position — the configuration a reference must be built
-   * under) takes exact values only, while a `"guard"` (decl position — the
-   * configuration a declaration participates in) is a pattern, since matching is
-   * the whole point.
-   * That asymmetry is also the diagnostic that catches the transposition
-   * `deps = mylib<TARGET=*-linux-*>` for `deps<TARGET=*-linux-*> = mylib`.
-   * When `firstKey` is given, its key identifier is *also*
-   * already consumed and the current token is its `=` (the left-factored
-   * spaced-`<` path, where the value loop reads the shared `<`+IDENTIFIER prefix
-   * before the `=` discriminator decides constraint vs redirect); otherwise the
-   * first key is read here (the ordinary abutting `ref<k=v>` path).
-   * With `readOn` false the closing `>` is the current token on return and the
-   * reader is just past it, for a caller that reads what follows by character.
+   * Parse a `<k=v, …>` list from after its `<` through its `>`. An empty `<>`, a
+   * key that is not an identifier (or, for a `"rule"` guard, `<name>.<name>`) and
+   * a repeated key are reported. A `"requirement"` value may not be a pattern:
+   * that is reported with a hint to write a guard on the property instead
+   * (`deps<TARGET=*-linux-*> = mylib` for `deps = mylib<TARGET=*-linux-*>`).
+   *
+   * Where `firstKey` is given, that key has already been read too and the
+   * current token is its `=`. With `readOn` false, the `>` is left as the
+   * current token with the reader just past it, for a caller that reads on by
+   * character.
+   *
+   * @return the constraints, in written order.
    */
   private parseConstraintList(
     firstKey?: { text: string; start: number },
@@ -1858,9 +1778,7 @@ export class BuildParser {
   ): NameConstraint[] {
     const constraints: NameConstraint[] = [];
     const seen = new Set<string>();
-    /* Inside the `<...>`, a `>` closes the constraint — never a redirect (see
-     * suppressRedirect). Restored in `finally` so an error, or the tail after the
-     * `>`, lexes redirects normally again. */
+    /* A `>` here closes the list and is no redirect; reset in `finally`. */
     this.suppressRedirect = true;
     try {
       let pending = firstKey;
@@ -1904,8 +1822,7 @@ export class BuildParser {
         }
         constraints.push([keyText, valueName]);
         this.nextToken();
-        /* Continue on a comma (unless it was trailing, before the '>'); otherwise
-         * the list is done and a '>' must follow. */
+        /* Continue after a comma, unless it is a trailing one before the '>'. */
         if (!this.consumeIfToken(TokenType.COMMA) || this.token.type === TokenType.RANGLE) {
           break;
         }
@@ -1926,9 +1843,8 @@ export class BuildParser {
     throw new ParseAbort();
   }
 
-  /** A pattern where a use-position requirement wants an exact value — nearly
-   * always a guard written on the value instead of on the property it belongs
-   * to, so the help says so rather than merely restating the rule. */
+  /** Report a pattern as a requirement's value, with a hint to write it as a
+   * guard on the property, and throw. */
   private globConstraintError(key: string, offset: number): never {
     this.log.log(DIAG_GLOB_CONSTRAINT, {
       key,
@@ -1939,12 +1855,9 @@ export class BuildParser {
   }
 
   /**
-   * Read a property key: the name as written, including any abutting `<k=v>`,
-   * which in key position is the guard. Assumes the key token is current.
-   *
-   * A **spaced** `<` gets its own diagnostic rather than the bare "expected '='"
-   * that would otherwise land on it — the guard must abut its key, as a
-   * requirement must abut its reference.
+   * Read a property key from its token: the name as written, with an abutting
+   * `<k=v>` as its guard. A `<` with a space before it is reported: a guard
+   * must abut its key.
    */
   private parsePropertyKey(): Name {
     const base = this.tokenToName(this.token as NameToken | IdentToken);
@@ -1952,9 +1865,9 @@ export class BuildParser {
     return this.finishPropertyKey(base);
   }
 
-  /** {@link parsePropertyKey} from the key token already consumed — the shape the
-   * top-level statement path arrives in, having had to read the following token
-   * to tell a property from a target declaration. */
+  /** Read a property key as {@link parsePropertyKey} does, its base token
+   * already consumed (a statement parser reads past it to tell a property from a
+   * target). */
   private finishPropertyKey(base: Name): Name {
     const key = this.parseRefSuffix(base, "guard");
     if (this.token.type === TokenType.LANGLE) {
@@ -1970,15 +1883,15 @@ export class BuildParser {
   /**
    * PropertyDecl ::= NAME '=' Value* ';'
    *                      ^
-   * @param key the key as written — a bare identifier, or a whole reference (a
-   * `sync` coordinate). Any `<k=v>` on it has already been parsed into its
-   * constraint facet, which in key position IS the guard; an enclosing guard
-   * block conjoins onto it here.
+   * Parse a property declaration from its `=`. The enclosing guard block's
+   * guard is added to the key's own; a rename on the key is reported.
+   *
+   * @param key the key as written, a bare identifier or a whole reference (a
+   * `sync` coordinate), its `<k=v>` already parsed as its guard.
    */
   private parsePropertyDecl(key: Name, nameOffset: number, docComment?: string): IPropertyDecl {
     if (key.getRenameTo() !== undefined) {
-      /* `srcs -> foo = …`: a rename says what to call what a name selects, and a
-       * key selects nothing — it IS the name. */
+      /* `srcs -> foo = …` */
       this.renameTemplateError("a property key cannot carry a rename", nameOffset);
     }
     const name = this.blockGuard ? key.withConstraints(this.mergeGuards(key.getConstraints(), nameOffset, "this declaration")) : key;
@@ -1993,17 +1906,12 @@ export class BuildParser {
     return this.parsePropertyValues(base);
   }
 
-  /**
-   * The guard of the `<k=v> { … }` block being parsed, distributed onto every
-   * declaration within it (the block form is pure sugar — it introduces no scope
-   * of its own). Undefined outside such a block.
-   */
+  /** The guard of the `<k=v> { … }` block being parsed, added to every
+   * declaration in it; undefined outside one. */
   private blockGuard?: readonly NameConstraint[];
 
-  /** An inner declaration's or block's own guard (`site` names which, for the
-   * error) conjoined with the enclosing block's. A key guarded by both is an
-   * error: the two would have to agree, and if they do the inner one says
-   * nothing. */
+  /** @return the enclosing block's guard followed by `own`, a declaration's or a
+   * nested block's guard. A key in both is reported, `site` saying which. */
   private mergeGuards(own: readonly NameConstraint[], offset: number, site: string): readonly NameConstraint[] {
     const block = this.blockGuard ?? [];
     for (const [key] of own) {
@@ -2016,31 +1924,23 @@ export class BuildParser {
   }
 
   /**
-   * The right-hand side of a property: its value list up to (and including) the
-   * terminating ';'. Shared by an ordinary `name = values;` declaration and a
-   * targetdef's `default values;` clause, so the two admit exactly the same value
-   * grammar. Assumes the current token starts the first value.
+   * Parse a property's values through the terminating ';', for a `name = …;`
+   * declaration and a targetdef's `default …;` clause alike. The current token
+   * starts the first value. Where an operator appears, the values are a command
+   * (one {@link ICommandValue}).
    */
   private parsePropertyValues(base: Omit<IPropertyDecl, "values">): IPropertyDecl {
     const values: IValue[] = [];
-    /* The value loop admits `{...}` blocks as values (parseValue), so a value
-     * list may hold names, blocks, or (per Validate, only homogeneously) several
-     * blocks — `maintainers = { ... } { ... };`. A block value swallows its own
-     * closing brace, so the loop's RBRACE test only ever sees the *enclosing*
-     * body's terminator. Like a target body, a block needs no trailing ';': a
-     * closed block ends the property unless another block follows (an array of
-     * maps) — homogeneity makes this unambiguous, since any other token can only
-     * start the next entry/statement. On the first pipeline operator (`|`, `<`,
-     * `>`, …) the whole RHS is a command: hand the words gathered so far to
-     * parseCommand as stage 0. A bare `cmd args` with no operator stays a value
-     * list (getCommandPipeline folds it into a single stage). */
+    /* Values are names and `{...}` blocks (`maintainers = { ... } { ... };`); a
+     * block consumes its own `}`, so the RBRACE test sees only the enclosing
+     * body's. A block ends the property, with no ';', unless another block
+     * follows. On the first pipeline operator (`|`, `<`, `>`, …) the words read
+     * so far are the command's first stage. Words with no operator stay a value
+     * list. */
     while (this.token.type !== TokenType.SEMI && this.token.type !== TokenType.RBRACE) {
-      /* A spaced `<` after a reference is ambiguous between a detached `<k=v>`
-       * constraint on that reference and a stdin redirect. Left-factor it: the
-       * two productions share a leading IDENTIFIER (a constraint key, or a
-       * bare-identifier redirect target), so consume `<` and that identifier,
-       * then the current token discriminates — `=` ⟹ constraint, else ⟹ redirect.
-       * Only relevant when a constrainable reference precedes it. */
+      /* A spaced `<` after a reference is either a `<k=v>` on that reference or
+       * a stdin redirect. Read the `<` and, if it follows, an identifier: an `=`
+       * after that makes it a `<k=v>`, anything else a redirect. */
       if (this.token.type === TokenType.LANGLE && values.length > 0 && isNameValue(values[values.length - 1])) {
         const langleAt = this.token.start;
         const afterLangle = this.nextToken(); /* consume '<' */
@@ -2048,15 +1948,13 @@ export class BuildParser {
           const keyToken = { text: afterLangle.text, start: afterLangle.start };
           const afterKey = this.nextToken(); /* consume the shared identifier prefix */
           if (afterKey.type === TokenType.EQUALS) {
-            /* A detached constraint: attach to the preceding reference, exactly
-             * as an abutting `ref<k=v>` would (constraints + `-> rename` tail). */
+            /* A `<k=v>` on the preceding reference, as if it abutted. */
             const last = values[values.length - 1] as INameValue;
             const refined = this.applyConstraintsAndRename(last.value, this.parseConstraintList(keyToken));
             values[values.length - 1] = { ...last, value: refined, endOffset: this.prevTokenEnd };
             continue;
           }
-          /* Not a constraint: a stdin redirect whose target starts with this
-           * identifier (which may carry its own abutting `<k=v>`/`->` suffix). */
+          /* A stdin redirect whose target starts with the identifier. */
           const target: INameValue = {
             kind: DeclKind.NameValue,
             source: this.source,
@@ -2070,8 +1968,7 @@ export class BuildParser {
             this.parseCommand(values, { op: CommandOpKind.Stdin, at: langleAt }, target)
           );
         }
-        /* A spaced `<` before a non-identifier: an ordinary stdin redirect whose
-         * target the command path parses (a SIMPLE_NAME/NAME/reference). */
+        /* A stdin redirect whose target is not an identifier. */
         return this.finishCommandProperty(base, values, this.parseCommand(values, { op: CommandOpKind.Stdin, at: langleAt }));
       }
       const op = this.tryCommandOp();
@@ -2088,9 +1985,9 @@ export class BuildParser {
     return { ...base, values };
   }
 
-  /** Wrap a parsed pipeline as the property's single command value. `values` are
-   * the words gathered before the first operator (stage 0); its first element,
-   * or `prevTokenEnd`, positions the value. */
+  /** Make the property's one command value from a parsed pipeline, positioned at
+   * the first of `values` (the words before the first operator), else at
+   * `prevTokenEnd`. */
   private finishCommandProperty(base: Omit<IPropertyDecl, "values">, values: IValue[], pipeline: ICommandStage[]): IPropertyDecl {
     this.consumeIfToken(TokenType.SEMI);
     const command: ICommandValue = {
@@ -2109,15 +2006,11 @@ export class BuildParser {
    * Splice    ::= Ref ';'
    * MapKey    ::= IDENTIFIER | SIMPLE_NAME | NAME
    *
-   * A MAP property's value: a block of `key = value;` sub-properties and
-   * `NAME;` splices. Unlike a `sync` member coordinate, a map key is a *literal
-   * foreign name* (dotted keys like `process.env.NODE_ENV` are common), never
-   * resolved as a reference — so its canonical string is taken verbatim as the
-   * entry name. A name NOT followed by `=` is instead a *splice*: a reference
-   * to another block-valued property whose entries merge in at this position
-   * (the in-block form of the top-level bare-reference chase). Entry values are
-   * ordinary values, including nested blocks. Assumes the current token is the
-   * opening `{`.
+   * Parse a MAP value from its `{`: `key = value;` entries and `NAME;` splices.
+   * A key is literal text, never a reference (`process.env.NODE_ENV`). A splice
+   * names another block-valued property, whose entries are merged in at that
+   * position. Values are ordinary values, blocks included. A bad entry is
+   * reported and skipped. Nesting beyond {@link MAX_BLOCK_DEPTH} is reported.
    */
   private parseMapBlock(): IMapItemDecl[] {
     if (this.blockDepth >= MAX_BLOCK_DEPTH) {
@@ -2125,8 +2018,8 @@ export class BuildParser {
       throw new ParseAbort();
     }
     this.blockDepth++;
-    /* A map block is a VALUE, not a body of declarations: an enclosing guard
-     * block distributes over the property that holds it, and no further. */
+    /* An enclosing guard block applies to the property holding the map, not to
+     * the map's entries. */
     const outerGuard = this.blockGuard;
     this.blockGuard = undefined;
     try {
@@ -2141,10 +2034,9 @@ export class BuildParser {
    * GuardBlock ::= Constraints '{' PropertyList '}'
    *                ^
    *
-   * `<TARGET=…> { … }` — sugar for writing the guard on each of the contained
-   * declarations, which is exactly what it does: the block introduces no scope,
-   * so it yields the declarations themselves, guarded. Nested blocks conjoin.
-   * Assumes the current token is the opening `<`.
+   * Parse `<TARGET=…> { … }` from its `<`: the declarations in it, each with the
+   * guard added to its own. Nested blocks add theirs too; the block introduces
+   * no scope.
    */
   private parseGuardBlock(): IPropertyDecl[] {
     if (this.blockDepth >= MAX_BLOCK_DEPTH) {
@@ -2168,8 +2060,7 @@ export class BuildParser {
     }
   }
 
-  /** {@link parseMapBlock}'s body, split out so the depth accounting is a single
-   * enter/leave around it (including the recovery throw). */
+  /** Parse {@link parseMapBlock}'s block, its depth already counted. */
   private parseMapBlockBody(): IMapItemDecl[] {
     this.consumeToken(TokenType.LBRACE);
     const entries: IMapItemDecl[] = [];
@@ -2185,8 +2076,7 @@ export class BuildParser {
         if (next.type === TokenType.EQUALS) {
           entries.push(this.parsePropertyDecl(name, offset));
         } else if (next.type === TokenType.SEMI || next.type === TokenType.RBRACE) {
-          /* A splice: the reference's Name is kept intact (it may carry `${...}`
-           * substitutions), resolved at read time. */
+          /* A splice; its Name may carry `${...}` substitutions. */
           entries.push({
             kind: DeclKind.Splice,
             source: this.source,
@@ -2202,9 +2092,7 @@ export class BuildParser {
         if (!(error instanceof ParseAbort)) {
           throw error;
         }
-        /* Recover within the block (as parsePropertyList does for a target body),
-         * so a bad entry doesn't collapse the whole block and leak the enclosing
-         * body's `}`. */
+        /* Skip to the next entry or the block's own `}`. */
         this.recoverInBody();
       }
     }
@@ -2216,8 +2104,9 @@ export class BuildParser {
    * PropertyList ::= ( PropertyDecl | GuardBlock | Splice )*
    * Splice       ::= Ref ';'
    *
-   * A splice is accepted where `splices` is true (a target's own body, not a
-   * guard block within it).
+   * Parse a target's body, or a guard block's. A splice is accepted only where
+   * `splices` is true (a target's own body), and never with a guard. A bad
+   * property is reported and skipped.
    */
   private parsePropertyList(splices: boolean): IMapItemDecl[] {
     const list: IMapItemDecl[] = [];
@@ -2227,12 +2116,9 @@ export class BuildParser {
         if (token.type === TokenType.LANGLE) {
           list.push(...this.parseGuardBlock());
         } else if (token.type === TokenType.IDENTIFIER || token.type === TokenType.NAME || token.type === TokenType.SIMPLE_NAME) {
-          /* One key path for every key: a plain property name, and equally a
-           * reference in key position — a `sync` member coordinate
-           * (`@npm:pkg:ver = srcs`) or a bare-name/path key (`@fabr-build/core`,
-           * `lib/x`). The key IS a Name either way; what an ordinary property
-           * has that a coordinate does not is simply a schema to be found under
-           * its base name. */
+          /* A property name, or a reference as the key: a `sync` member
+           * coordinate (`@npm:pkg:ver = srcs`) or a name or path
+           * (`@fabr-build/core`, `lib/x`). */
           const start = token.start;
           const key = this.parsePropertyKey();
           const keyEnd = this.prevTokenEnd;
@@ -2246,8 +2132,7 @@ export class BuildParser {
             continue;
           }
           const decl = this.parsePropertyDecl(key, start);
-          /* Span the key (not the whole `key = value`), so a per-member error
-           * underlines the offending reference. */
+          /* The span is the key's, not the whole declaration's. */
           decl.endOffset = keyEnd;
           list.push(decl);
         } else {
@@ -2257,20 +2142,16 @@ export class BuildParser {
         if (!(error instanceof ParseAbort)) {
           throw error;
         }
-        /* Recover *within* this body: skip to the next `;` (resume with the next
-         * property, keeping this target and the properties that parsed) or the
-         * body's own `}` (end the body). */
+        /* Skip to the next property or the body's own `}`. */
         this.recoverInBody();
       }
     }
     return list;
   }
 
-  /** Skip tokens after a body property error until the next statement boundary
-   * within the current `{...}` body: a `;` at body depth (consumed — resume the
-   * next property) or the body's own closing `}` (left in place — the caller
-   * consumes it). Nested `{}` (a map-block value) are balanced so their `}` is
-   * not mistaken for the body close. */
+  /** Skip tokens after an error in a `{...}` body: through the next `;` at the
+   * body's depth, or up to (not past) the body's own `}`. Nested `{...}` are
+   * skipped whole. */
   private recoverInBody(): void {
     let depth = 0;
     while (this.token.type !== TokenType.EOF) {
@@ -2296,9 +2177,9 @@ export class BuildParser {
   }
 
   /**
-   * TargetDecl ::= NAME NAME '{' PropertyList '}'
-   *                     ^
-   * `type` and `typeOffset` are the already-consumed type token.
+   * TargetDecl ::= IDENTIFIER ( IDENTIFIER | SIMPLE_NAME ) '{' PropertyList '}'
+   *                           ^
+   * `type` and `typeOffset` are the type token, already consumed.
    */
   private parseTargetDecl(type: string, typeOffset: number, docComment?: string): ITargetDecl {
     if (this.token.type !== TokenType.IDENTIFIER && this.token.type !== TokenType.SIMPLE_NAME) {
@@ -2330,12 +2211,10 @@ export class BuildParser {
    * PrivateDecl ::= 'private' ( PropertyDecl | TargetDecl )
    *                            ^
    *
-   * `default` and `private` (the `keyword`) each prefix either form of named
-   * declaration, so the word here is a property name or a target type and must
-   * be an identifier — a `/`-bearing SIMPLE_NAME (or anything else) is a
-   * positioned error, NOT a target of the keyword's type. Which form follows is
-   * decided by the token after it, exactly as for an unprefixed declaration. A
-   * targetdef can be neither, and no other keyword's declaration is private.
+   * Parse the declaration after `keyword`, a property or a target, told apart
+   * by the token after its first word as for an unprefixed one. That word must
+   * be an IDENTIFIER. `default targetdef`, `default repository` and
+   * `default private` are reported, as is `private` before any keyword.
    */
   private parsePrefixedDecl(keyword: "default" | "private", docComment: string | undefined): IResolvableDecl {
     const name = this.token;
@@ -2345,11 +2224,10 @@ export class BuildParser {
     }
     const next = this.nextToken();
     if (next.type === TokenType.EQUALS || next.type === TokenType.LANGLE) {
-      /* `<` is the declaration's guard (`default F<TARGET=…> = …`), as on an
-       * ordinary global. */
+      /* `<` is the declaration's guard (`default F<TARGET=…> = …`). */
       return this.parsePropertyDecl(this.finishPropertyKey(Name.fromLiteral(name.text)), name.start, docComment);
     } else if (next.type === TokenType.IDENTIFIER || next.type === TokenType.SIMPLE_NAME) {
-      /* Reported at the word, rather than read as a target of that type: none of these declarations is a default. */
+      /* Reported at the keyword word, not read as a target of that type. */
       if (DEFAULT_REFUSED.has(name.text)) {
         this.unexpectedTokenError(expected, name.start);
       }
@@ -2365,8 +2243,11 @@ export class BuildParser {
    * RuleGuard ::= '<' RuleGuardKey '=' NAME ( ',' RuleGuardKey '=' NAME )* '>'
    * RuleGuardKey ::= NAME | <param> '.' NAME
    *
-   * The rule of `type`, written at `typeOffset`, or of every type where
-   * undefined; `offset` is where the declaration starts.
+   * Parse a rule declaration from its target parameter: the rule of `type`,
+   * written at `typeOffset`, or of every type where undefined; `offset` is where
+   * the declaration starts. The guard abuts the parameter; a key
+   * `<param>.<name>` guards on the target's property, any other dotted key is
+   * reported.
    */
   private parseRuleDecl(type: string | undefined, typeOffset: number | undefined, offset: number): IRuleDecl {
     const param = this.token;
@@ -2406,13 +2287,15 @@ export class BuildParser {
   }
 
   /**
-   * RuleImplementation ::= NAME ';'                          a package entry
-   *                      | NAME NAME '{' PropertyList '}'      one target, the result
-   *                      | Reference '{' RuleBlockBody '}'    the result, and the block
+   * RuleImplementation ::= NAME ';'                                         a package entry
+   *                      | IDENTIFIER ( IDENTIFIER | SIMPLE_NAME ) '{' PropertyList '}'   one target, the result
+   *                      | Reference RuleBlockBody                         the result, and the block
    *                        ^
    *
-   * The forms are told apart by what follows the first token: a `;`, a second
-   * name, or a `{` after the reference.
+   * Parse a rule's implementation; the forms are told apart by what follows the
+   * first token: a second name, a `{` after the reference, or a `;`. A package
+   * entry with a glob, variable, `<k=v>` or rename, or without a `:`, is
+   * reported.
    */
   private parseRuleImplementation(): INameValue | IRuleBlock {
     const first = this.token;
@@ -2518,8 +2401,8 @@ export class BuildParser {
   }
 
   /**
-   * Parse a rule's or repository's implementation, a reference to an entry of
-   * a package (`@fabr-build/js:rules/BuildJSPackage`), and the `;` after it.
+   * Parse a repository's implementation, a reference to an entry of a package
+   * (`@fabr-build/js:rules/BuildJSPackage`), and the `;` after it.
    */
   private parseImplementation(): INameValue {
     const token = this.token;
@@ -2575,13 +2458,16 @@ export class BuildParser {
 
   /**
    * PropertyTypeList ::= PropertyType*
-   * PropertyType ::= NAME '=' PropertySchema DefaultClause? ';'
+   * PropertyType ::= ( IDENTIFIER | '*' ) '=' PropertySchema DefaultClause? ';'
    * PropertySchema ::=  ( 'STRING'|'FILES'|'PACKAGES'|'REWRITE'|'MAP'|'COMMAND'|'REQUIRED' )*
    * DefaultClause ::= 'default' Value*
    *
+   * Parse a targetdef's property types, keyed by property name, `*` the type of
+   * any key the targetdef does not name. Reported, the first declaration
+   * standing: no type, `default` before the type, REQUIRED with a default, a
+   * default on `*`, and a repeated key.
    */
   private parsePropertyTypeList(): Map<string, IPropertySchema> {
-    /* A Map, as the keys are user-controlled property names. */
     const result = new Map<string, IPropertySchema>();
     while (this.token.type !== TokenType.RBRACE) {
       const token = this.token;
@@ -2589,12 +2475,9 @@ export class BuildParser {
       let required = false;
       let type: PropertyType | undefined;
       let defaultDecl: IPropertyDecl | undefined;
-      /* The key is a property name (`srcs`), or `*` — the wildcard, typing any
-       * further keys a target of this type may carry (a `sync`'s reference-keyed
-       * members). `*` lexes as a glob NAME, so match it by its part *structure*:
-       * the wildcard is the one whose sole part is the `*` glob. Comparing
-       * rendered text instead would also admit a quoted `'*'`, which is the
-       * literal character and not the wildcard. */
+      /* A property name (`srcs`), or the `*` wildcard (a `sync`'s
+       * reference-keyed members). Match `*` by its parts, not its text: a quoted
+       * `'*'` is the literal character. */
       let key: string;
       if (token.type === TokenType.IDENTIFIER) {
         key = token.text;
@@ -2609,11 +2492,9 @@ export class BuildParser {
         this.unexpectedTokenError("'STRING' or 'FILES' or 'PACKAGES' or 'REWRITE' or 'MAP' or 'COMMAND' or 'REQUIRED'");
       } else {
         while (next.type === TokenType.IDENTIFIER) {
-          /* `default` ends the keyword run and hands the rest of the line to the
-           * ordinary value parser (which consumes the terminating ';'), so a
-           * default admits every value form a written property does. The decl it
-           * builds is positioned at the schema key, that being what a resolution
-           * error against the default should underline. */
+          /* `default` ends the keywords; the rest, through the ';', is parsed as
+           * a property's values. The default's declaration is positioned at the
+           * schema key. */
           if (next.text === "default") {
             this.nextToken();
             defaultDecl = this.parsePropertyValues({
@@ -2654,31 +2535,23 @@ export class BuildParser {
       }
       if (type === undefined) {
         if (defaultDecl) {
-          /* `default` ended the keyword run before any type keyword. The clause
-           * itself parsed clean (values and ';' consumed), so this is an
-           * ordinary logged error at the key, not a thrown recovery. */
+          /* `default` before any type keyword. The clause has been parsed, so
+           * this is logged without throwing. */
           this.log.log(DIAG_DEFAULT_BEFORE_TYPE, { key, loc: { ...this.source, offset: token.start } });
         } else {
           this.unexpectedTokenError("'STRING' or 'FILES' or 'PACKAGES' or 'REWRITE' or 'MAP' or 'COMMAND'");
         }
       } else if (required && defaultDecl) {
-        /* A default supplies the property whenever it is unwritten, so nothing is
-         * left for REQUIRED to demand — the pair says both "must be written" and
-         * "need not be". */
         this.log.log(DIAG_REQUIRED_DEFAULT, { key, loc: { ...this.source, offset: token.start } });
       } else if (key === "*" && defaultDecl) {
-        /* The wildcard types keys the schema never named; a default applies to a
-         * named property that went unwritten, and there is no such thing here —
-         * an unwritten wildcard member simply does not exist. */
         this.log.log(DIAG_WILDCARD_DEFAULT, { loc: { ...this.source, offset: token.start } });
       } else if (result.has(key)) {
-        /* The first declaration stands; the load fails on the error anyway, so
-         * the surviving entry only shapes further diagnostics. */
+        /* The first declaration stands. */
         this.log.log(DIAG_DUP_SCHEMA_KEY, { key, loc: { ...this.source, offset: token.start } });
       } else {
         result.set(key, { required, type, default: defaultDecl, docComment });
       }
-      /* A default clause has already consumed its own terminating ';'. */
+      /* A default clause has already consumed its ';'. */
       if (!defaultDecl && next.type !== TokenType.RBRACE) {
         this.consumeToken(TokenType.SEMI);
       }
@@ -2687,16 +2560,14 @@ export class BuildParser {
   }
 
   /**
-   * Report a parse error to the diagnostic log due to an unexpected token,
-   * and throw (caught by recovery). Note that the current token is _NOT_
-   * consumed.
-   * @param expected
-   * @param at offset to report at, defaulting to the current token — an earlier
-   * one where the token that is wrong is only known to be so from a later one
-   * (`default targetdef`, whose lookahead has already advanced past it).
+   * Report the current token as unexpected and throw, without consuming it. An
+   * ERROR token's error was reported when it was read, so it only throws.
+   * @param expected what was wanted, as the message names it
+   * @param at the offset to report at, by default the current token's; an
+   * earlier one where the wrong token was only found wrong by reading past it
+   * (`default targetdef`)
    */
   private unexpectedTokenError(expected: string, at: number = this.token.start): never {
-    /* An ERROR token's lexical error was reported as it was read. */
     if (this.token.type === TokenType.ERROR) {
       throw new ParseAbort();
     }
@@ -2730,10 +2601,10 @@ export class BuildParser {
    * Parse a statement.
    *
    * Statement ::= PropertyDecl | TargetDecl | IncludeDecl | PluginDecl | TargetDefDecl | DefaultDecl
-   *             | PrivateDecl | GuardBlock
+   *             | PrivateDecl | RuleDecl | RepositoryDecl | GuardBlock
    *               ^
    * PropertyDecl ::= NAME Guard? '=' expr ';'
-   * TargetDecl ::= NAME NAME '{' PropertyList '}'
+   * TargetDecl ::= IDENTIFIER ( IDENTIFIER | SIMPLE_NAME ) '{' PropertyList '}'
    * IncludeDecl ::= 'include' NAME ';'
    * PluginDecl ::= 'plugin' Reference ';'
    * TargetDefDecl ::= 'targetdef' NAME ( 'extends' NAME )? '{' PropertyTypeList '}'
@@ -2747,8 +2618,7 @@ export class BuildParser {
   public parseStatement(): void {
     const token = this.token;
     if (token.type === TokenType.IDENTIFIER) {
-      /* The doc comment rides on the statement's leading token — a keyword, a
-       * property name, or a target type — so capture it before advancing. */
+      /* The doc comment is on the statement's first token. */
       const doc = token.docComment;
       const next = this.nextToken();
       if (token.text === "include") {
@@ -2774,9 +2644,7 @@ export class BuildParser {
       } else if (token.text === "repository" && next.type === TokenType.IDENTIFIER) {
         this.result.repositories.push(this.parseRepositoryDecl(token.start));
       } else if (next.type === TokenType.EQUALS || next.type === TokenType.LANGLE) {
-        /* `<` here is the property's constraint guard (`TSC<TARGET=…> = …`) —
-         * part of the key, which the discriminating read above has already
-         * stepped past. */
+        /* `<` is the property's guard (`TSC<TARGET=…> = …`). */
         this.result.properties.push(this.parsePropertyDecl(this.finishPropertyKey(Name.fromLiteral(token.text)), token.start, doc));
       } else if (next.type === TokenType.IDENTIFIER || next.type === TokenType.SIMPLE_NAME) {
         if (token.text === "targetdef") {
@@ -2796,9 +2664,8 @@ export class BuildParser {
   }
 
   /**
-   * Very basic error recovery - skip tokens until we find a ';' or '}' followed by
-   * an IDENTIFIER, so that parsing can resume on the next statement (every statement
-   * begins with an identifier: a type name, a property name, or a keyword).
+   * Skip tokens after an error to the next statement: an IDENTIFIER after a ';'
+   * or '}'. A guard block there (a statement starting `<`) is skipped as well.
    */
   private recoverFromError(): void {
     let last = this.token.type;
@@ -2811,6 +2678,7 @@ export class BuildParser {
     }
   }
 
+  /** Parse the whole file, reporting errors and resuming after each. */
   public parse(): IBuildFileContents {
     while (this.token.type !== TokenType.EOF) {
       try {
@@ -2835,17 +2703,16 @@ export function parseBuildString(fs: FileSource, file: string, contents: string,
   return new BuildParser({ fs, file, reader: new StringReader(contents) }, log).parse();
 }
 
-/** Parse a single name expression (e.g. a command-line target/file reference).
- * Parse diagnostics are *captured*, not logged — the model never writes to a
- * sink — and a malformed name throws with the diagnostic as its message, which
- * the driver renders to stderr (never polluting `cat`/`ls`'s stdout). */
+/** Parse a single name expression, such as a command-line reference. A
+ * malformed name throws a FabrError whose message holds the diagnostics; none
+ * is logged. */
 export function parseName(contents: string): Name {
   const messages: string[] = [];
   const captureLog: Log = { log: (diagnostic, params) => messages.push(diagnostic.message(params)) };
   try {
-    /* A name is very nearly all one token, which the constructor primes: a
-     * lexical error there (an unterminated quote, character class or extglob
-     * group) is captured as it is read, and the name parsed is then empty. */
+    /* A lexical error in the first token (an unterminated quote, character
+     * class or extglob group) is captured as the constructor reads it, and the
+     * name parsed is then empty. */
     const parser = new BuildParser({ fs: EMPTY_FILESET, file: "<command-line>", reader: new StringReader(contents) }, captureLog);
     const name = parser.parseName();
     if (messages.length === 0) {

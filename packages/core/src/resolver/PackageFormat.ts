@@ -25,79 +25,49 @@ import { PackageFileSet } from "../core/PackageFileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { Requirement, ResolutionContext, VersionDomain } from "./Types";
 
-/**
- * A package as its ecosystem's manifest declares it — what
- * {@link PackageFormat.readContentPackage} reads out of package content:
- * the identity and requirements that let the content take part in version
- * selection. Purely the manifest's claims; delivering the files and wiring
- * the resolved dependencies stay the resolution machinery's business.
- */
+/** A package as the manifest in its content declares it
+ * ({@link PackageFormat.readContentPackage}). */
 export interface IContentPackage<V> {
-  /** The name the manifest declares for itself, when it declares one — the
-   * consumer decides whether it must agree with the name the content serves. */
+  /** The name the manifest declares, if it declares one. It may differ from
+   * the name the content is served as; the caller judges that. */
   readonly name?: string;
   readonly version: V;
   readonly requirements: Requirement[];
 }
 
 /**
- * The written forms of one package ecosystem — how references, versions and
- * manifests read, and how a resolved package launches — with the ecosystem's
- * {@link VersionDomain} as its base: a format IS its version algebra plus the
- * reference/manifest/launch surface, so the resolution-algebra layer
- * (resolveMVS and friends), which is VersionDomain-parametric and never sees
- * manifests, takes a format directly. One shared, stateless instance per
- * ecosystem (all npm registries hold the same object): a domain borrows its
- * format from the registry serving it, and *sharing the instance* is what
- * admits two registries to one `repository_group` — the homogeneity check is
- * object identity, so a per-ecosystem format must be a shared singleton,
- * never constructed per registry (npm's spreads the SEMVER implementation:
- * `{ ...SEMVER, resolutionTag, … }`).
+ * One package ecosystem's versions ({@link VersionDomain}), and how its
+ * references, publish coordinates and manifests read and its packages launch.
+ *
+ * Make one stateless instance per ecosystem and share it among every registry
+ * of the ecosystem: a `repository_group` admits two registries only where
+ * their formats are the same object.
  */
 export interface PackageFormat<V, C> extends VersionDomain<V, C> {
   /** The format's name as a message shows it (`npm`, `Maven`). */
   readonly name: string;
-  /**
-   * The memo tag persisted joint resolutions are keyed under (e.g.
-   * `npm:resolve:20`) — bumped when the resolution computation or the document
-   * shape changes behavior.
-   */
+  /** The memo tag persisted resolutions are keyed under (`npm:resolve:20`).
+   * Bump it when the resolution or its document changes. */
   readonly resolutionTag: string;
-  /**
-   * Split a written reference into its identity (`name:version`, the part the
-   * domain resolves) and whatever remains as a projection *into* the resolved
-   * content — the split behind vendPackageRef.
-   */
+  /** Split a written reference (`vendPackageRef`) into the requirement it
+   * states and any projection into the package's files that follows it. */
   splitReference(name: Name): Requirement & { projection?: IProjection };
-  /** Check that a reference identity is one this format can resolve: throws,
-   * with help attached, on a malformed version or a versionless reference the
-   * format does not allow. */
+  /** Check that the format can resolve `reference`. Throws, with help
+   * attached, on a malformed version, or on a reference stating no version
+   * where the format requires one. */
   validateRequirement(reference: Requirement): void;
-  /**
-   * The name + exact version a publish coordinate assigns — the write-side
-   * dual of {@link splitReference} (a coordinate pins an exact version where
-   * a requirement declares a range). Throws, positioned in the coordinate's
-   * own terms, on a malformed one — called at vend time so a bad address
-   * fails fast.
-   */
+  /** Get the name and exact version a publish coordinate assigns. Throws on
+   * a malformed coordinate, in the coordinate's own terms. */
   parsePublishCoordinate(name: Name): { name: string; version: string };
-  /**
-   * Read package content as the package its manifest declares (npm: the
-   * `package.json` at the fileset root) — the import half of a
-   * `repository_group` content route, and ONLY the reading: one pure
-   * function of the files, no registry surface. Throws (or rejects)
-   * when the content carries no usable manifest, in the manifest's own terms —
-   * the caller positions the error at whatever declared the content.
-   */
+  /** Read the package the manifest in `files` declares (npm: the
+   * `package.json` at the root), for a `repository_group` content route.
+   * Throws or rejects where there is no usable manifest; the caller
+   * attributes the error to what declared the content. */
   readContentPackage(files: FileSet): Computable<IContentPackage<V>>;
-  /**
-   * Make an already-resolved package launchable, keeping the exact closure it
-   * carries (no re-resolution). Launching is ecosystem convention (npm: bin
-   * entries under a node_modules mount), not transport: every registry of the
-   * format launches a package the same way, and the repository faces delegate
-   * here. `context` is the consumer's, whose configuration names the tools a
-   * launch needs (npm: `NODE`).
-   */
+  /** Make a resolved package runnable with the dependencies it carries,
+   * resolving nothing again (npm: its bins, over a `node_modules` tree).
+   * `context` is the consumer's, whose configuration names the tools a launch
+   * needs (npm: `NODE`). */
   makeRunnable(pkg: PackageFileSet, context: ResolutionContext): Computable<RunnableFileSet>;
   /**
    * Get the package URL (purl) of the package `name` at `version`, as

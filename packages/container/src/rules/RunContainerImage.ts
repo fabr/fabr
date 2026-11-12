@@ -22,8 +22,9 @@ import { ImageFileSet } from "../ImageFileSet";
 import { imageRunnable } from "../ImageRunnable";
 
 /**
- * The `container_image` rule, under `run`: the image as a program the
- * container engine `CONTAINER_ENGINE` names runs (see {@link imageRunnable}).
+ * The `container_image` rule, under `run`: the target's image, built under
+ * `build`, as a program run by the container engine `CONTAINER_ENGINE` names
+ * (see {@link imageRunnable}).
  */
 export default defineRule({
   requirements(context) {

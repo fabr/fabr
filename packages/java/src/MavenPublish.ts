@@ -20,9 +20,10 @@
 /**
  * Publishing to a Maven repository, as `mvn deploy` does to a repository
  * manager: each member is its artifact (the one jar, war or ear among its
- * files) and a POM generated from the edges its build bound, laid out at their
- * paths in the repository with `.md5` and `.sha1` checksums beside each, and
- * the package's `maven-metadata.xml` brought up to date when it is uploaded.
+ * files) and a POM generated from the dependencies its package carries, laid
+ * out at their paths in the repository with `.md5` and `.sha1` checksums
+ * beside each, and the package's `maven-metadata.xml` brought up to date when
+ * it is uploaded.
  */
 
 import XMLBuilder from "fast-xml-builder";
@@ -133,6 +134,7 @@ function xmlDocument(root: Record<string, unknown>): string {
   return `<?xml version="1.0" encoding="UTF-8"?>\n${builder.build(root)}`;
 }
 
+/** @return the `<dependency>` element of `dependency`, leaving out the default type (`jar`) and scope (`compile`). */
 function dependencyElement({
   groupId,
   artifactId,
@@ -328,10 +330,15 @@ function artifactOf(destination: RepositoryPublishRef, content: FileSet): { file
 }
 
 /**
- * Make the POM dependency an edge of the member's package declares: what its
- * reference states, with the version its build bound where the reference
- * states none, or for a target of the project, the coordinate the release
- * publishes that target at. A BOM, a package with no artifact, is an import.
+ * Make the POM entry for one of the member package's dependencies, `dep`:
+ * - for a repository's reference, the version {@link declaredRequirement}
+ *   records, as a `<dependency>`, or where the bound package has no files (a
+ *   BOM), as a `bom` entry to import in `<dependencyManagement>`;
+ * - for a target of the project, the coordinate the release publishes that
+ *   target at.
+ *
+ * Nothing where nothing is declared for it. Throws where a reference records
+ * no version, or the release publishes the target at no one coordinate.
  */
 function pomDependencyOf(
   destination: RepositoryPublishRef,
@@ -344,9 +351,11 @@ function pomDependencyOf(
       return {};
     }
     const provided = pkg.provided.get(dependencyName(dep));
-    /* A dependency passed on to a consumer's runtime alone is runtime-scoped;
-     * one passed on to its compile alone is compile-scoped, as Gradle writes
-     * `compileOnlyApi`: Maven has no scope for it. */
+    /* An expected provided requirement is `provided`-scoped, an optional one
+     * `optional`. One passed on to a consumer's run collection alone is
+     * `runtime`-scoped; one passed on to its compile alone is compile-scoped
+     * (Maven's default), as Gradle writes `compileOnlyApi`, Maven having no
+     * scope for it. */
     const scope =
       provided === "expected" ? { scope: "provided" } : pkg.usedFor.get(dependencyName(dep)) === "run" ? { scope: "runtime" } : {};
     const optional = provided === "optional";
@@ -383,9 +392,17 @@ function pomDependencyOf(
 
 /**
  * Package one member for a Maven repository: its artifact and a POM generated
- * from what its package requires, at their repository paths, each with its
- * checksums. Content that is no package (a war's files) has a POM with no
- * dependencies.
+ * from what its package requires (see {@link pomDependencyOf}), with its
+ * package's `metadata`, at their repository paths, each with its checksums.
+ * Content that is no package (a war's files) has a POM with no dependencies.
+ *
+ * `targets` holds each target's publish coordinates in the release, by
+ * target name; `coMembers` the names of the packages this destination
+ * publishes in the same sync; `release` every coordinate the release
+ * publishes. The result is uploaded after the members among `coMembers` it
+ * depends on and after its version's variants in `release`. Throws where the
+ * content holds no one artifact, or its `metadata` cannot be written into a
+ * POM.
  */
 export function packageMavenMember(
   member: PublishMember,

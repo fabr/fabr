@@ -40,18 +40,17 @@ export interface ZipOptions {
   symlinks?: boolean;
 }
 
-/* The date stamped on every entry: 1980-01-01 00:00, the format's epoch. Built
- * from local components, as yazl writes the DOS date from local time, so the
- * same bytes come out in every timezone; with `forceDosTimestamp`, it is the
+/* The date of every entry: 1980-01-01 00:00, the format's epoch. Build it
+ * from local components: yazl writes the DOS date from local time, so this
+ * gives the same bytes in every timezone. With `forceDosTimestamp` it is the
  * only time recorded. */
 const ZIP_DATE = new Date(1980, 0, 1);
 const ZIP_DIRECTORY_MODE = 0o40755;
 const ZIP_FILE_TYPE = 0o100000;
 const ZIP_SYMLINK_MODE = 0o120777;
 
-/**
- * Pack a FileSet into a zip archive (a jar) in memory; see {@link writeZip}.
- */
+/** Pack a FileSet into a zip archive (a jar) in memory, its entries as
+ * {@link writeZip} writes them. */
 export function packToZip(files: FileSet, options: ZipOptions = {}): Computable<Buffer> {
   return archiveOf(files, options).then(({ zip, output }) => {
     const archive = readStream(output);
@@ -61,16 +60,20 @@ export function packToZip(files: FileSet, options: ZipOptions = {}): Computable<
 }
 
 /**
- * Write a FileSet as a zip archive (a jar) into `output`, and answer the stored
- * file, named `name`, with `yazl`. Each file is deflated, streamed from where
- * its content is when the archive reaches it, except one that is itself a zip
- * archive (a nested jar): that is stored uncompressed, since deflating it gains
- * nothing and a loader reading it in place needs it stored, and is read whole
- * first, as a stored entry's checksum and size must precede its data for
- * `java.util.zip.ZipInputStream` to read it. Every directory above a file gets
- * an entry of its own, entries are written in sorted name order after
- * `options.first`, and each carries a fixed date and the file's own mode, so
- * the output is deterministic.
+ * Write a FileSet as a zip archive (a jar) into `output`, with `yazl`.
+ *
+ * Every directory above a file gets an entry of its own. Entries are written
+ * in sorted name order after `options.first`, each with a fixed date and its
+ * file's stored mode, so identical files make identical bytes. Each file is
+ * deflated, its content opened only when the archive reaches it, except:
+ *   - a file that is itself a zip archive (a nested jar): stored uncompressed,
+ *     for a loader that reads it in place, and read whole first, since
+ *     `java.util.zip.ZipInputStream` needs a stored entry's checksum and size
+ *     before its data;
+ *   - a symlink: refused unless `options.symlinks` (see {@link ZipOptions}).
+ *
+ * @return the archive, stored as the file `name`. Rejects where a file cannot
+ *   be read or a symlink is refused, the output then discarded.
  */
 export function writeZip(files: FileSet, output: IOutputHandle, name: string, options: ZipOptions = {}): Computable<IFile> {
   return archiveOf(files, options)
@@ -98,13 +101,14 @@ type ArchiveEntry =
   | { kind: "stored"; name: string; content: Buffer; mode: number }
   | { kind: "deflated"; name: string; file: IFile };
 
-/** Make the archive of `files`, its entries added but not ended, and the stream it is
- *  written to, on which the failure of any entry is reported. */
+/** Make the archive of `files`, its entries added but not ended, and the
+ *  stream it is written to, which fails with any entry's failure. */
 function archiveOf(files: FileSet, options: ZipOptions): Computable<{ zip: yazl.ZipFile; output: Readable }> {
   return entriesOf(files, options).then(entries => {
     const zip = new yazl.ZipFile();
     const output = zip.outputStream as Readable;
-    /* yazl reports a failed entry on the ZipFile, and leaves an entry's own read stream's errors unhandled. */
+    /* yazl reports a failed entry on the ZipFile, and leaves an entry's own
+     * read stream's errors unhandled: route both to the output. */
     const fail = (err: Error): void => {
       output.destroy(err);
     };
@@ -116,7 +120,7 @@ function archiveOf(files: FileSet, options: ZipOptions): Computable<{ zip: yazl.
         zip.addBuffer(entry.content, entry.name, { mtime: ZIP_DATE, mode: entry.mode, forceDosTimestamp: true, compress: false });
       } else {
         const { file } = entry;
-        /* Opened only when yazl reaches the entry, so an archive of many files holds one open at a time. */
+        /* Opened only when yazl reaches the entry. */
         zip.addReadStreamLazy(
           entry.name,
           { mtime: ZIP_DATE, mode: ZIP_FILE_TYPE | (file.mode & 0o7777), forceDosTimestamp: true },
@@ -156,12 +160,14 @@ function entriesOf(files: FileSet, options: ZipOptions): Computable<ArchiveEntry
   });
 }
 
-/** @return the target of the link at `name`, refused where symlinks are not to be stored or the target leaves the archive. */
+/** @return the target of the link at `name`. Throws where symlinks are not to
+ *  be stored, or the target is absolute or leaves the archive. */
 function linkTarget(name: string, file: SymlinkFile, options: ZipOptions): string {
   if (!options.symlinks) {
     throw new FabrError(`cannot zip '${name}': it is a symlink`);
   }
-  /* normalizeEntryName makes an absolute name relative, which for a link's target would change what it names. */
+  /* Refuse an absolute target first: normalizeEntryName would make it
+   * relative, which changes what it names. */
   if (path.posix.isAbsolute(file.target) || normalizeEntryName(path.posix.join(path.posix.dirname(name), file.target)) === undefined) {
     throw new FabrError(`cannot zip '${name}': it links to '${file.target}', outside the archive`);
   }

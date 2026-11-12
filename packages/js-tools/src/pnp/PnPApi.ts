@@ -17,8 +17,7 @@
 /**
  * The PnP runtime API (https://yarnpkg.com/advanced/pnp-spec, and Yarn's
  * `pnpapi` module): the public interface a PnP-aware tool resolves through,
- * written out here so that implementing it takes no dependency on Yarn. Paths
- * are native paths.
+ * declared here without a dependency on Yarn. Paths are native paths.
  *
  * A failure is thrown as an `Error` carrying `pnpCode` (one of
  * {@link PnpErrorCode}) and `code` — `MODULE_NOT_FOUND` for a lookup that
@@ -83,8 +82,7 @@ export type PnpErrorCode =
   | "UNDECLARED_DEPENDENCY"
   | "UNSUPPORTED";
 
-/** The codes a lookup that found nothing is reported under, as node reports a
- * missing module. */
+/** The PnP codes whose error carries node's `MODULE_NOT_FOUND` code. */
 const NOT_FOUND: ReadonlySet<PnpErrorCode> = new Set<PnpErrorCode>([
   "BUILTIN_NODE_RESOLUTION_FAILED",
   "MISSING_DEPENDENCY",

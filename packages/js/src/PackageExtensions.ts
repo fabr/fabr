@@ -18,11 +18,11 @@
  */
 
 /*
- * Package extensions: additive repairs to third-party npm manifests — a
- * dependency, peer or peer-optionality a published package uses but does not
- * declare (`reactcss` requiring `react`). The curated list is Yarn's
- * `@yarnpkg/extensions` (the one pnpm also applies), converted to JSON at build
- * time and shipped beside this plugin's entry point.
+ * Package extensions: additions to published npm manifests, each a dependency,
+ * peer or optional-peer mark a package needs but does not declare (`reactcss`
+ * requiring `react`). The list is Yarn's `@yarnpkg/extensions` (which pnpm also
+ * applies), converted to JSON at build time and shipped beside this plugin's
+ * entry point.
  */
 
 import * as fs from "fs";
@@ -42,23 +42,24 @@ import { dependencyBlock, IDependencyDecls } from "./PackageJson";
 /** The shipped list's file name, in this plugin's `lib/`. */
 export const PACKAGE_EXTENSIONS_FILE = "package-extensions.json";
 
-/** One repair: the packages it applies to, and what it adds to their manifest. */
+/** One extension: the packages it applies to (`name` at a version in `range`),
+ *  and what it adds to their manifest. */
 interface IPackageExtension {
   readonly name: string;
   readonly range: SemverConstraint;
   readonly dependencies: ReadonlyMap<string, string>;
   readonly peerDependencies: ReadonlyMap<string, string>;
-  /** Peers the repair marks optional (`peerDependenciesMeta: {x: {optional: true}}`). */
+  /** Peers the extension marks optional (`peerDependenciesMeta: {x: {optional: true}}`). */
   readonly optionalPeers: ReadonlySet<string>;
 }
 
-/** The fields a repair may carry — the ones Yarn's `PackageExtensionData` defines. */
+/** The fields an extension may carry: those Yarn's `PackageExtensionData` defines. */
 const EXTENSION_FIELDS = new Set(["dependencies", "peerDependencies", "peerDependenciesMeta"]);
 
 /**
- * A list of package extensions, and the digest that identifies it: what an npm
- * resolution folds into its memo key, so a different list never reuses a
- * resolution computed under another.
+ * A list of package extensions, and the digest that identifies it. An npm
+ * resolution includes the digest in its memo key, so a resolution made under
+ * one list is never reused under another.
  */
 export class PackageExtensions {
   constructor(
@@ -67,10 +68,12 @@ export class PackageExtensions {
   ) {}
 
   /**
-   * Apply every repair selecting `name@version` to `decls`. Additive only:
-   * a repair supplies a dependency or peer the manifest declares under no
-   * field at all and never replaces one it states, and an optional-peer mark is
-   * added only where the manifest gives that peer no metadata of its own.
+   * Apply every extension matching `name@version` to `decls`, returning `decls`
+   * itself where none matches (always, for an unnamed package). An extension
+   * only adds: a dependency or peer only where the manifest declares the name
+   * in none of `dependencies`, `peerDependencies` and `optionalDependencies`
+   * (the first matching extension wins a name), and an optional-peer mark only
+   * where `peerDependenciesMeta` has no entry for the peer.
    */
   public extend(name: string | undefined, version: SemverVersion, decls: IDependencyDecls): IDependencyDecls {
     const matching = name === undefined ? [] : this.entries.filter(e => e.name === name && SEMVER.satisfies(version, e.range));
@@ -113,14 +116,14 @@ export class PackageExtensions {
   }
 }
 
-/** No repairs at all. */
+/** The empty list. */
 export const NO_PACKAGE_EXTENSIONS = new PackageExtensions([], "none");
 
 /**
- * Convert the extension document — Yarn's `packageExtensions` array of
- * `[selector, data]` pairs, the selector `name@range` — to the repairs it lists. Throws on
- * any shape it does not know, a field included: a repair half-applied would be
- * a silently different resolution.
+ * Convert the extension document (Yarn's `packageExtensions`: an array of
+ * `[selector, data]` pairs, the selector `name@range`) to the extensions it
+ * lists. Throws on any shape it does not know, including a field outside
+ * {@link EXTENSION_FIELDS}, and on an invalid range.
  */
 export function toPackageExtensions(json: unknown): IPackageExtension[] {
   if (!Array.isArray(json)) {
@@ -165,17 +168,19 @@ export function toPackageExtensions(json: unknown): IPackageExtension[] {
   });
 }
 
-/** The list this plugin installation ships, read once. */
+/** The list this plugin installation ships, once read (or as set by
+ *  {@link useInstalledPackageExtensions}). */
 let installed: PackageExtensions | undefined;
 
 /**
- * Stand in for the shipped list in this process. For a test running the plugin
- * from its sources, where no list is shipped; production never calls it.
+ * Replace the shipped list for this process. For a test running the plugin
+ * from its sources, where no list is shipped.
  */
 export function useInstalledPackageExtensions(extensions: PackageExtensions): void {
   installed = extensions;
 }
 
+/** Get the list this plugin installation ships, reading it on first call. */
 export function installedPackageExtensions(): PackageExtensions {
   if (installed === undefined) {
     /* This module is beside the plugin's entry point. */

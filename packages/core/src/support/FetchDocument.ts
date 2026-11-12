@@ -29,7 +29,7 @@ import { IFetchReport } from "./Tasks";
 import { ExpectedDigest, verifiedStream } from "./Integrity";
 import { unpackStream } from "./Unpack";
 
-/** What fetches through the build cache: a target's context, as its `fetch`. */
+/** A fetcher through the build cache: a target's context, by its `fetch`. */
 type CacheFetcher = {
   fetch(
     cacheKey: string,
@@ -64,9 +64,11 @@ export interface IDocumentRequest<T> {
 }
 
 /**
- * Fetch a document through the build cache and read it with `convert`: checked
- * before it is kept, and again as it is read back, cached or not. A document
- * the server does not have (a 404) is undefined.
+ * Fetch a document through the build cache and read it with `convert`, both
+ * before it is kept (so an unusable one is never cached) and as it is read
+ * back.
+ * @return the value, or undefined where the server answers 404. Rejects with
+ *   any other failure, or `convert`'s.
  */
 export function fetchDocument<T>(context: CacheFetcher, request: IDocumentRequest<T>): Computable<T | undefined> {
   const { url, file, convert, keep } = request;
@@ -127,9 +129,9 @@ export interface IArchiveRequest {
 }
 
 /**
- * Fetch an archive through the build cache, checked against its digest as it
- * streams and unpacked straight into the store, so a mismatched download is
- * never kept.
+ * Fetch an archive through the build cache, unpacked as it streams in and
+ * checked against its digest, so a download that does not match is never
+ * kept.
  */
 export function fetchArchive(context: CacheFetcher, request: IArchiveRequest): Computable<FileSet> {
   const { keep } = request;

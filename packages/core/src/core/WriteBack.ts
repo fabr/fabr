@@ -18,20 +18,14 @@
  */
 
 /**
- * Write-back: how a build result offers files to be written back into the
- * USER'S SOURCE TREE — recorded snapshots a test run refreshed, a golden test's
- * blessed expectations. The build invariants fix the shape: actions are
- * hermetic and cache entries are memos, so nothing inside the build graph may
- * write to (or embed absolute paths of) the source tree. Only the *rule*
- * knows which produced file corresponds to which source file, and only the
- * **driver** may touch the user's tree, at explicit request.
+ * Write-back: files a build result offers to be written into the user's source
+ * tree, such as the records a test run refreshed. Nothing in the build graph
+ * writes to the source tree or holds an absolute path in it: a rule names each
+ * offer relative to an input, and the driver alone writes, when asked to.
  *
- * So a candidate list rides the built result as a partition on the FileSet —
- * runtime-only ghost data, never serialized, never in a manifest or cache key,
- * exactly like provenance and a runnable's launch descriptor. Because the rule
- * computes it in the action's reshape (applied every evaluation), the candidates
- * reconstruct on the CACHE-HIT path too: a warm replay of an update run whose
- * writes were never applied still offers them.
+ * The offers ride the result as a partition of its FileSet, kept in memory
+ * only, like provenance: never serialized, never in a manifest or cache key. A
+ * rule makes them in its action's reshape, so a cache hit offers them too.
  */
 
 import * as fs from "fs";
@@ -45,49 +39,36 @@ import { IProvenanceStep } from "./Provenance";
 import type { SourceRef } from "./Repository";
 
 /**
- * One offered write, as the rule that produced it can honestly state it: the
- * content, named relative to an INPUT it belongs beside.
- *
- * Deliberately not a host path. A rule knows the domain facts — which produced
- * file corresponds to which input, and what it is called there (for a recorded
- * snapshot, `__snapshots__/<test file>.snap`, which is *not* the name the run
- * emitted: the runner only ever sees compiled names). Where that input actually
- * lives on this machine is a generic provenance question with one answer for
- * every producer, and belongs to the layer that is allowed to touch the tree —
- * so the driver locates it (its source path, then SourceFileSource.locate)
- * and nothing in the model layer ever manufactures an absolute source-tree
- * path.
+ * One offered write: content named relative to an input it belongs beside (a
+ * recorded snapshot as `__snapshots__/<test file>.snap`, named after the test's
+ * source, not the compiled file the run saw). The driver finds where the input
+ * lives (its source path, then SourceFileSource.locate).
  */
 export interface IWriteBackCandidate {
-  /** What to put back, named in the SAME NAMESPACE as the inputs it corresponds
-   * to (`a/__snapshots__/Foo.test.ts.snap` beside a test named
-   * `a/Foo.test.ts`). A FileSet, so the name is a key like every other name in
-   * fabr and one offer can carry a whole set. */
+  /** What to write, named as the inputs it corresponds to are named
+   * (`a/__snapshots__/Foo.test.ts.snap` beside a test named `a/Foo.test.ts`). */
   readonly files: FileSet;
-  /** How a name in {@link files} names the INPUT it belongs to, as a rename
-   * projection — `**\/__snapshots__/*.snap -> **\/*`. One pattern for the whole
-   * set rather than a per-file anchor: the relationship IS a naming rule, and
-   * stating it once means the names and the relationship cannot drift apart.
-   * The driver applies it, locates that input, and puts the file at its own
-   * name relative to the input's directory. */
+  /** A rename projection from a name in {@link files} to the input it belongs
+   * to, one for the whole set: `**\/__snapshots__/*.snap -> **\/*`. The driver
+   * applies it, locates that input, and writes the file at its own name
+   * relative to the input's directory. */
   readonly belongsTo: Name;
-  /** Provenance of the input set {@link belongsTo} names into — runtime-only
-   * ghost data, like everything else here. */
+  /** Provenance of the input set {@link belongsTo} names into. */
   readonly origin: IProvenanceStep | undefined;
 }
 
-/** A candidate the driver has resolved to a real destination — what actually
- * gets written. Absolute, and therefore never constructed in the model layer. */
+/** A candidate the driver has resolved to an absolute destination. Never made
+ * in the model layer. */
 export interface IResolvedWriteBack {
   readonly file: IFile;
   readonly destination: string;
 }
 
 /**
- * A built result that additionally offers source-tree write-backs. The FileSet
- * itself is the target's ordinary content (a test report); `candidates` is the
- * ghost partition the driver reads. Constructed by the rule's reshape; a
- * plain FileSet (no candidates) is the normal case and needs no wrapper.
+ * A built result that offers source-tree write-backs: the FileSet is the
+ * target's ordinary content (a test report), and `candidates` the offers the
+ * driver reads. A derivation of it (`find`, `union`, ...) is a plain FileSet,
+ * without them.
  */
 export class WriteBackFileSet extends FileSet {
   constructor(
@@ -103,70 +84,52 @@ export class WriteBackFileSet extends FileSet {
   }
 }
 
-/**
- * Gather the write-back candidates offered by whatever was just built — the
- * driver's accessor, applied to a target's materialized sources. Anything that isn't a
- * {@link WriteBackFileSet} offers none, so this is total over any result.
- */
+/** Gather the write-back candidates among a target's materialized sources; a
+ *  source that is not a {@link WriteBackFileSet} offers none. */
 export function writeBackCandidates(sources: ReadonlyArray<SourceRef>): IWriteBackCandidate[] {
   return sources.flatMap(source => (source instanceof WriteBackFileSet ? [...source.candidates] : []));
 }
 
 /**
- * What a write-back does to the tree, told to whoever owns it.
- *
- * A write is not one event: it creates a temp sibling, renames it over the
- * destination, and may have had to create directories on the way. Under watch
- * every one of those is a filesystem event, so the owner of the tree has to
- * hear about all of them or it will recognize only part of its own work (see
- * {@link SourceFileSource.applyWriteBack}).
+ * The listener a write-back tells of every path it disturbs, each a watch
+ * event: the destination, the temp file renamed over it, and each directory
+ * created (see {@link SourceFileSource.applyWriteBack}).
  */
 export interface IWriteBackObserver {
-  /** The bytes about to be placed at `destination` — announced BEFORE the
-   * write, and whether or not one proves necessary, so no event can arrive
-   * ahead of the expectation that explains it. */
+  /** Announce the bytes about to be written at `destination`, before the
+   * write, so no event arrives ahead of it. */
   content(destination: string, buffer: Buffer): void;
-  /** A path the write necessarily disturbs but whose content is incidental: the
-   * temp sibling it renames from, a directory it had to create. */
+  /** Announce a path the write disturbs whose content is not checked: the
+   * temp file it renames from, a directory it is about to create. */
   touches(path: string): void;
 }
 
-/** Monotonic across the process, so no two temp siblings ever share a name —
- * two candidates in one batch may resolve to the same destination, and the pid
- * alone would give their in-flight temps the same path. */
+/** Counter making each temp file's name unique in the process: two candidates
+ * in one batch may share a destination. */
 let tempCounter = 0;
 
 /**
- * Write one candidate into the source tree under `realRoot` (a destination
- * resolving outside it is refused, the same containment discipline staging
- * applies in the other direction).
+ * Write `write.file` at `write.destination`, through a temp file renamed into
+ * place, creating missing directories up to the tree root `realRoot`. Before
+ * anything is written, `observer` is told the bytes, the temp file and each
+ * directory to be created. The destination is not read first: a candidate is
+ * already a change. Resolves to the absolute destination.
  *
- * A test expectation's candidate is already a change — whoever built the list
- * compared the produced content against the recorded input it came from, both
- * of which it holds hashed, and dropped what matched. So nothing here re-reads
- * the destination to ask: an unchanged record never reaches this function,
- * which is also what keeps its mtime and, under watch, means no event at all.
- *
- * The mechanics live here; the CALLER is {@link SourceFileSource.applyWriteBack},
- * which owns the tree being written to and is therefore the only thing able to
- * recognize the resulting watch event as its own — it is told every path the
- * write touches through `observer` (see {@link IWriteBackObserver}), ahead of
- * any event explaining it.
- *
- * The driver drives this — nothing in the build graph may. The caller has
- * found the destination's name in the tree ({@link treeNameOf}) and names it under the tree's root.
+ * Containment is not checked here: the caller
+ * ({@link SourceFileSource.applyWriteBack}) has found the destination's name in
+ * the tree ({@link treeNameOf}) and names it under the tree's root.
  */
 export function writeBackFile(write: IResolvedWriteBack, realRoot: string, observer: IWriteBackObserver): Computable<string> {
   const destination = path.resolve(write.destination);
   return write.file.getBuffer().then(buffer => {
     observer.content(destination, buffer);
-    /* Temp sibling + rename (stageWrite): atomic for a concurrent reader, and it
-     * replaces the directory entry rather than writing through a cache-blob
-     * hardlink — the same rule the served-install sync writes under. */
+    /* Temp file + rename (stageWrite): atomic for a concurrent reader, and it
+     * replaces the directory entry rather than writing through a hardlink into
+     * a cache blob. */
     const temp = `${destination}.fabr-writeback-${process.pid}-${tempCounter++}`;
     observer.touches(temp);
-    /* Announced before creating them, and only the ones that were actually
-     * missing — an existing directory is nobody's change. */
+    /* Announce only the directories that are missing: an existing one does
+     * not change. */
     for (const dir of missingAncestors(path.dirname(destination), realRoot)) {
       observer.touches(dir);
     }
@@ -188,8 +151,8 @@ function missingAncestors(dir: string, realRoot: string): string[] {
 /**
  * @return the path within the tree whose real path is `realRoot` that
  * `destination` names, or undefined where it lies outside that tree. Judged
- * through the destination's real parent directory: a purely lexical comparison
- * would be defeated by a symlinked component anywhere along the way.
+ * through the destination's real parent directory, so a symlinked component
+ * cannot lead outside.
  */
 export function treeNameOf(destination: string, realRoot: string): string | undefined {
   const real = path.join(realParent(path.dirname(path.resolve(destination))), path.basename(destination));

@@ -23,23 +23,18 @@ import { FabrError } from "./Errors";
 import type { IProjection, Miss } from "./Reference";
 
 /**
- * A looked-up source with pending projections — **pure data**: the suspended
- * remainder of a lookup walk, holding no behavior beyond accumulating
- * further narrowing. Deliberately NOT a FileSource (like RepositoryRef): it
- * cannot honestly promise files until the projections are applied, and how
- * they apply is the consumer's business — the build context resumes the walk
- * (`applyProjections`: the polymorphic `find` chain with archive descent,
- * expansion cached in the build cache), while a reinterpreting consumer gives
- * the projections its own meaning (js_script's package entry replays them as
- * bin selection on the runnable it builds — a raw `find` fold, no walk).
- * Produced by lookupFileSource for a projection landing on a package or a
- * runnable (keeping a package's identity and a runnable's launch machinery;
- * plain/directory sources project eagerly), and by RepositoryRef.applyTo as
- * the pending form of every projection into what a repository hands back
- * (stampProvenance + projections).
- * Ordinary consumers never see one: the model layer finishes pending refs as
- * its collections come back; a CONTAINED property instead hands the
- * pending ref to a reinterpreting consumer.
+ * A source with projections still to apply, held as data. It is not a
+ * FileSource: it has no files until the projections are applied, and the
+ * consumer decides how they apply. The build context applies them through
+ * `find`, entering archives (`applyProjections`); js_script's package entry
+ * reads them instead as the choice of a bin of the runnable it builds.
+ *
+ * Made for a projection over a package or a runnable (the build context's
+ * `projectSources`; other sources are projected at once), and by
+ * {@link RepositoryRef.applyTo} for a projection over what a repository
+ * resolves to. A collection applies its pending refs when it is
+ * materialized, except for a property read with `getContainedFileProperty`,
+ * whose consumer is handed the ref.
  */
 export class FileSourceRef {
   constructor(
@@ -49,29 +44,22 @@ export class FileSourceRef {
     public readonly source: FileSource,
     public readonly projections: ReadonlyArray<IProjection>,
     /**
-     * When set, applying this ref to nothing is an error, thrown with this
-     * context. Its presence IS the judgment, made once where the reference was
-     * written (which is also the only place its position is known): **a name
-     * containing a glob anywhere may match nothing; a wholly literal one may
-     * not.** Deciding it there rather than per-application is what keeps the
-     * rule about the *written name* — a projection step is literal far more
-     * often than the name it belongs to, so re-deriving it from the projections
-     * in hand would call a glob's empty result an error.
-     *
-     * A rule requiring a property to have a value is a separate judgment, made
-     * by the rule: this one only says whether the reference itself resolved.
+     * Where set, the check of what applying this ref selected (see
+     * {@link Miss}), whose error is thrown. It is set where the reference was
+     * written, over the whole written name: a name with a glob anywhere may
+     * select nothing, and a name with none may not. Whether a property must
+     * have a value is a separate check, the rule's.
      */
     public readonly miss?: Miss
   ) {
-    /* A ref exists to suspend projections; every construction site supplies at
-     * least one, and the applier (`applyProjections`) folds from the first.
-     * Enforced here so a violation fails at construction, not as a stray base. */
+    /* Give every ref at least one projection: `applyProjections` folds from
+     * the first. */
     if (projections.length === 0) {
       throw new FabrError("internal: a FileSetRef must carry at least one projection");
     }
   }
 
-  /** Narrowing a pending projection accumulates, RepositoryRef-style. */
+  /** Get this ref with a further projection after its own. */
   public find(pattern: Name, prefix = ""): FileSourceRef {
     return new FileSourceRef(this.source, [...this.projections, { pattern, prefix }], this.miss);
   }
@@ -93,8 +81,8 @@ export class FileSetRef extends FileSourceRef {
   }
 
   /**
-   * The projected files under their projected names — the *extract* reading of
-   * this ref (see {@link FileSet.select}).
+   * Get the projected files under their projected names (see
+   * {@link FileSet.select}). Throws the {@link miss} error where it gives one.
    */
   public select(): FileSet {
     const files = this.source.select(this.projections);
@@ -103,9 +91,9 @@ export class FileSetRef extends FileSourceRef {
   }
 
   /**
-   * Where the projected members sit **within the base**, container-relative path
-   * → projected name — the *contained* reading of this ref (see
-   * {@link FileSet.locate}).
+   * Get where the projected files sit within the base: each one's path in the
+   * base mapped to its projected name (see {@link FileSet.locate}). Throws the
+   * {@link miss} error where it gives one.
    */
   public locate(): Map<string, string> {
     const located = this.source.locate(this.projections);
@@ -113,9 +101,8 @@ export class FileSetRef extends FileSourceRef {
     return located;
   }
 
-  /** The literal-must-resolve rule, once for every way of applying a ref.
-   * Carrying a `miss` IS the judgment — made once, over the whole written name,
-   * by whoever built the ref — so there is nothing to re-decide here. */
+  /** Throw the {@link miss} error for whether the ref `matched` anything,
+   * where it gives one. */
   private checkMatched(matched: boolean): void {
     const err = this.miss?.(matched);
     if (err !== undefined) {

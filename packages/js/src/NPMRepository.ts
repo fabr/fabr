@@ -103,14 +103,13 @@ import * as crypto from "node:crypto";
 const METADATA_FILE = "metadata.json";
 const PACKUMENT_FILE = "packument.json";
 
-/** What a packument is asked for as: the abbreviated form npm and pnpm install
- *  from — every version's dependencies, gates and `dist`, without the
+/** The `accept` header asking for the abbreviated packument npm and pnpm
+ *  install from: every version's dependencies, gates and `dist`, without the
  *  READMEs and publish history of the full one. */
 const ABBREVIATED_PACKUMENT = "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*";
 
-/** Map name → its coordinate for the names `assignments` assign exactly one
- *  distinct version — the names a manifest dependency can be unambiguously
- *  rewritten to. */
+/** Map each name `assignments` assign exactly one distinct version to that
+ *  coordinate; a name assigned several is left out. */
 function uniqueAssignments(assignments: readonly NpmPublishIdentity[]): Map<string, NpmPublishIdentity> {
   const byName = new Map<string, Set<string>>();
   for (const { name, version } of assignments) {
@@ -123,8 +122,8 @@ function uniqueAssignments(assignments: readonly NpmPublishIdentity[]): Map<stri
   );
 }
 
-/** Map a target's name → the one npm coordinate `targets` publish it at, for
- *  the targets published at exactly one. */
+/** Map each target `targets` publish at exactly one distinct npm coordinate to
+ *  that coordinate; any other target is left out. */
 function uniqueTargets(targets: ReadonlyMap<string, readonly RepositoryPublishRef[]>): Map<string, NpmPublishIdentity> {
   return new Map(
     select([...targets], ([target, coordinates]) => {
@@ -138,41 +137,42 @@ function uniqueTargets(targets: ReadonlyMap<string, readonly RepositoryPublishRe
 }
 
 /**
- * Encode a package name as ONE registry path segment: npm percent-encodes the
- * `/` of a scoped name (`@types/node` → `@types%2fnode`) on every read. npmjs
- * also accepts the raw slash, but a registry or proxy routing on path segments
- * reads that as a package `@types` with a sub-resource, and answers 404.
+ * Encode a package name as one registry path segment, as npm does on every
+ * read: the `/` of a scoped name percent-encoded (`@types/node` →
+ * `@types%2fnode`). npmjs accepts the raw slash too, but a registry or proxy
+ * routing on path segments answers 404 for it.
  */
 function packagePath(pkg: string): string {
   return pkg.replace(/\//g, "%2f");
 }
 
 /**
- * The repository an `npm_repository` declaration builds: the
- * {@link RepositoryReader} for the npm ecosystem — metadata, packuments,
- * tarballs, the publish PUT, and npm's per-name policies (dependency-block
- * reading, os/cpu/libc gating, platform validation). Its reader face hands
- * each reference batch to the package resolver
- * (resolvePackages/packageClosure) with itself as the registry the
- * resolution reads from.
+ * The repository an `npm_repository` declaration makes: an npm registry at
+ * `url`. As a {@link RepositoryReader} it answers the resolver's reads
+ * (packuments, version documents, requirements with the package extensions
+ * applied and optional dependencies gated on the target platform) and fetches
+ * tarballs; as a {@link RepositoryWriter} it packages and publishes members.
+ * Its requests are signed with the credential it is made with, else with
+ * `.npmrc`'s for each request's URL.
  */
 export class NPMRepository implements Repository, RepositoryWriter, RepositoryReader<SemverVersion, SemverConstraint> {
   public readonly format = NPM_FORMAT;
   private readonly url: string;
   private readonly context: TargetContext;
-  /** The access level this repository's publishes request (see {@link PublishAccess}). */
+  /** The access this repository's publishes request (see {@link PublishAccess}). */
   private readonly access: PublishAccess;
-  /* In-process memo over the persistent metadata cache, keyed by "pkg/version" */
+  /* Each version document read this run, by "pkg/version". */
   private readonly metadataCache = new MemoryCache<string, INPMPackageMetadata>();
-  /** Each package's packument as read this run, and as re-read when it lacked a
-   *  version asked for. */
+  /** Each package's packument as read this run, and (`revalidatedPackuments`)
+   *  as read again for a version it lacked. */
   private readonly packuments = new MemoryCache<string, ReadonlyMap<string, INPMPackageMetadata> | undefined>();
   private readonly revalidatedPackuments = new MemoryCache<string, ReadonlyMap<string, INPMPackageMetadata> | undefined>();
-  /** The repairs applied to every manifest this registry serves; the shipped
-   * list unless a caller supplies one. */
+  /** The package extensions applied to every manifest this registry serves:
+   * the shipped list unless the constructor is given one. */
   private readonly extensions: () => PackageExtensions;
 
-  /** What signs the registry's requests in: the one it is made with, else `.npmrc`'s for each request's url. */
+  /** The credential the registry's requests are signed with: the one it is
+   * made with, else `.npmrc`'s for each request's URL. */
   private readonly credential: Credential;
 
   /** Whether a publish carries a provenance statement where the registry accepts one. */
@@ -199,7 +199,7 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
     this.sigstore = sigstore;
   }
 
-  /** The registry's stable identity — its url — for the resolution memo key. */
+  /** The registry's identity, its URL, in the resolution memo key. */
   public get identity(): string {
     return this.url;
   }
@@ -212,8 +212,8 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
     return vendPackageRef(this, this.format, name);
   }
 
-  /** List a package's published versions, read afresh from its packument.
-   *  Neither the registry's every package nor a scope's can be listed. */
+  /** List a package's published versions, from its packument read again.
+   *  Rejects for the whole registry or a scope, which cannot be listed. */
   public children({ name: namespace }: PartialRepositoryRef): Computable<Map<string, Reference>> {
     if (namespace === "" || /^@[^/]*$/.test(namespace)) {
       return Computable.reject(
@@ -229,62 +229,51 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
     return new PackagePublishRef(this, this.format.parsePublishCoordinate(name));
   }
 
-  /* Get the run's registry-auth authority (the combined project + user
-   * `.npmrc`, plus the per-registry second-factor sessions), loaded once per
-   * run and shared across every NPMRepository instance (held on the
-   * ExecutionContext via the js plugin context, not per instance); the project
-   * `.npmrc` is read through the source FS, so it re-settles if it changes in
-   * watch mode. */
+  /* Get the run's NPMAuth, loaded once per run and shared by every
+   * NPMRepository through the js plugin context. */
   private npmAuth(): Computable<NPMAuth> {
     return jsPluginContext(this.context.execution).npmAuth();
   }
 
   /**
-   * Package this registry's members into the npm wire form (pure — the dry-run
-   * artifacts), jointly. Each member's built `package.json` is the final
-   * manifest: rewritten with its assigned name/version and, for any dependency
-   * naming a release member, that member's assigned version. The rewrite map
-   * prefers **this destination's own assignments** — a dependant published
-   * alongside one line of a package that the release assigns different versions
-   * at different registries declares *its* registry's line, since that is what
-   * its consumers will resolve — falling back to the release-wide assignment for
-   * names this batch doesn't cover (the maintained-in-sync twin published
-   * elsewhere). At either scope a name only rewrites when assigned a single
-   * distinct version; any install-relevant dependency still versionless after
-   * rewriting (a built package this sync does not publish, or one it publishes
-   * at conflicting versions with none at this destination) is unresolvable for
-   * every consumer, so packaging fails. A dependency on a target of the project
-   * that the release publishes under another name (`targets`) is rewritten to
-   * that coordinate in npm's alias form. Each member's files are laid out under
-   * `package/` and gzip-tarred; its carrier holds that `.tgz` plus the rewritten
-   * manifest as a sidecar (sans `dist`, which `publish` injects) and the
-   * co-member dependency names for deps-first upload ordering.
+   * Package the members this registry publishes, without uploading anything.
+   * Each member's built `package.json` is rewritten with the name and version
+   * its coordinate assigns, and each dependency on a package the release
+   * publishes is given that package's version. A dependency's version comes
+   * from, in order of preference: this batch's members, then the whole
+   * release's npm coordinates (at any npm registry), then a target of the
+   * project the release publishes under another name (`targets`), written in
+   * npm's alias form. A name is used only where it is assigned one distinct
+   * version at that level.
+   *
+   * Rejects for a member with no `package.json`, or one with a dependency
+   * still lacking a version after the rewrite (a package built here that the
+   * release does not publish at one version). Each result holds the
+   * `<name>-<version>.tgz` of the member's files under `package/`, the
+   * rewritten manifest beside it, and the dependencies naming other packages of
+   * the release, which order the uploads.
    */
   public package(
     members: PublishMember[],
     release: readonly RepositoryPublishRef[],
     targets: ReadonlyMap<string, readonly RepositoryPublishRef[]> = new Map()
   ): Computable<PublishableFileSet[]> {
-    /* The npm-shaped slice of the release: coordinates addressed to ANY npm
-     * destination (so a cross-registry npm twin participates in the rewrite),
-     * each with the name and version it assigns. A destination is npm
-     * iff its repository SPEAKS npm — format identity, which homogeneity
-     * makes answer for every coordinate in the repository, whichever registry
-     * a group routes it to. An address in some other ecosystem's namespace (a
-     * file path, say) has no name/version and is ignored. */
+    /* The release's coordinates at any repository whose format is
+     * NPM_FORMAT, this one or another, each with the name and version it
+     * assigns. */
     const npmRelease = packageCoordinates(release).filter(
       coordinate => isRepositoryReader(coordinate.source) && coordinate.source.format === NPM_FORMAT
     );
-    /* Later entries win the merge: a name published by the release over a
-     * target's name, and own-batch assignments over release-wide. */
+    /* Later entries win: the release's names over targets', and this batch's
+     * over the release's. */
     const published = uniqueTargets(targets);
     const coMembers = new Map([
       ...published,
       ...uniqueAssignments(npmRelease),
       ...uniqueAssignments(members.map(member => packageCoordinateOf(member.destination))),
     ]);
-    /* For upload order, every name a dependency may name a member by: the
-     * release's names, whatever versions they are published at, and its targets'. */
+    /* For upload order, every name a dependency may name a package of the
+     * release by: the release's names, at whatever versions, and its targets'. */
     const memberNames = new Map([
       ...[...published].map(([target, { name }]): [string, string] => [target, name]),
       ...npmRelease.map(({ name }): [string, string] => [name, name]),
@@ -325,16 +314,15 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
           }
         }
         rooted.set("package/package.json", MemoryFile.from(manifestJson));
-        /* No hardlinks: the registry rejects an upload containing one (415,
-         * "Hard link is not allowed"), and fabr's content-hash dedup would emit
-         * one for any two identical files in the package. The wire format's
-         * constraints are this destination's to know. */
+        /* Write no hardlinks: the registry refuses an upload containing one
+         * (415, "Hard link is not allowed"), and packing would otherwise link
+         * any two files with the same content. */
         return packToTarball(new FileSet(rooted), { hardlinks: false }).then(tgz => {
           const files = new Map<string, IFile>([
             [tarballBasename(identity.name, identity.version), new MemoryFile(tgz)],
             ["package.json", MemoryFile.from(manifestJson)],
           ]);
-          /* provides = the package name (what a co-member's dependsOn references). */
+          /* Provides the package name, which other members' dependencies name. */
           return new PublishableFileSet(files, member.destination, identity.name, memberDependencies(manifest, memberNames));
         });
       });
@@ -342,18 +330,15 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
   }
 
   /**
-   * Upload a packaged artifact to this registry (the one side effect): reads
-   * the sidecar manifest, hashes the tarball for `dist.integrity`/`shasum`,
-   * builds the `libnpmpublish` packument envelope, and PUTs it to the escaped
-   * package name; a 409, or npmjs's 403 "cannot publish over" (version already
-   * present), is the already-synced status. Pure upload mechanics — release
-   * orchestration (ordering, skipping) is the generic layer's. The credential
-   * is resolved here — the repository owns its own authentication: where the
-   * run has a CI identity, the token the registry exchanges it for (trusted
-   * publishing), else, or where the registry refuses the exchange, the
-   * per-registry `.npmrc`'s (with `${VAR}` substitution). A provenance
-   * statement is attached where the registry accepts one (see
-   * {@link provenanceOf}).
+   * Upload an artifact {@link package} made, through {@link publishToRegistry}:
+   * its tarball and manifest, with a provenance statement where
+   * {@link provenanceOf} makes one. Answers `"already-synced"` where the
+   * version is already published.
+   *
+   * The credential is the token the registry exchanges the run's CI identity
+   * for (trusted publishing), where there is one and the registry grants it;
+   * else this repository's credential. Where the exchange was refused and the
+   * upload then fails, the error carries help naming the refusal.
    */
   public publish(artifact: PublishableFileSet): Computable<PublishStatus> {
     const { name, version } = packageCoordinateOf(artifact.destination);
@@ -444,22 +429,18 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
   }
 
   /**
-   * Get the platform we are building for, projected to npm's {os, cpu, libc}
-   * vocabulary — read off the TARGET property (a clang/LLVM triple;
-   * `default TARGET = ${HOST}`) via the same property surface every rule sees,
-   * then run through core's lossy `tripleToNpm`. Native selection consumes the
-   * triple verbatim; this projection is only what the npm os/cpu/libc gate
-   * matches on.
+   * Get the platform being built for in npm's `{os, cpu, libc}` values: the
+   * TARGET property's triple, converted by `tripleToNpm`, which drops what npm
+   * has no value for. Used only for the os/cpu/libc gates.
    */
   private targetPlatform(): Computable<NpmPlatform> {
     return this.context.getGlobalString(TARGET).then(triple => tripleToNpm(triple));
   }
 
   /**
-   * Name what an npm resolution is computed *for* beyond its roots: the target
-   * platform, which gates which optional deps exist, and the package
-   * extensions, which add requirements — inputs to the graph, not only to
-   * delivery, so the domain folds them into the resolution memo key.
+   * Get what a resolution depends on besides its roots, for its memo key: the
+   * target platform, which decides which optional dependencies are kept, and
+   * the digest of the package extensions, which add requirements.
    */
   public environmentKey(): Computable<string> {
     const extensions = this.extensions().digest;
@@ -467,10 +448,9 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
   }
 
   /**
-   * RepositoryReader implementation: the operation of the configuration this
-   * instance was made in. Instances are interned per BuildContext, so a rule
-   * reading a FILES property under BUILD_OVERRIDE reaches a build-configured
-   * instance even when the rule itself was selected under `run`.
+   * The operation of the configuration this instance was made in. A rule
+   * reading a property under BUILD_OVERRIDE reaches the `build` instance even
+   * where the rule was selected under `run`.
    */
   public get operation(): string {
     return this.context.operation;
@@ -483,18 +463,12 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
   }
 
   /**
-   * Read the requirements of pkg@version (RepositoryReader implementation): its
-   * declared `dependencies` and `peerDependencies` (the shared manifest
-   * reading, {@link declaredDependencies}), plus the `optionalDependencies`
-   * that are installable on the target. The dominant use of the latter is
-   * os/cpu-gated native binaries (esbuild's @esbuild/<platform> engine): all
-   * variants are listed, and only the target-matching one(s) are kept. Peers
-   * are **provided** requirements (the `provided_deps` relationship — the
-   * consumer's tree supplies them): an "expected" one demands its minimum
-   * only when the converged tree selects nothing for the package, an
-   * "optional" one never. A peer the build's selection is outside the range
-   * of binds that selection anyway (the format shares provided requirements):
-   * recorded as data, never repaired by a private copy.
+   * Read the requirements of `pkg@version`, from its metadata with this
+   * registry's package extensions applied ({@link declaredDependencies}): its
+   * `dependencies`, its `peerDependencies` as provided requirements
+   * (`"optional"` where `peerDependenciesMeta` marks them so, else
+   * `"expected"`), and those of its `optionalDependencies` whose own gates
+   * admit the target platform ({@link keepIfTargetMatches}).
    */
   public getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
     return this.getVersionEntry(pkg, versionToString(version)).then(meta => {
@@ -503,10 +477,9 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
       if (optional.length === 0) {
         return Computable.resolve(required);
       }
-      /* The os/cpu gate is declared in the *dependency's* own metadata, so each
-       * candidate must be probed. The match is version-stable (a package's target
-       * platform doesn't change across releases), so probing the constraint's
-       * minimum decides correctly whatever version selection ultimately picks. */
+      /* Each optional dependency's gates are in its own metadata, read at the
+       * constraint's lower bound: a package's platform is the same in every
+       * version. */
       return this.targetPlatform().then(target =>
         Computable.forAll(
           optional.map(req => this.keepIfTargetMatches(req, target)),
@@ -517,13 +490,11 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
   }
 
   /**
-   * Validate a finished resolution's selections against the target platform.
-   * Optional deps were already filtered to the target, so any
-   * os/cpu/libc mismatch remaining is a *non-optional* dependency (or a direct
-   * requirement) on a package for another platform — npm's EBADPLATFORM — and
-   * is an error rather than an unusable install. Each selection's metadata was
-   * fetched during the resolution walk, so these are cache hits. (Override
-   * TARGET with -D to resolve for a different platform.)
+   * Check a finished resolution's selections against the target platform,
+   * rejecting where one's os/cpu/libc gates refuse it (npm's EBADPLATFORM),
+   * naming the package and what required it. Optional dependencies were
+   * already filtered, so a refusal is of a non-optional dependency or a direct
+   * requirement.
    */
   public validateSelections(selections: Selected<SemverVersion>[]): Computable<void> {
     return this.targetPlatform().then(target =>
@@ -548,18 +519,13 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
   }
 
   /**
-   * Find, as the floor-raise hook (see RepositoryReader), the lowest
-   * *published* version of `pkg` satisfying `constraint`, consulted only when
-   * the constraint's own minimum turned out unpublished. Reads the
-   * **packument** — the registry's per-package version list, held for the run
-   * (see {@link packument}); if the held list satisfies nothing, that is
-   * evidence it may be stale, so it is re-read once before giving up.
-   * Deterministic modulo registry append.
-   *
-   * A package the registry has never heard of (a typo'd name) has no published
-   * versions at all, which is a definite answer rather than a stale one: it
-   * skips the revalidation and reports no raise, leaving the caller's original
-   * "not found" the failure the resolver reports.
+   * Find the lowest published version of `pkg` satisfying `constraint`, for
+   * the resolver to raise a lower bound that was never published to. A
+   * prerelease is a candidate only where the constraint names one. Reads the
+   * packument held for the run, and where nothing in it satisfies the
+   * constraint, reads it again once. Answers undefined where nothing
+   * satisfies, where `constraint` does not parse, or where the registry has no
+   * such package (without reading again).
    */
   public lowestAvailable(pkg: string, constraint: string): Computable<SemverVersion | undefined> {
     let parsed: SemverConstraint;
@@ -568,8 +534,6 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
     } catch {
       return Computable.resolve(undefined);
     }
-    /* npm-consistent candidates: no prerelease unless the constraint opts in
-     * (lowestSatisfying) — the raise must never silently pin an -rc. */
     const pick = (versions: SemverVersion[] | undefined): SemverVersion | undefined => versions && lowestSatisfying(versions, parsed);
     return this.publishedVersions(pkg, false).then(versions => {
       const found = pick(versions);
@@ -580,9 +544,8 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
     });
   }
 
-  /** List the registry's versions for repair suggestions (see
-   *  RepositoryReader): the packument read, without the staleness retry
-   *  (suggestions are advisory). */
+  /** List the package's published versions, for suggesting a remedy: the
+   *  packument held for the run, not read again. */
   public availableVersions(pkg: string): Computable<SemverVersion[] | undefined> {
     return this.publishedVersions(pkg, false);
   }
@@ -604,12 +567,11 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
   }
 
   /**
-   * Read the package's abbreviated packument — each published version's
-   * metadata, by version — or undefined if the registry has no such package
-   * (its 404). A version's entry never changes once published, so a held
-   * packument is kept for every version it lists; `forceRevalidate` re-reads
-   * it, for a caller asking about a version it lacks. Read once per run either
-   * way.
+   * Read the package's abbreviated packument: each published version's
+   * metadata, by version, or undefined where the registry answers 404. A
+   * cached packument is served for every version it lists; `forceRevalidate`
+   * reads it from the registry again, for a version it lacks. Each of the two
+   * is read at most once per run.
    */
   private packument(pkg: string, forceRevalidate: boolean): Computable<ReadonlyMap<string, INPMPackageMetadata> | undefined> {
     const held = forceRevalidate ? this.revalidatedPackuments : this.packuments;
@@ -620,11 +582,10 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
         url,
         file: PACKUMENT_FILE,
         tag: "npm:packument:2",
-        /* An index read: a resolution makes one of these per package it walks,
-         * and the resolve that asked is the item worth recording. */
+        /* An index read: one per package a resolution walks. */
         report: { resource: "package document", role: "index" },
         convert: text => parseJson(text, what, toPackumentVersions),
-        /* What is kept is only what fabr reads. */
+        /* Cache only the fields fabr reads. */
         keep: versions => JSON.stringify({ versions: Object.fromEntries(versions) }),
         headers: () => Computable.resolve({ accept: ABBREVIATED_PACKUMENT }),
         credential: this.credential,
@@ -634,14 +595,11 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
   }
 
   /**
-   * Probe an optional dependency's os/cpu/libc gates, returning it as a requirement
-   * only if the target satisfies them (else undefined). A candidate that can't be
-   * probed — unparseable pin, no version to probe, or an unreachable/unpublished
-   * metadata document — is dropped non-fatally, per npm's optional-dependency
-   * contract (a genuinely-needed absence surfaces at the consumer's own runtime
-   * check, e.g. esbuild's "missing platform binary" error). A future refinement:
-   * a matched-but-unfetchable probe deserves a diagnostic once the progress layer
-   * carries warnings; a plain platform mismatch stays silent.
+   * Read an optional dependency's os/cpu/libc gates at its constraint's lower
+   * bound, and return it where they admit `target`, else undefined. As npm
+   * does, it is left out silently where it cannot be judged: its constraint
+   * does not parse or has no lower bound, or its metadata cannot be read or
+   * its gates evaluated.
    */
   private keepIfTargetMatches(req: Requirement, target: NpmPlatform): Computable<Requirement | undefined> {
     let probeVersion: string;
@@ -654,20 +612,17 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
     } catch {
       return Computable.resolve(undefined);
     }
-    /* Catch rather than a rejection handler: a probe that cannot be evaluated
-     * (malformed gates in a fetched document) is as non-fatal as one that could
-     * not be fetched, and a handler passed to then() does not see the success
-     * callback's own throw. */
+    /* Use catch, not a rejection handler on then(): a throw while judging the
+     * gates must be caught too. */
     return this.gatedMetadata(req.name, probeVersion, target)
       .then(meta => (matchesTargetPlatform(meta, target) ? req : undefined))
       .catch(() => undefined);
   }
 
   /**
-   * Get what the registry publishes about one exact version besides its files
-   * (RepositoryReader implementation): its licence and the tarball's digest,
-   * from the version's own document, which the abbreviated packument leaves
-   * the licence out of.
+   * Get what the registry publishes about one exact version besides its files:
+   * its licence and the tarball's digest, read from the version's own
+   * document, since the abbreviated packument leaves out the licence.
    */
   public getVersionMetadata(pkg: string, version: SemverVersion): Computable<IVersionMetadata> {
     return this.versionDocument(pkg, versionToString(version)).then(versionMetadataOf);
@@ -681,8 +636,7 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
     return (
       this.packument(pkg, false)
         .then(versions => (entry(versions) !== undefined ? entry(versions) : this.packument(pkg, true).then(entry)))
-        /* The packument only saves requests: where it cannot be read at all, the
-         * version's own document answers as it would have anyway. */
+        /* Where the packument cannot be read, read the version's own document. */
         .catch(() => undefined)
         .then(meta => meta ?? this.versionDocument(pkg, version))
     );
@@ -690,11 +644,10 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
 
   /**
    * Get an exact package version's metadata for judging it against `target`:
-   * as {@link getVersionMetadata} gives it, except that an abbreviated
-   * packument leaves out `libc`. A platform-gated version (one declaring `os` or
-   * `cpu`) whose gates admit a target that has a libc is read whole from its
-   * own document, so its `libc` gate is judged too; any other cannot be decided
-   * by `libc`.
+   * as {@link getVersionEntry} gives it, except that the abbreviated packument
+   * leaves out `libc`. Where an entry has no `libc`, declares `os` or `cpu`,
+   * both admit `target`, and `target` has a libc, the version's own document
+   * is read instead, so its `libc` gate is judged too.
    */
   private gatedMetadata(pkg: string, version: string, target: NpmPlatform): Computable<INPMPackageMetadata> {
     return this.getVersionEntry(pkg, version).then(meta =>
@@ -709,16 +662,11 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
   }
 
   /**
-   * Fetch the metadata document for an exact package version, persisted in the
-   * build cache and never refreshed, for a version its packument cannot fully
-   * answer for (see {@link getVersionMetadata}). Note the immutability here is a *content*
-   * contract fabr asserts, not an HTTP one: npmjs serves version docs with only
-   * `max-age=300` (unlike tarballs, which it marks `cache-control: immutable`
-   * for a year), because a version doc has exactly one mutable field —
-   * `deprecated`. The dependency-relevant fields can never change (a version
-   * number is never republished), and fabr reads nothing else; if deprecation
-   * warnings are ever surfaced, that read must go through a revalidating
-   * fetch, not this cache-forever one.
+   * Fetch the metadata document for an exact package version, kept in the
+   * build cache and never refreshed. Rejects with a VersionNotFoundError where
+   * the registry answers 404. The cache keeps it although npmjs serves it with
+   * `max-age=300`: its one field that changes is `deprecated`. Read
+   * `deprecated` through a revalidating fetch, not this one.
    */
   private versionDocument(pkg: string, version: string): Computable<INPMPackageMetadata> {
     const key = pkg + "/" + version;
@@ -728,14 +676,14 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
         url: metadataUrl,
         file: METADATA_FILE,
         tag: "npm:metadata:1",
-        /* As the version list: one per package version considered. */
+        /* An index read: one per package version the resolution reads. */
         report: { resource: "metadata", role: "index" },
         convert: text => parseMetadataResponse(text, key),
         keep: meta => JSON.stringify(meta),
         credential: this.credential,
       }).then(meta => {
-        /* The registry's 404, typed, so the resolver can tell an unpublished
-         * version (raisable) from an unreachable registry. */
+        /* The registry's 404: typed, so the resolver can raise a lower bound
+         * that was never published. */
         if (meta === undefined) {
           throw new VersionNotFoundError(pkg, version, `NPM package ${pkg}@${version} not found at ${this.url}`);
         }
@@ -746,9 +694,8 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
 
   public fetch(pkg: string, version: SemverVersion): Computable<PackageFileSet> {
     const exact = versionToString(version);
-    /* Kept by registry and version, not by tarball url: a published version
-     * never changes, so a package fetched before is had without reading its
-     * metadata, which is only where the url is. */
+    /* Key by registry and version, not tarball URL: a package fetched before
+     * is then had without reading its metadata, where the URL is. */
     return fetchArchive(this.context, {
       key: `${this.identity} ${pkg}@${exact}`,
       tag: "npm:package:1",
@@ -766,7 +713,10 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
   }
 }
 
-/** Make the repository an `npm_repository` declaration declares, or a namespace makes with `url` and `credential`: its own `url` first, and a `credential` in place of `.npmrc`'s. */
+/** Make the repository an `npm_repository` declaration declares, or a
+ * namespace makes with `url` and `credential`: the declaration's own `url`
+ * takes precedence, and `credential` replaces `.npmrc`'s. Rejects where there
+ * is no URL, or `provenance` is neither `on` nor `off`. */
 function createRepository(context: TargetContext, url?: string, credential?: Credential): Computable<Repository> {
   return Computable.forAll(
     [context.getProperty("url"), context.getString("access"), context.getString("provenance")],

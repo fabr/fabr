@@ -123,6 +123,11 @@ const RUNNER_CLASS = "build.fabr.junit.Runner";
 /** Where a measured run's JaCoCo agent and analysis libraries are staged. */
 const COVERAGE_DIR = ".coverage";
 
+/**
+ * Make the test run's action: the tests compiled against the package's build,
+ * then run by the runner over the compiled test classes, with the classpath
+ * the `run` side resolved; nothing where no tests are declared.
+ */
 function testJar(context: TargetContext, inputs: TestInputs): Computable<RuleResult> {
   const tests = FileSet.unionAll(...inputs.tests);
   if (tests.isEmpty()) {
@@ -271,7 +276,8 @@ function measuredPackages(srcs: readonly FileSet[]): Computable<string[]> {
 /**
  * Make the table the runner names results and coverage by: a line per Java
  * source, its path within its package tree (`com/x/Foo.java`, from its package
- * declaration and file name) and its source path, sorted.
+ * declaration and file name), a tab, and its source path (its name where it
+ * has none), sorted and without duplicates.
  */
 function sourcesTable(sets: readonly FileSet[]): Computable<string> {
   const sources = sets.flatMap(set =>

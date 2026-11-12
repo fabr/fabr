@@ -19,13 +19,15 @@
 
 import { ISourceSpan } from "./Log";
 
-/**
+/*
  * The analysis report fabr writes for code-scanning services: SARIF (Static
  * Analysis Results Interchange Format, OASIS, version 2.1.0), the members fabr
  * uses of https://docs.oasis-open.org/sarif/sarif/v2.1.0/. A report is one
  * run of one tool: its rules (what can be found) and its results (what was),
  * each result located in a source file where it has a place.
  */
+
+/** The schema a SARIF 2.1.0 document names. */
 const SARIF_SCHEMA = "https://json.schemastore.org/sarif-2.1.0.json";
 
 /** The base a result's `uri` is relative to: the root of the source tree, as code-scanning services name it. */
@@ -68,8 +70,8 @@ export interface ISarifResult {
   level: SarifLevel;
   message: ISarifMessage;
   locations?: ISarifLocation[];
-  /** Why the result does not stand, where it does not: `inSource` for a
-   * suppression the project declares. */
+  /** The suppressions that set the result aside: `inSource` for one the
+   * project declares, `external` for one a separate document states. */
   suppressions?: Array<{ kind: "inSource" | "external"; justification?: string }>;
   properties?: Record<string, unknown>;
 }
@@ -106,8 +108,8 @@ export function sarifLog(tool: ISarifTool, results: ISarifResult[], properties?:
 /**
  * Locate a result at `span`, a position in a build file of the source tree:
  * the file relative to {@link SARIF_SOURCE_ROOT}, and its line and column,
- * through the span's end where it has one. The caller says the span is in
- * the source tree: a position elsewhere has no uri the tree's root resolves.
+ * through the span's end where it has one. Pass only a span in the source
+ * tree: a position elsewhere has no uri the tree's root resolves.
  */
 export function sarifLocation(span: ISourceSpan): ISarifLocation {
   const start = span.reader.resolvePosition(span.offset);

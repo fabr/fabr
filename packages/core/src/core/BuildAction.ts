@@ -38,57 +38,50 @@ import { FabrError } from "./Errors";
 import { manifestArguments, type RunnableArgument } from "./RunnableFileSet";
 
 /**
- * Configuration handed to a build step — *how* the build is performed, as
- * against `inputs`, the content it is performed on: a command line (a list of
- * {@link RunnableArgument}s, keyed by {@link manifestArguments}), patterns, switches, a
- * `Name` where a step consumes a projection (received live on a miss and
- * applied with `makeProjector`), and file-shaped configuration (a generated
- * tsconfig) as a FileSet, staged for the tool to read.
+ * A member of a build step's configuration: how the build is performed, where
+ * `inputs` are what it is performed on. A string (a pattern, a switch), a
+ * command line (a list of {@link RunnableArgument}s, keyed by
+ * {@link manifestArguments}), a `Name` for a projection the step applies (with
+ * `makeProjector`), or file-shaped configuration (a generated tsconfig) as a
+ * FileSet, staged for the tool to read.
  *
- * The whole bag is the configuration half of every key ({@link configDigest}):
- * a config change starts a fresh target key with its own build-state chain, and
- * file-shaped members never enter the diff base. Content belongs in `inputs` —
- * a member here that varies with source content makes every edit a fresh
- * target key.
+ * The whole of an action's config is in its target key ({@link configDigest}),
+ * so a change to it starts a new build-state record, and its files are never
+ * part of the recorded base. Put content in `inputs`: a config member that
+ * varies with source content makes every edit a new target key.
  */
 export type ActionConfigValue = string | readonly RunnableArgument[] | Name | FileSet;
 export type ActionConfig = Record<string, ActionConfigValue>;
 
-/** What a build step's `run` — and so a cache `create` callback — hands back. */
+/** What a build step's `run`, and so a cache `create` callback, returns. */
 export interface BuildResult {
   result: FileSet;
-  /** The selection this run read of its discoverable inputs, where it
-   * discovers them; the entry's key and its discovered-deps record both derive
-   * from it. */
+  /** What this run read of its discoverable inputs, where the step reports
+   * it; the entry's key and its discovered-deps record are made from it. */
   discoveredDeps?: DiscoveredDeps;
-  /**
-   * The tool's own kept files, stored as ordinary content, preserved across
-   * runs. Fabr stores, pairs and stages them; it never reads inside.
-   */
+  /** The tool's own files, kept for its next run. Fabr stores and stages
+   * them and never reads them. */
   incrementalState?: FileSet;
 }
 
 /**
- * The build step of a build action: a pure function from resolved inputs to
- * output content, run in a framework-provided {@link ActionContext}. This is
- * the only unit of build caching; `id` + `version` identify the step in every
- * cache key, so a behavior change is a version bump rather than a manual cache
- * flush.
+ * A build step: a function from a build action's inputs to its output content,
+ * run in an {@link ActionContext}. `id` and `version` name the step in every
+ * cache key; bump `version` whenever the step's behaviour changes.
  */
 export interface IBuildActionDefinition {
   id: string;
   version: number;
   /**
-   * Perform the step, answering its output content — plus, where the step
-   * discovers which of its inputs it really used, the subset it read.
+   * Perform the step on `action`'s `inputs`, `config` and `discoverable` bags
+   * and return its output, with what it read of its discoverable inputs where
+   * it reports that.
    *
-   * The step receives the whole demanded {@link BuildAction}; its resolved
-   * `inputs`/`config`/`discoverable` bags are what it consumes. `ctx` is what
-   * the cache and the execution funnel give it; `report` is where its
-   * executions announce output and funnel phases, already resolved against the
-   * run's verbosity — a step makes no display decisions of its own beyond
-   * withholding the output sink where its contract puts the output elsewhere
-   * (the test runner's report).
+   * `ctx` holds what the cache and the execution funnel provide. `report`
+   * takes its executions' output and funnel phases, already set for the run's
+   * verbosity: a step makes no display decisions, beyond leaving out the
+   * output sink where its contract puts the output elsewhere (the test
+   * runner's report).
    */
   run(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult>;
   /**
@@ -119,22 +112,14 @@ export interface IStagedStep {
   env: ReadonlyMap<string, string>;
 }
 
-/**
- * A build action: a build step plus its concrete (already-resolved) inputs —
- * the cacheable leaf a rule yields. Actions do not compose directly;
- * composition is via sub-targets (see TargetContext.subTarget), so an action's
- * inputs are always plain data.
- *
- * Every member but {@link reshape} must reduce to a stable manifest, since the
- * key is a function of exactly those fields. The per-field bags are
- * developer-authored fixed-key records, never user-controlled names.
- */
+/** The optional parts of a {@link BuildAction}. */
 export interface IBuildActionOptions {
   /**
    * Input files the step's tool may or may not read; the step reports those it
    * did, and the entry is keyed on them.
    */
   discoverable?: ActionFileInputs;
+  /** A display label (see {@link BuildAction.withLabel}). */
   label?: string;
   /**
    * Ask the cache to track what moved between builds of this target key: it
@@ -143,33 +128,38 @@ export interface IBuildActionOptions {
    */
   trackChangedFiles?: boolean;
   /**
-   * Gives the step's output the shape the target yields: what the files
-   * ARE — a package, with its identity — or how they divide, which a cached
-   * step cannot carry. Applied to the output every evaluation, whether the
-   * step ran or its entry was served.
+   * Give the step's output the shape the target yields: a package with its
+   * identity, or a report with its write-back partition. Applied to the output
+   * on every evaluation, whether the step ran or its entry was served.
    *
-   * It is no part of the action's key, so it must add nothing the output's
-   * content depends on: the files it is given are all it may draw content
-   * from.
+   * It is not in the action's key, so take content only from the files it is
+   * given.
    */
   reshape?: (output: FileSet) => FileSet | Computable<FileSet>;
   /**
    * The inputs (of {@link BuildAction.inputs} or {@link discoverable}) whose
    * files' source paths the step hands its tool. Only these carry source paths
-   * into the key and the recorded base: another input's source paths reach
-   * nothing the step produces.
+   * into the key and the recorded base.
    */
   sourcePathInputs?: ReadonlyArray<string>;
   /**
    * Installs the step links into its work directory from the tree pool
-   * ({@link ActionContext.ensureTree}) rather than stages file by file — a
-   * tool's own install, a test runner's — by the name each is linked at. In
-   * the key by hash alone (the `links` section), no part of the recorded base,
-   * and ensured and linked by {@link linkTrees}.
+   * ({@link ActionContext.ensureTree}) instead of staging them file by file (a
+   * tool's own install, a test runner's), by the name each is linked at. In
+   * the key by manifest hash alone (the `# links` section), no part of the
+   * recorded base, and linked by {@link linkTrees}.
    */
   links?: Readonly<Record<string, FileSet>>;
 }
 
+/**
+ * A build action: a build step and the content and configuration it runs on,
+ * the unit of build caching a rule yields. Actions do not nest; rules compose
+ * through sub-targets (see TargetContext.subTarget), so an action's inputs are
+ * always content in hand.
+ *
+ * The bags' keys are each step's own fixed names, never user-controlled.
+ */
 export class BuildAction {
   public readonly discoverable?: ActionFileInputs;
   public readonly label?: string;
@@ -180,11 +170,11 @@ export class BuildAction {
 
   constructor(
     public readonly step: IBuildActionDefinition,
-    /** Per-file material, manifested into the action key file by file, or as
-     * the package graph for its PackageFileSet members ({@link manifestGraph}). */
+    /** Per-file content, in the action key file by file, or as the package
+     * graph for its PackageFileSet members ({@link manifestGraph}). */
     public readonly inputs: ActionFileInputs,
-    /** The step's configuration: all of it is target-key identity
-     * ({@link configDigest}); file-shaped members are staged with the inputs. */
+    /** The step's configuration, all of it in the target key
+     * ({@link configDigest}); its FileSet members are staged with the inputs. */
     public readonly config: ActionConfig,
     options: IBuildActionOptions = {}
   ) {
@@ -213,25 +203,23 @@ export class BuildAction {
     return new BuildAction(this.step, this.inputs, this.config, { ...this.options(), label });
   }
 
-  /** @return a copy whose output is given its delivered shape by `reshape`. */
+  /** @return a copy whose output `reshape` gives the shape the target yields. */
   public withReshape(reshape: (output: FileSet) => FileSet | Computable<FileSet>): BuildAction {
     return new BuildAction(this.step, this.inputs, this.config, { ...this.options(), reshape });
   }
 
   /**
-   * Make the durable cache key of a target's action — *whose build is this*, the
-   * coordinate a build-state record hangs off. Content-free (step id+version,
-   * decl identity, sub-target label, config digest), so it survives every edit
-   * and the next build can find its base; configuration IS part of it, so each
-   * configuration of one target keeps its own base chain instead of two
-   * alternating builds replacing each other's. A target running two actions
-   * holds two of these, distinguished by their step.
+   * Make the target key of this action: the key its build-state record is kept
+   * under. It is a hash of the step's id and version, `owner`'s identity
+   * ({@link declIdentity}), `label` and the config digest, and of no content,
+   * so it stays the same across edits and the next build finds its base. Each
+   * configuration of a target has its own, and a target running two actions
+   * has one per step.
    *
-   * `owner` is the target's declaration — an anonymous sub-target takes its
-   * OWNER's — and `label` is the sub-target's display label (absent for a
-   * declared target or an unlabelled sub-target), which separates the chains
-   * of same-stepped sub-targets whose configs happen to coincide. Renaming a
-   * label abandons its chains: one cold build.
+   * `owner` is the target's declaration (for an anonymous sub-target, its
+   * declared owner's), and `label` the sub-target's label, absent for a
+   * declared target or an unlabelled sub-target. Renaming a label leaves its
+   * records behind, so the next build is cold.
    */
   public targetKey(owner: ITargetDecl, label?: string): string {
     return hashString(
@@ -245,15 +233,16 @@ export class BuildAction {
   }
 
   /**
-   * Render the key material this action is demanded under: `rule:<id>:<version>`, then
-   * the file-inputs section, then the config section, then the links section
-   * (each linked install by its hash), each under its own header line with one
-   * `name=…` line per member, names sorted. Every section is always rendered,
-   * so an empty one cannot alias a shifted one.
+   * Render this action's key: `rule:<id>:<version>`, then the file-inputs
+   * section, the config section and the links section (each linked install by
+   * its hash), each under its own header line with one `name=…` line per
+   * member, names sorted. Every section is rendered even when empty, so an
+   * empty section cannot be mistaken for a shifted one.
    *
-   * With no discoverable deps this is the complete key; with {@link discoverable}
-   * it is the **anchor**, and the entry is stored under
-   * {@link preciseActionKey} — never under a bare anchor.
+   * With no {@link discoverable} inputs this is the entry's whole key. With
+   * them it is the anchor: the entry is stored under {@link preciseActionKey},
+   * made from the anchor's hash and what the run read, never under the anchor
+   * alone.
    */
   public actionKey(): string {
     const links = Object.keys(this.links)
@@ -268,9 +257,8 @@ export class BuildAction {
 
 /**
  * Link each of the action's {@link IBuildActionOptions.links} into `dir`, at
- * its name, from the tree the pool holds it as — ensured first, so the target
- * exists. The link's target is the tree's own path on this machine, which no
- * output of a step carries.
+ * its name, to the tree the pool holds it as, ensuring the tree first. A link
+ * points at the tree's path on this machine.
  */
 export function linkTrees(action: BuildAction, dir: string, ensureTree: (files: FileSet) => Computable<string>): Computable<void> {
   return mapComputable(Object.keys(action.links).sort(compareText), name =>
@@ -278,9 +266,8 @@ export function linkTrees(action: BuildAction, dir: string, ensureTree: (files: 
   ).then(() => undefined);
 }
 
-/* The action's reading face: what a build step's `run` uses to take a typed
- * member off the action it received. The member NAMES are each step's own
- * vocabulary, which is why these know none. */
+/* Readers a build step's `run` uses to take a typed member off its action,
+ * by the member's name (each step's own). */
 
 /** Take the named per-file input, which must be a single FileSet. */
 export function fileSetInput(action: BuildAction, name: string): FileSet {
@@ -318,9 +305,9 @@ export function stringConfig(action: BuildAction, name: string, fallback?: strin
   return value;
 }
 
-/** Union the file-shaped members of the action's config — what an exec step
- * stages into the work dir beside the inputs. Two members carrying the same
- * name for different files are the ordinary staging conflict. */
+/** Union the FileSet members of the action's config: what an exec step
+ * stages into the work dir beside the inputs. Two members naming one path for
+ * different files conflict (a ConflictError). */
 export function configFiles(action: BuildAction): FileSet {
   return FileSet.unionAll(...Object.values(action.config).filter((value): value is FileSet => value instanceof FileSet));
 }
@@ -334,11 +321,9 @@ export function declIdentity(decl: ITargetDecl): string {
 }
 
 /**
- * Digest the configuration half of an action's key: the manifest of `config`, whole.
- * Nothing of `inputs` participates, and the discoverable deps are not consulted.
- *
- * Note for rule authors: content passed as config lands here, making every
- * change to it a fresh target key.
+ * Digest the configuration half of an action's key: the manifest of its whole
+ * `config`, and nothing of its inputs or discoverable inputs. Content passed
+ * as config makes every change to it a new target key.
  */
 export function configDigest(action: BuildAction): string {
   return hashString(manifestConfig(action.config));
@@ -354,9 +339,9 @@ export function manifestConfig(config: ActionConfig): string {
     .join("\n");
 }
 
-/** Render one config member as key material. A `Name` manifests by `toGlobString`,
- * which is lossless where `toString` is not (a quoted `'*'` and a wildcard `*`
- * render alike, colliding two different projections onto one key). */
+/** Render one config member as key material. Render a `Name` by
+ * `toGlobString`: `toString` renders a quoted `'*'` and a wildcard `*` alike,
+ * which would give two different projections one key. */
 function manifestConfigValue(value: ActionConfigValue): string {
   if (typeof value === "string") {
     return JSON.stringify(value);
@@ -371,21 +356,17 @@ function manifestConfigValue(value: ActionConfigValue): string {
 }
 
 /**
- * Per-file material handed to a build step: staged content, manifested
- * file-by-file into the action key. `PackageFileSet` members manifest as the
- * graph they form instead ({@link manifestGraph}). FileSets must be fully
- * materialized — inert references never cross.
+ * Per-file content handed to a build step, staged for it and in the action
+ * key file by file; `PackageFileSet` members are in the key as the graph they
+ * form ({@link manifestGraph}). Hold only content in hand, never a reference.
  */
 export type ActionFileInputs = Record<string, FileSet | FileSet[]>;
 
 /**
- * One discoverable input narrowed to a selection: a recorded one at lookup, or
- * the run's own at commit.
- *
- * Always a genuine selection: an input the selection never mentioned is
- * settled by `narrowDeps` to the selection a run that read EVERYTHING would
- * have reported, so nothing above that point can tell a non-reporting run
- * from a maximally-reporting one.
+ * One discoverable input narrowed to a selection of what was read: a recorded
+ * selection at lookup, or the run's own at commit. An input the selection
+ * does not mention is narrowed by `narrowDeps` to what a run that read
+ * everything would report.
  */
 export interface INarrowedInput {
   /** The files the selection's paths landed on, each named by the flat
@@ -400,13 +381,8 @@ export interface INarrowedInput {
   readonly absent: ReadonlyArray<string>;
 }
 
-/**
- * The discoverable deps narrowed to a selection, keyed as they are.
- *
- * Total: every discoverable key is present — an unmentioned input arrives as
- * the everything-selection (see {@link INarrowedInput}) — so a consumer never
- * has to handle a missing entry.
- */
+/** The discoverable inputs narrowed to a selection, by input name; every
+ * discoverable input is present (see {@link INarrowedInput}). */
 export type INarrowedDeps = Record<string, INarrowedInput>;
 
 /**
@@ -433,8 +409,8 @@ export function preciseActionKey(anchor: string, used: INarrowedDeps): string {
 
 /** Render the per-input sections of {@link preciseActionKey}: that input's
  * manifest, its source-path digest lines, then its absent paths. Sorts the
- * input names and each input's digests and absences, so the text is a
- * function of what it was handed and not of arrival order. */
+ * input names and each input's digests and absences, so the text does not
+ * depend on arrival order. */
 function narrowedSections(used: INarrowedDeps): string {
   return Object.keys(used)
     .sort()
@@ -455,10 +431,11 @@ function narrowedSections(used: INarrowedDeps): string {
 const SOURCE_PATHS_PREFIX = "# source-paths ";
 
 /**
- * Render one per-file input as key material: the loose members' file manifests, then
- * the package graph as {@link manifestGraph} walks it, each with its
- * {@link FileSet.sourcePathsDigest} where `sourcePaths`. List order does not
- * participate; how a package is REACHED does.
+ * Render one per-file input as key material: the loose members' file
+ * manifests, sorted, then the package graph as {@link manifestGraph} renders
+ * it, each with its {@link FileSet.sourcePathsDigest} where `sourcePaths`.
+ * The members' order does not change it; the path a package is reached by
+ * does.
  */
 function manifestFileInput(value: FileSet | ReadonlyArray<FileSet>, sourcePaths: boolean): string {
   const members = [...new Set(Array.isArray(value) ? (value as FileSet[]) : [value as FileSet])];
@@ -471,20 +448,12 @@ function manifestFileInput(value: FileSet | ReadonlyArray<FileSet>, sourcePaths:
 }
 
 /**
- * Render the package graph as key material, in the same path vocabulary as a
- * discovered-deps record: one line per root and one per edge, each holding the
- * path the node is reached by, its content hash, and what `digest` gives it
- * (its {@link FileSet.sourcePathsDigest}, or nothing).
- *
- * A package's own edges are walked at its FIRST-SEEN path only, so the count is
- * one line per root plus one per edge rather than one per distinct route (which
- * is exponential in a shared graph). Every edge still appears — `a b c` is the
- * b→c edge whatever route reached b — so what a mount can depend on is covered:
- * the direct list (a length-one path), the bindings, and the contents.
- *
- * The walk is canonically ordered, roots and edges alike, since a first-seen
- * path is only well defined against a fixed order. An edge not yet bound to a
- * package is omitted: an assembler cannot see through it.
+ * Render the package graph among `members` as key material, in the path
+ * vocabulary of a discovered-deps record: a line for each call
+ * {@link walkPackages} makes, holding the path of package names the package
+ * is reached by, its content hash, and what `digest` gives it (its
+ * {@link FileSet.sourcePathsDigest}, or nothing). `a b c` is the dependency
+ * of `b` on `c`, whatever path reached `b`.
  */
 function manifestGraph(members: ReadonlyArray<FileSet>, digest: (pkg: FileSet) => string): string[] {
   const lines: string[] = [];
@@ -493,15 +462,17 @@ function manifestGraph(members: ReadonlyArray<FileSet>, digest: (pkg: FileSet) =
 }
 
 /**
- * Walk the package graph canonically: every root, then every edge, each visited at its
- * first-seen path — so the count is one call per root plus one per edge rather
- * than one per distinct route, which a shared graph makes exponential. Roots and
- * edges are canonically ordered, a first-seen path being well defined only
- * against a fixed order.
+ * Walk the package graph among `members`, calling `reached` with each
+ * package and the path of package names it is reached by: once for each root
+ * package, then once for each dependency of each package reached. A package's
+ * dependencies are walked from the first path that reaches it only, so the
+ * calls number the roots plus the dependencies, not every route. Roots and
+ * each package's dependencies are taken in {@link packageMembers} order, which
+ * fixes which path is first. A dependency not yet bound to a package is
+ * skipped.
  *
- * Exported for the recorded base (BuildCache): its rows must name a file
- * exactly as the key's graph lines name its package, and one walk is what
- * guarantees they cannot disagree.
+ * BuildCache's recorded base names packages through this walk too, so its
+ * rows match the key's graph lines.
  */
 export function walkPackages(members: ReadonlyArray<FileSet>, reached: (pkg: PackageFileSet, route: string[]) => void): void {
   const firstSeen = new Map<PackageFileSet, string[]>();

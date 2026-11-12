@@ -18,11 +18,11 @@
  */
 
 /**
- * How a Java target is described (see core's Description): as BSP's own `jvm`
- * target, its `javacOptions` naming the classpath's jars, which the
- * description lays out, and the Java release it compiles for. A package the
- * target requires that is itself described is no jar of it: it is the target
- * that builds it, among the target's dependencies.
+ * Describing a Java target for an editor (see core's Description): as BSP's
+ * `jvm` target, its `javacOptions` naming the classpath's jars, which the
+ * description lays out, and the Java release it compiles for. A required
+ * package that is itself described adds no jar: it appears as the target that
+ * builds it, among the target's dependencies.
  */
 
 import { Computable, describeTarget, descriptionFile, FileSet, ResolvedRequirements, TargetContext } from "@fabr-build/core";
@@ -34,7 +34,7 @@ export const JVM_DATA_KIND = "jvm";
 /** Where a description lays out the classpath's jars. */
 const CLASSPATH_DIR = "classpath";
 
-/** The class directory a description names: nothing writes it, as an editor's compiler keeps its own. */
+/** The class directory a description names. Nothing writes it: an editor's compiler keeps its own output. */
 const CLASS_DIRECTORY = "classes/";
 
 /** What a Java target is described as compiling. */

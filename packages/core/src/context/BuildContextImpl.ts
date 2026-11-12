@@ -140,6 +140,7 @@ function withHints<T extends FabrError>(err: T, hints: string[]): T {
   return hints.length > 0 ? err.withHelp(hints.join("; ")) : err;
 }
 
+/** The build model as a configuration reads it. */
 interface IBuildModel {
   getConfig(constraints: Constraints, execution: ExecutionContext): BuildContext;
   getDecl(name: string): IPropertyEntry | ITargetDecl | undefined;
@@ -147,12 +148,13 @@ interface IBuildModel {
   getPrivateFiles(name: string): string[];
   getTargetDef(name: string): ITargetDefDecl | undefined;
   getPrefixMatch(name: Name, file?: string): IPrefixMatch | undefined;
-  /** Name enumerations, for nearest-match suggestions and for recognizing a marked target name. */
+  /** Get every declared target, for nearest-match suggestions. */
   getTargets(): { name: string; decl: ITargetDecl }[];
+  /** Get every declared property, for nearest-match suggestions. */
   getProperties(): { name: string; decl: IPropertyDecl }[];
-  /** The rule tables and repository providers, built per load from the contributions of core
-   * and the active plugins. */
+  /** Get the rules declared for targets of `type`, from core and the plugins in use. */
   getTargetRules(type: string): TargetRules[];
+  /** Get the rules declared for targets of any type. */
   getDefaultRules(): SelectableRule[];
   /** Get the operations `type` has rules of its own for, `*` for a rule of any operation. */
   getOperations(type: string): string[];
@@ -182,11 +184,11 @@ function provided(
 }
 
 /**
- * Report `err`, a failure of what a written reference names, as the
- * reference's: a referenced target's failure crossing it records the use site,
- * so the driver can render the dependant chain as "required by <target>
- * <property>" against the written value, and a conflict gets the reference's
- * step on both sides, so the driver traces it back to the written value.
+ * Get `err`, a failure of what the written reference `step` records names, as
+ * the reference's failure: a target's failure (`DependencyFailedError`,
+ * `NoRuleFoundError`) is wrapped in a `ReferenceFailedError` naming the use
+ * site, and a `ConflictError` gets `step` added to the provenance of both
+ * sides. Any other error is returned as it is.
  */
 function failureOfReference(step: IModelStep, err: Error): Error {
   if (err instanceof DependencyFailedError || err instanceof NoRuleFoundError) {
@@ -202,6 +204,7 @@ function failureOfReference(step: IModelStep, err: Error): Error {
   return err;
 }
 
+/* A model step attributes a failure, and labels a cycle, by the written reference. */
 registerReferenceStep(MODEL_PROVENANCE, {
   failure: (step, err) => failureOfReference(step as IModelStep, err),
   label: step =>
@@ -213,22 +216,29 @@ registerReferenceStep(MODEL_PROVENANCE, {
 });
 
 /**
- * The BuildModel instantiated with a set of constraints (possibly empty): the implementation of
- * both {@link BuildContext} and {@link InternalBuildContext}, where names are looked up and
- * targets resolved and evaluated.
+ * A configuration: the build model with a set of constraints (possibly none)
+ * applied, implementing both {@link BuildContext} and
+ * {@link InternalBuildContext}. It looks names up, reads and substitutes
+ * properties, resolves targets and repositories (each memoised by name), and
+ * evaluates targets with their rules. The model holds one per constraint set
+ * ({@link getContextWithOverrides}, {@link inConfiguration}); a build file
+ * that declares private names sees it through a {@link FileScopedContext}
+ * ({@link inFile}).
  */
 export class BuildContextImpl implements InternalBuildContext {
   public readonly execution: ExecutionContext;
   protected readonly constraints: Constraints;
   public readonly model: IBuildModel;
+  /** The value of each property read here with no caller override, by name. */
   private propCache: Map<string, Computable<Property | undefined>>;
+  /** What each name resolves to here with no caller override ({@link resolveTarget}), by name. */
   private targetCache: Map<string, Computable<SourceRef[]>>;
   /** This configuration as each build file declaring private names sees it, by the file's name. */
   private readonly fileScopes = new Map<string, FileScopedContext>();
   /** The rule-built targets of this configuration, resolved, by name. A
    * target's entry in `targetCache` is the reference to it. */
   private readonly resolvedTargets = new Map<string, Computable<ResolvedTarget>>();
-  /** What the requirements of each repository declaration resolved, by its name, as it is resolved. */
+  /** The resolved requirements of each repository declaration, by its name. */
   private readonly resolvedRepositories = new Map<string, Computable<ResolvedRequirements>>();
 
   constructor(model: IBuildModel, constraints: Constraints, execution: ExecutionContext) {
@@ -239,16 +249,16 @@ export class BuildContextImpl implements InternalBuildContext {
     this.targetCache = new Map();
   }
 
-  /** @return true if the constraints give `name` a value here, which it then
-   *  reads as, otherwise false. */
+  /** @return true if this configuration's constraints give `name` a value,
+   *  which is then read in place of any declaration of it, otherwise false. */
   protected constrains(name: string): boolean {
     return this.constraints.has(name);
   }
 
   /**
-   * Get this configuration as the build file `file` names sees it: where the
-   * file declares private names, the configuration that looks those up first;
-   * otherwise this one.
+   * Get this configuration as seen from the build file `file`: where the file
+   * declares private names, a configuration that looks those up first (one per
+   * file); otherwise this one.
    */
   public inFile(file: string | undefined): BuildContextImpl {
     const names = file === undefined ? undefined : this.model.getPrivateScope(file);
@@ -273,10 +283,9 @@ export class BuildContextImpl implements InternalBuildContext {
   }
 
   /**
-   * Get this context as the {@link ResolutionContext} of a collection point
-   * entered from the build context itself (`materialize`, `resolve`, a command
-   * substitution's tools), named `name`. A target's collection points pass
-   * the TargetContext, which satisfies the interface directly.
+   * Make the {@link ResolutionContext} for a collection point this
+   * configuration enters itself (`materialize`, `resolve`, a command
+   * substitution's tools), named `name` in progress output.
    */
   private resolutionContext(name = "<command line>"): ResolutionContext {
     const context: ResolutionContext = {
@@ -311,13 +320,11 @@ export class BuildContextImpl implements InternalBuildContext {
   private applyProjection(ref: FileSourceRef): ComputableSource<FileSet> {
     let result: ComputableSource<FileSet>;
     if (ref instanceof FileSetRef && ref.source instanceof RunnableFileSet) {
-      /* A runnable's projection selects an entry rather than files, so the walk
-       * does not apply to it: collapse instead. An empty result then meets the
-       * same literal-must-resolve judgment as any other projection below. */
+      /* A projection over a runnable selects its entry. An entry not found is
+       * the empty set, judged by `miss` below as any other projection is. */
       result = Computable.resolve(toRunnable(ref) ?? EMPTY_FILESET);
     } else {
-      /* The constructor guarantees at least one projection, so the fold's seed
-       * is always the walk over the base. */
+      /* A ref always has at least one projection. */
       const [first, ...narrowing] = ref.projections;
       result = this.findWithDescent(ref.source, first.pattern, first.prefix);
       for (const projection of narrowing) {
@@ -325,10 +332,10 @@ export class BuildContextImpl implements InternalBuildContext {
       }
     }
     if (ref.miss) {
-      /* A ref carries a `miss` only where an empty result may be an error:
-       * that was judged over the whole written name where the ref was built
-       * (see lookupSubstituted), and the miss answers for every source the
-       * name reached once each has reported. */
+      /* A ref has a `miss` only where selecting nothing may be an error,
+       * decided from the written name (see lookupSubstituted). It returns the
+       * error once every source the name reached has reported selecting
+       * nothing. */
       result = result.then(files => {
         const err = ref.miss!(!files.isEmpty());
         if (err !== undefined) {
@@ -348,14 +355,29 @@ export class BuildContextImpl implements InternalBuildContext {
   }
 
   /**
-   * Apply `projection` to `sources`, the sources one name reached: a reference
-   * or a package is narrowed, a node gets the projection pending over it, and
-   * a container is projected now, descending into archives. `miss` judges a
-   * literal that selects nothing, over every source the name reached: each is
-   * given a miss of its own to answer with what it selected — a container now,
-   * a reference or a node when it delivers — and the name's error is made once
-   * all have answered and none selected anything.
-   * `repositoryName` is how a repository among them was written.
+   * Apply `projection` to `sources`, the sources one written name reached, and
+   * return the projected sources, each kept separate:
+   * - a {@link TargetRef}, {@link RepositoryRef} or {@link FileSetRef} has the
+   *   projection added to it (`find`), applied once it is built or fetched;
+   * - a {@link ResolvedNode} becomes, and a {@link ProjectedPackage} stays, a
+   *   `ProjectedPackage` with the projection pending;
+   * - a package or a runnable in hand becomes a {@link FileSetRef} with the
+   *   projection pending;
+   * - a {@link NamespaceRef} makes the member the pattern's first part names,
+   *   and the rest is projected on that ({@link projectThrough});
+   * - a {@link PartialRepositoryRef} is completed by the pattern into the
+   *   reference its repository vends for the whole name, `repositoryName`
+   *   being how the repository was written;
+   * - any other source (a container) is projected now, descending into
+   *   archives. A container that selects nothing is dropped, and where none
+   *   selects anything one empty set is kept in their place.
+   *
+   * `miss` makes the error for a literal name that selects nothing. Each
+   * target, node, package or runnable in hand and namespace member answers it
+   * with its own share ({@link jointMiss}), the containers with one between
+   * them, and the error is raised once every share has answered and none
+   * selected anything. The result is a Computable where a container or a
+   * namespace member must be waited on.
    */
   public projectSources(
     sources: Array<SourceRef | Unbuilt>,
@@ -364,48 +386,34 @@ export class BuildContextImpl implements InternalBuildContext {
     repositoryName?: string
   ): Array<SourceRef | Unbuilt> | Computable<Array<SourceRef | Unbuilt>> {
     const { pattern, prefix } = projection;
-    /* A name through a namespace is had once its member is made. */
+    /* Each projected source, or a Computable of them where a namespace's member must be made first. */
     const references: Array<SourceRef | Unbuilt | Computable<Array<SourceRef | Unbuilt>>> = [];
     const containers: FileSource[] = [];
     const participant: () => Miss | undefined = miss === undefined ? () => undefined : jointMiss(miss);
     for (const source of sources) {
       if (source instanceof TargetRef) {
-        /* Projected as what it yields, once it does, which is when it answers for the name. */
+        /* Projected over what the target builds, which answers its share of the miss. */
         references.push(source.find(pattern, prefix, participant()));
       } else if (source instanceof ResolvedNode) {
-        /* A node not yet materialized projects as a package in hand does (below): the projection
-         * pends over it. */
         references.push(new ProjectedPackage(source, [projection], participant()));
       } else if (source instanceof ProjectedPackage) {
         references.push(new ProjectedPackage(source.base, [...source.projections, projection], participant()));
       } else if (source instanceof RepositoryRef || source instanceof FileSetRef) {
         references.push(source.find(pattern, prefix));
       } else if (source instanceof NamespaceRef) {
-        /* The name's first part names a member of the namespace, made when first asked for; the
-         * rest goes on from the member as from any source a declaration's value is, its own
-         * written separator deciding how (see writtenSeparator). */
         references.push(this.projectThrough(source, projection, participant()));
       } else if (source instanceof PartialRepositoryRef) {
-        /* The rest completes the name, after the separator it was written with, into a requirement
-         * identifier followed by an optional projection into the delivered content — the repository
-         * vends the ref for the whole name: its identity portion
-         * claimed (`esbuild:0.28.1`), the remainder packed in as a projection into the resolved
-         * package (`:package.json`), riding the normal find/naming path (any rename facet rides the
-         * projection). The written-name rule applies to the projection, not to the requirement
-         * itself. */
-        /* Stamp the alias the repository was reached by, as written — how the resolution layer
-         * renders suggestions and progress in the user's own spelling. */
+        /* The pattern, after the separator it was written with, completes the reference: the
+         * repository vends the reference for the whole name, its requirement (`esbuild:0.28.1`)
+         * and any projection into the package after it (`:package.json`, a rename riding on it).
+         * Result names follow the projection, not the requirement. */
         references.push(source.getRepositoryRef(pattern, writtenSeparator(prefix), repositoryName));
       } else if (source instanceof PackageFileSet || source instanceof RunnableFileSet) {
-        /* A projection into a package or a runnable defers as a FileSetRef, keeping a package's
-         * identity and a runnable's launch machinery (its projection names an entry, not files).
-         * The base's class decides how the ref collapses when something is demanded of it; an
-         * ordinary consumer sees the projected files at its collection point, with this site's miss
-         * error for a literal that matches nothing. */
+        /* Pending as a FileSetRef keeps the package's identity, and the runnable's launch
+         * descriptor (a runnable's projection selects an entry, not files). */
         references.push(new FileSetRef(source, [projection], participant()));
       } else {
-        /* A container projects on its own terms (FileSource.find): a fileset filters + prefixes (or
-         * renames, per the facet). */
+        /* A container projects by its own `find`, which also applies a rename. */
         containers.push(source);
       }
     }
@@ -414,11 +422,9 @@ export class BuildContextImpl implements InternalBuildContext {
         ? had(references)
         : (references as Array<SourceRef | Unbuilt>);
     }
-    /* Each container projects separately and stays a separate source: only a consumer that merges
-     * content unions it. Each projection is applied now through applyProjection, with no miss of
-     * its own: the containers answer for the name together, below. Containers the projection
-     * missed are dropped, and one empty set is kept when nothing matched, so the driver can report
-     * "matched no files". */
+    /* Each container is projected now and stays a separate source. They answer one share of the
+     * miss together, below. The empty set kept where none selects anything is what the driver
+     * reports as "matched no files". */
     const answer = participant();
     return Computable.forAll(
       containers.map(container => this.applyProjection(new FileSourceRef(container, [projection]))),
@@ -437,7 +443,9 @@ export class BuildContextImpl implements InternalBuildContext {
    * Project `projection` through the namespace `namespace` names: its
    * pattern's first part, up to its first `:` or `/`, names the member, and
    * the rest is projected on the member once it is made, after the separator
-   * it was written with. A pattern naming the member alone is the member.
+   * it was written with. A pattern naming the member alone is the member. An
+   * empty first part, or a pattern that is no literal and names no member
+   * before a separator, rejects with the namespace's refusal.
    */
   private projectThrough(
     namespace: NamespaceRef,
@@ -461,9 +469,10 @@ export class BuildContextImpl implements InternalBuildContext {
   }
 
   /**
-   * File a node for `name` that runs `compute` when first depended on, so that
-   * a request for `name` made while it is computed, however indirectly,
-   * depends on that node.
+   * File a node for `name` in the target cache that runs `compute` when first
+   * depended on, so that a request for `name` made while it is computed,
+   * however indirectly, depends on that node (and a cycle through it is
+   * found).
    */
   private answer(name: string, target: ITargetDecl | undefined, compute: () => Computable<SourceRef[]>): Computable<SourceRef[]> {
     const result = Computable.detached(compute).labelled(new NameLabel(name, target));
@@ -563,15 +572,13 @@ export class BuildContextImpl implements InternalBuildContext {
     const { decls, defaults } = entry;
     const candidates = [...decls, ...defaults];
     if (!candidates.some(candidate => candidate.name.hasConstraints())) {
-      /* Nothing is guarded, so there is nothing to decide: every declaration
-       * applies, and the tier rule alone picks between them — with no property
-       * read. */
+      /* With no guard, every declaration applies: the ordinary ones where
+       * there are any, else the defaults. No property is read. */
       return Computable.resolve(decls.length > 0 ? decls : defaults);
     }
-    /* The property being judged is a stack frame while its guards read other
-     * properties, so that what a guard reads is attributed to it. The use
-     * site is the guarded declaration's own key; `owner` (a target body's
-     * property) rides as the frame's target. */
+    /* The guards are read with the property on the stack (its first
+     * declaration's key as the use site, `owner` as its target), so what a
+     * guard reads is attributed to the property. */
     const guarded = candidates[0];
     const frame: IUseFrame = {
       property: guarded,
@@ -589,17 +596,15 @@ export class BuildContextImpl implements InternalBuildContext {
       return Computable.forAll(
         candidates.map(candidate => this.inFile(candidate.source.file).guardAdmits(candidate.name.getConstraints(), frame)),
         (...admitted: boolean[]) => {
-          /* An ordinary declaration displaces a `default` one only where it
-           * applies, so the tiers are judged in order: the defaults answer
-           * exactly when nothing ordinary matched. */
+          /* The ordinary declarations that apply, else the `default` ones that do. */
           const matched = candidates.filter((_, i) => admitted[i]);
           const ordinary = matched.filter(candidate => decls.includes(candidate));
           return ordinary.length > 0 ? ordinary : matched;
         }
       ).labelled(new ReferenceLabel({ value: frame.value, property: guarded, target: owner }));
     } catch (err) {
-      /* A guard reading an unknown property throws where it is built, not where
-       * it settles. */
+      /* A guard reading an unknown property throws as its read is made, not
+       * when it settles. */
       return Computable.reject(toError(err));
     }
   }
@@ -642,10 +647,10 @@ export class BuildContextImpl implements InternalBuildContext {
 
   public getProperty(name: string, stack?: IDependencyStack, callerOverrides?: Constraints): Computable<Property> {
     if (callerOverrides) {
-      /* As in resolveTarget: a caller's override outranks a `<k=v>` requirement on the
-       * property's value (ambient < requirement < caller), so for a declared property it
-       * is passed into the value's lookup rather than added to the ambient constraints.
-       * A name the constraints supply is read from the overridden context. Uncached. */
+      /* A caller's override outranks a `<k=v>` written on the property's value
+       * (ambient < the value's requirement < caller), so for a declared property it
+       * is passed to the value's lookup, not merged into this configuration. Any
+       * other name is read in the overridden configuration. Not cached. */
       if (!this.constrains(name)) {
         const def = this.lookupDecl(name);
         if (def?.kind === DeclKind.Property) {
@@ -690,7 +695,6 @@ export class BuildContextImpl implements InternalBuildContext {
   public getOptionalProperty(name: string, stack?: IDependencyStack): Computable<Property | undefined> {
     const cached = this.propCache.get(name);
     if (cached) {
-      /* Already seen */
       return cached;
     }
     if (this.constrains(name)) {
@@ -714,16 +718,15 @@ export class BuildContextImpl implements InternalBuildContext {
 
   public resolveTarget(name: string, stack?: IDependencyStack, callerOverrides?: Constraints): Computable<SourceRef[]> {
     if (callerOverrides) {
-      /* A caller's override outranks a `<k=v>` requirement written on a
-       * property's value (ambient < requirement < caller, see lookupContextFor),
-       * so for a property it is passed into the value's lookup rather than added
-       * to the ambient constraints. A name the constraints supply and a target
-       * are resolved by the overridden context, whose targetCache memoizes them.
-       * The property case is uncached, since targetCache keys by bare name; the
-       * targets it references stay memoized in their own configurations. */
+      /* A caller's override outranks a `<k=v>` written on a property's value
+       * (ambient < the value's requirement < caller, see lookupContextFor), so
+       * for a property it is passed to the value's lookup, not merged into this
+       * configuration, and the result is not cached. A name the constraints
+       * supply, and a target, are resolved and cached by the overridden
+       * configuration. */
       const def = this.lookupDecl(name);
       if (!this.constrains(name) && def?.kind === DeclKind.Property) {
-        /* The fallback is a target, which no written requirement fights. */
+        /* A fallback target has no written value for the override to outrank. */
         return this.resolveProperty(
           name,
           def,
@@ -738,12 +741,11 @@ export class BuildContextImpl implements InternalBuildContext {
     if (cached) {
       return cached;
     } else if (this.constrains(name)) {
-      /* A constraint overrides how the name resolves — to files as well as to a
-       * string (`${name}`, see getOptionalProperty): resolve the override
-       * value as a reference in place of the declared property/target. Parsed as
-       * a full reference (not a bare literal), so `-Dchai=@npm:chai:5.0.0` repins
-       * a dependency written as a bare `chai`, and a `:`/`<k=v>` on the override
-       * is honoured as it would be in a script. */
+      /* A constraint given for the name replaces its declaration here too, as
+       * for its string value (getOptionalProperty): the value is parsed as a
+       * whole reference and looked up, so `-Dchai=@npm:chai:5.0.0` replaces a
+       * dependency written as `chai`, and a `:` projection or `<k=v>` in the
+       * value applies. */
       return this.answer(name, undefined, () => this.lookupFileValue(parseName(this.constraints.get(name)!), stack));
     } else {
       const def = this.lookupDecl(name);
@@ -819,8 +821,9 @@ export class BuildContextImpl implements InternalBuildContext {
    * Look up each of `prop`'s values with `tail` ({@link lookupStringValue} or
    * {@link lookupFileValue}), handing it the value's use frame. A value that is
    * not a name (a map block or a command pipeline) is refused with a message
-   * naming the use `expects` ("a string", "files"); Validate does not check
-   * default and top-level properties or sync coordinates.
+   * naming the use `expects` ("a string", "files"). This is the only check of
+   * that for `default` and global properties and sync coordinates, which
+   * Validate does not see.
    */
   private lookupValues<T>(
     prop: IPropertyDecl,
@@ -889,6 +892,8 @@ export class BuildContextImpl implements InternalBuildContext {
     return this.lookupMapReference(Name.fromLiteral(name), stack, stack, new Set(), callerOverrides);
   }
 
+  /** Look up the MAP property `prop` as {@link lookupMap} does, `seen` holding
+   * the properties already on the chain of map references. */
   private lookupMapDecl(
     prop: IPropertyDecl,
     target: ITargetDecl | undefined,
@@ -901,18 +906,18 @@ export class BuildContextImpl implements InternalBuildContext {
     }
     const nextSeen = new Set(seen).add(prop);
     if (hasMapValue(prop)) {
-      /* Inline form: one block (Validate enforces this for schema'd properties;
-       * re-checked here for shared globals, which never pass a targetdef). */
+      /* One `{ … }` block. Validate checks this for a target's property; a
+       * global is checked only here. */
       if (prop.values.length > 1) {
         return Computable.reject(new FabrError(`'${prop.name}' must be a single \`{ ... }\` block or bare reference(s), not a mix`));
       }
       const block = prop.values[0];
       return this.lookupMapBlock(isMapValue(block) ? block.entries : [], target, stack, nextSeen, callerOverrides);
     }
-    /* Reference form: each value names a block-valued property (resolved
-     * recursively under this context, so a shared map's `${...}` sees the
-     * consuming build's config), merged left-to-right with later winning; each
-     * merged entry's origin gains the written reference as a via-hop. */
+    /* References: each value names a block-valued property, looked up in this
+     * configuration (so a shared map's `${...}` reads the consumer's), and the
+     * maps are merged in written order, a later entry replacing an earlier one.
+     * Each merged entry's origin records the written reference it came through. */
     return Computable.forAll(
       prop.values.filter(isNameValue).map(value =>
         this.inFile(value.source.file)
@@ -951,11 +956,12 @@ export class BuildContextImpl implements InternalBuildContext {
   }
 
   /** Look up one block's items in written order: a `key = value;` entry sets its
-   * key (strings to their word list; nested blocks to a sub-map, several to a
-   * list of sub-maps — mixing rejected, statically for schema'd properties and
-   * re-checked here for shared globals); a `NAME;` splice merges the named map's
-   * entries in at that position. Later values win. Each entry records its ghost
-   * origin (the written decl, plus via-hops for splices). */
+   * key (strings to their word list; a nested block to a sub-map, several to a
+   * list of sub-maps; strings and blocks mixed are an error, which Validate
+   * checks only for a target's property); a `NAME;` splice merges the named
+   * map's entries in at that position. A later value replaces an earlier one.
+   * Each entry records its origin ({@link recordMapOrigin}): the written entry,
+   * and the splices it came through. */
   private lookupMapBlock(
     entries: IMapItemDecl[],
     target: ITargetDecl | undefined,
@@ -1096,15 +1102,15 @@ export class BuildContextImpl implements InternalBuildContext {
     }
   ): Computable<SourceRef[]> {
     const provenance = options?.provenance;
-    /* A property value roots bare paths at its own decl; an explicit relativeTo
-     * (a stdin redirect) overrides. */
+    /* A bare path is rooted at the property's declaration, unless `relativeTo`
+     * says otherwise (a stdin redirect). */
     const relativeTo = options?.relativeTo ?? provenance?.property;
     /* Judged on the name as written: a `${NAME}` or a `` `cmd` `` part makes
      * it no literal target name, whatever text it substitutes to. */
     const substituted = name.getSubstitutions().length > 0;
-    /* A value written as `ref<k=v>` resolves under this context overridden by its
-     * requirement, so the referenced target builds under those constraints and the
-     * model step (stamped by that context) records them. */
+    /* A value written as `ref<k=v>` is looked up in this configuration with its
+     * requirement applied, so the target it names builds under those
+     * constraints and the model step (made by that configuration) records them. */
     return this.inFile(relativeTo?.source.file)
       .lookupContextFor(name, options?.callerOverrides, stack)
       .then(({ context, reference, substitutions }) => {
@@ -1114,8 +1120,8 @@ export class BuildContextImpl implements InternalBuildContext {
         }
         const { value, property, target } = provenance;
         /* A failure looking the value up is the reference's. A target's own
-         * failure is reported as the reference's when the target is built, by
-         * the step stamped on it. */
+         * failure becomes the reference's when the target is built, through the
+         * step stamped on it. */
         const step = context.modelStep(value, property, target, substitutions);
         return resolved
           .then(sources => sources.map(source => context.withModelStep(source, step)))
@@ -1126,12 +1132,12 @@ export class BuildContextImpl implements InternalBuildContext {
   }
 
   /**
-   * Get the context a reference is looked up under, the reference fully
+   * Get the configuration a reference is looked up in, the reference fully
    * substituted with its `<k=v>` stripped, and the substitutions made.
-   * Constraints layer lowest to highest as ambient (this), the reference's own
-   * `<k=v>` requirement, then the caller's override, so a consumer's explicit
-   * override (a rule forcing `BUILD_OPERATION=run` on a tool) wins over a
-   * requirement on the same key.
+   * Constraints apply lowest to highest as this configuration's, the
+   * reference's own `<k=v>`, then `callerOverrides`, so a caller's override (a
+   * rule forcing `BUILD_OPERATION=run` on a tool) wins over a requirement on
+   * the same key.
    */
   private lookupContextFor(
     name: Name,
@@ -1173,7 +1179,7 @@ export class BuildContextImpl implements InternalBuildContext {
   }
 
   public materialize(ref: INameValue, stack?: IDependencyStack): Computable<Array<FileSource | IncompleteRef>> {
-    /* Under `run` the name IS the program, so its closure is a sealed install. */
+    /* Under `run` the name is a program, whose closure is collected permissively. */
     const options = this.constraints.get(BUILD_OPERATION) === "run" ? PERMISSIVE_RESOLUTION : undefined;
     return this.lookupFileValue(ref.value, stack, { relativeTo: ref }).then(found => {
       const sources = found.map(versionsOf);
@@ -1188,8 +1194,10 @@ export class BuildContextImpl implements InternalBuildContext {
     });
   }
 
-  /** Look up the sources `name` names. `substituted` says the name as written
-   * made substitutions, so it cannot be a marked target's literal name. */
+  /** Look up the sources `name` names, after substituting it. A name ending
+   * in `?` or `!` whose rest is a declared target's name is a reference to the
+   * target with that marker, unless `substituted` says the written name made
+   * substitutions. */
   private lookupFileSource(
     name: Name,
     relativeTo: IDecl | undefined,
@@ -1197,10 +1205,10 @@ export class BuildContextImpl implements InternalBuildContext {
     substituted = false
   ): Computable<SourceRef[]> {
     return this.substituteNameVars(name, stack).then((substName): SourceRef[] | Computable<SourceRef[]> => {
-      /* A `?` or `!` ending what is otherwise the literal name of a target
-       * is a marker on the reference (`foo?` / `foo!`), consumed by the
-       * collection it is written in, as one on a version is. Anywhere else a
-       * `?` is part of a pattern. */
+      /* `foo?` / `foo!`, `foo` a declared target: a marker on the reference
+       * to it, for the collection it is written in. Where `foo` resolves to
+       * anything but references to targets (a flag), the name is looked up as
+       * written. */
       const marked = substituted ? undefined : this.markedTarget(substName);
       if (marked !== undefined) {
         const found = this.lookupSubstituted(marked.unmarked, relativeTo, stack);
@@ -1215,7 +1223,22 @@ export class BuildContextImpl implements InternalBuildContext {
     });
   }
 
-  /** Look up the sources `substName` names, its substitutions already made. */
+  /**
+   * Look up the sources `substName` names, its substitutions already made:
+   * - where a declared name, or a name the constraints give a value, is a
+   *   prefix of it ({@link getPrefixTargetIfExists}), what that name resolves
+   *   to, renamed by a `-> name` written on the whole reference, or with the
+   *   rest of the name projected over it ({@link projectSources});
+   * - otherwise, where it is written in a build file (`relativeTo`), the files
+   *   it selects relative to that file's directory, as one set;
+   * - otherwise (a constraint's value, which has nothing to root a path at),
+   *   it throws `Unknown name`.
+   *
+   * A literal name written in a build file that selects nothing is an error:
+   * a {@link NameResolutionError}, or `Unknown name` with suggestions where no
+   * use frame is on the stack (a name on the command line). A name with a glob
+   * that selects nothing is no error.
+   */
   private lookupSubstituted(
     substName: Name,
     relativeTo: IDecl | undefined,
@@ -1228,36 +1251,28 @@ export class BuildContextImpl implements InternalBuildContext {
     if (targetDep) {
       const { target, rest, name: matchedName, retainedPrefix } = targetDep;
       if (rest.isEmpty()) {
-        /* Nothing to project, so a `-> name` here renames what the whole
-         * reference delivers: the package rename, the same rule a delivered
-         * external one goes through, applied to what the target yields. */
+        /* With nothing to project, a `-> name` renames what the name resolves
+         * to, as it renames a registry's package ({@link renamedAs}). */
         const renameTo = substName.getRenameTo()?.toString();
         return target.then(sources =>
           renameTo === undefined ? sources : sources.map(source => renamedAs(source, renameTo, substName.toString()))
         );
       } else {
-        /* `rest` is the projection after the target; a `sel -> tmpl` rename
-         * (final naming) rides on it as a facet (getPrefixMatch/getRepositoryRef
-         * carry it through the split — see Name.substring), so find applies it
-         * with no special handling here (the rename target's names supersede
-         * retainedPrefix). Names into a repository become references, deferred
-         * until the consuming collection point resolves them jointly (and
-         * finding into an existing reference narrows it); container sources
-         * answer immediately. Result names follow the written-name rule: a
-         * slash-form reference keeps the written prefix, a colon-form
-         * reference strips it. */
+        /* `rest`, the name after the declared prefix, is projected over what
+         * the prefix resolves to. A rename (`sel -> tmpl`) rides on `rest`
+         * (Name.substring keeps it) and is applied by `find`, its names taking
+         * the place of `retainedPrefix`. A slash-form reference keeps the
+         * written prefix in result names, a colon-form one does not. */
         const project = (
           t: Array<SourceRef | Unbuilt>,
           miss: Miss | undefined
         ): Array<SourceRef | Unbuilt> | Computable<Array<SourceRef | Unbuilt>> =>
           this.projectSources(t, { pattern: rest, prefix: retainedPrefix }, miss, matchedName);
-        /* The literal-must-resolve error, when it applies here: only in a
-         * property context (a CLI name reports through the driver's
-         * "matched no files") and only when the WHOLE written name is
-         * literal. Judged over `substName`, not over the projection: a
-         * glob anywhere earlier (the part that chose the container) means
-         * this step is applied to whatever that matched, so its finding
-         * nothing is no more an error than the glob matching nothing. */
+        /* Selecting nothing is an error only for a name with a declaration
+         * to report at (`relativeTo`; otherwise the driver reports "matched
+         * no files"), and only where the whole of `substName` is literal, not
+         * just `rest`: after a glob, the projection applies to whatever the
+         * glob matched, and finding nothing there is no error. */
         const miss: Miss | undefined =
           relativeTo && !substName.hasGlob()
             ? selected =>
@@ -1268,23 +1283,16 @@ export class BuildContextImpl implements InternalBuildContext {
         return target.then(reached => project(reached, miss) as SourceRef[] | Computable<SourceRef[]>);
       }
     } else if (relativeTo) {
-      /* Not an identified target; check the filesystem relative to the file
-       * the reference is written in. `Name.relativeTo` joins the build-file's
-       * dir as a `:` alias — it *locates* the files (works equally for a
-       * project-relative dir and a contributed lib file's absolute one), and
-       * `find`'s own projection strips it, so results carry their written
-       * names directly: `./astro.config.mjs` in `docs/BUILD.fabr` is the file
-       * `astro.config.mjs`, not `docs/astro.config.mjs`. A reference climbing
-       * out of its dir (`../scripts/gendoc.ts`, a tool a level up) flattens
-       * to its tail (`scripts/gendoc.ts`): a flat sandbox has no "above", so
-       * the leading `../` strips under FileSet name canonicalization
-       * — which also makes two files flattening to one name a
-       * checked conflict, not a silent drop. */
-      /* A projection over the source filesystem, applied now, with the
-       * literal-must-resolve error as its `miss`. A literal naming neither a
-       * declaration nor a file is a failed value lookup when written in a
-       * build file; typed on the command line (no use frame) it reads and is
-       * helped as resolveTarget's `Unknown name` is. */
+      /* A path relative to the build file's directory, projected over the
+       * source filesystem now. `Name.relativeTo` adds the directory as a `:`
+       * prefix, which `find` strips, so a result keeps the name as written:
+       * `./astro.config.mjs` in `docs/BUILD.fabr` is the file
+       * `astro.config.mjs`. A leading `../` is dropped by FileSet's name
+       * canonicalization (`../scripts/gendoc.ts` is `scripts/gendoc.ts`), so
+       * two files that flatten to one name conflict. */
+      /* A literal naming neither a declaration nor a file: a failed lookup of
+       * the value in a build file, or `Unknown name` with suggestions on the
+       * command line (no use frame), as in resolveTarget. */
       const miss: Miss | undefined = substName.hasGlob()
         ? undefined
         : selected => {
@@ -1299,11 +1307,10 @@ export class BuildContextImpl implements InternalBuildContext {
               this.unknownNameHints(written, !frame)
             );
           };
-      /* Express the pattern in the source's own root-relative namespace up
-       * front — `find` would rebase internally anyway, but the walker's
-       * boundary probes and mounts must live in the same space, or a
-       * reference in an absolutely-rooted build file (a plugin's
-       * contributed lib) would silently never descend. */
+      /* Rebase the pattern onto the source's root before the walk: its
+       * directory probes use the source's names, and a reference in a build
+       * file outside the project (a plugin's lib file) would otherwise never
+       * descend. */
       const fs = relativeTo.source.fs;
       let pattern = substName.relativeTo(relativeTo.source.file);
       if (fs instanceof FSFileSource) {
@@ -1311,10 +1318,9 @@ export class BuildContextImpl implements InternalBuildContext {
       }
       return this.applyProjection(new FileSourceRef(fs, [{ pattern, prefix: "" }], miss)).then(data => [data]);
     } else {
-      /* The one reference with no decl to root a bare path at: a constraint
-       * override's value (see resolveTarget), whether it came from `-D` or a
-       * `<k=v>` requirement — a constraint set carries the value, never where it
-       * was written. Only a declared name can answer here. */
+      /* A constraint's value (see resolveTarget), from `-D` or a `<k=v>`,
+       * carries no declaration to root a path at: only a declared name
+       * answers it. */
       const written = substName.toString();
       throw this.unresolvedNameError(written, undefined, `Unknown name '${written}'`, this.unknownNameHints(written, true));
     }
@@ -1346,10 +1352,10 @@ export class BuildContextImpl implements InternalBuildContext {
     );
   }
 
-  /** Get one substituted part's text: a property's value, or a command's
-   * stdout. Two identically-written commands run once between them, since they
-   * key the same action, which the build cache serves from one in-flight
-   * attempt. */
+  /** Get one substituted part's text, with what it substituted: a property's
+   * value (with its pattern edit applied), or a command's stdout. Two
+   * identically-written commands are one action to the build cache, so run
+   * once. */
   private substitutedText(
     part: NamePart,
     stack?: IDependencyStack,
@@ -1406,14 +1412,11 @@ export class BuildContextImpl implements InternalBuildContext {
   }
 
   /**
-   * Run a resolved pipeline and return its stdout as text: stage it exactly as
-   * `generate` does, run it as an ordinary build action — so the value is keyed,
-   * cached, deduped in flight and reported like any other work — and normalize
-   * the bytes ({@link normalizeCommandOutput}).
-   *
-   * The action belongs to no target (see {@link runOwnAction}) and stages no
-   * `srcs`: the pipeline's inputs are whatever its own stages carry.
-   * `written` labels the work.
+   * Run a resolved pipeline and return its stdout as text: stage it as
+   * `generate` does, perform it as a build action through the cache, and
+   * normalize the output ({@link normalizeCommandOutput}). The action belongs
+   * to no target ({@link runOwnAction}) and stages no `srcs`, only what its
+   * stages carry. `written` labels the work.
    */
   private captureOutput(stages: MaterializedCommandStage[], written: string): Computable<string> {
     if (stages.length === 0) {
@@ -1454,11 +1457,11 @@ export class BuildContextImpl implements InternalBuildContext {
   }
 
   /**
-   * Look up the property a bare reference names, if any: substitute its
-   * variables (positioned via `info`), then look the result up. Used to chase a
-   * map reference (`metadata = SHARED`) or a command reference
-   * (`run = shared_cmd`); each caller decides what a non-property result means.
-   * `name` is the substituted reference, for the caller's message.
+   * Look up the property the bare reference `ref` names: substitute it
+   * (positioned by `info`) and find the one declaration of it that applies
+   * here (see {@link ReferencedProperty}). Chases a map reference (`metadata =
+   * SHARED`) or a command reference (`run = shared_cmd`); the caller decides
+   * what a name that is no property means.
    */
   public referencedProperty(ref: Name, info?: IDependencyStack): Computable<ReferencedProperty> {
     return this.substituteNameVars(ref, info).then((name): Computable<ReferencedProperty> | ReferencedProperty => {
@@ -1466,8 +1469,8 @@ export class BuildContextImpl implements InternalBuildContext {
       if (def?.kind !== DeclKind.Property) {
         return { prop: undefined, property: false, name, context: this };
       }
-      /* A chased map/command property is a single value, so it selects like one;
-       * a property none of whose declarations applies here is unset. */
+      /* A map or command property takes one declaration, as a scalar does; with
+       * none applying here it is unset. */
       return this.getAvailableDecls(def, info).then(applicable => ({
         prop: soleDecl(applicable),
         property: true,
@@ -1507,9 +1510,8 @@ export class BuildContextImpl implements InternalBuildContext {
     if (names.length === 0) {
       return Computable.resolve([]);
     }
-    /* A sole bare name may reference another command-valued property (chased via
-     * the shared referencedProperty primitive — the same reference resolution a
-     * map reference uses); else it is a plain `cmd args…` single stage. */
+    /* A sole bare name may name another command-valued property
+     * ({@link referencedProperty}); otherwise it is a one-stage `cmd`. */
     if (names.length === 1) {
       const value = names[0];
       const info: IUseFrame = { property: prop, target, value, next: stack };
@@ -1535,10 +1537,8 @@ export class BuildContextImpl implements InternalBuildContext {
     target: ITargetDecl | undefined,
     stack: IDependencyStack | undefined
   ): Computable<ICommandStageLookup> {
-    /* A command substitution can sit in a value with no owning property decl (a
-     * global's), and the stack frame is built *from* that decl — so with none,
-     * the caller's stack stands as the attribution and only the per-name span is
-     * lost, which the written value itself already carries. */
+    /* A command substitution in a value with no property (a global's) uses the
+     * caller's stack as it stands, with no use frame per name. */
     const position = (value: INameValue): Computable<IPositionedName> =>
       this.substituteName(value, prop ? { property: prop, target, value, next: stack } : stack).then(name => ({ name, ref: value }));
     const positionOpt = (value: INameValue | undefined): Computable<IPositionedName | undefined> =>
@@ -1596,10 +1596,18 @@ export class BuildContextImpl implements InternalBuildContext {
     return this.ruleFor(target.type, context, noRule).then(rule => ({ context, rule }));
   }
 
+  /**
+   * Resolve the declared target `target`:
+   * - a repository declaration to what its type's provider makes
+   *   ({@link sourceOf}), once its requirements are resolved and kept in
+   *   `resolvedRepositories`; a failure is a `DependencyFailedError` for it;
+   * - a target whose rule is a value (a flag) to the value;
+   * - any other to a {@link TargetRef}, the target resolved by its rule
+   *   ({@link resolveByRule}).
+   */
   private resolveTargetDecl(target: ITargetDecl, stack?: IDependencyStack): Computable<SourceRef[]> {
-    /* Repositories are not rule-built targets: the provider constructs the
-     * instance lazily, interned per context via the target cache. No build
-     * events, no build-cache entries of its own. */
+    /* A repository has no rule and no build action of its own; the target
+     * cache holds one per configuration. */
     const implementation = this.model.getRepositoryImplementation(target.type);
     if (implementation) {
       const context = this.targetContextFor(target, stack);
@@ -1629,17 +1637,16 @@ export class BuildContextImpl implements InternalBuildContext {
   protected holdResolved(context: DeclaredTargetContext, resolved: Computable<ResolvedTarget>): Computable<SourceRef[]> {
     const name = declName(context.target);
     this.resolvedTargets.set(name, resolved);
-    /* What asks for the target: the reference to it, nothing written on it. */
+    /* A reference to the target with nothing written on it. */
     return resolved.then((): SourceRef[] => [new TargetRef(this, name)]);
   }
 
   /** Resolve the target `context` evaluates with `rule`. */
   protected resolvedTargetByRule(context: DeclaredTargetContext, rule: RuleDefinition): Computable<ResolvedTarget> {
-    /* Resolved here, where the target is referenced: every requirement read, and
-     * the lot resolved as one collection — versions selected and the graph
-     * wired, nothing fetched or built. What that fails with (a cycle, a
-     * name that resolves to nothing, versions that cannot be reconciled)
-     * is the target's failure. */
+    /* Every requirement is read and the lot resolved as one collection:
+     * versions selected and the graph wired, nothing fetched or built. What
+     * that fails with (a cycle, a name that resolves to nothing, versions that
+     * cannot be reconciled) is the target's failure. */
     return this.resolvedWith(
       context,
       rule,
@@ -1712,6 +1719,12 @@ export class BuildContextImpl implements InternalBuildContext {
       .then(({ context, reference }) => context.actionOfTarget(reference.toString(), stack));
   }
 
+  /**
+   * Get the build action the rule of the declared target `name` yields, not
+   * performed: undefined where the rule is a value or yields content. The
+   * target's requirements are read from its resolution where it has been
+   * resolved, and are resolved here otherwise. A name that is no target throws.
+   */
   private actionOfTarget(name: string, stack?: IDependencyStack): Computable<BuildAction | undefined> {
     const def = this.lookupDecl(name);
     if (def?.kind !== DeclKind.Target) {
@@ -1722,8 +1735,6 @@ export class BuildContextImpl implements InternalBuildContext {
       if (rule.value) {
         return undefined;
       }
-      /* Where the target was referenced it was resolved, and that is read;
-       * one asked for its action alone is resolved here. */
       const resolved = this.resolvedTargets.get(declName(context.target))?.then(target => target.resolved);
       const applied = (parts?: ResolvedRequirements): Computable<BuildAction | undefined> =>
         this.applyRule(context, rule, parts)
@@ -1742,6 +1753,11 @@ export class BuildContextImpl implements InternalBuildContext {
       .then(({ context, reference }) => context.describeTarget(reference.toString(), stack));
   }
 
+  /**
+   * Describe the declared target `name` with its rule ({@link describeWith}):
+   * undefined where the rule is a value or describes nothing. A name that is
+   * no target throws.
+   */
   private describeTarget(name: string, stack?: IDependencyStack): Computable<FileSet | undefined> {
     const def = this.lookupDecl(name);
     if (def?.kind !== DeclKind.Target) {
@@ -1751,7 +1767,7 @@ export class BuildContextImpl implements InternalBuildContext {
       if (rule.value || rule.describe === undefined) {
         return undefined;
       }
-      /* Where the target was referenced it was resolved, and that is read. */
+      /* A target already resolved has its requirements read from there. */
       const resolved = this.resolvedTargets.get(declName(context.target))?.then(target => target.resolved);
       return resolved === undefined
         ? this.describeWith(context, rule)
@@ -1857,9 +1873,7 @@ export class BuildContextImpl implements InternalBuildContext {
     options?: { label?: string; constraints?: Constraints }
   ): Computable<SourceRef[]> {
     const buildContext = this.getContextWithOverrides(options?.constraints);
-    /* A sub-target's type must have a targetdef. A missing one means the plugin
-     * did not declare the type, an internal inconsistency rather than a user
-     * error. */
+    /* A sub-target's type without a targetdef is a plugin's internal error. */
     const targetDef = this.model.getTargetDef(type);
     if (!targetDef) {
       throw new FabrError(`Internal error: sub-target type '${type}' has no registered targetdef`);
@@ -1934,9 +1948,8 @@ export class BuildContextImpl implements InternalBuildContext {
    * {@link forcedBuild}).
    */
   private runAction(action: BuildAction, context: TargetContext): Computable<FileSet> {
-    /* An anonymous sub-target keys under its declared owner's identity plus its
-     * own label — see {@link BuildAction.targetKey} for what the coordinate
-     * includes and excludes. */
+    /* A sub-target's build state is keyed by its declared owner and its own
+     * label ({@link BuildAction.targetKey}). */
     const task = context.taskDescription();
     return this.performAction(action, task, {
       force: this.forcedBuild(context),
@@ -1953,18 +1966,23 @@ export class BuildContextImpl implements InternalBuildContext {
     return this.performAction(action, task, {});
   }
 
-  /** Perform `action` through the cache, reporting a miss as `task`: the core of
-   * {@link runAction} and {@link runOwnAction}. A caller with no target passes
-   * no `targetKey`. */
+  /**
+   * Perform `action` through the build cache, reported as `task` where the
+   * cache does not hold it, and @return its output with the action's
+   * `reshape` applied (to a cached output as to a new one). `options.force`
+   * performs it whether or not the cache holds it; `targetKey` names the
+   * target's build state, absent for an action of no target. Where the run
+   * retries failed tests (`--retry-failed`), a cached output with failed
+   * tests is performed again, once.
+   */
   private performAction(
     action: BuildAction,
     task: TaskDescription,
     options: { force?: boolean; retry?: boolean; targetKey?: string }
   ): Computable<FileSet> {
     const execution = this.execution;
-    /* The action IS the task reported: this callback runs only on a miss, so a
-     * task exists exactly when something is performed, bracketing the step's
-     * own chain. A target with several actions reports each. */
+    /* Run only where the cache misses, so a task is reported for each action
+     * performed, and only then. */
     const create = (ctx: ActionContext): Computable<BuildResult> =>
       execution.runTask(task, report => action.step.run(action, ctx, report));
     /* The cache derives the key (anchor or complete, by the action's shape),
@@ -1973,9 +1991,9 @@ export class BuildContextImpl implements InternalBuildContext {
     const reshape = action.reshape;
     const delivered = (files: FileSet): Computable<FileSet> =>
       reshape === undefined ? Computable.resolve(files) : Computable.resolve(files).then(reshape);
-    /* A red test run served from the cache rather than performed here is
-     * performed again, once, where the run asks for that (`--retry-failed`),
-     * from its own last run: what it reruns is the step's to decide. */
+    /* A failed test run served from the cache is performed again, once, under
+     * `--retry-failed`, from its own last run: the step decides what it
+     * reruns. */
     return outcome.then(({ files, created }) =>
       execution.retryFailed && !created && !options.retry
         ? hasTestFailures(files).then(failed =>
@@ -1987,10 +2005,9 @@ export class BuildContextImpl implements InternalBuildContext {
 
   /**
    * @return true if `context` belongs to a target the run was asked to force
-   * (`-f`, see {@link ExecutionContext.forceTarget}), otherwise false. The
-   * question is put to the declared owner, so a forced target's anonymous
-   * sub-targets are forced with it, while the declared targets it depends on
-   * are served from cache.
+   * (`-f`, see {@link ExecutionContext.forceTarget}), otherwise false. A
+   * sub-target is asked about by its declared owner, so it is forced with the
+   * owner, while the declared targets the owner depends on are not.
    */
   private forcedBuild(context: TargetContext): boolean {
     return this.execution.isForced(context.getDeclaredContext().target);
@@ -2055,11 +2072,10 @@ function unmatchedError(name: string, entry: IPropertyEntry): Error {
 }
 
 /**
- * @return `source`, or, where it is a registry's reference to a package that
- * states no version and selects nothing of it, the namespace of the package's
- * published versions: a name materialized on its own has no requirement to
- * take a version from, so it names the versions, as an incomplete reference
- * does.
+ * @return `source`, or, where it is a reference to a registry's package that
+ * states no version, has no marker and selects no files, a
+ * {@link PartialRepositoryRef} naming the package's published versions
+ * (`fabr ls @mvn:g:a`), where the registry can list them.
  */
 function versionsOf(source: SourceRef): SourceRef {
   return source instanceof RepositoryRef &&
@@ -2121,7 +2137,7 @@ interface BlockRequirements {
   readonly run: ReadonlyMap<string, RequiredSources>;
   /** What the result reference names. */
   readonly result: ReadonlyArray<SourceRef>;
-  /** The requirement each key of `requirements` stands for. */
+  /** The requirement name each key of `build` and `run` stands for. */
   readonly names: ReadonlyMap<string, string>;
   /** Each target reached, by name, with whether its rule collects permissively, what it declares it builds and the advisories it declares its build fixes. */
   readonly reachedTargets: ReadonlyMap<string, Pick<ResolutionSpec, "permissive" | "result" | "fixes">>;
@@ -2130,7 +2146,12 @@ interface BlockRequirements {
 /** The name of what a block's result reference names among the requirements of a rule written in `.fabr`: no `<target>.<requirement>`. */
 const RESULT_KEY = "result";
 
-/** @return what the target `node` stands for builds, as its rule declares it: files where it is plain, the package its rule declares (renamed where it was) at the version it has, or nothing where its rule declares nothing. */
+/**
+ * @return what the target `node` stands for builds, as its rule declares it:
+ * `"files"` where it is plain, the package its rule declares (renamed where it
+ * was) at the node's version where the rule states none, or undefined where
+ * the rule declares nothing or `node` is no target's node.
+ */
 function builtBy(node: Unbuilt | undefined): Builds | undefined {
   if (!(node instanceof ResolvedNode)) {
     return undefined;
@@ -2155,8 +2176,8 @@ function sourcesOf(read: Read): SourceRef[] {
 export function blockRuleDefinition(block: RuleBlockDefinition): RuleDefinition {
   const scopeOf = (context: TargetContext): RuleScope =>
     context.ruleState(block, () => {
-      /* Its instances are made anew in each application, so a rule applied
-       * inside its own application would be applied without end. */
+      /* A rule selected inside its own application would apply without end:
+       * its block's targets are made anew in each application. */
       if (enclosingRules(context).some(enclosing => enclosing.decl === block.decl)) {
         throw context.failure(recursiveRuleError(block));
       }
@@ -2172,18 +2193,27 @@ export function blockRuleDefinition(block: RuleBlockDefinition): RuleDefinition 
 }
 
 /**
- * One application of a rule written in `.fabr`: its block, for the target it
- * matched, in the configuration the target is in. Its requirements are what
- * the block's result and the block's targets it reaches require
- * ({@link requirements}), so the target's collection point is theirs; its
- * evaluation builds the result ({@link evaluate}). It holds the block's
- * configurations, two per constraint set ({@link config}).
+ * One application of a rule written in `.fabr`: its block, applied to the
+ * target it matched (`matched`), in that target's configuration. It is the
+ * rule's implementation for that target:
+ * - {@link requirements} states what the block's result and the block's
+ *   targets it reaches require, so they all resolve as the matched target's
+ *   one collection;
+ * - {@link evaluate} builds the matched target from them.
+ *
+ * It also answers the names the block scopes: the block's configurations,
+ * made on demand, two per constraint set ({@link config}); the block's
+ * targets, resolved there; the matched target as `<param>`; and its
+ * properties as `<param>.<name>` (the `aliased*` methods).
  */
 class RuleScope {
+  /** The block's configurations made so far. */
   private readonly configs: ScopedBuildContext[] = [];
   /** The state the rules of the block's targets keep, per configuration and target. */
   private readonly states = new Map<ScopedBuildContext, Map<string, Map<object, unknown>>>();
+  /** The configuration the result is built in, once computed. */
   private resultConstraints?: Computable<Constraints>;
+  /** What the block looks up for the matched target, once started. */
   private lookedUp?: Computable<BlockRequirements>;
   /** The matched target's requirements as resolved, where it has no resolved target to read them from (a target a rule's code made). */
   private given?: ResolvedRequirements;
@@ -2203,9 +2233,10 @@ class RuleScope {
   }
 
   /**
-   * Get the block's configuration of `constraints`; with `unresolved`, the one
-   * in which each of the block's targets is its node with its requirements
-   * left unresolved ({@link ScopedBuildContext.unresolved}).
+   * Get the block's configuration of `constraints`, made on first use over the
+   * rule file's configuration of them; with `unresolved`, the one in which
+   * each of the block's targets is its node with its requirements left
+   * unresolved ({@link ScopedBuildContext.unresolved}).
    */
   public config(constraints: Constraints, unresolved = false): ScopedBuildContext {
     const held = this.configs.find(config => config.unresolved === unresolved && config.hasConstraints(constraints));
@@ -2220,7 +2251,7 @@ class RuleScope {
     return config;
   }
 
-  /** Get the configuration the result is built in: the rule's, with what the result reference requires once substituted. Done once. */
+  /** Get the configuration the result is built in: the matched target's, with the `<k=v>` written on the result reference applied once substituted. Done once. */
   public resultConfiguration(): Computable<Constraints> {
     return (this.resultConstraints ??= this.config(this.constraints)
       .substituteName(this.rule.decl.implementation.result)
@@ -2229,9 +2260,10 @@ class RuleScope {
 
   /**
    * State what the matched target requires: what the block looks up for it
-   * ({@link lookupBlockRequirements}), collected permissively, the result
-   * among it as what the target is made from (`extends`) where it is one whole
-   * target, so the target passes on what the result passes on.
+   * ({@link lookupBlockRequirements}), collected permissively. Where the
+   * result is one whole target, it is what the matched target is made from
+   * (`extends`), so the matched target builds and passes on what the result
+   * does; otherwise the matched target builds files.
    */
   public requirements(stack?: IDependencyStack): Computable<ResolutionSpec> {
     return this.lookupBlockRequirements(stack).then(({ build, run, result }) => {
@@ -2262,7 +2294,7 @@ class RuleScope {
       : requirements.materialize(RESULT_KEY).then((sets): FileSet => (sets.length === 1 ? sets[0] : FileSet.unionAll(...sets)));
   }
 
-  /** Get the matched target's requirements as resolved: its part of them is what a target of the block it reaches requires. */
+  /** Get the matched target's requirements as resolved, which hold what each target of the block the result reaches requires. */
   private collection(): Computable<ResolvedRequirements> {
     const { matched } = this;
     if (matched instanceof DeclaredTargetContext) {
@@ -2273,7 +2305,7 @@ class RuleScope {
       : Computable.resolve(this.given);
   }
 
-  /** Get the requirements of the block's target `name`, reached by the result: its part of the matched target's, collected and building as its rule declares (`reached`). */
+  /** Get the requirements of the block's target `name`, which the result reaches: its part of the matched target's, with how its rule collects and what it declares it builds (`reached`). */
   public requirementsOf(
     name: string,
     reached: Pick<ResolutionSpec, "permissive" | "result" | "fixes">
@@ -2312,11 +2344,11 @@ class RuleScope {
    * other constraints is not reached.
    */
   public lookupBlockRequirements(stack?: IDependencyStack): Computable<BlockRequirements> {
-    /* Filed before it runs, so a request made while it runs joins it. */
+    /* Held before it runs, so a request made while it runs depends on it. */
     return (this.lookedUp ??= Computable.detached(() => this.lookupReached(stack)));
   }
 
-  /** Look up what {@link lookupBlockRequirements} looks up. */
+  /** Look up what {@link lookupBlockRequirements} returns. */
   private lookupReached(stack?: IDependencyStack): Computable<BlockRequirements> {
     interface Requires {
       readonly permissive: boolean;
@@ -2334,7 +2366,7 @@ class RuleScope {
           )
         ),
       ];
-      /* Each target read once; its node's value is what it requires. */
+      /* What each target requires, read once; undefined for a value rule's. */
       const read = new Map<ITargetDecl, Computable<Requires | undefined>>();
       const requirementsOf = (target: ITargetDecl): Computable<Requires | undefined> => {
         const held = read.get(target);
@@ -2361,7 +2393,7 @@ class RuleScope {
         read.set(target, requires);
         return requires;
       };
-      /* The targets reached from `frontier`, beside those in `reached`. */
+      /* `reached` with the targets reached from `frontier` added, each with what it requires. */
       const reach = (
         frontier: ReadonlyArray<ITargetDecl>,
         reached: ReadonlyMap<ITargetDecl, Requires | undefined>
@@ -2401,15 +2433,16 @@ class RuleScope {
   }
 
   /**
-   * Make the node of the block's target `context` evaluates with `rule`, in
-   * the unresolved configuration, with its requirements left unresolved: its
-   * edges the references among its `dependencies`, `provided` and
-   * `optional_provided`, a reference to another of the block's targets bound
-   * to that one's node, and its build the target's in the block's ordinary
-   * configuration of `constraints`. What it passes on is what any target's
-   * node passes on ({@link passedOn}), its `extends` read as material. Every
-   * requirement is read, as resolving a target reads them, so a cycle among
-   * the block's targets is found here.
+   * Make the node of the block's target `context` evaluates with `rule`, for
+   * the unresolved configuration, its requirements left unresolved. Its
+   * dependencies are the references among its `dependencies`, `provided` and
+   * `optional_provided` requirements, unbound, except that a reference to
+   * another of the block's targets is bound to that one's node; what it passes
+   * on is what any target's node passes on ({@link passedOn}), its `extends`
+   * read as material; and its build is the target's in the block's ordinary
+   * configuration of `constraints`. Every requirement is read, as resolving a
+   * target reads them, so a cycle among the block's targets is found here. A
+   * failure is the target's.
    */
   public blockTargetNode(context: DeclaredTargetContext, rule: RuleDefinition, constraints: Constraints): Computable<TargetNode> {
     const name = declName(context.target);
@@ -2440,8 +2473,8 @@ class RuleScope {
         );
       })
       .then(({ result, lists }) => {
-        /* What the target is made from is read as material, as any target's
-         * is, which joins no resolution. */
+        /* What the target is made from is read as material, joining no
+         * resolution, as any target's is. */
         const made = lists.get(EXTENDS_KEY);
         const material =
           made === undefined || sourcesOf(made).length === 0
@@ -2492,7 +2525,7 @@ class RuleScope {
       : matched.getFileProperty(name, alias);
   }
 
-  /** Get the matched target's one declaration of `name`, chased as a map or command property. */
+  /** Get the matched target's one declaration of `name` that applies, with the configuration its values are looked up in, for reading as a map or command property. A target a rule's code made rejects. */
   public aliasedDecl(
     name: string,
     reader: Constraints,
@@ -2522,7 +2555,7 @@ class RuleScope {
     return new Property([this.matched.name]);
   }
 
-  /** Resolve the matched target in the configuration of `constraints`, as `<param>` names it. */
+  /** Resolve the matched target in the configuration of `constraints`, as `<param>` names it. A target a rule's code made rejects. */
   public resolveMatched(constraints: Constraints, stack?: IDependencyStack): Computable<SourceRef[]> {
     const { matched } = this;
     if (!(matched instanceof DeclaredTargetContext)) {
@@ -2542,10 +2575,11 @@ class RuleScope {
 type ScopedMatch = Pick<IPrefixMatch, "name" | "rest" | "retainedPrefix">;
 
 /**
- * A configuration over `parent`, the configuration of the same constraints, in
- * which a scope's names are looked up: a name the scope declares is looked up
- * and cached here, in place of any constraint of the name, and every other
- * name in `parent`.
+ * A configuration in which a scope's own names are looked up first. A name the
+ * scope declares ({@link ownDecl}, {@link ownPrefixMatch}) is read, resolved
+ * and cached here, and a constraint of that name does not replace it. Every
+ * other name is passed to `parent`, the configuration of the same constraints
+ * outside the scope. A subclass says what the scope declares.
  */
 abstract class ScopedConfiguration extends BuildContextImpl {
   constructor(
@@ -2607,9 +2641,20 @@ abstract class ScopedConfiguration extends BuildContextImpl {
 }
 
 /**
- * A configuration of a rule's block, over `parent`, the file's configuration
- * of the same constraints: a name the block declares, or the rule's
- * parameter, is looked up here, and every other name in `parent`.
+ * A configuration of a rule's block ({@link RuleScope}), over `parent`, the
+ * configuration of the same constraints as the rule's file sees it. The
+ * block's own names and the rule's parameter are looked up here, and every
+ * other name in `parent`:
+ * - `<param>` is the matched target, and `${<param>}` its name;
+ * - `<param>.<name>` is the matched target's property `name`, read as the
+ *   reader asks (files, strings, a map or command), and a `NAME;`
+ *   splice of `<param>` supplies each of its properties;
+ * - a target of the block resolves in the result's configuration as part of
+ *   the matched target's collection where the result reaches it, and alone
+ *   otherwise (a tool the block runs, or another configuration).
+ *
+ * In the `unresolved` configuration each of the block's targets is instead its
+ * node with its requirements left unresolved ({@link RuleScope.blockTargetNode}).
  */
 class ScopedBuildContext extends ScopedConfiguration {
   constructor(
@@ -2618,15 +2663,15 @@ class ScopedBuildContext extends ScopedConfiguration {
     execution: ExecutionContext,
     private readonly scope: RuleScope,
     parent: BuildContextImpl,
-    /** Whether each of the block's targets is here its node with its
-     * requirements left unresolved ({@link RuleScope.blockTargetNode}): where
-     * what the block's targets require is looked up without waiting on any of
-     * them. */
+    /** True in the configuration where each of the block's targets is its
+     * node with its requirements left unresolved, so what they require is
+     * looked up without waiting on any of them. */
     public readonly unresolved: boolean
   ) {
     super(model, constraints, execution, parent);
   }
 
+  /** The node made for each of the block's targets in this configuration, by name. */
   private readonly blockTargetNodes = new Map<string, Computable<TargetNode>>();
 
   /** Where a reference to one of the block's targets in the unresolved configuration finds its node. */
@@ -2834,9 +2879,10 @@ class ScopedBuildContext extends ScopedConfiguration {
 }
 
 /**
- * A configuration as the build file `file` sees it: the names it declares
- * privately (`names`) are its scope. A private target is evaluated in
- * `parent`, so only what is written in the file sees the file's private names.
+ * A configuration as the build file `file` sees it: the names the file
+ * declares privately (`names`) are looked up here first, and every other name
+ * in `parent`. A target is evaluated in `parent` ({@link targetContextFor}),
+ * so the file's private names are seen only by values written in the file.
  */
 class FileScopedContext extends ScopedConfiguration {
   constructor(
@@ -2879,7 +2925,7 @@ class FileScopedContext extends ScopedConfiguration {
   }
 }
 
-/** Wait for each of `references` that is still to be had, in order. */
+/** Wait for each of `references` that is a Computable, and @return them all in order, flattened. */
 function had(
   references: ReadonlyArray<SourceRef | Unbuilt | Computable<Array<SourceRef | Unbuilt>>>
 ): Computable<Array<SourceRef | Unbuilt>> {

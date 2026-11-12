@@ -47,10 +47,9 @@ interface MigrateOptions {
 }
 
 /**
- * @return the root of fabr's build cache, found exactly as the CLI's
- * `getBuildCacheRoot` finds it (where to keep the cache is a driver's policy,
- * so this driver holds its own copy): `FABR_CACHE_DIR`, else `fabr` under the
- * platform's cache directory, always absolute.
+ * @return the root of fabr's build cache, found as the CLI's
+ * `getBuildCacheRoot` finds it: `FABR_CACHE_DIR`, else `fabr` under the
+ * platform's cache directory, always absolute. Keep the two in step.
  */
 export function defaultCacheRoot(): string {
   const explicit = process.env.FABR_CACHE_DIR;
@@ -67,7 +66,11 @@ export function defaultCacheRoot(): string {
   }
 }
 
-/** @return `TYPESCRIPT`'s value where the catalog holds a compiler fabr's driver drives (5 or 6), otherwise undefined. */
+/**
+ * @return `TYPESCRIPT`'s value where the catalog's `typescript` entry is a
+ * version fabr's driver drives (5 or 6), otherwise undefined; another
+ * version is reported to `report`.
+ */
 function typescriptOf(catalog: Catalog, report: Report): string | undefined {
   const entry = catalog.entries.get("typescript");
   const constraint = entry === undefined ? undefined : constraintOf(entry.range);
@@ -82,7 +85,7 @@ function typescriptOf(catalog: Catalog, report: Report): string | undefined {
   return undefined;
 }
 
-/** @return the test framework the project's manifests use: `vitest`, `jest`, or undefined. */
+/** @return the test framework the project's manifests declare: `vitest` where any declares it, else `jest` where any does, otherwise undefined. */
 function testFrameworkOf(workspace: Workspace): string | undefined {
   const declared = [workspace.rootManifest, ...workspace.packages].flatMap(manifest => [...declaredDependencies(manifest).keys()]);
   return declared.includes("vitest") ? "vitest" : declared.includes("jest") ? "jest" : undefined;
@@ -98,11 +101,20 @@ function writeNew(file: string, text: string): boolean {
 }
 
 /**
- * Write the fabr files of the project at `root` that do not exist: `PROJECT.fabr`,
- * a `BUILD.fabr` per package and the catalog file. With `pins`, where the
- * catalog file is written, the project is then resolved and the catalog pinned
- * against the lockfile until a round adds nothing.
- * @return the report of what could not be converted.
+ * Write the fabr files of the project at `root` that do not exist yet:
+ * `PROJECT.fabr`, a `BUILD.fabr` per package and the catalog file. A file that
+ * exists is left as it is and listed in the report, as is a kept
+ * `PROJECT.fabr` that does not include the catalog file.
+ *
+ * With `options.pins`, and only where the catalog file was written, the
+ * project is then resolved (see {@link observe}) and pins added to the catalog
+ * (see {@link proposePins}), the catalog file rewritten each round, until a
+ * round adds none or {@link MAX_ROUNDS} is reached. Packages required only
+ * without a lower bound and not in the lockfile are pinned at their latest
+ * published version.
+ *
+ * @return the report: what could not be converted, the files kept, and what
+ * resolution left unanswered (failures, targets that did not resolve).
  */
 export async function migrate(root: string, options: MigrateOptions): Promise<Report> {
   const report = new Report();

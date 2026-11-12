@@ -22,7 +22,8 @@ import { compareVersions, parseConstraint, SemverConstraint, SemverVersion } fro
 /** A dependency spec as a package manager reads it. */
 export type Spec =
   /** A registry package: `packageName` is the name it is published under,
-   * which an alias (`npm:real@^1`) makes another than the dependency's. */
+   * which differs from the dependency's under an alias (`npm:real@^1`);
+   * `patched` where yarn's `patch:` wraps it. */
   | { readonly kind: "registry"; readonly packageName: string; readonly range: string; readonly patched?: boolean }
   /** A workspace package (`workspace:*`, `workspace:^`, `workspace:../x`). */
   | { readonly kind: "workspace" }
@@ -42,7 +43,7 @@ export function constraintOf(range: string): SemverConstraint | undefined {
   }
 }
 
-/** Read the spec `text`, written for the dependency `name`. */
+/** Read the spec `text`, written for the dependency `name`. An empty spec is the dist-tag `latest`. */
 export function parseSpec(name: string, text: string): Spec {
   const spec = text.trim();
   if (spec.startsWith("workspace:")) {
@@ -82,7 +83,7 @@ export function parseSpec(name: string, text: string): Spec {
   return { kind: "tag", tag: spec === "" ? "latest" : spec };
 }
 
-/** @return the lowest version `constraint` admits: its least lower bound. */
+/** @return the least of `constraint`'s lower bounds. */
 export function floorOf(constraint: SemverConstraint): SemverVersion {
   return constraint.ranges.map(range => range.min).reduce((low, each) => (compareVersions(each, low) < 0 ? each : low));
 }

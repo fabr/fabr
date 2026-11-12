@@ -35,25 +35,22 @@ import {
 } from "../core/BuildAction";
 import { RunnableArgument, toArgv } from "../core/RunnableFileSet";
 
-/**
- * The generic `exec` build action core ships for rules to compose: stage a
- * fileset, run a command, collect an output pattern — the execution point
- * most build steps are built on. A plain BuildAction descriptor, not a
- * registered target type — a rule constructs it and yields it (typically as
- * the build step of a sub-target whose output feeds the next).
+/*
+ * The generic `exec` build action (`core:exec`): stage files, run a command,
+ * collect its output. It is no target type: a rule makes one with
+ * createExecAction and yields it.
  */
 
 /**
- * Read the `outputs` config member: what the run's work dir is collected by. One
- * pattern is the ordinary case; a LIST is for a step collecting a second thing
- * beside its result — a tool's report about the run — which has to be collected
- * rather than read in place, since collection sweeps away everything it does
- * not select.
+ * @return the action's `outputs` config: the pattern its work directory is
+ * collected by, or a list of patterns, each file named by the first that
+ * selects it (a result and a tool's report beside it). Defaults to "**".
  */
 export function outputsConfig(action: BuildAction): string | string[] {
   return Array.isArray(action.config.outputs) ? stringListConfig(action, "outputs") : stringConfig(action, "outputs", "**");
 }
 
+/** Stage the action's files and config files, run its argv in the work directory, and collect its outputs. */
 function runExec(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
   const files = FileSet.unionAll(fileSetInput(action, "files"), configFiles(action));
   const argv = toArgv(commandLineConfig(action, "argv"));
@@ -69,11 +66,11 @@ function runExec(action: BuildAction, ctx: ActionContext, report: ITaskReport): 
   );
 }
 
-/* The version tracks what the step DOES; a change to the action-key text's
- * shape (see BuildAction.actionKey) already invalidates mechanically and needs
- * no bump here. */
+/* Bump the version when what the step does changes; a change to the shape of
+ * the action-key text (BuildAction.actionKey) changes every key already. */
 export const EXEC_ACTION: IBuildActionDefinition = { id: "core:exec", version: 4, run: runExec, stage: stageExec };
 
+/** Stage the action into `dir` as runExec would, and describe the command it would run there. */
 function stageExec(action: BuildAction, dir: string): Computable<IStagedStep> {
   const argv = toArgv(commandLineConfig(action, "argv"));
   return writeFileSet(dir, FileSet.unionAll(fileSetInput(action, "files"), configFiles(action))).then(() => ({

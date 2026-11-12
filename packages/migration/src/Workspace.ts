@@ -92,7 +92,7 @@ function readYamlObject(file: string): Record<string, unknown> | undefined {
   return isJsonObject(doc) ? doc : undefined;
 }
 
-/** @return the strings among `value` where it is an array, otherwise none. */
+/** @return the strings among `value` where it is an array, otherwise an empty array. */
 function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((each): each is string => typeof each === "string") : [];
 }
@@ -133,8 +133,9 @@ function findPackages(root: string, patterns: string[]): string[] {
   return found.sort();
 }
 
-/** @return pnpm's catalogs: `catalog:` and `catalogs:` in pnpm-workspace.yaml,
- * or the root manifest's `pnpm` field. */
+/** @return pnpm's catalogs: `catalog:` and `catalogs:` in pnpm-workspace.yaml
+ * and in the root manifest's `pnpm` field, the manifest's replacing a catalog
+ * of the same name. */
 function catalogsOf(pnpm: Record<string, unknown> | undefined, rootManifest: Manifest): Map<string, ReadonlyMap<string, string>> {
   const catalogs = new Map<string, ReadonlyMap<string, string>>();
   for (const source of [pnpm, isJsonObject(rootManifest.json.pnpm) ? rootManifest.json.pnpm : undefined]) {
@@ -228,7 +229,8 @@ function overridesOf(rootManifest: Manifest, pnpm: Record<string, unknown> | und
 
 /** Read the registries the project installs from: `.npmrc`'s `registry` and
  * `@scope:registry`, pnpm-workspace.yaml's `registries`, and `.yarnrc.yml`'s
- * `npmRegistryServer` and `npmScopes`. */
+ * `npmRegistryServer` and `npmScopes`, each replacing what the ones before it
+ * set. The default registry is left out where it is npm's. */
 function registries(root: string, pnpm: Record<string, unknown> | undefined): { scopes: Map<string, string>; registry?: string } {
   const scopes = new Map<string, string>();
   let registry: string | undefined;

@@ -26,9 +26,8 @@ import { ISourceIndexRow } from "./Manifest";
 import { WatchController } from "./WatchController";
 import { sniffMime } from "../support/Mime";
 
-/** Minimum gap between index writes under watch — an edit-heavy session
- * rewrites the record at most this often; the tail is best-effort (a dropped
- * row just re-hashes next start). One-shot runs write once, ungated. */
+/** Minimum gap between index writes under watch, bar the write on closing. A
+ * one-shot run writes once, whenever it ends. */
 const INDEX_WRITE_INTERVAL_MS = 30_000;
 
 /** How an {@link IndexedFileSource} reads a file and what it watches. */
@@ -48,11 +47,10 @@ export interface IndexedReading {
 
 /**
  * A FileSource over a directory on disk whose files' hashes are kept in an
- * index: a stat cache whose rows pair a file's hash with the stat it was
- * captured under, persisted through the cache's projects registry. A file whose
- * stat matches its row exactly, once two captures agreed, is served from the
- * row with no read and no hash. Advisory end to end: identical builds with the
- * index present, absent, or damaged.
+ * index: a stat cache whose rows pair a file's hash with the stat it was read
+ * under, persisted in the cache's projects registry. A file whose stat matches
+ * its row exactly, once two reads agreed, is served from the row with no read
+ * and no hash. Builds are identical with the index present, absent or damaged.
  */
 export class IndexedFileSource extends FSFileSource {
   constructor(
@@ -80,15 +78,14 @@ export class IndexedFileSource extends FSFileSource {
           }
           const fsStat = { size: fileStat.size, mtime: fileStat.mtime, mode: fileStat.mode };
           const held = rows.get(filename);
-          /* Only a VERIFIED row is served on a stat match: an unverified one
-           * re-hashes here, which is the second capture that verifies it (see
-           * recordIndexRow) — or catches a write that landed in the same
-           * filesystem-timestamp tick as the recorded one. */
+          /* Serve only a verified row on a stat match. An unverified one is
+           * read again here, which verifies it (see recordIndexRow) or catches
+           * a write in the same filesystem timestamp tick as the recorded one. */
           if (held !== undefined && held.verified && held.size === fileStat.size && held.mtimeMs === fileStat.mtimeMs) {
             const blobPath = this.reading.read === "snapshot" ? this.cache.presentBlob(held.hash) : filepath;
             if (blobPath !== undefined) {
-              /* Confirmation is unconditional in ingest — which branch served
-               * the hash must not decide whether an echo is judged. */
+              /* Call confirmIngested on every path here: which branch gave the
+               * hash must not decide whether a write fabr expects is checked. */
               this.confirmIngested(filename, held.hash);
               return Computable.resolve(
                 new FSFile(this.root, filename, fsStat, held.hash, held.mime, this.reading.read === "snapshot" ? blobPath : undefined)
@@ -114,10 +111,9 @@ export class IndexedFileSource extends FSFileSource {
         })
       )
       .catch(err => {
-        /* Gone since the event fired, or the path is a directory (a watch event
-         * on a directory the tree gained — e.g. a served tool's own cache/output
-         * dirs): either way it is not a file, so treat it as absent, not an error.
-         * Mirrors the base FSFileSource.ingest. */
+        /* Gone since the event fired, or a directory (a watch event for one the
+         * tree gained, such as a served tool's own output directory): not a
+         * file, so absent, as in FSFileSource.ingest. */
         if (isNotFound(err) || isDirectoryError(err)) {
           this.dropIndexRow(filename);
           return undefined;
@@ -130,8 +126,8 @@ export class IndexedFileSource extends FSFileSource {
     return this.reading.watch === "queried" ? query.directory : "";
   }
 
-  /** Note that `filename` was read and holds `hash`, whichever way its hash was
-   *  had; a subclass that records what it expects a file to hold judges it here. */
+  /** Note that `filename` was ingested holding `hash`, from its row or a read;
+   *  a subclass that records what it expects a file to hold checks it here. */
   protected confirmIngested(filename: string, hash: string): void {
     void filename;
     void hash;
@@ -146,10 +142,10 @@ export class IndexedFileSource extends FSFileSource {
   private lastIndexWrite = 0;
 
   /**
-   * Load this root's rows, once. Once they are loaded they are handed out as a settled
-   * constant and the load is dropped: an ingest, made per file per enumeration, must hold
-   * no edge to a node that lives as long as this source, or every ingest stays reachable
-   * as its dependant.
+   * Load this root's rows, once. Once loaded, hand them out as a settled
+   * constant and drop the load: an ingest, made per file per enumeration, must
+   * not depend on a node that lives as long as this source, or every ingest
+   * stays reachable as its dependant.
    */
   private loadIndex(): Computable<Map<string, ISourceIndexRow>> {
     if (this.indexRows !== undefined) {
@@ -164,13 +160,11 @@ export class IndexedFileSource extends FSFileSource {
   }
 
   /**
-   * Refresh a row from a full-path capture. A fresh or disagreeing capture
-   * records **unverified**: a write landing in the same filesystem-timestamp
-   * tick as this one is invisible to the stat, so a single capture may not be
-   * trusted. A capture that AGREES with the held row is the second observation
-   * that **verifies** it — from then on a stat match serves the row without
-   * reading (see ingest). No clock takes part: the poison tick is over by the
-   * time any later capture compares against the row.
+   * Record a row from a read of the file. A new row, or one differing from the
+   * held row, is recorded unverified: a write in the same filesystem timestamp
+   * tick as this read is invisible to the stat. A read that agrees with the
+   * held row verifies it, and from then on a stat match serves the row
+   * without reading (see ingest).
    */
   private recordIndexRow(
     rows: Map<string, ISourceIndexRow>,
@@ -192,8 +186,8 @@ export class IndexedFileSource extends FSFileSource {
     this.indexDirty = true;
   }
 
-  /** Drop a row whose file is gone. Consulted rows only — unconsulted rows are
-   * carried forward (a partial build must not shed the rest of the tree). */
+  /** Drop the row of a file found gone. Rows this run never consulted are kept,
+   * so a partial build keeps the rest of the tree's. */
   private dropIndexRow(filename: string): void {
     if (this.indexRows?.delete(filename)) {
       this.indexDirty = true;
@@ -201,12 +195,11 @@ export class IndexedFileSource extends FSFileSource {
   }
 
   /**
-   * Persist the index if it changed — a run where every consulted file trusted
-   * its row writes nothing. Under watch, gated to at most one write per
-   * {@link INDEX_WRITE_INTERVAL_MS} unless `flush` (the close-time drain); a
-   * skipped write stays dirty for the next opportunity. Writes serialize
-   * behind any still-running one, and a failed write re-marks dirty. Never
-   * rejects: the record is an accelerator, not an outcome.
+   * Write the index if it changed: a run in which every file consulted was
+   * served from its row writes nothing. Under watch, writes at most once per
+   * {@link INDEX_WRITE_INTERVAL_MS} unless `flush` (the write on closing); a
+   * skipped write stays pending for the next call. A write waits for any still
+   * running, and a failed one is left pending. Never rejects.
    */
   public persistIndex(flush = false): Computable<void> {
     if (!this.indexDirty || this.indexRows === undefined) {

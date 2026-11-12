@@ -18,24 +18,24 @@
  */
 
 /**
- * The generic `generate` target: run a command **pipeline** and collect its
- * output — the ecosystem-neutral genrule (Bazel's genrule analogue). It is a
- * *build* step (registered under BUILD_OPERATION=build), unrelated to the
- * interactive `fabr run` verb.
+ * The `generate[build]` rule: run a command pipeline over input files and keep
+ * its output, as Bazel's genrule does.
  *
- * `run` is a command line: `cmd args… [redirs] | cmd args… [redirs]`. Each
- * command is a fabr runnable resolved under `run` (a single command mounted at
- * the sandbox root beside `srcs`, each stage of a multi-stage pipeline under
- * its own subdir, so the tools don't share a `node_modules`); args are literal
- * or a glob expanded over the staged `srcs` (never rewritten, never a reference —
- * `<`/redirect targets are the only other reference position). `|` wires
- * stdout→stdin; `> name` / `2> name` / `&> name` capture a stream as content
- * named `name`; `< source` streams a single-file reference to the first stage's
- * stdin. `srcs` are the input files staged at the sandbox root; `output` (a
- * `dir:glob` projection) selects what is collected, from the files the tools
- * wrote and the redirect captures alike — without it, the captures are collected.
- * `incremental` (a pattern like `output`'s) selects what the command keeps for
- * its next run, and `changes` names where that run is told what moved.
+ * `run` is a command line, `cmd args… [redirs] | cmd args… [redirs]`. Each
+ * command is a runnable, resolved under `run`. A single command's tool is
+ * staged at the root of the directory it runs in, beside `srcs`; each stage of
+ * a longer pipeline has its own subdirectory, so their tools share no files.
+ * An argument is literal text or a glob expanded over the staged `srcs`. `|`
+ * connects one stage's stdout to the next's stdin; `> name`, `2> name` and
+ * `&> name` capture a stream as the file `name`; `< source` feeds a one-file
+ * reference to the first stage's stdin.
+ *
+ * `srcs` are the input files, staged at the root. `output` (a `dir:glob`
+ * projection) selects what is kept, from the files the commands wrote and the
+ * captures alike; without it, the captures are kept. `incremental` (a pattern
+ * like `output`'s) selects what the command keeps for its next run, and
+ * `changes` names the file that run is told what changed in. `env` is the
+ * commands' whole environment.
  */
 
 import { MaterializedCommandPipeline, TargetContext, toEnvironment } from "../context/index";
@@ -56,6 +56,7 @@ export default defineRule({
   },
 });
 
+/** Make the pipeline action of the `generate` target `context` evaluates, over `srcSets`. Rejects where `run` is empty. */
 function generate(context: TargetContext, srcSets: FileSet[]): Computable<RuleResult> {
   return Computable.forAll(
     [
@@ -76,8 +77,7 @@ function generate(context: TargetContext, srcSets: FileSet[]): Computable<RuleRe
   );
 }
 
-/** Stage the install (see {@link stagePipeline}, shared with command
- * substitution) and yield the pipeline action. */
+/** Lay out `stages` beside `srcs` ({@link stagePipeline}) and make the pipeline action that runs them. */
 function assemblePipeline(
   srcs: FileSet,
   stages: MaterializedCommandPipeline,

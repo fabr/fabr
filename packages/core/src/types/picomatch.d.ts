@@ -18,11 +18,10 @@
  */
 
 /*
- * Corrected declarations for picomatch (v2), in place of @types/picomatch —
- * whose `parse` signature wrongly types its options as only `{ maxLength }`
- * (unfixed through the latest 4.x), while the runtime honours the full option
- * set, notably `dot`. Covers exactly the surface fabr uses: the matcher factory,
- * `scan` (static-base extraction) and `parse` (regex-source compilation).
+ * Declarations for picomatch (v2), covering only what fabr uses: the matcher
+ * factory, `scan` (the static base of a pattern), `parse` (a pattern's regex
+ * source) and `makeRe`. Use these rather than @types/picomatch, whose `parse`
+ * accepts only `{ maxLength }` of the options picomatch honours.
  */
 declare module "picomatch" {
   interface PicomatchOptions {
@@ -40,10 +39,10 @@ declare module "picomatch" {
     capture?: boolean;
   }
 
-  /** Tests a single forward-slash path against the compiled pattern. */
+  /** A test of one forward-slash path against the compiled pattern. */
   type Matcher = (test: string) => boolean;
 
-  /** The static (non-glob) leading portion of a pattern. */
+  /** A scanned pattern: its static (non-glob) leading portion, and whether it has any glob. */
   interface ScanResult {
     base: string;
     isGlob: boolean;

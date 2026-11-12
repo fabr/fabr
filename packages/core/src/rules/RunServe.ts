@@ -18,16 +18,15 @@
  */
 
 /**
- * The serve[run] rule: *define* a served program — a long-lived server (`tool`,
- * any runnable: a script/js_script target or an external package run via its
- * bin) decorated with the content it serves (`files`, staged at the install
- * root) and any support files (`deps`, unioned flat like a script's). It
- * yields a `RunnableFileSet` whose descriptor records the app persona: launch
- * cwd anchored at the staged install (the content is the program's world, so a
- * stock static server serves it with no path argument), and `files` as the
- * hot-swappable `served` partition — under `fabr run -w` a content-only change
- * is synced into the running server's staging area in place, while a program
- * change (tool/deps/args/env) restarts it. It does not itself execute.
+ * The `serve[run]` rule: a long-lived server with the content it serves.
+ * `tool` is the server, any runnable (a `script` or `js_script` target, or an
+ * external package run by its bin); `files` is the content, at the install
+ * root; `deps` are support files, unioned flat as a script's are; `args` and
+ * `env` are added to the tool's launch. The rule yields a `RunnableFileSet`
+ * that launches in its staged install root, with `files` as its `served`
+ * content: under `fabr run -w` a change to `files` alone is synced into the
+ * running server's install, and any other change restarts it. It runs
+ * nothing itself.
  */
 
 import { toEnvironment } from "../context/index";
@@ -38,13 +37,10 @@ import { defineRule, RuleResult } from "./Types";
 
 /** The `serve` rule, under `run`. */
 export default defineRule({
-  /* deps/files are ordinary build content, read under build rather than the run
-   * operation this rule is selected by (constraints otherwise propagate). Both
-   * are read for their files, as script's are — a repository reference as the
-   * package's files alone, a target as what it built — and nothing is resolved
-   * together. `tool` is read apart in `evaluate`, under the run operation
-   * (getRunnableProperty), as a program to execute on this machine, and built
-   * alongside them rather than after. */
+  /* `deps` and `files` are read under `build`, not the `run` operation this
+   * rule is selected by, and for their files alone, as script's are. `tool` is
+   * read in `evaluate` (`getRunnableProperty`), as a program to run on this
+   * machine, and built alongside them. */
   requirements(context) {
     return {
       run: {
@@ -63,8 +59,8 @@ export default defineRule({
       ],
       ({ deps, files }, tool, args, env): RuleResult => {
         const served = FileSet.unionAll(...files);
-        /* A same-name collision between content and program is the ordinary
-         * two-sided conflict, raised here by the union. */
+        /* A file of the content and one of the program under one name are a
+         * ConflictError, raised by the union. */
         const install = FileSet.unionAll(tool, ...deps, served);
         return tool.withServedContent(install, served, args ? args.getValues() : [], env);
       }

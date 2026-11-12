@@ -21,20 +21,18 @@ import { IDiagnosticNote } from "../support/Log";
 import type { Label } from "./Errors";
 
 /**
- * A single step in a provenance chain: a small, inert, kind-tagged description
- * of how some content came to be part of the build, linked to the provenance
- * of whatever it was derived from. Concrete kinds are defined by whichever
- * layer produces them (model references, target evaluations, repository
- * resolutions, ...), together with a matching renderer.
+ * One step in a provenance chain: a small, inert, kind-tagged description of
+ * how some content came to be part of the build, linked to the provenance of
+ * what it was derived from. Each kind is defined by the layer that makes it
+ * (model references, target evaluations, repository resolutions, ...), which
+ * registers how to render it.
  *
- * Provenance is a runtime-only annotation: it is reconstructed from the
- * project files on every run, is never serialized into the build cache (it may
- * change from run to run without affecting the cached content), and never
- * participates in manifests, cache keys, or content equality — except as a
- * file's source path ({@link sourcePathOf}), which an action's key records for
- * each of its inputs. Rendering is
- * deferred until an explanation is actually needed (typically the failure
- * path), so steps must be cheap to construct: hold references, don't compute.
+ * Provenance is made afresh on every run and kept only in memory: it is never
+ * serialized, and takes no part in manifests, cache keys or content equality,
+ * except that an action's key records a digest of its inputs' source paths
+ * ({@link sourcePathsDigestOf}). A chain is rendered only when an explanation
+ * is needed (usually a failure), so keep steps cheap to make: hold
+ * references, don't compute.
  */
 export interface IProvenanceStep {
   readonly kind: string;
@@ -43,20 +41,14 @@ export interface IProvenanceStep {
 }
 
 /**
- * A build step's own contribution to provenance: this content was PRODUCED,
- * from a named input, by a named step.
- *
- * Generic on purpose. Every step that maps input names to output names can have
- * two inputs land on one output — `x.module.scss` and `x.css` both lowering to
- * `x.css`, `Foo.ts` and `Foo.js` both emitting `Foo.js` — and the reader's
- * question is always the same: which inputs, and what turned them into this
- * name? Without the step recorded, a conflict can only report two paths and
- * leave the production that brought them together implicit.
+ * The kind of step stamped on content a build step produced: the content was
+ * made from the input `from` by the step `by`. A conflict between two inputs
+ * that produce one output name (`x.module.scss` and `x.css` both producing
+ * `x.css`) can then name both inputs and the step.
  *
  * `from` is the input's source path where it has one (`./src/Card.module.scss`),
- * else its name as the producing step names it: what the user would edit or
- * rename rather than wherever the file was staged. Stamped on the content a
- * step produced, it is what {@link derivedFromOf} answers for each file.
+ * else its name as the producing step names it, never where it was staged.
+ * {@link derivedFromOf} reads it for each file.
  */
 export const DERIVED_PROVENANCE = "derived";
 
@@ -73,27 +65,19 @@ export function derivedFrom(from: string, by: string): IDerivedStep {
   return { kind: DERIVED_PROVENANCE, from, by };
 }
 
-/**
- * Context supplied when rendering a provenance chain.
- */
+/** Context supplied when rendering a provenance chain. */
 export interface IRenderContext {
   /** The file path being explained, where relevant */
   path?: string;
   /** Index of the step being rendered among those that render something (0 = nearest) */
   stepIndex?: number;
-  /**
-   * Constraint keys to omit from "with k=v" annotations: the caller's ambient
-   * keys (the driver's injected host facts and BUILD_OPERATION), universal for
-   * the run and so noise in an explanation — matching their elision from
-   * progress lines.
-   */
+  /** Constraint keys to omit from "with k=v" annotations: the caller's ambient
+   *  keys (the host facts the driver injects, and BUILD_OPERATION). */
   elideConstraintKeys?: ReadonlySet<string>;
 }
 
-/**
- * Render one provenance step as structured diagnostic notes (each optionally
- * anchored at a source span).
- */
+/** A function rendering one provenance step as diagnostic notes, each
+ *  optionally anchored at a source span. */
 export type ProvenanceRenderer<S extends IProvenanceStep = IProvenanceStep> = (step: S, context: IRenderContext) => IDiagnosticNote[];
 
 const PROVENANCE_RENDERERS = new Map<string, ProvenanceRenderer>();
@@ -123,9 +107,9 @@ export function renderProvenance(step: IProvenanceStep | undefined, context: IRe
 }
 
 /**
- * Link a sequence of collected steps (ordered innermost first) onto an existing
- * chain: used when steps are accumulated as data before their parent exists
- * (e.g. while a deferred reference travels to its resolution point).
+ * Link `steps` (innermost first) onto the chain `parent`, for steps collected
+ * before their parent existed (a reference's steps, carried to where it is
+ * resolved).
  */
 export function chainSteps(steps: ReadonlyArray<IProvenanceStep>, parent: IProvenanceStep | undefined): IProvenanceStep | undefined {
   let chain = parent;
@@ -136,8 +120,8 @@ export function chainSteps(steps: ReadonlyArray<IProvenanceStep>, parent: IProve
 }
 
 /**
- * Replace the last step of the chain `origin` with `root`, as where a chain
- * was made over a stand-in for content that now has an origin of its own.
+ * Replace the last step of the chain `origin` with the chain `root`, for a
+ * chain made over a stand-in for content that now has an origin of its own.
  * Either is returned alone where the other is undefined.
  */
 export function rootedAt(origin: IProvenanceStep | undefined, root: IProvenanceStep | undefined): IProvenanceStep | undefined {
@@ -148,9 +132,9 @@ export function rootedAt(origin: IProvenanceStep | undefined, root: IProvenanceS
 }
 
 /**
- * What a reference whose provenance includes a step of one kind does with
- * what crosses it: a failure of what the reference names is reported as the
- * reference's, and a cycle through it is reported by the reference's label.
+ * The handling, for a reference whose provenance includes a step of one kind,
+ * of a failure or a cycle through what it names: the failure is reported as
+ * the reference's, and the cycle by the reference's label.
  */
 export interface IReferenceStep {
   /** Get the error a failure of what the reference names is reported as. */
@@ -161,21 +145,20 @@ export interface IReferenceStep {
 
 const REFERENCE_STEPS = new Map<string, IReferenceStep>();
 
+/** Register how a reference with a step of `kind` among its provenance reports
+ *  a failure or a cycle through what it names. */
 export function registerReferenceStep(kind: string, handling: IReferenceStep): void {
   REFERENCE_STEPS.set(kind, handling);
 }
 
-/** Get how a reference with `step` among its provenance answers for what
- * crosses it; undefined for a step of a kind that registered nothing. */
+/** Get how a reference with `step` among its provenance reports a failure or a
+ * cycle through what it names; undefined for a kind that registered nothing. */
 export function referenceStep(step: IProvenanceStep): IReferenceStep | undefined {
   return REFERENCE_STEPS.get(step.kind);
 }
 
-/**
- * Produce a short identifier from one provenance step — "the name it was
- * written as" — for attributing content in one-line messages, as opposed to
- * the full multi-line rendering.
- */
+/** A function giving a short identifier of content from one provenance step
+ *  (the name it was written as), for attributing it in one-line messages. */
 export type ProvenanceDescriber<S extends IProvenanceStep = IProvenanceStep> = (step: S) => string;
 
 const PROVENANCE_DESCRIBERS = new Map<string, ProvenanceDescriber>();
@@ -200,10 +183,11 @@ export function describeProvenance(step: IProvenanceStep | undefined): string | 
 }
 
 /**
- * How one kind of step names a file's source path — the text of the fabr
- * reference that resolves to the file (`./src/a.ts`, `gen:made.ts`,
- * `@npm:react:18.2.0:index.js`) — and what those names depend on. Registered
- * together, since an action's key records the second in place of the first.
+ * The naming, by one kind of step, of a file's source path (the text of the
+ * fabr reference that resolves to the file: `./src/a.ts`, `gen:made.ts`,
+ * `@npm:react:18.2.0:index.js`), and of what those names depend on. An
+ * action's key records `digest` in place of the source paths, so register the
+ * two together and keep them in agreement.
  */
 export interface IProvenanceNaming<S extends IProvenanceStep = IProvenanceStep> {
   /**
@@ -312,20 +296,19 @@ export function sourcePathPrefixOf(step: IProvenanceStep | undefined): string | 
 }
 
 /**
- * Get the prefix of a step that names whole content as `<reference>:<name>`
- * where nothing beneath names a file: the reference's, where nothing beneath
- * names any, else what beneath gives.
+ * Get the source-path prefix for a step that names whole content as
+ * `<reference>:<name>`: `<reference>:` where nothing beneath names any file,
+ * else the prefix `below` gives.
  */
 export function wholeContentPrefix(step: IProvenanceStep, reference: string, below: () => string | undefined): string | undefined {
   return sourcePathsDigestOf(step.parent) === "" ? `${reference}:` : below();
 }
 
 /**
- * Get the text of a step that renames: what each name in `names` (new name →
- * name beneath) was called, as the one prefix mapping every name follows —
- * the name beneath is `[from, to]`'s `from` plus the name less `to` — or the
- * whole table where no single mapping fits. Either way a function of the
- * names alone.
+ * Make the digest text of a rename, `names` mapping each new name to its name
+ * beneath: the one `[from, to]` prefix mapping every entry follows (the name
+ * beneath is `from` plus the new name less its prefix `to`), else the whole
+ * table, sorted by new name. Either way it depends on the names alone.
  */
 export function renamingText(names: ReadonlyMap<string, string>): string {
   const mapping = prefixMappingOf(names);
@@ -336,7 +319,8 @@ export function renamingText(names: ReadonlyMap<string, string>): string {
 }
 
 /** Find the `[from, to]` prefixes every entry of `names` follows, from the first
- *  entry's longest common suffix; undefined where some entry does not. */
+ *  entry's longest common suffix; `["", ""]` for no entries, undefined where
+ *  some entry does not follow them. */
 function prefixMappingOf(names: ReadonlyMap<string, string>): [string, string] | undefined {
   const first = names.entries().next();
   if (first.done) {
@@ -364,10 +348,10 @@ export function namingDigest(kind: string, own: string, below: string): string {
 }
 
 /**
- * The step a content's provenance carries where a reference names the content
- * whole: each file's source path is `<sourcePath>:<its name>`, where nothing
- * beneath names it otherwise. A registry's package carries one, naming the
- * package as `@npm:react:18.2.0` names it.
+ * The kind of step a content's provenance carries where a reference names the
+ * content whole: each file's source path is `<sourcePath>:<its name>`, where
+ * nothing beneath names it otherwise. A registry's package carries one, naming
+ * the package as `@npm:react:18.2.0` names it.
  */
 export const SOURCE_PATH_PROVENANCE = "source-path";
 
@@ -382,14 +366,12 @@ registerProvenanceNaming<ISourcePathStep>(SOURCE_PATH_PROVENANCE, {
   digest: (step, names, below) => namingDigest(SOURCE_PATH_PROVENANCE, JSON.stringify(step.sourcePath), below(names)),
   prefix: (step, below) => wholeContentPrefix(step, step.sourcePath, below),
 });
-/* Explains nothing a diagnostic needs: the steps beneath say why the content
- * is here. */
+/* Renders nothing: the steps beneath explain the content. */
 registerProvenanceRenderer(SOURCE_PATH_PROVENANCE, () => []);
 
 /**
- * A step recording that a set's files were renamed: each new name to the name
- * it had in the set beneath, so a name beneath is asked by the name it had
- * there.
+ * The kind of step recording that a set's files were renamed; the steps
+ * beneath are asked about each file by the name it had there.
  */
 export const RENAME_PROVENANCE = "rename";
 
@@ -417,14 +399,9 @@ registerProvenanceNaming<IDerivedStep>(DERIVED_PROVENANCE, {
 });
 
 registerProvenanceRenderer<IDerivedStep>(DERIVED_PROVENANCE, (derived, context): IDiagnosticNote[] => {
-  /* The mapping is the point, so it is stated whenever there IS one: a name
-   * that arrived by being renamed reads as a puzzle until the rename is on the
-   * page. Where the step did not rename it, saying so twice would be noise —
-   * it is just an input that happens to be called that.
-   *
-   * Deliberately the step's own name and no verb of its own: "compiled",
-   * "lowered", "copied" belong to whichever step this is, and the step is named
-   * right here for a reader who wants to know which it was. */
+  /* State the mapping where the file's name differs from `from`; otherwise say
+   * only that it is an input. Name the step rather than using a verb of its
+   * own ("compiled", "lowered"), which would be the step's to choose. */
   return [
     {
       message:

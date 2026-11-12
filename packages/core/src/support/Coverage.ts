@@ -43,7 +43,8 @@ export interface ICoverageRecord {
 /** Merged coverage, by source. */
 export type Coverage = Map<string, ICoverageRecord>;
 
-/** Read a count as lcov writes one: `-` is a branch whose block never ran. */
+/** Read a count as lcov writes one; `-` (a branch whose block never ran), or
+ * anything else that is not a number, reads as 0. */
 function countOf(text: string | undefined): number {
   const count = Number(text);
   return Number.isFinite(count) ? count : 0;

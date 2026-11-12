@@ -18,9 +18,21 @@
  */
 
 /**
- * The js_package[build] rule: build a Node/NPM-compatible package — compile
- * its TypeScript sources against the resolved deps, generate its package.json,
- * and deliver it as a PackageFileSet carrying identity and direct deps.
+ * The js_package[build] rule: build an npm package named as the target, at
+ * its `version`. The sources in `srcs` and the entry points in `exports` are
+ * compiled through js_compile against `deps`, `provided_deps`,
+ * `optional_provided_deps` and `compile_deps`, leaving out `tests` and the
+ * loose files in `test_deps`, `test_resources` and `test_expectations`; their
+ * stylesheets are compiled to CSS. `resources` are shipped as they are. Where
+ * `JS_TARGET` names `dual`, a CommonJS and an ES-module compile (`.mjs`) are
+ * shipped together.
+ *
+ * The generated `package.json` starts from a `package.json` among the sources,
+ * and adds `metadata`, the entry points, a bin for each executable directly
+ * under `bin/`, and the requirements as written: `deps` as `dependencies`,
+ * `provided_deps` as `peerDependencies` and `optional_provided_deps` as
+ * optional peers. The result is a PackageFileSet requiring those packages, the
+ * provided ones named as provided.
  */
 
 import {
@@ -86,13 +98,12 @@ type PackageRequirements = {
 /** The `js_package` rule, under `build`. */
 export default defineRule({
   /**
-   * State the package's requirements, resolved as one collection so this
-   * target's pins govern the lot (a package needing Node APIs lists
-   * `@types/node` among them). `dependencies` and `provided` are what the
-   * package passes on. `provided_deps` take part in resolution and the compile
-   * like `deps`, are written to `peerDependencies`, and are carried named as
-   * provided, so a consumer's collection point binds each to what it uses under
-   * that name. The compiler is resolved apart, by js_compile.
+   * State the package's requirements as one collection, so this target's pins
+   * apply to them all. `dependencies` (`deps`), `provided` (`provided_deps`)
+   * and `optional_provided` are what the package passes on; each consumer binds
+   * a provided one to what it uses under that name. `compile_deps` are compiled
+   * against and not passed on. Throws where `version` is not a valid npm
+   * version. The compiler is resolved by js_compile, apart from these.
    */
   requirements(context: TargetContext): Computable<ResolutionSpec<PackageRequirements>> {
     return context.getProperty("version").then(version => {
@@ -108,7 +119,7 @@ export default defineRule({
           dependencies: context.getPackageProperty("deps", undefined, NPM_FORMAT),
           provided: context.getPackageProperty("provided_deps", undefined, NPM_FORMAT),
           optional_provided: context.getPackageProperty("optional_provided_deps", undefined, NPM_FORMAT),
-          /* Compiled against, and private to the build: not passed on. */
+          /* Compiled against, and not passed on. */
           compile_deps: context.getPackageProperty("compile_deps", undefined, NPM_FORMAT),
           test_resources: context.getFileProperty("test_resources"),
           test_expectations: context.getFileProperty("test_expectations"),
@@ -117,7 +128,7 @@ export default defineRule({
       };
     });
   },
-  /* Describe the package as an editor is told of it: its build unit, and its manifest. */
+  /* Describe the package for an editor: its build unit, and its manifest. */
   describe(context, requirements) {
     return Computable.forAll([requirements.describeAll(), context.getLooseFileProperty("test_deps")], (gathered, testDeps) =>
       describePackage(context, gathered, testDeps, requirements.resolved)
@@ -130,10 +141,11 @@ export default defineRule({
         requirements.packages("dependencies"),
         requirements.packages("provided"),
         requirements.packages("optional_provided"),
-        /* The files `test_deps` names, subtracted from `srcs`: test support that
-         * compiles with the tests and does not ship. Read here rather than among
-         * the requirements, so the packages and targets it names are the tests'
-         * alone, and a test-support package may depend on this one. */
+        /* The loose files `test_deps` names, left out of the compile: test
+         * support compiled with the tests and not shipped. Read it here, not
+         * among the requirements: there the packages and targets it names would
+         * resolve with this build, and a test-support package depending on this
+         * one would be a cycle. */
         context.getLooseFileProperty("test_deps"),
       ],
       (gathered, dependencies, provided, optional_provided, testDeps) =>
@@ -207,9 +219,9 @@ function describePackage(
   );
 }
 
-/** A package needs no version, but one it states must be one npm can read: it
- * is written into the manifest, and everything that later resolves against
- * the package compares by it. */
+/** Check that a stated `version` is one npm can read, or throw a FabrError. It
+ * is written into the manifest, and whatever resolves against the package
+ * compares by it. A package need state no version. */
 function assertPackageVersion(version: string | undefined): void {
   if (version === undefined) {
     return;
@@ -276,25 +288,24 @@ export function packageCompileInputs(parts: {
   deps: FileSet[];
   testOnly: FileSet[];
 }): IPackageCompileInputs {
-  /* The declared entry points are compile inputs in their own right, so a
-   * target may name one that `srcs` does not cover (js_bundle's `entry` has
-   * the same relation to its `srcs`). Naming the same file twice is not a
-   * conflict — a union is by file identity, not by arrival. */
+  /* The entry points are compile inputs of their own, so one need not be in
+   * `srcs` (as js_bundle's `entry` need not be in its `srcs`). A file named in
+   * both is one file, not a conflict. */
   const exported = FileSet.unionAll(...parts.exports);
   const sources = FileSet.unionAll(...parts.srcs, exported);
   const tests = FileSet.unionAll(...parts.tests);
-  /* `srcs` minus everything declared test-only. `tests` is the obvious
-   * half; the other is the plain-SOURCE part of `test_deps` — test support
-   * that compiles with the test types in scope but is neither run nor
-   * shipped (an integration suite the entry file imports, a harness). A
-   * file named there is not package content, exactly as one named in
-   * `tests` is not. A Flag is excluded: it names nothing. */
+  /* `srcs` less everything test-only: `tests`, and the source files among
+   * the test-only lists (`test_deps`' test support, such as a harness,
+   * compiled with the tests but neither run nor shipped). A Flag names no
+   * files and is skipped. */
   const testOnlySources = parts.testOnly.filter((source): source is FileSet => !(source instanceof Flag));
   const compileSources = sources.minus(tests).minus(FileSet.unionAll(...testOnlySources));
   const compileDeps = parts.deps.filter((dep): dep is FileSet => dep instanceof FileSet);
   return { exported, sources, compileSources, compileDeps };
 }
 
+/** Build the package from its materialized requirements, `edges` being the
+ * edges to the packages it passes on. */
 function buildJsPackage(
   context: TargetContext,
   gathered: {
@@ -339,13 +350,12 @@ function buildJsPackage(
             testOnly: [...testDepSources, ...testResourceSources, ...expectationSources],
           });
           const dual = jsTarget.module === "dual";
-          /* If there's a 'package.json' in the source list, we can initialize the output package.json from it */
+          /* A `package.json` among the sources seeds the generated one. */
           const seedJson = sources.get("package.json").then(file => file && readJsonFile(file, toJsonObject));
-          /* Declared (not resolved) requirements for the generated manifest: each
-           * reports what was *written* — an inline `@npm:pkg:1.2.3` off the
-           * reference the edge was resolved for, a catalog dep from the catalog's
-           * pin — not the version the joint resolution selected. Provided deps
-           * declare `peerDependencies`, optional ones marked so. */
+          /* The requirements as written, for the generated manifest: the
+           * version an `@npm:pkg:1.2.3` reference states, or a catalog's pin,
+           * not the version the resolution selected. Provided deps go to
+           * `peerDependencies`, the optional ones marked so. */
           const declaredDeps = context.collectDeclaredRequirements(edges.dependencies);
           const declaredProvided = context.collectDeclaredRequirements(edges.provided);
           const declaredOptional = context.collectDeclaredRequirements(edges.optional_provided);
@@ -353,55 +363,49 @@ function buildJsPackage(
           return Computable.forAll(
             [seedJson, declaredDeps, declaredProvided, declaredOptional],
             (seed, declared, providedDeclared, optionalDeclared) => {
-              /* Compile against the direct deps: the sources see only these, while
-               * the transitive closure is reachable only by the deps themselves —
-               * the dependency manifest's doing, not a layout's. Provided deps are
-               * on the compile path too (js codes against core's types). */
-              /* Stylesheets in `srcs` are built like any other source, so the
-               * package ships plain CSS rather than Sass — a css-module as its
-               * scoped stylesheet plus the compiled class-map module. One meant to
-               * be `@use`d BY other packages belongs in `resources`, which ships it
-               * verbatim. */
-              /* A dual target is built as TWO compiles, each pinned to a format — one
-               * compile emits one module system. The ES-module format additionally
-               * emits `.mjs`/`.d.mts`, so the two trees ship together at the package
-               * root instead of occupying the same names. */
+              /* Compile against the direct deps, provided ones included: the
+               * sources see only these, and what they require is reachable only
+               * from them. */
+              /* Stylesheets in `srcs` are compiled like any other source, so the
+               * package ships CSS: a css-module as its scoped stylesheet and its
+               * class-name module. A stylesheet other packages `@use` belongs in
+               * `resources`, which ships as it is. */
+              /* A dual target is two compiles, one per module format. The
+               * ES-module compile emits `.mjs`/`.d.mts`, so the two trees ship
+               * together at the package root. */
               const formatCompile = (format: "commonjs" | "esm"): Computable<ICompiledContents> =>
                 compileContents(context, compileSources, compileDeps, {
                   packageName: context.name,
                   constraints: Constraints.of({ JS_TARGET: formatJSTarget({ ...jsTarget, module: format }) }),
                   moduleExtension: format === "esm" ? ESM_JS_EXTENSION : undefined,
                 });
-              /* Single-format keeps the ambient target verbatim. */
+              /* A single-format compile uses JS_TARGET as it is. */
               const contents = dual
                 ? formatCompile("commonjs")
                 : compileContents(context, compileSources, compileDeps, { packageName: context.name });
               const esmContents = dual ? formatCompile("esm") : undefined;
 
-              /* Delivery shape: add the generated package.json (in memory — its
-               * entry points depend on the compiled file list) and wrap with
-               * identity + carried deps. This runs on every evaluation (whether the
-               * compile sub-target hit or missed), reconstructing the runtime-only
-               * identity each time. */
+              /* Add the generated package.json (in memory: its entry points
+               * depend on the compiled files) and make the package, with its name
+               * and requirements. This runs on every evaluation, whether the
+               * compile was a cache hit or not. */
               const deliver = (
                 { compiled, css, passthrough, depOutputs, rewrites }: ICompiledContents,
                 esm?: ICompiledContents
               ): Computable<FileSource> => {
-                /* A source dep is compiled against, not distributed, so what the
-                 * compiler emitted for one is dropped here — a package ships its
-                 * own artifacts. The test pipeline keeps them, needing the file to
-                 * run. */
+                /* Drop what the compiler emitted for a source file in `deps`: it is
+                 * compiled against, not shipped. The test pipeline keeps it, to
+                 * run it. */
                 const own = compiled.minus(depOutputs);
                 /* Two formats, one tree — see dualFormatOutputs. */
                 const formats = esm ? dualFormatOutputs(own, esm.compiled.minus(esm.depOutputs)) : [own];
-                /* `resources` ship exactly as given — never compiled, so a prebuilt
-                 * .js keeps its own level and a hand-written .d.ts is the only
-                 * declaration for it (no generated one to collide with). Taken from
-                 * the primary format alone: both compiles pass the same files through. */
+                /* `resources` ship as given, never compiled: a prebuilt .js keeps
+                 * its own level, and a hand-written .d.ts is its only declaration.
+                 * For a dual target the passthrough files are taken from the
+                 * CommonJS compile alone: both pass the same files through. */
                 const delivered = FileSet.unionAll(...formats, stripPackageJson(passthrough), css, ...resourceSets);
-                /* Guarantee every declared bin opens with an interpreter line so the
-                 * installed npm command is launchable — derived from the bin convention,
-                 * not a hand-written source shebang (see withBinShebangs). */
+                /* Give every bin an interpreter line, so the installed npm command
+                 * can be launched (see withBinShebangs). */
                 return withBinShebangs(delivered).then(shebanged => {
                   const packageJson = createPackageJson({
                     files: shebanged,
@@ -413,9 +417,8 @@ function buildJsPackage(
                     optionalProvided: optionalDeclared,
                     jsTarget,
                     metadata,
-                    /* Named by their source names: the map is generated from the
-                     * emitted counterparts, so an author declares entry points in
-                     * the terms they wrote them in, never in fabr's emit layout. */
+                    /* Named by their source names; the manifest maps each to the
+                     * files emitted for it. */
                     exports: [...exported].map(([sourceName]) => sourceName),
                     rewrites,
                   });
@@ -424,9 +427,8 @@ function buildJsPackage(
                 });
               };
 
-              /* The compiled/lowered parts are sub-target output; a target with
-               * nothing to build yields empty ones and the package is just its
-               * passthrough files + package.json, assembled in memory. */
+              /* A target with nothing to compile gets empty compile outputs, and
+               * the package is its passthrough files and package.json. */
               return esmContents === undefined
                 ? contents.then(primary => deliver(primary))
                 : Computable.forAll([contents, esmContents], (primary, secondary) => deliver(primary, secondary));

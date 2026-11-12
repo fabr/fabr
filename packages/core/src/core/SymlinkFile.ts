@@ -24,27 +24,21 @@ import { IFile } from "./FileSet";
 import { FabrError } from "./Errors";
 
 /**
- * A symbolic link within a FileSet: an IFile that names another path (its
- * `target`) rather than carrying content of its own. It participates in a
- * FileSet like any file — matched by `find`, keyed by its own name — and stages
- * to disk as a real symlink (see Staging.writeFileSet). Its "content" is the
- * link text (the target path), so `readString`/`getBuffer` return that.
- *
- * A consumer that wants to follow the link resolves `target` within the set
- * itself (a FileSet doesn't dereference for you); RunnableFileSet uses this to
- * carry a package's bins (`tsc` → its real file) as find-time entries, resolving
- * the target to the real install path at launch — so no symlink is ever staged
- * on that path, though staging one is fully supported for other uses.
+ * A symbolic link in a FileSet: a file whose content is the path it names,
+ * `target`, which `readString` and `getBuffer` return. It is matched and keyed
+ * by its own name like any file, and staged as a real symlink
+ * (`writeFileSet`), which staging leaves out where the target leads outside
+ * the tree being written. A FileSet does not follow links: a consumer that
+ * wants the file a link names looks `target` up itself, as RunnableFileSet
+ * does for a package's bins.
  */
 export class SymlinkFile implements IFile {
   public readonly hash: string;
-  /** A symlink's own permission bits are conventionally 0o777 and ignored on
-   * most systems (the target's mode governs); carried only to satisfy IFile —
-   * a symlink stages as a link, never through the read-only blob path. */
+  /** A symlink's own permission bits, which most systems ignore. */
   public readonly mode = 0o777;
-  /** The freedesktop name for "this entry IS a symlink" — a constant of the
-   * class, never sniffed (link text is a path, not content), and not written to
-   * the manifest (a link line's form already says what it is). */
+  /** The freedesktop type for a symlink: fixed for the class, never sniffed
+   * from the link text, and not written to the cache manifest, where a link has
+   * a line of its own form. */
   public readonly mime = "inode/symlink";
 
   constructor(public readonly target: string) {
@@ -67,33 +61,30 @@ export class SymlinkFile implements IFile {
     return file instanceof SymlinkFile && file.target === this.target;
   }
 
-  /** A symlink has no source path on disk — it names its target, which staging (Staging.writeFileSet) writes as a real link. */
+  /** @return undefined: a symlink has no file on disk to read. */
   public getAbsPath(): undefined {
     return undefined;
   }
 }
 
-/** The scheme a {@link HostLink}'s symbolic target carries. It is not there to
- * be read back — nothing parses it — but to make the degraded form inert: should
- * a link ever be written to a manifest and re-read, it comes back as a plain
- * symlink whose target is not a path to anything, which the staging containment
- * guard drops. */
+/** The scheme a {@link HostLink}'s `target` starts with. Nothing parses it: a
+ * host link written to a manifest and read back is a plain symlink whose target
+ * names no path, which staging leaves out. */
 const HOST_LINK_SCHEME = "fabr-host:";
 
 /**
  * A link to a program of the host, used where it lies (`@host:clang`).
  *
- * Its identity — hash, `target`, hence every action key it rides in — is the
- * program's content hash, never its location on this machine: a different
- * build of the program is a different key, and the same program found at
- * another path is the same one. `location` is where the program is run from
- * (a command line names it there, see `toArgv`), and where a link is staged to
- * when the program is read as a file; it is no part of that identity.
+ * Its identity (its hash and `target`, and so every action key holding it) is
+ * the program's content hash, not its location on this machine: a different
+ * build of the program is a different key, and the same program at another
+ * path is the same one. `location` is where the program is run from (see
+ * `toArgv`), and what a link is staged to when the program is read as a file;
+ * it is no part of the identity.
  *
- * **In-memory only, and that is a security property.** Staging lets this class
- * out of the tree being written, so being one must not be something content can
- * claim: a host link exists only where fabr constructs one, and nothing parses
- * one back.
+ * Staging writes a host link even though it leads out of the tree being
+ * written. Construct one only for a program fabr found itself, and never make
+ * one from content read back (a manifest, an archive).
  */
 export class HostLink extends SymlinkFile {
   constructor(

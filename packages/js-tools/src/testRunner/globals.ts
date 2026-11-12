@@ -18,16 +18,14 @@
  */
 
 /**
- * Test-globals shim, preloaded (--require) into every test process by the
- * runner: exposes node:test's describe/it family under the conventional
- * global names (including the jest-style beforeAll/afterAll aliases), typed
- * by test-globals.d.ts. Assertion libraries are not provided here — tests
- * import them explicitly from their test_deps. Tests that import describe/it
- * from node:test directly are unaffected (their imports shadow the globals).
+ * The native runner's preload, required into every test process: installs
+ * node:test's describe/it family as globals (with jest's beforeAll/afterAll
+ * names for before/after), typed by test-globals.d.ts, without replacing a
+ * global already defined. Tests import their assertion libraries themselves.
  *
- * Also places node:test's recorded snapshots (`t.assert.snapshot`) where fabr
- * collects them — see snapshotPathOf — and makes stylesheet and binary imports
- * yield their stubs (see Assets).
+ * Also places node:test's recorded snapshots (`t.assert.snapshot`) at
+ * snapshotPathOf's path, and makes stylesheet and binary imports yield their
+ * stubs (see Assets).
  */
 
 import * as nodeTest from "node:test";
@@ -48,7 +46,7 @@ globals.afterEach ??= nodeTest.afterEach;
 globals.beforeAll ??= nodeTest.before;
 globals.afterAll ??= nodeTest.after;
 
-/* Absent before node 22.3, where there are no snapshot assertions to place. */
+/* `snapshot` is absent before node 22.3, which has no snapshot assertions. */
 (
   nodeTest as { snapshot?: { setResolveSnapshotPath(fn: (testPath: string | undefined) => string | undefined): void } }
 ).snapshot?.setResolveSnapshotPath(testPath => (testPath === undefined ? undefined : snapshotPathOf(testPath)));

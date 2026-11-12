@@ -18,12 +18,11 @@
  */
 
 /**
- * Find the closest candidate to `input` by edit distance (case-insensitive), or
- * undefined when no candidate is plausibly a slip of it — the "did you mean?"
- * primitive behind unresolved-name diagnostics. The allowance scales with the
- * input (one edit per three characters, capped at three), so a short name only
- * matches a near-exact slip while a long one tolerates a few. Ties break to
- * the earliest candidate (declaration order).
+ * Find the candidate closest to `input` by edit distance, ignoring case, for a
+ * "did you mean?" suggestion. A candidate matches only within one edit per
+ * three characters of `input`, at least one and at most three; among equally
+ * close candidates the first wins.
+ * @return the closest candidate, or undefined where none is close enough.
  */
 export function closestMatch(input: string, candidates: Iterable<string>): string | undefined {
   const target = input.toLowerCase();
@@ -40,9 +39,8 @@ export function closestMatch(input: string, candidates: Iterable<string>): strin
   return best;
 }
 
-/** Compute the Levenshtein distance, capped: any true distance above `cap` reports as
- * `cap + 1` (with a cheap length-difference pre-check and an early exit when a
- * whole row exceeds the cap — the usual bounded-DP shape). */
+/** Compute the Levenshtein distance between `a` and `b`, any distance above
+ * `cap` reported as `cap + 1`. */
 function editDistance(a: string, b: string, cap: number): number {
   if (Math.abs(a.length - b.length) > cap) {
     return cap + 1;

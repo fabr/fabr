@@ -19,10 +19,12 @@
 
 import type { IPropertyDecl } from "./AST";
 
+/** A property's value as read in one configuration: its words, and where
+ *  they came from. */
 export class Property {
   private values: string[];
-  /** The declaration that answered, where one did (a value given as a
-   *  constraint has none). Runtime-only: for saying where a value came from. */
+  /** The declaration that gave the value, where one did (a value given as a
+   *  constraint has none). Runtime-only, for provenance. */
   public readonly origin?: IPropertyDecl;
   constructor(values: string[], origin?: IPropertyDecl) {
     this.values = values;

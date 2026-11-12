@@ -18,24 +18,12 @@
  */
 
 /**
- * The load-time hoist. `jest.mock(...)` must take effect before the `require`
- * calls it affects, but a compiler emits it where it was written — after them.
- * Jest solves this by rewriting the source as it transforms it; fabr owns
- * compilation and keeps the compiled tree PURE (one artifact serves the package
- * build and the test run alike), so the rewrite happens here instead, at
- * require time, on a file about to be loaded.
- *
- * **The transform is swc's** (its jest hoist pass), not jest's
- * `babel-plugin-jest-hoist`. The two differ in what they accept: babel's plugin
- * also *validates* a factory's free variables, allowing only `mock`-prefixed
- * names, known globals and pure `const`s, while swc hoists without judging. So
- * fabr accepts a superset of what babel-jest accepts, never a subset: a suite
- * that runs under jest keeps running here.
- *
- * Source maps are threaded through (see {@link inputMapFor}): the hoist MOVES
- * statements, so line numbers shift, and without chaining the compiler's map
- * every stack trace in a failure would point at compiled lines rather than the
- * original TypeScript.
+ * The load-time hoist: `jest.mock(...)` and its kin are moved above the
+ * `require` calls they affect as a compiled file is loaded, by swc's jest hoist
+ * pass. Unlike jest's `babel-plugin-jest-hoist`, it does not check a mock
+ * factory's free variables, so it accepts every file babel-jest accepts and
+ * more. The compiler's source map is chained into the hoisted file's, so a
+ * stack trace still names the original source.
  */
 
 import * as fs from "node:fs";
@@ -43,9 +31,7 @@ import * as path from "node:path";
 import { Module } from "node:module";
 import { isCodeUnderTest, runnerDependency } from "./Tools";
 
-/** The calls jest hoists. A file mentioning none of them needs no transform,
- * which is the overwhelming majority — so this cheap token scan is what keeps
- * the hoist off the hot path. */
+/** The calls jest hoists. A file mentioning none of them is not transformed. */
 const HOISTABLE = /\bjest\s*\.\s*(mock|unmock|deepUnmock|enableAutomock|disableAutomock)\s*\(/;
 
 /** Where a compiled file names its source map. */
@@ -60,15 +46,11 @@ interface ISwc {
 }
 
 /**
- * Wrap `Module.prototype._compile` so first-party sources are hoisted as they
- * load.
- *
- * **Scope: the code under test only, never node_modules.** The wrap sees every
- * CommonJS module in the process, and plenty of published test-utility packages
- * merely *contain* the token `jest.mock` in their shipped code; feeding one of
- * those through a transform could fail to parse and break a module that loads
- * fine today. Restricting to the staged tree is the fixed-convention analogue
- * of jest's default `transformIgnorePatterns`.
+ * Wrap `Module.prototype._compile` so that a file of the code under test below
+ * `root` that calls a hoistable `jest` method is hoisted as it loads. Nothing
+ * in `node_modules` is transformed, as with jest's default
+ * `transformIgnorePatterns`: a published package may contain the token and fail
+ * to parse as a script.
  */
 export function installHoist(root: string): void {
   const compiling = Module as unknown as { prototype: ICompilingModule };
@@ -86,18 +68,14 @@ export function installHoist(root: string): void {
 function hoisted(swc: ISwc, content: string, filename: string): string {
   return swc.transformSync(content, {
     filename,
-    /* Already-compiled CommonJS. `isModule: false` parses it as a script, so a
-     * stray top-level `this` reads as it does at runtime, and no module
-     * transform is applied — the only change wanted here is the hoist. */
+    /* Already-compiled CommonJS: parse it as a script, so a top-level `this`
+     * reads as at runtime, and apply no module transform. */
     isModule: false,
     jsc: {
       parser: { syntax: "ecmascript" },
       target: "es2022",
-      /* The hoist pass. Undocumented in swc's published types, but load-bearing
-       * for `@swc/jest` — swc's own jest transformer sets exactly this — so it
-       * cannot move without breaking their own package. Should it ever move,
-       * going through `@swc/jest` is the fallback (it owns the name), at the
-       * cost of the per-file input map below, which it cannot accept. */
+      /* The hoist pass: undocumented in swc's types, and what `@swc/jest`
+       * sets. */
       transform: { hidden: { jest: true } },
     },
     sourceMaps: "inline",
@@ -106,13 +84,10 @@ function hoisted(swc: ISwc, content: string, filename: string): string {
 }
 
 /**
- * Read the compiler's own source map for this file, as JSON, so the hoist's map
- * can be chained onto it and a stack trace still names the original TypeScript.
- *
- * Both spellings are handled because both occur: an inline `data:` map (what a
- * single-file transform emits) and a sibling `.map` file (what fabr's `tsc`
- * emits). Undefined when there is none — a release build strips them — in which
- * case the hoist maps to the compiled file, as it must.
+ * Read the source map a compiled file names, as JSON text: an inline base64
+ * `data:` map, or a file relative to it (what the tsc driver emits).
+ * @return the map, or undefined where the file names none (a release build) or
+ *   the named file cannot be read.
  */
 function inputMapFor(content: string, filename: string): string | undefined {
   const url = MAP_URL.exec(content)?.[1];
@@ -126,7 +101,7 @@ function inputMapFor(content: string, filename: string): string | undefined {
   try {
     return fs.readFileSync(path.resolve(path.dirname(filename), url), "utf8");
   } catch {
-    /* Named but absent: the hoist is still correct, only less well mapped. */
+    /* Named but absent: hoist without an input map. */
     return undefined;
   }
 }

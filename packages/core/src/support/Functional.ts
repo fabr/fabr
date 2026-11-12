@@ -19,12 +19,7 @@
 
 import { Computable, ComputableSource } from "../core/Computable";
 
-/**
- * Map each item and keep only the defined results — `map` then drop `undefined`
- * in one pass, typed as `U[]`. A `fn` returning `undefined` selects the item
- * out; any side effect it performs on that path (e.g. logging the reason)
- * still runs.
- */
+/** Map each item with `fn`, keeping only the results that are not undefined. */
 export function select<T, U>(items: Iterable<T>, fn: (item: T) => U | undefined): U[] {
   const result: U[] = [];
   for (const item of items) {
@@ -36,10 +31,9 @@ export function select<T, U>(items: Iterable<T>, fn: (item: T) => U | undefined)
   return result;
 }
 
+/** Map each own enumerable property of `input` to `fn`'s result for it. */
 export function mapObject<K extends string | symbol | number, V, U>(input: Record<K, V>, fn: (key: K, value: V) => U): Record<K, U> {
   const result = {} as Record<K, U>;
-  /* Own enumerable keys only, so an inherited member cannot be mapped in — the
-   * guard a `for...in` would need. */
   for (const key of Object.keys(input) as K[]) {
     result[key] = fn(key, input[key]);
   }
@@ -47,11 +41,9 @@ export function mapObject<K extends string | symbol | number, V, U>(input: Recor
 }
 
 /**
- * Compare two strings by plain code unit, for canonical orderings. Key material and
- * serialized documents sort with THIS (or `Array.sort`'s default), never
- * `localeCompare`: a locale collation varies with the machine's ICU and can
- * even order two distinct strings as equal, where the whole point of a
- * canonical order is one answer everywhere. Locale collation is for display.
+ * Compare two strings by code unit, as `Array.sort`'s default orders them. Sort
+ * key material and serialized documents with this, never `localeCompare`,
+ * whose order varies with the machine's ICU.
  */
 export function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
@@ -62,17 +54,15 @@ export const DEFAULT_MAX_CONCURRENCY = 16;
 
 /**
  * Run a one-shot operation on each of `items`, at most `maxConcurrency` at a
- * time, yielding the results in `items` order. `items` is iterated as the
- * operations start: `fn` is called when an item's turn comes, so an operation
- * that starts on construction starts then; a source it returns is consumed
- * once, and a later change to it is not followed.
+ * time, resolving to the results in `items` order. `items` is iterated and `fn`
+ * called only as each item's turn comes. The first value a returned source
+ * settles to is taken; a later change to it is not followed.
  *
- * A failure stops further items from starting; once the operations already in
- * flight have settled, the result rejects with the first error.
+ * A failure stops further items from starting; once the operations already
+ * running have settled, the result rejects with the first error.
  *
- * Any list whose length follows the data (files, archive members) goes through
- * this rather than {@link Computable.forAll}, which takes one argument per
- * input.
+ * Use this, not {@link Computable.forAll}, for a list whose length depends on
+ * the data (files, archive members).
  */
 export function mapComputable<T, U>(
   items: Iterable<T>,

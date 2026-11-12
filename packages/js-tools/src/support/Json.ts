@@ -24,10 +24,8 @@
  * tool cannot import at runtime.
  */
 
-/**
- * Converts a parsed document to the value a caller needs, or throws the reason
- * it cannot.
- */
+/** A function converting a parsed document to the value a caller needs, or
+ * throwing the reason it cannot. */
 export type JsonConverter<T> = (json: unknown) => T;
 
 /** Read a document from `text`, attributed to `what` in any error. */
@@ -53,8 +51,8 @@ export function toJsonObject(json: unknown): Record<string, unknown> {
   return json;
 }
 
-/** @return true if `value` is a JSON object, otherwise false. Excludes `null`
- * and arrays, both of which are `typeof === "object"`. */
+/** @return true if `value` is a JSON object (not `null` nor an array),
+ * otherwise false. */
 export function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

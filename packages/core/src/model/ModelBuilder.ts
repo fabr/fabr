@@ -285,11 +285,11 @@ export class ModelBuilder implements BuildModel {
   private readonly resolvedPlugins = new Set<string>();
   /** Loads the implementations `rule` and `repository` declarations name. */
   private readonly load: LoadImplementation;
-  /** What the model reports through, counting its errors: held until {@link finish} reports them to `out`. */
+  /** The log the model reports through, counting its errors; its diagnostics are held until {@link finish} reports them to `out`. */
   private readonly log: ErrorTrackingLog;
   /** The diagnostics reported about what was added, each a report to make. */
   private readonly held: Array<(log: Log) => void> = [];
-  /** The errors reported elsewhere about what was added: reading its files, resolving its plugins. */
+  /** The number of errors reported elsewhere about what was added: reading its files, resolving its plugins. */
   private reported = 0;
   /** The files that failed to parse, by name: their declarations are not validated. */
   private readonly unparsed = new Set<string>();
@@ -300,10 +300,11 @@ export class ModelBuilder implements BuildModel {
 
   /**
    * Make a model of no files, with the rules and repositories of
-   * `contributions`, whose declared implementations `load` loads: by default,
-   * from core and the plugins added. What is wrong in what is added to it is
-   * reported through `out` when it is finished, so a model made and dropped
-   * reports nothing.
+   * `contributions`, whose declared implementations `load` loads (by default,
+   * from core and the plugins added). What is wrong in what is added is
+   * reported through `out` only when the model is finished, so a model dropped
+   * before then reports nothing. Throws where two contributions register one
+   * repository type.
    */
   constructor(
     private readonly out: Log,
@@ -325,9 +326,7 @@ export class ModelBuilder implements BuildModel {
         this.addRule(rule);
       }
       for (const repository of contribution.repositories ?? []) {
-        /* A repository type names a resolution mechanism; two contributions
-         * claiming the same type is a plugin conflict, not a silent last-wins
-         * override — reject it. */
+        /* Two contributions may not register one repository type. */
         if (this.repositories.has(repository.type)) {
           throw new FabrError(`Duplicate repository type '${repository.type}' registered by more than one plugin`);
         }
@@ -338,13 +337,13 @@ export class ModelBuilder implements BuildModel {
   }
 
   /**
-   * Add the declarations of `files` to the model, `reported` errors having been
-   * reported reading them, the files named in `unparsed` failing to parse: their
-   * declarations are not validated, holding only what parsed. A name they declare that the model already declares
-   * is the ordinary conflict. Nothing is checked against a targetdef until
-   * {@link validate}, so a file may use a type a file added later declares.
-   * A plugin's files (`fromPlugin`) may declare only defaults, and no
-   * `fabr_plugin`, so nothing they add changes what was read before them.
+   * Add the declarations of `files` to the model. `reported` counts the errors
+   * already reported reading them; the files named in `unparsed` failed to
+   * parse, hold only what parsed, and their declarations are not validated. A
+   * name the model already declares is reported as a conflict. Nothing is
+   * checked against a targetdef until {@link finish}, so a file may use a type
+   * a file added later declares. A plugin's files (`fromPlugin`) may declare
+   * only defaults, and no `fabr_plugin`; anything else is reported.
    */
   public addFiles(
     files: IBuildFileContents[],
@@ -380,10 +379,11 @@ export class ModelBuilder implements BuildModel {
   }
 
   /**
-   * Add what the `plugin` declaration `decl` resolved to, `reported` errors
-   * having been reported resolving it: a plugin package, whose
-   * implementations are then loaded from it, or the reason it names none,
-   * which is reported here. A second plugin of one package's name is an error.
+   * Add what the `plugin` declaration `decl` resolved to, `reported` counting
+   * the errors already reported resolving it. A plugin package is added, and
+   * its implementations are then loaded from it. An error (the reason it names
+   * no plugin, or the failure of the plugin's build) is reported here, as is a
+   * second plugin whose package has the same name.
    */
   public addPlugin(decl: IPluginDecl, resolved: PluginPackage | Error, reported = 0): void {
     this.resolvedPlugins.add(decl.name.toString());
@@ -444,12 +444,16 @@ export class ModelBuilder implements BuildModel {
   }
 
   /**
-   * Finish the model: report each `plugin` declaration still pending as naming
-   * nothing, and each include of optional libs still pending as of a plugin the
-   * project does not use where every plugin declaration resolved, check the whole ({@link validate}), and @return the model, or
-   * throw if anything added held an error: the failures of plugins that did
-   * not build, or else a {@link BuildFilesInvalidError} for errors already
-   * reported, which only halts. What is wrong is reported first.
+   * Finish the model: check the whole, report every diagnostic held to `out`,
+   * and @return the model. Each `plugin` declaration still pending is reported
+   * as naming nothing. Where every `plugin` declaration resolved to a plugin,
+   * each include of optional libs still pending is reported as naming a
+   * plugin the project does not use.
+   *
+   * Throws, after reporting, where anything added held an error: a MultiError
+   * of the failures of plugins that did not build, or else a
+   * {@link BuildFilesInvalidError} counting the errors reported, which carries
+   * no detail of its own.
    */
   public finish(): BuildModel {
     const pending = this.pendingPlugins();
@@ -483,8 +487,10 @@ export class ModelBuilder implements BuildModel {
 
   /**
    * Check every declaration added against the targetdefs added: each target
-   * against its type, and each rule and repository type against the type it is
-   * for. A rule or repository type that fails is reported and withdrawn.
+   * against its type, each rule block's declarations, and each rule and
+   * repository type against the type it is for. A declared rule or repository
+   * type that fails is reported and withdrawn; a contributed rule that fails
+   * throws.
    */
   private validate(): void {
     const parsed = (decl: { source: IBuildFile }): boolean => !this.unparsed.has(decl.source.file);
@@ -539,9 +545,9 @@ export class ModelBuilder implements BuildModel {
   }
 
   /**
-   * Check that a type-specific rule guards only on what its type declares: each
-   * of its `targetProperties` must be a STRING property of the type's targetdef.
-   * A type with no targetdef has no schema to check against.
+   * Check that each of a type-specific rule's `targetProperties` is a STRING
+   * property of its type's targetdef, throwing where one is not. A type with
+   * no targetdef is not checked.
    */
   private assertTargetProperties(type: string, rule: RuleDefinition): void {
     const schema = this.root.getTargetDef(type)?.properties;

@@ -18,14 +18,11 @@
  */
 
 /**
- * Staging: moving FileSets between the in-memory graph and real on-disk trees —
- * write a set out (an action's work dir, a runnable's install), keep a live
- * tree tracking successive snapshots (a served install), and collect what a
- * tool wrote back into a FileSet. Deliberately apart from the BuildCache: these
- * are filesystem-materialization primitives with no knowledge of cache keys or
- * the blob pool (they meet the cache only in that staged files are often
- * hardlinks into it — which is why replacement is by rename, never an in-place
- * write).
+ * Staging: writing FileSets out to directories on disk (an action's work dir, a
+ * runnable's install), keeping a directory in step with successive FileSets (a
+ * served install), and collecting what a tool wrote as a FileSet. Nothing here
+ * knows cache keys or the blob pool, but staged files are often hardlinks into
+ * the pool: replace a staged file by rename, never write into it.
  */
 
 import * as fs from "fs";
@@ -58,24 +55,21 @@ const liveTempTrees = new Set<string>();
 let tempExitHookInstalled = false;
 
 /**
- * Register an already-created temp tree for removal when fabr exits, and return
- * it. Callers release it on their normal path ({@link removeTempTree}); this is
- * the backstop for the paths that never reach that call, and it is load-bearing
- * rather than paranoia: fabr routes its own termination signals through
- * `process.exit` (so the build-step group sweep and the run supervisor's child
- * kill still run), and `process.exit` runs no Computable continuation — a
- * `finally` that removes the tree is skipped entirely.
- * WHERE the tree lives is the cache's business, not this module's (see
- * {@link BuildCache.createWorkDir}); only its disposal is handled here.
+ * Register an already-created temp tree for removal when fabr exits, and
+ * return it. Callers release it on their normal path ({@link removeTempTree});
+ * the exit hook removes whatever is still registered, after killing live child
+ * processes. Register anything that must be removed on exit: `process.exit`
+ * (which fabr's signal handlers call) runs no Computable continuation, so a
+ * `finally` that removes the tree never runs. Where the tree lives is the
+ * cache's choice ({@link BuildCache.createWorkDir}).
  */
 export function registerTempTree(dir: string): string {
   if (!tempExitHookInstalled) {
     tempExitHookInstalled = true;
     process.on("exit", () => {
-      /* This hook registers before Execute's kill hooks (the cache's work tree
-       * is registered at construction, before anything spawns), so exit-order
-       * alone would remove these trees out from under still-running children.
-       * Kill them first — a child must never outlive the install it runs in. */
+      /* Kill live children first: this hook is installed before Execute's
+       * (the cache registers its work tree before anything spawns), so would
+       * otherwise remove the trees while children still run in them. */
       killLiveChildren();
       for (const tree of liveTempTrees) {
         rmTempTree(tree);
@@ -87,52 +81,51 @@ export function registerTempTree(dir: string): string {
   return dir;
 }
 
-/** Release a temp tree: remove it and forget it. Idempotent (a tree already
- * released, or already gone, is fine). */
+/** Release a temp tree: remove it and forget it. A tree already released,
+ * or already gone, is fine. */
 export function removeTempTree(dir: string): void {
   liveTempTrees.delete(dir);
   rmTempTree(dir);
 }
 
-/** Best-effort removal: cleanup never outranks the outcome of whatever was
- * using the tree, and this also runs from the exit hook, where a throw would
- * turn a tidy exit into a crash. */
+/** Remove `dir` and everything under it, ignoring any failure. Never throw
+ * here: it also runs from the exit hook. */
 function rmTempTree(dir: string): void {
   try {
     fs.rmSync(dir, { recursive: true, force: true });
   } catch {
-    /* The owning process's work tree is reaped on a later run; nothing else to
-     * do from here. */
+    /* A later run reaps a dead process's work tree. */
   }
 }
 
 /**
- * Materialize a FileSet into `targetDir` (additive — only the given files are
- * written; nothing else in the tree is touched). By default a cache-backed file
- * is **hardlinked** (cheap, shares the blob) — correct for an ephemeral staged
- * tree fabr owns. Pass `copy: true` when the destination is durable user-space
- * (`fabr cp`): the file is copied so an edit of it can never write through to
- * the shared cache blob.
+ * Write `files` into `targetDir`, leaving anything else there untouched.
+ *
+ * By default a file with content on disk is hardlinked (sharing the cache's
+ * read-only blob), and an in-memory file is written read-only to match; a
+ * path that already exists fails the write with a {@link ConflictError}, which
+ * names both sides where two names fold to one path on a case-insensitive
+ * filesystem. With `copy: true`, for a destination the user owns (`fabr cp`), each
+ * file is copied at its own mode, overwriting what is there, so an edit of it
+ * cannot write into a cache blob.
+ *
+ * A {@link SymlinkFile} whose target resolves outside `targetDir` is skipped
+ * without a word; a {@link HostLink} is staged as a link to its program. Any
+ * other filesystem failure rejects as an {@link ExecutionError}.
  */
 export function writeFileSet(targetDir: string, files: FileSet, options?: { copy?: boolean }): Computable<void> {
   const root = path.resolve(targetDir);
   let realRoot: string | undefined;
-  /* Staging is fail-on-clobber: a hardlink/symlink already refuses to overwrite,
-   * and an in-memory write uses `wx`, so two staged names that map to one path on
-   * the target filesystem — most often names differing only in case on a
-   * case-insensitive one — surface as a clear error here instead of one file
-   * silently overwriting the other (which, for a cache-bound install, would store
-   * one file's bytes under the other's hash). Let the filesystem be the detector:
-   * exclusive create is atomic and only collides on a genuinely case-folding fs.
-   * A `copy` (`fabr cp`) is user space and mirrors system `cp` — overwrite. */
+  /* Every write but a copy's fails where the path exists (a link refuses to
+   * overwrite, an in-memory write is exclusive), so two names that fold to one
+   * path are reported rather than one overwriting the other. A copy overwrites,
+   * as `cp` does. */
   const stage = (op: Computable<void>, name: string): Computable<void> =>
     op.catch((err: unknown) => {
       if (!options?.copy && (err as NodeJS.ErrnoException)?.code === "EEXIST") {
         /* Two staged names fold to one path on a case-insensitive filesystem.
-         * Find the earlier-written variant (an O(N) scan, only on this error
-         * path) to name both sides, and attribute each through the install's
-         * lazy merge provenance so the diagnostic traces back to the source
-         * (e.g. the offending npm package and its resolution chain). */
+         * Find the other name to report both, each attributed through the
+         * set's provenance. */
         const folded = name.toLowerCase();
         let other: string | undefined;
         for (const [candidate] of files) {
@@ -150,42 +143,35 @@ export function writeFileSet(targetDir: string, files: FileSet, options?: { copy
       }
       throw new ExecutionError(describeSystemError(err));
     });
-  /* Resolve every name first, so the directories can be created as ONE
-   * concurrent batch of distinct paths ahead of the writes (a synchronous
-   * per-file mkdir would block the event loop, which is also the build's
-   * scheduler). The writes below need every parent to exist (the symlink arm
-   * additionally reads the real path of one), hence a barrier and not a
-   * per-file dependency. */
+  /* Resolve every name first, create the distinct parent directories
+   * together, and only then write. Do not mkdir synchronously per file: that
+   * blocks the event loop the build is scheduled on. */
   const staged = [...files].map(([name, file]) => contained(root, name, file));
   return mapComputable(new Set(staged.map(entry => entry.dirname)), dir => mkdir(dir)).then(() => writeStaged(staged));
 
-  /* Deferred until the directories exist: the symlink arm reads its parent's
-   * real path. */
+  /* Run once the directories exist: the symlink check reads a parent's real
+   * path. */
   function writeStaged(entries: typeof staged): Computable<void> {
     return mapComputable(entries, ({ name, file, targetName, dirname }) => {
       const filepath = file.getAbsPath();
       if (file instanceof HostLink) {
-        /* The one link staged leading out of the tree, unchecked by the guard
-         * below: only fabr makes a host link (see HostLink), naming a program
-         * it found on this host and identified by its content. */
+        /* Staged unchecked, the one link that leads out of the tree: only fabr
+         * makes a HostLink, naming a program it found on this host. */
         return stage(symlink(file.location, targetName), name);
       }
       if (file instanceof SymlinkFile) {
-        /* Security: a symlink whose target escapes the staged tree (via `..`, an
-         * absolute path, or a symlinked parent component) could point at — or,
-         * written-through, clobber — files outside it. Resolve the target against
-         * the *real* parent directory (path.resolve is purely lexical and would not
-         * follow symlinks in the path), and only stage it if it stays within the
-         * real root. */
+        /* Security: stage a symlink only where its target stays within the
+         * tree, so nothing written through it can reach outside. Resolve the
+         * target against the parent's real path: path.resolve alone is lexical
+         * and does not follow a symlinked parent. */
         realRoot ??= fs.realpathSync(path.resolve(targetDir));
         const resolved = path.resolve(fs.realpathSync(dirname), file.target);
         const inside = resolved === realRoot || resolved.startsWith(realRoot + path.sep);
         return inside ? stage(symlink(file.target, targetName), name) : undefined;
       }
       if (filepath) {
-        /* A hardlink shares the read-only cache blob's mode (0o444/0o555). A copy
-         * (`fabr cp`) is durable user space, so reapply the file's real mode —
-         * restoring writability and the exact original bits the blob dropped. */
+        /* A hardlink has the read-only blob's mode (0o444/0o555); a copy is
+         * given the file's own mode. */
         return stage(
           options?.copy
             ? copyFile(filepath, targetName).then(() => fs.chmodSync(targetName, file.mode & 0o7777))
@@ -193,10 +179,8 @@ export function writeFileSet(targetDir: string, files: FileSet, options?: { copy
           name
         );
       }
-      /* An in-memory file mirrors what a blob-backed file gets in the same
-       * context: a copy (`fabr cp`) exports at its real mode (writable, durable
-       * user space), while a staged file matches the read-only 0o444/0o555 of the
-       * hardlinked blobs beside it (exec-if-executable, so a generated tool runs). */
+      /* As a file on disk would be: a copy at its own mode, a staged file
+       * read-only like the blobs beside it (stagedPermissions). */
       const mode = options?.copy ? file.mode & 0o7777 : stagedPermissions(file.mode);
       return stage(
         file
@@ -209,74 +193,60 @@ export function writeFileSet(targetDir: string, files: FileSet, options?: { copy
   }
 }
 
-/** Get the read-only mode an in-memory file of `mode` is staged with: the blobs' modes, or readable by its owner alone where `mode` grants nothing to anyone else (a secret). */
+/** Get the read-only mode an in-memory file of `mode` is staged with: the blobs' modes (0o444, or 0o555 where executable), or its owner's bits alone where `mode` grants nothing to anyone else (a secret). */
 function stagedPermissions(mode: number): number {
   const readOnly = readOnlyPermissions(mode);
   return (mode & 0o077) === 0 ? readOnly & 0o700 : readOnly;
 }
 
-/** Make a staged entry with its resolved destination and that destination's parent,
- * containment asserted. Resolving up front is what lets the distinct parents be
- * created as one batch before any write starts. */
+/** Make a staged entry with its resolved destination and that destination's
+ * parent, asserting the destination lies within `root`. */
 function contained(root: string, name: string, file: IFile): { name: string; file: IFile; targetName: string; dirname: string } {
   const targetName = path.resolve(root, name);
   assertContained(root, targetName, name);
   return { name, file, targetName, dirname: path.dirname(targetName) };
 }
 
-/** Assert a resolved write target stays inside the staged root — a
- * belt-and-braces backstop for the FileSet canonical-name invariant: names are
- * canonicalized at construction (no `../`, no absolute paths — see
- * canonicalFileName), so a resolved write target always stays inside the staged
- * root. But staging is the boundary where a violated invariant becomes
- * filesystem damage, so containment is asserted here regardless of producer. */
+/** Assert a resolved write target lies within the staged root. A FileSet's
+ * names are canonical (no `../`, no absolute path; see canonicalFileName), so
+ * this fails only on an internal error. */
 function assertContained(root: string, targetName: string, name: string): void {
   if (targetName !== root && !targetName.startsWith(root + path.sep)) {
     throw new FabrError(`Internal error: file name '${name}' resolves outside the staging directory '${root}'`);
   }
 }
 
-/** Monotonic across the whole process, so no two temp siblings ever share a
- * name — a temp left by a failed sync cannot collide with a later one. */
+/** Counter for temp-sibling names, never reused in the process. */
 let tempCounter = 0;
 
 /**
- * Update an already-staged tree in place to match `after`: write files that are
- * new or changed (judged by content hash against `before`), remove files that
- * are gone, leave the rest untouched — the incremental complement of
- * {@link writeFileSet}, for a tree with a live consumer (a served install, any
- * continuously-materialized output). Each write goes to a temp sibling and is
- * renamed into place, so a concurrent reader (the running program, an fs
- * watcher) never observes a half-written file — and an existing hardlink into
- * the cache is never written through (the link is replaced; the blob stays
- * untouched). Writes and file removals run concurrently, but **directory
- * pruning is deferred to a final phase, once the whole tree has settled**: a
- * removal that empties a directory must not rmdir it while a sibling write is
- * still renaming a new file into that same directory (content-hashed shards
- * replace a directory's entire contents wholesale, so removes and writes
- * routinely target the same dir). Resolves to the applied
- * delta counts, for progress reporting.
+ * Update `targetDir`, staged as `before`, to hold `after`: write each file that
+ * is new or whose content hash changed, remove each file `after` lacks, and
+ * leave the rest. Each write goes to a temp sibling renamed into place, so a
+ * reader (the running program, a watcher) never sees a half-written file and a
+ * hardlink into the cache is replaced, never written into. Directories the
+ * removals empty are removed once every write and removal has finished.
+ *
+ * Resolves to the number of files written and removed. A {@link SymlinkFile}
+ * whose target resolves outside `targetDir` is skipped and not counted
+ * (`written` counts only what was written). Filesystem failures reject as an
+ * {@link ExecutionError}.
  */
 export function syncFileSet(targetDir: string, before: FileSet, after: FileSet): Computable<{ written: number; removed: number }> {
   const root = path.resolve(targetDir);
   let realRoot: string | undefined;
-  /* Resolve and containment-check every name up front — before anything touches
-   * the filesystem, which is the point of a backstop guard — and take the
-   * distinct parents from the same pass. */
+  /* Resolve and check every name before anything touches the filesystem. */
   const changed = [...after]
     .filter(([name, file]) => before.getFile(name)?.hash !== file.hash)
     .map(([name, file]) => contained(root, name, file));
   const gone = [...before].filter(([name]) => after.getFile(name) === undefined).map(([name, file]) => contained(root, name, file));
-  /* The parents of everything about to be written, created as one concurrent
-   * batch ahead of the writes — same reasoning as writeFileSet, on a smaller
-   * scale (only the changed files are written here). */
+  /* Create the parents of everything to be written, together, first. */
   return mapComputable(new Set(changed.map(entry => entry.dirname)), dir => mkdir(dir)).then(() => applySync());
 
-  /* Deferred until the directories exist, since the symlink guard reads a
-   * parent's real path. */
+  /* Run once the directories exist: the symlink check reads a parent's real
+   * path. */
   function applySync(): Computable<{ written: number; removed: number }> {
-    /* Same containment guard as writeFileSet: a symlink whose target escapes
-     * the staged tree is silently not staged. */
+    /* As in writeFileSet, a symlink whose target leaves the tree is skipped. */
     const written = changed.filter(({ file, dirname }) => {
       if (!(file instanceof SymlinkFile) || file instanceof HostLink) {
         return true;
@@ -297,9 +267,8 @@ export function syncFileSet(targetDir: string, before: FileSet, after: FileSet):
       if (filepath) {
         return stageWrite(temp, targetName, hardlink(filepath, temp));
       }
-      /* A served install is nominally hardlink output, so an in-memory file
-       * matches the read-only 0o444/0o555 of the blobs beside it; chmod the temp
-       * before the atomic rename so it never appears at the wrong mode. */
+      /* Read-only like the blobs beside it; chmod the temp before the rename so
+       * the file never appears at another mode. */
       return stageWrite(
         temp,
         targetName,
@@ -309,8 +278,9 @@ export function syncFileSet(targetDir: string, before: FileSet, after: FileSet):
           .then(() => fs.chmodSync(temp, stagedPermissions(file.mode)))
       );
     });
-    /* Unlink the gone files (concurrent with the writes — disjoint names); their
-     * parent directories are the prune candidates for after everything settles. */
+    /* Remove the gone files alongside the writes (their names are disjoint).
+     * Prune their parents only after both finish: a removal can empty a
+     * directory a write is still renaming a file into. */
     const removals = mapComputable(gone, ({ targetName }) => asExecutionError(deleteFile(targetName)));
     return Computable.forAll([writes, removals], () => undefined)
       .then(() => pruneEmptyDirs(root, new Set(gone.map(entry => entry.dirname))))
@@ -318,13 +288,10 @@ export function syncFileSet(targetDir: string, before: FileSet, after: FileSet):
   }
 }
 
-/** Finish one staged write: `create` has produced the temp sibling; rename it
- * atomically over the target. On any failure, remove the temp best-effort so a
- * partial sync leaves no debris behind.
- *
- * Exported for the write-back path, which replaces a user's file under exactly
- * the same rule: the destination may be a hardlink into the blob pool, so it is
- * replaced rather than written through. */
+/** Finish one staged write: once `create` has made `temp`, rename it over
+ * `targetName`. On any failure, remove `temp` where possible and reject as an
+ * {@link ExecutionError}. Use it for any write that may land on a hardlink into
+ * the blob pool (the write-back path does). */
 export function stageWrite(temp: string, targetName: string, create: Computable<void>): Computable<void> {
   return asExecutionError(
     create
@@ -340,10 +307,10 @@ export function stageWrite(temp: string, targetName: string, create: Computable<
   );
 }
 
-/** Prune directories emptied by removals, walking up from each candidate towards
- * (but never reaching) the staged root — a non-empty parent just stops the walk.
- * Best-effort and run only after every write/removal has settled, so an rmdir can
- * never race a concurrent create into the same directory. */
+/** Remove each candidate directory that is empty, and each parent it leaves
+ * empty, up to but not including `root`. The walk stops at the first
+ * directory that cannot be removed. Run only once no write into the tree is in
+ * progress. */
 function pruneEmptyDirs(root: string, candidates: Set<string>): void {
   for (const start of candidates) {
     for (let dir = start; dir !== root && dir.startsWith(root + path.sep); dir = path.dirname(dir)) {
@@ -356,10 +323,7 @@ function pruneEmptyDirs(root: string, candidates: Set<string>): void {
   }
 }
 
-/**
- * Classify failures of a staging operation as execution errors (mechanical
- * failures of the build step, reported grouped per target).
- */
+/** Reject with an {@link ExecutionError} where `operation` fails. */
 function asExecutionError<T>(operation: Computable<T>): Computable<T> {
   return operation.catch(err => {
     throw new ExecutionError(describeSystemError(err));
@@ -367,51 +331,43 @@ function asExecutionError<T>(operation: Computable<T>): Computable<T> {
 }
 
 /**
- * Collect the files a build step wrote under `targetDir` that the `output`
- * projection selects, naming each by its projected name; delete everything the
- * projection drops. `output` is either a plain `dir:glob` string (select under
- * `dir`, name relative to it) or a {@link Name} projection — a selector with the
- * usual `:`-strip / slash-retain rule, optionally carrying a `sel -> tmpl`
- * rename. The two are the same primitive: a `dir:glob` string is exactly the
- * degenerate no-rename projection, so both compile to one `path -> name?`
- * function ({@link outputProjector}). A rename can collapse two written files
- * onto one output name — a {@link ConflictError}, mirroring FileSet.rename.
+ * Collect the files a build step wrote under `targetDir` that `output`
+ * selects, each named as `output` projects it, and delete every other file
+ * there (a symlink is removed, never its target; directories stay). `output`
+ * is a `dir:glob` string (select under `dir`, named relative to it), a
+ * {@link Name} projection (`:`-strip, slash-retain, and an optional
+ * `sel -> tmpl` rename), or several of these, of which the first to select a
+ * file names it (the test run's report and the snapshots it refreshed).
  *
- * Several selectors may be given, for a step whose output is genuinely two
- * unrelated things (the test run's report *and* the snapshot files it
- * refreshed): a file is kept if ANY selects it, named by the first that does.
- * They are alternatives of one projection, not successive passes — everything
- * unselected is still deleted exactly once.
+ * Rejects with a {@link ConflictError} where two different files are given
+ * one name, and with an {@link ExecutionError} where a deletion fails.
  */
 export function getResultFileSet(targetDir: string, output: OutputSelection): Computable<FileSet> {
   return getResultFileSets(targetDir, [output]).then(([files]) => files);
 }
 
-/** What {@link getResultFileSet} selects by: a projection, or several as
- * alternatives (the first that selects a file names it). */
+/** What {@link getResultFileSet} selects by: a projection, or several of
+ * which the first to select a file names it. */
 export type OutputSelection = Name | string | ReadonlyArray<Name | string>;
 
 /**
- * {@link getResultFileSet} for several selections at once: one set per
- * selection, each naming the files it selects as it projects them, so a file
- * two select is in both sets. A file is hashed once however many select it,
- * and only what none selects is deleted.
+ * Collect as {@link getResultFileSet} does for several selections at once,
+ * returning one set per selection, each naming the files it selects as it
+ * projects them; a file two select is in both sets. Only what no selection
+ * selects is deleted.
  */
 export function getResultFileSets(targetDir: string, selections: ReadonlyArray<OutputSelection>): Computable<FileSet[]> {
   const projectors = selections.map(outputProjector);
   const results = selections.map(() => new Map<string, IFile>());
-  /* Source path each output name came from, per selection, for a rename-collision message. */
+  /* The path each output name came from, per selection, for a conflict message. */
   const sources = selections.map(() => new Map<string, string>());
   /* Every non-directory entry of the tree, with the name each selection collects
    * it under (none: that selection drops it). */
   const found: Array<{ abspath: string; rel: string; names: Array<string | undefined> }> = [];
 
-  /* Walk without following symlinks (walkTree recurses real dirs only): the work
-   * dir may contain symlinks — a scoped node_modules links its direct deps into a
-   * hidden store — and following them would visit each linked file twice and risk
-   * cycles. Keep selected files, prune everything else — a symlink by removing the
-   * link itself, never its target. Directories are neither collected nor deleted;
-   * the emptied work dir is discarded by the caller. */
+  /* Walk without following symlinks (walkTree recurses into real directories
+   * only): a linked file would be visited twice, and a link may form a cycle.
+   * Only regular files are collected; a symlink is deleted as a link. */
   return walkTree(targetDir, (entry, abspath) => {
     if (!entry.isDirectory()) {
       const rel = path.relative(targetDir, abspath);
@@ -424,10 +380,8 @@ export function getResultFileSets(targetDir: string, selections: ReadonlyArray<O
           return asExecutionError(deleteFile(abspath));
         }
         return hashFile(abspath).then(({ hash, mime }) => {
-          /* A work-dir output is path-backed (content at its on-disk rel, not at
-           * a blob hash), so it can't be a BuildFile — storeContent then ingests
-           * it into the pool by rename. The FileSet key is the *projected* name;
-           * the file itself stays anchored at its real location. */
+          /* A file at its place in the work dir (storeContent later moves it
+           * into the pool), keyed in the set by its projected name. */
           const file = new FSFile(targetDir, rel, fs.statSync(abspath), hash, mime);
           names.forEach((name, i) => {
             if (name === undefined) {
@@ -452,12 +406,11 @@ export function getResultFileSets(targetDir: string, selections: ReadonlyArray<O
 }
 
 /**
- * Compile an `output` selector to a `workDir-relative path -> result name`
- * function (undefined ⇒ not selected). A {@link Name} owns what its projection
- * means (glob-select, `:`-strip, `-> tmpl` rename), so it is just its
- * {@link Name.makeProjector}. A `dir:glob` string is the degenerate case:
- * strip the `dir/` prefix and name results relative to it — equivalent to the
- * colon projection, without needing the model parser to build a Name here.
+ * Make a function from a path relative to the work dir to the name `output`
+ * collects it under, or undefined where `output` does not select it. A
+ * {@link Name} is its own {@link Name.makeProjector}; a `dir:glob` string
+ * selects what the glob matches under `dir/` and names it relative to `dir`;
+ * a list tries each in turn.
  */
 function outputProjector(output: OutputSelection): (rel: string) => string | undefined {
   if (typeof output !== "string" && !(output instanceof Name)) {

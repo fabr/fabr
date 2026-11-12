@@ -90,6 +90,7 @@ export interface IImageManifest {
   readonly layers: readonly ILayerDescriptor[];
 }
 
+/** A layer's descriptor, with how its bytes are compressed. */
 export interface ILayerDescriptor extends IDescriptor {
   readonly compression: LayerCompression;
 }
@@ -257,7 +258,11 @@ export class Registry {
     private readonly credential: Credential
   ) {}
 
-  /** Fetch the manifest `version` (a tag or a digest) names in `repository`. A tag's is re-checked by its digest; a digest's is verified against it. */
+  /**
+   * Fetch the manifest `version` (a tag or a digest) names in `repository`, or
+   * undefined where there is none. A tag's cached copy is revalidated against
+   * the digest the registry states; a digest's is verified against it.
+   */
   public manifest(repository: string, version: string): Computable<IDigested<ManifestDocument> | undefined> {
     const url = `${this.url}/v2/${repository}/manifests/${version}`;
     const byDigest = isDigest(version);

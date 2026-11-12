@@ -18,15 +18,12 @@
  */
 
 /**
- * The script[run] rule: *define* a runnable plain shell script — the
- * ecosystem-neutral analogue of js_script. `entry` is the script FILE itself,
- * contributed to the install at its resolved name and launched with the shell;
- * `deps` stage any further support files (their filesets union flat — no
- * package mounting, this is just files); `args` are fixed leading arguments.
- * The shell is the runnable the global `SHELL` names.
- * It yields a `RunnableFileSet` — the staged files plus how to launch them —
- * for `fabr run` or a `generate` command to invoke. It does not itself
- * execute: running a runnable and collecting its output is `generate`'s job.
+ * The `script[run]` rule: a runnable shell script. `entry` is the script file
+ * itself, added to the install under its resolved name; `deps` are further
+ * files, unioned flat beside it; `args` are fixed leading arguments. It is
+ * launched by the runnable the global `SHELL` names. The rule yields the
+ * `RunnableFileSet`, for `fabr run` or a `generate` command to run; it runs
+ * nothing itself.
  */
 
 import { BUILD_OVERRIDE } from "../model/Constraints";
@@ -38,10 +35,10 @@ import { FabrError } from "../core/Errors";
 
 /** The `script` rule, under `run`. */
 export default defineRule({
-  /* deps/entry are ordinary build content, read under build rather than the run
-   * operation this rule is selected by (constraints otherwise propagate). Both
-   * are read for their files — a repository reference as the package's files
-   * alone, a target as what it built — and nothing is resolved together. */
+  /* `deps` and `entry` are read under `build`, not the `run` operation this
+   * rule is selected by, and for their files alone: a repository reference as
+   * the package's own files, a target as what it built. Nothing among them is
+   * resolved together. */
   requirements(context) {
     return {
       run: {
@@ -62,8 +59,7 @@ const SHELL_GLOBAL = "SHELL";
 
 /** Make the runnable of the script `entry`, with `deps` beside it, run with `args`. */
 function runnableScript(deps: FileSet[], entry: FileSet[], args: string[]): RunnableFileSet {
-  /* The entry is the script file itself — exactly one. (A shell script has no
-   * notion of a package bin; a packaged tool is js_script's job.) */
+  /* The entry must be exactly one file, the script itself. */
   const entrySet = FileSet.unionAll(...entry);
   const names = [...entrySet].map(([name]) => name);
   if (names.length !== 1) {

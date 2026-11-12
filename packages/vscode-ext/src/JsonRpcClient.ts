@@ -14,7 +14,6 @@
  * details.
  */
 
-/** A JSON-RPC message, as a client reads one. */
 /** A JSON-RPC message, as a connection reads one. */
 export interface IMessage {
   id?: number | string;
@@ -24,7 +23,7 @@ export interface IMessage {
   error?: { message: string };
 }
 
-/** @return `json` as a JSON-RPC message, or undefined where it is none: an object whose `id` and `method`, where it has them, are a number or a string and a string. */
+/** @return `json` as a JSON-RPC message, or undefined where it is none: an object whose `id`, where it has one, is a number or a string, and whose `method`, where it has one, is a string. A `null` id is left out. */
 export function toMessage(json: unknown): IMessage | undefined {
   if (typeof json !== "object" || json === null || Array.isArray(json)) {
     return undefined;
@@ -59,10 +58,9 @@ function frameEnd(buffer: Buffer, blank: number): number | undefined {
  * frames one.
  *
  * @return the frame's `fabr-protocol` header, its body parsed as JSON (absent
- * where it is none), and what follows it in `rest`; or undefined where `buffer`
- * holds no whole frame yet. A frame whose headers state no length is taken up
- * to the end of its headers, with no body, so a malformed frame never stops
- * the reading.
+ * where it is not JSON), and what follows it in `rest`; or undefined where
+ * `buffer` holds no whole frame yet. A frame whose headers state no length
+ * ends with its headers and has no body, and the reading goes on after it.
  */
 function takeFrame(buffer: Buffer): { rest: Buffer; protocol?: string; json?: unknown } | undefined {
   const blank = buffer.indexOf("\r\n\r\n");
@@ -87,8 +85,9 @@ function takeFrame(buffer: Buffer): { rest: Buffer; protocol?: string; json?: un
 
 /**
  * Call `receive` with each message read from `input` and the `fabr-protocol`
- * its frame names, a frame that holds none skipped. The data is joined into one
- * buffer only once a frame can be whole.
+ * its frame names (undefined where it names none); a frame holding no message
+ * is skipped. The data read is joined into one buffer only once the frame being
+ * read can be whole.
  */
 export function readMessages(input: NodeJS.ReadableStream, receive: (message: IMessage, protocol?: string) => void): void {
   let buffer = Buffer.alloc(0);
@@ -154,7 +153,7 @@ export class JsonRpcClient {
     this.pending.clear();
   }
 
-  /** Send request `method`, resolving with its result. */
+  /** Send request `method`, resolving with its result; rejects with its error, or once the server has ended. */
   public request<T>(method: string, params: unknown): Promise<T> {
     this.id += 1;
     const id = this.id;
@@ -189,10 +188,11 @@ export class JsonRpcClient {
     };
   }
 
+  /** Dispatch `message`: a notification to its handlers, a response to the request waiting for it. */
   private receive(message: IMessage): void {
     if (message.method !== undefined) {
       const method = message.method;
-      /* A handler's failure is reported as the host reports any, and does not stop the reading. */
+      /* A handler's throw is rethrown on a microtask, reported as the host reports any, and does not stop the reading. */
       const call = (handler: () => void): void => {
         try {
           handler();

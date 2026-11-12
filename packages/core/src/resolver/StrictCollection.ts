@@ -18,15 +18,14 @@
  */
 
 /**
- * The strict (linked) check of a collection point: over everything a consumer
- * uses together, a package may ship at one version only, unless each version
- * it ships is sanctioned.
+ * The strict check of a collection point: among everything a consumer uses
+ * together, a package may ship at one version only, unless each version it
+ * ships is sanctioned (written as a `?` or an exact pin).
  *
- * It is made at the end of the collection point's resolution, from what the
- * collection resolves to (what ships) and the resolutions it was answered
- * from. A violation a resolution recorded counts only where a version the
- * consumer actually ships fails it: the resolution's principal may belong to a
- * member this consumer never reaches.
+ * The check is made once the collection is resolved, from what it resolves to
+ * (what ships) and the resolutions it was answered from. A violation a
+ * resolution recorded counts only where a version the collection ships fails
+ * it.
  */
 
 import { Computable } from "../core/Computable";
@@ -60,26 +59,24 @@ export interface ResolvedBatch {
   readonly catalog?: boolean;
 }
 
-/**
- * A resolution as the strict check reads it: made from a {@link
- * ResolvedBatch} when the collection is checked.
- */
+/** A resolution as the strict check reads it, made from a {@link ResolvedBatch}. */
 export interface CheckedResolution<V = unknown, C = unknown> {
   /** The versions' domain, builds among them. */
   readonly domain: VersionDomain<V, C>;
   /** The format the resolution is of ({@link BUILDS_ALONE} for builds
-   * alone): resolutions are checked together only within one. */
+   * alone). Resolutions are checked together only within one format. */
   readonly format: object;
   readonly graph: MVSResolution<V>;
-  /** The requirements the collection made of it: those written, `?`
-   * alternates included, and its pins. */
+  /** The requirements the collection made of it: its requests, `?`
+   * alternates included, its pins, and the collection's builds where they
+   * were resolved in it. */
   readonly requested: readonly Requirement[];
-  /** The selections the collection took as they stand, each an exact root
-   * of the resolution that nothing wrote. */
+  /** The catalog selections the collection pinned: exact roots of the
+   * resolution that nothing wrote. */
   readonly pins: ReadonlyArray<Pin>;
   /** Whether it is a catalog's resolution rather than one of the
-   * collection's own: its sanctions hold together, and with the collection's
-   * own, never with another catalog's. */
+   * collection's own. A catalog's written versions sanction a package
+   * together with the collection's own, never with another catalog's. */
   readonly catalog: boolean;
   /** The versions written as sanctioned (`?`, or an exact pin), by package. */
   readonly written: ReadonlyMap<string, ReadonlySet<string>>;
@@ -88,10 +85,10 @@ export interface CheckedResolution<V = unknown, C = unknown> {
   readonly refText: RefRenderer;
   /** Find the selection of this resolution that `pkg` is, if it is one. */
   selectionOf(pkg: Package): Selected<V> | undefined;
-  /** The provenance of the build a selection is, where it is one: where it
-   * was required. */
+  /** Get where the build `selection` was required, or undefined where it
+   * is no build. */
   buildOrigin(selection: Selected<V>): IProvenanceStep | undefined;
-  /** The registry access a remedy is computed and verified with. */
+  /** Get the registry access a remedy is computed and verified with. */
   sources(): SuggestSources<V, C>;
 }
 
@@ -117,7 +114,8 @@ export class Conflicts {
   }
 
   /** Make the error a strict collection is refused with, or undefined where
-   * nothing conflicts. Made on the first call, once. */
+   * nothing conflicts. The error is made on the first call and shared by
+   * later ones. */
   public error(): Computable<Error | undefined> {
     return this.refusal();
   }
@@ -144,9 +142,9 @@ export class Conflicts {
 }
 
 /**
- * Make the refusal of a collection whose errors `errors` makes: every one of
- * them that is an error, as one, or undefined where none is. Made on the
- * first call, once.
+ * Make the refusal of a collection from the errors `errors` makes: those that
+ * are errors, as one MultiError, or undefined where none is. `errors` is
+ * called on the refusal's first call, and its result shared by later ones.
  */
 function refusalOf(errors: () => ReadonlyArray<Computable<Error | undefined>>): () => Computable<Error | undefined> {
   let refused: Computable<Error | undefined> | undefined;
@@ -164,9 +162,13 @@ export const NO_CONFLICTS = new Conflicts(
   () => Computable.resolve(undefined)
 );
 
-/** Make the {@link RootRenderer} naming each of `pins` as what the
- * collection reached it through, each pin's requirement spelled as `domain`'s
- * exact constraint. */
+/**
+ * Make the {@link RootRenderer} that names a root requirement which is one of
+ * `pins` by what the collection reached the pin through (`pinned by
+ * '@dep:foo'`). A root is taken for a pin where its name and constraint are
+ * the pin's name and `domain`'s exact constraint for its version, unless the
+ * collection wrote that constraint itself (`ownWritten`).
+ */
 function pinText<V, C>(
   pins: ReadonlyArray<Pin>,
   ownWritten: ReadonlyMap<string, ReadonlySet<string>>,
@@ -191,10 +193,32 @@ function pinText<V, C>(
 }
 
 /**
- * Find what conflicts in a collection. `resolutions` are the resolutions it
- * was answered from, `shipped` what it resolves to, and `finished` each
- * written reference with what it resolved to: a conflict is attributed to the
- * references whose closures hold a package taking part in it.
+ * Find the versions that conflict among everything a collection ships. A
+ * package conflicts where it ships at more than one version, or a version of
+ * it that ships fails a requirement a resolution recorded as violated, unless
+ * every version of it that ships is sanctioned ({@link checkDomain} has the
+ * rules). Resolutions are judged together only within one format
+ * (`CheckedResolution.format`); those of builds alone ({@link BUILDS_ALONE})
+ * are judged with each format's, or alone where there is no other.
+ *
+ * - `resolutions`: the resolutions the collection was answered from: its own
+ *   registries', its builds', and each catalog's it reached through a member.
+ * - `shipped`: the sources the collection resolves to. Every package they
+ *   hold or reach ships, including the package beneath a pending projection.
+ * - `finished`: each written reference with what it resolved to, used only
+ *   to attribute the error.
+ *
+ * Returns {@link NO_CONFLICTS} where `resolutions` is empty or nothing
+ * conflicts. Otherwise, in the result:
+ * - `versions` maps each conflicting package to every version of it that
+ *   ships, as its resolution writes them;
+ * - `includes(pkg)` is true for a package that is one of those versions;
+ * - `error()` makes the error, once: each format's conflict report with a
+ *   remedy (which may read registry metadata), as a MultiError where several
+ *   formats conflict. Each report is wrapped in a RequirementResolutionError
+ *   where references or builds take part: a reference whose closure holds a
+ *   version of a conflicting package or the requirer of a violated
+ *   requirement, and a build that is a version of a conflicting package.
  */
 export function findConflicts(
   resolutions: ReadonlyArray<CheckedResolution>,
@@ -260,8 +284,14 @@ interface IShipped<V, C> {
 
 /** What conflicts within one domain, and how to report it. */
 interface DomainConflicts {
+  /** Each conflicting package, with every version of it that ships. */
   readonly conflicts: ReadonlyMap<string, ReadonlySet<string>>;
+  /** @return true if `pkg` is a version of a conflicting package, otherwise
+   * false. */
   conflicting(pkg: Package): boolean;
+  /** Make the error the conflicts are refused with, attributed to the
+   * references in `finished` that take part, or undefined where nothing
+   * conflicts. */
   report(finished: ReadonlyMap<RepositoryRef, unknown>): Computable<Error | undefined>;
 }
 
@@ -278,8 +308,38 @@ function writtenAcross<V, C>(resolutions: ReadonlyArray<CheckedResolution<V, C>>
   return written;
 }
 
-/** Find what conflicts among the resolutions of one domain, given what ships
- * (`packages`). */
+/**
+ * Find what conflicts among `group`, the resolutions of one format, given the
+ * packages that ship (`packages`). A version ships from a resolution where a
+ * shipped package is one of its selections (`selectionOf`); versions are
+ * compared by their text, so one version selected by two resolutions is one.
+ *
+ * A package conflicts where it is not sanctioned and either:
+ * - it ships at more than one version; or
+ * - a version of it that ships fails a violation a resolution in `group`
+ *   recorded, either against one of the requirements the collection made of
+ *   that resolution (`requested`, forced and `?` requirements excepted) or
+ *   against a selection of that resolution that ships. A violation whose
+ *   constraint does not parse counts as failed.
+ *
+ * A package is sanctioned where every version of it that ships is written
+ * (`written`) by the collection's own resolutions, or by them together with
+ * one catalog's; or where the collection's own resolutions or one catalog's
+ * sanction it at every version (`everyVersion`). One catalog's written
+ * versions never combine with another's.
+ *
+ * In the result, `conflicts` maps each conflicting package to every version
+ * of it that ships, and `conflicting(pkg)` is true where `pkg` is a selection
+ * in `group` at one of those versions. `report(finished)` resolves to
+ * undefined where nothing conflicts, else to the conflict error
+ * ({@link conflictError}) with a remedy: where one resolution is behind every
+ * part of the conflict, a remedy computed and verified against it
+ * ({@link suggestSanctions}); otherwise the `?` lines that sanction every
+ * version shipped and not yet written. The error is wrapped in a
+ * RequirementResolutionError where a reference in `finished` or a build takes
+ * part (see {@link findConflicts}). It rejects where the remedy cannot be
+ * computed.
+ */
 function checkDomain<V, C>(group: CheckedResolution<V, C>[], packages: ReadonlyArray<Package>): DomainConflicts {
   const { domain } = group[0];
   /* Each resolution's selections that ship, in its own canonical order, and
@@ -304,9 +364,8 @@ function checkDomain<V, C>(group: CheckedResolution<V, C>[], packages: ReadonlyA
     }
   }
   const written = writtenAcross(group);
-  /* What sanctions a package shipped at several versions: the collection's
-   * own written versions, together with one catalog's — a catalog's entries
-   * settle its own selections, and vouch for no other catalog's. */
+  /* A package shipped at several versions is sanctioned by the collection's
+   * own written versions, together with at most one catalog's. */
   const own = group.filter(resolution => !resolution.catalog);
   const catalogs = group.filter(resolution => resolution.catalog);
   const ownWritten = writtenAcross(own);
@@ -320,9 +379,9 @@ function checkDomain<V, C>(group: CheckedResolution<V, C>[], packages: ReadonlyA
   const sanctioned = (pkg: string): boolean => coveredBy(pkg) || catalogs.some(catalog => coveredBy(pkg, catalog));
   const shippedOf = (pkg: string): Selected<V>[] => [...(shipped.get(pkg)?.values() ?? [])].map(entry => entry.selection);
 
-  /* Each resolution's recorded violations in its own scope — the roots the
-   * collection asked of it, and the requirers it ships — that a version
-   * shipped here fails. */
+  /* Each resolution's recorded violations, against the roots the collection
+   * asked of it or the selections of it that ship, that a version shipped
+   * here fails, with the resolution that recorded each. */
   const violations = new Map<Violation<V>, CheckedResolution<V, C>>();
   for (const resolution of group) {
     const { graph } = resolution;
@@ -371,9 +430,9 @@ function checkDomain<V, C>(group: CheckedResolution<V, C>[], packages: ReadonlyA
       const outstanding = [...violations.keys()];
       const refText = members[0].refText;
       const explaining = graphs.length === 1 ? graphs[0] : combinedExplanation(graphs);
-      /* One resolution behind every part of the conflict: its remedy is
-       * computed and verified against it. Several resolutions have no joint one
-       * to verify a pin against, so the remedy is the sanction set. */
+      /* Where one resolution is behind every part of the conflict, the remedy
+       * is computed and verified against it; otherwise it is the `?` lines
+       * completing each sanction. */
       const suggestion =
         graphs.length === 1
           ? suggestSanctions(
@@ -415,8 +474,8 @@ function checkDomain<V, C>(group: CheckedResolution<V, C>[], packages: ReadonlyA
             )
           ),
         ];
-        /* A catalog's member is attributed to the catalog's entry for it,
-         * found on its origin: its reference does not name the entry. */
+        /* A catalog member is attributed to the catalog's entry for it, which
+         * its origin names and its reference does not. */
         const origins = new Map(
           references.flatMap(reference => {
             const value = finished.get(reference);

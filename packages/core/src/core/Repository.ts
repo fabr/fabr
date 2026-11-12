@@ -37,40 +37,33 @@ import { markerOf, variantName } from "../resolver/Requirement";
 import { IProjection, Miss, NO_REFERENCE_FIELDS, Reference, ReferenceFields } from "./Reference";
 
 /**
- * A repository owns a namespace and vends references into it — the whole thing,
- * read and write faces alike (as distinct from a FileSource, which is a
- * container that can answer queries about files it already has). Capability is
- * discovered by asking: each vend method returns a ref carrying the matching
- * provider (a read face — {@link RepositoryReader}, {@link RepositoryLookup} or
- * {@link RepositoryCollection} — or the write face, {@link RepositoryWriter}) or throws — a
- * read-only repository (a catalog) refuses to vend publish refs, a write-only
- * one refuses read refs, and a vended ref IS the proof of capability, so no
- * consumer ever capability-tests or hits an unsupported operation. How a name
- * parses is the repository's own syntax, re-read from the ref's name wherever
- * it is consumed — a ref is carried currency, never a parsed struct.
+ * A repository: a namespace of names it vends references into, for reading and
+ * for publishing (as distinct from a FileSource, which answers for files it
+ * already has). Each vend method returns a reference carrying the face that
+ * answers it — a read face ({@link RepositoryReader}, {@link RepositoryLookup}
+ * or {@link RepositoryCollection}) or the write face ({@link RepositoryWriter})
+ * — or throws where the repository has no such face: a read-only repository (a
+ * catalog) vends no publish refs, and a write-only one no read refs. How a name
+ * parses is the repository's own syntax.
  */
 export interface Repository {
   /**
-   * Vend a read reference for the whole written `name`: the repository claims
-   * the identity portion it resolves (npm: `name:version`) and packs anything
-   * left over into the ref as a projection *into* the resolved content (the
-   * written-name rule rides on it) — so the caller holds one deferred ref, with
-   * nothing of the name left to interpret. Where the name is a namespace of
-   * the repository's names rather than one (a scope, `@fabr-build`), vend the
-   * {@link PartialRepositoryRef} naming it instead, for the name to go on from.
-   * Throws if this repository cannot be read from, or the name is no valid
-   * identity.
+   * Vend a read reference for the whole written `name`: the repository takes
+   * the part of the name that says what it resolves (npm: `name:version`) and
+   * keeps the rest as projections into what that resolves to, so the caller is
+   * left nothing of the name to read. Where the name is not yet a complete
+   * reference (a scope, `@fabr-build`), vend the {@link PartialRepositoryRef}
+   * naming it instead, for a name written after it to complete. Throws where
+   * this repository cannot be read from, or the name is no valid identity.
    */
   getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef;
 
   /**
-   * Vend a publish ref: validate `name` as an address in this repository's
-   * namespace to *write* (npm: `name:version` with an exact version; a file
-   * destination: a contained relative path), throwing if it is malformed or
-   * this repository is not a publish destination. Cheap, no content — the sync
-   * rule vends every member's ref before anything builds, so a bad coordinate
-   * fails fast, positioned. Unlike a read ref it admits no projection: you
-   * cannot project into an address you are creating.
+   * Vend a publish ref for `name`, an address in this repository to write (npm:
+   * `name:version` with an exact version; a file destination: a relative path
+   * within it). Throws where the address is malformed or this repository is no
+   * publish destination. Reads no content: `sync` vends every member's ref
+   * before anything is built. A publish ref takes no projection.
    */
   getRepositoryPublishRef(name: Name): RepositoryPublishRef;
 
@@ -80,74 +73,70 @@ export interface Repository {
    * within it, in the order the repository lists them, mapped to the
    * reference that names the child. Names only — nothing is fetched or
    * resolved to list them. Rejects where it cannot be listed (a registry
-   * cannot enumerate every package it holds). OPTIONAL: absent, nothing in the
-   * repository can be listed.
+   * cannot list every package it holds). Absent, nothing in the repository can
+   * be listed.
    */
   children?(ref: PartialRepositoryRef): Computable<Map<string, Reference>>;
 }
 
+/** @return true if `source` is a {@link Repository}, otherwise false. */
 export function isRepository(source: unknown): source is Repository {
   return typeof (source as Partial<Repository>).getRepositoryRef === "function";
 }
 
 /**
- * @return true if this source serves content directly — a FileSet, or any
- * other FileSource that answers `find`/`get` on its own terms (a `fetch`
- * table, a release namespace) — otherwise false. The complement is the deferred kinds, which promise
- * content but cannot yet serve it: the references (a {@link Reference} of any
- * kind) and a pending projection (FileSetRef — a collection point applies it).
+ * @return true if `source` has its content now — a FileSet, or any other
+ * FileSource that answers `find`/`get` itself (a `fetch` table, a release
+ * namespace) — otherwise false: a {@link Reference} of any kind, or a
+ * {@link FileSetRef} with projections pending.
  */
 export function isFileSource(source: SourceRef): source is FileSource {
   return !(source instanceof Reference) && !(source instanceof FileSetRef);
 }
 
 /**
- * The LOOKUP read face of a repository: per-reference delivery (`fabr_home`).
- * The counterpart of {@link RepositoryReader} (the resolving read face, whose
- * references the resolution layer batches for joint version selection): a
- * repository carries this face instead when each reference is answered on its
- * own and there is nothing joint to resolve.
+ * The lookup read face of a repository: each reference is answered on its own,
+ * with nothing resolved together (`fabr_home`). A registry, whose references
+ * are resolved together, carries {@link RepositoryReader} instead.
  */
 export interface RepositoryLookup {
   /**
-   * Resolve what ONE reference names: the package as the repository holds it,
-   * its files in hand, or a {@link ResolvedNode} whose content is fetched only
-   * when the collection that asked is given its content — so a reading that
-   * never materializes (`fabr deps`) downloads nothing. A node that is no
-   * package is marked {@link PackageContent.plain}, so it claims no name
-   * among the collection's packages. A registry, whose references resolve
-   * jointly, never implements this face.
-   * Projections and provenance carried by the reference are applied by the
-   * caller.
+   * Resolve one reference: to the package as the repository holds it, its
+   * files in hand, or to a {@link ResolvedNode} whose files are fetched only
+   * when the collection that asked is materialized, so `fabr deps` downloads
+   * nothing. A node that is no package is marked
+   * {@link PackageContent.plain}, so it claims no name among the collection's
+   * packages. The caller applies the reference's projections and provenance
+   * steps.
    */
   resolve(reference: RepositoryRef): Computable<FileSet | ResolvedNode>;
 
   /**
-   * Resolve the files of what ONE reference names, with no dependency closure
-   * (see {@link RepositoryReader.fetchFiles}). OPTIONAL: where absent,
-   * {@link resolve}'s answer serves.
+   * Resolve the files of what one reference names, without its dependencies
+   * (see {@link RepositoryReader.fetchFiles}). Absent, {@link resolve}'s
+   * answer is used.
    */
   resolveFiles?(reference: RepositoryRef): Computable<FileSet>;
 
   /**
-   * Get the requirement `ref` declares — package name + the version constraint as
-   * WRITTEN — for a generated manifest (which records what a package *requires*,
-   * not what fabr's joint resolution pinned, which a transitive constraint may
-   * have bumped). Undefined if the reference declares no version to record.
-   * OPTIONAL, and implemented only where the answer is the repository's own (as
-   * a {@link RepositoryCollection} does): for a package registry the answer is pure
-   * written-form parsing, so callers dispatch to the format instead (see
-   * declaredRequirement in the resolution layer). Absent means nothing to record.
+   * Get the requirement `ref` declares, for a generated manifest: the package
+   * name and the version constraint as written, not the version the resolution
+   * selected. Undefined where the reference states no version to record.
+   * Implemented only where the answer is the repository's own (as a
+   * {@link RepositoryCollection}'s is); a registry's is read from the written
+   * reference by its format (`declaredRequirement` in the resolution layer).
+   * Absent, there is nothing to record.
    */
   declaredRequirement?(ref: RepositoryRef): Computable<Requirement | undefined>;
 }
 
 /**
- * The COLLECTION read face of a repository: one that resolved a set of
- * requirements jointly, itself, and names the results — a catalog. It delivers
- * nothing: a reference against it is answered with the {@link ResolvedMember}
- * it names, and the collection point that asked delivers that member from the
- * repository's resolution, fetching and building only what it reaches.
+ * The collection read face of a repository: one that resolved a set of
+ * requirements together, itself, and names the results (a catalog). It fetches
+ * and builds nothing: a reference to it is answered with the
+ * {@link ResolvedMember} it names, which the collection point that asked
+ * resolves from the repository's resolution, fetching and building only what
+ * it reaches.
  */
 export interface RepositoryCollection {
   /** Look up the member `reference` names, as the collection resolved for
@@ -159,32 +148,11 @@ export interface RepositoryCollection {
   declaredRequirement?(ref: RepositoryRef): Computable<Requirement | undefined>;
 }
 
+/** @return true if `source` is a {@link RepositoryCollection}, otherwise false. */
 export function isRepositoryCollection(source: unknown): source is RepositoryCollection {
   return typeof (source as Partial<RepositoryCollection>).member === "function";
 }
 
-/**
- * The RESOLVING read face of a repository — a package registry as the
- * resolution layer (PackageResolver) drives one: a transport for one ecosystem
- * — everything that needs the url, the credentials, or the wire formats, and
- * nothing that orchestrates. References against this face resolve jointly (the
- * resolution layer batches them — see resolvePackages); the counterpart for a
- * repository that answers each reference on its own is the per-reference
- * {@link RepositoryLookup} face, and for one that resolved its own collection
- * the {@link RepositoryCollection} face. `npm_repository` implements this directly; a
- * `repository_group` implements it by routing every call to the member the
- * name routes to; a content route's member derives every answer from its
- * manifest. The driver functions (resolvePackages / packageClosure) only
- * ever ask per-name questions of the one registry they are given — which is
- * why a group's whole closure, transitive requirements included, flows through
- * the group and gets routed there.
- *
- * Reading only: a registry that is also a publish destination additionally
- * carries the repository write face ({@link RepositoryWriter}) — whether a
- * coordinate CAN publish is that surface's presence, judged where the
- * coordinate routes; the coordinate's *shape* is written-form knowledge,
- * parsed by {@link PackageFormat.parsePublishCoordinate}.
- */
 /** What a registry publishes about one exact package version besides its
  * files: the licence it declares, as the registry states it (an SPDX
  * expression, a licence's name), and the digests of its content. Read for a
@@ -201,9 +169,27 @@ export interface ILicense {
   readonly url?: string;
 }
 
+/**
+ * The resolving read face of a repository: a package registry, as the
+ * resolution layer (PackageResolver) uses one. It is one ecosystem's
+ * transport: everything that needs the url, the credentials or the wire
+ * formats, and nothing that orchestrates. References to it are resolved
+ * together (see resolvePackages). `npm_repository` implements it directly, a
+ * `repository_group` by routing each call to the member the package's name
+ * routes to, and a content route's member answers from its manifest. The
+ * resolution layer asks a registry questions about one package at a time, so
+ * every requirement a group's packages reach, transitive ones included, is
+ * routed through the group.
+ *
+ * A registry that is also a publish destination carries the write face
+ * ({@link RepositoryWriter}) too, and a coordinate can be published to where
+ * the repository it routes to has that face. A coordinate's shape is read by
+ * {@link PackageFormat.parsePublishCoordinate}.
+ */
 export interface RepositoryReader<V, C> extends RequirementSource<V> {
-  /** The shared per-ecosystem format (see {@link PackageFormat}): object
-   * identity across registries is what admits them to one domain. */
+  /** The ecosystem's format (see {@link PackageFormat}), one object shared by
+   * its registries: registries with the same format object resolve in one
+   * version domain. */
   readonly format: PackageFormat<V, C>;
   /** Stable identity of the registry (npm: the registry url; a group: its
    * serialized route table): keys its resolution memos and package fetches,
@@ -214,12 +200,13 @@ export interface RepositoryReader<V, C> extends RequirementSource<V> {
    * Absent where it has none, and its files then have none. */
   readonly name?: string;
   /**
-   * An opaque discriminator of what a resolution is computed *for* — anything
-   * beyond the roots that shapes the graph (npm: the target platform, which
-   * gates optional deps; a content member: its manifest's claims; Maven: the
-   * JVM release, and the usage `operation` selects). Folded into the
-   * resolution memo key. `operation` is the `BUILD_OPERATION` the resolution
-   * is for (see {@link RequirementSource.getRequirements}).
+   * Get an opaque key for what, beside its roots, shapes a resolution for
+   * `operation`, the `BUILD_OPERATION` it is for (see
+   * {@link RequirementSource.getRequirements}): npm, the target platform,
+   * which gates optional dependencies; a content route's member, its
+   * manifest's claims; Maven, the JVM release and the usage `operation`
+   * selects. Part of the resolution memo key: instances of one registry
+   * resolve together only where their keys agree.
    */
   environmentKey(operation?: string): Computable<string>;
   /** The operation of the configuration this instance was made in
@@ -229,8 +216,8 @@ export interface RepositoryReader<V, C> extends RequirementSource<V> {
   /**
    * Fetch the files of the package one reference names, with no dependency
    * closure and no joint resolution: the version is the reference's own lower
-   * bound. What a {@link fileRequests file request} is answered with when it is
-   * materialized, whatever operation this instance was interned under.
+   * bound. Answers a {@link fileRequests file request} when it is
+   * materialized, whatever operation this instance was made under.
    */
   fetchFiles(reference: RepositoryRef): Computable<FileSet>;
   /** Fetch one exact package version's content. */
@@ -247,16 +234,17 @@ export interface RepositoryReader<V, C> extends RequirementSource<V> {
    * registry without it publishes no variants.
    */
   fetchVariant?(name: string, version: V, variant: string): Computable<FileSet>;
-  /** Get the published-version list for repair suggestions; undefined when the
-   * registry has no such package. Reads a mutable document — failure-path
-   * only, and optional: absence means no suggestions. */
+  /** Get the published versions of `name`, for suggesting a remedy;
+   * undefined where the registry has no such package. Reads a document that
+   * changes over time, so call it only on a failure. Optional: absent, no
+   * remedy is suggested. */
   availableVersions?(name: string): Computable<V[] | undefined>;
   /**
-   * Post-resolution policy over the final selections (npm: EBADPLATFORM — a
-   * non-optional dependency on a package for another platform), rejected to
-   * fail the whole resolution. Called once per resolution, after the graph
-   * converges, before it is persisted. Optional: most registries have no
-   * policy.
+   * Check a resolution's selections against the registry's policy (npm:
+   * EBADPLATFORM, a non-optional dependency on a package for another
+   * platform), rejecting to fail the whole resolution. Called once per
+   * resolution, once its selections are settled and before it is persisted.
+   * Optional: absent, there is no policy.
    */
   validateSelections?(selections: Selected<V>[]): Computable<void>;
   /**
@@ -269,10 +257,10 @@ export interface RepositoryReader<V, C> extends RequirementSource<V> {
 }
 
 /**
- * @return true if `source` is a package registry (structurally — the same move
- * as {@link isRepository}), otherwise false: what a `repository_group` requires of a route target,
- * and how one ecosystem's publish packaging recognizes coordinates of its own
- * ecosystem in a release (by then comparing `format` for identity).
+ * @return true if `source` is a package registry (it has the
+ * {@link RepositoryReader} members), otherwise false. A `repository_group`
+ * requires it of a route's target; an ecosystem's publish packaging uses it,
+ * then compares `format`, to find its own ecosystem's coordinates in a release.
  */
 export function isRepositoryReader(source: unknown): source is RepositoryReader<unknown, unknown> {
   const registry = source as Partial<RepositoryReader<unknown, unknown>>;
@@ -288,33 +276,28 @@ export function isRepositoryReader(source: unknown): source is RepositoryReader<
 
 /**
  * The write face of a repository, carried by every {@link RepositoryPublishRef}
- * it vends. Packaging is **batch-shaped**, the write-side dual of `resolve`'s
- * per-repository joint batches: the sync partitions its members by destination
- * and each destination packages its whole batch jointly, so ecosystem packaging
- * policy — co-member dependency rewriting, unresolvable-dependency errors —
- * lives behind this interface, never in the generic rule. Release-level
- * orchestration is NOT here: the carriers announce what they reference
- * (`provides`/`dependsOn`, minted ecosystem-side, carried generically), and
- * ordering uploads deps-first / skipping the dependants of a failure is the
- * generic layer's job (the sync rule orders; the driver walks). The two halves
- * straddle the pure/side-effect line: `package` is a pure, cacheable transform
- * (building/`cat`-ing its result is the dry-run); `publish` is the one
- * non-idempotent, credentialed, never-cached network write, to this
- * repository's single `url`.
+ * it vends. A `sync` groups its members by destination, and each destination
+ * packages its whole group at once ({@link package}), so the ecosystem's
+ * packaging policy (rewriting a dependency on another member, refusing one
+ * that cannot be resolved) is the destination's. The order of uploads
+ * (dependencies first, skipping what depends on a failed upload) is not: the
+ * sync rule orders them and the driver uploads them, by what each carrier
+ * says it provides and depends on (`provides`/`dependsOn`). `package` is pure
+ * and cached, so building or `cat`-ing its result is a dry run; `publish` is
+ * the one upload, to this repository's `url`, and is never cached.
  */
 export interface RepositoryWriter {
   /**
-   * Package this destination's members into its wire form (npm: a
-   * `package/`-rooted `.tgz` + the final manifest per member), jointly. `release`
-   * is every coordinate the whole sync assigns — across ALL destinations — as
-   * ecosystem-read context: npm rewrites a member's manifest dependency on a
-   * release member to its assigned version, reading the coordinates addressed to
-   * npm destinations (so a maintained-in-sync twin published to another registry
-   * still rewrites, its own destination's assignments taking precedence over the
-   * release-wide one) and ignoring addresses it doesn't understand. How to
-   * rewrite, and that a dependency on a built but unpublished package is
-   * unresolvable (an error), is this ecosystem's policy. Pure/cacheable — the
-   * carriers' files ARE the wire artifact, returned parallel to `members`.
+   * Package this destination's members, together, into its wire form (npm: a
+   * `package/`-rooted `.tgz` and the final manifest per member), returned
+   * parallel to `members`; each carrier's files are the artifact uploaded.
+   * `release` is every coordinate the whole sync assigns, across all
+   * destinations: npm rewrites a member's manifest dependency on a release
+   * member to its assigned version, reading the coordinates addressed to npm
+   * destinations (its own destination's taking precedence over another's)
+   * and ignoring addresses it does not understand. How to rewrite, and whether
+   * a dependency on a built but unpublished package is an error, is the
+   * ecosystem's. Pure and cached.
    */
   package(
     members: PublishMember[],
@@ -336,12 +319,11 @@ export interface RepositoryWriter {
   attachments?(destination: RepositoryPublishRef): readonly PublishAttachment[];
 
   /**
-   * Upload one prior {@link package} result to this repository's `url` — the one
-   * side effect: pure upload mechanics (envelope, credential, what counts as
-   * already-published), nothing about the rest of the release. Authentication is
-   * the repository's own business — it knows its registry and its ecosystem's
-   * credential conventions — so no token is threaded in. `report` is the
-   * upload's task, which may measure its progress.
+   * Upload one {@link package} result to this repository's `url`: the
+   * envelope, the credential, and what counts as already published, nothing
+   * about the rest of the release. The repository finds its own credential; no
+   * token is passed in. `report` is the upload's task, which may report its
+   * progress.
    */
   publish(artifact: PublishableFileSet, report: ITaskReport): Computable<PublishStatus>;
 }
@@ -355,8 +337,9 @@ export interface PublishAttachment {
 }
 
 /** What a {@link RepositoryRef} resolves against: a repository's read face —
- * resolving (references batched by the resolution layer), lookup
- * (per-reference delivery) or collection (a member of what it resolved). */
+ * resolving (references resolved together by the resolution layer), lookup
+ * (each reference answered on its own) or collection (a member of what it
+ * resolved). */
 export type RefSource = RepositoryLookup | RepositoryReader<unknown, unknown> | RepositoryCollection;
 
 /**
@@ -396,26 +379,23 @@ export type Resolved = Materialized | ResolvedNode | ProjectedPackage | TargetRe
 export interface PublishMember {
   readonly destination: RepositoryPublishRef;
   /** The member's content: where it is one package, that package as its build
-   *  made it, with the edges that build bound (a {@link PackageFileSet});
-   *  otherwise its files. */
+   *  made it, with the dependencies that build bound (a
+   *  {@link PackageFileSet}); otherwise its files. */
   readonly content: FileSet;
 }
 
-/** A successful {@link RepositoryWriter.publish}'s report: whether the upload
- *  happened, or the coordinate already held the content (sync is declarative —
- *  already-there is success, reported distinctly). A failure is an ordinary
- *  rejection. */
+/** The outcome of a successful {@link RepositoryWriter.publish}: uploaded, or
+ *  the coordinate already held the content, which is also a success. A failure
+ *  rejects. */
 export type PublishStatus = "published" | "already-synced";
 
 /**
- * A vended write address: where a `sync` member's content goes — validated by
- * the destination at vend time ({@link Repository.getRepositoryPublishRef}), so holding one
- * proves the name is a well-formed, writable address. The write dual of
- * {@link RepositoryRef} (a name in a repository's namespace plus the provider
- * its operations need), minus projections (you cannot project into an address
- * you are creating) and provenance; it is never resolved. A destination's
- * address is its `name` (a file destination's path); a package destination's
- * coordinate adds the version it assigns ({@link PackagePublishRef}).
+ * A publish address: where a `sync` member's content goes, vended and so
+ * validated by the destination ({@link Repository.getRepositoryPublishRef}).
+ * The write counterpart of {@link RepositoryRef}, without projections or
+ * provenance steps, and never resolved. A destination's address is its `name`
+ * (a file destination's path); a package destination's coordinate adds the
+ * version it assigns ({@link PackagePublishRef}).
  */
 export class RepositoryPublishRef {
   /** The address, within {@link source}. */
@@ -424,21 +404,21 @@ export class RepositoryPublishRef {
   constructor(
     public readonly source: RepositoryWriter,
     coordinate: { readonly name: string },
-    /** The declared name of the destination repository in the build's
-     *  namespace (`@npm`) — the destination cannot know what it was declared
-     *  as, so lookup attaches it at vend time. Display-only: completes
-     *  the written coordinate (`@npm:name:version`). */
+    /** The name the destination repository is declared as (`@npm`), attached
+     *  where the coordinate is looked up. Display only: it completes the
+     *  written coordinate (`@npm:name:version`). */
     public readonly repositoryName?: string
   ) {
     this.name = coordinate.name;
   }
 
+  /** @return a copy carrying `repositoryName`. */
   public withRepositoryName(repositoryName: string): RepositoryPublishRef {
     return new RepositoryPublishRef(this.source, this, repositoryName);
   }
 
-  /** The display form for messages — the full written coordinate when the
-   *  repository name is known. */
+  /** @return the coordinate as written, for a message, with the repository's
+   *  name where it is known. */
   public toString(): string {
     return this.repositoryName === undefined ? this.coordinate() : `${this.repositoryName}:${this.coordinate()}`;
   }
@@ -482,15 +462,10 @@ export function packageCoordinateOf(ref: RepositoryPublishRef): PackagePublishRe
 }
 
 /**
- * A deferred reference to files from a Repository, possibly narrowed by
- * projections: "the thing we resolve", explicitly separate from the FileSet
- * content it eventually produces. References travel through property and
- * target lookup as inert values, so that the consuming target's collection
- * point can gather every reference that surfaces and resolve them together.
- *
- * Instances are immutable: provenance steps and projections accumulate into
- * new copies, so instances cached in shared property values are never affected
- * by any individual consumer.
+ * A reference into a repository: a requirement addressed to its `source`,
+ * possibly narrowed by projections, and not yet resolved. References are
+ * carried unchanged through property and target lookup to the consuming
+ * target's collection point, which resolves them together.
  */
 export class RepositoryRef extends Reference implements Requirement {
   /** The package named, within {@link source}. */
@@ -510,10 +485,9 @@ export class RepositoryRef extends Reference implements Requirement {
     public readonly source: RefSource,
     identity: Requirement,
     fields: ReferenceFields = { ...NO_REFERENCE_FIELDS, override: identity.override, renameTo: identity.renameTo },
-    /** The name the repository was reached by, as written (`@deps`) — stamped
-     *  where the reference is looked up (the site that matched the declaration),
-     *  like a publish ref's repositoryName. Display-only: how the resolution
-     *  layer renders suggestions and progress in the user's own spelling. */
+    /** The name the repository was reached by, as written (`@deps`), stamped
+     *  where the reference is looked up. Display only: the resolution layer
+     *  names the repository by it in suggestions and progress. */
     public readonly repositoryName?: string
   ) {
     super(fields);
@@ -566,13 +540,11 @@ export class RepositoryRef extends Reference implements Requirement {
   }
 
   /**
-   * Chain this reference's provenance steps onto its resolved base — the
-   * provenance half of finishing a delivery, kept separate from projection
-   * application (the build context's applyProjections).
+   * Chain this reference's provenance steps onto `base`, what it resolved to,
+   * where that is plain content. A package is returned as it is: its
+   * provenance is its resolution's, which carries the reference's steps.
    */
   public stampProvenance<T extends FileSet | ResolvedNode>(base: T): T {
-    /* A package's provenance is its resolution's: the steps of the reference
-     * it is delivered for ride the entry that delivers it. */
     if (this.steps.length === 0 || isPackage(base)) {
       return base;
     }
@@ -581,20 +553,19 @@ export class RepositoryRef extends Reference implements Requirement {
   }
 
   /**
-   * Make a delivered base this reference's result: provenance stamped on
-   * plain content, a package rename written on the reference applied, and,
-   * where the reference carries projections, wrapped as a pending
-   * {@link ProjectedPackage} (over a resolved node) or {@link FileSetRef}. The
-   * delivery machinery never applies projections itself.
+   * Make `base`, what this reference resolved to, its result: provenance
+   * stamped on plain content, a package rename written on the reference
+   * applied, and any projections left pending over it, as a
+   * {@link ProjectedPackage} over a resolved node or a {@link FileSetRef} over
+   * files. No projection is applied here.
    */
   public applyTo(base: FileSet | ResolvedNode): FileSet | ResolvedNode | FileSetRef | ProjectedPackage {
     const renameTo = this.renameTo;
     const stamped = this.stampProvenance(base);
-    /* A rename written on the reference's IDENTITY half is the package rename,
-     * applied here because this is where an external package first exists; at a
-     * projection the facet rides the projection instead (see find) and renames
-     * the files it selects. The two never meet — a repository splits its
-     * reference at the projection boundary, so the facet reaches exactly one. */
+    /* A rename written before any projection renames the package, here; one
+     * written after a projection rides that projection (see find) and renames
+     * the files it selects. The repository splits its reference before the
+     * first projection, so a rename reaches only one of the two. */
     return renamedAndProjected(stamped, { renameTo, projections: this.projections }, this.toString());
   }
 }
@@ -628,9 +599,9 @@ const NO_SOURCE: RepositoryLookup = {
 };
 
 /**
- * TEST SUPPORT. Make the edges to `deps`, each a package asked for by its own
- * name through a reference nothing vends: what a test writes where a
- * collection point would have delivered the edge.
+ * TEST SUPPORT. Make a {@link Dependency} on each of `deps`, asked for by the
+ * package's own name through a reference no repository vends, where a
+ * collection point would have bound it.
  */
 export function dependenciesOn<P extends Package>(...deps: P[]): Array<Dependency<P>> {
   return deps.map(dep => ({
@@ -640,18 +611,18 @@ export function dependenciesOn<P extends Package>(...deps: P[]): Array<Dependenc
 }
 
 /**
- * Deliver `source` under the name a written `-> name` gave it — the package
- * rename, in one place because only the *moment* differs between the kinds of
- * package: an external one does not exist until its collection point (so the
- * facet rides its reference here, to {@link RepositoryRef.applyTo}), and
- * a target's package does not exist until the target is resolved or built (so
- * it rides its {@link TargetRef}). A still-deferred reference is renamed by
- * carrying the facet onward, and what it resolves to reaches this same rule
- * later.
+ * Rename `source` to `renameTo`, as a `-> name` written on a reference renames
+ * what it resolves to:
+ * - a package is renamed;
+ * - a target's node takes the name, and its build must be a package: its
+ *   files reject where it is not;
+ * - a reference with no projection carries the rename, and what it resolves
+ *   to is renamed when it is resolved ({@link RepositoryRef.applyTo},
+ *   {@link TargetRef}).
  *
- * Only a package has an identity to rename. Anything else — a runnable, a plain
- * fileset — has no name a rename could be about, so it is an error rather than
- * a silent no-op. `written` names the reference the rename was written on.
+ * Throws for anything else (a runnable, plain files, a reference with a
+ * projection), which has no name to rename. `written` names the reference
+ * the rename was written on, for the error.
  */
 export function renamedAs(source: FileSet, renameTo: string, written: string): FileSet;
 export function renamedAs<T extends FileSet | ResolvedNode>(source: T, renameTo: string, written: string): T;
@@ -663,9 +634,9 @@ export function renamedAs(source: SourceRef | ResolvedNode, renameTo: string, wr
       "a rename on a reference that delivers files must name what it selects ('ref:pattern -> template')"
     );
   if (source instanceof ResolvedNode && source.content.builds !== undefined) {
-    /* What a target builds is known when it is built. Delivered under another
-     * name it is a package of that name, a build apart from the target's own:
-     * its key says so, and its files are the one build's. */
+    /* Under another name the node is a package of that name, a build apart
+     * from the target's own (its key says so), with the target's files. Whether
+     * the build is a package is known only once it is built. */
     const renamed = source.withPackageName(renameTo);
     const { content } = renamed;
     return renamed.withContent({
@@ -689,15 +660,14 @@ export function renamedAs(source: SourceRef | ResolvedNode, renameTo: string, wr
 }
 
 /**
- * A FileSource, a PartialRepositoryRef (a repository named on its own), a deferred
- * RepositoryRef, a projection-pending FileSetRef, or an unbuilt TargetRef: the
- * currency of looking up properties and targets.
+ * A source as looking up a property or a target finds it: a FileSource, a
+ * PartialRepositoryRef or NamespaceRef, a RepositoryRef, a FileSetRef with
+ * projections pending, or a TargetRef, not built.
  */
 export type SourceRef = FileSource | PartialRepositoryRef | NamespaceRef | RepositoryRef | FileSetRef | TargetRef;
 
 /** A collection's source, materialized: content, or, where its reference
- * carries projections, a {@link FileSetRef}
- * with them still pending. The caller applies the pending projections
- * (`applyProjections`), or hands the ref to a consumer that reinterprets it
- * (see TargetContext.getContainedFileProperty). */
+ * carries projections, a {@link FileSetRef} with them still pending, which the
+ * caller applies (`applyProjections`) or hands to a consumer that reads them
+ * itself (see TargetContext.getContainedFileProperty). */
 export type Materialized = FileSource | FileSetRef;

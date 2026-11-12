@@ -17,17 +17,12 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-/**
- * Pure (esbuild-independent) helpers behind the js_bundle rule: computing the
- * externalized-dependency name set, mapping each entry to its output name via
- * the `output` REWRITE, and assembling the fabr-level options document handed to
- * the standalone bundle driver (see @fabr-build/js-tools's
- * bundleDriver/bundle-driver.ts — resolved as the JS_BUNDLER runnable declared
- * in JS.fabr). Everything here runs in the host during evaluation; the esbuild
- * invocation itself is the driver's job.
- * Kept apart from the driver so it can import @fabr-build/core and be
- * unit-tested under jest (the driver runs standalone in the bundle build step
- * and must not depend on core at runtime).
+/*
+ * The js_bundle rule's computations, run in fabr's process: the package names
+ * left external, each entry's output name by the `output` rewrite, and the
+ * options document given to the bundle driver (JS_BUNDLER, js-tools'
+ * `bundleDriver/`), which runs esbuild. The driver must not import this
+ * module: it runs without @fabr-build/core.
  */
 
 import { dependencyName, FabrError, FileSet, PackageFileSet, RewriteFn } from "@fabr-build/core";
@@ -37,11 +32,10 @@ import { JSTarget } from "./JSPackage";
 /** Where esbuild writes and the rule collects the bundle output from. */
 export const BUNDLE_OUTDIR = "out";
 
-/** Name an entry's default OUTPUT: every spelling the pipeline compiles
- * or links (`.ts`/`.tsx`/`.jsx`/`.mts`/`.cts`/`.mjs`/`.cjs`) maps to `.js` —
- * the bundle is a fresh file esbuild always writes as `.js`, so even a
- * module-flavoured entry (`.mts`, `.mjs`) yields a plain `.js` bundle name.
- * Anything else keeps its name (and fails the `.js` check downstream). */
+/** Name an entry's default output: a `.ts`, `.tsx`, `.jsx`, `.mts`, `.cts`,
+ * `.mjs` or `.cjs` name ends in `.js` instead, as esbuild writes every bundle
+ * as `.js`. Any other name is kept, and is refused by
+ * {@link computeBundleEntries}. */
 export function compiledName(name: string): string {
   return name.replace(/\.(?:tsx?|jsx|[cm]ts|[cm]js)$/i, ".js");
 }
@@ -51,10 +45,9 @@ export interface IBundleEntrySource {
   name: string;
 }
 
-/** Collect every package name reachable from the given roots — the roots themselves plus
- * their whole dependency closure, deduped. An unbound edge (an external
- * requirement a package still carries inertly) contributes the name it is
- * imported by, its local name; a bound one recurses into its package. */
+/** Collect the name of every package among `roots` and every package they
+ * depend on, directly or not. A dependency bound to no package contributes
+ * the name it is imported by ({@link dependencyName}). */
 export function collectClosureNames(roots: FileSet[]): Set<string> {
   const names = new Set<string>();
   const visit = (pkg: PackageFileSet): void => {
@@ -78,7 +71,7 @@ export function collectClosureNames(roots: FileSet[]): Set<string> {
   return names;
 }
 
-/** Collect the direct (top-level, i.e. property-listed) package names among the roots. */
+/** Collect the names of the packages among `roots` themselves. */
 function directNames(roots: FileSet[]): Set<string> {
   const names = new Set<string>();
   for (const set of roots) {
@@ -90,19 +83,18 @@ function directNames(roots: FileSet[]): Set<string> {
 }
 
 /**
- * Compute the package names to externalize (left runtime-provided, not bundled). A
- * package is externalized only when it is provided MORE directly than it is
- * bundled — its directness in `deps` outranks its directness in `srcs`, where
- * direct (property-listed) = 2, transitive (closure-only) = 1, absent = 0:
+ * Compute the package names left external (not bundled, loaded at run time).
+ * A package reachable from `deps` is external where it sits more directly in
+ * `deps` than in `srcs`: listed in the property is 2, reached only through
+ * another package is 1, absent is 0.
  *
- *   direct src   + direct dep    -> bundled     (an explicit srcs entry isn't overridden)
- *   transitive src + transitive dep -> bundled  (neither side names it explicitly)
- *   transitive src + direct dep  -> externalized (the explicit dep wins)
- *   direct src   + transitive dep -> bundled    (the explicit srcs entry wins)
- *   (absent from srcs, present in deps -> externalized, the ordinary external case)
+ *   srcs listed     + deps listed     -> bundled
+ *   srcs reached    + deps reached    -> bundled
+ *   srcs reached    + deps listed     -> external
+ *   srcs listed     + deps reached    -> bundled
+ *   absent in srcs  + in deps         -> external
  *
- * So externalization requires an explicit deps declaration that out-ranks how the
- * package entered srcs; identity is what matters, not which import reached it.
+ * Packages are matched by name, whichever import reaches them.
  */
 export function computeExternalNames(srcs: FileSet[], deps: FileSet[]): string[] {
   const srcsDirect = directNames(srcs);
@@ -118,8 +110,8 @@ export function computeExternalNames(srcs: FileSet[], deps: FileSet[]): string[]
   return external;
 }
 
-/** Rank how directly a package sits in `srcs`: direct (property-listed) = 2,
- * transitive (closure-only) = 1, absent = 0. */
+/** Rank how directly a package sits in `srcs`: listed in the property 2,
+ * reached only through another package 1, absent 0. */
 function srcLevel(name: string, direct: Set<string>, all: Set<string>): number {
   if (direct.has(name)) {
     return 2;
@@ -138,9 +130,9 @@ const HASH = "[hash]";
 
 /**
  * Map each entry to its bundle entry pair, and make the pattern their outputs are
- * written by. `path` is where the file is staged — for a loose source its compiled
- * name at the bundle root, for one located inside a mounted container the path
- * under that mount. `name` is what the reference CALLS it, and the output is
+ * written by. `path` is where the file is staged: for a loose source its compiled
+ * name at the bundle root, for one inside a mounted container the path
+ * under that mount. `name` is what the reference calls it, and the output is
  * derived from that: any compiled/linked spelling becomes `.js`
  * ({@link compiledName}), named by its content as `<name>-[hash].js`, then the
  * `output` REWRITE renames it (first matching value; unmatched → unchanged). The
@@ -227,10 +219,11 @@ export function toBundleFormat(value: string): BundleFormat {
 
 /**
  * Assemble the driver options from the target's JS_TARGET, bundle format and
- * BUILD_TYPE and the computed entries + external set. Minify/sourcemap track
- * BUILD_TYPE (cmake-style): debug → sourcemap only, relwithdebinfo → both,
- * release → minify only.
+ * BUILD_TYPE and the computed entries and external names. BUILD_TYPE decides
+ * minifying and source maps: debug a linked source map only, relwithdebinfo
+ * both, release minified only. `esm-split` is `esm` with code splitting.
  */
+
 export function buildBundleOptions(
   jsTarget: JSTarget,
   bundleFormat: BundleFormat,

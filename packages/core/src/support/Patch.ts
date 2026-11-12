@@ -88,8 +88,10 @@ export function parsePatchFile(text: string, what: string, strip = 1): FilePatch
   });
 }
 
-/** Strip `strip` leading components from a name as the patch writes it;
- * undefined for the null file. */
+/** Strip `strip` leading components from a name as the patch writes it.
+ * @return the name, or undefined for the null file. Throws where nothing is
+ *   left, or the name is absolute or holds `..`: keep that check, since a
+ *   patch must not reach outside the files it applies to. */
 function strippedName(written: string | undefined, what: string, strip: number): string | undefined {
   if (written === undefined || written === NO_FILE) {
     return undefined;
@@ -107,6 +109,7 @@ function strippedName(written: string | undefined, what: string, strip: number):
   return kept.join("/");
 }
 
+/** Apply `file`'s hunks to `content`, exactly, or throw naming the hunks that do not match. */
 function applyHunks(content: string, file: StructuredPatch, name: string, what: string): string {
   const result = applyPatch(content, file, { fuzzFactor: 0 });
   if (result !== false) {

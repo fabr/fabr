@@ -25,46 +25,35 @@ const cursorUp = (n: number): string => `\x1b[${n}F`;
 /** Erase from the cursor to the end of the screen. */
 const ERASE_DOWN = "\x1b[0J";
 
-/** How often the pane repaints while work is in flight, so elapsed times
- * advance. Fast enough to read as live, slow enough to cost nothing. */
+/** How often the pane repaints while it is up, so elapsed times advance. */
 const TICK_MS = 100;
 
-/** Fallback width for a terminal that doesn't report one — or reports 0, which
- *  a pty with no known size does, and which is not a width. */
+/** The width of a terminal that reports none, or 0 (a pty whose size nobody set). */
 const DEFAULT_COLUMNS = 80;
 
-/** Narrowest width the pane paints at all: below this the rows would be all
- *  ellipsis, and a row must never exceed the real width (a wrapped row desyncs
- *  the erase's line count). */
+/** The narrowest width the pane is painted at. */
 const MIN_COLUMNS = 24;
 
 /**
- * The most of the screen the pane may take, as a fraction of its height, and
- * the ceiling and floor on that.
- *
- * Height is not just a matter of taste. Painting the pane scrolls that many
- * real log lines off the top of the screen, and when the pane later shrinks the
- * space cannot be refilled — the content that was there is in scrollback — so a
- * tall pane leaves a correspondingly tall hole above the prompt. The bound on
- * the pane is therefore also the bound on that hole.
+ * The pane's row budget: 1/MAX_PANE_FRACTION of the screen's height, between
+ * MIN_PANE_ROWS and MAX_PANE_ROWS. Keep it small: painting the pane scrolls
+ * that many log lines into scrollback, and the space is left blank when the
+ * pane shrinks.
  */
 const MAX_PANE_FRACTION = 4;
 const MAX_PANE_ROWS = 6;
 const MIN_PANE_ROWS = 2;
 
-/** Fallback height for a terminal that doesn't report one (see width()). */
+/** The height of a terminal that reports none, or 0. */
 const DEFAULT_ROWS = 24;
 
-/** stderr as fabr holds it: a Writable that, when it is a real tty, also
- *  carries the screen's measurements and emits "resize". A plain pipe (or a
- *  test's capture) carries neither and gets the defaults. */
+/** The stream the terminal writes to: a Writable that, on a tty, also carries
+ *  the screen's measurements and emits "resize". */
 type ScreenStream = Writable & { columns?: number; rows?: number };
 
-/* One process-level exit hook shared by every pane-painting stream (tests
- * construct many; per-instance hooks would pile up listeners): process.exit
- * runs no `finally`, and the driver routes signals through it deliberately —
- * so the pane is torn down from an exit hook or not at all, else a terminated
- * run leaves its rows on screen as if still running. */
+/* The erasers of the streams painting a pane, run by one process exit hook
+ * shared by them all. Erase the pane from the exit hook: process.exit runs no
+ * `finally`. */
 const liveScreens = new Set<() => void>();
 let exitHookInstalled = false;
 function eraseOnExit(erase: () => void): void {
@@ -76,10 +65,9 @@ function eraseOnExit(erase: () => void): void {
 }
 
 /**
- * One row of the pane: what the work is, and its current state (elapsed time,
- * a download's bytes). Split because only the terminal knows the width: the
- * `right` column is the part that must survive a narrow terminal, so it is the
- * `left` that is truncated.
+ * One row of the pane: what the work is (`left`), and its current state
+ * (`right`: elapsed time, a download's bytes). Where the row does not fit, the
+ * terminal truncates `left` first ({@link layoutRow}).
  */
 export interface IPaneRow {
   left: string;
@@ -96,60 +84,47 @@ export interface IPaneContent {
 }
 
 /**
- * Where the pane's content comes from. A *source*, not a value, because the
- * pane is derived state that changes with the clock as much as with events —
- * a row's elapsed time advances while nothing at all happens, so anything
- * handed over as rendered text would freeze between events. Asked afresh on
- * every paint.
- *
- * It is given the number of rows it may use, and decides how to spend them:
- * only the terminal knows how big the screen is, and only the source knows
- * which of its rows are worth the space (and how to say what it left out).
+ * The source of the pane's content, asked afresh at every paint, given the
+ * number of rows it may use. A source returning more rows than that is cut,
+ * with a row counting the rest.
  */
 export type PaneSource = (rows: number) => IPaneContent;
 
 /**
- * fabr's stderr, as a stream one component owns.
+ * fabr's stderr, which keeps a live pane painted below the text written to it.
  *
- * Everything fabr writes to the terminal goes through here: rendered
- * diagnostics from the log, and build steps' output from the pump. Its whole
- * job is cursor management — it inspects nothing and decorates nothing, so
- * attribution (prefixing a step's lines) stays with the pump that knows where
- * a line came from, and diagnostic rendering stays with the formatter.
+ * {@link write} writes a block of already-rendered text through unchanged,
+ * erasing the pane before and painting it again after. With a pane, the
+ * stream's own `write` is wrapped too, so a write fabr did not make (a node
+ * warning, a library writing to `process.stderr`) is bracketed the same way;
+ * the pane is not painted again until such a write has ended its line.
  *
- * Text is written a *block* at a time rather than a line at a time, so a
- * multi-line diagnostic — whose gutter and underline are aligned against
- * column 0 — can never be split across a repaint.
+ * The pane is painted from the {@link PaneSource} within the row budget
+ * ({@link MAX_PANE_FRACTION}), each line cut to the terminal's width. It is
+ * repainted on {@link paneChanged}, on a resize, and every {@link TICK_MS}
+ * while it is up, and erased on {@link suspend} and as the process exits.
  *
- * Without a pane (not a tty), this is a direct write and nothing else: the
- * pane is a derived view of what the log already records, so its absence costs
- * no information.
+ * Without a pane, {@link write} is a plain write.
  */
 export class TerminalStream {
-  /** Lines of pane currently painted below the cursor (0 = none). */
+  /** The lines of pane painted below the cursor (0 = none). */
   private painted = 0;
-  /** What was last painted, so an unchanged repaint (a tick whose elapsed times
-   *  rounded to the same text) writes nothing at all. */
+  /** The text last painted; a repaint that would paint the same writes nothing. */
   private lastPainted = "";
   private source?: PaneSource;
   private timer?: NodeJS.Timeout;
-  /** Depth of hand-overs in force — suspensions nest, since a prompt can fire
-   *  while a supervised child already owns the terminal: the pane stays erased,
-   *  and repaints are suppressed, until the *last* one lifts. */
+  /** The number of suspensions in force; the pane stays erased until the last
+   *  one is resumed (a prompt can come while a supervised child holds the terminal). */
   private suspended = 0;
-  /** Set while *we* are the one writing, so adopted foreign writes (below) do
-   *  not recurse back through the erase/repaint they exist to perform. */
+  /** Whether this stream is writing, so the wrapped `write` lets its writes by. */
   private emitting = false;
-  /** Whether the cursor is at the start of a line. A foreign write that ends
-   *  mid-line has nowhere to put a pane — painting there would append the
-   *  heading to somebody's half-written line, and the next erase would take
-   *  that line with it — so the pane waits for the newline. */
+  /** Whether the cursor is at the start of a line. Paint only there: a pane
+   *  painted after a half-written line joins it, and its erase takes the line. */
   private lineStart = true;
 
   /**
-   * @param out where rendered text goes (process.stderr in production)
-   * @param pane whether to paint the in-flight pane at all — false for a
-   *   non-tty, where cursor movement would be noise in a log file
+   * @param out where text goes (process.stderr)
+   * @param pane whether to paint the pane: false where `out` is not a tty
    */
   constructor(
     private readonly out: ScreenStream,
@@ -157,42 +132,31 @@ export class TerminalStream {
   ) {
     if (pane) {
       this.adoptForeignWrites();
-      /* A resize invalidates every truncation the pane made, and the erase
-       * depends on those truncations having held (a wrapped row occupies two
-       * screen lines and would desync the count). Repaint against the new
-       * width immediately rather than waiting for the tick.
-       *
-       * Known limit: this first erase counts lines laid out at the OLD width,
-       * so a terminal that reflows on shrink (iTerm2, VTE) can briefly strand
-       * pane fragments; the repaint at the new width heals from there. */
+      /* Repaint at once at the new width. The erase counts the lines laid out
+       * at the old width, so a terminal that reflows on shrink (iTerm2, VTE)
+       * can leave pane fragments behind, until later repaints overwrite them. */
       this.out.on("resize", () => this.repaint());
-      /* Torn down from the shared exit hook (see eraseOnExit) or not at all. */
+      /* Erased from the shared exit hook (see eraseOnExit). */
       eraseOnExit(() => this.erase());
     }
   }
 
   /**
-   * Bring writes fabr didn't make through the same erase/repaint — node's own
-   * warnings (a deprecation notice from a dependency's first URL parse, an
-   * experimental-feature notice), and anything else that reaches for
-   * `process.stderr` directly.
-   *
-   * Unadopted, such a write lands *below* the painted pane and moves the
-   * cursor, after which every erase counts back from the wrong line —
-   * stranding a copy of the pane on screen while the live one carries on
-   * elsewhere.
+   * Wrap `out`'s own `write`, so a write fabr did not make (node's own
+   * warnings, anything writing to `process.stderr` directly) erases the pane
+   * before it and paints it after. An unwrapped write would land below the
+   * pane and leave every later erase counting from the wrong line.
    */
   private adoptForeignWrites(): void {
     const original = this.out.write.bind(this.out);
     const adopted: Writable["write"] = (chunk, encoding?, callback?) => {
       if (this.emitting) {
-        /* Ours — already bracketed by the erase/repaint that called it. */
+        /* This stream's own write, already between an erase and a paint. */
         return original(chunk as never, encoding as never, callback as never);
       }
       this.erase();
       const accepted = original(chunk as never, encoding as never, callback as never);
-      /* A zero-length write moves no cursor, so it must not flip the mid-line
-       * judgment (which would hold the pane down until the next newline). */
+      /* A zero-length write moves no cursor: leave `lineStart` as it is. */
       if ((chunk as { length: number }).length !== 0) {
         this.lineStart = endsLine(chunk);
       }
@@ -202,14 +166,12 @@ export class TerminalStream {
     this.out.write = adopted;
   }
 
-  /** @return true if this stream paints a live pane at all, otherwise false. Read by whoever is
-   *  deciding what the *log* must carry: with a pane showing what is running,
-   *  the log needn't also announce it. */
+  /** @return true if this stream paints a pane, otherwise false. */
   public get hasPane(): boolean {
     return this.pane;
   }
 
-  /** Write a block of already-rendered text (trailing newline supplied here). */
+  /** Write a block of already-rendered text, ending it with a newline where it has none. */
   public write(text: string): void {
     this.erase();
     this.emit(text.endsWith("\n") ? text : text + "\n");
@@ -217,7 +179,7 @@ export class TerminalStream {
     this.paint();
   }
 
-  /** Write ours, marked as ours so {@link adoptForeignWrites} lets it by. */
+  /** Write `text` to `out` as this stream's own, which the wrapped `write` lets by. */
   private emit(text: string): void {
     this.emitting = true;
     try {
@@ -233,17 +195,15 @@ export class TerminalStream {
     this.repaint();
   }
 
-  /** Repaint now, the pane's content having possibly changed, rather than at
-   *  the next tick, so a row appears and disappears with the event that caused it. */
+  /** Repaint now: the pane's content may have changed. */
   public paneChanged(): void {
     this.repaint();
   }
 
   /**
-   * Hand the terminal to something else that writes to it directly — a prompt
-   * reading a line, an interactive child with inherited stdio. The pane is
-   * erased and stays erased until {@link resume}; work carries on being
-   * tracked, so resuming shows the current state rather than a stale snapshot.
+   * Hand the terminal to something else that writes to it directly (a prompt
+   * reading a line, an interactive child with inherited stdio): erase the pane
+   * and paint none until each suspension is matched by a {@link resume}.
    */
   public suspend(): void {
     this.suspended++;
@@ -251,6 +211,7 @@ export class TerminalStream {
     this.stopTicking();
   }
 
+  /** Lift one suspension, painting the pane as it is now once none is left. */
   public resume(): void {
     if (this.suspended > 0) {
       this.suspended--;
@@ -261,14 +222,9 @@ export class TerminalStream {
   }
 
   /**
-   * Redraw in place: erase what is up and paint what is current. The whole pane
-   * goes, since a row leaving shifts every row below it.
-   *
-   * Compared against what is already on screen *before* erasing — a tick whose
-   * elapsed times rendered to the same text has nothing to say, and a terminal
-   * over a slow link should not pay for it. (The comparison has to happen here
-   * rather than in {@link paint}: erasing is itself a write, and by the time
-   * paint runs the screen no longer holds what it is being compared to.)
+   * Erase the whole pane and paint it as it is now, unless that would paint
+   * what is already painted. Compare here, before erasing: an erase clears
+   * `lastPainted`.
    */
   private repaint(): void {
     if (this.render() === this.lastPainted) {
@@ -278,6 +234,7 @@ export class TerminalStream {
     this.paint();
   }
 
+  /** Erase the pane painted, if any. */
   private erase(): void {
     if (this.painted > 0) {
       this.emit(cursorUp(this.painted) + ERASE_DOWN);
@@ -288,6 +245,7 @@ export class TerminalStream {
     }
   }
 
+  /** Paint the pane below the cursor where it is at the start of a line, ticking while it is up. */
   private paint(): void {
     const text = this.lineStart ? this.render() : "";
     if (text.length > 0) {
@@ -301,13 +259,10 @@ export class TerminalStream {
   }
 
   /**
-   * Render the pane as it should look now — empty when there is none to paint (no
-   * terminal, suspended, or no work in flight: an empty pane is nothing at all,
-   * not a bare heading over an idle build).
-   *
-   * Every line is truncated to the terminal width, because a line that wraps
-   * occupies two *screen* lines while the erase counts the lines it wrote — one
-   * wrapped row and the pane eats a line of scrollback on every repaint.
+   * Render the pane as it should look now, each line cut to the terminal's
+   * width; "" where there is none to paint (no pane, suspended, no rows, or a
+   * terminal narrower than {@link MIN_COLUMNS}). Cut every line: the erase
+   * counts the lines written, and a line that wraps takes two on the screen.
    */
   private render(): string {
     const content = this.pane && this.suspended === 0 ? this.source?.(this.rowBudget()) : undefined;
@@ -316,48 +271,40 @@ export class TerminalStream {
     }
     const width = this.width();
     if (width < MIN_COLUMNS) {
-      /* Too narrow to say anything useful — and an over-wide row would wrap,
-       * desyncing the erase's line count. */
       return "";
     }
     const rows = this.fit(content.rows).map(row => layoutRow(row, width));
     return [truncate(content.heading, width), ...rows].map(line => line + "\n").join("");
   }
 
-  /**
-   * Count how many rows the screen can spare (see {@link MAX_PANE_FRACTION}). Told to
-   * the pane source, which spends them; only this component knows the screen.
-   */
+  /** Count the rows the pane may use (see {@link MAX_PANE_FRACTION}). */
   private rowBudget(): number {
     const height = this.out.rows || DEFAULT_ROWS;
     return Math.max(MIN_PANE_ROWS, Math.min(MAX_PANE_ROWS, Math.floor(height / MAX_PANE_FRACTION)));
   }
 
   /**
-   * Cut the rows of a source that overspends its budget (the backstop), and say so
-   * rather than truncate silently — a pane showing 6 of 30 with no sign of the
-   * other 24 reads as "that is everything running".
+   * Cut `rows` to the row budget where they exceed it, the last row kept
+   * replaced by one counting those cut ("… +24 more").
    */
   private fit(rows: IPaneRow[]): IPaneRow[] {
     const limit = this.rowBudget();
     if (rows.length <= limit) {
       return rows;
     }
-    /* The cut line takes one of the budgeted rows itself — the bound on the
-     * pane is the bound on the scrollback hole it leaves. */
     const kept = limit - 1;
     return [...rows.slice(0, kept), { left: `  … +${rows.length - kept} more`, right: "" }];
   }
 
-  /** Count the columns available to a pane line, one short of the terminal's own so a
-   *  full-width line can't wrap. `||`, not `??`: a pty whose size nobody set
-   *  reports 0 columns, which is an absence dressed as a number. */
+  /** Count the columns a pane line may take: one short of the terminal's, so a
+   *  full-width line cannot wrap. Use `||`, not `??`: a pty whose size nobody
+   *  set reports 0 columns. */
   private width(): number {
     return (this.out.columns || DEFAULT_COLUMNS) - 1;
   }
 
-  /** Repaint on a timer while rows are up, so their elapsed times advance.
-   *  Unref'd: a pane must never be the reason the process stays alive. */
+  /** Repaint every {@link TICK_MS} while the pane is up. The timer is unref'd,
+   *  so it never keeps the process alive. */
   private startTicking(): void {
     if (this.timer === undefined) {
       this.timer = setInterval(() => this.repaint(), TICK_MS);
@@ -365,6 +312,7 @@ export class TerminalStream {
     }
   }
 
+  /** Stop repainting on a timer. */
   private stopTicking(): void {
     if (this.timer !== undefined) {
       clearInterval(this.timer);
@@ -374,29 +322,23 @@ export class TerminalStream {
 }
 
 /**
- * The run's terminal, for the code that must hand it over rather than write to
- * it — a prompt reading a line, an interactive child with inherited stdio.
- * Module-level, as Execute's interactive child is: "who owns the terminal
- * right now" is a property of the process.
+ * The process's terminal, for code that must hand it over rather than write
+ * to it (a prompt reading a line, an interactive child with inherited stdio).
  */
 let active: TerminalStream | undefined;
 
+/** Make `terminal` the one the hand-over functions below suspend and resume. */
 export function setActiveTerminal(terminal: TerminalStream): void {
   active = terminal;
 }
 
 /**
- * Hand the terminal to something that writes to it directly, for as long as
- * `run`'s chain takes. Suspending is unconditional and resuming happens on
- * settle either way: a program that fails still had the terminal, and leaving
- * the pane suspended would silently disable it for the rest of the run.
- * Hand-overs nest (a prompt can fire while a supervised child already owns the
- * terminal): the pane returns when the last one ends, not the first.
+ * Suspend the active terminal for as long as `run`'s chain takes, resuming it
+ * when the chain settles, resolved or rejected, or where `run` throws.
+ * Hand-overs nest: the pane returns when the last one ends.
  */
 export function withTerminalSuspended<T>(run: () => Computable<T>): Computable<T> {
   suspendActiveTerminal();
-  /* A synchronous throw must still resume, or the pane is silently disabled
-   * for the rest of the run. */
   try {
     return run().finally(() => resumeActiveTerminal());
   } catch (err) {
@@ -405,14 +347,14 @@ export function withTerminalSuspended<T>(run: () => Computable<T>): Computable<T
   }
 }
 
-/** Suspend the active terminal until {@link resumeActiveTerminal} — the
- *  unbracketed form of {@link withTerminalSuspended}, for a hand-over whose end is an event rather than the
- *  settling of a chain (the supervised `run -w` child, which outlives the build
- *  that launched it and is only over when it exits). */
+/** Suspend the active terminal until {@link resumeActiveTerminal}, for a
+ *  hand-over that ends with an event rather than a chain (the supervised
+ *  `run -w` child, until it exits). */
 export function suspendActiveTerminal(): void {
   active?.suspend();
 }
 
+/** Lift one suspension of the active terminal. */
 export function resumeActiveTerminal(): void {
   active?.resume();
 }
@@ -425,34 +367,30 @@ function endsLine(chunk: unknown): boolean {
   return chunk instanceof Uint8Array && chunk.at(-1) === 0x0a;
 }
 
-/** The gap held between a row's two columns, so they never run together. */
+/** The least gap between a row's two columns. */
 const ROW_GAP = 2;
 
-/** Where a row's right column starts on a comfortably wide terminal — enough
- *  for a target name, so the states line up and read as a column. */
+/** The column a row's right part starts at, where the terminal is wide enough. */
 const ROW_RIGHT_COLUMN = 52;
 
 /**
- * Lay a row out across `width` columns: the left, then the right pushed out to
- * {@link ROW_RIGHT_COLUMN} (or as far as it fits), the LEFT giving way when the
- * terminal is too narrow for both. A row's right column is what changes — the
- * elapsed time, a download's fraction — so it is what must survive; a truncated
- * target name is still recognizable, a truncated percentage is nothing.
+ * Lay a row out across `width` columns: the left, then the right pushed out
+ * to {@link ROW_RIGHT_COLUMN}, or as far as fits, at least {@link ROW_GAP}
+ * after the left. Where both do not fit, the left is truncated first, to
+ * nothing where the right needs the whole row. A row with an empty right is
+ * the left alone, with no trailing spaces.
  */
 export function layoutRow(row: IPaneRow, width: number): string {
   const right = truncate(row.right, width);
   const rightWidth = visibleLength(right);
   if (rightWidth === 0) {
-    /* Nothing to hold a column for — and trailing spaces are invisible until
-     * they are selected and copied. */
     return truncate(row.left, width);
   }
   const leftRoom = Math.max(0, width - rightWidth - ROW_GAP);
   const left = truncate(row.left, leftRoom);
   const leftWidth = visibleLength(left);
   if (leftWidth === 0) {
-    /* The right column has the whole row: any pad would push past `width`
-     * and wrap, desyncing the erase. */
+    /* No pad: it would push the row past `width`. */
     return right;
   }
   const column = Math.max(ROW_RIGHT_COLUMN, leftWidth + ROW_GAP);
@@ -460,22 +398,17 @@ export function layoutRow(row: IPaneRow, width: number): string {
   return left + pad + right;
 }
 
-/** Count printable columns: escapes occupy none, and width is display columns
- *  (CJK/emoji count 2), since the erase counts what the terminal drew. */
+/** Count the columns `text` takes on a terminal: escapes take none, and a
+ *  wide character (CJK, emoji) two. */
 function visibleLength(text: string): number {
   return displayWidth(stripAnsi(text));
 }
 
 /**
- * Cut `text` to `width` printable columns, marking the cut with an ellipsis.
- * ANSI escapes occupy no columns, so width is measured without them — a line
- * that only *looks* long because it is colored is left as it is.
- *
- * An over-length line that *does* carry escapes is stripped before cutting:
- * slicing mid-sequence would emit a partial escape, and slicing after one
- * would leave the color unterminated for the rest of the screen. Losing the
- * color of a too-long pane row is the cheaper failure — the row's width is
- * what the erase depends on being right.
+ * Cut `text` to `width` columns, ending the cut with an ellipsis, its width
+ * measured without ANSI escapes. Text that fits is returned as it is; text
+ * that does not loses its escapes before it is cut, so no escape is left
+ * partial or unterminated.
  */
 export function truncate(text: string, width: number): string {
   const plain = stripAnsi(text);

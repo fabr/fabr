@@ -107,35 +107,22 @@ export function toArgv(args: readonly RunnableArgument[], anchor?: string): stri
 }
 
 /**
- * A FileSet that is *runnable*: the assembled, ready-to-launch install of a
- * target (its files, laid out so it can be staged and executed), plus a
- * descriptor of how to launch it. It is what a `BUILD_OPERATION=run` rule
- * yields; a consumer (`fabr run`, a `generate` command stage, a tool a rule
- * runs) stages its files, reduces it to a command line with `toCommandLine`,
- * then resolves argv[0] (via findExecutable) and spawns it under whatever I/O
- * it needs.
+ * A FileSet that can be run: a target's install, laid out to be staged and
+ * run, with how to launch it. A `BUILD_OPERATION=run` rule yields one; a
+ * consumer (`fabr run`, a `generate` stage, a tool a rule runs) stages its
+ * files, makes a command line with {@link toCommandLine}, finds argv[0] with
+ * findExecutable, and spawns it.
  *
- * The launchable entries live in an inner **`surface`** FileSet: the primary
- * package's files (findable by path, e.g. `bin/tsc`) unioned with a `SymlinkFile`
- * per declared bin (findable by command, e.g. `tsc`, whose target is the bin's
- * install path; a bin takes precedence over a file — it wins its command name and
- * a same-path dedup). A **bin is thus just a symlink in a FileSet**, so a
- * *projection* is nothing but a `locate` over the surface — bins and files match
- * together.
+ * What can be launched is its `surface`: the primary package's files, by path
+ * (`bin/tsc`), and a SymlinkFile per declared bin, by command (`tsc`), naming
+ * the bin's install path. Where a bin and a file share a name or an install
+ * path, the bin is the one found. A projection over a runnable is a pending
+ * {@link FileSetRef}: {@link toRunnable} reads it as a launch entry
+ * ({@link selectEntry}), and `select` and `locate` read it as files.
  *
- * A runnable carries **no reference state**: projecting one yields an ordinary
- * pending {@link FileSetRef} (which composes by accumulating), and what that ref
- * means is decided by THIS class when a consumer demands something of it —
- * `selectEntry` for a launcher ({@link toRunnable}), `select`/`locate` for
- * content. So this class only ever describes a runnable whose entry is already
- * decided.
- *
- * `toCommandLine` resolves the launch entry from the surface: the sole declared
- * bin, or (a bin-less package with) a sole file, else the "which entry?" error.
- * Each candidate resolves to an install path (a symlink → its target, a file →
- * `root`/name), deduped by path (a bin and the file it targets collapse — the
- * bin keeps its name). `RunnableFileSet.forEntry` builds the common single
- * definite-entry runnable (a `js_script`/`script`), as a one-symlink surface.
+ * {@link toCommandLine} launches the default entry: the sole declared bin, or
+ * the sole file of a package declaring none; anything else is the "which
+ * entry?" error. {@link forEntry} makes a runnable with one entry.
  */
 export class RunnableFileSet extends FileSet {
   constructor(
@@ -144,19 +131,19 @@ export class RunnableFileSet extends FileSet {
     public readonly args: readonly RunnableArgument[] = [],
     /** What runs the entry: a program of the host, run where it lies, or a
      * runnable (`NODE`), reached through the cache's tree pool (see
-     * {@link launchedBy}). Omitted → the entry is itself executable. */
+     * {@link launchedBy}). Absent where the entry is itself executable. */
     public readonly interpreter?: RunnableFileSet | HostLink,
     /** The primary package's mount within the install (e.g. `node_modules/@fabr-build/cli`); a `surface` file resolves to `root`/name. */
     public readonly root: string = "",
-    /** The launch surface: package files (by path) + a SymlinkFile per bin (by command → install path). `locate`/`select` search this. */
+    /** The launch surface: the package's files by path, and a SymlinkFile per bin, by command, naming its install path. */
     public readonly surface: FileSet = EMPTY_FILESET,
-    /** The hot-swappable content partition (a `serve` target's `files`): the subset of the
-     * install that is the program's *data*, synced in place under watch rather than
-     * triggering a relaunch. Empty for an ordinary runnable — everything is program. */
+    /** The part of the install that is the program's content (a `serve`
+     * target's `files`), which watch mode syncs into the running program in
+     * place, without a restart. Empty for an ordinary runnable. */
     public readonly served: FileSet = EMPTY_FILESET,
-    /** Where the program launches: `caller` — the user's own directory (the npx-like tool
-     * persona; the entry is anchored at the install) — or `install` — the staged install
-     * root (the app persona: a served program's world is its own content). */
+    /** Where the program launches: `caller`, in the user's own directory, the
+     * entry named within the staged install; or `install`, at the staged
+     * install's root (a served program). */
     public readonly launchCwd: "caller" | "install" = "caller",
     /** Environment variables the program is launched with: over the
      * environment its launcher inherits, under any variables the launcher sets
@@ -175,7 +162,7 @@ export class RunnableFileSet extends FileSet {
     super(files instanceof FileSet ? files : new Map(files), origin ?? (files instanceof FileSet ? files.origin : undefined));
   }
 
-  /** Make a runnable with a single, definite launch entry — a `js_script`/`script`: a one-symlink surface. */
+  /** Make a runnable whose one launch entry is `entry` (a `js_script` or `script`): a surface of one symlink. */
   public static forEntry(
     files: Iterable<[string, IFile]>,
     entry: string,
@@ -238,8 +225,8 @@ export class RunnableFileSet extends FileSet {
     return pool.ensureTree(interpreter).then(() => launched(interpreter));
   }
 
-  /** Get this runnable offering a different launch surface — how a projection is
-   * applied ({@link selectEntry}), the install and everything else unchanged. */
+  /** Get this runnable offering `surface` as its launch surface, all else
+   * unchanged ({@link selectEntry}). */
   public withSurface(surface: FileSet): RunnableFileSet {
     return new RunnableFileSet(
       this,
@@ -257,12 +244,10 @@ export class RunnableFileSet extends FileSet {
   }
 
   /**
-   * Re-wrap this runnable (the tool) over an enlarged install for serving — the
-   * `serve` rule's assembly: same launch surface/interpreter/root, `extraArgs`
-   * appended to the fixed args, `served` recorded as the hot content partition,
-   * and the launch cwd anchored at the install root (a served program's world
-   * is its staged install, not the caller's directory). `env` adds to the
-   * variables it is launched with.
+   * Make this runnable (the tool) over `install`, for serving (the `serve`
+   * rule): `extraArgs` after its own args, `served` as its served content,
+   * launched at the install's root, `env` added to its variables. Its surface,
+   * interpreter and root are kept.
    */
   public withServedContent(
     install: FileSet,
@@ -323,29 +308,22 @@ export class RunnableFileSet extends FileSet {
   }
 
   /**
-   * Render the manifest of the **program partition** — the install minus the served-content
-   * names. With no served partition this is the whole-install manifest. What a
-   * supervisor keys restarts on (content-only changes sync in place instead);
-   * a name in `served` IS the served file — a same-name collision with the
-   * program install would already have been a ConflictError at assembly.
+   * Render the manifest of the install less the served content: a supervisor
+   * restarts the program where this changes, and syncs a change to the served
+   * content in place.
    */
   public programManifest(): string {
     return this.served.isEmpty() ? this.toManifest() : this.minus(this.served).toManifest();
   }
 
   /**
-   * Apply a reference's projections, **selecting the launch entry** rather than
-   * filtering files: the install is kept whole and only the entry moves. Bins
-   * (symlinks) and package files are matched together by one ordinary `locate`,
-   * whose keys are install paths — so the result is this runnable offering that
-   * one entry, and nothing downstream needs to know it was ever projected.
+   * Select the launch entry `projections` name: this runnable, its install
+   * whole, offering only that entry. Bins and package files are matched
+   * together ({@link locate}).
    *
-   * @return undefined when the projection matched nothing — lenient, so a miss
-   * reports through the shared "matched no files" path rather than as a runnable
-   * that fails at launch.
-   * @throws the "which entry?" error when it matched several. Ambiguity is
-   * judged here, at the point a launcher is demanded, so a reference that
-   * narrows further ({@link FileSetRef.find}) still gets its chance.
+   * @return undefined where the projections match nothing, which the caller
+   * reports as a reference matching no files.
+   * @throws the "which entry?" error where they match several.
    */
   public selectEntry(projections: ReadonlyArray<IProjection>): RunnableFileSet | undefined {
     const located = this.locate(projections);
@@ -356,31 +334,28 @@ export class RunnableFileSet extends FileSet {
       throw this.ambiguityError([...located.values()], true);
     }
     const [entry] = [...located.keys()];
-    /* A one-symlink surface: the selected install path, addressed by its own
-     * basename, or the program of the host selected. The default-entry rules
-     * then resolve it with no special case — a selected runnable and a
-     * `forEntry` one are the same shape. */
+    /* A surface of one entry, as `forEntry` makes: the selected install path,
+     * named by its basename, or the program of the host selected. */
     const host = [...this.surface].find(([, file]) => file instanceof HostLink && file.target === entry);
     return this.withSurface(new FileSet(new Map<string, IFile>([host ?? [path.posix.basename(entry), new SymlinkFile(entry)]])));
   }
 
   /**
-   * Reduce this runnable to a command line: the interpreter (if any) as the
-   * command, then the launch entry, the runnable's own fixed args, then the
-   * caller's, which are taken as they are. Pure — no filesystem or PATH
-   * access; the caller makes it text with {@link toArgv}, resolves argv[0]
-   * with findExecutable, relative to the directory it launches in, and spawns.
-   * An entry that is a program of the host is that program. Any other names a
-   * file of the install, relative to the launch directory: `base` is where the
-   * install is staged within it — for a tool staged under a subdir of the
-   * launch cwd (e.g. a compiler mounted apart from the workspace it operates
-   * on) — and with none, the install is the launch directory itself (the exec
-   * step). A runnable interpreter is its own command line, placed in the tree
-   * pool, taking this one's entry and arguments as its caller's. `pool` is
-   * where the pool is, as a path from the launch directory: {@link TREE_MOUNT}
-   * by default, for a launch in a step's working directory.
-   * @throws if no single entry resolves — the "which entry?" error, deferred to
-   * launch so a projection has the chance to pick one.
+   * Make the command line this runnable is run with: the interpreter, if any,
+   * and `interpreterArgs`, then the launch entry, this runnable's args, and
+   * `callerArgs` as they are. Reads no filesystem or PATH: the caller makes it
+   * text with {@link toArgv}, finds argv[0] with findExecutable relative to the
+   * launch directory, and spawns it.
+   *
+   * An entry that is a program of the host is that program. Any other entry,
+   * and every install file among the arguments, is named relative to the
+   * launch directory: under `base`, where the install is staged within it (a
+   * compiler mounted apart from the workspace it works on), or with no `base`,
+   * with the install as the launch directory. A runnable interpreter makes the
+   * command line itself, as staged in the tree pool, with this line as its
+   * caller's arguments; `pool` is the pool's path from the launch directory,
+   * {@link TREE_MOUNT} by default.
+   * @throws the "which entry?" error where no single entry resolves.
    */
   public toCommandLine(callerArgs: readonly RunnableArgument[] = [], opts?: { base?: string; pool?: string }): RunnableArgument[] {
     const base = opts?.base ?? "";
@@ -401,16 +376,11 @@ export class RunnableFileSet extends FileSet {
   }
 
   /**
-   * Locate against the launch **surface** rather than the raw install: a runnable
-   * is addressed by what it offers to launch — its files by path AND a declared
-   * bin by command name — so `pkg:tsc` and `pkg:bin/tsc` both resolve, the bin
-   * winning its name.
-   *
-   * Keys are install paths, so a matched bin reports the file it TARGETS rather
-   * than the command it matched under: a caller joining its mount point onto the
-   * symlink's own name would point at nothing. Dedup by that path (first wins,
-   * bins being first) so a bin and the file it targets are one result, as at
-   * launch.
+   * Locate the files `projections` select on the launch surface, not the
+   * install: a file by path and a bin by command, so `pkg:tsc` and
+   * `pkg:bin/tsc` both match. Each result is keyed by its install path, a bin
+   * by the file it names, and a bin and the file it names are one result,
+   * under the bin's name.
    */
   public locate(projections: ReadonlyArray<IProjection>): Map<string, string> {
     const projected = this.surface.locate(projections);
@@ -423,27 +393,19 @@ export class RunnableFileSet extends FileSet {
   }
 
   /**
-   * Select as content what {@link locate} selects as positions: the *installed*
-   * files the projection picks, under their projected names. A bin yields the
-   * file it TARGETS (`pkg:tsc` → the contents of `bin/tsc`, called `tsc`).
-   *
-   * Overridden because a runnable is addressed by its launch surface, not by its
-   * install paths — the base implementation would match `pkg:tsc` against
-   * `node_modules/typescript/bin/tsc` and find nothing, so the one written
-   * reference would mean different things depending on which reading a consumer
-   * asked for.
+   * Select as files what {@link locate} locates: the installed files the
+   * projections pick on the launch surface, under the names they give them. A
+   * bin yields the file it names (`pkg:tsc` is the content of `bin/tsc`, named
+   * `tsc`); a bin naming no file of the install stays a symlink.
    */
   public select(projections: ReadonlyArray<IProjection>): FileSet {
-    /* The base implementation over the SURFACE — so renaming and its collision
-     * check are the ordinary ones, and only the namespace differs. */
+    /* The base implementation over the surface, with its usual conflict
+     * check. */
     const selected = this.surface.select(projections);
     const files = new Map<string, IFile>();
     for (const [name, entry] of selected) {
-      /* A bin is a symlink into the install, and content means the file it
-       * TARGETS — extracting the link verbatim would point into the container
-       * this reading just discarded (locate reports that same file's path,
-       * rather than the command's, for the same reason). A target that isn't in
-       * the install stays a symlink, for the staging layer to judge. */
+      /* A bin's link would point into the install, which is not part of the
+       * result: take the file it names. */
       const target = entry instanceof SymlinkFile ? this.getFile(entry.target) : undefined;
       files.set(name, target ?? entry);
     }
@@ -451,10 +413,10 @@ export class RunnableFileSet extends FileSet {
   }
 
   /**
-   * Resolve surface names to the install paths they launch — a declared bin to
-   * the file it TARGETS, a plain file to its own place under `root` — keyed by
-   * path so a bin and the file it points at are one entry. First wins, and the
-   * surface puts bins first, so a bin keeps its name in the result.
+   * Get the install path each of `candidates` launches, a bin the file it names
+   * and a file its place under `root`, mapped to the candidate's name. Where
+   * two give one path the first is kept; a surface lists its bins first, so a
+   * bin keeps its name.
    */
   private installPaths(candidates: Iterable<[string, IFile]>): Map<string, string> {
     const byPath = new Map<string, string>();
@@ -522,20 +484,13 @@ export class RunnableFileSet extends FileSet {
 }
 
 /**
- * Collapse a resolved source to the runnable it denotes: a runnable is itself,
- * and a pending projection *over* a runnable selects an entry within it (see
- * {@link RunnableFileSet.selectEntry}).
+ * Get the runnable `source` denotes: a runnable itself, or a pending
+ * projection over one, which selects an entry in it
+ * ({@link RunnableFileSet.selectEntry}).
  *
- * This is the one place that reading is applied. A ref stays inert data — how a
- * projection applies is decided by the **base's** class, at the point a consumer
- * demands something of it, never by the producer that suspended it. A ref over a
- * package collapses to content (`FileSetRef.select`/`locate`); a ref over a
- * runnable collapses to a launcher, here.
- *
- * @return undefined when the source is not (a projection over) a runnable, and
- * equally when it is one whose projection matched nothing. The two are
- * deliberately one answer — "no runnable to launch" — which the callers
- * distinguish, where it matters, by whether any content resolved at all.
+ * @return undefined where `source` is neither, and where it is a projection
+ * over a runnable that matched nothing. A caller tells the two apart, where it
+ * must, by whether any content resolved.
  */
 export function toRunnable(source: FileSource | Repository | FileSetRef): RunnableFileSet | undefined {
   if (source instanceof RunnableFileSet) {

@@ -31,9 +31,9 @@ import { renamedAndProjected, ProjectedPackage, renamedAs, RepositoryRef, Source
 export type Unbuilt = ResolvedNode | ProjectedPackage;
 
 /**
- * A target's node, as a reference to the target finishes it: a resolved node
- * that can be built, and whose build a projection selects from. The
- * configuration's resolved target implements it.
+ * A target's node, as a {@link TargetRef} uses it: a resolved node that can
+ * be built, and whose build a projection selects from. The configuration's
+ * resolved target implements it.
  */
 export interface TargetNode extends ResolvedNode {
   /** Build the target and return its result, as its rule yields it. Built on
@@ -50,6 +50,11 @@ export interface TargetSource {
   resolvedTarget(name: string): Computable<TargetNode>;
 }
 
+/**
+ * A reference to a target, by its name in the configuration that resolves it.
+ * It is data until asked for the target's node ({@link nodes}) or its build
+ * ({@link materialize}), each with what was written on the reference applied.
+ */
 export class TargetRef extends Reference {
   private materialized?: Computable<SourceRef[]>;
   private asNodes?: Computable<Unbuilt[]>;
@@ -64,7 +69,7 @@ export class TargetRef extends Reference {
     super(fields);
   }
 
-  /** A target answers for itself, whatever it builds. */
+  /** A target may build a package or plain files. */
   public readonly requiresPackage = false;
 
   /** Whether this is the target itself, and not a selection of its files. */
@@ -102,7 +107,7 @@ export class TargetRef extends Reference {
     return new TargetRef(this.source, this.name, fields) as this;
   }
 
-  /** The reference as a message names it. */
+  /** @return the reference as a message names it. */
   public toString(): string {
     return this.renameTo === undefined ? this.name : `${this.name} -> ${this.renameTo}`;
   }
@@ -149,6 +154,8 @@ function answeredBy<T>(result: Computable<T>, steps: ReadonlyArray<IProvenanceSt
   }, result);
 }
 
+/** Replace each target reference among `sources` with what `open` gives for
+ * it, and each target reference in that with what `open` gives in turn. */
 function opened(sources: ReadonlyArray<SourceRef>, open: (ref: TargetRef) => Computable<SourceRef[]>): Computable<SourceRef[]> {
   if (!sources.some(source => source instanceof TargetRef)) {
     return Computable.resolve([...sources]);
@@ -161,7 +168,8 @@ function opened(sources: ReadonlyArray<SourceRef>, open: (ref: TargetRef) => Com
   );
 }
 
-/** @return the reference to one whole target that `sources` is, if that is what they are. */
+/** @return the reference where `sources` is exactly one reference to a whole
+ * target, otherwise undefined. */
 export function soleWholeTarget(sources: ReadonlyArray<SourceRef>): TargetRef | undefined {
   const [only, ...others] = sources;
   return others.length === 0 && only instanceof TargetRef && only.whole ? only : undefined;

@@ -23,16 +23,14 @@ import { toError } from "../core/Errors";
 /**
  * A counting semaphore over Computable-producing work: at most `capacity` of
  * the functions handed to {@link run} are in flight at once, the rest queued in
- * demand order and started as slots free.
+ * the order asked and started as slots free.
  *
- * The queued work is a plain closure the semaphore holds, NOT a graph node
- * awaiting a value — so a slot is released even when the chain consuming the
- * result has since detached (a superseded watch-mode evaluation), which a
- * gate built out of Computables could not guarantee: settle is inert while
- * detached, so the granted work would never start and its slot never come back.
+ * Keep the queue to plain closures, never graph nodes: settle is inert while
+ * a node is Detached, so work granted to a detached chain would never start
+ * and its slot never come back.
  *
- * The caller must not acquire a second slot from within work already holding
- * one — nested acquisition of a bounded resource deadlocks at capacity.
+ * Never ask for a slot from within work already holding one: at capacity
+ * that deadlocks.
  */
 export class Semaphore {
   private readonly queued: (() => void)[] = [];
@@ -41,16 +39,15 @@ export class Semaphore {
   constructor(private readonly capacity: number) {}
 
   /**
-   * Run `work` once a slot is available, resolving with its result. The slot is
-   * held from the moment `work` is called until its result settles, either way
-   * — so `work` is where the bounded resource is consumed, and nothing before
-   * it (a cache lookup, say) should be inside it.
+   * Run `work` once a slot is available, settling as its result first settles.
+   * The slot is held from the call of `work` until that result settles, so
+   * put only the bounded work itself inside `work` (not a cache lookup before
+   * it). A synchronous throw from `work` rejects.
    */
   public run<T>(work: () => Computable<T>): Computable<T> {
     return Computable.from<T>((resolve, reject) => {
       this.acquire(() => {
-        /* One release per grant: a work computable that settles again (a
-         * revalidation) must not hand back a slot it no longer holds. */
+        /* Release once per grant, though the work's result may settle again. */
         let released = false;
         const release = (): void => {
           if (!released) {

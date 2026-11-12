@@ -19,6 +19,7 @@
 
 import assert from "assert";
 
+/** A position in the text: its offset, 1-based line and column (in code points), and its line's text. */
 export interface IResolvedPosition {
   offset: number;
   line: number;
@@ -29,35 +30,23 @@ export interface IResolvedPosition {
 const CHAR_NEWLINE = 10;
 
 /**
- * A UTF-8 byte-order mark, which `readString("utf8")` keeps as a leading U+FEFF.
- * It is not whitespace and belongs to no token, so it is dropped on the way in
- * (else the tokenizer reports an unexpected character at 1:1 of an
- * ordinary-looking file). Offsets — and so diagnostic positions, which resolve
- * through this same reader — are relative to the text without it.
+ * A UTF-8 byte-order mark, which `readString("utf8")` keeps as a leading
+ * U+FEFF. The reader drops a leading one: offsets, and the positions they
+ * resolve to, are of the text without it.
  */
 const BOM = "\uFEFF";
 
-/**
- * String buffer + tokenizer
- */
+/** A cursor over a string, by code point, for a tokenizer: its offsets are UTF-16 indexes into the string. */
 export class StringReader {
-  /**
-   * The input string being read
-   */
+  /** The text being read. */
   private data: string;
 
-  /**
-   * The offset of the next character to be returned, as a direct
-   * index into the string. (note this is _not_ a byte index into
-   * the original file)
-   */
+  /** The UTF-16 index of the current character (not a byte offset into the file). */
   private offset: number;
 
   private currentChar: number | undefined;
 
-  /**
-   * Array of offsets corresponding to the first character of each line.
-   */
+  /** The offset of the first character of each line read so far. */
   private lineTable: number[];
 
   constructor(input: string) {
@@ -80,10 +69,9 @@ export class StringReader {
   }
 
   /**
-   * Peek at the codepoint `delta` UTF-16 units ahead of the current position
-   * without advancing, or undefined past end-of-input. Intended for short ASCII
-   * lookahead (e.g. distinguishing the `->` arrow from a `-` name char); `delta`
-   * is a raw index offset, so it is only exact for BMP characters in between.
+   * @return the code point `delta` UTF-16 units ahead of the current one, or
+   * undefined past the end, without advancing. For short lookahead (`->`
+   * against a `-` in a name): `delta` counts UTF-16 units, not code points.
    */
   public peekAt(delta: number): number | undefined {
     return this.data.codePointAt(this.offset + delta);
@@ -105,9 +93,8 @@ export class StringReader {
   }
 
   /**
-   * Consume the given character - assert that the current character is indeed
-   * the expected one, and then advances forward one character.
-   * @param char expected value.
+   * Assert that the current character is `char`, and advance past it.
+   * @return the next code point, or undefined at the end.
    */
   public consume(char: number | undefined): number | undefined {
     assert(this.currentChar === char);
@@ -115,11 +102,9 @@ export class StringReader {
   }
 
   /**
-   * Skip characters until the given callback returns true or EOF is reached.
-   * The first character tested will be the current character (if not EOF)
-   * @param test Function from codepoint to boolean.
-   * @return the codepoint for which the test succeeded, or undefined if EOF
-   * was reached.
+   * Advance until `test` returns true of the current code point, testing the
+   * current one first.
+   * @return the code point `test` accepted, left current, or undefined at the end.
    */
   public skipUntil(test: (char: number) => boolean): number | undefined {
     while (this.currentChar !== undefined && !test(this.currentChar)) {
@@ -133,12 +118,8 @@ export class StringReader {
   }
 
   /**
-   * Skip characters until the given callback returns true or EOF is reached,
-   * and consumes that last character tested.
-   * The first character tested will be the current character (if not EOF)
-   * @param test Function from codepoint to boolean.
-   * @return the codepoint after the one for which the test succeeded, or undefined if EOF
-   * was reached.
+   * Advance as {@link skipUntil} does, then past the code point `test` accepted.
+   * @return the code point after it, or undefined at the end.
    */
   public skipUntilAfter(test: (char: number) => boolean): number | undefined {
     this.skipUntil(test);
@@ -146,14 +127,10 @@ export class StringReader {
   }
 
   /**
-   * As skipUntil, except that the callback may itself consume input (e.g. an
-   * entire quoted string or variable substitution): when the callback has
-   * advanced the reader, the scan does not advance again, and the new current
-   * character is tested on the next step. Returning true stops the scan with
-   * the current character unconsumed.
-   * @param test Function from codepoint to boolean; may consume input.
-   * @return the codepoint for which the test succeeded, or undefined if EOF
-   * was reached.
+   * Advance as {@link skipUntil} does, where `test` may itself advance the
+   * reader (past a whole quoted string, say): where it has, the scan does not
+   * advance again but tests the new current code point.
+   * @return the code point `test` accepted, left current, or undefined at the end.
    */
   public scanUntil(test: (char: number) => boolean): number | undefined {
     while (this.currentChar !== undefined) {
@@ -168,26 +145,16 @@ export class StringReader {
     return this.currentChar;
   }
 
-  /**
-   * @returns the string of characters between the start position (inclusive) up to the
-   *  end position (excluding the character at the end position).
-   * @param start First character to include.
-   * @param end Character after the last character to include. Optional: if not specified,
-   *  returns all characters from start up to (but not including) the current offset.
-   */
+  /** @return the text from offset `start` up to `end` (the current offset by default), `end` excluded. */
   public substring(start: number, end: number = this.offset): string {
     return this.data.substring(start, end);
   }
 
   /**
-   * Resolve the offset to a human-friendly file position. Note this is relatively
-   * expensive (O(lg N) in line count + O(N) in line width), but we should only be
-   * doing this for final error reporting.
-   *
-   * Note: for offset === length we point at the end of the last line (for EOF)
-   *
-   * @return the source position, or undefined if the offset is out of range.
-   * @param offset
+   * Resolve an offset to its line and column, for reporting. An offset equal to
+   * the text's length is the end of its last line. Lines are known only as far
+   * as the reader has read: resolve an offset only once the reader has passed it.
+   * @return the position, or undefined where the offset is undefined or out of range.
    */
   public resolvePosition(offset: number | undefined): IResolvedPosition | undefined {
     if (offset === undefined || offset > this.data.length || offset < 0) {
@@ -221,11 +188,7 @@ export class StringReader {
     return a;
   }
 
-  /**
-   * Count the number of characters between the given start and end offsets.
-   * @param startOffset
-   * @param endOffset
-   */
+  /** Count the code points from `startOffset` up to `endOffset`. */
   private countCodePositions(startOffset: number, endOffset: number): number {
     let count = 0;
     for (let offset = startOffset; offset < endOffset; offset += this.data.codePointAt(offset)! > 0xffff ? 2 : 1) {
@@ -234,9 +197,7 @@ export class StringReader {
     return count;
   }
 
-  /**
-   * Return an empty JSON representation to avoid polluting output
-   */
+  /** @return an empty object, so the reader adds nothing to a JSON rendering of what holds it. */
   public toJSON(): Record<string, unknown> {
     return {};
   }

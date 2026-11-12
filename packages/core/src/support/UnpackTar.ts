@@ -44,8 +44,7 @@ export function extractTar(createOutput: () => IOutputHandle): { sink: Writable;
   /* A failure of the stream feeding it (a dropped connection) destroys the sink. */
   extract.on("error", err => reject(err));
   const files: Computable<[string, IFile]>[] = [];
-  /* Every emitted entry, keyed by its (normalized) in-archive name, so a
-   * later hardlink can resolve to the file its `linkname` already produced. */
+  /* Each file emitted, by its normalized name, for a later hardlink to find. */
   const byName = new Map<string, Computable<IFile>>();
   const emit = (name: string, file: Computable<[string, IFile]>): void => {
     files.push(file);
@@ -58,22 +57,19 @@ export function extractTar(createOutput: () => IOutputHandle): { sink: Writable;
     entry.on("end", () => next());
     const name = normalizeEntryName(headers.name);
     if (name === undefined || headers.type === "directory") {
-      /* A directory carries no file; a name that escapes the tree (a `../`
-       * traversal in an untrusted network tarball) is dropped. */
+      /* A directory carries no file. Drop a name that escapes the tree (a
+       * `../` traversal): the archive is untrusted. */
       entry.resume();
     } else if (headers.type === "symlink") {
-      /* A symlink names its target (`linkname`, relative to the link's own
-       * directory) and has no body — emit a SymlinkFile carrying the target
-       * and drain the (empty) entry. The target may escape the tree; that
-       * is guarded when the set is staged (writeFileSet), not here. */
+      /* A symlink's target (`linkname`) is relative to its own directory, and
+       * may escape the tree: writeFileSet refuses that when the set is staged,
+       * so keep the target as it is here. */
       emit(name, Computable.resolve([name, new SymlinkFile(headers.linkname)]));
       entry.resume();
     } else if (headers.type === "link") {
-      /* A hardlink has no body — its `linkname` names an earlier entry
-       * whose content it shares. Content-addressed storage makes that a
-       * pure dedup: reuse the target's file (same hash → one blob, two
-       * names). An unknown target (dropped for escaping, or malformed)
-       * drops the link too. */
+      /* A hardlink's `linkname` names an earlier entry whose content it
+       * shares: the link takes that entry's file. A link to an entry not
+       * emitted (dropped for escaping the tree, or absent) is dropped too. */
       const target = byName.get(normalizeEntryName(headers.linkname) ?? "");
       if (target) {
         emit(
@@ -83,20 +79,16 @@ export function extractTar(createOutput: () => IOutputHandle): { sink: Writable;
       }
       entry.resume();
     } else {
-      /* A regular file: stream its body straight into a CAS blob (the sink
-       * hashes as it writes), preserving the entry's full permission bits
-       * (setuid/setgid/sticky included) so an executable — e.g. esbuild's
-       * native binary in @esbuild/<platform> — lands runnable. `finalize`
-       * places the blob under its content hash and yields the file;
-       * `{ end: false }` leaves the sink for finalize to end, not the pipe. */
+      /* A regular file: its body streamed into its output, which `finalize`
+       * stores with the entry's permission bits (setuid, setgid and sticky
+       * included). Pipe with `{ end: false }`: finalize ends the stream. */
       const mode = headers.mode & 0o7777;
       const output = createOutput();
       emit(
         name,
         Computable.from<[string, IFile]>((resolveFile, rejectFile) => {
-          /* A write/read failure settles this file AND the whole unpack (a
-           * stalled tar whose `finish` never fires can't hang the outer),
-           * and drops the half-written blob. */
+          /* A read or write failure discards the output and rejects both this
+           * file and the whole extraction, whose `finish` may never fire. */
           const fail = (err: Error): void => {
             output.discard().then(() => {
               rejectFile(err);

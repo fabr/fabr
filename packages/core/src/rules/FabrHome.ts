@@ -19,13 +19,14 @@
 
 /**
  * `fabr_home`: the packages installed with fabr itself, found as node finds
- * them from fabr's own code — the way plugins are. A reference names a package
+ * them from fabr's own code, as plugins are. A reference names a package
  * by its full name (`@fabr-home:@fabr-build/sass-pnp-importer`); STD.fabr makes
  * its `@fabr-build` scope the `@fabr-build` namespace's fallback, so
  * `@fabr-build/<package>` resolves here unless the project declares the name.
  *
- * A delivery is the installed package's files (less its nested `node_modules`)
- * with, as its dependencies, the installed packages node would load for it.
+ * A reference resolves to the installed package's files (less its nested
+ * `node_modules`), with, as its dependencies, the installed packages node would
+ * load for it. No version is chosen.
  */
 
 import * as fs from "node:fs";
@@ -45,18 +46,20 @@ import { isJsonObject, readJsonFile, toJsonObject } from "../support/Json";
 import type { TargetContext } from "../context/index";
 import { RepositoryImplementation, RepositoryRegistration } from "./Types";
 
-/** Where lookups of the packages installed with fabr start: fabr's own code,
- *  from which the plugin loader finds plugins too. */
+/** The directory lookups of the packages installed with fabr start from:
+ *  fabr's own code, where the plugin loader starts too. */
 export const INSTALLED_FROM = __dirname;
 
 /** What an installed package's manifest says: its version, and the names it
- *  depends on — a name in both blocks being optional, as npm reads it. */
+ *  depends on. A name in both `dependencies` and `optionalDependencies` is
+ *  optional, as npm reads it. */
 interface IInstalledManifest {
   readonly version?: string;
   readonly required: string[];
   readonly optional: string[];
 }
 
+/** Read an installed package's `package.json`. Throws where `version` is not a string. */
 function toInstalledManifest(json: unknown): IInstalledManifest {
   const manifest = toJsonObject(json);
   if (manifest.version !== undefined && typeof manifest.version !== "string") {
@@ -71,11 +74,10 @@ function toInstalledManifest(json: unknown): IInstalledManifest {
 }
 
 /**
- * Locate the directory of the package `name` installed where node would look for it
- * from `from` — the first `node_modules/<name>` holding a `package.json`, from
- * `from` up — or undefined if there is none. Found by where it is installed,
- * not by resolving a module of it, so its `exports` (which says what may be
- * imported from it) has no say.
+ * Locate the directory of the package `name` installed where node would look
+ * for it from `from`: the real path of the first `node_modules/<name>` holding a
+ * `package.json`, from `from` up, or undefined if there is none. The package's
+ * `exports` play no part: no module of it is resolved.
  */
 function locate(name: string, from: string): string | undefined {
   for (let dir = path.resolve(from); ; dir = path.dirname(dir)) {
@@ -137,11 +139,12 @@ function readInstalled(files: FileSource, directory: string): Computable<{ manif
 }
 
 /**
- * Read the installed package `name` at `directory`, with every package it brings
- * with it wired as its dependencies — each located as node locates it from the
- * requiring package's own directory, and each with the delivering reference's
- * `steps` in its provenance. A missing required dependency is an installation
- * fault; a missing optional one is simply absent.
+ * Read the installed package `name` at `directory`, with every package it
+ * depends on wired as its dependencies, each located as node locates it from
+ * the requiring package's own directory, and each with the reference's `steps`
+ * in its provenance. A dependency's edge is a reference by name to this
+ * repository. Rejects where a required dependency is not installed; a missing
+ * optional one is left out.
  */
 function installedPackage(
   repository: RefSource,
@@ -190,7 +193,7 @@ function installedPackage(
         nodes.get(pkgDir)!,
         deps.map(([dep, depDir]) => {
           const node = nodes.get(depDir)!;
-          /* Asked for by name, of the installation. */
+          /* A reference by name to this repository, bound to the installed package. */
           return {
             reference: new RepositoryRef(repository, { name: dep, versionConstraint: undefined }),
             package: node.packageName === dep ? node : node.withPackageName(dep),
@@ -266,6 +269,7 @@ export class FabrHomeRepository implements Repository, RepositoryLookup {
     throw new FabrError(`fabr's installation is not a publish destination (cannot sync to '${name.toString()}')`);
   }
 
+  /** Resolve `reference` to the package it names, as installed, with its dependencies. Rejects where it is not installed. */
   public resolve(reference: RepositoryRef): Computable<FileSet> {
     const { name } = reference;
     try {
@@ -280,7 +284,7 @@ export class FabrHomeRepository implements Repository, RepositoryLookup {
   }
 }
 
-/** Register a `fabr_home` repository type looking packages up from fabr's own code. */
+/** @return the registration of the `fabr_home` repository type, looking packages up from fabr's own code. */
 function fabrHomeRegistration(): RepositoryRegistration {
   return {
     type: "fabr_home",

@@ -21,21 +21,20 @@ import { FileSet } from "../core/FileSet";
 import { IProvenanceStep, namingDigest, registerProvenanceNaming, wholeContentPrefix } from "../core/Provenance";
 import { declName, ITargetDecl } from "./AST";
 
+/** The provenance kind of an {@link ITargetOrigin}. */
 export const TARGET_PROVENANCE = "target";
 
 /**
- * Provenance step for a FileSet produced by evaluating a target: the
- * declaration of the target that built it.
+ * The provenance step of a FileSet a target built: the target's declaration.
  */
 export interface ITargetOrigin extends IProvenanceStep {
   kind: typeof TARGET_PROVENANCE;
   decl: ITargetDecl;
 }
 
-/* What the target built is named from the target (`gen:out/x.ts`), where
- * nothing beneath names it otherwise: a file it passed through unchanged keeps
- * its own. The name is the target's in any configuration — a configuration
- * that changes what is built changes its inputs. */
+/* A file a target built has the source path `<target>:<name>` (`gen:out/x.ts`)
+ * where nothing beneath names it: a file passed through unchanged keeps its
+ * own. The target's name is used whatever the configuration. */
 registerProvenanceNaming<ITargetOrigin>(TARGET_PROVENANCE, {
   sourcePath: (step, path, below) => below(path) ?? `${declName(step.decl)}:${path}`,
   digest: (step, names, below) => namingDigest(TARGET_PROVENANCE, JSON.stringify(declName(step.decl)), below(names)),
@@ -53,10 +52,7 @@ export function builtInProject(origin: IProvenanceStep | undefined): boolean {
   return false;
 }
 
-/**
- * The final evaluated result of a TargetDecl, normally consisting of a FileSet
- * and possibly additional properties.
- */
+/** A target's built FileSet, its origin the target's step. */
 export interface Target extends FileSet {
   origin: ITargetOrigin;
 }

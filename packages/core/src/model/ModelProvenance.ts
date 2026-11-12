@@ -23,21 +23,21 @@ import { declName, declPosn, INameValue, IPropertyDecl, ITargetDecl } from "./AS
 import { Constraints, shownConstraints } from "./Constraints";
 import { ITargetOrigin, TARGET_PROVENANCE } from "./Target";
 
+/** The provenance kind of an {@link IModelStep}. */
 export const MODEL_PROVENANCE = "model";
 
 /**
- * Provenance step for a FileSet that was included by writing a name in a
- * property value: the written value (with its source position), and the
- * constraint set it was looked up under. Steps chain along the data path, each
- * lookup wrapping what it finds, so a nested property expansion makes a chain
- * of several steps.
+ * The provenance step of content a name written in a property value brought
+ * in: the written value, with its position, and the constraint set it was
+ * looked up under. A name reached through other properties has one step per
+ * value written.
  */
 export interface IModelStep extends IProvenanceStep {
   kind: typeof MODEL_PROVENANCE;
   value: INameValue;
   constraints: Constraints;
   /** The property the value was written in, and its owning target (absent for
-   * a global/default property) — the "required by <target> <property>" facts */
+   *  a global). */
   property: IPropertyDecl;
   target?: ITargetDecl;
   /** The `${...}` the written value substituted, with what each gave. */
@@ -58,10 +58,12 @@ registerProvenanceRenderer<ITargetOrigin>(TARGET_PROVENANCE, step => {
   return [{ message: `built by ${target.type} '${target.name}'`, loc: declPosn(target) }];
 });
 
-/* Short attribution ("the name it was written as") for one-line messages */
+/* One-line attribution: the name as written, or the target's name. */
 registerProvenanceDescriber<IModelStep>(MODEL_PROVENANCE, step => step.value.value.toString());
 registerProvenanceDescriber<ITargetOrigin>(TARGET_PROVENANCE, step => declName(step.decl));
 
+/** Render a model step as a note at the written value, with its
+ *  substitutions' notes. */
 function renderModelStep(step: IModelStep, context: IRenderContext): IDiagnosticNote[] {
   const verb = context.stepIndex === 0 ? "from" : "via";
   return [
@@ -85,19 +87,18 @@ export function substitutionNotes(step: IModelStep): IDiagnosticNote[] {
   });
 }
 
-/** Describe a use site as `<target> <property>`, or `<property>` for a global:
- * the attribution model step notes and the driver's dependant chain share. */
+/** Describe a use site as `<target> <property>`, or `<property>` for a
+ *  global. */
 export function describeUseSite(property: IPropertyDecl, target: ITargetDecl | undefined): string {
   return target ? `${declName(target)} ${property.name.toBaseString()}` : property.name.toBaseString();
 }
 
 /**
- * Describe the constraint set a reference was looked up under, but only where
- * it is informative: the deepest model step shows its (non-empty) constraints,
- * other steps show only the entries that differ from the next model step
- * down the chain (i.e. override boundaries), and the caller's ambient keys
- * (context.elideConstraintKeys) are omitted throughout. Undefined when there
- * is nothing to say.
+ * Describe the constraint set a reference was looked up under, as `with K=V
+ * …`: for the deepest model step, its constraints; for any other, only those
+ * differing from the next model step beneath it. Leaves out what
+ * shownConstraints hides, with `context.elideConstraintKeys` as the ambient
+ * keys. Undefined where nothing is left.
  */
 export function constraintText(step: IModelStep, context: IRenderContext): string | undefined {
   const deeper = findNextModelStep(step.parent);
@@ -113,6 +114,7 @@ export function constraintText(step: IModelStep, context: IRenderContext): strin
     .join(" ")}`;
 }
 
+/** Find the first model step at or beneath `step`. */
 function findNextModelStep(step: IProvenanceStep | undefined): IModelStep | undefined {
   for (let current = step; current; current = current.parent) {
     if (current.kind === MODEL_PROVENANCE) {

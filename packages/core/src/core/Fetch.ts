@@ -27,49 +27,31 @@ import { Computable } from "./Computable";
 import { FabrError, HttpStatusError, toError } from "./Errors";
 import { Semaphore } from "../support/Semaphore";
 
-/** Bounded redirect following: npmjs serves tarballs directly, but GitHub
- * Packages, Artifactory, and most corporate mirrors 302 to blob storage. */
+/** The most redirects a request follows. */
 const MAX_REDIRECTS = 5;
 
 /**
- * Explicit HTTP timeouts, so the worst case is fabr's choice rather than
- * undici's inherited defaults. `connectTimeout`/`headersTimeout` bound reaching
- * the origin and its first response (a wedged registry fails fast); `bodyTimeout`
- * bounds only the *idle gap between body chunks*, not total transfer, so a large
- * tarball on a slow-but-live link still completes — it fires only when a stream
- * stalls. All are inter-event idle timeouts, not overall deadlines.
+ * HTTP idle timeouts, none of them a deadline on the whole request:
+ * connecting, waiting for the response's headers, and the gap between two
+ * chunks of its body.
  */
 const CONNECT_TIMEOUT_MS = 30_000;
 const HEADERS_TIMEOUT_MS = 30_000;
 const BODY_TIMEOUT_MS = 120_000;
 
 /**
- * Sockets held open per origin; requests beyond it queue in the dispatcher's
- * pool and dispatch as sockets free. A wide resolution demands metadata for
- * every reachable requirement at once and then tarballs for every selection, so
- * without a cap fabr opens a socket per in-flight demand — hundreds against one
- * registry. Matched to npm's own default (15) so fabr puts no more pressure on
- * a registry than the client it replaces. Per *origin* is the useful
- * granularity here: a registry that redirects tarballs to blob storage gets an
- * independent pool for each, so bulk downloads can't starve metadata reads.
- *
- * This bounds sockets only. The timeouts above are socket-level idle timeouts
- * that start once a request has a connection, so a queued request does not
- * spend its budget waiting.
+ * Sockets held open per origin (npm's default); further requests queue in the
+ * dispatcher's pool. The timeouts above start once a request has a socket, so
+ * time spent queued counts against none of them.
  */
 const MAX_CONNECTIONS_PER_ORIGIN = 15;
 
 /**
- * Requests in flight per origin, by role, whatever protocol the origin speaks:
- * further requests queue until one ends. The socket limit above does not bound
- * this where the origin speaks HTTP/2 (which undici negotiates by default),
- * since one socket then carries many streams. A request holds its slot until
- * its body has been read or discarded, so the bound is on transfers, not on
- * handshakes. Each role is admitted apart, so a resolution's index reads never
- * queue behind large downloads, and each is sized for what limits it: an index
- * read is small and waits on the registry, so many at once (pnpm's own default:
- * three per CPU core, between 64 and 96); a download is limited by bandwidth,
- * which a few at once already fill, and more only share it thinner.
+ * Requests in flight per origin and role, whatever protocol the origin speaks
+ * (over HTTP/2 one socket carries many requests, so the socket limit does not
+ * bound them); further requests queue until one ends. A request holds its slot
+ * until its body has been read or discarded. Index reads get three per CPU
+ * core, between 64 and 96 (pnpm's default).
  */
 const MAX_REQUESTS_PER_ORIGIN: Readonly<Record<FetchRole, number>> = {
   index: Math.min(96, Math.max(availableParallelism() * 3, 64)),
@@ -78,21 +60,20 @@ const MAX_REQUESTS_PER_ORIGIN: Readonly<Record<FetchRole, number>> = {
 
 /**
  * HTTP/2 flow-control windows: how much a sender may have in flight unread on
- * one stream, and on a connection's streams together. undici's defaults (256KB
- * and 512KB) cap a stream at its window per round trip — a few MB/s whatever
- * the link. A stream's window is sized for a large tarball at speed, and the
- * connection's holds every stream an origin admits (both roles) at once, so
- * streams read slowly cannot fill it and stall the others on the connection
- * (which a registry then cuts as idle).
+ * one stream, and on all of a connection's streams together. Keep the
+ * connection's window at a full stream window for every request an origin
+ * admits (both roles): slowly read streams that fill it stall every other
+ * stream on the connection.
  */
 const STREAM_WINDOW_BYTES = 4 * 1024 * 1024;
 const CONNECTION_WINDOW_BYTES = (MAX_REQUESTS_PER_ORIGIN.index + MAX_REQUESTS_PER_ORIGIN.content) * STREAM_WINDOW_BYTES;
 
 /** What a request is for: reading a registry's index (a packument,
- *  per-version metadata) or transferring content the build consumes. */
+ *  per-version metadata) or transferring content the build uses. Each role
+ *  has its own limit per origin. */
 export type FetchRole = "content" | "index";
 
-/** Each origin's admission per role, made on first use. */
+/** The request limit of each role and origin, made on first use. */
 const admissions = new Map<string, Semaphore>();
 
 /**
@@ -111,16 +92,12 @@ function admitted(urlstring: string, role: FetchRole, send: (release: () => void
 }
 
 /**
- * The one dispatcher every fabr HTTP(S) request rides. It combines two things
- * node's raw `http`/`https` don't do:
- *  - **Proxy** from the standard environment (`http_proxy`/`https_proxy`/
- *    `no_proxy`, upper- or lower-case) — {@link EnvHttpProxyAgent} reads them
- *    once at construction and CONNECT-tunnels or routes accordingly.
- *  - **Redirects**, bounded to {@link MAX_REDIRECTS}; undici's redirect
- *    interceptor drops credential-bearing headers on cross-origin hops.
- * A single pooling instance for the process (agents reuse keep-alive sockets),
- * which is also what makes {@link MAX_CONNECTIONS_PER_ORIGIN} a whole-run bound
- * rather than a per-caller one.
+ * The dispatcher every fabr HTTP(S) request is sent through: one pooling agent
+ * for the process, so {@link MAX_CONNECTIONS_PER_ORIGIN} holds for the whole
+ * run. It uses the proxy the environment names (`http_proxy`/`https_proxy`/
+ * `no_proxy`, either case, read once at construction), and follows up to
+ * {@link MAX_REDIRECTS} redirects, dropping credential-bearing headers on a
+ * hop to another origin.
  */
 const dispatcher = new EnvHttpProxyAgent({
   connectTimeout: CONNECT_TIMEOUT_MS,
@@ -131,30 +108,32 @@ const dispatcher = new EnvHttpProxyAgent({
   connectionWindowSize: CONNECTION_WINDOW_BYTES,
 }).compose(interceptors.redirect({ maxRedirections: MAX_REDIRECTS }));
 
-/** Make the error refusing a non-HTTP(S) URL — a clear message rather than a
- * transport-layer error — or undefined for http/https, the only protocols fabr
- * fetches over. */
+/** @return the error refusing `urlstring` where its protocol is not http or
+ * https, otherwise undefined. */
 function unsupportedProtocol(urlstring: string): Error | undefined {
   const protocol = new URL(urlstring).protocol;
   return protocol === "https:" || protocol === "http:" ? undefined : new FabrError("Unsupported protocol: " + protocol);
 }
 
+/** Send a GET for `urlstring` and return its body. Rejects as {@link openUrlStream} does. */
 export function fetchUrl(urlstring: string): Computable<Buffer> {
-  /* Unconditional request, so a resolved response always carries the stream */
+  /* No validators are sent, so a resolved response carries a stream. */
   return openUrlStream(urlstring).then(response => readStream(response.stream!));
 }
 
+/** A request for {@link sendRequest}. */
 export interface HttpRequest {
   method: string;
   headers?: Record<string, string>;
-  /** What signs the request in, asked again with the challenge where the server answers 401 (see {@link withCredential}): not where `body` is a stream, which cannot be sent twice. */
+  /** What signs the request in, asked again with the challenges where the server answers 401 (see {@link withCredential}), unless `body` is a stream, which cannot be sent twice. */
   credential?: Credential;
-  /** Request body, sent verbatim: bytes, whose Content-Length is derived when not
-   *  supplied, or a stream, sent as it is read, whose length the caller states
-   *  where the server needs it. */
+  /** Request body, sent verbatim: bytes, whose Content-Length is derived where
+   *  `headers` give none, or a stream, sent as it is read, whose length the
+   *  caller states where the server needs it. */
   body?: Buffer | string | Readable;
 }
 
+/** A response {@link sendRequest} read, body and all. */
 export interface HttpResponse {
   statusCode: number;
   headers: http.IncomingHttpHeaders;
@@ -162,12 +141,15 @@ export interface HttpResponse {
 }
 
 /**
- * Perform a single buffered HTTP(S) request/response. Unlike {@link openUrlStream}
- * (a streaming GET that *rejects* on any non-200), this returns the response
- * whatever its status — the caller inspects `statusCode` and reads the body,
- * which for a write (a registry publish) carries the server's JSON error detail
- * that a bare status code would lose. The whole response is buffered, so this is
- * for control-plane calls (publish, dist-tag), not bulk downloads.
+ * Send one HTTP(S) request and return its response, whatever its status: the
+ * caller reads `statusCode` and the body (where a registry's publish states
+ * its error detail). The whole response is read into memory, so this is for
+ * small exchanges such as a publish or a dist-tag; {@link openUrlStream}
+ * streams a download. The request is admitted under the `content` role, and
+ * a 401 is answered with `credential` as {@link withCredential} describes.
+ *
+ * Rejects where the URL's protocol is not http or https, or the request fails
+ * in transport.
  */
 export function sendRequest(urlstring: string, request: HttpRequest): Computable<HttpResponse> {
   const { credential, method, headers, body } = request;
@@ -217,10 +199,9 @@ function send(
 }
 
 /**
- * The HTTP cache-control facts of a response, parsed: when the copy must next
- * be revalidated before serving, and the validators to revalidate it with.
- * Returned by {@link openUrlStream} alongside the content (and
- * persisted by the build cache as a non-immutable entry's `!meta` header).
+ * The HTTP caching facts of a response: when a copy of it must next be
+ * revalidated, and the validators to revalidate it with. The build cache keeps
+ * them in a mutable entry's `!meta` header.
  */
 export interface ICacheControl {
   /** Epoch-ms time after which the entry must be revalidated before serving. */
@@ -228,54 +209,41 @@ export interface ICacheControl {
   /** HTTP validators for conditional revalidation, as the origin sent them. */
   etag?: string;
   lastModified?: string;
-  /** The document's digest as the origin states it in a header of the
-   *  caller's naming (a registry's `Docker-Content-Digest`), compared on a
-   *  `HEAD` to revalidate (see {@link headUrl}). */
+  /** The document's digest, as the response header the caller names states
+   *  it (a registry's `Docker-Content-Digest`), for revalidating by a `HEAD`
+   *  (see {@link headUrl}). */
   digest?: string;
 }
 
 /**
- * The outcome of a (possibly conditional) GET: a fresh body stream for a 200,
- * or no stream for a 304 (Not Modified — the caller's cached copy stands; only
- * possible for a request that sent validators). The response's parsed
- * cache-control facts ride along in both cases; a 304's carry the updated
- * freshness lifetime and validators.
+ * The outcome of a GET: a body stream for a 200, or none for a 304 to a
+ * request that sent validators (the caller's copy stands). Either carries the
+ * response's caching facts.
  */
 export interface UrlStreamResponse {
   cacheControl: ICacheControl;
   /** Present for a 200; absent for a 304. */
   stream?: Readable;
-  /**
-   * The body's declared size in bytes, when the origin declared one — for
-   * reporting a download's progress as a fraction. Absent for a chunked or
-   * unlabelled response, which is why a consumer must be able to report bare
-   * bytes with no total.
-   */
+  /** The body's size in bytes, where the origin declared one. */
   contentLength?: number;
 }
 
-/**
- * Parse the declared body size: undefined when the origin declared none — or
- * declared nonsense. A size is only ever used to render a fraction, so an
- * unusable one degrades to "no total" rather than failing the download.
- */
+/** @return the body size a `Content-Length` header declares, or undefined
+ * where there is none or it is not a non-negative integer. */
 function parseContentLength(value: string | string[] | undefined): number | undefined {
   const size = typeof value === "string" ? Number(value) : NaN;
   return Number.isSafeInteger(size) && size >= 0 ? size : undefined;
 }
 
 /**
- * Pass `stream` through unchanged while reporting how many bytes have gone by,
- * for a caller displaying a download's progress.
- *
- * Counted inside a Transform, not by a `data` listener: a listener would put
- * the counter in flowing mode at once, silently discarding whatever arrives
- * before the real consumer attaches — whereas `_transform` only sees bytes as
- * the consumer draws them, so backpressure holds and a consumer that attaches
- * a tick late loses nothing. Errors are forwarded, so a failed transfer still
- * fails the consumer rather than hanging it.
+ * Pass `stream` through unchanged, calling `report` with the number of bytes
+ * read so far as each chunk is read. An error on `stream` destroys the
+ * returned stream with it.
  */
 export function reportingProgress(stream: Readable, report: (bytes: number) => void): Readable {
+  /* Count in a Transform, not a `data` listener: a listener switches the
+   * stream to flowing mode, and what arrives before the consumer attaches is
+   * lost. */
   let seen = 0;
   const counter = new Transform({
     transform(chunk: Buffer, _encoding, done): void {
@@ -289,13 +257,17 @@ export function reportingProgress(stream: Readable, report: (bytes: number) => v
 }
 
 /**
- * Streaming GET. A caller revalidating a cached copy supplies its validators
+ * Send a GET for `urlstring` and return its response with the body as a
+ * stream. The request holds its slot under `role` until the body is read
+ * through or closed.
+ *
+ * A caller revalidating a held copy sends its validators
  * (`if-none-match`/`if-modified-since`) among `headers`, and a 304 then
- * resolves with no stream; a 304 to a request that sent NO validators is a
- * server defect and rejects like any other non-200 (so an unconditional
- * caller's resolved response always carries the stream). `now` feeds the
- * absolute `expires` in the parsed cache-control facts (injectable for tests;
- * defaults to the wall clock).
+ * resolves with no stream. Any other status but 200, a 304 to a request that
+ * sent no validators included, rejects as an {@link HttpStatusError}; so does
+ * a 401 that `credential` cannot answer. Also rejects where the URL's protocol
+ * is not http or https, or the request fails in transport. `now` is the time
+ * the caching facts' `expires` counts from.
  */
 export function openUrlStream(
   urlstring: string,
@@ -333,14 +305,12 @@ function streamUrl(
       return;
     }
     admitted(urlstring, role, release => {
-      /* Redirects are followed transparently by the dispatcher, so the response
-       * we see is the final hop (a 200, a conditional 304, or an error status). */
+      /* The dispatcher follows redirects, so this is the last hop's response. */
       httpRequest(urlstring, { method: "GET", headers, dispatcher }).then(
         response => {
           const resHeaders = response.headers as http.IncomingHttpHeaders;
           if (response.statusCode === 200) {
-            /* The slot is the transfer's: held until the body is read through or
-             * given up, however the consumer ends it. */
+            /* Hold the slot until the body closes, however the consumer ends it. */
             response.body.once("close", release);
             resolve({
               cacheControl: parseCacheControl(resHeaders, now(), digestHeader),
@@ -348,7 +318,7 @@ function streamUrl(
               contentLength: parseContentLength(resHeaders["content-length"]),
             });
           } else if (response.statusCode === 304 && conditional) {
-            void response.body.dump().finally(release); /* discard the (empty) body so the socket is released */
+            void response.body.dump().finally(release); /* discard the (empty) body, then free the slot */
             resolve({ cacheControl: parseCacheControl(resHeaders, now(), digestHeader) });
           } else {
             void response.body.dump().finally(release);
@@ -417,11 +387,11 @@ function challengesOf(statusCode: number, headers: http.IncomingHttpHeaders): re
 }
 
 /**
- * Send a `HEAD` for `urlstring` and return the response's cache-control facts,
- * the digest the `digestHeader` response header states among them — for a
- * caller revalidating a held copy by comparing digests, where the origin
- * counts a `GET` against a quota and a `HEAD` not (Docker Hub). Any status but
- * 200 rejects as an {@link HttpStatusError}.
+ * Send a `HEAD` for `urlstring` and return the response's caching facts, with
+ * the digest the `digestHeader` response header states, for a caller
+ * revalidating a held copy by comparing digests. Any status but 200 rejects
+ * as an {@link HttpStatusError}, as does a 401 that `credential` cannot
+ * answer.
  */
 export function headUrl(
   urlstring: string,
@@ -477,15 +447,11 @@ function headOf(
 }
 
 /**
- * Parse a response's cache-control facts, per plain HTTP caching semantics.
- * The freshness remaining is the origin-declared lifetime (`max-age`; a
- * `no-cache`/`no-store` counts as zero; else `Expires` relative to the
- * response's own `Date`) minus the response's `Age` — a CDN edge may serve a
- * copy that has already spent most of its lifetime in the edge cache (npmjs
- * serves packuments via Cloudflare with `age` routinely near the `max-age`).
- * An origin declaring nothing gets no lifetime — stale immediately,
- * revalidated on every demand (cheap 304s when it sends validators); the
- * origin owns its staleness contract.
+ * Parse a response's caching facts. `expires` is `now` plus the lifetime the
+ * headers declare ({@link declaredLifetime}) less the response's `Age`, never
+ * less than `now`; where no lifetime is declared it is `now`, so the copy is
+ * already due for revalidation. The digest is read from `digestHeader` where
+ * one is named and the response states it.
  */
 function parseCacheControl(headers: http.IncomingHttpHeaders, now: number, digestHeader?: string): ICacheControl {
   const declared = declaredLifetime(headers, now);
@@ -501,12 +467,11 @@ function parseCacheControl(headers: http.IncomingHttpHeaders, now: number, diges
 }
 
 /**
- * Get the freshness lifetime (ms) a response's own headers declare:
- * `Cache-Control: max-age` wins (`no-cache`/`no-store` count as zero —
- * revalidate every time); else `Expires`, aged relative to the response's
- * `Date` (the origin's clock, avoiding skew against ours) or `now` when
- * absent — an unparseable `Expires` (e.g. the conventional "0") means already
- * stale. Undefined when the origin declares nothing.
+ * Get the freshness lifetime in ms a response's headers declare, or undefined
+ * where they declare none. `Cache-Control: no-cache` or `no-store` declares
+ * zero, and its `max-age` the lifetime; otherwise `Expires` less the
+ * response's `Date` (or `now` where it has none), and zero where `Expires`
+ * does not parse (the conventional "0").
  */
 function declaredLifetime(headers: http.IncomingHttpHeaders, now: number): number | undefined {
   const cacheControl = headers["cache-control"];
@@ -531,9 +496,7 @@ function declaredLifetime(headers: http.IncomingHttpHeaders, now: number): numbe
   return undefined;
 }
 
-/**
- * Read a stream to completion and return the entire contents as a single Buffer.
- */
+/** Read `stream` to its end and return its contents. */
 export function readStream(stream: Readable): Computable<Buffer> {
   return Computable.from<Buffer>((resolve, reject) => {
     const data: Buffer[] = [];

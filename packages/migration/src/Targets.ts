@@ -54,7 +54,26 @@ export function packageOfTypes(types: string): string {
   return scoped < 0 ? name : `@${name.slice(0, scoped)}/${name.slice(scoped + 2)}`;
 }
 
-/** Plan the `js_package` target of each package of `workspace`. */
+/**
+ * Plan the `js_package` target of each package of `workspace`, named by its
+ * package's name, else by its directory (the root by the project directory's
+ * name).
+ *
+ * - `deps`, `provided` and `optionalProvided` come from the manifest's
+ *   blocks: peers as `provided_deps`, optional peers as
+ *   `optional_provided_deps`, everything else as `deps`. Each is a reference
+ *   to another workspace package's target, or to the catalog entry
+ *   `addressOf` gives for the package's manifest, else for the root's; a
+ *   dependency with neither is left out.
+ * - For a package other than the root, the root's dependencies its sources use
+ *   without declaring them are added to `deps` (see {@link cascade}).
+ * - `srcs` and `tests` are globs over the sources found (see
+ *   {@link sourceGlobs}).
+ *
+ * What the plan cannot decide (no name, no sources, test files outside `src/`,
+ * an undeclared import, a `workspace:` spec naming no package) is in its
+ * `report`.
+ */
 export function planTargets(
   workspace: Workspace,
   addressOf: (manifest: Manifest, name: string) => CatalogAddress | undefined
@@ -66,8 +85,8 @@ export function planTargets(
   const packageDirs = new Set(workspace.packages.map(manifest => path.join(workspace.root, manifest.dir)));
   const root = workspace.rootManifest;
   const rootDeclared = declaredDependencies(root);
-  /* A root `@types` package whose package the root does not declare is ambient
-   * (`@types/node`, `@types/jest`), used by every package with TypeScript sources. */
+  /* The root's ambient `@types` packages: those whose package the root does not
+   * declare (`@types/node`, `@types/jest`). */
   const rootAmbient = [...rootDeclared.keys()].filter(
     name => name.startsWith("@types/") && ![...rootDeclared.keys()].some(other => typesPackageOf(other) === name)
   );
@@ -151,11 +170,11 @@ export function planTargets(
 }
 
 /**
- * @return the packages a workspace package's TypeScript sources use without importing
- * them: what its tsconfigs' `types` name (an `@types` package, or the package
- * itself), or where its `tsconfig.json` sets no `types`, the root's `@types`
- * packages that are no package's companion (`rootAmbient`), every one of
- * which the compiler then includes.
+ * @return the `@types` packages a workspace package's TypeScript sources use
+ * without importing them: those its tsconfigs' `types` name (`node` naming
+ * `@types/node`), or, where its `tsconfig.json` sets no `types`,
+ * `rootAmbient`, since the compiler then includes every visible `@types`
+ * package.
  */
 function ambientOf(tsconfigs: ReadonlyMap<string, TsconfigOptions>, rootAmbient: ReadonlyArray<string>): string[] {
   if (tsconfigs.get("tsconfig.json")?.types === undefined) {
@@ -231,9 +250,9 @@ function cascade(
   }
 }
 
-/** @return the `srcs` and `tests` globs covering the files `scan` found, by
- * extension: the files in `src/`, under `src:`, where there are any, and the
- * test files outside it; otherwise every file. */
+/** @return the `srcs` and `tests` globs, one per extension, over the files in
+ * `src/` (under `src:`) where it holds any, otherwise over every file `scan`
+ * found; and `outside`, the test files outside `src/` the globs leave out. */
 function sourceGlobs(scan: SourceScan): { srcs: string[]; tests: string[]; outside: string[] } {
   const inSrc = scan.files.filter(file => file.startsWith("src/"));
   const base = inSrc.length > 0 ? "src:" : "";

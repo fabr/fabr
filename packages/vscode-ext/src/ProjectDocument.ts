@@ -17,11 +17,13 @@
 /**
  * A project's TypeScript view, composed from the targets its server describes:
  * the project document the tsserver wrapper reads (see tsserver/Registry), and
- * the files it names. Each `typescript` payload names its units; a unit's
- * table locates a fetched package as its compile does — a pool tree at
- * `./.fabr-tree/<tree>/`, rewritten here to be located from the unit's real
- * root — and a package another unit builds at that unit's root, which the
- * unit's config then references, so the editor reads it from source.
+ * the files it names. A target's `typescript` data names its units, each a
+ * directory of the target's description holding the unit's `unit.json`,
+ * `tsconfig.json` and `.pnp.data.json`. A unit's table locates a fetched
+ * package as its compile does, in a pool tree at `./.fabr-tree/<tree>/`, which
+ * is rewritten here to be located from the unit's root; a package another unit
+ * builds is located at that unit's root and referenced from the unit's config,
+ * so the editor reads it from source.
  */
 
 import type { ITypeScriptUnit } from "@fabr-build/js-tools";
@@ -61,7 +63,7 @@ interface IPnpTable {
   packageRegistryData: Array<[string | null, Array<[string | null, { packageLocation: string }]>]>;
 }
 
-/** Convert a target's `typescript` data. */
+/** Convert a target's `typescript` data, throwing where it names no units or plugin. */
 function toTypeScriptPayload(json: unknown): ITypeScriptPayload {
   const payload = toObject(json, "the target's data");
   const { units, manifest, plugin } = payload;
@@ -74,7 +76,7 @@ function toTypeScriptPayload(json: unknown): ITypeScriptPayload {
   return { units: units as Record<string, string>, plugin, ...(manifest === undefined ? {} : { manifest }) };
 }
 
-/** Convert a unit's `unit.json`. */
+/** Convert a unit's `unit.json`, throwing where it is not a unit's summary. */
 function toUnitSummary(json: unknown): IUnitSummary {
   const { root, rewrites, resources, package: name, generated } = toObject(json, "unit.json");
   const optionalString = (value: unknown): value is string | undefined => value === undefined || typeof value === "string";
@@ -100,7 +102,7 @@ function toUnitSummary(json: unknown): IUnitSummary {
   };
 }
 
-/** Convert a unit's `.pnp.data.json`, checking the rows composing reads. */
+/** Convert a unit's `.pnp.data.json`, checking only the rows composing reads, throwing where they are malformed. */
 function toPnpTable(json: unknown): IPnpTable {
   const table = toObject(json, ".pnp.data.json");
   const nameOrNull = (value: unknown): boolean => value === null || typeof value === "string";
@@ -151,9 +153,13 @@ interface IUnit {
   name: string;
   /** The operation its target is described under. */
   operation?: string;
+  /** The unit's root, absolute. */
   root: string;
+  /** The package the unit builds, if any. */
   package?: string;
+  /** The directory holding the unit's description files. */
   description: string;
+  /** The directory the table's pool trees are located from. */
   pool: string;
   summary: IUnitSummary;
   config: Record<string, unknown>;
@@ -171,9 +177,23 @@ export interface IComposedProject {
 }
 
 /**
- * Compose the TypeScript view of the project at `root` from `targets`, its
- * files written under `storage`; a payload's plugin is resolved from
- * `installation` by `resolve`.
+ * Compose the TypeScript view of the project at `root` from `targets`, reading
+ * their description files with `readFile`.
+ *
+ * Each unit whose `unit.json` names a root is shown at a config at that root:
+ * `tsconfig.json` where it is the root's only unit, otherwise
+ * `tsconfig.fabr-<n>.json` for each, the build operation's unit first, with a
+ * solution `tsconfig.json` referencing them. A unit's composed config and
+ * table are written under `storage`.
+ *
+ * - `document`: the project document: the links (served path to composed or
+ *   description file), the units, and the tsserver plugin, resolved by
+ *   `resolve` from `installation` (a path under `installation` that does not
+ *   exist where it cannot be).
+ * - `files`: the composed files to write.
+ * - `problems`: each target or unit that could not be read, which is left out;
+ *   units naming different plugins, of which the first is used; and a plugin
+ *   that cannot be resolved.
  */
 export function composeProject(input: {
   root: string;
@@ -233,9 +253,9 @@ export function composeProject(input: {
   const files = new Map<string, string>();
   const links = new Map<string, string>();
   const documentUnits: ITypeScriptUnit[] = [];
-  /* The units at each root, a build unit first: where several share a root,
-   * a solution config there references them, and tsserver gives a file the
-   * first that holds it, so a source is judged as its build judges it. */
+  /* The units at each root. Order a build unit first: where several share a
+   * root, tsserver gives a file the first config of the solution that holds it,
+   * and a source must be checked as its build checks it. */
   const byRoot = new Map<string, IUnit[]>();
   for (const unit of units) {
     byRoot.set(unit.root, [...(byRoot.get(unit.root) ?? []), unit]);
@@ -292,10 +312,12 @@ export function composeProject(input: {
 }
 
 /**
- * Compose `unit`, shown at `config`, into `files` under `own` and `links`: its
- * table located from its root, a package another unit builds at that unit's
- * root (referenced from its config), its config, its package's manifest and its
- * generated sources linked in.
+ * Compose `unit`, shown at `config`: write its config and table to `own` in
+ * `files`, and add to `links` `config` to that config, the unit's
+ * `package.json` to its package's manifest (where it is the package's own
+ * unit), and each generated source to its copy in the description. In the
+ * table a pool tree is relocated from the unit's root, and a package another
+ * unit builds at another root is referenced from the config instead.
  */
 function composeUnit(
   unit: IUnit,
@@ -309,8 +331,8 @@ function composeUnit(
     const text = path.relative(unit.root, to).split(path.sep).join("/");
     return text === "" ? "./" : `./${text}/`;
   };
-  /* A package another unit builds is located at that unit's root already, and
-   * is referenced from the unit's config; a pool tree is located from here. */
+  /* A package another unit builds at another root is left located there and
+   * referenced from the config; a pool tree is relocated from the unit's root. */
   const referenced = new Set<string>();
   for (const [name, rows] of unit.table.packageRegistryData) {
     for (const [reference, info] of rows) {

@@ -28,29 +28,20 @@ import type { IOutputHandle } from "./Execute";
 import { archiveEntryNames } from "./Paths";
 import { TarPack } from "./TarPack";
 
-/**
- * A fixed mtime stamped on every entry: the tarball must be a pure function of
- * its file contents (it is content-addressed and cached like any other build
- * output), so the wall-clock at pack time must not leak into the bytes. The
- * exact value is arbitrary; a constant is all that matters.
- */
+/** The mtime of every entry. Keep it constant: an archive's bytes must depend
+ * on its files alone. */
 const FIXED_MTIME = new Date(0);
 
 /** The mode of a directory entry (see {@link PackOptions.directories}). */
 const DIRECTORY_MODE = 0o755;
 
 /**
- * One entry of an archive, in the order written — the dual of the split
- * {@link unpackStream} produces on the way in:
- *   - `directory`: a directory above a file, where they are written.
+ * One entry of an archive, in the order written:
+ *   - `directory`: a directory above a file (see {@link PackOptions.directories}).
  *   - `file`: a regular file, its content streamed when the archive reaches it.
- *   - `symlink`: names its target (`linkname`), no body. Fixed 0o777 mode (its
- *     content is the target, so it has no exec bit of its own).
- *   - `hardlink`: a later entry whose content is byte-identical to an earlier
- *     one — emitted as a tar hardlink (`type: "link"`) to that first entry
- *     rather than packing the bytes twice. Content-addressed storage already
- *     dedups the blob; this dedups the archive. No body; fixed mode (a hardlink
- *     shares the target inode, so its own mode field is ignored on extraction).
+ *   - `symlink`: a symlink to `linkname`, with no body.
+ *   - `hardlink`: a file whose content is identical to the earlier entry
+ *     `linkname`, written as a tar hardlink to it, with no body.
  */
 type PackEntry =
   | { kind: "directory"; name: string }
@@ -60,16 +51,10 @@ type PackEntry =
 
 export interface PackOptions {
   /**
-   * Whether a byte-identical repeat may be packed as a tar hardlink rather than
-   * as its own copy of the bytes (see {@link PackEntry}). Default **true**.
-   *
-   * Turn it off for an archive whose *destination* may refuse links, which is a
-   * property of that destination, not of tar: npm's registry rejects an upload
-   * containing any hard link outright (415, "Hard link is not allowed"). Note
-   * that fabr trips such a rule far more readily than the usual packer does —
-   * it dedups by content hash, where a tool packing a directory dedups by inode,
-   * so for fabr *any* two identical files suffice (a pair of generated `.d.ts`
-   * stubs will do it).
+   * Whether a file with the same content as an earlier one is packed as a tar
+   * hardlink to it (see {@link PackEntry}). Default true. Turn it off for an
+   * archive whose destination refuses hardlinks (npm's registry rejects an
+   * upload containing one): any two files of identical content make one.
    */
   hardlinks?: boolean;
   /** Whether every directory above a file gets an entry of its own, mode 0755,
@@ -77,10 +62,8 @@ export interface PackOptions {
   directories?: boolean;
 }
 
-/**
- * Pack a FileSet into a single gzip-compressed tar archive in memory — the
- * inverse of {@link unpackStream}; see {@link writeTar} for the entries.
- */
+/** Pack a FileSet into a gzip-compressed tar archive in memory, its entries
+ * as {@link writeTar} writes them. */
 export function packToTarball(files: FileSet, options: PackOptions = {}): Computable<Buffer> {
   return Computable.from<Buffer>((resolve, reject) => {
     const pack = new TarPack();
@@ -100,14 +83,16 @@ export function packToTarball(files: FileSet, options: PackOptions = {}): Comput
 }
 
 /**
- * Write a FileSet as an uncompressed tar archive into `output`, and answer the
- * stored file, named `name`. Entries are written in sorted name order, a
- * directory's before those within it, with a fixed mtime, owner and group 0,
- * and each file's own (stored) mode, so the output is deterministic
- * (byte-identical for identical content). Each file's content is streamed when
- * the archive reaches it, so an archive of many files holds one open at a
- * time. Names are taken verbatim: any layout convention (npm's `package/`
- * prefix, say) is the caller's to impose on the FileSet first.
+ * Write a FileSet as an uncompressed tar archive into `output`.
+ *
+ * Entries are written in sorted name order, a directory before those within
+ * it, each with a fixed mtime, owner and group 0, and its file's stored mode,
+ * so identical files make identical bytes. Names are written as the FileSet
+ * has them: a layout such as npm's `package/` prefix is the caller's to apply
+ * first. Each file's content is opened only when the archive reaches it.
+ *
+ * @return the archive, stored as the file `name`. Rejects with the first
+ *   error reading a file or writing the output, the output then discarded.
  */
 export function writeTar(files: FileSet, output: IOutputHandle, name: string, options: PackOptions = {}): Computable<IFile> {
   return Computable.from<void>((resolve, reject) => {
@@ -134,9 +119,8 @@ function entriesOf(files: FileSet, options: PackOptions): PackEntry[] {
     [...files].map(([name]) => name),
     { directories: options.directories ?? false }
   );
-  /* First entry (in sorted order) to carry each content hash — a repeat becomes
-   * a hardlink to it, so identical content is packed once. Symlinks are excluded
-   * (their "content" is the target text); the sorted order keeps this stable. */
+  /* The first entry of each content hash, which a later file of that hash
+   * links to. Symlinks are never linked. */
   const firstByHash = new Map<string, string>();
   return ordered.map((name): PackEntry => {
     if (name.endsWith("/")) {
@@ -180,13 +164,11 @@ function writeEntry(pack: TarPack, entry: PackEntry, done: (err?: Error | null) 
     /* A symlink carries no body; its target rides in `linkname`. */
     pack.entry({ ...header, type: "symlink", linkname: entry.linkname, mode: 0o777 }, done);
   } else if (entry.kind === "hardlink") {
-    /* A hardlink carries no body; `linkname` names the entry it shares
-     * content with (packed earlier in sorted order). */
+    /* A hardlink carries no body; `linkname` names the earlier entry it shares
+     * content with. */
     pack.entry({ ...header, type: "link", linkname: entry.linkname, mode: 0o644 }, done);
   } else {
-    /* The file's original mode (full 0o7777, from the manifest) — the archive is
-     * a faithful export, and it is deterministic because mode is a stored
-     * property, not read from the read-only blob's own permission bits. */
+    /* The file's stored mode, never the pooled blob's permission bits. */
     contentOf(entry.file).then(
       ({ size, stream }) => {
         const sink = pack.entry({ ...header, size, mode: entry.file.mode & 0o7777 }, done);

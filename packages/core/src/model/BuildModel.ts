@@ -49,44 +49,35 @@ export interface BuildModel {
   /** Get the implementation of the repository type `type`, if it is one: a declared type's is loaded the first time. */
   getRepositoryImplementation(type: string): Computable<RepositoryImplementation> | undefined;
 
-  /** @return every declared targetdef (the build vocabulary), in declaration
-   * order — for diagnostic listing (`fabr list-targetdefs`). */
+  /** @return every declared targetdef, in declaration order (`fabr
+   *  list-targetdefs`). */
   getTargetDefs(): ITargetDefDecl[];
 
   /** @return every buildable target declared in the project, with its
-   * fully-qualified name — for diagnostic listing (`fabr list-targets`).
-   * Repository instances (`npm_repository @npm`, `catalog @dep`) share the
-   * target-decl shape but are not buildable targets, so they are excluded (a
-   * type is a repository iff it has a registered provider). */
+   *  fully-qualified name (`fabr list-targets`): repository declarations
+   *  (`npm_repository @npm`, `catalog @dep`) are left out. */
   getTargets(): { name: string; decl: ITargetDecl }[];
 
-  /** @return every declared target — repository instances (`npm_repository
-   * @npm`, `catalog @dep`) included — in declaration order. For the docs listing
-   * (`fabr list-all`), which documents repositories alongside ordinary lib
-   * targets; {@link getTargets} excludes them as not buildable. */
+  /** @return every declared target, repository declarations included, in
+   *  declaration order (`fabr list-all`). */
   getDeclaredTargets(): { name: string; decl: ITargetDecl }[];
 
-  /** @return every property declared in the project (effective set — a `default`
-   * counts unless overridden), for documenting the configuration surface
-   * (`fabr list-targetdefs --json` emits the documented ones). */
+  /** @return every property declared in the project, a `default` included
+   *  unless an ordinary declaration overrides it (`fabr list-targetdefs
+   *  --json`). */
   getProperties(): { name: string; decl: IPropertyDecl }[];
 
-  /** @return the BUILD_OPERATION values for which a type-specific rule is
-   * registered for `type` or a type it extends — the operations that type supports (`build`,
-   * `test`, `run`, …). A rule that constrains no operation is a wildcard,
-   * reported as `"*"` (it applies to any operation). Default (all-types)
-   * rules are excluded: they apply everywhere and so say nothing about a
-   * particular type. */
+  /** @return the operations (`build`, `test`, `run`, …) a rule of `type`, or
+   *  of a type it extends, is guarded on; `"*"` for a rule guarded on none.
+   *  The default (all-types) rules are left out. Sorted. */
   getOperations(type: string): string[];
 
-  /**
-   * @return the build configuration under the given (possibly empty set of)
-   * constraints, evaluating within the given execution context. The model
-   * itself is purely the declarations as written; everything runtime (the
-   * build cache, progress observers) rides in the ExecutionContext.
-   */
+  /** @return the configuration of the model under `constraints` (possibly
+   *  empty), evaluating within `execution`: the same one for every equal
+   *  constraint set and execution. */
   getConfig(constraints: Constraints, execution: ExecutionContext): BuildContext;
 
+  /** Get the public declaration of exactly `name`, or undefined. */
   getDecl(name: string): IPropertyEntry | ITargetDecl | undefined;
 
   /** @return the namespace of the names the file `file` names declares
@@ -96,11 +87,11 @@ export interface BuildModel {
   /** @return the names of the files that declare `name` privately, in name order. */
   getPrivateFiles(name: string): string[];
 
-  /** @return the target this name declares, or undefined if it names something
-   * else (a property, a namespace) or nothing at all — for a caller that needs
-   * a target's *type* (and so what can be done with it) before asking for it. */
+  /** @return the target `name` declares, or undefined if it names something
+   *  else (a property, a namespace) or nothing. */
   getTargetDecl(name: string): ITargetDecl | undefined;
 
+  /** Get the targetdef named `name`, or undefined. */
   getTargetDef(name: string): ITargetDefDecl | undefined;
 
   /** Look up the declaration a prefix of `name` names, as written in the file
@@ -109,14 +100,11 @@ export interface BuildModel {
   getPrefixMatch(name: Name, file?: string): IPrefixMatch | undefined;
 
   /**
-   * Look up the declared target a written reference builds — its literal
-   * prefix, read exactly as resolution reads it, so `pkg:bin/x.js` and
-   * `pkg<BUILD_TYPE=release>` both name `pkg`. Undefined when the reference names no declared target at
-   * all (an external requirement, a bare path, an unknown name).
-   *
-   * This is for a caller holding a name it was *given* and needing to say
-   * something about the target behind it before building — the CLI's `-f`,
-   * which marks what the command line named.
+   * Look up the declared target a written reference names, by the prefix of
+   * it that is declared, as resolution reads it: `pkg:bin/x.js` and
+   * `pkg<BUILD_TYPE=release>` both name `pkg`. Undefined where it names no
+   * declared target (an external requirement, a bare path, an unknown name).
+   * The CLI's `-f` uses it.
    */
   getReferencedTarget(name: string): ITargetDecl | undefined;
 

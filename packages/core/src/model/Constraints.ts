@@ -18,32 +18,32 @@
  */
 
 /**
- * The build *verb* constraint ('build', 'test', 'run', 'files', ...): `fabr test foo`
- * is sugar for constraining BUILD_OPERATION=test. Rule selection matches against it,
- * so a target type provides an operation by registering a rule constrained to it.
- * An operation-specific rule is responsible for explicitly requesting
- * BUILD_OPERATION=build for its dependencies (the constraint otherwise propagates).
+ * The constraint naming the build operation ('build', 'test', 'run', 'files',
+ * ...): `fabr test foo` builds `foo<BUILD_OPERATION=test>`. A rule is selected
+ * for an operation by a guard on it. The constraint propagates to a target's
+ * dependencies, so an operation-specific rule requests BUILD_OPERATION=build
+ * for its dependencies explicitly.
  */
 export const BUILD_OPERATION = "BUILD_OPERATION";
 
 /**
- * The platform triple (clang/LLVM form, e.g. `arm64-apple-macosx15.0`,
- * `x86_64-linux-gnu`) fabr is actually running on — a driver-injected fact, not
- * meant to be overridden. Native rules consume it verbatim; the npm gate reads a
- * lossy {os,cpu,libc} projection off it.
+ * The constraint naming the platform fabr runs on, as a clang/LLVM triple
+ * (`arm64-apple-macosx15.0`, `x86_64-linux-gnu`). Set by the driver, and not
+ * meant to be overridden.
  */
 export const HOST = "HOST";
 
-/** Constraint keys the driver injects as ambient context, elided from
- *  constraint displays (the verb and the host facts speak for themselves). */
+/** The constraint keys the driver sets on every configuration, left out where
+ *  constraints are displayed. */
 export const AMBIENT_CONSTRAINT_KEYS: ReadonlySet<string> = new Set([BUILD_OPERATION, HOST]);
 
+/** The operations {@link preferredOperation} suggests, most preferred first. */
 const OPERATION_PREFERENCE = ["build", "test", "run"];
 
 /**
  * @return the operation to suggest for a target whose type supports
- * `operations` (as BuildModel.getOperations reports them, `"*"` being any),
- * preferring the commonest verbs; undefined when none of them is suggestible.
+ * `operations` (as BuildModel.getOperations reports them, `"*"` being any):
+ * the first of build, test and run it supports, or undefined.
  */
 export function preferredOperation(operations: string[]): string | undefined {
   if (operations.includes("*")) {
@@ -53,19 +53,17 @@ export function preferredOperation(operations: string[]): string | undefined {
 }
 
 /**
- * The platform triple we are *building for*. `default TARGET = ${HOST};` (STD.fabr),
- * overridable per build (`-D TARGET=…`) or per reference (`ref<TARGET=…>`) to
- * cross-compile. Repository/native selection gates on this, not HOST. Running a
- * target (`BUILD_OPERATION=run`) forces TARGET back to HOST — you can only execute
- * what was built for the machine you're on, and it makes build *tools* resolve
- * host-side automatically.
+ * The property naming the platform being built for, a triple as {@link HOST}
+ * is. STD.fabr defaults it to `${HOST}`; set it per build (`-D TARGET=…`) or per
+ * reference (`ref<TARGET=…>`) to cross-compile. Platform-specific package
+ * selection reads it. A target resolved to be run has it set to HOST (see
+ * TargetContext.runOverrides).
  */
 export const TARGET = "TARGET";
 
 /**
- * Select the entries of `constraints` worth showing a reader: all but the `ambient`
- * keys, and but the values running a tool pins explicitly, so that they would
- * otherwise read as a choice — a TARGET equal to HOST, and COVERAGE off.
+ * Select the entries of `constraints` to display: all but the `ambient` keys, a
+ * TARGET equal to HOST, and COVERAGE off (the values a tool's run pins).
  */
 export function shownConstraints(
   constraints: Iterable<[string, string]> & { get(key: string): string | undefined },
@@ -78,33 +76,30 @@ export function shownConstraints(
 }
 
 /**
- * What a test run does when actual output diverges from a recorded expectation:
- * `check` (fail — the default, declared in STD.fabr) or `update` (rewrite the
- * record and offer it back to the source tree). `fabr test -u` sets it. Not a
- * driver-injected fact like the above — an ordinary global property — but named
- * here because the driver, core's write-back pass and the js test pipeline all
- * have to agree on the spelling.
+ * The property saying what a test run does where output differs from a
+ * recorded expectation: `check` (fail; the default, declared in STD.fabr) or
+ * `update` (rewrite the record and offer it back to the source tree). `fabr
+ * test -u` sets it.
  */
 export const TEST_EXPECTATIONS = "TEST_EXPECTATIONS";
 
-/** The {@link TEST_EXPECTATIONS} value that turns recorded expectations into
- * offered updates. */
+/** The {@link TEST_EXPECTATIONS} value that rewrites recorded expectations. */
 export const UPDATE_EXPECTATIONS = "update";
 
 /**
- * The regular expression selecting which tests a test run runs: a test runs
- * where it matches part of the test's name as its runner names it (suite and
- * test names joined by spaces for the js runners, `Class#method` for JUnit);
- * empty (the default, declared in STD.fabr) runs them all. `fabr test
- * -t` sets it, and the test rules read it.
+ * The property holding the regular expression selecting the tests a test run
+ * runs: those whose name, as the runner names it (suite and test names joined
+ * by spaces for the js runners, `Class#method` for JUnit), it matches part of.
+ * Empty (the default, declared in STD.fabr) runs them all. `fabr test -t` sets
+ * it.
  */
 export const TEST_NAME_PATTERN = "TEST_NAME_PATTERN";
 
 /**
- * Whether what is built and tested is measured for code coverage: `on` or
- * `off` (the default, declared in STD.fabr). `fabr test --coverage` sets it; a
- * tool is always resolved with it `off` (see TargetContext.runOverrides). Named
- * here because the driver, the tool reset and the js rules agree on it.
+ * The property saying whether what is built and tested is measured for code
+ * coverage: `on` or `off` (the default, declared in STD.fabr). `fabr test
+ * --coverage` sets it; a tool is resolved with it `off` where it is set (see
+ * TargetContext.runOverrides).
  */
 export const COVERAGE = "COVERAGE";
 
@@ -112,13 +107,11 @@ export const COVERAGE = "COVERAGE";
 export const COVERAGE_ON = "on";
 
 /**
- * The `files` operation: "give me the output files, and do no more than that."
- * A weaker form of `build` — it has no type-specific rules of its own; a generic
- * default rule (see rules/DefaultFilesRule) delegates it to the target's `build`
- * result. Its value is that a consumer reading the operation off its context can
- * do strictly less work when only the files are wanted: notably an `@npm:`
- * repository delivers a package's own files without resolving its dependency
- * closure. The driver's `ls`/`cat` verbs resolve under it.
+ * The `files` operation: a target's output files, and nothing more. The
+ * default `files` rule answers it with the target's `build` result as plain
+ * files; a registry answers it with a package's own files, its dependencies
+ * neither resolved nor fetched. The driver's `ls`, `cat` and `cp` resolve under
+ * it.
  */
 export const FILES_OPERATION = "files";
 
@@ -146,14 +139,13 @@ export function operationOf(constraints: Constraints): string {
 }
 
 /**
- * An immutable set of scalar build-config constraints (`BUILD_OPERATION`,
- * `TARGET`, `BUILD_TYPE`, and `-D`/`<k=v>` overrides). A distinct constraint set is
- * a distinct {@link BuildContext}: value-equal sets ({@link equals}) denote the
- * same one.
+ * An immutable set of build constraints, key to scalar value
+ * (`BUILD_OPERATION`, `TARGET`, `BUILD_TYPE`, and `-D`/`<k=v>` overrides). Each
+ * distinct set is a distinct {@link BuildContext}; sets equal by value
+ * ({@link equals}) denote the same one.
  *
- * Construct via {@link of} (from a plain record) or {@link with} (layer another set
- * on top); there is no public constructor. The common operation overrides are the
- * shared {@link BUILD_OVERRIDE} / {@link RUN_OVERRIDE} / {@link FILES_OVERRIDE}.
+ * Make one with {@link of} or {@link with}. The common operation overrides are
+ * {@link BUILD_OVERRIDE}, {@link RUN_OVERRIDE} and {@link FILES_OVERRIDE}.
  */
 export class Constraints {
   /** The empty configuration (the ambient default build). */
@@ -161,13 +153,13 @@ export class Constraints {
 
   private constructor(private readonly values: ReadonlyMap<string, string>) {}
 
-  /** Build a constraint set from a plain record (the funnel from raw key/value
-   * data — `-D` flags, host properties, a merged override map). */
+  /** Make a constraint set from a plain record (`-D` flags, host properties,
+   *  a merged override map). */
   public static of(values: Record<string, string>): Constraints {
     return new Constraints(new Map(Object.entries(values)));
   }
 
-  /** The value for `key`, or undefined if unconstrained. */
+  /** Get the value for `key`, or undefined if unconstrained. */
   public get(key: string): string | undefined {
     return this.values.get(key);
   }
@@ -185,8 +177,8 @@ export class Constraints {
     return this.values.size === 0;
   }
 
-  /** Layer `overrides` on top of this set — a later key wins; returns this set
-   * unchanged when `overrides` is absent or empty. */
+  /** Layer `overrides` on top of this set, their values winning; returns this
+   *  set itself where `overrides` is absent or empty. */
   public with(overrides?: Constraints): Constraints {
     if (!overrides || overrides.values.size === 0) {
       return this;
@@ -194,7 +186,7 @@ export class Constraints {
     return new Constraints(new Map([...this.values, ...overrides.values]));
   }
 
-  /** The constrained keys, in insertion order. */
+  /** Get the constrained keys, in insertion order. */
   public keys(): IterableIterator<string> {
     return this.values.keys();
   }
@@ -224,15 +216,14 @@ export class Constraints {
   }
 }
 
-/** Resolve a dependency for its build output — `BUILD_OPERATION=build`. The
- * override an operation-specific rule applies to its deps (which otherwise inherit
- * the rule's own operation). */
+/** The override `BUILD_OPERATION=build`, which an operation-specific rule
+ *  applies to its dependencies to read their build output. */
 export const BUILD_OVERRIDE = Constraints.of({ [BUILD_OPERATION]: "build" });
 
-/** Resolve a target in order to *run* it — `BUILD_OPERATION=run`. Note TARGET is
- * pinned back to HOST separately (see TargetContext.runOverrides). */
+/** The override `BUILD_OPERATION=run`, to resolve a target to run it. It
+ *  does not set TARGET to HOST; TargetContext.runOverrides does both. */
 export const RUN_OVERRIDE = Constraints.of({ [BUILD_OPERATION]: "run" });
 
-/** Resolve a dependency for its output files only — `BUILD_OPERATION=files` (see
- * {@link FILES_OPERATION}). */
+/** The override `BUILD_OPERATION=files`, to read a dependency's output files
+ *  only (see {@link FILES_OPERATION}). */
 export const FILES_OVERRIDE = Constraints.of({ [BUILD_OPERATION]: FILES_OPERATION });

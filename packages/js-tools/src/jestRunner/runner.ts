@@ -18,24 +18,14 @@
  */
 
 /**
- * Fabr's test runner with a JEST COMPATIBILITY LAYER — the flavour that drives
- * **jest-circus itself** rather than emulating it over node:test.
+ * The jest framework's test runner: test files run by jest-circus, over node's
+ * own module loader with fabr's mock registry, load-time hoist and `jest`
+ * object (see child.ts).
  *
- * The split: circus owns the test framework (describe/it, hooks, `.each`,
- * `.only`, `.concurrent`, timeouts, `expect` with its snapshot state and
- * assertion counting), and fabr owns the module system (node's real loader plus
- * the mock registry, the load-time hoist and the `jest` object). Neither jest's
- * orchestrator nor `jest-runtime` runs: circus is handed a facade over eleven
- * methods it actually calls, so modules load through node and `require(esm)`
- * keeps working — the capability jest's own vm-based loader lacks.
- *
- * This file is the parent. node:test is not involved at all, so process
- * management is ours: fork a child per test file, bounded, and aggregate what
- * they report into the CTRF document fabr's contract expects. Per-TEST timeouts
- * are circus's, enforced inside the child; the parent's only timing concern is
- * a child that never reports at all. Invoked with a SINGLE file — which is how
- * fabr calls it, once per test file, so the machine-wide scheduling is the
- * build's — the file runs in this process instead (see {@link runHere}).
+ * Given one test file, as fabr invokes it, the runner runs it in this process
+ * (see {@link runHere}); given several, it forks a child per file, at most
+ * `availableParallelism()` at a time. The results are written as one CTRF
+ * report, in the order the files were given.
  *
  * Usage (the runner contract, same as every flavour):
  *   node runner.js --report=<path> --env=<node|jsdom> [--update-snapshots]
@@ -56,36 +46,25 @@ import { describeThrown, runTestFile } from "./child";
 import type { IChildRequest, IChildResult, IChildTestResult } from "./child";
 
 /**
- * How long a child may run without reporting at all. A backstop against a
- * WEDGED process, not a budget for the work: a file's tests are bounded
- * individually by {@link TEST_TIMEOUT_MS} (circus enforces that per test, and
- * fails the test rather than the file), while the file's TOTAL is by design
- * unbounded — it holds as many tests as it holds.
- *
- * So this has to exceed a plausible total, not a plausible test: fabr's own
- * heaviest e2e file spawns a `fabr` subprocess per test and legitimately runs
- * several minutes under a saturated gate.
- *
- * A child reports once, at the end, so there is no progress signal to reset
- * this against.
+ * How long a test file may run before it is reported as crashed. Each test is
+ * bounded by {@link TEST_TIMEOUT_MS} (circus fails the test); this bounds the
+ * whole file, so must exceed a long file's total (fabr's own heaviest e2e file
+ * runs several minutes).
  */
 const CHILD_GRACE_MS = 600_000;
 
 export function main(argv: string[]): void {
   const options = parseRunnerArgs(argv);
-  /* Fail here, once, rather than identically in every child. */
+  /* Check the host once, before any child. */
   assertSupportedHost();
-  /* Before anything resolves from the test install: the environment's jsdom
-   * is among its packages. */
+  /* Before anything resolves from the test install (jsdom among it). */
   if (options.pnp !== undefined) {
     installPnpRuntime(options.pnp);
   }
   requireEnvironment(options.env);
-  /* Stack frames resolve through tsc's `.js.map` files and the hoist's inline
-   * maps, so a failure names the `.ts` line. The forked children get this via
-   * execArgv below; THIS process needs it too, because a single-file
-   * invocation — which is how fabr calls the runner, once per test file — runs
-   * in-process. */
+  /* So a stack frame names the source line, through the compiler's and the
+   * hoist's maps, for a file run in this process; a child gets
+   * `--enable-source-maps`. */
   process.setSourceMapsEnabled(true);
 
   const start = Date.now();
@@ -127,17 +106,15 @@ export function main(argv: string[]): void {
 interface ICompletedFile {
   testFile: string;
   result?: IChildResult;
-  /** The child's stderr, kept for a file that died without reporting — see
-   * toTestResults. */
+  /** The child's stderr, the trace of a file that died without reporting. */
   stderr: string;
   crash?: string;
 }
 
 /**
- * Run every file, at most `availableParallelism()` at a time. A plain bounded
- * pool: the unit of concurrency is the FILE, matching the isolation boundary,
- * and the cap keeps a large suite from spawning hundreds of node processes at
- * once.
+ * Run each file in a child of its own, at most `availableParallelism()` at a
+ * time.
+ * @return the outcomes, in the order of `requests`.
  */
 async function runAll(requests: IChildRequest[], childModule: string, preloads: string[]): Promise<ICompletedFile[]> {
   const limit = Math.max(1, Math.min(availableParallelism(), requests.length));
@@ -149,24 +126,15 @@ async function runAll(requests: IChildRequest[], childModule: string, preloads: 
     }
   });
   await Promise.all(workers);
-  /* Restore the caller's order: the pool completes out of order, and a report
-   * whose contents depend on scheduling is a report that churns. */
+  /* The caller's order, not the order the files finished. */
   const order = new Map(requests.map((request, index) => [request.testFile, index]));
   return done.sort((a, b) => (order.get(a.testFile) ?? 0) - (order.get(b.testFile) ?? 0));
 }
 
 /**
- * One file, run in THIS process rather than forked. fabr invokes the runner
- * once per test file (a partition the contract permits), so this process
- * already IS the per-file isolation boundary a fork would provide. The pool
- * (runAll) serves a standalone invocation with a list.
- *
- * The wedge backstop mirrors the forked path's guard, minus the process to
- * kill: with no result after {@link CHILD_GRACE_MS} the run is declared
- * crashed and reported through the ordinary finish path (whose process.exit
- * takes the wedged work down, as the forked path's SIGKILL does). unref'd, so
- * a completed run never waits on it. A throw out of the run is shaped exactly as the
- * forked child shapes it — an execError result — so reporting is one path.
+ * Run one file in this process. With no result after {@link CHILD_GRACE_MS}
+ * the file is reported as crashed (the run's exit then ends the work still
+ * going). A rejection becomes an `execError` result, as a child reports it.
  */
 function runHere(request: IChildRequest): Promise<ICompletedFile[]> {
   return new Promise(resolve => {
@@ -201,13 +169,9 @@ function runHere(request: IChildRequest): Promise<ICompletedFile[]> {
 
 function runOne(request: IChildRequest, childModule: string, preloads: string[]): Promise<ICompletedFile> {
   return new Promise<ICompletedFile>(resolve => {
-    /* stdio piped, not inherited: a file that dies before reporting leaves its
-     * reason ONLY on stderr, and that is what makes the difference between a
-     * report that says why and one that says "test failed". */
-    /* `--enable-source-maps` makes node resolve stack frames through tsc's
-     * `.js.map` files and the hoist's inline maps, so a failure names the `.ts`
-     * line rather than the compiled one. Jest normally does this itself via its
-     * transformer's map registry, which fabr does not use. */
+    /* Pipe stderr, which holds the only reason a file that dies before
+     * reporting gives. `--enable-source-maps`, so a stack frame names the
+     * source line. */
     const child = fork(childModule, [], {
       cwd: request.root,
       stdio: ["ignore", "pipe", "pipe", "ipc"],
@@ -216,9 +180,8 @@ function runOne(request: IChildRequest, childModule: string, preloads: string[])
     let stderr = "";
     let result: IChildResult | undefined;
     let settled = false;
-    /* Settle-once: `close` is the ordinary end, but a spawn failure delivers
-     * `error` (with or without a `close` after it), and double-resolving would
-     * double-count the file. */
+    /* Settle once: a spawn failure delivers `error`, with or without a `close`
+     * after it. */
     const finish = (crash: string | undefined): void => {
       if (!settled) {
         settled = true;
@@ -239,15 +202,10 @@ function runOne(request: IChildRequest, childModule: string, preloads: string[])
       child.kill("SIGKILL");
       stderr += `\nfabr: no result after ${Math.round(CHILD_GRACE_MS / 1000)}s — the test process was killed`;
     }, CHILD_GRACE_MS);
-    /* A child that could not be spawned at all (EAGAIN under a saturated
-     * machine) reports through the same shape as a crash — without this
-     * listener the runner itself dies with an uncaught exception and no file
-     * gets a result. */
+    /* A child that could not be spawned (EAGAIN) is reported as a crash. */
     child.on("error", (err: Error) => finish(`could not run the test process: ${err.message}`));
-    /* `close`, not `exit`: exit fires when the process dies, while its last IPC
-     * message and stderr tail can still be undelivered; close waits for the
-     * stdio (the IPC channel among them) to drain, so a result sent just before
-     * exiting is never mistaken for a crash. */
+    /* Use `close`, not `exit`: only `close` waits for the last IPC message and
+     * stderr to arrive. */
     child.on("close", (code, signal) =>
       finish(result ? undefined : `the test process exited ${signal ? `on ${signal}` : `with status ${code}`} without reporting`)
     );
@@ -255,14 +213,12 @@ function runOne(request: IChildRequest, childModule: string, preloads: string[])
   });
 }
 
-/** jest's phrasing for "there is no recorded snapshot and I am not allowed to
- * write one". Its advice — a jest CLI flag, and a guess about CI — is not
- * fabr's, so the tail of the message is replaced. */
+/** The start of jest's failure for a missing snapshot it may not write, whose
+ * advice (a jest CLI flag) is replaced by {@link FABR_REMEDY}. */
 const NOT_WRITTEN = "New snapshot was not written";
 
-/** The two ways to reach that failure are "there is no record yet" and "the
- * record exists in your tree but the target wasn't given it" —
- * indistinguishable from inside a hermetic run, so the remedy covers both. */
+/** The remedy for a missing snapshot: record one, or declare the existing one
+ * as an expectation of the target (the run cannot tell which applies). */
 const FABR_REMEDY =
   "No recorded snapshot for this test.\n\n" +
   "Run `fabr test -u <target>` to record one. If the snapshot file already exists in your source tree, " +
@@ -286,23 +242,20 @@ const STATUS: Record<string, TestStatus> = {
 
 /**
  * Convert one file's results to CTRF entries: one per test it ran, plus one
- * named for the file where the file itself failed — it never reported (a crash,
- * an OOM, a broken preload: the captured stderr is the trace, since nothing else
- * can say why), circus could not load it, or an error was raised outside any
- * test (an unhandled rejection, a failed `afterAll`), which jest reports beside
- * the tests that ran. Exported for its tests.
+ * named for the file where the file itself failed: it never reported (a crash,
+ * an OOM, a broken preload; its stderr is the trace), circus could not load it,
+ * or an error was raised outside any test (an unhandled rejection, a failed
+ * `afterAll`). A file that reported neither a test nor an error is one failed
+ * entry, "This test file registered no tests". Exported for its tests.
  */
 export function toTestResults(file: ICompletedFile): ITestResult[] {
-  /* Named as the TARGET names it — see reportPathOf. */
+  /* The file's source path (see reportPathOf). */
   const relative = reportPathOf(file.testFile);
   const results = file.result?.results ?? [];
   const execError = file.result === undefined ? (file.crash ?? "the test process failed") : file.result.execError;
   if (execError === undefined && results.length === 0) {
-    /* A file that registered nothing is a MISTAKE, not a pass. The way to get
-     * here is a test file that imports describe/it from `node:test` directly:
-     * those registrations go to node:test, which this flavour never runs, so
-     * the file would contribute nothing and the run would stay green — a silent
-     * hole exactly where a test suite must not have one. */
+    /* A failure: usually a file importing describe/it from `node:test`, whose
+     * tests register with node:test, which this runner does not run. */
     return [
       {
         name: relative,
@@ -318,11 +271,9 @@ export function toTestResults(file: ICompletedFile): ITestResult[] {
     ];
   }
   const tests = results.map((test: IChildTestResult) => {
-    /* Circus hands back jest's FULLY formatted failures — one per failure, and
-     * a test can carry several (its body AND a failing hook, each with the
-     * matcher diff, the code frame, the stack), so every one is kept, blank-line
-     * separated as jest prints them. The summary takes the first line and the
-     * rest becomes the trace, which the report renders indented beneath it. */
+    /* Every formatted failure of the test (its body and a failing hook, say),
+     * blank-line separated as jest prints them: the first line is the message,
+     * the rest the trace. */
     const [summary, ...detail] =
       test.failureMessages.length > 0 ? test.failureMessages.map(withFabrRemedy).join("\n\n").split("\n") : [];
     return {
@@ -337,8 +288,8 @@ export function toTestResults(file: ICompletedFile): ITestResult[] {
   if (execError === undefined) {
     return tests;
   }
-  /* The first line is the message; the rest becomes the trace, the captured
-   * stderr standing in where the error carries no detail of its own. */
+  /* The first line is the message and the rest the trace, else the captured
+   * stderr. */
   const [reason, ...rest] = execError.split("\n");
   const detail = rest.join("\n").trim() || file.stderr.trim();
   return [

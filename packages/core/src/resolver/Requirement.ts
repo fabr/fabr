@@ -18,12 +18,12 @@
  */
 
 /**
- * Reading a {@link Requirement}, ecosystem-generic: the name its package is
- * required as, its identity (the key a root set and a resolution memo are
- * built from), the constraint its stated version makes, and the spelling of
- * the override marker written on that version. Also the versions of packages
- * built in the project ({@link BUILDS_ALONE}) and the domain a resolution
- * holding them runs over ({@link allowingBuilds}).
+ * Ecosystem-generic readings of a {@link Requirement}: the name its package is
+ * required as, its identity (the key root sets and resolution memo keys are
+ * built from), the constraint its version makes, and the marker its override
+ * is written with. Also the versions of packages built in the project
+ * ({@link BUILDS_ALONE}) and the domain a resolution with them among its
+ * candidates runs over ({@link allowingBuilds}).
  */
 
 import { compareText } from "../support/Functional";
@@ -36,9 +36,9 @@ export function markerOf(override: Requirement["override"]): "" | "?" | "!" {
 
 /**
  * Get the name a requirement's package is **required as**: its rename where it
- * has one, else the package's own. A renamed package is a package of that
- * name — selected, installed and known by it; only the registry is asked for
- * it under the name it publishes (`Selected.publishedName`).
+ * has one, else the package's own. A renamed package is selected, installed
+ * and known by that name; only the registry is asked for it under the name it
+ * is published under (`Selected.publishedName`).
  */
 export function requiredAs(req: Requirement): string {
   return req.renameTo ?? req.name;
@@ -46,7 +46,8 @@ export function requiredAs(req: Requirement): string {
 
 /**
  * @return true if `name` is matched by one of `patterns` (see
- * {@link Requirement.excludes}), otherwise false.
+ * {@link Requirement.excludes}), where `*` matches any run of characters
+ * other than `/`, otherwise false.
  */
 export function excludedBy(patterns: readonly string[] | undefined, name: string): boolean {
   return (patterns ?? []).some(pattern => {
@@ -64,21 +65,17 @@ export function variantName(name: string, variant: string): string {
 }
 
 /**
- * @return the name a requirement's edge has in its requirer: the name it is
- * required as, and for a variant, the variant's name under it.
+ * @return the name a requirement's requirer knows its dependency by: the name
+ * it is required as, or for a variant, the variant's name under it.
  */
 export function dependencyNameOf(req: Requirement): string {
   return req.variant === undefined ? requiredAs(req) : variantName(requiredAs(req), req.variant);
 }
 
 /**
- * Make a requirement's canonical identity, marker, rename and role included:
- * an override changes what resolution means (a force substitutes outright; an
- * alternate can supply a floorless-only package's version), a rename makes it
- * a requirement on a package of another name, and being provided demands
- * nothing where the tree already selects the package, a variant installs
- * other content, and exclusions change what it brings in — so all are part
- * of the identity, hence of any resolution memo key built from these.
+ * Make a requirement's canonical identity: its package and variant, version
+ * constraint, marker, rename, provided role and exclusions. Each changes what
+ * resolving it means, so resolution memo keys are built from these.
  */
 export function requirementKey(req: Requirement): string {
   const role = req.provided === undefined ? "" : req.provided === "optional" ? " (optionally provided)" : " (provided)";
@@ -89,11 +86,10 @@ export function requirementKey(req: Requirement): string {
 }
 
 /**
- * Deduplicate requirements and order them canonically by {@link
- * requirementKey} — the one root-set form everything downstream shares: a
- * resolution (and its memo key, and the root indices a resolution's
- * `reachableFrom` refers to) must be independent of the order references were
- * written in.
+ * Deduplicate requirements by {@link requirementKey} and sort them by it,
+ * returning the requirements with their keys. Pass every root set through
+ * this, so that a resolution, its memo key and the root indices of its
+ * `rootBindings` do not depend on the order references were written in.
  */
 export function canonicalRequirements(requirements: readonly Requirement[]): { roots: Requirement[]; keys: string[] } {
   const byKey = new Map<string, Requirement>(requirements.map(req => [requirementKey(req), req]));
@@ -135,10 +131,10 @@ export function versionConstraintText(versionConstraint: string | undefined, nam
 }
 
 /**
- * Make the keys a violation recorded against one of these root requirements has
- * (a {@link Violation} states the package and constraint alone). A forced
- * root is never violated and an alternate is never demanded, so neither has
- * one.
+ * Make the keys ({@link violationKey}) a violation recorded against one of
+ * `roots` would have: the name it is required as and its constraint, all a
+ * {@link Violation} states. Forced and alternate roots are left out, since
+ * neither is recorded as violated.
  */
 export function violationKeys(roots: readonly Requirement[]): Set<string> {
   return new Set(roots.filter(req => req.override === undefined).map(req => `${requiredAs(req)}\n${req.versionConstraint}`));
@@ -169,10 +165,10 @@ export function isBuildVersion(value: unknown): value is string {
 const BUILD_PREFIX = "<build";
 
 /**
- * The versions of packages built in the project: each build is its key
- * ({@link buildKey}), which is also the only constraint it satisfies. Nothing
- * is published in it, so a constraint that is no build's key is floorless and
- * answered by none. Builds order by their keys.
+ * The version domain of packages built in the project: each build's version is
+ * its key ({@link buildKey}), which is also the only constraint it satisfies.
+ * Nothing is published in it, so a constraint that is no build's key has no
+ * lower bound and no build satisfies it. Builds order by their keys.
  */
 export const BUILDS_ALONE: VersionDomain<string, string> = {
   parseConstraint: text => {
@@ -181,9 +177,9 @@ export const BUILDS_ALONE: VersionDomain<string, string> = {
     }
     return text;
   },
-  /* No build's key: floorless and answered by none, as every constraint that
-   * is no key is. Reached only by a requirement stating no version, which no
-   * requirement among builds alone makes (each names a build). */
+  /* No build's key, so satisfied by no build. Read only for a requirement
+   * stating no version, which no requirement among builds alone is (each
+   * names a build). */
   unconstrained: "",
   compare: compareText,
   minimumOf: constraint => {
@@ -207,10 +203,10 @@ export const BUILDS_ALONE: VersionDomain<string, string> = {
 /**
  * Make the domain of `domain`'s versions and {@link BUILDS_ALONE}'s together,
  * for a resolution with packages built in the project among its candidates.
- * Each answers only its own constraints, so a build answers no version range
- * (a build the collection requests itself answers the other requirements on
- * its name by being forced), and a build ranks above every version of
- * `domain`. A version of `domain` must not be a string.
+ * A build satisfies only the constraint naming it and a constraint of
+ * `domain` with no lower bound (`*`); a version of `domain` satisfies only
+ * `domain`'s constraints. A build ranks above every version of `domain`. A
+ * version of `domain` must not be a string.
  */
 export function allowingBuilds<V, C>(domain: VersionDomain<V, C>): VersionDomain<V | string, C | string> {
   const isStable = domain.isStable?.bind(domain);
@@ -228,8 +224,8 @@ export function allowingBuilds<V, C>(domain: VersionDomain<V, C>): VersionDomain
         : isBuildVersion(b)
           ? -1
           : domain.compare(a as V, b as V),
-    /* A build answers the constraint naming it, and a floorless one (`*`),
-     * which any selection answers; a range is a demand on the registry. */
+    /* A build satisfies the constraint naming it and one with no lower bound
+     * (`*`); a range is met by `domain`'s versions only. */
     satisfies: (version, constraint) =>
       isBuildVersion(constraint)
         ? isBuildVersion(version) && BUILDS_ALONE.satisfies(version, constraint)

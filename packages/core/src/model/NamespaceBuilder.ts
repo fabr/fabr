@@ -56,9 +56,8 @@ const DIAG_INCOMPATIBLE_PROPERTY = Diagnostic.Error<{ name: string; key: string;
 );
 const DIAG_UNKNOWN_TARGET_TYPE = Diagnostic.Error<{ type: string; loc: ISourcePosition }>("Unknown target type '{type}'");
 
-/** What to blame in a conflict against an existing entry: for a property, its
- * first declaration — they all share the name, and `addResolvableDecl` keeps
- * their written keys distinct. */
+/** Get the declaration to report a conflict with `entry` against: a
+ *  property's first declaration, else the entry itself. */
 function blameFor(entry: NamespaceEntry): INamedDecl | NamespaceNode {
   if (isNamespaceNode(entry)) {
     return entry;
@@ -66,6 +65,11 @@ function blameFor(entry: NamespaceEntry): INamedDecl | NamespaceNode {
   return entry.kind === DeclKind.Property ? (entry.decls[0] ?? entry.defaults[0]) : entry;
 }
 
+/**
+ * The builder of a model's namespace: it adds each file's declarations to the
+ * public namespace or to the file's private one, reporting conflicts to the
+ * log as it goes, and validates what it holds when asked.
+ */
 export class NamespaceBuilder {
   private log: Log;
   private root: NamespaceNode;
@@ -79,6 +83,8 @@ export class NamespaceBuilder {
     this.root = newNamespaceNode();
   }
 
+  /** Add an ordinary declaration under its name in `root`; returns false,
+   *  having reported the conflict, where it could not be added. */
   public addDecl(decl: ITargetDefDecl | ITargetDecl | IPropertyDecl, root: NamespaceNode = this.root): boolean {
     const nameParts = declName(decl).split(NAME_COMPONENT_SEPARATOR);
     const simpleName = nameParts.pop()!;
@@ -101,6 +107,8 @@ export class NamespaceBuilder {
     return false;
   }
 
+  /** Add a `default` declaration under its name in `root`; returns false,
+   *  having reported the conflict, where it could not be added. */
   public addDefaultDecl(decl: IResolvableDecl, root: NamespaceNode = this.root): boolean {
     const nameParts = declName(decl).split(NAME_COMPONENT_SEPARATOR);
     const simpleName = nameParts.pop()!;
@@ -109,27 +117,27 @@ export class NamespaceBuilder {
   }
 
   /**
-   * Add one target or property declaration under `simpleName`, into the given
-   * `tier` (ordinary, or `default`).
+   * Add one target or property declaration under `simpleName` in `node`, in
+   * `tier` (ordinary or `default`). Returns false, having reported the
+   * conflict, where it is not added.
    *
-   * A property joins the entry already under that name, in its own tier — so
-   * what must be unique is the key **as written**, guard included, which is what
-   * `name.toString()` renders, and an ordinary declaration never collides with a
-   * `default` one of the same key (they are different tiers). Across kinds the
-   * tiers work the same way: an ordinary
-   * declaration supersedes a `default` one of the other kind (a property keeps
-   * a default target as its `fallbackTarget`), while two
-   * `default`s of one name conflict whatever their kinds. Anything else — a
-   * repeated key within a tier, an unguarded redeclaration, two targets, a
-   * clash with a namespace — is the duplicate it looks like.
+   * - A property joins the entry of its name, in its tier; the key as written,
+   *   guard included (`name.toString()`), must be unique within the tier. A
+   *   property of a namespace's name is that namespace's fallback.
+   * - An ordinary declaration supersedes a `default` one of the other kind: an
+   *   ordinary target takes the name from a property with only `default`
+   *   declarations, which are still validated; an ordinary property keeps a
+   *   `default` target as its `fallbackTarget`.
+   * - Two `default`s of one name conflict, whatever their kinds.
+   * - Anything else (two targets, a target and an ordinary property, a target
+   *   and a namespace) conflicts.
    */
   private addResolvableDecl(node: NamespaceNode, simpleName: string, decl: IResolvableDecl, tier: "decls" | "defaults"): boolean {
     const existing = node.content.get(simpleName);
     if (decl.kind === DeclKind.Target) {
       if (tier === "defaults") {
-        /* Kept apart (see NamespaceNode.defaultTargets). A name that is a
-         * namespace is not a target's to take, and a second `default` of the
-         * name — target or property — is a duplicate, not an override. */
+        /* Kept apart (see NamespaceNode.defaultTargets). It conflicts with a
+         * namespace of its name and with another `default` of it. */
         const clash =
           node.defaultTargets.get(simpleName) ??
           (existing !== undefined &&
@@ -156,7 +164,7 @@ export class NamespaceBuilder {
         return false;
       }
       if (existing !== undefined && !isNamespaceNode(existing) && existing.kind === DeclKind.Property) {
-        /* Superseded, but declared: validated like any declaration. */
+        /* Superseded, but still validated. */
         this.superseded.push(...existing.defaults);
       }
       node.content.set(simpleName, decl);
@@ -213,7 +221,7 @@ export class NamespaceBuilder {
     return node;
   }
 
-  /** @return the namespace of everything added, which reads what is added later too. */
+  /** @return the public namespace, which reads what is added later too. */
   public toNamespace(): Namespace {
     return Namespace.of(this.root);
   }
@@ -256,13 +264,16 @@ export class NamespaceBuilder {
     return scope === undefined ? undefined : Namespace.of(scope);
   }
 
+  /** Get the node for the namespace path `parts` under `root`, making the
+   *  namespaces it lacks; undefined, having reported the conflict, where a
+   *  part names something other than a namespace. */
   private getNodeFor(root: NamespaceNode, parts: string[], decl: INamedDecl): NamespaceNode | undefined {
     let node = root;
     for (const part of parts) {
       const existing = this.namespaceOf(node, part, decl);
       if (existing) {
         if (!isNamespaceNode(existing)) {
-          /* Is not a namespace but we needed one */
+          /* Not a namespace, where one is needed. */
           this.conflictError(blameFor(existing), decl);
           return undefined;
         } else {
@@ -277,6 +288,7 @@ export class NamespaceBuilder {
     return node;
   }
 
+  /** Look up the targetdef `name` with what it inherits. */
   private resolveTargetDef(name: string): ITargetDefDecl | undefined {
     return Namespace.of(this.root).getTargetDef(name);
   }
@@ -320,8 +332,9 @@ export class NamespaceBuilder {
     }
   }
 
-  /** Validate every declaration added so far against the targetdefs added so
-   * far: each `parsed` says came from a file that parsed. */
+  /** Validate every declaration added so far that `parsed` says came from a
+   *  file that parsed, against the targetdefs added so far, reporting to the
+   *  log. */
   public validate(parsed: (decl: { source: IBuildFile }) => boolean): void {
     this.validateInheritance(parsed);
     const validate = (decl: ITargetDefDecl | ITargetDecl | IPropertyDecl): void => {
@@ -334,6 +347,8 @@ export class NamespaceBuilder {
     this.superseded.forEach(validate);
   }
 
+  /** Call `validate` on every declaration under `node`, recursively, and
+   *  validate each targetdef's schema. */
   private resolve(
     node: NamespaceNode,
     validate: (decl: ITargetDefDecl | ITargetDecl | IPropertyDecl) => void,
@@ -351,19 +366,16 @@ export class NamespaceBuilder {
     if (node.fallback !== undefined) {
       [...node.fallback.decls, ...node.fallback.defaults].forEach(validate);
     }
-    /* Default targets live apart from `content` but are validated the same way:
-     * declared ⇒ validated, whether or not anything ends up taking it. (A
-     * default *property* is inside its entry, so the walk above covers it.) */
+    /* Default targets are kept apart from `content`; validate each, whether
+     * or not it answers for its name. */
     node.defaultTargets.forEach(validate);
-    /* Targetdefs likewise live apart: each schema's own `default` values are
-     * validated against the declared type here, so a malformed default fails
-     * the load rather than the first resolution that takes it. */
+    /* Validate each targetdef's own `default` values against their declared
+     * types. */
     node.targetDefs.forEach(def => parsed(def) && validateTargetDef(def, this.log));
   }
 
-  /** Validate one collated declaration: a target against its targetdef schema, a
-   * schema-less property (global or default) structurally. (A targetdef's own
-   * schema is validated in {@link resolve}, off `targetDefs`.) */
+  /** Validate one declaration: a target against its targetdef, a global
+   *  property on its own. */
   private validateDecl(decl: ITargetDefDecl | ITargetDecl | IPropertyDecl): void {
     if (decl.kind === DeclKind.Target) {
       const targetDef = this.resolveTargetDef(decl.type);
@@ -377,6 +389,8 @@ export class NamespaceBuilder {
     }
   }
 
+  /** Report `newDecl` as conflicting with `decl`: a duplicate or conflicting
+   *  declaration of one name, or a conflict with an implicit namespace. */
   private conflictError(decl: INamedDecl | NamespaceNode, newDecl: INamedDecl): void {
     const oldDecl = "kind" in decl ? decl : decl.self!;
     const name = declName(newDecl);
@@ -396,6 +410,7 @@ export class NamespaceBuilder {
     }
   }
 
+  /** Report `decl`'s type as unknown. */
   private unknownTargetDefError(decl: ITargetDecl): void {
     this.log.log(DIAG_UNKNOWN_TARGET_TYPE, { type: decl.type, loc: { ...decl.source, offset: decl.typeOffset } });
   }

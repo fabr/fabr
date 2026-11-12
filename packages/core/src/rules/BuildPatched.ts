@@ -18,19 +18,18 @@
  */
 
 /**
- * The generic `patched` target: `srcs` with `patches` applied, then the `run`
- * command run over the files, which it changes in place. What it yields has
- * the shape of what it was given — one package in is a package out, named as
- * this target is, at the same version and with the same requirements, its
- * files changed; anything else is the changed union of the files. Named after
- * the package it patches, it is that package to everything built with it.
+ * The `patched[build]` rule: `srcs` with `patches` applied, then the `run`
+ * command run over the files, which it changes in place. Where `srcs` is one
+ * package, the result is a package named as this target is, at that package's
+ * version and with its requirements, its files changed; otherwise it is the
+ * changed union of the files. Named after the package it patches, it takes
+ * that package's place for everything built with it.
  *
- * `srcs` is the target's `extends` requirement: the package it is made from,
- * resolved on its own as material, so a package named in a repository carries
- * what it declares for the consumer's collection point to resolve. A patch
- * therefore changes a package's files and nothing else, its manifest included
- * as a file. `fixes` names the advisories the change fixes in that package,
- * declared for an audit to read.
+ * `srcs` is the target's `extends` requirement: resolved on its own, as the
+ * package it is made from, its requirements left for whatever requires the
+ * target to resolve. A patch changes files only; a change to the manifest
+ * changes the file, not the requirements. `fixes` names the advisories the
+ * change fixes in that package, which `fabr audit` reads.
  */
 
 import * as fs from "fs";
@@ -68,8 +67,8 @@ import { defineRule, RuleResult } from "./Types";
 
 /** The `patched` rule. */
 export default defineRule({
-  /* One package patched is a package again, at the version and with the
-   * requirements of the one it was made from. */
+  /* `srcs` as `extends`: one package patched is a package again, at the
+   * version and with the requirements of the one it was made from. */
   requirements(context) {
     return context.getProperty("fixes").then(fixes => ({
       build: { extends: context.getPackageProperty("srcs"), patches: context.getFileProperty("patches") },
@@ -87,6 +86,11 @@ const STRIP = 1;
 /** The directory of the step's work directory the files are changed in. */
 const FILES_DIR = "files";
 
+/**
+ * Make the patch action of the `patched` target `context` evaluates, reshaped
+ * to a package where `srcs` is one package. Throws where there are neither
+ * `patches` nor `run`, or where `fixes` is given and `srcs` is not one package.
+ */
 function patched(context: TargetContext, { srcs, patches }: { srcs: FileSet[]; patches: FileSet[] }): Computable<RuleResult> {
   const files = FileSet.unionAll(...srcs);
   return Computable.forAll(
@@ -122,8 +126,7 @@ function patched(context: TargetContext, { srcs, patches }: { srcs: FileSet[]; p
         }
       );
       /* One package in is a package out: named as this target is, at that
-       * package's version and with its requirements, which are not the change's
-       * to make. The reference to the target that asks for it is given it there. */
+       * package's version and with its requirements. */
       const [only] = srcs;
       return srcs.length === 1 && only instanceof PackageFileSet
         ? action.withReshape(
@@ -144,6 +147,7 @@ function patched(context: TargetContext, { srcs, patches }: { srcs: FileSet[]; p
   );
 }
 
+/** Stage the files, apply the patches, run the command, and collect the files as changed with the command's captures. */
 function runPatch(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
   const links = linksOf(action);
   const dir = path.join(ctx.workDir, FILES_DIR);

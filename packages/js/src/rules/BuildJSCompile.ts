@@ -18,23 +18,26 @@
  */
 
 /**
- * The js_compile rule: the one TS-compile path, a self-contained target
- * `{ srcs = FILES; deps = PACKAGES }`. `deps` are the dependencies the sources are
- * compiled against (package deps + any @types), handed over as content by the
- * rule that creates the sub-target. It resolves its *own* toolchain as a
- * **runnable** (`BUILD_OPERATION=run`), so it needn't know how to launch it:
- * fabr's TypeScript **driver** (TSC_DRIVER, internal), which carries the pinned
- * compiler as one of its own dependencies — the compiler's own CLI cannot be
- * told where packages are, and this one can. It resolves its own `JS_TARGET`,
- * derives the tsconfig, and lays out the working directory. The tool is
- * **mounted apart** from the workspace (under `TOOL_DIR`): its dependencies
- * must not collide with — nor be visible to — the sources'. It runs with cwd at
- * the workspace root and yields the `js:exec` action (output: `build/**`). With
- * no sources it compiles nothing and yields no files.
+ * The js_compile rule: compile the TypeScript and JavaScript sources in `srcs`
+ * to JavaScript and declarations under `build/`, against the packages and
+ * flags in `deps`. `resources` are files the sources import that are not
+ * compiled (stylesheets), named to the compiler so those imports resolve;
+ * `declarations` are declarations another compile emitted for some of the
+ * sources, which are compiled against and neither checked nor emitted.
+ * `package_name` is the name the sources import themselves by,
+ * `module_extension` the extension the emitted JavaScript takes, and
+ * `rewrite_imports` renames import specifiers. The output follows the
+ * `JS_TARGET` global (which must name one module format) and `BUILD_TYPE`; the
+ * source-mode flags in `deps` relax strictness or state the sources' ES level.
  *
- * The dependencies reach the compiler as a generated PnP manifest over the
- * cache's tree pool, so a compile stages only its own sources however large its
- * closure — there is no tree to build.
+ * The compiler is the `TSC_DRIVER` program, fabr's TypeScript driver, which
+ * carries the compiler as one of its own dependencies. It is staged under its
+ * own directory so its packages are not visible to the sources, and runs with
+ * its cwd at the workspace root. The packages in `deps` reach it as a PnP
+ * table over the cache's tree pool, so only the sources are staged. The rule
+ * yields a `js:exec` action collecting `build/**`, which compiles only what
+ * changed since the last successful build of the same target key. With no
+ * sources it yields no files.
  */
 
 import {
@@ -96,7 +99,7 @@ export default defineRule({
   evaluateMaterialized(context, inputs) {
     return compileTypescript(context, inputs);
   },
-  /* Describe the compilation unit an editor's TypeScript server is shown in place of the compile. */
+  /* Describe the compile as the compilation unit an editor's TypeScript server is given. */
   describe(context, requirements) {
     return requirements
       .describeAll()
@@ -105,68 +108,51 @@ export default defineRule({
   },
 });
 
-/** Where the toolchain is mounted in the working dir — disjoint from src/ and build/. */
+/** Where the driver's install is staged in the working directory, apart from src/ and build/. */
 const TOOL_DIR = ".tools/tsc";
 
 /**
- * The compile's own layout: sources under `src/`, emitted output under `build/`.
- *
- * Exported: a consumer that mounts the compiled tree alongside its sources
- * (the test install) reproduces the same pairing, so a map entry the driver
- * left as tsc wrote it (relative from outDir back to rootDir, for a file no
- * source-paths row names) still resolves.
+ * The compile's layout: sources under `src/`, emitted output under `build/`.
+ * A consumer that stages the compiled tree beside its sources (the test
+ * install) uses the same pair, so a source map entry tsc wrote relative from
+ * `build/` back to `src/` still resolves.
  */
 export const COMPILE_SRC_DIR = "src";
 export const COMPILE_OUT_DIR = "build";
 
-/** The automatic-runtime jsx mode: the dev variant (source-position
- * instrumentation, `<src>/jsx-dev-runtime`) for a debug build, else production. */
+/** @return the automatic-runtime jsx mode: `react-jsxdev` (source positions,
+ * `<source>/jsx-dev-runtime`) for a debug build, else `react-jsx`. */
 export function jsxModeFor(buildType: string | undefined): "react-jsx" | "react-jsxdev" {
   return buildType === "debug" ? "react-jsxdev" : "react-jsx";
 }
 
 /**
- * The `paths` entries that let a package's sources import their own package
- * name (`@scope/pkg/sub` -> `src/sub`). Node resolves an installed package's
- * own name through node_modules; these sources are not installed anywhere yet,
- * so the mapping stands in for that until they are.
- *
- * Deliberately NOT `baseUrl`: that would additionally make every bare specifier
- * try the source root, quietly admitting root-relative imports (`from
- * "lib/thing"`) that resolve nowhere at runtime. `paths` alone is resolved
- * against the tsconfig's own directory (TS 4.1+), which is the scope wanted.
- * Targets are relative (TS requires that without a baseUrl) and extensionless,
- * so tsc applies its usual extension search.
- *
- * Not what resolves a self-reference — the manifest's self row does that,
- * before any `paths` lookup happens. It serves the DECLARATION EMITTER, which
- * consults `paths` when synthesizing a specifier for a type it cannot otherwise
- * name.
+ * @return the tsconfig `paths` mapping the package's own name to its sources
+ * (`@scope/pkg/sub` -> `./src/sub`), relative and extensionless so tsc applies
+ * its usual extension search. A self-import is resolved by the PnP table's self
+ * row; these serve the declaration emitter, which reads `paths` when it writes
+ * a specifier for a type it cannot otherwise name. Do not add `baseUrl`: every
+ * bare specifier would then also resolve against the source root, admitting
+ * imports (`from "lib/thing"`) that resolve nowhere at runtime.
  */
 function selfReferencePaths(packageName: string): Record<string, string[]> {
   return { [packageName]: ["./src/index"], [`${packageName}/*`]: ["./src/*"] };
 }
 
-/** @return the `lib` list: the source level, plus the DOM where the sources use it,
- * its iterables included (TypeScript 6 merged `dom.iterable` into `dom`, leaving
- * the name an empty stub; before 6 it is a lib of its own). */
+/** @return the `lib` list: the source level, plus `dom` and `dom.iterable` where
+ * the sources use the DOM (TypeScript 6 merged `dom.iterable` into `dom`, leaving
+ * the name an empty lib; before 6 it is a lib of its own). */
 function libFor(level: string, hasDom: boolean): string[] {
   return hasDom ? [level, "dom", "dom.iterable"] : [level];
 }
 
 /**
- * `useDefineForClassFields` defaults to true from target ES2022, which changes
- * what is EMITTED: an uninitialized field declaration becomes a real class
- * field, defined (as `undefined`) after `super()` returns. Sources written
- * before that semantic — anything populating fields from a base constructor,
- * `Object.assign(this, data)` being the common shape — have those values
- * silently overwritten, and TypeScript only warns (TS2612) for the subset that
- * shadow a base property.
- *
- * So when the source predates define semantics and the emit target does not,
- * keep assignment semantics: the source's own declared level says which
- * semantic it was written for. Nothing is forced when no level is declared —
- * the target's tsc default stands.
+ * @return `{ useDefineForClassFields: false }` where the sources declare an ES
+ * level below es2022 and the emit target is es2022 or later, otherwise no
+ * option (also where the sources declare no level). From es2022 tsc emits an
+ * uninitialized field declaration as a class field set to `undefined` after
+ * `super()` returns, which overwrites a value a base constructor assigned
+ * (`Object.assign(this, data)`).
  */
 function defineClassFieldsOverride(sourceVersion: string | undefined, target: string): Record<string, unknown> {
   if (sourceVersion === undefined) {
@@ -177,24 +163,20 @@ function defineClassFieldsOverride(sourceVersion: string | undefined, target: st
 }
 
 /**
- * Below es2015 there is no native iteration protocol, and tsc's default emit
- * for `for..of` and spread is an index loop: correct for an array, wrong for
- * every other iterable — a Map/Set/generator is rejected outright (TS2802) and
- * a string is silently mis-iterated over UTF-16 code units. `downlevelIteration`
- * emits the real protocol instead, and has no effect from es2015 up, so it is
- * derived from the emit target.
+ * @return true if the emit target is below es2015, where `for..of` and spread
+ * need `downlevelIteration`, otherwise false. Without it tsc emits an index
+ * loop, which refuses a Map, Set or generator (TS2802) and iterates a string
+ * by UTF-16 code unit.
  */
 function needsDownlevelIteration(target: string): boolean {
   return esLevelOrder(target) < 2015;
 }
 
 /**
- * The `@types` packages a compile includes without being asked — tsc's own
- * automatic inclusion, which scans `node_modules/@types` and so finds nothing
- * when there is no tree to scan. Stating the list explicitly reproduces the
- * rule exactly (the DIRECT dependencies that are types packages; a transitive
- * one was never automatic either) and is what a compiler reading the manifest
- * needs, since it has no directory to enumerate.
+ * @return the names, sorted and without the `@types/` prefix, of the `@types`
+ * packages among the direct `deps`: what tsc's automatic inclusion would find
+ * by scanning `node_modules/@types`, which a compile through a PnP table has
+ * no directory for.
  */
 function automaticTypes(deps: FileSet[]): string[] {
   return deps
@@ -204,14 +186,15 @@ function automaticTypes(deps: FileSet[]): string[] {
 }
 
 /**
- * The tsconfig the compile runs under. `include` matches `.ts`/`.tsx` and
- * `.js`/`.jsx` (all routed to this compile), so none is silently ignored. `.js`
- * comes in via `allowJs`: tsc downlevels it to `target` (a package's own JS
- * honors JS_TARGET) and includes it in the program (a `.ts` can import a local
- * `.js`), while `checkJs` stays off — JS is transpiled, not typechecked, so
- * untyped JS can't fail the build. When a `jsx` runtime is given, the automatic
- * transform is emitted — a JSX source's code imports `<jsxImportSource>/jsx-runtime`,
- * so the target must carry that runtime as a dep (auto-detected, see resolveJsxImportSource).
+ * Make the tsconfig a compile runs under: strict, emitting JavaScript and
+ * declarations from `src/` to `build/` at `jsTarget`'s ES level and module
+ * format, and including every TypeScript and JavaScript extension. JavaScript
+ * sources are compiled to `target` and importable from TypeScript, but not
+ * type-checked. `lib` is `sourceVersion` where given, else the emit level.
+ * Where `jsx` is given the automatic JSX transform is emitted, importing
+ * `<importSource>/jsx-runtime`, which the target must carry as a dep (see
+ * resolveJsxImportSource). `modeOverlay` is applied last, over every other
+ * option. `moduleResolution` is left for the driver to choose.
  */
 export function makeTsConfig(
   jsTarget: JSTarget,
@@ -220,34 +203,30 @@ export function makeTsConfig(
   buildType?: string,
   packageName?: string,
   sourceVersion?: string,
-  /** Whether the sources declared the `dom` flag — see usesDom. */
+  /** True if the sources declare the `dom` flag (see usesDom). */
   hasDom = false,
-  /** The automatic `@types` inclusions, where the compiler cannot discover them
-   * for itself (see {@link automaticTypes}); omitted, tsc's own scan
-   * applies. */
+  /** The `@types` packages to include (see {@link automaticTypes}); omitted,
+   * tsc's own scan applies. */
   types?: string[],
-  /** Whether to emit JS source maps: by default, where the build type is one
-   * that carries them. */
+  /** True to emit JS source maps; by default, where the build type carries them. */
   sourceMaps = emitsSourceMap(buildType)
 ): Record<string, unknown> {
   return {
     compilerOptions: {
       declaration: true,
-      /* No declarationMap: a `.d.ts.map` can only resolve against a shipped
-       * `src/` tree (unlike a JS map, `inlineSources` does NOT embed sources
-       * into it), which we don't ship — so it would only ever dangle. */
+      /* No declarationMap: a `.d.ts.map` resolves only against a shipped `src/`
+       * tree (`inlineSources` does not embed sources in it), and none is
+       * shipped. */
       outDir: COMPILE_OUT_DIR,
       rootDir: COMPILE_SRC_DIR,
-      /* Strict by default (fabr's own code and modern TS); a target relaxes it
-       * per its `deps` source-mode flags, folded in via `modeOverlay` below. */
+      /* Strict, unless the source-mode flags in `deps` relax it through
+       * `modeOverlay`. */
       strict: true,
-      /* Ecosystem-baseline options every real tsconfig sets: skip typechecking
-       * dependency .d.ts (a broken third-party type can't fail the build, and
-       * it's faster), allow `import data from "./x.json"`, and interop default
-       * imports of CJS modules (`import express from "express"` — matching Node's
-       * actual ESM/CJS runtime semantics and what esbuild always does). A target
-       * written for classic interop (`import * as x` of a callable module) opts
-       * out via the `ts/no_es_module_interop` source-mode flag. */
+      /* Dependencies' `.d.ts` files are not checked, `import data from
+       * "./x.json"` is allowed, and a default import of a CommonJS module
+       * (`import express from "express"`) works as it does in Node. The
+       * `ts/no_es_module_interop` source-mode flag turns interop off, for
+       * sources written with `import * as x` of a callable module. */
       skipLibCheck: true,
       resolveJsonModule: true,
       esModuleInterop: true,
@@ -256,48 +235,43 @@ export function makeTsConfig(
       allowJs: true,
       checkJs: false,
       /* Let a non-JS import be typed by a `{base}.d.{ext}.ts` declaration beside
-       * it (TS 5.0+) — how `import styles from "./x.module.scss"` gets the real
-       * class-name shape instead of the `any` an ambient `declare module "*.scss"`
-       * would give it. What the emit names in its place is stated separately (the
-       * `rewrite_imports` property); this option only makes the import resolve. */
+       * it (TS 5.0+), so `import styles from "./x.module.scss"` gets its class
+       * names' type. This only makes the import resolve; what the output names
+       * in its place is the `rewrite_imports` property's. */
       allowArbitraryExtensions: true,
       target: jsTarget.version,
       ...(needsDownlevelIteration(jsTarget.version) ? { downlevelIteration: true } : {}),
-      /* `lib` is what the SOURCE may use, `target` what is EMITTED: different
-       * questions, so a target that declares its source level gets that,
-       * falling back to the emit level when it declares none. */
+      /* `lib` is what the sources may use, `target` what is emitted: the
+       * sources' declared level, else the emit level. */
       lib: libFor(sourceVersion ?? jsTarget.version, hasDom),
       ...defineClassFieldsOverride(sourceVersion, jsTarget.version),
       ...(types ? { types } : {}),
-      /* One compile emits one module system. A `dual` package is built as two
-       * compiles, each pinned to a format by its caller, so `dual` reaching here
-       * means a caller forgot to pin one — see the assert in compileTypescript. */
+      /* One compile emits one module format: a `dual` package is two compiles,
+       * each pinned to a format by its caller (checked in compileSetup). */
       module: jsTarget.module === "esm" ? "esnext" : "commonjs",
-      /* `moduleResolution` is deliberately NOT stated. The right value depends
-       * on the compiler version — before TypeScript 6 a CommonJS emit cannot be
-       * paired with `bundler` (TS5095); from 6, `node10` is a deprecation error
-       * (TS5107) — and the version is known only to the driver, which loads the
-       * compiler. So the driver supplies it (see `resolutionFor`), and a project
-       * that states one of its own keeps it. */
+      /* Leave `moduleResolution` out: the right value depends on the compiler
+       * version, which only the driver knows (`resolutionFor`; before
+       * TypeScript 6 a CommonJS emit cannot use `bundler`, TS5095, and from 6
+       * `node10` is an error, TS5107). The driver keeps a value the tsconfig
+       * states. */
       ...(packageName ? { paths: selfReferencePaths(packageName) } : {}),
-      /* JS source maps where asked for — a debuggable build, or one measured for
-       * coverage, which maps what ran back to its source. `inlineSources`
-       * embeds the original TS into each `.js.map`, so the maps are self-contained
-       * and debuggable at runtime without shipping a `src/` tree. tsc always writes
-       * the `//# sourceMappingURL=` link comment when `sourceMap` is on. */
+      /* JS source maps where asked for (a debuggable build, or one measured for
+       * coverage), with the TypeScript sources embedded (`inlineSources`) so a
+       * map needs no shipped `src/` tree. tsc writes the `//# sourceMappingURL=`
+       * comment whenever `sourceMap` is on. */
       ...(sourceMaps ? { sourceMap: true, inlineSources: true } : {}),
       ...(jsx ? { jsx: jsx.mode, jsxImportSource: jsx.importSource } : {}),
-      /* tsc ignores FORCE_COLOR (it only checks its own TTY), so formatted
-       * diagnostics must be forced here; unwanted codes are stripped at
-       * render time. Note this also overrides the child's NO_COLOR. */
+      /* Force formatted diagnostics: tsc ignores FORCE_COLOR and checks only its
+       * own TTY. This also overrides NO_COLOR in the driver's environment;
+       * unwanted codes are stripped when the output is rendered. */
       pretty: true,
       /* Source-mode relaxations last, so they override the defaults above
        * (e.g. `strict: false`, `noImplicitAny: false`). */
       ...modeOverlay,
     },
     exclude: ["node_modules"],
-    /* Every extension classifyJsSource routes here — an omission would leave the
-     * source silently uncompiled rather than failing. */
+    /* Every extension classifyJsSource routes here: one left out would leave
+     * its sources uncompiled with no error. */
     include: [
       "./src/**/*.ts",
       "./src/**/*.mts",
@@ -311,16 +285,17 @@ export function makeTsConfig(
   };
 }
 
-/** Where the {@link importRewrites} document is staged, and what the flag names. */
+/** Where the {@link importRewrites} document is staged. */
 const REWRITES_FILE = "rewrite-imports.json";
 
-/** What names it on the driver's command line; must match the driver's own
+/** The driver flag naming that document; must match the driver's own
  * REWRITES_FLAG (tsc-driver.ts). */
 const REWRITES_FLAG = "--rewrite-imports";
 
-/** Where the `resources` property's names are staged, and what the flag names.
- * The NAMES, not the files: the compiler only asks whether one is there, so
- * staging the bytes would key the compile on every stylesheet's content. */
+/** Where the names of the `resources` files are staged, and the driver flag
+ * naming them. Stage the names, not the files: the compiler only asks whether a
+ * file is there, and the bytes would key the compile on every stylesheet's
+ * content. */
 const RESOURCES_FILE = "resources.json";
 const RESOURCES_FLAG = "--resources";
 
@@ -328,15 +303,13 @@ const RESOURCES_FLAG = "--resources";
 const DECLARATIONS_DIR = ".fabr-declarations";
 
 /**
- * The compile's `rewrite_imports` rules, compiled for a driver holding no fabr
- * vocabulary: an ordered list of pattern/replacement pairs, first match wins.
- * Undefined when the property names none, so the flag and the file are both
- * absent.
- *
- * Rules rather than the pairs resolving them against the sources: this document
- * rides the action's `config`, so per-source pairs would put one entry
- * per stylesheet into the key material and any new stylesheet would rebuild the
- * whole compile.
+ * Convert the `rewrite_imports` rules into the driver's document: an ordered
+ * list of pattern/replacement pairs, the first match winning. Returns undefined
+ * where there are none, and then neither the file nor the flag is passed.
+ * Throws a FabrError for a rule using an alias. Keep the rules as patterns,
+ * not resolved against the sources: the document is in the action's key, and
+ * one entry per stylesheet would make each new stylesheet rebuild the whole
+ * compile.
  */
 export function importRewrites(rewrites: Name[]): Array<{ pattern: string; replacement: string }> | undefined {
   const rules = rewrites.flatMap(name => {
@@ -346,11 +319,9 @@ export function importRewrites(rewrites: Name[]): Array<{ pattern: string; repla
     }
     const { pattern, replacement, excludes } = name.toRenameRule(renameTo);
     if (excludes !== undefined) {
-      /* An aliased selector's base is matched by the pattern but must not be
-       * renamed, and the driver has no way to be told so. Refused rather than
-       * carried without it, which would rename a file that should have been left
-       * alone — and reachable only from a hand-written value, since the rules
-       * fabr generates carry no alias. */
+      /* An aliased selector's base matches the pattern but must not be
+       * renamed, which the driver cannot be told. Only a hand-written value
+       * can carry an alias. */
       throw new FabrError(`js_compile: a 'rewrite_imports' rule may not use an alias ('${name.toString()}')`);
     }
     return [{ pattern, replacement }];
@@ -378,7 +349,7 @@ export interface ICompileSetup {
   packageName?: string;
   moduleExtension?: string;
   rewrites?: Array<{ pattern: string; replacement: string }>;
-  /** The files the target ships that no step compiles. */
+  /** The files the sources import that are not compiled. */
   resources: FileSet;
   /** The declarations another compile emitted for some of `srcs`. */
   declarations: FileSet;
@@ -389,7 +360,9 @@ function resourceNamesOf(resources: FileSet): string[] {
   return [...resources].map(([name]) => name).sort();
 }
 
-/** Work out the compile `inputs` make in `context`'s configuration, or undefined if they make none. */
+/** Work out the compile `inputs` make in `context`'s configuration, or undefined
+ * where they hold no sources. Throws where `JS_TARGET` is `dual` or two packages
+ * in `deps` share a name. */
 function compileSetup(
   context: TargetContext,
   { srcs: srcSets, deps, resources, declarations }: CompileInputs
@@ -408,41 +381,38 @@ function compileSetup(
     ],
     (target, buildType, packageNameProp, moduleExtensionProp, rewriteRules, coverage) => {
       assertOnePackagePerName(deps);
-      /* Source-mode flags (strictness relaxations, the ES level) ride among
-       * `deps` like any other dep; a flag materializes to nothing. */
+      /* The source-mode flags (strictness relaxations, the ES level) are among
+       * `deps`. */
       const depFlags = deps.filter((dep): dep is Flag => dep instanceof Flag);
       const jsTarget = parseJSTarget(target);
       if (jsTarget.module === "dual") {
-        /* Not a user error: every caller pins a format (js_package builds one
-         * compile per format, the test and bundle paths force theirs), so this can
-         * only be a rule that forgot to. Silently picking one would emit half a
-         * package under the wrong name. */
+        /* Every caller pins a format (js_package makes one compile per format,
+         * the test and bundle paths force theirs), so this is a rule's bug, not
+         * a user's error. */
         throw new FabrError("js_compile cannot emit a dual target: its caller must pin a module format");
       }
       const packageName = packageNameProp?.toString();
       const moduleExtension = moduleExtensionProp?.toString();
       const srcs = FileSet.unionAll(...srcSets);
-      /* The flags recognized into a compilerOptions overlay (the flag→option
-       * table lives with the tsconfig it feeds). Empty (the default) leaves the
-       * strict tsconfig unchanged. */
+      /* The compilerOptions the flags set; empty leaves the strict tsconfig as
+       * it is. */
       const modeOverlay = resolveSourceMode(depFlags);
       /* The ES level these sources are written against (an `es<level>` flag
        * among deps), which drives `lib` and the class-field semantics. */
       const sourceVersion = resolveSourceVersion(depFlags);
-      /* A .tsx/.jsx source needs a jsxImportSource (auto-detected from the
-       * direct deps); a JSX-free compile omits it. */
+      /* A .tsx/.jsx source needs a jsxImportSource, found among the direct
+       * deps; a compile without JSX has none. */
       const hasJsx = [...srcs].some(([name]) => {
         const lower = name.toLowerCase();
         return lower.endsWith(".tsx") || lower.endsWith(".jsx");
       });
-      /* Which file an import really names, where a rule redirects it — used by
-       * the driver both to resolve the specifier and to name it in the emitted
-       * code. The driver is handed the rules as patterns and applies them
-       * itself; a compile declaring none carries no file, no flag, and no
-       * change of key. */
+      /* The rules redirecting an import to the file it names, which the
+       * driver applies both to resolve the specifier and to write it in the
+       * output. A compile with none passes no file and no flag, so its key is
+       * unchanged. */
       const rewrites = importRewrites(rewriteRules);
-      /* The files the target ships that no step compiles: an import of one
-       * resolves as an empty module. */
+      /* The files the sources import that are not compiled; the driver is
+       * told their names so those imports resolve. */
       const resourceSet = FileSet.unionAll(...(resources ?? []));
       const setup = (jsxImportSource: string): ICompileSetup => {
         const jsx = jsxImportSource ? { mode: jsxModeFor(buildType), importSource: jsxImportSource } : undefined;
@@ -487,32 +457,29 @@ function compileAction(
   const resourceNames = resourceNamesOf(resources);
   const workspace = {
     [COMPILE_SRC_DIR]: srcs,
-    /* Content, not configuration: which of them changed is what tells the
-     * driver which of those sources' interfaces moved. */
+    /* Staged as content: which of them changed tells the driver which
+     * sources' interfaces changed. */
     ...(declarations.isEmpty() ? {} : { [DECLARATIONS_DIR]: declarations }),
-    /* The driver's own install, compiler included: `typescript` is one of
-     * its declared dependencies, so it sits in the install's node_modules
-     * and the driver requires it from there. One mount, one pin
-     * (${TYPESCRIPT}) governing what compiles the sources. */
+    /* The driver's own install, with the compiler (`${TYPESCRIPT}`) among
+     * its dependencies in its node_modules. */
     [TOOL_DIR]: driver,
   };
   /* The generated configuration, staged beside the sources but keyed as
-   * config: each distinct tsconfig (a format-pinned test compile, a
-   * release build) is its own target key with its own incremental base,
-   * and a config change never appears in the diff as a file no edge can
-   * bound. */
+   * configuration: each distinct tsconfig (a test compile pinned to a format,
+   * a release build) has a target key and incremental base of its own, and a
+   * change to it never appears among the changed files, where the driver
+   * could trace it to no source and would compile everything. */
   const config = FileSet.layout({
     "tsconfig.json": new MemoryFile(Buffer.from(JSON.stringify(tsconfig))),
     ...(rewrites ? { [REWRITES_FILE]: MemoryFile.from(JSON.stringify(rewrites)) } : {}),
     ...(resourceNames.length === 0 ? {} : { [RESOURCES_FILE]: MemoryFile.from(JSON.stringify(resourceNames)) }),
   });
-  /* The tool launches from its own mount (its deps resolve there); cwd is
-   * the workspace root, so `include` and dependency resolution alike
-   * resolve against the staged workspace.
+  /* The driver launches from its own directory (its packages resolve
+   * there), with its cwd at the workspace root, which `include` and package
+   * lookups resolve against.
    *
-   * The dependencies go over UNASSEMBLED, with the layout named rather
-   * than built: composition is a table the step generates on a miss, so
-   * evaluation stages nothing and a hit costs nothing. */
+   * The packages are passed as they are, with the layout named: on a miss
+   * the step writes their PnP table, so evaluation stages nothing. */
   /* The ES-module format of a dual package emits `.mjs` so its tree can ship
    * beside the CommonJS format's. The driver does the renaming, because the
    * specifiers it writes have to name the renamed siblings. */
@@ -545,19 +512,18 @@ function compileAction(
       layout: PNP,
       label: "compile",
       config,
-      /* The four locations the argv above names, so the step stages and
-       * collects the files the driver was told to use. The driver reports
-       * which declaration files it read, and the entry is keyed on that
-       * selection rather than on the whole deps input. Handed the last green
-       * build of this target key — its state, its output, and what changed
-       * since — it checks and emits only what the change reaches. */
+      /* The four locations the argv above names, which the step stages and
+       * collects. The driver reports which declaration files it read, and the
+       * entry is keyed on those instead of on the whole of `deps`. Given the
+       * last successful build of this target key (its state, its output and
+       * what changed since), it checks and emits only what the change
+       * reaches. */
       depsReport: DEPS_REPORT_FILE,
       stateDir: STATE_DIR,
       changes: CHANGES_FILE,
       sourcePaths: SOURCE_PATHS_FILE,
-      /* The sources' own package identity is a row like any other, which
-       * is how a package's references to itself resolve without the
-       * compiler ever searching for them. */
+      /* The sources' own package name is a row of the PnP table, so a
+       * self-import resolves as an import of any package does. */
       self: packageName ? { name: packageName, location: `./${COMPILE_SRC_DIR}/` } : undefined,
     }
   );

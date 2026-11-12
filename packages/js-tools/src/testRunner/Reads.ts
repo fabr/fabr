@@ -18,15 +18,14 @@
  */
 
 /**
- * What a test process read: the runner contract's `--reads` document
- * ({@link IReadsDocument}), from which the test step decides which test files a
- * change can reach. Every module the process loaded, the `package.json` nearest
- * each, every file it read or probed through `fs` (a probe that found a
- * directory named with a trailing `/`), and every package it looked up by a
- * bare specifier, found or not. A directory listing is not recorded. Where the
- * process did what no record can follow — started another process or a worker
- * thread, whose reads are its own — there is no document, and the step runs
- * the file again on every change.
+ * Recording what a test process reads, for the runner contract's `--reads`
+ * document ({@link IReadsDocument}): every module the process loaded, the
+ * `package.json` nearest each, every file it read or probed through `fs` (a
+ * probe that found a directory named with a trailing `/`), and every package
+ * it looked up by a bare specifier, found or not. A directory listing is not
+ * recorded. Where the process started another process or a worker thread,
+ * whose reads are not recorded, no document is written, and the test step
+ * runs the file again on every change.
  */
 
 import * as fs from "node:fs";
@@ -75,11 +74,14 @@ const SPAWNERS = ["spawn", "spawnSync", "exec", "execSync", "execFile", "execFil
 
 /** What a process has read so far. */
 interface IRecording {
+  /** The absolute path of each module loaded. */
   loaded: Set<string>;
+  /** The absolute path of each file read or probed through `fs`. */
   read: Set<string>;
   /** Each lookup by the file that asked and the package name, to the absolute
    *  path that answered, or null where nothing did. */
   lookups: Map<string, string | null>;
+  /** True once the process has started another process or a worker thread. */
   untracked: boolean;
 }
 
@@ -109,8 +111,8 @@ export function recordReads(): () => IRecordedReads | undefined {
   wrapLookups(current.lookups);
   const cache = createRequire(__filename).cache;
   /* A module is loaded by its real path already. A file read through `fs` may
-   * be named through a link — a `node_modules` one — so its directory is
-   * resolved, once per directory. */
+   * be named through a link (a `node_modules` one), so resolve its directory,
+   * once per directory. */
   const realDirectories = new Map<string, string>();
   const realPathOf = (file: string): string => {
     const directory = path.dirname(file);
@@ -154,7 +156,7 @@ export function recordReads(): () => IRecordedReads | undefined {
   };
 }
 
-/** @return `file` with a trailing separator where it is a directory now, else as it is. */
+/** @return `file` with a trailing separator where it is a directory now, otherwise `file`. */
 function markDirectory(file: string): string {
   try {
     return statSync(file).isDirectory() ? file + path.sep : file;
@@ -163,7 +165,7 @@ function markDirectory(file: string): string {
   }
 }
 
-/** A specifier that is a URL (`data:`, `file:`, `node:`), which names no package. */
+/** Matches a specifier that is a URL (`data:`, `file:`, `node:`), which names no package. */
 const URL_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
 
 /** @return the package a bare specifier names, or undefined where it names none (a path, a URL, a built-in). */
@@ -179,7 +181,7 @@ function lookupName(specifier: unknown): string | undefined {
  * CommonJS loader resolves one (`Module._resolveFilename`) and as node's own
  * resolve hooks do for either module system: the file that asked and the
  * package name, to the file that answered, or null where the lookup failed. A
- * failed lookup of a subpath does not unsay an answer the package gave.
+ * failed lookup of a subpath does not replace an answer the package gave.
  */
 function wrapLookups(lookups: Map<string, string | null>): void {
   const note = (from: string | undefined, name: string | undefined, to: string | null): void => {
@@ -223,7 +225,8 @@ function wrapLookups(lookups: Map<string, string | null>): void {
   });
 }
 
-/** @return the path `target` names, where it names one. */
+/** @return the path `target` names (a string, a `file:` URL or a Buffer), or
+ * undefined where it names none. */
 function pathOf(target: unknown): string | undefined {
   return typeof target === "string"
     ? target
@@ -298,9 +301,9 @@ function wrapStarters(current: IRecording): void {
   } as typeof threads.Worker;
 }
 
-/** Record into `loaded` each module as it loads: a CommonJS one may leave the
- * module cache again (`jest.resetModules`) before the cache is read, and an ES
- * module is loaded through node's own loader, which no `fs` wrapper sees. */
+/** Record into `loaded` each module as it loads, CommonJS or ES. The module
+ * cache alone misses a CommonJS module that left it again (`jest.resetModules`),
+ * and the `fs` wrappers miss every ES module, which node's loader reads. */
 function wrapLoaders(loaded: Set<string>): void {
   const note = (target: unknown): void => {
     const file = pathOf(target);
@@ -326,11 +329,10 @@ function wrapLoaders(loaded: Set<string>): void {
 }
 
 /**
- * Record what this process reads into `directory`, as a file named for its
- * pid that is written when it exits: how a runner whose tests run in processes
- * it does not start itself learns what they read (see {@link readsRecordedIn}).
- * Loaded as a `--require` preload, so that it runs before anything the process
- * imports (see {@link recordReads}).
+ * Record what this process reads into `directory`, as a file named for its pid
+ * written when it exits or receives SIGTERM, for {@link readsRecordedIn} to
+ * collect. Call it from a `--require` preload, so that it runs before anything
+ * the process imports (see {@link recordReads}).
  */
 export function recordReadsInto(directory: string): void {
   const reads = recordReads();
@@ -345,7 +347,7 @@ export function recordReadsInto(directory: string): void {
 }
 
 /** @return what the processes recording into `directory` read, or undefined
- * where any of them did what no record can follow. */
+ * where any of them started another process or a worker thread. */
 export function readsRecordedIn(directory: string): IRecordedReads | undefined {
   const each = fs
     .readdirSync(directory)
@@ -356,7 +358,8 @@ export function readsRecordedIn(directory: string): IRecordedReads | undefined {
     : { files: each.flatMap(reads => reads?.files ?? []), lookups: each.flatMap(reads => reads?.lookups ?? []) };
 }
 
-/** Convert one process's recorded reads, or `null` for what no record can follow. */
+/** Convert one process's recorded reads: a reads document, or `null` where it
+ * started another process or a worker thread (converted to undefined). */
 function toRecordedReads(json: unknown): IRecordedReads | undefined {
   if (json === null) {
     return undefined;
@@ -365,16 +368,16 @@ function toRecordedReads(json: unknown): IRecordedReads | undefined {
   return { files: [...document.files], lookups: [...document.lookups] };
 }
 
-/** @return `reads` with the PnP table the processes resolved through, which
- * each loaded before anything could record it. */
+/** @return `reads` with the PnP table the processes resolved through added,
+ * since each loaded it before recording began. */
 export function withPnpTable(reads: IRecordedReads | undefined, table: string | undefined): IRecordedReads | undefined {
   return reads === undefined || table === undefined ? reads : { ...reads, files: [...reads.files, table] };
 }
 
 /**
  * Write `reads` as the `--reads` document at `file` ({@link IReadsDocument}):
- * sorted, deduplicated, each path relative to the working directory. Undefined
- * reads — something no record can follow — write no document.
+ * sorted, deduplicated, each path relative to the working directory. Writes
+ * nothing where `reads` is undefined.
  */
 export function writeReads(file: string, reads: IRecordedReads | undefined): void {
   if (reads === undefined) {

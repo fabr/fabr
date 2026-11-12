@@ -44,11 +44,13 @@ const PROJECT_FILE = "PROJECT.fabr";
 
 /** Where the extension keeps what every window's TypeScript server reads (`FABR_VSCODE_HOME` overriding). */
 const HOME = process.env.FABR_VSCODE_HOME ?? path.join(os.homedir(), ".fabr", "vscode");
+/** The registry of project documents every window's TypeScript server reads. */
 const REGISTRY = path.join(HOME, "registry.json");
 
 /** The command sharing a project's server at a socket, given the project's root URI and the socket's path. */
 const CONNECT_BUILD_SERVER_COMMAND = "_fabr.connectBuildServer";
 
+/** Each project's `fabr build-server` process. */
 const servers: ChildProcess[] = [];
 /** What each project's server shows in the editor, disposed of when it ends. */
 const served: vscode.Disposable[] = [];
@@ -56,11 +58,14 @@ const served: vscode.Disposable[] = [];
 const projects = new Map<string, IServedProject>();
 /** What refreshes the Testing view's targets. */
 let refreshTests = (): void => undefined;
+/** The project documents this window registered, unregistered when it ends. */
 const documents: string[] = [];
 /** Each project's server, by the project's root, once it is initialized: its client and its `build/initialize` result. */
 const initializedServers = new Map<string, Promise<{ client: JsonRpcClient; initialized: unknown }>>();
+/** Each relay sharing a project's server, closed when the extension ends. */
 const relays: Array<Promise<net.Server>> = [];
 
+/** Start serving the workspace's fabr projects, once the workspace is trusted. */
 export function activate(context: vscode.ExtensionContext): void {
   if (vscode.workspace.isTrusted) {
     start(context);
@@ -69,6 +74,7 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 }
 
+/** Stop every project's server and relay, and unregister this window's project documents. */
 export function deactivate(): void {
   for (const server of servers) {
     server.kill();
@@ -85,6 +91,7 @@ export function deactivate(): void {
   updateRegistry(REGISTRY, names => names.filter(name => !documents.includes(name)));
 }
 
+/** Register the extension's views and commands, and serve each workspace folder holding a fabr project. */
 function start(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("Fabr");
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
@@ -171,7 +178,17 @@ function typeScriptActive(): boolean {
   return vscode.extensions.getExtension("vscode.typescript-language-features")?.isActive === true;
 }
 
-/** Start the server of the project at `root`, and keep its document current. */
+/**
+ * Start the server of the project at `root`, and show what it serves: its
+ * build files through the language server it carries, the diagnostics it
+ * publishes in `problems`, its test targets in the Testing view, and its
+ * TypeScript units through the project document, composed again each time its
+ * targets change once a describing pass has finished.
+ *
+ * `status` shows the describing pass's progress, then the targets served and
+ * those that could not be described. A server that cannot start, or exits, is
+ * reported there and in `output`.
+ */
 function serveProject(
   root: string,
   output: vscode.OutputChannel,
@@ -213,16 +230,16 @@ function serveProject(
   documents.push(document);
   let installation = "";
   let projectRoot = root;
-  /* The document tsserver last read, and the paths it served: at first, what
-   * an earlier session left, listed at once so that a server starting now
-   * reads it rather than starting without it. */
+  /* The document tsserver last read, and the paths it serves: at first, what an
+   * earlier session left, which is listed in the registry at once for a
+   * TypeScript server starting now to read. */
   let written = readIfPresent(document);
   let shown = linksOf(written);
   if (written !== undefined) {
     const listed = registeredDocuments(REGISTRY).includes(document);
     updateRegistry(REGISTRY, names => (names.includes(document) ? names : [...names, document]));
     if (shown !== "") {
-      /* A TypeScript server started before the document was listed found none of its paths, and none of its watching. */
+      /* Restart a TypeScript server that started before the document was listed: it found none of its paths, and watches none. */
       void pointTsdk(output).then(changed =>
         !changed && !listed && typeScriptActive() ? vscode.commands.executeCommand("typescript.restartTsServer") : undefined
       );
@@ -232,13 +249,13 @@ function serveProject(
   initializedServers.set(root, new Promise(resolve => (ready = resolve)));
   /* What the status shows: the describing task's progress, the targets it failed to describe, and the targets composed. */
   let progress: { done: number; total: number } | undefined;
-  /* The describing task under way: only its progress and finish are the pass's. */
+  /* The id of the describing task under way; other tasks' progress and finish are ignored. */
   let describing: string | undefined;
   let failed: string[] = [];
   let shownTargets: number | undefined;
-  /* True if a refresh waits for the running describing task to finish: what
-   * the task changes is composed once, when it does, since each composition
-   * may reload or restart tsserver. */
+  /* True if a refresh waits for the describing task under way to finish.
+   * Compose what a task changes once, when it finishes: each composition may
+   * reload or restart tsserver. */
   let held = false;
   /* True once a describing pass has finished. */
   let described = false;
@@ -361,9 +378,10 @@ function serveProject(
         }
       });
   };
-  /* Until the server is initialized a change waits, and until its first
-   * describing pass ends a refresh does: one composed from a pass still
-   * running would replace a whole document with part of one. */
+  /* Until the server is initialized a change is ignored (initializing
+   * refreshes), and until its first describing pass ends a refresh is held: one
+   * composed from a pass still running would replace a whole document with
+   * part of one. */
   let started = false;
   client.onNotification("buildTarget/didChange", () => {
     if (!started) {
@@ -401,7 +419,7 @@ function serveProject(
     });
 }
 
-/** @return `params` as a `build/publishDiagnostics`'s, or undefined where they are not one: a diagnostic that is no diagnostic is left out. */
+/** @return `params` as a `build/publishDiagnostics`'s, or undefined where they are not one; an entry of its diagnostics that is not one is left out. */
 function toPublishDiagnostics(params: unknown): IPublishDiagnostics | undefined {
   if (!isRecord(params) || !isRecord(params.textDocument) || !isRecord(params.buildTarget)) {
     return undefined;
@@ -464,8 +482,9 @@ const COMMAND_NOT_FOUND = 127;
 
 /**
  * Report that the server's command, or one it runs (`node`), was not found on
- * the PATH VS Code was given — which, started outside a shell, is the
- * system's alone where VS Code could not read the login shell's in time.
+ * the PATH VS Code was given, in the output, the status and an error message
+ * offering the `fabr.command` setting. Started outside a shell, VS Code has
+ * only the system's PATH where it could not read the login shell's in time.
  */
 function notFound(what: string, output: vscode.OutputChannel, status: vscode.StatusBarItem): void {
   const message = `fabr: ${what}, on VS Code's PATH (${process.env.PATH ?? ""}). Start VS Code from a shell, or set fabr.command to fabr's bin/fabr.js, which runs on VS Code's own Node.js.`;
@@ -484,7 +503,8 @@ function notFound(what: string, output: vscode.OutputChannel, status: vscode.Sta
  * runs in: the `fabr.command` setting, else the fabr installed in the
  * project's `node_modules`, else `fabr` on the PATH. A fabr entry script (the
  * installed one, or a setting naming a lone `.js` file) runs on VS Code's own
- * Node.js, so that starting it needs nothing from the PATH.
+ * Node.js (`ELECTRON_RUN_AS_NODE`), needing nothing from the PATH. A part of
+ * the setting starting `./` is taken from the project's root.
  */
 function commandFor(root: string): { argv: string[]; env?: NodeJS.ProcessEnv } {
   const configured = (vscode.workspace.getConfiguration("fabr", vscode.Uri.file(root)).get<string[]>("command") ?? []).map(part =>
@@ -518,7 +538,7 @@ function readIfPresent(file: string): string | undefined {
   }
 }
 
-/** @return the paths `text`, a project's document, serves, or "" where it names none. */
+/** @return the paths `text`, a project's document, serves, one per line, or "" where it names none or is unreadable. */
 function linksOf(text: string | undefined): string {
   try {
     const document: unknown = JSON.parse(text ?? "{}");

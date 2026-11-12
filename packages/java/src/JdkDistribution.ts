@@ -66,7 +66,7 @@ const RELEASE_PATTERN = /^[0-9][0-9A-Za-z.+_-]*$/;
 
 /** How many releases are asked for per page (the API may list fewer). */
 const PAGE_SIZE = 50;
-/** How many pages of releases are read before the listing is taken for runaway. */
+/** How many pages of releases are read before the listing is refused as too long. */
 const MAX_PAGES = 100;
 
 /** The query naming the JDK builds this repository serves, beside the platform. */
@@ -139,6 +139,7 @@ export function makeJdkRunnable(release: FileSet): RunnableFileSet {
   return new RunnableFileSet(release, [], undefined, "", new FileSet(new Map([...files, ...commands])));
 }
 
+/** A `jdk_distribution` repository: the Temurin releases the Adoptium API at `url` publishes. */
 export class JdkDistribution implements Repository, RepositoryLookup {
   private readonly releases = new MemoryCache<string, string[]>();
 
@@ -276,6 +277,7 @@ export class JdkDistribution implements Repository, RepositoryLookup {
     });
   }
 
+  /** List the releases from page `page` on, after `listed`; throws past {@link MAX_PAGES}. */
   private releasePages(query: string, page: number, listed: string[]): Computable<string[]> {
     if (page >= MAX_PAGES) {
       throw new FabrError(`${this.url} lists more than ${MAX_PAGES * PAGE_SIZE} JDK releases`);
@@ -289,7 +291,7 @@ export class JdkDistribution implements Repository, RepositoryLookup {
       convert: text => parseJson(text, `JDK release list from ${this.url}`, toReleases),
       options: { immutable: false, forceRevalidate: true },
     }).then(releases => {
-      /* The listing ends where a page is missing or empty: the API caps a page below what is asked. */
+      /* End at a missing or empty page, not a short one: the API may list fewer than PAGE_SIZE on a page. */
       return releases === undefined || releases.length === 0 ? listed : this.releasePages(query, page + 1, [...listed, ...releases]);
     });
   }

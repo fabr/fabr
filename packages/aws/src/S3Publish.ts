@@ -98,8 +98,7 @@ export function s3CoordinateOf(ref: RepositoryPublishRef): S3PublishRef {
 /**
  * Package a member for S3: for a prefix, its content's files as they are, each
  * named by its key within the prefix; for an object, its content's one file,
- * named by the key's last part. A symbolic link is refused: an object holds
- * bytes.
+ * named by the key's last part. A symbolic link is refused.
  */
 export function packageS3Member({ destination, content }: PublishMember): PublishableFileSet {
   const coordinate = s3CoordinateOf(destination);

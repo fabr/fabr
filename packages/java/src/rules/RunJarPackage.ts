@@ -51,6 +51,7 @@ export default defineRule({
   },
 });
 
+/** Make the runnable starting `mainClass`, else the `Main-Class` the built jar's manifest names; throws where neither names one. */
 function runnableJar(
   context: TargetContext,
   pkg: FileSet[],

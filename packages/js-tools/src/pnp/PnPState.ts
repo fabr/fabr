@@ -27,8 +27,9 @@
  */
 export type PnpDependencyTarget = string | [string, string] | null;
 
-/** One row's payload. `linkType` is advisory for consumers that copy rather
- * than link; a package's tree is a real directory, hence `HARD`. */
+/** One package's row. `linkType` is `SOFT` for the build's own sources (the
+ * top-level row and the self row naming them as a package) and `HARD` for a
+ * materialized package. */
 export interface IPnpPackageInfo {
   packageLocation: string;
   packageDependencies: Array<[string, PnpDependencyTarget]>;
@@ -38,10 +39,10 @@ export interface IPnpPackageInfo {
 }
 
 /**
- * The serialized manifest (`.pnp.data.json`), the subset of Yarn's state that
- * resolution actually consumes. `packageRegistryData` is a nested association
- * list — name → reference → info — with the top-level package keyed by a
- * `null` name and reference, exactly as Yarn writes it.
+ * The serialized manifest (`.pnp.data.json`): the subset of Yarn's state that
+ * resolution reads. `packageRegistryData` is a nested association list, name →
+ * reference → row, with the top-level package under a `null` name and
+ * reference, as Yarn writes it.
  */
 export interface IPnpSerializedState {
   __info: string[];

@@ -19,106 +19,111 @@
 
 import { MultiError, toError, CycleError, Label } from "./Errors";
 
+/** The state of a node in the reactive graph. */
 export enum ComputableState {
   /**
-   * Out of the graph: unregistered from dependencies, value is indeterminate.
+   * Out of the graph: registered with none of its inputs and holding no
+   * subscription. Whatever value it last held is not current.
    */
   Detached = "detached",
   /**
-   * No value has yet been determined at all
+   * In the graph and awaiting a value: its first, or its next after it
+   * attached again or ran again.
    */
   Unresolved = "unresolved",
   /**
-   * An ancestor has been updated; the node held a valid value and may or may
-   * not eventually need recomputation.
+   * Held a value, and something it depends on has since been marked
+   * maybe-invalid: it may or may not have to compute again.
    */
   MaybeValid = "maybevalid",
   /**
-   * An ancestor has been updated; the node held an error and may or may not
-   * eventually need recomputation.
+   * Held an error, and something it depends on has since been marked
+   * maybe-invalid: it may or may not have to compute again.
    */
   MaybeError = "maybeerror",
   /**
-   * The node definitely requires recalculation.
+   * Must produce a new value: an input settled to a changed value and the
+   * node has not run since, or, for a raw source, a new value is about to be
+   * settled.
    */
   Invalid = "invalid",
-  /**
-   * The node has a valid value and does not need updating.
-   */
+  /** Holds a current value. */
   Valid = "valid",
-  /**
-   * The node has an error value
-   */
+  /** Holds a current error. */
   Error = "error",
 }
 
 type CatchHandler<U> = (err: Error) => U | ComputableSource<U>;
 
-/**
- * The "depend on me" half of the reactive graph: a value other nodes can depend
- * on, that notifies its dependants when it changes, and that attaches/detaches
- * from the graph with demand. A source is either a *derived* {@link Computable}
- * or an externally-settled leaf (e.g. a filesystem watch) — the latter subclasses
- * this and settles itself via {@link settle}/{@link invalidate}, overriding
- * {@link attach}/{@link detach} to acquire/release its external subscription.
- *
- * A dependant reads across the edge through the triple `isSettled` / `state` /
- * `value`; the structural wiring is internal — a dependant registers via
- * {@link attachTo} / {@link detachFrom}, which drive the protected {@link addDependant}
- * / {@link removeDependant}. Recomputation from inputs is the derived half, in
- * {@link Computable}.
- *
- * **Attachment.** A raw source is born {@link ComputableState.Detached} and attaches on
- * its first dependant, and so is the one derived node made to wait for demand,
- * {@link Computable.detached}; every other node enters the graph at birth — a derived node
- * attaches eagerly on creation (so fire-and-forget tails run), a `from` cell
- * attaches in its factory (its executor runs eagerly there — it is producer-driven,
- * never demand-deferred), and `resolve`/`reject` are born already settled. On losing its
- * last dependant a node detaches — unregisters from its dependencies, cascading up,
- * releasing an orphaned subgraph's filesystem watches with no disposal. Reattaching
- * recomputes (a detached node missed any invalidations; sources re-read external state).
- * A node born with no dependants, never given one, never drops.
- *
- * Two invariants. **Detachable ⟺ reconstructable:** only a node that can re-establish
- * its value on reattach detaches — a derived node with an `fn`, or a re-reading source;
- * a constant (`resolve`/`reject`/`from`) never detaches, serving its value at zero
- * dependants. **A source settles only while attached** — enforced: {@link settle} and
- * {@link revalidate} are no-ops on a detached node, so the async tail of a superseded
- * evaluation landing after its detach is simply discarded (a reattach re-derives), and
- * `Detached` never coexists with a live value. A source subclass therefore needs no
- * settle-time guard of its own — but work that *mutates its own state* before settling
- * must still discard superseded completions itself (see TreeQuery's generation check).
- *
- * Persistence: a derived node is recomputed when an input changes, and so on
- * throughout the (attached) graph; this applies to errors too. Multiple failed
- * dependencies aggregate into a single MultiError rather than failing fast.
- */
-/** The notification cascades in flight (nested {@link ComputableSource.notifyDependants}
- * calls), and the cycle closers asked to decide during one. A closer decides once no
- * notification is pending: until then a node it would judge unable to move may merely
- * not have been notified yet of an input that settled. */
+/** The depth of nested {@link ComputableSource.notifyDependants} calls in
+ * progress, and the cycle closers (see {@link Computable.recheckCycle}) that
+ * asked to decide during one. Each deferred closer decides when the outermost
+ * call returns: until then, a node that looks unable to move may not yet have
+ * been told of an input that settled. */
 let cascadeDepth = 0;
 const deferredClosers = new Set<ComputableSource<unknown>>();
 
+/**
+ * A node of the reactive graph that other nodes can depend on: it holds a
+ * value or an error, tells its dependants when that changes, and stays in the
+ * graph only while something depends on it. A source is either a derived
+ * {@link Computable} or a raw source that settles itself from outside (a
+ * filesystem query). A raw source subclasses this, calls {@link invalidate}
+ * and {@link settle} as what it reads changes, and overrides {@link attach}
+ * and {@link detach} to take and drop its subscription.
+ *
+ * Read a node through `state`, `value` and `isSettled()`; derive from it with
+ * `then`, `catch` and `finally`, or consume its result once with `once`.
+ *
+ * Attachment:
+ * - A raw source, and a node made by {@link Computable.detached}, is born
+ *   {@link ComputableState.Detached} and attaches when it gains its first
+ *   dependant. Every other node is in the graph from birth: a derived node
+ *   attaches as it is made (so a tail nothing depends on still runs), a
+ *   `from` cell attaches and runs its executor in its factory, and
+ *   `resolve`/`reject` are born settled.
+ * - A node that loses its last dependant detaches: it unregisters from its
+ *   inputs, and each input left with no dependant detaches in turn, so an
+ *   unused subgraph drops its filesystem subscriptions. A node that never had
+ *   a dependant stays attached.
+ * - A node that regains a dependant attaches again and derives its state
+ *   afresh: a derived node computes again where its inputs are all settled,
+ *   and otherwise waits Unresolved; a raw source reads again.
+ * - Only a node that can make its value again detaches: a derived node with
+ *   an `fn`, or a raw source. A node without one (a constant, a `from` cell, a
+ *   final node, see {@link isFinal}) keeps its value with no dependants.
+ * - {@link settle} and {@link revalidate} do nothing while Detached, so a
+ *   superseded evaluation's late result is dropped. A subclass whose async
+ *   work changes its own state before settling must still discard superseded
+ *   completions itself (as TreeQuery's `attachGeneration` does): after a
+ *   reattach the node is attached again, and its settle lands.
+ *
+ * Changes: a derived node computes again when an input settles to a changed
+ * value, and so on through the attached graph, errors included. A node whose
+ * inputs failed gets their errors combined in one MultiError.
+ */
 export abstract class ComputableSource<T> {
-  /** The settled result: T when Valid, Error when Error (undefined while unresolved) */
+  /** The value when Valid, the error when Error; otherwise the last one held,
+   * or undefined. */
   protected currentValue: T | Error | undefined;
-  /** Doubles as the attached/detached bit; see the class doc's Attachment note. */
+  /** The node's state, Detached while it is out of the graph. */
   protected currentState: ComputableState = ComputableState.Detached;
-  /** Nodes depending on this one — typed at the base contract the cascade uses (its
-   * cascade methods), not the concrete `Computable` they always are in practice (via then/forAll). */
+  /** The nodes that depend on this one. */
   private readonly dependants: ComputableSource<any>[] = [];
 
   /** What this node stands for, to a reader of a cycle it is found in. */
   public label?: Label;
 
-  /** Whether a dependant has read this node's error since it settled, so the
-   * error was observed even where nothing depends on this node now (a final
-   * dependant lets go of its inputs). */
+  /** Set when a dependant has read this node's error since it settled, so the
+   * error is not reported as unhandled once a final dependant has let go of
+   * this node. */
   private errorObserved = false;
 
   /**
-   * Global event listener for otherwise unhandled rejections.
+   * Called with an error nothing will read: one a node settled with and no
+   * dependant reads, one that reached a {@link once} tail with no `onError`,
+   * or one a {@link ComputableHandle}'s `onSettled` threw. Unset, nothing is
+   * reported.
    */
   public static onUnhandledError: ((err: Error) => void) | undefined;
 
@@ -130,6 +135,7 @@ export abstract class ComputableSource<T> {
     return this.currentValue;
   }
 
+  /** @return true if the node is Valid or Error, otherwise false. */
   public isSettled(): boolean {
     return this.currentState === ComputableState.Valid || this.currentState === ComputableState.Error;
   }
@@ -149,16 +155,18 @@ export abstract class ComputableSource<T> {
   }
 
   /**
-   * Derive a node from this one. Unlike a Promise, the callback runs
-   * **synchronously** when the receiver is already settled (this is a reactive
-   * cell, not a microtask queue — a derived node eager-attaches and, with a
-   * settled input, computes in-line). Do not rely on a `then` callback deferring
-   * to a later tick; if you need that, defer explicitly.
+   * Derive a node computing `fn` over this node's value, or `onError` over its
+   * error (without `onError`, the error passes on). Where the callback returns
+   * a source, the derived node takes that source's outcome. Unlike a
+   * Promise's, the callback runs synchronously where this node is already
+   * settled: do not rely on it running on a later tick.
    */
   public then<U>(fn: (value: T) => U | ComputableSource<U>, onError?: CatchHandler<U>): Computable<U> {
     return Computable.deriving([this], fn, onError, true);
   }
 
+  /** Derive a node passing this node's value through, or computing `onError`
+   * over its error. */
   public catch<U>(onError: CatchHandler<U>): Computable<T | U> {
     return this.then<T | U>(value => value, onError);
   }
@@ -185,10 +193,12 @@ export abstract class ComputableSource<T> {
   }
 
   /**
-   * Consume this node's result **exactly once**, without holding the receiver
-   * in the graph (typically for fire-and-forget situations where you don't want
-   * the chain to hang around (note if the receiver has no other dependents,
-   * it will be detached)
+   * Call `fn` with this node's value, or `onError` with its error, exactly
+   * once, without keeping this node in the graph: the tail made for the call
+   * stops depending on this node as it consumes the result, so where it was
+   * the last dependant this node detaches. Without `onError` the error is
+   * reported through {@link onUnhandledError}. Use it where the result is
+   * applied outside the graph and a second call would be wrong.
    */
   public once(fn: (value: T) => void, onError?: (err: Error) => void): void {
     let consumed = false;
@@ -205,13 +215,15 @@ export abstract class ComputableSource<T> {
       err => consume(() => (onError ? onError(err) : reportUnobserved(err)))
     );
     release = () => this.removeDependant(tail);
+    /* An already-settled node ran the tail inside `then`, before `release`
+     * was set: withdraw it now. */
     if (consumed) {
       release();
     }
   }
 
-  /** Register `dep` as depending on this source; reattaches this source if it had
-   * detached. Protected — reached only via a dependant's {@link attachTo}. */
+  /** Register `dep` as a dependant, attaching this node where it was
+   * detached. Reached through the dependant's {@link attachTo}. */
   protected addDependant(dep: ComputableSource<any>): void {
     this.dependants.push(dep);
     if (this.currentState === ComputableState.Detached) {
@@ -219,17 +231,17 @@ export abstract class ComputableSource<T> {
     }
   }
 
-  /** Detach a dependant. When the last one leaves, this source detaches too
-   * (releasing its dependencies / external subscription), cascading upward. */
+  /** Remove a dependant. Where it was the last, this node detaches, and each
+   * of its inputs left with no dependant in turn. */
   protected removeDependant(dep: ComputableSource<any>): void {
     if (this.dropDependant(dep)) {
       ComputableSource.release([this]);
     }
   }
 
-  /** Remove `dep` from this source's dependants, detaching nothing. Returns
-   * whether that left this source attached with no dependants: a node to
-   * detach. */
+  /** Remove `dep` from the dependants, detaching nothing. @return true if
+   * that left this node attached with no dependants, to be detached,
+   * otherwise false. */
   private dropDependant(dep: ComputableSource<unknown>): boolean {
     const index = this.dependants.indexOf(dep);
     if (index >= 0) {
@@ -254,10 +266,10 @@ export abstract class ComputableSource<T> {
   }
 
   /**
-   * Register with dependencies / acquire external state, entering the graph from
-   * {@link ComputableState.Detached} as Unresolved (pending). {@link Computable}
-   * overrides to re-register with its inputs and recompute; a source subscribes and
-   * settles from its current value. A no-op if already attached (not Detached).
+   * Enter the graph from {@link ComputableState.Detached} as Unresolved; a
+   * no-op where already attached. {@link Computable} overrides it to register
+   * with its inputs and compute; a raw source overrides it to subscribe and
+   * read what it reports.
    */
   protected attach(): void {
     if (this.currentState === ComputableState.Detached) {
@@ -265,17 +277,16 @@ export abstract class ComputableSource<T> {
     }
   }
 
-  /** Unregister from dependencies / release external state, returning to
-   * Detached. Detaches nothing further: returns the dependencies left with no
-   * dependants, which {@link release} detaches in turn. */
+  /** Leave the graph: unregister from the inputs, or drop the subscription,
+   * and become Detached. Detaches nothing further: @return the inputs left
+   * with no dependants, which {@link release} detaches in turn. */
   protected detach(): ComputableSource<unknown>[] {
     this.currentState = ComputableState.Detached;
     return [];
   }
 
-  /** Register as a dependant of each of `dependencies`. The cross-instance
-   * `addDependant` call lives here in the declaring class, so that method stays
-   * protected (a subclass can't reach it through a base-typed dependency). */
+  /** Register as a dependant of each of `dependencies`: the way a subclass
+   * reaches their protected {@link addDependant}. */
   protected attachTo(dependencies: ComputableSource<unknown>[]): void {
     for (const dep of dependencies) {
       dep.addDependant(this);
@@ -289,20 +300,19 @@ export abstract class ComputableSource<T> {
   }
 
   /** Deregister as a dependant of each of `dependencies`, detaching nothing:
-   * returns those left with no dependants. */
+   * @return those left with no dependants. */
   protected dropFrom(dependencies: ComputableSource<unknown>[]): ComputableSource<unknown>[] {
     return dependencies.filter(dep => dep.dropDependant(this));
   }
 
   /**
-   * Mark the computable as invalid without immediately triggering re-execution;
-   * (This is primarily exported for use in batch invalidation/revalidation
-   * scenarios, e.g. watch-mode re-settlement.)
+   * Mark this node Invalid and its dependants maybe-invalid, computing
+   * nothing: the new value comes with a later {@link settle}. A raw source
+   * calls it to begin a batched change (see WatchController's
+   * `PreparedUpdate`). Does nothing while Detached, nor while Unresolved
+   * unless {@link recomputesWhileUnresolved}.
    */
   public invalidate(): void {
-    /* Nothing to invalidate while out of the graph (Detached — unobservable, and
-     * it re-derives on reattach anyway), nor before a first value unless that
-     * value is computed from inputs (see {@link recomputesWhileUnresolved}). */
     if (
       this.currentState !== ComputableState.Detached &&
       (this.currentState !== ComputableState.Unresolved || this.recomputesWhileUnresolved())
@@ -319,13 +329,13 @@ export abstract class ComputableSource<T> {
     return false;
   }
 
+  /**
+   * Settle with `value`, becoming final where it can
+   * ({@link becomeFinalIfDone}), and tell the dependants: where `value`
+   * differs (by identity) from the value held, each is first invalidated;
+   * then each is asked to recompute. Does nothing while Detached.
+   */
   protected settle(state: ComputableState.Valid | ComputableState.Error, value: T | Error): void {
-    /* Inert while Detached (the enforced invariant — see the class doc): a
-     * detached node is out of the graph and holds no value, which is what makes
-     * detach reversible. The async tail of a superseded evaluation (an orphaned
-     * TreeQuery's enumeration, a watch batch's prepared update) routinely
-     * completes after the detach; dropping it here discards the stale result —
-     * a reattach re-derives from current state. */
     if (this.currentState === ComputableState.Detached) {
       return;
     }
@@ -350,13 +360,11 @@ export abstract class ComputableSource<T> {
   protected becomeFinalIfDone(): void {}
 
   /**
-   * Restore the previous settled state after a dependency re-settled without
-   * changing its value, and cascade onwards: nothing needs recomputation, but
-   * the whole maybe-invalidated subgraph must return to its settled state.
+   * Return from a maybe state to the settled state held before, and tell the
+   * dependants: what it depends on settled again with no value changed. Does
+   * nothing while Detached.
    */
   protected revalidate(): void {
-    /* Inert while Detached, like settle: revalidation restores a *settled*
-     * state and a detached node has none. */
     if (this.currentState === ComputableState.Detached) {
       return;
     }
@@ -365,9 +373,11 @@ export abstract class ComputableSource<T> {
   }
 
   /**
-   * Mark this node maybe-invalid, and everything that depends on it, from a
-   * work list rather than the stack, so a long chain is marked without
-   * running out of it.
+   * Mark this node maybe-invalid, and everything that depends on it in turn
+   * (a maybe-invalid wave): each settled node becomes MaybeValid or
+   * MaybeError and keeps its outcome until what it depends on settles again.
+   * Then call {@link afterMaybeInvalidWave} on each node marked. Works from a
+   * list rather than the stack, so a long chain does not overflow it.
    */
   protected markMaybeInvalid(): void {
     const pending: ComputableSource<unknown>[] = [this];
@@ -385,8 +395,8 @@ export abstract class ComputableSource<T> {
   protected afterMaybeInvalidWave(): void {}
 
   /**
-   * Mark this node alone maybe-invalid: a settled value becomes a maybe.
-   * Returns the nodes to mark after it.
+   * Mark this node alone maybe-invalid, where it is settled. @return the
+   * nodes to mark next: its dependants, or none where it was not settled.
    */
   protected markSelfMaybeInvalid(): ComputableSource<unknown>[] {
     if (!this.isSettled()) {
@@ -396,8 +406,9 @@ export abstract class ComputableSource<T> {
     return this.dependants.slice();
   }
 
-  /** Notify the dependants — those in `dependants`, a snapshot taken for the
-   *  caller, else a snapshot taken now — that this node has settled or revalidated. */
+  /** Ask each of `dependants` (a snapshot of them; by default taken now) to
+   *  recompute, this node having settled or revalidated. When the outermost
+   *  such call returns, run the cycle decisions deferred during it. */
   private notifyDependants(
     dependants: ReadonlyArray<ComputableSource<unknown>> = this.dependants.length === 0 ? NO_DEPENDANTS : this.dependants.slice()
   ): void {
@@ -416,59 +427,48 @@ export abstract class ComputableSource<T> {
     }
   }
 
-  /** Iterate dependants over a snapshot — the cascade may detach one mid-iteration
-   * (a re-run superseding an old subgraph), which mutates this list. */
+  /** Call `fn` on a snapshot of the dependants: the cascade may detach one
+   * meanwhile, changing the list. */
   private eachDependant(fn: (dep: ComputableSource<any>) => void): void {
     this.dependants.slice().forEach(fn);
   }
 
   /**
-   * Recompute this node in response to a dependency settling, if it can. A pure
-   * source (settled from outside) never recomputes; {@link Computable} overrides
-   * this to run (or revalidate) from its inputs.
+   * Respond to an input settling or revalidating. A raw source does nothing;
+   * {@link Computable} overrides it to run, or revalidate, from its inputs.
    */
   protected maybeRecompute(): void {}
 
   /**
    * Decide, as a node that closed a cycle, whether to settle its error again. A
-   * pure source closes no cycle; {@link Computable} overrides this.
+   * raw source closes no cycle; {@link Computable} overrides this.
    */
   protected recheckCycle(): void {}
 
   /**
-   * @return true if this node's settled error would go unobserved, otherwise
-   * false: it is settled Error, no dependant has read the error, and it is in
-   * the graph with no dependant that would *read* it. {@link Computable} narrows it
-   * to also exclude a binding node (which forwards to its `outer`). The
-   * `dependants` check already excludes a detached node: a derived node that loses
-   * its last dependant *detaches* (Detached, not Error), so only an eager,
-   * still-live terminal tail reaches here.
+   * @return true if this node's error would go unread, otherwise false: it is
+   * settled Error, no dependant has read the error since, and no dependant
+   * reads errors (see {@link observesErrors}). {@link Computable} also excludes
+   * a binding.
    */
   protected isUnhandledError(): boolean {
     return this.currentState === ComputableState.Error && !this.errorObserved && !this.dependants.some(dep => dep.observesErrors());
   }
 
   /**
-   * @return true if depending on this node amounts to observing its error, otherwise
-   * false. True for a derived node — it reads its inputs and propagates their failure
-   * onwards. False for a {@link Sink}, which
-   * holds a node attached without ever reading it: an edge that keeps a chain alive is not
-   * an edge that reports its failure, so a seated chain must still answer for its own
-   * errors (see {@link isUnhandledError}).
+   * @return true if depending on this node reads its error, otherwise false:
+   * false for the {@link Sink} behind a {@link ComputableHandle}, which holds a
+   * chain without reading it, so a seated chain's error is still reported.
    */
   protected observesErrors(): boolean {
     return true;
   }
 
   /**
-   * Report a stranded computed error, deferred one microtask past the synchronous
-   * graph-building burst — a handler attached on the next line
-   * (`const c = x.then(f); c.catch(g)`) settles within that window and clears the
-   * candidacy, exactly as V8 suppresses a rejected-then-handled promise. Fires per
-   * strand event: a persistent node that re-errors on a later (watch-mode) rebuild
-   * reports again, which is the honest signal — it stranded again. A settle with
-   * dependants (ordinary error propagation) fails {@link isUnhandledError} here and
-   * costs nothing.
+   * Report this node's error through {@link onUnhandledError} where it would
+   * go unread, checking again one microtask later, so that a handler attached
+   * just after (`const c = x.then(f); c.catch(g)`) suppresses the report. A
+   * node that errors again later, under watch, is reported again.
    */
   private checkUnhandledError(): void {
     if (ComputableSource.onUnhandledError === undefined || !this.isUnhandledError()) {
@@ -483,42 +483,58 @@ export abstract class ComputableSource<T> {
 }
 
 /**
- * A value *derived* from other {@link ComputableSource}s (which may themselves be
- * derived or raw sources). Functions very similarly to a Promise, except it is
- * persistent — recomputed when an input changes — and can depend on any number
- * of inputs, aggregating their errors into a single MultiError.
+ * A node derived from other {@link ComputableSource}s: like a Promise, but it
+ * may depend on any number of inputs, and it computes again whenever one of
+ * them changes. Made with `then`, `catch` and `finally`, {@link forAll},
+ * {@link deriving} and {@link detached}; {@link from}, {@link resolve} and
+ * {@link reject} make cells with no `fn`.
+ *
+ * - Running: once every input is settled, `fn` runs over their values. Where
+ *   any input is Error, `errfn` runs instead over their errors combined in a
+ *   MultiError, or, with no `errfn`, the node settles with them. A throw
+ *   settles the node with the error.
+ * - A source as the result: where `fn` returns a {@link ComputableSource},
+ *   the node takes that source's outcome, now and as it changes, without
+ *   running `fn` again (see {@link resolveTo}).
+ * - Finality: a node settled Valid whose inputs, and whose source if it took
+ *   one, are all final becomes final itself and lets go of them (see
+ *   {@link becomeFinalIfDone}).
+ * - Cycles: where the source `fn` returns depends on the node itself, the
+ *   node settles with a {@link CycleError} (see {@link checkCycle}), and takes
+ *   the source's value once the cycle is gone.
  */
 export class Computable<T> extends ComputableSource<T> {
+  /** The inputs `fn` runs over. */
   private dependsOn: ComputableSource<any>[] = [];
+  /** The computation; undefined on a cell and on a final node. */
   private fn: ((...args: any[]) => any) | undefined = undefined;
+  /** The computation run over the inputs' errors, in place of `fn`. */
   private errfn: CatchHandler<any> | undefined = undefined;
-  /** When resolved *to* another source, the binding node feeding us from it —
-   * tracked so a re-resolve detaches the previous one, releasing the old inner
-   * subgraph (and any watches under it) once it has no other dependants. */
+  /** The binding to the source `fn` last returned, where it returned one (see
+   * {@link resolveTo}). Detached when `fn` runs again, so the old source's
+   * subgraph detaches where nothing else depends on it. */
   private binding?: Computable<T>;
-  /** Set only on a binding node: the outer Computable that resolved to this node's
-   * sole dependency, and which mirrors our cascade (see {@link resolveTo}). */
+  /** On a binding: the node whose result it passes on. */
   private outer?: Computable<T>;
-  /** Whether this binding's inner depends on its outer (set only on a binding
-   * node). While it does, the outer holds the cycle's error and refuses what
-   * the inner delivers (see {@link fromBinding}). */
+  /** On a binding: true while the source it depends on depends on its
+   * `outer`, closing a cycle. The outer then holds the cycle's error and
+   * refuses what the binding passes on (see {@link fromBinding}). */
   private cyclic = false;
   /** Set on a cyclic binding while a maybe-invalid wave it carried into its
    * outer is still being marked (see {@link afterMaybeInvalidWave}). */
   private carriedWave = false;
-  /** Whether a search for a cycle reached this node and could not follow its
-   * binding (see {@link inputsWaitedOn}). If so, whether the binding closes a
-   * cycle is checked when this node is next waiting on it for certain (see
+  /** Set where a cycle search reached this node and did not follow its
+   * binding, the node being liable to run again (see {@link inputsWaitedOn}):
+   * the binding is checked once the node's inputs come back unchanged (see
    * {@link maybeRecompute}). */
   private unsearched = false;
-  /** The nodes that closed a cycle this node is on and are holding for it
-   * to stop moving (see {@link recheckCycle}): each is asked again whenever
-   * this node moves. */
+  /** The cycle closers holding on this node (see {@link recheckCycle}): each
+   * is asked to decide again whenever this node moves. */
   private closedBy: Set<Computable<unknown>> | undefined;
-  /** The nodes this node is holding on, having closed a cycle (see
-   * {@link recheckCycle}): the pending region behind its binding, as a wave
-   * crossing the binding or a node asking finds it. Released when the binding
-   * delivers, and when this node re-runs or detaches. */
+  /** On a cycle closer: the nodes it holds on, those of the pending region
+   * behind its binding (see {@link pendingRegion}) as each wave or ask finds
+   * it. Released when the binding passes on a value, and when this node runs
+   * again, detaches or becomes final. */
   private holding: Set<Computable<unknown>> | undefined;
 
   /** Label this node, and return it. */
@@ -527,8 +543,9 @@ export class Computable<T> extends ComputableSource<T> {
     return this;
   }
 
-  /** Derive a node computing `fn` over `deps` (or `errfn` on failure); `owned`
-   *  where `deps` is the node's to keep, made for it and held by no one else. */
+  /** Derive a node computing `fn` over `deps`, or `errfn` over their errors.
+   *  Pass `owned` where `deps` was made for the node and is held by no one
+   *  else, so it is kept rather than copied. */
   public static deriving<U>(
     deps: ComputableSource<any>[],
     fn: (...args: any[]) => U | ComputableSource<U>,
@@ -542,10 +559,11 @@ export class Computable<T> extends ComputableSource<T> {
   }
 
   /**
-   * Create a node that computes `fn` when it is first depended on, not when
-   * it is made: it is born detached, as a raw source is. A memo that files
-   * such a node holds it before `fn` runs, so a request for the same thing
-   * made while `fn` runs finds the node and depends on it.
+   * Make a node that computes `fn` when it is first depended on, not when it
+   * is made: it is born Detached, as a raw source is. A memo filing such a
+   * node holds it before `fn` runs, so a request for the same thing made
+   * while `fn` runs finds the node and depends on it, and a cycle through it
+   * is found (see {@link checkCycle}).
    */
   public static detached<U>(fn: () => U | ComputableSource<U>): Computable<U> {
     const result = new Computable<U>();
@@ -553,14 +571,18 @@ export class Computable<T> extends ComputableSource<T> {
     return result;
   }
 
-  /** Initialise a derived node's inputs + fn and enter the graph — the shared tail
-   * of {@link deriving} and {@link resolveTo}'s binding construction. */
+  /** Set a derived node's inputs and `fn`, and attach it. */
   private setDerivation(deps: ComputableSource<any>[], fn: (...args: any[]) => any): void {
     this.dependsOn = deps;
     this.fn = fn;
     this.attach();
   }
 
+  /**
+   * Derive a node computing `fn` over the values of `deps`, once all of them
+   * are settled. Where any failed, `onError` runs over their errors combined
+   * in a MultiError, or, without it, the node settles with them.
+   */
   public static forAll<U, D extends readonly ComputableSource<unknown>[] | []>(
     deps: D,
     fn: (...deps: { -readonly [P in keyof D]: Awaited<D[P]> }) => U | ComputableSource<U>,
@@ -569,6 +591,7 @@ export class Computable<T> extends ComputableSource<T> {
     return Computable.deriving(deps as unknown as ComputableSource<any>[], fn as (...args: any[]) => U | ComputableSource<U>, onError);
   }
 
+  /** Make a constant node holding `value`. */
   public static resolve<T>(value: T): Computable<T> {
     const result = new Computable<T>();
     result.currentValue = value;
@@ -576,29 +599,29 @@ export class Computable<T> extends ComputableSource<T> {
     return result;
   }
 
+  /** Make a constant node holding `err`. */
   public static reject<T>(err: Error): Computable<T> {
     const result = new Computable<T>();
-    /* Born settled, mirroring resolve(): a constant enters the graph already
-     * holding its outcome — settle() is for a node transitioning while attached,
-     * and would drop the value on a Detached-born node. */
+    /* Set directly, as resolve() does: settle() would drop the error on a
+     * node still Detached. */
     result.currentValue = err;
     result.currentState = ComputableState.Error;
     return result;
   }
 
   /**
-   * Create a cell settled by `fn`'s executor: its first resolve or reject, a
-   * synchronous throw rejecting, and any later call ignored — a callback API
-   * that reports again after its outcome (a stream's `error` after its `end`,
-   * a failed spawn's `close` after its `error`) cannot settle it twice.
+   * Make a cell settled by `fn`'s executor, which runs at once: the first
+   * call of `resolve` or `reject` settles it (resolving with a source takes
+   * that source's outcome), a synchronous throw rejects it, and any later call
+   * is ignored, so a callback API that reports again after its outcome (a
+   * stream's `error` after its `end`, a failed spawn's `close` after its
+   * `error`) cannot settle it twice. The cell has no `fn`, so it never
+   * detaches.
    */
   public static from<T>(fn: (resolve: (value: T | Computable<T>) => void, reject: (err: Error) => void) => void): Computable<T> {
     const result = new Computable<T>();
-    /* In the graph from birth: the executor runs eagerly (right here), so this
-     * cell is producer-driven, never demand-deferred — it must not sit Detached
-     * while pending, or its own resolve would be dropped by settle's detached
-     * guard. Fn-less, so it never detaches; attach here is just the
-     * Detached -> Unresolved (pending) transition. */
+    /* Attach before the executor runs: settle does nothing while Detached, so
+     * a resolve during it would be dropped. */
     result.attach();
     let settled = false;
     try {
@@ -625,25 +648,25 @@ export class Computable<T> extends ComputableSource<T> {
     return result;
   }
 
+  /** Register with the inputs and become Unresolved, then compute where every
+   * input is settled, discarding any value held from before a detach;
+   * otherwise wait for an input to settle. A cell with no `fn` just waits. */
   protected override attach(): void {
-    /* Register with dependencies while still Detached: a dep that reattaches and settles
-     * mid-registration notifies us, but maybeRecompute's Detached guard drops it — so we
-     * compute exactly once below, after the whole input set is wired. */
+    /* Register while still Detached, so maybeRecompute ignores an input that
+     * attaches and settles during registration: the node runs once, below,
+     * with every input registered. */
     this.attachTo(this.dependsOn);
-    super.attach(); // Detached -> Unresolved (pending)
-    /* Recompute if every input is settled — a reattach discards a possibly-stale value.
-     * Otherwise stay in the pending state super.attach left us in, until an input settles
-     * and notifies us; a fn-less node (an unresolved `from`) likewise just waits. */
+    super.attach();
     if (this.canRun() && this.fn) {
       this.run();
     }
   }
 
+  /** Leave the graph, dropping the inputs and the binding; a node with no
+   * `fn` (a constant, a cell, a final node) cannot compute its value again,
+   * so it stays attached and keeps its value. */
   protected override detach(): ComputableSource<unknown>[] {
     this.releaseHolds();
-    /* Detachable ⟺ reconstructable. A node with no `fn` (a resolve/reject/from
-     * constant) can't be recomputed on reattach and has no inputs registered to
-     * release, so it never detaches — it keeps serving its value at zero dependants. */
     if (!this.fn) {
       return [];
     }
@@ -655,24 +678,26 @@ export class Computable<T> extends ComputableSource<T> {
     return this.fn !== undefined;
   }
 
-  /** @return true if this node is in a maybe state — a value served before,
-   * with an input since marked maybe-invalid — otherwise false. */
+  /** @return true if this node is MaybeValid or MaybeError, otherwise false. */
   private isMaybe(): boolean {
     return this.currentState === ComputableState.MaybeValid || this.currentState === ComputableState.MaybeError;
   }
 
+  /** @return true if every input is settled, otherwise false. */
   private canRun(): boolean {
     return this.dependsOn.every(dep => dep.isSettled());
   }
 
+  /** Run `fn` over the inputs' values, or `errfn` over their errors (or settle
+   * with them), and take the result (see {@link resolveTo}). A throw settles
+   * the node with the error. */
   private run(): void {
-    /* Re-running supersedes the previous fn-result link: detach it, so the old
-     * inner subgraph (and any watches under it) unwinds once orphaned. */
+    /* The previous binding is replaced: detach it, so the old source's
+     * subgraph detaches where nothing else depends on it. */
     this.unbind();
     this.unsearched = false;
     this.releaseHolds();
-    /* Running consumes the inputs: no re-run is owed any longer, and this node
-     * awaits what `fn` gives it, as on a first run. */
+    /* No run is owed any longer: the node awaits what `fn` gives it. */
     if (this.currentState === ComputableState.Invalid) {
       this.currentState = ComputableState.Unresolved;
     }
@@ -702,15 +727,25 @@ export class Computable<T> extends ComputableSource<T> {
     }
   }
 
+  /**
+   * Take `value` as this node's result, detaching any previous binding. A
+   * plain value settles the node Valid. A final source's outcome is taken
+   * outright. Any other source is bound: a binding, a node depending on the
+   * source with this node as its `outer`, passes the source's changes on to
+   * this node.
+   * - A maybe-invalid wave, or an invalidate (as a maybe-invalid mark): this
+   *   node and its dependants wait while the source recomputes.
+   * - A settle: taken as this node's outcome, without running `fn` again.
+   * - A revalidation: this node revalidates.
+   *
+   * A settle or revalidation lands only where this node's own inputs are
+   * settled and no run is owed ({@link acceptFromBinding},
+   * {@link revalidateFromBinding}), so a dependant never sees this node's
+   * outcome from one batch beside an input's from another. A source already
+   * settled settles this node at once. Then checks whether the binding closes
+   * a cycle ({@link checkCycle}).
+   */
   private resolveTo(value: T | ComputableSource<T>): void {
-    /* Resolving to another source: link to it through a binding — an identity node
-     * that sits on the inner as its sole dependant and mirrors the inner's cascade
-     * (maybe-invalid, revalidate, settle) into us, its `outer` (the overrides
-     * below). Being a real dependant is what carries the maybe-invalid frontier
-     * across the boundary (a batch invalidation must reach us and our dependants);
-     * forwarding the settle rather than recomputing us is what stops a
-     * fresh-per-call factory (`x.then(v => build(v))`) from thrashing. Superseding
-     * on re-run is handled in run(). */
     this.unbind();
     if (!(value instanceof ComputableSource)) {
       this.settle(ComputableState.Valid, value);
@@ -718,8 +753,6 @@ export class Computable<T> extends ComputableSource<T> {
       return;
     }
     if (value.isFinal()) {
-      /* A final inner delivers nothing again, so its outcome is this node's
-       * outright, with no binding to forward one. */
       if (value.state === ComputableState.Error) {
         ComputableSource.observeError(value);
         this.settle(ComputableState.Error, value.value as Error);
@@ -730,8 +763,8 @@ export class Computable<T> extends ComputableSource<T> {
       return;
     }
     const binding = new Computable<T>();
-    /* Wired before entering the graph: an already-settled inner settles the
-     * binding during setDerivation's attach, which must forward to this node. */
+    /* Set `outer` before attaching: an already-settled source settles the
+     * binding during setDerivation's attach, which must reach this node. */
     binding.outer = this;
     this.binding = binding;
     binding.setDerivation([value], IDENTITY);
@@ -740,11 +773,13 @@ export class Computable<T> extends ComputableSource<T> {
   }
 
   /**
-   * Check whether the binding closes a dependency cycle: whether the inner
-   * depends on this node through nodes waiting for certain. If so this node
-   * settles with the cycle's error and the binding stays, marked cyclic: inert
-   * to every wave, so this node stays settled until its own inputs re-run it
-   * or the inner's delivery no longer depends on it (see {@link fromBinding}).
+   * Check whether a pending binding closes a dependency cycle: whether the
+   * source it depends on depends on this node, through nodes each waiting on
+   * the next for certain ({@link inputsWaitedOn}). Where it does, settle with
+   * the cycle's error ({@link settleCycle}) and keep the binding, marked
+   * `cyclic`: the node keeps the error until its own inputs run it again, or
+   * the binding passes on a value that no longer depends on it (see
+   * {@link fromBinding}).
    */
   private checkCycle(): void {
     const binding = this.binding;
@@ -758,11 +793,13 @@ export class Computable<T> extends ComputableSource<T> {
     this.settleCycle(path);
   }
 
-  /** Settle with the error of the cycle `path` leads round from the binding
-   * to this node, marking the binding cyclic. */
+  /** Mark the binding cyclic and settle with a CycleError holding the labels
+   * on the cycle: this node's, then those along `path`, from the binding round
+   * to this node. */
   private settleCycle(path: ComputableSource<unknown>[]): void {
     const labels = [this, ...path].map(node => node.label).filter((label): label is Label => label !== undefined);
-    /* The same cycle found again is the same error: an unchanged value. */
+    /* The same cycle found again settles the error already held, an unchanged
+     * value. */
     const held = this.currentValue;
     const same =
       held instanceof CycleError && held.labels.length === labels.length && held.labels.every((label, i) => label === labels[i]);
@@ -815,13 +852,13 @@ export class Computable<T> extends ComputableSource<T> {
   }
 
   /**
-   * List the nodes this one is waiting on: none where it is settled (its value is
-   * in hand, so nothing is held up behind it); otherwise its inputs, and its
-   * binding only where it is waiting on that for certain — its own inputs
-   * settled and no re-run owed. A node whose inputs are unsettled may re-run
-   * and drop its binding, so it is marked to be judged when they settle
-   * instead: a re-run binds afresh, and one whose inputs come back unchanged
-   * checks in {@link maybeRecompute}.
+   * List the nodes this one is waiting on, for a cycle search: none where it
+   * is settled; otherwise its inputs, and its binding where it is waiting on
+   * that for certain, its inputs settled and no run owed. A node with a
+   * binding whose inputs are unsettled, or which owes a run, may run again
+   * and drop the binding, so the binding is left out and the node marked
+   * `unsearched`: a run checks its new binding, and inputs coming back
+   * unchanged check the old one ({@link maybeRecompute}).
    */
   private inputsWaitedOn(): ComputableSource<unknown>[] {
     if (this.isSettled()) {
@@ -834,25 +871,24 @@ export class Computable<T> extends ComputableSource<T> {
     return this.inputs();
   }
 
-  /** Tear down the current resolveTo binding, releasing the inner subgraph once
-   * it has no other dependants. */
+  /** Detach the binding, and the source it depends on where nothing else
+   * does. */
   private unbind(): void {
     ComputableSource.release(this.dropBinding());
   }
 
-  /** Detach the current resolveTo binding, releasing nothing further: returns
-   * the inner where the binding was its last dependant. */
+  /** Detach the binding, detaching nothing further: @return the source it
+   * depends on where the binding was its last dependant. */
   private dropBinding(): ComputableSource<unknown>[] {
     const binding = this.binding;
     this.binding = undefined;
     return binding === undefined ? [] : binding.detach();
   }
 
+  /** Settle with `err`, detaching the binding first, so that a source a
+   * `from` executor resolved with before rejecting cannot settle this node
+   * later. */
   private rejectWith(err: Error): void {
-    /* An outside rejection supersedes a pending fn-result link just as a
-     * re-resolve does (a from() executor may resolve with a Computable and then
-     * reject) — without this, the orphaned inner's eventual settle would forward
-     * through the stale binding and clobber the error. */
     this.unbind();
     this.settle(ComputableState.Error, err);
     this.askClosers();
@@ -860,7 +896,7 @@ export class Computable<T> extends ComputableSource<T> {
 
   /**
    * @return true if this node's outcome can never change, otherwise false: it
-   * is settled, with no `fn` to run again and no binding to deliver again — a
+   * is settled, with no `fn` to run again and no binding to settle it again — a
    * constant, a settled {@link from} cell, or a derived node that has become
    * final (see {@link becomeFinalIfDone}).
    */
@@ -874,7 +910,7 @@ export class Computable<T> extends ComputableSource<T> {
    * inputs, its `fn` and its binding. They are final already, so letting go of
    * them detaches nothing. An error is not held this way: the node keeps its
    * `fn`, so it detaches when its last dependant leaves and computes again when
-   * next demanded, a failure being retried where a value is kept.
+   * next depended on.
    */
   protected override becomeFinalIfDone(): void {
     const binding = this.binding;
@@ -894,43 +930,40 @@ export class Computable<T> extends ComputableSource<T> {
     this.releaseHolds();
   }
 
+  /** A binding passes its error to its `outer`, so its error is never
+   * unhandled. */
   protected override isUnhandledError(): boolean {
-    /* A binding forwards its settle to its `outer`, so its error IS observed —
-     * exclude it, else every forwarded error would double as a false strand. */
     return this.outer === undefined && super.isUnhandledError();
   }
 
+  /**
+   * Respond to an input settling or revalidating, once every input is
+   * settled. A node owed a run, or awaiting its first value, runs. A node in
+   * a maybe state, its inputs back unchanged, revalidates where it has no
+   * binding, takes a settled binding's result, and otherwise waits on the
+   * binding, deciding a cyclic one ({@link recheckCycle}) and checking an
+   * `unsearched` one for a cycle ({@link checkCycle}). Then asks the closers
+   * holding on this node to decide again. Ignored while Detached, including
+   * during {@link attach}.
+   */
   protected override maybeRecompute(): void {
-    /* Suppressed while Detached: mid-attach (still registering our own deps — we run once
-     * at the end of attach), and for any stray notify reaching an orphaned node. */
     if (this.currentState === ComputableState.Detached) {
       return;
     }
     if (!this.isSettled() && this.canRun()) {
       if (this.isMaybe()) {
-        /* Returning to settled after a maybe-invalid wave. With a live binding,
-         * this node's settled-ness is the CONJUNCTION of its own deps (all
-         * settled — canRun above) and the binding: revalidating from the
-         * own-deps side alone would re-serve the stale inner value while the
-         * inner is still recomputing — exactly the mixed-generation interim the
-         * maybe-invalid frontier exists to forbid. So adopt a settled binding's
-         * result (settle dedups an unchanged value into the equivalent of a
-         * revalidation — and adopts a *changed* one, which plain revalidate
-         * would silently discard); hold on a pending one — its forward delivers
-         * when the inner side lands. */
+        /* With a binding, the node is settled again only once the binding is
+         * too: do not revalidate while a pending binding may still bring a
+         * changed value, and settle with a settled binding's result, which
+         * may have changed, rather than revalidating. */
         const binding = this.binding;
         if (!binding) {
           this.revalidate();
         } else if (binding.isSettled()) {
           this.fromBinding(binding.state as ComputableState.Valid | ComputableState.Error, binding.value as T | Error);
         } else if (binding.cyclic) {
-          /* Its own inputs came back unchanged, so the cycle's error stands
-           * unless the batch is still cutting it (see {@link recheckCycle}). */
           this.recheckCycle();
         } else if (this.unsearched) {
-          /* Its own inputs came back unchanged, so it is now waiting on its
-           * binding for certain: where a search for a cycle reached it while
-           * it was maybe-invalid, check now whether the binding closes one. */
           this.unsearched = false;
           this.checkCycle();
         }
@@ -942,19 +975,17 @@ export class Computable<T> extends ComputableSource<T> {
   }
 
   /**
-   * Decide, as the node that closed a cycle, whether to settle its error again
-   * while its binding is pending: asked when its own inputs come back from a
-   * maybe-invalid wave unchanged, and again whenever a node it holds on
-   * moves. The cycle's nodes wait on this one, so it must settle for them to;
-   * but the batch may be cutting the cycle, and settling first would serve
-   * the stale error to a consumer that then sees the healed value too. So it
-   * settles only when nothing behind its binding can move — every node the
-   * binding still waits on this one through is waiting itself, on nothing
-   * but the cycle — and otherwise holds on those nodes, which ask again as
-   * each moves. A binding that no longer waits on this node decides by its
-   * delivery. Asked while a notification cascade is in flight, it decides at
-   * the cascade's end instead: a node not yet notified of an input that
-   * settled is about to move, whatever its state says now.
+   * Decide, as a cycle closer (a node whose binding is `cyclic`), whether to
+   * settle its error again while the binding is pending. Asked when its own
+   * inputs come back unchanged from a maybe-invalid wave, and whenever a node
+   * it holds on moves. It holds on every node of the pending region behind
+   * the binding ({@link pendingRegion}, {@link holdOn}), and revalidates only
+   * when it is in a maybe state with its inputs settled and no node of the
+   * region can move ({@link canMove}): until then the batch may still cut
+   * the cycle. A binding whose source no longer depends on this node decides
+   * by the value it passes on ({@link fromBinding}). Asked during a
+   * notification cascade, it decides when the outermost cascade ends, since
+   * a node not yet told of an input that settled may be about to move.
    */
   protected override recheckCycle(): void {
     if (cascadeDepth > 0) {
@@ -980,8 +1011,8 @@ export class Computable<T> extends ComputableSource<T> {
     this.revalidate();
   }
 
-  /** Hold on each derived node of `region`: it asks this node to decide again
-   * whenever it moves (see {@link recheckCycle}). */
+  /** Hold on each derived node of `region`: each asks this node to decide
+   * again whenever it moves (see {@link recheckCycle}). */
   private holdOn(region: ReadonlyArray<ComputableSource<unknown>>): void {
     for (const node of region) {
       if (node instanceof Computable && this.holding?.has(node) !== true) {
@@ -1056,14 +1087,11 @@ export class Computable<T> extends ComputableSource<T> {
   }
 
   /**
-   * Take the inner's settled result from the binding. It lands only when this
-   * node is coherent to receive it: own deps settled (canRun) and no re-run
-   * pending — Invalid means an own-dep *value* changed and `fn` hasn't consumed
-   * it yet; run() will unbind this binding and rebind from fresh inputs, so its
-   * value must not land now (settling here would make maybeRecompute see a
-   * settled node and skip the re-run, freezing the stale binding in place). A
-   * held delivery is not lost: once the own-dep side settles, maybeRecompute
-   * adopts the binding's result (own deps unchanged) or run() rebinds (changed).
+   * Take the source's settled result from the binding, where this node's own
+   * inputs are settled and no run is owed (it is not Invalid); otherwise
+   * ignore it. An owed run binds afresh, and inputs coming back unchanged take
+   * the binding's result then ({@link maybeRecompute}). Do not settle while
+   * Invalid: maybeRecompute would see a settled node and skip the owed run.
    */
   private acceptFromBinding(state: ComputableState.Valid | ComputableState.Error, value: T | Error): void {
     if (this.canRun() && this.currentState !== ComputableState.Invalid) {
@@ -1072,13 +1100,12 @@ export class Computable<T> extends ComputableSource<T> {
   }
 
   /**
-   * Take what the binding delivers — unless the binding closes a cycle the
-   * inner still makes: then this node keeps the cycle's error, and what came
-   * back around is its own. Once the inner no longer depends on this node the
-   * cycle is gone, and the delivery is its value.
+   * Settle with what the binding passes on, unless the binding is cyclic and
+   * its source still depends on this node: then keep the cycle's error,
+   * revalidating from a maybe state. Once the source no longer depends on
+   * this node, clear `cyclic`, release the holds and settle.
    */
   private fromBinding(state: ComputableState.Valid | ComputableState.Error, value: T | Error): void {
-    /* The binding has settled, so whether it closes a cycle is answered. */
     this.unsearched = false;
     const binding = this.binding;
     if (binding?.cyclic === true) {
@@ -1095,10 +1122,9 @@ export class Computable<T> extends ComputableSource<T> {
   }
 
   /**
-   * Take the binding's report that the inner revalidated unchanged: return to
-   * settled only if the own-dep side is settled too and we are in a maybe state
-   * (the only states a revalidation can restore); otherwise hold — the own-dep
-   * side's own settle/revalidate converges us through maybeRecompute.
+   * Take the binding's report that its source revalidated: revalidate where
+   * this node's own inputs are settled and it is in a maybe state; otherwise
+   * its inputs settle it through {@link maybeRecompute}.
    */
   private revalidateFromBinding(): void {
     if (this.canRun() && this.isMaybe()) {
@@ -1106,27 +1132,15 @@ export class Computable<T> extends ComputableSource<T> {
     }
   }
 
-  /* A binding node mirrors the full cascade into its outer (no-ops elsewhere —
-   * `outer` is only ever set on a binding): the maybe-invalid frontier, the
-   * revalidation wave, and the settle itself (state + value adopted verbatim,
-   * never recomputed — re-running the outer's fn would mint a fresh inner).
-   * A maybe-invalid wave forwards, except through a pending cyclic binding,
-   * and a hard invalidate forwards except from a cyclic binding (see
-   * {@link markSelfMaybeInvalid} and {@link invalidate}); the SETTLING
-   * direction is coherence-gated on the outer
-   * (acceptFromBinding / revalidateFromBinding): the outer returns to settled
-   * only when both its own deps and the binding agree, so a consumer never
-   * observes mixed-generation inputs across the boundary. */
+  /* The overrides below act on a binding (`outer` set) and pass its source's
+   * changes on to the outer; on any other node they add nothing. */
 
-  /** Invalidate, and on a binding mark the outer maybe-invalid too: a hard
-   * invalidate (the inner re-settled a changed value with no prior
-   * maybe-invalid wave) must still unsettle the outer, or a consumer sharing
-   * another arm of the diamond reads the outer's stale value mid-cascade. The
-   * outer only ever needs maybe: the definite new value arrives via settle.
-   * Not from a cyclic binding: what the inner re-settles to while the cycle
-   * stands is the outer's own error coming back around, or a change inside
-   * the cycle, neither of which changes the outer; one that cuts the cycle
-   * reaches it as a delivery (see {@link fromBinding}). */
+  /** Invalidate, and on a binding mark the outer maybe-invalid, so the
+   * outer's dependants do not read its old value before the new one arrives
+   * with the settle. Not on a cyclic binding: while the cycle stands, what its
+   * source settles to is the outer's own error coming back, or a change
+   * inside the cycle; a value that cuts the cycle reaches the outer through
+   * {@link fromBinding}. */
   public override invalidate(): void {
     super.invalidate();
     if (this.outer !== undefined && !this.cyclic) {
@@ -1135,11 +1149,10 @@ export class Computable<T> extends ComputableSource<T> {
   }
 
   /** Mark this node alone maybe-invalid, returning the nodes to mark after
-   * it — on a binding, its outer too where the wave crosses. A wave crosses
-   * a cyclic binding where the binding was settled, the cycle standing: the outer and what depends on it may be
-   * about to change, if the batch cuts the cycle, and must hold until it is
-   * decided (see {@link recheckCycle}). It does not cross one still pending:
-   * the wave is then the outer's own cycle error on its way back around. */
+   * it: on a binding, its outer too. A cyclic binding passes the wave on only
+   * where it was settled, so that the outer waits while the batch may cut
+   * the cycle (see {@link recheckCycle}); a pending one does not, the wave
+   * then being the outer's own error coming back. */
   protected override markSelfMaybeInvalid(): ComputableSource<unknown>[] {
     const settled = this.isSettled();
     const next = super.markSelfMaybeInvalid();
@@ -1147,10 +1160,9 @@ export class Computable<T> extends ComputableSource<T> {
     return this.outer !== undefined && (!this.cyclic || settled) ? [...next, this.outer] : next;
   }
 
-  /** Have the outer hold on its pending region, on a cyclic binding that
-   * carried a wave into it: once the wave is done that region is marked in
-   * full, and the outer holds on it, so that whichever of its nodes moves
-   * first asks the outer to decide. */
+  /** On a cyclic binding that carried a wave into its outer, have the outer
+   * hold on its pending region, now marked in full, so that whichever of its
+   * nodes moves first asks the outer to decide. */
   protected override afterMaybeInvalidWave(): void {
     if (this.carriedWave) {
       this.carriedWave = false;
@@ -1160,8 +1172,8 @@ export class Computable<T> extends ComputableSource<T> {
 
   protected override revalidate(): void {
     super.revalidate();
-    /* Forward only what actually landed (the base drops a revalidate on a
-     * detached binding); the outer applies its own coherence gate. */
+    /* Pass on only what landed: the base ignores a revalidate while
+     * Detached. */
     if (this.currentState !== ComputableState.Detached) {
       this.outer?.revalidateFromBinding();
     }
@@ -1169,72 +1181,57 @@ export class Computable<T> extends ComputableSource<T> {
 
   protected override settle(state: ComputableState.Valid | ComputableState.Error, value: T | Error): void {
     super.settle(state, value);
-    /* Forward only what actually landed: if the base dropped the settle (this
-     * binding detached — unbound by a supersede), the outer must not adopt the
-     * stale value either. Post-drop the state is still Detached, so this check
-     * distinguishes a landed settle from a discarded one. The outer then applies
-     * its own coherence gate (acceptFromBinding). */
+    /* Pass on only what landed: the base ignores a settle while Detached, as
+     * a binding is once its outer has run again. */
     if (this.currentState !== ComputableState.Detached) {
       this.outer?.acceptFromBinding(state, value);
     }
   }
 }
 
-/** A binding is a pure identity over its inner — shared, since it captures
- * nothing (its forwarding rides the `outer` link, not the fn). */
+/** The `fn` of every binding. */
 const IDENTITY = (value: unknown): unknown => value;
 
 /** The snapshot of a node with no dependants: shared, there being nothing in it. */
 const NO_DEPENDANTS: ReadonlyArray<ComputableSource<unknown>> = [];
 
 /**
- * Report an error that reached a {@link ComputableSource.once} tail with no `onError`,
- * or that a {@link ComputableHandle}'s `onSettled` threw: the observer is the error's
- * last reader, so with no handler it must surface the error rather than swallow it.
- * Reported directly (not deferred like {@link ComputableSource.checkUnhandledError}):
- * the observer's handlers are fixed when it is built, so there is no late-handler
- * window for the deferral to allow for.
+ * Report `err` through {@link ComputableSource.onUnhandledError} at once: an
+ * error that reached a {@link ComputableSource.once} tail with no `onError`,
+ * or that a {@link ComputableHandle}'s `onSettled` threw. Not deferred as
+ * {@link ComputableSource.checkUnhandledError} is, since no handler can be
+ * added to either later.
  */
 function reportUnobserved(err: Error): void {
   ComputableSource.onUnhandledError?.(err);
 }
 
 /**
- * The registered dependant behind a {@link ComputableHandle}, and the reason the two are
- * separate classes: the cascade a source drives over its dependants
- * (`markMaybeInvalid`/`invalidate`/`maybeRecompute`) is protected, so a dependant has to
- * *be* a ComputableSource — while a handle must not be one, or it could be depended on
- * in turn. The sink is that bridge, and is never exported.
- *
- * A handle needs its own dependant (rather than the plain `then` tail
- * {@link ComputableSource.once} withdraws) because it observes *many* results over one
- * seating and has to tell a real settle from a revalidation, which a tail's `fn` cannot
- * see.
- *
- * It is only ever the dependant half of an edge: nothing depends on it, so it is never
- * attached and stays {@link ComputableState.Detached} for life — which is precisely what
- * makes it inert, since all three cascade methods no-op in that state. Only the settle
- * observation needs overriding.
+ * The dependant a {@link ComputableHandle} registers on the chain it holds: a
+ * ComputableSource, since only a source can be a dependant, kept apart so
+ * that the handle itself cannot be depended on. Nothing depends on the sink,
+ * so it stays Detached and ignores every cascade but {@link maybeRecompute},
+ * through which it reports each settlement of the chain.
  */
 class Sink<T> extends ComputableSource<never> {
+  /** The chain held. */
   private seated: ComputableSource<T> | undefined;
 
   constructor(private readonly onSettled?: (source: ComputableSource<T>) => void) {
     super();
   }
 
-  /** Hold `source`: becoming its dependant is what keeps it (and everything below it)
-   * attached, and — for a raw source — what starts it. */
+  /** Hold `source`, releasing what was held: as its dependant, the sink keeps
+   * it attached, and starts a raw source. */
   public seat(source: ComputableSource<T>): void {
     this.clear();
     this.seated = source;
     this.attachTo([source]);
   }
 
-  /** Fires on each settlement of the seated chain — a settle OR a
-   * revalidate-unchanged, which a `then` tail cannot see. A throw from
-   * `onSettled` is reported as unobserved, as a {@link ComputableSource.once}
-   * tail's is, never into the seated chain's settle. */
+  /** Call `onSettled` on each settlement of the held chain: a settle, or a
+   * revalidation with no value changed. A throw from it is reported through
+   * {@link reportUnobserved}, never into the chain. */
   protected override maybeRecompute(): void {
     const source = this.seated;
     if (source?.isSettled()) {
@@ -1246,8 +1243,8 @@ class Sink<T> extends ComputableSource<never> {
     }
   }
 
-  /** Withdraw demand: the source loses a dependant and, if it was the last, detaches and
-   * cascades — the whole point of a handle. */
+  /** Release the held chain: where the sink was its last dependant, it
+   * detaches. */
   public clear(): void {
     const source = this.seated;
     this.seated = undefined;
@@ -1263,28 +1260,24 @@ class Sink<T> extends ComputableSource<never> {
 }
 
 /**
- * Holds a Computable in the graph on behalf of something outside it, and lets that hold be
- * withdrawn or moved. A chain built for its effect has no dependants of its own, so nothing
- * would ever detach it (see the Attachment note on {@link ComputableSource}); seating it
- * gives it the dependant it lacks, and {@link release} — or seating something else — takes
- * that edge away again, unwinding the chain through the ordinary last-dependant cascade.
+ * A hold on a chain in the graph, for something outside the graph. A chain
+ * nothing depends on never detaches; {@link seat} makes the handle a
+ * dependant of the chain, and {@link release}, or seating another chain,
+ * withdraws it, so the chain detaches where nothing else depends on it. A
+ * chain seated over is left Detached, so a late settle from it does nothing.
  *
- * Reseating supersedes, which is the point: the chain it replaces is left *detached*, so a
- * late settle from it is inert rather than merely unread.
- *
- * Deliberately not a {@link ComputableSource} — it terminates the graph on the dependant
- * side, so nothing can depend on it in turn. For the same reason it exposes no value: put a
- * `then` on the chain before seating it, so the graph delivers the result (and reports its
- * failure — a sink reads nothing, so a seated chain still answers for its own errors).
+ * A handle is not a source: nothing can depend on it, and it exposes no
+ * value. Put a `then` on the chain before seating it to have its result. The
+ * handle does not read the chain's error, so an error nothing else reads is
+ * still reported as unhandled.
  */
 export class ComputableHandle<T> {
   private readonly sink: Sink<T>;
 
-  /** `onSettled`, if given, fires on every settlement of the seated chain from
-   *  seating onward — including a revalidation that changed no value, which no
-   *  `then` tail is notified of. A chain already settled when seated reports
-   *  nothing until its next settlement. Fixed at construction, like a sink's
-   *  handlers. */
+  /** `onSettled`, if given, is called on every settlement of the seated
+   *  chain from seating onward, including a revalidation that changed no
+   *  value, which no `then` tail is told of. A chain already settled when
+   *  seated reports nothing until it next settles. */
   constructor(onSettled?: (source: ComputableSource<T>) => void) {
     this.sink = new Sink<T>(onSettled);
   }
@@ -1294,7 +1287,8 @@ export class ComputableHandle<T> {
     this.sink.seat(source);
   }
 
-  /** Withdraw demand, unwinding the held chain. Idempotent. */
+  /** Release the held chain, which detaches where nothing else depends on
+   * it. Idempotent. */
   public release(): void {
     this.sink.clear();
   }

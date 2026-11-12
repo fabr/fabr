@@ -20,7 +20,7 @@
 import * as path from "path";
 import { FabrError } from "../core/Errors";
 
-/** Characters that are never part of a valid name, whatever the path structure. */
+/** The characters no file name may hold: `\` and control characters. */
 // eslint-disable-next-line no-control-regex
 const JUNK_CHARACTER = /[\\\u0000-\u001f\u007f]/;
 
@@ -30,14 +30,11 @@ const BACKSLASH = "\\".charCodeAt(0);
 const DEL = 0x7f;
 
 /**
- * Canonicalize a file name for the FileSet namespace: a clean, relative,
- * `/`-separated path. `./` and interior `..` segments are resolved away, and a
- * leading `/` or run of `../` is **stripped** — the namespace is a flat sandbox
- * with no "above", so a name climbing out of its frame flattens to its tail
- * (`../scripts/x` names `scripts/x`; the rule behind file-relative references
- * that climb out of their build file's directory). Names
- * that aren't path structure at all — `\`, control characters, or nothing left
- * after flattening — are errors, never repaired.
+ * Canonicalize a file name as a FileSet names files: a relative, `/`-separated
+ * path with no empty, `.` or `..` segment and no trailing `/`. Interior `.` and
+ * `..` segments are resolved, and a leading `/` or run of `../` is stripped
+ * (`../scripts/x` names `scripts/x`). Throws where the name holds `\` or a
+ * control character, or names nothing once stripped.
  */
 export function canonicalFileName(name: string): string {
   if (JUNK_CHARACTER.test(name)) {
@@ -55,23 +52,15 @@ export function canonicalFileName(name: string): string {
 }
 
 /**
- * @return true if `name` is already canonical, otherwise false — canonical
- * being defined as the fixed point of {@link canonicalFileName}, so the two can
- * never drift. Beyond the FileSet
- * fast path, this is the general "is this string usable as a path?" test for
- * any name that will be used verbatim as path structure (e.g. a package name,
- * mounted at `node_modules/<name>`): a name canonicalization would change or
- * refuse cannot honestly serve as the path it claims to be.
- *
- * Answered by a direct scan rather than by canonicalizing and comparing: it is
- * asked once per name per FileSet construction (millions of times in a large
- * build), where allocating a normalized copy to throw away dominates. The two
- * must agree exactly — a test pins them together over a corpus.
+ * @return true if `name` is one {@link canonicalFileName} returns unchanged,
+ * otherwise false. Use it to test any name used as a path as it stands (a
+ * package name mounted at `node_modules/<name>`). It scans the name without
+ * copying it, and must agree exactly with canonicalFileName: a test checks the
+ * two against each other.
  */
 export function isCanonicalFileName(name: string): boolean {
   const length = name.length;
-  /* Empty, absolute, or trailing-slash: all three are things canonicalization
-   * would change or refuse. */
+  /* Empty, absolute, or ending in `/`. */
   if (length === 0 || name.charCodeAt(0) === SLASH || name.charCodeAt(length - 1) === SLASH) {
     return false;
   }
@@ -82,8 +71,7 @@ export function isCanonicalFileName(name: string): boolean {
       return false;
     }
     if (c === SLASH) {
-      /* An empty (`//`), `.` or `..` segment is one normalization resolves
-       * away; every other segment survives verbatim. */
+      /* An empty (`//`), `.` or `..` segment. */
       const len = i - segment;
       if (len === 0) {
         return false;
@@ -97,10 +85,10 @@ export function isCanonicalFileName(name: string): boolean {
   return true;
 }
 
-/** Normalize an archive entry name to a safe relative FileSet key: strip a leading
- * `/` (an absolute archive name → relative, standard tar behavior) and collapse
- * `.`/`..` segments. A name that still escapes the tree (a `../` traversal in an
- * untrusted network archive) or is empty returns undefined — dropped. */
+/** Normalize an archive entry's name to a relative FileSet name: a leading `/`
+ * stripped, `.` and `..` segments resolved.
+ * @return the name, or undefined where it is empty or escapes the tree with
+ *   `../`. Drop such an entry: an archive is untrusted. */
 export function normalizeEntryName(raw: string): string | undefined {
   const normalized = path.posix.normalize(raw.replace(/^\/+/, ""));
   if (normalized === "" || normalized === "." || normalized === ".." || normalized.startsWith("../")) {

@@ -18,21 +18,18 @@
  */
 
 /**
- * The two worlds this layer straddles, and how it reaches each.
+ * Loading modules from the two installs a test process has, and the checks on
+ * them.
  *
- * **The runner's own mount** holds jest's libraries — `jest-mock`, `expect`,
- * `jest-snapshot`, `@jest/fake-timers`, `jest-each` — taken from the pinned
- * `JEST` package's closure (plus `@swc/core`, the hoist's transform, pinned
- * apart as `SWC`). It is a sealed tool
- * install, resolved through a require anchored at this file, so it is
- * collision-free with the user's dependencies by construction: a test's own
- * `expect`, `chalk` or `pretty-format` coexists with jest's copies exactly as a
- * project's `typescript` coexists with `TSC_DRIVER`'s.
+ * - **The runner's install** holds jest's libraries (`jest-mock`, `expect`,
+ *   `jest-snapshot`, `@jest/fake-timers`, `jest-each`, …), from the `JEST`
+ *   package's closure, and `@swc/core` (`SWC`), resolved from this file, apart
+ *   from the test's own dependencies.
+ * - **The test installation** (the process's cwd) holds what the target
+ *   declared. Only `jsdom` is loaded from it.
  *
- * **The test installation** (the process's cwd is its compiled mount) holds
- * what the target itself declared. Only one thing is read from there — `jsdom`,
- * which supplies the DOM environment: an environment is the *target's* choice
- * and pin, not the runner's.
+ * It also says which a module's file is: the runner's own, the code under
+ * test, or a module of the tests' registry.
  */
 
 import { createRequire } from "node:module";
@@ -41,21 +38,18 @@ import * as path from "node:path";
 import { parseJson, toJsonObject } from "../support/Json";
 import { atLeastNode } from "../testRunner/RunTests";
 
-/** jest releases this layer is written against. Checked at startup: the layer
- * uses jest's libraries directly, so an untested major would fail obscurely
- * somewhere deep instead of saying what is wrong. */
+/** The jest major versions supported, checked by {@link assertSupportedHost}. */
 const SUPPORTED_JEST_MAJORS = [29, 30];
 
-/** `module.registerHooks` — the seam for intercepting ESM edges — is 22.15/23.5
- * and up. */
+/** The lowest node version with `module.registerHooks`, which the ES module
+ * seam uses. */
 const MINIMUM_NODE = [22, 15] as const;
 
 const fromRunner = createRequire(__filename);
 
 /**
- * Load one of the runner's own declared dependencies. Typed as `unknown` on
- * purpose: these are third-party modules fabr has no type information for, and
- * each caller narrows to the small surface it actually uses.
+ * Load one of the runner's own declared dependencies, untyped: the caller
+ * narrows it to the members it uses.
  */
 export function runnerDependency(name: string): unknown {
   return fromRunner(name);
@@ -64,9 +58,8 @@ export function runnerDependency(name: string): unknown {
 let fromJest: NodeJS.Require | undefined;
 
 /**
- * Load one of jest's libraries — a package of the declared `jest`'s closure,
- * resolved as `jest` itself would resolve it, since the runner declares only
- * `jest`. `unknown` for the reason {@link runnerDependency} gives.
+ * Load one of jest's libraries, untyped, resolved as the runner's `jest`
+ * package would resolve it.
  */
 export function jestLibrary(name: string): unknown {
   fromJest ??= createRequire(fromRunner.resolve("jest/package.json"));
@@ -74,11 +67,9 @@ export function jestLibrary(name: string): unknown {
 }
 
 /**
- * Load a module from the TEST installation (resolved from the process's cwd,
- * inside it) rather than the runner's mount — how the DOM environment reaches
- * jsdom, which the target declares among its `test_deps`. Returns undefined if
- * it isn't installed, so the caller can say *which* dependency is missing and
- * why it is wanted.
+ * Load a module from the test installation, resolved from the process's cwd.
+ * @return the module, or undefined where it is not installed (or fails to
+ *   load).
  */
 export function userModule(name: string): unknown {
   try {
@@ -98,9 +89,9 @@ export function userModuleFile(name: string): string | undefined {
 }
 
 /**
- * Fail loudly, at startup, on a host or a jest release this layer does not
- * claim to support — rather than somewhere deep inside a mocked require, where
- * the real cause would be unrecoverable from the symptom.
+ * Check the host's node version (at least {@link MINIMUM_NODE}) and the
+ * installed jest's major version (one of {@link SUPPORTED_JEST_MAJORS}),
+ * throwing an error naming the requirement where either fails.
  */
 export function assertSupportedHost(): void {
   if (!atLeastNode(MINIMUM_NODE[0], MINIMUM_NODE[1])) {
@@ -133,12 +124,11 @@ function jestVersion(): string | undefined {
 }
 
 /**
- * Check that the requested environment can actually be provided, before any
- * test process is spawned. Only `jsdom` can fail: it comes from the target's
- * own dependencies, and saying which dependency is missing (and why it is
- * wanted) is far more use than a test child dying during its preload.
- * `fromDocblock` says the environment was a test file's own `@jest-environment`
- * choice rather than the invocation's.
+ * Check that the environment `env` can be provided: `node` always, `jsdom`
+ * where the test installation has it. Throws for any other name, and for a
+ * missing jsdom an error saying to add it to `test_deps`, worded for where the
+ * environment was asked for (`fromDocblock`: the file's `@jest-environment`
+ * docblock, else the target's `dom` flag).
  */
 export function requireEnvironment(env: string, fromDocblock = false): void {
   if (env === "node") {
@@ -173,18 +163,14 @@ export function installRootOf(dir: string): string {
 }
 
 /**
- * Everything under this directory is the runner's own machinery, not the code
- * under test: the runner's install, which holds the runner and its
- * dependencies, jest's libraries among them. The load-time hoist skips it (a
- * dependency merely *containing* the token `jest.mock` must never be fed
- * through the transform), the registry never mocks for it, and `resetModules`
- * leaves it cached (evicting the runner from under itself is not what a test
- * asked for).
+ * The runner's install, holding the runner and its dependencies, jest's
+ * libraries among them. The hoist does not transform its modules, the registry
+ * serves them no mock, and `resetModules` leaves them loaded.
  */
 export const RUNNER_INSTALL = installRootOf(RUNNER_ROOT);
 
 /**
- * @return true if a file is the runner's own machinery (see
+ * @return true if a file is in the runner's install (see
  * {@link RUNNER_INSTALL}), otherwise false.
  */
 export function isRunnerModule(filename: string, runnerInstall = RUNNER_INSTALL): boolean {
@@ -192,20 +178,19 @@ export function isRunnerModule(filename: string, runnerInstall = RUNNER_INSTALL)
 }
 
 /**
- * @return true if a file is the code under test, as opposed to the runner's
- * own machinery or an installed dependency, otherwise false: what the load-time
- * hoist transforms.
+ * @return true if a file is the code under test (below `root`, outside any
+ * `node_modules` and the runner's install), otherwise false: what the hoist
+ * transforms.
  */
 export function isCodeUnderTest(root: string, filename: string): boolean {
   return filename.startsWith(root + path.sep) && !filename.includes(`${path.sep}node_modules${path.sep}`) && !isRunnerModule(filename);
 }
 
 /**
- * @return true if a file is in the tests' module registry, otherwise false:
- * every module bar the runner's own machinery (under `runnerInstall`) and
- * native addons, which node cannot load a second time — the code under test
- * and its dependencies, wherever the layout places them. These are what
- * `resetModules` and `isolateModules` load afresh, as jest's registry does.
+ * @return true if a file is a module of the tests' registry, otherwise false:
+ * every module bar the runner's install (`runnerInstall`) and native addons,
+ * which node cannot load twice. These are what `resetModules` and
+ * `isolateModules` load afresh, as jest's registry does.
  */
 export function isRegistryModule(filename: string, runnerInstall = RUNNER_INSTALL): boolean {
   return !isRunnerModule(filename, runnerInstall) && path.extname(filename) !== ".node";

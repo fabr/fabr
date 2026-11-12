@@ -25,7 +25,7 @@ export type Protocol = "bsp" | "lsp";
 /** The frame header naming the protocol of a message that is not BSP's. */
 export const PROTOCOL_HEADER = "Fabr-Protocol";
 
-/** Each protocol's request a client opens it with, before whose answer the server sends it nothing. */
+/** Each protocol's initialize request: the server holds its notifications to the client until it is answered. */
 const INITIALIZE: Record<Protocol, string> = { bsp: "build/initialize", lsp: "initialize" };
 
 /** JSON-RPC's error codes a server answers with. */
@@ -66,7 +66,7 @@ export class MethodNotFound extends FabrError {}
 /** Parameters a request's method cannot be answered with. */
 export class InvalidParams extends FabrError {}
 
-/** What a protocol's server answers a request or notification `method` with. */
+/** A protocol's server: answers a request or notification `method` with its result, or throws (MethodNotFound, InvalidParams, or any other error, answered as an internal error). */
 export type Handler = (method: string, params: unknown) => unknown;
 
 /**
@@ -76,11 +76,13 @@ export type Handler = (method: string, params: unknown) => unknown;
  * is BSP's, so a client speaking BSP alone sees nothing but BSP.
  */
 export class JsonRpcConnection {
+  /** The data read and joined, and not yet taken as frames. */
   private buffer = Buffer.alloc(0);
-  /** Data read since `buffer` was last joined, and its length with `buffer`'s. */
+  /** The data read since the last join onto `buffer`. */
   private chunks: Buffer[] = [];
+  /** The length of `buffer` and `chunks` together. */
   private readLength = 0;
-  /** The length `buffer` must reach to hold the frame it begins, where its headers say. */
+  /** The length `buffer` must reach to hold the frame it begins, where its headers have said; else 0. */
   private wanted = 0;
   private readonly handlers = new Map<Protocol, Handler>();
   /** Each protocol's notifications sent before its client's initialize was answered, sent once it is. */
@@ -99,7 +101,7 @@ export class JsonRpcConnection {
     this.handlers.set(protocol, handler);
   }
 
-  /** Read messages from `input` until it ends, then call `onEnd`. */
+  /** Read messages from `input` and dispatch each until it ends, then call `onEnd`. A frame that cannot be read is answered with an error. */
   public listen(input: NodeJS.ReadableStream, onEnd: () => void): void {
     input.on("data", (data: Buffer) => {
       this.chunks.push(data);
@@ -124,8 +126,8 @@ export class JsonRpcConnection {
     input.on("end", onEnd);
   }
 
-  /** Send `protocol`'s notification `method`: once its client's initialize has
-   * been answered, and until then held; dropped where the protocol has no client yet. */
+  /** Send `protocol`'s notification `method` to its client, holding it until the
+   * client's initialize has been answered. Dropped where the protocol has no client yet. */
   public notify(method: string, params: unknown, protocol: Protocol = "bsp"): void {
     const held = this.held.get(protocol);
     if (!this.heard.has(protocol)) {
@@ -141,8 +143,9 @@ export class JsonRpcConnection {
   /**
    * @return the next frame in the buffer, taken from it, or undefined where the
    * buffer holds no whole frame yet. A frame whose headers state no length is
-   * dropped up to the end of its headers, and one whose body is no JSON-RPC
-   * message is reported as such, so a malformed frame never stops the reading.
+   * taken up to the end of its headers and returned as an invalid request; one
+   * whose body is not a JSON-RPC message is taken whole and returned as a parse
+   * error or an invalid request.
    */
   private next(): Frame | undefined {
     const blank = this.buffer.indexOf("\r\n\r\n");
@@ -178,6 +181,10 @@ export class JsonRpcConnection {
     }
   }
 
+  /** Answer `message` with `protocol`'s handler: a request with its result or
+   * error, a notification with nothing. Once the protocol's initialize is
+   * answered, send the notifications held for it. A message with no method (a
+   * response) is ignored. */
   private dispatch(protocol: Protocol, message: IMessage): void {
     if (message.method === undefined) {
       return;
@@ -213,6 +220,7 @@ export class JsonRpcConnection {
       );
   }
 
+  /** Write `message` as a frame, naming its protocol where it is not BSP. */
   private send(protocol: Protocol, message: unknown): void {
     const body = Buffer.from(JSON.stringify(message), "utf8");
     const tag = protocol === "bsp" ? "" : `${PROTOCOL_HEADER}: ${protocol}\r\n`;

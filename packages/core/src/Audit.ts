@@ -34,18 +34,12 @@ import { compareText } from "./support/Functional";
 import { decidingStatement, suppresses, VexStatement } from "./support/OpenVex";
 import { ISarifLocation, ISarifLog, ISarifResult, ISarifRule, sarifLog } from "./support/Sarif";
 
-/**
- * Audit what names resolve to against a database of security advisories: the
- * registry packages among the dependencies, each at its exact version, asked
- * about by its purl, and each target made from one (a `patched` package) as
- * the package it is made from, its build fixing what its rule declares. The render-free operation behind `fabr audit`: a driver
- * resolves the names ({@link BuildContext.resolve}), hands them to
- * {@link audit} with the {@link AdvisoryServer} to ask, and renders the
- * {@link AuditReport}, or writes it as SARIF ({@link auditSarif}). OpenVEX
- * statements the project makes ({@link VexStatement}) suppress an advisory in
- * the packages they say it does not affect. Nothing is
- * fetched or built, and nothing the database answers is cached: its answer is
- * read as it stands, and is no input to any build.
+/*
+ * The audit behind `fabr audit`, without its rendering: a driver resolves the
+ * names ({@link BuildContext.resolve}), passes them to {@link audit} with the
+ * {@link AdvisoryServer} to ask, and renders the {@link AuditReport}, or
+ * writes it as SARIF ({@link auditSarif}). No package is fetched and no target
+ * built, and nothing the advisory database answers is cached.
  */
 
 /** How a name's dependencies reach a package. */
@@ -54,7 +48,7 @@ export interface AuditedPath {
   readonly path: ReadonlyArray<string>;
   /** How many other edges among the name's dependencies lead to the package. */
   readonly others: number;
-  /** Where the path's first reference was written, where it was written in a build file. */
+  /** Where the first reference on the path that a build file wrote was written, where there is one. */
   readonly site?: ISourceSpan;
 }
 
@@ -71,7 +65,7 @@ export interface AuditedPackage {
   readonly version: string;
   /** The format it was resolved in, whose versions the advisories' are. */
   readonly format: PackageFormat<unknown, unknown>;
-  /** How each tree reaches the package, one entry per tree that does. */
+  /** How each name reaches the package, one entry per name that does. */
   readonly paths: ReadonlyArray<AuditedPath>;
   /** The target the package is made into, where the trees reach a target made
    * from it rather than the package itself, with the advisories its rule
@@ -88,9 +82,9 @@ function pathName(pkg: Package): string {
  * List the packages among what `names` resolve to that an advisory database
  * can be asked about: each registry package at its exact version, by its purl,
  * once however many names reach it. A package built in the project is walked
- * through for what it requires, and asked about as the registry package it is
- * made from where it is made from one, apart from that package itself;
- * otherwise it is asked about nothing, having no published version.
+ * through for what it requires, and listed as the registry package it is made
+ * from ({@link madeFrom}), as an entry apart from that package's own;
+ * otherwise it is not listed.
  */
 export function auditedPackages(names: ReadonlyArray<ResolvedName>): Computable<AuditedPackage[]> {
   return walkNames(names).then(walked => walked.packages);
@@ -98,7 +92,7 @@ export function auditedPackages(names: ReadonlyArray<ResolvedName>): Computable<
 
 /** List the {@link auditedPackages} among what `names` resolve to, and the
  * advisories declared fixed by each target among them that is made from no
- * registry package to fix them in. */
+ * registry package. */
 function walkNames(names: ReadonlyArray<ResolvedName>): Computable<{ packages: AuditedPackage[]; unattached: UnmatchedFix[] }> {
   return walkReadingFiles(readFor => walkNamesReading(names, readFor));
 }
@@ -120,8 +114,8 @@ function walkNamesReading(
   }
   const audited = new Map<string, Entry>();
   for (const { title, resolved } of names) {
-    /* Each package's dependencies are walked once; every further edge to it is
-     * counted as another path. */
+    /* Walk each package's dependencies once per name; count every further
+     * edge to it in its first path's `others`. */
     const reached = new Map<Package, { path: string[]; others: number } | undefined>();
     const walk = (edges: ReadonlyArray<WalkedEdge>, path: string[], site: ISourceSpan | undefined): void => {
       for (const { edge: dependency, whole } of edges) {
@@ -151,7 +145,7 @@ function walkNamesReading(
         } else {
           const found = { path: here, others: 0, ...(written === undefined ? {} : { site: written }) };
           reached.set(pkg, found);
-          /* A target made from the package is a package of its own. */
+          /* A target made from the package is an entry of its own. */
           const key = patched === undefined ? purl : `${purl} ${pkg.packageName}`;
           const entry = audited.get(key) ?? {
             purl,
@@ -231,8 +225,8 @@ export function toAdvisory(json: unknown): Advisory {
   };
 }
 
-/** One query's answer in a batch: the advisories' ids, and the token for the
- * rest where there are more. */
+/** One query's answer in a batch: the advisories' ids, and the page token for
+ * the rest where there are more. */
 interface QueryResult {
   readonly ids: string[];
   readonly next?: string;
@@ -252,7 +246,7 @@ export function toQueryResults(json: unknown): QueryResult[] {
   });
 }
 
-/** The advisories' side of an audit: what the database answers. */
+/** An advisory database the audit asks. */
 export interface AdvisoryServer {
   /** Query the advisories affecting each of `purls`: their ids, aligned with the purls. */
   query(purls: ReadonlyArray<string>): Computable<ReadonlyArray<ReadonlyArray<string>>>;
@@ -265,10 +259,11 @@ const QUERY_BATCH = 1000;
 
 /**
  * Make the server at `base`, a URL answering OSV's API
- * (https://google.github.io/osv.dev/api/): `v1/querybatch` for the queries,
- * a thousand at a time and paged where one package has more, `v1/vulns/<id>`
- * for each advisory. Nothing is cached: the advisories are read as they
- * stand.
+ * (https://google.github.io/osv.dev/api/): `v1/querybatch` for the queries, a
+ * thousand at a time, following each query's pages to the end, and
+ * `v1/vulns/<id>` for each advisory. Nothing is cached. A request rejects
+ * where the server answers other than 200, with a body that does not convert,
+ * or with a different number of answers than queries.
  */
 export function osvServer(base: string): AdvisoryServer {
   const root = base.replace(/\/+$/, "");
@@ -324,7 +319,7 @@ export function osvServer(base: string): AdvisoryServer {
   };
 }
 
-/** A package an advisory would affect, which a VEX statement says it does not. */
+/** A package an advisory would affect, which an OpenVEX statement says it does not. */
 export interface SuppressedPackage {
   readonly pkg: AuditedPackage;
   /** The statement deciding the advisory's status in the package. */
@@ -338,12 +333,12 @@ export interface Finding {
   readonly packages: ReadonlyArray<AuditedPackage>;
   /** The packages it would affect, made into targets whose builds fix it. */
   readonly fixed: ReadonlyArray<AuditedPackage>;
-  /** The packages it would affect, apart from those {@link fixed}, which VEX statements say it does not. */
+  /** The packages it would affect, apart from those {@link fixed}, which OpenVEX statements say it does not. */
   readonly suppressed: ReadonlyArray<SuppressedPackage>;
 }
 
-/** An advisory a target declares its build fixes, which affects nothing it is
- * made from, or which it has no registry package to fix in. */
+/** An advisory a target declares its build fixes that does not affect the
+ * package it is made from, or a target made from no registry package. */
 export interface UnmatchedFix {
   readonly target: string;
   /** The advisory as the target names it. */
@@ -353,7 +348,7 @@ export interface UnmatchedFix {
 }
 
 /** What an audit found: the packages asked about, the advisories affecting
- * them, and the fixes declared for advisories that do not. */
+ * them, and the declared fixes that match no advisory affecting them. */
 export interface AuditReport {
   readonly packages: ReadonlyArray<AuditedPackage>;
   readonly findings: ReadonlyArray<Finding>;
@@ -365,7 +360,7 @@ function namedAmong(advisory: Advisory, ids: ReadonlyArray<string>): boolean {
   return ids.includes(advisory.id) || advisory.aliases.some(alias => ids.includes(alias));
 }
 
-/** @return true if any advisory `report` found affects a package, as one its builds do not fix, otherwise false. */
+/** @return true if any advisory `report` found affects a package, neither fixed nor suppressed, otherwise false. */
 export function affectsAny(report: AuditReport): boolean {
   return report.findings.some(finding => finding.packages.length > 0);
 }
@@ -381,14 +376,23 @@ export function severityRank(advisory: Advisory): number {
 }
 
 /**
- * Audit what `names` resolve to: ask `server` about every registry package among them,
- * those the targets read for their files require included, and
- * report each advisory it answers with against the packages it affects,
- * the worst first, apart from those made into targets that declare their
- * builds fix it, and apart from those `statements` say it does not affect
- * (the deciding statement's status `not_affected` or `fixed`); and report
- * each advisory a target declares its build fixes that affects nothing it is
- * made from.
+ * Audit what `names` resolve to: ask `server` about every package
+ * {@link auditedPackages} lists among them (what the targets they read for
+ * their files require included), and report what it answers.
+ *
+ * The report holds:
+ * - `packages`: every package asked about.
+ * - `findings`: each advisory `server` answers with, worst rated first (see
+ *   {@link severityRank}), then by id. Each package it affects is in exactly
+ *   one of: `fixed`, where the package is made into a target that declares
+ *   its build fixes the advisory (by its id or an alias); `suppressed`, where
+ *   the deciding statement among `statements` for the advisory and package
+ *   has the status `not_affected` or `fixed`; `packages`, otherwise.
+ * - `unmatched`: each advisory a target declares its build fixes that does
+ *   not affect the package it is made from, and each a target made from no
+ *   registry package declares.
+ *
+ * Rejects where `server` fails to answer.
  */
 export function audit(
   names: ReadonlyArray<ResolvedName>,
@@ -398,7 +402,7 @@ export function audit(
   return walkNames(names).then(({ packages, unattached }) => auditPackages(packages, unattached, server, statements));
 }
 
-/** Audit `packages` as {@link audit} does, with the fixes `unattached` declares where there is nothing to fix them in. */
+/** Audit `packages` as {@link audit} does, adding `unattached` (the fixes declared by targets made from no registry package) to the unmatched. */
 function auditPackages(
   packages: AuditedPackage[],
   unattached: UnmatchedFix[],
@@ -479,16 +483,16 @@ export function fixedVersions(advisory: Advisory, pkg: AuditedPackage): string[]
     .map(each => each.text);
 }
 
-/** @return the level a result for `advisory` is reported at, by the database's
- * rating: the worst two are errors, the next two warnings, the least a note, an
- * unrated one a warning. */
+/** @return the SARIF level a result for `advisory` is reported at, by the
+ * database's rating: `CRITICAL` and `HIGH` are errors, `MODERATE`, `MEDIUM`
+ * and an unrated one warnings, `LOW` a note. */
 function sarifLevel(advisory: Advisory): ISarifResult["level"] {
   const rank = severityRank(advisory);
   return rank < 2 ? "error" : rank < 4 ? "warning" : rank < SEVERITIES.length ? "note" : "warning";
 }
 
-/** The `security-severity` code-scanning services bucket by, a CVSS-scaled
- * score as text, from the database's rating; none where it gives none. */
+/** The SARIF `security-severity` (a CVSS-scaled score, as text) given for
+ * each of the database's ratings. */
 const SECURITY_SEVERITY = new Map([
   ["CRITICAL", "9.5"],
   ["HIGH", "8.0"],
@@ -511,12 +515,14 @@ export function pathText({ path, others }: AuditedPath): string {
 }
 
 /**
- * Shape an audit report as SARIF, for a code-scanning service: each advisory a
- * rule, each affected package a result at the level its rating gives (one a
- * target's build fixes, suppressed in source), located
- * where `locate` places the written references that bring it in, where it
- * places them (a reference written in the project's own build files). `tool`
- * names the fabr that ran.
+ * Write an audit report as a SARIF log, for a code-scanning service. Each
+ * finding's advisory is a rule, and each package it would affect a result at
+ * the level its rating gives ({@link sarifLevel}): a package a target's build
+ * fixes carries an `inSource` suppression, one an OpenVEX statement
+ * suppresses an `external` one. A result is located where `locate` places the
+ * written references its paths start from; `locate` returns undefined for a
+ * reference it cannot place, such as one outside the project's build files.
+ * `tool.version` is the version of fabr that ran.
  */
 export function auditSarif(
   report: AuditReport,
@@ -536,7 +542,7 @@ export function auditSarif(
   }));
   const result = (advisory: Advisory, ruleIndex: number, pkg: AuditedPackage, statement?: VexStatement): ISarifResult => {
     const fixed = fixedVersions(advisory, pkg);
-    /* Paths starting from one reference are located once. */
+    /* Locate paths that start from one reference once. */
     const located = new Map<string, ISarifLocation>();
     for (const { site } of pkg.paths) {
       const location = site === undefined ? undefined : locate(site);
@@ -556,8 +562,8 @@ export function auditSarif(
         }, required through ${pkg.paths.map(pathText).join("; ")}`,
       },
       ...(locations.length === 0 ? {} : { locations }),
-      /* A target that declares it fixes the advisory says so where it is
-       * declared; a VEX statement, in a document of its own. */
+      /* A target's declared fix is suppressed in source; an OpenVEX
+       * statement's externally. */
       ...(patched !== undefined && namedAmong(advisory, patched.fixes)
         ? { suppressions: [{ kind: "inSource" as const, justification: `fixed by the patched target '${patched.target}'` }] }
         : statement !== undefined

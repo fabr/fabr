@@ -85,8 +85,8 @@ export function installPnpRuntime(table: string): void {
       if (parent === undefined || nodeModule.isBuiltin(specifier)) {
         return nextResolve(specifier, context);
       }
-      /* Answers are kept by the issuer's directory and the conditions, which
-       * are all the table's answer depends on. */
+      /* Answers are memoized by specifier, the issuer's directory and the
+       * conditions: the table's answer depends on nothing else. */
       const key = `${specifier}\0${path.dirname(parent)}\0${(context.conditions ?? []).join(",")}`;
       const known = answered.get(key);
       if (known !== undefined) {
@@ -99,8 +99,8 @@ export function installPnpRuntime(table: string): void {
       try {
         resolved = resolver.resolveRequest(specifier, parent, { conditions: new Set(context.conditions ?? []) });
       } catch (err: unknown) {
-        /* What the table refuses is node's to answer; where node cannot
-         * either, the table's error is the one reported. */
+        /* Where the table refuses, ask node; where node fails too, report the
+         * table's error. */
         try {
           return nextResolve(specifier, context);
         } catch {
@@ -110,8 +110,9 @@ export function installPnpRuntime(table: string): void {
       if (resolved === null) {
         return nextResolve(specifier, context);
       }
-      /* By its real path, as node names every module it resolves, so a file
-       * reached through the pool's link and not is one module. */
+      /* Answer with the real path (virtual part kept), as node names every
+       * module it resolves, so a file reached through the pool's link and
+       * directly loads as one module. */
       const answer = { url: pathToFileURL(realpathKeepingVirtual(resolved, realpath)).href, shortCircuit: true };
       answered.set(key, answer);
       return answer;

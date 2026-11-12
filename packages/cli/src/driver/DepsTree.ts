@@ -111,12 +111,13 @@ export interface DependencyTree {
 
 /**
  * Split what `target` requires into sections by where each source was written:
- * the target's own property it was read from (`deps`), or the rule, for what
- * the rule requires itself (`required by <type> rule`). What the target's rule
- * builds under the target's own name (a rule block's result, the target under
- * another operation) is part of the target, not something it requires: it is
- * shown by what it requires in turn, and what conflicts there is the target's
- * too. Each source is shown once.
+ * the property of the target it was read from (`deps`), or `required by <type>
+ * rule` for what the rule requires itself. A build the rule makes under the
+ * target's own name (a rule block's result, the target under another
+ * operation) gets no line of its own: what it requires is shown in the
+ * target's sections, and its conflicts are counted with the target's. A target
+ * read for its files is shown with the edges `readFiles` holds for it. Each
+ * source is shown once.
  */
 function requiredAsWritten(
   target: ResolvedTarget,
@@ -180,13 +181,13 @@ function propertyOf(source: unknown, writtenIn: (step: IModelStep) => boolean): 
 }
 
 /**
- * Split what a name resolved to into the tree's sections. One target is shown
- * by what it requires, a section per requirement, with what conflicts there,
- * and a declaration's own requirements (a catalog's) likewise; a
- * target it reads for its files (resolved in `readFiles`) as that target.
- * Anything else (an external requirement, a catalog member, a global naming
- * several things) is shown as what it names, in one unnamed section, with each
- * target among it as its node.
+ * Split what a name resolved to into the tree's sections. A declaration's own
+ * requirements (a catalog's) are split by property ({@link declaredAsWritten}),
+ * and one target by where each of its sources was written
+ * ({@link requiredAsWritten}), a target it reads for its files shown with the
+ * edges `readFiles` holds for it. Anything else (an external requirement, a
+ * catalog member, a global naming several things) is shown as what it names,
+ * in one unnamed section, each target among it as its node.
  */
 export function sectionsOf(
   title: string,
@@ -218,14 +219,15 @@ function conflictNotes(conflicts: Conflicts): string[] {
 }
 
 /**
- * Render the dependency trees of what each `title` names: a block per title, a
- * section per requirement that holds a package, each package's
- * subtree expanded the first time it appears in the block and marked `(*)`
- * after. Requirements holding only files are left out, as are the files a projected
- * reference selects. A version conflicting in what the name requires is
- * marked `(!)`, and the conflicts are listed under the block. Ends with a legend for the marks used. `style`
- * paints the output for a terminal: packages built in the project stand out,
- * conflicts too, and the scaffolding recedes.
+ * Render each tree in `blocks` as lines: its title, then each section that
+ * holds a package, under its name where it has one ("No dependencies" where
+ * none does). Each package's subtree is expanded the first time it appears in
+ * the block and marked `(*)` after. A provided requirement is marked `(p)`, an
+ * edge bound to no package `(n)`, and a package among the block's conflicts
+ * `(!)`, the conflicting versions listed under the block. Ends with a legend
+ * for the marks used. `style` paints the output for a terminal: packages built
+ * in the project coloured (with a legend line for the colour), marks and
+ * conflicts coloured, and the connectors dimmed.
  */
 export function renderDependencyTrees(blocks: ReadonlyArray<DependencyTree>, style: Style = (_code, text) => text): string[] {
   const lines: string[] = [];
@@ -302,11 +304,12 @@ function severityStyle(advisory: Advisory, style: Style): string {
 }
 
 /**
- * Render an audit report: a block per advisory — its id and aliases, the
- * database's rating and its summary, then each affected package with the
- * versions that fix it and a path the tree reaches it by, then each a patched
- * target fixes — and the count.
- * `style` paints the output for a terminal.
+ * Render an audit report as lines: a block per advisory (its id and aliases,
+ * the database's rating and its summary; each affected package with the
+ * versions that fix it and each path the tree reaches it by; each package a
+ * patched target fixes; each package a VEX statement suppresses it in; and
+ * the advisory's URL), then a line counting the advisories and the packages
+ * they affect. `style` paints the output for a terminal.
  */
 export function renderAudit(report: AuditReport, style: Style = (_code, text) => text): string[] {
   const lines: string[] = [];

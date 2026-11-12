@@ -18,10 +18,9 @@
  */
 
 /*
- * The engine-layer error vocabulary: every typed error the core can reject
- * with, in one place (the model layer's own errors live in model/Errors.ts —
- * they reference model types the core doesn't know). Errors carry data;
- * presentation is exclusively the driver's job.
+ * The engine layer's typed errors, every one the core can reject with (the
+ * model layer's are in model/Errors.ts). Errors carry data; the driver renders
+ * them.
  */
 
 import { STATUS_CODES } from "node:http";
@@ -33,21 +32,18 @@ import type { OutputStream } from "../support/Execute";
 import type { ITestReport } from "../support/TestResult";
 import type { Package } from "./PackageFileSet";
 
-/**
- * Coerce an arbitrary thrown value to an Error.
- */
+/** Coerce an arbitrary thrown value to an Error. */
 export function toError(err: unknown): Error {
   return err instanceof Error ? err : new FabrError(String(err));
 }
 
 /**
- * The base of fabr's errors: one that may carry remedy text, rendered as
- * `help:` line(s) when the error is reported — the message states the problem,
- * the help suggests the fix. `help` holds one entry per `help:` line (several
- * for a multi-line remedy like a pasteable override set), and is empty where
- * there is none. `cause` is the error this one was raised in response to,
- * where there is one. An error wrapping another holds no copy of its help:
- * read the help for a failure with {@link helpOf}.
+ * The base of fabr's errors. The message states the problem; `help` holds the
+ * remedy, one entry per `help:` line of the report (several for a multi-line
+ * remedy such as a set of overrides to paste), empty where there is none.
+ * `cause` is the error this one was raised in response to, where there is one.
+ * An error wrapping another holds no copy of its help: read the help for a
+ * failure with {@link helpOf}.
  */
 export class FabrError extends Error {
   public help: string[];
@@ -61,19 +57,17 @@ export class FabrError extends Error {
     }
   }
 
-  /**
-   * Set this error's help, replacing any it has, and return the same error —
-   * for a remedy known only to a caller of the code that raised it.
-   */
+  /** Set this error's help, replacing any it has, and return the same error:
+   *  for a remedy known only to a caller of the code that raised it. */
   public withHelp(help: string | string[]): this {
     this.help = Array.isArray(help) ? help : [help];
     return this;
   }
 }
 
-/** What a node of the Computable graph stands for, to a reader of a dependency
- * cycle it is found on: the name it answers for, or the written reference it
- * was made for. */
+/** The name a node of the Computable graph is reported by when it is on a
+ * dependency cycle: the name it answers for, or the written reference it was
+ * made for. */
 export interface Label {
   readonly name: string;
 }
@@ -105,10 +99,8 @@ export function helpOf(err: Error): string[] {
   return [];
 }
 
-/**
- * Aggregate of multiple independent errors (e.g. several dependencies of a
- * computation failing), flattened into a single list.
- */
+/** Several independent errors (several dependencies of a computation failing,
+ *  say), as one flat list. */
 export class MultiError extends FabrError {
   public readonly errors: ReadonlyArray<Error>;
 
@@ -118,13 +110,10 @@ export class MultiError extends FabrError {
   }
 
   /**
-   * Aggregate one or more errors: nested MultiErrors are flattened, and
-   * duplicates (by object identity) are dropped, so a single root cause that
-   * reaches a computation via multiple paths is reported once. If only one
-   * distinct error remains it is returned as-is rather than wrapped, which
-   * also preserves its identity for unchanged-value propagation checks.
-   *
-   * @param errors a non-empty list of errors.
+   * Aggregate `errors`: nested MultiErrors are flattened and duplicates (by
+   * object identity) dropped, so one cause reaching a computation by several
+   * paths is reported once. Where one distinct error remains, it is returned
+   * itself, unwrapped. Throws where `errors` is empty.
    */
   public static of(errors: Error[]): Error {
     const distinct = new Set<Error>();
@@ -144,12 +133,9 @@ export class MultiError extends FabrError {
 }
 
 /**
- * A non-200 HTTP response, with the status carried as data so a caller can
- * translate specific statuses (e.g. a registry 404) into domain messages.
- *
- * The rendered reason phrase is the standard one for the code, not the
- * response's own: HTTP/2 has no reason phrase and the client doesn't surface
- * one over HTTP/1 either, so the alternative is the bare number.
+ * A non-200 HTTP response. A caller may translate a status (a registry's 404,
+ * say) into a message of its own. The message's reason phrase is the standard
+ * one for the code (`STATUS_CODES`), not the response's.
  */
 export class HttpStatusError extends FabrError {
   constructor(
@@ -163,11 +149,12 @@ export class HttpStatusError extends FabrError {
 }
 
 /**
- * Downloaded content failed to match the integrity digest its metadata
- * promised — TLS alone can't catch a truncated-but-valid payload or a tampered
- * mirror, so a mismatch fails the fetch (and, since it throws inside the fetch
- * `process` callback, the entry is never cached). `algorithm` names the digest
- * compared (`sha512`, `sha1`, …); `expected`/`actual` are its encoded values.
+ * Content that does not match the integrity digest stated for it (by registry
+ * metadata, or a `fetch` declaration). Raised while a download streams, before
+ * it is committed to the cache, and against stored content a declared digest
+ * does not match. `algorithm` names the digest compared (`sha512`, `sha1`, …);
+ * `expected` and `actual` are its encoded values, `expected` listing every
+ * acceptable value joined by ` | `.
  */
 export class IntegrityError extends FabrError {
   constructor(
@@ -181,10 +168,10 @@ export class IntegrityError extends FabrError {
 }
 
 /**
- * A mechanical failure while executing a build step (spawning processes,
- * staging files, ...) — as opposed to a semantic diagnostic like a conflict or
- * resolution failure. Multiple execution errors from one target are reported
- * grouped under the target rather than as individual diagnostics.
+ * A mechanical failure while executing a build step (spawning a process,
+ * staging files, ...), as opposed to a diagnostic such as a conflict or a
+ * resolution failure. The failure report groups a target's execution errors
+ * under the target.
  */
 export class ExecutionError extends FabrError {}
 
@@ -195,10 +182,10 @@ export interface ICommandOutputLine {
 }
 
 /**
- * A command that ran and failed: its command line (`$ cmd args…`), everything
- * it showed, in arrival order, and how it ended ("exited with error code 2").
- * The message renders the three plainly; a reporter that knows whose command it
- * was renders the output lines attributed, as the live stream does.
+ * A command that ran and failed: its command line (`$ cmd args…`), its output
+ * lines in arrival order, and how it ended ("exited with error code 2"). The
+ * message is the three, plain; a reporter that knows whose command it was
+ * renders the output lines attributed, as the live stream does.
  */
 export class CommandFailedError extends ExecutionError {
   constructor(
@@ -211,10 +198,10 @@ export class CommandFailedError extends ExecutionError {
 }
 
 /**
- * A test run completed mechanically but some tests failed — as distinct from
- * an ExecutionError (the run itself couldn't be performed). Test rules throw
- * this with a pre-rendered summary ("N of M tests failed: ..."), which the
- * driver reports against the target under test rather than as a build failure.
+ * A test run that completed with some tests failed, as distinct from an
+ * ExecutionError (the run could not be performed). The message is a rendered
+ * summary ("N of M tests failed: ..."); the driver reports it against the
+ * target under test as test outcomes, not as a build failure.
  */
 export class TestsFailedError extends FabrError {
   /** Number of failing tests */
@@ -233,25 +220,25 @@ export class TestsFailedError extends FabrError {
 }
 
 /**
- * One side of a conflict: the provenance chain of the contributor and, for
- * disambiguating same-provenance conflicts, an optional concrete `detail` (a
- * file's display name, a package's version).
+ * One side of a conflict: the contributor's provenance and an optional
+ * `detail` (a file's display name, a package's version), which labels the side
+ * where the provenance describes nothing.
  */
 export interface IConflictSource {
   provenance?: IProvenanceStep;
   detail?: string;
 }
 
-/** A conflict side as reported: the label is derived from the provenance. */
+/** A conflict side as reported, with its label: the provenance's description,
+ *  else the `detail`, else "unknown". */
 export interface IConflictSide extends IConflictSource {
   label: string;
 }
 
 /**
- * Two provenance-attributed sources supply the same `key` with different
- * content — a naming conflict. `kind` names what collides ("files", "catalog
- * entries", ...); both sides are attributed so whoever reports it (the driver)
- * can point at each.
+ * A naming conflict: two sources supply the same `key` with different content.
+ * `kind` names what collides ("files", "catalog entries", ...); each side
+ * carries its provenance, so a report can point at both.
  */
 export class ConflictError extends FabrError {
   public readonly left: IConflictSide;
@@ -280,15 +267,13 @@ function describeSide(source: IConflictSource): IConflictSide {
 }
 
 /**
- * Rejection raised when the registry cannot supply the metadata needed to
- * continue a resolution walk (a fetch failure, an unpublished package) —
- * unlike a constraint violation, which is reported as data on the
- * MVSResolution (`violations`/`errors`).
- * Carries the failing package, the chain of requirers that first reached it
- * (nearest first; empty when the package is itself a root requirement), and
- * the root package name the chain leads back to — so a repository can
- * attribute the failure to the written reference(s) whose requirement pulled
- * the package in.
+ * A resolution walk's failure to read the metadata of `packageName` at
+ * `version` from its registry (a fetch failure, an unpublished version).
+ * `requirerPath` is the chain of requirers that first reached the package,
+ * nearest first, empty where it is a root requirement; `rootName` is the root
+ * it leads back to, so a repository can attribute the failure to the written
+ * references that required that root. An unsatisfied constraint is no such
+ * failure: it is listed in the MVSResolution's `violations`.
  */
 export class MetadataFetchError extends FabrError {
   declare public readonly cause: Error;
@@ -305,11 +290,11 @@ export class MetadataFetchError extends FabrError {
 }
 
 /**
- * Hard errors found during a resolution walk (an unparseable constraint in
- * registry metadata, an unconstrained-only requirement), each attributed to
- * the root package whose subtree contains it — carried structured so the
- * repository can map every failure back to the written reference(s) requiring
- * that root (the walk-errors analogue of MetadataFetchError's rootName).
+ * The problems a resolution walk listed in its `errors` (an unparseable
+ * constraint in registry metadata, a package required only without a lower
+ * bound, ...), each with the root package whose subtree holds it (`rootName`),
+ * so a repository can attribute it to the written references requiring that
+ * root.
  */
 export class ResolutionWalkError extends FabrError {
   constructor(
@@ -328,10 +313,10 @@ export class ResolutionWalkError extends FabrError {
 }
 
 /**
- * A specific package version does not exist in its registry (the translated
- * 404 for a version document) — distinguished from transport failures so the
- * resolver can attempt the floor-raise repair (an unpublished declared floor)
- * rather than treating it as an unreachable registry.
+ * A package version its registry does not have (a 404 for the version's
+ * document). The resolver takes a lower bound that answers this as never
+ * published, and meets it from a published version (see resolveMVS); any
+ * other fetch failure fails the walk.
  */
 export class VersionNotFoundError extends FabrError {
   constructor(
@@ -345,8 +330,8 @@ export class VersionNotFoundError extends FabrError {
 
 /**
  * A requirement on a package that was bound, by its name, to a target of the
- * project that turned out to build no package. `requirer` is the package that
- * states the requirement, or the registry's reference the target answers; `constraint` is
+ * project that builds no package. `requirer` is the package that states the
+ * requirement, or the registry's reference the target answers; `constraint` is
  * what a package's requirement asked for, where that is known.
  */
 export class TargetNotPackageError extends FabrError {
@@ -368,11 +353,11 @@ export class TargetNotPackageError extends FabrError {
 }
 
 /**
- * A repository failure attributed to the written reference(s) it traces back
- * to: the underlying error (e.g. a registry 404) wrapped with the refs whose
- * requirement — or whose closure's root requirement — the failure arose from.
- * The refs' carried provenance (model steps) is what lets the driver point
- * back at the written requirement rather than only at the consuming target.
+ * A repository failure attributed to the written references it traces back
+ * to: the underlying error (a registry's 404, say) wrapped with the references
+ * whose requirement, or whose closure's root requirement, it arose from. Their
+ * provenance lets the driver point at the written requirement as well as the
+ * consuming target.
  */
 export class RequirementResolutionError extends FabrError {
   declare public readonly cause: Error;
@@ -382,9 +367,9 @@ export class RequirementResolutionError extends FabrError {
     cause: Error,
     /** Where each package built in the project that takes part was required. */
     public readonly builds: ReadonlyArray<IProvenanceStep> = [],
-    /** Where what a reference delivered came from, for a reference whose
-     * delivery has an origin of its own (a catalog member: the catalog's
-     * entry for it). */
+    /** For a reference answered by content with an origin of its own (a
+     * catalog member: the catalog's entry for it), where that content came
+     * from. */
     public readonly delivered: ReadonlyMap<Reference, IProvenanceStep> = new Map()
   ) {
     super(cause.message, cause);

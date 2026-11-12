@@ -20,9 +20,9 @@
 import { Computable, ComputableSource } from "./Computable";
 import { toError } from "./Errors";
 
-/** One step of a work-list traversal: the value computed for a key, plus the
- * keys it makes reachable. Already-visited keys in `next` are ignored, so
- * cycles and shared references need no special handling by the step. */
+/** One step of a work-list traversal: the value computed for a key, and the
+ * keys it makes reachable. Keys in `next` already visited are ignored, so a
+ * step need not avoid cycles or repeats. */
 export interface WorkListItem<K, V> {
   value: V;
   next: K[];
@@ -30,18 +30,17 @@ export interface WorkListItem<K, V> {
 
 /**
  * Compute the transitive closure of `step` over `seeds`: every key reachable
- * through `next` edges is visited exactly once, yielding key → value in
- * discovery (breadth-first) order. Keys compare by Map identity, so use
+ * through `next` is visited once, and the result maps each key to its value
+ * in discovery (breadth-first) order. Keys compare as Map keys do, so use
  * primitives or interned objects.
  *
- * The result is persistent like any Computable: `step` is called at most once
- * per key ever, and its node is depended on for as long as the key is
- * reachable — if it re-resolves, the closure recomputes from the then-current
- * values. A changed `next` set discovers new keys (stepped on demand) or drops
- * no-longer-reachable ones from the result; a dropped key's step node detaches
- * while idle and reattaches (re-reading its current state) if rediscovered.
- * Step failures aggregate and reject the whole result, recovering if the
- * failed step later re-resolves.
+ * `step` is called at most once per key, and the result depends on each
+ * key's node while the key is reachable, so it computes again when a node
+ * settles to a new item: a changed `next` adds the keys it now reaches
+ * (stepping new ones) and drops those it no longer does. A dropped key's
+ * node detaches, and attaches again if the key is reached again. Where steps
+ * fail, the result rejects with their errors combined, and recovers when the
+ * failed steps settle to values.
  */
 export function computableWorkList<K, V>(
   seeds: readonly K[],
@@ -61,14 +60,12 @@ export function computableWorkList<K, V>(
     return node;
   };
 
-  /* One pass over the closure-so-far. `keys` is deduplicated, in discovery
-   * order, and grows monotonically down the recursion (so the recursion
-   * terminates for any finite reachable set, cycles included). The pass
-   * depends on EVERY key's step, not just the newest frontier: a re-resolve
-   * anywhere in the prefix re-runs the shallowest pass containing it, which
-   * recomputes the frontier from the current values and supersedes the
-   * previously grown tail (detaching it, along with any step nodes only it
-   * was keeping attached). */
+  /* One pass over the closure so far: `keys` is deduplicated, in discovery
+   * order, and only grows from one pass to the next. The pass depends on
+   * every key's step, not just the newest: a step settling to a new item
+   * re-runs the first pass holding its key, which finds the next keys from
+   * the current values and replaces the passes after it (detaching them, and
+   * any step nodes only they kept attached). */
   const expand = (keys: K[]): Computable<Map<K, V>> =>
     Computable.forAll(keys.map(stepFor), (...items) => {
       const known = new Set(keys);
@@ -92,11 +89,9 @@ export function computableWorkList<K, V>(
 
 /**
  * Get what `fn` answers for the first item it answers anything for, or
- * undefined where it answers for none: items are tried in order and `fn` is
- * not called for any item after the one that answers.
- *
- * Sequential by contract, not by accident — the caller is relying on the tail
- * going untouched, so this is not interchangeable with a parallel search.
+ * undefined where it answers for none: items are tried in order, one at a
+ * time, and `fn` is not called for any item after the one that answers.
+ * Callers rely on that: do not make the search parallel.
  */
 export function computableFind<T, U>(items: readonly T[], fn: (item: T) => Computable<U | undefined>): Computable<U | undefined> {
   const at = (index: number): Computable<U | undefined> =>

@@ -42,16 +42,15 @@ const DIAG_NO_SANDBOX = Diagnostic.Error<{ name: string }>(
 const SHOWN_COMMANDS = 3;
 
 /**
- * `fabr shell <target>`: stage the target's build-action sandbox — its inputs and tool
- * mounts, exactly as the build step would see them — into a work dir in the cache's own
- * work tree (where the step's would sit), print the commands the step would run, and open
- * an interactive shell where they run, with their environment, so the step can be
- * reproduced and inspected by hand. The dir is removed when the shell exits. Fabr's
- * analogue of Bazel's --sandbox_debug. The step stages itself ({@link
- * IBuildActionDefinition.stage}); one that cannot is refused.
+ * Stage `action`'s inputs and tool mounts for `fabr shell`, as its build step
+ * would see them, into a work dir in the cache's work tree, log the
+ * commands the step would run, and open an interactive shell (`$SHELL`, else
+ * `/bin/sh`) in the step's working directory with the step's environment.
+ * `action` itself is not run. The work dir is removed when the shell exits.
+ * The step stages itself ({@link IBuildActionDefinition.stage}).
  *
- * The target's own action is withheld (the point is to run it by hand); its
- * dependencies are built as usual, since they are what fills the sandbox.
+ * Resolves to the shell's exit status. Where there is no action, or its step
+ * cannot stage itself, an error is logged and it resolves to 1.
  */
 export function shellInto(cache: BuildCache, name: string, action: BuildAction | undefined, log: Log): Computable<number> {
   const stage = action?.step.stage;
@@ -67,9 +66,8 @@ export function shellInto(cache: BuildCache, name: string, action: BuildAction |
     .then(staged => {
       const cwd = join(dir, staged.cwd);
       log.log(DIAG_SHELL, { name, dir: cwd, commands: describeCommands(staged) });
-      /* $SHELL is the user's login shell; fall back to a POSIX shell. Launched with the
-       * step's own environment, not the parent's, so the sandbox reflects what the build
-       * runs under. The shell owns the terminal for as long as the user is in it. */
+      /* The shell gets the step's environment, not fabr's, and owns the
+       * terminal until it exits. */
       return withTerminalSuspended(() => executeInteractive(process.env.SHELL || "/bin/sh", [], cwd, Object.fromEntries(staged.env)));
     })
     .finally(() => cache.releaseWorkDir(sandbox));

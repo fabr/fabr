@@ -89,6 +89,7 @@ const PROCESSOR_PATH_DIR = ".processorpath";
 /** The argument file the compiler reads its arguments from. */
 const ARGUMENTS_FILE = ".fabr-javac.args";
 
+/** Make the javac action for the sources; throws where a source is not a `.java` file. */
 function compileJava(context: TargetContext, { srcs, deps }: { srcs: FileSet[]; deps: FileSet[] }): Computable<RuleResult> {
   const sources = FileSet.unionAll(...srcs);
   const notJava = [...sources].map(([name]) => name).filter(name => !name.endsWith(".java"));

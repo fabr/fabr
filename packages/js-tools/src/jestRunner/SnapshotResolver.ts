@@ -18,46 +18,36 @@
  */
 
 /**
- * Where a test's recorded snapshots live: jest's own `snapshotResolver` hook, a
- * documented config option.
+ * The jest `snapshotResolver` naming where a test's snapshots are recorded.
+ * Tests run under their compiled names (`Foo.test.js`) and a record is named
+ * for the source (`__snapshots__/Foo.test.tsx.snap`), the source read from the
+ * compiled file's `.js.map`, so a new record is source-named too. Without a
+ * map, an existing record with the same stem is used, else the compiled name.
  *
- * The run works in COMPILED names (`Foo.test.js`) while the checked-in record
- * is named for the SOURCE (`Foo.test.tsx.snap`, jest's own convention). The
- * compiled file's own `.js.map` says which source it came from, so the record
- * is named from that — a NEW record is created source-named too, not just an
- * existing one matched.
- *
- * Without a map (a release build emits none) it falls back to finding an
- * existing record by **stem** — one readdir — and failing that to the compiled
- * name, which still matches on the next run.
- *
- * Loaded by jest-config from a path, so it must be a plain CommonJS module with
- * no dependency on fabr's *core* at runtime — another runner module is fine
- * (this one imports ../testRunner/Report).
+ * jest-config loads this module by path: keep it plain CommonJS, with no
+ * runtime dependency on fabr's core.
  */
 
 import * as path from "node:path";
 import { SNAPSHOT_EXT, snapshotPathOf } from "../testRunner/Report";
 
-/** Name the record for `testPath` for the SOURCE it was compiled from. */
+/** Get the snapshot file for the compiled test `testPath`. */
 export function resolveSnapshotPath(testPath: string): string {
   return snapshotPathOf(testPath);
 }
 
-/** Map a record back to the test it names — the record's name less `.snap`,
- * beside `__snapshots__` — for jest's consistency check. Only a compiled-named
- * record (the consistency check's sample) maps back to the compiled file. */
+/** Get the test a snapshot file names: its name less `.snap`, in the directory
+ * holding `__snapshots__`. Only a compiled-named record maps back to the
+ * compiled test, which is all jest's consistency check needs. */
 export function resolveTestPath(snapshotPath: string): string {
   const dir = path.dirname(path.dirname(snapshotPath));
   return path.join(dir, path.basename(snapshotPath, SNAPSHOT_EXT));
 }
 
-/** jest verifies the two functions above are mutual inverses using this sample.
- * It must therefore round-trip exactly, so it names a file with no record on
- * disk — the compiled-name branch, which is the invertible one. */
+/** The sample jest round-trips through the two functions above. It names a
+ * file with no map and no record, so it is named as compiled and maps back
+ * exactly. */
 export const testPathForConsistencyCheck = path.join("consistency", "check.test.js");
 
-/* jest reads a custom resolver as `interopRequireDefault(module).default`, so
- * the three members have to be reachable as a default export, not only as named
- * ones. */
+/* jest reads a custom resolver as `interopRequireDefault(module).default`. */
 export default { resolveSnapshotPath, resolveTestPath, testPathForConsistencyCheck };

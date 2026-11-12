@@ -57,10 +57,10 @@ export interface IChangedPaths {
 
 /**
  * Read an engine's `diff` (`A /path`, `C /path`, `D /path`, one a line, as
- * Docker and podman print it) as what a layer must hold: a path under an added
- * directory is covered by it; a changed path with changes below it is
- * a directory whose entries are listed themselves, so is not copied; a path
- * under a deleted directory is covered by its whiteout.
+ * Docker and podman print it) as what a layer must hold. A path under an added
+ * directory is left out, the directory being copied whole; a changed path with
+ * changes listed below it is a directory, and is not copied itself; a path
+ * under a deleted directory is left out, the directory's whiteout covering it.
  */
 export function changedPaths(diff: string): IChangedPaths {
   const kinds = new Map<string, string>();
@@ -100,13 +100,18 @@ export interface IBuildCommand {
 }
 
 /**
- * Run `command` in `base` with the container engine, and write what it
- * changed as a layer under `dir`: the base loaded into the engine where the
- * engine lacks it, the command run in a container named for this process (the
- * containers dead runs left removed first), then each changed path copied out
- * and written, with a whiteout per deletion, owners and modes kept and times
- * fixed, indexed as it is written. The container is removed whatever happens.
- * The command's output is the step's.
+ * Run `build.command` in `base` with the container engine, and write what it
+ * changed as a layer under `dir`.
+ *
+ * Containers dead fabr runs left are removed first, and `base` is loaded into
+ * the engine where it lacks it. The command runs in a container named for this
+ * process, its output reported as the step's. Each changed path is then copied
+ * out and written into `<dir>/layer.tar`, with a whiteout per deletion, owners
+ * and modes kept and times fixed. The container is removed however the build
+ * ends, or as fabr exits where it is cut short.
+ * @return the layer's records (`layer.tar` and its `index.json`) and its
+ *   uncompressed digest. Rejects where the command fails or its changes
+ *   cannot be read.
  */
 export function runBuildCommand(
   ctx: ActionContext,
@@ -123,7 +128,6 @@ export function runBuildCommand(
     .then(({ config }) => `localhost/fabr/build-base:${config.digest.substring("sha256:".length, "sha256:".length + 12)}`)
     .then(tag => reapContainers(ctx.processLimit, build.engine, env).then(() => tag))
     .then(tag => {
-      /* Removed whatever happens: here, or as fabr exits where it is cut short. */
       const release = removeOnExit(build.engine, name, env);
       return loadBase(ctx, report, base, build.engine, tag, env)
         .then(() =>
@@ -217,7 +221,12 @@ function copyOut(
   ).then(() => archives);
 }
 
-/** Write the layer: a whiteout per deletion, then each copied archive's entries at their paths, times fixed; indexed as it is written. */
+/**
+ * Write a layer named `name` to `output`: a whiteout per deletion, then each
+ * copied archive's entries at their paths, times fixed, indexed as it is
+ * written.
+ * @return the layer and its index beside it (`index.json`), by name, and its uncompressed digest.
+ */
 export function writeChanges(
   output: IOutputHandle,
   deletions: readonly string[],

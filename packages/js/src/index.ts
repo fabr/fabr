@@ -18,19 +18,19 @@
  */
 
 /**
- * @fabr-build/js: the Javascript/NPM ecosystem support for fabr, loaded as a fabr
- * plugin (`plugin @fabr-build/js;` — see docs/src/content/docs/developer/plugins.md
- * for the plugin contract). Its package.json lists lib/JS.fabr, which declares
- * the js rules and the npm, Node.js and browser repository types, each
- * implemented by a module this package exports (`rules/*`, `NPMRepository`,
- * `NodeDistribution`, `BrowserRepository`).
+ * @fabr-build/js: fabr's JavaScript and npm support, loaded as a fabr plugin
+ * (`plugin @fabr-build/js;`; the plugin contract is in
+ * docs/src/content/docs/developer/plugins.md). Its package.json lists
+ * lib/JS.fabr, which declares the js rules and the npm, Node.js and browser
+ * repository types, each implemented by a module this package exports
+ * (`rules/*`, `NPMRepository`, `NodeDistribution`, `BrowserRepository`).
  *
  * The test runners and tool drivers the js rules run are bins of
  * @fabr-build/js-tools, declared as `js_script` globals in JS.fabr; nothing
  * here imports them.
  */
 
-/* The compile pipeline helpers, for other js rules to build on (in-tree only:
- * cross-plugin extension isn't supported yet — see docs/src/content/docs/developer/plugins.md) */
+/* The compile pipeline helpers, for other js rules to build on. Only rules in
+ * this repository can use them: one plugin cannot extend another. */
 export { assembleNodeModules } from "./NodeModules";
 export { classifySources, compileJsSources, IJsSources, JSTarget, parseJSTarget, passthroughFiles } from "./JSPackage";

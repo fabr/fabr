@@ -35,6 +35,7 @@ export interface PomCoordinate {
   readonly version: string;
 }
 
+/** A dependency as a POM's `<dependencies>` or `<dependencyManagement>` states it. */
 export interface PomDependency {
   readonly groupId: string;
   readonly artifactId: string;
@@ -65,10 +66,11 @@ export interface RawPom {
   readonly properties: ReadonlyMap<string, string>;
   readonly dependencies: readonly PomDependency[];
   readonly dependencyManagement: readonly PomDependency[];
-  /** Whether Gradle published a `.module` beside it, which describes the version in its place. */
+  /** True where Gradle published a `.module` beside it, which then describes the version. */
   readonly gradleMetadata: boolean;
 }
 
+/** A version's effective POM. */
 export interface EffectivePom extends PomCoordinate {
   readonly packaging: string;
   /** The licences declared: its own, else the nearest ancestor's, as Maven inherits them. */
@@ -118,7 +120,12 @@ function readDependency(element: XmlElement, what: string): PomDependency {
   };
 }
 
-/** Parse a POM's text. Throws, naming `what`, on one with no `artifactId`. */
+/**
+ * Parse a POM's text. Throws, naming `what`, on a document whose root is not
+ * `<project>`, one with no `artifactId`, a parent missing its groupId,
+ * artifactId or version, and a dependency or exclusion missing its groupId or
+ * artifactId.
+ */
 export function parsePom(text: string, what: string): RawPom {
   const project = parseXml(text, what);
   if (project.name !== "project") {
@@ -221,6 +228,7 @@ function interpolator(properties: ReadonlyMap<string, string>, what: string): (t
   return text => expand(text, new Set());
 }
 
+/** @return `dependency` with each of its fields interpolated. */
 function interpolateDependency(dependency: PomDependency, interpolate: (text: string) => string): PomDependency {
   const optionalField = (value: string | undefined): string | undefined => (value === undefined ? undefined : interpolate(value));
   const version = optionalField(dependency.version);
@@ -251,10 +259,25 @@ function mergeManaged(...lists: ReadonlyArray<readonly PomDependency[]>): PomDep
 }
 
 /**
- * Build the effective POM of `pom`: what its parent chain gives it, its
- * properties interpolated, and its dependencies' missing versions and scopes
- * filled from its `dependencyManagement`, including the BOMs that imports.
- * Throws where a dependency is left with no version.
+ * Build the effective POM of `pom`, as Maven does without profiles:
+ * - its groupId and version are the nearest its parent chain states (a
+ *   `<parent>` reference's included);
+ * - its licences are the nearest declared along the parent chain, and its
+ *   packaging is its own (`jar` where it states none);
+ * - properties (its chain's, the nearer winning, and `project.*`, `pom.*`,
+ *   `project.parent.*` and `parent.*` for the coordinates) are interpolated
+ *   into every dependency;
+ * - its dependencies and managed dependencies are its own and its chain's,
+ *   the nearer winning where two share a management key, and the managed ones
+ *   include those of every BOM it imports (`scope` import), loaded through
+ *   `load` and made effective in turn;
+ * - a dependency missing a version or scope takes the managed entry's, and
+ *   one declaring no exclusions takes its exclusions.
+ *
+ * Throws, naming `what`, where the parent chain or BOM imports nest more than
+ * {@link MAX_DEPTH} deep, no groupId or version is stated or inherited, an
+ * imported BOM has no version, a dependency is left with no version, or a
+ * property refers to itself or expands too far.
  */
 export function effectivePom(pom: RawPom, load: PomLoader, what: string, depth = 0): Computable<EffectivePom> {
   if (depth >= MAX_DEPTH) {

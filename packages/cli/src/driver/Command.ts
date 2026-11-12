@@ -31,14 +31,10 @@ import {
 import { CommandLineSource } from "./CommandLineSource";
 import { dirname, join } from "path";
 
-/** @return the directory of the fabr installation this runs from: the CLI
- * package's own, the nearest directory above this module holding a
- * package.json. The compiled module's depth below the package root differs
- * between build layouts (`build/driver/` under the yarn/tsc devchain, but
- * `driver/` in the fabr-built package, which strips the outDir), and that
- * nearest package.json is the CLI's own in every layout: nothing above it is
- * looked at (an ancestor could be an unrelated package). Undefined where there
- * is none. */
+/** @return the directory of the fabr installation this runs from: the
+ * nearest directory above this module holding a package.json, which is the CLI
+ * package's own (`build/driver/` lies below it in the devchain's build,
+ * `driver/` in fabr's). Undefined where there is none. */
 export function installationDirectory(): string | undefined {
   for (let dir = __dirname; ; dir = dirname(dir)) {
     if (existsSync(join(dir, "package.json"))) {
@@ -51,8 +47,8 @@ export function installationDirectory(): string | undefined {
 }
 
 /** @return the fabr version, read from the CLI package's own package.json
- * ({@link installationDirectory}) at runtime. The version is stamped only at
- * release, so a present-but-versionless package.json is an unreleased build. */
+ * ({@link installationDirectory}): `0.0.0-dev` where it states none (an
+ * unreleased build), `unknown` where it cannot be read. */
 export function getVersion(): string {
   const dir = installationDirectory();
   if (dir === undefined) {
@@ -74,15 +70,8 @@ export enum Mode {
 /** The heading a command is listed under in the help. */
 type CommandGroup = "Building" | "Inspecting" | "Project";
 
-/** One command: its help entry, and the options it accepts. The set of commands
- * the command line accepts is derived from this table.
- *
- * `build`/`test`/`run` are BUILD_OPERATION values; `ls`/`cat`/`cp` are
- * driver-side verbs that materialize their names under the `files` operation and
- * then list / dump / copy-to-disk the results, and `sync` packages under
- * BUILD_OPERATION=build and publishes; the `list-*` verbs are model-query verbs
- * that load the model and print without building anything (so they need no
- * targets). */
+/** One command: its help entry, and the options it accepts. The command line
+ * accepts the commands {@link COMMAND_SPECS} lists. */
 interface CommandSpec {
   name: string;
   group: CommandGroup;
@@ -92,14 +81,12 @@ interface CommandSpec {
   /** What the command's own help says beyond its summary, if anything. */
   description?: string;
   /** The command-specific option flags this command accepts, by their
-   * {@link OptionSpec.flag}, used for its help and to *reject* a flag applied to
-   * a command it means nothing for (`fabr cat --json`). The
-   * {@link UNIVERSAL_OPTIONS} are always allowed and are not listed here. */
+   * {@link OptionSpec.flag}: listed in its help, and any other refused
+   * (`fabr cat --json`). The {@link UNIVERSAL_OPTIONS} are always accepted and
+   * are not listed here. */
   accepts: string[];
-  /** This command acts on exactly one target (`shell` stages a single sandbox),
-   * so a second target is a usage error rather than being silently dropped.
-   * `run` needs no marker — it captures one target and forwards the rest as the
-   * program's argv. */
+  /** This command takes at most one target (`shell`): a second is a usage
+   * error. (`run` takes one target and passes what follows to the program.) */
   singleTarget?: boolean;
   /** This command acts on the targets it is given, so naming none is a usage
    * error. */
@@ -339,19 +326,16 @@ export interface Options {
   command: string;
   mode: Mode;
   longListing: boolean;
-  /** For the model-query verbs (`list-*`): emit machine-readable JSON instead
-   * of the human listing (the docs-generation interface). */
+  /** For the `list-*` commands: write JSON instead of the listing. */
   json: boolean;
-  /** For `list-targets`: include system-contributed targets (declared in core's
-   * or a plugin's lib files) alongside the project's own, which are otherwise
-   * the only ones listed. */
+  /** For `list-targets`: list the targets core's and the plugins' `.fabr` files
+   * declare, beside the project's own. */
   all: boolean;
   /** For `list-all`: read every optional lib of each plugin the project uses,
    * as though the project included it. */
   includeOptional: boolean;
-  /** Suppress the live subcommand output that is otherwise streamed to stderr as
-   * build steps run (`-q`/`--quiet`), as well as the live progress display.
-   */
+  /** Suppress the step output otherwise streamed to stderr as build steps run,
+   * and the live progress display (`-q`/`--quiet`). */
   quiet: boolean;
   /** Show the live progress display when stderr is a terminal; false
    *  (`--no-progress`) logs as without one, streaming step output as it
@@ -361,20 +345,18 @@ export interface Options {
    * version list — however recently it was fetched (`--refresh`). */
   refresh: boolean;
   /**
-   * Rebuild the named targets even when their outputs are already cached
-   * (`-f`/`--force`) — a development aid for timing a build step, undocumented
-   * for that reason. It reaches only the targets named on the command line and
-   * the anonymous sub-targets they decompose into (the work whose time is being
-   * measured); their dependencies build from cache as usual. Exclusive with
-   * `-w`: a watch cycle would force the same target on every rebuild.
+   * Rebuild the targets named on the command line, and the sub-targets they are
+   * built from, even where their outputs are cached (`-f`/`--force`); their
+   * dependencies are served from the cache as usual. Left out of the help.
+   * Exclusive with `-w`.
    */
   force: boolean;
   /** Run again the tests whose cached result failed (`--retry-failed`), rather
    * than report the cached failure. Exclusive with `-w`, as `-f` is. */
   retryFailed: boolean;
-  /** Target names, or (for `ls`/`cat`/`cp`) whole name references — `pkg:build/*.js`
-   * — resolved by the model, not split here. For `cp` the trailing destination
-   * path has already been split off into `dest`. */
+  /** The names given to the command: target names, or whole references
+   * (`pkg:build/*.js`), which the model resolves. For `cp`, without the
+   * destination ({@link dest}). */
   targets: string[];
   /** For `run`: the program's argv — everything after the target, verbatim. */
   runArgs?: string[];
@@ -396,28 +378,26 @@ export interface Options {
   /** For `--trace[=<file>]`: where the run's trace is written, a plain
    * filesystem path resolved against the invocation cwd. */
   traceFile?: string;
-  /** Raw `-D` overrides, normalized into a Constraints at the driver's getConfig funnel. */
+  /** The properties set on the command line, by key: each `-D`, and those
+   * `-u`, `-t` and `--coverage` set. */
   properties: Map<string, string>;
-  /** The invocation as source text — what a name given here is *written in*, so
-   * that resolving one reports against the command that gave it. */
+  /** The invocation as source text, which a name given on it is written in. */
   commandLine: CommandLineSource;
   /**
-   * No command word was given: the arguments from the first positional onward,
-   * verbatim and unparsed. Which verb each names depends on what its target's
-   * type supports, and a target that only *runs* takes everything after it as
-   * the program's own argv — neither of which is knowable until the model is
-   * loaded, so the split is finished by {@link completeCommandLine}.
+   * Where no command word was given, the arguments from the first positional
+   * onward, unparsed. Which operation each target takes, and where a run's own
+   * arguments begin, depend on what its type supports, so
+   * {@link completeCommandLine} finishes the parse once the model is loaded.
    */
   deferred?: string[];
 }
 
 /**
- * What a command-less invocation resolves to once the model can say what each
- * named target supports: the targets to build and to test (in the order
- * written), and at most one to run — being interactive, it is necessarily last
- * and takes the rest of the command line as its argv. Where the first word is
- * an operation a rule declares (`fabr lint app`), the targets are built under
- * that operation instead.
+ * The work a command-less invocation comes to once the model is loaded: the
+ * targets to build and to test, in the order written, and at most one to run,
+ * last, with the rest of the line as its arguments. Where the first word is an
+ * operation a rule declares (`fabr lint app`), `operation` names it and the
+ * targets built under it.
  */
 export interface CommandPlan {
   build: string[];
@@ -587,24 +567,25 @@ const ALL_FORMATS: ReadonlyArray<ReportFormat> = ["sarif", "ctrf", "junit"];
 /** Where `--trace` writes the run's trace when not given a file. */
 const DEFAULT_TRACE_FILE = "fabr-trace.json";
 
-/** Where `--coverage` writes its report when not given a directory: jest's and
- * c8's convention. */
+/** Where `--coverage` writes its report when not given a directory. */
 const DEFAULT_COVERAGE_DIR = "coverage";
 
 /**
- * Apply one `-`-leading argument to the options being built, recording the
- * flags that are only meaningful to some commands for validation against the
- * command once it is known. Shared by the two parsing passes: the whole line
- * when a command was given, and (via {@link completeCommandLine}) the tail
- * deferred when one was not. `next` is the argument after `arg`, for an option
- * taking a value of its own; `command` is the command, where it was given before
- * `arg`, whose help a usage error shows.
+ * Apply one `-`-leading argument to `options`, recording a command-specific
+ * flag in `seenFlags` to be checked against the command once it is known.
+ * `next` is the argument after `arg`, for an option taking its value there;
+ * `command`, where it was given before `arg`, is the command whose help a usage
+ * error shows. Used for the whole line by {@link parseCommandLine} and for the
+ * deferred tail by {@link completeCommandLine}.
+ *
+ * Exits on `-v` (printing the version) and on a usage error: an unknown or
+ * malformed option, or one missing its value.
  *
  * @return the number of arguments after `arg` the option consumed.
  */
 function applyOption(arg: string, next: string | undefined, options: Options, seenFlags: SeenFlag[], command?: string): number {
   if (arg === "-t") {
-    /* Sugar for the -D pathway, as -u is: which tests run is a build input. */
+    /* Sets TEST_NAME_PATTERN, as a -D would. */
     if (next === undefined) {
       usageError(`Option '${arg}' requires a pattern`, command);
     }
@@ -627,9 +608,8 @@ function applyOption(arg: string, next: string | undefined, options: Options, se
     options.includeOptional = true;
     seenFlags.push({ raw: arg, flag: arg });
   } else if (arg === "-u" || arg === "--update") {
-    /* Sugar for the -D pathway: update mode IS a build input (a check run and
-     * an update run are different builds and must not share a cache entry), so
-     * it rides the ordinary constraint. */
+    /* Sets TEST_EXPECTATIONS, as a -D would: a check run and an update run are
+     * different builds. */
     options.properties.set(TEST_EXPECTATIONS, UPDATE_EXPECTATIONS);
     seenFlags.push({ raw: arg, flag: "-u" });
   } else if (arg === "--format" || arg.startsWith("--format=")) {
@@ -661,7 +641,7 @@ function applyOption(arg: string, next: string | undefined, options: Options, se
     seenFlags.push({ raw: arg, flag: "--operation" });
     return arg === "--operation" ? 1 : 0;
   } else if (arg === "--coverage" || arg.startsWith("--coverage=")) {
-    /* Sugar for the -D pathway, as -u is: a measured build is a build input. */
+    /* Sets COVERAGE, as a -D would. */
     options.properties.set(COVERAGE, COVERAGE_ON);
     options.coverageDir = arg === "--coverage" ? DEFAULT_COVERAGE_DIR : arg.slice("--coverage=".length);
     if (!options.coverageDir) {
@@ -710,12 +690,9 @@ function applyOption(arg: string, next: string | undefined, options: Options, se
   return 0;
 }
 
-/** Refuse `-f` combined with `-w`. `-f` forces a rebuild of what was named
- * *this* invocation; under `-w` there
- * is no such thing — every cycle would rebuild it, so the two together are more
- * likely a mistake than a request. Checked after each parsing pass, since the
- * two flags can land in different ones (`fabr -f x -w`). The error shows the
- * help for `command`, where one was given. */
+/** Refuse `-f` or `--retry-failed` combined with `-w`, as a usage error
+ * showing the help for `command` where one was given. Call it after each
+ * parsing pass: the flags may be given in different ones (`fabr -f x -w`). */
 function checkFlagsCoherent(options: Options, command?: string): void {
   if (options.force && options.mode === Mode.Watch) {
     usageError("Options '-f' and '-w' cannot be combined", command);
@@ -725,6 +702,22 @@ function checkFlagsCoherent(options: Options, command?: string): void {
   }
 }
 
+/**
+ * Parse fabr's command line, `args` being `process.argv` (its first two entries
+ * are skipped). The first positional is the command where it is a command
+ * word, and options may come before or after it. For `run`, everything after
+ * the target is the program's (`runArgs`); for `cp`, the last positional is the
+ * destination (`dest`). Where no command word is given, the parse stops at the
+ * first positional and leaves the rest in `deferred`, for
+ * {@link completeCommandLine}.
+ *
+ * Exits instead of returning: with the help on `-h`, on `help`, and on a line
+ * with no command and no target; with the version on `-v`; and non-zero, with
+ * the help, on a usage error: an unknown or malformed option, a flag or
+ * `--format` the command does not accept, `test --format` without `--report`,
+ * a missing or second target, `cp` without a source and a destination, or
+ * `-f`/`--retry-failed` with `-w`.
+ */
 export function parseCommandLine(args: string[]): Options {
   const options: Options = {
     command: "build",
@@ -744,9 +737,9 @@ export function parseCommandLine(args: string[]): Options {
   };
   const opts = args.slice(2);
 
-  /* Command-specific flags seen, paired with their canonical form, validated
-   * against the resolved command once the whole line is parsed — an option may
-   * precede its command (`fabr -w test x`), so the command isn't yet known here. */
+  /* Command-specific flags seen, with their canonical form, checked against the
+   * command once the whole line is parsed: an option may precede its command
+   * (`fabr -w test x`). */
   const seenFlags: SeenFlag[] = [];
 
   let commandGiven = false;
@@ -760,9 +753,9 @@ export function parseCommandLine(args: string[]): Options {
     } else if (options.runArgs) {
       options.runArgs.push(arg);
     } else if (!noMoreOptions && arg === "--") {
-      /* A bare `--` ends fabr's option parsing: every following argument is a
-       * positional (a target/name), so a name that begins with `-` can be given.
-       * Only the first `--` is special — a later one is an ordinary positional. */
+      /* A bare `--` ends option parsing: every following argument is a
+       * positional, so a name may begin with `-`. A later `--` is an ordinary
+       * positional. */
       noMoreOptions = true;
     } else if (!noMoreOptions && arg[0] === "-") {
       consumed = applyOption(arg, opts[index + 1], options, seenFlags, commandGiven ? options.command : undefined);
@@ -773,11 +766,9 @@ export function parseCommandLine(args: string[]): Options {
       options.command = arg;
       commandGiven = true;
     } else if (!commandGiven) {
-      /* No command word: this positional's verb depends on what its target
-       * supports, and a run-only one takes everything after it as the program's
-       * argv — so the rest of the line waits for the model (completeCommandLine).
-       * A `--` already seen rides along at the head, since the deferred pass
-       * re-reads the remainder under the same rules. */
+      /* No command word: leave the rest of the line to completeCommandLine. A
+       * `--` already seen goes at its head, since the deferred pass reads the
+       * remainder under the same rules. */
       options.deferred = noMoreOptions ? ["--", ...opts.slice(index)] : opts.slice(index);
       break;
     } else {
@@ -795,8 +786,8 @@ export function parseCommandLine(args: string[]): Options {
     printHelp(commandGiven ? options.command : undefined);
   }
   const spec = COMMAND_BY_NAME.get(options.command);
-  /* Reject a flag applied to a command it means nothing for (`fabr cat --json`,
-   * `fabr build -l`) rather than silently ignoring it. */
+  /* Refuse a flag the command does not accept (`fabr cat --json`,
+   * `fabr build -l`). */
   const accepts = new Set(spec?.accepts);
   for (const { raw, flag } of seenFlags) {
     if (!accepts.has(flag)) {
@@ -813,15 +804,13 @@ export function parseCommandLine(args: string[]): Options {
   if (options.command === "test" && options.format !== undefined && options.reportFile === undefined) {
     usageError("Option '--format' needs '--report FILE' for the 'test' command", "test");
   }
-  /* A single-target command (`shell`) errors on a second target rather than
-   * silently building only the first. */
+  /* A single-target command (`shell`) refuses a second target. */
   if (spec?.singleTarget && options.targets.length > 1) {
     usageError(`The '${options.command}' command takes a single target`, options.command);
   }
   if (options.command === "cp") {
-    /* `cp <source…> <dest>`: the final positional is the destination directory,
-     * split off here so `targets` carries only source names (resolved like
-     * cat/ls). At least one source plus a dest are required. */
+    /* `cp <source…> <dest>`: the final positional is the destination
+     * directory, split off so `targets` holds only the source names. */
     if (options.targets.length < 2) {
       usageError("cp requires at least one source and a destination directory", "cp");
     }
@@ -840,18 +829,21 @@ export function parseCommandLine(args: string[]): Options {
 }
 
 /**
- * Finish parsing a command-less invocation, now that the model can say what
- * each named target's type supports: each positional takes the operation it
- * supports (build, else test, else run — see core's {@link preferredOperation}),
- * defaulting to `build` for a name that supports none, which then reports as
- * the ordinary "no rule matches" failure. A target that *runs* ends the line:
- * everything after it is the program's own argv, so an inferred run cannot be
- * followed by more fabr arguments. Options found in the tail apply as they
- * would anywhere else; only those every inferable command accepts are allowed.
- * Where the first word is one of `operations`, the operations a rule declares,
- * it is the command, and every positional after it a target built under it.
+ * Finish parsing a command-less invocation from `options.deferred`, now that
+ * `operationsOf` can say which operations a named target's type has rules for.
+ * Each positional takes the one preferred (build, else test, else run:
+ * {@link preferredOperation}), or `build` where it has none, which then fails
+ * as no rule matching. A target that runs ends the line: the arguments after it
+ * are the program's. Where the first word is one of `operations`, those the
+ * project's rules declare, it is the command, and every positional after it a
+ * target built under it.
  *
- * Mutates `options` (it is the same parse, resumed) and returns the plan.
+ * Options in the tail apply as anywhere else. Exits with the help on `-h`, and
+ * on a usage error: an option that build, test and run do not all accept, a
+ * declared operation given no target, or `-f`/`--retry-failed` with `-w`.
+ *
+ * Sets `options.targets` and `options.runArgs` (it is the same parse, resumed)
+ * and returns the plan.
  */
 export function completeCommandLine(
   options: Options,
@@ -888,7 +880,7 @@ export function completeCommandLine(
   if (seenFlags.some(({ flag }) => flag === "-h")) {
     printHelp();
   }
-  /* A flag meaningful only to some command a target cannot select needs that
+  /* Refuse a flag that not every inferable command accepts: it needs its
    * command written out. */
   for (const { raw, flag } of seenFlags) {
     if (!INFERABLE_OPTIONS.has(flag)) {

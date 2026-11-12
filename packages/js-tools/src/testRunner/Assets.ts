@@ -18,32 +18,27 @@
  */
 
 /**
- * Non-JavaScript imports, under test.
+ * Stubs for non-JavaScript imports under test, as a jest `moduleNameMapper`
+ * entry conventionally supplies them: a stylesheet import
+ * (`import styles from "./Card.module.scss"`) yields an identity proxy, a
+ * binary one its file name.
  *
- * A component that does `import styles from "./Card.module.scss"` is asking a
- * BUNDLER for something; under test there is no bundler, and handing the file
- * to node gets a syntax error. Fabr answers such an import in the loader with
- * what a jest `moduleNameMapper` entry conventionally supplies: an identity
- * proxy for a stylesheet, a string stub for a binary.
+ * Shared by every runner flavour: {@link assetStubFor} gets the stub for an
+ * import, and {@link installAssetHooks} installs the stubs on node's own module
+ * loaders. The jest flavour consults {@link assetStubFor} from its own module
+ * registry instead, so that an explicit `jest.mock()` takes precedence.
  *
- * Shared by every runner flavour: the stubs ({@link assetStubFor}) are what an
- * asset import yields, and {@link installAssetHooks} puts them on node's own
- * loader seams for a flavour that loads through node directly. The jest
- * flavour consults the stubs from its own module registry instead, so that an
- * explicit `jest.mock()` keeps precedence over them.
- *
- * Executes in test child processes: no dependency on the host's core.
+ * Runs in test processes: do not depend on core at runtime.
  */
 
 import { Module } from "node:module";
 import * as path from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
-/** Stylesheets: the import yields the class-name map a css-modules loader would
- * have produced. */
+/** The extensions of stylesheets, whose import yields {@link styleProxy}. */
 const STYLESHEET_EXTENSIONS = ["css", "scss", "sass", "less", "styl"];
 
-/** Binaries a bundler would have turned into a URL. */
+/** The extensions of binary files, whose import yields the file's name. */
 const BINARY_EXTENSIONS = [
   "png",
   "jpg",
@@ -66,6 +61,7 @@ const BINARY_EXTENSIONS = [
   "wav",
 ];
 
+/** @return a pattern matching a name ending in one of `extensions`. */
 function extensionPattern(extensions: string[]): RegExp {
   return new RegExp(`\\.(${extensions.join("|")})$`, "i");
 }
@@ -75,35 +71,33 @@ const BINARY = extensionPattern(BINARY_EXTENSIONS);
 const ASSET = extensionPattern([...STYLESHEET_EXTENSIONS, ...BINARY_EXTENSIONS]);
 
 /**
- * Get the stub for `request`, or undefined if it is ordinary JavaScript.
- *
- * Judged on the REQUEST rather than the resolved path: a
- * stylesheet that was never staged (not among the target's `srcs`) does not
- * resolve at all, and it must still be stubbed rather than becoming a confusing
- * "cannot find module". `undefined` means "ordinary JavaScript, not ours".
+ * Get the stub for an import of `request`: a fresh {@link styleProxy} for a
+ * stylesheet, the file's name for a binary file, or undefined for anything
+ * else. Judged on the request as written, not the resolved path, so a
+ * stylesheet that was never staged (not among the target's `srcs`) is stubbed
+ * too.
  */
 export function assetStubFor(request: string): unknown {
   if (STYLESHEET.test(request)) {
     return styleProxy();
   }
   if (BINARY.test(request)) {
-    /* What a bundler emits is a URL; what a test can meaningfully assert on is
-     * the file's name, which is also what the common stub modules return. */
     return basenameOf(request);
   }
   return undefined;
 }
 
 /**
- * Make every asset import in this process yield its stub, on both of node's
- * loader seams: CommonJS (`require`, and the `import` of a test compiled to
- * CommonJS) through the module system's resolve and extension hooks, and ES
- * modules through `module.registerHooks`. Both judge the request, as
- * {@link assetStubFor} does, so an asset that is not in the installation stubs
- * rather than failing to resolve. Call once, before any test file loads.
+ * Make every stylesheet or binary import in this process yield its stub, in
+ * both of node's module loaders: CommonJS (`require`, and the `import` of a
+ * test compiled to CommonJS) through `Module._resolveFilename` and
+ * `Module._extensions`, and ES modules through `module.registerHooks`. Both
+ * judge the request as {@link assetStubFor} does, so a file that is not in the
+ * installation is stubbed rather than failing to resolve. Call once, before
+ * any test file loads.
  *
- * The ES-module seam needs node 22.15; on an older node only CommonJS is
- * covered, which is all a flavour whose tests compile to CommonJS loads.
+ * Before node 22.15, which has no `module.registerHooks`, only CommonJS
+ * imports are stubbed.
  */
 export function installAssetHooks(): void {
   const loader = Module as unknown as ICommonJSLoader;
@@ -119,8 +113,7 @@ export function installAssetHooks(): void {
       module.exports = assetStubFor(filename);
     };
   }
-  /* Optional: absent on a node before 22.15, where only the CommonJS seam is
-   * installed. */
+  /* Absent before node 22.15. */
   const { registerHooks } = Module as unknown as { registerHooks?: (hooks: IModuleHooks) => void };
   if (registerHooks !== undefined) {
     registerHooks({
@@ -132,8 +125,8 @@ export function installAssetHooks(): void {
       },
       load(url, context, next) {
         if (ASSET.test(url)) {
-          /* The stub cannot be handed over as a value, only as module source:
-           * one that reaches back here for it. */
+          /* A load hook returns module source, not a value: make the source
+           * require this module and export assetStubFor's answer. */
           const stub = `createRequire(${JSON.stringify(url)})(${JSON.stringify(__filename)}).assetStubFor(${JSON.stringify(fileURLToPath(url))})`;
           return {
             format: "module",
@@ -147,7 +140,7 @@ export function installAssetHooks(): void {
   }
 }
 
-/** The parts of node's CommonJS loader the hooks sit on; not in its typings. */
+/** The members of node's CommonJS loader the hooks replace, which its typings omit. */
 interface ICommonJSLoader {
   _resolveFilename(this: unknown, request: string, parent: { filename?: string } | undefined, ...rest: unknown[]): string;
   _extensions: Record<string, (module: { exports: unknown }, filename: string) => void>;
@@ -169,25 +162,21 @@ interface ILoaded {
 }
 
 /**
- * Make the css-modules identity proxy: every property is its own name, so
- * `styles.cardTitle` is `"cardTitle"` and a className assertion reads exactly as
- * the source does.
- *
- * The interop members are the subtlety. A compiled `import styles from "…scss"`
- * becomes `__importDefault(require("…scss")).default`, and the helper branches
- * on `__esModule` — so a proxy that answered every property with its own name
- * would report `__esModule` as the truthy string `"__esModule"`, be taken for an
- * ES module, and hand back `"default"` as the styles object. Answering
- * `__esModule` with `true` and `default` with the proxy itself makes both the
- * default-import and the plain-`require` forms yield the map.
+ * Make the css-modules identity proxy: every string property is its own name,
+ * so `styles.cardTitle` is `"cardTitle"`. The exceptions:
+ * - `__esModule` is `true` and `default` is the proxy itself, so both a
+ *   compiled default import (`__importDefault(require("…scss")).default`) and
+ *   a plain `require` yield the proxy.
+ * - `toString` and `valueOf` behave as a plain object's, so `${styles}` is
+ *   `"[object Object]"` rather than a TypeError.
+ * - A symbol property is undefined, for the runtime's own inspection,
+ *   iteration and coercion.
  */
 function styleProxy(): unknown {
   const proxy: unknown = new Proxy(
     {},
     {
       get(_target, property) {
-        /* Symbols are the runtime's own probing (inspection, iteration,
-         * coercion); answering them with a string breaks it. */
         if (typeof property !== "string") {
           return undefined;
         }
@@ -197,12 +186,6 @@ function styleProxy(): unknown {
         if (property === "default") {
           return proxy;
         }
-        /* Coercion must not blow up. `${styles}` looks up `toString` and then
-         * `valueOf`, and a map that answered those with their own NAMES would
-         * hand back a string where a function is required — "Cannot convert
-         * object to primitive value", from a template literal that reads
-         * perfectly reasonably. Behaving like a plain object is the least
-         * surprising thing available. */
         if (property === "toString" || property === "valueOf") {
           return () => "[object Object]";
         }
@@ -213,6 +196,7 @@ function styleProxy(): unknown {
   return proxy;
 }
 
+/** @return the last `/`-separated part of `request`. */
 function basenameOf(request: string): string {
   const at = request.lastIndexOf("/");
   return at === -1 ? request : request.slice(at + 1);

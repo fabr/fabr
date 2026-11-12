@@ -47,10 +47,11 @@ interface IEcrToken {
 }
 
 /**
- * Signing in to an account's ECR registry: each request carries `Basic` with
- * the password ECR's `GetAuthorizationToken` gives, fetched once and again
- * where the registry no longer accepts it (it lasts 12 hours), once however
- * many requests meet that together.
+ * The credential of an account's ECR registry: each request carries `Basic`
+ * with the password ECR's `GetAuthorizationToken` gives. The password is
+ * fetched when first needed, and again when the registry challenges a request
+ * (a password lasts 12 hours); requests challenged while a fetch is under way
+ * share it.
  */
 export class EcrSignIn implements Credential {
   /** The password, fetched when first needed. */

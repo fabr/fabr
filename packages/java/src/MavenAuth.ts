@@ -33,7 +33,7 @@ import { parseXml, xmlChild, xmlChildren, xmlText, XmlElement } from "./Xml";
 export interface MavenServer {
   readonly username?: string;
   readonly password?: string;
-  /** Further headers sent with each request (`<configuration><httpHeaders>`), for a token a server reads from one. */
+  /** Further headers sent with each request (`<configuration><httpHeaders>`), each value with `${env.NAME}` substituted. */
   readonly headers: ReadonlyMap<string, string>;
 }
 
@@ -47,7 +47,10 @@ function interpolated(text: string): string {
   return text.replace(/\$\{env\.([^}]+)\}/g, (written, name: string) => process.env[name] ?? written);
 }
 
-/** Read a server's credential field, refusing a password Maven has encrypted with its master password. */
+/**
+ * Read a server's `field`, with `${env.NAME}` substituted. Throws where the
+ * value is encrypted with Maven's master password (written `{…}`).
+ */
 function credential(server: XmlElement, field: string, id: string): string | undefined {
   const text = xmlText(server, field);
   if (text === undefined) {
@@ -86,11 +89,11 @@ export function parseMavenSettings(text: string, what: string): Map<string, Mave
   return servers;
 }
 
-/** The credentials of a run's Maven repositories, read once per run. */
+/** The credentials of a run's Maven repositories: the servers of the user's `settings.xml`, by id. */
 export class MavenAuth {
   constructor(private readonly servers: ReadonlyMap<string, MavenServer>) {}
 
-  /** Load the user's `~/.m2/settings.xml`, where there is one. */
+  /** Load the user's `~/.m2/settings.xml`; with none, no server has credentials. */
   public static load(execution: ExecutionContext): Computable<MavenAuth> {
     const settings = userSettingsPath();
     return execution.absFileSource
@@ -100,9 +103,9 @@ export class MavenAuth {
   }
 
   /**
-   * Make the credential signing a request in with the headers {@link headersFor}
-   * gives the server `id`. Its headers are fixed, so a 401 is final: answering
-   * the challenge gives nothing to retry with.
+   * Make the credential that sends a request with the headers
+   * {@link headersFor} gives the server `id`. It answers a challenge (a 401)
+   * with no headers, so the request is not retried.
    */
   public static credential(load: () => Computable<MavenAuth>, id: string): Credential {
     return {

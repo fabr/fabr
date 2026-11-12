@@ -27,37 +27,30 @@ import { unpackStream } from "./Unpack";
 import { MemoryOutput } from "../core/MemoryFS";
 
 /**
- * An archive read as a **directory of the same name**: the equivalence that lets
- * `./x.tgz:*:**` and `@dl:x.tgz:*:**` mean the same thing as projecting into a
- * directory. Expansion happens when something addresses *into* an archive, never
- * because a glob swept past one — `**` does not cross a namespace boundary, so a
- * recursive match over a source tree can never explode the archives in it.
- *
- * Whether a file *can* be read this way is decided by its content (magic bytes),
- * not its name: an extension is a convention, and a member of a `fetch` table is
- * named by its author.
+ * Archive descent: a projection that names a path inside an archive file
+ * (`./x.tgz:*:**`) reads the archive as a directory of the same name. An
+ * archive is expanded only where a pattern names a path inside it, never where
+ * a `**` sweeps past it. Whether a file is an archive is judged by its
+ * content, never its name.
  */
 
 /**
- * The boundary action the walker is parameterized by: an archive file's
- * contents as a FileSet, named relative to the archive root. Production binds
- * this to the build context's cached expansion (BuildContextImpl.expandArchive — the
- * one owner of the traversal, with the BuildCache in hand); a caller with no
- * cache (tests) binds {@link expandOnce}.
+ * A function expanding an archive file into its contents, named relative to
+ * the archive's root: the build's cached expansion
+ * (`BuildContextImpl.expandArchive`), or {@link expandOnce} where there is no
+ * cache.
  */
 export type ExpandFn = (file: IFile) => Computable<FileSet>;
 
 /**
- * List the namespace-boundary probes of a selector — the walker's descent policy
- * over {@link Name.componentPrefixes}: for each separator with selector
- * remaining, the pattern up to (excluding) it, in slash form so a probe's
- * matches keep their in-namespace paths rather than being alias-stripped. A
- * prefix whose final component contains `**` is excluded: `**` never
- * participates in a crossing, which is what keeps a recursive glob sweeping a
- * source tree from probing every file it matches. Candidates stop at an
- * unsubstituted `${var}` (nothing concrete to probe with), and probes carry no
- * facets — a rename or constraint applies to the whole reference, never to a
- * probe.
+ * List the probes of a pattern: the prefixes that may name an archive file
+ * with more of the pattern after it. For each separator with pattern after it,
+ * the pattern up to the separator ({@link Name.componentPrefixes}), in slash
+ * form, so a probe's matches are named by their paths.
+ *
+ * A prefix whose last component contains `**` is left out, so a recursive glob
+ * never probes the files it sweeps. The list stops at a component holding an
+ * unsubstituted `${var}`. A probe carries no rename or constraints.
  */
 export function descentPrefixes(pattern: Name): Name[] {
   const components = pattern.components();
@@ -75,23 +68,21 @@ export function descentPrefixes(pattern: Name): Name[] {
 }
 
 /**
- * Project `source` by `pattern` with **archive descent**: the ordinary
- * polymorphic `find`, plus — wherever a proper prefix of the pattern lands on a
- * real file with pattern remaining (see {@link descentPrefixes}) — that file
- * read as a directory of its contents (`expand`) and the whole pattern
- * re-matched over the expansion mounted at the file's path, so naming follows
- * the ordinary written-name rule: `./a.tgz:*:**` names results relative to
- * `a.tgz:*` exactly as it would were `a.tgz` a directory. Recursion over the
- * mounted set descends nested archives the same way.
+ * Project `source` by `pattern` with archive descent: `source.find`, unioned
+ * with the matches inside each archive a probe of the pattern lands on (see
+ * {@link descentPrefixes}). The archive is expanded with `expand`, mounted at
+ * the archive file's path, and the whole pattern matched over it again, so
+ * `./a.tgz:*:**` names its results as it would were `a.tgz` a directory, and a
+ * nested archive is descended into the same way.
  *
- * A pattern with no boundary candidates returns the source's own `find`
- * untouched — so a runnable's projection keeps its bin-selection semantics, and
- * a bare reference to an archive stays the file. Descent contributes only when
- * an expansion actually matches; a non-archive file landed on by a probe simply
- * contributes nothing (the projection's "matched no files" reporting is the
- * caller's, unchanged). This is the ONE place descent exists: `find` itself
- * stays archive-free, so a programmatic find can never explode an archive —
- * descent is projection-scoped by construction.
+ * Where the pattern has no probes, or no probe lands on a file, this returns
+ * `source.find` itself (a runnable keeps its entry selection, and a bare
+ * reference to an archive stays the file). A file a probe lands on that is
+ * not an archive adds nothing. Matching nothing is not an error here: the
+ * caller reports it. A failure to expand an archive is an error where the
+ * probe named it literally, and adds nothing where a glob matched it.
+ *
+ * `FileSource.find` never descends into archives; only this does.
  */
 export function findWithDescent(source: FileSource, pattern: Name, prefix: string, expand: ExpandFn): ComputableSource<FileSet> {
   const probes = descentPrefixes(pattern);
@@ -110,17 +101,16 @@ export function findWithDescent(source: FileSource, pattern: Name, prefix: strin
       [direct, ...candidates.map(candidate => descend(candidate, pattern, prefix, expand))],
       (...sets: FileSet[]) => {
         const [directSet, ...descended] = sets;
-        /* unionAll returns a sole argument unchanged, so a runnable's narrowed
-         * self survives when no descent contributed. */
+        /* unionAll returns a sole argument as it is: where nothing was found
+         * inside an archive, a runnable stays a runnable. */
         return FileSet.unionAll(directSet, ...descended.filter(files => !files.isEmpty()));
       }
     );
   });
 }
 
-/** A file a boundary probe landed on: its in-namespace path, and whether the
- * probe was literal — the user *named* this path — or a glob that merely swept
- * it (which decides how an expansion failure is judged; see descend). */
+/** A file a probe landed on: its path, and whether the probe named it
+ * literally rather than matching it with a glob. */
 interface BoundaryCandidate {
   at: string;
   file: IFile;
@@ -128,10 +118,8 @@ interface BoundaryCandidate {
 }
 
 /**
- * Find the files a boundary probe lands on, each with its in-namespace path. A
- * fully-literal probe is an exact-name lookup (`get` — no enumeration); a
- * globbed one is an ordinary find, whose slash-form pattern keeps result names
- * equal to their paths.
+ * Find the files a probe lands on, each with its path: a literal probe looks
+ * its one path up with `get`, a glob probe is matched with `find`.
  */
 function probeBoundary(source: FileSource, probe: Name): Computable<BoundaryCandidate[]> {
   const literal = probe.getSimpleName();
@@ -146,10 +134,9 @@ function probeBoundary(source: FileSource, probe: Name): Computable<BoundaryCand
 }
 
 /**
- * Put a literal probe's path in canonical form (the namespace FileSet names / the
- * filesystem walk live in), or undefined for one that cannot name inside this
- * namespace (empty, absolute, or climbing out — such a pattern matches nothing
- * anyway, so there is no boundary to find).
+ * @return a literal probe's path normalized as a FileSet names files, or
+ *   undefined where it names nothing within the source (empty, absolute, or
+ *   leading out with `..`).
  */
 function probePath(literal: string): string | undefined {
   const normalized = path.posix.normalize(literal);
@@ -160,22 +147,17 @@ function probePath(literal: string): string | undefined {
 }
 
 /**
- * Cross one boundary: if the file is an archive (by its sniffed {@link
- * IFile.mime} — a property read, no I/O), mount its expansion at the file's own
- * path and re-match the whole pattern over it (recursively, so a nested archive
- * descends again). Anything else contributes nothing.
+ * Match `pattern` inside the archive a probe landed on: where the file's
+ * {@link IFile.mime} is an archive's, its expansion mounted at the file's path
+ * and matched with {@link findWithDescent}; any other file gives the empty set.
  */
 function descend(candidate: BoundaryCandidate, pattern: Name, prefix: string, expand: ExpandFn): Computable<FileSet> {
   const { at, file, named } = candidate;
   if (!isArchiveMime(file.mime)) {
     return Computable.resolve(EMPTY_FILESET);
   }
-  /* A glob-swept candidate is speculative — the pattern merely swept past this
-   * file — so one that cannot actually be expanded (gzip wrapping non-tar
-   * content, a corrupt or unreadable file) contributes nothing, per the
-   * globs-are-lenient convention. A
-   * literal probe is a path the user WROTE: its expansion failure is a real,
-   * reportable error. */
+  /* An archive a glob matched that cannot be expanded (a corrupt or unreadable
+   * file) adds nothing; one the pattern names literally fails. */
   const expansion = named ? expand(file) : expand(file).catch(() => EMPTY_FILESET);
   return expansion.then(expanded =>
     expanded.isEmpty() ? expanded : findWithDescent(FileSet.layout({ [at]: expanded }), pattern, prefix, expand)
@@ -183,13 +165,9 @@ function descend(candidate: BoundaryCandidate, pattern: Name, prefix: string, ex
 }
 
 /**
- * Expand an archive: read it whole into memory and unpack it. Cached use
- * wraps this (`BuildContextImpl.expandArchive` memoizes it in the build
- * cache, keyed on the file's content hash); a cache-less caller (tests) uses
- * it directly as its {@link ExpandFn}. A non-archive yields an empty set
- * rather than an error: "this file has no contents to address into" is the
- * projection's business to report, in the same terms as any other name that
- * matched nothing.
+ * Expand an archive, read whole into memory, into its files held in memory: the
+ * {@link ExpandFn} where there is no cache. A file that is not an archive
+ * expands to the empty set.
  */
 export function expandOnce(file: IFile): Computable<FileSet> {
   return file.getBuffer().then(buffer => {
@@ -200,7 +178,6 @@ export function expandOnce(file: IFile): Computable<FileSet> {
   });
 }
 
-/** Bumped when expansion semantics change (symlink handling, name
- *  normalization, mode bits), so expansions memoized by an older fabr are not
- *  served (cache entries are memos, never inputs). */
+/** The cache tag of memoized expansions. Bump it when what an archive expands
+ *  to changes (symlinks, name normalization, modes). */
 export const EXPAND_TAG = "expand:1";

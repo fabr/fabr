@@ -18,37 +18,31 @@
  */
 
 /**
- * The driver's incremental planning: everything between "these names changed"
- * and "compile exactly this".
+ * The tsc driver's incremental planning: from the names fabr reports changed
+ * and deleted since the last green build, decide which files to check and
+ * emit, and read and write the driver's memo of the import graph.
  *
- * The division of facts: fabr's native facts are bytes and
- * hashes, so fabr diffs the staged inputs against its own manifest triples and
- * hands over two name lists. Everything *graph*-shaped — which change reaches
- * what, which file roots global scope, what an addition can re-bind, which
- * outputs a vanished source leaves stale — is compiler-domain knowledge, and
- * lives here, beside the compiler that produces it.
+ * The **memo** is the driver's own file in its `--state-dir`. Fabr keeps it with
+ * the target's build state and stages it back, and never reads it. A memo that
+ * is missing, damaged or of another format version means a cold compile.
  *
- * The **memo** this module reads and writes is this driver's own file in its
- * `--state-dir`: fabr keeps it with the target's build state, stages it back,
- * and never reads inside, so its format — and the
- * format-version-mismatch-means-cold rule — is private to this module. Damage
- * or an unreadable version costs one cold compile of that target key, exactly
- * what a missing memo costs.
+ * Names here are **node names**: a project file by its staged path, a
+ * dependency's file by the path it is reached by (see PnpResolver.pathNameOf),
+ * which contains a space.
  *
- * This module is the driver's and must not import fabr; the vocabulary it
- * shares with the step (dependency path names, the changes document)
- * comes from pnp/ReadSet.ts, which is shared source with no core dependency.
+ * This module must not import fabr. The vocabulary it shares with the build
+ * step (dependency path names, the changes document) comes from pnp/ReadSet.ts.
  */
 
 import { IChangeLists } from "../pnp/ReadSet";
 
-/** The extensions a TypeScript program can hold — everything else staged under
- * the source root is content the compiler never opens. */
+/** The extensions of the files a TypeScript program can hold. Any other file
+ * under the source root is no file of the graph. */
 export const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json"];
 
-/** Where the caller stages the declarations another compile emitted for some
- * of this compile's sources, laid out as the source root is: those sources are
- * in the program to be compiled against, and neither checked nor emitted here. */
+/** The flag naming where the caller staged the declarations another compile
+ * emitted for some of this compile's sources, laid out as the source root is.
+ * Those sources are compiled against, and neither checked nor emitted. */
 export const SOURCE_DECLARATIONS_FLAG = "--source-declarations";
 
 /** The declaration extension a source's declaration has, by the source's own. */
@@ -63,14 +57,14 @@ export const DECLARATION_EXTENSION: ReadonlyMap<string, string> = new Map([
   [".cjs", ".d.cts"],
 ]);
 
-/** The extensions of a declaration file, which end in `.ts`/`.mts`/`.cts` and
- * so must be recognized whole: stripping one segment of `util.d.ts` leaves
- * `util.d`, a base no import ever probes. */
+/** The declaration extensions. Match them whole: `util.d.ts` has the stem
+ * `util`, not `util.d`. */
 const DECLARATION_EXTENSIONS = [...new Set(DECLARATION_EXTENSION.values())];
 
-/** @return a source name with its extension removed — including the emitted
- * spellings, which is how an ES-module source names a TypeScript file, and the
- * compound declaration extensions as units. */
+/** @return `name` without its extension: a declaration extension (`.d.ts`,
+ * `.d.mts`, `.d.cts`) whole, else any of {@link SOURCE_EXTENSIONS} (the `.js`
+ * spellings included, as an ES-module source names a TypeScript file); `name`
+ * as it is where it has none. */
 export function sourceStem(name: string): string {
   const dropped =
     DECLARATION_EXTENSIONS.find(extension => name.endsWith(extension)) ??
@@ -78,15 +72,12 @@ export function sourceStem(name: string): string {
   return dropped === undefined ? name : name.slice(0, -dropped.length);
 }
 
-/**
- * The extensions a relative specifier may have been written without, in the
- * order resolution probes them — and the ES-module spelling, where `./util.js`
- * is how a source names `util.ts`.
- */
+/** The extensions resolution tries after a relative specifier, in the order it
+ * tries them. */
 const PROBED_EXTENSIONS = [".ts", ".tsx", ".d.ts", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json"];
 
-/** @return a logical name with its `.` and `..` segments applied — names are
- * always `/`-separated, whatever the platform. */
+/** @return `name` with its `.` and empty segments dropped and each `..` applied
+ * (a leading `..` is kept). Names are `/`-separated on every platform. */
 export function normalizeName(name: string): string {
   const segments: string[] = [];
   for (const segment of name.split("/")) {
@@ -103,10 +94,14 @@ export function normalizeName(name: string): string {
 }
 
 /**
- * Resolve what a relative specifier names against a bare list of names —
- * resolution's probe order, replayed. The planner walks the memo's edges
- * backwards with it, and the wave answers an edge whose target has been deleted
- * (the one case live resolution cannot).
+ * Resolve a relative specifier written in `from` against the names `isMember`
+ * accepts, trying candidates in resolution's order: the path as written, then
+ * with each of {@link PROBED_EXTENSIONS} (after dropping a `.js`, `.mjs` or
+ * `.cjs` extension, since an ES-module specifier names the emitted file), then
+ * as a directory's `index` file with each extension.
+ *
+ * @return the first candidate that is a member, or undefined for a bare
+ *   specifier or where no candidate is one.
  */
 export function membershipTarget(from: string, specifier: string, isMember: (name: string) => boolean): string | undefined {
   if (!specifier.startsWith(".")) {
@@ -114,8 +109,7 @@ export function membershipTarget(from: string, specifier: string, isMember: (nam
   }
   const directory = from.includes("/") ? from.slice(0, from.lastIndexOf("/")) : "";
   const base = normalizeName(directory === "" ? specifier : `${directory}/${specifier}`);
-  /* An ES-module specifier names the file the compile EMITS; the source it
-   * resolves to is the one the extension was substituted for. */
+  /* An ES-module specifier names the emitted file (`./util.js` for `util.ts`). */
   const written = base.replace(/\.[cm]?js$/, "");
   for (const candidate of [
     base,
@@ -130,79 +124,61 @@ export function membershipTarget(from: string, specifier: string, isMember: (nam
 }
 
 /**
- * One outgoing edge. `specifier` is the authored form (`./foo`, never the
- * `./foo.js` an ES-module rewrite emits), since a later build re-resolves it.
- * `target` rides along only where membership could not replay the resolution —
- * a bare name, or a self-reference through a package's `exports`.
+ * One edge of the memo's graph: an import a file makes. `specifier` is as the
+ * source wrote it (`./foo`, never the `./foo.js` the ES-module rewrite emits).
+ * `target` is the node name it resolved to, recorded only where
+ * {@link membershipTarget} cannot recover it: a bare specifier, or a
+ * package's reference to itself through its `exports`.
  */
 export interface IMemoEdge {
   specifier: string;
   target?: string;
 }
 
-/**
- * What the memo knows about one file: whether its declarations affect global
- * scope, its outgoing edges of both kinds, the outputs attributed to it, and
- * the lookups it tried that found nothing.
- *
- * Use edges live in the file's body (its imports); forwarding edges appear in
- * its own emitted interface, and are what a consumer transitively depends on.
- * A declaration file has no body, so its imports are its forwarding edges.
- * `outputs` is what the build that last emitted this source wrote FOR it, as
- * the entry names them — recorded rather than derived, because only the
- * compiler knows its own source→output mapping, and it is what lets a later
- * build delete the stale outputs of a source that has gone.
- *
- * `failed` is each package lookup this file made that nothing answered, named
- * by the path it took ending at the manifest (`thing package.json`) — the same
- * name the read set reports the absence under, so a later change list's
- * appearance of that name matches it verbatim. Recorded because the failure is
- * an edge to nothing: whether tsc settled for the `@types` sidecar or reported
- * the import unresolvable, no resolved edge names the package that was asked
- * for, so without this line the one change that must re-check the file — that
- * package appearing — reaches it through nothing (see {@link rebound}).
- */
+/** What the memo records of one file after the last green build. */
 export interface IMemoFile {
+  /** true if the file's declarations affect global scope. */
   global: boolean;
+  /** The imports of the file's body. */
   use: IMemoEdge[];
+  /** The imports its emitted declarations make, which a consumer of the file
+   * depends on in turn. A declaration file's imports are all forwarding edges. */
   forwarding: IMemoEdge[];
+  /** The outputs the last build that emitted this file wrote for it, as the
+   * entry names them: what to delete once the file is gone. */
   outputs?: string[];
+  /** Each package lookup the file made that found nothing, named by the path it
+   * took ending at the manifest (`thing package.json`), as the read set names
+   * the absence. A change list naming it means the package appeared, and the
+   * file must be checked again. */
   failed?: string[];
 }
 
-/** The driver's memo: what it knew of each file after the last green build,
- * keyed by node name (a project file by staged path, a dependency's file by
- * the path it is reached by — see PnpResolver.pathNameOf). */
+/** The driver's memo: each file of the last green build, by node name. */
 export type DriverMemo = Map<string, IMemoFile>;
 
-/** The memo format's version, in the header. A change to what the lines mean
- * is a bump: an older memo then parses as malformed, is ignored, and that
- * target key compiles cold once. */
+/** The memo's header: magic and format version. Bump the version on any change
+ * to what a line means; a memo of another version reads as none. */
 const MEMO_MAGIC = "!tscmemo";
 const MEMO_VERSION = 2;
-/** The per-file flag: this file's declarations affect global scope, so a
- * change to it bounds nothing. */
+/** The field marking a file whose declarations affect global scope. */
 const GLOBAL_FLAG = "!g";
-/** Separates a line's sections: use edges, then forwarding edges, then — where
- * the file emitted any — the outputs attributed to it, then — where any lookup
- * found nothing — the failed lookups. Every field is encoded, so a bare one of
- * these can only ever be a separator. A trailing section is present only where
- * it has members, and an earlier empty one is held open by its separator when
- * a later one follows. */
+/** The field separating a line's sections: use edges, forwarding edges, then
+ * the outputs and the failed lookups. A trailing section is written only where
+ * it or a later one has members. Every other field is encoded, so a bare `|`
+ * is always a separator. */
 const EDGE_SEPARATOR = "|";
 
-/** @return the memo's bytes. Lines are name-sorted, so identical memos give
- * identical bytes; integrity is the enclosing record's business (fabr checksums
- * the whole memo it stores), so there is none here. */
+/** @return the memo as text: the header, then one line per file, sorted by
+ * name. It carries no checksum; fabr's record of it does. */
 export function serializeDriverMemo(files: DriverMemo): string {
   return [`${MEMO_MAGIC} ${MEMO_VERSION}`, ...[...files.keys()].sort().map(name => fileLine(name, files.get(name)!)), ""].join("\n");
 }
 
 /**
- * Read a memo, or **undefined for anything that is not exactly one**: a wrong
- * magic, an unsupported version, a torn line, a field that does not decode. It
- * never throws — a memo this driver cannot read means a cold compile, the same
- * price a missing one costs.
+ * Read a memo. Never throws: anything that is not exactly a memo of this
+ * version (a wrong header, a torn line, a field that does not decode) reads as
+ * undefined.
  */
 export function parseDriverMemo(data: string): DriverMemo | undefined {
   const lines = data.split("\n");
@@ -222,56 +198,60 @@ export function parseDriverMemo(data: string): DriverMemo | undefined {
       memo.set(parsed.name, parsed.file);
     }
   } catch {
-    /* A field that does not decode (a truncated escape) is the same answer as
-     * any other damage. */
+    /* A field that does not decode (a truncated escape). */
     return undefined;
   }
   return memo;
 }
 
 /**
- * What to compile, planned from what fabr said changed.
- *
- * `seeds` is what the wave grows from — the changed and deleted names, plus
- * the importers an addition may have re-bound; undefined means every project
- * file, the answer whenever nothing bounds the change's reach (no base, an
- * unreadable memo, a non-node input moved).
- * `roots` is the bound — the project files the program is rooted at;
- * undefined roots at everything, and an empty bound is a legitimate answer
- * (nothing to check), so the two must not share a spelling.
+ * What to compile. The **wave** is the set of files a run checks and emits,
+ * grown from the seeds over the memo's edges (see Wave.ts); the **bound** is
+ * the set of project files the program is rooted at, which holds every file
+ * the wave can reach.
  */
 export interface ICompilePlan {
+  /** The names the wave grows from: the changed and deleted names, plus the
+   * importers an added file may now resolve to. Undefined for a full compile
+   * of every project file. */
   readonly seeds: ReadonlySet<string> | undefined;
+  /** The bound. Undefined to root the program at every project file; an empty
+   * set means nothing needs checking. */
   readonly roots: ReadonlySet<string> | undefined;
-  /** The base build's graph — empty for a cold compile. */
+  /** The base build's memo; empty for a cold compile. */
   readonly memo: DriverMemo;
-  /** The names fabr reported gone, which the merged memo drops and whose
+  /** The names fabr reported deleted, whose memo lines are dropped and whose
    * recorded outputs are stale. */
   readonly deleted: ReadonlySet<string>;
-  /** Present where the plan is a full compile: the carried output tree cannot
-   * be incrementally corrected, so the driver starts the emit from nothing. */
+  /** Present for a full compile: why. The driver then starts the emit
+   * directory from nothing rather than from the base build's outputs. */
   readonly fresh?: { reason: string; cause?: string };
 }
 
 /**
- * Plan the compile from fabr's diff.
+ * Plan the compile from the names fabr reports changed and deleted since the
+ * base build.
  *
- * The classification: a changed name the graph can bound — a project source or
- * a dependency's file — seeds the wave; anything else that moved (the
- * generated configuration, the tool's own mount) is a change whose reach no
- * edge can bound, so the answer is every file.
+ * Every changed and deleted name is a seed, and so is each file whose import
+ * an added file may now resolve to ({@link rebound}). The bound is what the
+ * seeds can reach backwards over the memo's edges, plus every file affecting
+ * global scope; it is every project file where a seed affected global scope.
  *
- * A **deleted** name is an ordinary seed: its shape is nothing, which differs
- * from whatever it was, so the wave reaches its dependers through the memo's
- * edges exactly as any other change does. A deleted name that is no file of the
- * graph has no memo line, so it seeds nothing; what could matter there — the
- * generated configuration, the tool's mount — never changes by deletion alone.
+ * The plan is a full compile (`seeds` undefined, `fresh` set) where:
+ * - there is no base build (`changes` undefined), or `memo` is undefined (the
+ *   driver could not read its memo);
+ * - a changed name is no file of the graph: not a dependency's file, nor a
+ *   source under `sourceRoot` (the generated configuration, the tool's mount);
+ * - an added dependency's file is claimed by no edge or failed lookup of the
+ *   memo, and nothing else of its package changed (a `@typescript/lib-*`
+ *   replacement or a type directive's package appearing).
+ *
+ * A deleted name with no memo line seeds nothing.
  *
  * @param projectFiles the project files on disk, by node name.
- * @param sourceRoot the source root as a node-name prefix (`src`) — which
- *   decides which staged names can be files of the graph — or undefined where
- *   the project states none, in which case no project-space change can be
- *   classified and every change costs a full compile.
+ * @param sourceRoot the source root as a node-name prefix (`src`), or undefined
+ *   where the project states none, in which case every changed project file
+ *   makes a full compile.
  */
 export function planCompile(
   changes: IChangeLists | undefined,
@@ -283,9 +263,8 @@ export function planCompile(
     return coldPlan("no base build");
   }
   if (memo === undefined) {
-    /* Fabr had a base but this driver cannot read its own section — a format
-     * bump, or a different driver's bytes. Cold, but the deleted names still
-     * mean what they mean. */
+    /* A base build, but a memo this driver cannot read. The deleted names are
+     * still kept, for their stale outputs. */
     return coldPlan("unreadable memo", undefined, changes.deleted);
   }
   const seeds = new Set<string>();
@@ -306,18 +285,12 @@ export function planCompile(
   for (const importer of importers) {
     seeds.add(importer);
   }
-  /* An added DEPENDENCY-space name the graph cannot explain — no memo line, no
-   * failed lookup or probe that claims it, and no sibling change of its own
-   * package to carry the reach (a bump's manifest row rides its files' lines) —
-   * was asked for at PROGRAM level: a `@typescript/lib-*` replacement or a type
-   * directive's package appearing, or a manifest edited with its files
-   * untouched (an `exports` edit re-binding by content no row carries). Those
-   * move the global type environment or the binding of anything that asks, so
-   * no wave bounds them; left in the seeds they would wave nothing at all. A
-   * workspace addition is exempt: a new source nothing imports yet is benign,
-   * and rebound covers what one can capture. Deletions need no counterpart —
-   * a vanished lib or ambient package had HELD files, whose global-flagged
-   * lines already unbound the plan. */
+  /* An added dependency's file that no memo edge or failed lookup claims, with
+   * no other change in its package, was asked for by the program as a whole: a
+   * `@typescript/lib-*` replacement or a type directive's package appearing, or
+   * a manifest edited with its files unchanged. It can change the global types
+   * or what any import resolves to, so compile everything. An added project
+   * file needs no such check: what it can change, {@link rebound} finds. */
   const moved = [...changes.changed, ...changes.deleted];
   for (const name of added) {
     if (isDependencyName(name) && !explained.has(name) && !moved.some(other => other !== name && sharesRoute(name, other))) {
@@ -327,26 +300,23 @@ export function planCompile(
   return { seeds, roots: boundFor(memo, seeds, projectFiles), memo, deleted: new Set(changes.deleted) };
 }
 
-/** @return true if `other` is a change within the same package `name` names —
- * sharing the route up to `name`'s own file segment — otherwise false. */
+/** @return true if `other` is in the same package as the dependency's file
+ * `name` (it shares the path up to `name`'s last segment), otherwise false. */
 function sharesRoute(name: string, other: string): boolean {
   return other.startsWith(name.substring(0, name.lastIndexOf(" ") + 1));
 }
 
 /**
- * @return the paths an edge's specifier probes from — empty for one no in-tree
- * addition can capture.
+ * @return the stems an added file could take for `edge` (an import of
+ * `importer`) to resolve to it; empty where no added file can.
  *
- * A **relative** specifier probes from the path it names, with the resolution
- * mode's substitution applied: a specifier authored `./util.js` (the ES-module
- * spelling) binds `util.ts`, so indexing the raw text would miss the re-bind.
+ * A **relative** specifier gives the stem of the path it names, extension
+ * dropped (`./util.js` gives `util`, as it resolves to `util.ts`).
  *
- * A **bare** specifier is the package table's business and no addition can
- * capture it — except where it already resolved into this compile's own tree (a
- * package's reference to itself, which the table answers with a source file),
- * and there what could be captured is every name that could have produced the
- * file it landed on: `mypkg/util` resolving to `util/index.ts` is captured by a
- * `util.ts` appearing beside it, which offers the directory's own name.
+ * A **bare** specifier gives the stems of its recorded `target` (a package's
+ * reference to itself): `mypkg/util` resolving to `util/index.ts` gives
+ * `util/index` and `util`, so an added `util.ts` beside it is found. A bare
+ * specifier with no recorded target gives none.
  */
 function probeBases(importer: string, edge: IMemoEdge): string[] {
   if (!edge.specifier.startsWith(".")) {
@@ -356,8 +326,8 @@ function probeBases(importer: string, edge: IMemoEdge): string[] {
   return [sourceStem(normalizeName(directory === "" ? edge.specifier : `${directory}/${edge.specifier}`))];
 }
 
-/** @return the names an added file could be probed as: its own stem, and — for an
- * `index.*` — the directory that resolves to it. */
+/** @return the stems a specifier resolving to `name` could have: its own, and,
+ * for an `index.*`, its directory's. */
 function bindableBases(name: string): string[] {
   const stem = sourceStem(name);
   const directory = stem.endsWith("/index") ? [stem.slice(0, -"/index".length)] : [];
@@ -365,15 +335,9 @@ function bindableBases(name: string): string[] {
 }
 
 /**
- * @return the memo to remember: the base's, with this run's knowledge over the
- * top.
- *
- * The rule is what a run's account means — it says what it looked at, and says
- * nothing about what it had no reason to open. So a file the run reported
- * replaces its line, a file it did not keeps the base's, and a file fabr said
- * is gone loses its line. One field falls back apart: a line's `outputs` is
- * the last build that EMITTED the file, so a fresh line that emitted nothing
- * keeps the base's attribution.
+ * @return the memo to keep after a run: the base's lines, less the `deleted`
+ * names, with each line the run `learned` replacing the base's. A learned line
+ * with no `outputs` keeps the base line's.
  */
 export function mergeMemo(base: DriverMemo, deleted: Iterable<string>, learned: DriverMemo): DriverMemo {
   const merged = new Map(base);
@@ -387,8 +351,8 @@ export function mergeMemo(base: DriverMemo, deleted: Iterable<string>, learned: 
   return merged;
 }
 
-/** A diagnostic, structured — so a caller can compare two runs' outcomes
- * without parsing rendered text. The human rendering goes to stdout. */
+/** A diagnostic as the run report records it. Its rendered form goes to
+ * stdout. */
 export interface IDriverDiagnostic {
   file?: string;
   code: number;
@@ -398,30 +362,26 @@ export interface IDriverDiagnostic {
   character?: number;
 }
 
-/**
- * What an incremental run says about itself in its report — observation for a
- * caller comparing runs (the test suites), never read by fabr, whose whole
- * interest in the report is the reads and the edges.
- */
+/** What a run reports of its own compile, under the report's `compile` field.
+ * Read by tests comparing runs; fabr does not read it. */
 export interface ICompileTelemetry {
   /** Every file the wave came to hold, in the order it grew. */
   wave: string[];
-  /** Present when the wave was expanded to the whole project rather than
-   * computed, with the file that forced it — global scope is all-or-nothing. */
+  /** Present where the wave became every project file because a file affecting
+   * global scope changed: why, and that file. */
   expanded?: { reason: string; cause?: string };
   /** The files written, under the names they were written as. */
   emitted: string[];
-  /** Whether the run was abandoned and redone rooted at every project file. */
+  /** true if the run was abandoned and redone rooted at every project file. */
   fellBack?: boolean;
   diagnostics: IDriverDiagnostic[];
-  /** How much of the project the run rooted at — absent where it rooted at
-   * everything. */
+  /** How many project files the run rooted at, of how many; absent where it
+   * rooted at every one. */
   bound?: { roots: number; project: number };
 }
 
-/** Read the telemetry half of a run report, for a test comparing runs; undefined
- * for a run that had none. The document is this driver's own output, so the
- * read is a shape check rather than a validation pass. */
+/** Read the `compile` field of a run report; undefined for a report with none.
+ * Checks only that it is an object. */
 export function toCompileTelemetry(json: unknown): ICompileTelemetry | undefined {
   if (typeof json !== "object" || json === null || Array.isArray(json)) {
     throw new Error("expected a JSON object");
@@ -441,15 +401,10 @@ export function toCompileTelemetry(json: unknown): ICompileTelemetry | undefined
  */
 
 /**
- * @return a field, escaped so a space-separated line's structure is unambiguous.
- * `encodeURI` does the bulk — it escapes the space and the `|` separator while
- * leaving a path's `/` and a specifier's `:@&` legible. Two more characters
- * are escaped by hand because the line's own grammar gives them meaning:
- * `=` (an edge's spec/target split) and a LEADING `!` (which would otherwise
- * let a name spell the `!g` flag or the header). Defined here independently
- * of fabr's own manifest escaping BY RULE, not by drift: this module runs in
- * the build's child process and must not import core, and the two formats
- * never read each other's bytes.
+ * @return `text` escaped as a memo line's field: `encodeURI` (which escapes the
+ * space and `|`, and leaves `/`, `:`, `@` and `&`), plus `=` (the split
+ * between an edge's specifier and target) and a leading `!` (which could
+ * otherwise spell the `!g` field or the header).
  */
 function encodeField(text: string): string {
   const encoded = encodeURI(text).replace(/=/g, "%3D");
@@ -494,8 +449,8 @@ function parseFileLine(line: string): { name: string; file: IMemoFile } | undefi
   if (split < 0) {
     return undefined;
   }
-  /* The trailing sections are optional, so their absence is not damage: a line
-   * with one separator is a file that emitted nothing and failed no lookup. */
+  /* The trailing sections are optional: a line with one separator is a file
+   * with no outputs and no failed lookups. */
   const emitted = fields.indexOf(EDGE_SEPARATOR, split + 1);
   const failedAt = emitted < 0 ? -1 : fields.indexOf(EDGE_SEPARATOR, emitted + 1);
   const outputsEnd = failedAt < 0 ? undefined : failedAt;
@@ -520,23 +475,21 @@ function parseEdge(field: string): IMemoEdge {
     : { specifier: decodeField(field.substring(0, split)), target: decodeField(field.substring(split + 1)) };
 }
 
-/** @return the cold plan: no base to diff against, so the wave is every project
- * file, the emit starts from nothing, and this run's memo is the first. */
+/** @return a full-compile plan over `memo` (empty where omitted), keeping the
+ * `deleted` names. */
 function coldPlan(reason: string, memo?: DriverMemo, deleted?: Iterable<string>): ICompilePlan {
   return { seeds: undefined, roots: undefined, memo: memo ?? new Map(), deleted: new Set(deleted ?? []), fresh: { reason } };
 }
 
-/** @return true if a name is a dependency's file, otherwise false. A
- * dependency's file is named by the path it was reached by — the packages an
- * edge chain calls it through, then the file — so a space is what tells one
- * from a staged path (which is refused those names). See
- * PnpResolver.pathNameOf. */
+/** @return true if `name` is a dependency's file, otherwise false: its name
+ * (the packages it was reached through, then the file) contains a space, which
+ * no staged path does. */
 function isDependencyName(name: string): boolean {
   return name.indexOf(" ") > 0;
 }
 
-/** @return true if a name can be a node of the graph — a dependency's file,
- * or a source of this compile — otherwise false. */
+/** @return true if `name` can be a file of the graph (a dependency's file, or a
+ * source under `sourceRoot`), otherwise false. */
 function isNode(name: string, sourceRoot: string | undefined): boolean {
   if (isDependencyName(name)) {
     return true;
@@ -547,16 +500,13 @@ function isNode(name: string, sourceRoot: string | undefined): boolean {
 }
 
 /**
- * @return the project files this compile roots its program at: the reverse
- * closure of `seeds` over both edge kinds, plus every file affecting global
- * scope. The wave is a subset of it by construction, expanding over those same
- * edges.
+ * @return the bound: the project files on disk among the seeds, the files
+ * importing a seed (directly or through other files, over either kind of
+ * edge), and the files the memo marks as affecting global scope. Undefined
+ * (every file) where a seed's memo line affects global scope.
  *
- * Global scope is rooted UNCONDITIONALLY, whatever the change was — a
- * project's ambient declarations are imported by nothing, so the closure never
- * reaches them and leaving one out deletes its declarations from the
- * compilation. Undefined means root at everything, the answer when a changed
- * file was itself global.
+ * Always include the global-scope files: nothing imports them, and a program
+ * without one loses its declarations.
  */
 function boundFor(memo: DriverMemo, seeds: ReadonlySet<string>, projectFiles: ReadonlySet<string>): Set<string> | undefined {
   for (const name of seeds) {
@@ -565,10 +515,8 @@ function boundFor(memo: DriverMemo, seeds: ReadonlySet<string>, projectFiles: Re
     }
   }
   const bound = new Set<string>();
-  /* Project files alone, and only ones still on disk. A dependency's file is
-   * in the graph and can be the START of a wave, but it is never a root: the
-   * compiler reaches it through resolution, and rooting it would compile
-   * somebody else's package. */
+  /* Project files on disk only. A dependency's file can be a seed but never a
+   * root: the compiler reaches it through resolution. */
   const root = (name: string): void => {
     if (projectFiles.has(name)) {
       bound.add(name);
@@ -585,8 +533,8 @@ function boundFor(memo: DriverMemo, seeds: ReadonlySet<string>, projectFiles: Re
   return bound;
 }
 
-/** @return the transitive reverse closure of `seeds` over both edge kinds — every
- * file that could come to depend on something that moved. */
+/** @return `seeds` and every file of the memo importing one of them, directly
+ * or through other files, over either kind of edge. */
 function potentialWave(memo: DriverMemo, seeds: ReadonlySet<string>): Set<string> {
   const dependers = new Map<string, string[]>();
   const record = (target: string, depender: string): void => {
@@ -619,32 +567,15 @@ function potentialWave(memo: DriverMemo, seeds: ReadonlySet<string>): Set<string
 }
 
 /**
- * @return the importers an **added** file may have captured — the one change that
- * reaches files with no edge to it at all.
+ * Find the files of the memo whose imports an `added` file may now resolve to.
+ * An import matches an added file where the stems it could resolve to
+ * ({@link probeBases}) include one the added file has ({@link bindableBases});
+ * a failed lookup matches an added name equal to it (`thing package.json`).
+ * Matching ignores which extension resolution would prefer: an added `foo.tsx`
+ * beside `foo.ts` matches `./foo`'s importer though `foo.ts` still wins.
  *
- * Resolution's probe order is invertible: a specifier probes a fixed list of
- * candidate paths, so an added file can only re-bind specifiers whose list
- * contains it, and that is computable from its path alone. The memo's edges
- * are indexed by the base each specifier probes from; an added file offers the
- * bases it could be probed *as*; an importer in both is re-checked and
- * re-emitted (its emitted specifier can move too — the ES-module rewrite names
- * the file this compile emits).
- *
- * Conservative where priority is subtle: an added `foo.tsx` beside an existing
- * `foo.ts` does not actually win, but it lands in the index and its importer is
- * re-checked anyway. Re-checking one file needlessly is a cost; missing one is
- * a wrong answer.
- *
- * A file's FAILED lookups are the same capture through the package table: the
- * package appearing is what re-binds them, and it arrives under exactly the
- * name the failure was recorded as (`thing package.json` — the base recorded
- * the absence, so the diff reports the appearance under the path the lookup
- * took), so they are indexed verbatim and the added name is looked up verbatim
- * alongside its bases.
- *
- * Alongside the importers, answers which of the added names found ANY claim in
- * the index — what tells an addition the graph accounts for from one it cannot
- * (see the program-level arm in {@link planCompile}).
+ * @return `importers`, the files matched, and `explained`, the added names
+ *   that matched any file.
  */
 function rebound(memo: DriverMemo, added: ReadonlyArray<string>): { importers: Set<string>; explained: Set<string> } {
   const importers = new Set<string>();

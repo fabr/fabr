@@ -32,10 +32,10 @@ export interface IAuthChallenge {
 }
 
 /**
- * What signs a request in: a token added to every request, or a signature
- * over each. A repository made by a namespace is handed one (see
- * RepositoryProvider); core's HTTP layer asks it for each request it sends
- * and, where the server answers 401, once more with the server's challenge.
+ * A sign-in for requests: a token added to every request, or a signature over
+ * each. A repository a namespace makes is given one (see RepositoryProvider);
+ * core's HTTP layer asks it for each request it sends and, where the server
+ * answers 401, once more with the server's challenge.
  */
 export interface Credential {
   /**
@@ -46,7 +46,8 @@ export interface Credential {
   authorize(request: IRequestHead, challenge?: IAuthChallenge): Computable<ReadonlyMap<string, string> | undefined>;
 }
 
-/** Make the credential signing in, as `credential` does, the requests to `origin` alone: any other request carries nothing of it. */
+/** Make a credential that authorizes the requests to `origin` as `credential`
+ *  does, and adds nothing to any other request (nor retries its 401). */
 export function onlyTo(origin: string, credential: Credential): Credential {
   return {
     authorize: (request, challenge) =>

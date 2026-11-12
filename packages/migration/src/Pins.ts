@@ -47,7 +47,7 @@ import {
 import { Catalog, highest } from "./Catalog";
 import { Lockfile } from "./Lockfile";
 
-/** What fabr's resolution of a project's targets says, read as the facts the pins answer. */
+/** What fabr's resolution of a project's targets found, as the pins read it. */
 export interface Observation {
   /** Each registry package the targets reach, by published name, with each version selected. */
   readonly selected: ReadonlyMap<string, ReadonlySet<string>>;
@@ -67,8 +67,11 @@ export function npmPurl(purl: string): { name: string; version: string } | undef
   return match === null ? undefined : { name: decodeURIComponent(match[1]), version: decodeURIComponent(match[2]) };
 }
 
-/** Collect into `found` the floorless-required packages a resolution failure carries.
- * @return true if it carries any other failure, otherwise false. */
+/**
+ * Collect into `found`, by published name, the packages `err`'s resolution
+ * failures name as required only without a lower bound.
+ * @return true if `err` holds any other failure, otherwise false.
+ */
 function floorlessOf(err: unknown, found: Set<string>): boolean {
   if (err instanceof MultiError) {
     return err.errors.map(each => floorlessOf(each, found)).some(Boolean);
@@ -117,7 +120,10 @@ function evaluate<T>(
 
 /**
  * Resolve each of `targets` in the project at `root` as `fabr deps` does:
- * under `build`, nothing fetched or built.
+ * under `build`, nothing fetched or built. Never rejects: a target that does
+ * not resolve is listed in `failed`, the packages its failure names as
+ * required only without a lower bound in `floorless`, and any other failure
+ * rendered into `failures`.
  */
 export function observe(root: string, cacheRoot: string, targets: ReadonlyArray<string>): Promise<Observation> {
   const selected = new Map<string, Set<string>>();
@@ -203,7 +209,7 @@ export function latestPublished(root: string, cacheRoot: string, packages: Reado
   ).catch(() => latest);
 }
 
-/** @return true if `a` and `b` are versions a caret range starting at the lower admits both of. */
+/** @return true if `a` and `b` have the same major, and, where it is 0, the same minor, otherwise false. */
 function caretCompatible(a: string, b: string): boolean {
   const va = parseVersion(a);
   const vb = parseVersion(b);
@@ -222,14 +228,23 @@ interface Proposal {
 
 /**
  * Add to `catalog` the pins `observation` calls for, against what `lockfile`
- * records as installed:
- *  - a floorless-required package is pinned at the highest version the lockfile
- *    installs, or where it installs none, at `latest`'s version of it;
- *  - where the resolution selects a package lower than every version the
- *    lockfile installs in the same caret range, it is raised to the lowest of
- *    those (or, where the lockfile installs the package at one version, to it);
+ * records as installed (see {@link Catalog.raise} and
+ * {@link Catalog.sanction}):
+ *  - a package required only without a lower bound is pinned at the highest
+ *    version the lockfile installs, or where it installs none, at `latest`'s
+ *    version of it;
+ *  - where the highest version the resolution selects of a package is lower
+ *    than every version the lockfile installs that {@link caretCompatible}
+ *    admits, its entry is raised to the lowest of those; where the lockfile
+ *    and the resolution each have one version, to the lockfile's whatever its
+ *    major;
  *  - where versions of a package conflict and the lockfile installs it at more
  *    than one version too, each conflicting version is sanctioned with a `?`.
+ *
+ * @return how many pins were added, and as report lines what no pin answers:
+ * a package with no version to pin, one pinned at its latest published
+ * version, a lower selected version of a package below what the lockfile
+ * installs, and a conflict where the lockfile installs one version.
  */
 export function proposePins(
   catalog: Catalog,
@@ -263,9 +278,9 @@ export function proposePins(
     const sorted = [...versions].sort(byVersion);
     const principal = sorted[sorted.length - 1];
     for (const version of sorted) {
-      /* The installed versions a raise could take: those in the selection's
-       * caret range, or the one version installed, which satisfied every
-       * requirer on the package whatever its major. */
+      /* The installed versions a raise could take: those caret-compatible with
+       * the selection, or, where both the lockfile and the resolution have one
+       * version, that version whatever its major. */
       const caret = installed.filter(each => caretCompatible(each, version)).sort(byVersion);
       const compatible = caret.length === 0 && installed.length === 1 && sorted.length === 1 ? installed : caret;
       if (compatible.length === 0 || byVersion(compatible[0], version) <= 0) {

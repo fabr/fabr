@@ -35,92 +35,59 @@ import {
 } from "./Types";
 
 /**
- * Minimal Version Selection resolver (after Go's MVS): every constraint is
- * interpreted as a lower bound, and each package **name** is resolved to the
- * maximum over all lower bounds declared in the reachable requirement graph —
- * the **principal** selection, the one version per name a flat delivery ships.
+ * Resolve `roots` by minimal version selection, as Go modules do: each
+ * constraint's lower bound is a demand, and each package selects the highest
+ * version demanded of it. The walk reads the requirements of every demanded
+ * version (`registry.getRequirements`), including a version a higher demand
+ * displaces, and the result keeps only the selections the roots reach, sorted
+ * by package and version. Each root's entry in `rootBindings` names the
+ * selection it binds to among those it reaches.
  *
- * The **requirement graph is the whole demanded closure**: every version any
- * reachable requirement demands is expanded, not merely the ones that improve
- * the current selection (Go's module graph, likewise). This is what makes the
- * result a pure function of the requirement set rather than of metadata
- * arrival order — a demanded version that loses its slot still contributes its
- * own requirements' floors, whether it is reached before or after the winner.
- * Selection is consequently monotone: a max over a set, computed once the walk
- * is quiet.
- * Superseded versions are pruned from the *result* by the post-walk
- * reachability pass, which follows the edge bindings only.
+ * Kinds of requirement:
+ * - A `force` requirement (`!`) fixes its package's version for every
+ *   requirement on it, as does a BOM dependency of a forced root.
+ *   Requirements the forced version leaves unsatisfied are listed in
+ *   `coerced`.
+ * - An `alternate` requirement (`?`) demands nothing. Its version raises every
+ *   requirement on its package that it satisfies, and is selected where the
+ *   package is otherwise required only without a lower bound.
+ * - A requirement with no lower bound (such as `*`) demands nothing, and is
+ *   met by whatever the other requirements select.
+ * - A `bom` requirement demands its version only for a package something else
+ *   requires.
+ * - A `provided` requirement demands its version only where nothing else
+ *   selects its package, and an `"optional"` one never does; either binds to
+ *   its package's one selection.
+ * - A requirement on a package that every path to its requirer `excludes` is
+ *   left out.
  *
- * The result therefore depends only on what the packages in the graph declare,
- * never on what else the repository happens to contain, so it is deterministic
- * without a lockfile (provided published metadata is immutable). Upper bounds
- * are checked after selection. For **convex** constraints this check is a
- * satisfiability proof: any flat assignment must sit at or above every floor,
- * hence at or above the principal, so a principal breaking some cap means no
- * flat assignment exists at all — the constraints are jointly unsatisfiable,
- * reported in MVSResolution.violations as data, not failure. (A disjunctive
- * range can in principle be satisfiable above the minimal point; suggesting
- * such a cross-disjunct pin is a corrections concern, not the resolver's.)
+ * Upper bounds are checked once selection is done. A requirement its
+ * package's selection does not satisfy is listed in `violations`, or in
+ * `shared` for a `provided` requirement where `domain.providedMismatch`
+ * tolerates it. Unless `domain.flat`, an unsatisfied requirement that is
+ * neither forced nor provided gets a fork where a published version satisfies
+ * it: a further selection of the same package (`Selected.fork`, numbered in
+ * ascending version order). Unsatisfied requirements share forks greedily,
+ * each fork selecting the highest lower bound among those it serves, and a
+ * fork's own requirements resolve the same way until no new fork is needed. A
+ * package whose only reachable selection is a fork takes that version as its
+ * selection, and the violations it satisfies are dropped.
  *
- * Each violated edge is then repaired by a **fork**: a further selection of
- * the same package (Selected.fork > 0), packed greedily so that the fewest
- * forks jointly satisfy the violated edges — max-of-floors *within the pack*,
- * exactly the MVS rule applied to the edges the principal cannot serve. Fork
- * subtrees resolve **jointly in the one graph**: a fork's own requirement
- * edges bind by satisfaction against the same selections (usually the
- * principals — sharing is the default), and edges they in turn violate fork
- * further, iterated to a fixpoint. There is no second resolution world, so
- * root pins govern fork subtrees exactly as they govern everything else. The
- * consumer judges forks per delivery: a strict (linked) delivery refuses
- * reachable forks (the violations carry the report), a sealed tool delivery
- * nests them privately. A violated edge nothing published satisfies gets no
- * fork and stays a bare violation — undeliverable in every mode, judged where
- * it is in scope.
+ * A lower bound the registry never published (it answers VersionNotFoundError)
+ * is met by an existing selection that satisfies the constraint, if there is
+ * one. Otherwise, where the registry offers `lowestAvailable`, it is raised to
+ * the lowest published version that satisfies the constraint, in any major
+ * version, and listed in `raises`. The first pass raises nothing; a package
+ * still selected at an unpublished version when the walk settles is raised in
+ * a further pass, repeated until none remains. A forced version is never
+ * raised.
  *
- * The one relaxation of pure lower-bound selection is the **floor raise**: a
- * requirement whose declared minimum was never published (the registry rejects
- * it with VersionNotFoundError) degrades to attach-first semantics, judged at
- * convergence — an existing selection satisfying the constraint (a root pin,
- * typically) answers the request outright, with no registry read at all;
- * otherwise, if the registry offers `lowestAvailable`, the requirement's
- * contribution is raised to the lowest *published* satisfying version — the
- * request was for the constraint, and the first published version meeting it
- * is an acceptable answer (>=5 where the 5.x line was never published is
- * answered from major 6; edges bind by satisfaction, so the moved demand
- * cannot vanish from the closure). Raises are recorded in MVSResolution.raises
- * when they win. An unpublished winner nothing needs is simply excluded from
- * the result: edges are resolved against the *published* selections only, so a
- * demand's phantom slot entry serves no edge and needs no withdrawal.
- *
- * Principal repairs fire only when no repair-free resolution exists, and only
- * for the nodes that prove it: resolution runs first with repairs disabled,
- * tolerating an unpublished demanded version as an unexpandable pending
- * selection (a transient winner superseded by a higher declared floor never
- * mattered, and must not trigger — or be failed by — a repair). Only if the
- * CONVERGED tree has an edge no published selection answers — whose slot
- * winner is an unpublished version, the proof that the tree is unresolvable
- * without repair — is the walk rerun, with the raise hook armed for **exactly
- * those nodes**. Each rerun can expose further blocking nodes (a raise changes
- * selections), so the armed set grows and the walk repeats until the tree
- * converges clean or stops growing; it is bounded by the finite node set, so
- * this terminates. (A **fork** candidate needs no such arming: a fork exists
- * only because a converged tree proved the violated edges need it, so its
- * unpublished floor is raised directly.)
- *
- * The hook is armed per node, not globally for the rerun: a broken floor phase 1
- * tolerated *is* tolerable, and raising it would move a selection nothing asked
- * to be moved — coupling that package's version to whether some unrelated
- * subtree needed repairing. The judgment is likewise independent of visit order:
- * an eagerly-probed transient floor whose range has no published version must
- * not fail a tree a later declared floor makes clean. Without the hook the same
- * tolerance applies, and a live unpublished winner at convergence is the
- * terminal failure.
- *
- * Note: if the registry rejects a metadata fetch (other than a raisable
- * version-not-found), the returned Computable rejects with a
- * MetadataFetchError identifying the failing package and the requirement chain
- * that first reached it (the requirement graph cannot be determined, which is
- * unlike a constraint violation and so is not reported via the result).
+ * A problem with one requirement is listed in `errors`, and the rest of the
+ * resolution is still returned: an unparseable constraint, a package required
+ * only without a lower bound, or two different packages required under one
+ * name. Rejects with a MetadataFetchError, naming the package and the
+ * requirement chain that reached it, where the registry fails to answer, or a
+ * package is left selected at an unpublished version.
  */
 export function resolveMVS<V, C>(
   roots: Requirement[],
@@ -143,8 +110,6 @@ export function resolveMVS<V, C>(
  * Get the versions forced BOMs force: of each root forced with `!`, the BOM
  * dependencies its version states, by package, each forcing the version it
  * gives. A package a root forces itself, or an earlier BOM, keeps that force.
- * Read before the walk, as a root's own requirements, so the walk starts with
- * every force it is to apply.
  */
 function forcedByBoms<V, C>(
   roots: readonly Requirement[],
@@ -185,11 +150,9 @@ function forcedByBoms<V, C>(
   );
 }
 
-/** Internal signal: the converged tree has edges only these (unpublished)
- * nodes could answer, and the hook has not yet been armed for them — so no
- * repair-free resolution exists and the walk must rerun with them raisable.
- * Never escapes resolveMVS; `nodes` is non-empty (a converged tree whose
- * blocking nodes were all already armed is the terminal failure instead). */
+/** Thrown by a walk that settled with packages selected at unpublished
+ * versions it may not raise (`nodes`, never empty): resolveMVS reruns the
+ * walk with raising enabled for them. Never escapes resolveMVS. */
 class RepairsRequired extends Error {
   constructor(public readonly nodes: string[]) {
     super("resolution requires repairs");
@@ -214,19 +177,24 @@ interface Demand {
 }
 
 /** Get the name a requirement's package is published under, where the
- * requirement renames it — the one field of a selection the walk takes from the
- * requirement rather than the slot. */
+ * requirement renames it. */
 function publishedBy(req: Requirement): { publishedName?: string } {
   return requiredAs(req) === req.name ? {} : { publishedName: req.name };
 }
 
+/**
+ * Run one walk of {@link resolveMVS}, forcing the versions in `managed` and
+ * raising unpublished lower bounds only for the nodes in `repairable`.
+ * Rejects with RepairsRequired where the walk settles with other packages
+ * selected at unpublished versions.
+ */
 function resolvePhase<V, C>(
   roots: Requirement[],
   domain: VersionDomain<V, C>,
   registry: RequirementSource<V>,
-  /** Node ids ({@link nodeId}) whose floors this walk may raise — the ones a
-   * previous walk converged on as unpublished *winners*. Empty on the first
-   * walk, so it is repair-free. */
+  /** Node ids ({@link nodeId}) whose lower bounds this walk may raise: those
+   * a previous walk settled on at an unpublished version. Empty on the first
+   * walk. */
   repairable: ReadonlySet<string>,
   /** The versions forced BOMs force, by package ({@link forcedByBoms}). */
   managed: ReadonlyMap<string, V> = new Map()
@@ -234,11 +202,9 @@ function resolvePhase<V, C>(
   /* The walk knows a package by the name it is required as (its slot); the
    * registry is asked for it by the name it is published under. */
   return Computable.from((resolve, reject) => {
-    /* Forced packages (a `!` root override): every requirement on the package
-     * is substituted with exactly this version — npm-`overrides` semantics.
-     * The caller validates at most one force per package (a generic defensive
-     * first-in-canonical-order would mask the error); the resolver takes the
-     * first. */
+    /* Forced packages (a `!` root): every requirement on the package is
+     * answered by exactly this version, as npm's `overrides` do. Callers allow
+     * at most one force per package; the first is taken. */
     const forced = new Map<string, V>(managed);
     for (const root of roots) {
       if (root.override === "force" && !forced.has(requiredAs(root))) {
@@ -272,18 +238,17 @@ function resolvePhase<V, C>(
       const raised = allowed.get(name)?.find(version => domain.satisfies(version, constraint));
       return raised !== undefined && domain.compare(raised, minimum) > 0 ? raised : minimum;
     };
-    /** @return true if this walk may raise the floors demanding `id`, otherwise
-     * false: the registry must offer the hook, and the node must be one a
-     * converged tree proved blocking — and never a forced package's (the user
-     * pinned it; a raise would move a version that was explicitly forced). */
+    /** @return true if this walk may raise the lower bounds demanding `id`,
+     * otherwise false: the registry offers `lowestAvailable`, `id` is in
+     * `repairable`, and its package is not forced. */
     const canRepair = (id: string): boolean =>
       registry.lowestAvailable !== undefined && repairable.has(id) && !forced.has(packageOf(id));
-    /* Highest minimum seen so far, per package name — the principal winner */
+    /* The highest lower bound demanded so far, per package name: its
+     * selection without a fork. */
     const selected = new Map<string, Selected<V>>();
-    /* Fork selections per package, in creation order (each round's packing is
-     * deterministic, so this order is too); canonical indices are assigned at
-     * finalize. Every fork's version is a *published* version by construction
-     * (created only once its metadata answered). */
+    /* Fork selections per package, in creation order; their indices are
+     * assigned at finalize. A fork is made only once its version's metadata
+     * has answered, so every fork's version is published. */
     const forks = new Map<string, Selected<V>[]>();
     /* Raise answers for fork candidates, per "pkg\nconstraint": in flight,
      * the raised version, or null when nothing published satisfies. */
@@ -304,27 +269,21 @@ function resolvePhase<V, C>(
     /* The requirement(s) whose minimum demanded each node — the floor(s) to
      * raise if the node turns out to be unpublished */
     const nodeDemands = new Map<string, Demand[]>();
-    /* Nodes the registry reported unpublished — the phantoms. Serves three
-     * duties: a demand arriving after the 404 is repaired on the same terms as
-     * one that preceded it (the raise must not depend on whether the answer
-     * beat the demand); the result view is filtered by it (a phantom slot
-     * winner serves no edge — see the convergence rounds); and convergence
-     * reads the terminal failure's cause from it. */
+    /* Nodes the registry reported unpublished. A demand arriving after the
+     * report is raised as one before it would be; such a node is left out of
+     * the result; and the terminal failure takes its cause from here. */
     const notPublished = new Map<string, VersionNotFoundError>();
     /* Raises applied during the walk; filtered to the winners at finish */
     const candidateRaises: RaisedFloor<V>[] = [];
     /* (node, demand) pairs already floor-raised, so a repair is attempted once
      * however often its demand is re-offered (see raiseFloors) */
     const raisedDemands = new Set<string>();
-    /* Expected-provided (peer) requirements deferred to quiescence: each is
-     * primarily a constraint on whatever the tree selects; one whose package
-     * the converged tree doesn't select at all fires as an ordinary demand
-     * (auto-install as last resort). */
+    /* Expected-provided requirements, deferred until the walk is quiet: one
+     * whose package nothing selects then fires as an ordinary demand. */
     const providedReqs: Array<{ req: Requirement; requiredBy: string }> = [];
     const providedFired = new Set<{ req: Requirement; requiredBy: string }>();
-    /* Written `?` alternates (attach-last: supply a version to a package the
-     * tree requires only floorlessly), and the packages seen floorlessly
-     * required — the trigger condition, judged at quiescence. */
+    /* Written `?` versions, supplied when the walk is quiet to a package
+     * required only without a lower bound; and the packages so required. */
     const alternateAnswers = new Map<string, { version: V; publishedName?: string }>();
     /* BOM dependencies, deferred to quiescence: each fires as an ordinary
      * demand once the tree requires its package by another edge. */
@@ -378,12 +337,7 @@ function resolvePhase<V, C>(
       try {
         constraint = constraintOf(domain, req.versionConstraint);
       } catch {
-        /* An unparseable constraint is reported at the reachability walk
-         * (followEdge), not here: the fixpoint walk visits superseded/pruned
-         * requirements too, and a bad constraint in one that doesn't survive
-         * pruning must not fail the whole resolution. followEdge reparses the
-         * constraint (deterministically the same error) on exactly the edges
-         * that are in effect. */
+        /* Reported by followEdge, for a requirement that is in effect. */
         return;
       }
       if (req.bom) {
@@ -391,14 +345,9 @@ function resolvePhase<V, C>(
         return;
       }
       if (req.override === "alternate") {
-        /* Attach-LAST (the mirror of a peer's attach-first): an alternate
-         * demands nothing of its own — it raises the floors of the
-         * requirements it satisfies (floorOf), and where the converged tree
-         * requires the package ONLY floorlessly, where no version is
-         * selectable deterministically, the written alternate supplies one
-         * (fired at quiescence, like the other convergence repairs).
-         * Recorded here; never an ordinary demand. One stating no version
-         * (`@npm:debug?`) has none to supply. */
+        /* Never a demand: recorded to raise the requirements it satisfies
+         * (floorOf), and to be supplied when the walk is quiet (settle). One
+         * stating no version (`@npm:debug?`) has none to supply. */
         if (req.versionConstraint === undefined) {
           return;
         }
@@ -411,13 +360,10 @@ function resolvePhase<V, C>(
       }
       if (forced.has(requiredAs(req))) {
         const forcedVersion = forced.get(requiredAs(req)) as V;
-        /* Substitution: whatever this requirement asked for, the forced
-         * version is what it gets — its own floor is never offered (nor its
-         * version's metadata fetched). The original constraint is judged at
-         * convergence: unsatisfied means coerced, recorded as data. The force
-         * root's own edge is the one demand offered to the pool, so the
-         * principal is the forced version by construction; a version a forced
-         * BOM forces has no root, so each requirement on it offers it. */
+        /* The requirement gets the forced version, whatever it asked for; its
+         * own lower bound is never offered. The force root is the one demand
+         * offered; a version a forced BOM forces has no root, so each
+         * requirement on it offers it. */
         if (req.override === "force" || managed.has(requiredAs(req))) {
           attempt(req, forcedVersion, requiredBy);
         } else {
@@ -426,20 +372,14 @@ function resolvePhase<V, C>(
         return;
       }
       if (domain.isFloorless(constraint)) {
-        /* No lower bound ('*', or an upper-bound-only range): contributes no
-         * selection of its own, and is satisfied by whatever the floored
-         * requirements select (resolved during the convergence rounds, where
-         * any upper bound is still violation-checked; a floorless-only package
-         * is an error there — unless a written alternate supplies the version,
-         * for which the package is remembered here). */
+        /* No lower bound ('*', or an upper-bound-only range): no demand. The
+         * package is remembered for a written `?` version to supply. */
         floorlessRequired.add(requiredAs(req));
         return;
       }
       if (req.provided === "optional") {
-        /* Never a demand, not even the last-resort one an expected-provided
-         * requirement fires: npm does not install an optional peer, and
-         * neither does this. It is still recorded (see nodeRequirements), so
-         * it binds if something else selects the package. */
+        /* Never a demand; still recorded (nodeRequirements), so it binds if
+         * something else selects the package. */
         return;
       }
       if (req.provided !== undefined) {
@@ -454,12 +394,9 @@ function resolvePhase<V, C>(
      * function of the requirement set, not of which fetch landed first. */
     const edgeOrder = (edge: IRequirementEdge): string => `${edge.requiredBy}\n${edge.versionConstraint}`;
 
-    /** Offer `version` as a lower bound for the package (a requirement's
-     * declared minimum, or its raised floor): it is selected iff it beats the
-     * current principal, and expanded either way — a demanded version
-     * contributes its own requirements to the graph even when it loses (see
-     * the Go MVS note above; `visit` dedups, so each pkg@version is fetched
-     * once). */
+    /** Offer `version` as a lower bound for the package: it is selected if it
+     * is higher than the current selection, and its requirements are read
+     * either way (`visit` reads each version once). */
     const attempt = (req: Requirement, version: V, requiredBy: string): void => {
       const name = requiredAs(req);
       const current = selected.get(name);
@@ -472,26 +409,14 @@ function resolvePhase<V, C>(
     };
 
     /**
-     * Raise each of `demands`' contribution, for a demanded version that was
-     * never published, to the lowest published version satisfying its
-     * constraint (re-offered through the normal max-of-minimums rule). A
-     * requirement nothing published satisfies raises nothing, so the node keeps its
-     * unpublished declared version — tolerated here and judged at convergence
-     * exactly as in phase 1, since the walk expands superseded versions too
-     * and an unrepairable floor on one of those never mattered. One an
-     * in-effect edge still needs at convergence is the terminal failure.
-     *
-     * Takes the demands to repair rather than reading them off the node,
-     * because they arrive on both sides of the registry's answer: the demands
-     * known when it lands are repaired together, and each later one is repaired
-     * as it arrives. The caller holds a `pending` token for the duration.
+     * Raise each of `demands`, on a version that was never published, to the
+     * lowest published version satisfying its constraint, offered as any
+     * demand is. A demand nothing published satisfies is not raised, and the
+     * unpublished version is judged when the walk settles. Each (node, demand)
+     * pair is raised once. The caller holds a `pending` token for the
+     * duration.
      */
     const raiseFloors = (pkg: string, version: V, demands: Demand[]): void => {
-      /* Each (node, demand) is raised once. Since the raise is a pure function
-       * of the two, re-raising could only repeat itself — and would not
-       * terminate if the hook offers a version the registry then rejects in
-       * turn (the offer is re-demanded, found already demanded, and repaired
-       * again). Termination is otherwise by the finite demand set. */
       const id = nodeId(pkg, version);
       const fresh = demands.filter(demand => {
         const signature = `${id}\n${demand.requiredBy}\n${demand.req.versionConstraint}`;
@@ -501,27 +426,16 @@ function resolvePhase<V, C>(
         raisedDemands.add(signature);
         return true;
       });
-      /* A repair that cannot be evaluated at all (the hook itself failed — an
-       * unreachable registry, say) is attributed like the metadata failure that
-       * provoked it: it belongs to the same node, so it must reach the consumer
-       * pointing at the requirement chain that demanded it, not bare against
-       * the target being built. */
+      /* A failure of `lowestAvailable` is attributed to the node, as a
+       * metadata failure is. */
       Computable.forAll(
         fresh.map(demand =>
           registry.lowestAvailable!(demand.req.name, statedConstraint(demand.req)).then(raised => {
-            /* Nothing published satisfies the constraint at all: the demand
-             * contributes nothing further and its phantom stays the slot
-             * winner, reported at convergence (terminal, since this node is
-             * armed) if an in-effect edge still needs it. */
+            /* Nothing published satisfies it: judged when the walk settles. */
             if (raised === undefined) {
               return;
             }
-            /* The raise re-offers the constraint's answer through the normal
-             * max rule. The request was for the constraint, and the first
-             * published version meeting it is an acceptable answer, whatever
-             * major it lives in (npm: '>=5' where the 5.x line was never
-             * published raises into major 6); edges bind by satisfaction, so
-             * the moved demand cannot vanish from the delivered closure. */
+            /* In any major version: '>=5' with no 5.x published raises to 6.x. */
             candidateRaises.push({
               name: pkg,
               versionConstraint: statedConstraint(demand.req),
@@ -541,12 +455,10 @@ function resolvePhase<V, C>(
     };
 
     /**
-     * Apply the registry's verdict that pkg@version was never published to
-     * the demands recorded so far: repaired by floor raises when the phase and
-     * registry allow it, else tolerated as an unexpandable pending selection
-     * (judged at convergence — only one an in-effect edge still needs proves
-     * repair is required). Consumes the `pending` token the caller holds for
-     * the node.
+     * Record that pkg@version was never published, and raise the demands
+     * recorded so far where this walk may (canRepair); otherwise the version
+     * stays selected, to be judged when the walk settles. Consumes the
+     * `pending` token the caller holds for the node.
      */
     const nodeNotPublished = (id: string, pkg: string, version: V, err: VersionNotFoundError): void => {
       if (allowed.get(pkg)?.some(written => domain.compare(written, version) === 0)) {
@@ -565,9 +477,8 @@ function resolvePhase<V, C>(
 
     /**
      * Attribute a metadata failure to the requirement chain that first reached
-     * the failing node: walk the first-reacher parents back to a root. The
-     * first reacher may be a later-superseded version — still a truthful
-     * "required by" trace, and the only one available if the walk cannot finish.
+     * the failing node, walking first reachers back to a root. The chain may
+     * pass through a version that was later displaced.
      */
     const annotate = (id: string, pkg: string, version: V, err: unknown): MetadataFetchError => {
       const path: string[] = [];
@@ -628,10 +539,8 @@ function resolvePhase<V, C>(
       excluding ||= (req.excludes?.length ?? 0) > 0;
       const demands = nodeDemands.get(id);
       if (demands) {
-        /* Metadata already demanded (or resolved); record the demand for raise
-         * attribution should the node turn out unpublished — or repair it now
-         * if that answer is already in, so a demand is treated the same either
-         * side of it. */
+        /* Already read, or being read: record the demand in case the version
+         * is unpublished, and raise it now if that is already known. */
         demands.push(entry);
         const known = notPublished.get(id);
         if (known && canRepair(id)) {
@@ -677,27 +586,21 @@ function resolvePhase<V, C>(
     };
 
     /**
-     * Gate quiescence: before judging the converged tree, fire any deferred
-     * expected-provided requirement whose package the tree selects nothing
-     * for — as an ordinary demand, the failed expectation repaired — and keep
-     * walking. Judged at quiescence so the outcome is a function of the
-     * converged state, not of visit order (the same discipline as the repair
-     * phases); a fired demand may itself declare more provided requirements,
-     * so this repeats until quiet.
+     * Run when the walk is quiet: fire the deferred requirements that now
+     * apply (an expected-provided requirement whose package nothing selects,
+     * a written `?` version for a package required only without a lower bound,
+     * a BOM dependency on a package something requires, an excluded
+     * requirement a path no longer excludes) and keep walking; once none
+     * applies, finish.
      */
     const settle = (): void => {
       if (failed) {
         return;
       }
       const selectedPkgs = new Set([...selected.values()].map(sel => sel.name));
-      /* Attach-last alternates: a package the converged tree requires only
-       * floorlessly (nothing selects it) takes its written `?` version — the
-       * deterministic answer the requirements alone cannot give. "Selects" is
-       * judged over PUBLISHED selections, the same view judgeConverged takes:
-       * a phantom occupying the slot is no deliverable answer, so its package
-       * still wants the alternate. (The provided-req guard keeps the full view
-       * deliberately — a phantom's demand is still a demand, answered by the
-       * raise machinery, not by installing the peer.) */
+      /* A written `?` version is supplied where no published version is
+       * selected; an expected-provided requirement fires only where no version
+       * at all is selected. */
       const publishedPkgs = new Set(
         [...selected.values()].filter(sel => !notPublished.has(nodeId(sel.name, sel.version))).map(sel => sel.name)
       );
@@ -732,11 +635,8 @@ function resolvePhase<V, C>(
       }
       for (const [pkg, { version, publishedName }] of supplying) {
         alternateFired.add(pkg);
-        /* A phantom in the slot (an unpublished floor from a superseded
-         * demand) must not out-floor the supplied answer — evict it so the
-         * supply reads as the root selection it is. An in-effect edge that
-         * genuinely needed the phantom still fails at convergence: it now
-         * judges against the supplied version and violates. */
+        /* An unpublished version selected for the package gives way to the
+         * supplied one. */
         const current = selected.get(pkg);
         if (current && notPublished.has(nodeId(current.name, current.version))) {
           selected.delete(pkg);
@@ -761,10 +661,9 @@ function resolvePhase<V, C>(
       constraint: C;
     }
 
-    /** Everything one convergence round judges of the quiet walk: the
-     * reachable graph and its attributions, the violations against the
-     * principals, and the edges no current selection satisfies (the packing
-     * input). */
+    /** What one round of judging the quiet walk finds: the reachable
+     * selections and how each was reached, what is unsatisfied, and the edges
+     * no selection satisfies, to be packed into forks. */
     interface Round {
       selectionsByPkg: Map<string, Selected<V>[]>;
       reachable: Map<Selected<V>, Selected<V>>;
@@ -776,23 +675,15 @@ function resolvePhase<V, C>(
     }
 
     /**
-     * Judge one convergence round of the quiet walk. The fixpoint walk visits
-     * the requirements of superseded versions too, so each round recomputes
-     * reachability through the *published* selections only, following each
-     * edge's binding: this prunes packages
-     * dragged in solely by superseded versions, validates upper bounds only
-     * for requirements actually in effect, and reaches forks exactly through
-     * the violated edges bound to them. Undefined when the round failed the
-     * walk instead (a needed phantom — terminal, or the armed-rerun signal).
+     * Judge the quiet walk: from the roots, follow each requirement to the
+     * published selection it binds to (edgeBinding), checking its upper bound
+     * on the way. Only what is reached this way is in effect. Undefined where
+     * a requirement in effect still binds to an unpublished version, in which
+     * case the walk has been failed (with RepairsRequired, or terminally).
      */
     const judgeConverged = (): Round | undefined => {
-      /* The selections of each package: the principal first (published only —
-       * an unpublished slot winner, a phantom, is no deliverable answer, so
-       * edges resolve against the published selections; a phantom an in-effect
-       * edge still *needs* is detected below, where the edge finds no
-       * candidates at all), then the forks in their canonical creation order.
-       * The map's iteration order is not consumed — reachability order comes
-       * from the roots and each node's declared requirement order. */
+      /* The published selections of each package: the one without a fork
+       * first, then the forks in creation order. */
       const selectionsByPkg = new Map<string, Selected<V>[]>();
       for (const selection of selected.values()) {
         if (notPublished.has(nodeId(selection.name, selection.version))) {
@@ -801,11 +692,8 @@ function resolvePhase<V, C>(
         selectionsByPkg.set(selection.name, [selection]);
       }
       for (const [pkg, packed] of forks) {
-        /* A principal CAN go phantom after its forks were created — a fork
-         * subtree's expansion can raise the pool to an unpublished floor. The
-         * forks drop with it: the round then sees no candidates for the
-         * package, records the needed phantom below, and the armed rerun
-         * rebuilds fork state from scratch against the repaired principal. */
+        /* A package whose selection became unpublished after its forks were
+         * made drops its forks too. */
         selectionsByPkg.get(pkg)?.push(...packed);
       }
 
@@ -818,23 +706,16 @@ function resolvePhase<V, C>(
        * first reached; keyed by the underlying selection instance */
       const reachable = new Map<Selected<V>, Selected<V>>();
       const visited = new Set<string>();
-      /* Alternate roots are not demands: an unfired one has (by design) no
-       * selection to lead to, so it is no reachability edge either. */
+      /* An alternate root is not followed. */
       const demandRoots = roots.filter(root => root.override !== "alternate");
       const queue: Array<{ from: string; requirements: Requirement[] }> = [{ from: ROOT_REQUIRER, requirements: demandRoots }];
-      /* Phantoms an in-effect edge still needs — an edge for which no published
-       * selection exists at all, whose slot winner the registry never
-       * published. The proof the tree is unresolvable without repair: unarmed
-       * ones become the next walk's repairable set, armed ones are terminal. */
+      /* Unpublished selected versions a requirement in effect still needs. */
       const neededPhantoms = new Map<string, { name: string; version: V; err: VersionNotFoundError }>();
 
       const followEdge = (from: string, req: Requirement): void => {
         if (req.provided === "optional") {
-          /* An optional peer attaches to what the tree DELIVERS; it never makes
-           * anything deliverable, so the walk — which decides reachability —
-           * does not follow it. The binding itself is not lost: the edge map is
-           * built from the requirements directly (see `edges` in finalize), so
-           * a peer the tree does deliver is still bound. */
+          /* Not followed; finalize still binds it where its package is
+           * reached. */
           return;
         }
         const name = requiredAs(req);
@@ -842,9 +723,6 @@ function resolvePhase<V, C>(
         try {
           constraint = constraintOf(domain, req.versionConstraint);
         } catch (err) {
-          /* An unparseable constraint on an edge that is actually in effect
-           * (reachable through selected versions): report it here, where
-           * pruning has already dropped superseded/unreachable requirements. */
           const message = `${toError(err).message} in requirement '${name}: ${req.versionConstraint}' (required by ${from})`;
           errors.set(message, { message, rootName: rootPkgOf(from, name) });
           return;
@@ -858,13 +736,8 @@ function resolvePhase<V, C>(
           return;
         }
         if (candidates.length === 0) {
-          /* No published selection of the package at all. For a floored edge
-           * that means its slot winner is a phantom (an unpublished declared
-           * floor nothing yet raised or satisfied) — every constrained demand
-           * otherwise leaves a published selection the binding rule reaches.
-           * Record it for the convergence judgment; anything else is a real
-           * internal error, reported rather than dropped — a resolution that
-           * lost a dependency must never look complete. */
+          /* No published selection of the package: its selected version is
+           * unpublished, or this is an internal error. */
           const winner = selected.get(name);
           const winnerId = winner && nodeId(winner.name, winner.version);
           const phantomErr = winnerId !== undefined ? notPublished.get(winnerId) : undefined;
@@ -878,24 +751,18 @@ function resolvePhase<V, C>(
           errors.set(message, { message, rootName: rootPkgOf(from, name) });
           return;
         }
-        /* A violation is judged against the PRINCIPAL — what a flat delivery
-         * ships — whether or not a fork repairs the edge (the fork is the
-         * repair record; strict mode reports the violation). A FORCED
-         * package's unsatisfied edges are instead COERCED — the force
-         * suppresses the conflict by design, so they are recorded as data and
-         * never packed into forks. A provided edge is never packed either: it
-         * binds the principal, and a mismatch is data where the domain
-         * tolerates one and a violation where it does not. The packing input
-         * is stricter than the violation judgment: an edge no current
-         * selection satisfies at all. */
+        /* The upper bound is checked against the selection without a fork,
+         * whether or not a fork satisfies the requirement; a forced package's
+         * unsatisfied requirements are coerced. A requirement no current
+         * selection satisfies is packed into a fork, unless it is forced,
+         * provided, or the domain is flat. */
         const forcedPkg = forced.has(name);
         const providedEdge = req.provided !== undefined;
         const tolerated = providedEdge && domain.providedMismatch === "tolerate";
         const principal = candidates.find(sel => !sel.fork);
         const bound = edgeBinding(domain, candidates, req)!;
-        /* One name is one package: a requirement that renames some other
-         * package to a name the tree already selects is a conflict, not a
-         * version to choose between. */
+        /* One name is one package: a requirement renaming another package to
+         * a name already selected is an error. */
         const held = bound.publishedName ?? bound.name;
         if (held !== req.name) {
           const message =
@@ -904,10 +771,7 @@ function resolvePhase<V, C>(
           errors.set(message, { message, rootName: rootPkgOf(from, name) });
           return;
         }
-        /* Judged against the flat winner when there is one; a package whose
-         * principal went phantom (candidates are forks alone) is judged
-         * against what actually ships — an edge satisfied by neither must
-         * still record, or an unsatisfiable delivery would look clean. */
+        /* Where the package has only forks, judged against what it binds to. */
         const judged = principal ?? bound;
         if (!domain.satisfies(judged.version, constraint)) {
           (forcedPkg ? coerced : tolerated ? shared : violations).push({
@@ -937,20 +801,13 @@ function resolvePhase<V, C>(
         }
       }
 
-      /* Convergence judgment on tolerated unpublished versions: one an
-       * in-effect edge still needs (collected by followEdge above) means the
-       * tree is unresolvable without repair. Those the hook was not armed for
-       * are handed back as the next walk's repairable set (only they need
-       * raising — see resolveMVS); one that WAS armed has already had its
-       * turn, so nothing published satisfies it and the failure is terminal.
-       * Phantoms every edge resolved past — superseded, pruned, raised away,
-       * or answered by an existing satisfying selection — never mattered and
-       * are dropped silently. Ordered by node id so the reported failure
-       * doesn't depend on which metadata answer landed first. */
+      /* An unpublished version a requirement in effect still needs: those
+       * this walk could not raise are handed back for the next walk
+       * (RepairsRequired); otherwise the walk fails with the first, by node
+       * id. Unpublished versions nothing in effect needs are dropped. */
       if (neededPhantoms.size > 0) {
         const needed = [...neededPhantoms.entries()].sort(([a], [b]) => compareText(a, b));
-        /* A forced package's phantom is terminal outright: the user pinned
-         * the version, so it is never raised. */
+        /* A forced package's version is never raised. */
         const unarmed = needed.filter(([id, info]) => !repairable.has(id) && !forced.has(info.name)).map(([id]) => id);
         const [id, info] = needed[0];
         fail(
@@ -972,27 +829,20 @@ function resolvePhase<V, C>(
     }
 
     /**
-     * Pack the violated edges no current selection satisfies into new fork
-     * selections: greedy first-fit per package in canonical edge order, a
-     * candidate version being the max of its members' floors (the MVS rule
-     * applied to the edges the principal cannot serve), admitted only while it
-     * satisfies every member. A candidate's floor was necessarily demanded
-     * already (every floored requirement's minimum is visited), so its
-     * published status is known at quiescence: published → the fork is created
-     * outright; unpublished → its floor is raised (no arming — the converged
-     * violations are the proof of need), and the raised version is demanded so
-     * the fork lands once its metadata answers. An edge whose class can offer
-     * no published satisfier is marked unrepairable and stays a bare
-     * violation. A floorless violated edge (an upper-bound-only range the
-     * principal exceeds) has no floor to propose and goes straight to the
-     * raise hook.
+     * Pack the requirements no current selection satisfies into new forks:
+     * first-fit per package, in a canonical order, each fork's version the
+     * highest lower bound among its members, admitted only while it
+     * satisfies every member. A published version becomes a fork at once; an
+     * unpublished one is raised (without waiting for a further walk) and the
+     * raised version read, to become a fork next round. A requirement with no
+     * lower bound is raised directly. One nothing published satisfies is
+     * marked unrepairable and stays a violation.
      */
     const packForks = (unsatisfied: PackEdge[]): PackStep => {
       const step: PackStep = { asyncWork: false, progressed: false };
       const edgeSig = (edge: PackEdge): string => `${requiredAs(edge.req)}\n${edge.req.versionConstraint}`;
-      /* Canonical packing order; identical (pkg, constraint) edges collapse
-       * (satisfaction does not depend on the requirer — keep the first, whose
-       * requiredBy is canonical, for attribution). */
+      /* Canonical packing order, identical (package, constraint) edges kept
+       * once, attributed to the first. */
       const seen = new Set<string>();
       const edges = unsatisfied
         .filter(edge => !unrepairable.has(edgeSig(edge)))
@@ -1042,38 +892,34 @@ function resolvePhase<V, C>(
         return "pending";
       };
 
-      /** Create the fork, or demand what it still needs: `declared` is the
-       * class's max-of-floors, undefined when `candidate` is already a raise's
-       * answer (a floorless class's, or the recursive call's) — in which case
-       * a 404 on it is terminal for the edge, not a second raise (the hook
-       * would only repeat the same offer). */
+      /** Create the fork at `candidate`, or demand what it still needs.
+       * `declared` is the group's highest lower bound, undefined where
+       * `candidate` is already a raised version, which is not raised again. */
       const forkAt = (candidate: V, declared: V | undefined, floorEdge: PackEdge): void => {
         const name = requiredAs(floorEdge.req);
         const id = nodeId(name, candidate);
         if (!nodeDemands.has(id)) {
-          /* A raised candidate nothing yet demanded: expand it; the fork is
-           * created next round, when its metadata (hence subtree) is known. */
+          /* Read it; the fork is made next round. */
           step.asyncWork = true;
           visit(name, candidate, floorEdge.requiredBy, floorEdge.req);
           return;
         }
         if (notPublished.has(id)) {
           if (declared === undefined) {
-            /* The raise's own offer was rejected by the registry: re-asking
-             * could only repeat it, so the edge is unrepairable. */
+            /* A raised version the registry rejects: unrepairable. */
             unrepairable.add(edgeSig(floorEdge));
             step.progressed = true;
             return;
           }
-          /* The class floor itself was never published: raise it. */
+          /* The group's lower bound was never published: raise it. */
           const answer = raiseAnswer(name, statedConstraint(floorEdge.req), floorEdge);
           if (answer === "pending") {
             step.asyncWork = true;
             return;
           }
           if (answer === null) {
-            /* Nothing published satisfies this edge — it stays a bare
-             * violation; any other members repack without it next round. */
+            /* Nothing published satisfies it: the other members repack
+             * without it next round. */
             unrepairable.add(edgeSig(floorEdge));
             step.progressed = true;
             return;
@@ -1100,9 +946,8 @@ function resolvePhase<V, C>(
         step.progressed = true;
       };
 
-      /* First-fit classes per package, this round. A class holds the members
-       * packed so far and the floor (+ its contributing edge) that is its
-       * candidate. */
+      /* The groups packed per package this round: each holds its members and
+       * its highest lower bound, with the requirement stating it. */
       interface NewClass {
         floor: V;
         floorEdge: PackEdge;
@@ -1116,9 +961,8 @@ function resolvePhase<V, C>(
           continue;
         }
         if (domain.isFloorless(edge.constraint)) {
-          /* No floor to propose: the raise hook picks the lowest published
-           * satisfier (its own singleton class — a capped floorless range is
-           * rare enough not to share). */
+          /* No lower bound: raised alone, to the lowest published version
+           * that satisfies it. */
           const answer = raiseAnswer(pkg, statedConstraint(edge.req), edge);
           if (answer === "pending") {
             step.asyncWork = true;
@@ -1160,23 +1004,19 @@ function resolvePhase<V, C>(
 
     /** Finalize the converged, fully-packed graph into the resolution. */
     const finalize = (round: Round): void => {
-      /* Mark, for each root, which selections it (transitively) reaches,
-       * following the same bindings reachability followed. */
+      /* Mark, for each root, the selections it reaches. */
       const targetsOf = (req: Requirement): Selected<V> | undefined =>
         edgeBinding(domain, round.selectionsByPkg.get(requiredAs(req)) ?? [], req);
       roots.forEach((root, rootIndex) => {
         if (root.override === "alternate") {
-          /* Never requested as a delivery of its own; the supplied selection
-           * is reached (and marked) through the floorless edges that need it. */
+          /* Reached through the requirements it supplies. */
           return;
         }
         const visitedNodes = new Set<string>();
         const mark = (requirements: Requirement[]): void => {
           for (const req of requirements) {
             if (req.provided === "optional") {
-              /* Bound, never delivering — the reachability walk's own rule
-               * (see followEdge): an optional peer joins a root's subset only
-               * when something in that subset really demands it. */
+              /* Not followed, as in followEdge. */
               continue;
             }
             const target = targetsOf(req);
@@ -1204,14 +1044,8 @@ function resolvePhase<V, C>(
         }
         return domain.compare(a.version, b.version);
       });
-      /* A package whose ONLY reachable version is a fork has no divergence at
-       * all: its principal was a phantom of the whole-closure pool (a
-       * superseded node's floor that no in-effect edge ever bound — pruned
-       * above), so the single shipping version IS the selection. Promote it,
-       * and drop the violations judged against the pruned phantom — with one
-       * version delivered and every in-effect edge bound to it, there is
-       * nothing to sanction. (A package with several surviving forks keeps
-       * them: that is a real divergence.) */
+      /* A package whose only reachable version is a fork takes it as its
+       * selection without a fork. */
       const perPkg = new Map<string, Selected<V>[]>();
       for (const selection of selections) {
         perPkg.set(selection.name, [...(perPkg.get(selection.name) ?? []), selection]);
@@ -1223,10 +1057,8 @@ function resolvePhase<V, C>(
           promoted.set(pkg, group[0].version);
         }
       }
-      /* Dropped only where moot: an edge the PROMOTED version satisfies was
-       * never really in conflict. One it does not satisfy (an unrepairable
-       * range beside the repaired ones) remains a violation — re-pointed at
-       * the version actually shipping, not the pruned phantom. */
+      /* Its violations are dropped where the version satisfies them, and
+       * otherwise name that version. */
       const violations = round.violations.flatMap(violation => {
         const promotedVersion = promoted.get(violation.name);
         if (promotedVersion === undefined) {
@@ -1240,9 +1072,7 @@ function resolvePhase<V, C>(
           return [];
         }
       });
-      /* Canonical fork indices: per package, ascending version order among the
-       * reachable forks — the walk's creation order got them into the graph,
-       * but the persisted identity must not depend on it. */
+      /* Fork indices: per package, in ascending version order. */
       const forkCount = new Map<string, number>();
       for (const selection of selections) {
         if (selection.fork !== undefined) {
@@ -1251,12 +1081,8 @@ function resolvePhase<V, C>(
           selection.fork = next;
         }
       }
-      /* Keep only the raises that shaped the result: the raised version must
-       * be a reachable selection (a raise superseded by a higher floor —
-       * possibly a root pin that answered the request itself — or pruned with
-       * a superseded subtree, never mattered) — then dedup identical
-       * (pkg, constraint) raises from parallel demands, in a canonical order
-       * (they are pushed as the registry answers). */
+      /* The raises whose version is selected, each (package, constraint)
+       * once, in a canonical order. */
       const raiseKeys = new Set<string>();
       const ordered = [...candidateRaises].sort(
         (a, b) =>
@@ -1273,20 +1099,14 @@ function resolvePhase<V, C>(
         raiseKeys.add(dedup);
         return true;
       });
-      /* The declared requirements of every surviving node (forks included), in
-       * the selections' canonical order (superseded/pruned nodes are dropped
-       * with their subtrees, exactly as the reachability walk dropped them). */
+      /* The declared requirements of every selection, forks included. */
       const requirements = new Map<string, Requirement[]>(
         selections.map(sel => {
           const id = nodeId(sel.name, sel.version);
           return [id, nodeRequirements.get(id) ?? []];
         })
       );
-      /* Candidates per package, in the canonical order — binding an edge only
-       * ever considers selections of its own package, so this is what the walk
-       * itself passes to edgeBinding (see targetsOf). Built locally: the
-       * MVSResolution (which indexes the same way) wraps the *finished*
-       * resolution, which this is still becoming. */
+      /* The selections of each package, as edgeBinding takes them. */
       const candidates = new Map<string, Selected<V>[]>();
       for (const selection of selections) {
         const held = candidates.get(selection.name);
@@ -1296,10 +1116,8 @@ function resolvePhase<V, C>(
           candidates.set(selection.name, [selection]);
         }
       }
-      /* Where each of those edges LEADS, resolved once here rather than by
-       * every consumer: the delivery walks this instead of searching the
-       * selections per edge. Computed after the fork renumbering above, so the
-       * ids it names are the persisted ones. */
+      /* The selection each requirement binds to, by node id (after the fork
+       * renumbering). */
       const edges = new Map<string, Map<string, string>>(
         selections.map(sel => {
           const from = new Map<string, string>();
@@ -1319,10 +1137,8 @@ function resolvePhase<V, C>(
           return [nodeId(sel.name, sel.version), from];
         })
       );
-      /* A root binds against what it reaches, not against everything: a fork
-       * packed for some other root's violated edge must not answer this one.
-       * Recorded as a position in `selections`, which is what a delivery needs
-       * to reach the node without a table of its own. */
+      /* Each root binds among the selections it reaches, as a position in
+       * `selections`. */
       const rootBindings = roots.map((root, rootIndex) => {
         if (root.override === "alternate") {
           return undefined;
@@ -1348,11 +1164,10 @@ function resolvePhase<V, C>(
     };
 
     /**
-     * Judge the quiet walk, pack forks for what the judgment cannot satisfy,
-     * and either finalize (nothing left to pack), keep walking (packing
-     * demanded metadata or a raise — finish re-runs at the next quiescence),
-     * or loop (packing changed the graph synchronously — forks created or
-     * edges retired — so the judgment must re-run).
+     * Judge the quiet walk and pack forks for what it leaves unsatisfied, then
+     * finalize where nothing was packed, return where packing started reads
+     * (the walk settles again), or judge again where packing changed the
+     * graph.
      */
     const finish = (): void => {
       for (;;) {

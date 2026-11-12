@@ -96,6 +96,7 @@ export function serveBuildFiles(
     reportedIn.add(params.uri);
     problems.set(vscode.Uri.parse(params.uri), toProtocolDiagnostics(params.diagnostics).map(toDiagnostic));
   });
+  /* A request waits for the server to be initialized, and answers undefined where it fails. */
   const request = <T>(method: string, params: unknown): Thenable<T | undefined> =>
     ready
       .then(() => client.request<T>(method, params))

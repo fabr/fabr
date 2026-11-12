@@ -24,15 +24,15 @@ import type { Name } from "./Name";
 import type { Repository, RepositoryPublishRef, RepositoryRef } from "./Repository";
 
 /**
- * A reference to a repository named on its own (`@npm`, `@fabr-home`), or a
+ * A reference to a repository named on its own (`@npm`, `@fabr-home`), or to a
  * name in it that is not yet a complete reference (`@fabr-home:@fabr-build`, a
  * scope; `@npm:glob`, a package with no version): what a name declared as a
  * repository finds, or what a repository vends for such a name. It names no
- * package and no files, so a collection point refuses it. Where a name goes on
- * from it, the repository vends the reference for the whole name, completed
- * as written (`A:4.17.21` with `A = @npm:lodash;` is `@npm:lodash:4.17.21`), a
- * publish ref likewise, and a route takes the repository from it. Where the
- * repository can list it, its {@link children} are what `fabr ls` shows of it.
+ * package and no files, so a collection point refuses it. A name written after
+ * it is completed into the reference the repository vends for the whole name
+ * (`A:4.17.21` with `A = @npm:lodash;` is `@npm:lodash:4.17.21`), or the
+ * publish ref; a `repository_group` route takes the repository from it. Where
+ * the repository can list it, its {@link children} are what `fabr ls` shows.
  */
 export class PartialRepositoryRef extends Reference {
   /** A repository answers no requirement on a package. */
@@ -41,8 +41,8 @@ export class PartialRepositoryRef extends Reference {
   constructor(
     /** The repository named. */
     public readonly repository: Repository,
-    /** The repository's name this narrows to, which a name projected into it
-     * goes on from; empty for the whole repository. */
+    /** The name in the repository this reference names, which a name written
+     * after it is completed from; empty for the whole repository. */
     public readonly name: string = "",
     fields: ReferenceFields = NO_REFERENCE_FIELDS,
     /** The repository's name as written, as on a {@link RepositoryRef}:
@@ -86,8 +86,8 @@ export class PartialRepositoryRef extends Reference {
     return [this.repositoryName, this.name].filter(part => part !== undefined && part !== "").join(":");
   }
 
-  /** A repository has no name a `-> name` could be about, nor has an
-   * incomplete reference into one. */
+  /** Refuse a rename: neither a repository nor an incomplete reference into
+   * one names a package to rename. Throws, attributed to this reference. */
   public override withRenameTo(renameTo: string): this {
     const written = this.toString();
     throw this.attributed(

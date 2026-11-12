@@ -66,7 +66,7 @@ interface JarInputs {
   compile_deps: FileSet[];
 }
 
-/** The edges to the packages among the requirements the jar passes on. */
+/** The dependencies on the packages among each requirement the jar passes on. */
 interface JarEdges {
   dependencies: ReadonlyArray<Dependency<PackageFileSet>>;
   provided: ReadonlyArray<Dependency<PackageFileSet>>;
@@ -80,8 +80,8 @@ export default defineRule({
   /* `dependencies`, `provided`, `optional_provided`, `compile` and `runtime`
    * are what the package passes on, the last two to one of a consumer's
    * collections only; `compile_deps` is compiled against and private to the
-   * build. `runtime` is not compiled against, so it is resolved as what is
-   * run. */
+   * build. `runtime` is not compiled against, and is resolved on the `run`
+   * side. */
   requirements(context) {
     return {
       build: {
@@ -141,7 +141,12 @@ export function jarNameOf(target: string): string {
   return `${path.posix.basename(target)}.jar`;
 }
 
-/** Make the target's package: `files`, requiring what `edges` lead to, the provided ones and those passed on to one collection only named so, with its `metadata`. */
+/**
+ * Make the target's package: `files`, depending on every package in `edges`,
+ * the provided ones marked `expected` or `optional` in `provided`, the
+ * `runtime` and `compile` ones marked `run` and `build` in `usedFor`, with its
+ * `metadata`.
+ */
 function packageOf(context: TargetContext, files: FileSet, edges: JarEdges, metadata: PropertyMap): PackageFileSet {
   return new PackageFileSet(
     files,
@@ -169,9 +174,9 @@ interface JarAttributes {
 
 /**
  * @return the attributes the jar's manifest is given: `main_class` as its
- * `Main-Class`, and each of `manifest`'s entries, a string, in order. A
- * `Main-Class` may come from either, not both, and `Manifest-Version` is the
- * format's.
+ * `Main-Class`, and each of `manifest`'s entries, a string, in order. Throws
+ * where an entry is a block, where `manifest` sets `Manifest-Version`, or
+ * where both name a `Main-Class`.
  */
 function manifestAttributesOf(name: string, mainClass: string | undefined, manifest: PropertyMap): JarAttributes {
   const written = [...manifest].map(([key, value]): [string, string] => {
@@ -190,6 +195,12 @@ function manifestAttributesOf(name: string, mainClass: string | undefined, manif
   return { mainClass, written };
 }
 
+/**
+ * Make the jar's action: the sources compiled against everything but
+ * `runtime`, the main class checked against the classes and the packages the
+ * jar runs with, and the classes, resources and manifest written as a jar,
+ * reshaped into the target's package.
+ */
 function buildJar(
   context: TargetContext,
   inputs: JarInputs,

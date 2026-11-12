@@ -17,24 +17,14 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-/**
- * Host-side (tool-independent) helpers behind the sass_compile and css_postcss
- * rules: the naming policy for everything the two steps emit, and the options
- * documents handed to the standalone drivers (see @fabr-build/js-tools's
- * cssDriver/sass-driver.ts and cssDriver/postcss-driver.ts — resolved as the
- * SASS_DRIVER and POSTCSS_DRIVER runnables declared in JS.fabr). Everything
- * here runs in the host during evaluation; the Sass and postcss invocations
- * are the drivers' job.
- *
- * **The rule names, the driver writes.** Every output path in
- * {@link ISassOptions} and {@link IPostcssOptions} is computed here, so a
- * swapped driver produces the same tree without having to reproduce a naming
- * convention, and the compile edge ({@link cssImportRewrites}) is derived from
- * the same functions that named the files.
- *
- * Kept apart from the drivers so it can import @fabr-build/core and be
- * unit-tested under jest (the drivers run standalone in the css build steps and
- * must not depend on core at runtime).
+/*
+ * The sass_compile and css_postcss rules' computations, run in fabr's process:
+ * the names of everything the two steps write, and the options documents given
+ * to their drivers (SASS_DRIVER and POSTCSS_DRIVER, js-tools' `cssDriver/`),
+ * which run Sass and postcss. Every output path in {@link ISassOptions} and
+ * {@link IPostcssOptions} is named here, and {@link cssImportRewrites} is made
+ * from the same naming. The drivers must not import this module: they run
+ * without @fabr-build/core.
  */
 
 import { createHash } from "node:crypto";
@@ -68,60 +58,54 @@ export const CSS_OUTDIR = "out";
 /** Where the stylesheet inputs are staged (the drivers read from here). */
 export const CSS_SRC_ROOT = "src";
 
-/** Where the CSS toolchain + driver mount — disjoint from the styled tree so
- * the tools' deps neither collide with nor are visible to the sources. */
+/** Where the CSS tools and driver are mounted, apart from the stylesheets so
+ * that the tools' dependencies neither collide with nor are visible to them. */
 export const CSS_TOOL_DIR = ".fabr-css";
 
-/** @return true if a styled source is a Sass PARTIAL (`_foo.scss`), otherwise
- * false. A partial is included by another stylesheet rather than compiled in its
- * own right, so it produces nothing. */
+/** @return true if a stylesheet is a Sass partial (`_foo.scss`), otherwise
+ * false. A partial is only included by other stylesheets, and produces no
+ * output of its own. */
 export function isSassPartial(name: string): boolean {
   return name.split("/").pop()?.startsWith("_") === true;
 }
 
-/** @return true if a styled source is a **css-module** (the `.module.` infix),
- * whose local names are scoped and exported to the importing JavaScript,
- * otherwise false. */
+/** @return true if a stylesheet is a css-module (named `*.module.css`,
+ * `.scss` or `.sass`), whose local names are scoped and exported to the
+ * importing JavaScript, otherwise false. */
 export function isCssModule(name: string): boolean {
   return /\.module\.(css|scss|sass)$/i.test(name);
 }
 
 /**
- * Name the stylesheet the *scoping step* publishes: it consumes the
- * `.module.` marker — which every bundler reads as "scope this", so a
- * stylesheet whose names are already final must not still carry it. Identity on
- * a plain stylesheet, whose names were never anything but final.
+ * Name the stylesheet the postcss step writes for its input: `x.module.css`
+ * becomes `x.css`, since its names are scoped and a bundler would scope a
+ * `.module.` stylesheet again. Any other name is kept.
  */
 export function scopedCssName(name: string): string {
   return name.replace(/\.module\.css$/i, ".css");
 }
 
 /**
- * Name the plain CSS a styled source lowers to end-to-end: `x.scss` → `x.css`,
- * and `x.module.scss` → `x.css` as well — the sass step's lowering followed by
- * the scoping step's marker consumption.
- *
- * Two sources can therefore lower to one name; see {@link cssOutputConflict}.
+ * Name the CSS a stylesheet ends as after both steps: `x.scss` and
+ * `x.module.scss` both become `x.css`. Two stylesheets can therefore end as
+ * one name; see {@link cssOutputConflict}.
  */
 export function loweredCssName(name: string): string {
   return scopedCssName(sassLoweredName(name));
 }
 
 /**
- * Compute the scope suffix a css-module's local names take: a digest of the
- * package name and the package-relative path of the *scoping step's input* (the
- * {@link sassLoweredName} — `a/x.module.css` whether the author wrote `.scss`
- * or `.css`), so it is a function of the file rather than of a bundle or of
- * where the file was staged.
- *
- * Distinctness across files rests on the digest rather than on construction, at
- * ~48 bits; {@link cssScopeCollision} catches the residue within a package, and
- * nothing can catch it across packages.
+ * Compute the scope suffix a css-module's local names take: a digest, about
+ * 48 bits, of the package name and the package-relative path of the postcss
+ * step's input (`a/x.module.css`, whether the author wrote `.scss` or `.css`;
+ * see {@link sassLoweredName}). Two files can share a suffix by chance:
+ * {@link cssScopeCollision} finds that within a package, and nothing finds it
+ * across packages.
  */
 export function cssScopeDigest(packageName: string, path: string): string {
   const digest = createHash("sha256").update(`${packageName}\0${path}`).digest("hex");
-  /* Reduced from 64 bits rather than from the 48 being kept, so the modulo bias
-   * is one part in 84,000 rather than one in three. */
+  /* Reduce from 64 bits of the digest, not 48, to keep the modulo bias to one
+   * part in 84,000. */
   let value = BigInt(`0x${digest.substring(0, 16)}`) % BigInt(SCOPE_ALPHABET.length) ** BigInt(SCOPE_LENGTH);
   const radix = BigInt(SCOPE_ALPHABET.length);
   let scope = "";
@@ -133,17 +117,17 @@ export function cssScopeDigest(packageName: string, path: string): string {
 }
 
 /**
- * The alphabet and width a scope is rendered in: base62 in 8 characters, ~47.6
- * bits. Every character is legal in a CSS identifier, and the suffix follows
- * `<local>_` so a leading digit is fine. Mixed case needs class matching to be
- * case-sensitive, which holds outside quirks mode.
+ * The alphabet and width a scope is written in: base62 in 8 characters, about
+ * 47.6 bits. Every character is legal in a CSS identifier, and the suffix
+ * follows `<local>_`, so it may start with a digit. Mixed case relies on class
+ * names matching case-sensitively, as they do outside quirks mode.
  */
 const SCOPE_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const SCOPE_LENGTH = 8;
 
 /**
- * Name every output the sass step produces for one Sass source, or undefined
- * where it produces none (a Sass partial, which exists only to be included).
+ * Name every output the sass step writes for one Sass source: its CSS, and
+ * with `sourceMaps` its map. Undefined for a Sass partial, which has none.
  */
 export function sassSourceOutputs(path: string, sourceMaps = false): ISassSource | undefined {
   if (isSassPartial(path)) {
@@ -154,10 +138,11 @@ export function sassSourceOutputs(path: string, sourceMaps = false): ISassSource
 }
 
 /**
- * Name every output the postcss step produces for one stylesheet input: its
- * css, and with `sourceMaps` its map. `carriedMaps` is the step's map inputs: a
- * stylesheet that arrived with one (a lowered Sass source) has it as the map
- * its own map composes onto (`prev`).
+ * Name every output the postcss step writes for one stylesheet input, and its
+ * scope: its CSS, for a css-module the `.ts` module exporting its class names
+ * (`shim`), and with `sourceMaps` its map. `carriedMaps` is the step's map
+ * inputs: an input with a map beside it (a lowered Sass source) names it as
+ * `prev`, the map its own map is composed onto.
  */
 export function postcssSourceOutputs(
   path: string,
@@ -189,21 +174,19 @@ export function postcssSourceOutputs(
 }
 
 /**
- * Lower (and scope) the classified stylesheet bucket: the `sass_compile`
- * sub-target lowers the Sass sources (partials staged, never listed), then the
- * `css_postcss` sub-target runs the postcss chain over the lowered tree plus
- * the authored plain CSS — scoping the css-modules and prefixing every
- * stylesheet for `BROWSER_TARGET`.
- * `deps` are the packages Sass `@use`/`@import` may load from, answered by the
- * driver's importer from the dependency table; `packageName` is the identity
- * scoped names are derived from. Builds under BUILD_OPERATION=build — lowering
- * is a build even for a test target. An empty bucket skips both sub-targets, so
- * a project with no stylesheets never resolves the CSS toolchain.
+ * Compile a target's stylesheets `css` to plain CSS: the `sass_compile`
+ * sub-target compiles the Sass sources (partials staged, never listed), then
+ * the `css_postcss` sub-target runs postcss over its output and the plain CSS,
+ * scoping the css-modules and prefixing every stylesheet for
+ * `BROWSER_TARGET`. Both are built under BUILD_OPERATION=build.
  *
- * The end-to-end conflict checks run here, over the author's own names — the
- * per-step checks in each rule see only that step's inputs, and a collision
- * across the seam (`x.module.scss` beside `x.css`) is better reported against
- * the files the author wrote.
+ * `deps` are the packages a Sass `@use` or `@import`, or a `composes`, may
+ * load from; `packageName` is what the scopes are digested from. Empty `css`
+ * builds neither sub-target, so no CSS tool is resolved. Each output file
+ * carries a `derived` step naming the stylesheet it came from. Throws, before
+ * building anything, where two stylesheets would end as one output name
+ * (`x.module.scss` beside `x.css`) or two css-modules share a scope, naming the
+ * stylesheets as the author wrote them.
  */
 export function compileCssSources(
   context: TargetContext,
@@ -225,10 +208,8 @@ export function compileCssSources(
     ? Computable.resolve(EMPTY_FILESET)
     : context.subTarget("sass_compile", { srcs: sassSrcs, deps }, { label: "Compiling styles", constraints: BUILD_OVERRIDE });
   return lowered.then(sassOut => {
-    /* The sass step's whole output is the postcss step's input — it emits
-     * stylesheets and their maps and nothing else, so nothing crosses the
-     * postcss step to reach the delivery and the lowered `.module.css`
-     * intermediate has no path out. */
+    /* The sass step writes only stylesheets and maps, all of them postcss
+     * inputs, so its `.module.css` outputs never reach the result. */
     const inputs = FileSet.unionAll(sassOut, plain);
     if (inputs.isEmpty()) {
       return Computable.resolve(EMPTY_FILESET);
@@ -270,11 +251,9 @@ export function withDerivations(output: FileSet, sources: FileSet, packageName: 
 }
 
 /**
- * Name one styled source's outputs across the whole pipeline, for the
- * end-to-end conflict checks: the two steps' own naming functions composed.
- * Every name either step emits for the source, and the scope its locals take,
- * keyed by the name the AUTHOR wrote; undefined for a Sass partial, which
- * produces nothing.
+ * Name the outputs of one stylesheet across both steps, and its scope, under
+ * the name the author wrote: the two steps' naming functions composed.
+ * Undefined for a Sass partial, which produces nothing.
  */
 function cssPipelineOutputs(path: string, packageName: string): IPostcssSource | undefined {
   if (!isSassSource(path)) {
@@ -287,8 +266,9 @@ function cssPipelineOutputs(path: string, packageName: string): IPostcssSource |
   return { ...postcssSourceOutputs(sass.css, packageName), path };
 }
 
-/** Run the end-to-end output-name and scope checks, over the author's own
- * names. */
+/** Check, over the stylesheets as the author named them, that no two end as
+ * one output name and no two css-modules share a scope, throwing where they
+ * do. */
 function assertCssOutputsDisjoint(fileNames: string[], packageName: string): void {
   const sources = [...fileNames]
     .sort()
@@ -308,8 +288,8 @@ const SCOPE_COLLISION_HELP =
   "two stylesheets hashed to the same scope, so their identically-named classes would collide " +
   "— this is a chance event; renaming or moving either file resolves it";
 
-/** The slice of a step source the conflict checks read — both steps' source
- * shapes satisfy it, as does the whole-pipeline view. */
+/** The fields of a step's source entry the conflict checks read, which
+ * {@link ISassSource} and {@link IPostcssSource} both have. */
 export interface ICssStepSource {
   path: string;
   css: string;
@@ -323,12 +303,10 @@ function outputPathsOf(source: ICssStepSource): string[] {
 }
 
 /**
- * Find the first pair of sources that would write the same file, or undefined
- * if none do — `x.module.scss` alongside `x.scss`, both lowering to `x.css`.
- * `step` is the targetdef the conflict is attributed to.
- *
- * Nothing downstream catches this: the driver's writes silently overwrite, and
- * the step's output is collected as one tree, never unioned.
+ * Find the first pair of sources that would write the same file
+ * (`x.module.scss` beside `x.scss`, both ending as `x.css`), or undefined if
+ * none do. `step` is the targetdef each side is attributed to. Check this
+ * before the driver runs: it overwrites a file it has written.
  */
 export function cssOutputConflict(sources: ICssStepSource[], step: string): ConflictError | undefined {
   const claimed = new Map<string, string>();
@@ -336,9 +314,8 @@ export function cssOutputConflict(sources: ICssStepSource[], step: string): Conf
     for (const path of outputPathsOf(source)) {
       const owner = claimed.get(path);
       if (owner !== undefined) {
-        /* Each side carries the PRODUCTION that reached this name, not just
-         * the input path: two stylesheets with different names colliding makes
-         * no sense until the step that renamed one of them is on the page. */
+        /* Give each side a `derived` step, so the report shows the step that
+         * renamed each stylesheet. */
         return new ConflictError(
           "stylesheet outputs",
           path,
@@ -353,11 +330,9 @@ export function cssOutputConflict(sources: ICssStepSource[], step: string): Conf
 }
 
 /**
- * Find the first pair of css-modules whose scope digests collide, or undefined
- * if none do — which would let two files' identically-named locals scope to one
- * class and bleed. Chance only, and only within a package, which is all one css
- * step can see. A collision is reported, never disambiguated: a file's scope is
- * a function of its own name alone.
+ * Find the first pair of css-modules whose scopes are the same, which would
+ * give their same-named local names one class, or undefined if none do. A
+ * step passes only one package's stylesheets.
  */
 export function cssScopeCollision(sources: Array<{ path: string; scope?: string }>): ConflictError | undefined {
   const claimed = new Map<string, string>();
@@ -375,9 +350,8 @@ export function cssScopeCollision(sources: Array<{ path: string; scope?: string 
 }
 
 /**
- * Say what to do about two stylesheets producing one file, in terms of THESE
- * two — which of them is the css-module, and why that makes it land where it
- * does — ending with the generic "rename either of them".
+ * Make the help for two stylesheets producing one file: where one is a
+ * css-module, why it ends at that name; then to rename either.
  */
 function outputConflictHelp(conflict: ConflictError): string[] {
   const sides = [conflict.left, conflict.right]
@@ -387,9 +361,8 @@ function outputConflictHelp(conflict: ConflictError): string[] {
   if (module === undefined) {
     return [`two stylesheets both produce '${conflict.key}' — rename either of them`];
   }
-  /* By basename: the two always sit in one directory (they collide on an output
-   * name, which keeps its source's directory), and the full paths are in the
-   * message already. */
+  /* Name each by its file name: both are in one directory, and the message
+   * already gives the full paths. */
   const name = (path: string): string => path.split("/").pop() ?? path;
   return [
     `'${name(module)}' is a css-module, and scoping consumes its '.module' marker — so it lowers to ` +
@@ -399,11 +372,10 @@ function outputConflictHelp(conflict: ConflictError): string[] {
 }
 
 /**
- * Assemble the Sass driver's options from the step's source names: every
- * output is named here and written by the driver, read from
- * {@link CSS_SRC_ROOT} and written under {@link CSS_OUTDIR} — all
- * working-dir-relative, so the document stays content-addressed with no host
- * paths. A non-Sass source is refused: plain CSS enters at css_postcss.
+ * Assemble the Sass driver's options from the step's source names: each
+ * source's outputs ({@link sassSourceOutputs}), read from {@link CSS_SRC_ROOT}
+ * and written under {@link CSS_OUTDIR}, every path relative to the working
+ * directory. Throws for a source that is not Sass, or two writing one file.
  */
 export function buildSassOptions(fileNames: string[], sourceMaps = false): ISassOptions {
   const stray = fileNames.find(name => !isSassSource(name));
@@ -421,19 +393,20 @@ export function buildSassOptions(fileNames: string[], sourceMaps = false): ISass
   return {
     sources,
     srcRoot: CSS_SRC_ROOT,
-    /* None: the dependencies are a table the driver's importer reads, not a
-     * tree with roots to search. The field stays because it is the driver
-     * contract's, and a swapped driver may still be handed load paths. */
+    /* None: the driver's importer reads the dependencies from a table, and
+     * searches no directories. */
     loadPaths: [],
     outdir: CSS_OUTDIR,
   };
 }
 
 /**
- * Assemble the postcss driver's options from the step's input names — the
- * stylesheets, with any `.map` beside them carried as map inputs rather than
- * listed as sources, every stylesheet prefixed for `browsers` (`BROWSER_TARGET`).
- * A Sass source is refused: it enters at sass_compile, and arrives here lowered.
+ * Assemble the postcss driver's options from the step's input names: each
+ * stylesheet's outputs ({@link postcssSourceOutputs}), a `.map` input being
+ * the map of the stylesheet it names, not a source; the stylesheets `deps`
+ * hold, for `composes`; and `browsers` (`BROWSER_TARGET`), what every
+ * stylesheet is prefixed for. Throws for a Sass source, two sources writing
+ * one file, or two css-modules sharing a scope.
  */
 export function buildPostcssOptions(
   fileNames: string[],
@@ -463,12 +436,9 @@ export function buildPostcssOptions(
 }
 
 /**
- * List the stylesheets each dependency holds, as a compose names them: by the
- * name the package is bound under and the path within it, each with a scope of
- * its own so two of them cannot name one class alike.
- *
- * Scoped by delivered name: a compose takes a private copy, so the scope only
- * has to be distinct here.
+ * List the `.css` stylesheets each dependency holds, as a `composes` names
+ * them: by the name the package is bound under and the path within it, each
+ * with a scope digested from the package's name and that path, sorted.
  */
 function composableStylesheets(deps: PackageFileSet[]): IPostcssOptions["composable"] {
   return deps
@@ -482,13 +452,10 @@ function composableStylesheets(deps: PackageFileSet[]): IPostcssOptions["composa
 }
 
 /**
- * Split the css step's outputs where a consumer needs them apart: the
- * **compile inputs** (the shims and declarations, which go into js_compile's
- * `srcs`) and the **content** (the stylesheets, which ship as the build's
- * output).
- *
- * Decided by extension over the step's whole output; the two sets partition it
- * exactly.
+ * Split the css step's outputs by extension: the compile inputs (`.js` and
+ * `.ts` files, the css-modules' class-name modules, which go into js_compile's
+ * `srcs`) and the content (everything else, the stylesheets and maps the build
+ * outputs).
  */
 export function partitionCssOutput(output: FileSet): { compileInputs: FileSet; content: FileSet } {
   const groups = output.partition(name => (/\.(js|ts)$/i.test(name) ? "compileInputs" : "content"));
@@ -499,39 +466,31 @@ export function partitionCssOutput(output: FileSet): { compileInputs: FileSet; c
 }
 
 /**
- * Make the compile's whole knowledge of stylesheets, as `rewrite_imports`
- * rules: each a stylesheet specifier as an author writes it, paired with the
- * file it really names. Constant, so the compile is told it once rather than
- * once per stylesheet.
+ * Make the `rewrite_imports` rules for stylesheet imports, the same for every
+ * target: each renames a stylesheet specifier as an author writes it to the
+ * file it names after the css step. A css-module's specifier names its
+ * class-name module (`x.module.scss` → `x.css.js`); a Sass stylesheet's names
+ * the CSS written for it (`x.scss` → `x.css`), which the compile types
+ * through the `resources` fallback. A plain `.css` needs no rule.
  *
- * A module names its shim, the module that really carries the class map — so
- * the type comes from a source the pipeline compiles rather than a declaration
- * asserted beside it. A plain stylesheet names the published stylesheet, which
- * the compile types through the `resources` fallback — an `import "./x.css"`
- * exports nothing but must still resolve. A plain `.css` needs no entry: it
- * already names the published stylesheet.
- *
- * Selectors are written against the specifier rather than the declaration it
- * resolves to, the two stylesheet kinds reaching one declaration shape.
- *
- * Order matters, first match wins: `**\/*.scss` also matches `x.module.scss`.
+ * The first matching rule applies, so the css-module rules come first:
+ * `**\/*.scss` also matches `x.module.scss`.
  */
 export function cssImportRewrites(): Name[] {
   return CSS_REWRITE_RULES.map(([selector, target]) => rule(selector, target));
 }
 
-/** Make `<selector> -> <target>`, as a rename over paths at any depth. `**\/`
- * owns its adjacent slash, so the pair is structure-preserving at the tree root
- * too. */
+/** Make `**\/*<selector> -> **\/*<target>`, a rename over paths at any depth,
+ * the tree root included. */
 function rule(selector: string, target: string): Name {
   const build = (suffix: string): Name =>
     new NameBuilder().appendGlobMetachars("**").appendLiteralString("/").appendGlobMetachars("*").appendLiteralString(suffix).name();
   return build(selector).withRenameTo(build(target));
 }
 
-/** Each stylesheet specifier an author may write, paired with the file it
- * really names. A plain `.css` needs no entry: it already names the published
- * stylesheet. */
+/** Each stylesheet suffix an author may import, paired with the suffix of the
+ * file it names after the css step, in the order the rules are tried. */
+
 const CSS_REWRITE_RULES: ReadonlyArray<readonly [string, string]> = [
   [".module.scss", ".css.js"],
   [".module.sass", ".css.js"],

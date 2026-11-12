@@ -18,19 +18,23 @@
  */
 
 /**
- * The js_script[run] rule: *define* a runnable JavaScript program. `entry` is
- * either a script FILE — launched under node at its resolved name; a TypeScript
- * entry is first compiled (with any source `deps`) through the shared js_compile
- * path and its emitted `.js` launched — or a PACKAGE (external or built) whose
- * declared bin is the entry; package-mode exists to decorate a packaged tool with
- * additional dependencies, so entry co-resolves with `deps` at the one
- * collection point (one joint version selection, one node_modules). `deps`
- * assemble the rest of the install (packages mount under `node_modules/<name>`,
- * loose filesets land at their own paths); `args` are fixed leading arguments.
- * It yields a `RunnableFileSet` — the assembled install plus how to launch it —
- * for `fabr run` or the generic `generate` target to invoke. It
- * does not itself execute (executing a runnable and collecting output is the
- * generic `generate` target's job).
+ * The js_script[run] rule: make a runnable Node.js program from `entry`,
+ * `deps`, `args` and `env`. `entry` is either:
+ *
+ * - a script file, installed at its own name and launched under the `NODE`
+ *   global. A TypeScript entry is first compiled through js_compile, with the
+ *   source files in `deps` and against the packages there, and its emitted
+ *   `.js` launched; or
+ * - a package, built or from a registry, launched by its sole declared bin or
+ *   the one a projection names (`entry = @npm:typescript:5.6.3:tsc`), with
+ *   `deps` added to its install.
+ *
+ * `entry` and `deps` resolve as one collection, so the install holds one
+ * `node_modules`. Packages in `deps` are installed under `node_modules`, loose
+ * files at their own paths. `args` come before any arguments given at launch,
+ * and `env` is set in the program's environment. The result is a
+ * `RunnableFileSet` (the install and how to launch it) for `fabr run`, a
+ * `generate` command or a `serve` tool; the rule runs nothing itself.
  */
 
 import {
@@ -69,14 +73,12 @@ import { NPM_FORMAT } from "../NPMProtocol";
 /** The `js_script` rule, under `run`. */
 export default defineRule({
   /**
-   * State `deps` and `entry`, read under build rather than the run operation this
-   * rule is selected by. They resolve as one collection, so an entry package
-   * resolves with the deps' own pins. The install is a sealed program, executed
-   * and never linked against, so they are collected permissively: resolution
-   * repairs are accepted, each fork laid out as an instance of its own. `entry`
-   * is read contained, so a projected package arrives as a pending FileSetRef
-   * that makeNpmRunnable consumes directly: the projection selects the
-   * runnable's entry, as it does for `fabr run`.
+   * State `deps` and `entry`, read under `build`, as one permissive
+   * collection: a requirement the package's one selection does not satisfy is
+   * installed as a fork, an instance of its own, instead of failing the
+   * target. `entry` is read contained, so a projection over a package arrives
+   * as a pending FileSetRef, which makeNpmRunnable reads as the selection of
+   * the runnable's entry, as `fabr run pkg:cmd` does.
    */
   requirements(
     context: TargetContext
@@ -98,8 +100,8 @@ export default defineRule({
   },
 });
 
-/** The compiled entry's emitted name: tsc keeps the module flavour
- * (`.mts`→`.mjs`, `.cts`→`.cjs`); `.ts`/`.tsx` emit `.js`. */
+/** @return the name tsc emits for a TypeScript entry: `.mts`→`.mjs`,
+ * `.cts`→`.cjs`, `.ts`/`.tsx`→`.js`. */
 export function compiledEntryName(entryName: string): string {
   return entryName.replace(/\.(?:([cm])?ts|tsx)$/i, (_match, flavour: string | undefined) => `.${(flavour ?? "").toLowerCase()}js`);
 }
@@ -113,15 +115,13 @@ function defineJsRunnable(
     (args, target): RuleResult | Computable<RuleResult> => {
       const argv = args ? args.getValues() : [];
       const sole = entry.length === 1 ? entry[0] : undefined;
-      /* Package-mode: the (jointly-resolved) package IS the runnable —
-       * its declared bin (or the pending projection's pick) the entry —
-       * with the deps bundled into its install. */
+      /* A package entry is the program, launched by its declared bin (or the
+       * one a pending projection names), with `deps` added to its install. */
       if (sole instanceof PackageFileSet || (sole instanceof FileSetRef && sole.source instanceof PackageFileSet)) {
         return makeNpmRunnable(context, sole, deps, argv);
       }
-      /* File-mode: the entry IS the script file. A plain-JS entry is
-       * contributed to the install verbatim and launched under node; a
-       * TypeScript entry is compiled first (see below). */
+      /* A file entry is the script. A JavaScript entry is installed as it is
+       * and launched under node; a TypeScript entry is compiled first. */
       return context.applyProjections(entry).then(entrySets => {
         if (entrySets.some(set => set instanceof PackageFileSet)) {
           throw new FabrError("js_script 'entry' must be a single file or a single package — further packages belong in 'deps'");
@@ -138,26 +138,23 @@ function defineJsRunnable(
         const entryName = names[0];
         const packages = deps.filter((d): d is PackageFileSet => d instanceof PackageFileSet);
 
-        /* TypeScript entry: compile the entry + any source deps through the
-         * shared js_compile path (the package deps are what it compiles
-         * against), then launch the entry's compiled `.js`. A root
-         * package.json carries the module `type` matching JS_TARGET so node
-         * runs the emitted code (ESM by default) in the right mode. */
+        /* A TypeScript entry: compile it and the source files in `deps`
+         * against the packages in `deps`, then launch its compiled `.js`. A
+         * root package.json states the module `type` JS_TARGET emits (ESM by
+         * default), so node loads the output in that mode. */
         if (classifySourceByExt(entryName) === "ts") {
           const jsTarget = parseJSTarget(target);
           const launchName = compiledEntryName(entryName);
-          /* Loose-dep runtime resources (.json, templates, assets): tsc
-           * neither compiles nor emits them, so they never ride compiledTree
-           * and must be carried into the install explicitly — rooted at the
-           * package root, next to the compiled entry, so a `./x.json` import
-           * resolves. Compilable loose deps are excluded (their output is
-           * already in compiledTree — and a raw .js would collide by name). */
+          /* Loose files in `deps` the compile does not emit (.json, templates,
+           * assets) are added to the install at the root, beside the compiled
+           * entry, so a `./x.json` import resolves. Leave compilable files out:
+           * their output is already in the compile's, and a raw .js would
+           * collide with it by name. */
           const resources = resourceFiles(deps.filter(d => !(d instanceof PackageFileSet)));
-          /* A runnable install is a single artifact with one `type`, so a
-           * `dual` target reduces to its sole format — for the compile as well
-           * as the manifest, or js_compile would be asked to emit both. Set
-           * unconditionally: for an already-single target this is the same
-           * target respelt, so it shares the one compile by cache key. */
+          /* The install has one module `type`, so a `dual` JS_TARGET is
+           * reduced to one format, for the compile as well as the manifest. For
+           * a single-format target this names the same target, so the compile
+           * is shared with any other of that target. */
           const format = soleModuleFormat(jsTarget.module);
           const faceTarget = Constraints.of({ JS_TARGET: formatJSTarget({ ...jsTarget, module: format }) });
           return compileContents(context, entrySet, deps, { constraints: faceTarget }).then(built => {
@@ -172,8 +169,8 @@ function defineJsRunnable(
           });
         }
 
-        /* Plain-JS entry: contributed verbatim, deps placed as-is (packages
-         * under node_modules, loose files at their own paths). */
+        /* A JavaScript entry is installed as it is, with packages under
+         * node_modules and loose files at their own paths. */
         const loose = deps.filter(d => !(d instanceof PackageFileSet));
         const install = FileSet.unionAll(FileSet.layout({ node_modules: assembleNodeModules(packages) }), ...loose, entrySet);
         return context.launchedBy(RunnableFileSet.forEntry(install, entryName, argv), NODE_GLOBAL);

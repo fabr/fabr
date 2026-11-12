@@ -76,29 +76,26 @@ const DIAG_INVALID_SPLICE = new Diagnostic<{ detail: string; loc: ISourcePositio
 const DIAG_INVALID_COMMAND = new Diagnostic<{ detail: string; loc: ISourcePosition }>(LogLevel.Error, "Invalid command: {detail}");
 
 /**
- * Check that all properties in the target decl are
- *   a) known to the schema,
- *   b) do not have duplicates, and
- *   c) are not missing any required properties.
+ * Check a target decl against its targetdef: each property is one the schema
+ * declares (or the schema has a `*` entry), no key is written twice (a
+ * property may be written again under another guard), each required property
+ * is declared, and each value suits its property's type
+ * ({@link validatePropertyShape}).
  *
- * What a splice supplies is checked when it is looked up, so a key written
- * again after a splice is no duplicate of one before it, and a target that
- * splices may leave a required property to what it splices.
+ * What a splice supplies is checked when it is looked up: a key written after
+ * a splice is no duplicate of one before it, and a target that splices is not
+ * checked for required properties.
  *
- * Potentially value-range checks (if we have any) can also be done here iff the value is constant.
- *
- * @return true if validation succeeds, otherwise false (and errors are written to the log);
+ * @return true if valid, otherwise false, the errors written to `log`.
  */
 export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log: Log): boolean {
-  /* Keys as written — what must be unique — and the properties named at all,
-   * which is what satisfies `required`. */
+  /* The keys as written, guard included, which must be unique; and the
+   * properties declared, under any guard, which satisfy `required`. */
   const seen = new Set<string>();
   const declared = new Set<string>();
   let isValid = true;
-  /* A `* = TYPE` entry in the targetdef admits any further keys — a target of this
-   * type may carry members not named in the schema (a `sync`'s reference-keyed
-   * coordinates), each typed by the wildcard. Without it, an unrecognized key
-   * (including a reference key) is an error. */
+  /* A `* = TYPE` entry admits any key the schema does not name (a `sync`'s
+   * coordinates), typed by it. */
   const wildcard = targetDef.properties.get("*");
 
   let spliced = false;
@@ -131,11 +128,6 @@ export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log
         target: declName(decl),
       });
     } else {
-      /* A property may be written more than once when its declarations are told
-       * apart by their guards — so what must be unique is the key AS WRITTEN
-       * (`toString`, guard included), while `required` is satisfied by any
-       * declaration of the property (`toBaseString`): a guard makes a property
-       * conditional, not absent. Hence the two sets. */
       seen.add(prop.name.toString());
       declared.add(prop.name.toBaseString());
     }
@@ -152,8 +144,8 @@ export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log
     }
   });
 
-  /* Per-value shape rules, checked here where the schema is known (a wildcard
-   * member is typed by the `*` entry). */
+  /* Check each value against its property's type (a key the schema does not
+   * name takes the `*` entry's). */
   decl.properties.filter(isPropertyDecl).forEach(prop => {
     const type = (targetDef.properties.get(prop.name.toBaseString()) ?? wildcard)?.type;
     if (type === undefined) {
@@ -168,18 +160,17 @@ export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log
 }
 
 /**
- * Check the per-value shape rules for one property against its schema type —
- * shared by a written property ({@link validateTarget}) and a targetdef's own
- * `default` ({@link validateTargetDef}): block<->MAP agreement, command
- * placement, then either the MAP entry rules or the REWRITE rules
- * ({@link validateRenameValue}).
+ * Check one property's values against its type `type`: a pipeline only in a
+ * COMMAND property, a COMMAND property not empty, a `{ ... }` block only in a
+ * MAP property, a MAP property's own rules ({@link validateMapProperty}), and
+ * the REWRITE rules ({@link validateRenameValue}).
+ *
+ * @return true if valid, otherwise false, the errors written to `log`.
  */
 export function validatePropertyShape(prop: IPropertyDecl, type: PropertyType, log: Log): boolean {
   let isValid = true;
   if (prop.values.some(value => isCommandValue(value))) {
-    /* A pipeline (`a | b > c`) parses to a command value (well-formedness
-     * already a parse error). It is only meaningful in a COMMAND property — the
-     * mirror of a `{...}` block being MAP-only. */
+    /* A pipeline (`a | b > c`) is valid only in a COMMAND property. */
     if (type !== PropertyType.Command) {
       log.log(DIAG_INVALID_COMMAND, {
         detail: "pipeline operators ('|', '<', '>', '2>', '&>') are only valid in a COMMAND property",
@@ -188,8 +179,8 @@ export function validatePropertyShape(prop: IPropertyDecl, type: PropertyType, l
       isValid = false;
     }
   } else if (type === PropertyType.Command) {
-    /* A COMMAND property with no operators is a bare single-stage command
-     * (`run = astro build`) — a non-empty value list is all it needs. */
+    /* A COMMAND property with no operators is a single-stage command
+     * (`run = astro build`), which needs only a value. */
     if (prop.values.length === 0) {
       log.log(DIAG_INVALID_COMMAND, { detail: "a command is required", loc: declPosn(prop) });
       isValid = false;
@@ -213,10 +204,10 @@ export function validatePropertyShape(prop: IPropertyDecl, type: PropertyType, l
 }
 
 /**
- * Validate a targetdef's own schema: each property's `default` values are
- * checked against the declared type exactly as a written property's would be —
- * at load, whether or not any target ever takes the default (the same
- * discipline as a default target: declared ⇒ validated).
+ * Check each `default` in a targetdef's schema against its property's type, as
+ * a written property is checked, whether or not any target takes it.
+ *
+ * @return true if valid, otherwise false, the errors written to `log`.
  */
 export function validateTargetDef(decl: ITargetDefDecl, log: Log): boolean {
   let isValid = true;
@@ -229,19 +220,13 @@ export function validateTargetDef(decl: ITargetDefDecl, log: Log): boolean {
 }
 
 /**
- * Validate a schema-less property — a top-level/global or `default` property,
- * which has no targetdef to give it a type. Only the structural (type-independent)
- * rules apply: a `{ ... }` block validates as a map (its internals, and no
- * block/name mix). A plain name/reference list has nothing to check without a
- * schema — a rename's own rules read only the written name, so the parser has
- * already enforced them.
+ * Check a property declared outside any target (a global or a `default`),
+ * which has no type: only a `{ ... }` block is checked, as a MAP property's
+ * ({@link validateMapProperty}). A command value is not checked here: it may be
+ * referenced into a target's COMMAND property, and where it is read elsewhere
+ * that is reported when it is resolved.
  *
- * A command value is NOT rejected here: a pipeline may be defined in
- * a standalone property and *referenced* into a target's COMMAND property (the
- * "chase"), so whether it lands in a COMMAND slot is only knowable at resolution
- * — an invalid placement is caught by the resolution-time backstop, not statically.
- *
- * @return true if validation succeeds, otherwise false (errors written to the log).
+ * @return true if valid, otherwise false, the errors written to `log`.
  */
 export function validateProperty(prop: IPropertyDecl, log: Log): boolean {
   if (hasMapValue(prop)) {
@@ -250,11 +235,9 @@ export function validateProperty(prop: IPropertyDecl, log: Log): boolean {
   return true;
 }
 
-/** Validate a MAP property. Its value is either one `{ ... }` block or bare
- * reference(s) to other block-valued properties (`metadata = SHARED;`, resolved
- * at read time), never a mix; a list of blocks at the top level is reserved for
- * the deferred extension syntax. An inline block validates recursively via
- * {@link validateBlock}. */
+/** Check a MAP property: its value is one `{ ... }` block, checked by
+ * {@link validateBlock}, or bare references to other MAP properties
+ * (`metadata = SHARED;`), never several blocks and never a mix. */
 function validateMapProperty(prop: IPropertyDecl, log: Log): boolean {
   if (!hasMapValue(prop)) {
     return true; /* reference form */
@@ -279,13 +262,13 @@ function spliceShapeError(splice: ISpliceDecl): string | undefined {
     : undefined;
 }
 
-/** Recursively validate a `{ ... }` block: unique keys per level (literal
- * entries only — what a splice brings in is knowable only at read time, and
- * overriding a spliced key is the point); each entry's values homogeneous —
- * all blocks (a map, or a list of maps) or all strings — and string values
- * plain scalars (a rename facet is meaningless on a map value). A splice's
- * reference is a plain property name: no projection, constraints, rename, or
- * glob. Nested blocks validate to any depth. */
+/** Check a `{ ... }` block and every block nested in it: each key written
+ * once per level (a splice's keys are not checked, and a key may override one
+ * a splice brings), each entry's values all blocks or all strings, no
+ * pipeline, no rename on a string value, and each splice's reference a plain
+ * property name (no projection, constraints, rename or glob).
+ *
+ * @return true if valid, otherwise false, the errors written to `log`. */
 function validateBlock(entries: IMapItemDecl[], log: Log): boolean {
   const fail = (detail: string, at: IMapItemDecl): boolean => {
     log.log(DIAG_INVALID_MAP, { detail, loc: declPosn(at) });
@@ -312,8 +295,7 @@ function validateBlock(entries: IMapItemDecl[], log: Log): boolean {
     }
     entry.values.forEach(value => {
       if (isCommandValue(value)) {
-        /* A `k = a | b;` inside a block parses to a command value; a map holds
-         * only strings/maps, so pipeline operators are meaningless here. */
+        /* A map holds only strings and maps. */
         isValid = fail(`a command (pipeline operators) is not valid in a map block (key '${entry.name}')`, entry);
       } else if (isMapValue(value)) {
         if (!validateBlock(value.entries, log)) {
@@ -328,16 +310,16 @@ function validateBlock(entries: IMapItemDecl[], log: Log): boolean {
 }
 
 /**
- * Validate a single property value's rename facet (if any) against its property
- * type; returns false and logs on a violation. Only the rules that NEED the
- * schema type live here — the rename's own well-formedness (`*`/`**` only and
- * equal wildcard counts unless the template is wildcard-free, no `:` in the
- * template) reads the written name alone and is enforced by the parser, for
- * every name including one no Validate pass sees.
+ * Check one value of a REWRITE property: a value with no rename is a literal,
+ * with no wildcards; a rename's selector has no `:` and no constraints. Every
+ * other value passes; the parser checks a rename's own rules (wildcards and
+ * their counts, the template).
+ *
+ * @return true if valid, otherwise false, the error written to `log`.
  */
 function validateRenameValue(prop: IPropertyDecl, value: IValue, type: PropertyType, log: Log): boolean {
   if (!isNameValue(value) || type !== PropertyType.Rewrite) {
-    return true; /* a block is handled by the MAP path, never here */
+    return true; /* only a REWRITE property's names are checked here */
   }
   const name = value.value;
 
@@ -347,16 +329,15 @@ function validateRenameValue(prop: IPropertyDecl, value: IValue, type: PropertyT
   };
 
   if (!name.getRenameTo()) {
-    /* A bare REWRITE value is a constant literal: a wildcard has no meaning
-     * with no rename target to replay it into. */
+    /* A bare REWRITE value is a literal: with no template, a wildcard fills nothing. */
     if (name.hasGlob()) {
       return fail("a bare REWRITE value must be a literal constant (no wildcards); add `-> template` to rename");
     }
     return true;
   }
-  /* A REWRITE selector is a bare pattern (never a reference): no `:` and no
-   * `<constraints>`. (A templated FILES value's selector is a real projection,
-   * so its `:` and constraints are fine.) */
+  /* A REWRITE selector is a pattern, never a reference: no `:` and no
+   * `<constraints>`. (A FILES value's selector is a projection, which may have
+   * both.) */
   if (name.hasLevelSeparator()) {
     return fail("a REWRITE selector cannot contain ':'");
   }
@@ -368,11 +349,12 @@ function validateRenameValue(prop: IPropertyDecl, value: IValue, type: PropertyT
 
 /**
  * Check a rule's block: each target against its targetdef (`targetDefOf`), each
- * property structurally, each name declared once (a property may be written
- * again under another guard) and none the parameter's, and, where the rule has
- * a type, each `<param>.<property>` it reads against the type's targetdef.
+ * property as one outside a target ({@link validateProperty}), each name
+ * declared once (a property may be written again under another guard) and none
+ * the parameter's, and, where the rule has a type, each `<param>.<property>` it
+ * reads against the type's targetdef.
  *
- * @return true if validation succeeds, otherwise false (and errors are written to the log).
+ * @return true if valid, otherwise false, the errors written to `log`.
  */
 export function validateRuleBlock(
   rule: IRuleDecl,

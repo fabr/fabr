@@ -22,28 +22,16 @@ import { FabrError, toError } from "../core/Errors";
 import type { IFile } from "../core/FileSet";
 
 /**
- * Reading third-party JSON — a registry document, a package.json, a report
- * written by someone else's tool.
- *
- * **Parse to `unknown`, then convert** — never `JSON.parse(text) as IThing`,
- * which type-checks a shape nothing verified.
- *
- * A document is always read through a {@link JsonConverter} — `toJsonObject`
- * where the caller claims nothing more, a domain one (`toTestReport`) where the
- * whole document becomes a domain value. Malformed JSON and a converter's
- * refusal both throw, attributed to the document, so a caller holds a value and
- * not a maybe; the reader that genuinely wants leniency writes the one `catch`
- * itself.
- *
- * A cast is only honest where the shape was checked before it was written
- * (fabr's own memos and manifests) — and even then the check belongs in one
- * place, not at each read.
+ * Reading JSON that fabr did not write: a registry document, a package.json, a
+ * report another tool wrote. Read each through a {@link JsonConverter}
+ * (`toJsonObject` where nothing more is needed, a domain converter such as
+ * `toTestReport` where the document becomes a domain value), never with
+ * `JSON.parse(text) as IThing`. Malformed JSON and a converter's refusal both
+ * throw, naming the document; a reader that wants to go on without it catches
+ * that itself.
  */
 
-/**
- * Converts a parsed document to the value a caller needs, or throws the reason
- * it cannot — succeed-or-throw, so the caller never handles a maybe.
- */
+/** A function converting a parsed document to a value, or throwing why it cannot. */
 export type JsonConverter<T> = (json: unknown) => T;
 
 /** Read a document from a file, which names itself in any error. */
@@ -52,10 +40,9 @@ export function readJsonFile<T>(file: IFile, convert: JsonConverter<T>): Computa
 }
 
 /**
- * Read a document from bytes, attributed to `what` — the document as its reader
- * names it ("response from NPM repository for 'pkg/1.0.0'", "package.json of
- * @scope/pkg"). For bytes with no file behind them, or a file whose own name
- * would not identify it.
+ * Read a document from bytes, named in any error as `what` ("response from NPM
+ * repository for 'pkg/1.0.0'", "package.json of @scope/pkg"): for bytes with no
+ * file behind them, or a file whose own name would not identify it.
  */
 export function parseJson<T>(text: string | Buffer, what: string, convert: JsonConverter<T>): T {
   let parsed: unknown;
@@ -71,7 +58,7 @@ export function parseJson<T>(text: string | Buffer, what: string, convert: JsonC
   }
 }
 
-/** Convert a document nothing further is claimed about: any JSON object. */
+/** Convert a document that must be a JSON object, and nothing more. */
 export function toJsonObject(json: unknown): Record<string, unknown> {
   if (!isJsonObject(json)) {
     throw new FabrError("expected a JSON object");
@@ -87,9 +74,7 @@ export function toStringList(json: unknown): string[] {
   return json as string[];
 }
 
-/** @return true if `value` is a JSON object — the shape a value must have before
- * any field can be read off it — otherwise false. Excludes `null` and arrays,
- * both of which are `typeof === "object"`. */
+/** @return true if `value` is a JSON object (not `null`, not an array), otherwise false. */
 export function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

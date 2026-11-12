@@ -24,17 +24,15 @@
  * each input by its source path and each output relative to the output directory. */
 export const BUNDLE_METAFILE = "metafile.json";
 
+/** An entry point, as esbuild takes one: the staged file `in`, bundled to the
+ * output name `out`. */
 export interface IBundleEntry {
   in: string;
   out: string;
 }
 
-/**
- * The options document fabr writes for the bundle driver — a plain, esbuild-free
- * description of the build. The driver maps it onto esbuild's BuildOptions and
- * owns the resolver plugin (membership + single-variant). Serialized to JSON, so
- * it stays content-addressed with no host paths.
- */
+/** The options document fabr writes for the bundle driver, as JSON, which the
+ * driver maps onto esbuild's BuildOptions. Holds no host paths. */
 export interface IBundleOptions {
   /** Entry points to bundle, each with its output name: `[name]` in `entryNames`. */
   entries: IBundleEntry[];

@@ -21,8 +21,8 @@
  * Gradle Module Metadata: the `.module` file Gradle publishes beside a POM,
  * which describes a version as variants, each with its own attributes,
  * dependencies and files. A package whose POM carries Gradle's marker is read
- * from its `.module`: the variant a Java program runs with is selected, and its
- * dependencies and files are the package's.
+ * from its `.module`: the variant a Java consumer asks for is selected
+ * ({@link javaVariant}), and its dependencies and files are the package's.
  */
 
 import { FabrError, parseJson, Requirement, toJsonObject } from "@fabr-build/core";
@@ -211,13 +211,20 @@ function usageOf(variant: GradleVariant): string | undefined {
 
 /**
  * Select the variant of `module` a Java consumer on Java `release` asks for
- * `usage`, as Gradle matches a classpath's attributes: a library's, or where
- * the module has none, a platform's; providing the module's own capability,
- * not another such as its test fixtures; of the usage, or for `java-api`, of
- * `java-runtime` where the module publishes no `java-api` one; whose other
- * attributes, where it states them, are what a Java consumer asks for, and
- * whose JVM version it can run. Of several, the one for the highest JVM
- * version. `what` names the module in a message.
+ * `usage`, as Gradle matches a classpath's attributes. A variant is a
+ * candidate where it:
+ * - provides the module's own capability, not another such as its test
+ *   fixtures;
+ * - is of `usage`, or states none, or for `java-api` is of `java-runtime`
+ *   (taken only where no candidate is of `java-api` or states none);
+ * - states the other attributes a Java consumer asks for, where it states
+ *   them; and
+ * - runs on a JVM no later than `release`.
+ *
+ * A `library` candidate (one stating no category is one) is chosen over a
+ * `platform` one, and of either, the one for the highest JVM version; a
+ * candidate of any other category is never chosen. Throws, naming the module by `what`, where
+ * several tie or none is a candidate.
  */
 export function javaVariant(module: GradleModule, release: number, usage: JavaUsage, what: string): GradleVariant {
   const compatible = module.variants.filter(variant => {
@@ -252,10 +259,12 @@ export function javaVariant(module: GradleModule, release: number, usage: JavaUs
 }
 
 /**
- * @return the requirements `variant` states: each dependency, and each
- * dependency constraint as a floor without a demand, its version what it
- * requires, or strictly, a range or an exact version that is the only one
- * allowed. A variant another module holds requires that module.
+ * @return the requirements `variant` states: each dependency, with its
+ * variant and excludes, except one that asks for another capability (its
+ * test fixtures); and each dependency constraint as a BOM requirement
+ * (`bom: true`), a lower bound that applies only to a package something else
+ * requires. Each version is as {@link versionOf} reads it. A variant another
+ * module holds requires only that module, at the version it names.
  */
 export function variantRequirements(variant: GradleVariant): Requirement[] {
   if (variant.availableAt !== undefined) {
@@ -287,7 +296,8 @@ export function variantRequirements(variant: GradleVariant): Requirement[] {
 /**
  * @return the Maven version constraint a dependency's version states:
  * `strictly` as a range, an exact one as `[v]`; else `requires`, else
- * `prefers`; with the versions it `rejects` cut out of it.
+ * `prefers`; with the versions it `rejects` cut out of it. Throws where it
+ * rejects every version it allows.
  */
 function versionOf(dependency: GradleDependency): string | undefined {
   const { strictly } = dependency;

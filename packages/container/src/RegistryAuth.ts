@@ -54,7 +54,7 @@ function authFilePaths(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Pl
 
 /** What an auth file holds: credentials by registry host, the helper that holds a host's, and the helper that holds the rest. */
 interface IAuthFile {
-  /** Each host's credential, and the key it is filed under (Docker Hub's is `https://index.docker.io/v1/`). */
+  /** Each registry host's credential, by host (an entry filed under `https://index.docker.io/v1/` is `index.docker.io`'s). */
   readonly credentials: ReadonlyMap<string, IRegistryCredential>;
   /** The helper holding each host's credential (`credHelpers`). */
   readonly helpers: ReadonlyMap<string, string>;

@@ -24,9 +24,9 @@ import { isJsonObject } from "@fabr-build/core";
 
 /** The compiler options of a tsconfig that say what its sources import. */
 export interface TsconfigOptions {
-  /** The `@types` packages, by the names `types` lists, that are included
-   * without an import; undefined where `types` is not set, and every visible
-   * `@types` package is. */
+  /** The names `types` lists: the `@types` packages included without an
+   * import. Undefined where `types` is not set, in which case the compiler
+   * includes every visible `@types` package. */
   readonly types?: ReadonlyArray<string>;
   /** `baseUrl`, absolute, where it is set. */
   readonly baseUrl?: string;
@@ -34,9 +34,13 @@ export interface TsconfigOptions {
   readonly paths: ReadonlyMap<string, ReadonlyArray<string>>;
 }
 
-/** Read the tsconfig in `file` with the options it inherits through relative
- * `extends`; undefined where it cannot be read. An `extends` naming a package is
- * not followed. */
+/**
+ * Read the tsconfig in `file` with the options it inherits through relative
+ * `extends`, a later parent's options replacing an earlier's and the file's
+ * own replacing both. An `extends` naming a package is not followed.
+ * @return the options, or undefined where the file is missing, cannot be
+ * parsed, or is already in `seen` (a cycle of `extends`).
+ */
 export function readTsconfig(file: string, seen = new Set<string>()): TsconfigOptions | undefined {
   if (seen.has(file) || !fs.existsSync(file)) {
     return undefined;
@@ -91,7 +95,7 @@ export function readTsconfigs(dir: string): Map<string, TsconfigOptions> {
 
 const LOCAL_EXTENSIONS = ["", ".ts", ".tsx", ".d.ts", ".js", ".jsx", ".mjs", ".cjs", ".json"];
 
-/** @return true if `file` names a file or directory outside every `node_modules`, with one of the extensions a module is found by. */
+/** @return true if `file`, or `file` with one of the extensions a module is found by, exists outside every `node_modules`, otherwise false. */
 function isLocalModule(file: string): boolean {
   return !file.split(path.sep).includes("node_modules") && LOCAL_EXTENSIONS.some(ext => fs.existsSync(`${file}${ext}`));
 }

@@ -35,6 +35,7 @@ export const CONFIG_FILE = "fabr-tsdk.json";
 /** How often the registry is checked for changes, in milliseconds. */
 const REGISTRY_POLL_MS = 500;
 
+/** The wrapper's configuration, as {@link CONFIG_FILE} holds it. */
 interface IWrapperConfig {
   /** The real `tsserver.js`. */
   tsserver: string;
@@ -79,9 +80,11 @@ export function layOutTsdk(dir: string, layout: ITsdkLayout): string {
 /**
  * Run the TypeScript server for the `tsdk` directory `tsdk`: read its registry
  * and lay the projects' links over the filesystem, re-reading the registry when
- * it changes; add the shim to the server's plugins and, where the registry
- * lists a project, drop `--canUseWatchEvents` (the client would watch the real
- * disk, where a link is never seen to change); then load the real server.
+ * it changes and telling the watches of a repointed link; add the shim to the
+ * server's plugins and, where the registry lists a project, drop
+ * `--canUseWatchEvents` (with it the client watches the real disk, where a link
+ * is never seen to change); then load the real server. Problems reading the
+ * registry are written to stderr.
  */
 export function start(tsdk: string): void {
   const config = toWrapperConfig(JSON.parse(fs.readFileSync(path.join(tsdk, CONFIG_FILE), "utf8")));
@@ -117,6 +120,7 @@ export function withPlugin(argv: readonly string[], probe: string, serving: bool
   return result;
 }
 
+/** Convert the wrapper's configuration, throwing where it names no tsserver or registry. */
 function toWrapperConfig(json: unknown): IWrapperConfig {
   const record = (typeof json === "object" && json !== null ? json : {}) as Record<string, unknown>;
   if (typeof record.tsserver !== "string" || typeof record.registry !== "string") {

@@ -18,9 +18,9 @@
  */
 
 /**
- * The runner contract's `--reads` document: what a test process read, from
- * which the test step decides what a change reaches. Every path is relative to
- * the runner's working directory.
+ * The runner contract's `--reads` document: what a test run's processes read,
+ * from which the test step decides which test files a change reaches. Every
+ * path is relative to the runner's working directory.
  */
 export interface IReadsDocument {
   /** Every module the process loaded, the `package.json` nearest each, and
@@ -39,7 +39,7 @@ export interface ILookup {
   readonly to?: string;
 }
 
-/** Convert a parsed `--reads` document, or throw where it is not one. */
+/** Convert a parsed `--reads` document. Throws where it is not one. */
 export function toReadsDocument(json: unknown): IReadsDocument {
   if (typeof json !== "object" || json === null || !("files" in json) || !("lookups" in json)) {
     throw new Error("expected a reads document with 'files' and 'lookups'");

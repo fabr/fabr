@@ -19,21 +19,19 @@
 
 /* The options document the test pipeline writes for the coverage driver. */
 
-/**
- * What the coverage driver converts: the raw V8 coverage a run left behind,
- * read against the compiled files it measures. Every path is relative to the
- * driver's working directory.
- */
+/** The coverage driver's options. Every path is relative to the driver's
+ * working directory. */
 export interface ICoverageOptions {
   /** The directory the run's processes wrote their V8 coverage into. */
   raw: string;
-  /** The compiled files measured, each beside its source map: those a run did
-   * not load are reported as not run at all. */
+  /** The compiled files measured, each naming its source map in a
+   * `sourceMappingURL` comment (a file naming none is left out). A file no
+   * process loaded is reported as not run. */
   measured: string[];
   /** Where the lcov document is written. */
   output: string;
-  /** true to convert only the measured files the raw coverage saw, leaving out
-   * the rest rather than reporting them as not run: one test file's share of a
-   * run, merged with the others' afterwards. */
+  /** true to convert only the measured files the raw coverage includes and
+   * leave out the rest: one test file's share of a run, merged with the others
+   * afterwards. */
   loaded?: boolean;
 }

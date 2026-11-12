@@ -109,8 +109,8 @@ function madeFrom(name: string, made: ReadonlyArray<unknown>): Builds | undefine
  * every copy of the node share. */
 class TargetBuild {
   private materialized?: Computable<SourceRef[]>;
-  /** The label on the build, made when the target is resolved: a cycle is
-   * reported from the name on it asked for first. */
+  /** The label on the build, which a dependency cycle through it is reported
+   * by. */
   private readonly label: NameLabel;
 
   constructor(
@@ -132,13 +132,14 @@ class TargetBuild {
   }
 
   /**
-   * Get what the target passes on to whatever requires it: each requirement
-   * as the reference it was resolved for. A reference to a target names that
-   * build exactly, so the edge is bound to its node; any other is unbound —
-   * what the target's own batch selected for it is the build's business, and
-   * the consumer resolves the reference with its own. A package the target is
-   * made from (`extends`) passes on its edges as it has them, bindings
-   * included.
+   * Get what the target passes on to whatever requires it (see
+   * {@link passedOn}): each package among the requirements it passes on, as a
+   * `Dependency` on the reference it was resolved for. A dependency on a
+   * target is bound to the target's node; any other is left unbound, for the
+   * consumer to resolve the reference with its own requirements. A package
+   * the target is made from (`extends`) passes on its dependencies as it has
+   * them, bindings included. Throws where a package among them was resolved
+   * for no reference.
    */
   public stated(): Stated {
     const carried = (name: string): Dependency[] => {
@@ -163,9 +164,12 @@ class TargetBuild {
 
   /**
    * Build the target for whatever requires it: the package it builds, or
-   * where it builds none, its sources as they stand. A package requires only
-   * what the target stated, since that is what was resolved with what
-   * requires it.
+   * where it builds none, or `plain` asks for files alone, its sources as they
+   * stand, each package among them as plain files. Unless `plain`, rejects
+   * where what it built is not what its rule declares
+   * ({@link ResolvedRequirements.result}); and rejects where it built a
+   * package beside other sources, or a package requiring a name the target
+   * did not state as passed on ({@link stated}).
    */
   public built(plain: boolean): Computable<PackageFileSet | SourceRef[]> {
     const name = this.context.name;
@@ -200,7 +204,10 @@ class TargetBuild {
     });
   }
 
-  /** Check that what the target built, the package `pkg` or files where there is none, is what its rule declares it builds. */
+  /** Check that what the target built, the package `pkg` or files where there
+   * is none, is what its rule declares it builds: the package's name, and
+   * its version where the rule declares one. Throws the target's failure
+   * where it is not. */
   private checkDeclared(pkg: PackageFileSet | undefined): void {
     const declared = this.resolved.result;
     const name = this.context.name;
@@ -243,8 +250,11 @@ export abstract class ResolvedTarget extends ResolvedNode implements TargetNode 
    * resolved for, and what conflicts among them. */
   public abstract readonly resolved: ResolvedRequirements;
 
+  /** Build the target and return what it built. Built on first demand, once. */
   public abstract materialize(): Computable<SourceRef[]>;
 
+  /** Apply `projection` to `sources`, what the target built (see
+   * `InternalBuildContext.projectSources`). */
   public abstract projectBuilt(
     sources: SourceRef[],
     projection: IProjection,
@@ -379,7 +389,9 @@ export class BlockTargetNode extends ResolvedNode implements TargetNode {
     super(fields.content, fields.packageName, fields.version, fields.dependencies, fields.origin, fields.provided, fields.usedFor);
   }
 
-  /** Make the node of the target `context` names, which passes on `dependencies`, those named in `provided` provided, and which `target` resolves to build. */
+  /** Make the node of the target `context` names, which passes on `stated`,
+   * builds what `declared` says where it is given, and which `target`
+   * resolves to build. */
   public static of(
     context: DeclaredTargetContext,
     stated: Stated,

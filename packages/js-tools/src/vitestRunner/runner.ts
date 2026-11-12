@@ -18,17 +18,17 @@
  */
 
 /**
- * Fabr's test runner for VITEST: it runs the real vitest, from the target's own
- * dependencies, over the compiled test files — configured entirely from the
- * runner contract (no config file is read) and reporting through fabr's test
- * report. Vitest loads the tests through node's own module loader rather than
- * Vite's (`experimental.viteModuleRunner: false`), so what runs is what fabr
- * compiled; Vite's transforms (plugins, aliases, `import.meta.env`) do not
- * apply.
+ * Fabr's test runner for vitest: it runs the real vitest, from the target's own
+ * dependencies, over the compiled test files, configured entirely from the
+ * runner contract (no config file is read), and writes fabr's test report.
+ * Vitest loads the tests through node's own module loader
+ * (`experimental.viteModuleRunner: false`), so Vite's transforms (plugins,
+ * aliases, `import.meta.env`) do not apply.
  *
- * Usage (the runner contract, same as every flavour):
+ * Usage (the runner contract, as for every runner):
  *   node runner.js --report=<path> --env=<node|jsdom> [--update-snapshots]
- *                  [--name-pattern=<regex>] [--setup=<module|./staged path>]... <test-file>...
+ *                  [--name-pattern=<regex>] [--setup=<module|./staged path>]...
+ *                  [--pnp=<file>] [--reads=<file>] <test-file>...
  */
 
 import * as fs from "node:fs";
@@ -58,9 +58,10 @@ interface IVitestNode {
 const importModule = new Function("specifier", "return import(specifier)") as (specifier: string) => Promise<unknown>;
 
 /**
- * Load vitest's node API from the TEST installation (resolved from `root`, the
- * working directory inside it): the framework and its version are the target's
- * choice, declared among its `test_deps` like any other dependency.
+ * Load vitest's node API from the test installation, resolved from `root`, the
+ * working directory inside it. Throws where vitest is not installed there (it
+ * belongs in the target's `test_deps`) or is older than
+ * {@link MINIMUM_VITEST}.
  */
 async function loadVitest(root: string): Promise<IVitestNode> {
   const fromInstall = createRequire(path.join(root, "index.js"));
@@ -103,6 +104,10 @@ async function runTests(options: IRunnerOptions, root: string): Promise<ITestRes
   return results;
 }
 
+/**
+ * Run the test files `argv` names under vitest and write the report. The
+ * process exits 1 where a test failed or the run could not be made.
+ */
 export function main(argv: string[]): void {
   const options = parseRunnerArgs(argv);
   if (options.pnp !== undefined) {
@@ -114,8 +119,8 @@ export function main(argv: string[]): void {
       const report = buildReport(results, start, Date.now());
       fs.writeFileSync(options.report, JSON.stringify(report, undefined, 2));
       const failed = report.results.summary.failed;
-      /* Vitest's server and workers are closed; whatever a test leaked must not
-       * keep this process alive. */
+      /* Vitest's server and workers are closed; end the process whatever a test
+       * left running. */
       endAfterReport(failed > 0 ? 1 : 0);
     })
     .catch((err: Error) => {

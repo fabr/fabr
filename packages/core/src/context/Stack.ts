@@ -40,8 +40,8 @@ export interface IEvaluationFrame {
 /**
  * The chain of demand that led to what is being looked up, nearest first: the
  * written values being looked up ({@link IUseFrame}) and the targets being
- * evaluated ({@link IEvaluationFrame}). Read to say who required what; a cycle
- * is found in the Computable graph, not here.
+ * evaluated ({@link IEvaluationFrame}). Read to say who required what; not
+ * used to find cycles.
  */
 export type IDependencyStack = IUseFrame | IEvaluationFrame;
 

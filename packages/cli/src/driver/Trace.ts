@@ -60,15 +60,14 @@ const PID = 1;
 const CYCLE_TID = 0;
 
 /**
- * Write a run's work as a trace, from the build-event stream: one span per
+ * A build listener that writes a run's work to a file as a trace: one span per
  * task from its start to its end as this writer received them, the stretches
  * it waited for an execution slot as spans within it, each test file's run as
  * an async span placed by the runner's own timing, and each cycle's start and
- * end as instants. Concurrent tasks take distinct tracks, a track being reused
- * once its task ends, so the trace reads as the pane did. Written as the
- * trace-event JSON array, each cycle's events appended at its end and the
- * array closed by {@link write}; until then the file lacks its closing `]`,
- * which the format allows.
+ * end as instants. Concurrent tasks take distinct tracks, the lowest free one
+ * first. The file is the trace-event JSON array, each cycle's events appended
+ * at its end and the array closed by {@link write}; until then the file lacks
+ * its closing `]`, which the format allows.
  */
 export class TraceWriter {
   /** The events not yet written. */
@@ -78,12 +77,14 @@ export class TraceWriter {
   private written = false;
   /** Whether writing the file failed, after which nothing more is written. */
   private failed = false;
+  /** The tasks started and not yet ended, by id. */
   private readonly open = new Map<number, IOpenTask>();
   /** Each track's task, by lane; undefined where the track is free. */
   private readonly lanes: Array<number | undefined> = [];
   private readonly now: () => number;
   /** What to add to a time of this writer's clock for the epoch time it was. */
   private readonly epochOffset: number;
+  /** The number of test-file runs drawn, which numbers the next one's async id. */
   private fileRuns = 0;
 
   private readonly onError: (err: Error) => void;
@@ -102,6 +103,7 @@ export class TraceWriter {
     this.events.push({ name: "thread_name", cat: "__metadata", ph: "M", ts: 0, pid: PID, tid: CYCLE_TID, args: { name: "cycles" } });
   }
 
+  /** The listener to subscribe to the run's build events. */
   public get buildListener(): BuildListener {
     return event => this.onBuildEvent(event);
   }
@@ -134,8 +136,9 @@ export class TraceWriter {
     });
   }
 
-  /** Write to the file with `write`, unless writing has failed; a failure is
-   *  reported and stops the writing, since a build listener must not throw. */
+  /** Write to the file with `write`, unless writing has failed. Never throw (a
+   *  build listener must not): a failure is reported to `onError` and stops
+   *  all further writing. */
   private writing(write: () => void): void {
     if (this.failed) {
       return;
@@ -233,6 +236,7 @@ export class TraceWriter {
     open.since = now;
   }
 
+  /** Make the span of task `id` from its start to `end`, its args `args` beside its context and time waited. */
   private taskSpan(id: number, open: IOpenTask, end: number, args: Record<string, unknown>): ITraceEvent {
     return this.span(
       describeTask(open.task),
@@ -250,7 +254,8 @@ export class TraceWriter {
   }
 
   /** Draw a test file's run, placed by the runner's own clock, as an async span
-   *  on the task's track (several files run at once, so a plain span would overlap). */
+   *  on the task's track. Use an async span: several files run at once, and
+   *  plain spans on one track must not overlap. */
   private fileRun(open: IOpenTask, run: ITestFileRun): void {
     const id = `${open.lane + 1}:${this.fileRuns++}`;
     const start = run.start - this.epochOffset;

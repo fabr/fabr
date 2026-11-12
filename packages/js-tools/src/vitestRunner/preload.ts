@@ -20,8 +20,8 @@
 /**
  * Loaded into every vitest worker before any test file, as the first of the
  * run's `setupFiles`: makes stylesheet and binary imports yield their stubs
- * (see ../testRunner/Assets). The tests are ES modules, so the seam this
- * needs is `module.registerHooks`, hence the node floor.
+ * (see ../testRunner/Assets). The tests are ES modules, so this needs
+ * `module.registerHooks`, and a node that has it.
  */
 
 import { installAssetHooks } from "../testRunner/Assets";

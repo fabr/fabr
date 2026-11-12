@@ -46,8 +46,9 @@ export function ownerOfContainer(name: string): string | undefined {
 }
 
 /**
- * Remove the container `name` with `engine` when fabr exits, where it is not
- * removed before; return the release, for once it is.
+ * Remove the container `name` with `engine` when fabr exits, unless it has been
+ * removed before then.
+ * @return the function that cancels the removal, to call once the container is removed.
  */
 export function removeOnExit(engine: string, name: string, env: Record<string, string>): () => void {
   return registerExitTeardown(() => {

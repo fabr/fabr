@@ -42,21 +42,23 @@ const ENGINE_DIR = "engine";
 const SHELL_GLOBAL = "SHELL";
 
 /**
- * With the container engine `$1` (Docker or podman), load the image `$3` from
- * the layout beside this script, streamed as an archive with no extended
- * attributes (macOS's tar would otherwise add its own, which Docker refuses),
- * where the container engine does not hold it,
- * removing the other tags of its repository (the program's earlier images) but
- * the one loaded most recently before it, and any a container still uses;
- * then run it under a minimal init, which passes signals on to the program
- * (the kernel ignores those sent to a PID 1 that does not handle them), removed
- * when it ends, its stdin attached and a terminal given it where stdin is one.
- * The `$4` arguments after it are the engine's options for the run (`-p
- * 8080:8080/tcp`, `-e NAME=value`), and the rest are the program's own. The
- * container is named for the launch fabr gave it (`FABR_LAUNCH`), so the
- * runnable's teardown removes it; launched otherwise, for host `$2` and this
- * script's pid, which `exec` makes the engine client's. Either way a run
- * killed before removing it is reaped by a later one.
+ * The launcher of a runnable image, a shell script taking the container engine
+ * (Docker or podman) as `$1`, this host's owner part as `$2`, the image's tag
+ * as `$3`, and a count `$4`: the next `$4` arguments are the engine's options
+ * for the run (`-p 8080:8080/tcp`, `-e NAME=value`) and the rest the program's
+ * own.
+ *
+ * - Where the engine does not hold the tag, it loads the layout beside the
+ *   script, streamed as a tar with no extended attributes (macOS's tar adds its
+ *   own otherwise, which Docker refuses), then removes the repository's other
+ *   tags except the one tagged most recently, leaving any a container still uses.
+ * - It runs the image with `--rm` and `--init` (a minimal init that passes
+ *   signals on to the program: the kernel ignores signals sent to a PID 1 that
+ *   does not handle them), stdin attached, and a terminal where stdin is one.
+ * - The container is named `fabr-$FABR_LAUNCH` where fabr launched it, which
+ *   the runnable's teardown removes; otherwise `fabr-<$2>-<pid>-run`, the pid
+ *   the script's, which `exec` makes the engine client's. A container left by
+ *   a killed run is removed by a later one (`reapContainers`).
  */
 export const LAUNCH_SCRIPT = `#!/bin/sh
 set -e
@@ -95,7 +97,7 @@ const TEARDOWN_SCRIPT = 'exec "$0" rm -f "fabr-$FABR_LAUNCH" >/dev/null 2>&1';
 
 /** How a program runs its image: the engine's options for the run, and its arguments. */
 export interface IContainerRun {
-  /** Ports published on the host (`8080:80`, `5353:53/udp`); none, each the image exposes on the same port. */
+  /** Ports published on the host (`8080:80`, `5353:53/udp`); where absent, each port the image exposes, on the same number. */
   readonly ports?: readonly string[];
   /** Environment variables, set over the image's. */
   readonly env: ReadonlyArray<readonly [string, string]>;
@@ -111,13 +113,16 @@ export interface IContainerRun {
 const IMAGE_RUN: IContainerRun = { env: [], hosts: [], args: [] };
 
 /**
- * Make `image` a program the container engine `engine` runs (Docker or
- * podman): its install the image's OCI layout (its layers the stored files,
- * so staged by hardlink), tagged `localhost/fabr/<name>:<config digest>`, the
- * engine where it is no program of the host, and a launcher, run by the shell
- * `SHELL` names, that loads the layout only where the engine lacks the tag, then
- * runs it as `run` says, with the caller's arguments after the image's
- * entrypoint and `run`'s own.
+ * Make `image` a program the container engine `engine` (Docker or podman) runs.
+ *
+ * The install holds the image's OCI layout, tagged
+ * `localhost/fabr/<name>:<config digest>` (its layers are the stored tars, so
+ * they stage by hardlink), the engine's install where it is not a program of
+ * the host, and {@link LAUNCH_SCRIPT}, run by the shell `SHELL` names. The
+ * launch runs the image as `run` says, the caller's arguments after the
+ * entrypoint's and `run.args`; the teardown removes the launch's container.
+ * Before it is made, containers dead fabr runs left in a host engine are
+ * removed. Throws where `engine` is not a single program.
  */
 export function imageRunnable(
   image: ImageFileSet,

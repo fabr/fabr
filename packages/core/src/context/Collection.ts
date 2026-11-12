@@ -131,24 +131,26 @@ export type RequiredSources = Read | Computable<Read>;
 export type Requirements = Record<string, RequiredSources> | ReadonlyMap<string, RequiredSources>;
 
 /**
- * What resolution needs to know of a target, as its rule's `requirements`
- * returns it: the sources it requires, by name, as two collections — those it
- * compiles against or otherwise builds with (`build`), and those it installs
- * or runs (`run`), each resolved for that operation (a Maven package requires
- * its compile scope for the first and its runtime scope for the second);
- * whether they are collected permissively, so that a target built with them is
- * not refused for versions that conflict, as a sealed program install is not
- * (`permissive`); what the target builds, where the rule knows
- * (`result`); and the advisories its build fixes in the package it is made
- * from (`fixes`: ids as an advisory database names them, its aliases
- * included), which an audit reports as fixed by the target. A name is one requirement whichever collection holds it, so the
- * two hold different names.
+ * What a rule's `requirements` returns: what its target requires, by name, in
+ * two collections, and what resolution needs to know of what it builds. A name
+ * is one requirement whichever collection holds it, so the two collections
+ * hold different names.
  */
 export interface ResolutionSpec<B extends Requirements = Requirements, R extends Requirements = NoRequirements> {
+  /** What the target compiles against or otherwise builds with, resolved for
+   * `build` (a Maven package's compile scope). */
   readonly build?: B;
+  /** What the target installs or runs, resolved for `run` (a Maven package's
+   * runtime scope). */
   readonly run?: R;
+  /** True where versions that conflict among the requirements do not refuse
+   * the target, as for a program's sealed install. */
   readonly permissive?: boolean;
+  /** What the target builds, where the rule knows. */
   readonly result?: Builds;
+  /** The advisories the target's build fixes in the package it is made from,
+   * by the ids an advisory database names them by (aliases included), which
+   * an audit reports as fixed by the target. */
   readonly fixes?: ReadonlyArray<string>;
 }
 
@@ -270,7 +272,7 @@ export class ResolvedRequirements {
     return checked(this.conflicts, this.permissive);
   }
 
-  /** Narrow to the requirements `names`. */
+  /** Narrow to the requirements `names`. Throws where one is not among them. */
   public only(...names: string[]): ResolvedRequirements {
     const kept = names.map((name): [string, ResolvedRequirement] => {
       const entry = this.entries.get(name);
@@ -283,11 +285,11 @@ export class ResolvedRequirements {
   }
 
   /**
-   * Get the requirements of the target `target` among these, each named
-   * `<target>.<name>`, as requirements named `<name>`, collected strictly
-   * unless `permissive`, of a target that builds what `result` says and fixes
-   * the advisories `fixes` names, with what conflicts among their sources alone, in each collection that
-   * resolved them.
+   * Get the requirements of the target `target` among these: each one named
+   * `<target>.<name>`, renamed `<name>`. The result is collected strictly
+   * unless `permissive`, declares `result` and `fixes` as a
+   * {@link ResolutionSpec} does, and has as its conflicts only those among
+   * its own sources, in each collection that resolved them.
    */
   public ofTarget(
     target: string,
@@ -313,8 +315,10 @@ export class ResolvedRequirements {
     );
   }
 
-  /** Materialize every requirement and finish it into what a rule reads,
-   * each source aligned with the reference it was resolved for. */
+  /** Materialize every requirement into what a rule reads, each source
+   * aligned with the reference it was resolved for. With `describe`, a
+   * package a target builds is its description where its rule describes it.
+   * Does not apply {@link check}. */
   public materialize(config: InternalBuildContext, describe = false): Computable<Map<string, Collected>> {
     const names = [...this.entries.keys()];
     const entries = [...this.entries.values()];
@@ -377,12 +381,20 @@ type CollectedSource = FileSet | FileSetRef;
  */
 
 /**
- * Run the resolve half of `target`'s collection point: every requirement read,
- * and each of the spec's collections resolved as ONE collection, for its
- * operation — every reference answered from its repository's joint
- * resolution, the graph wired — with nothing fetched and nothing built. The
- * strict check is left for when the requirements are materialized
- * ({@link ResolvedRequirements.check}).
+ * Resolve the requirements `spec` states for `target`, fetching and building
+ * nothing. Each of the spec's collections is resolved as one collection, for
+ * its operation: every reference is answered from its repository's joint
+ * resolution, and the packages among the collection are bound to one
+ * another. Two collections that read exactly the same sources the same way
+ * are resolved together, as one where both operations resolve them alike
+ * (see resolveListsFor). The versions that conflict are found and kept on
+ * the result; whether they refuse the target is decided when the
+ * requirements are materialized ({@link ResolvedRequirements.check}).
+ *
+ * Rejects where a name is stated in both collections, a requirement the
+ * target passes on (`dependencies`, `provided`, …) is read for its files, a
+ * package is not of the `format` its {@link PackageSources} names, or a
+ * reference fails to resolve.
  */
 export function resolveRequirements(target: TargetContext, spec: ResolutionSpec): Computable<ResolvedRequirements> {
   let entries: Array<[string, RequiredSources, string]>;
@@ -498,8 +510,8 @@ function refuseOtherFormats(
 
 /**
  * Get the requirement name `key` stands for: its last part, so that a name a
- * rule qualifies (`classes.extends`) is read as the name it qualifies, while
- * only the plain name is what the target itself passes on.
+ * rule qualifies (`classes.extends`) is read as the name it qualifies. Only
+ * a plain name is passed on by the target itself.
  */
 function requirementName(key: string): string {
   return key.substring(key.lastIndexOf(".") + 1);
@@ -508,18 +520,20 @@ function requirementName(key: string): string {
 /**
  * A target's requirements as its rule's `evaluate` receives them: resolved,
  * and given their content when the rule asks. Nothing is fetched or built
- * until it does. Where they are collected strictly and versions conflict,
- * materializing any of them fails.
+ * until it does. `materializeAll`, `materialize` and `packages` materialize
+ * each requirement at most once between them, and `describeAll` once of its
+ * own. Where the requirements are collected strictly and
+ * versions conflict, `materializeAll`, `materialize` and `packages` reject.
  */
 export interface Unmaterialized<P> {
-  /** Materialize every requirement, by name. Done on the first call, once. */
+  /** Materialize every requirement, and return their content by name. */
   materializeAll(): Computable<MaterializedRequirements<P>>;
-  /** Materialize one requirement and leave the others as they are. Done on
-   * the first call for that name, once. */
+  /** Materialize the requirement `name` alone, and return its content. */
   materialize<K extends keyof P & string>(name: K): Computable<MaterializedRequirements<P>[K]>;
-  /** Materialize one requirement read as packages and return the packages
-   * among it as the edges the target has to them: each with the reference
-   * it was resolved for. Loose files among the requirement are left out. */
+  /** Materialize the requirement `name`, read as packages, and return the
+   * packages among it, each as a `Dependency` with the reference it was
+   * resolved for. Loose files among it are left out. Rejects where a package
+   * among it was handed over as content, with no reference. */
   packages<K extends keyof P & string>(name: K): Computable<Array<Dependency<PackageFileSet>>>;
   /** The requirements as resolved, nothing materialized. */
   readonly resolved: ResolvedRequirements;
@@ -527,7 +541,7 @@ export interface Unmaterialized<P> {
    * context/Description): a package a target builds, where its rule describes
    * it, is its description, a `DescribedPackage`, and not its build. Versions
    * that conflict are described as the resolution selected them, as `fabr deps`
-   * shows them: only a build refuses them. Done on the first call, once. */
+   * shows them: this never rejects for them. */
   describeAll(): Computable<MaterializedRequirements<P>>;
 }
 
@@ -538,9 +552,9 @@ export function unmaterialized(
 ): Unmaterialized<Record<string, RequiredSources>> {
   let held: Computable<void> | undefined;
   const check = (): Computable<void> => (held ??= resolved.check());
-  /* One memo per requirement, which every form reads, so what one call gave
-   * content no other materializes again. The names a call finds
-   * unmaterialized are materialized together, as one collection. */
+  /* One memo per requirement, shared by `materializeAll`, `materialize` and
+   * `packages`. The names a call finds unmaterialized are materialized
+   * together, as one collection. */
   const each = new Map<string, Computable<Collected>>();
   let described: Computable<unknown> | undefined;
   const materialize = (names: string[]): Computable<Collected[]> => {
@@ -582,10 +596,10 @@ export function unmaterialized(
   };
 }
 
-/** List the packages among a collected requirement as the edges to them. A
- * package among it with no reference — one a sub-target was handed in hand,
- * which no reference asked for — has no edge and is refused: such a
- * requirement is read with `materialize`. */
+/** List the packages among a collected requirement, each as a `Dependency`
+ * with the reference it was resolved for. Throws for a package with no
+ * reference (one a sub-target was handed as content): read such a
+ * requirement with `materialize`. */
 function packageEdges(name: string, collected: Collected): Array<Dependency<PackageFileSet>> {
   return collected.sources.flatMap((source, at): Array<Dependency<PackageFileSet>> => {
     if (!(source instanceof PackageFileSet)) {

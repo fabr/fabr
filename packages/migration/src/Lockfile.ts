@@ -61,7 +61,7 @@ function record(versions: Map<string, Set<string>>, name: string, version: strin
   versions.set(name, held.add(version));
 }
 
-/** Split `name@version` at the version's `@` (never a scope's). */
+/** Split `name@version` at the version's `@` (never a scope's); undefined where there is none. */
 function splitAtVersion(key: string): [string, string] | undefined {
   const at = key.lastIndexOf("@");
   return at > 0 ? [key.slice(0, at), key.slice(at + 1)] : undefined;

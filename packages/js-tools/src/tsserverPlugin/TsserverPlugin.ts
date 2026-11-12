@@ -15,15 +15,14 @@
  */
 
 /**
- * What an editor plugin loads into tsserver for the projects of one fabr
- * project, to show the editor's TypeScript server the project's compilation
- * units as their compiles see them. Each unit's imports resolve through the unit's
- * PnP table with the tsc driver's own resolution; every other tsserver project
- * is left as it is.
+ * The tsserver plugin's language service for the projects of one fabr project,
+ * showing the editor's TypeScript server each compilation unit as its compile
+ * sees it: a unit's imports resolve through the unit's PnP table with the tsc
+ * driver's own resolution. Every other tsserver project is left as it is.
  *
  * The editor's plugin calls {@link createLanguageService} from its `create`,
  * with the units of the fabr project the tsserver project lies in. Nothing here
- * reads the editor's own settings or files: the units are handed in.
+ * reads the editor's own settings or files.
  */
 
 import * as path from "path";
@@ -61,8 +60,8 @@ export interface ITypeScriptUnit {
   resources?: string[];
 }
 
-/* Structural typing for the tsserver API used here, as the driver types the
- * compiler's. */
+/* The parts of the tsserver API used here, typed structurally, as the driver
+ * types the compiler's. */
 
 /** The compiler as tsserver loads it, with the members the server adds. */
 export interface IServerTypeScript extends ITypeScript {
@@ -96,6 +95,7 @@ export interface ILanguageService {
   getCodeFixesAtPosition(fileName: string, ...rest: unknown[]): readonly ICodeFix[];
 }
 
+/** A tsserver project's language service host. */
 export interface ILanguageServiceHost extends IResolutionHost {
   /** Changes whenever the project's files may have. */
   getProjectVersion?(): string;
@@ -104,12 +104,14 @@ export interface ILanguageServiceHost extends IResolutionHost {
   realpath?: (path: string) => string;
 }
 
+/** A tsserver project. */
 export interface IProject {
   getProjectName(): string;
   projectService: { serverMode: number; logger: { info(text: string): void } };
   getPackageJsonAutoImportProvider?: () => unknown;
 }
 
+/** What tsserver hands a plugin's `create`. */
 export interface IPluginCreateInfo {
   project: IProject;
   languageService: ILanguageService;
@@ -120,7 +122,8 @@ export interface IPluginCreateInfo {
  * the compiler looks for them. */
 const TYPESCRIPT_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts"];
 
-/** A module's file, as the compiler reads one: the others are resources. */
+/** Matches the name of a module's file, as the compiler reads one; any other
+ * file is a resource. */
 const MODULE_EXTENSION = /\.(?:[cm]?[jt]sx?|json)$/;
 
 /** The resolution hooks a unit installs. */
@@ -159,10 +162,10 @@ function unitOf(project: IProject, units: readonly ITypeScriptUnit[]): ITypeScri
 
 /**
  * Show `info`'s project, the tsserver project of `unit`, as the unit's compile
- * sees it: its imports resolved through the unit's table, the declarations a
- * local unit would output present where their sources are (so that tsserver
- * reads that unit from source), and auto-import offering only what the unit
- * can import.
+ * sees it: its imports resolved through the unit's table, the declarations
+ * another unit of the project would output present where their sources are (so
+ * that tsserver reads that unit from source), and auto-import offering only
+ * what the unit can import.
  *
  * @return the language service tsserver is to use for the project.
  */
@@ -194,9 +197,9 @@ function decorateUnitProject(
     }
   }
   answerLinks(host, links);
-  /* tsserver's auto-import project resolves the dependencies the manifests
-   * above a file list with stock resolution: in a unit it can reach only what
-   * lies outside the unit. With no provider, tsserver makes no such project. */
+  /* Give tsserver no auto-import provider, so it makes no auto-import project:
+   * that project resolves the dependencies of the manifests above a file with
+   * stock resolution, which in a unit reaches only what lies outside it. */
   info.project.getPackageJsonAutoImportProvider = () => undefined;
   info.project.projectService.logger.info(`fabr: ${unit.config} resolves through ${unit.table}`);
   return withFinishedDiagnostics(scopedAutoImports(info.languageService), installed);
@@ -286,9 +289,9 @@ interface ILocalLayout extends IOutputLayout {
 
 /**
  * @return the output layout of every unit of `units` that builds a package,
- * by its config as `configs` holds it:
- * a package may import itself by name, and a package's tests import it as
- * the package does.
+ * by its config as `configs` holds it. Every unit's resolution takes them all,
+ * the package's own included: a package may import itself by name, and its
+ * tests import it as the package does.
  */
 function localLayouts(units: readonly ITypeScriptUnit[], configs: ReadonlyMap<ITypeScriptUnit, IUnitConfig>): ILocalLayout[] {
   return units.flatMap(unit =>
@@ -319,10 +322,12 @@ function readTable(ts: IServerTypeScript, unit: ITypeScriptUnit, project: IProje
 
 /**
  * Make `unit`'s resolution over `host`: the driver's, through the unit's table,
- * with a local unit's output declarations (`layouts`) answering as present
- * wherever their sources are — tsserver holds a referenced project's outputs
- * as present only in its program's own host, and the resolution reads the
- * project's.
+ * with the output declarations of the units in `layouts` answering as present
+ * wherever their sources are, as do the files their packages ship that no step
+ * compiles. (tsserver holds a referenced project's outputs as present only in
+ * its program's own host, not the project's host the resolution reads.) Each
+ * import of a package from the unit's own files is stated as reached through
+ * `<unit root>/node_modules/<name>`, the link recorded in `links`.
  */
 function unitResolution(
   ts: IServerTypeScript,
@@ -342,12 +347,10 @@ function unitResolution(
    * name in the package where one of the package's directories holds it. */
   const isLocalResource = (file: string): boolean =>
     !MODULE_EXTENSION.test(file) && locals.some(layout => layout.filesOf(file).some(candidate => host.fileExists(candidate)));
-  /* The compiler takes a referenced project's output for its source, under
-   * that project's own options, where it names the output as the project lays
-   * it out: by its `rootDir`. Where a package's sources come from several
-   * directories the package names its outputs otherwise, and the plugin answers
-   * with the output the project lays out beside the source; the unit's own
-   * package, with the source itself. */
+  /* The compiler maps a referenced project's output to its source only where
+   * the output is named by the project's `rootDir`. For a package whose
+   * sources come from several directories, answer with the declaration beside
+   * the source instead, or for the unit's own package with the source itself. */
   const redirected = (file: string): string | undefined => {
     for (const layout of locals.filter(local => local.rootDirs > 1)) {
       for (const source of layout.sourcesOf(file)) {
@@ -367,14 +370,13 @@ function unitResolution(
   };
   const resolver = new PnpResolver(table, unit.root, conditionsOf(ts, options), { validateExports: false });
   const installed = installResolution(ts, resolution, options, resolver, unit.root, unit.rewrites, unit.resources);
-  /* A package import is stated as reached through `<unit>/node_modules/<name>`,
-   * a link to the package's directory: tsserver names a module by its package
-   * only where it reached it through node_modules, which it learns from a
-   * resolution's original path. Only the unit's own imports are stated so: a
-   * package's own imports are its own business. A resolution to JavaScript is left as it is:
-   * the compiler loads a module of a package only where its resolved path, or
-   * the absence of an original path, says it was found in node_modules, and
-   * otherwise reads it as the project's own source. */
+  /* State a package import from the unit's own files as reached through
+   * `<unit>/node_modules/<name>`, a link to the package's directory, as the
+   * resolution's original path: tsserver names a module by its package only
+   * where it reached it through node_modules. Leave a resolution to JavaScript
+   * as it is: the compiler loads it as a package's module only where its
+   * resolved path says it was found in node_modules, or it has no original
+   * path, and otherwise reads it as the project's own source. */
   const resolveLiterals = resolution.resolveModuleNameLiterals!;
   resolution.resolveModuleNameLiterals = (literals, from, ...rest) =>
     resolveLiterals(literals, from, ...rest).map((answer, i) => {
@@ -410,8 +412,8 @@ function unitResolution(
       const originalPath = path.join(link, path.relative(directory, resolved.resolvedFileName));
       return { ...answer, resolvedModule: { ...resolved, originalPath } };
     });
-  /* Each program asks its lookups afresh: a file created since the last can
-   * answer one that failed then. */
+  /* Forget earlier lookups whenever the project version changes: a file
+   * created since can answer one that failed. */
   let version: string | undefined;
   for (const hook of RESOLUTION_HOOKS) {
     const resolve = resolution[hook] as ((...args: unknown[]) => unknown) | undefined;
@@ -483,8 +485,12 @@ function answerLinks(host: ILanguageServiceHost, links: ReadonlyMap<string, stri
 
 /** How a compile lays its outputs out; see {@link outputLayout}. */
 interface IOutputLayout {
+  /** The number of directories the compile names its sources from. */
   rootDirs: number;
+  /** Get the sources (each less its extension) an output declaration could be
+   * emitted from. */
   sourcesOf(file: string): string[];
+  /** Get where a file of the package under the output directory may lie. */
   filesOf(file: string): string[];
 }
 
@@ -562,9 +568,9 @@ function parsedConfig(ts: IServerTypeScript, unit: ITypeScriptUnit): IUnitConfig
 /**
  * Wrap `service` so that auto-import, by completion or quick fix, offers only
  * imports the unit can make: from a file of the unit's program, and by a
- * relative path only to the unit's own files — another unit's sources are in
- * the program as a referenced project's, and its compile stages that unit's
- * package, not its sources.
+ * relative path only to the unit's own files, not to another unit's sources
+ * (in the program as a referenced project's), whose package the compile stages
+ * instead.
  */
 function scopedAutoImports(service: ILanguageService): ILanguageService {
   const intoReference = (program: IProgram, file: string, specifier: string): boolean => {

@@ -21,13 +21,11 @@ import { FileSet } from "./FileSet";
 import { IProvenanceStep } from "./Provenance";
 
 /**
- * A Flag is a named marker carried among a target's `deps` — it selects a
- * build-mode option (e.g. `ts/no_strict`) rather than contributing files. It **is
- * an (empty) FileSet**, so it rides the ordinary source / materialization paths
- * like any other dep: it survives materialization as itself (a rule reads it back
- * with `getFlags`) and mounts to nothing wherever a FileSet's content is consumed
- * (its inherited `find` returns no files). `provides` is its closure of implied
- * flags.
+ * A named marker among a target's `deps` that selects a build-mode option
+ * (`ts/no_strict`) and contributes no files. It is an empty FileSet: it comes
+ * through materialization as itself, where a rule reads it back with
+ * `getFlags`, and adds nothing wherever a FileSet's files are used.
+ * `provides` is the flags it implies, each with its own `provides`.
  */
 export class Flag extends FileSet {
   private readonly flagName: string;
@@ -39,14 +37,13 @@ export class Flag extends FileSet {
     this.provides = provides;
   }
 
-  /** The flag's own name — a Flag is exactly a named marker, so this IS the
-   * delivered name {@link FileSet.name} means. */
+  /** The flag's name. */
   public override get name(): string {
     return this.flagName;
   }
 
-  /** Preserve flag identity through provenance stamping (the PackageFileSet
-   * pattern); content derivations deliberately fall back to a plain FileSet. */
+  /** @return a copy of this flag carrying `origin`. A derivation of its
+   * content (`find`, `rename`, …) is a plain FileSet. */
   public withOrigin(origin: IProvenanceStep): Flag {
     return new Flag(this.name, this.provides, origin);
   }

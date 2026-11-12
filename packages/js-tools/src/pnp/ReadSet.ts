@@ -18,98 +18,83 @@
  */
 
 /**
- * The vocabulary a driver and the step that runs it share for **what the run
- * read** — the discovered-dependency report.
+ * The names a driver and the step that runs it share for what a run read: the
+ * discovered-dependency report, which the step's cache entry is keyed on in
+ * place of the whole staged package closure.
  *
- * A tool handed a package closure reads a small subset of it, so the step's
- * cache entry is keyed on that subset rather than on everything staged. Which
- * means the two sides must agree on exactly one thing: the **names** the subset
- * is spelled in. A read is named by the **path the run took to it** — the
- * names an edge chain calls its packages by, then the file within the last,
- * in the flat spelling ({@link joinDepsPath}) of core's DepsPath. The reads
- * ARE the paths; the step splits them and nothing else (no translation, no
- * join), and replay walks each through the current graph. The same
- * names are the incremental namespace: the recorded base and the `--changes`
- * lists arrive in them, so a driver reads its own vocabulary back.
+ * A read is named by the path the run took to it: the names a chain of
+ * dependency requirements calls its packages by, then the file within the last
+ * package, in the flat spelling of core's DepsPath ({@link joinDepsPath}). The
+ * path's first name is a direct dependency of the compilation, each later name
+ * one the package before it declares, so the step replays a read by walking the
+ * current package graph, never by resolving. A driver whose answer came from
+ * elsewhere (the fallback pool) reports it in these terms itself. The recorded
+ * base and the `--changes` lists use the same names.
  *
- * Two rows state a lookup wherever one cannot: every resolution contributes
- * its access path ending at the answering package's manifest (pinning that
- * edge's binding, since a shared instance's files ride ONE canonical route),
- * and a lookup the requirer's own edges did not answer adds the top-level
- * lookup that decided it (`<name> package.json` — the pool is the top level's
- * table), whether it found anything or not. Every path indexes PLAINLY through the
- * delivered graph — head a direct member, hops the requirer's own edges — so
- * replay is a walk, never a resolution; whatever ecosystem rule produced an
- * answer (the pool) is the reporter's to convert.
+ * Each package lookup adds two rows: the requirer's route, the name, then
+ * `package.json` (the answering package's manifest, or an absent one), which
+ * records the requirement's binding where the files' own names, each on its
+ * package's one canonical route, cannot; and, for a lookup the requirer's own
+ * requirements did not answer, `<name> package.json`, the top-level lookup
+ * that decided it, found or not.
  *
- * This module is shared with the driver, which runs in the build's own process
- * and must not depend on @fabr-build/core: it holds names and a converter, and
- * nothing else.
+ * Runs in the drivers, so it must not depend on @fabr-build/core.
  */
 
 /** Where a driver writes its report, relative to the staged working directory.
- * The action collects it beside the emit (`NodeExecAction`'s `collectedWith`)
- * and the step reads it from the result. */
+ * The action collects it with the output (`NodeExecAction`'s `collectedWith`). */
 export const DEPS_REPORT_FILE = ".fabr-deps.json";
 
-/** How a step asks for one: `--deps-report <file>`. A driver given no such flag
- * reports nothing, and its entry is keyed on the whole deps input. */
+/** The flag asking a driver for a report: `--deps-report <file>`. A driver not
+ * given it reports nothing, and its entry is keyed on the whole deps input. */
 export const DEPS_REPORT_FLAG = "--deps-report";
 
 /**
- * @return the FLAT spelling of a dependency path (core's `DepsPath`): its parts
- * — the names an edge chain calls its packages by, then the file within the
- * last — each `encodeURI`-encoded, joined with single spaces. Every conversion
- * between parts and the flat string goes through this pair: a raw join would
- * make a space inside a file's name indistinguishable from the separator.
+ * @return the flat spelling of a dependency path (core's `DepsPath`): its parts
+ * (package names, then the file) each `encodeURI`-encoded, joined with single
+ * spaces. Convert between parts and the flat string only through this pair: a
+ * raw join cannot tell a space in a file's name from the separator.
  *
- * Mirrors core's Manifest.ts `joinDepsPath`/`splitDepsPath` — kept in sync by
- * hand, since this module must not depend on core at runtime.
+ * Mirrors core's Manifest.ts `joinDepsPath`/`splitDepsPath`; keep the two in
+ * sync by hand.
  */
 export function joinDepsPath(parts: ReadonlyArray<string>): string {
   return parts.map(part => encodeURI(part)).join(" ");
 }
 
 /** @return the parts of a flat dependency path, the inverse of
- * {@link joinDepsPath}. `encodeURI` only ever introduces `%` escapes, so a part
- * without one decodes to itself. */
+ * {@link joinDepsPath}. A part with no `%` is taken as it is. */
 export function splitDepsPath(name: string): string[] {
   return name.split(" ").map(part => (part.includes("%") ? decodeURI(part) : part));
 }
 
 /**
- * How a step asks a driver to compile incrementally: `--state-dir <dir>` names
- * a directory the driver owns the contents of — the step stages the last green
- * build's state back into it and keeps whatever is there when the run ends,
- * unread, however many files that is (zero included). Naming the directory IS
- * asking for incremental mode: a driver given one plans for itself and owns the
- * emitted tree's staleness.
+ * The flags asking a driver to build incrementally. `--state-dir <dir>` names a
+ * directory whose contents the driver owns: the step stages the last green
+ * build's state back into it and keeps whatever is there when the run ends.
+ * A driver given it plans the build itself and is responsible for removing
+ * stale output.
  *
- * `--changes <file>` accompanies it and says what moved since the last green
- * build (see {@link parseChangesDocument}). The FILE is what is conditional, not the
- * flag: a step composes one invocation and only learns whether it has a base to
- * diff against once it has looked, so a driver reads the path and takes its
- * absence as "no base". The two are one-directional: state handed back with no
- * change lists is the step contradicting itself, while an empty state directory
- * beside readable changes is ordinary — a first build, or one whose state was
- * lost — and compiles cold. A driver given neither flag is the ordinary
- * CLI-parity invocation.
+ * `--changes <file>` names the changes document ({@link parseChangesDocument})
+ * listing what moved since the last green build. The flag is always given with
+ * `--state-dir`, but the file may be missing: read a missing file as "no base",
+ * and compile cold. An empty state directory with a changes file (a first
+ * build, or lost state) also compiles cold. A driver given neither flag runs
+ * as the tool's own CLI does.
  */
 export const STATE_DIR_FLAG = "--state-dir";
 export const CHANGES_FLAG = "--changes";
 
-/** The locations fabr's own rules pass for those two, relative to the staged
- * working directory. Defaults, not protocol: a rule names what it likes, and
- * these are what {@link STATE_DIR_FLAG}/{@link CHANGES_FLAG} carry. */
+/** The locations fabr's own rules pass with {@link STATE_DIR_FLAG} and
+ * {@link CHANGES_FLAG}, relative to the staged working directory. A rule may
+ * pass others. */
 export const STATE_DIR = ".fabr-state";
 export const CHANGES_FILE = ".fabr-changes";
 
 /**
- * What moved since the base build, as the step's hash diff states it: the names
- * whose content differs (additions included) and the names that are gone, both
- * in this module's namespace — a dependency's file by its path name (the route
- * it is reached by), the compile's own by its staged path. Bytes are the step's
- * native facts; what a change *reaches* is the driver's business.
+ * What moved since the base build, by content hash: the names whose content
+ * differs (additions included) and the names that are gone. A dependency's file
+ * is named by its path name, the compile's own by its staged path.
  */
 export interface IChangeLists {
   changed: string[];
@@ -117,10 +102,8 @@ export interface IChangeLists {
 }
 
 /** Read a changes document (core's `toChangesDocument`: one `<status>\t<name>`
- * line per name, `A`/`M`/`D`), folding an addition into `changed`. A driver reads
- * this from a file its caller wrote, and the two sides disagreeing about the
- * contract is a bug — so a malformed line is an error, never a silent full
- * compile. */
+ * line per name, `A`/`M`/`D`), folding an addition into `changed`. Throws on a
+ * malformed line. */
 export function parseChangesDocument(text: string): IChangeLists {
   const lists: IChangeLists = { changed: [], deleted: [] };
   for (const line of text.split("\n")) {
@@ -139,14 +122,14 @@ export function parseChangesDocument(text: string): IChangeLists {
 }
 
 /**
- * One resolution a run performed: the requirer, the name it asked for, and the
- * instance that name bound to — all three in this module's names, with `""`
- * standing for the compilation itself.
+ * One package lookup a run made: the requirer's instance name (`""` for the
+ * compilation itself), the name it asked for, and the instance name the name
+ * bound to.
  *
  * `via` says how it resolved: `own` (the requirer declared the name),
- * `fallback` (it did not, and the pool answered), or `absent` (nothing
- * answered, and `to` is empty). An unresolvable name is not necessarily an
- * error — tsc asks for `thing` and settles for `@types/thing`.
+ * `fallback` (it did not, and the fallback pool answered), or `absent`
+ * (nothing answered, and `to` is empty). An absent lookup need not be an
+ * error: tsc asks for `thing` and settles for `@types/thing`.
  */
 export interface IResolutionEdge {
   from: string;
@@ -156,16 +139,16 @@ export interface IResolutionEdge {
 }
 
 /**
- * A run report as the step reads it: the pool names the run READ and the
- * resolutions it performed ({@link IResolutionEdge}). A driver's own state is
- * not in here — it is files, written into the `--state-dir`. Anything else in
- * the document is not the step's business.
+ * A run report as the step reads it: the path names of the files the run read,
+ * and the lookups it made ({@link IResolutionEdge}). Other sections of the
+ * document are ignored.
  */
 export interface IRunReport {
   reads: string[];
   edges: IResolutionEdge[];
 }
 
+/** Convert a run report document, throwing where `reads` or `edges` is malformed. */
 export function toRunReport(json: unknown): IRunReport {
   if (typeof json !== "object" || json === null || Array.isArray(json)) {
     throw new Error("expected a JSON object");
@@ -177,9 +160,8 @@ export function toRunReport(json: unknown): IRunReport {
   return { reads: reads as string[], edges: toResolutionEdges(edges) };
 }
 
-/** Read the edges section, absent from a driver that resolves nothing of its
- * own; an empty list leaves every read named by its place in the delivered
- * graph. */
+/** Convert the `edges` section; absent, as from a driver that looks up no
+ * package itself, it is an empty list. */
 function toResolutionEdges(json: unknown): IResolutionEdge[] {
   if (json === undefined) {
     return [];
@@ -202,11 +184,9 @@ function toResolutionEdges(json: unknown): IResolutionEdge[] {
 }
 
 /**
- * @return the run's report file: what it READ and how its names RESOLVED (the
- * discovered-dependency halves, which the step joins into the walks the entry
- * is keyed on), plus any further sections a driver keeps of its own, as one
- * document. Sorted, so a report is a function of what the run read and
- * resolved and not of the order it happened to ask.
+ * @return the text of a run report: the names read (deduplicated and sorted),
+ * the lookups (sorted by requirer and name), and any further `sections` the
+ * driver adds.
  */
 export function serializeRunReport(
   reads: Iterable<string>,
@@ -216,9 +196,8 @@ export function serializeRunReport(
   return `${JSON.stringify({ reads: [...new Set(reads)].sort(), edges: [...edges].sort(compareEdges), ...sections }, undefined, 2)}\n`;
 }
 
-/** Compare two edges in report order: by requirer then name, in code-unit order —
- * never a locale comparison, the point being one spelling on every machine
- * (core's compareText, which a driver cannot import). */
+/** Compare two edges by requirer then name, in code-unit order (core's
+ * `compareText`). */
 function compareEdges(left: IResolutionEdge, right: IResolutionEdge): number {
   const l = `${left.from}\0${left.name}`;
   const r = `${right.from}\0${right.name}`;

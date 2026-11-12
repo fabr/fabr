@@ -26,6 +26,7 @@ import { type IProjectDocument, projectOf, registeredProjects } from "./Registry
 /** The name the shim is loaded under, from the wrapper's probe location. */
 export const SHIM_NAME = "fabr-tsserver-shim";
 
+/** What tsserver hands a plugin's `create`: the parts the shim reads. */
 interface IPluginInfo {
   project: {
     getProjectName(): string;
@@ -41,6 +42,7 @@ interface IPluginImplementation {
   createLanguageService(ts: unknown, info: IPluginInfo, units: readonly ITypeScriptUnit[]): unknown;
 }
 
+/** Each plugin implementation loaded, or the error loading it, by module path. */
 const implementations = new Map<string, IPluginImplementation | Error>();
 
 /** tsserver's `ProjectKind` of a project no config names, as the syntax server's are. */
@@ -50,7 +52,8 @@ const INFERRED_PROJECT = 0;
  * @return the tsserver plugin module: its `create` hands a project to the
  * plugin implementation of the fabr project its config lies in, and an
  * inferred project to the implementations of the fabr projects within or
- * around the directory it is inferred for; any other project to none.
+ * around the directory it is inferred for, each wrapping the language service
+ * the one before made; any other project keeps its own service.
  */
 export function shim(modules: { typescript: unknown }): { create(info: IPluginInfo): unknown } {
   return {

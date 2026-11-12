@@ -22,19 +22,19 @@ import { isJsonObject, toStringList } from "../support/Json";
 import { MVSResolution, nodeIdOf } from "./MVSResolution";
 import { IRequirementEdge, Requirement, Selected, Violation } from "./Types";
 
-/** Serialized form of one selection in a persisted resolution document */
+/** One selection (`Selected`) in a persisted resolution document. */
 interface IResolutionEntry {
   name: string;
-  /** See resolver Selected.publishedName; absent where it is `name` */
+  /** See `Selected.publishedName`; absent where it is `name`. */
   publishedName?: string;
   version: string;
   selectedBy?: IRequirementEdge;
   reachedVia?: IRequirementEdge;
-  /** Fork index (see resolver Selected.fork); absent for the principal */
+  /** See `Selected.fork`; absent for a selection that is no fork. */
   fork?: number;
 }
 
-/** Serialized upper-bound violation (see resolver Violation) */
+/** One `Violation` in a persisted resolution document. */
 interface IViolationEntry {
   name: string;
   versionConstraint: string;
@@ -42,7 +42,7 @@ interface IViolationEntry {
   selected: string;
 }
 
-/** Serialized floor raise (see resolver RaisedFloor) */
+/** One raised lower bound (`RaisedFloor`) in a persisted resolution document. */
 interface IRaiseEntry {
   name: string;
   versionConstraint: string;
@@ -51,39 +51,40 @@ interface IRaiseEntry {
   requiredBy: string;
 }
 
-/** Serialized declared requirements of one selected node (see
- * {@link MVSResolution.requirements}) */
+/** The requirements one selection declared (see
+ * {@link MVSResolution.requirements}). */
 interface IRequirementsEntry {
   node: string;
   requires: Requirement[];
 }
 
-/** Serialized form of a persisted joint resolution: per-name principals with
- * fork selections and `!`-coerced edges. Version strings are in the owning
- * ecosystem's canonical form; everything else is ecosystem-free. */
+/** A persisted resolution: the fields of an {@link MVSResolution} but
+ * `errors`, with versions written by the domain's `versionToString`. */
 export interface IResolutionDoc {
-  /** Self-description for anyone reading the cache file — deserialization
-   * never reads it (the memo key already fixes the roots). */
+  /** The root requirements resolved, for a reader of the file; reading the
+   * document back ignores them. */
   roots: Requirement[];
   selections: IResolutionEntry[];
   violations: IViolationEntry[];
-  /** Edges a `!` force override coerced (data — never judged) */
+  /** See {@link MVSResolution.coerced}. */
   coerced?: IViolationEntry[];
-  /** Provided edges bound to an out-of-range selection the domain shares (data — never judged) */
+  /** See {@link MVSResolution.shared}. */
   shared?: IViolationEntry[];
   raises: IRaiseEntry[];
   requirements: IRequirementsEntry[];
   /**
-   * The resolved edges (see {@link MVSResolution.edges}), positionally: entry
-   * `i` belongs to `selections[i]`, and each `[name, target]` pair names the
-   * *index* of the selection it binds to.
+   * {@link MVSResolution.edges} by position: entry `i` is `selections[i]`'s,
+   * and each `[name, target]` pair gives the index in `selections` of the
+   * selection the dependency `name` binds to.
    */
   edges: [string, number][][];
-  /** Per root (see {@link MVSResolution.rootBindings}), the index of the
-   * selection it binds to; `null` for a root that selects nothing. */
+  /** {@link MVSResolution.rootBindings}, with `null` for a root that binds to
+   * nothing. */
   rootBindings: (number | null)[];
 }
 
+/** Write `result`, resolved from `roots`, as a resolution document. Throws
+ * where one of its edges names no selection. */
 export function serializeResolutionDoc<V>(
   roots: Requirement[],
   result: MVSResolution<V>,
@@ -95,7 +96,7 @@ export function serializeResolutionDoc<V>(
     requiredBy: entry.requiredBy,
     selected: versionToString(entry.selected),
   });
-  /* Edge targets are stored by position, so the id→index map is built once. */
+  /* The index in `selections` of each selection, by node id. */
   const index = new Map<string, number>(result.selections.map((sel, at) => [nodeKey(sel, versionToString), at]));
   return {
     roots,
@@ -117,7 +118,7 @@ export function serializeResolutionDoc<V>(
       raised: versionToString(raise.raised),
       requiredBy: raise.requiredBy,
     })),
-    /* Already canonical: the resolver builds the map in its selections' order. */
+    /* In the map's order, which is the order of `selections`. */
     requirements: [...result.requirements].map(([node, requires]) => ({ node, requires })),
     edges: result.selections.map(sel => {
       const from = result.edges.get(nodeKey(sel, versionToString)) ?? new Map<string, string>();
@@ -276,16 +277,15 @@ function indexOf(json: unknown, what: string): number {
   return json;
 }
 
-/** Deserialize a resolution document into the loaded resolution — a
- * {@link MVSResolution}, indexed and ready to deliver from. `domain` is any
- * carrier of the version codec (a PackageFormat serves). */
+/** Read a resolution document back as an {@link MVSResolution}, with no
+ * `errors`, parsing its versions with `domain` (a PackageFormat serves). */
 export function deserializeResolutionDoc<V>(
   doc: IResolutionDoc,
   domain: { parseVersion(text: string): V; versionToString(version: V): string }
 ): MVSResolution<V> {
   const parseVersion = (text: string): V => domain.parseVersion(text);
-  /* Edge targets are positional (see IResolutionDoc.edges); the ids they mean
-   * are read straight off the serialized selections, no version parsing. */
+  /* The node id of each selection, by its index, from the version text as
+   * written. */
   const ids = doc.selections.map(entry => nodeIdOf(entry.name, entry.version));
   const violation = (entry: IViolationEntry): Violation<V> => ({
     name: entry.name,

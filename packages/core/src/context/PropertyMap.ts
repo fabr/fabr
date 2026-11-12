@@ -30,20 +30,22 @@ import { NameResolutionError } from "../model/Errors";
  */
 export type PropertyMapValue = string[] | PropertyMap | PropertyMap[];
 
+/** A MAP property's value: its entries, by key, in the order written. */
 export type PropertyMap = Map<string, PropertyMapValue>;
 
 /**
- * Ghost provenance for one map entry: the written `key = value;` decl the value
- * came from, and the reference hops it arrived through, outermost first, each
- * an in-block `NAME;` splice or a top-level bare-reference value ("via
- * 'FABR_METADATA'"). Runtime-only: it is kept in {@link MAP_ORIGINS} beside the
- * map, never on it.
+ * Where one map entry came from: the written `key = value;` decl, and the
+ * references it was reached through, outermost first, each an in-block
+ * `NAME;` splice or a top-level bare-reference value ("via 'FABR_METADATA'").
+ * Runtime-only, kept in {@link MAP_ORIGINS} rather than on the map, so a copy
+ * of a map has none unless they are recorded for it ({@link mergeMapInto}).
  */
 export interface MapEntryOrigin {
   entry: IPropertyDecl;
   via: (ISpliceDecl | INameValue)[];
 }
 
+/** The origins of each map's entries, by key. */
 const MAP_ORIGINS = new WeakMap<PropertyMap, Map<string, MapEntryOrigin>>();
 
 /** Get the origin of a map's entry, where the map came from `lookupMap` (a
@@ -88,6 +90,7 @@ export function toEnvironment(map: PropertyMap): ReadonlyMap<string, string> {
   return variables;
 }
 
+/** Record `origin` as where `map`'s entry `key` came from. */
 export function recordMapOrigin(map: PropertyMap, key: string, origin: MapEntryOrigin): void {
   let origins = MAP_ORIGINS.get(map);
   if (!origins) {
@@ -97,8 +100,9 @@ export function recordMapOrigin(map: PropertyMap, key: string, origin: MapEntryO
   origins.set(key, origin);
 }
 
-/** Merge `source`'s entries into `target` (later wins), threading each entry's
- * origin with the written reference `hop` prepended to its via-chain. */
+/** Merge `source`'s entries into `target`, replacing an entry of the same key,
+ * and record each entry's origin in `target` with `hop`, the written reference
+ * that reached `source`, first among the references it came through. */
 export function mergeMapInto(target: PropertyMap, source: PropertyMap, hop: ISpliceDecl | INameValue): void {
   for (const [key, value] of source) {
     target.set(key, value);

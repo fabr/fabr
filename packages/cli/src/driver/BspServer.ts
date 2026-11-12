@@ -116,16 +116,19 @@ const TASK_CANCELLED = 3;
 export const DESCRIBE_TASK_DATA_KIND = "fabr-describe";
 
 /**
- * The server: the targets described so far, and the connection they are
- * served over. It belongs to the run, not to a model, so a reloaded model's
- * descriptions replace the last one's.
+ * The server of the BSP half of a connection: the targets described so far.
+ * One serves the whole run, each reloaded model's descriptions replacing the
+ * last one's ({@link serve}).
  */
 export class BspServer {
+  /** The targets served, by identifier. */
   private readonly served = new Map<string, IServedTarget>();
   private loaded?: () => void;
-  /** Settled once a model is served, or the first cycle ends without one: what a request about the targets waits for until then. */
+  /** Settled once a model is served, or the first cycle ends without one; a request about the targets waits for it. */
   private readonly ready = new Promise<void>(resolve => (this.loaded = resolve));
+  /** The changes held for the next `buildTarget/didChange`: each target's `BuildTargetEventKind`, by identifier. */
   private readonly changes = new Map<string, number>();
+  /** The timer that sends the changes held. */
   private announcement?: NodeJS.Timeout;
   /** The targets whose description failed, by identifier. */
   private readonly failed = new Set<string>();
@@ -287,9 +290,11 @@ export class BspServer {
    * Build or test the targets a `buildTarget/compile` or `buildTarget/test`
    * request names, as one task: a build's failure published as diagnostics, as
    * a description's is; each test's outcome reported as a `test-start` and
-   * `test-finish` beneath the task, then each target's `test-report`.
+   * `test-finish` beneath the task, then each target's `test-report`. A target
+   * not served fails.
    *
-   * @return the request's result: its `originId`, and whether every target succeeded.
+   * @return the request's result: its `originId`, and whether every target
+   * succeeded (an error status, with no task, where no model is served).
    */
   private async perform(
     operation: "build" | "test",
@@ -504,6 +509,7 @@ export class BspServer {
     this.connection.notify("buildTarget/didChange", { changes });
   }
 
+  /** Answer BSP's request or notification `method`; one about the targets waits for a model ({@link ready}). */
   private async request(method: string, params: unknown): Promise<unknown> {
     switch (method) {
       case "build/initialize":
@@ -518,8 +524,8 @@ export class BspServer {
             compileProvider: { languageIds: LANGUAGE_IDS },
             testProvider: { languageIds: LANGUAGE_IDS },
           },
-          /* The project's root, and the fabr installation serving it, which a
-           * payload's modules resolve from. */
+          /* The project's root, and the fabr installation serving it, which
+           * the editor extension resolves fabr's modules (its tsserver plugin) from. */
           data: { root: this.fileUri("./"), installation: installationDirectory() ?? __dirname },
         };
       case "build/initialized":

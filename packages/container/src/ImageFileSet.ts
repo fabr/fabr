@@ -227,8 +227,8 @@ interface IMergedEntry {
 
 /**
  * Merge `layers`' entries, lowest first, into the files of the filesystem they
- * make. A hardlink shares the content of its target as the filesystem holds
- * it where the link's layer applies, whatever a later layer does to the target.
+ * make. A hardlink takes its target's content as it is once the link's layer
+ * is applied; a later layer changing the target does not change the link.
  */
 function filesystemOf(layers: readonly ILayerRecord[]): Map<string, IFile> {
   const merged = new Map<string, IMergedEntry>();

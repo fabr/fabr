@@ -15,40 +15,30 @@
  */
 
 /**
- * The `exports`/`imports` half of module resolution: node's
- * PACKAGE_EXPORTS_RESOLVE and PACKAGE_IMPORTS_RESOLVE as pure functions of a
- * package's own manifest.
+ * Node's PACKAGE_EXPORTS_RESOLVE and PACKAGE_IMPORTS_RESOLVE as pure functions
+ * of a package's parsed manifest: given the `exports` or `imports` value and a
+ * subpath, they answer with package-relative paths. Finding the manifest,
+ * probing extensions and reading files are the caller's.
  *
- * The split this file marks: a specifier's PACKAGE is decided by the dependency
- * table (which is composition — who may see whom), and everything below the
- * package root is decided by the package itself. `exports` is where a package
- * writes that down.
+ * Trailing-slash folder keys (`"./features/": "./src/features/"`), which node
+ * removed in v17, are not honoured unless the caller passes `validate: false`,
+ * which honours them as the TypeScript compiler and esbuild do (see
+ * {@link matchSubpath}).
  *
- * Pure and fs-free by construction: it takes the parsed manifest value and
- * answers with a package-relative path. Everything filesystem-shaped (finding
- * the manifest, extension probing, the read) stays with the caller.
- *
- * Trailing-slash "folder" keys (`"./features/": "./src/features/"`) are not part
- * of the specification — node removed them in v17 — and are not honored, unless
- * the caller passes `validate: false`, which honors them as the TypeScript
- * compiler and esbuild still do (see {@link matchSubpath}).
- *
- * One deviation from node: an invalid map is answered with "no resolution"
- * rather than a thrown error, except for the two shapes that are unambiguously a
- * mistake in the package rather than in the specifier (subpath keys mixed with
- * condition keys; a numeric condition key), which are reported — unless the
- * caller passes `validate: false`, which reads them as the TypeScript compiler
- * does instead (see {@link subpathMap}, {@link matchingConditions}).
+ * Differs from node in one way: an invalid map or target resolves nothing
+ * rather than throwing, except for two shapes, which throw: subpath keys mixed
+ * with condition keys, and a numeric condition key. With `validate: false`
+ * those two are read as the TypeScript compiler reads them instead (see
+ * {@link subpathMap}, {@link matchingConditions}).
  */
 
 /** An `exports`/`imports` entry: a target path, an ordered fallback list, a
- * condition map, or `null` — which does not mean "absent" but "deliberately not
- * exposed", and so stops the search rather than falling through. */
+ * condition map, or `null`, which refuses the subpath and stops the search. */
 export type ExportsValue = string | null | readonly ExportsValue[] | { readonly [key: string]: ExportsValue };
 
-/** Convert a manifest's `exports` or `imports` field: a target of any other
- * JSON type, which node refuses as an invalid target, is read as `null`, which
- * resolves nothing. */
+/** Convert a manifest's `exports` or `imports` field. A value of any other JSON
+ * type (node refuses it as an invalid target) is read as `null`, so a whole
+ * field of such a type reads as `null`. */
 export function toExportsValue(json: unknown): ExportsValue {
   if (typeof json === "string" || json === null) {
     return json;
@@ -69,7 +59,7 @@ export function exportsSubpath(rest: string): string {
 }
 
 /**
- * The conditions a resolution satisfies, asked one key at a time. A plain
+ * The conditions a resolution satisfies, asked one key at a time. A
  * `Set<string>` is one; a caller with its own rule for some keys (TypeScript's
  * versioned `types@<range>` keys) supplies its own `has`.
  */
@@ -78,14 +68,13 @@ export interface IConditionSet {
 }
 
 /**
- * @return the package-relative path `subpath` names, or undefined when the
- * package does not expose it. A package with no `exports` field at all has
- * nothing to say and is not this function's business — the caller resolves
- * those against the filesystem, as node does.
+ * @return the package-relative path (`./x`) the `exports` map gives `subpath`
+ * (`.` or `./x`), or undefined where the map does not expose it. A package with
+ * no `exports` field is the caller's to resolve against the filesystem.
  *
- * `conditions` is a SET, not a preference order: the map's own key order decides
- * which condition wins, which is what lets a package state its own priorities
- * (`types` before `import` before `default`). `default` always matches.
+ * `conditions` is a set, not a preference order: of the conditions it holds,
+ * the first a condition map lists wins. `default` always matches. Throws for
+ * the invalid maps the module doc lists.
  */
 export function resolveExports(
   exports: ExportsValue,
@@ -97,20 +86,11 @@ export function resolveExports(
 }
 
 /**
- * @return every file the map publishes for `subpath`, in the order the package
- * prefers them — its own key order. The first is what {@link resolveExports}
- * answers and what node would load; the rest are the ones it passed over.
- *
- * Why a caller would want the rest: a condition names an IMPLEMENTATION, and a
- * compiler is asking about DECLARATIONS. A package may describe its formats under
- * `import`/`require` and keep the only declaration file behind a `types` key
- * listed after them — bad practice, and common. Reading one answer and stopping
- * makes that package untyped; walking its preferences until one of them answers
- * the question actually asked is what the compiler itself does.
- *
- * This never widens what is RESOLVABLE: every candidate comes from a condition
- * this world already satisfies, so a package with nothing to offer here still
- * has nothing.
+ * @return every file the `exports` map gives `subpath` under `conditions`, in
+ * the order the map lists them, without duplicates. The first is what
+ * {@link resolveExports} answers and what node would load. A compiler looking
+ * for declarations walks the rest, since a package may list its only `types`
+ * key after `import`/`require`. Empty where the map does not expose `subpath`.
  */
 export function resolveExportsAll(exports: ExportsValue, subpath: string, conditions: IConditionSet, validate = true): string[] {
   const map = subpathMap(exports, validate);
@@ -125,10 +105,9 @@ export function resolveExportsAll(exports: ExportsValue, subpath: string, condit
 
 /**
  * @return the target a `#`-prefixed specifier names in the issuing package's
- * `imports` map: a package-relative path (`./x`), or a BARE SPECIFIER when the
- * entry redirects to another package — which the caller must then resolve like
- * any other name, through the table. The two are told apart by the `./` prefix,
- * exactly as node tells them apart.
+ * `imports` map: a package-relative path (`./x`), or a bare specifier where the
+ * entry redirects to another package, which the caller resolves like any other
+ * package name. Undefined where the map does not define `specifier`.
  */
 export function resolveImports(
   imports: ExportsValue,
@@ -141,13 +120,11 @@ export function resolveImports(
 
 /**
  * @return every target the `imports` entry for `specifier` names, in the order
- * the package prefers them — the {@link resolveExportsAll} walk, for the same
- * reason: a compiler asking for declarations may need a candidate a condition
- * listed later.
+ * the map lists them, as {@link resolveExportsAll} does for `exports`.
  */
 export function resolveImportsAll(imports: ExportsValue, specifier: string, conditions: IConditionSet, validate = true): string[] {
-  /* `#` alone names nothing. `#/x` is refused by the written specification and
-   * accepted by node, and node is what decides whether the import will load. */
+  /* `#` alone names nothing. `#/x` is accepted, as node accepts it, though the
+   * written specification refuses it. */
   if (!specifier.startsWith("#") || specifier === "#" || !isMap(imports)) {
     return [];
   }
@@ -161,40 +138,28 @@ export function resolveImportsAll(imports: ExportsValue, specifier: string, cond
 }
 
 /**
- * Look up, in reverse, which subpath a consumer would write to reach `file`
- * (`./dist/index.d.ts` → `./client`), or undefined when the package publishes no
- * name for it.
+ * Look up, in reverse, the subpath a consumer would write to reach the
+ * package-relative `file` (`./dist/index.d.ts` → `./client`), or undefined
+ * where the `exports` map gives it no name. Node has no such step.
  *
- * Node has no such algorithm because node never asks the question — but anything
- * that WRITES a specifier does, and a path that happens to be inside a package
- * is not a name a consumer can use: `exports` is exactly the statement that most
- * of a package has no public name at all.
- *
- * Every answer is CHECKED before it is given: the candidate name is resolved
- * forwards, and kept only if it comes back to the file it was derived from. The
- * derivation alone is not enough, and each way it can lie is a shape that
- * occurs — a more specific key may intercept the name (`./aa*` shadowing what
- * `./a*` derived), a broader key may name a subpath a narrower `null` has
- * blocked, and a key with two wildcards expands to a name that matches nothing.
- *
- * Keys are tried most-specific first, so among the names that do round-trip the
- * answer is the tightest one, and deterministic.
+ * Keys are tried most specific first, each target under `conditions` in turn,
+ * and the first candidate name whose forward resolution
+ * ({@link resolveExportsAll}) includes `file` is the answer. The forward check
+ * rejects a name a more specific key intercepts (`./aa*` shadowing what `./a*`
+ * derived), one a narrower `null` blocks, and one a key with two wildcards
+ * expands to.
  */
 export function exportedSubpath(exports: ExportsValue, file: string, conditions: IConditionSet, validate = true): string | undefined {
   const map = subpathMap(exports, validate);
   for (const key of [...map.keys()].sort(compareKeys)) {
-    /* Every target the key can name, unexpanded — `wildcard: undefined` leaves
-     * a pattern's `*` in place, which is exactly the shape to match the file
-     * against, and leaves an ordinary key's target as the literal filename it
-     * is. All of them, not the first: the file may be named by a condition the
-     * package lists after the one that answers a forward lookup. */
+    /* Every target the key can name, not only the first, unexpanded: with
+     * `wildcard: undefined` a pattern's `*` stays in place to match the file
+     * against. */
     const targets: string[] = [];
     collectTargets(map.get(key)!, undefined, conditions, false, targets, validate, false);
     for (const candidate of targets.map(target => nameFor(key, target, file))) {
-      /* Against every file the name publishes, not merely the first: a package
-       * may name its declarations under a condition it lists after the
-       * implementation, and that name still reaches them — the consumer's
-       * compiler walks the same candidates. */
+      /* Check against every file the name resolves to, not only the first, as
+       * a compiler looking for declarations walks them all. */
       if (candidate !== undefined && resolveExportsAll(exports, candidate, conditions, validate).includes(file)) {
         return candidate;
       }
@@ -203,9 +168,10 @@ export function exportedSubpath(exports: ExportsValue, file: string, conditions:
   return undefined;
 }
 
-/** @return the subpath `key` would have to be written as for its `target` to name
- * `file`, or undefined if it cannot name it at all. A pattern carries the
- * matched portion across; an ordinary key names one file and nothing else. */
+/** @return the subpath `key` would have to be written as for its `target` to
+ * name `file`, or undefined if it cannot: a pattern key with what the target's
+ * `*` matched in `file` substituted for its `*`, or an ordinary key where its
+ * target is `file`. */
 function nameFor(key: string, target: string, file: string): string | undefined {
   if (!key.includes("*")) {
     return target === file ? key : undefined;
@@ -220,14 +186,13 @@ function isMap(value: ExportsValue): value is { readonly [key: string]: ExportsV
 }
 
 /**
- * @return the `exports` value as a subpath map. A value whose keys are all
- * conditions (or which is not a map at all) is sugar for the main entry:
- * `"exports": "./index.js"` and `"exports": { "import": … }` both describe `.`
- * alone.
+ * @return the `exports` value as a subpath map. A value that is not a map, or a
+ * map with no keys starting `.`, is the entry for `.` alone:
+ * `"exports": "./index.js"` and `"exports": { "import": … }` both describe `.`.
  *
- * Mixing the two is reported rather than declined. Unvalidated, it is read as the
- * TypeScript compiler reads it: its `"."` entry answers for the package itself,
- * and no other subpath resolves.
+ * A map mixing subpath and condition keys throws; unvalidated, it is read as
+ * the TypeScript compiler reads it: its `"."` entry answers for `.`, and no
+ * other subpath resolves.
  */
 function subpathMap(exports: ExportsValue, validate: boolean): Map<string, ExportsValue> {
   if (isMap(exports)) {
@@ -249,9 +214,9 @@ function subpathMap(exports: ExportsValue, validate: boolean): Map<string, Expor
   return new Map([[".", exports]]);
 }
 
-/** A key matched against a subpath: the entry it points at, plus what the key's
- * wildcard stood for — undefined when the key is not a pattern, which is what
- * keeps a `*` in its target a literal character rather than a placeholder. */
+/** A key matched against a subpath: its entry, and what the key's `*` matched,
+ * undefined where the key is not a pattern (a `*` in its target is then a
+ * literal character). */
 interface IMatch {
   readonly target: ExportsValue;
   readonly wildcard: string | undefined;
@@ -261,10 +226,10 @@ interface IMatch {
 }
 
 /** @return the entry that answers `subpath`: its exact key if there is one,
- * else the most specific pattern key that covers it. A trailing-slash folder
- * key is neither, and matches nothing, not even itself, as the specification
- * has it — unless `folders`, when it covers every subpath beneath it, ordered
- * among the pattern keys by its length as the TypeScript compiler orders it. */
+ * else the most specific pattern key that matches it. A trailing-slash folder
+ * key matches nothing, not even itself, as the specification has it, unless
+ * `folders`: then it matches every subpath beneath it, ranked among the
+ * pattern keys by its length, as the TypeScript compiler ranks it. */
 function matchSubpath(map: ReadonlyMap<string, ExportsValue>, subpath: string, folders = false): IMatch | undefined {
   const exact = map.get(subpath);
   if (exact !== undefined && !subpath.includes("*") && !subpath.endsWith("/")) {
@@ -272,8 +237,7 @@ function matchSubpath(map: ReadonlyMap<string, ExportsValue>, subpath: string, f
   }
   let best: (IMatch & { key: string }) | undefined;
   for (const [key, target] of map) {
-    /* Only a pattern expands; a key without a `*` names one subpath, offered
-     * above. */
+    /* A key without a `*` matches only exactly, checked above. */
     if (!key.includes("*")) {
       if (folders && key.endsWith("/") && subpath.length > key.length && subpath.startsWith(key)) {
         if (best === undefined || compareKeys(key, best.key) < 0) {
@@ -291,9 +255,9 @@ function matchSubpath(map: ReadonlyMap<string, ExportsValue>, subpath: string, f
 }
 
 /**
- * @return what `*` stood for when `pattern` matched `candidate`, or undefined
- * if it did not. A pattern holds at most one `*`; anything else never matches,
- * which is how an invalid key declines rather than throws.
+ * @return what `*` matched when `pattern` matched `candidate`, `""` for a
+ * pattern with no `*` equal to `candidate`, or undefined if it did not match.
+ * A pattern with more than one `*` matches nothing.
  */
 function matchPattern(pattern: string, candidate: string): string | undefined {
   const star = pattern.indexOf("*");
@@ -312,11 +276,9 @@ function matchPattern(pattern: string, candidate: string): string | undefined {
 }
 
 /**
- * Compare two keys most specific first — node's PATTERN_KEY_COMPARE: the longer
- * fixed prefix wins, a pattern beats a plain key with the same prefix, and the
- * longer key breaks the remaining tie. A total order, so which key answers a
- * subpath does not depend on the order the manifest happens to list its keys
- * in.
+ * Compare two keys most specific first, as node's PATTERN_KEY_COMPARE does: the
+ * longer prefix before the `*` first, then a pattern before a plain key, then
+ * the longer key, then code-unit order, so the order is total.
  */
 function compareKeys(key: string, other: string): number {
   const base = (candidate: string): number => (candidate.includes("*") ? candidate.indexOf("*") + 1 : candidate.length);
@@ -325,30 +287,26 @@ function compareKeys(key: string, other: string): number {
 }
 
 /**
- * Append every file a matched entry can name, in preference order, and return
- * false if the package REFUSED the subpath, otherwise true.
+ * Append to `found` every file the matched entry `target` names under
+ * `conditions`, in the order the entry lists them, with `wildcard` substituted
+ * ({@link expandTarget}). Return false if the entry refuses the subpath,
+ * otherwise true. The first file found is node's answer.
  *
- * One walk serves both questions, because node's own answer is simply the first
- * thing this finds: a condition map contributes its matching keys in the order
- * it lists them, and a fallback list contributes its entries in order.
+ * - A `null`, or a target that may not be named (one leaving the package), is
+ *   a refusal. Node returns null for the first and throws for the second.
+ * - A fallback list skips an entry that refuses and tries the next, so
+ *   `[null, "./b.js"]` resolves to `./b.js`. The list refuses where it is
+ *   empty, or an entry refused and none answered; one whose entries matched no
+ *   condition does not refuse.
+ * - A condition map stops at the first matching condition that refuses, and
+ *   refuses itself, so a `null` under one condition is not undone by a
+ *   `default` listed after it. Files found under earlier conditions stay in
+ *   `found`.
  *
- * The three shapes refuse differently, and node's own behaviour is the guide:
- *
- * - A `null`, or a target that may not be named at all (one that would leave
- *   the package), is a refusal. Node throws for the second and returns null for
- *   the first; both stop the walk here, since what a package has taken away a
- *   later condition may not give back.
- * - A FALLBACK LIST absorbs a refusal while any entry answers: an entry that
- *   refuses is skipped and the next is tried, which is why `[null, "./b.js"]`
- *   resolves to `./b.js`. A list where something refused and nothing answered
- *   is itself a refusal, as is an empty list; one whose entries merely matched
- *   no condition is not, and the walk goes on past it.
- * - A CONDITION MAP propagates a refusal, so a `null` under one condition is not
- *   undone by a `default` listed after it.
- *
- * @param external whether a target naming another package is allowed — true for
- * `imports` (whose whole point is redirecting a name elsewhere) and false for
- * `exports`, where a package may only publish its own files.
+ * @param external true if a target may name another package (`imports`),
+ * false where it may name only the package's own files (`exports`).
+ * @param folder true if the entry was matched by a folder key: `wildcard` is
+ * appended to a target ending in `/`.
  */
 function collectTargets(
   target: ExportsValue,
@@ -383,12 +341,11 @@ function collectTargets(
   );
 }
 
-/** @return a condition map's values in the order it lists them, keeping only
- * those this world satisfies. `default` is satisfied by every world. A key that
- * is an array index is an invalid map: JavaScript enumerates such keys first
- * whatever order the manifest wrote, so the order conditions are tried in
- * cannot be read. Unvalidated, the keys are taken in the order JavaScript gives
- * them, as the TypeScript compiler takes them. */
+/** @return a condition map's values in the order it lists them, keeping those
+ * whose condition is in `conditions` or is `default`; empty for a value that is
+ * not a map. A key that is an array index throws (JavaScript enumerates such
+ * keys first, whatever order the manifest wrote them in); unvalidated, the
+ * keys are taken in JavaScript's order, as the TypeScript compiler takes them. */
 function matchingConditions(target: ExportsValue, conditions: IConditionSet, validate: boolean): ExportsValue[] {
   if (!isMap(target)) {
     return [];
@@ -403,18 +360,18 @@ function matchingConditions(target: ExportsValue, conditions: IConditionSet, val
 }
 
 /**
- * @return a target string with its wildcard filled in, or undefined if what
- * results is not something the package may name.
+ * @return a target string with its wildcard filled in and decoded
+ * ({@link decodeTargetPath}), or undefined if the result is not something the
+ * entry may name: a path with an invalid segment ({@link hasInvalidSegment}),
+ * or, unless `external`, anything not starting `./`. A rooted or `../` path is
+ * refused even when `external`.
  *
- * `wildcard` is undefined for a key that is not a pattern, and then no
- * substitution happens at all: a `*` in the target of an ordinary key is a
- * literal character of a filename, not a placeholder, so `{".": "./a*b.js"}`
- * names the file `a*b.js`.
+ * `wildcard` is undefined for a key that is not a pattern, and then nothing is
+ * substituted: `{".": "./a*b.js"}` names the file `a*b.js`.
  */
 function expandTarget(target: string, wildcard: string | undefined, external: boolean, folder = false): string | undefined {
-  /* The wildcard comes from the SPECIFIER, so it is checked in its own right
-   * and not merely as part of the result — a target that does not use it would
-   * otherwise let any subpath through unexamined. */
+  /* Check the wildcard on its own too: a target that does not use it would
+   * otherwise let any subpath through unchecked. */
   if (wildcard !== undefined && hasInvalidSegment(decodeTargetPath(wildcard))) {
     return undefined;
   }
@@ -427,18 +384,15 @@ function expandTarget(target: string, wildcard: string | undefined, external: bo
     const file = decodeTargetPath(expanded.slice(2));
     return file === undefined || hasInvalidSegment(file) ? undefined : `./${file}`;
   }
-  /* A bare specifier is a redirection, which only `imports` may do; a rooted or
-   * upward path is neither that nor a file of this package, so it is refused
-   * either way. */
+  /* A bare specifier redirects to another package, which only `imports` may
+   * do. */
   return external && !expanded.startsWith("/") && !expanded.startsWith("../") ? expanded : undefined;
 }
 
 /**
- * @return true if a DECODED path holds a segment no target may contain — an
- * upward step, a self-reference, or a `node_modules` hop out of the package —
- * or is undefined (not decodable at all), otherwise false. A backslash
- * separates on Windows, and a case-insensitive filesystem reaches
- * `node_modules` through `NODE_MODULES`.
+ * @return true if a decoded path is undefined or holds a segment no target may
+ * contain (`.`, `..` or `node_modules`, in any case, split at `/` or `\`),
+ * otherwise false.
  */
 function hasInvalidSegment(path: string | undefined): boolean {
   return (
@@ -451,11 +405,10 @@ function hasInvalidSegment(path: string | undefined): boolean {
 }
 
 /**
- * @return a target path as the file it names. Targets are URL-relative — node
- * resolves one against the package's URL and converts the result to a path — so
- * `a%20b.js` names `a b.js`. Undefined for what node refuses: a malformed
- * escape, or an encoded separator (`%2F`, `%5C`), which would smuggle a segment
- * past the checks.
+ * @return a target path as the file it names, percent-decoded as node decodes
+ * a target resolved against the package's URL (`a%20b.js` names `a b.js`).
+ * Undefined for what node refuses: a malformed escape, or an encoded separator
+ * (`%2F`, `%5C`).
  */
 function decodeTargetPath(path: string): string | undefined {
   if (/%2f|%5c/i.test(path)) {
@@ -470,9 +423,8 @@ function decodeTargetPath(path: string): string | undefined {
 
 /**
  * @return a package-relative file name spelled as a target, the inverse of
- * {@link decodeTargetPath}: the characters URL resolution would read otherwise
- * — `%` (an escape), `#` (a fragment), `?` (a query) — are escaped; everything
- * else, `*` and `/` included, is written as it is.
+ * {@link decodeTargetPath}: `%`, `#` and `?` are percent-escaped, everything
+ * else (`*` and `/` included) is written as it is.
  */
 export function encodeTargetPath(path: string): string {
   return path.replace(/[%#?]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);

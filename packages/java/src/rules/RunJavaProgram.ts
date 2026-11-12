@@ -55,10 +55,9 @@ interface ProgramInputs {
 
 /** The `java_program` rule, under `run`. */
 export default defineRule({
-  /* Read under build rather than the run operation the rule is selected by:
-   * `deps` once to compile the sources against, and once as what the program
-   * runs with (`classpath`). The program is run and never compiled against,
-   * so its packages are collected permissively, as a tool's are. */
+  /* Read under build, not the run operation the rule is selected by: `deps`
+   * once to compile the sources against, and once as what the program runs
+   * with (`classpath`). The collection is permissive, as a tool's is. */
   requirements(context) {
     return {
       build: {
@@ -81,6 +80,7 @@ export default defineRule({
   },
 });
 
+/** Make the program's runnable: its sources compiled (none where it has none), run with `classpath` from {@link mainClassOf}'s class. */
 function runnableProgram(
   context: TargetContext,
   { srcs, deps, classpath, agents }: ProgramInputs,

@@ -31,21 +31,19 @@ function written(root: Requirement): string {
 export const PACKAGE_RESOLUTION_PROVENANCE = "package-resolution";
 
 /**
- * Provenance step for a FileSet produced by resolving a package requirement,
- * for any package ecosystem. The root requirement identifies the (persisted,
- * deterministic) resolution, and selections is a reference to the
- * already-loaded resolution document — retained, not copied, and only
- * consulted if an explanation is actually needed.
- *
- * The ecosystem-specific concerns are parameterized: how versions print, and
- * the format the package was resolved in. Everything else — including which
- * package owns a path within the resolved output — is answerable from the
- * selections themselves.
+ * Provenance step of a package resolved from a registry, in any ecosystem: the
+ * root requirement it was resolved for and the resolution's selections, from
+ * which {@link explainResolutionPath} explains why a package of the closure is
+ * there at its version, and {@link purlOf} and {@link formatOf} read the
+ * package's identity.
  */
 export interface IResolutionOrigin<V> extends IProvenanceStep {
   kind: typeof PACKAGE_RESOLUTION_PROVENANCE;
+  /** The root requirement the closure was resolved for. */
   root: Requirement;
+  /** The resolution's selections, shared with the resolution, not copied. */
   selections: Selected<V>[];
+  /** Write a version as the registry's format writes it. */
   versionToString(version: V): string;
   /** The format of the registry the package was resolved from. */
   format: PackageFormat<unknown, unknown>;
@@ -85,11 +83,9 @@ export function purlOf(origin: IProvenanceStep | undefined, name: string, versio
 
 /**
  * Find the selection owning `path` within a mounted closure: the one whose
- * package name is a leading component-prefix of the path (longest wins — a
- * scoped npm name is simply a two-component prefix). Purely positional: the selections
- * carry every name in the closure, so no ecosystem naming convention is
- * needed. Undefined when nothing owns it — e.g. a path mounted under a
- * dependency *alias*, which is not a resolution name.
+ * package name is the longest leading run of the path's components (a scoped
+ * npm name is a two-component prefix). Undefined when nothing owns it, as for
+ * a path mounted under a dependency alias, which no selection is named.
  */
 function owningSelection<V>(selections: Selected<V>[], path: string): Selected<V> | undefined {
   let best: Selected<V> | undefined;
@@ -102,11 +98,17 @@ function owningSelection<V>(selections: Selected<V>[], path: string): Selected<V
 }
 
 /**
- * Reconstruct the requirement chain explaining how the package owning `path`
- * came to be in the resolved closure, as a dependency-ordered arrow chain of
- * selected versions (each annotated with the constraint its predecessor
- * declared). The chain shown is the one through the requirement that actually
- * determined the selected version, so every name in it is justified.
+ * Explain how the package owning `path` came to be in the resolved closure, at
+ * its version, as display lines:
+ * - selected by the root requirement: one line, the package at its version and
+ *   the root's constraint;
+ * - selected by another package's requirement: one line, the chain of
+ *   selections from the root through that requirer (`a@1 -> b@2 (^2.0.0)`),
+ *   ending at the package with the constraint that selected it;
+ * - selected by a requirer that is no longer among the selections (a version
+ *   a higher one displaced): the chain the package is reached by, then a line
+ *   naming the requirement that raised it;
+ * - owned by no selection: one line saying so.
  */
 export function explainResolutionPath<V>(origin: IResolutionOrigin<V>, path: string): string[] {
   const selection = owningSelection(origin.selections, path);
@@ -124,8 +126,8 @@ export function explainResolutionPath<V>(origin: IResolutionOrigin<V>, path: str
   if (winnerNode) {
     return [[...pathTo(winnerNode), `${id(selection)} (${winner.versionConstraint ?? "any version"})`].join(" -> ")];
   }
-  /* The winning requirement was declared by a version that was itself
-   * superseded; fall back to the reachability path and note the raise. */
+  /* The requirement that selected the version was declared by a version
+   * since displaced: show the chain the package is reached by, and name it. */
   return [
     pathTo(selection).join(" -> "),
     `version ${origin.versionToString(selection.version)} raised by ${winner.requiredBy} requiring ${

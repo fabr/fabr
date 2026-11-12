@@ -104,7 +104,7 @@ export interface IDescription {
   javacOptions?: IJavacOptions;
 }
 
-/** What a plugin's `describe` rule adds to what core states of every target. */
+/** What a rule's `describe` adds to what core states of every target. */
 export interface IDescribeOptions {
   /** The target's sources, as the rule read them: each file of the project's
    * own tree among them is listed. */
@@ -199,7 +199,8 @@ function isIdentifiers(value: unknown): value is IBuildTargetIdentifier[] {
   return Array.isArray(value) && value.every(each => isJsonObject(each) && typeof each.uri === "string");
 }
 
-/** Convert a description as a `describe` result's {@link DESCRIPTION_FILE} holds it. */
+/** Convert a description as a `describe` result's {@link DESCRIPTION_FILE}
+ * holds it. Throws where `json` is not a description in BSP's shapes. */
 export function toDescription(json: unknown): IDescription {
   if (!isJsonObject(json) || !isJsonObject(json.target)) {
     throw new FabrError("expected a description with a target");

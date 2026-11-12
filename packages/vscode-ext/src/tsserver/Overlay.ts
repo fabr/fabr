@@ -60,10 +60,26 @@ export function linkedChildren(links: Links, dir: string): string[] {
 }
 
 /**
- * Patch `target`'s functions tsserver reads the filesystem through so that they
- * answer through the links `current()` returns, read at each call, and a path
- * `masked` names is missing. Other paths under no link reach the real
- * functions unchanged.
+ * Patch the functions of `target` that tsserver reads and watches the
+ * filesystem through, so that it sees the links `current()` returns (read at
+ * each call), with the paths `masked` names missing.
+ *
+ * - `readFileSync`, `openSync`, `existsSync`, `statSync` and `lstatSync` of a
+ *   path under a link reach its target; a stat's mtime is no earlier than the
+ *   link was last repointed (see {@link notifyRelinked}). A directory that only
+ *   links beneath it imply exists, and stats as the nearest real directory at
+ *   or above it.
+ * - `readdirSync` of a directory above links lists the next name of each link
+ *   beside its real entries.
+ * - `realpathSync` and `realpathSync.native` of a path under a link, or of an
+ *   implied directory, return the path itself.
+ * - `watchFile` and `watch` of a path under a link watch its target, and are
+ *   told when the link is repointed ({@link notifyRelinked}); `unwatchFile`
+ *   and a watcher's `close` end them.
+ * - A masked path is missing (ENOENT, or false from `existsSync`) and left out
+ *   of listings.
+ *
+ * Every other path reaches the real functions unchanged.
  */
 export function installOverlay(target: typeof fs, current: () => Links, masked: (file: string) => boolean = () => false): void {
   const exists = target.existsSync;
@@ -173,7 +189,7 @@ export function installOverlay(target: typeof fs, current: () => Links, masked: 
   }
 }
 
-/** When each repointed link was repointed, by path. */
+/** When each repointed link was last repointed, by path. */
 const relinkedAt = new Map<string, number>();
 
 /**
@@ -199,7 +215,7 @@ interface ILinkWatch {
   watched: string;
 }
 
-/** The watches tsserver made of linked paths and has not ended, by path. */
+/** The watches tsserver made of linked paths and has not ended, by the path watched. */
 const linkWatchers = new Map<string, Set<ILinkWatch>>();
 
 /** Forget `watch`, a watch of `file`. */
@@ -212,8 +228,10 @@ function forgetWatch(file: string, watch: ILinkWatch): void {
 }
 
 /**
- * Tell the watches of every linked path whose target differs between
- * `previous` and `next` that the path changed.
+ * Record when each link whose target differs between `previous` and `next` was
+ * repointed, and tell the watches of every path whose target differs that the
+ * path changed: a `watch` listener with `change` (`rename` where it is no longer
+ * linked), a `watchFile` listener with the new and old targets' stats.
  */
 export function notifyRelinked(target: typeof fs, previous: Links, next: Links): void {
   const now = Date.now();

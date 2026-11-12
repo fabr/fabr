@@ -77,8 +77,8 @@ const INDEX_FILE = "index.json";
 /** The archive kinds a release is fetched as, best first. */
 const ARCHIVE_SUFFIXES = [".tar.xz", ".tar.gz"];
 
-/** Read a release's SHASUMS256.txt: each artifact's name → its hex sha256.
- *  Throws on a document with no entries, so an error page is never cached. */
+/** Read a release's SHASUMS256.txt: each artifact's hex sha256, by name.
+ *  Throws for a document listing none, such as an error page. */
 function parseShasums(text: string, what: string): Map<string, string> {
   const sums = new Map<string, string>();
   for (const line of text.split("\n")) {
@@ -143,12 +143,13 @@ function validateNodeRequirement({ versionConstraint, override }: Requirement): 
 }
 
 /**
- * Make a node release runnable: the release itself is the install, launched
+ * Make a node release runnable: the release is the install, launched
  * directly, its entry selected by path (`@node:24.22.1:bin/node`). The
- * release's own symlinks (`bin/npm`) stay in the install but are no entry:
- * a runnable reads a symlink on its surface as a bin, whose target is an
- * install path, where these are relative to the link.
+ * release's symlinks (`bin/npm`) stay in the install but are left off the
+ * surface: a symlink there is read as a bin targeting an install path, and
+ * these target paths relative to the link.
  */
+
 function makeNodeRunnable(pkg: PackageFileSet): Computable<RunnableFileSet> {
   const surface = new FileSet(new Map([...pkg].filter(([, file]) => !(file instanceof SymlinkFile))));
   return Computable.resolve(new RunnableFileSet(pkg, [], undefined, "", surface));

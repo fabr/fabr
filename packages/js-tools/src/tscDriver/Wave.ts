@@ -18,106 +18,89 @@
  */
 
 /**
- * Check and emit the files a change actually reaches.
- * A change's frontier stops wherever the edge target's interface artifact is
- * unchanged, following forwarding edges transitively and use edges one hop —
- * two kinds, because a type can flow through a declaration whose bytes never
- * moved.
+ * The wave: check and emit the files a change reaches, starting from the
+ * plan's seeds (see Planning.ts). A file whose interface changed reaches the
+ * files importing it through forwarding edges (imports of emitted
+ * declarations), directly or through other files, and the files with a use
+ * edge (an import of a body) to it or to any of those. A file whose interface
+ * did not change reaches nothing.
  *
- * All checking happens against one program built from the current sources, so a
- * waved file in an import cycle sees its partner's live types. The base is
- * always green, a red cycle committing no entry, so the wave never resumes from
- * a broken state.
+ * Every file is checked in one program built from the current sources.
  *
- * This module is the driver's and must not import fabr; the plan it walks is
- * the driver's own (Planning.ts).
+ * This module must not import fabr.
  */
 
 import { DriverMemo, ICompilePlan, IMemoEdge } from "./Planning";
 
-/** What the wave needs of the world around it — supplied by the driver, which
- * owns the program, the resolution and the emit. */
+/** The driver's side of a wave run: the program, resolution and emit. */
 export interface IWaveHost {
-  /** @return every project file this compile holds, by node name: the wave's
-   * universe when global scope forces it wide. */
+  /** @return every project file this compile holds, by node name. */
   projectFiles(): string[];
-  /** @return how to build a wave member — check and emit it, answering whether
-   * what its consumers can see of it changed: its emitted declaration against
-   * the base build's, or, for a file that emits no interface artifact, whether
-   * its own content moved (which the plan's seeds already state). Undefined
-   * where there is nothing to build: a deleted file, or a dependency's
-   * declaration (which this compile reads but never emits). */
+  /** @return a function that checks and emits the file at `name` and returns
+   * true if its interface changed: its emitted declaration differs from the
+   * base build's (or the base emitted none for it), or, for a file that emits
+   * no declaration, its content changed. Undefined for a deleted file or a
+   * dependency's declaration, which this compile does not emit. */
   fileFor(name: string): (() => boolean) | undefined;
   /** @return true if the file now at `name` affects global scope, otherwise
-   * false — asked of the file's NEW form, since removing a global declaration
-   * changes global scope just as adding one does. Undefined for a name with no
-   * file (a deletion). */
+   * false; undefined for a name with no file (a deletion). */
   isGlobal(name: string): boolean | undefined;
-  /** @return what an edge of `from` names, resolved as this compile resolves —
-   * the driver is the authority, so a memo edge that recorded no target is
-   * answered rather than guessed at. */
+  /** @return the node name an edge of `from` resolves to in this compile, or
+   * undefined where it resolves to none. */
   targetOf(from: string, edge: IMemoEdge): string | undefined;
-  /** @return true if THIS program is rooted at a subset of the project,
-   * otherwise false — the question the plan's own bound cannot answer, since
-   * the caller's fallback hands the same plan to a program rooted at
-   * everything. */
+  /** @return true if this program is rooted at the plan's bound rather than at
+   * every project file, otherwise false. */
   isBoundRooted(): boolean;
-  /** Announce that the wave is about to become every project file: the carried
-   * base output tree cannot be incrementally corrected by a full emit (an
-   * output whose name nothing current produces would linger), so the host
-   * discards it first. */
+  /** Prepare for the wave to become every project file: discard the base
+   * build's outputs, so that none that no current source produces remains. */
   expanding(): void;
-  /** @return true if this run has become void, otherwise false —
-   * {@link fileFor} was asked for an on-disk project file the program is not
-   * holding. Checked after every member, so a void run stops emitting drafts
-   * from a program known to be incomplete rather than building the rest of the
-   * wave on it. */
+  /** @return true if this run is void, otherwise false: {@link fileFor} was
+   * asked for a project file on disk that the program does not hold. Asked
+   * after each member. */
   voided(): boolean;
 }
 
-/** What a wave run came to. */
+/** The outcome of a wave run. */
 export interface IWaveResult {
-  /** The members, in the order the wave grew — the changed set first, then what
-   * each shape change reached. */
+  /** The files checked, in the order they were reached: the seeds (or every
+   * project file) first. */
   wave: string[];
-  /** Why the wave was the whole project, where it was. */
+  /** Present where the wave became every project file because a seed affects
+   * global scope: why, and that seed. */
   expanded?: { reason: string; cause?: string };
-  /** Whether this run must be abandoned and redone rooted at every project file
-   * — the change turned out to affect global scope, which a bound-rooted program
-   * cannot answer for. */
+  /** true if the run must be redone rooted at every project file: a seed
+   * affects global scope and the program is rooted at the bound, or the run
+   * was voided. */
   fellBack?: boolean;
 }
 
 /**
- * Run the wave: build each member, and extend by the interface rule until
- * nothing new is reached.
+ * Run the wave: check and emit each member, adding the files each member's
+ * change reaches, until no new file is reached.
  *
- * A member expands the wave when what its consumers can see of it has changed:
+ * A member's interface counts as changed where it is deleted, is a
+ * dependency's declaration (a seed because it changed), or the function
+ * `host.fileFor` gives for it returns true. The edges followed are the base
+ * build's memo's, resolved by `host.targetOf`.
  *
- * - a **deleted** file, or a changed **dependency declaration**, always — the
- *   first has a shape of nothing (which differs from whatever it was), and the
- *   second is in the seeds precisely because its bytes moved;
- * - a **project file** whose build answers that its interface moved. A file the
- *   base never emitted for (an addition) counts as differing: there is no
- *   artifact to have matched.
- *
- * Expansion follows the plan's own edges — the base build's memo, which is the
- * only account of the world the wave has for the files it is not building.
+ * - A plan with no seeds (a full compile) checks every project file and
+ *   follows no edge.
+ * - Where a seed affects global scope, by its memo line or its current form,
+ *   the wave is every project file, `expanded` says why, and `host.expanding`
+ *   is called first. Where the program is rooted at the bound, the run instead
+ *   returns at once, empty, with `fellBack`.
+ * - Where `host.voided()` becomes true, the run stops with `fellBack`.
  */
 export function runWave(plan: ICompilePlan, host: IWaveHost): IWaveResult {
-  /* A plan with no seeds is a full compile decided before this run began (cold,
-   * or a change no edge can bound); the emit tree was started fresh, so there
-   * is no expansion to decide and nothing to fall back from. */
+  /* No seeds: a full compile, whose emit directory the driver already started
+   * fresh. */
   const everything = plan.seeds === undefined;
   const expanded = everything ? undefined : globalExpansion(plan.seeds!, plan.memo, host);
   if (expanded !== undefined && host.isBoundRooted()) {
-    /* Global scope is all-or-nothing and a bound-rooted program does not hold
-     * every project file, so nothing here can be trusted. The plan catches a
-     * file that WAS global; this is the one only parsing reveals.
-     *
-     * Ask what THIS program is rooted at, never what the plan bounded: the
-     * rebuild gets the same plan, so a guard reading it bails again, and a bail
-     * emits nothing the caller would commit as a green empty delta. */
+    /* A program rooted at the bound cannot check a change to global scope:
+     * return, emitting nothing, for the caller to redo the run rooted at every
+     * file. Ask the host what this program is rooted at, not the plan: the
+     * redo is given the same plan. */
     return { wave: [], expanded, fellBack: true };
   }
   if (expanded !== undefined) {
@@ -130,8 +113,7 @@ export function runWave(plan: ICompilePlan, host: IWaveHost): IWaveResult {
   /* Only a bounded wave follows edges; a whole-project one never reads them. */
   const forwarders = whole ? new Map<string, string[]>() : reverseEdges(plan.memo, host, "forwarding");
   const users = whole ? new Map<string, string[]>() : reverseEdges(plan.memo, host, "use");
-  /* An index cursor: BFS order, which is the order the telemetry reports the
-   * wave in. */
+  /* Breadth-first, the order `wave` reports. */
   for (let at = 0; at < pending.length; at++) {
     const name = pending[at];
     if (seen.has(name)) {
@@ -141,19 +123,18 @@ export function runWave(plan: ICompilePlan, host: IWaveHost): IWaveResult {
     wave.push(name);
     const build = host.fileFor(name);
     if (host.voided()) {
-      /* Everything already emitted came from a program now known incomplete;
-       * the caller redoes the run rooted at everything, over a fresh tree. */
+      /* What was emitted came from an incomplete program: stop, for the caller
+       * to redo the run rooted at every file. */
       return { wave, fellBack: true };
     }
-    /* Deleted, or a dependency's declaration that changed under us: both are in
-     * the wave because their content moved, and neither has an interface
-     * artifact of ours to compare — so both expand. */
+    /* A deleted file or a dependency's declaration has no emitted declaration
+     * to compare: count its interface as changed. */
     const changesInterface = build === undefined ? true : build();
     if (whole || !changesInterface) {
       continue;
     }
-    /* The conduits — everything that republishes this file's interface — and
-     * then the bodies that consume each of them, one hop and no further. */
+    /* This file and every file importing it through forwarding edges, directly
+     * or through others, and each file with a use edge to one of those. */
     for (const conduit of closure(name, forwarders)) {
       for (const affected of [conduit, ...(users.get(conduit) ?? [])]) {
         if (!seen.has(affected)) {
@@ -166,15 +147,9 @@ export function runWave(plan: ICompilePlan, host: IWaveHost): IWaveResult {
 }
 
 /**
- * @return why this change bounds nothing, or undefined where it is bounded: the
- * reason is a file affecting **global scope**, whose declarations are facts
- * about the whole program rather than about anyone who imports it. Nothing
- * imports a global, so no edge can reach its dependents and the only honest
- * wave is every file.
- *
- * Judged against the memo's flag AND the file's new form, because both
- * directions count: adding a global declaration and removing one each change
- * what every other file sees.
+ * @return why the wave must be every project file, or undefined where it need
+ * not: a seed that affected global scope in the base build (its memo line) or
+ * does now (`host.isGlobal`), with that seed as `cause`.
  */
 function globalExpansion(
   seeds: ReadonlySet<string>,
@@ -192,8 +167,8 @@ function globalExpansion(
   return undefined;
 }
 
-/** @return the reverse of one edge kind over the plan's memo: for each node,
- * who names it. */
+/** @return for each node name, the files of the memo with an edge of `kind` to
+ * it, as `host.targetOf` resolves them. */
 function reverseEdges(memo: DriverMemo, host: IWaveHost, kind: "use" | "forwarding"): Map<string, string[]> {
   const reverse = new Map<string, string[]>();
   for (const [name, file] of memo) {
@@ -210,8 +185,8 @@ function reverseEdges(memo: DriverMemo, host: IWaveHost, kind: "use" | "forwardi
   return reverse;
 }
 
-/** @return everything that transitively republishes `name`, itself included.
- * Grow-only, so a forwarding cycle terminates. */
+/** @return `name` and every file importing it through forwarding edges,
+ * directly or through other files. */
 function closure(name: string, forwarders: ReadonlyMap<string, string[]>): Set<string> {
   const found = new Set<string>();
   const pending = [name];

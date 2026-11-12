@@ -31,59 +31,49 @@ import { Semaphore } from "./Semaphore";
 import type { TaskProgress, TaskState } from "./Tasks";
 
 /**
- * Which of a child's two streams a line arrived on. Carried because it is the
- * child's own statement about the line and nothing downstream can recover it —
- * NOT as a severity: tools disagree about which stream a diagnostic belongs on
- * (tsc writes its errors to stdout), so a display that marked one of them
- * special would be claiming something the stream does not mean.
+ * The stream of a child's that a line arrived on. It is not a severity: tools
+ * disagree about which stream a diagnostic belongs on (tsc writes its errors
+ * to stdout), so don't treat either one as the error stream.
  */
 export type OutputStream = "out" | "err";
 
-/**
- * Where a running process's output goes, one complete line at a time, as it
- * arrives — beside the copy kept for a failure's own report. A step is
- * given one by the framework, and it is the *driver* that implements it, which
- * is what keeps attribution (prefixing each line with the target it came from)
- * a rendering decision rather than something the execution layer has to know.
- */
+/** A line-based output sink for process output. */
 export interface IOutputSink {
   /** One complete line of the child's output, newline already stripped. */
   line(text: string, stream: OutputStream): void;
 }
 
 /**
- * A streaming output sink: bytes are hashed as written and placed straight into
- * the content store, with no memory buffer or work-dir round trip.
+ * A stream that writes its bytes into the content store, hashing them as they
+ * are written.
  */
 export interface IOutputHandle {
-  /** Pipe into this with `{ end: false }` — the handle is ended by
-   * {@link finalize}/{@link discard}, not by the source. */
+  /** Pipe into this with `{ end: false }`: the handle is ended by
+   * {@link finalize} or {@link discard}, not by the source. */
   readonly stream: Writable;
-  /** End and flush the stream, store the bytes under their hash, and answer a
-   * cache-backed file named `name`. `mode` is the file's real permission bits
-   * (default non-executable), carried so an unpacked executable survives. */
+  /** End and flush the stream, store the bytes under their hash, and return a
+   * cache-backed file named `name`. `mode` is the file's permission bits
+   * (default non-executable). */
   finalize(name: string, mode?: number): Computable<IFile>;
-  /** Abandon the stream and delete its temp file — nothing enters the store.
-   * Settles once nothing of the output is left; a synchronous error path may
-   * leave it to finish in the background. */
+  /** Abandon the stream and delete its temp file, so nothing enters the store.
+   * Settles once nothing of the output is left; on a synchronous error path
+   * the caller may leave it to finish in the background. */
   discard(): Computable<void>;
 }
 
 /**
- * Where one process execution is in the machine-wide funnel: `queued` waiting
- * for a slot, `started` holding one, `finished` having given it back.
- *
- * Reported per *execution*, not per step, because a step may run many at once
- * (the per-file test fan-out) — so whoever displays it counts, rather than
- * being told a state that the last execution to finish would wrongly clear.
+ * The state of one process execution in the execution funnel: `queued` waiting
+ * for a slot, `started` holding one, `finished` having given it back. Reported
+ * per execution; a step may run several at once.
  */
 export type ExecutionPhase = "queued" | "started" | "finished";
 
 /**
- * Derive a task's {@link TaskState} from its executions' phases, calling
- * `onState` on each change. Counted rather than assigned because a step may
- * run several executions at once — the first to finish must not clear a state
- * the others still hold.
+ * Make a listener for a task's execution phases that derives the task's
+ * {@link TaskState} and calls `onState` each time it changes. The task is
+ * `waiting` while it has executions queued and none started, otherwise
+ * `running` (its starting state, which is not reported). It counts executions,
+ * so the first of several to finish does not end a state the others still hold.
  */
 export function activityCounter(onState: (state: TaskState) => void): (phase: ExecutionPhase) => void {
   let queued = 0;
@@ -98,8 +88,7 @@ export function activityCounter(onState: (state: TaskState) => void): (phase: Ex
     } else {
       running--;
     }
-    /* Blocked only while everything it wants is queued: one admitted piece
-     * running is the work running, however much else is behind it. */
+    /* Waiting only while everything it has asked for is queued. */
     const state: TaskState = running === 0 && queued > 0 ? "waiting" : "running";
     if (state !== reported) {
       reported = state;
@@ -109,56 +98,54 @@ export function activityCounter(onState: (state: TaskState) => void): (phase: Ex
 }
 
 /**
- * How a task reports itself to the build-event stream, handed to the code
- * performing it by ExecutionContext.runTask. Display only: nothing here
+ * The channels a task reports itself through to the build-event stream,
+ * handed to the code performing it by ExecutionContext.runTask. Nothing here
  * reaches the cache key, the command, or the outcome.
  */
 export interface ITaskReport {
-  /** Where output goes, line by line; absent ⇒ shown only inside a failure
-   *  — the one optional channel, its absence being the display decision. */
+  /** The sink for the task's output; absent, output is shown only inside a
+   *  failure. */
   output?: IOutputSink;
-  /** Where each execution's funnel phases go. */
+  /** The listener for each execution's funnel phases. */
   activity: (phase: ExecutionPhase) => void;
-  /** Where the work says how far along it is. Callable as often as it likes:
-   *  a listener keeps the latest and displays it on its own schedule. */
+  /** The listener for how far along the work is. Call it as often as you
+   *  like: a listener keeps the latest and displays it on its own schedule. */
   progress: (progress: TaskProgress) => void;
-  /** Record that the work ended in a failure of what it produced, though the
-   *  step itself succeeded and its result stands (a red test run): the task
-   *  then ends as failed, with `error` saying why. */
+  /** Record that the work's result is a failure though the step itself
+   *  succeeded and its result stands (a red test run): the task then ends as
+   *  failed, with `error` saying why. */
   fail: (error: Error) => void;
 }
 
-/** The report for work nobody observes — a unit test's stand-in. */
+/** A report that discards everything, for work nobody observes (unit tests). */
 export const SILENT_REPORT: ITaskReport = { activity: () => undefined, progress: () => undefined, fail: () => undefined };
 
-/** Brackets a unit of work as a reported task — the shape of a partially
- *  applied ExecutionContext.runTask, for a layer that must apply the caller's
- *  bracketing around work whose timing only it knows (the cache around an
- *  actual transfer). */
+/** A function that runs a unit of work as a reported task: a partially
+ *  applied ExecutionContext.runTask, for a layer that knows when the work
+ *  starts (the cache, around an actual transfer). */
 export type TaskTracker<T> = (run: (report: ITaskReport) => Computable<T>) => Computable<T>;
 
 /**
- * Split ONE byte stream into lines: a partial line is held until its newline
- * arrives, `\r\n` is normalized, a bare `\r` (a tool repainting one line) also
- * ends a line — except a chunk-final `\r`, held back in case it is half of a
- * split `\r\n` — and the unterminated tail is flushed at stream end.
+ * Make a line splitter for one byte stream. Each complete line is passed to
+ * `emit` without its terminator; `\n`, `\r\n` and a bare `\r` (a tool
+ * repainting a line) each end a line. A partial line is held until its
+ * terminator arrives, a chunk-final `\r` is held in case it is half of a
+ * `\r\n`, and `flush` emits whatever is left at stream end.
  *
- * One stream, and a plain `emit` rather than a sink, because a child's stdout
- * and stderr are independent byte streams: pushed through a shared splitter,
- * an unfinished line on one is spliced onto the next line of the other
- * ("Compiling: 41%" + "src/a.ts: error TS2322" as a single line). Each stream
- * gets its own, and the caller says which stream the lines came from.
+ * Use one per stream: stdout and stderr are independent byte streams, and a
+ * shared splitter would join an unfinished line on one to the next line of the
+ * other.
  */
 export function lineSplitter(emit: (line: string) => void): { push(chunk: Uint8Array): void; flush(): void } {
   let held = "";
-  /* A stateful decoder, not per-chunk toString: a multi-byte UTF-8 sequence
-   * split across two pipe reads must not decode as U+FFFD. */
+  /* Keep the decoder stateful: a multi-byte UTF-8 sequence split across two
+   * reads must not decode as U+FFFD. */
   const decoder = new StringDecoder("utf8");
   return {
     push(chunk: Uint8Array): void {
       held += decoder.write(Buffer.from(chunk));
-      /* Hold a trailing \r back from the split (see above); it rejoins the
-       * remainder so the next chunk (or flush) sees it in context. */
+      /* Hold a trailing \r back from the split; it rejoins the remainder so
+       * the next chunk (or flush) sees it in context. */
       const splittable = held.endsWith("\r") ? held.slice(0, -1) : held;
       const carried = held.slice(splittable.length);
       const lines = splittable.split(/\r\n|\n|\r/);
@@ -170,8 +157,7 @@ export function lineSplitter(emit: (line: string) => void): { push(chunk: Uint8A
     flush(): void {
       held += decoder.end();
       if (held.length > 0) {
-        /* A held trailing \r was a line ending after all — just one that never
-         * got its \n. It terminates the line rather than appearing in it. */
+        /* A held trailing \r ends the last line. */
         emit(held.endsWith("\r") ? held.slice(0, -1) : held);
         held = "";
       }
@@ -180,10 +166,10 @@ export function lineSplitter(emit: (line: string) => void): { push(chunk: Uint8A
 }
 
 /**
- * @return a human-readable description of an OS-level error, without the errno
- * code or syscall noise (e.g. "no such file or directory" rather than
- * "spawn ... ENOENT") — libuv's strerror, via util.getSystemErrorMap. Falls
- * back to the error's own message for anything unrecognized.
+ * @return the system's description of an OS-level error, without the errno
+ * code or syscall ("no such file or directory" rather than
+ * "spawn ... ENOENT"), from util.getSystemErrorMap; for an error it does not
+ * recognize, the error's own message.
  */
 export function systemErrorText(err: unknown): string {
   const sys = err as Partial<NodeJS.ErrnoException>;
@@ -193,10 +179,9 @@ export function systemErrorText(err: unknown): string {
       return entry[1];
     }
   }
-  /* HACK: the map is keyed by libuv's negative errnos, but Node's C++ fs.rm
-   * implementation (v23+) throws with the raw *positive* POSIX errno and a
-   * nonstandard message (nodejs/node#57095 area), so the lookup above misses.
-   * The `code` name is still correct on those errors — match on it instead. */
+  /* HACK: the map is keyed by libuv's negative errnos, but Node's fs.rm
+   * (v23+) throws with the positive POSIX errno, so the lookup above misses.
+   * Its `code` is still correct, so match on that. */
   if (typeof sys.code === "string") {
     for (const [name, text] of getSystemErrorMap().values()) {
       if (name === sys.code) {
@@ -237,13 +222,11 @@ function executableFile(candidate: string): string | undefined {
 }
 
 /**
- * Locate an executable. A name with a path separator is used directly (as a
- * shell does — a command containing a slash is not PATH-searched), relative to
- * `cwd`, the directory the command will run in; this also lets a caller name a
- * specific binary by absolute path without any PATH. A bare name is searched
- * on the PATH environment variable, and what it finds (the `sh` a `script`
- * runs on) is an input fabr does not track. On Windows a name with no
- * extension is also looked for with `.exe`.
+ * Locate an executable, as a shell does. A name with a path separator is used
+ * directly, relative to `cwd` (the directory the command will run in), with no
+ * PATH search. A bare name is searched for on the PATH environment variable;
+ * what it finds (the `sh` a `script` runs on) is an input fabr does not track.
+ * On Windows a name with no extension is also looked for with `.exe`.
  * @return the executable's path, absolute where `name` has a path separator.
  * @throws ExecutionError if the executable cannot be found.
  */
@@ -273,63 +256,49 @@ export function findExecutable(name: string, cwd = process.cwd(), platform: Node
 }
 
 /**
- * Build steps run in **driver-owned process groups** (POSIX; Windows keeps the
- * plain spawn): each step's process is spawned detached, leading its own group,
- * and when it exits the group is swept — SIGTERM immediately (a straggler that
- * cleans its own children on TERM, like a supervised watcher, gets to), SIGKILL
- * after a grace. The step boundary is a containment boundary: anything a step
- * leaves running is swept rather than leaking as an orphan (one holding the
- * step's output pipes open would otherwise hang the build waiting for a stream
- * close that never comes; the sweep forces those pipes shut). Only a child
- * that starts its *own* session escapes the sweep — the TERM'd parent cleaning
- * up behind itself is the recovery there.
+ * True where build steps run in process groups of their own (POSIX; Windows
+ * keeps the plain spawn). Each step's process is spawned detached, leading its
+ * own group, and when it exits the group is swept: SIGTERM at once, SIGKILL
+ * after a grace, so nothing a step leaves running outlives it (a child that
+ * starts its own session escapes the sweep). A detached step is not in the
+ * terminal's foreground group, so Ctrl-C does not reach it: the driver routes
+ * its termination signals through `process.exit`, whose exit hook here runs
+ * {@link killLiveChildren}.
  *
- * A detached step does not sit in the terminal's foreground group, so Ctrl-C
- * does not reach it directly — the driver routes its own termination signals
- * through `process.exit`, which fires {@link killLiveChildren} from the exit
- * hook installed here.
- *
- * The sweep signals the group by the (exited) leader's pid; POSIX keeps that
- * pgid reserved while any member survives, so the signal is precise whenever
- * there is anything to kill. An *empty* group has dissolved and the sweep gets
- * ESRCH — with a theoretical pid-reuse window between dissolve and sweep that
- * is accepted (microseconds against a full pid-space cycle).
+ * The sweep signals the group by the exited leader's pid, which POSIX keeps
+ * reserved while any member survives; an empty group gives ESRCH.
  */
 const GROUPS_SUPPORTED = process.platform !== "win32";
 
-/** Grace between the sweep's SIGTERM and its SIGKILL escalation — long enough
- * for a straggler to tear down its own children, short enough not to dawdle. */
+/** The grace between the sweep's SIGTERM and its SIGKILL. */
 const SWEEP_KILL_GRACE_MS = 5000;
 
-/** How often a sweep re-checks whether the TERM'd group has drained, so a straggler
- * that honours TERM costs one interval rather than the whole grace. */
+/** The interval at which a sweep checks whether the group has emptied. */
 const SWEEP_POLL_MS = 25;
 
-/** Group leaders of in-flight steps (and of sweeps still in their KILL grace),
- * so the exit hook can sweep whatever is live when fabr itself dies. */
+/** The group leaders of running steps and of sweeps still in their grace, for
+ * the exit hook to kill. */
 const liveGroups = new Set<number>();
 let exitSweepInstalled = false;
 
-/** Register a just-spawned step leader for the exit sweep. */
+/** Register a just-spawned step's group for the exit sweep. */
 function trackGroup(pid: number | undefined): void {
   if (!GROUPS_SUPPORTED || pid === undefined) {
     return;
   }
   if (!exitSweepInstalled) {
     exitSweepInstalled = true;
-    /* Fabr is dying: no grace. */
+    /* Fabr is exiting: no grace. */
     process.on("exit", killLiveChildren);
   }
   liveGroups.add(pid);
 }
 
 /**
- * Synchronously SIGKILL everything fabr spawned that is still alive — the
- * detached step groups and the interactive child. Exit-hook duty only: the
- * hooks installed here use it as the last-resort sweep, and Staging's temp-tree
- * hook calls it BEFORE removing the trees those processes run in (exit hooks
- * run in registration order, and the temp-tree hook registers first) — so a
- * child is never left running over a deleted install. Idempotent; never throws.
+ * Synchronously SIGKILL everything fabr spawned that is still alive: the step
+ * groups and the interactive child. For exit hooks only: the hook installed
+ * here, and Staging's temp-tree hook, which must call it before removing the
+ * trees those processes run in. Idempotent; never throws.
  */
 export function killLiveChildren(): void {
   for (const gid of liveGroups) {
@@ -344,13 +313,12 @@ export function killLiveChildren(): void {
     try {
       process.kill(child.pid, "SIGKILL");
     } catch {
-      /* Already gone — the desired end state. */
+      /* already gone */
     }
   }
 }
 
-/** @return true if any member of `pid`'s group is still alive, otherwise false —
- * signal 0 probes without delivering, so ESRCH means the group has dissolved. */
+/** @return true if any member of `pid`'s group is still alive, otherwise false. */
 function groupAlive(pid: number): boolean {
   try {
     process.kill(-pid, 0);
@@ -361,18 +329,13 @@ function groupAlive(pid: number): boolean {
 }
 
 /**
- * Sweep an exited step's process group for stragglers, resolving once the group is
- * gone.
+ * Sweep an exited step's process group: SIGTERM whatever is left in it, then
+ * SIGKILL it if it is not empty after {@link SWEEP_KILL_GRACE_MS}. Resolves
+ * once the group is gone; never rejects. An empty group resolves at once,
+ * already settled.
  *
- * The result is awaited before the step settles, so a straggler cannot still be writing
- * into the work dir when it is reclaimed. That matters only for a straggler which does
- * NOT hold the step's stdio: one that does keeps `close` from firing (see execute), so
- * the settle already waits for it, whereas one that redirected its output lets `close`
- * fire at once — and the reclaim would then race its writes, leaving debris below a tree
- * the exit hook has already forgotten.
- *
- * The happy case costs nothing: an empty group gives ESRCH on the first signal and the
- * result is already settled, so the caller consumes it in line.
+ * Settle the step only after this resolves, so that a process left behind
+ * cannot still be writing into the work dir when it is reclaimed.
  */
 function sweepGroup(pid: number | undefined): Computable<void> {
   if (!GROUPS_SUPPORTED || pid === undefined) {
@@ -381,15 +344,13 @@ function sweepGroup(pid: number | undefined): Computable<void> {
   try {
     process.kill(-pid, "SIGTERM");
   } catch {
-    /* ESRCH: the group dissolved with the leader — the common, clean case. */
+    /* ESRCH: the group ended with its leader. */
     liveGroups.delete(pid);
     return Computable.resolve<void>(undefined);
   }
-  /* Something survived the step. TERM was just delivered; poll until the group drains,
-   * escalating to KILL at the grace (a natively-wedged process handles no signal but
-   * KILL). The timers are NOT unref'd: the step's outcome waits on this, so it must
-   * hold the loop open. The group stays registered throughout, so a
-   * concurrent fabr exit still KILLs it via the exit hook. */
+  /* Poll until the group is empty, KILLing it at the grace. Don't unref the
+   * timers: the step's outcome waits on this. The group stays registered
+   * meanwhile, so the exit hook still kills it if fabr exits. */
   return Computable.from<void>(resolve => {
     const deadline = Date.now() + SWEEP_KILL_GRACE_MS;
     const done = (): void => {
@@ -414,30 +375,35 @@ function sweepGroup(pid: number | undefined): Computable<void> {
   });
 }
 
-/** Spawn options putting a step in its own group where supported. */
+/** The spawn options putting a step in its own group where supported. */
 const DETACHED = GROUPS_SUPPORTED ? { detached: true } : {};
 
 /**
- * Ask tools to keep their color/formatting: set unconditionally so a step's
- * environment stays deterministic — never conditioned on the driver's terminal
- * (a step's inputs, and thus its cache key, must not depend on it). The driver
- * strips the codes at render time when its own output isn't a TTY. A caller's
- * own env entries win.
+ * The variables asking tools to keep their colour, set for every build step
+ * whatever the driver's terminal (the driver strips the codes when its output
+ * is not a TTY). Don't make them depend on the terminal: a step's environment
+ * must not. A caller's own entries win.
  */
 const FORCE_COLOR_ENV = { FORCE_COLOR: "1", CLICOLOR_FORCE: "1" };
 
-/** Render the `$ cmd args…` line shown at the head of an execution error, args
- * quoted where they wouldn't survive a shell round-trip. */
+/** Render the `$ cmd args…` line shown at the head of an execution error, each
+ * argument quoted where a shell would not read it back as written. */
 function commandLine(cmd: string, args: string[]): string {
   return "$ " + [cmd, ...args].map(quoteArg).join(" ");
 }
 
 /**
- * Run one command through the given execution funnel (a build step passes
- * `ActionContext.processLimit`): the slot is acquired around exactly the
- * process lifetime, so boundedness is enforced by this signature — there is no
- * unbounded way to run a build process. The interactive spawns below take no
- * limit: the user's foreground program is not build parallelism.
+ * Run one build-step command, holding a slot of the execution funnel `limit`
+ * (a step passes `ActionContext.processLimit`) for the process's lifetime.
+ *
+ * The process runs in `cwd` with `env` plus {@link FORCE_COLOR_ENV}, stdin at
+ * EOF, in a process group of its own that is swept when it exits. Its output
+ * lines go to `report.output` as they arrive, where there is one.
+ *
+ * Resolves when the process exits with status 0 and its group is gone.
+ * Rejects with a CommandFailedError (the command line, every output line in
+ * arrival order, and how it ended) on a non-zero exit or a signal, and with an
+ * ExecutionError where it cannot be spawned.
  */
 export function execute(
   limit: Semaphore,
@@ -458,8 +424,8 @@ export function admitted<T>(limit: Semaphore, report: ITaskReport, work: () => C
   report.activity("queued");
   return limit.run(() => {
     report.activity("started");
-    /* A synchronous throw must still report `finished`, or the task looks
-     * running forever (the Semaphore turns the throw into a rejection). */
+    /* Report `finished` on a synchronous throw too, or the task looks running
+     * forever (the Semaphore turns the throw into a rejection). */
     try {
       return work().finally(() => report.activity("finished"));
     } catch (err) {
@@ -476,51 +442,38 @@ function executeUnbounded(
   env: Record<string, string>,
   sink?: IOutputSink
 ): Computable<void> {
-  /* A failed spawn emits 'error' then a spurious 'close' (code -2): Computable.from
-   * keeps the first (informative ENOENT) rejection and drops the useless "-2". */
+  /* A failed spawn emits 'error' then 'close' (code -2): Computable.from keeps
+   * the first, the ENOENT rejection. */
   return Computable.from((resolve, reject) => {
     const line = commandLine(cmd, args);
-    /* stdin from /dev/null ("ignore"), not the default open pipe: a build step is
-     * non-interactive, so a tool that reads stdin must get EOF at once rather than
-     * blocking forever on input the parent never sends. Both output streams are
-     * always PIPED — fabr is the pump — and always kept, merged in arrival order,
-     * for a failure to report in context; with a `sink` they are also split into
-     * lines and forwarded as they arrive (so the driver can attribute each line
-     * to this step and decide when to show it). Nothing is ever inherited: a
-     * child writing straight to fd 2 could not be attributed, and would scribble
-     * through whatever the driver is painting. The environment (color forced) is
-     * the same whether or not there is a sink — a step's inputs must not depend
-     * on how it is displayed. */
+    /* stdin is /dev/null, so a tool that reads it gets EOF rather than
+     * blocking. Both output streams are piped and kept, merged in arrival
+     * order, for a failure to report; with a `sink` they are also forwarded
+     * line by line. Never inherit them, and keep the environment the same
+     * whether or not there is a sink. */
     const output: ICommandOutputLine[] = [];
     const stdio: Array<"ignore" | "pipe" | number> = ["ignore", "pipe", "pipe"];
     const proc = spawn(cmd, args, { cwd, env: { ...FORCE_COLOR_ENV, ...env }, stdio, windowsHide: true, ...DETACHED });
     trackGroup(proc.pid);
-    /* Sweep on 'exit', not 'close': a straggler holding the step's output pipes
-     * open is exactly what keeps 'close' from ever firing — the sweep is what
-     * unblocks it (killed stragglers drop the pipes, 'close' follows, settle).
-     * Held so 'close' can wait for it (already settled in the common case — see
-     * sweepGroup); starts settled for a step that never reaches 'exit' at all. */
+    /* Sweep on 'exit', not 'close': a leftover process holding the output
+     * pipes open keeps 'close' from firing until the sweep kills it. 'close'
+     * waits for the sweep; `swept` starts settled for a process that never
+     * reaches 'exit'. */
     let swept: Computable<void> = Computable.resolve<void>(undefined);
     proc.on("exit", () => {
       swept = sweepGroup(proc.pid);
     });
-    /* A splitter per stream (see lineSplitter): stdout and stderr are
-     * independent, so a shared one splices an unfinished line on one onto the
-     * next line of the other. The kept lines stay in arrival order — a failure
-     * report replays them, where the interleaving as it happened is what reads
-     * correctly. */
+    /* A splitter per stream; the kept lines share one list, in arrival order. */
     const streams = showLines(output, sink);
     proc.stdout?.on("data", (data: Uint8Array) => streams.out.push(data));
     proc.stderr?.on("data", (data: Uint8Array) => streams.err.push(data));
-    /* Failure to spawn at all (e.g. missing executable) is reported through
-     * the 'error' event; without a handler it would crash the process. */
+    /* A failure to spawn (a missing executable) arrives as 'error'; without a
+     * handler it would crash the process. */
     proc.on("error", err => {
       reject(new ExecutionError(`${line}\nunable to execute: ${systemErrorText(err)}`));
     });
-    /* Failures report the command line, then the output, then how it ended. */
     proc.on("close", (code, signal) => {
-      /* Whatever the tool left unterminated is still its output, and a tool
-       * that dies mid-line is exactly when it matters most. */
+      /* Emit an unterminated last line too. */
       streams.out.flush();
       streams.err.flush();
       const how = signal ? `terminated by signal ${signal}` : code !== 0 ? `exited with error code ${code}` : undefined;
@@ -531,25 +484,23 @@ function executeUnbounded(
           reject(new CommandFailedError(line, output, how));
         }
       };
-      /* Report only once the group is gone, so whoever reclaims the work dir on this
-       * outcome cannot race a straggler still writing into it (see sweepGroup). Both
-       * arms deliver the step's own outcome: a sweep cannot fail, and if one somehow
-       * did, that is no reason to lose the result. */
+      /* Settle only once the group is gone (see sweepGroup), with the process's
+       * own outcome whatever the sweep's. */
       swept.once(deliver, deliver);
     });
   });
 }
 
-/** The teardowns run when fabr exits, for what the process-group sweep cannot reach. */
+/** The teardowns to run when fabr exits. */
 const exitTeardowns = new Set<() => void>();
 let teardownHookInstalled = false;
 
 /**
  * Register `teardown` to run when fabr exits, for something it started that
- * the process-group sweep cannot reach (a container an engine runs), and
- * return the function that releases it, called on the normal path once the
- * thing is gone. It must be synchronous: `process.exit` runs no Computable
- * continuation, so an exit hook is the only place left. A throw is ignored.
+ * the process-group sweep cannot reach (a container an engine runs).
+ * `teardown` must be synchronous, since it runs from an exit hook; a throw from
+ * it is ignored.
+ * @return the function that unregisters it, to call once the thing is gone.
  */
 export function registerExitTeardown(teardown: () => void): () => void {
   if (!teardownHookInstalled) {
@@ -559,7 +510,7 @@ export function registerExitTeardown(teardown: () => void): () => void {
         try {
           each();
         } catch {
-          /* Cleanup never outranks exiting. */
+          /* ignored */
         }
       }
       exitTeardowns.clear();
@@ -569,7 +520,7 @@ export function registerExitTeardown(teardown: () => void): () => void {
   return () => exitTeardowns.delete(teardown);
 }
 
-/** What a program run by {@link executeInternalCapture} wrote, and how it exited. */
+/** The output and exit status of a program run by {@link executeInternalCapture}. */
 export interface CapturedOutput {
   /** Its exit code; null where it was ended by a signal. */
   readonly status: number | null;
@@ -578,12 +529,13 @@ export interface CapturedOutput {
 }
 
 /**
- * Run `cmd` through the given execution funnel for fabr's own use, with
- * `input` on its stdin, and return what it wrote and how it exited, whatever
- * that was: for a short host program whose answer fabr reads (a credential
- * helper's), never a build step's output, so kept nowhere — not in the
- * cache, not on screen. Its environment is `env` alone. Not hermetic: its
- * answer is cached nowhere, and may differ from one call to the next.
+ * Run a short host program whose answer fabr itself reads (a credential
+ * helper), holding a slot of `limit`, with `input` on its stdin and `env` as
+ * its whole environment. Its output is neither cached nor shown, and may
+ * differ from one call to the next.
+ *
+ * Resolves with its stdout, stderr and exit status, whatever the status;
+ * rejects with an ExecutionError only where it cannot be spawned.
  */
 export function executeInternalCapture(
   limit: Semaphore,
@@ -603,7 +555,7 @@ export function executeInternalCapture(
       proc.on("close", code =>
         resolve({ status: code, stdout: Buffer.concat(stdout).toString("utf8"), stderr: Buffer.concat(stderr).toString("utf8") })
       );
-      /* A program that exits without reading its input closes the pipe under the write. */
+      /* Ignore EPIPE from a program that exits without reading its input. */
       proc.stdin?.on("error", () => undefined);
       proc.stdin?.end(input);
     })
@@ -611,20 +563,15 @@ export function executeInternalCapture(
 }
 
 /**
- * Where a pipeline stage's output streams go. A name being present is the signal
- * to capture that stream as content under it (capturing stdout is only valid on
- * the final stage — an earlier stage's stdout feeds the pipe); absent means the
- * stream's default, which for stdout is the pipe or the pipeline's own output and
- * for stderr is the diagnostic sink. Shared by a command's materialized stage
- * (`MaterializedCommandStage`), the pipeline action's `RunnableStage` and
- * {@link StageSpec}.
+ * The redirections of a pipeline stage's output streams. `stdout` or `stderr`
+ * names the file that stream is captured as; absent, stdout goes to the next
+ * stage (or, on the last stage, the pipeline's own output) and stderr is
+ * shown. Only the last stage may capture stdout.
  *
- * `mergedTo` is a dup (`2>&1` / `1>&2`): the stream whose destination both share,
- * so one capture handle with the two interleaved in arrival order. It subsumes
- * `&>` (`&> n` is `> n 2>&1`) and also covers the *un*captured case, where the
- * merge decides only which stream's default the pair lands on — stdout's output,
- * or the diagnostic sink. The non-surviving stream never carries a name of its
- * own: `mergedTo: "out"` ⇒ `stderr` unset, and vice versa.
+ * `mergedTo` is a dup (`2>&1` is `"out"`, `1>&2` is `"err"`): both streams go
+ * where the named one goes, interleaved in arrival order, captured or not
+ * (`&> n` is `> n 2>&1`). The other stream then names no file of its own
+ * (`mergedTo: "out"` leaves `stderr` unset, and vice versa).
  */
 export interface StageStreams {
   stdout?: string;
@@ -632,9 +579,8 @@ export interface StageStreams {
   mergedTo?: "out" | "err";
 }
 
-/** One stage of an {@link executePipeline}: the resolved argv to run plus the
- * streams it captures. The whole pipeline shares one cwd and the head stage's
- * stdin, passed to executePipeline directly rather than repeated per stage. */
+/** One stage of an {@link executePipeline}: the argv to run and its
+ * redirections. */
 export interface StageSpec extends StageStreams {
   argv: string[];
   /** The variables its runnable is launched with, each `NAME=value`, under the pipeline's own. */
@@ -654,30 +600,35 @@ function stageCommandLine(spec: StageSpec): string {
   return commandLine(spec.argv[0], spec.argv.slice(1));
 }
 
-/** A capture in flight: the redirect target `name` and the store-write `handle`
- * its stream(s) are piped into. */
+/** A capture in progress: the file `name` and the `handle` its stream or
+ * streams are piped into. */
 interface Capture {
   name: string;
   handle: IOutputHandle;
 }
 
 /**
- * Run a pipeline of stages as concurrent child processes in `cwd`, stdout→stdin
- * wired between consecutive stages, the head fed `stdin` (if any), and stream
- * each captured redirect straight into the content store via `createOutput`.
- * The stages' environment is `env` and nothing else (no FORCE_COLOR — captured
- * content must be the tool's raw bytes, not ANSI). Once every stage has ended,
- * fails with the earliest stage (in pipeline order) that exited non-zero or by
- * signal (pipefail): a redirected stderr is the *user's* stream, so only an
- * un-redirected stage's stderr is buffered (small) to report on failure. On
- * success resolves a FileSet of the captured content, each file named by its
- * redirect target; on failure every in-flight capture is discarded (nothing
- * enters the store). A single-stage pipeline is the ordinary "run one command
- * and capture its output" case.
+ * Run a pipeline of stages as concurrent processes in `cwd`, holding one slot
+ * of `limit` for the whole pipeline. Each stage's stdout feeds the next
+ * stage's stdin; the first stage reads `stdin`, or EOF where there is none.
+ * Each capture is streamed into the content store through a handle from
+ * `createOutput`. A stage's environment is its own `env` entries overlaid with
+ * the pipeline's `env`, and nothing else (no {@link FORCE_COLOR_ENV}). Each
+ * stage runs in a process group of its own, as `execute`'s does. Output a
+ * stage does not redirect is shown through `report.output` and kept for its
+ * failure report.
+ *
+ * Resolves, once every stage has ended, with a FileSet of the captures, each
+ * file named by its redirection. Rejects (pipefail) with a CommandFailedError
+ * for the first stage, in pipeline order, that exited non-zero or by signal,
+ * carrying that stage's shown output; and with an ExecutionError where a
+ * stage's executable cannot be found (before anything is spawned) or a stage
+ * cannot be spawned. On a failure every stage's group is sent SIGTERM and
+ * every capture is discarded.
  */
-/* The pipeline takes ONE slot of the funnel for all its stages: they are
- * pipe-wired and must co-run — admitting them separately could wedge a stage
- * behind its own reader. Bounded by signature, like `execute`. */
+/* Take ONE slot for all the stages: they are pipe-wired and must run
+ * together, and admitted separately a stage could wait behind its own
+ * reader. */
 export function executePipeline(
   limit: Semaphore,
   specs: StageSpec[],
@@ -700,9 +651,8 @@ function pipelineUnbounded(
 ): Computable<FileSet> {
   const captures: Capture[] = [];
   return Computable.from<void>((resolve, reject) => {
-    /* Resolve every command to an executable up front, so a bad one rejects
-     * before any process is spawned (rather than leaving a half-built pipeline).
-     * The failure is framed like a spawn 'error' below ("unable to execute"). */
+    /* Find every stage's executable first, so a missing one rejects before
+     * any process is spawned. */
     const argvs: string[][] = [];
     for (const spec of specs) {
       try {
@@ -712,28 +662,21 @@ function pipelineUnbounded(
       }
     }
     const procs: ChildProcess[] = [];
-    /* What each stage showed — its un-redirected streams, merged in arrival
-     * order — kept for that stage's failure report. A stream captured to a
-     * handle or feeding the next stage is not shown, so is not kept. */
+    /* The lines each stage showed (its streams neither captured nor feeding
+     * the next stage), merged in arrival order, for its failure report. */
     const shown: ICommandOutputLine[][] = specs.map(() => []);
-    /* A line splitter per stage AND per stream (feeding the shared sink), so
-     * neither two stages writing at once nor one stage's two streams can splice
-     * their partial lines together. */
+    /* A line splitter per stage and per stream, all feeding the one sink. */
     const stageLines = shown.map(lines => showLines(lines, sink));
     const exit: Array<number | string | undefined> = specs.map(() => undefined);
     let settled = false;
     let remaining = specs.length;
 
-    /* Pipefail teardown kills each stage's whole GROUP (each stage is a group
-     * leader), so a stage that doesn't forward signals to its own children
-     * does not leave them orphaned. An exited stage is signalled too: its own
-     * sweep may still be within its KILL grace, and a dissolved group is a
-     * swallowed ESRCH. */
+    /* On failure, TERM every stage's whole group, an exited stage's included
+     * (its sweep may still be in its grace). */
     const killAll = (): void => procs.forEach(p => killProcessGroup(p, "SIGTERM"));
-    /* The sweeps of stages that have exited — only those: a stage still running
-     * is TERM'd by killAll and left to the exit hook (waiting on a process that
-     * may never exit would hang). Empty or already-settled ⇒ the outcome is
-     * delivered in line. */
+    /* The sweeps of the stages that have exited. The outcome waits for these
+     * only: a stage still running is left to killAll and the exit hook, since
+     * it may never exit. */
     const sweeps: Computable<void>[] = [];
     const afterSweeps = (deliver: () => void): void => {
       Computable.forAll(sweeps.slice(), () => undefined).once(deliver, deliver);
@@ -754,20 +697,18 @@ function pipelineUnbounded(
     };
 
     /* Build and wire the pipeline; a synchronous failure (a bad spawn, a
-     * disk error opening a capture) fails the whole run, discarding any
-     * captures already opened rather than leaking them and stalling. */
+     * disk error opening a capture) fails the whole run, discarding the
+     * captures already opened. */
     try {
       specs.forEach((spec, i) => {
         const isLast = i === specs.length - 1;
-        /* stdout must be read whenever it has anywhere to go: its own capture, a
-         * `1>&2` dup into stderr's capture, the next stage, or the sink. */
+        /* True where stdout is captured: to its own file, or by a `1>&2` into
+         * stderr's. */
         const capStdout = spec.stdout !== undefined || (spec.mergedTo === "err" && spec.stderr !== undefined);
-        /* stdin: first stage from supplied bytes (else EOF); a later stage reads the
-         * previous stage's stdout (wired below). Every stream fabr looks at is
-         * PIPED — captured as content, feeding the next stage, or shown (kept
-         * for the failure report, and streamed to the sink if there is one). The
-         * environment is the given variables and nothing else: captured content
-         * must be the tool's raw bytes, whatever fabr itself was run under. */
+        /* The first stage reads the given bytes (else EOF); a later stage reads
+         * the previous stage's output (wired below). Keep the environment to
+         * the given variables, so that captured content is the tool's own
+         * bytes whatever fabr was run under. */
         const stdinCfg = i === 0 ? (stdin ? "pipe" : "ignore") : "pipe";
         const proc = spawn(argvs[i][0], argvs[i].slice(1), {
           cwd,
@@ -779,19 +720,15 @@ function pipelineUnbounded(
         trackGroup(proc.pid);
         proc.on("exit", () => sweeps.push(sweepGroup(proc.pid)));
         procs.push(proc);
-        /* Swallow stream errors on the stdio fabr wires up: when a downstream
-         * stage exits before draining its input (the SIGPIPE case, `… | head`),
-         * writing to its closed stdin — or the head stage's stdin write below —
-         * emits EPIPE, which Node escalates to an uncaught exception (killing the
-         * whole process) if unhandled. The stage's exit code is the real failure
-         * signal (pipefail, in finish()); a broken pipe is not our error. */
+        /* Ignore stream errors on the stdio: when a stage exits before reading
+         * all its input (`… | head`), writing to its stdin emits EPIPE, which
+         * Node raises as an uncaught exception if unhandled. The stages' exit
+         * statuses decide the outcome (in finish). */
         proc.stdin?.on("error", () => undefined);
         proc.stdout?.on("error", () => undefined);
         proc.stderr?.on("error", () => undefined);
-        /* Captures stream into store handles (piped with `{ end: false }` — the
-         * handle is ended by finalize, not by the source). A dup gives both
-         * streams ONE handle, so the shared destination is opened once and both
-         * are piped into it, chunk-interleaved. */
+        /* Pipe captures into their handles with `{ end: false }` (finalize ends
+         * the handle). A dup gives both streams one handle. */
         const captureName = spec.mergedTo === "err" ? spec.stderr : spec.stdout;
         const shared = captureName !== undefined ? capture(captureName) : undefined;
         const show =
@@ -799,12 +736,11 @@ function pipelineUnbounded(
           (data: Uint8Array): void =>
             stageLines[i][stream].push(data);
         if (spec.mergedTo !== undefined) {
-          /* Both streams to the survivor's destination. For a `2>&1` that is
-           * stdout's: mid-pipeline the PIPE (both streams feed the next stage —
-           * wired below, nothing attaches here), and on the final stage its
-           * capture handle, else the pipeline's own output (so the lines ARE
-           * stdout now, labelled as such). For a `1>&2` it is stderr's: its
-           * capture, else shown — and the next stage, if any, reads EOF. */
+          /* Both streams go where the named one goes. For a `2>&1` that is
+           * stdout's: before the last stage, the next stage (wired below, so
+           * nothing attaches here); on the last stage, its capture, else shown
+           * as stdout. For a `1>&2` it is stderr's: its capture, else shown;
+           * the next stage, if any, reads EOF. */
           const label = spec.mergedTo;
           const merge = (stream: NodeJS.ReadableStream | null): void => {
             if (shared) {
@@ -827,9 +763,8 @@ function pipelineUnbounded(
             proc.stderr?.on("data", show("err"));
           }
         }
-        /* A final un-redirected stdout is the pipeline's own output, shown like
-         * stderr. A dup already routed both streams above — including stdout —
-         * so this must not attach a second reader and count it twice. */
+        /* The last stage's unredirected stdout is shown. Don't attach a second
+         * reader where a dup already routed it above. */
         if (isLast && !capStdout && spec.mergedTo === undefined) {
           proc.stdout?.on("data", show("out"));
         }
@@ -838,14 +773,10 @@ function pipelineUnbounded(
           exit[i] = signal ?? code ?? 0;
           stageLines[i].out.flush();
           stageLines[i].err.flush();
-          /* Propagate a broken pipe upstream (SIGPIPE-equivalent): if this stage
-           * exited while its producer is still writing, close fabr's read end of
-           * whatever feeds this stage — the producer's stdout, and under `2>&1`
-           * its stderr too — so the producer's next write fails, rather than
-           * leaving it blocked forever on a pipe nobody drains (a hung pipeline).
-           * Under `1>&2` the pipe carries NOTHING from the producer — its streams
-           * feed the diagnostic route, and destroying them would EPIPE a healthy
-           * stage. */
+          /* Close fabr's read end of whatever fed this stage (the previous
+           * stage's stdout, and under `2>&1` its stderr), so the previous
+           * stage's next write fails rather than blocking on a pipe nobody
+           * reads. Under `1>&2` nothing fed it, so leave those streams open. */
           if (i > 0 && specs[i - 1].mergedTo !== "err") {
             procs[i - 1].stdout?.destroy();
             if (specs[i - 1].mergedTo === "out") {
@@ -858,11 +789,9 @@ function pipelineUnbounded(
         });
       });
 
-      /* Wire the pipes and feed the head's stdin. What a pipe carries follows
-       * the upstream stage's dup: ordinarily its stdout; under `2>&1` BOTH its
-       * streams (each piped without ending the destination, which closes only
-       * once both have); under `1>&2` nothing — stdout went to the diagnostic
-       * stream, so the next stage reads immediate EOF. */
+      /* Wire the pipes and feed the first stage's stdin. A stage reads the
+       * previous stage's stdout; under that stage's `2>&1` both its streams
+       * (its stdin ended once both have); under `1>&2` nothing, so EOF. */
       for (let i = 1; i < procs.length; i++) {
         const prev = procs[i - 1];
         const feeds = (
@@ -891,7 +820,7 @@ function pipelineUnbounded(
     }
 
     const finish = (): void => {
-      /* pipefail: report the earliest stage that failed (discarding captures). */
+      /* pipefail: fail with the first stage that failed. */
       for (let i = 0; i < specs.length; i++) {
         const status = exit[i];
         if (typeof status === "string") {
@@ -907,8 +836,8 @@ function pipelineUnbounded(
   }).then(() => finalizeCaptures(captures));
 }
 
-/** Place every finished capture in the store and gather them as a FileSet, each
- * file named by its redirect target. */
+/** Store every capture and gather them as a FileSet, each file under its
+ * capture's name. */
 function finalizeCaptures(captures: Capture[]): Computable<FileSet> {
   if (captures.length === 0) {
     return Computable.resolve(new FileSet(new Map()));
@@ -919,38 +848,27 @@ function finalizeCaptures(captures: Capture[]): Computable<FileSet> {
   );
 }
 
-/** The interactive program currently running in fabr's own stdio (a one-shot
- * `fabr run`, a `fabr shell`), if any. Tracked because fabr's death must not
- * leave it behind: it is deliberately NOT detached (see
- * {@link executeInteractive}), so a signal directed at fabr alone — a CI job or
- * a supervisor stopping the run, the ordinary way to stop a running program —
- * never reaches it on its own. */
+/** The interactive program running in fabr's own stdio (a one-shot
+ * `fabr run`, a `fabr shell`), if any, for the exit hook to kill. It shares
+ * fabr's process group, so a signal sent to fabr alone does not reach it. */
 let interactiveChild: ChildProcess | undefined;
-/** Whether the live interactive child has already been offered a termination
- * signal, so a second one escalates (fabr exits, the hook kills the child)
- * instead of waiting again on a program that is ignoring signals. */
+/** True once the interactive child has been offered a termination signal. */
 let interactiveSignalled = false;
 let interactiveExitHookInstalled = false;
 
-/** Take ownership of the interactive child for the duration of its run. */
+/** Record `child` as the interactive child for the duration of its run. */
 function trackInteractive(child: ChildProcess): void {
   if (!interactiveExitHookInstalled) {
     interactiveExitHookInstalled = true;
-    /* Fabr is leaving: the program it launched goes with it. Hard (SIGKILL) and
-     * synchronous, because an exit hook can neither wait nor escalate (the
-     * signal path below gives the program its graceful window *before* fabr
-     * exits). By pid,
-     * not by group: this child shares fabr's own process group (it must, to stay
-     * in the terminal's foreground and read stdin), so the group form would
-     * signal fabr itself; a program that forks its own workers is supervised by
-     * `fabr run -w`, which does spawn a group leader. */
+    /* SIGKILL the child when fabr exits. Signal it by pid, not by group: it
+     * is in fabr's own process group, so the group form would signal fabr. */
     process.on("exit", () => {
       const child = interactiveChild;
       if (child?.pid !== undefined && child.exitCode === null && child.signalCode === null) {
         try {
           process.kill(child.pid, "SIGKILL");
         } catch {
-          /* Already gone — the desired end state. */
+          /* already gone */
         }
       }
     });
@@ -959,7 +877,7 @@ function trackInteractive(child: ChildProcess): void {
   interactiveSignalled = false;
 }
 
-/** Release it once it has ended, so nothing later signals a recycled pid. */
+/** Forget `child` once it has ended, so nothing later signals a reused pid. */
 function releaseInteractive(child: ChildProcess): void {
   if (interactiveChild === child) {
     interactiveChild = undefined;
@@ -968,20 +886,14 @@ function releaseInteractive(child: ChildProcess): void {
 }
 
 /**
- * Offer a termination signal to the running interactive program. `true` means it
- * took it: the caller (the driver's signal handler) should then let the program
- * end the run in its own time — its exit resolves {@link executeInteractive} with
- * 128+signal, and the ordinary path releases the staged install and exits with
- * that status. `false` — no interactive program, or it has already been given one
- * — leaves the caller to exit immediately, the exit hooks killing what is left;
- * so a second Ctrl-C (or TERM) always forces the issue.
- *
- * The signal is only *forwarded* when fabr has no terminal of its own. With one,
- * fabr and the child share the foreground process group and the terminal already
- * delivered the Ctrl-C to both, so forwarding would double-signal the program —
- * and a second SIGINT means "quit now" to plenty of them (a REPL, a dev server).
- * Without a terminal (CI, a supervisor) the signal was directed at fabr alone and
- * the program would otherwise never hear it.
+ * Offer a termination signal fabr received to the running interactive program.
+ * The signal is sent to the program only where fabr has no terminal; with one,
+ * the terminal has already delivered it to the program too.
+ * @return true if the program took it: the caller (the driver's signal
+ * handler) should let the program end the run, its exit resolving
+ * {@link executeInteractive} with 128+signal. false where there is no
+ * interactive program or it has already been offered a signal: the caller
+ * should exit at once, the exit hooks killing what is left.
  */
 export function signalInteractiveChild(signal: NodeJS.Signals): boolean {
   const child = interactiveChild;
@@ -993,37 +905,32 @@ export function signalInteractiveChild(signal: NodeJS.Signals): boolean {
     try {
       process.kill(child.pid, signal);
     } catch {
-      /* Already gone; its exit is on its way. */
+      /* already gone; its exit is on its way */
     }
   }
   return true;
 }
 
-/** @return true if fabr is attached to a terminal on any of its own standard
- * streams — i.e. a Ctrl-C at that terminal reached the foreground group as a
- * whole, this process included — otherwise false. */
+/** @return true if any of fabr's standard streams is a terminal, otherwise
+ * false. */
 function hasTerminal(): boolean {
   return process.stdin.isTTY === true || process.stdout.isTTY === true || process.stderr.isTTY === true;
 }
 
 /**
- * Run a command interactively: the child inherits this process's stdio (tty,
- * pipes, stdin) and environment, and its outcome resolves as *data* — a program
- * may legitimately exit non-zero, unlike `execute`, which fails the build on a
- * non-zero exit. A program killed by a signal resolves as the shell's own
- * 128+signal rather than failing: being stopped is a way to end a run, not a
- * build error (and stopping fabr stops the program — see
- * {@link signalInteractiveChild}). Rejects only when the process cannot be
- * spawned at all. This is the launch behind `fabr run`. `cwd` overrides
- * the inherited working directory — an install-anchored runnable (`launchCwd
- * === "install"`) launches at its staged root rather than the caller's cwd.
- * `env` (when given) REPLACES the inherited environment — `fabr shell` passes the
- * build step's own (clean) env so the sandbox matches what the build runs under;
- * omitted, the child inherits this process's env (the `fabr run` case).
+ * Run a program in fabr's own stdio, in fabr's process group (the launch behind
+ * `fabr run` and `fabr shell`). `cwd`, where given, replaces the working
+ * directory and `env` the whole environment; otherwise both are fabr's own.
+ * The program is the interactive child: killed when fabr exits, and offered
+ * fabr's termination signals by {@link signalInteractiveChild}.
+ *
+ * Resolves with its exit status whatever it is, and with 128+signal where a
+ * signal ended it, as a shell reports one. Rejects with an ExecutionError only
+ * where it cannot be spawned.
  */
 export function executeInteractive(cmd: string, args: string[], cwd?: string, env?: Record<string, string>): Computable<number> {
-  /* A failed spawn emits 'error' then 'close': Computable.from keeps the informative
-   * rejection and stops 'close' flipping a settled failure into a success. */
+  /* A failed spawn emits 'error' then 'close': Computable.from keeps the
+   * rejection. */
   return Computable.from((resolve, reject) => {
     const line = commandLine(cmd, args);
     const proc = spawn(cmd, args, { stdio: "inherit", windowsHide: true, cwd, env });
@@ -1040,40 +947,23 @@ export function executeInteractive(cmd: string, args: string[], cwd?: string, en
 }
 
 /**
- * Spawn an interactive child (inherited stdio) and return the live handle, for a
- * caller that must manage its lifecycle — kill it, restart it, watch for its
- * exit — rather than merely await it. This is the supervised counterpart of
- * {@link executeInteractive} (the one-shot form that resolves on exit); it backs
- * `fabr run -w`, where a source change relaunches the program. `cwd` and `env`
- * are as for {@link executeInteractive}. All process spawning stays centralized
- * here.
+ * Spawn a program in fabr's own stdio and return its handle, for a caller that
+ * manages its lifecycle (`fabr run -w`'s supervisor, which restarts it). `cwd`
+ * and `env` are as for {@link executeInteractive}.
  *
- * Spawned **detached**, so the child leads its own process group: a launched
- * program that forks its own workers (every real dev server does) puts them in
- * that group, and {@link killProcessGroup} then tears the whole tree down as a
- * unit rather than orphaning the workers. (The child is *not* unref'd — the
- * supervisor still tracks it and waits on its exit.) In its own session the
- * child does not receive the controlling terminal's Ctrl-C — only fabr does,
- * and the supervisor forwards it to the group.
+ * The program leads a process group of its own, so {@link killProcessGroup}
+ * ends it with any workers it forked. It does not receive the terminal's
+ * Ctrl-C; the caller must forward it. It is not tracked for the exit hook.
  */
 export function spawnInteractive(cmd: string, args: string[], cwd?: string, env?: Record<string, string>): ChildProcess {
   return spawn(cmd, args, { stdio: "inherit", windowsHide: true, cwd, env, detached: true });
 }
 
 /**
- * Signal a detached child's whole process **group** (the negative-pid form), so a
- * launched program that forked its own workers is torn down as a unit instead of
- * leaving orphans behind. Only meaningful for a group leader — a child spawned by
- * {@link spawnInteractive}, or a build-step/pipeline-stage process (all spawned
- * detached; see the group-ownership note above). ESRCH — the group is already
- * gone — is swallowed, since "not running" is precisely the goal.
- *
- * The target is the **group**, which outlives its leader, so an already-exited
- * child is signalled all the same: its surviving workers are exactly what a
- * SIGKILL escalation is for. POSIX reserves the pgid while any member survives,
- * so the signal is precise whenever there is anything to kill; an empty group
- * has dissolved and yields ESRCH, with the same theoretical pid-reuse window
- * {@link sweepGroup} accepts.
+ * Send `signal` to the whole process group `child` leads: a child of
+ * {@link spawnInteractive}, or a build step's or pipeline stage's process. An
+ * exited child's group is signalled too, since its members may survive it.
+ * A group that is already gone is ignored.
  */
 export function killProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
   if (child.pid === undefined) {
@@ -1082,18 +972,19 @@ export function killProcessGroup(child: ChildProcess, signal: NodeJS.Signals): v
   try {
     process.kill(-child.pid, signal);
   } catch {
-    /* ESRCH: the group already exited — the desired end state, nothing to do. */
+    /* ESRCH: the group is already gone. */
   }
 }
 
-/** Quote an argument for display where it wouldn't survive a shell round-trip */
+/** Quote an argument for display where a shell would not read it back as written. */
 function quoteArg(arg: string): string {
   return arg.length > 0 && !/[\s'"$\\`*?[\]{}()<>|&;#~!]/.test(arg) ? arg : `'${arg.replace(/'/g, "'\\''")}'`;
 }
 
 /**
- * A line splitter per stream, each keeping its lines in `into` (shared, so in
- * arrival order) and forwarding them to `sink` when there is one.
+ * Make a line splitter for each stream, each adding its lines to `into` (so
+ * the two streams' lines are in arrival order) and passing them to `sink` where
+ * there is one.
  */
 function showLines(into: ICommandOutputLine[], sink: IOutputSink | undefined): Record<OutputStream, ReturnType<typeof lineSplitter>> {
   const splitter = (stream: OutputStream): ReturnType<typeof lineSplitter> =>

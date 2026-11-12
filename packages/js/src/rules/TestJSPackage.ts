@@ -18,9 +18,13 @@
  */
 
 /**
- * The js_package[test] rule: the package's tests, compiled against the package
- * as its build makes it (in the module format the test framework loads) and
- * run beside it, against the package's deps.
+ * The js_package[test] rule: compile `tests` against the package as
+ * js_package[build] builds it (in the module format the test framework loads),
+ * with `test_deps` and the package's own requirements, and run each test file
+ * under the test framework `test_framework` names, with the package installed
+ * beside them. `test_resources` are staged for the tests to read,
+ * `test_expectations` are the recorded snapshots and `test_env` is the test
+ * processes' environment.
  */
 
 import { BUILD_OVERRIDE, Computable, defineRule, PackageSources, ResolutionSpec, TargetContext } from "@fabr-build/core";
@@ -34,14 +38,13 @@ import {
 } from "../TestPipeline";
 import { NPM_FORMAT } from "../NPMProtocol";
 
-/** The `js_package` rule, under `test`: the package's tests, run under the test framework its `test_framework` names. */
+/** The `js_package` rule, under `test`. */
 export default defineRule({
   /**
    * State the package's test requirements. Its `provided_deps` and
-   * `optional_provided_deps` are more `deps` here, compiled and installed
-   * identically: a test install is self-contained, with no host to supply them
-   * and no manifest to distinguish them. Its `compile_deps` are compiled and
-   * installed too, but say nothing of the test run. The package itself is
+   * `optional_provided_deps` are read as more `deps`, compiled against and
+   * installed. Its `compile_deps` are compiled against and installed too, but
+   * their flags do not set the test environment. The package itself is
    * required as its build makes it, in the module format the framework loads.
    */
   requirements(context: TargetContext): Computable<ResolutionSpec<TestRequirements>> {
@@ -73,7 +76,7 @@ export default defineRule({
         })
     );
   },
-  /* Describe the tests as an editor is told of them: the unit the run compiles. */
+  /* Describe the tests for an editor as the compile the run makes. */
   describe(context, requirements) {
     return testFramework(context, "test_framework").then(framework =>
       describeTests(context, framework, { envProperty: "test_env", packageName: context.name }, requirements)

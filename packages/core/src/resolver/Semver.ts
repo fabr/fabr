@@ -21,23 +21,21 @@ import { VersionDomain } from "./Types";
 import { FabrError } from "../core/Errors";
 
 /**
- * npm-flavoured semver, supporting the constraint forms that appear in practice
- * in package dependencies: exact versions, caret and tilde ranges, comparators
- * (>=, >, <, <=, =, with or without whitespace before the version, per npm)
- * and space-separated conjunctions thereof, x-ranges
- * (1.x, 1.2.x, bare 1 or 1.2, *), hyphen ranges ('1.2.3 - 2.3.4'), and '||'
- * disjunctions.
+ * npm's semver: versions, and the constraint forms npm accepts — exact
+ * versions, caret and tilde ranges (and `~>`, meaning `~`), comparators (>=,
+ * >, <, <=, =, with or without whitespace before the version) and
+ * space-separated conjunctions of them, x-ranges (1.x, 1.2.x, bare 1 or 1.2,
+ * *), hyphen ranges ('1.2.3 - 2.3.4'), and '||' disjunctions.
  *
- * Not supported (parseConstraint throws): dist-tags. Prerelease versions are
- * ordered per the semver spec, but the npm rule that prereleases only match
- * ranges explicitly mentioning a prerelease of the same triple is not
- * implemented: `satisfies` uses plain ordering, and lowestSatisfying (the
- * floor-raise pick) admits prereleases only when the constraint mentions one,
- * of any triple. Build metadata (`1.2.3+abc`) is
- * accepted by the grammar but discarded — SemverVersion has no field for it —
- * so it never round-trips through versionToString; harmless for npm, which
- * forbids build metadata in published versions (so it never appears in registry
- * metadata or a fetch key).
+ * Differences from npm:
+ * - A dist-tag (`latest`) is no constraint: parseConstraint throws.
+ * - Prereleases are ordered as the semver spec orders them, and `satisfies`
+ *   uses that order alone: npm's rule that a prerelease matches only a range
+ *   naming a prerelease of the same major.minor.patch is not applied.
+ *   lowestSatisfying admits prereleases only where the constraint names one,
+ *   of any major.minor.patch.
+ * - Build metadata (`1.2.3+abc`) is parsed and discarded, so versionToString
+ *   leaves it out.
  */
 
 export interface SemverVersion {
@@ -48,8 +46,8 @@ export interface SemverVersion {
 }
 
 /**
- * A contiguous version interval. min is always present (0.0.0 for unbounded);
- * max of undefined means unbounded above.
+ * A contiguous version interval: `min` is 0.0.0 where there is no lower bound,
+ * and `max` undefined where there is no upper bound.
  */
 interface IRange {
   min: SemverVersion;
@@ -58,16 +56,14 @@ interface IRange {
   maxInclusive: boolean;
 }
 
-/**
- * A constraint is a disjunction ('||') of ranges.
- */
+/** A constraint: a disjunction ('||') of ranges. */
 export interface SemverConstraint {
   ranges: IRange[];
 }
 
 /**
- * A version pattern as written in a range, where trailing components may be
- * omitted or wildcarded (undefined = unspecified/wildcard).
+ * A version as written in a range, whose trailing components may be left out
+ * or written as wildcards; either is undefined.
  */
 interface IPartialVersion {
   major?: number;
@@ -81,6 +77,8 @@ const PARTIAL_RE = /^v?(\d+|[xX*])(?:\.(\d+|[xX*]))?(?:\.(\d+|[xX*]))?(?:-([0-9A
 
 const ZERO_VERSION: SemverVersion = { major: 0, minor: 0, patch: 0, prerelease: [] };
 
+/** Parse an exact version, a leading `v` allowed. Throws where `text` is not
+ * one. */
 export function parseVersion(text: string): SemverVersion {
   const m = VERSION_RE.exec(text.trim());
   if (!m) {
@@ -153,8 +151,8 @@ function lowerOf(p: IPartialVersion): SemverVersion {
 
 /**
  * Get the exclusive upper bound implied by the unspecified components of a
- * partial version (e.g. 1.2 -> 1.3.0, 1 -> 2.0.0), or undefined if fully
- * unbounded.
+ * partial version (1.2 -> 1.3.0, 1 -> 2.0.0), or undefined where every
+ * component is specified, or none is.
  */
 function upperOfPartial(p: IPartialVersion): SemverVersion | undefined {
   if (p.major === undefined) {
@@ -206,9 +204,8 @@ function tildeRange(p: IPartialVersion, lower: SemverVersion): IRange {
 }
 
 function parseComparator(token: string): IRange {
-  /* `~>` (before `~`, or the `>` would fall into the version) is the rubygems
-   * spelling of the tilde range, accepted by node-semver and present in
-   * published metadata; it means exactly `~`. */
+  /* `~>` means `~`, as node-semver reads it. Keep it before `~` in the
+   * pattern, or its `>` is read as part of the version. */
   const m = /^(>=|<=|>|<|=|\^|~>|~)?(.*)$/.exec(token)!;
   const op = m[1] ?? "";
   const p = parsePartial(m[2]);
@@ -283,10 +280,9 @@ function intersectRanges(a: IRange, b: IRange): IRange {
 }
 
 /**
- * Make an npm hyphen range: 'A - B' is >=A together with the <= reading of B
- * — a partial B admits its whole prefix ('1.2.3 - 2.3' is <2.4.0, '1.2.3 - 2'
- * is <3.0.0; per npm, mirroring the '<=' partial rule), a wildcard B is
- * unbounded above. Each side reuses the ordinary partial-version machinery.
+ * Make an npm hyphen range: 'A - B' is >=A and <=B, where a partial B admits
+ * every version it is a prefix of ('1.2.3 - 2.3' is <2.4.0, '1.2.3 - 2' is
+ * <3.0.0) and a wildcard B leaves no upper bound.
  */
 function hyphenRange(left: string, right: string): IRange {
   const lower = lowerOf(parsePartial(left));
@@ -302,9 +298,8 @@ function hyphenRange(left: string, right: string): IRange {
 }
 
 function parseRange(text: string): IRange {
-  /* npm tolerates whitespace between an operator and its version — published
-   * metadata contains e.g. '>= 2.1.2 < 3.0.0' (iconv-lite) — so join each
-   * operator to the version it governs before splitting on conjunctions. */
+  /* Join each operator to its version before splitting on whitespace: npm
+   * allows space between them ('>= 2.1.2 < 3.0.0'). */
   const tokens = text
     .replace(/(>=|<=|>|<|=|\^|~>|~)\s+(?=[\dvxX*])/g, "$1")
     .trim()
@@ -313,8 +308,8 @@ function parseRange(text: string): IRange {
   if (tokens.length === 0) {
     return { min: ZERO_VERSION, minInclusive: true, maxInclusive: false };
   }
-  /* A standalone '-' token is a hyphen range joining its two neighbours (the
-   * spaces are required — an unspaced '1.2.3-rc' hyphen is a prerelease). */
+  /* A standalone '-' token is a hyphen range joining its two neighbours; an
+   * unspaced '1.2.3-rc' is a prerelease. */
   const ranges: IRange[] = [];
   for (let idx = 0; idx < tokens.length; idx++) {
     if (tokens[idx] === "-") {
@@ -350,21 +345,17 @@ function versionInRange(version: SemverVersion, range: IRange): boolean {
 }
 
 /**
- * @return true if any bound of the constraint carries a prerelease component
- * — npm's opt-in signal that prerelease versions are admissible
- * (`^1.2.3-beta.4`) — otherwise false.
+ * @return true if any bound of the constraint has a prerelease component
+ * (`^1.2.3-beta.4`), otherwise false.
  */
 function mentionsPrerelease(constraint: SemverConstraint): boolean {
   return constraint.ranges.some(range => range.min.prerelease.length > 0 || (range.max?.prerelease.length ?? 0) > 0);
 }
 
 /**
- * Find the lowest of `versions` satisfying `constraint`, under npm's prerelease
- * contract: a prerelease version is a candidate only when the constraint
- * itself mentions one (node-semver's opt-in; a prerelease sorts *below* its
- * release, so admitting them unasked would pick `4.0.1-rc.0` over an
- * available `4.0.1`). The candidate rule for the floor-raise repair (see
- * NPMRepository.lowestAvailable).
+ * Find the lowest of `versions` satisfying `constraint`, a prerelease only
+ * where the constraint names one (else `>=4.0.1` would pick `4.0.1-rc.0` over
+ * `4.0.1`, as a prerelease sorts below its release).
  */
 export function lowestSatisfying(versions: SemverVersion[], constraint: SemverConstraint): SemverVersion | undefined {
   const allowPrerelease = mentionsPrerelease(constraint);
@@ -380,16 +371,16 @@ function rangeMinimum(range: IRange): SemverVersion {
   if (range.minInclusive) {
     return range.min;
   }
-  /* The successor of an exclusive lower bound (node-semver's minVersion rule).
-   * Off a prerelease it is exact — appending the lowest numeric identifier `0`
-   * names the immediately-greater version, so `>1.2.3-rc.1` floors at
-   * `1.2.3-rc.1.0` and still admits `1.2.3-rc.2`/`1.2.3`. Off a release there is
-   * no representable successor below the next patch. */
+  /* The lowest version above an exclusive lower bound, as node-semver's
+   * minVersion gives it: a prerelease gains a `0` identifier (`>1.2.3-rc.1`
+   * gives `1.2.3-rc.1.0`), and a release goes to the next patch (`>1.2.3`
+   * gives `1.2.4`). */
   return range.min.prerelease.length > 0
     ? { ...range.min, prerelease: [...range.min.prerelease, 0] }
     : { major: range.min.major, minor: range.min.minor, patch: range.min.patch + 1, prerelease: [] };
 }
 
+/** The version domain of npm's semver. */
 export const SEMVER: VersionDomain<SemverVersion, SemverConstraint> = {
   parseConstraint,
   unconstrained: parseConstraint("*"),
@@ -401,12 +392,9 @@ export const SEMVER: VersionDomain<SemverVersion, SemverConstraint> = {
   },
 
   isFloorless(constraint: SemverConstraint): boolean {
-    /* A disjunction expresses no lower bound if any arm floors at the zero
-     * version — '*', 'x', '>=0.0.0', and equally an upper-bound-only '<4.1.0',
-     * whose 0.0.0 floor is fabricated by the grammar rather than requested
-     * (nobody who writes '<4.1.0' is asking for the unpublished 0.0.0). The
-     * exception is the point range: an exact '0.0.0' names that very version,
-     * and remains an ordinary floored demand for it. */
+    /* No lower bound where any range of the disjunction starts at an
+     * inclusive 0.0.0: '*', 'x', '>=0.0.0', and an upper-bound-only '<4.1.0'.
+     * An exact '0.0.0' is a lower bound. */
     return constraint.ranges.some(
       range =>
         range.minInclusive &&

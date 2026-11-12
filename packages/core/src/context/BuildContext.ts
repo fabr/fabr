@@ -69,7 +69,8 @@ export interface BuildContext {
    * an external requirement or a catalog member as its package, with its
    * dependencies bound; each as one unnamed requirement. A repository
    * declaration's name (a catalog's) comes back as the declaration's own
-   * requirements, by name.
+   * requirements, by name. Versions that conflict are kept on the result,
+   * not rejected. Rejects where a name or reference fails to resolve.
    */
   resolve(ref: INameValue): Computable<ResolvedRequirements>;
 
@@ -81,7 +82,10 @@ export interface BuildContext {
    * namespace) has no content and comes back as it stands: a caller wanting
    * content refuses it ({@link refuseNamespaces}), and one listing names lists
    * its children. Under `BUILD_OPERATION=run` the name is a program to launch,
-   * and what it requires is resolved permissively.
+   * and what it requires is resolved permissively; otherwise the references
+   * it names are one strict collection. Rejects where a target fails to
+   * build, a reference fails to resolve or fetch, or a strict collection's
+   * versions conflict.
    */
   materialize(ref: INameValue): Computable<Array<FileSource | IncompleteRef>>;
 
@@ -380,8 +384,9 @@ export interface InternalBuildContext extends BuildContext {
    * Apply `projection` to `sources`, the sources one name reached: a reference
    * or a package is narrowed, a node gets the projection pending over it, and
    * a container is projected now, descending into archives. `miss` is the
-   * error for a literal that selects nothing, judged over all the containers
-   * together and only where no reference might still supply the name.
+   * error for a literal that selects nothing: each source answers its share
+   * (`jointMiss`), a container now and a target or node once built, and
+   * the error is raised once all have answered and none selected anything.
    */
   projectSources(
     sources: Array<SourceRef | Unbuilt>,

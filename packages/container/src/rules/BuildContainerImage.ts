@@ -61,11 +61,14 @@ import { OCI_TARGET, ociPlatformOf } from "../OciRepository";
 
 /**
  * The `container_image` rule: `base`'s layers, reused as they are, and one
- * layer of `files` above them, with the target's settings applied to the
- * base's config. The base is what the image passes on: an image holds its
- * base, so what requires the image requires the base. Its `files` are resolved
- * for the image's platform, with the C library the base has filled in (see
- * {@link baseLibc}).
+ * layer above them, with the target's settings applied to the base's config.
+ *
+ * - The layer is `files`, resolved for the image's platform with the C library
+ *   the base has filled in (see {@link baseLibc}), or, where `build` is set,
+ *   what the build command changed in the base. Where `build` is set beside
+ *   `files` or other settings, the command's layer is built first as a
+ *   sub-target, and `files` go in a layer above it.
+ * - The base is passed on as the image's dependency: an image holds its base.
  */
 export default defineRule({
   requirements(context) {
@@ -104,7 +107,7 @@ export default defineRule({
           throw new FabrError(`${context.name}'s build command has no image to run in`).withHelp("set 'base' to the image it runs in");
         }
         if (contents.size > 0 || setsMoreThanBuild(settings)) {
-          /* The command's layer is a step of its own, so what is set beside it does not run it again. */
+          /* Build the command's layer as a step of its own, so a change to what is set beside it does not run it again. */
           return context
             .subTarget("container_image", { base: [image], build: settings.build, env }, { label: "Running build" })
             .then(built => action(built as ImageFileSet, { ...settings, build: undefined }));
@@ -213,10 +216,10 @@ function libcAlong(node: SourceRef | Unbuilt | undefined): Computable<ImageLibc 
 }
 
 /**
- * Make the triple an image's contents are resolved for: `target` with the C
- * library `libc` its base has, where `target` states none — musl where the
- * base has none, the usual static form — and `target` as it is where it
- * states one, which must be the base's.
+ * Make the triple an image's contents are resolved for. Where `target` states
+ * no C library, it is added: the base's `libc`, or musl (the usual static
+ * form) where the base has none. Where `target` states one, it is used as it
+ * is, and throws where it differs from the base's.
  */
 export function contentsTriple(target: string, libc: ImageLibc | undefined): string {
   const environment = target.split("-")[3];

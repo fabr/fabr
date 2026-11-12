@@ -18,11 +18,10 @@
  */
 
 /*
- * Ambient types for the globals the runner preloads into every test process
- * (see globals.ts). The test rules mount this file as a synthetic @types
- * package in the test compile, so test files can use describe/it without
- * importing them. Deliberately NOT part of the devchain tsconfig (it would
- * collide with @types/jest's globals there).
+ * Ambient types for the globals the native runner preloads into every test
+ * process (see globals.ts). The test rules mount this file as a synthetic
+ * @types package in the test compile. Keep it out of the devchain tsconfig:
+ * its globals collide with @types/jest's there.
  */
 
 declare const describe: typeof import("node:test").describe;

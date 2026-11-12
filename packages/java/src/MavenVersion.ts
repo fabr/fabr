@@ -26,8 +26,9 @@
  * qualifier after those, alphabetically. A version is identified by its text:
  * `1.0` and `1.0.0` compare equal but are different published artifacts.
  *
- * A plain version (`1.2`) is a soft requirement, a floor with no cap. A range
- * (`[1.0,2.0)`, `[1.2]`, `(,1.0],[1.2,)`) admits exactly what it names.
+ * A plain version (`1.2`) is a soft requirement: a lower bound with no upper
+ * bound. A range (`[1.0,2.0)`, `[1.2]`, `(,1.0],[1.2,)`) admits exactly what
+ * it names.
  */
 
 import { compareText, FabrError, VersionDomain } from "@fabr-build/core";
@@ -47,9 +48,9 @@ export interface MavenVersion {
   /** The version as published, which is its identity. */
   readonly text: string;
   readonly items: Item[];
-  /** Set on the floor of a range whose lower bound excludes the version
-   *  `items` name: it sorts above that version and below every version above
-   *  it, so it is never published, and is written `(<version>`. */
+  /** Set on the lowest version of a range whose lower bound excludes the
+   *  version `items` name: it sorts above that version and below every
+   *  version above it, is never published, and is written `(<version>`. */
   readonly above?: true;
 }
 
@@ -64,7 +65,7 @@ interface Interval {
   readonly upper?: Bound;
 }
 
-/** A soft requirement's floor, or the intervals a range admits (any of them). */
+/** A soft requirement's lower bound (`floor`), or the intervals a range admits (any of them). */
 export type MavenConstraint = { kind: "soft"; floor: MavenVersion } | { kind: "range"; intervals: Interval[] };
 
 const ZERO_INT = BigInt(0);
@@ -261,7 +262,8 @@ const PREFIX_VERSION = /^(?:(.*)\.)?\+$/;
  * @return the constraint a dependency's version in a published POM or `.module`
  * states: `(,)` for a tag (`latest.release`, `LATEST`); for a Gradle prefix
  * version, the range of versions with that prefix (`1.2.+` is `[1.2,1.3)`, `+`
- * is `(,)`, a stem not ending in a number its floor alone); otherwise the version.
+ * is `(,)`, and a stem not ending in a number, `[<stem>,)`); otherwise the
+ * version as written. Undefined for undefined.
  */
 export function constraintOfVersion(text: string | undefined): string | undefined {
   const trimmed = text?.trim();
@@ -292,6 +294,7 @@ export function parseMavenVersion(text: string): MavenVersion {
   return { text: trimmed, items: parseItems(trimmed) };
 }
 
+/** Compare two versions in Maven's order, a {@link justAbove} version just after the one it is above. */
 export function compareMavenVersions(a: MavenVersion, b: MavenVersion): number {
   return compareLists(a.items, b.items) || (a.above === b.above ? 0 : a.above ? 1 : -1);
 }
@@ -335,6 +338,7 @@ function parseRange(text: string): Interval[] {
   return intervals;
 }
 
+/** Parse a version requirement: a range where it starts with `[` or `(`, else a soft requirement. Throws on a malformed one. */
 export function parseMavenConstraint(text: string): MavenConstraint {
   const trimmed = text.trim();
   return /^[[(]/.test(trimmed)
@@ -361,6 +365,7 @@ function admits(interval: Interval, version: MavenVersion): boolean {
 
 const ZERO = parseMavenVersion("0");
 
+/** @return the lowest version `constraint` admits, `0` where an interval has no lower bound. */
 function minimumOf(constraint: MavenConstraint): MavenVersion {
   if (constraint.kind === "soft") {
     return constraint.floor;
@@ -374,8 +379,8 @@ function minimumOf(constraint: MavenConstraint): MavenVersion {
 /** The qualifiers a stable release never carries. */
 const UNSTABLE = /(^|[.-])(alpha|beta|milestone|rc|cr|snapshot|ea|preview)|[.-]?(a|b|m)\d/i;
 
-/** Maven's versions: soft requirements are floors, and every installation is
- *  flat (one version per package, as on a classpath). */
+/** Maven's versions: a soft requirement is a lower bound, and every
+ *  installation is flat (one version per package, as on a classpath). */
 export const MAVEN_VERSIONS: VersionDomain<MavenVersion, MavenConstraint> = {
   parseConstraint: parseMavenConstraint,
   unconstrained: { kind: "range", intervals: [{}] },
@@ -389,7 +394,7 @@ export const MAVEN_VERSIONS: VersionDomain<MavenVersion, MavenConstraint> = {
       : constraint.intervals.some(interval => admits(interval, version)),
   versionToString: version => version.text,
   parseVersion: parseMavenVersion,
-  /* A bare version is a soft floor to Maven; only the hard range names it alone. */
+  /* A bare version is a soft requirement to Maven; only the range `[v]` admits `v` alone. */
   exactConstraint: version => `[${version.text}]`,
   exactVersion: text => {
     try {
@@ -435,7 +440,7 @@ function isEmpty({ lower, upper }: Interval): boolean {
   return order > 0 || (order === 0 && !(lower.inclusive && upper.inclusive));
 }
 
-/** @return the intervals of `constraint`, a soft one being its floor and up. */
+/** @return the intervals of `constraint`, a soft one being its lower bound and up. */
 function intervalsOf(constraint: MavenConstraint): readonly Interval[] {
   return constraint.kind === "soft" ? [{ lower: { version: constraint.floor, inclusive: true } }] : constraint.intervals;
 }
@@ -465,7 +470,7 @@ function subtract(interval: Interval, removed: Interval): Interval[] {
  * (`[1.0,1.2),(1.2,)`), or undefined where it admits nothing.
  */
 export function rangeExcluding(constraint: MavenConstraint, rejected: readonly MavenConstraint[]): string | undefined {
-  /* A rejected version is that version alone, not a floor. */
+  /* A rejected version rejects that version alone, not it and everything above. */
   const removed = rejected.flatMap(reject =>
     reject.kind === "soft"
       ? [{ lower: { version: reject.floor, inclusive: true }, upper: { version: reject.floor, inclusive: true } }]

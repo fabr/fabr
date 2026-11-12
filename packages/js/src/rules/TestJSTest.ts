@@ -18,18 +18,18 @@
  */
 
 /**
- * The js_test[test] rule: a standalone test target `{ tests, deps }`. The `tests`
- * are compiled and run under the runner of the framework the target's
- * `framework` selects; `deps` are given explicitly and
- * carry both packages and any plain-source support (e.g. a test harness), which
- * compiles as a sibling but is never run.
+ * The js_test[test] rule: compile `tests` with `deps` and `compile_deps` and
+ * run each test file under the test framework `framework` names, with
+ * `resources` beside them, `expectations` as the recorded snapshots and `env`
+ * as the test processes' environment. Source files in `deps` (a test harness)
+ * are compiled with the tests but not run.
  */
 
 import { BUILD_OVERRIDE, Computable, defineRule, PackageSources, ResolutionSpec, TargetContext } from "@fabr-build/core";
 import { compileAndRunTests, describeTests, TestRequirements, testFramework, testRequirements } from "../TestPipeline";
 import { NPM_FORMAT } from "../NPMProtocol";
 
-/** The `js_test` rule: the tests, run under the test framework the target's `framework` names. */
+/** The `js_test` rule. */
 export default defineRule({
   requirements(context: TargetContext): Computable<ResolutionSpec<TestRequirements>> {
     return Computable.forAll(
@@ -54,7 +54,7 @@ export default defineRule({
         })
     );
   },
-  /* Describe the tests as an editor is told of them: the unit the run compiles. */
+  /* Describe the tests for an editor as the compile the run makes. */
   describe(context, requirements) {
     return testFramework(context, "framework").then(framework =>
       describeTests(context, framework, { envProperty: "env" }, requirements)

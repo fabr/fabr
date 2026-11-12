@@ -24,13 +24,14 @@ import { sniffMime } from "../support/Mime";
 import type { IOutputHandle } from "../support/Execute";
 import { Writable } from "stream";
 
+/** A file whose content is held in memory. */
 export class MemoryFile implements IFile {
   private content: Buffer;
   public hash: string;
   public readonly mime: string;
 
-  /** An in-memory file is a non-executable regular file unless a producer asks
-   * otherwise (e.g. a rule stamping a generated script executable). */
+  /** Make a file of `buffer`'s bytes, with permission bits `mode` (a
+   * non-executable regular file unless given). */
   constructor(
     buffer: Buffer,
     public mode: number = DEFAULT_FILE_MODE
@@ -48,8 +49,7 @@ export class MemoryFile implements IFile {
     return Computable.resolve(this.content.toString(encoding));
   }
   public getDisplayName(): string {
-    /* An in-memory file has no path; a generic label keeps conflict diagnostics
-     * (which fall back to getDisplayName when provenance is absent) from crashing. */
+    /* Conflict diagnostics name a file by this where it has no provenance. */
     return "<generated file>";
   }
   public isSameFile(file: IFile): boolean {

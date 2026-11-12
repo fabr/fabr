@@ -18,10 +18,10 @@
  */
 
 /**
- * The test-run action: one execution of a test runner over a staged
- * installation — the cache unit of a test run, built by the shared test
- * pipeline (which assembles `staged` and `argv`, and gives the run's output its
- * delivered shape). See TestPipeline for the run's construction.
+ * The test-run action (`js:test-run`): the build step that runs a test runner
+ * once per test file over a staged installation. The shared test pipeline
+ * (TestPipeline.ts) makes it, assembling its files and argv, and reshapes its
+ * output.
  */
 
 import * as fs from "fs";
@@ -76,15 +76,18 @@ import { COMPILE_OUT_DIR } from "./rules/BuildJSCompile";
 import { IPackageLayout, layoutPackages, NodeLayout, ReadName, selfConfig } from "./Layout";
 
 /**
- * The test-run build step: stage the complete installation (built in
- * resolution — deps as node_modules, the runner, the compiled tree, a minimal
- * package.json), execute the runner once per test file, and deliver the
- * collected outputs with the per-invocation reports merged into one. Per-file
- * invocation is a partition the runner contract permits, so each test process
- * is an ordinary unit of the machine-wide execution funnel. A run whose tests
- * failed is a result like a green one, and enters the cache: its merged report
- * says what failed, and its task ends as failed. A run that could not be performed —
- * an invocation that crashed, or wrote no report — throws, and enters nothing.
+ * The test-run build step: stage the installation ({@link stageInstall}), run
+ * the runner once for each test file that needs it ({@link filesToRun}), each
+ * invocation one process execution of the process funnel, and collect the
+ * outputs, the invocations' reports merged into one {@link TEST_REPORT_FILENAME}.
+ *
+ * - A run whose tests failed is a result: its merged report says what failed,
+ *   its task ends as failed, and it is cached.
+ * - Where an invocation failed outright (crashed, or wrote no usable report),
+ *   the step rejects and nothing is cached.
+ * - The step keeps each test file's report, reads and, in a measured run, lcov
+ *   as its incremental state, and keys the entry on the deps rows the files
+ *   read ({@link selectionOf}).
  */
 /* Bump the version when what the step stages, keeps between runs or reports
  * as its reads changes. */
@@ -108,11 +111,12 @@ function stageTests(action: BuildAction, dir: string, ensureTree: (files: FileSe
 }
 
 /**
- * Stage the installation into `dir`: the run's own files, the packages laid
- * out as the action's `layout` says ({@link layoutPackages}, as the compile
- * step lays its out) and the linked installs. Answers with how a read of the
- * staged installation is named in the action's key ({@link IPackageLayout.nameRead}) — the
- * layout itself.
+ * Stage the installation into `dir`: the run's own files (its `writable` ones
+ * as writable copies), the packages laid out as the action's `layout` says
+ * ({@link layoutPackages}) and the linked installs.
+ *
+ * @return the layout, which names a read of the staged installation as the
+ *   action's key does ({@link IPackageLayout.nameRead}).
  */
 function stageInstall(
   action: BuildAction,
@@ -123,8 +127,8 @@ function stageInstall(
   const files = fileSetInput(action, "files");
   const writable = fileSetInput(action, "writable");
   return layoutPackages(action, dir, ensureTree).then(layout => {
-    /* One admission for the whole installation, given back before any test
-     * process asks for a slot of its own. */
+    /* Stage under one admission, released before any test process asks for a
+     * slot of its own. */
     const staged = FileSet.unionAll(files, layout.files);
     return admit(() => writeFileSet(dir, staged.minus(writable)).then(() => writeFileSet(dir, writable, { copy: true })))
       .then(() => linkTrees(action, dir, ensureTree))
@@ -132,9 +136,9 @@ function stageInstall(
   });
 }
 
-/** Where the test files' names are, among the action's inputs: an input
- * rather than configuration, so a test added or removed is a change the run
- * can see rather than a new target key. */
+/** The input holding the test files' names ({@link TEST_FILES_FILE}). Keep it an
+ * input, not configuration, so a test file added or removed is a change to the
+ * run rather than a new target key. */
 const TEST_FILES_INPUT = "tests";
 const TEST_FILES_FILE = ".fabr-test-files.json";
 
@@ -153,6 +157,7 @@ function invocationOf(argv: string[], file: string, index: number): string[] {
   return [...argv.slice(1), `--report=${invocationReport(index)}`, `--reads=${invocationReads(index)}`, file];
 }
 
+/** Run the test-run step ({@link JS_TEST_STEP}). */
 function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
   const workDir = ctx.workDir;
   const argv = toArgv(commandLineConfig(action, "argv"));
@@ -163,10 +168,10 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
         files => new TestCoverage(ctx, report, toArgv(commandLineConfig(action, "coverage_argv")), declared, files)
       )
     : Computable.resolve(undefined);
-  /* Tests run with only the environment their target declares (no ambient vars
-   * that could alter their output); a test that must spawn a tool references it
-   * by an absolute path (e.g. process.execPath), which needs no PATH. The argv's leading command
-   * (the runner's interpreter) is PATH-resolved here, at run time. */
+  /* Tests run with only the environment their target declares, so a test that
+   * spawns a tool names it by an absolute path (e.g. process.execPath). The
+   * argv's leading command (the runner's interpreter) is found on PATH when each
+   * invocation runs. */
   return Computable.forAll(
     [testFilesOf(action), ctx.changedFiles(), ctx.incrementalState().then(keptRunsOf), measured],
     (testFiles, changes, kept, coverage) => {
@@ -182,11 +187,9 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
            * report it wrote. */
           const tally = new RunTally(rerun.length, report.progress);
           return Computable.forAll(
-            /* All issued at once: each execution queues on the funnel, which is
-             * what schedules the files — against each other and against every
-             * other execution in the build. A red file must not abort its
-             * siblings (the report must be complete), so an invocation NEVER
-             * rejects here; its outcome is judged as data below. */
+            /* All issued at once; each execution queues for a slot of the
+             * process funnel. An invocation never rejects here, so a failed
+             * file cannot stop the others: concludeRun judges the outcomes. */
             rerun.map(file => {
               const index = testFiles.indexOf(file);
               return runOneFile(ctx, report, argv, coverage?.environmentOf(index) ?? declared, file, index, layout)
@@ -213,11 +216,10 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
 }
 
 /**
- * @return what the run read of its packages, as the selection the entry is keyed on:
- * every deps row any test file's run read, this run's and the kept ones' alike.
- * Nothing where any file's reads are unknown (a process the runner could not
- * follow), which keys the entry on the whole deps input, as an unreported run
- * means.
+ * @return what the run read of its packages, as the selection the entry is
+ * keyed on: every deps row any test file's latest run read, this run's and the
+ * kept ones' alike. None where any file's reads are unknown (a process the
+ * runner could not follow), which keys the entry on the whole deps input.
  */
 function selectionOf(latest: ReadonlyArray<ILatestRun>): { discoveredDeps?: DiscoveredDeps } {
   if (latest.some(run => run.deps === undefined)) {
@@ -276,7 +278,7 @@ class TestCoverage {
     );
   }
 
-  /** Run the coverage driver with `options` over the measured files, answering the lcov it wrote. */
+  /** Run the coverage driver with `options` over the measured files, and read back the lcov it wrote. */
   private drive(name: string, options: { raw: string; loaded?: boolean }): Computable<IFile> {
     const document = `.fabr-coverage.${name}.json`;
     const output = `.fabr-coverage.${name}.info`;
@@ -316,12 +318,12 @@ export interface IKeptRun {
 /** A test file's latest run: this run's, or the one kept. */
 type ILatestRun = IKeptRun & { file: string };
 
-/** Where a test file's lcov is kept, in the incremental state. */
+/** Name where a test file's lcov is kept in the incremental state. */
 function keptCoverageName(file: string): string {
   return `coverage/${file}.info`;
 }
 
-/** Where the step keeps each test file's last run, in its incremental state. */
+/** The file of the incremental state that keeps each test file's last run. */
 const KEPT_RUNS_FILE = "runs.json";
 
 /**
@@ -402,13 +404,16 @@ export interface IFilesToRun {
 }
 
 /**
- * @return the test files to run: every one, where nothing is kept to compare
- * with or one of the step's own files was added or deleted — whether such a
- * file exists is not among what a run reports reading, so no record can say
- * whom that reaches — and otherwise each with no kept run, a kept run that
- * failed, a runner that did not say what it read, a read or deps row among
- * what changed, was added or was deleted, or — in a measured run — no kept
- * coverage; and the kept run of every other file.
+ * Choose which test files to run, and the kept run to reuse for each of the
+ * others.
+ *
+ * Every file runs where nothing is kept, where there is no record of what
+ * changed, or where a name was added or deleted that no kept run recorded
+ * among its deps rows: that is one of the step's own files, and whether one
+ * exists is not among the reads a run reports. Otherwise a file's kept run is
+ * reused where it passed, its runner said what it read, none of its reads or
+ * deps rows changed, was added or was deleted, and (in a measured run) it kept
+ * coverage; every other file runs.
  */
 export function filesToRun(
   testFiles: string[],
@@ -444,13 +449,10 @@ export function filesToRun(
 }
 
 /**
- * The run's outcomes so far, reported as each file lands.
- *
- * Per *file*, not per test: a file's report exists only once its process has
- * written it, so this is as live as the runner contract allows — the runner is
- * invoked, writes a report and exits, and says nothing in between. A file
- * whose invocation failed outright counts as
- * finished with nothing to add; the summary at the end is what judges it.
+ * A test run's outcomes so far, reported as the task's progress each time a
+ * file's invocation ends: files done, tests passed and failed, and the latest
+ * file's own figures. A file whose invocation failed outright counts as done
+ * and adds no tests.
  */
 class RunTally {
   private files = 0;
@@ -496,20 +498,25 @@ function invocationReads(index: number): string {
 }
 
 /**
- * Read an invocation's reads document ({@link IReadsDocument}) and name what
- * it says in the key's vocabulary (see {@link IPackageLayout.nameRead}): the
- * run's own files by name, and as deps rows the packages' files read, a probe
- * that found a package's directory itself as the package's manifest, and each
- * package looked up — the binding row of the lookup, the requirer's route
- * then `<name> package.json`, present where the requirer's own edge or the
- * requirer itself (a self-reference) answered and absent otherwise, and where
- * a direct member answered instead the top-level row too. The runner names a path relative to its working directory,
- * `cwd`. Undefined where the document is unreadable — a process the runner
- * could not follow — or where what was read fits no row: a lookup answered by
- * neither the requirer's own edges nor a direct member (a `node_modules`
- * tree's hidden links, which answer from the whole closure), or a probe that
- * found a directory within a package (whose presence no file row states); the
- * file is then run again next time and the run is keyed on the whole input.
+ * Read an invocation's reads document ({@link IReadsDocument}) and name what it
+ * says in the key's vocabulary ({@link IPackageLayout.nameRead}). The document
+ * names paths relative to the runner's working directory, `cwd`.
+ *
+ * - `reads`: the run's own files read, by name.
+ * - `deps`: rows naming what was read of the packages: each file read; a probe
+ *   that found a package's own directory, as its `package.json`; and for each
+ *   package looked up by name, the requirer's route then `<name> package.json`
+ *   (a row whether or not the lookup was answered), plus the top-level row
+ *   `<name> package.json` where a direct member answered rather than the
+ *   requirer's own dependencies or the requirer itself (a self-reference).
+ * - A path that names nothing in the staged work is skipped.
+ *
+ * @return undefined where the document is unreadable (a process the runner
+ *   could not follow), or where a read fits no row: a lookup answered by
+ *   neither the requirer's own dependencies nor a direct member (a
+ *   `node_modules` tree's hidden links, which answer from the whole closure),
+ *   or a probe that found a directory within a package. The file then runs
+ *   again next time, and the run is keyed on the whole input.
  */
 export function readsOf(
   document: string,
@@ -553,7 +560,7 @@ export function readsOf(
       continue;
     }
     /* A package's lookup of itself (a self-reference through its own
-     * `exports`) is answered by the requirer, whose route row is added above. */
+     * `exports`) needs no row beyond its route row, added above. */
     const ownEdge =
       "file" in requirer
         ? false
@@ -572,6 +579,8 @@ export function readsOf(
 /** The file node reads to resolve a package: a lookup's row ends at it. */
 const MANIFEST_FILE = "package.json";
 
+/** Run the runner on one test file and judge the invocation ({@link judgeRun}),
+ * adding what it read where its reads document says ({@link readsOf}). */
 function runOneFile(
   ctx: ActionContext,
   taskReport: ITaskReport,
@@ -606,11 +615,10 @@ function runOneFile(
 }
 
 /**
- * Judge one invocation from its report, which is the run's result whatever
- * the process did after writing it (a runner may end by signal once it has
- * reported). With no usable report, a failed invocation is the mechanical
- * failure it was, and a successful one is a broken contract — left unchecked
- * it would cache as a passing file that ran no tests, and stay cached.
+ * Judge one invocation from its report, whatever the process's exit status (a
+ * runner may end by signal once it has reported). With no usable report, a
+ * failed invocation's outcome is its own error, and a successful one's is an
+ * ExecutionError saying the report is missing or unusable.
  */
 function judgeRun(workDir: string, invocation: string[], reportName: string, file: string, error: Error | undefined): IFileRun {
   let report: ITestReport;
@@ -618,8 +626,8 @@ function judgeRun(workDir: string, invocation: string[], reportName: string, fil
     report = parseJson(fs.readFileSync(join(workDir, reportName)), reportName, toTestReport);
   } catch (readErr) {
     if (error !== undefined) {
-      /* Absent or unreadable after a red exit: the invocation's own error is
-       * the better story (it carries the captured output). */
+      /* Absent or unreadable after a failed exit: report the invocation's own
+       * error, which carries the captured output. */
       return { file, error };
     }
     const detail = isMissingFile(readErr)
@@ -635,12 +643,13 @@ function isMissingFile(err: unknown): boolean {
 }
 
 /**
- * Conclude the whole run from the per-file outcomes, answering every test
- * file's latest run: this run's where it ran, else the one `reused`.
- * Mechanical failures outrank test outcomes: an invocation that crashed means
- * the run did not happen as specified, so nothing merges and nothing caches.
- * Otherwise the reports merge into one, written as {@link TEST_REPORT_FILENAME}
- * red or green; where tests failed, the task is told so.
+ * Conclude the run from the per-file outcomes. Where any invocation failed
+ * outright, throw a MultiError of those failures, merging nothing. Otherwise
+ * write every test file's latest report (this run's where it ran, else the one
+ * `reused`) merged as {@link TEST_REPORT_FILENAME}, red or green, and fail the
+ * task where tests failed.
+ *
+ * @return every test file's latest run.
  */
 function concludeRun(
   workDir: string,
@@ -724,7 +733,8 @@ export interface ITestRunInputs {
    * links into the content store. */
   writable: FileSet;
   /** The runner invocation, without report or files: the step invokes it once
-   * per `testFiles` entry, appending a per-invocation report name and the file. */
+   * per `testFiles` entry, appending the invocation's report and reads
+   * documents and the file. */
   argv: readonly RunnableArgument[];
   testFiles: string[];
   /** The selectors for what the run leaves behind: the report, plus any
@@ -738,10 +748,7 @@ export interface ITestRunInputs {
   coverage?: { argv: readonly RunnableArgument[]; measured: string[] };
 }
 
-/**
- * @return the action that runs the tests. A generic exec cannot serve: a red
- * run must fail the target while keeping the report.
- */
+/** Make the test-run action ({@link JS_TEST_STEP}). */
 export function createTestRunAction({
   links = {},
   files,
@@ -774,8 +781,8 @@ export function createTestRunAction({
       ...(coverage ? { coverage_argv: coverage.argv } : {}),
     },
     /* Each test file's last run is kept, and what changed since decides which
-     * files run again. The packages are discoverable: the runs report what they read of them,
-     * and the entry is keyed on that selection, as a reporting compile's is. */
+     * files run again. The packages are discoverable: the runs report what they
+     * read of them, and the entry is keyed on that selection. */
     { discoverable: { deps: packages }, trackChangedFiles: true, links }
   );
 }

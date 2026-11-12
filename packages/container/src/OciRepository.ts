@@ -214,7 +214,7 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
   }
 
   /**
-   * Answer `reference` with the node of its image for `OCI_TARGET`'s platform:
+   * Resolve `reference` to the node of its image for `OCI_TARGET`'s platform:
    * a package named as written, at the digest of the platform's manifest,
    * which its tag resolves to here. Its config and layers are fetched only
    * when its files are wanted, once a run. Under `run` its files are the
@@ -351,14 +351,15 @@ function createRepository(context: TargetContext, url?: string, credential?: Cre
   );
 }
 
-/** The implementation CONTAINER.fabr's `repository` declaration names. */
 /**
  * Make what signs in the requests to the registry at `base`: `credential`, or
  * the auth files' login for `loginUrl`, applied to the registry's own origin
- * alone, so a blob read or an upload elsewhere carries nothing of it.
+ * only; a request to any other origin (a blob or upload elsewhere) is sent
+ * without it.
  */
 export function registrySignIn(context: TargetContext, base: string, loginUrl?: string, credential?: Credential): Credential {
   return onlyTo(new URL(base).origin, credential ?? authFileSignIn(context, base, loginUrl));
 }
 
+/** The implementation CONTAINER.fabr's `repository` declaration names. */
 export default { provider: createRepository } satisfies RepositoryImplementation;

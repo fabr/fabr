@@ -40,31 +40,25 @@ import { ChildProcess } from "node:child_process";
 import { resumeActiveTerminal, suspendActiveTerminal, withTerminalSuspended } from "./Terminal";
 
 /**
- * Stage the runnable's install into the program's kept work dir (syncing what
- * changed since that dir was last written) and launch it
- * *interactively*: inherited stdio, so args, pipes, tty and the exit code all
- * pass through, and it runs in the user's own working directory (the entry is
- * anchored at the staged dir, so its module/resource resolution still points at
- * the install regardless of cwd) — or, for an install-anchored runnable
- * (`launchCwd: "install"`), in the staged dir. Returns the program's exit code.
- * This is `fabr run`'s execution half, kept apart from the driver's
- * model/dispatch concerns.
+ * Run `runnable` for `fabr run`: stage its install into the program's kept
+ * work dir (`key`), syncing what changed since the dir was last written, and
+ * launch it with `callerArgs` and fabr's stdio, the terminal's pane suspended
+ * while it runs. It runs in the user's working directory, its entry made
+ * absolute in the staged dir, or, where `launchCwd` is `"install"`, in the
+ * staged dir. Its environment is fabr's with the runnable's `env` over it, and
+ * its launch is ended (its teardown run) once it exits, however it ends.
  *
- * This shares the launch reduction (`toCommandLine`) with the `generate` build
- * step, differing in inherited (not captured) stdio, the launch cwd, and
- * passing the exit code through rather than failing on non-zero.
+ * Resolves to the program's exit status. Rejects where the install cannot be
+ * staged or the program cannot be started.
  */
 export function runInteractive(cache: BuildCache, key: string, runnable: RunnableFileSet, callerArgs: string[]): Computable<number> {
-  /* A kept work dir of the program's: an install is hardlinks into the store, so
-   * it has to be on the store's filesystem, and keeping it means the next run of
-   * the same program syncs what changed rather than staging it all. */
+  /* Stage into a kept work dir, on the store's filesystem: an install is
+   * hardlinks into the store. */
   const dir = cache.holdKeptWorkDir(key);
   const argv = launchArgv(runnable, callerArgs, dir);
   return (
     stageInstall(cache, dir, runnable)
-      /* The program owns the terminal while it runs (it inherits fabr's stdio),
-       * so fabr's own display steps aside for the duration. Its teardown runs
-       * once it has ended, however it ended. */
+      /* The program owns the terminal while it runs. */
       .then(() => {
         const launch = startLaunch(runnable, dir, launchEnv(runnable));
         return withTerminalSuspended(() =>
@@ -94,15 +88,15 @@ function stageInstall(cache: BuildCache, dir: string, runnable: RunnableFileSet,
   );
 }
 
-/** Make the argv for launching from `dir`: an install-anchored runnable runs *in* the
- * staged dir, so its entry stays install-relative (as the exec build step); a
- * caller-cwd runnable runs in the user's directory with the entry made absolute. */
+/** Make the argv for launching `runnable` staged at `dir`: install-relative for
+ * a runnable launched in the install (`launchCwd: "install"`), else made
+ * absolute in `dir`. */
 function launchArgv(runnable: RunnableFileSet, callerArgs: string[], dir: string): string[] {
   return toArgv(runnable.toCommandLine(callerArgs), runnable.launchCwd === "install" ? undefined : dir);
 }
 
-/** Choose the launch cwd override: the staged dir for an install-anchored runnable,
- * none (inherit the caller's) otherwise. */
+/** Choose the launch directory: `dir` for a runnable launched in the install,
+ * else undefined (the caller's). */
 function launchDir(runnable: RunnableFileSet, dir: string): string | undefined {
   return runnable.launchCwd === "install" ? dir : undefined;
 }
@@ -117,93 +111,75 @@ function launchEnv(runnable: RunnableFileSet): Record<string, string> | undefine
   return Object.fromEntries([...inherited, ...runnable.env]);
 }
 
-/** How long a gracefully-stopped child (a restart) has to exit on SIGTERM before
- * its group is SIGKILLed — long enough for a server to close its listeners and
- * free its port, short enough not to stall the relaunch. */
+/** How long a child stopped for a restart has to exit after SIGTERM before
+ * its process group is sent SIGKILL. */
 const RESTART_GRACE_MS = 2000;
 
 const DIAG_RESTART = Diagnostic.Info<{ name: string }>("Restarting {name}");
 const DIAG_UPDATE = Diagnostic.Info<{ name: string; count: number }>("Updating {name} content ({count} files)");
 const DIAG_RUN_ERROR = Diagnostic.Error<{ name: string; message: string }>("Failed to launch {name}: {message}");
 
-/**
- * One staged install of the program: the directory it was written to, the
- * `programKey` (program manifest, launch argv and variables) identifying *which* program it
- * is, what fabr has written into it (`held`, the whole runnable, and its `served`
- * partition — a content sync advances both), and the child running it once launched.
- *
- * A swap has two of these live at once — the old child keeps serving out of its
- * own dir while the replacement is staged — so the supervisor's state is this
- * one type plus two pointers into it ({@link RunSupervisor.target},
- * {@link RunSupervisor.current}), which coincide from launch to the next update.
- */
+/** One staged install of the program, in a kept work dir, and the child running it once launched. */
 interface Install {
   readonly dir: string;
+  /** The key of the program staged: its program manifest, launch argv and variables. */
   readonly programKey: string;
   /** What the dir holds, as fabr last wrote it; undefined where a write into it
    * failed, so its contents are unknown until it is written whole. */
   held: FileSet | undefined;
+  /** The `served` content the dir holds. */
   served: FileSet;
-  /** The writes into the dir so far, each queued behind the last, so a sync or
-   * a restage into it never interleaves with one still landing. A gate, not a
-   * history: once the newest write has landed it is collapsed to a settled node
-   * (see {@link RunSupervisor.update} and {@link RunSupervisor.updateContent}). */
+  /** The last write into the dir queued, each queued behind the one before so
+   * none interleaves with another. Once the newest has landed it is replaced
+   * by a settled node, so the install holds no chain of writes. */
   writes: Computable<void>;
-  /** The number of the most recently queued sync; only the newest write (that
-   * sync, or the staging write where none is queued) may collapse `writes`, since
-   * an earlier one finishing behind a newer one must leave it in place. */
+  /** The number of the most recently queued sync. Only the newest write (that
+   * sync, or the staging write where none is queued) may replace `writes`: an
+   * earlier one finishing later must leave it in place. */
   writeSeq: number;
-  /** Absent until launched — and again once the child has exited. */
+  /** The child running from the dir; undefined until launched and once it has exited. */
   child?: ChildProcess;
   /** The child's launch, ended (its teardown run) once the child has exited. */
   launch?: ILaunch;
 }
 
 /**
- * `fabr run -w`'s execution half: supervise a single long-lived child across the
- * watch session, reacting when the rebuilt install actually changes.
+ * The supervisor of `fabr run -w`'s program: one child, launched from the
+ * runnable each {@link update} is given, across the watch session.
  *
- * The graph already suppresses most churn — an edit that doesn't match the
- * runnable's globs never re-settles it, and a content-preserving touch is
- * skipped upstream — but the Computable cutoff is *identity*-based, so a genuine
- * rebuild hands us a fresh object even when its bytes are unchanged. So the
- * reaction is a pure function of successive artifacts, on two keys:
+ * Each update is compared with the install the supervisor is committed to on
+ * two keys:
+ * - the **program key**: the program's manifest (`programManifest`, the
+ *   install less its `served` content), its launch argv and its `env`. A
+ *   change stages a new install, then stops the running child (SIGTERM, then
+ *   SIGKILL after {@link RESTART_GRACE_MS}) and launches the new one once the
+ *   old has exited, logging "Restarting" where one was running.
+ * - the **served content**: where only it changed, it is synced into the
+ *   committed install's dir in place (syncFileSet, each file replaced
+ *   atomically), with no restart, logging "Updating … content".
  *
- * - the **program key** — the program-partition manifest (the install minus the
- *   `served` content) plus the launch argv and `env` (an args- or env-only decl
- *   edit must relaunch too) — a change triggers the stop-stage-relaunch;
- * - the **served content** — a content-only change is synced into the running
- *   child's staged dir in place (syncFileSet: per-file atomic, so the server —
- *   or its own fs watcher — never sees a torn file), no restart.
- *
- * An ordinary runnable has an empty `served` partition, so the second key never
- * differs and every change relaunches.
- *
- * Installs are kept work dirs of the program's (`key`): a relaunch stages into
- * the install the previous child ran from, or a slot an earlier session left,
- * by syncing what changed (blue/green: the old child keeps serving from its own
- * install while the other is brought up to date), and a shutdown leaves them
- * for the next session.
- *
- * A build error leaves the current child running (the caller simply doesn't
- * call {@link update} on a failed re-settle); a child that exits on its own is
- * *not* auto-respawned — we stay watching and relaunch on the next change.
+ * A runnable with no `served` content relaunches on every change of its
+ * program key. Installs are kept work dirs of the program (`key`): a new one
+ * is staged into the dir a finished child left, else into a slot an earlier
+ * session left, else a new one, by syncing what changed, while the old child
+ * keeps running from its own. A child that exits on its own is not relaunched
+ * until the next update. On fabr's exit every child's process group is killed
+ * ({@link stop}); the dirs are kept for the next session.
  */
 export class RunSupervisor {
   /** Every install staged on disk, so a shutdown releases the lot. */
   private readonly installs = new Set<Install>();
   /** The install a finished child left, if any, for the next relaunch to sync into. */
   private spare?: Install;
-  /** The install we are *committed to* — running, or staged and waiting for the
-   * old child to exit; undefined ⇒ the next update stages and launches. An
-   * update is judged against this rather than against what is *running*, or a
-   * revert-to-what-is-running (save, then undo) mid-swap would read as
-   * unchanged and leave the in-flight swap to launch the superseded program. */
+  /** The install committed to: running, or staged and waiting for the old
+   * child to exit; undefined where the next update stages and launches. Judge
+   * an update against this, not against the install running: mid-swap, an edit
+   * reverting to the running program must still supersede the swap. */
   private target?: Install;
   /** The install whose child is live. */
   private current?: Install;
-  /** Bumped per state-changing reaction; a slower async stage (or sync) checks
-   * it to bail out when a newer reaction has superseded it. */
+  /** The number of the newest update that changed the program; a stage, swap
+   * or sync started by an older one stops where it finds this changed. */
   private generation = 0;
 
   constructor(
@@ -213,22 +189,20 @@ export class RunSupervisor {
     private readonly callerArgs: string[],
     private readonly log: Log
   ) {
-    /* Whatever ends fabr (SIGINT/SIGTERM/SIGHUP → exit 0, an error, a stall)
-     * must take the child with it — a synchronous exit hook kills it and
-     * releases its install. This relies on the process ending via `process.exit`
-     * (the watch lifecycle routes its signals through it); a default signal disposition
-     * would bypass the hook, which is why those signals are handled explicitly. */
+    /* Kill the children however fabr ends. This needs the process to end
+     * through `process.exit`: the watch driver handles SIGINT, SIGTERM and
+     * SIGHUP by calling it, where a default signal disposition would skip the
+     * hook. */
     process.on("exit", () => this.stop());
   }
 
-  /** React to a freshly-settled runnable: relaunch iff its program changed,
-   * sync in place iff only its served content did. The result settles when the
-   * reaction has fully landed (child swapped, sync applied, or nothing to do) —
-   * completion, not success: failures are logged here and never reject, so a
-   * caller can sequence after it (the driver's cycle-completion marker). */
+  /** React to a newly settled runnable: relaunch where its program changed,
+   * sync in place where only its served content did. Settles when the reaction
+   * is done (the child swapped, the sync applied, or nothing to do, or a newer
+   * update superseded it). Never rejects: a failure is logged. */
   public update(runnable: RunnableFileSet): Computable<void> {
-    /* Key on the command line's key text, identical across staged dirs — so an
-     * args/entry-only change relaunches, a mere restage doesn't. */
+    /* The command line's key text names no staged dir, so a restage alone
+     * does not change it. */
     const variables = [...runnable.env].map(([name, value]) => `${name}=${value}`).join("\0");
     const programKey = `${runnable.programManifest()}\n$ ${manifestArguments(runnable.toCommandLine(this.callerArgs))}\n${variables}`;
     if (programKey === this.target?.programKey) {
@@ -236,10 +210,8 @@ export class RunSupervisor {
     }
     const wasRunning = this.current !== undefined;
     const generation = ++this.generation;
-    /* Stage the replacement install BEFORE touching the running child: the old
-     * process keeps serving while we write, and a staging failure leaves it
-     * running (killing it up front would leave nothing to fall back to). The
-     * running child is only stopped once the new install is ready to launch. */
+    /* Stage the new install before stopping the running child, which keeps
+     * running where staging fails. */
     const spare = this.spare;
     this.spare = undefined;
     const install: Install = {
@@ -251,21 +223,19 @@ export class RunSupervisor {
       writeSeq: 0,
     };
     this.installs.add(install);
-    /* Commit at stage time, not at launch, so an update arriving mid-swap is
-     * judged against what we are heading for and a content sync lands in this
-     * install whether or not the child has been swapped over to it yet. */
+    /* Commit as staging starts: a later update is judged against this
+     * install, and a content sync lands in it, whether or not the child has
+     * been swapped to it yet. */
     this.target = install;
     const argv = launchArgv(runnable, this.callerArgs, install.dir);
-    /* A restage into the spare queues behind the writes still landing in it (a
-     * sync its own program was given before it was superseded), and starts from
-     * what they left: `held` is read once they are done. */
+    /* A restage into the spare queues behind the writes still landing in it,
+     * and starts from what they left: `held` is read once they are done. */
     const staged = (spare?.writes ?? Computable.resolve(undefined)).then(() =>
       stageInstall(this.cache, install.dir, runnable, spare?.held)
     );
-    /* Syncs into this install queue behind its staging write — the dir does not
-     * hold the program until it lands. Once it has, the gate collapses to a settled
-     * node as a sync's does, or the install would hold the spare it was staged from,
-     * and that one its own, back through every install of the session. */
+    /* Syncs into this install queue behind its staging write. Once that has
+     * landed, replace `writes` with a settled node, or each install would hold
+     * the spare it was staged from, back through every install of the session. */
     const seq = install.writeSeq;
     let collapsed = false;
     const landed = (): undefined => {
@@ -289,11 +259,10 @@ export class RunSupervisor {
     );
   }
 
-  /** Swap to the staged `install`: stop the old child (if any) and launch it
-   * once that child has *actually exited*. The wait matters: a real server still holds its
-   * port until it exits, so binding the replacement synchronously races it
-   * (EADDRINUSE) — exactly the dev-server case run supervises. Resolves when the
-   * new child is running (or the update was superseded meanwhile). */
+  /** Swap to the staged `install`: stop the old child, if any, and launch the
+   * new one once the old has exited (a server holds its port until then).
+   * Resolves once the new child is launched, or the update was superseded and
+   * `install` retired. */
   private swap(
     install: Install,
     argv: string[],
@@ -301,8 +270,8 @@ export class RunSupervisor {
     generation: number,
     wasRunning: boolean
   ): Computable<void> {
-    /* A newer update raced ahead while we staged — discard this one and leave the
-     * current child alone (that newer update will supersede it). */
+    /* A newer update came while this one staged: retire this install and
+     * leave the running child to the newer update. */
     if (generation !== this.generation) {
       this.retire(install);
       return Computable.resolve(undefined);
@@ -312,11 +281,9 @@ export class RunSupervisor {
       this.launch(install, argv, runnable, generation, wasRunning);
       return Computable.resolve(undefined);
     }
-    /* Stop the old child gracefully and defer the launch to its exit — its own
-     * exit handler ({@link onChildGone}) drops its staged install, so we neither
-     * pre-remove it (the child may still read the tree while shutting down) nor
-     * spawn over a still-listening server. The escalation timer SIGKILLs a child
-     * that overruns the grace window; that kill's exit still drives the launch. */
+    /* Launch once the old child has exited, whether on SIGTERM or on the
+     * SIGKILL after the grace period. Its own exit handler ({@link onChildGone})
+     * retires its install. */
     return Computable.from(resolve => {
       old.once("exit", () => {
         this.launch(install, argv, runnable, generation, wasRunning);
@@ -326,9 +293,9 @@ export class RunSupervisor {
     });
   }
 
-  /** Give `install` its child. Generation-guarded: a newer update that superseded
-   * us while the old child was exiting discards this now-stale install instead of
-   * launching it. */
+  /** Launch `install`'s child, unless a newer update superseded it while the
+   * old child was exiting, in which case `install` is retired. A failure to
+   * launch is logged, and the install discarded. */
   private launch(install: Install, argv: string[], runnable: RunnableFileSet, generation: number, wasRunning: boolean): void {
     if (generation !== this.generation) {
       this.retire(install);
@@ -346,15 +313,12 @@ export class RunSupervisor {
         launchDir(runnable, install.dir),
         launch.env
       );
-      /* The supervised program owns the terminal from here until it exits —
-       * which outlives the build that launched it, so the hand-over is bracketed
-       * by the child's own lifetime rather than by a chain. Rebuild diagnostics
-       * still print; only the live pane stands down. */
+      /* The program owns the terminal until it exits ({@link onChildGone}
+       * resumes it); only the pane stands down, and fabr's log lines still print. */
       suspendActiveTerminal();
       install.child = child;
       this.current = install;
-      /* `target` is not re-pointed here — it was set when this install was staged,
-       * and a content sync that landed since has already advanced its `served`. */
+      /* `target` was set when this install was staged. */
       child.on("error", err => this.onChildGone(install, err));
       child.on("exit", () => this.onChildGone(install));
     } catch (err) {
@@ -363,10 +327,8 @@ export class RunSupervisor {
     }
   }
 
-  /** Forget an install and give up its dir — it failed to stage or launch.
-   * Idempotent. If it was still the commitment (rather than a newer update having
-   * taken over) that goes with it, so the next update stages afresh instead of
-   * matching a dead install's key. */
+  /** Forget an install that failed to stage or launch, and give up its dir.
+   * Where it was the `target`, the next update stages afresh. */
   private discard(install: Install): void {
     this.forget(install);
     this.cache.releaseKeptWorkDir(install.dir);
@@ -387,6 +349,7 @@ export class RunSupervisor {
     }
   }
 
+  /** Drop `install` from the installs held, and from `target` where it is that. */
   private forget(install: Install): void {
     this.installs.delete(install);
     if (this.target === install) {
@@ -398,22 +361,22 @@ export class RunSupervisor {
     this.log.log(DIAG_RUN_ERROR, { name: this.name, message: err instanceof Error ? err.message : String(err) });
   }
 
-  /** SIGTERM a child's whole process group, escalating to SIGKILL if it hasn't
-   * exited within {@link RESTART_GRACE_MS} — so a well-behaved server closes its
-   * listeners (frees its port) first. Unref'd so the escalation timer never keeps
-   * the loop alive on its own; the live child handle does until it exits. */
+  /** Send a child's whole process group SIGTERM, and SIGKILL after
+   * {@link RESTART_GRACE_MS}. The timer is unref'd, so it never keeps the
+   * process alive. */
   private stopChildGroup(child: ChildProcess): void {
     killProcessGroup(child, "SIGTERM");
     setTimeout(() => killProcessGroup(child, "SIGKILL"), RESTART_GRACE_MS).unref();
   }
 
-  /** Apply a served-content delta (if any) to the committed install's dir in
-   * place, the program being unchanged. Queued behind that install's writes so
-   * they apply in settle order; a restart that supersedes a queued sync before
-   * it starts discards it. One that has started runs to its end, and the
-   * install's `held` and record follow what it wrote, since a later restage
-   * into the dir starts from them. Settles when this cycle's sync has landed
-   * (or proved unnecessary). */
+  /** Sync `runnable`'s served content into the committed install's dir in
+   * place, the program being unchanged, where it differs from what the dir
+   * holds; a dir whose contents are unknown is written whole. Queued behind
+   * the install's writes, so they apply in the order the updates came. A
+   * restart before the sync starts cancels it; a sync that has started runs
+   * to its end, and the install's `held` and record follow what it wrote.
+   * Settles once the sync has landed or was not needed. Never rejects: a
+   * failure is logged, and leaves `held` unknown. */
   private updateContent(runnable: RunnableFileSet): Computable<void> {
     const target = this.target;
     if (target === undefined) {
@@ -421,8 +384,8 @@ export class RunSupervisor {
     }
     const generation = this.generation;
     const seq = ++target.writeSeq;
-    /* Release the gate on every terminal path (including the nothing-to-do ones),
-     * so a run that syncs indefinitely holds one settled node rather than a chain. */
+    /* Replace `writes` with a settled node on every way out, including
+     * nothing to do, so the install holds no chain of syncs. */
     let collapsed = false;
     const finish = (): undefined => {
       if (seq === target.writeSeq) {
@@ -464,30 +427,27 @@ export class RunSupervisor {
         }
       );
     });
-    /* A sync with nothing to do settles while `then` is still constructing, so the
-     * gate is already released by here — taking `sync` as the gate would reinstate
-     * the chain it just dropped. */
+    /* A sync with nothing to do runs `finish` while `then` is still making
+     * `sync`; taking `sync` as `writes` then would hold the chain again. */
     if (!collapsed) {
       target.writes = sync;
     }
     return sync;
   }
 
-  /** Drop `install`'s child once it has ended (crash, one-shot completion, or a
-   * spawn error), so the next change relaunches. Keyed on the install, so a handler for a
-   * superseded one can't clear the live child. */
+  /** Drop `install`'s child once it has ended (it exited, or failed to spawn,
+   * `err` then logged): resume the terminal, end its launch and retire the
+   * install. The next update launches a child again. */
   private onChildGone(install: Install, err?: Error): void {
     if (install.child === undefined) {
-      /* `error` and `exit` can both fire for one child; the first delivery was
-       * the event, and a second resume would lift someone else's nested
-       * suspension early. */
+      /* `error` and `exit` can both fire for one child: act on the first only,
+       * or the second resume would lift another suspension. */
       return;
     }
     if (err) {
       this.log.log(DIAG_RUN_ERROR, { name: this.name, message: err.message });
     }
-    /* The terminal is fabr's again (a restart's new child suspends it afresh).
-     * What the child started is undone before anything relaunches. */
+    /* End the launch (run its teardown) before anything relaunches. */
     resumeActiveTerminal();
     install.launch?.end();
     install.launch = undefined;
@@ -498,14 +458,10 @@ export class RunSupervisor {
     this.retire(install);
   }
 
-  /** Kill every live child's whole process group and give up every install — one
-   * loop, since `installs` is exactly what is held (the running one plus any
-   * staged mid-restart); each is left on disk for the next session, as its
-   * record describes it. Synchronous and hard (SIGKILL), so it is safe and
-   * reliable from a `process.on("exit")` hook: fabr is already leaving, so
-   * guaranteeing no orphaned workers outranks giving the child a graceful window.
-   * The whole group is signalled, not just the direct child, so a program that
-   * forked its own workers isn't left orphaned. */
+  /** Send every live child's whole process group SIGKILL, end each launch, and
+   * give up every install's dir, leaving it on disk for the next session as
+   * its record describes it. Synchronous, so it can run from a
+   * `process.on("exit")` hook. */
   public stop(): void {
     for (const install of this.installs) {
       if (install.child) {

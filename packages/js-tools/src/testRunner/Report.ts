@@ -18,12 +18,11 @@
  */
 
 /**
- * The runner-side implementation of the test report contract. The contract
- * itself — a CTRF document (https://ctrf.io) — is defined by @fabr-build/core
- * (support/TestResult.ts) and consumed there by the rules and the driver; the
- * runner executes standalone inside the test working directory — it cannot
- * reach the host's core at runtime — so it carries its own copies of the
- * (small) helpers. Keep them in sync with core.
+ * The runners' side of the test report contract, a CTRF document
+ * (https://ctrf.io) defined by @fabr-build/core (support/TestResult.ts): how a
+ * result names its file, where snapshots are recorded, and how failures are
+ * described. A runner cannot load core at runtime, so what it needs of core is
+ * copied here: keep the copies in sync with core.
  */
 
 import * as fs from "node:fs";
@@ -32,31 +31,25 @@ import { takeCoverage } from "node:v8";
 import type { ITestReport, ITestResult, ITestSummary } from "@fabr-build/core";
 import { getMapSource, referenceOfEntry, SOURCE_LOCATIONS_FILE } from "../support/SourceMap";
 
-/**
- * The mounts a test installation is laid out under — the compile's own `src/`
- * and `build/`, reproduced there so each `.js.map` resolves (see TestPipeline).
- * Duplicated from the host rather than imported: a runner executes standalone in
- * the test process and cannot reach core at runtime. Keep in sync with
- * BuildJSCompile's COMPILE_SRC_DIR/COMPILE_OUT_DIR.
- */
+/** The directories a test installation mounts the compile's sources and output
+ * under. Keep in sync with BuildJSCompile's COMPILE_SRC_DIR and COMPILE_OUT_DIR. */
 const INSTALL_MOUNTS = ["src", "build"];
 
-/** Memo of {@link reportPathOf}: the node:test flavour asks per *test*, not
- * per file. */
+/** Memo of {@link reportPathOf}, by compiled file (the node:test flavour asks
+ * once per test). */
 const reportPaths = new Map<string, string>();
 
 /**
- * Name a test file in the report as the source it was compiled from. Fabr
- * compiles ahead of the run, so the file executed is `build/Foo.test.js` while the thing to point at is its source, and the
- * `.js.map` beside it records that authoritatively (a stem guess cannot tell
- * `Foo.test.ts` from a `Foo.test.js` next to it).
+ * Get the name the report gives a compiled test file: the source it was
+ * compiled from, as the `.js.map` beside it names it.
  *
- * A map fabr wrote names the source by its reference
- * (`fabr:./packages/x/src/Foo.test.ts`), and the report names it by the path
- * that reference gives (`packages/x/src/Foo.test.ts`). A map naming its source
- * relative to itself is named as the install lays it out, the mount (`src/`)
- * stripped. Degrades rather than fails: no map (a release build emits none)
- * leaves the compiled name, likewise stripped.
+ * - A map entry naming the source by reference
+ *   (`fabr:./packages/x/src/Foo.test.ts`) gives that reference's path
+ *   (`packages/x/src/Foo.test.ts`).
+ * - A map entry naming the source by a path gives that path relative to the
+ *   install, its mount (`src/`) stripped.
+ * - With no map (a release build emits none), the compiled file's path relative
+ *   to the install, its mount (`build/`) stripped.
  */
 export function reportPathOf(file: string): string {
   let name = reportPaths.get(file);
@@ -70,25 +63,24 @@ export function reportPathOf(file: string): string {
   return name;
 }
 
-/** The root of the staged install, under which the mounts sit: a runner is
- * invoked with the compiled mount (`build/`) as its working directory. */
+/** @return the root of the staged install: the parent of the runner's working
+ * directory, the compiled mount (`build/`). */
 function installRoot(): string {
   return path.dirname(process.cwd());
 }
 
-/** Drop the leading install mount, so the name is the target's own. */
+/** @return `relative` without its leading install mount, where it has one. */
 function stripMount(relative: string): string {
   const [first, ...rest] = relative.split(path.sep);
   return rest.length > 0 && INSTALL_MOUNTS.includes(first) ? rest.join(path.sep) : relative;
 }
 
 /**
- * Where the source a compiled file was emitted from is staged, per its own
- * `.js.map`: the path a relative entry resolves to, or for a fabr reference the
- * location the installation records for it ({@link SOURCE_LOCATIONS_FILE}).
- * Undefined when it cannot be known. Absolute.
- *
- * Shared rather than private: the jest flavour reads a test's docblock from it.
+ * Get where the source a compiled file was emitted from is staged, as an
+ * absolute path, from its `.js.map`: the path a path entry names, or for a
+ * reference the location the installation records for it
+ * ({@link SOURCE_LOCATIONS_FILE}). Undefined where there is no map, or the
+ * installation records no location for the reference.
  */
 export function sourcePathOf(compiled: string): string | undefined {
   const entry = getMapSource(compiled);
@@ -100,15 +92,16 @@ export function sourcePathOf(compiled: string): string | undefined {
   return staged === undefined ? undefined : path.resolve(installRoot(), staged);
 }
 
-/** A stack frame's location naming a fabr reference: the reference, then the
- *  line and column, at the end of a frame line or before its closing paren. */
+/** Matches a stack frame's location naming a fabr reference: the reference,
+ *  then the line and column, at the end of a frame line or before its closing
+ *  paren. */
 const REFERENCED_FRAME = /fabr:(\S+?):(\d+):(\d+)(?=\)|$)/gm;
 
 /**
- * `stack` with each frame that names a source by reference naming where the
- * installation stages it instead, so that what reads a frame's file (jest's
- * code frame) finds it. A frame naming a source the installation does not
- * stage is left as it is.
+ * @return `stack` with each frame that names a source by reference naming where
+ * the installation stages it instead, so that what reads a frame's file (jest's
+ * code frame) finds it. A frame naming a source the installation does not stage
+ * is left as it is.
  */
 export function withStagedSources(stack: string): string {
   return stack.replace(REFERENCED_FRAME, (frame: string, reference: string, line: string, column: string) => {
@@ -119,8 +112,8 @@ export function withStagedSources(stack: string): string {
 
 let staged: ReadonlyMap<string, string> | undefined;
 
-/** The installation's record of where each source is staged, by source path:
- *  empty where it records none. Read once. */
+/** Get the installation's record of where each source is staged, by source
+ *  path: empty where it records none. Read once. */
 function stagedSources(): ReadonlyMap<string, string> {
   if (staged === undefined) {
     try {
@@ -138,10 +131,10 @@ const SNAPSHOT_DIR = "__snapshots__";
 export const SNAPSHOT_EXT = ".snap";
 
 /**
- * Where the compiled test file `testPath` keeps its recorded snapshots:
+ * Get the path of the compiled test file `testPath`'s recorded snapshots:
  * `__snapshots__/<source file name>.snap` beside it, the source being the one
- * its `.js.map` names. Without a map it is an existing record matching the
- * test by **stem**, and failing that one named for the compiled file.
+ * its `.js.map` names. Without a map it is an existing record whose name has
+ * the test's stem, or failing that `<compiled file name>.snap`.
  */
 export function snapshotPathOf(testPath: string): string {
   const dir = path.join(path.dirname(testPath), SNAPSHOT_DIR);
@@ -154,21 +147,21 @@ export function snapshotPathOf(testPath: string): string {
   return path.join(dir, existing ?? path.basename(testPath) + SNAPSHOT_EXT);
 }
 
-/** A file's name with its final extension removed. */
+/** @return a file's name with its final extension removed. */
 function stemOf(name: string): string {
   return name.replace(/\.[^.]+$/, "");
 }
 
+/** @return the names in `dir`, empty where it does not exist. */
 function readdir(dir: string): string[] {
   try {
     return fs.readdirSync(dir);
   } catch {
-    /* No records for this file yet — the ordinary first-run case. */
     return [];
   }
 }
 
-/** How a failure reads in the report: its one-line `message`, and a `trace`
+/** A failure as the report states it: a one-line `message`, and a `trace`
  * where the message cannot carry the diagnosis. */
 export interface IFailureDescription {
   message: string;
@@ -178,14 +171,15 @@ export interface IFailureDescription {
 /** The frame every failure of node:test's snapshot assertion carries. */
 const SNAPSHOT_FRAME = "(node:internal/test_runner/snapshot:";
 
-/** node's advice for a missing record: a flag of the `node` command line,
- * which nobody running `fabr test` can pass. */
+/** Matches node's advice for a missing record, which names a flag of the
+ * `node` command line; replaced with fabr's. */
 const NODE_UPDATE_ADVICE = /\s*Missing snapshots can be generated[^.]*\./;
 
 /**
- * A failure of node:test's `t.assert.snapshot`, described in fabr's terms —
- * the remedy is `fabr test -u`, and a mismatch is a line diff of the recorded
- * value against the actual one — or undefined if `cause` is any other failure.
+ * Describe a failure of node:test's `t.assert.snapshot` in fabr's terms: the
+ * remedy is `fabr test -u`, and a mismatch has a line diff of the recorded
+ * value against the actual one as its trace. Undefined where `cause` is any
+ * other failure.
  */
 export function describeSnapshotFailure(cause: Error): IFailureDescription | undefined {
   if (!cause.stack?.includes(SNAPSHOT_FRAME)) {
@@ -210,8 +204,8 @@ export function describeSnapshotFailure(cause: Error): IFailureDescription | und
   return { message: cause.message.replace(NODE_UPDATE_ADVICE, " Run 'fabr test -u' to record them again.") };
 }
 
-/** A line diff of `before` against `after`: common lines indented, the rest
- * marked `-` (only in `before`) or `+` (only in `after`). */
+/** @return a line diff of `before` against `after`: common lines indented, the
+ * rest marked `-` (only in `before`) or `+` (only in `after`). */
 function lineDiff(before: string[], after: string[]): string[] {
   /* common[i][j]: the longest common subsequence of before[i..] and after[j..]. */
   const common = before.map(() => new Array<number>(after.length + 1).fill(0));
@@ -238,9 +232,12 @@ function lineDiff(before: string[], after: string[]): string[] {
   return lines;
 }
 
-/** The report filename, relative to the test working directory (= core's TEST_REPORT_FILENAME) */
+/** The report's default file name, relative to the runner's working directory.
+ * Keep equal to core's TEST_REPORT_FILENAME. */
 export const TEST_REPORT_FILENAME = "ctrf-report.json";
 
+/** Make the CTRF report of `tests`, run between `start` and `stop` (epoch
+ * milliseconds). */
 export function buildReport(tests: ITestResult[], start: number, stop: number): ITestReport {
   const summary: ITestSummary = { tests: tests.length, passed: 0, failed: 0, pending: 0, skipped: 0, other: 0, start, stop };
   for (const test of tests) {
@@ -255,8 +252,8 @@ export function buildReport(tests: ITestResult[], start: number, stop: number): 
  * threadpool, which `process.exit` would wait for), the process runs its `exit`
  * listeners, writes its V8 coverage where it is measured (`NODE_V8_COVERAGE`)
  * and kills itself rather than exiting with `status`; output not yet written
- * to a pipe may then be lost. Never deferred to a later turn of the event loop,
- * which work the tests left running may never yield.
+ * to a pipe may then be lost. Call it in the same turn of the event loop: work
+ * the tests left running may never yield to a later one.
  */
 export function endAfterReport(status: number): never {
   if (pendingRequests().length > 0) {

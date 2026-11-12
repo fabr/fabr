@@ -18,34 +18,27 @@
  */
 
 /*
- * Content classification by magic bytes — the home of {@link IFile.mime}'s
- * vocabulary and the one place that knows a format's signature. Keep it
- * import-free: classification is consulted from the lowest layers (file
- * hashing, the cache store), which must not drag stream/unpack machinery into
- * their import graphs.
+ * Classifying content by its leading bytes: the values of {@link IFile.mime}.
+ * Keep this module free of imports: file hashing and the cache store use it.
  */
 
-/** How many leading bytes classification needs (tar's magic sits at bytes
- * 257–262; everything else is within the first four). */
+/** The number of leading bytes classification reads (tar's magic is at bytes
+ * 257 to 261). */
 export const SNIFF_LENGTH = 262;
 
-/* The MIME names fabr's sniffer can assign — the persistent vocabulary of
- * {@link IFile.mime} (written into cache manifests, so additions extend it and
- * never re-number it). Standard names, minimal set: a type earns an entry when
- * something consumes it. */
+/* The MIME types {@link sniffMime} assigns. They are written into cache
+ * manifests: add to them, never change one. */
 export const MIME_GZIP = "application/gzip";
 export const MIME_TAR = "application/x-tar";
 export const MIME_ZIP = "application/zip";
 export const MIME_XZ = "application/x-xz";
-/** The everything-else classification: every file has a mime; this is "nothing
- * fabr recognizes", NOT an error. */
+/** The MIME type of a file of no type fabr recognizes. */
 export const MIME_UNKNOWN = "application/octet-stream";
 
 /**
- * Classify content by its leading bytes (up to {@link SNIFF_LENGTH} of them —
- * fewer is fine, the magic simply won't match). Pure and deterministic: the
- * same bytes always classify the same way, which is what makes the result safe
- * to persist beside the content hash.
+ * Classify content by its leading bytes (the first {@link SNIFF_LENGTH}; fewer
+ * classify as far as they reach).
+ * @return a gzip, tar, zip or xz MIME type, else {@link MIME_UNKNOWN}.
  */
 export function sniffMime(head: Buffer): string {
   if (head[0] === 0x1f && head[1] === 0x8b && head[2] === 0x08) {
@@ -61,8 +54,7 @@ export function sniffMime(head: Buffer): string {
   }
 }
 
-/** @return true if this mime names an archive fabr can expand (see Expand.ts /
- * Unpack.ts), otherwise false. */
+/** @return true if `mime` is of an archive fabr can unpack, otherwise false. */
 export function isArchiveMime(mime: string): boolean {
   return mime === MIME_GZIP || mime === MIME_TAR || mime === MIME_ZIP || mime === MIME_XZ;
 }

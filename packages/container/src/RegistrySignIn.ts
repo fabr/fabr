@@ -32,13 +32,17 @@ import {
 import { containerPluginContext, IRegistryCredential } from "./RegistryAuth";
 
 /**
- * Signing in to a registry as it asks, from its 401's challenge: with a
- * bearer token fetched for the request's scopes, with the registry's own
- * credential where there is one or else anonymously, or with that credential
- * itself (`Basic`). Once the registry has named its token realm, a request
- * needing scopes no token is held for has one fetched before it is sent. A
- * token is kept for its scopes; one the registry no longer accepts is fetched
- * again, once however many requests meet it together.
+ * A `Credential` that signs in to a registry as its 401 challenge asks:
+ *
+ * - `Bearer`: a token fetched from the challenge's realm for the request's
+ *   scopes, signed in with the registry's credential where there is one, else
+ *   anonymously.
+ * - `Basic`: the registry's credential itself; no headers where there is none.
+ *
+ * Once the registry has named its realm, a request needing scopes no token is
+ * held for has one fetched before it is sent. A token is kept per set of
+ * scopes; one the registry rejects is fetched again, once for all the requests
+ * rejected together. A challenge of any other scheme is rejected.
  */
 export class RegistrySignIn implements Credential {
   /** The token for each set of scopes, by the scopes joined. */
@@ -101,7 +105,7 @@ export class RegistrySignIn implements Credential {
     credential: IRegistryCredential | undefined
   ): Computable<string> {
     const realm = new URL(challenge.realm);
-    /* The credential is sent no less securely than the registry's own requests. */
+    /* Send the credential only over https, or over http where the registry itself is http. */
     if (
       credential !== undefined &&
       realm.protocol !== "https:" &&

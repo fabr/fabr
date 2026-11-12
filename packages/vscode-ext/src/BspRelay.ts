@@ -17,9 +17,11 @@
 /**
  * The project's build server, shared with other clients in the window — the
  * Java language server's fabr importer — over a Unix socket: each connection
- * is a BSP session of its own, `build/initialize` answered with what the
- * server answered the extension, every other request forwarded to the server,
- * and every notification the server sends passed on.
+ * is a BSP session of its own. `build/initialize` is answered with what the
+ * server answered the extension, `build/shutdown` with null, and every other
+ * request is forwarded to the server; `build/exit` ends the connection, and
+ * the connection's other notifications are dropped. Every notification the
+ * server sends is passed on to every connection.
  */
 
 import * as fs from "fs";
@@ -27,10 +29,11 @@ import * as net from "net";
 import { type JsonRpcClient, readMessages, sendMessage } from "./JsonRpcClient";
 
 /**
- * Serve `client`'s server at the socket `socket`, `initialized` the result of
- * its `build/initialize`.
+ * Serve `client`'s server at the socket `socket`, replacing any file there,
+ * `initialized` the result of its `build/initialize`. The relay stops passing
+ * on notifications once it is closed.
  *
- * @return the relay, once it is listening.
+ * @return the relay, once it is listening; rejects where it cannot listen.
  */
 export function relayBuildServer(client: JsonRpcClient, initialized: unknown, socket: string): Promise<net.Server> {
   const connections = new Set<net.Socket>();

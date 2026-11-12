@@ -20,8 +20,8 @@
 import { Computable, IdentityProvider, ISlsaBuild, jwtClaims, SIGSTORE_AUDIENCE } from "@fabr-build/core";
 
 /**
- * Make the identity provider of the GitLab CI/CD job `env` describes, whose
- * tokens, given to the job before it ran, `token` answers with.
+ * Make the identity provider of the GitLab CI/CD job `env` describes. `token`
+ * answers with the identity tokens the job was given before it ran.
  */
 export function gitLabCiProvider(env: NodeJS.ProcessEnv, token: (audience: string) => Computable<string>): IdentityProvider {
   return { token, build: gitLabBuild(env, token) };

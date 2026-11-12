@@ -18,31 +18,32 @@
  */
 
 /*
- * How a tool's source maps name the sources they map: by the fabr reference
- * that resolves to each (`fabr:./packages/core/src/Fabr.ts`, `fabr:gen:out/x.ts`),
- * an absolute entry no composing tool re-resolves. The step running a tool
- * stages a table of the source path of each file it staged — a row per file, or
- * per directory (`dir/` → a prefix) whose files are all named `<prefix><path
- * within>`; a source the table lacks keeps the entry the tool wrote for it.
+ * Naming the sources in a tool's source maps by the fabr reference that
+ * resolves to each (`fabr:./packages/core/src/Fabr.ts`, `fabr:gen:out/x.ts`),
+ * an absolute entry that a tool composing maps keeps as it is. The step running
+ * a tool stages a table of the source path of each file it staged: a row per
+ * file, or per directory (`dir/` → a prefix) whose files are all named
+ * `<prefix><path within>`. A source the table lacks keeps the entry the tool
+ * wrote for it.
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-/** Where the step stages the table, and the flag that names it on a tool's
- *  command line. */
+/** The file the step stages the table as. */
 export const SOURCE_PATHS_FILE = ".fabr-source-paths.json";
+/** The flag naming the table on a tool's command line. */
 export const SOURCE_PATHS_FLAG = "--source-paths";
 
-/** Where a test installation stages the location of each source it holds, by
- *  its source path: what a runner opens a source a map entry names by. */
+/** The file in which a test installation records where it staged each source,
+ *  by source path: how a runner finds the source a map entry names. */
 export const SOURCE_LOCATIONS_FILE = ".fabr-source-locations.json";
 
 /** The scheme of a map entry fabr writes. */
 const FABR_SCHEME = "fabr:";
 
 /** @return true if a map entry is an absolute URL (`fabr:…`, `webpack://…`),
- *  which a tool composing maps leaves as it is, otherwise false. */
+ *  otherwise false. */
 function isAbsoluteEntry(entry: string): boolean {
   return /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(entry);
 }
@@ -65,11 +66,11 @@ export function readSourcePaths(file: string): ReadonlyMap<string, string> {
 }
 
 /**
- * Rewrite `text`, the map at `mapFile`, so every relative `sources` entry is
- * named as a fabr reference: resolved against the map, and named by
- * `referenceOf` from its path relative to `root` — or left as it is where
- * that names nothing. An absolute entry is kept, and `sourceRoot` is dropped,
- * every relative entry having been resolved through it.
+ * Rewrite `text`, the map at `mapFile`, so every relative `sources` entry is a
+ * fabr reference: resolved against the map's directory and `sourceRoot`, and
+ * named by `referenceOf` from its path relative to `root`, or left as it is
+ * where that gives undefined. An absolute entry is kept. `sourceRoot` is
+ * dropped. A map with no `sources` array is returned unchanged.
  */
 export function withReferencedSources(
   text: string,
@@ -106,11 +107,12 @@ export interface IStagedReferenceOptions {
 }
 
 /**
- * Make the namer a tool uses for a source it staged, from the table a step
- * staged and named on its command line ({@link SOURCE_PATHS_FLAG}, written
- * `--flag value` or `--flag=value`): by the table's row for it or for the innermost directory
- * holding it, or failing both, with `withinPackages`, by a package containing
- * it. Undefined for a source none names, and wholly where no table was staged.
+ * Make the function a tool names a staged source with, from the table `argv`
+ * names ({@link SOURCE_PATHS_FLAG}, as `--flag value` or `--flag=value`,
+ * relative to `root`): by the table's row for the source or for the innermost
+ * directory holding it, or else, with `withinPackages`, by a package holding
+ * it. The function gives undefined for a source none of these names; the
+ * result is undefined where `argv` names no table.
  */
 export function stagedReferences(
   argv: string[],

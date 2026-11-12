@@ -64,6 +64,7 @@ const DOC_DIR = "doc";
 /** The argument file javadoc reads its arguments from. */
 const ARGUMENTS_FILE = ".fabr-javadoc.args";
 
+/** Make the javadoc action for the `.java` files among the sources, or nothing where there are none. */
 function generateJavadoc(context: TargetContext, { srcs, deps }: { srcs: FileSet[]; deps: FileSet[] }): Computable<RuleResult> {
   const sources = FileSet.unionAll(...srcs);
   const javaFiles = [...sources].map(([name]) => name).filter(name => name.endsWith(".java"));

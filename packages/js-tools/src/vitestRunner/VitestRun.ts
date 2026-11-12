@@ -18,14 +18,12 @@
  */
 
 /**
- * What the vitest runner asks of vitest and what it makes of the answer — the
- * two conversions between fabr's runner contract and vitest's own interfaces,
- * kept apart from the process that performs them (runner.ts) so they can be
- * exercised without vitest installed.
+ * The vitest runner's two conversions: from fabr's runner contract to the
+ * options vitest runs with, and from what vitest reports to fabr's test
+ * results. They are apart from runner.ts so they can be tested without vitest.
  *
- * Vitest is typed structurally and locally: it comes from the TARGET's
- * dependencies, in whatever version the project chose, so there is no type
- * package of it to compile this against.
+ * Vitest's interfaces are typed here, structurally: vitest comes from the
+ * target's dependencies, at the version the project chose.
  */
 
 import * as fs from "node:fs";
@@ -61,15 +59,14 @@ export interface IReportedModule {
 
 /**
  * Make the options one invocation runs vitest with, for the test files of
- * `options` in the installation whose working directory is `root`, each worker
- * loading the runner's own `preloads` before the target's setup entries, and
- * `workerPreloads` before anything at all. Nothing is read from a config file:
- * what a suite needs is what the target declares.
+ * `options` in the installation whose working directory is `root`, reporting
+ * to `reporter`. Each worker loads `workerPreloads` (with `--require`) before
+ * anything else, then `preloads` and the target's setup entries as
+ * `setupFiles`. No config file is read.
  *
- * Modules load through node's own loader (`viteModuleRunner: false`), which is
- * what the compiled tests are built for, and recorded snapshots are checked
- * strictly unless they are being updated — vitest would otherwise record a
- * missing one and pass.
+ * Tests load through node's own loader (`viteModuleRunner: false`). Snapshots
+ * are written only where `options.update` is set; otherwise a missing one
+ * fails.
  */
 export function vitestOptions(
   options: IRunnerOptions,
@@ -104,9 +101,10 @@ const NO_TESTS = "No test suite found in file";
 const STATUS: Record<string, TestStatus> = { passed: "passed", failed: "failed", skipped: "skipped" };
 
 /**
- * Convert the results of one test file: each of its tests, or a single failure
- * of the file where it could not be loaded, or registered no tests at all —
- * which is a mistake to report, not a suite that passed.
+ * Convert one test file's results: one per test, or a single failure of the
+ * file where vitest reports an error of the file (it could not be loaded) or
+ * the file registered no tests. A `todo` test is `pending`, and a state fabr
+ * has no name for is `other`.
  */
 export function toTestResults(module: IReportedModule): ITestResult[] {
   const filePath = reportPathOf(module.moduleId);
@@ -115,8 +113,8 @@ export function toTestResults(module: IReportedModule): ITestResult[] {
   ];
   const tests = [...module.children.allTests()];
   const errors = module.errors();
-  /* Vitest reports a file with no tests as an error of the file, worded around
-   * a path inside the installation. */
+  /* Vitest reports a file with no tests as an error of the file, naming a path
+   * inside the installation; report it in fabr's words. */
   if (tests.length === 0 && errors.every(error => error.message?.startsWith(NO_TESTS) ?? false)) {
     return fileFailure({ message: "This test file registered no tests" });
   }
@@ -163,8 +161,8 @@ function describeErrors(errors: ReadonlyArray<IReportedError>): { message: strin
 /** Vitest's wording for a snapshot that does not match its record, or has none. */
 const SNAPSHOT_MISMATCH = /^Snapshot `.*` mismatched$/;
 
-/** Add to a failed snapshot's message the way to accept the new value, which
- * vitest's own flag is not: nobody running `fabr test` can pass it. */
+/** Add to a failed snapshot's message how to record the new value with fabr
+ * (`fabr test -u`). */
 function withFabrRemedy(message: string): string {
   return SNAPSHOT_MISMATCH.test(message) ? `${message}. Run 'fabr test -u' to record the new value.` : message;
 }

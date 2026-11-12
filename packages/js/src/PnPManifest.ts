@@ -18,18 +18,12 @@
  */
 
 /**
- * The delivered package graph as a **Yarn PnP manifest** — composition as a
- * table instead of a tree.
- *
- * A package's tree is content-named and mounted once; *what it sees* is a row
- * here. The format is Yarn's; @fabr-build/js-tools's PnpResolver reads it for
- * every driver (tsc, bundle, sass, postcss), none of whose tools reads it
- * natively.
- *
- * PnP is package-granular: the table answers "which directory is this package
- * here", and the file part of a specifier (`main`/`types`/extensions) is
- * ordinary filesystem work inside it. So real per-package directories are still
- * needed — the cache's tree pool — but no tree OF them is ever built.
+ * A step's package graph written as a Yarn PnP manifest (`.pnp.data.json`):
+ * each package's files are a tree of the cache's pool, and its row says where
+ * that tree is and what each name it imports resolves to. js-tools'
+ * PnpResolver reads the manifest for every driver (tsc, bundle, sass,
+ * postcss). The table locates a package's directory; the files within it
+ * (`main`, `types`, extensions) are found on disk.
  */
 
 import {
@@ -46,28 +40,27 @@ import {
 } from "@fabr-build/core";
 import { type IPnpPackageInfo, type IPnpSerializedState, type PnpDependencyTarget, virtualLocation } from "@fabr-build/js-tools";
 
-/** The sources being compiled, when they carry a package identity: the name
- * they may import themselves by, and where they are staged (a directory path
- * relative to the manifest, `./src/`). */
+/** The package identity of the sources a step stages: the name they may
+ * import themselves by, and where they are staged (a directory relative to the
+ * manifest, `./src/`). */
 export interface ISelfPackage {
   readonly name: string;
   readonly location: string;
 }
 
-/** The self row's reference. A fixed label rather than a hash: it names a place
- * in this build, not content, and it cannot collide with a package's reference
- * (those are hex digests). */
+/** The self row's reference: a fixed label, which cannot collide with a
+ * package's reference (a hex digest). */
 const SELF_REFERENCE = "self";
 
-/** A manifest and the packages it names, which the caller must materialize as
- * content entries before anything reads it. */
+/** A manifest and the packages it has rows for. The caller must put each
+ * package's tree in the pool before anything reads the manifest. */
 export interface IPnpManifest {
   readonly state: IPnpSerializedState;
   /** Every package with a row, one instance per row. */
   readonly packages: ReadonlyArray<PackageFileSet>;
-  /** Locate a package's row, relative to the working directory:
-   * {@link treeMountOf}, or — for one of several wirings of the same content in
-   * this manifest — a virtual location over that tree, one per wiring. */
+  /** Locate a package's row, relative to the working directory: its tree
+   * ({@link treeMountOf}), or, where its content is wired more than one way in
+   * this manifest, the virtual location of its wiring over that tree. */
   mountOf(pkg: PackageFileSet): string;
   /** Make the manifest the file to stage. */
   toFile(): MemoryFile;
@@ -79,12 +72,12 @@ const INFO = [
 ];
 
 /**
- * Refuse two packages of one name among the direct deps: sources address their
- * direct dependencies by name, so two versions under one name could not both be
+ * Refuse two different packages of one name among `directDeps`: the sources
+ * import a direct dependency by its name, so only one of them could be
  * imported.
  *
- * @throws the conflict between the two, for the rule compiling against them to
- * report before it yields anything that could be served from the cache.
+ * @throws the conflict between the first two ({@link packageNameConflict}). A
+ *   rule calls this before yielding its action, so a cache hit cannot hide it.
  */
 export function assertOnePackagePerName(directDeps: ReadonlyArray<FileSet>): void {
   const top = new Map<string, PackageFileSet>();
@@ -100,26 +93,30 @@ export function assertOnePackagePerName(directDeps: ReadonlyArray<FileSet>): voi
 }
 
 /**
- * Build the manifest for a compilation whose directly declared dependencies are
- * `directDeps` (packages only — a Flag or a loose FileSet has no row).
+ * Make the PnP manifest for a step whose declared direct dependencies are
+ * `directDeps`; only the packages among them have rows, not flags or loose
+ * files.
  *
- * The sources being compiled are the top-level package (`packageLocation:
- * "./"`), so they see exactly what was declared and nothing else.
+ * - The staged sources are the top-level row (`packageLocation: "./"`), which
+ *   resolves exactly the direct packages.
+ * - Where `self` is given, a further row under the sources' package name
+ *   resolves the same names and that name too ({@link selfPackageRow}).
+ * - Each package the direct ones reach has one row per name and reference
+ *   ({@link referencesOf}), located at its tree in the pool, or at a virtual
+ *   location where its content is wired more than one way ({@link locations}).
+ *   Each row resolves the package's own name and its dependencies.
+ * - The fallback pool is the top-level row's dependencies: a package from a
+ *   repository that imports a name it does not declare (`reactcss` requires
+ *   `react` without declaring it) resolves that name where the sources declare
+ *   it, and only then. A package built in the project is in the fallback
+ *   exclusion list instead, its row listing those same names after its own.
+ *   PnpResolver gives the sources no fallback.
+ * - `ignored`, a regular expression over paths relative to the table's root, is
+ *   Yarn's `ignorePattern`: the files it names belong to no package of the
+ *   table (a tree laid out for node's own resolution beside it).
  *
- * **Fallback is on, and holds the compilation's declared direct deps.** A
- * delivered package that imports something it never declared — a peer its
- * typings name (`postprocessing`'s `three`, typed by the consumer's
- * `@types/three`), or a plain require (`reactcss` requires `react` and declares
- * nothing) — resolves when the consumer declares that name itself. That is the
- * remedy for such a failure: add the dep. A package only reachable transitively
- * never answers a phantom import.
- *
- * The sources being compiled do not get the fallback (see PnpResolver): a
- * phantom import in first-party code is a bug whose author can fix it.
- *
- * `ignored`, a regular expression over paths relative to the table's root, is
- * Yarn's `ignorePattern`: the files it names belong to no package of the table
- * (a tree laid out for node's own resolution beside it).
+ * Every list is sorted, so the manifest's bytes depend only on the graph.
+ * Throws where two direct packages share a name ({@link assertOnePackagePerName}).
  */
 export function pnpManifestOf(directDeps: FileSet[], self?: ISelfPackage, ignored?: string): IPnpManifest {
   assertOnePackagePerName(directDeps);
@@ -128,8 +125,8 @@ export function pnpManifestOf(directDeps: FileSet[], self?: ISelfPackage, ignore
   const packages: PackageFileSet[] = [];
   const seen = new Set<string>();
   for (const pkg of reachablePackages(roots)) {
-    /* One row per (name, reference). Two delivered INSTANCES of one node are one
-     * row; one package wired two ways is two nodes, so two rows. */
+    /* One row per name and reference: two instances of one node share a row;
+     * one package wired two ways is two nodes, so two rows. */
     const key = `${pkg.packageName}\0${referenceIn(pkg)}`;
     if (!seen.has(key)) {
       seen.add(key);
@@ -137,24 +134,19 @@ export function pnpManifestOf(directDeps: FileSet[], self?: ISelfPackage, ignore
     }
   }
   const mountOf = locations(packages, referenceIn);
-  /* ONE dependency table, used by both rows that stand for the sources: the
-   * anonymous top-level and, where the sources are a package, the self row.
-   * They must agree — a source file matches the self row (its location is the
-   * longer prefix), so a difference would silently change what the sources can
-   * resolve — so they are derived rather than written twice. */
+  /* The one dependency list of both rows that stand for the sources, the
+   * top-level row and the self row. Keep them one list: a source file matches
+   * the self row (its location is the longer prefix), so a difference would
+   * change what the sources resolve. */
   const topLevel = dependencyList(roots, referenceIn);
-  /* The pool is the top level's own table: a phantom import is answered by
-   * exactly what the consumer declared, so the pool's membership is the direct
-   * members themselves — which a read set can name by plain indexing
-   * (`<name> package.json`), hit or miss. */
+  /* The fallback pool is the top-level row's own dependencies, so a read set
+   * names a fallback lookup by its top-level row (`<name> package.json`). */
   const pool = topLevel;
-  /* Packages this project BUILT do not read the pool; they resolve the declared
-   * surface through their own rows instead (see packageInfo), which answers the
-   * same names. */
+  /* Packages built in the project are excluded from the fallback; their rows
+   * list the top-level dependencies instead (see packageInfo). */
   const excluded = packages.filter(pkg => !isResolved(pkg));
   const barred = new Set(excluded);
-  /* Rows built last, because a barred package's row carries the declared
-   * surface the pool would otherwise have answered for it. */
+  /* Made last, as an excluded package's row needs the top-level dependencies. */
   const rows = new Map<string, Array<[string, IPnpPackageInfo]>>();
   for (const pkg of packages) {
     const reference = referenceIn(pkg);
@@ -165,11 +157,7 @@ export function pnpManifestOf(directDeps: FileSet[], self?: ISelfPackage, ignore
   const selfRow = self && selfPackageRow(self, topLevel);
   const state: IPnpSerializedState = {
     __info: INFO,
-    /* Empty rather than a synthesized root locator: the roots concept exists to
-     * mark workspaces, of which a compilation has none — its sources are the
-     * anonymous top-level package. Its only effect is that the fallback also
-     * applies to the top level, which is a no-op here because the pool IS the
-     * top level's dependencies. */
+    /* No workspaces: the sources are the anonymous top-level package. */
     dependencyTreeRoots: [],
     enableTopLevelFallback: true,
     ignorePatternData: ignored ?? null,
@@ -190,9 +178,9 @@ export function pnpManifestOf(directDeps: FileSet[], self?: ISelfPackage, ignore
 }
 
 /**
- * Name the row references for one manifest's installation: {@link referenceOf}
- * wherever a package id is wired one way, and a distinct reference per wiring
- * where an id is wired several ways ({@link nodeNaming}).
+ * Make the function naming each package's row reference in one manifest: the
+ * hash of its name under {@link nodeNaming}, which gives each wiring of a
+ * package id a reference of its own.
  */
 function referencesOf(roots: ReadonlyArray<PackageFileSet>): (pkg: PackageFileSet) => string {
   const naming = nodeNaming(roots);
@@ -208,12 +196,12 @@ function referencesOf(roots: ReadonlyArray<PackageFileSet>): (pkg: PackageFileSe
 }
 
 /**
- * Locate each row's files. A row's location is its content's tree, shared
- * by every row of that content — the same package under two names — so long as
- * they bind the same dependencies. Content wired more than one way in this
- * manifest gets a virtual location per wiring instead ({@link virtualLocation}),
- * every wiring alike: a location is what tells the resolver which row a file
- * belongs to, so two wirings cannot share one, and none may own the bare tree.
+ * Make the function locating each row's files: its content's tree, shared by
+ * every row of that content (the same package under two names) where they all
+ * bind the same dependencies. Where content is wired more than one way in this
+ * manifest, every wiring gets a virtual location of its own over the tree
+ * ({@link virtualLocation}) and none uses the bare tree: the resolver tells
+ * which row a file belongs to by its location.
  */
 function locations(
   packages: ReadonlyArray<PackageFileSet>,
@@ -236,18 +224,11 @@ function locations(
 }
 
 /**
- * Make the row for the sources being compiled, WHEN they are a package: a row
- * under the name they may import themselves by.
- *
- * It resolves everything the top-level row does, plus its own name — which is
- * the whole of what a package's self-reference means, and subsumes the
- * `paths` mapping a tsconfig would otherwise carry: `pkg/sub` lands at
- * `<location>/sub` by the same rooted probing every other row's subpaths use,
- * and bare `pkg` at the location's own index.
- *
- * `SOFT`, like the top-level row and like a Yarn workspace: it is a place in
- * the project, not a package materialized in the pool — which is also what
- * keeps it out of the pool-facing queries (see PnpResolver.packageOf).
+ * Make the row for sources that are a package, under the name they may import
+ * themselves by: it resolves what the top-level row does and its own name, so
+ * `pkg/sub` resolves to `<location>/sub` and bare `pkg` to the location's own
+ * index. Its link type is `SOFT`, as the top-level row's is: it is a place in
+ * the project, not a tree of the pool (PnpResolver.packageOf leaves it out).
  */
 function selfPackageRow(
   self: ISelfPackage,
@@ -270,20 +251,17 @@ function selfPackageRow(
   ];
 }
 
-/**
- * A package's **reference**: its label in this table, the hash of the package
- * node's identity — content hash, edge targets by id, override flag
- * ({@link packageNodeSignature}).
- *
- * NOT the content digest, which is the *location's* identity: two instances can
- * hold identical bytes and still resolve differently (a republished version
- * whose content never changed, or one package bound to different versions of a
- * requirement by different requirers), and those are separate rows with
- * separate dependency tables. Memoized per instance; instances sharing an id
- * share a signature, so the value is per-node.
- */
+/** Each package's {@link referenceOf}, memoized per instance. */
 const REFERENCES = new WeakMap<PackageFileSet, string>();
 
+/**
+ * Get a package's reference, its label in a table: the hash of its package
+ * node's signature ({@link packageNodeSignature}: content hash, the ids its
+ * dependencies are bound to, override flag). Two packages with the same bytes
+ * have different references where they resolve differently (one package bound
+ * to different versions of a requirement by different requirers), and so
+ * separate rows.
+ */
 export function referenceOf(pkg: PackageFileSet): string {
   const known = REFERENCES.get(pkg);
   if (known !== undefined) {
@@ -295,16 +273,14 @@ export function referenceOf(pkg: PackageFileSet): string {
 }
 
 /**
- * Make one package's row payload: where its content is, and every name it may
- * resolve — its own included, so a package can import itself by name.
+ * Make one package's row: where its files are, and every name it may resolve,
+ * its own included so it can import itself by name.
  *
- * `supplied` is the compilation's own declared surface, written into the rows of
- * the packages BARRED from the pool — the same names the pool holds, so a barred
- * package resolves what an unbarred one does, through its own row. What it
- * exists for is a name the project puts in front of everything, such as a
- * node-builtin shim (`@dep:path-browserify -> path`) named once for the whole
- * bundle and meant to answer for every package in it, first-party ones
- * included.
+ * `supplied` (the top-level row's dependencies, for a package excluded from the
+ * fallback) is added after the package's own dependencies, which win on a
+ * shared name. It lets a package built in the project resolve a name the
+ * project supplies to every package, such as a node-builtin shim
+ * (`@dep:path-browserify -> path`).
  */
 function packageInfo(
   pkg: PackageFileSet,
@@ -320,18 +296,16 @@ function packageInfo(
     }
   }
   return {
-    /* Yarn's spelling: a location in the table's directory is `./`-prefixed, one
-     * above it (the tree pool) is not. */
+    /* Yarn's spelling: a location below the table's directory is `./`-prefixed,
+     * one above it (the tree pool) is not. */
     packageLocation: `${location.startsWith("../") ? "" : "./"}${location}/`,
     packageDependencies: [...own].sort(byText(([name]) => name)),
     linkType: "HARD",
   };
 }
 
-/** @return true if a package arrived from a repository — its provenance carries
- * a resolution step — as opposed to being built by a target of this project,
- * otherwise false. The question provenance exists to answer, so no property of
- * the content itself is consulted. */
+/** @return true if a package came from a repository (its provenance has a
+ * package-resolution step), otherwise false. */
 function isResolved(pkg: PackageFileSet): boolean {
   for (let step = pkg.origin; step !== undefined; step = step.parent) {
     if (step.kind === PACKAGE_RESOLUTION_PROVENANCE) {
@@ -341,8 +315,8 @@ function isResolved(pkg: PackageFileSet): boolean {
   return false;
 }
 
-/** List the packages barred from the fallback pool, in PnP's
- * `[name, [references]]` shape and sorted for byte-stability. */
+/** List the packages excluded from the fallback, in PnP's
+ * `[name, [references]]` shape, sorted. */
 function exclusionList(
   excluded: ReadonlyArray<PackageFileSet>,
   referenceIn: (pkg: PackageFileSet) => string
@@ -359,9 +333,8 @@ function exclusionList(
   return [...byName].map(([name, references]): [string, string[]] => [name, [...references].sort()]).sort(byText(([name]) => name));
 }
 
-/** Write edges as PnP dependency entries, sorted and deduplicated by name (a
- * graph cannot bind one name twice at one node; a repeat would be a delivery
- * bug, and taking the first keeps the table well-formed rather than ambiguous). */
+/** Write a package's dependencies as PnP dependency entries, sorted by name;
+ * where one name repeats, the first is taken. */
 function dependencyList(
   deps: ReadonlyArray<PackageFileSet>,
   referenceIn: (pkg: PackageFileSet) => string
@@ -376,27 +349,20 @@ function dependencyList(
 }
 
 /**
- * Locate where a package's files are staged, relative to the working directory:
- * its tree under the pool mount, named by the package's content digest — the
- * same hex string the FileSet carries, that a package node's signature quotes,
- * and that the cache derives the tree from ({@link BuildCache.ensureTree}). A
- * tree is content alone, so the same bytes are one directory however many
- * environments deliver them.
+ * Locate a package's tree, relative to the working directory: under the pool
+ * mount, named by the package's content digest, as {@link BuildCache.ensureTree}
+ * names it.
  */
 export function treeMountOf(pkg: PackageFileSet): string {
   return `${TREE_MOUNT}/${pkg.toManifestHash()}`;
 }
 
-/** Make an ascending comparator over a text projection — every list in the
- * manifest is sorted through one, so the bytes are a function of the graph and
- * not of traversal order. */
+/** Make an ascending comparator over a text projection, by code unit. */
 function byText<T>(of: (value: T) => string): (a: T, b: T) => number {
   return (a, b) => (of(a) < of(b) ? -1 : of(a) > of(b) ? 1 : 0);
 }
 
-/** Serialize the manifest: two-space JSON like Yarn's own, newline-terminated.
- * Nothing here is machine- or time-dependent, so identical graphs give
- * identical bytes. */
+/** Serialize the manifest as two-space JSON, newline-terminated, as Yarn writes it. */
 function serialize(state: IPnpSerializedState): string {
   return `${JSON.stringify(state, undefined, 2)}\n`;
 }

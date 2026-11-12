@@ -28,42 +28,36 @@ import {
 } from "@fabr-build/core";
 
 /**
- * Where the invocation was run, as a reference given there needs to know it: the
- * file sources it may read through, and the directory (in the source tree's own
- * namespace, `""` at its root) its bare paths root at. Known only once the
- * project has been located, so it is supplied at use rather than at parse.
+ * Where the invocation was run, as a name given on its command line is resolved
+ * there: the file sources it reads through and the directory its bare paths
+ * root at. Supply it once the project has been located.
  */
 export interface IInvocationSite {
-  /**
-   * The source tree, as something writable rather than as the bare `FileSource`
-   * interface: it is both what a bare path resolves through and what the driver
-   * writes refreshed test expectations back into, and the write belongs to the
-   * owner of the tree (see {@link WritableSourceTree}). The source knows its
-   * own root, and containment against it is its own invariant.
-   */
+  /** The project's source tree: what a relative name reads through, and what
+   *  the driver writes refreshed test expectations and reports back into. */
   sourceFileSource: WritableSourceTree;
+  /** The file source an absolute name reads through. */
   absFileSource: FileSource;
+  /** The invocation's cwd within the source tree, `""` at its root. */
   invocationDir: string;
 }
 
-/** How the invocation names itself in the excerpt: fabr was reached by some
- * path (`node …/build/index.js`, a `.bin` shim), none of which is what the user
- * typed or would recognize. */
+/** The program name the rendered command line starts with, whatever path
+ * fabr was started by (`node …/build/index.js`, a `.bin` shim). */
 const PROGRAM = "fabr";
 
-/** The virtual file a name given on the command line counts as written in —
- * how it names itself in diagnostics. */
+/** The name of the virtual file a name given on the command line is written
+ * in, as diagnostics show it. */
 const COMMAND_LINE_FILE = "<command-line>";
 
-/** Arguments that would not survive being read back as one word: rendered
- * single-quoted, as a shell would need them written. */
+/** Arguments a shell would not read back as one word, which are rendered
+ * single-quoted. */
 const NEEDS_QUOTING = /^$|[\s'"\\|&;<>()$`*?[\]{}!#~]/;
 
 /**
- * The command line as fabr's own source text: the invocation rendered as one
- * line, with the span each argument occupies in it. It is what lets a name
- * given to a verb be reported like any other written reference — the offending
- * argument underlined in the command that gave it:
+ * The command line as source text: the invocation rendered as one line, with
+ * the span each argument occupies in it, so a diagnostic about a name given to
+ * a verb underlines that argument in the command:
  *
  * ```
  * error: Unknown name 'packagez'
@@ -73,8 +67,7 @@ const NEEDS_QUOTING = /^$|[\s'"\\|&;<>()$`*?[\]{}!#~]/;
  *   |         ^^^^^^^^
  * ```
  *
- * An argument is located by its text (the first occurrence: two identical
- * arguments render indistinguishably), not by an argv index.
+ * An argument is located by its text, at its first occurrence.
  */
 export class CommandLineSource {
   private readonly text: string;
@@ -101,17 +94,12 @@ export class CommandLineSource {
   }
 
   /**
-   * Make the decl a name typed on the command line is written in: this line as its
-   * file, `<command-line>` *located in the invocation directory*. A reference's
-   * bare paths root at the directory of the file it is written in, so
-   * `fabr ls ./packages` means what `./packages` written in a build file there
-   * means.
-   *
-   * An absolute name has no directory to root at, and reads through the absolute
-   * file source instead — as the loader reads a lib path.
-   *
-   * A name this line does not contain (nothing produces one today) falls back to
-   * the whole line.
+   * Make the value `name`, an argument of this command line, is written as: its
+   * span in this line, in a virtual file `<command-line>` in the invocation
+   * directory, so its bare paths root at the cwd (`fabr ls ./packages` means
+   * what `./packages` written in a build file there means). An absolute name
+   * reads through `site.absFileSource` instead, in `<command-line>` at the
+   * root. A name the line does not contain spans the whole line.
    */
   public refFor(name: string, site: IInvocationSite): INameValue {
     const absolute = name.startsWith(NAME_COMPONENT_SEPARATOR);

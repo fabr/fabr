@@ -18,9 +18,9 @@
  */
 
 /**
- * The `node_modules` tree fabr generates for a tool that resolves through the
- * filesystem: one directory per package instance, linked together. The peer of
- * the PnP table in `PnPManifest.ts`.
+ * The `node_modules` tree fabr generates for a tool that resolves packages
+ * through the filesystem: one directory per package instance, linked together.
+ * `PnPManifest.ts` makes the other layout, a PnP table.
  */
 
 import { posix } from "path";
@@ -36,19 +36,22 @@ import {
   SymlinkFile,
 } from "@fabr-build/core";
 
-/** What {@link collectPackages} found: the direct roots, every reachable
- * instance, one representative per node, and the loose sets. */
+/** The packages {@link collectPackages} found. */
 interface CollectedPackages {
+  /** The packages among the given sets themselves. */
   roots: PackageFileSet[];
+  /** Every package object reachable from the roots, each once. */
   all: PackageFileSet[];
+  /** One package per node name, the first reached. */
   byNode: Map<string, PackageFileSet>;
+  /** The given sets that are not packages. */
   loose: FileSet[];
   /** The installation's node name of an instance ({@link nodeNaming}). */
   nodeOf: (pkg: PackageFileSet) => string;
 }
 
-/** Collect every package instance the given sets reach, keyed by node name,
- * with the loose (non-package) sets passed through. */
+/** Collect every package the given sets reach through their dependencies,
+ * keyed by node name, with the sets that are not packages kept apart. */
 function collectPackages(sets: FileSet[]): CollectedPackages {
   const nodeOf = nodeNaming(sets);
   const byNode = new Map<string, PackageFileSet>();
@@ -82,10 +85,10 @@ function collectPackages(sets: FileSet[]): CollectedPackages {
 }
 
 /**
- * Refuse two instances under one `packageId` with different CONTENT: within one
- * installation an id names one package, and two contents claiming one identity
- * are two packages no layout can hold. The same package wired two ways is two
- * nodes, each with a directory of its own ({@link assembleNodeModules}).
+ * Throw a package conflict where two nodes share a `packageId` but differ in
+ * content. Two nodes with one id and one content (the same package with its
+ * dependencies bound differently) are allowed: each gets a directory of its
+ * own ({@link assembleNodeModules}).
  */
 function assertOneContentPerId(collected: CollectedPackages): void {
   const byId = new Map<string, PackageFileSet>();
@@ -104,13 +107,14 @@ function assertOneContentPerId(collected: CollectedPackages): void {
 export const INSTANCE_AREA = ".fabr";
 
 /** The longest instance directory name written in full; a longer one is cut
- * and told apart by a hash of the whole. */
+ * short and ends in a hash of the whole name. */
 const INSTANCE_NAME_LIMIT = 120;
 
 /**
- * Name the instance directory of every node of an installation:
- * `<name>@<version>` (a scoped name's `/` written `+`), plus a suffix telling
- * the wirings apart where one package is installed wired several ways.
+ * Name the instance directory of every node of an installation, by node name:
+ * `<name>@<version>` (`<name>` alone for a package with no version; a scoped
+ * name's `/` written `+`), with `_` and a hash of the node name added where one
+ * `packageId` has several nodes (its dependencies bound differently).
  */
 function instanceNames({ byNode }: CollectedPackages): Map<string, string> {
   const wirings = new Map<string, number>();
@@ -147,25 +151,31 @@ function linkEntry(from: string, to: string): [string, IFile] {
 }
 
 /**
- * Lay out the given (materialized) sources as node_modules contents, one
- * directory per package instance — pnpm's layout:
+ * Lay out the given sets as the contents of a `node_modules` directory, one
+ * directory per package instance, as pnpm does:
  *
  * ```
  * <name>                                    -> .fabr/<instance>/node_modules/<name>     each package in `sets`
  * .fabr/<instance>/node_modules/<name>/…                                                the instance's files
- * .fabr/<instance>/node_modules/<dep>       -> ../../<instance>/node_modules/<dep>      one per dependency edge
+ * .fabr/<instance>/node_modules/<dep>       -> ../../<instance>/node_modules/<dep>      one per dependency
  * .fabr/node_modules/<name>                 -> ../<instance>/node_modules/<name>        one per name in the closure
  * ```
  *
- * An instance is a package wired one way ({@link nodeNaming}), so everything
- * requiring it loads the one directory, and a `<dep>` is the name its requirer
- * imports it by (the rename, for a renamed edge). Only the packages in `sets`
- * are visible from the top; `.fabr/node_modules` is what a package finds when
- * it imports a name it never declared — one instance per name, the packages in
- * `sets` excluded, claimed nearest the top first and then by instance name.
- * Anything in `sets` that isn't a package passes through unchanged. The
- * sources must have been materialized by the collection point before they get
- * here.
+ * An instance is one node ({@link nodeNaming}): a package with its
+ * dependencies bound one way, so everything that requires that node loads the
+ * one directory. A `<dep>` link is named as the requirer imports the package
+ * (the renamed name, for a renamed dependency). Only the packages in `sets` are
+ * linked at the top. `.fabr/node_modules` is what node's directory walk finds
+ * for a name a package imports without declaring it: one link per name in the
+ * closure, except the names of the packages in `sets`, each to the first
+ * instance of that name a breadth-first walk from the top reaches (each level
+ * taken in instance-name order).
+ * Sets that are not packages are unioned in unchanged.
+ *
+ * The packages must be materialized (each dependency a PackageFileSet). Throws
+ * a package conflict where two nodes share a `packageId` with different
+ * content, and a package-name conflict where two packages in `sets` share a
+ * name but are different nodes.
  */
 export function assembleNodeModules(sets: FileSet[]): FileSet {
   const collected = collectPackages(sets);

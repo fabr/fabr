@@ -17,39 +17,30 @@
 import { Computable } from "./Computable";
 
 /**
- * A single leaf's pending re-settlement, split into two phases so a whole batch
- * can be applied atomically: every affected leaf is {@link invalidate}d first
- * (marking the dependent subgraph stale without running anything), then every
- * leaf is {@link settle}d with its new value. Because a dependant only runs once
- * all its inputs are settled again, a node fed by several changed leaves rebuilds
- * exactly once per batch rather than once per leaf.
+ * One watched source's prepared change, applied in two phases across a batch:
+ * every source in the batch is {@link invalidate}d first, then every one is
+ * {@link settle}d with its new value, so a node fed by several changed
+ * sources computes once per batch.
  */
 export interface PreparedUpdate {
-  /** Mark the leaf (and hence its dependants) stale, without supplying a value. */
+  /** Mark the source Invalid, and its dependants maybe-invalid, without a value. */
   invalidate(): void;
-  /** Push the recomputed value into the leaf, cascading the recompute. */
+  /** Settle the source with its new value, which its dependants then compute from. */
   settle(): void;
 }
 
-/**
- * A watched source whose backing files may change. On a change it is asked to
- * {@link recompute}: read the current state and return the update to apply, or
- * `null` when nothing actually changed (a touch / metadata-only event) so no
- * cascade happens at all.
- */
+/** A watched source whose files may change. */
 export interface WatchEntry {
+  /** Read the current state, and return the update to apply, or `null` where
+   * nothing changed (a touch). */
   recompute(): Computable<PreparedUpdate | null>;
 }
 
-/** The result of recomputing one entry in a batch: its update (possibly `null`
- * for a no-op), or the error that entry raised — captured per entry so a single
- * failure doesn't reject the whole batch's {@link Computable.forAll}. */
+/** The result of recomputing one entry of a batch: its update (`null` where
+ * nothing changed), or the error it failed with. */
 type EntryOutcome = { entry: WatchEntry; update: PreparedUpdate | null } | { entry: WatchEntry; error: Error };
 
-/**
- * Injectable timer so the debounce is deterministically testable (a fake clock)
- * without real `setTimeout` delays.
- */
+/** The timer behind the quiet window; a test passes a fake clock. */
 export interface WatchTimer {
   schedule(fn: () => void, ms: number): unknown;
   clear(handle: unknown): void;
@@ -61,22 +52,30 @@ const defaultTimer: WatchTimer = {
 };
 
 /**
- * Coordinates watch-mode re-settlement across every watched source in a run.
- * A burst of filesystem events is collapsed behind a quiet-window timer into a
- * single batch: after `quietMs` of no further events, all dirty entries are
- * recomputed together and applied as one atomic invalidate-then-settle pass, so
- * the live Computable graph does a single minimal recompute per quiet window.
+ * Apply watched changes to the graph in batches, for every watched source of
+ * a run. An entry reported changed ({@link notifyChanged}) is dirty; once
+ * `quietMs` pass with no further change, every dirty entry is recomputed and
+ * the updates applied together, each invalidated and then each settled, so
+ * the graph computes once per batch. One batch runs at a time:
+ * - An entry that changes again while its batch is recomputed is skipped,
+ *   and recomputed in the next batch.
+ * - An entry whose recompute fails is reported through `onError` and stays
+ *   dirty, keeping its last value; the rest of the batch is applied.
+ * - What is still dirty after a batch starts the quiet window again.
  *
- * The controller drives the graph; it does not report — the driver observes the
- * top-level Computable re-settling and renders the outcome.
+ * The controller reports nothing of the build: the driver observes the graph
+ * settling.
  */
 export class WatchController {
+  /** The entries changed since the last batch began. */
   private readonly dirty = new Set<WatchEntry>();
+  /** The quiet-window timer, while one is set. */
   private handle: unknown;
-  /** True while a batch is being recomputed/applied. Only one flush runs at a
-   * time: a timer firing during it is a no-op, and the flush re-arms on completion
-   * if more work accrued — so batches can't overlap and settle out of order. */
+  /** True while a batch is being recomputed and applied. A timer firing
+   * meanwhile does nothing; the batch starts the quiet window again when it
+   * ends, where entries are dirty. */
   private flushing = false;
+  /** The teardowns {@link close} runs. */
   private readonly closers = new Set<() => void | Promise<void>>();
   private closed = false;
 
@@ -84,42 +83,37 @@ export class WatchController {
     private readonly quietMs: number,
     private readonly timer: WatchTimer = defaultTimer,
     private readonly onError: (err: Error) => void = () => {},
-    /** Invoked once per applied batch, just before the graph is re-settled —
-     * how the facade advances the build cycle (emitting its cycle-start). */
+    /** Called once per batch with updates to apply, just before they are
+     * applied: the facade advances the build cycle here. */
     private readonly onBeforeApply: () => void = () => {},
-    /** Surface a non-fatal watcher notice (e.g. a backend fallback) for the
-     * driver to render; core never logs directly. */
+    /** Called with a non-fatal watcher notice (a backend fallback), for the
+     * driver to show. */
     private readonly onWarning: (message: string) => void = () => {}
   ) {}
 
-  /** Surface a non-fatal watcher notice (e.g. the FS backend falling back to an
-   * alternate) through the driver's diagnostics. */
+  /** Report a non-fatal watcher notice (a filesystem backend falling back
+   * to another) through `onWarning`. */
   public reportWarning(message: string): void {
     this.onWarning(message);
   }
 
-  /** Register a teardown callback (e.g. closing a filesystem watcher). May be
-   * async: {@link close} awaits it, so the process can exit only once the native
-   * watcher thread has stopped (an abrupt exit mid-flight crashes the kqueue
-   * backend — see {@link close}). */
+  /** Register a teardown for {@link close} to run (closing a filesystem
+   * subscription). It may return a promise, which close waits for. */
   public track(close: () => void | Promise<void>): void {
     this.closers.add(close);
   }
 
-  /** Surface a watcher-backend error (e.g. the filesystem subscription failing)
-   * through the same channel as a recompute error. */
+  /** Report a watcher error (a filesystem subscription failing) through
+   * `onError`, as a failed recompute is. */
   public reportError(err: Error): void {
     this.onError(err);
   }
 
   /**
-   * Note that a watched entry changed, (re)starting the quiet-window timer.
-   *
-   * With `defer`, the entry is recorded as dirty but the timer is NOT armed:
-   * the change will be applied by whatever flush happens next, and causes none
-   * of its own. This is for a change fabr itself made and already knows the
-   * outcome of — a written-back test expectation — where rebuilding *because of
-   * it* would only reproduce the bytes just written.
+   * Mark `entry` dirty and start the quiet window again. With `defer`, only
+   * mark it dirty: the change is applied by the next batch something else
+   * starts. Pass `defer` for a change fabr itself made (a written-back test
+   * expectation). Does nothing once closed.
    */
   public notifyChanged(entry: WatchEntry, options?: { defer?: boolean }): void {
     if (this.closed) {
@@ -131,17 +125,16 @@ export class WatchController {
     }
   }
 
-  /** Arm the quiet window for changes already recorded — how a deferred entry
-   * (see {@link notifyChanged}) becomes a rebuild when it turns out not to have
-   * been ours after all. No-op with nothing dirty: a flush of an empty batch
-   * would advance the build cycle for no work. */
+  /** Start the quiet window for the entries already dirty, as for a change
+   * deferred ({@link notifyChanged}) that turns out not to be fabr's own. Does
+   * nothing where none is dirty, or once closed. */
   public armFlush(): void {
     if (!this.closed && this.dirty.size > 0) {
       this.scheduleFlush();
     }
   }
 
-  /** (Re)arm the quiet-window timer for a flush. */
+  /** Start the quiet window again, replacing the timer set. */
   private scheduleFlush(): void {
     if (this.handle !== undefined) {
       this.timer.clear(this.handle);
@@ -149,12 +142,10 @@ export class WatchController {
     this.handle = this.timer.schedule(() => this.flush(), this.quietMs);
   }
 
+  /** Recompute and apply the dirty entries as one batch (see the class
+   * doc). */
   private flush(): void {
     this.handle = undefined;
-    /* Only one batch in flight: a timer firing mid-flush is a no-op — the running
-     * flush re-arms on completion if more accrued. This serializes batches so a
-     * slow batch can't settle after a newer one and stick (and lets us drop an
-     * entry re-touched mid-flight, below). */
     if (this.flushing) {
       return;
     }
@@ -164,21 +155,10 @@ export class WatchController {
       return;
     }
     this.flushing = true;
-    /* Recompute every entry independently so one entry's failure can't sink the
-     * rest of the batch: each yields either its update or its error. The good
-     * updates are applied atomically; a failed entry is surfaced via onError and
-     * re-marked dirty (retried on a later flush), settling nothing — its leaf
-     * keeps its last-good value, consistent because the memo only advances in a
-     * settle that never ran. */
-    /* Consumed with `once`, not read as a value: the batch is a unit of work with a
-     * definite end, and its chain must not outlive it. Two reasons, and the second is
-     * the load-bearing one. (a) A gathering node has no dependants, so nothing would
-     * ever detach it — every flush would strand its whole recompute chain, registered
-     * against each query's file cells for the rest of the session. (b) A second
-     * delivery would be *wrong*, not merely wasteful: it would clear `flushing` out
-     * from under a newer batch and re-apply this batch's captured updates, settling
-     * file sets that have since been superseded. `once` withdraws demand before the
-     * effect runs, so neither can happen. */
+    /* Each entry's recompute yields its update or its error, so one failure
+     * does not reject the batch. Consume the batch with `once`: its chain
+     * must detach when the batch ends, and a second call would clear
+     * `flushing` under a newer batch and apply superseded updates. */
     Computable.forAll(
       batch.map(entry =>
         entry.recompute().then<EntryOutcome>(
@@ -195,9 +175,8 @@ export class WatchController {
         }
         const changed: PreparedUpdate[] = [];
         for (const outcome of outcomes) {
-          /* Re-touched while this flush ran → its result is already stale; skip it
-           * (never settle it), leaving it dirty for the next flush to recompute
-           * from fresh state — so the superseded value never enters the graph. */
+          /* Changed again while this batch ran: skip its stale update, and
+           * leave it dirty for the next batch. */
           if (this.dirty.has(outcome.entry)) {
             continue;
           }
@@ -210,13 +189,12 @@ export class WatchController {
         }
         if (changed.length > 0) {
           this.onBeforeApply();
-          /* Two phases: invalidate the whole affected frontier, THEN settle it, so
-           * a node fed by several changed leaves recomputes once, not once each. */
+          /* Invalidate every update before settling any, so a node fed by
+           * several changed sources computes once. */
           changed.forEach(update => update.invalidate());
           changed.forEach(update => update.settle());
         }
-        /* Anything still dirty — superseded (skipped above) or re-marked on error —
-         * gets its own flush once the quiet window elapses again. */
+        /* Entries skipped or failed above are still dirty. */
         if (this.dirty.size > 0) {
           this.scheduleFlush();
         }
@@ -228,12 +206,10 @@ export class WatchController {
     );
   }
 
-  /** Stop watching: cancel the pending flush and run every teardown callback,
-   * resolving once they all settle. The teardowns are awaited (not fire-and-
-   * forget) because a filesystem watcher's `unsubscribe` stops a native thread,
-   * and exiting the process before that thread has stopped crashes the kqueue
-   * backend (`mutex lock failed` → SIGABRT). A teardown that rejects doesn't
-   * block the others — shutdown proceeds regardless. */
+  /** Stop watching: cancel the quiet window, forget the dirty entries, and
+   * run every teardown, resolving once all have settled, whether or not they
+   * failed. Wait for it before the process exits: exiting while a native
+   * watcher thread is still running crashes the kqueue backend (SIGABRT). */
   public close(): Promise<void> {
     this.closed = true;
     if (this.handle !== undefined) {

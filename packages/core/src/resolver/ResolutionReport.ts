@@ -18,14 +18,11 @@
  */
 
 /**
- * Reporting a failed (or refused) resolution, and computing its repair —
- * ecosystem-generic, beside `ResolutionProvenance` in the "explain a
- * resolution" family. A repository contributes two things: how a reference is
- * WRITTEN in its grammar ({@link RefRenderer} — a suggestion must be
- * pasteable), and how to reach its registry ({@link SuggestSources} — the
- * version list, and a memoized re-resolve for verification). Everything else
- * — conflict grouping, both-sides provenance, the sanction suggestions, and
- * the one-pass complete-repair fixpoint — is shared.
+ * The errors for a failed or refused resolution, and the repairs they
+ * suggest, for any ecosystem. A repository supplies how a reference is written
+ * in its grammar ({@link RefRenderer}, so a suggestion can be pasted) and how
+ * to reach its registry ({@link SuggestSources}). A sanction, throughout, is a
+ * `?` reference naming a version allowed to ship.
  */
 
 import { Computable } from "../core/Computable";
@@ -43,9 +40,9 @@ import {
   Violation,
 } from "./Types";
 
-/** Render a reference to a package as the repository's users write it —
- * `@npm:pkg:1.4.2?`, `@npm:pkg:1.4.2 -> name` — so a suggestion pastes
- * verbatim into a deps list. */
+/** Render a reference to a package as the repository's users write it
+ * (`@npm:pkg:1.4.2?`, `@npm:pkg:1.4.2 -> name`), to be pasted into a deps
+ * list. */
 export type RefRenderer = (pkg: PackageIdentity, versionText: string, marker?: "?" | "!") => string;
 
 /**
@@ -68,16 +65,16 @@ function identityOf<V>(selections: readonly Selected<V>[], name: string): Packag
   return selections.find(sel => sel.name === name) ?? { name };
 }
 
-/** The subset of a resolution the reporting and suggestion machinery reads
- * (an {@link MVSResolution} satisfies it). */
+/** The parts of a resolution the suggestions read (an {@link MVSResolution}
+ * is one). */
 export type ResolvedTree<V> = Pick<MVSResolution<V>, "selections" | "violations" | "requirements">;
 
-/** What the suggester needs from the repository: the domain, the written
- * reference form, the registry's (mutable, failure-path-only) version list,
- * and a memoized re-resolve that rejects with {@link ResolutionWalkError} on
- * hard errors and applies NO reporting of its own. `resolve` always receives
- * roots in canonical (`requirementKey`-sorted) order — an implementation
- * keying a memo by them can join them as given. */
+/** The repository's side of the suggestions: its version domain, how it
+ * writes a reference, the registry's published versions of a package, and a
+ * memoized resolve. `resolve` rejects with {@link ResolutionWalkError} where
+ * the walk reports errors, and reports nothing of its own; it is always given
+ * roots in canonical (`requirementKey`-sorted) order, so a memo may key on
+ * them as given. */
 export interface SuggestSources<V, C> {
   domain: VersionDomain<V, C>;
   refText: RefRenderer;
@@ -86,13 +83,10 @@ export interface SuggestSources<V, C> {
 }
 
 /**
- * Collapse violations to one entry per *conflict* — the (pkg, constraint,
- * selected) triple: a widely-declared requirement (tslib '^1.11.1' across a
- * dozen @aws-* siblings) violates once per requirer, but the conflict, its
- * "selected by" side, and its remedy are identical for all of them — a dozen
- * near-identical stanzas bury the second distinct conflict. The first
- * requirer (walk order — canonical) keeps the full detail; the rest are
- * summarised by name on one line.
+ * Group violations by package, constraint and selected version, in the order
+ * given: each group's `first` violation is reported in full, and `others`
+ * names the requirers of the rest. (tslib '^1.11.1' required by a dozen
+ * @aws-* packages is one group.)
  */
 export function groupViolations<V>(
   violations: readonly Violation<V>[],
@@ -123,12 +117,11 @@ function alsoRequiredBy(name: string, constraint: string, others: readonly strin
 }
 
 /**
- * Explain the two questions a violation raises beyond the fact of it: which
- * requirement pushed the package to the version that violates the bound (and
- * where *that* requirer came from), and where the losing requirement itself
- * came from. Rendered as detail lines under the violation, indented one level;
- * empty for a resolution carrying no provenance edges or a requirer since
- * superseded out of the selections.
+ * Explain a violation as detail lines, indented one level: the chain of the
+ * requirement that selected the violating version, where the resolution
+ * records one, and the chain the violated requirement's requirer is reached
+ * by, where the requirer is a package among the selections. Either line is
+ * left out where its chain is unknown.
  */
 function explainViolation<V>(
   violation: Violation<V>,
@@ -139,8 +132,8 @@ function explainViolation<V>(
   const selection = find(`${violation.name}@${versionToString(violation.selected)}`);
   const selected = versionText(versionToString(violation.selected), violation.name);
   const lines = selection?.selectedBy ? [`  ${selected} selected by: ${winnerOf(selection, selection.selectedBy, explainer)}`] : [];
-  /* Only where there is a path to add: the requirer is already named on the
-   * violation line, so repeating it alone would say nothing. */
+  /* Only where there is a chain: the violation line already names the
+   * requirer. */
   const requirer = violation.requiredBy === ROOT_REQUIRER ? undefined : find(violation.requiredBy);
   if (requirer !== undefined) {
     lines.push(
@@ -151,11 +144,11 @@ function explainViolation<V>(
 }
 
 /**
- * State a violation as the disagreement it is: two requirements on one
- * package that the version selected does not both meet, each with where it
- * came from. The requirement that selected the version is as much a party as the one it
- * fails, so neither is reported as the loser. Falls back to naming the
- * selected version where the resolution does not record what selected it.
+ * Write a violation as two requirements on one package that no one version
+ * meets, the violated one and the one that selected the version, each with
+ * the chain it was reached by. Where the resolution does not record what
+ * selected the version, write that the selected version does not satisfy the
+ * violated requirement, with {@link explainViolation}'s detail.
  */
 function conflictLines<V>(
   violation: Violation<V>,
@@ -189,24 +182,23 @@ function conflictLines<V>(
   ];
 }
 
-/** Trace the requirement whose floor won `selection` its version, as the path
- * from a root down to it. */
+/** Trace `winner`, the requirement that selected `selection`'s version, as the
+ * chain from a root down to it. */
 function winnerOf<V>(selection: Selected<V>, winner: IRequirementEdge, explainer: ResolutionExplainer<V>): string {
   if (winner.requiredBy === ROOT_REQUIRER) {
     return `the requested ${versionConstraintText(winner.versionConstraint, selection.name)}`;
   }
   const winnerNode = explainer.find(winner.requiredBy);
   if (!winnerNode) {
-    /* The winning requirement was declared by a version itself since superseded */
+    /* Declared by a version since displaced by a higher one */
     return `${nodeLabel(winner.requiredBy)} requiring ${versionConstraintText(winner.versionConstraint, selection.name)} (since superseded)`;
   }
   const chosen = `${nodeLabel(explainer.id(selection))} (${winner.versionConstraint === undefined ? "any version" : versionConstraintText(winner.versionConstraint, selection.name)})`;
   return [...explainer.pathTo(winnerNode), chosen].join(" -> ");
 }
 
-/** Explain where each coexisting version of a package was required from —
- * the same question a violation raises, asked of every version rather than
- * one. */
+/** Explain each of a package's versions as the chain it was reached by, one
+ * line per version the resolution records a chain for. */
 function explainDuplicate<V>(
   pkg: string,
   versions: readonly V[],
@@ -232,19 +224,24 @@ function explainDuplicate<V>(
 }
 
 /**
- * Make the strict (linked) collection's judgment of a repaired closure: every
- * repair reachable from the requested roots, reported together — violations and
- * coexisting versions as the structural facts they are — rather than one
- * build-fail-pin iteration each. (Floor raises are NOT judged: a raised floor
- * is the constraint's plain meaning when its literal minimum was never
- * published, acceptable in every delivery mode.)
+ * Make the error refusing a strict collection that ships several versions of
+ * a package, reporting every conflict at once under the heading `Resolution
+ * requires multiple versions of the same package:`.
  *
- * `needed` is what the delivery ships; `graph` explains each repair — one
- * resolution's, or several combined where a collection point's deliveries
- * came from more than one; `written` (the user's `?`/pin set, when any exists for
- * a violated package) drives the partial-sanction set-mismatch note; the
- * suggester's pasteable repair set arrives pre-rendered as `suggestion` and
- * becomes the help.
+ * - Each group of `violations` ({@link groupViolations}) is written as the two
+ *   requirements that disagree (`rootText` describes a root requirement the
+ *   consumer did not write), and the further requirers on one line.
+ * - Where `written` names versions of a violated package and some version of
+ *   it in `needed` (what the collection ships) is not among them, a line lists
+ *   both and the `?` references to add.
+ * - Each of `duplicates` (a package and its versions) on a package with no
+ *   violation is written as its versions, each with the chain it was reached
+ *   by.
+ *
+ * Chains are read from `graph` (one resolution, or several combined), which
+ * may hold packages `needed` does not. The help is `suggestion`, where it is
+ * not empty, else a generic statement of the two remedies. Raised lower bounds
+ * are not reported.
  */
 export function conflictError<V>(
   violations: Violation<V>[],
@@ -257,10 +254,9 @@ export function conflictError<V>(
   rootText?: RootRenderer
 ): Error {
   const { versionToString } = graph;
-  /* Chains explain through the whole resolution — a subset delivery's chain
-   * may pass through a node it does not itself ship. The set-mismatch note
-   * below stays scoped to `needed`: what THIS delivery ships is the fact the
-   * sanction is judged against. */
+  /* Chains go through the whole resolution, which may hold packages this
+   * collection does not ship; the note on written versions reads `needed`
+   * alone. */
   const explainer = graph.explainer();
   const lines: string[] = [];
   const violatedPkgs = new Set(violations.map(violation => violation.name));
@@ -271,8 +267,8 @@ export function conflictError<V>(
       ...conflictLines(first, moreRequirers, explainer, versionToString, rootText),
       ...alsoRequiredBy(first.name, first.versionConstraint, others)
     );
-    /* A partial sanction is a set mismatch, called out where the conflict is
-     * reported: the versions this delivery needs vs the versions written. */
+    /* Versions written for the package that leave a shipped one out: list
+     * both, and the `?` references to add. */
     const declared = written?.get(first.name);
     if (declared && declared.size > 0 && !sanctionNoted.has(first.name)) {
       sanctionNoted.add(first.name);
@@ -286,18 +282,13 @@ export function conflictError<V>(
       }
     }
   }
-  /* A coexisting-versions entry restates a violation on the same package (a
-   * fork exists exactly because an edge violated), so only packages with no
-   * violation entry report here — a safety net for a multiplicity nothing
-   * above explained, not the normal path. */
+  /* A package with a violation is already reported above. */
   for (const [pkg, versions] of duplicates.filter(([pkg]) => !violatedPkgs.has(pkg))) {
     lines.push(
       `${pkg} is required at ${versions.map(version => versionText(versionToString(version), pkg)).join(" and ")}`,
       ...explainDuplicate(pkg, versions, explainer, versionToString, rootText)
     );
   }
-  /* The help IS the remedy: the suggester's pasteable override set when it
-   * produced one, else the generic statement of the two fixes. */
   const help =
     suggestion !== undefined && suggestion.length > 0
       ? suggestion
@@ -306,12 +297,11 @@ export function conflictError<V>(
 }
 
 /**
- * Make the every-mode failure for violated edges the resolver could not
- * repair: no published version of the package satisfies the constraint, so
- * no delivery — flat or nested — can honor it. Reported with the same
- * provenance detail as the strict judgment; coercion (`!`) is this failure's
- * designed remedy, if the user judges the constraint bogus, and is suggested
- * as such.
+ * Make the error `Unable to resolve <root>:` for violations no published
+ * version satisfies, in any collection: each group of `violations` with
+ * {@link explainViolation}'s detail and its further requirers. The help
+ * suggests correcting the requirement, or forcing each package's selected
+ * version with `!`.
  */
 export function unrepairableError<V>(root: string, violations: Violation<V>[], graph: MVSResolution<V>, refText: RefRenderer): Error {
   const { versionToString } = graph;
@@ -332,8 +322,8 @@ export function unrepairableError<V>(root: string, violations: Violation<V>[], g
   return new FabrError(`Unable to resolve ${root}:\n  ${lines.join("\n  ")}`).withHelp(help);
 }
 
-/** Find the latest suggestion-eligible version, per the domain's stability
- * rule. */
+/** Find the latest published version of `pkg` that the domain counts as
+ * stable, or undefined where there is none or the registry fails to answer. */
 function latestStable<V, C>(sources: SuggestSources<V, C>, pkg: PackageIdentity): Computable<V | undefined> {
   const { domain } = sources;
   return sources.availableVersions(pkg).then(
@@ -346,9 +336,9 @@ function latestStable<V, C>(sources: SuggestSources<V, C>, pkg: PackageIdentity)
   );
 }
 
-/** Write the suggestion line for a package: its permitted versions as
- * written `?` references (already-written versions omitted — the line
- * completes the set, it does not restate it). */
+/** Write the sanction line for a package with forks: a `?` reference to each
+ * of its selected versions not already `written`. None for a package without
+ * forks, or with every version written. */
 function sanctionLine<V, C>(
   sources: SuggestSources<V, C>,
   selections: readonly Selected<V>[],
@@ -358,8 +348,7 @@ function sanctionLine<V, C>(
   const { domain } = sources;
   const principal = selections.find(sel => sel.name === pkg && sel.fork === undefined);
   const forks = selections.filter(sel => sel.name === pkg && sel.fork !== undefined);
-  /* Principal optional: a package can survive as forks alone (its pool winner
-   * was a pruned phantom and several forks remain). */
+  /* A package may have several forks and no unforked selection. */
   if (forks.length === 0) {
     return [];
   }
@@ -370,9 +359,10 @@ function sanctionLine<V, C>(
   return entries.length > 0 ? [entries.join(" ")] : [];
 }
 
-/** Shape suggested entries as `help:` lines: one compact line for a single
- * entry, else one multi-line block entry (the `help:` prefix lands only on
- * its lead line, so the group copies cleanly), commentary separate. */
+/** Make `help:` lines for suggested entries: one line for a single entry,
+ * else one multi-line help (its `help:` prefix only on the lead line, so the
+ * block copies cleanly), then, where an entry has a `?`, a line saying what
+ * `?` means. */
 export function sanctionHelp(entries: string[]): string[] {
   if (entries.length === 0) {
     return [];
@@ -387,18 +377,19 @@ export function sanctionHelp(entries: string[]): string[] {
 }
 
 /**
- * Suggest fixes for the strict gate at failure time: a **verified working
- * set** of override lines the user can paste. Per conflicted package, in
- * order of preference: a **single-version pin** where one exists — a
- * published version at or above the principal satisfying every in-scope
- * constraint (only reachable for disjunctive ranges: for convex ranges the
- * violation is the proof no such version exists) — verified by one
- * re-resolution with the candidate pins added; otherwise the **`?` sanction
- * lines completing what the consumer ships** (`needed`) against what is
- * already `written`. If the
- * verification resolution still shows conflicts, every pin is demoted to its
- * sanction lines — the always-safe suggestion. Runs only on the failure path;
- * degrades to the sanction lines when the registry is unreachable.
+ * Suggest a set of references to paste that settles the `outstanding`
+ * violations of a strict collection, as `help:` lines ({@link sanctionHelp}).
+ *
+ * For each violated package, the suggestion is a pin where one exists: the
+ * lowest published version at or above its unforked selection in `tree` that
+ * satisfies every requirement on it, from `demanded` (the roots, `?` and `!`
+ * left out) and from the packages in `needed` (what the collection ships).
+ * A package with no pin gets its sanction line ({@link sanctionLine}): `?`
+ * references to the versions shipped that `written` does not already name (a
+ * package with no forks gets none). The pins are checked by resolving
+ * `demanded` with them added; where that resolution leaves a violation or
+ * fails, every package gets its sanction line instead. A registry failure
+ * while looking for a pin leaves that package without one.
  */
 export function suggestSanctions<V, C>(
   outstanding: readonly Violation<V>[],
@@ -410,12 +401,10 @@ export function suggestSanctions<V, C>(
 ): Computable<string[]> {
   const { domain } = sources;
   const conflicted = [...new Set(outstanding.map(violation => violation.name))];
-  /* Every constraint in scope on the package: the root demands plus each
-   * delivered node's declared edges (a pin must satisfy the already-happy
-   * requirers too). */
+  /* Every constraint on the package: the roots', and those of each package
+   * shipped, satisfied or not. */
   const constraintsOn = (pkg: string): C[] => {
-    /* Override requirements are permissions/substitutions, not constraints a
-     * pin must satisfy. */
+    /* A `?` or `!` root is no constraint a pin must satisfy. */
     const texts = new Set(
       demanded.flatMap(req =>
         requiredAs(req) === pkg && req.override === undefined && req.versionConstraint !== undefined ? [req.versionConstraint] : []
@@ -438,10 +427,6 @@ export function suggestSanctions<V, C>(
     }
     return parsed;
   };
-  /* '?' sanctions only — resolution-pure: a sanction is no dependency (no
-   * floor, no mount), so pasting it into a deps list adds nothing to the
-   * consumer's dependency surface. Every version shipped must be written, so
-   * the line completes what ships against what is already there. */
   const writtenOf = (pkg: string): ReadonlySet<string> => written.get(pkg) ?? new Set();
   const sanctionsOnly = (): string[] => sanctionHelp(conflicted.flatMap(pkg => sanctionLine(sources, needed, writtenOf, pkg)));
   const singleFix = (pkg: string): Computable<V | undefined> => {
@@ -470,9 +455,8 @@ export function suggestSanctions<V, C>(
     if (pins.length === 0) {
       return Computable.resolve(sanctionsOnly());
     }
-    /* Verify the pins by one re-resolution (a pin is just a root floor). Any
-     * remaining conflict demotes the whole set to the construction-verified
-     * sanction lines rather than presenting an unverified promise. */
+    /* Check the pins, added as roots, by one resolution: any violation left
+     * replaces the whole set with the sanction lines. */
     const pinReqs: Requirement[] = pins.map(pin => requirementAt(pin.pkg, domain.versionToString(pin.version)));
     return sources.resolve(canonicalRequirements([...demanded, ...pinReqs]).roots).then(
       verify => {
@@ -493,16 +477,22 @@ export function suggestSanctions<V, C>(
 }
 
 /**
- * Group and enrich a walk's hard errors into ONE combined failure carrying
- * the COMPLETE repair set, computed in one pass: supply the latest stable for
- * each floorless-only package, RE-RESOLVE with those as `?` alternates
- * (attach-last — exactly what the user will paste), iterate while the
- * completion surfaces further floorless packages, then fold the completed
- * resolution's divergence sanctions (principal + forks per conflicted
- * package) into the same list — so one paste resolves, rather than a second
- * round of errors. Non-repairable failures (unparseable constraints) stay
- * separate. All registry reads are failure-path only; on any misstep the
- * loop degrades to what it has.
+ * Combine a walk's `errors` on packages required only without a lower bound
+ * (those with a `name`) into one error whose help is a set of `?` references
+ * that completes the resolution of `roots` at once. Errors without a `name`
+ * are returned unchanged, after it; with none to combine, `errors` is
+ * returned as it is.
+ *
+ * Each such package is given its latest stable version as a `?` reference,
+ * and `roots` resolved again with them. Packages that resolution finds
+ * required only without a lower bound are given one in turn, for up to four
+ * further resolutions. Where the last resolution has violations, the help also
+ * names every selected version of each violated package, and the message lists
+ * the violations. The combined error lists each package with its requirers
+ * (`floorless`, sorted); a package with no stable version is listed but gets
+ * no reference. Where a round finds no stable version for any of its
+ * packages, or a resolution fails for another reason, the help names only the
+ * versions given so far.
  */
 export function completeRepairSet<V, C>(
   errors: IResolutionError[],
@@ -516,7 +506,8 @@ export function completeRepairSet<V, C>(
   }
   const supplies = new Map<string, V>();
   const requirersOf = new Map<string, Set<string>>();
-  /* Each floorless-required package, as a reference to it is written. */
+  /* Each package required only without a lower bound, as a reference to it is
+   * written. */
   const identities = new Map<string, PackageIdentity>();
   const identity = (pkg: string): PackageIdentity => identities.get(pkg) ?? { name: pkg };
   const recordFloorless = (failures: ReadonlyArray<{ name?: string; publishedName?: string; requiredBy?: string }>): string[] => {
@@ -569,8 +560,8 @@ export function completeRepairSet<V, C>(
       }
     );
   return supply(recordFloorless(errors), 0).then(completed => {
-    /* One suggestion line per package: its supplied version and/or the
-     * divergent set (principal + forks) the completed resolution ships. */
+    /* One suggestion line per package: the version given it, and every
+     * version the last resolution selects of a violated package. */
     const suggest = new Map<string, Set<string>>();
     for (const [pkg, version] of supplies) {
       suggest.set(pkg, new Set([domain.versionToString(version)]));
@@ -592,9 +583,7 @@ export function completeRepairSet<V, C>(
       const more = requirers.length - shown.length;
       return `  '${pkg}' — required by ${shown.join(", ")}${more > 0 ? ` (+${more} more)` : ""}`;
     });
-    /* The forecast conflicts are stated, not just counted — the grouped
-     * one-line form (the full provenance stanzas belong to the dedicated
-     * conflict error, when one is hit directly). */
+    /* The violations the last resolution has, one line per group. */
     const conflictNote =
       completed !== undefined && conflicts.size > 0
         ? [
@@ -608,8 +597,8 @@ export function completeRepairSet<V, C>(
     const entries = [...suggest.keys()]
       .sort()
       .map(pkg => [...suggest.get(pkg)!].map(version => sources.refText(identity(pkg), version, "?")).join(" "));
-    /* ONE help entry for the pasteable block (the `help:` prefix lands only
-     * on its lead line, so the group copies cleanly), commentary separate. */
+    /* One help for the block (its `help:` prefix only on the lead line, so it
+     * copies cleanly), then the line saying what `?` means. */
     const help =
       entries.length > 0
         ? [

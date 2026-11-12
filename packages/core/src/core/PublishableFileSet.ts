@@ -22,23 +22,24 @@ import { IProvenanceStep } from "./Provenance";
 import type { RepositoryPublishRef } from "./Repository";
 
 /**
- * One member's publish carrier: a FileSet whose content IS the wire artifact
- * (npm: `{ <name>-<version>.tgz, package.json }`) — the pure, cacheable output of
- * a `sync` member's `package()`, so building/`cat`-ing it is the dry-run. It
- * carries, as runtime-only shape (reattached by evaluation on the cache-hit path,
- * never serialized — only the artifact bytes are cached): the `destination` this
- * artifact goes to (the vended publish ref — a writer plus the name it will hold
- * in that namespace), and the release-ordering edges — `provides`, the opaque
- * token this artifact satisfies (npm: its package name; several members may
- * provide one token — a package at two major lines — and a destination without
- * the concept provides none), and `dependsOn`, the tokens it requires of
- * co-members (npm: its manifest's release-member dep names). The tokens are
- * minted and matched ecosystem-side but carried as generic data: the sync rule
- * orders uploads so a member follows everything providing a token it depends
- * on — across destinations — and the driver skips the dependants of a failed
- * member. The upload itself is `destination.source.publish(this)` — the carrier
- * exists because the driver (which cannot see the ecosystem plugin) needs a
- * core-level handle to it, exactly as RunnableFileSet carries "how to launch".
+ * The artifact one `sync` member publishes, as files (npm: `<name>-<version>.tgz`
+ * and `package.json`). Building or `cat`-ing it is a dry run of the publish;
+ * the driver uploads it with `destination.source.publish`. The fields are not
+ * cached with the files: evaluation attaches them again where the files are
+ * served from the cache.
+ *
+ * - `destination`: the publish reference the artifact goes to (a writer, and
+ *   the name and version the artifact takes there).
+ * - `provides`: the token this artifact satisfies (npm: its package name),
+ *   where the destination has one. Several members may provide one token (a
+ *   package at two major versions).
+ * - `dependsOn`: the tokens it requires of the release's other members (npm:
+ *   the names of the members its manifest depends on).
+ *
+ * Tokens are made by the ecosystem's writer and compared as plain strings:
+ * `publishOrder` puts a member after every member providing a token it depends
+ * on, across destinations, and the driver skips the members that depend on a
+ * failed one.
  */
 export class PublishableFileSet extends FileSet {
   constructor(

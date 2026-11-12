@@ -28,6 +28,7 @@
 import * as sax from "sax";
 import { FabrError } from "@fabr-build/core";
 
+/** An XML element: its name, its child elements and its text. */
 export interface XmlElement {
   /** The element's name, without any namespace prefix. */
   readonly name: string;

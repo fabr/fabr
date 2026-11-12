@@ -18,10 +18,9 @@
  */
 
 /*
- * The model-layer error vocabulary: typed errors that reference build-model
- * declarations (targets, properties, written values). The engine layer's own
- * errors live in core/Errors.ts. Errors carry data; presentation is
- * exclusively the driver's job.
+ * The model layer's errors: typed errors naming declarations (targets,
+ * properties, written values), and the labels a cycle error is made from. They
+ * carry data; the driver renders them.
  */
 
 import { INameValue, IPropertyDecl, ITargetDecl } from "./AST";
@@ -32,23 +31,18 @@ import { ISourceSpan } from "../support/Log";
 import type { Constraints } from "./Constraints";
 
 /**
- * Failure of a target, as propagated to its dependants: carries the failed
- * target's declaration and the underlying cause, so that whoever ultimately
- * reports the failure (the driver) can attribute each cause to its target
- * exactly once and render dependants' failures tersely.
+ * The failure of a target, as its dependants see it: the failed target's
+ * declaration and the underlying `cause`. The failure report shows each cause
+ * once, against its target.
  */
 export class DependencyFailedError extends FabrError {
   public readonly target: ITargetDecl;
   declare public readonly cause: Error;
-  /**
-   * Set when the failure is an anonymous sub-target's build step: the action
-   * verb (e.g. "Compiling"). `target` is then the *declared* target it
-   * belongs to, so the driver renders "Compiling X failed" against it and
-   * collapses the intermediate hop.
-   */
+  /** For a failed labelled sub-target, its participle ("Compiling");
+   *  `target` is then the declared target it belongs to. */
   public readonly label?: string;
-  /** Set when the failure is a target of a rule's block, or one made for it:
-   * its names, as {@link ITargetBuildTask.subtargetNames}. */
+  /** For a failed target of a rule's block, or one made for it, its names,
+   *  as {@link ITargetBuildTask.subtargetNames}. */
   public readonly subtargetNames?: readonly string[];
 
   constructor(target: ITargetDecl, cause: Error, label?: string, subtargetNames?: readonly string[]) {
@@ -65,15 +59,10 @@ export class DependencyFailedError extends FabrError {
 }
 
 /**
- * The build files contained one or more errors (a parse error, or a
- * sema/validation failure such as an unknown target type, an unexpected or
- * missing property, or a naming conflict). Loading reports each such error as
- * its own positioned diagnostic and then rejects with this to *stop* the run:
- * the model is not sound, so no operation should proceed against it. Carries
- * only the count — the individual errors are already on the log, so the driver
- * renders nothing further for this (it just fails the run). In watch mode the
- * rejection leaves the previous model resident: the reload's new (broken) model
- * never supersedes it.
+ * The error loading fails with where the build files held errors (a parse
+ * error, an unknown target type, an unexpected or missing property, a naming
+ * conflict). Each error has already been reported as its own diagnostic, so
+ * this carries only their count and the failure report shows nothing for it.
  */
 export class BuildFilesInvalidError extends FabrError {
   constructor(public readonly errorCount: number) {
@@ -92,7 +81,7 @@ export interface IUseSite {
 let nextOrder = 0;
 
 /** The label of a node computing what a name stands for: a target's or a
- * global's answer in one configuration, or a target's build. */
+ * global's value in one configuration, or a target's build. */
 export class NameLabel implements Label {
   /** Where this stands among the names asked for, earliest lowest. */
   public readonly order = nextOrder++;
@@ -125,13 +114,11 @@ export class ProvenanceLabel implements Label {
 }
 
 /**
- * A name that resolves (directly or through other names) to itself. The cycle
- * is carried as its use sites, closing reference first — the value that named
- * an already-resolving target/property — back to the use site that entered it;
- * a self-reference (`js_package base { srcs = base:*.ts; }`, where `base` names
- * the target being declared rather than the directory beside it) is the
- * single-element case. The written reference, not the declaration it re-enters,
- * is what the user got wrong, so the report anchors there.
+ * A name that depends, directly or through other names, on itself. `cycle` is
+ * the written references making the cycle, the one that closed it first; a
+ * self-reference (`js_package base { srcs = base:*.ts; }`, where `base` names
+ * the target being declared) has one. The report is positioned at the
+ * references.
  */
 export class CircularDependencyError extends FabrError {
   constructor(
@@ -146,18 +133,14 @@ export class CircularDependencyError extends FabrError {
 }
 
 /**
- * A written name that failed to resolve, positioned at the name itself (its own
- * source span) so the report underlines it, not just the enclosing target. The
- * default case is a literal (wildcard-free) name in a FILES property that named
- * no target and matched no file — there is no reading under which the user meant
- * "nothing", so it is an error rather than a silently-empty resolution (a glob
- * matching nothing stays lenient). A caller with a *specific* reason — a `sync`
- * coordinate that names no repository, names no publish target, or carries a bad
- * version — passes it as `reason` for the message.
+ * A written name that failed to resolve, positioned at the name itself: by
+ * default a literal (wildcard-free) name that named no target and matched no
+ * file. A caller with a specific reason (a `sync` coordinate naming no repository or publish target,
+ * or carrying a bad version) passes it as `reason`.
  */
 export class NameResolutionError extends FabrError {
   public readonly position: ISourceSpan;
-  /** Where the name was written (property + owning target), when known */
+  /** Where the name was written (property and owning target), when known. */
   public readonly useSite?: IUseSite;
 
   constructor(name: Name, position: ISourceSpan, useSite?: IUseSite, reason?: string) {
@@ -168,18 +151,13 @@ export class NameResolutionError extends FabrError {
 }
 
 /**
- * No rule matched a target's type under the constraints in effect. Carries
- * the data — the declaration and the full constraint set — and leaves
- * presentation to the driver (notably, which constraints are worth showing:
- * explicit overrides, not the run's ambient facts). The demand chain is not
- * carried here: like a failed build, this error is wrapped per written
- * reference it crosses (ReferenceFailedError), which attributes each actual
- * demand path rather than the first demander's.
+ * No rule of a target's type applies under the constraints in effect.
+ * Carries the declaration and the whole constraint set. Like a failed build,
+ * it is wrapped in a ReferenceFailedError per written reference it crosses.
  *
  * `candidates` are the type's own rules, none of which applied, each as the
- * keys of its guards were judged for this target — so the report can say what
- * the type does support and what this target has instead. Empty for a type
- * with no rule of its own.
+ * keys of its guards were judged for this target; empty for a type with no
+ * rule of its own.
  */
 export class NoRuleFoundError extends FabrError {
   constructor(
@@ -194,7 +172,7 @@ export class NoRuleFoundError extends FabrError {
 /** One key of a rule's guard, as it was judged for a target. */
 export interface IJudgedKey {
   /** The property the key names: the target's own where `own`, else the
-   * configuration's. */
+   *  configuration's. */
   key: string;
   own: boolean;
   /** The pattern the rule requires of it. */
@@ -205,13 +183,11 @@ export interface IJudgedKey {
 }
 
 /**
- * A referenced target's failure crossing the property value that referenced
- * it: records the use site — the written value, its property, and the owning
- * target — so the driver can render the dependant chain as
- * "required by <target> <property>" notes underlining each written reference.
- * Wraps only failures OF the referenced target (it failed to build, or no
- * rule matched it) — an error intrinsic to the current resolution carries its
- * own attribution and passes through unwrapped.
+ * A referenced target's failure, wrapped where it crosses the written value
+ * that referenced it: the value, its property and the owning target, which the
+ * failure report shows as a "required by" note. Wraps only a failure of the
+ * referenced target itself (it failed to build, or no rule applies); any other
+ * error passes through unwrapped.
  */
 export class ReferenceFailedError extends FabrError {
   declare public readonly cause: DependencyFailedError | NoRuleFoundError;

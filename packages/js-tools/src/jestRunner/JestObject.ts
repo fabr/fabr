@@ -18,45 +18,34 @@
  */
 
 /**
- * The `jest` object.
+ * The `jest` object. Every public method of jest-mock's `ModuleMocker` (`fn`,
+ * `spyOn`, `mocked`, the clear/reset/restore family) and of `@jest/fake-timers`'
+ * `ModernFakeTimers` is copied onto it, bound, so a member the installed jest
+ * release lacks is absent here too (`jest.advanceTimersToNextFrame` on jest 29).
+ * The module-registry operations (`mock`, `unmock`, `requireActual`,
+ * `resetModules`, …) are written out over fabr's registry (Registry.ts).
  *
- * Half of it is **adopted wholesale** from the libraries that implement it —
- * every public method of jest-mock's `ModuleMocker` (`fn`, `spyOn`, `mocked`,
- * the clear/reset/restore family) and of `@jest/fake-timers`' `ModernFakeTimers`
- * — bound and copied across, not forwarded one by one, so a member that a given
- * jest release does not have is absent here too, as under that release of real
- * jest (`jest.advanceTimersToNextFrame` on jest 29, say).
- *
- * The other half cannot be adopted, because no library implements it: the
- * module-registry operations (`mock`, `unmock`, `requireActual`,
- * `resetModules`, …) ARE the interface to the registry, which is fabr's own
- * (see Registry.ts). Those are written out below, along with the few members
- * that need fabr behaviour.
- *
- * There is one object per *caller*, because `jest.mock('./x')` resolves
- * relative to the module that wrote it. The per-caller objects are handed out
- * through the `@jest/globals` interception (which is also what the hoisted
- * calls require); the plain `jest` global shares everything except that
- * resolution base, which is the test file's.
+ * There is one object per calling module, since `jest.mock('./x')` resolves
+ * relative to the module that wrote it. The registry hands them out through
+ * `@jest/globals`, which the hoisted calls require; the `jest` global resolves
+ * relative to the test file.
  */
 
 import { ILoaderModule, MockRegistry } from "./Registry";
 
-/** What this module needs of jest-mock's ModuleMocker by NAME; the rest of its
- * surface is adopted generically and needs no declaration here. */
+/** The members of jest-mock's ModuleMocker called by name; the rest are copied
+ * onto the `jest` object unnamed. */
 export interface IMocker {
   getMetadata(component: unknown): unknown;
   generateFromMetadata(metadata: unknown): unknown;
 }
 
-/** Likewise @jest/fake-timers' ModernFakeTimers: only the member fabr overrides
- * and the teardown it drives are named. */
+/** The members of @jest/fake-timers' ModernFakeTimers called by name. */
 export interface IFakeTimers {
   useFakeTimers(config?: unknown): void;
-  /** Restore the real timers/clock (uninstall). Not on the jest object (see
-   * NOT_JEST_API) — the RUN calls it after the framework returns, because a
-   * file whose last test leaves fake timers active would otherwise fake the
-   * clock the run's own reporting reads. */
+  /** Restore the real timers and clock. Not on the jest object: the run calls
+   * it once circus returns, so a file whose last test leaves fake timers
+   * installed does not fake the clock the run's reporting reads. */
   dispose(): void;
 }
 
@@ -70,13 +59,9 @@ export interface IJestEnvironment {
 }
 
 /*
- * Circus's own control channel. Real jest's runtime hands these values to
- * circus as `Symbol.for` globals (see jest-runtime's `retryTimes`/`setTimeout`)
- * and circus reads them off `globalThis` — which is the SAME global object
- * here, so assigning them is jest's own mechanism; when a member is applied
- * (per test, at describe entry) is circus's business. A symbol a given circus
- * release does not read is simply inert, exactly as under that release of real
- * jest.
+ * The `Symbol.for` globals jest-runtime sets for `jest.setTimeout` and
+ * `jest.retryTimes`, which circus reads off `globalThis` and applies itself. A
+ * symbol the installed circus does not read has no effect, as under jest.
  */
 const TEST_TIMEOUT = Symbol.for("TEST_TIMEOUT_SYMBOL");
 const RETRY_TIMES = Symbol.for("RETRY_TIMES");
@@ -84,8 +69,8 @@ const LOG_ERRORS_BEFORE_RETRY = Symbol.for("LOG_ERRORS_BEFORE_RETRY");
 const WAIT_BEFORE_RETRY = Symbol.for("WAIT_BEFORE_RETRY");
 const RETRY_IMMEDIATELY = Symbol.for("RETRY_IMMEDIATELY");
 
-/** jest.retryTimes' options bag, as jest 30 declares it; circus 29 reads only
- * the count and the extra symbols sit inert, per the note above. */
+/** jest.retryTimes' options, as jest 30 declares them; circus 29 reads only the
+ * count. */
 interface IRetryOptions {
   logErrorsBeforeRetry?: boolean;
   waitBeforeRetry?: number;
@@ -95,38 +80,31 @@ interface IRetryOptions {
 const circusGlobals = globalThis as Record<symbol, unknown>;
 
 /**
- * Public methods of the backing libraries that are NOT part of jest's `jest`
- * object: machinery fabr drives itself (the automock metadata pair, which
- * Registry.ts uses), and lifecycle jest never exposes. Everything else a
- * library declares is assumed to be API — the safer default, since a member
- * wrongly copied is an unused extra, while one wrongly withheld breaks a test
- * that works under jest.
+ * Public methods of ModuleMocker and ModernFakeTimers that are not on jest's
+ * `jest` object: the automock metadata pair Registry.ts calls, and lifecycle
+ * jest does not expose. Every other public method is copied.
  */
 const NOT_JEST_API = new Set(["generateFromMetadata", "getMetadata", "clearMocksOnScope", "dispose", "reset"]);
 
 /**
- * Build the `jest` object as seen by one module. `caller` is the module the
- * object was handed to, and is what module specifiers resolve against.
+ * Make the `jest` object for one module. Module specifiers given to it resolve
+ * relative to `caller`, or to the test file where `caller` is undefined.
  */
 export function makeJestObject(env: IJestEnvironment, caller: ILoaderModule | undefined): Record<string, unknown> {
   const { registry, timers } = env;
   const jest: Record<string, unknown> = {};
 
-  /* Adopted: mock functions and spies, and the whole timer surface. */
+  /* Mock functions and spies, and the timer methods. */
   adopt(jest, env.mocker);
   adopt(jest, timers);
 
-  /* jest's module operations return the `jest` object for chaining; each is
-   * void here, so this discards the result and hands the object back. */
+  /* Get the `jest` object, which jest's module operations return for
+   * chaining. */
   const chain = (): Record<string, unknown> => jest;
 
   Object.assign(jest, {
-    /* The module registry — fabr's own, so written out. `mock`/`unmock`/
-     * `deepUnmock` are the hoisted forms (by the time they run, nothing they
-     * affect has been required yet); `doMock`/`dontMock` are the un-hoisted
-     * duals, taking effect for requires that follow. Both land in the same
-     * registry: the difference is purely *when* they run, which is the hoist's
-     * business, not this object's. */
+    /* The module registry. `mock` and `doMock` do the same here, as do
+     * `unmock` and `dontMock`: the hoist moves only the first of each. */
     mock: (moduleName: string, factory?: () => unknown, options?: { virtual?: boolean }) => (
       registry.setMock(moduleName, caller, factory, options?.virtual ?? false),
       chain()
@@ -137,9 +115,7 @@ export function makeJestObject(env: IJestEnvironment, caller: ILoaderModule | un
     ),
     unmock: (moduleName: string) => (registry.unmock(moduleName, caller), chain()),
     dontMock: (moduleName: string) => (registry.unmock(moduleName, caller), chain()),
-    /* fabr has no module *tree* of its own to walk: a mock is keyed by the file
-     * it resolves to, so unmocking one is already deep in the only sense that
-     * matters here. */
+    /* The same as `unmock`: a mock is keyed by the file it resolves to. */
     deepUnmock: (moduleName: string) => (registry.unmock(moduleName, caller), chain()),
     setMock: (moduleName: string, moduleExports: unknown) => (
       registry.setMock(moduleName, caller, () => moduleExports, true),
@@ -147,24 +123,22 @@ export function makeJestObject(env: IJestEnvironment, caller: ILoaderModule | un
     ),
     enableAutomock: () => (registry.setAutomockAll(true), chain()),
     disableAutomock: () => (registry.setAutomockAll(false), chain()),
-    /* jest's own long-standing aliases for the pair above. */
+    /* jest's aliases for the pair above. */
     autoMockOn: () => (registry.setAutomockAll(true), chain()),
     autoMockOff: () => (registry.setAutomockAll(false), chain()),
     requireActual: (moduleName: string) => registry.requireActual(moduleName, caller),
     requireMock: (moduleName: string) => registry.requireMock(moduleName, caller),
     createMockFromModule: (moduleName: string) => registry.requireMock(moduleName, caller),
-    /* Dropped by jest 30; still declared by the supported 29. */
+    /* Removed in jest 30; declared by jest 29. */
     genMockFromModule: (moduleName: string) => registry.requireMock(moduleName, caller),
     resetModules: () => (registry.resetModules(), chain()),
     isolateModules: (fn: () => void) => (registry.isolateModules(fn), chain()),
     isolateModulesAsync: (fn: () => Promise<void>) => registry.isolateModulesAsync(fn),
 
-    /* Overrides the adopted one: see withTimerDefaults for the one deliberate
-     * divergence from jest's defaults. */
+    /* Replaces the copied method, to apply withTimerDefaults. */
     useFakeTimers: (config?: unknown) => (timers.useFakeTimers(withTimerDefaults(config)), chain()),
 
-    /* Circus applies these; the object only posts them on the control channel
-     * above, exactly as jest-runtime does. */
+    /* Set the globals circus reads, as jest-runtime does. */
     setTimeout: (ms: number) => ((circusGlobals[TEST_TIMEOUT] = ms), chain()),
     retryTimes: (count: number, options?: IRetryOptions) => {
       circusGlobals[RETRY_TIMES] = count;
@@ -174,8 +148,7 @@ export function makeJestObject(env: IJestEnvironment, caller: ILoaderModule | un
       return chain();
     },
 
-    /* jest-config always generates one; its absence means the config path
-     * changed under us, which must not read as a working seed of undefined. */
+    /* jest-config always generates a seed: throw where there is none. */
     getSeed: () => {
       if (env.seed === undefined) {
         throw new Error("jest.getSeed: the normalized jest config carries no seed");
@@ -183,15 +156,11 @@ export function makeJestObject(env: IJestEnvironment, caller: ILoaderModule | un
       return env.seed;
     },
 
-    /* The process IS the environment here — there is no vm context to tear
-     * down — so it is never torn down while a test is running. */
+    /* The environment is the process, never torn down while a test runs. */
     isEnvironmentTornDown: () => false,
 
-    /* Not implemented. Each is a real jest API, so each is present and THROWS:
-     * left undefined they would surface as "is not a function", which reads
-     * like a bug in the layer rather than a feature it does not have yet.
-     * (Members a FUTURE jest may add are deliberately absent, so
-     * `if (jest.newThing)` feature detection still behaves.) */
+    /* jest API not implemented here: present, and throws saying so. A member
+     * jest does not have is left absent, so feature detection works. */
     onGenerateMock: notSupported("jest.onGenerateMock", "customizing generated automocks"),
     runAllImmediates: notSupported("jest.runAllImmediates", "it exists only for jest's legacy fake timers"),
     unstable_mockModule: notSupported("jest.unstable_mockModule", "ESM-mode mocking; tests compile to CommonJS here"),
@@ -201,9 +170,9 @@ export function makeJestObject(env: IJestEnvironment, caller: ILoaderModule | un
 }
 
 /**
- * Copy every public method of `source` onto `target`, bound to `source`. Walks
- * the prototype (these are class instances), skipping the constructor,
- * `_`-prefixed internals, and the {@link NOT_JEST_API} names.
+ * Copy every public method on `source`'s prototype onto `target`, bound to
+ * `source`, skipping the constructor, `_`-prefixed names and the
+ * {@link NOT_JEST_API} names.
  */
 function adopt(target: Record<string, unknown>, source: object): void {
   const prototype = Object.getPrototypeOf(source) as object;
@@ -217,17 +186,11 @@ function adopt(target: Record<string, unknown>, source: object): void {
 }
 
 /**
- * Apply fabr's fake-timer defaults, with ONE deliberate divergence from jest's:
- * `setImmediate` and `process.nextTick` are not faked.
- *
- * There is no vm sandbox here, so circus and the child's own IPC report back to
- * the parent run in the SAME realm as the test and schedule through the same
- * `setImmediate`/`nextTick` a test fakes; with the two faked, a test that
- * times out under fake timers fails *silently* — the timeout is never reported
- * and the run appears to stop. Excluding them restores the ordinary report
- * ("test timed out after Nms") and lets the following tests run. A test that
- * really wants them faked says so — `useFakeTimers({doNotFake: []})` — and
- * accepts the flush risk, which is documented.
+ * Add the default `doNotFake: ["setImmediate", "nextTick"]` to a
+ * `useFakeTimers` config that states no `doNotFake`; jest fakes both by default.
+ * Circus and the child's report to its parent schedule through them, so with
+ * them faked a test that times out is never reported and the run stops. A test
+ * that wants them faked passes `doNotFake: []`.
  */
 function withTimerDefaults(config: unknown): unknown {
   const given = (config ?? {}) as { doNotFake?: string[] };

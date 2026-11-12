@@ -46,10 +46,10 @@ import {
 export type LayerEntryType = "file" | "directory" | "symlink" | "hardlink" | "other";
 
 /**
- * One entry of a layer's tar, as its filesystem manifest records it: its path
+ * One entry of a layer's tar, as the layer's index records it: its path
  * (relative to the image's root, `.` and `..` collapsed), what it is, and its
- * stored metadata; a regular file also where its bytes are in the uncompressed
- * tar, their hash (as the blob pool names content) and their mime.
+ * stored metadata; for a regular file also where its bytes are in the
+ * uncompressed tar, their hash (as the blob pool names content) and their mime.
  */
 export interface ILayerEntry {
   readonly path: string;
@@ -91,8 +91,9 @@ interface IHeader {
 /**
  * Index a layer's uncompressed tar as it streams through: write the tar into
  * the returned sink, and read the index from `result` once it has finished.
- * Reads ustar, pax and GNU long names, as core's tar reader does; a name
- * leaving the tree is refused, as an unpacked archive's is.
+ * Reads ustar, pax and GNU long names, as core's tar reader does. The sink
+ * fails on an entry whose path (or hardlink target) leaves the tree; `result`
+ * throws where the tar ended before its end-of-archive marker.
  */
 export function indexLayer(): { sink: Writable; result: () => ILayerIndex } {
   const entries: ILayerEntry[] = [];
@@ -276,7 +277,7 @@ function entryType(type: TarEntryType | null): LayerEntryType {
   }
 }
 
-/** Make an output whose bytes also go to `sink`, which has finished before the output is finalized. */
+/** Make an output whose bytes also go to `sink`; finalizing it first waits for `sink` to finish. */
 export function teeOutput(output: IOutputHandle, sink: Writable): IOutputHandle {
   const stream = new PassThrough();
   let failure: Error | undefined;

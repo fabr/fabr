@@ -40,52 +40,50 @@ import { canonicalFileName, isCanonicalFileName } from "../support/Paths";
 import { hashString } from "./FSWrapper";
 import { manifestLine } from "./Manifest";
 
-/** The permission bits (`man 2 stat`, the low 12 bits — rwx triples plus
- * setuid/setgid/sticky) fabr records for a file when none are otherwise known:
- * a plain non-executable file. A file's real mode is carried on {@link IFile.mode}
- * and preserved through the cache (see BuildCache's manifest) so it can be
- * reapplied on export (`fabr cp`, tar pack). */
+/** The permission bits ({@link IFile.mode}) fabr records for a file where
+ * none are known: a plain non-executable file. */
 export const DEFAULT_FILE_MODE = 0o644;
 
+/** A file of a FileSet: its content, permission bits and type. */
 export interface IFile {
+  /** The file's identity in a manifest or a key: a digest of its content,
+   * unless the implementation says otherwise. */
   hash: string;
 
   /**
-   * The file's POSIX permission bits (low 12 bits, `0o7777` — including
-   * setuid/setgid/sticky). Authoritative and preserved verbatim through the
-   * cache manifest; reapplied when the file is exported to user space (`fabr cp`)
-   * or packed into a tarball. The content-addressed blob a file is stored in is
-   * *not* this mode — a blob is read-only (0o444, or 0o555 when this mode is
-   * executable), since one blob may back several files with differing modes.
+   * The file's POSIX permission bits (the low 12 bits, `0o7777`, setuid,
+   * setgid and sticky included). Kept exactly through the cache manifest, and
+   * applied where the file is exported (`fabr cp`) or packed into a tarball.
+   * The blob holding the content in the store does not have this mode: a blob
+   * is read-only (0o444, or 0o555 where this mode is executable), and may hold
+   * the content of several files with different modes.
    */
   mode: number;
 
   /**
-   * The file's sniffed content type (see Mime's `sniffMime`):
-   * `application/octet-stream` for anything unrecognized. Total and synchronous
-   * on every implementation — classified from the leading bytes wherever the
-   * content is first read (hashing, streaming into the store), and persisted
-   * through the cache manifest, so consulting it costs no I/O anywhere. A pure
-   * function of the content (same hash ⇒ same mime); like the hash it
-   * identifies, it never participates in cache keys. Identification only — the
-   * consumer that acts on it (archive descent) still parses the content on its
-   * own terms.
+   * The file's content type, as `sniffMime` classifies its leading bytes
+   * (`application/octet-stream` where unrecognized). Every implementation
+   * answers it synchronously: it is classified where the content is first read
+   * (hashing, streaming into the store) and kept in the cache manifest. A
+   * function of the content, and never part of a cache key. A consumer acting
+   * on it (archive descent) still parses the content itself.
    */
   mime: string;
 
   readString(encoding?: BufferEncoding): Computable<string>;
 
   /**
-   * @returns a human readable string representing the file (may not be parseable in any sense)
+   * @returns a name for the file in messages, which need not be a path.
    */
   getDisplayName(): string;
 
   /**
-   * Whether the receiver names the *same underlying file* as the given one
-   * (same identity, not merely same content) — used to tell a genuine union
-   * conflict from the same file arriving twice. A given cache entry surfaces
-   * with a stable identity on both the fresh and served-from-disk paths (see
-   * BuildCache.getOrCreate), so the two compare equal.
+   * @return true if `file` is the same underlying file as this one, otherwise
+   * false: the same file on disk (for a file of the store's content-addressed
+   * pool, the same bytes), the same symlink target, or the same in-memory
+   * buffer. Two files under one name in a union conflict only where this is
+   * false. A cache entry's files compare equal whether just built or read back
+   * (`BuildCache.getOrCreate`).
    */
   isSameFile(file: IFile): boolean;
 
@@ -100,14 +98,14 @@ export interface IFile {
   getBuffer(): Computable<Buffer>;
 }
 
+/** A container of files, looked up by name. */
 export interface FileSource {
   /**
-   * Project this source to the part named by `name`, its result names rewritten
-   * under `prefix` (the written-name rule: `alias/path` keeps `alias/`, `alias:path`
-   * strips it). "Project" because a plain source yields the **matching files**,
-   * but a source with its own notion of a named part may yield something else —
-   * a RunnableFileSet re-points its launch entry, keeping the whole install. No
-   * match yields the empty set.
+   * Project this source to the part `name` names, each result name under
+   * `prefix` (`alias/path` keeps `alias/`, `alias:path` strips it). A plain
+   * source yields the matching files; a source with its own reading of a name
+   * may yield something else (a `sync` target's source yields a member's
+   * publish artifact). Nothing matching yields the empty set.
    *
    * @param name the name/glob to match.
    * @param prefix prepended to every result name (default none).
@@ -115,72 +113,61 @@ export interface FileSource {
   find(name: Name, prefix?: string): ComputableSource<FileSet>;
 
   /**
-   * @return a single direct file by exact name or undefined if it does not exist.
-   * @param name
+   * @return the file named exactly `name`, or undefined where there is none.
    */
   get(name: string): ComputableSource<IFile | undefined>;
 }
 
 type FileSetContent = Map<string, IFile>;
 
-/**
- * The lazily-computed manifest hash of one content map, held in a cell **shared
- * by every set sharing that map**. The hash is a property of the content, not
- * of any one set, and is computed on demand: the cell travels with the map, so
- * a re-wrap that shares the content shares the answer.
- */
+/** The manifest hash of one content map, computed on first ask and shared by
+ * every set sharing the map. */
 interface IManifestHash {
   value?: string;
 }
 
 /**
- * Construction-site marker asserting that a content map's names are already
- * canonical, so the constructor skips canonicalization. For names that are
- * canonical *by construction* only: a set derived name-unchanged from an
- * existing FileSet (union, minus, partition), or one read back from a
- * fabr-written cache manifest (the cache is a memo of a canonical set — reads
- * are trusted without rechecking). Any site introducing NEW names goes through
- * the canonicalizing constructor.
+ * Constructor argument asserting that a content map's names are already
+ * canonical, so the constructor does not check them. Pass it only for names
+ * taken unchanged from an existing FileSet (union, minus, partition) or read
+ * back from a cache manifest fabr wrote. A site introducing new names goes
+ * through the canonicalizing constructor.
  */
 export const CANONICAL: unique symbol = Symbol("canonical-names");
 
 /**
- * Represents a set of files that may originate from arbitrary points of the file system
- * (or not even be on the filesystem). FileSets are immutable after construction.
+ * An immutable set of files by name, which may lie anywhere on disk or not on
+ * disk at all.
  *
- * Every name is **canonical** (see {@link canonicalFileName}): the constructor
- * canonicalizes whatever it is handed — so "no `../`, no absolute paths, no
- * control characters" holds for every FileSet *by construction*, whoever the
- * producer is (staging containment then cannot be escaped by a crafted name).
- * The common already-clean case costs one scan and keeps the map as given;
- * construction sites whose names are canonical by construction pass
- * {@link CANONICAL} to skip even that.
+ * Every name is canonical ({@link canonicalFileName}: no `../`, no absolute
+ * path, no control characters): the constructor canonicalizes the names it is
+ * given, unless told they are {@link CANONICAL}.
  *
- * Current implementation is just a Map<string,IFile> but other code shouldn't depend on that.
+ * Do not depend on the set being a Map.
  */
 export class FileSet implements FileSource {
   private content: FileSetContent;
-  /** Shared with any set sharing {@link content} — see {@link IManifestHash}. */
+  /** Shared with every set sharing {@link content}. */
   private readonly manifestHash: IManifestHash;
   /**
-   * Optional provenance chain, preserved through single-source derivations.
-   * This is runtime-only "ghost" data: it must never participate in manifests,
-   * cache keys, or file equality, except as the files' source paths
-   * ({@link sourcePaths}), which an action's key records.
+   * The set's provenance, kept through single-source derivations. Runtime-only:
+   * it takes no part in manifests, cache keys or file equality, except as the
+   * files' source paths ({@link sourcePaths}), which an action's key records.
    */
   public readonly origin: IProvenanceStep | undefined;
 
-  /** {@link sourcePaths} and {@link sourcePathsDigest}, once asked: functions of
-   * the content and `origin`. */
+  /** {@link sourcePaths} and {@link sourcePathsDigest}, computed on first ask. */
   private sourcePathTable?: ReadonlyMap<string, string>;
   private sourcePathsDigestText?: string;
 
   /**
-   * Handed an existing FileSet, the receiver **shares** its content map rather
-   * than copying it: a set is immutable, its names are already canonical, and
-   * the derivation keeps them verbatim — so a re-wrap (a restamped package, a
-   * runnable over an install) costs nothing per file. Handed a raw map, `trust`
-   * decides whether the names are canonicalized (see {@link CANONICAL}).
+   * Make a set of `content` carrying `origin`. Given an existing FileSet, the
+   * new set shares its content map and manifest hash, copying and checking
+   * nothing. Given a map, its names are canonicalized unless `trust` is
+   * {@link CANONICAL}.
+   * @throws ConflictError where two different files canonicalize to one name,
+   * and FabrError where a name has no canonical form (`\`, a control
+   * character, or no path at all).
    */
   constructor(content: FileSetContent | FileSet, origin?: IProvenanceStep, trust?: typeof CANONICAL) {
     this.content =
@@ -190,11 +177,10 @@ export class FileSet implements FileSource {
   }
 
   /**
-   * Canonicalize a raw content map's names. Fast path: every name already
-   * canonical (the overwhelmingly common case) returns the map as given, no
-   * allocation. Otherwise the map is rebuilt under canonical names, and two
-   * *different* files landing on one canonical name is a {@link ConflictError}
-   * (the same file twice dedups by identity, as in {@link unionAll}).
+   * Canonicalize the names of `content`: the map itself where every name is
+   * already canonical, otherwise a new map under canonical names.
+   * @throws ConflictError where two different files land on one canonical
+   * name; the same file twice is kept once.
    */
   private static canonicalizeContent(content: FileSetContent, origin?: IProvenanceStep): FileSetContent {
     let clean = true;
@@ -227,14 +213,11 @@ export class FileSet implements FileSource {
   }
 
   /**
-   * This set's own delivered name — what a graph *edge* pointing at it is
-   * called, and so how a discovered-deps path names the step that reaches it
-   * (see Manifest's DepsPath). Empty for an ordinary set: its files are already
-   * named, so they are reached directly rather than through a step.
-   *
-   * Unversioned deliberately — it names the binding, not the thing bound: two
-   * coexisting versions are told apart by *where* the walk found them, and the
-   * bytes at that position are what the key carries.
+   * The set's own name: what a dependency on it is called, and so how a
+   * discovered-deps path (Manifest's DepsPath) names the step that reaches it.
+   * Empty for a plain set, whose files are reached by their own names. It
+   * holds no version: two versions held together are told apart by where the
+   * walk found them.
    */
   public get name(): string {
     return "";
@@ -244,8 +227,8 @@ export class FileSet implements FileSource {
    * @return a copy of the receiver carrying the given provenance.
    */
   public withOrigin(origin: IProvenanceStep): FileSet {
-    /* `this`, not `this.content`: sharing the set shares its manifest-hash cell
-     * along with the map, which passing the bare map would not. */
+    /* Pass `this`, not `this.content`, so the copy shares the manifest hash
+     * too. */
     return new FileSet(this, origin);
   }
 
@@ -270,10 +253,10 @@ export class FileSet implements FileSource {
     return derivedFromOf(this.origin, name);
   }
 
-  /** What its files' source paths depend on besides their names, as a hash:
-   *  equal digests mean every name has the same source path. Empty where none
-   *  has one. What an action's key records of an input in place of each file's
-   *  source path. */
+  /** A hash of what the files' source paths depend on besides their names:
+   *  equal digests mean every name has the same source path. Empty where no
+   *  file has one. An action's key records it in place of each file's source
+   *  path. */
   public get sourcePathsDigest(): string {
     if (this.sourcePathsDigestText === undefined) {
       this.sourcePathsDigestText = this.sourcePathsDigestOf([...this.content.keys()]);
@@ -313,14 +296,11 @@ export class FileSet implements FileSource {
   }
 
   /**
-   * Locate projections' matches *within this set* rather than extracting
-   * the files: a map from each matched member's own name to the name the
-   * projection gives it.
-   *
-   * The two names differ whenever the projection's naming facets do work — a path
-   * segment before the `:` (`pkg/src/blah:index.ts` → `src/blah/index.ts` keyed,
-   * called `index.ts`) or a rename (`pkg:*.ts -> *.js`). A rename never moves
-   * anything: only the name the caller uses changes.
+   * Locate the files `projections` select within this set: a map from each
+   * matched file's own name to the name the projections give it. The two
+   * differ where a projection names its result: a path before the `:`
+   * (`pkg/src/blah:index.ts` keys `src/blah/index.ts`, named `index.ts`), or a
+   * rename (`pkg:*.ts -> *.js`).
    */
   public locate(projections: ReadonlyArray<IProjection>): Map<string, string> {
     const projectors = projections.map(projection => projection.pattern.makeProjector(projection.prefix));
@@ -341,49 +321,39 @@ export class FileSet implements FileSource {
   }
 
   /**
-   * Apply projections as *content*: the matched files under their projected
-   * names, the container gone. The extract half of the pair {@link locate}
-   * completes — same projections, same matches, the other reading.
-   *
-   * Through the checked `rename`, so a many-to-one rename is the ordinary
-   * ConflictError rather than a silently lost file. Overridden where a container
-   * is addressed by something other than its own file names (a runnable's launch
-   * surface).
+   * Select the files `projections` select, under the names they give them, as
+   * a set of their own: the files {@link locate} locates.
+   * @throws ConflictError where two different files take one name.
+   * Overridden by a set addressed by something other than its file names
+   * (RunnableFileSet, by its launch surface).
    */
   public select(projections: ReadonlyArray<IProjection>): FileSet {
     return projections.reduce((set: FileSet, projection) => set.rename(projection.pattern.makeProjector(projection.prefix)), this);
   }
 
   public find(name: Name, prefix = ""): Computable<FileSet> {
-    /* The name owns what a projection means (glob-select under `prefix`, or a
-     * `sel -> tmpl` rename); find just applies it. Through the checked rename so
-     * a user rename's name collisions surface — a plain glob projection can't
-     * collide (distinct paths stay distinct under a constant prefix). */
+    /* The name decides what the projection means (a glob under `prefix`, or a
+     * `sel -> tmpl` rename); `rename` reports two different files taking one
+     * name. */
     return Computable.resolve(this.rename(name.makeProjector(prefix)));
   }
 
   /**
-   * Read the contents of the given file as a string (convenience method).
-   * Rejects if the file is not in the set.
-   * @param filepath path of a file within the set.
-   * @param encoding Optional encoding to use for the file (default UTF8)
+   * Read the file named `filepath` as a string. Rejects where the set has no
+   * such file.
+   * @param encoding the file's encoding (default UTF-8).
    */
   readFile(filepath: string, encoding?: BufferEncoding): Computable<string> {
     const file = this.content.get(filepath);
     return file ? file.readString(encoding) : Computable.reject(new FabrError(`File not found: ${filepath}`));
   }
 
-  /**
-   *
-   * @param name
-   * @returns
-   */
+  /** @return the file named `name`, or undefined. */
   public get(name: string): Computable<IFile | undefined> {
     return Computable.resolve(this.content.get(name));
   }
 
-  /** Look up a member by exact name, synchronously — the FileSource `get` is
-   * the Computable-valued interface form; a FileSet's membership is immediate. */
+  /** Look up a file by exact name, synchronously. */
   public getFile(name: string): IFile | undefined {
     return this.content.get(name);
   }
@@ -392,8 +362,7 @@ export class FileSet implements FileSource {
     return Computable.resolve(this);
   }
 
-  /** Get the sole file when this set holds exactly one, else undefined — the projection a
-   * single-file query applies to reduce its (0-or-1-element) FileSet to that file. */
+  /** @return the sole file where this set holds exactly one, otherwise undefined. */
   public getSingleFile(): IFile | undefined {
     return this.content.size === 1 ? this.content.values().next().value : undefined;
   }
@@ -411,19 +380,17 @@ export class FileSet implements FileSource {
   }
 
   /**
-   * Hash this set's {@link toManifest}: a stable identity for its
-   * content, distinguishing exactly what the manifest distinguishes (names,
-   * content hashes and modes) and nothing else: not provenance, not the
-   * delivery that produced it.
-   *
-   * For an action that assembles its own inputs: the key can name a whole
-   * package by its id instead of listing its files, which is O(packages)
-   * rather than O(files) while staying injective over the bytes.
+   * Hash this set's {@link toManifest}: an identity of its content that tells
+   * sets apart by what the manifest records (names, content hashes and modes),
+   * and not by provenance or how the set was made. Computed once per content
+   * map. An action that lays out its own inputs can key a whole package by it
+   * rather than by each file.
    */
   public toManifestHash(): string {
     return (this.manifestHash.value ??= hashString(this.toManifest()));
   }
 
+  /** Render the set's manifest: a line per file (name, content hash, mode), sorted by name. */
   public toManifest(): string {
     const result = [];
     for (const name of [...this.content.keys()].sort()) {
@@ -436,14 +403,13 @@ export class FileSet implements FileSource {
   /* Set operations */
 
   /**
-   * Partition the fileset into 1 or more subsets based on a partition function
-   * (each file in the original will be placed in exactly one output partition).
-   * @param cb
+   * Partition the set by `cb`, which names the partition each file's path goes
+   * to. Each file is in exactly one partition, and each partition carries this
+   * set's origin.
    */
   public partition(cb: (path: string) => string): Record<string, FileSet> {
-    /* Note: we're technically mutating the content of each of the partitioned FileSets
-     * as we go, but those FileSets can't escape from this function before they're finalized.
-     */
+    /* The partitions are filled in after they are made; none leaves this
+     * function before it is complete. */
     const partitions: Record<string, FileSet> = {};
     for (const [path, file] of this.content) {
       const dest = cb(path);
@@ -456,9 +422,8 @@ export class FileSet implements FileSource {
   }
 
   /**
-   * Remap the files in the fileset, and return a new FileSet with the result.
-   * A synonym of {@link rename} (the name used where the intent is layout
-   * rather than projection) — same canonicalization, same collision rule.
+   * Rename the files as {@link rename} does: the name used where the intent is
+   * layout.
    * @param fn A function that either returns the new name for the given file, or undefined to exclude it from the result.
    */
   public remap(fn: (name: string, file: IFile) => string | undefined): FileSet {
@@ -466,12 +431,9 @@ export class FileSet implements FileSource {
   }
 
   /**
-   * Mount this set under `prefix` — every name prefixed, nothing dropped,
-   * renamed or merged. The layout counterpart of {@link rename}: a canonical
-   * prefix onto a canonical name is canonical, so one canonicalization of the
-   * prefix stands in for one per file, and no collision is possible (a constant
-   * prefix keeps distinct names distinct). An empty prefix mounts at the root
-   * and is the receiver itself.
+   * Mount this set under `prefix`: every name prefixed, nothing dropped or
+   * renamed. The prefix is canonicalized once, which makes every name
+   * canonical. An empty prefix returns this set.
    */
   public mountedAt(prefix: string): FileSet {
     if (prefix === "") {
@@ -486,18 +448,15 @@ export class FileSet implements FileSource {
   }
 
   /**
-   * Apply a name projection: `renamer` maps each file's path to its result name
-   * (undefined drops it), returning a new FileSet. This is the loop behind
-   * {@link find} — a plain glob projection and a `sel -> tmpl` rename alike —
-   * and the direct home of the collision rule: two *different* files landing on
-   * one result name is a **conflict**, reported with both sides attributed via
-   * provenance; the same file arriving twice at one name is fine (identity
-   * dedup, as in {@link unionAll}). Result names are canonicalized as they are
-   * produced (a renamer yielding `../x` flattens to `x` — the namespace rule),
-   * and the collision check runs on the *canonical* names, so two names that
-   * only collide after flattening still conflict rather than silently collapse.
-   * A plain glob projection never collides (distinct paths stay distinct under
-   * a constant prefix).
+   * Rename each file by `renamer`, which gives its new name, or undefined to
+   * leave it out, returning a new set: what {@link find} applies for a glob
+   * and for a `sel -> tmpl` rename. Each new name is canonicalized (`../x`
+   * becomes `x`, and a name with no canonical form throws) before names are
+   * compared. Where any name changed, the
+   * result's origin adds a rename step from each new name to its old one.
+   * @throws ConflictError where two different files take one name, both sides
+   * attributed by this set's provenance; the same file twice under one name is
+   * kept once.
    */
   public rename(renamer: (name: string, file: IFile) => string | undefined): FileSet {
     const result = new Map<string, IFile>();
@@ -507,8 +466,7 @@ export class FileSet implements FileSource {
       if (rawName === undefined) {
         continue;
       }
-      /* Canonicalization is the identity on an already-canonical name, and
-       * answering that is much cheaper than producing the canonical form. */
+      /* Checking a name is canonical is much cheaper than canonicalizing it. */
       const newName = isCanonicalFileName(rawName) ? rawName : canonicalFileName(rawName);
       const existing = result.get(newName);
       if (existing && !existing.isSameFile(file)) {
@@ -526,9 +484,8 @@ export class FileSet implements FileSource {
   }
 
   /**
-   * @return all files in the receiver, excluding any file names that appear in the given
-   *  fileset (irrespective of file content).
-   * @param files
+   * @return the files of this set whose names `files` does not hold, whatever
+   * their content.
    */
   public minus(files: FileSet): FileSet {
     const result = new Map(this.content);
@@ -539,13 +496,14 @@ export class FileSet implements FileSource {
   }
 
   /**
-   * Union the given sets; two different files at the same path is a conflict,
-   * reported with both sides attributed via their sets' provenance.
+   * Union `refs`, each FileSetRef taken as the files it selects. No sets gives
+   * the empty set, and one gives itself.
+   * @throws ConflictError where two different files share a name, each side
+   * attributed by its set's provenance; the same file twice is kept once.
    */
   public static unionAll(...refs: Array<FileSet | FileSetRef>): FileSet {
-    /* A materialized ref stands in for the content it projects — flattening is
-     * the pure rename fold, so nothing here becomes async. A caller that needs
-     * the CONTAINER to survive must not come through here (see FileSet.locate). */
+    /* A ref is replaced by the files it selects, so its container is lost
+     * here: a caller that needs the container uses `locate`. */
     const sets = refs.map(ref => (ref instanceof FileSetRef ? ref.select() : ref));
     if (sets.length === 0) {
       return EMPTY_FILESET;
@@ -573,20 +531,24 @@ export class FileSet implements FileSource {
         }
       }
     }
-    /* Lazy merge provenance: retain the contributors (not a per-file map) so a
-     * later diagnostic can trace any file back to its source (see IMergeOrigin). */
+    /* The merge step holds the contributors, not a table of files (see
+     * FILESET_MERGE_PROVENANCE). */
     return new FileSet(result, mergeOrigin(sets.map(fileset => ({ prefix: "", fileset }))), CANONICAL);
   }
 
+  /**
+   * Lay out `data`, each entry under its key: a FileSet, or a list of them,
+   * mounted under the key as a directory, and a bare file named by the key
+   * itself. A later file at a name replaces an earlier one, unchecked.
+   * @throws where a bare file's key is empty.
+   */
   public static layout(data: Record<string, FileSet | Array<FileSet | undefined> | IFile | undefined>): FileSet {
-    /* A mounted name is prefix + a member's own (already canonical) name, so
-     * canonicalizing the *prefix* — once, not once per file — makes the whole
-     * result canonical by construction. Names are `/`-separated everywhere,
-     * whatever the host platform, so the join is a concatenation. */
+    /* A mounted name is a canonical prefix joined to a canonical name, so
+     * canonicalize each prefix once. Names are `/`-separated on every
+     * platform. */
     const result = new Map<string, IFile>();
-    /* Contributors and the prefix each was mounted under, for lazy merge
-     * provenance (see IMergeOrigin) — a raw IFile carries no origin, so only
-     * FileSet sources are recorded. */
+    /* The sets laid out, with their mounts, for the merge step. A bare file
+     * has no origin, so is not recorded. */
     const sources: IMergeSource[] = [];
     for (const prefix in data) {
       const files = data[prefix];
@@ -607,8 +569,7 @@ export class FileSet implements FileSource {
         }
         sources.push({ prefix: mount, fileset: files });
       } else if (files !== undefined) {
-        /* A bare file mounts *at* the prefix, which is then the whole name —
-         * so an empty one names nothing and is rejected. */
+        /* A bare file is named by its key alone, so an empty key is refused. */
         result.set(canonicalFileName(prefix), files);
       }
     }
@@ -619,20 +580,16 @@ export class FileSet implements FileSource {
 export const EMPTY_FILESET: FileSet = new FileSet(new Map());
 
 /**
- * Provenance for a FileSet assembled from several sources (a `unionAll`, or a
- * prefixed `layout`). A single `origin` slot can't represent multiple sources,
- * so this step retains only its
- * contributor FileSets (O(K) references — never a per-file map) and reconstructs
- * one file's origin **lazily**, at render/error time: given the file's path it
- * strips the matching mount prefix, finds the contributor that holds it, and
- * delegates to *that* set's origin — recursing through nested merges down to a
- * single-source origin (e.g. a package resolution) that explains the path.
- * Nothing is computed unless a diagnostic actually asks.
+ * The provenance kind of a set assembled from several sets (`unionAll`,
+ * `layout`, `mountedAt`). The step holds its contributors, not a table of
+ * files, and finds a file's origin only when asked: it strips the file's
+ * mount prefix, finds the contributor holding it, and asks that set's origin,
+ * through any nested merges.
  */
 export const FILESET_MERGE_PROVENANCE = "fileset-merge";
 
 interface IMergeSource {
-  /** The layout prefix this source was mounted under ("" for a bare union). */
+  /** The prefix the set is mounted under, ending in `/`; empty at the root. */
   readonly prefix: string;
   readonly fileset: FileSet;
 }
@@ -646,8 +603,7 @@ interface IMergeOrigin extends IProvenanceStep {
   readonly size: number;
 }
 
-/** Make a merge-provenance step over `sources`, or undefined when none carries an
- * origin — nothing to attribute, so don't pay for a step that can never explain. */
+/** Make a merge step over `sources`, or undefined where none has an origin. */
 function mergeOrigin(sources: IMergeSource[]): IMergeOrigin | undefined {
   if (!sources.some(source => source.fileset.origin !== undefined)) {
     return undefined;
@@ -701,10 +657,10 @@ registerProvenanceRenderer<IMergeOrigin>(FILESET_MERGE_PROVENANCE, (merge, conte
   return [];
 });
 
-/* A merge repositions content, so it must rebase before delegating — the same
- * "strip the mount prefix, find the holder, recurse" walk the renderer does. */
+/* A merge moves files: each answer strips the mount prefix and asks the
+ * contributors holding the file, as the renderer does. */
 registerProvenanceNaming<IMergeOrigin>(FILESET_MERGE_PROVENANCE, {
-  /* The least of the holders' answers, for the same reason as the source path's. */
+  /* The least of the holders' answers, as for the source path. */
   derivedFrom: (step, path) => {
     let least: string | undefined;
     for (const { source, rel } of holdersOf(step, path)) {
@@ -715,9 +671,9 @@ registerProvenanceNaming<IMergeOrigin>(FILESET_MERGE_PROVENANCE, {
     }
     return least;
   },
-  /* Where several contributors hold the name — one file, deduplicated by the
-   * union — the least of their source paths, so it does not depend on the
-   * order the union was given them in. */
+  /* Where several contributors hold the name (one file, kept once by the
+   * union), the least of their source paths, whatever order the union was
+   * given them in. */
   sourcePath: (step, path) => {
     let least: string | undefined;
     for (const { source, rel } of holdersOf(step, path)) {
@@ -728,10 +684,9 @@ registerProvenanceNaming<IMergeOrigin>(FILESET_MERGE_PROVENANCE, {
     }
     return least;
   },
-  /* Each contributor by its mount and its own digest, in sorted order for the
-   * same reason. Where another contributor's mount overlaps its own, which of
-   * them answers for a name depends on the names each holds, so those are
-   * recorded too. */
+  /* Each contributor by its mount and its own digest, sorted. Where another
+   * contributor's mount overlaps its own, the names each holds are recorded
+   * too: they decide which contributor answers for a name. */
   digest: (merge, names) => {
     if (names === undefined || names.length === merge.size) {
       return mergeDigestOf(merge.sources.filter(source => source.fileset.size > 0));
@@ -754,11 +709,11 @@ registerProvenanceNaming<IMergeOrigin>(FILESET_MERGE_PROVENANCE, {
 
 /**
  * Digest a merge over the names its contributors in `held` hold: each by its
- * mount and its own digest over those names (`names`, all of its own where
- * absent), the names recorded where another contributor's mount overlaps its
- * own. A contributor's digest over all of its names is its whole set's, which it
- * memoizes, so a merge's digest is made from its contributors' once each,
- * however many merges share them.
+ * mount and its own digest over those names (`names`, or all of its own where
+ * absent), with the names listed where another contributor's mount overlaps
+ * its own. A contributor's digest over all its names is its set's memoized
+ * {@link FileSet.sourcePathsDigest}, so each set is digested once however many
+ * merges hold it.
  */
 function mergeDigestOf(held: ReadonlyArray<{ prefix: string; fileset: FileSet; names?: string[] }>): string {
   const namesOf = ({ fileset, names }: { fileset: FileSet; names?: string[] }): string[] =>

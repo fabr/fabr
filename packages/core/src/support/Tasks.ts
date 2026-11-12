@@ -43,8 +43,8 @@ export interface ITestFileRun {
   failed: number;
 }
 
-/** Whether the task is actively doing anything, or queued waiting for
- *  execution resources. */
+/** A task's state: `waiting` while everything it has asked for is queued for
+ *  a slot of the execution funnel, otherwise `running`. */
 export type TaskState = "running" | "waiting";
 
 /**
@@ -71,8 +71,8 @@ export interface IFetchTask {
   /** A human noun for what is being fetched (e.g. "metadata", "package", a
    *  file's path); the URL alone is opaque. */
   resource: string;
-  /** Whether the fetch delivers content the build consumes, or reads the
-   *  registry's index (a packument, per-version metadata). */
+  /** `content` where the fetch gets content the build uses, `index` where it
+   *  reads a registry's index (a packument, per-version metadata). */
   role: "content" | "index";
 }
 

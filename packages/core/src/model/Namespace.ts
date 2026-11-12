@@ -21,18 +21,16 @@ import { DeclKind, INamedDecl, IPropertyDecl, IPropertySchema, ITargetDecl, ITar
 import { NAME_COMPONENT_SEPARATOR, Name } from "../core/Name";
 
 /**
- * What a name maps to when it names a property: every declaration of it, in the
- * two tiers a read consults — those written ordinarily, and those written
- * `default`, which supply the property exactly when no ordinary declaration's
- * guard matched.
- *
+ * Every declaration of one property, in the two tiers a read consults: those
+ * written ordinarily (`decls`), and those written `default` (`defaults`), read
+ * only where no ordinary declaration's guard admits the configuration.
  */
 export interface IPropertyEntry {
   kind: DeclKind.Property;
   decls: IPropertyDecl[];
   defaults: IPropertyDecl[];
-  /** A `default` TARGET of the same name, which answers wherever none of the
-   * property's declarations applies (its guards exclude the configuration). */
+  /** A `default` target of the same name, which answers wherever none of the
+   *  property's declarations applies. */
   fallbackTarget?: ITargetDecl;
 }
 
@@ -51,9 +49,9 @@ export interface NamespaceNode {
    * first read and cleared when a targetdef is added. */
   inheritedTargetDefs?: Map<string, ITargetDefDecl>;
   content: Map<string, NamespaceEntry>;
-  /** `default` TARGETS, kept apart: one answers for its name where nothing in
-   * `content` does, and is a property's `fallbackTarget` where a property
-   * holds the name. */
+  /** The `default` targets, by name: one answers for its name where nothing
+   *  in `content` does, and is a property's `fallbackTarget` where a property
+   *  holds the name. */
   defaultTargets: Map<string, ITargetDecl>;
   /** The namespace reading this node, made the first time one is asked for. */
   view?: Namespace;
@@ -64,23 +62,25 @@ export function newNamespaceNode(self?: INamedDecl): NamespaceNode {
   return { self, content: new Map(), defaultTargets: new Map(), targetDefs: new Map() };
 }
 
-/** @return true if a name is held by a (sub-)namespace rather than by declarations, otherwise false. */
+/** @return true if `entry` is a sub-namespace rather than declarations, otherwise false. */
 export function isNamespaceNode(entry: NamespaceEntry): entry is NamespaceNode {
   return !("kind" in entry);
 }
 
+/** What a name in a {@link Namespace} names. */
 type ContentType = Namespace | ITargetDecl | IPropertyEntry;
 
+/** The declaration a prefix of a name names, and what is left of the name. */
 export interface IPrefixMatch {
-  /* The matched declaration, or — for a property — all of them */
+  /** The matched target, or the property's declarations. */
   decl: ITargetDecl | IPropertyEntry;
-  /* The matched name, qualified by any namespace path it was found under */
+  /** The matched name, qualified by the namespace path it was found under. */
   name: string;
-  /* The part of the prefix string after the last ':' in the matched prefix (if any).
-   * That is, if we match e.g. a/b:c/d at c, then `c` is the retained part
-   */
+  /** The matched prefix after its last ':', through the separator after it,
+   *  if any: matching `a/b:c/d` at `c` retains `c/`, and a match followed by
+   *  `:` retains nothing. */
   retainedPrefix: string;
-  /* The part of the string that's left over after matching decl */
+  /** The rest of the name after the matched prefix and its separator. */
   rest: Name;
 }
 
@@ -92,11 +92,12 @@ export function writtenSeparator(retainedPrefix: string): ":" | "/" {
 }
 
 /**
- * A namespace is a target-like entity that contains other targets or properties.
- *
+ * A read-only view of one namespace's declarations: targets, properties,
+ * targetdefs and sub-namespaces. It reads its node live, so it sees what is
+ * added later.
  */
 export class Namespace {
-  /** Make the namespace reading `node`, which reads what is added to it later too. */
+  /** Make the namespace reading `node`; use {@link of}, which keeps one per node. */
   constructor(private readonly node: NamespaceNode) {}
 
   /** @return the namespace reading `node`. */
@@ -104,9 +105,9 @@ export class Namespace {
     return (node.view ??= new Namespace(node));
   }
 
-  /** The property of this namespace's own name: it answers names under the
-   *  namespace that nothing declares (the rest of the name is a projection
-   *  into its value), and the namespace's name itself. */
+  /** The property of this namespace's own name: it answers the namespace's
+   *  name itself, and names under it that nothing declares (the rest of the
+   *  name is then a projection into its value). */
   private get fallback(): IPropertyEntry | undefined {
     return this.node.fallback;
   }
@@ -134,6 +135,8 @@ export class Namespace {
     return this.inheritedTargetDef(name, new Set());
   }
 
+  /** Look up `name` as {@link getTargetDef} does; `visiting` holds the
+   *  targetdefs whose bases are being read. */
   private inheritedTargetDef(name: string, visiting: Set<string>): ITargetDefDecl | undefined {
     const parts = name.split(NAME_COMPONENT_SEPARATOR);
     const targetName = parts.pop()!; /* Array must contain at least 1 element */
@@ -179,17 +182,15 @@ export class Namespace {
     return chain;
   }
 
-  /** @return this namespace's own targetdefs with what they inherit, in declaration order (does not
-   * recurse into sub-namespaces — targetdefs are conventionally top-level). */
+  /** @return this namespace's own targetdefs with what they inherit, in
+   *  declaration order; sub-namespaces' are not included. */
   public getTargetDefs(): ITargetDefDecl[] {
     return [...this.node.targetDefs.keys()].map(name => this.getTargetDef(name)!);
   }
 
   /** @return every target declared in this namespace and, recursively, its
-   * sub-namespaces — each paired with its fully-qualified name (a sub-namespace
-   * target carries its namespace path, `ns/target`). Repository instances share
-   * the target-decl shape and are included here; a caller wanting only buildable
-   * targets filters by type. */
+   *  sub-namespaces, each with its qualified name (`ns/target`) under
+   *  `prefix`. Repository declarations are included. */
   public getTargets(prefix = ""): { name: string; decl: ITargetDecl }[] {
     const result: { name: string; decl: ITargetDecl }[] = [];
     for (const [key, item] of this.entries()) {
@@ -204,14 +205,12 @@ export class Namespace {
   }
 
   /** @return every property declared in this namespace and, recursively, its
-   * sub-namespaces, each paired with its fully-qualified name — the effective
-   * set (a `default` folded in unless overridden). Used to document the global
-   * configuration surface (`BUILD_TYPE`, `JS_TARGET`, …). */
+   *  sub-namespaces, a namespace's own fallback included, each once with its
+   *  qualified name under `prefix`, represented by its first ordinary
+   *  declaration, else its first `default`. */
   public getProperties(prefix = ""): { name: string; decl: IPropertyDecl }[] {
     const result: { name: string; decl: IPropertyDecl }[] = [];
-    /* One row per NAME: this documents the configuration surface, so a
-     * property declared once per platform is still one property. The first
-     * declaration represents it (a default only if nothing else declares it). */
+    /* One row per name, however many declarations it has. */
     const add = (name: string, entry: IPropertyEntry): void => {
       const first = entry.decls[0] ?? entry.defaults[0];
       if (first) {
@@ -233,11 +232,11 @@ export class Namespace {
   }
 
   /**
-   * Given a Name, return the first target or prop that can be identified
-   * as a prefix of the Name.
-   * Note this requires the name to have a literal prefix.
-   * @return the target or prop whose name forms a prefix of the name, or the
-   * fallback of the namespace the name reaches; undefined if neither.
+   * Look up the target or property whose name is a prefix of `name`'s literal
+   * prefix, its parts split at `:` and `/`. Where the walk reaches a namespace
+   * with nothing declared for the next part, or the name ends at a namespace,
+   * that namespace's fallback property answers. Undefined where `name` has no
+   * literal prefix or nothing answers.
    */
   public getPrefixMatch(name: Name): IPrefixMatch | undefined {
     const literalPrefix = name.getLiteralPathPrefix();
@@ -263,7 +262,7 @@ export class Namespace {
       } else if (next?.kind === DeclKind.Target || next?.kind === DeclKind.Property) {
         return matchAt(next, idx + 1);
       } else {
-        /* Nothing declared here: the namespace's fallback answers, if it has one. */
+        /* Nothing declared here: the namespace's fallback answers, if any. */
         return next === undefined && node.fallback !== undefined ? matchAt(node.fallback, idx) : undefined;
       }
     }
@@ -271,9 +270,8 @@ export class Namespace {
     return node.fallback !== undefined ? matchAt(node.fallback, parts.length) : undefined;
   }
 
-  /**
-   * @return the decl with the given name, or undefined if there is no such decl.
-   */
+  /** @return the declaration named exactly `name` (a namespace's name giving
+   *  its fallback), or undefined. */
   public getDecl(name: string): ITargetDecl | IPropertyEntry | undefined {
     const parts = name.split(NAME_COMPONENT_SEPARATOR);
     const targetName = parts.pop()!; /* Array must contain at least 1 element */
@@ -281,6 +279,7 @@ export class Namespace {
     return item instanceof Namespace ? item.fallback : item;
   }
 
+  /** @return the namespace the path `parts` names, or undefined. */
   private getNamespacePrefix(parts: string[]): Namespace | undefined {
     let ns: Namespace = this;
     for (let idx = 0; idx < parts.length; ++idx) {

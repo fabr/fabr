@@ -34,16 +34,18 @@ import { DependencyFailedError, NameResolutionError } from "../model/Errors";
 import { RuleImplementation, RuleResult } from "./Types";
 
 /**
- * The `sync` rule. Under `files` the generic files rule hands back its build,
- * so `fabr cat release/@npm/x/1.0.0/package.json` names the same file as that
+ * The `sync[build]` rule: a release, each member a `coordinate = content`
+ * property publishing its content at a destination ({@link syncPackages}).
+ * Under `files` the default files rule returns its build, so
+ * `fabr cat release/@npm/x/1.0.0/package.json` names the same file as that
  * reference written in a build file.
  */
 export default {
   /* Each member's content is a requirement keyed by {@link Member.content},
-   * built under `build` whatever the sync is asked for (an attachment's under
-   * its own operation), read for publishing (a package with the edges its
-   * build bound, nothing resolved here), and materialized only for the members
-   * a name reaches. */
+   * built under `build` whatever the sync is built under (an attachment's under
+   * its own operation), read for publishing (SyncSources: a package keeps the
+   * requirements its build bound, nothing is resolved here), and materialized
+   * only for the members a name reaches. */
   requirements(context) {
     return members(context).then(table => ({
       build: new Map(
@@ -64,8 +66,9 @@ export default {
   },
 } satisfies RuleImplementation;
 
+/** One member of a release. */
 interface Member {
-  /** The vended publish ref this member is assigned — destination + validated name. */
+  /** The publish reference the member's coordinate vends: its destination and validated name. */
   readonly assigned: RepositoryPublishRef;
   /** The member's property decl, which declares its content: an attachment's
    *  is the declared member's it is published beside. */
@@ -77,15 +80,13 @@ interface Member {
 }
 
 /**
- * Order a release's carriers so a member comes after every member providing a
- * token it depends on (`provides`/`dependsOn` — opaque, minted ecosystem-side;
- * npm's are package names) — uploaded in this order, a consumer that installs
- * mid-release never sees a dangling dependency. Global across destinations,
- * which no single destination could do: a member may depend on a co-member
- * published to a different registry. Several members may provide one token (a
- * package at two major lines, or at two registries) — a dependant follows them
- * all; a dependency cycle (shouldn't happen for real packages) is tolerated —
- * broken at the back-edge — rather than an error.
+ * Order a release's carriers so each comes after every carrier that provides a
+ * token it depends on (`provides`/`dependsOn`, tokens the destination chooses:
+ * npm's are package names), across all destinations, so a consumer installing
+ * mid-release finds every dependency published. A dependant follows every
+ * carrier providing its token (a package at two major versions, or at two
+ * registries). A dependency cycle is broken where the walk meets it, not
+ * reported. Carriers otherwise keep their order.
  */
 export function publishOrder(carriers: ReadonlyArray<PublishableFileSet>): PublishableFileSet[] {
   const byToken = new Map<string, PublishableFileSet[]>();
@@ -116,52 +117,37 @@ export function publishOrder(carriers: ReadonlyArray<PublishableFileSet>): Publi
 }
 
 /**
- * A release as a **namespace**: its names are the declared member coordinates
- * (slash form — `@npm:x:1.0.0` is addressed as `@npm/x/1.0.0`, the alias
- * separator being a path separator) and its contents are the wire artifacts,
- * **packaged on demand**. The same shape as a `fetch` table (see FetchSource),
- * and for the same reason: the declaration is a *list of outputs*, not an
- * instruction to make all of them, so naming one member packages that member
- * and no other. Coordinate validation stays eager (see {@link syncPackages}) —
- * it is a name lookup, and every packaging needs the release-wide assignments
- * as context, which is exactly what validation produces.
+ * The file source a release is. Its names are the member coordinates in slash
+ * form (`@npm:x:1.0.0` is `@npm/x/1.0.0`), and its content is each member's
+ * carrier, the artifact as uploaded, packaged only when a name reaches it.
  *
- * Two things can be named, and they mean different things — the distinction any
- * namespace has, and the same one a repository reference makes between
- * `@npm:esbuild:0.28.1` and `@npm:esbuild:0.28.1:package.json`:
- *
- * - a **member**, named literally and in full, yields that member's carrier
- *   itself — the entity, still a {@link PublishableFileSet}, so
- *   `fabr sync release/@npm/x/1.0.0` publishes exactly that one;
- * - anything else — a projection into a member, or a glob — yields **files**,
- *   the touched members' artifacts laid out under their coordinates and
- *   projected by the ordinary written-name rule, so
- *   `release/@npm/x/1.0.0/package.json` and `release:@npm:x:1.0.0:package.json`
- *   name a file exactly as they would in any container.
- *
- * Being a namespace rather than one flat FileSet is what makes those names mean
- * the same thing under every operation: there is no separate `files` view to
- * disagree with the build (see the `sync` rule, this module's default export).
+ * - A member named literally and in full yields its carrier itself, a
+ *   {@link PublishableFileSet}: `fabr sync release/@npm/x/1.0.0` publishes
+ *   that member alone.
+ * - Any other name (a projection into a member, a glob) yields files: the
+ *   members it reaches laid out under their coordinates, then projected as in
+ *   any container, so `release/@npm/x/1.0.0/package.json` and
+ *   `release:@npm:x:1.0.0:package.json` name the same file.
  */
 export class SyncSource implements FileSource {
-  /** Coordinate (slash form) -> the carrier, packaged at most once however many
-   *  references name it. */
+  /** Each member's carrier, by coordinate (slash form), packaged at most once. */
   private readonly packaged = new Map<string, Computable<PublishableFileSet>>();
 
   constructor(
     private readonly context: TargetContext,
-    /** Coordinate (slash form) -> its member, in declaration order. */
+    /** Each member, by coordinate (slash form), in declaration order. */
     private readonly table: Map<string, Member>,
     /** The members' content by {@link contentKey}, each materialized when first asked for. */
     private readonly content: Unmaterialized<Record<string, RequiredSources>>
   ) {}
 
+  /**
+   * Find what `name` names: a member's carrier where it names one literally
+   * (with no rename), else the files of the members it reaches, projected. A
+   * literal reaching no member rejects, listing the members; a glob reaching
+   * none returns the empty set.
+   */
   public find(name: Name, prefix = ""): ComputableSource<FileSet> {
-    /* Naming a member outright yields the entity, not a view of it — an
-     * ordinary find result, a carrier being a FileSet (find's own contract:
-     * "a source with its own notion of a named part may yield something
-     * else"). A rename or a glob is not a name in that sense and falls
-     * through to the files case. */
     const literal = name.getRenameTo() === undefined ? name.getSimpleName() : undefined;
     const named = literal === undefined ? undefined : memberPath(literal);
     if (named !== undefined && this.table.has(named)) {
@@ -169,18 +155,15 @@ export class SyncSource implements FileSource {
     }
     const touched = this.touchedBy(name, prefix);
     if (touched.length === 0) {
-      /* A closed namespace can tell "no such member" from "matched nothing", so
-       * a literal miss says so with the table; a glob stays lenient, as
-       * everywhere. */
       return name.hasGlob() ? Computable.resolve(EMPTY_FILESET) : Computable.reject(this.unknownMember(name));
     }
     return this.packageMembers(touched).then(carriers => this.laidOut(touched, carriers).find(name, prefix));
   }
 
   /**
-   * Look up a file exactly within a member — how a projection walker's descent probe
-   * lands on an artifact. A member coordinate itself is no file (it names a
-   * namespace entry, as a directory would), so only a name *under* one resolves.
+   * Look up a file of a member's artifact exactly, packaging the member. A
+   * member's coordinate itself is no file, as a directory is not.
+   * @return the file, or undefined where `name` is under no member or names nothing in it.
    */
   public get(name: string): ComputableSource<IFile | undefined> {
     for (const path of this.table.keys()) {
@@ -192,17 +175,10 @@ export class SyncSource implements FileSource {
   }
 
   /**
-   * Package the carriers a name selects, in publish order (deps-first via
-   * {@link publishOrder}); every member when no name narrows it. THE selection
-   * primitive — {@link find} is this plus a layout, and takes the same names,
-   * so `members()` and `members(**)` are the same selection by construction.
-   *
-   * It exists beside `find` for arity alone, not for type: a carrier IS a
-   * FileSet, which is exactly how `find` hands back something publishable when
-   * a name picks ONE member. But `find` answers with one FileSet, and a
-   * selection of several members is several carriers — union them and the
-   * per-member `destination` an upload goes through is gone. So `fabr sync`
-   * takes the entities; everything else takes their content.
+   * Package the carriers of the members `name` reaches, as {@link find} selects
+   * them, or of every member where no name is given, in
+   * {@link publishOrder}. This is what `fabr sync` uploads: each carrier keeps
+   * its own destination, which a union of several would lose.
    */
   public members(name?: Name, prefix = ""): Computable<PublishableFileSet[]> {
     const selected = name === undefined ? [...this.table.keys()] : this.touchedBy(name, prefix);
@@ -210,11 +186,10 @@ export class SyncSource implements FileSource {
   }
 
   /**
-   * List the members a pattern could reach: those it names or matches outright, plus
-   * those it addresses *into* — judged by whether any component-prefix of the
-   * pattern matches the coordinate, which admits a `**` at any depth. An
-   * over-approximation on purpose: packaging a member the projection then
-   * discards costs work, missing one would lose files.
+   * List the members a pattern could reach: those it matches, and those any of
+   * its leading component sequences matches, which it may reach into (a `**`
+   * at any depth among them). The list may hold a member the projection then
+   * selects nothing from, never miss one it selects from.
    */
   private touchedBy(name: Name, prefix: string): string[] {
     const projector = name.makeProjector(prefix);
@@ -224,17 +199,15 @@ export class SyncSource implements FileSource {
     );
   }
 
-  /** Lay the given carriers out as one FileSet under their coordinates — the
-   *  release's file namespace, built for exactly the members a projection
-   *  touches. */
+  /** Lay `carriers` out as one FileSet, each under its coordinate in `paths`. */
   private laidOut(paths: string[], carriers: ReadonlyArray<PublishableFileSet>): FileSet {
     return FileSet.unionAll(...carriers.map((carrier, i) => carrier.mountedAt(paths[i])));
   }
 
   /**
-   * Package these members, memoized per coordinate: whatever is already in hand
-   * is reused, and everything new goes through one `package()` batch per
-   * destination, so members demanded together package together.
+   * Package the members at `paths`, each at most once: those not yet packaged
+   * go through one {@link packageBatch}, so members asked for together are
+   * packaged together.
    */
   private packageMembers(paths: string[]): Computable<PublishableFileSet[]> {
     const missing = paths.filter(path => !this.packaged.has(path));
@@ -254,12 +227,11 @@ export class SyncSource implements FileSource {
   }
 
   /**
-   * Materialize these members' content, then hand each
-   * destination its whole batch to `package` jointly (the write-side dual of the
-   * read side's per-repository joint resolution), with the **full** release's
-   * assignments as context — every packaging policy (npm's co-member version
-   * rewriting, unresolvable-dependency errors) is the destination's, and it is
-   * the assignments it needs for that, never the other members' content.
+   * Materialize the content of the members at `paths`, and package them with
+   * one `package` call per destination ({@link RepositoryWriter.package}),
+   * given every coordinate of the whole release and the targets it publishes.
+   * How a member's manifest refers to its co-members is the destination's
+   * choice. Rejects where a member's content is a namespace or holds a secret.
    */
   private packageBatch(paths: string[]): Computable<PublishableFileSet[]> {
     const release = [...this.table.values()].map(member => member.assigned);
@@ -328,6 +300,7 @@ export class SyncSource implements FileSource {
     return this.table.get(path)!;
   }
 
+  /** Make the error for a literal naming no member, listing the members there are. */
   private unknownMember(name: Name): Error {
     const declared = [...this.table.keys()].sort();
     return new FabrError(`${this.context.name} has no member matching '${name.toString()}'`).withHelp(
@@ -345,21 +318,15 @@ function memberPath(coordinate: string): string {
 }
 
 /**
- * Evaluate a `sync` target — the write-side collection point. Its body is a set
- * of `coordinate = content` members (reference-keyed bindings; the coordinate's
- * shape is the destination's — npm: `@repo:name:version`): each key resolves to
- * a vended publish ref (destination + validated address), and each member's
- * content is a requirement read under `BUILD_OPERATION=files` (its files
- * alone). Every coordinate is resolved and validated HERE, once, before any
- * content is built — cheap (a name lookup, no fetch), so a bad destination or
- * version fails fast positioned at the offending coordinate, and the resulting
- * assignments are the release-wide context each packaging needs.
+ * Evaluate a `sync` target. Its body is a set of `coordinate = content`
+ * members, each coordinate in its destination's form (npm:
+ * `@repo:name:version`). Every coordinate is looked up as a publish reference
+ * and validated before any content is built; a bad destination or address
+ * rejects, positioned at the coordinate.
  *
- * The result is the release as a {@link SyncSource} — a namespace of members
- * packaged on demand, NOT a pre-built set of carriers: `fabr sync` names the
- * whole release (or one member), while `fabr build`/`ls`/`cat` inspect the wire
- * artifacts member by member — the dry-run — packaging only what is named. No
- * upload happens here; that is the driver's job.
+ * @return the release as a {@link SyncSource}, which packages a member only
+ * when a name reaches it: `fabr build`, `ls` and `cat` show the artifacts, and
+ * `fabr sync` uploads them. Nothing is uploaded here.
  */
 function syncPackages(context: TargetContext, content: Unmaterialized<Record<string, RequiredSources>>): Computable<RuleResult> {
   return members(context).then(table => new SyncSource(context, table, content));
@@ -428,11 +395,10 @@ function declaredMembers(context: TargetContext): Computable<Map<string, Member>
 }
 
 /**
- * Refuse a member coordinate that is a path prefix of another — with both
- * `@npm/x/1.0.0` and `@npm/x/1.0.0/extra` declared, `release/@npm/x/1.0.0/extra`
- * would be ambiguous between the deeper member and a projection into the
- * shorter one. Rejected at declaration so the ambiguity is impossible by
- * construction (the same rule a `fetch` table applies to its downloads).
+ * Throw where a member's coordinate is a path prefix of another's: with both
+ * `@npm/x/1.0.0` and `@npm/x/1.0.0/extra` declared,
+ * `release/@npm/x/1.0.0/extra` could name the deeper member or a projection
+ * into the shorter one. A `fetch` table applies the same rule.
  */
 function rejectShadowedMembers(declaredName: string, table: ReadonlyMap<string, Member>): void {
   const sorted = [...table.keys()].sort();
@@ -451,12 +417,12 @@ function rejectShadowedMembers(declaredName: string, table: ReadonlyMap<string, 
 }
 
 /**
- * Look up one member's coordinate as a vended publish ref: the repository alias
- * is looked up, and the destination vends (validating shape) or refuses (read-only).
- * A failure of the coordinate itself (no such repository, not a publish
- * destination, a malformed address) is positioned at the written coordinate via
- * {@link NameResolutionError}; a genuine repository build failure passes through
- * with its own attribution.
+ * Look up one member's coordinate as a publish reference: the repository is
+ * looked up, and vends the reference, validating the address, or refuses.
+ * Rejects with a {@link NameResolutionError} at the written coordinate where
+ * the coordinate fails (no such repository, not a publish destination, a
+ * malformed address); a repository's own failure (a DependencyFailedError) is
+ * passed through as it is.
  */
 function validateMember(context: TargetContext, prop: { key: Name; decl: IPropertyDecl }): Computable<Member> {
   return context
@@ -471,8 +437,7 @@ function validateMember(context: TargetContext, prop: { key: Name; decl: IProper
     });
 }
 
-/** Name a member's content requirement: by its written
- * coordinate, which is also the property its content is read from. */
+/** @return the key of a member's content requirement: its coordinate as written, the property its content is read from. */
 function contentKey(decl: IPropertyDecl): string {
   return decl.name.toBaseString();
 }

@@ -41,9 +41,10 @@ import { Name } from "../core/Name";
 import type { LoadImplementation } from "./ModelBuilder";
 import { Computable, ComputableSource } from "../core/Computable";
 
+/** The provenance kind of an {@link IFabrHomeOrigin}. */
 export const FABR_HOME_PROVENANCE = "fabr-home";
 
-/** A package delivered from fabr's installation, and where it is installed. */
+/** The provenance step of a package read from fabr's installation: where it is installed. */
 export interface IFabrHomeOrigin extends IProvenanceStep {
   kind: typeof FABR_HOME_PROVENANCE;
   directory: string;
@@ -54,7 +55,7 @@ registerProvenanceDescriber<IFabrHomeOrigin>(FABR_HOME_PROVENANCE, step => step.
 
 /** @return the directory the package `files` is installed at, where it was read from fabr's
  *  installation, otherwise undefined. Its files are copies in the blob pool; this is where
- *  the installed package itself lies, for a caller that uses it in place (a plugin's code). */
+ *  the installed package itself lies, for a caller using it in place (a plugin's code). */
 export function installedDirectoryOf(files: FileSet): string | undefined {
   for (let step = files.origin; step !== undefined; step = step.parent) {
     if (step.kind === FABR_HOME_PROVENANCE) {
@@ -65,11 +66,9 @@ export function installedDirectoryOf(files: FileSet): string | undefined {
 }
 
 /**
- * The shape a plugin package's main module may export: `activate`, run once
- * when the plugin's code is first loaded (before its first rule or repository
- * implementation is). It reaches the host's facilities by importing
- * `@fabr-build/core` directly, which loads the host's own core (see
- * {@link bindHostCore}). The full plugin contract is documented in
+ * What a plugin package's main module may export: `activate`, run once when
+ * the plugin's code is first loaded, before its first rule or repository
+ * implementation. The plugin contract is documented in
  * docs/src/content/docs/developer/plugins.md.
  */
 interface IFabrPluginModule {
@@ -105,10 +104,9 @@ export function toPluginLibs(json: unknown): PluginLibs {
 }
 
 /**
- * @return the copy of `pkg` that code in directory `from` would load, as a
- * realpath — so the workspace symlinks of a devchain install, and the two names
- * of a hoisted package, all read as the one copy they are. Undefined if `from`
- * resolves none.
+ * @return the realpath of the entry of `pkg` that code in directory `from`
+ * would load, so every name of one installed copy (a workspace symlink, a
+ * hoisted package) reads alike. Undefined if `from` resolves none.
  */
 export function resolvePackageFrom(pkg: string, from: string): string | undefined {
   try {
@@ -119,10 +117,8 @@ export function resolvePackageFrom(pkg: string, from: string): string | undefine
 }
 
 /**
- * Make a module resolve hook answering every request for core with `hostCore`,
- * and passing every other on: so code loaded into fabr's process (a plugin, or
- * what it loads), whether it `require`s core or `import`s it, shares fabr's
- * core, whatever copy its own install holds.
+ * Make a module resolve hook answering every request for core, `require` or
+ * `import`, with the file `hostCore`, and passing every other request on.
  */
 export function hostCoreResolver(hostCore: string): Module.ResolveHook {
   const url = pathToFileURL(hostCore).href;
@@ -130,10 +126,12 @@ export function hostCoreResolver(hostCore: string): Module.ResolveHook {
     specifier === CORE_PACKAGE ? { url, format: "commonjs", shortCircuit: true } : nextResolve(specifier, context);
 }
 
+/** True once {@link bindHostCore} has registered its hook. */
 let hostCoreBound = false;
 
 /** Make every `require` or `import` of core in this process load the host's
- *  copy (see {@link hostCoreResolver}). Done once, when the first plugin is activated. */
+ *  copy (see {@link hostCoreResolver}), whatever copy a plugin's install
+ *  holds. Registers the hook once; later calls do nothing. */
 function bindHostCore(): void {
   const hostCore = resolvePackageFrom(CORE_PACKAGE, __dirname);
   if (hostCoreBound || hostCore === undefined) {
@@ -156,6 +154,7 @@ function nearestManifestFile(dir: string, matches: (manifest: Record<string, unk
   }
 }
 
+/** Read the `package.json` `file` as a JSON object. */
 function readManifest(file: string): Record<string, unknown> {
   return parseJson(fs.readFileSync(file), file, toJsonObject);
 }
@@ -181,7 +180,7 @@ export function coreVersionError(name: string, range?: string, version?: string)
   );
 }
 
-/** Fail unless the plugin whose `package.json` reads `plugin` declares a range for core that includes the host's version. */
+/** Throw {@link coreVersionError}'s error for the plugin `name`, whose `package.json` reads `plugin`, against the host core's version. */
 function checkCoreVersion(name: string, plugin: Record<string, unknown>): void {
   const hostFile = nearestManifestFile(__dirname, manifest => manifest.name === CORE_PACKAGE);
   const host = hostFile === undefined ? undefined : readManifest(hostFile);
@@ -198,11 +197,10 @@ function checkCoreVersion(name: string, plugin: Record<string, unknown>): void {
 }
 
 /**
- * Read the plugin package `decl` uses, whose `package.json` is `manifest`: a
- * package that marks itself a plugin and lists its `.fabr` files. Runs none
- * of its code. The plugin loads the host's core whatever copy its own install
- * holds ({@link bindHostCore}), so its declared range for core must include
- * the host's version.
+ * Read the plugin package `decl` uses, whose `package.json` is `manifest`,
+ * running none of its code. Throws where the package is not marked a plugin,
+ * has no name, declares a range for core excluding the host's version, or
+ * lists a `.fabr` file that is not there.
  */
 function packagedPlugin(decl: IPluginDecl, manifest: string): PluginPackage {
   const json = readManifest(manifest);
@@ -245,14 +243,16 @@ function coreManifestFile(): string {
 
 /**
  * Make the loader of the implementations `rule` and `repository` declarations
- * name, for a project using `plugins`: how to get the `package.json` of each
- * plugin (built, for one built in the project), by its package's own name, so a
- * name means the copy in use whatever the project calls it; core is the host's own. An
- * implementation `pkg:entry` is the default export of `pkg/entry`, required
- * from within `pkg` so that its own `exports` resolve it.
+ * name, for a project using `plugins`: by each plugin's package's own name,
+ * how to get its `package.json` (built first, for one built in the project).
+ * An implementation `pkg:entry` is the default export of `pkg/entry`, required
+ * from within `pkg` so its own `exports` resolve it; `pkg` is core (the host's
+ * own) or one of `plugins`. Before a plugin's first implementation is loaded,
+ * its main module's `activate` is run. Rejects where `pkg` is neither, or the
+ * module has no default export.
  */
 export function implementationLoader(plugins: ReadonlyMap<string, () => Computable<string>>): LoadImplementation {
-  /* The plugins whose code has been loaded, by `package.json`. */
+  /* The `package.json` files of the plugins whose code has been loaded. */
   const started = new Set<string>();
   /** Run the startup hook of the plugin whose `package.json` is `file`, once: its main module's `activate`. */
   const start = (file: string): void => {
@@ -327,7 +327,7 @@ export function matchOptionalLibs(plugin: PluginPackage, pattern: Name): string[
     .sort();
 }
 
-/** What one `plugin` declaration resolved to, and the errors reported resolving it. */
+/** What one `plugin` declaration resolved to, and the number of errors reported resolving it. */
 export interface PluginResolution {
   decl: IPluginDecl;
   resolved: PluginPackage | Error;
@@ -339,15 +339,15 @@ const DIAG_PLUGIN_ORDINARY = Diagnostic.Error<{ loc: ISourcePosition }>(
   "A plugin's .fabr files declare only defaults: write this as a `default` declaration"
 );
 
-/** A `fabr_plugin` target in a plugin's `.fabr` files: only a project declares a plugin it builds. */
+/** A `fabr_plugin` target in a plugin's `.fabr` files. */
 const DIAG_PLUGIN_DECLARES_PLUGIN = Diagnostic.Error<{ loc: ISourcePosition }>(
   "A plugin's .fabr files cannot declare a fabr_plugin: only a project declares a plugin it builds"
 );
 
 /**
  * Check a plugin's `.fabr` file `file`, reporting through `log` what it may not
- * declare: anything but defaults, and any `fabr_plugin`, so nothing it adds
- * changes what was read before it.
+ * declare: an ordinary public property or target (only `default` and private
+ * declarations are allowed), and any `fabr_plugin`.
  */
 export function checkPluginFile(file: IBuildFileContents, log: Log): void {
   [...file.properties, ...file.targets]
@@ -360,10 +360,12 @@ export function checkPluginFile(file: IBuildFileContents, log: Log): void {
 
 /**
  * Resolve `decl`, whose name's root `model` declares as `match`, to the plugin
- * package it names: a `fabr_plugin` target, adding its `libs` (resolved by
- * `libsOf`), its code built when it is first used; or, for any other
- * reference, a package marked a plugin, made now so its `package.json` can be
- * read. A plugin is made under `run` for `host`, within `execution`.
+ * package it names. A `fabr_plugin` target adds its `libs` and `optional_libs`
+ * (resolved by `libsOf`), its code built when first used. Any other reference
+ * is made now, so its `package.json` can be read. A plugin is made under `run`
+ * for `host`, within `execution`. A failure to make the package is returned
+ * as the resolution's `resolved`; a package that is not a usable plugin
+ * (`packagedPlugin`'s errors) rejects.
  */
 export function resolvePlugin(
   model: BuildModel,

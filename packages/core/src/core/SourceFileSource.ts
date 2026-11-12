@@ -31,8 +31,7 @@ import { IResolvedWriteBack, IWriteBackObserver, treeNameOf, writeBackFile } fro
 import { mapComputable } from "../support/Functional";
 import { FabrError } from "./Errors";
 
-/** What a project file's path from the root is prefixed with to make its
- *  source path, a reference to it from the project root. */
+/** The prefix that makes a project file's path from the root its source path. */
 const SOURCE_PATH_PREFIX = "./";
 
 /**
@@ -45,20 +44,15 @@ const SOURCE_PATH_PREFIX = "./";
  */
 export class SourceFileSource extends IndexedFileSource {
   /**
-   * What fabr itself last wrote into the tree: name → content hash. A watch
-   * event naming one of these is fabr's own echo, and must not arm a rebuild
-   * whose only outcome would be to write the identical bytes again (see
-   * {@link applyWriteBack}).
+   * The paths fabr wrote into the tree, name → content hash. A watch event for
+   * one of them is fabr's own write, and is deferred rather than arming a
+   * rebuild (see {@link applyWriteBack}). An entry stays while the file holds
+   * those bytes, so a repeated or late event is recognized too; it is dropped
+   * when a read finds different bytes ({@link confirmIngested}), or the path
+   * is removed ({@link isExpectedChange}).
    *
-   * Kept rather than consumed, because it states the CONTENT expected at a
-   * path, not "one event pending": a filesystem may deliver an event twice, or
-   * late, and every one of them is still the echo as long as the file holds
-   * those bytes. An entry is dropped the moment {@link ingest} reads different
-   * bytes there — that is a real edit, and it arms.
-   *
-   * `undefined` marks a path whose content is not the point — the temp sibling
-   * a write renames from, a directory it had to create. Those are ours too and
-   * there is nothing to confirm them against, so they are never refuted.
+   * `undefined` marks a path whose content is not checked: the temp file a
+   * write renames from, a directory it created.
    */
   private readonly expected = new Map<string, string | undefined>();
 
@@ -80,17 +74,12 @@ export class SourceFileSource extends IndexedFileSource {
     if (!removed) {
       return this.expected.has(rel);
     }
-    /* A REMOVAL is never something a write-back does to a destination — the
-     * one delete in its choreography is the temp sibling the rename consumes
-     * (recorded content-less, `undefined`). So a removal at or under a path
-     * whose CONTENT we vouched for is somebody else's change (a stale record
-     * deleted mid-watch, an `rm -rf __snapshots__`) — and since the file is
-     * gone, the ingest that would normally refute the expectation by hash can
-     * never run: it is refuted here instead, the stale entries dropped so a
-     * recreation is judged afresh. A removal touching only content-less
-     * entries (the temp sibling) stays ours and defers. The subtree scan is
-     * what catches a directory delete, which the FS reports as ONE event with
-     * no per-child deletes. */
+    /* A write-back removes only its temp file, recorded with no hash. A
+     * removal at or under a path recorded with a hash is someone else's change
+     * (a record deleted, an `rm -rf __snapshots__`), and no read will check
+     * it, so it is reported as a change here. Every entry at or under the path
+     * is dropped, so a file made there again is judged afresh. Match the
+     * subtree: the filesystem reports a directory's deletion as one event. */
     let sawOwn = false;
     let refuted = false;
     for (const [name, hash] of this.expected) {
@@ -106,30 +95,22 @@ export class SourceFileSource extends IndexedFileSource {
   }
 
   /**
-   * Write content back into the source tree — refreshed test expectations, or
-   * the coverage report.
-   *
-   * Under watch these destinations are *inputs being watched*, so the write is
-   * an input change: this source records what it wrote and its content, and
-   * recognizes the resulting events as its own echo (see
-   * {@link isExpectedChange}) rather than arming a rebuild.
-   *
-   * The DECISION stays the driver's: it chooses each write and its
-   * destination (an expectation only under `-u`, after a green build, located
-   * from the offering rule's input-relative names). This performs the writes
-   * it is asked to make, it does not choose which. Containment is asserted here
-   * regardless of caller: the tree's boundary is this source's own invariant.
+   * Write each of `writes` into the source tree (refreshed test expectations,
+   * a coverage report), recording every path a write touches, so that the
+   * watch events the writes cause are deferred rather than arming a rebuild
+   * (see {@link isExpectedChange}). Resolves to the paths written. A
+   * destination outside the tree, judged by real path, is not written, and
+   * the result rejects. The caller chooses what to write and where.
    */
   public applyWriteBack(writes: ReadonlyArray<IResolvedWriteBack>): Computable<string[]> {
-    /* Resolved once: `root` may be a symlinked form (macOS /var -> /private/var)
-     * and containment is judged against the real path. */
+    /* `root` may be reached through a symlink (macOS /var -> /private/var);
+     * judge containment against its real path. */
     const realRoot = fs.realpathSync(path.resolve(this.root));
     return mapComputable(writes, write => {
       const name = treeNameOf(write.destination, realRoot);
       if (name === undefined) {
-        /* A candidate's path comes from a source file's own recorded location, so
-         * this fires only on a genuinely out-of-tree input; it is checked here
-         * regardless, as the boundary where a bad path becomes damage to the disk. */
+        /* Check here whatever the caller checked: this is the last point
+         * before the disk. */
         return Computable.reject(
           new FabrError(`Refusing to write '${write.destination}': it is outside the project directory '${realRoot}'`)
         );
@@ -163,8 +144,8 @@ export class SourceFileSource extends IndexedFileSource {
     return writeBackFile(write, realRoot, observer);
   }
 
-  /** Record that a path is fabr's own doing. Keyed as this source names things,
-   * which is how a watch event (relative to the tree) finds it. */
+  /** Record that fabr wrote the path `absolute`, under its name in the tree,
+   * which is how a watch event names it. */
   private expect(absolute: string, hash: string | undefined): void {
     const rel = toSourceName(this.root, absolute);
     if (rel !== undefined) {
@@ -172,9 +153,9 @@ export class SourceFileSource extends IndexedFileSource {
     }
   }
 
-  /** Lexical containment: the source tree is this source's whole namespace, so a
-   * name escaping the root — a `..` climb or an out-of-tree absolute — is refused.
-   * The boundary is the *name*; symlinked content inside the tree reads as usual. */
+  /** @return true if `name` lies inside the root lexically (no `..` climb out,
+   * no absolute path elsewhere), otherwise false. A symlink inside the tree is
+   * not followed for this. */
   private contains(name: string): boolean {
     const rel = path.relative(this.root, path.resolve(this.root, name));
     return !path.isAbsolute(rel) && rel !== ".." && !rel.startsWith(".." + path.sep);
@@ -188,12 +169,10 @@ export class SourceFileSource extends IndexedFileSource {
   }
 
   public override find(name: Name, prefix = ""): ComputableSource<FileSet> {
-    /* Judge containment on the name's PATH interpretation (its static leading
-     * path, `:` read as a path separator — where the walk actually lands), not
-     * its written form: a `<k=v>`/`-> tmpl` facet is not path structure and
-     * must not trip the check, and an alias prefix hiding a `..` climb must
-     * not slip past it. The glob remainder never moves the walk base, so it
-     * plays no part. */
+    /* Judge containment on the path the walk starts from (`staticPath`: the
+     * name's static leading path, `:` read as a separator), not on the
+     * written name: a `<k=v>` or `-> tmpl` facet is no path, and an alias
+     * prefix may hide a `..`. The glob remainder never moves the walk's base. */
     if (!this.contains(staticPath(name))) {
       return Computable.reject(new FabrError(`'${name.toString()}' is outside the source tree`));
     }
@@ -201,22 +180,15 @@ export class SourceFileSource extends IndexedFileSource {
   }
 
   /**
-   * Confirm — or refute — an expected self-write, now that the file's real
-   * content is known.
-   *
-   * The dispatch that deferred the change could only match on the path, being
-   * synchronous; this is where the hash it was written with is checked, which
-   * is the whole reason the write records one. Matching bytes leave the
-   * expectation standing, so a repeated or late event for the same content is
-   * recognized as the echo too. DIFFERENT bytes mean somebody else edited the
-   * file, so the expectation is dropped and the flush armed — the change was
-   * already recorded as dirty by the deferred notify, it only needed a reason
-   * to be applied.
+   * Check a path fabr wrote against the hash a read found there. Different
+   * bytes mean someone else edited the file: drop the entry and arm the watch
+   * flush, since the change was recorded as dirty but deferred. Matching bytes
+   * leave the entry in place.
    */
   protected override confirmIngested(filename: string, hash: string): void {
     const expected = this.expected.get(filename);
-    /* `has` before comparing: a stored `undefined` is a path with no content to
-     * confirm (see `expected`), not a mismatch. */
+    /* A stored `undefined` is a path with no content to check (see
+     * `expected`), not a mismatch. */
     if (this.expected.has(filename) && expected !== undefined && expected !== hash) {
       this.expected.delete(filename);
       this.watchController?.armFlush();
@@ -224,20 +196,12 @@ export class SourceFileSource extends IndexedFileSource {
   }
 }
 
-/**
- * The source tree as a consumer sees it: readable like any {@link FileSource},
- * and — alone among sources — writable, for the one thing fabr puts back into
- * the user's tree.
- *
- * A ROLE rather than an implementation, so that `FileSource` itself stays free
- * of a root: a FileSet is a FileSource too and is rooted nowhere on disk, and
- * a containment bound should never come from downcasting a general interface.
- */
+/** The source tree as a consumer sees it: readable like any {@link FileSource},
+ *  and the one source fabr writes into. */
 export type WritableSourceTree = FileSource & Pick<SourceFileSource, "root" | "locate" | "applyWriteBack" | "writeFile">;
 
-/** Name a destination as this source does (tree-relative, posix), or undefined
- * if it lies outside the tree — which {@link SourceFileSource.applyWriteBack}
- * refuses anyway, so there is nothing to expect an echo from. */
+/** Name `destination` as the source rooted at `root` does (relative to the
+ * root, `/`-separated); undefined where it lies outside the tree. */
 function toSourceName(root: string, destination: string): string | undefined {
   const rel = path.relative(root, destination);
   if (path.isAbsolute(rel) || rel === ".." || rel.startsWith(".." + path.sep)) {

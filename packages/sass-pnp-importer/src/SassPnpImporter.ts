@@ -31,9 +31,10 @@
  * Relative loads from a stylesheet this importer served come back to it and
  * are searched the same way.
  *
- * Files are named by the path the table locates them at — a PnP virtual path
- * where a package is wired more than one way — so a nested load resolves from
- * the right wiring; they are read at their physical path.
+ * Files are named by the path the table locates them at (a PnP virtual path,
+ * where one package is installed with more than one set of dependencies), so a
+ * load nested in a stylesheet resolves against that stylesheet's dependencies;
+ * they are read at their physical path.
  *
  * The importer reads through node's `fs`, so under Yarn (whose runtime patches
  * `fs`) packages inside zip archives load too.
@@ -83,9 +84,10 @@ export interface ISassImporter {
   load(canonicalUrl: URL): ISassImporterResult | null;
 }
 
+/** Options for `sassPnpImporter`. */
 export interface ISassPnpImporterOptions {
-  /** The table to resolve through. By default, the one governing each loading
-   * file, as node's `module.findPnpApi` finds it — which exists only in a
+  /** The table to resolve through. Defaults to the one node's
+   * `module.findPnpApi` finds for each loading file, which exists only in a
    * process running under Yarn's PnP runtime; elsewhere, pass one. */
   pnpApi?: IPnpApi;
   /** Where a load with no containing file (a compiled string) is resolved
@@ -101,11 +103,24 @@ const FIELDS = ["sass", "style"];
 
 const EXTENSIONS = [".scss", ".sass", ".css"];
 
+/**
+ * Make a Sass importer that resolves package loads through a PnP table.
+ *
+ * - `canonicalize` answers a bare package load (`pkg/colors`, `pkg:pkg/colors`)
+ *   from the file that wrote it, or from `entryPointDirectory` where there is
+ *   none, and a `file:` URL inside an installed package. It returns null where
+ *   no table governs the file, the package is not one the file can see, the
+ *   specifier names no package, or a `file:` URL lies outside an installed
+ *   package (the project's own sources, which Sass loads itself).
+ * - It throws for a webpack-style `~` prefix, and where a load matches more
+ *   than one file, with the error message Sass gives.
+ * - `load` reads the file at its physical path.
+ */
 export function sassPnpImporter(options: ISassPnpImporterOptions = {}): ISassImporter {
   const apiFor = (file: string): IPnpApi | null => options.pnpApi ?? findPnpApi(file);
   const entry = withSeparator(path.resolve(options.entryPointDirectory ?? process.cwd()));
   return {
-    /* Declared so that Sass hands a `pkg:` load the file that wrote it. */
+    /* Declared so that Sass passes a `pkg:` load the file that wrote it. */
     nonCanonicalScheme: "pkg",
     canonicalize(url: string, context: ISassCanonicalizeContext): URL | null {
       if (url.startsWith("file:")) {
@@ -220,10 +235,10 @@ function resolvePackageLoad(
 
 /**
  * Resolve a stylesheet subpath through a package's `exports` map, as dart-sass
- * tries it: the subpath and its extension and partial variants, then
- * the same for an `index` beneath it — at most one match per round. Null when
- * the map publishes none of them, which leaves the load to the package's
- * directory: for a stylesheet the map is a first choice, not a boundary.
+ * tries it: the subpath and its extension and partial variants, then the same
+ * for an `index` beneath it, throwing where one round matches more than one.
+ * @return the file, or null where the map publishes none of them (the caller
+ * then searches the package's directory, as dart-sass does).
  */
 function resolveThroughExports(api: IPnpApi, name: string, subpath: string, issuer: string): string | null {
   const rounds = [subpath === "" ? ["."] : exportVariants(subpath), exportVariants(subpath === "" ? "index" : `${subpath}/index`)];
@@ -255,8 +270,8 @@ function exportVariants(subpath: string): string[] {
   return [...plain, ...plain.map(variant => path.posix.join(path.posix.dirname(variant), `_${path.posix.basename(variant)}`))];
 }
 
-/** Resolve `request` through `exports` to the file it publishes, or none where
- * it publishes nothing (or names a file that is not there). */
+/** Resolve `request` through `exports` to the file it publishes: none where it
+ * publishes nothing or names a file that is not there. */
 function published(api: IPnpApi, request: string, issuer: string): string[] {
   try {
     const found = api.resolveRequest(request, issuer, { conditions: CONDITIONS, extensions: [], considerBuiltins: false });
@@ -348,8 +363,7 @@ function physicalPath(api: IPnpApi, file: string): string {
   return api.resolveVirtual?.(file) ?? file;
 }
 
-/** Read a package's manifest, or null for one that has none or cannot be read —
- * whoever built the package is the one to report that. */
+/** Read a package's manifest, or null for one that has none or cannot be read. */
 function readManifest(file: string): Record<string, unknown> | null {
   try {
     const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8"));

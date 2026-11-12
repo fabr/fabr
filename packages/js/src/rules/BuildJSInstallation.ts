@@ -18,9 +18,9 @@
  */
 
 /**
- * The js_installation rule: a `node_modules` tree of every package `deps`
- * hold or reach, laid out as the plugin lays out any install, with the loose
- * files among `deps` at their own paths.
+ * The js_installation rule: build a `node_modules` tree of every package in
+ * `deps` and every package they require, laid out as any install the plugin
+ * makes, with the loose files in `deps` at their own paths.
  */
 
 import { defineRule, FileSet, PackageFileSet } from "@fabr-build/core";

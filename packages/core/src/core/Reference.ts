@@ -23,10 +23,10 @@ import type { Name } from "./Name";
 import type { IProvenanceStep } from "./Provenance";
 
 /**
- * One narrowing step of a reference: the pattern to match (against the names
- * produced by the previous step), and the prefix prepended to the matched
- * names — the written-name rule: `alias/path` keeps the written `alias/` in
- * result names, `alias:path` strips it (empty prefix).
+ * One projection written on a reference: the pattern matched against the
+ * names the previous projection produced, and the prefix put before each
+ * matched name (`alias/path` keeps the written `alias/`; `alias:path` has an
+ * empty prefix).
  */
 export interface IProjection {
   pattern: Name;
@@ -34,11 +34,12 @@ export interface IProjection {
 }
 
 /**
- * Judge what a projection selected, for the literal-must-resolve rule: called
- * with whether the source it was given selected anything, it returns the error
- * where the written name as a whole selected nothing, and undefined where it
- * did, or where other sources the name reached are still to answer. A name
- * reaching several sources gives each its own through {@link jointMiss}.
+ * A check of what a projection selected, present only where selecting nothing
+ * is an error (a written name with no glob). Called with whether the source it
+ * was given selected anything, it returns the error where the written name as
+ * a whole selected nothing, and undefined where it selected something or other
+ * sources the name reached have yet to answer. A name reaching several sources
+ * gives each its own through {@link jointMiss}.
  */
 export type Miss = (selected: boolean) => Error | undefined;
 
@@ -76,13 +77,13 @@ export const NO_REFERENCE_FIELDS: ReferenceFields = { projections: [], misses: [
 /**
  * A name looked up and not yet resolved: what a written reference finds,
  * unless that is content already. What was written on it beside the name (its
- * projections, rename, provenance and override marker) is data on it, the
- * same for every kind, and is applied to what it resolves to. A subclass says
- * what answers it.
+ * projections, rename, provenance steps and override marker) is held on it,
+ * the same for every kind, and is applied to what it resolves to. A subclass
+ * says what answers it.
  *
- * Instances are immutable: what is written accumulates into new copies, so a
- * reference cached in a shared property value is never changed by one of its
- * consumers. A copy is of the same kind as its original.
+ * Instances are immutable: each `with…` method makes a copy of the same kind,
+ * so a reference cached in a shared property value is never changed by one of
+ * its consumers.
  */
 export abstract class Reference {
   constructor(protected readonly fields: ReferenceFields = NO_REFERENCE_FIELDS) {}

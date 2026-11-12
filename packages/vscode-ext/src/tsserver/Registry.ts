@@ -49,6 +49,7 @@ interface IRegistryState {
   roots: string[];
 }
 
+/** The registry as this process last read it. */
 let state: IRegistryState = { projects: [], links: new Map(), roots: [] };
 
 /** The names tsserver finds a project's config by. */
@@ -161,7 +162,12 @@ export function updateRegistry(file: string, change: (names: string[]) => string
   }
 }
 
-/** Create the lock file `lock`, waiting for another writer's to go. @return true if it was created, otherwise false. */
+/**
+ * Create the lock file `lock`, waiting up to {@link LOCK_WAIT_MS} for another
+ * writer's to go, and removing one older than {@link STALE_LOCK_MS}.
+ *
+ * @return true if it was created, otherwise false.
+ */
 function acquireLock(lock: string): boolean {
   const pause = new Int32Array(new SharedArrayBuffer(4));
   for (const until = Date.now() + LOCK_WAIT_MS; ;) {
@@ -185,7 +191,7 @@ function acquireLock(lock: string): boolean {
   }
 }
 
-/** @return the document paths a registry names. */
+/** @return the document paths a registry names; throws where it is not a registry of {@link DOCUMENT_VERSION}. */
 export function toRegistry(json: unknown): string[] {
   const record = toVersioned(json, "registry");
   if (!Array.isArray(record.projects) || !record.projects.every(name => typeof name === "string")) {
@@ -194,7 +200,7 @@ export function toRegistry(json: unknown): string[] {
   return record.projects;
 }
 
-/** @return `json`, a unit's import rewrite rules, each a pattern and its replacement. */
+/** @return `json`, a unit's import rewrite rules, each a pattern and its replacement; throws where it is not. */
 function toRewrites(json: unknown): Array<{ pattern: string; replacement: string }> {
   if (!Array.isArray(json)) {
     throw new Error("a unit's rewrites must be a list");
@@ -208,7 +214,7 @@ function toRewrites(json: unknown): Array<{ pattern: string; replacement: string
   });
 }
 
-/** @return `json`, `what`: a list of names. */
+/** @return `json`, `what`, as a list of names; throws where it is not one. */
 function toNames(json: unknown, what: string): string[] {
   if (!Array.isArray(json) || json.some(name => typeof name !== "string")) {
     throw new Error(`${what} must be a list of names`);
@@ -216,7 +222,7 @@ function toNames(json: unknown, what: string): string[] {
   return json as string[];
 }
 
-/** @return the project a project document describes. */
+/** @return the project a project document describes; throws where it is not a project document of {@link DOCUMENT_VERSION}, or a path in it is not absolute. */
 export function toProjectDocument(json: unknown): IProjectDocument {
   const record = toVersioned(json, "project document");
   const text = (value: unknown, what: string): string => {
@@ -250,7 +256,7 @@ export function toProjectDocument(json: unknown): IProjectDocument {
   return { root: text(record.root, "root"), links, units, plugin: text(record.plugin, "plugin") };
 }
 
-/** @return `json` as a record, if it is one of this module's `version`. */
+/** @return `json` as a record; throws where it is not an object of {@link DOCUMENT_VERSION}. */
 function toVersioned(json: unknown, what: string): Record<string, unknown> {
   if (typeof json !== "object" || json === null) {
     throw new Error(`a ${what} must be an object`);

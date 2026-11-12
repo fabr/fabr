@@ -99,17 +99,17 @@ function fileRequests(
 }
 
 /**
- * Select the sources among `instantiated` that are taken as an instance of a
- * package: the package itself, as material to derive another from, rather
- * than something required. Nothing an instance requires is resolved here. Its
- * edges are for the collection point the derived package reaches.
+ * Select the sources among `instantiated` taken as an instance of a package:
+ * the package itself, as material to make another from, rather than a
+ * requirement. What an instance requires is not resolved here; it stays on
+ * the instance's dependencies, for whatever requires the package made from
+ * it.
  *
- * - A reference joins no resolution and pins nothing: a registry's is the
- *   package carrying the requirements it declares as references (see
- *   {@link instantiatePackage}), a catalog's the member as the catalog
- *   resolved it. A projected reference selects files, so it is no instance
- *   request.
- * - A package already in hand is delivered as it stands.
+ * - A reference with no projections joins no resolution and pins nothing. A
+ *   registry answers it with the package carrying the requirements its
+ *   version declares, as references ({@link instantiatePackage}); a catalog
+ *   with the member as the catalog resolved it.
+ * - A package already in hand is taken as it stands.
  */
 function instanceRequests(instantiated: ReadonlyArray<SourceRef | Unbuilt>): ReadonlySet<RepositoryRef | Package> {
   return new Set(
@@ -156,7 +156,8 @@ function withConstraint(err: unknown): never {
     : err;
 }
 
-/** Get what a node's content holds as one set of files. */
+/** Get what a node's content holds as one set of files. Throws where it holds
+ * something that is no set of files (a release's members). */
 function asOneSet(content: FileSet | ReadonlyArray<SourceRef>): FileSet {
   if (content instanceof FileSet) {
     return content;
@@ -211,13 +212,25 @@ function builtContent(sources: ReadonlyArray<SourceRef>): Materialized[] {
 }
 
 /**
- * Materialize resolved lists: give each package among them, and each it
- * reaches, its files, replace each target still unbuilt by what it builds to,
- * and fetch the files a projection selects from a repository. This is the one
- * place a collection fetches or builds. Each entry stays aligned with the
- * written reference it was resolved for (`references`, as
- * {@link resolveLists} gives them): an entry that materializes to several — a
- * target built as files — carries its reference to each.
+ * Materialize resolved lists: fetch or build the files of each package among
+ * them and of every package it reaches, build each target still unbuilt, and
+ * fetch each pending file request. This is the one place a collection fetches
+ * or builds. `references` holds, aligned with `lists`, the written reference
+ * each entry was resolved for, as {@link resolveLists} returns them.
+ *
+ * @return the lists materialized, with their references aligned with them.
+ * Each entry becomes:
+ * - for a package, the package with its files, a projection pending over it
+ *   kept pending over the package with files;
+ * - for a target built as a package, that package; for a target that built
+ *   files, each source it built as an entry of its own (a projection over it
+ *   selects from them as one set);
+ * - for a pending file request, its files;
+ * - for anything already in hand, itself.
+ *
+ * An entry that becomes several carries its reference to each. Rejects with
+ * a {@link TargetNotPackageError} where a target answering a registry's
+ * reference, or bound to a package's requirement, built no package.
  */
 export function materializeLists(
   lists: ReadonlyArray<ReadonlyArray<Resolved>>,
@@ -292,18 +305,26 @@ export function materializeLists(
 }
 
 /**
- * Resolve one repository's batch of requests. A registry's references resolve
- * jointly ({@link resolvePackages}, then {@link packageClosure}), each
- * answered as the registry's {@link RepositoryReader.operation operation}
- * says: the node, the node of the program it is under `run`
- * ({@link runnableNode}), or its files {@link PendingFiles pending} under
- * `files`. A catalog answers each with its member ({@link resolveMember}),
- * and any other repository resolves each reference on its own. An instance
- * request, and a request for files, are answered apart from the batch; a
- * request for files is answered with its files, since what asks for it is
- * fetching them. Given `resolution`, the batch is resolved from it; it must be
- * the resolution of a batch these requests are among, so that a subset keeps
- * the joint selection.
+ * Resolve one repository's batch of requests, answering each, aligned with
+ * `requests`, as its repository's kind says:
+ *
+ * - A registry resolves its package requests jointly
+ *   ({@link resolvePackages}, then {@link packageClosure}), each answered as
+ *   the registry's {@link RepositoryReader.operation operation} says: its
+ *   node, or under `run` the node of the program it is ({@link runnableNode}),
+ *   or an empty set where the resolution selects nothing for it. Under a
+ *   `files` operation each is answered with its files {@link PendingFiles
+ *   pending} instead, and nothing is resolved.
+ * - A catalog answers each with its member ({@link resolveMember}).
+ * - Any other repository answers each reference on its own
+ *   ({@link resolveLookup}).
+ *
+ * Whatever the repository, an instance request is answered by
+ * {@link resolveInstance}, and a request for files with its files, fetched
+ * now. Given `resolution`, the batch is answered from it, and it must be the
+ * resolution of a batch these requests are among, so that a subset keeps the
+ * joint selection; absent, the batch is resolved afresh. `resolvedMembers`
+ * holds each catalog member as resolved, made when first asked for.
  */
 function resolveBatch(
   context: ResolutionContext,
@@ -320,8 +341,8 @@ function resolveBatch(
     /* One joint resolution of the batch, which runs only when a request
      * among it is answered. */
     const closures = isRepositoryReader(source) && joint.length > 0 ? assembleClosures(context, source, joint, resolution) : undefined;
-    /* The joint answers, made from the batch's closure once for every request
-     * among it, under `run` each the node of the program it is. */
+    /* The joint answers, made once from the batch's closures, under `run`
+     * each the node of the program it is. */
     const answered =
       closures === undefined || !isRepositoryReader(source)
         ? Computable.resolve<Array<FileSet | ResolvedNode>>([])
@@ -379,8 +400,8 @@ function resolveBatch(
 
 /**
  * Resolve `reference` through the lookup `source`: its files in hand, or a
- * node whose content is fetched when materialized, a failure to fetch it the
- * reference's, as a registry's is.
+ * node whose content is fetched when materialized. A failure, now or in that
+ * later fetch, is attributed to the reference.
  */
 function resolveLookup(source: RepositoryLookup, reference: RepositoryRef): Computable<FileSet | ResolvedNode> {
   return attributedTo(reference, () => source.resolve(reference)).then(answer =>
@@ -426,12 +447,17 @@ function runnableNode(pkg: Package, runnable: (pkg: PackageFileSet) => Computabl
 }
 
 /**
- * Resolve the member of `source`'s collection that `request` names, from the
- * resolution `source` made: its package as resolved there, wired to that
- * selection, for the collection point that asked to materialize. Under the
- * `files` operation the member's files alone are pending, and under `run` it
- * is the node of the program. A request for files is answered with its files,
- * since what asks for it is fetching them.
+ * Resolve the member of the catalog `source` that `request` names, from the
+ * resolution the catalog made. As the catalog's operation says: under a
+ * `files` operation, the member's files alone, {@link PendingFiles pending};
+ * under `run`, the node of the program it is; otherwise its package as the
+ * catalog resolved it, its requirements bound as there
+ * ({@link memberPackage}). A request for files is answered with the member's
+ * files, fetched now.
+ *
+ * Rejects where a member built in the project is asked for under `run`. A
+ * failure of the repository's part is attributed to the reference; a member
+ * built in the project reports its own build's failure.
  */
 function resolveMember(
   context: ResolutionContext,
@@ -445,8 +471,8 @@ function resolveMember(
     .then((member): FileSet | ResolvedNode | PendingFiles | Computable<FileSet | ResolvedNode> => {
       const { collection, entry } = member;
       const local = isPackage(entry);
-      /* What a package of the project fails to build with is its own to report,
-       * so only the repository's part is attributed to the reference. */
+      /* Attribute only the repository's part to the reference: a package of
+       * the project reports its own build failure. */
       const alone = (): Computable<FileSet> =>
         local
           ? contentOf(entry).files().then(asOneSet)
@@ -528,10 +554,10 @@ function pinnedFiles(collection: ResolvedCollection, entry: RepositoryRef, opera
 }
 
 /**
- * Make a thunk for the closures of `requests`, one per request, from one
- * resolution of the batch (`resolution`, or a fresh one). The resolution runs
- * at most once, when a delivery first forces it, and not at all where none
- * does.
+ * Make a thunk for the closures of `requests`, one per request (undefined
+ * where the resolution selects nothing), from one resolution of the batch
+ * (`resolution`, or a fresh one). The resolution runs once, when the thunk is
+ * first called, and not at all where it never is.
  */
 function assembleClosures<V, C>(
   context: ResolutionContext,
@@ -589,12 +615,13 @@ export function usedForOf(operation: string): UsedFor {
 }
 
 /**
- * Make the nodes among `sources` as a collection resolved for `operation`
- * reads them: each node with an edge passed on to the other collection alone
- * ({@link PackageMetadata.usedFor}), or reaching one, copied without such
- * edges, a projection pending over such a node made over its copy; every
- * other source as it is. `markers` is remapped onto the copies. Packages in
- * hand are taken as they stand.
+ * Remove, from the nodes among `sources` and the nodes they reach, the
+ * requirements passed on only to the other collection than the one
+ * `operation` resolves ({@link PackageMetadata.usedFor}; {@link usedForOf}).
+ * Each node with such a requirement, or reaching one, is copied without them,
+ * and a projection pending over such a node is made over its copy; `markers`
+ * is moved onto the copies. Every other source, and every package in hand,
+ * comes back as it is, and `sources` itself where nothing changes.
  */
 export function sidedNodes<T extends SourceRef | Unbuilt>(sources: T[], operation: string, markers: Markers): T[] {
   const side = usedForOf(operation);
@@ -609,7 +636,7 @@ export function sidedNodes<T extends SourceRef | Unbuilt>(sources: T[], operatio
     const only = pkg.usedFor.get(dependencyName(dep));
     return only !== undefined && only !== side;
   };
-  /* Which nodes change: one with an edge left out, and whatever reaches one. */
+  /* Which nodes change: one with a requirement left out, and whatever reaches one. */
   const reached = new Set<ResolvedNode>();
   const parents = new Map<ResolvedNode, ResolvedNode[]>();
   const pending = sources.map(nodeOf).filter((node): node is ResolvedNode => node !== undefined);
@@ -684,12 +711,24 @@ export function sidedNodes<T extends SourceRef | Unbuilt>(sources: T[], operatio
 }
 
 /**
- * Resolve `sources`: gather their references, and set up each registry's
- * resolution of its batch, with the packages built in the project as
- * candidates of every one. The references in `files` are
- * {@link fileRequests file requests} and those in `instances`
- * {@link instanceRequests instance requests}, neither of which joins a
- * resolution.
+ * Set up the resolution of `sources` as one collection, resolving nothing yet:
+ * gather a request for each reference among them and each reference their
+ * packages carry ({@link gatherRequirements}), and make each registry's
+ * resolution of its batch, run when first asked for, with the packages built
+ * in the project as candidates of every one. The instances of one registry
+ * (one `identity`) whose {@link RepositoryReader.environmentKey environments}
+ * agree share one resolution. Each batch's resolution is given as pins the
+ * registry's selections the sources' bound requirements lead to and those
+ * each requested catalog member reaches, except on a name one of the
+ * collection's builds answers for.
+ *
+ * The references in `files` are {@link fileRequests file requests}, and those
+ * in `instances` {@link instanceRequests instance requests}; neither joins a
+ * resolution, and a package among `instances` is taken as it stands.
+ * `markers` holds the markers on the collection's own target references; a
+ * build marked `?` is a candidate though no source holds it.
+ *
+ * @return the {@link ResolvedCollection}.
  */
 export function resolveCollection(
   context: ResolutionContext,
@@ -709,9 +748,9 @@ export function resolveCollection(
         ? { ...request, as: "instance" }
         : request
   );
-  /* The collection's own builds, each with its marker: an alternate is among
-   * them though no source holds it, as a registry's `?` is a requirement of
-   * the collection that delivers nothing. */
+  /* The collection's own builds, each with its marker. A build marked `?` is
+   * among them though no source holds it: like a registry's `?`, it is a
+   * requirement of the collection that resolves to no source. */
   const alternates = [...markers].filter(([, marker]) => marker === "alternate").map(([pkg]) => pkg);
   const locals = [...gathered.locals, ...alternates.filter(pkg => !gathered.locals.includes(pkg))];
   const own = new Map<Package, Requirement["override"]>([
@@ -720,7 +759,7 @@ export function resolveCollection(
   ]);
   const resolutions = new Map<RefSource, () => Computable<Resolution>>();
   /* The instances of one registry (one identity) resolve together, apart only
-   * where their environment differs. Each reference is still delivered by its
+   * where their environment differs. Each reference is still answered by its
    * own instance. */
   const registries = new Map<string, Array<[RepositoryReader<unknown, unknown>, PackageRequest[]]>>();
   for (const [source, batch] of groupRequests(requests)) {
@@ -736,9 +775,10 @@ export function resolveCollection(
   const members = membersOf([...gathered.own], markers);
   const catalogued = requests.filter(request => isRepositoryCollection(request.reference.source) && request.as !== "files");
   /* The pins of the registry `identity`: the selections the sources reach
-   * through bound edges, and those each catalog member among the requests
-   * reaches, as the catalog resolved it. Gathered when the registry's batch
-   * first resolves: a catalog's resolution never waits on this one. */
+   * through bound requirements, and those each catalog member among the
+   * requests reaches, as the catalog resolved it. Gather them only when a
+   * registry's batch first resolves: a catalog's own resolution must not wait
+   * on this one. */
   let gatheredPins: Computable<Pin[]> | undefined;
   const pinsFor = (identity: string): Computable<Pin[]> =>
     (gatheredPins ??= Computable.forAll(
@@ -792,7 +832,8 @@ export function resolveCollection(
 }
 
 /** Get {@link ResolvedCollection.members} from the builds the collection
- * requires outright. */
+ * requires outright: of each name, the first, unless a later one is forced
+ * (`!`). */
 function membersOf(own: ReadonlyArray<Package>, markers: Markers): Map<string, Package> {
   const members = new Map<string, Package>();
   for (const pkg of own) {
@@ -824,23 +865,27 @@ function buildsResolution(
 }
 
 /**
- * Resolve `sources`, any of those `resolved` holds, and merge what each was
- * answered from into one graph ({@link mergeResolutions}). Nothing is fetched
- * or built. Provided requirements are left for the consumer to bind, and a
- * projection stays pending over its package.
+ * Resolve `sources`, which must be among those `resolved` was set up for,
+ * merge the graphs they were answered from into one
+ * ({@link mergeResolutions}), and fold the nodes that are one package wired
+ * one way into one. Nothing is fetched or built; provided requirements are
+ * left for the consumer to bind ({@link bindProvided}), and a projection
+ * stays pending over its package.
  *
- * @return the sources as resolved (`delivered`, `counts` of them per source)
- * and what each reference resolved to (`finished`): the sources' own, and
- * those the collection's builds carry, which a build these sources reach
- * needs whether or not they hold it.
+ * @return `delivered`, the sources as resolved, flat, with `counts` saying how
+ * many entries each source became (none for a `?`); and `finished`, what each
+ * reference resolved to: the sources' own, and those the collection's builds
+ * carry, which a build these sources reach needs whether or not they hold it.
+ * Rejects where a source is an incomplete reference, or a reference was not
+ * set up in `resolved`.
  */
 export function resolveSources(
   context: ResolutionContext,
   resolved: ResolvedCollection,
   sources: Array<SourceRef | Unbuilt>
 ): Computable<{ delivered: Resolved[]; counts: number[]; finished: Map<RepositoryRef, Resolved | RepositoryRef> }> {
-  /* Each reference as it was resolved, so that it is found in its resolution
-   * under the role it was resolved in. */
+  /* Each reference's request as the collection made it, so that it is
+   * answered as the request its resolution was made with. */
   const requests: PackageRequest[] = [];
   const taken = (source: SourceRef | Unbuilt): boolean => isPackage(source) && resolved.instances.has(source);
   for (const { reference } of gatherReferences([...sources.filter(source => !taken(source)), ...resolved.locals.values()])) {
@@ -875,9 +920,9 @@ export function resolveSources(
           ? undefined
           : (requirer: Package | undefined, dep: Package) => bindBuild(builds.registry, resolution, requirer, dep)
       );
-      /* What two sources were answered with from two resolutions (a catalog's
-       * member and a direct reference) is one node where it is one package
-       * wired one way. */
+      /* Fold what two resolutions answered with (a catalog's member and a
+       * direct reference) into one node where it is one package wired one
+       * way. */
       const folded = foldEqualNodes([...new Set(merged.values())]);
       const delivered = roots.map(entries =>
         entries.map(entry => {
@@ -893,7 +938,7 @@ export function resolveSources(
 
 /**
  * Fold the nodes under `roots` that are structurally equal
- * ({@link equalNodes}) into one each, rewiring every edge that led to a
+ * ({@link equalNodes}) into one each, rewiring every dependency that led to a
  * duplicate onto the one kept, and return how each root appears afterwards.
  * Copies only what changes: a node that is kept and leads to no duplicate is
  * itself.
@@ -903,7 +948,7 @@ function foldEqualNodes(roots: ReadonlyArray<Package>): Map<Package, Package> {
   if ([...canonical].every(([pkg, one]) => pkg === one)) {
     return new Map(roots.map(root => [root, root]));
   }
-  /* Which kept nodes change: one with an edge to a duplicate, and whatever
+  /* Which kept nodes change: one with a dependency on a duplicate, and whatever
    * reaches one. */
   const parents = new Map<Package, Package[]>();
   const changed = new Set<Package>();
@@ -954,26 +999,36 @@ function foldEqualNodes(roots: ReadonlyArray<Package>): Map<Package, Package> {
 
 /**
  * Merge the graphs a collection's sources were answered from into one, and
- * return how each of `roots` (the packages among them) appears in it. The
- * rules, applied wherever a package is reached:
+ * return how each of `roots` (the packages among the sources) appears in it.
  *
- * - A package resolved for a reference is what that reference resolved to
- *   here (`finished`), where that is another package: a package in hand is
- *   asked for again.
+ * Each requirement of a package reached (a {@link Dependency}: its reference,
+ * and the package it is bound to, if any) leads, by the first rule that
+ * applies:
+ * - for an optional provided requirement, to the package it is bound to, or
+ *   nowhere where it is unbound;
+ * - to the package its reference resolved to in this collection
+ *   (`finished`), where that is a package;
+ * - nowhere, where it is unbound;
+ * - between two of the collection's builds, where the builds' resolution
+ *   binds it (`bind`: the build itself, or the candidate a `!` gave the
+ *   build's name to, the requirement then carrying an exact pin of that
+ *   selection as its reference);
+ * - otherwise, to the package it is bound to.
+ *
+ * A requirement keeps its reference unless `bind` gives it one. Wherever a
+ * package is reached:
  * - A package another collection resolved (a catalog's member and what it
- *   reaches) of a name one of this collection's own builds has is that build
- *   ({@link ResolvedCollection.members}).
- * - A build of this collection is one node however it is reached. Its edges
- *   to other builds lead where the builds' resolution leads them (`bind`; a
- *   `!` may give a build's name to another candidate), and a reference it
- *   carries is what that reference resolved to here. A root that is one of the
- *   collection's own builds is bound as the collection's requirement on it.
+ *   reaches, or what a root reaches through bound requirements) is replaced
+ *   by the build of its name that answers for it here
+ *   ({@link ResolvedCollection.members}), unless this collection's own
+ *   batches answered with it or reach it, or the collection names it itself
+ *   as a catalog member.
+ * - A build of this collection is one node however it is reached: the first
+ *   reached of its content key.
+ * - A root that is one of the collection's builds is bound as the
+ *   collection's own requirement on it (`bind` with no requirer).
  * - Anything else is itself where nothing it reaches changes, and a copy with
- *   its edges merged where something does.
- *
- * What a reference resolved to, a root or a package asked for again, keeps
- * that reference whatever stands in its place. An optional provided edge is
- * left unbound where it is.
+ *   its requirements merged where something does.
  */
 function mergeResolutions(
   roots: ReadonlyArray<Package>,
@@ -987,7 +1042,7 @@ function mergeResolutions(
     return isPackage(resolved) ? resolved : undefined;
   };
   /* What a catalog's members reach, and what the roots reach through bound
-   * edges, less what this collection's own batches answered with and reach:
+   * requirements, less what this collection's own batches answered with and reach:
    * packages another collection resolved. */
   const catalogued = [...finished].flatMap(([reference, value]) =>
     isRepositoryCollection(reference.source) ? (packageIn(value) ?? []) : []
@@ -1015,10 +1070,8 @@ function mergeResolutions(
   };
   /** A root that is one of the collection's builds, as the collection's requirement on it binds it. */
   const rooted = (pkg: Package): Package => (bind !== undefined && isBuildVersion(pkg) ? bind(undefined, pkg).package : pkg);
-  /** Where an edge of `requirer` leads before merging, where it leads
-   * anywhere, and the reference the edge then carries where it changes: a
-   * bound edge whose reference this collection answered leads to its answer;
-   * one between builds leads where the builds' resolution binds it. */
+  /** Get where the requirement `dep` of `requirer` leads before merging, if
+   * anywhere, and the reference it then carries where that changes. */
   const target = (requirer: Package, dep: Dependency): Bound | undefined => {
     if (requirer.provided.get(dependencyName(dep)) === "optional") {
       return dep.package === undefined ? undefined : { package: dep.package };
@@ -1036,7 +1089,7 @@ function mergeResolutions(
   };
 
   /* Which packages the merge changes: one replaced, a build that is not its
-   * name's one node or whose edges lead elsewhere, and whatever reaches one. */
+   * name's one node or whose requirements lead elsewhere, and whatever reaches one. */
   const canonical = new Map<string, Package>();
   const parents = new Map<Package, Package[]>();
   const changed = new Set<Package>();
@@ -1123,7 +1176,9 @@ function mergeResolutions(
  * among `sources`, and resolve and fetch only the references among what they
  * hold, never those a package among them carries. Other sources pass through
  * untouched. A projected source comes back as a pending {@link FileSetRef} for
- * the caller to finish.
+ * the caller to finish. Rejects where a source is an incomplete reference,
+ * and where versions conflict among the references unless `options` is
+ * permissive.
  */
 export function materializeShallow(
   context: ResolutionContext,
@@ -1192,7 +1247,7 @@ function conflictsOf(
   finished: ReadonlyMap<RepositoryRef, Resolved | RepositoryRef>,
   shipped: ReadonlyArray<Resolved | RepositoryRef>
 ): Computable<Conflicts> {
-  /* What a catalog's members were answered from is the catalog's. */
+  /* Each catalog member's resolutions, as batches of its catalog. */
   const members = [...finished.keys()].flatMap(reference => {
     const { source } = reference;
     const request = collection.requests.get(reference);
@@ -1286,9 +1341,17 @@ function mergedBatches(batches: ReadonlyArray<ResolvedBatch>): ResolvedBatch[] {
 
 /**
  * Resolve `lists` as one collection: every reference among them answered
- * from its repository's joint resolution, the collection's own packages bound
- * in and provided requirements bound by their consumers, nothing fetched or
- * built, and what conflicts in it found (`conflicts`).
+ * from its repository's joint resolution, the packages built in the project
+ * merged in, and provided requirements bound by their consumers
+ * ({@link bindProvided}); nothing fetched or built. A package among the
+ * sources that `context.given` holds is taken as it stands, as `instances`
+ * are. Rejects where a list requires one name twice
+ * ({@link refuseTwoOfOneName}).
+ *
+ * @return the sources resolved, flat (`resolved`, with `counts` per source as
+ * {@link resolveSources} gives them), what conflicts among them
+ * (`conflicts`), how to find what conflicts among a part of them
+ * (`conflictsAmong`), and the collection.
  */
 function resolveBuilt(
   context: ResolutionContext,
@@ -1316,8 +1379,8 @@ function resolveBuilt(
     lists.forEach(list => refuseTwoOfOneName(list, files, taken));
     const collection = resolveCollection(context, sources, files, taken, markers);
     return resolveSources(context, collection, sources).then(({ delivered, counts, finished }) => {
-      /* Checked as bound: an offer the consumer answered with something else is
-       * not in the installation, so it is not a version that ships. */
+      /* Find conflicts in what is bound: an offer the consumer replaced is not
+       * installed, so it does not ship. */
       const bound = bindProvided(delivered, taken);
       return conflictsOf(context, collection, finished, bound).then(conflicts => ({
         resolved: bound,
@@ -1331,11 +1394,11 @@ function resolveBuilt(
 }
 
 /**
- * Refuse a list that requires one name twice: two of its requests delivered
- * under one name, whatever either resolves to. A `?` asks for nothing, so it
- * is no second request, and the same request written twice is one. A file
- * request, a projection, and what the collection takes as it stands (`taken`)
- * are no request for a package.
+ * Throw a {@link ConflictError} where a list requires one name twice: two of
+ * its requests for a package under one name, whatever either resolves to. A
+ * `?` asks for nothing, so it is no second request, and the same request
+ * written twice is one. A file request, a projection, and what the collection
+ * takes as it stands (`taken`) are no request for a package.
  */
 function refuseTwoOfOneName(
   sources: ReadonlyArray<SourceRef | Unbuilt>,
@@ -1405,27 +1468,32 @@ function twoOfOneName(name: string, left: SourceRef | Unbuilt, right: SourceRef 
 }
 
 /**
- * Bind every delivered package's provided requirements
- * ({@link PackageFileSet.provided}) among `sources` by its consumer, and return
- * the installation they make up. Each is answered by the first of:
+ * Bind the provided requirements ({@link PackageFileSet.provided}) of every
+ * package among `sources`, and of every package they reach, each by the
+ * package's consumer, and return the sources with their packages rewired. A
+ * provided requirement is bound to the first of:
  *
- * - what its **dependent** binds for that name — a dependency of the
- *   dependent's own, or the dependent's own provided binding — and so on up the
+ * - what its **dependent** binds for that name (one of the dependent's own
+ *   dependencies, or the dependent's own provided binding), and so on up the
  *   chain of dependents;
- * - the collection's own **direct member** of that name, which is the top of
- *   that chain (a renamed member supplies the name it is delivered under);
- * - what its resolution **offered**: the default the delivery wired, or, where
- *   it wired none, an instance of the offered version the installation holds;
+ * - the collection's own **direct member** of that name, at the top of that
+ *   chain: of several, the first, except that a repository's package stands
+ *   before a target's, and a target known to build files is none. A renamed
+ *   member answers for the name it is delivered under;
+ * - for an expected (not optional) requirement, the package it is already
+ *   bound to, as its resolution offered;
+ * - a package the installation holds that its reference's format accepts
+ *   for it ({@link answers}); of several, the one with the lowest node
+ *   signature, so the choice does not follow input order. The installation
+ *   is everything the sources reach other than through an optional provided
+ *   requirement.
  *
- * and is left unbound otherwise, as an installation without it leaves it. A
- * binding is an ordinary edge. A package reached through dependents that bind
- * it differently comes back as one node per binding; one reached the same way
- * everywhere is one node, so the result is the input's shape wherever nothing
- * above a package supplies what its resolution did not.
- *
- * The sources come back unchanged where no package has a provided requirement.
- * Where several instances hold one offered name and version, the one with the
- * lowest node signature is bound, so the choice does not follow input order.
+ * A requirement none of these answers is left unbound, its reference alone.
+ * A binding is an ordinary dependency. A package reached through dependents
+ * that bind it differently comes back as one node per binding, and one bound
+ * alike everywhere as one node. A package in `taken` keeps its bindings and is
+ * not descended into. `sources` itself comes back where no package has a
+ * provided requirement.
  */
 export function bindProvided<S extends Resolved>(sources: S[], taken?: ReadonlySet<Package | RepositoryRef>): Resolved[] {
   const roots = packagesAmong(sources);
@@ -1433,7 +1501,7 @@ export function bindProvided<S extends Resolved>(sources: S[], taken?: ReadonlyS
   if (!packages.some(pkg => pkg.provided.size > 0)) {
     return sources;
   }
-  /* What the installation holds: everything reached by an edge other than an
+  /* What the installation holds: everything reached by a dependency other than an
    * optional provided one, which installs nothing of its own. */
   const held = [...roots];
   const holding = new Set<Package>(held);
@@ -1531,8 +1599,8 @@ export function bindProvided<S extends Resolved>(sources: S[], taken?: ReadonlyS
     const node = builder.copy(pkg);
     copies.set(pkg, [...made, { scope, node }]);
     const own: IScope = { id: scopes++, parent: scope, bindings: new Map() };
-    /* Each edge with what supplies it: an ordinary one is supplied by what it
-     * is bound to, here; a provided one is decided below. */
+    /* Each dependency with what supplies it: an ordinary one is supplied by
+     * what it is bound to, here; a provided one is decided below. */
     const edges = pkg.dependencies.map(dep => {
       const provided = pkg.provided.has(dependencyName(dep));
       const supply: ISupply | undefined = !provided && dep.package !== undefined ? { pkg: dep.package, scope: own } : undefined;
@@ -1541,15 +1609,15 @@ export function bindProvided<S extends Resolved>(sources: S[], taken?: ReadonlyS
       }
       return { dep, provided, supply };
     });
-    /* Every binding is decided before anything below is copied: how a
-     * dependency is wired depends on all of them. */
+    /* Decide every binding before copying anything below: how a dependency
+     * is wired depends on all of them. */
     const bound = edges.map(({ dep, provided, supply }) => {
       if (!provided) {
         return { dep, supply };
       }
       const name = dependencyName(dep);
-      /* An optional one is never answered by the package on its edge (for a
-       * built package, the copy it was compiled against): only by what the
+      /* Never answer an optional one with the package it is bound to (for a
+       * built package, the copy it was compiled against): only with what the
        * consumer supplies or its installation holds. */
       const optional = pkg.provided.get(name) === "optional";
       const answer =
@@ -1566,8 +1634,9 @@ export function bindProvided<S extends Resolved>(sources: S[], taken?: ReadonlyS
     });
     builder.wire(
       node,
-      /* An edge nothing answers is its reference alone (an optional one would
-       * otherwise keep the package it was built against). */
+      /* A requirement nothing answers keeps its reference alone, unbound (an
+       * optional one would otherwise keep the package it was built
+       * against). */
       bound.map(({ dep, supply }) =>
         supply === undefined ? { reference: dep.reference } : { reference: dep.reference, package: copy(supply.pkg, supply.scope) }
       ),
@@ -1611,9 +1680,10 @@ function providedNamesBelow(packages: Package[]): Map<Package, string[]> {
 /**
  * Resolve several source lists as ONE collection, so every reference across
  * them resolves together, and materialize them, returning the results
- * partitioned back per input list. For a collection made in one step, such as
- * a tool read to be run (`getGlobalRunnable`/`getRunnableProperty`, a command
- * stage), a command's `<` source, or `TargetContext.materializeSources`.
+ * partitioned back per input list. Rejects where versions conflict, unless
+ * `options` is permissive. For a collection made in one step, such as a tool
+ * read to be run (`getGlobalRunnable`/`getRunnableProperty`, a command stage),
+ * a command's `<` source, or `TargetContext.materializeSources`.
  *
  * `extracted` says, per list, whether its consumer extracts the files a
  * projection selects (so the list's projected references are
@@ -1725,11 +1795,11 @@ export function resolveListsFor(
 }
 
 /**
- * Find whether a collection of `sources`, which neither operation's side
- * changes ({@link sidedNodes}), resolves alike for operations `a` and `b`:
- * @return true if every registry its requests are addressed to has one
- * environment for both ({@link RepositoryReader.environmentKey}, which keys
- * a resolution) and it asks no catalog for a member, otherwise false.
+ * @return true if a collection of `sources`, which neither operation's side
+ * changes ({@link sidedNodes}), resolves alike for operations `a` and `b`
+ * (it asks no catalog for a member, and every registry its requests are
+ * addressed to gives both one {@link RepositoryReader.environmentKey
+ * environment}), otherwise false.
  */
 function resolvedAlike(sources: Array<SourceRef | Unbuilt>, a: string, b: string): Computable<boolean> {
   const requests = gatherRequirements(sources).requests.filter(request => !resolvedApart(request));
@@ -1786,6 +1856,15 @@ export interface ResolvedLists {
  */
 type ListFiles = "files";
 
+/**
+ * Resolve opened lists as one collection ({@link resolveBuilt}), and
+ * partition the result back per list, each entry with the written reference
+ * it was resolved for. File requests are the projected references of the
+ * `extracted` lists and the references of the lists `reads` reads for files;
+ * instances are the packages of the `instantiated` lists and the packages in
+ * hand of the lists read for files. A source that another list reads for its
+ * packages is neither.
+ */
 function resolveBuiltLists(
   context: ResolutionContext,
   opened: Opened[][],
@@ -1828,31 +1907,37 @@ function resolveBuiltLists(
 }
 
 /**
- * Gather a request for every reference among `sources`, and for those of the
- * packages among them: the reference a package was delivered for or, for a
- * package nothing delivered, the references its edges hold, recursively,
- * stopping at a package that has a reference of its own. There is one request
- * per reference, and a reference among the sources themselves is the
- * collection's requirement whoever else carries it. A carried reference that
- * resolves nothing is left out: an optional provided requirement, a `?` (a
- * permission its writer gave its own collection point), and one with
- * projections, which names files and so binds no package.
+ * Gather a request for every reference among `sources` and every reference
+ * the packages among them carry: a package's unbound requirement is its
+ * reference, and one bound to a target's node or a package in hand is
+ * followed into that package. There is one request per reference. One among
+ * the sources themselves is the collection's own (`as: "package"`) whoever
+ * else carries it; any other is `"carried"`.
+ *
+ * Left out: a carried reference with projections (it names files) or marked
+ * `?` (its writer's collection point's); an optional provided requirement; a
+ * requirement bound to a registry's selection (taken as bound, see
+ * {@link gatherRequirements}); and a node known to build no package.
  */
 function gatherReferences(sources: Array<SourceRef | Unbuilt>): PackageRequest[] {
   return gatherRequirements(sources).requests;
 }
 
 /**
- * Gather the requests {@link gatherReferences} does, with the packages built
- * in the project that the sources hold or reach (`locals`), each a node of
- * every resolution here whose carried references are its own requirements,
- * and those of them the sources hold outright (`own`).
+ * Gather the requests {@link gatherReferences} does, and:
+ * - `locals`: the packages the sources hold, and those reached through
+ *   requirements bound to something other than a registry's selection: each
+ *   a candidate of every resolution here, its carried references its own
+ *   requirements;
+ * - `own`: those of `locals` the sources hold outright;
+ * - `pins`: the pins that requirements bound to a registry's selection make
+ *   ({@link takenPins}).
  */
 function gatherRequirements(sources: Array<SourceRef | Unbuilt>): {
   requests: PackageRequest[];
   locals: Package[];
   own: Set<Package>;
-  /** The registries' selections the sources reach through bound edges, taken
+  /** The registries' selections the sources reach through bound requirements, taken
    * as they stand: each a pin of the registry's resolution here. */
   pins: Pin[];
 } {
@@ -1879,8 +1964,8 @@ function gatherRequirements(sources: Array<SourceRef | Unbuilt>): {
       /* Known to be no package: it claims no name and requires nothing. */
     } else if (isPackage(source) && !visited.has(source)) {
       /* A package held or built here: what it carries is its own
-       * requirements. An edge bound to nothing is its reference, asked here;
-       * one bound to a registry's selection is taken as bound; one bound to a
+       * requirements. One bound to nothing is its reference, asked here; one
+       * bound to a registry's selection is taken as bound; one bound to a
        * target's node or to a package in hand leads into that. */
       visited.add(source);
       locals.push(source);
@@ -1897,7 +1982,7 @@ function gatherRequirements(sources: Array<SourceRef | Unbuilt>): {
           gather(dep.reference, true);
         } else if (isSelection(bound)) {
           /* Bound to a registry's selection by whatever resolved this package:
-           * taken as it stands, a pin of the batch — unless the edge is a
+           * taken as it stands, a pin of the batch — unless the requirement is a
            * provided requirement, whose binding is the offer the consumer may
            * replace, neither pinned nor asked again. */
           if (provided === undefined) {
@@ -1908,16 +1993,16 @@ function gatherRequirements(sources: Array<SourceRef | Unbuilt>): {
         }
       }
     } else if (source instanceof FileSetRef) {
-      /* A pending projection's base still carries its refs — they resolve at
-       * this collection point like any package's. */
+      /* A pending projection's base carries its references, resolved here
+       * like any package's. */
       gather(source.source, carried);
     } else if (source instanceof ProjectedPackage) {
       gather(source.base, carried);
     }
   };
   /* A node bound into a package here by another collection is taken as it
-   * stands, with what it reaches through its dependency edges: each
-   * registry's selection among them a pin, reached through `via`. */
+   * stands, with what it reaches through its dependencies: each registry's
+   * selection among them a pin, reached through `via`. */
   const take = (node: Package, via: Package): void => takenPins(node, via, pins, pinned);
   sources.forEach(source => gather(source, false));
   const requests = references.map((reference): PackageRequest => ({ reference, as: direct.has(reference) ? "package" : "carried" }));
@@ -1933,9 +2018,9 @@ function isSelection(pkg: Package | undefined): pkg is ResolvedNode {
 /**
  * Gather into `pins` the pins the package `pkg`, taken as another collection
  * bound it, makes for whatever reaches it through `via`: each registry's
- * selection among itself and what it reaches through bound dependency edges —
- * not a provided edge, whose binding is the consumer's to make. `seen` holds
- * what was gathered already.
+ * selection among itself and what it reaches through bound dependencies,
+ * other than provided ones, whose binding is the consumer's to make. `seen`
+ * holds what was gathered already.
  */
 function takenPins(pkg: Package, via: RepositoryRef | Package, pins: Pin[], seen: Set<Package>): void {
   if (seen.has(pkg)) {
@@ -1975,16 +2060,15 @@ function groupRequests(requests: ReadonlyArray<PackageRequest>): Map<RefSource, 
   return groups;
 }
 
-/** Get what a delivery leaves among resolved sources: itself, or nothing for
- * a `?` alternate, which was a requirement of the resolution and installs
- * nothing. */
+/** Get the resolved sources an answer stands for: itself, or none for a `?`
+ * alternate (answered by its own reference), which installs nothing. */
 function resolvedAs(delivery: Resolved | RepositoryRef): Resolved[] {
   return delivery instanceof RepositoryRef ? [] : [delivery];
 }
 
 /** @return true if `request` is for a package its reference only permits (a
- * `?` alternate), otherwise false. Such a request installs nothing, so what
- * comes back is the requirement. */
+ * `?` alternate), otherwise false. Such a request installs nothing, and is
+ * answered by its own reference. */
 function installsNothing(request: PackageRequest): boolean {
   return request.reference.override === "alternate" && request.as === "package";
 }
@@ -1998,7 +2082,7 @@ function resolvedApart(request: PackageRequest): boolean {
 /**
  * Resolve the package `request` names as an {@link instanceRequests instance}:
  * a registry's at the reference's lower bound, carrying what that version
- * declares as references; a collection's as the member it resolved, its edges
+ * declares as references; a collection's as the member it resolved, its requirements
  * bound as the collection bound them; a lookup's as it holds it.
  */
 function resolveInstance(
@@ -2024,11 +2108,14 @@ function resolveInstance(
 
 /**
  * Resolve `requests`, each repository's as one batch ({@link resolveBatch}),
- * and finish each reference's delivery ({@link RepositoryRef.applyTo}). A
- * `?` alternate is answered by its own reference. A repository with a resolution in
- * `collection` answers its batch from it. A request for files joins no
- * resolution, so nothing here waits on it: it is answered {@link PendingFiles
- * pending}, fetched when the collection is given its content.
+ * and apply what each reference states to its answer
+ * ({@link RepositoryRef.applyTo}). A `?` alternate is answered by its own
+ * reference. A repository with a resolution in `collection` answers its batch
+ * from it. A request for files joins no resolution, so nothing here waits on
+ * it: it is answered {@link PendingFiles pending}, fetched when the
+ * collection is given its content.
+ *
+ * @return what each reference resolved to, by reference.
  */
 function resolveRequests(
   context: ResolutionContext,
@@ -2075,11 +2162,11 @@ function resolveRequests(
 }
 
 /**
- * @return true if `pkg` is what `reference` names — a version its repository's
- * format accepts for the requirement the reference states — otherwise false.
- * Asked of a package already
- * known by the name the reference is required under. A reference whose
- * repository resolves no versions is answered by nothing.
+ * @return true if `pkg` is what `reference` names (a version its repository's
+ * format accepts for the requirement the reference states, or a package with
+ * no version), otherwise false. Asked of a package already known by the name
+ * the reference is required under. A reference whose repository resolves no
+ * versions is answered by nothing.
  */
 function answers(reference: RepositoryRef, pkg: Package): boolean {
   const source = reference.source;
@@ -2100,14 +2187,14 @@ function answers(reference: RepositoryRef, pkg: Package): boolean {
 }
 
 /**
- * How a collection point consumes what it materializes. **"strict"** (the
- * default): the closure is linked into the consumer's own module graph, so a
- * package shipped at more than one version, from any source, is an error unless
- * each version is sanctioned. **"permissive"**: the closure is a sealed program
- * that is executed, not linked against (a runnable's install), so coexisting
- * versions are accepted and nest. Given by the framework to a single-surface
- * collection (`collectLists`, `materializeShallow`); a rule's own requirements
- * say it with `permissive` (`ResolutionSpec`). Never a constraint.
+ * How a collection point treats a package at several versions. `"strict"`
+ * (the default): a package shipped at more than one version, from any source,
+ * is refused unless each version is sanctioned ({@link findConflicts}).
+ * `"permissive"`: several versions
+ * are accepted, each nested where it is required; for a closure run as a
+ * program (a runnable's install). The framework gives it to a single-surface
+ * collection (`collectLists`, `materializeShallow`); a rule's own
+ * requirements state it with `permissive` (`ResolutionSpec`).
  */
 export interface ResolutionOptions {
   resolutionMode?: "strict" | "permissive";
@@ -2119,9 +2206,9 @@ export const PERMISSIVE_RESOLUTION: ResolutionOptions = { resolutionMode: "permi
 
 /**
  * Run `deliver`, the work one reference asks of its repository, and attribute
- * any failure to the written reference (a {@link RequirementResolutionError}):
- * the ref's carried provenance lets the driver point back at the requirement as
- * written (`@npm:pkg:ver`, `@catalog:name`), not just at the consuming target.
+ * any failure, thrown or rejected, to the written reference: it is thrown or
+ * rejected in turn as a {@link RequirementResolutionError}, which the driver
+ * reports at the requirement as written (`@npm:pkg:ver`, `@catalog:name`).
  */
 export function attributedTo<T>(reference: RepositoryRef, deliver: () => Computable<T>): Computable<T> {
   try {

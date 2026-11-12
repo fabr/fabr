@@ -17,14 +17,12 @@
 /**
  * PnP virtual paths (https://yarnpkg.com/advanced/pnp-spec, "Virtual
  * Packages"): `<base>/__virtual__/<hash>/<n>/<subpath>` names the file at
- * `<base>`, stepped up `n` times, then `<subpath>`. One real directory can so
- * be reached under several distinct paths, and a PnP table tells its packages
- * apart by path — which is how one content wired several ways gets one row per
- * wiring.
+ * `<base>`, stepped up `n` times, then `<subpath>`. One real directory can be
+ * reached under several paths, so a package's content wired several ways has a
+ * PnP row per wiring, each at its own virtual location.
  *
- * The rule for every consumer: the virtual path IS the file's name (it is what
- * says which row a file belongs to); map it to the physical path only to touch
- * bytes.
+ * Treat the virtual path as the file's name, since it says which row the file
+ * belongs to; map it to the physical path only to read or stat the file.
  *
  * Runs inside the drivers, so it depends on nothing but node.
  */
@@ -39,8 +37,8 @@ export const VIRTUAL_SEGMENT = "__virtual__";
  * must equal core's TREE_MOUNT. */
 export const TREE_LINK = "../.fabr-tree";
 
-/** Yarn's own pattern (VirtualFS): the base up to the first virtual segment,
- * then an optional hash (hex, optionally `<name>-` prefixed) and depth, then the
+/** Yarn's pattern (VirtualFS): the base up to the first virtual segment, then
+ * an optional hash (hex, optionally `<name>-` prefixed) and depth, then the
  * rest. */
 const VIRTUAL_PATTERN = /^(\/(?:[^/]+\/)*?(?:\$\$virtual|__virtual__))((?:\/((?:[^/]+-)?[a-f0-9]+)(?:\/([^/]+))?)?((?:\/.*)?))$/;
 
@@ -73,16 +71,15 @@ export function isVirtual(file: string): boolean {
 
 /** @return a virtual location over `physical`:
  * `<pool>/__virtual__/<hash>/0/<name>` for the directory `<pool>/<name>`.
- * `hash` must be hex, which is what the spec's readers accept. */
+ * `hash` must be hex, as Yarn's pattern requires. */
 export function virtualLocation(physical: string, hash: string): string {
   return path.posix.join(path.posix.dirname(physical), VIRTUAL_SEGMENT, hash, "0", path.posix.basename(physical));
 }
 
 /**
  * Resolve `file` as `realpath` does, keeping a virtual path virtual: the part
- * before the virtual segment is resolved, the rest kept as written — so a file
- * reached through a virtual location stays attributable to its row. A path with
- * no virtual segment is an ordinary realpath.
+ * before the virtual segment is resolved and the rest kept as written. A path
+ * with no virtual segment gets an ordinary realpath.
  */
 export function realpathKeepingVirtual(file: string, realpath: (file: string) => string = fs.realpathSync): string {
   const at = file.indexOf(`/${VIRTUAL_SEGMENT}/`);

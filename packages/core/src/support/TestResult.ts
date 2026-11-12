@@ -23,28 +23,22 @@ import type { SourceRef } from "../core/Repository";
 import { isJsonObject, readJsonFile } from "./Json";
 import { FabrError, TestsFailedError } from "../core/Errors";
 
-/**
- * The structured test report: the contract between a test rule and its
- * runner. The document is CTRF (Common Test Report Format, https://ctrf.io) —
- * a standard JSON test-results schema, so the artifact a test target delivers
- * is directly consumable by third-party tooling. Each runner invocation writes
- * the document to the file its `--report` names; the test-run step merges them
- * ({@link mergeTestReports}) into TEST_REPORT_FILENAME, the test target's
- * output artifact, and the driver reads it back to summarize the run for the
- * user.
+/*
+ * The test report, the document a test runner writes and a test target
+ * produces, is CTRF (Common Test Report Format, https://ctrf.io). Each runner
+ * invocation writes one to the file its `--report` names; the test-run step
+ * merges them ({@link mergeTestReports}) into TEST_REPORT_FILENAME, and the
+ * driver reads it back to summarize the run.
  *
- * Note the summary start/stop are wall-clock times of the original run: a
- * cached-green report retains its original timings.
- *
- * (The runner side is standalone at runtime, so @fabr-build/js-tools carries
- * its own implementation of this contract in testRunner/Report.ts; the shapes
- * must be kept in sync.)
+ * @fabr-build/js-tools has its own copy of these shapes
+ * (testRunner/Report.ts): keep the two in step.
  */
 
+/** A test's outcome. */
 export type TestStatus = "passed" | "failed" | "skipped" | "pending" | "other";
 
 export interface ITestResult {
-  /** The test's own name (not including ancestor suite names) */
+  /** The test's own name, without its suites' names */
   name: string;
   status: TestStatus;
   /** Elapsed time in milliseconds */
@@ -52,15 +46,11 @@ export interface ITestResult {
   /** The test file's source path (`packages/x/src/Foo.test.ts`), or its
    * compiled name where no source map names a source */
   filePath?: string;
-  /** Failure description (failed tests only) — one line, the summary of what
-   * went wrong. */
+  /** A one-line description of the failure (failed tests only). */
   message?: string;
-  /**
-   * Supporting detail for a failure that the message alone cannot carry (CTRF's
-   * `trace`): a stack, or the output of a test file that died before any of its
-   * tests ran. Kept apart from `message` because the failure list shows one line
-   * per test — a trace is rendered under it, not folded into it.
-   */
+  /** A failure's further detail (CTRF's `trace`): a stack, or the output of a
+   * test file that died before any of its tests ran. Shown beneath the
+   * message. */
   trace?: string;
 }
 
@@ -71,11 +61,13 @@ export interface ITestSummary {
   pending: number;
   skipped: number;
   other: number;
-  /** Wall-clock start/stop of the run, epoch milliseconds */
+  /** The wall-clock start and stop of the run, in epoch milliseconds; a
+   * report served from the cache keeps its original run's. */
   start: number;
   stop: number;
 }
 
+/** A CTRF test report. */
 export interface ITestReport {
   results: {
     tool: { name: string };
@@ -84,11 +76,11 @@ export interface ITestReport {
   };
 }
 
-/** The report filename, relative to the test working directory */
+/** The report's file name, relative to the test working directory */
 export const TEST_REPORT_FILENAME = "ctrf-report.json";
 
-/** The name a test result carries its coverage under, where the run was
- * measured: an lcov document naming each source by its source path. */
+/** The file name of a measured test run's coverage, an lcov document naming
+ * each source by its source path. */
 export const COVERAGE_REPORT_FILENAME = "lcov.info";
 
 /**
@@ -108,17 +100,15 @@ export function formatTestSummary(report: ITestReport): string {
 }
 
 /**
- * @return a multi-line failure report: the summary line followed by one
- * indented line per failed test — plus, for a failure carrying one, its trace
- * indented beneath. One line per test keeps a large red run readable (a matcher
- * message can be a whole diff); a trace is the exception because a test that
- * never ran has nothing else to say about itself.
+ * @return a multi-line failure report: the summary line, then one indented
+ * line per failed test (its name, file and the first line of its message),
+ * each with its trace, if any, indented beneath.
  */
 export function formatTestFailures(report: ITestReport): string {
   const lines = [formatTestSummary(report)];
   for (const test of report.results.tests) {
     if (test.status === "failed") {
-      /* …unless the test IS the file (a load failure), where it would repeat. */
+      /* The file, unless the test is named as the file (a load failure). */
       const where = test.filePath && test.filePath !== test.name ? ` (${test.filePath})` : "";
       const detail = test.message ? `: ${firstLine(test.message)}` : "";
       lines.push(`  ${test.name}${where}${detail}`);
@@ -139,20 +129,14 @@ function firstLine(text: string): string {
   return newline === -1 ? text : text.substring(0, newline);
 }
 
-/** The summary fields every reader of a report relies on being numbers — the
- * counters, plus `start`/`stop` (CTRF requires them, and the merge computes
- * over them, so a report without them is not usable). */
+/** The summary fields a readable report must have as numbers. */
 const SUMMARY_COUNTERS = ["tests", "passed", "failed", "pending", "skipped", "other", "start", "stop"];
 
 /**
- * Merge per-invocation CTRF reports into the one report a test target
- * delivers. The runner contract permits the caller to partition a target's
- * test files across invocations (fabr runs one file per invocation, so each
- * execution is admitted separately by the machine-wide funnel); each
- * invocation writes its own report and the target's is their sum. The order
- * is the caller's (the declared file order), so the merged document never
- * depends on scheduling; start/stop are the earliest and latest — under
- * parallel invocations the span, not the sum.
+ * Merge the reports of several runner invocations into one: the counts
+ * summed, the tests concatenated in the order given, `start` the earliest and
+ * `stop` the latest, and the first report's tool.
+ * @throws FabrError if `reports` is empty.
  */
 export function mergeTestReports(reports: ITestReport[]): ITestReport {
   if (reports.length === 0) {
@@ -180,12 +164,8 @@ export function mergeTestReports(reports: ITestReport[]): ITestReport {
 }
 
 /**
- * Convert a parsed document to a report. The runner that wrote it is
- * replaceable, so this is third-party JSON, and this is the one place it
- * becomes an {@link ITestReport} — every consumer downstream relies on the
- * shape it was handed. Anything unrecognizable throws (attributed to the report
- * file by `readJsonFile`): a corrupt report is a real problem, never a silently
- * empty run.
+ * Convert a parsed document to an {@link ITestReport}.
+ * @throws FabrError if it is not a CTRF report fabr can read.
  */
 export function toTestReport(json: unknown): ITestReport {
   if (!isCtrfReport(json)) {
@@ -194,9 +174,9 @@ export function toTestReport(json: unknown): ITestReport {
   return json;
 }
 
-/** @return true if a parsed document is a report fabr can read — a `results`
- * block whose summary counters are numbers and whose `tests` are objects, what
- * every formatter and status check here assumes it was given — otherwise false. */
+/** @return true if a parsed document is a report fabr can read (a `results`
+ * block whose summary fields are numbers and whose `tests` are objects),
+ * otherwise false. */
 function isCtrfReport(document: unknown): document is ITestReport {
   if (!isJsonObject(document) || !isJsonObject(document.results)) {
     return false;
@@ -229,12 +209,10 @@ export function hasTestFailures(output: FileSet): Computable<boolean> {
 }
 
 /**
- * @return the test report among `sources`, what a name was built to: one
- * source's report as it is, several sources' (a name listing several test
- * targets) merged, or `undefined` if none produced a report artifact at all
- * (rendered as "no tests"). A report that IS present but cannot be parsed —
- * malformed JSON, or valid JSON that isn't a recognizable CTRF report —
- * rejects.
+ * @return the test report among `sources` (what a name was built to): one
+ * source's report as it is, several sources' merged, or undefined where none
+ * holds one. Rejects where a report is present but is not a readable CTRF
+ * report.
  */
 export function getTestReport(sources: SourceRef[]): Computable<ITestReport | undefined> {
   const sets = sources.filter((source): source is FileSet => source instanceof FileSet);

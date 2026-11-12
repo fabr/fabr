@@ -48,53 +48,47 @@ export enum PropertyType {
 }
 
 /**
- * A sub-target's inputs ({@link TargetContext.subTarget}). Distinct from a
- * {@link BuildAction}'s input bags because a sub-target is a **fully-fledged
- * target**, not an action: its rule's *evaluate* re-runs every build (it is not itself a
- * persistent-cache unit), reading these inputs through the anonymous
- * `TargetContext` exactly as a declared target reads its properties. So the bag
- * may carry the same un-reduced **model sources** a property holds — notably a
- * `Flag` (a `FileSource`) read back via `getFlags` — not only the plain,
- * manifestable data an action's bag is limited to. These inputs never form a
- * cache key directly; they reach one only through the action(s) evaluate yields
- * (e.g. js_compile reads the source-mode flags among its `deps` here and folds
- * the resolved overlay into the tsconfig *inside* the exec action's `files`).
- * The manifestability constraint is the action role's alone; a sub-target
- * must instead satisfy the ordinary target contract — its inputs make sense as
- * properties on their own.
+ * One input of a sub-target ({@link TargetContext.subTarget}), a value of one
+ * of its type's properties, read by its rule through the same accessors a
+ * declared target's properties are. It may be any source a property holds,
+ * a `Flag` included (read back with `getFlags`). The inputs are not themselves
+ * cache-key material: only the actions the sub-target's rule yields are keyed.
  */
 export type SubTargetInput = string | string[] | Name | Name[] | FileSource | FileSource[] | PropertyMap | CommandValue;
+/** A sub-target's inputs, by property name. */
 export type SubTargetInputs = Record<string, SubTargetInput>;
 
 /**
- * What a rule's evaluate yields: final content directly (a FileSource — flags,
- * an in-memory result, or a sub-target's output reshaped by evaluation), a
- * BuildAction the framework keys/caches/executes to produce the target's
- * content, or a *list* of FileSources — a target whose result is a set of
- * things (a `sync`'s per-member publish carriers). Name resolution is
- * list-shaped everywhere (a target's output flows as `SourceRef[]`), so a
- * scalar result is just the one-element case; a list yields its elements as
- * the target's sources directly, each provenance-stamped. Only declared
- * targets may be plural: an anonymous sub-target's output composes 1:1 into
- * its owner's evaluation.
+ * The result of a rule's `evaluate`, one of:
+ * - a FileSource: the target's content as it stands (a flag, files made in
+ *   memory, a sub-target's output reshaped);
+ * - a BuildAction: a build step the framework looks up in the cache, or runs,
+ *   its output (reshaped where the action has a `reshape`) being the content;
+ * - a list of FileSources: each one of the target's sources (a `sync`'s
+ *   carrier per member).
+ *
+ * Each FileSet among the content is stamped with the target's provenance. A
+ * sub-target must yield exactly one FileSet: {@link TargetContext.subTarget}
+ * rejects anything else.
  */
 export type RuleResult = FileSource | FileSource[] | BuildAction;
 
 /**
- * Make the repository a declaration of the provider's type declares, from its
- * `context`. Repositories are not rule-built targets: a provider lazily
- * constructs the instance for a declaration, per BuildContext (its
- * configuration resolves under that context's constraints). What it
- * constructs is the declaration's value as a source: a {@link Repository}
- * (vending references the resolution layer batches), a
- * {@link Namespace} (an AWS account), or a plain {@link FileSource}
- * for a declared namespace with nothing to resolve (a `fetch` table). A
- * repository a namespace makes (see TargetContext.makeRepository) is also
- * given the namespace's `url` and `credential`, each where it has one: a
- * property the declaration writes comes first, and the credential ahead of
- * any the repository's ecosystem would find for itself. `requirements` are
- * what its type's {@link RepositoryImplementation.requirements} state, resolved
- * (none where it states none).
+ * Make what a declaration of a repository type names, from the declaration's
+ * `context` (its properties, read in its configuration). Called when the
+ * declaration's name is first looked up in a configuration, or when a namespace
+ * makes a member of the type. It returns:
+ * - a {@link Repository}, which vends references to what it holds;
+ * - a {@link Namespace}, whose members it makes on demand (an AWS account);
+ * - or a plain {@link FileSource}, for a declaration with nothing to resolve
+ *   (a `fetch` table).
+ *
+ * `url` and `credential` are given only to a repository a namespace makes
+ * ({@link TargetContext.makeRepository}), each where the namespace has one; a
+ * provider should prefer a `url` property the declaration writes over `url`,
+ * and use `credential` ahead of any its ecosystem would find for itself.
+ * `requirements` are what the type's {@link RepositoryImplementation.requirements}
+ * state, resolved (empty where it states none).
  */
 export type RepositoryProvider = (
   context: TargetContext,
@@ -104,20 +98,17 @@ export type RepositoryProvider = (
 ) => Computable<Repository | Namespace | FileSource>;
 
 /**
- * A rule: the knowledge of how to build targets of a `type` where its guards
- * admit, contributed to a build by core or a plugin. Omit `type` for a *default*
- * rule — the type-dimension wildcard, selected for any target type that has no
- * more specific rule of its own. The BuildModel indexes these into its rule
- * tables.
+ * A rule: how to build targets of `type` where its guards match, with its
+ * implementation. A rule without a `type` is a default rule, tried for a target
+ * only where none of its own type's rules applies.
  *
- * A rule is selected as a guarded declaration is: every pattern must match the
- * value of the property it names (a glob, as in `srcs<TARGET=*-linux-*>`), and
- * the configuration is read as properties, so a `default` or a declared global
- * counts the same as a `-D`. Two things differ from a property's guard: a key
- * with no value here — nothing declares it, or no declaration of it applies —
- * makes the rule inapplicable rather than being an error; and among the rules
- * that apply, the one naming the most keys (over both records) is selected, two
- * equally specific ones being an error.
+ * A rule applies where every guard pattern matches the value of the property
+ * it names (a glob, as in `srcs<TARGET=*-linux-*>`). The configuration is read
+ * as properties, so a `default`, a declared global and a `-D` all count. A key
+ * with no value (nothing declares it, or no declaration of it applies) makes
+ * the rule inapplicable, where a property's guard would be an error. Among the
+ * rules that apply, the one naming the most keys over both guard records is
+ * selected; two naming equally many are an error.
  */
 export interface RuleDefinition extends SelectableRule, RuleImplementation {}
 
@@ -146,40 +137,40 @@ export interface RuleBlockDefinition extends SelectableRule {
  * is selected from these alone, before its implementation is loaded.
  */
 export interface SelectableRule {
-  /** Target type this rule builds; omitted → a default (all-types) rule. */
+  /** The target type this rule builds; omitted for a default (all-types) rule. */
   type?: string;
-  /** The guard over the build configuration: property name → pattern
-   * (`{ [BUILD_OPERATION]: "test" }`). A plain record — a developer-authored
-   * match pattern, not a user-keyed build config. */
+  /** The guard over the configuration: property name to pattern
+   * (`{ [BUILD_OPERATION]: "test" }`). */
   properties: Record<string, string>;
-  /** The guard over the TARGET's own STRING properties: property name →
-   * pattern. A property the target does not set makes the rule inapplicable.
-   * For a rule with a `type`, each key must be a STRING property of that
-   * type's targetdef. */
+  /** The guard over the target's own STRING properties (for a sub-target, its
+   * inputs): property name to pattern. A property the target does not set
+   * makes the rule inapplicable. For a rule with a `type`, each key must be a
+   * STRING property of that type's targetdef. */
   targetProperties?: Record<string, string>;
 }
 
-/** The rules of one target type, which selection tries together, ranked
- * against each other: `type` names them in an ambiguity error. */
+/** The rules of one target type, which selection ranks against each other.
+ * `type` names them in an ambiguity error. */
 export interface TargetRules<R extends SelectableRule = SelectableRule> {
   type: string;
   rules: R[];
 }
 
 /**
- * How a rule builds a target. A package entry a `rule` declaration names
- * exports one as its default export, its type and guards being the
- * declaration's.
+ * How a rule builds a target. The module a `rule` declaration names
+ * (`= <package>:<entry>`) default-exports one; its type and guards are the
+ * declaration's. It is loaded when the rule is first selected.
  */
 export interface RuleImplementation {
   /**
-   * State what the target requires: the files, packages and targets its
-   * FILES and PACKAGES properties and globals name, under names of the rule's
-   * choosing, read and not materialized. The framework resolves them as one
-   * collection and hands them to {@link evaluate}. Only such sources are
-   * requirements: a string, map or command property has nothing to resolve,
-   * and is read in `evaluate`. Nor is a tool: it is read in `evaluate`, to be
-   * run.
+   * State what the target requires: the sources its FILES and PACKAGES
+   * properties and globals name, read with `getFileProperty`,
+   * `getPackageProperty` and the like and not materialized, under names of the
+   * rule's choosing. Called when the target is resolved, which happens when a
+   * reference to it is read, before anything is built. The framework resolves
+   * each collection jointly and hands the result to {@link evaluate}. A STRING,
+   * MAP or COMMAND property has nothing to resolve, and is read in `evaluate`;
+   * so is a tool, which is resolved to be run.
    *
    * Six names mean something to the framework. `dependencies`, `provided`,
    * `optional_provided`, `runtime` and `compile` are what the target passes
@@ -194,62 +185,70 @@ export interface RuleImplementation {
    * (`classes.extends`) is read as its last part is (here, as material), but
    * only a plain name is passed on.
    *
-   * It returns them as a {@link ResolutionSpec}: the requirements, as the
-   * collection it builds with (`build`: what it compiles against, what it
-   * passes on) and the one it installs or runs (`run`), each resolved for that
-   * operation; whether they are collected permissively; and what the target
-   * builds (`result`: a package of a name, format and version, or files),
-   * which its node is made from and its build is checked against. Undeclared,
-   * what the target builds is known when it is built.
+   * Returns a {@link ResolutionSpec}, or a Computable of one where it depends
+   * on a value read first, with:
+   * - `build`: the collection the target builds with (what it compiles
+   *   against, what it passes on), resolved for the `build` operation;
+   * - `run`: the collection it installs or runs, resolved for `run`;
+   * - `permissive`: true where versions that conflict among the requirements do
+   *   not refuse the target (a program's sealed install);
+   * - `result`: what the target builds (a package of a name, format and
+   *   version, or files), which whatever requires it sees before it is built,
+   *   and which its build is checked against. Where it is not stated, what the
+   *   target builds is known only once it is built;
+   * - `fixes`: the advisory ids the target's build fixes in the package it is
+   *   made from, which `fabr audit` reports as fixed.
    *
-   * Optional: a rule without it requires nothing. What a rule reads for
-   * itself in `evaluate` is outside the resolved graph, so a cycle through it
-   * is found only when the target is built, and `fabr deps` does not show it.
-   * Returns the requirements as they are, or a Computable of them where they
-   * depend on a value read first.
+   * Optional: a rule without it requires nothing. What `evaluate` reads for
+   * itself is not among the target's requirements: a cycle through it is
+   * found only when the target is built, and `fabr deps` does not show it.
    */
   requirements?: (context: TargetContext) => ResolutionSpec | Computable<ResolutionSpec>;
   /**
-   * Whether the target is a value, with nothing to build (a flag): `evaluate`
-   * runs where the target is resolved, and what it yields stands for the
-   * target from then on. A value rule's `requirements` are never read.
+   * Set where the target is a value with nothing to build (a flag): `evaluate`
+   * runs where the target is resolved, and what it yields stands for the target
+   * in the list that looked it up.
    */
   value?: true;
   /**
-   * The rule body — always run, per evaluation, as the in-memory Computable
-   * graph (property/global lookups, layout, generated-file computation, and
-   * composing sub-targets via `context.subTarget`). Its requirements arrive
-   * resolved and without content: it calls `requirements.materializeAll()`,
-   * or `materialize(name)` for the ones it needs. A rule written with
-   * {@link defineRule} states it as `evaluateResolved`, or as
-   * `evaluateMaterialized` to be given them all materialized. It is given no work
-   * directory and never executes tools; all execution happens inside the
-   * build steps of the BuildActions it (and the sub-targets it builds)
-   * yield. It cannot tell whether it is building a declared or an anonymous
-   * target: it reads its properties through the same `context` accessors
-   * either way (for an anonymous target they are served from the
-   * caller-supplied inputs).
+   * Build the target: yield its content, or the build action that makes it
+   * ({@link RuleResult}). Called when the target is built, once per
+   * configuration in a run, whether its actions are cached or not, and again
+   * under watch when what it read changes; only the actions it yields are
+   * cached. It reads properties and globals through
+   * `context`, lays out files, and composes sub-targets (`context.subTarget`).
+   * It has no work directory and runs no tools: everything it runs is in the
+   * build steps of the actions it and its sub-targets yield. The same
+   * accessors serve a declared target's properties and a sub-target's inputs.
+   *
+   * `requirements` are what {@link requirements} stated, resolved and without
+   * content: call `materializeAll()`, `materialize(name)` for the ones needed,
+   * or `packages(name)` for the packages among one. The first materialization
+   * rejects where a collection is not permissive and ships a package at
+   * conflicting versions. A rule written with {@link defineRule} states this as
+   * `evaluateResolved`, or as `evaluateMaterialized` to be given every
+   * requirement materialized.
    */
   evaluate: (context: TargetContext, requirements: Unmaterialized<Record<string, RequiredSources>>) => Computable<RuleResult>;
   /**
-   * Describe the target as this rule would build it, for tools other than
-   * fabr (an editor, a language server; see context/Description): given its
-   * requirements as `evaluate` is, it yields the description's files, or a
-   * build step that makes them. Optional: under a rule without it, the target
-   * is not described.
+   * Describe the target as this rule would build it, for an editor or language
+   * server, served over the Build Server Protocol. Given its requirements as
+   * `evaluate` is, it yields the files of the description, or a build action
+   * that makes them. Optional: a target whose rule has none is not described.
    */
   describe?: (context: TargetContext, requirements: Unmaterialized<Record<string, RequiredSources>>) => Computable<RuleResult>;
 }
 
-/** A collection as {@link defineRule} infers it: one it cannot infer, inferred
- * as `any`, states nothing. */
+/** A collection's requirements as {@link defineRule} infers them: `any`, where
+ * nothing could be inferred, is taken as no requirements. */
 type Stated<T> = 0 extends 1 & T ? NoRequirements : T;
 
-/** The `evaluate` a rule given to {@link defineRule} states: one of the two,
- * given the requirements of both of its {@link ResolutionSpec}'s collections. */
+/** The evaluation a rule given to {@link defineRule} states, exactly one of the
+ * two forms, given the requirements of both of its {@link ResolutionSpec}'s
+ * collections. */
 type RuleEvaluation<B, R> =
   | {
-      /** Build the target from its requirements as {@link RuleDefinition.evaluate}
+      /** Build the target from its requirements as {@link RuleImplementation.evaluate}
        * receives them: resolved, materialized when the rule asks. */
       evaluateResolved: (context: TargetContext, requirements: Unmaterialized<Stated<B> & Stated<R>>) => Computable<RuleResult>;
       evaluateMaterialized?: never;
@@ -264,9 +263,13 @@ type RuleEvaluation<B, R> =
     };
 
 /**
- * Define a rule whose evaluation is typed by what its `requirements` names:
- * with a type and guards, a rule a contribution lists; without, the
- * implementation a `rule` declaration names, which may require nothing.
+ * Define a rule, its evaluation typed by the requirement names its
+ * `requirements` returns. Given a type and guards, it makes a
+ * {@link RuleDefinition}, for a contribution to list; given neither, a
+ * {@link RuleImplementation}, the default export of a module a `rule`
+ * declaration names. An `evaluateMaterialized` is called with every
+ * requirement materialized first; an `evaluateResolved` is the plain
+ * `evaluate`.
  */
 export function defineRule<
   B extends Record<string, RequiredSources> = NoRequirements,
@@ -312,17 +315,18 @@ export function defineRule<B extends Record<string, RequiredSources>, R extends 
 }
 
 /**
- * The implementation of a repository type: what the module a `repository`
- * declaration names exports by default.
+ * The implementation of a repository type: the default export of the module a
+ * `repository` declaration names.
  */
 export interface RepositoryImplementation {
   /**
    * State what a declaration of the type requires, as a rule's `requirements`
-   * states what its target requires: the reads, unmaterialized, resolved as the
-   * declaration's collection points (one per side) before the provider is
-   * given them.
+   * does for a target: the property reads, not materialized. They are resolved,
+   * one collection per side, and handed to {@link provider}. Optional: a type
+   * without it requires nothing.
    */
   requirements?(context: TargetContext): ResolutionSpec;
+  /** Make the repository a declaration names. */
   provider: RepositoryProvider;
 }
 
@@ -332,18 +336,13 @@ export interface RepositoryRegistration extends RepositoryImplementation {
 }
 
 /**
- * What core and each plugin contribute to a build: rules, repository types, and
- * `.fabr` library files. A plugin's `activate()` *returns* this — it performs no
- * global registration (see docs/src/content/docs/developer/plugins.md), so the
- * build's rule tables are a pure function of the active contribution set and are
- * rebuilt per load. `includes` are absolute paths to the plugin's own `.fabr`
- * files, which a `plugin <name>;` declaration auto-parses and merges into the
- * model (no explicit `include` needed); core's contribution auto-includes
- * STD.fabr, so it is always present.
- * `rules` and `repositories` are tracked by the {@link BuildModel}.
+ * Rules, repository types and `.fabr` files given to a load in code, beside
+ * those its `.fabr` files declare: core's contribution (STD.fabr, see
+ * `coreContribution`), or what a test lists.
  */
 export interface PluginContribution {
   rules?: RuleDefinition[];
   repositories?: RepositoryRegistration[];
+  /** Absolute paths of `.fabr` files read with the project's, with no `include`. */
   includes?: string[];
 }

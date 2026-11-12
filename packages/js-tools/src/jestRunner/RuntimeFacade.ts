@@ -18,19 +18,10 @@
  */
 
 /**
- * What jest-circus thinks it is talking to.
- *
- * Circus's adapter is written against `jest-runtime` — but it only ever calls
- * **eleven methods** on it, and needs **three members** of the environment. This
- * module is those, backed by node's real module system and fabr's own mock
- * registry: circus gets the framework it expects, while modules load through
- * node, so `require(esm)` keeps working.
- *
- * `enterTestCode`/`leaveTestCode` (jest 30) are pure bookkeeping in the real
- * Runtime (`this.state = 'inTest'`) and so are no-ops here.
- *
- * A circus that calls something absent here fails loudly and immediately — a
- * TypeError on the first test — rather than degrading quietly.
+ * The `jest-runtime` and environment objects jest-circus's adapter is handed:
+ * the eleven runtime methods and three environment members it calls, backed by
+ * node's own module loader and fabr's mock registry. A circus that calls
+ * anything else fails with a TypeError on the first test.
  */
 
 import { MockRegistry } from "./Registry";
@@ -43,11 +34,9 @@ export interface IMockerControls {
 }
 
 /**
- * The environment circus is handed. There is no vm context — the process IS the
- * environment — so `global` is simply the real global object, which is what
- * makes a DOM installed by Environment.ts visible to circus and to the tests
- * alike. `fakeTimers`/`fakeTimersModern` are touched only when a project sets
- * `fakeTimers.enableGlobally`, which fabr does not.
+ * The environment circus is handed. `global` is the process's own global object,
+ * where Environment.ts installs a DOM. `fakeTimers`/`fakeTimersModern` are read
+ * only under `fakeTimers.enableGlobally`, which the config never sets.
  */
 export interface IEnvironmentFacade {
   global: typeof globalThis;
@@ -60,21 +49,19 @@ export function makeEnvironmentFacade(): IEnvironmentFacade {
 }
 
 /**
- * Build the runtime facade for one test process. Modules are brought in by
- * node's `require`, through the registry's seams, so a mocked specifier is
- * served and everything else loads normally.
+ * Make the runtime facade for one test process. Modules load through node's
+ * `require`, and so through the registry, which serves a mocked specifier its
+ * mock.
  */
 export function makeRuntimeFacade(registry: MockRegistry, mocker: IMockerControls): Record<string, unknown> {
   return {
-    /* Circus loads its own initializer through the runtime. Ours is node's
-     * loader, which is fine: it is an ordinary module in the runner's mount. */
+    /* Circus's own initializer, an ordinary module of the runner's install. */
     requireInternalModule: (request: string) => require(request),
-    /* Setup files and the test file itself. Goes through node — and therefore
-     * through the registry's `Module._load` seam. */
+    /* Setup files and the test file, through the registry's `Module._load`
+     * wrap. */
     requireModule: (request: string) => require(request),
-    /* Circus hands over the globals it assembled (describe/it/hooks/expect).
-     * Note it does NOT build the `jest` object — that stays fabr's, since it is
-     * the interface to the registry. */
+    /* The globals circus made (describe/it/hooks/expect); the `jest` object is
+     * not among them (JestObject.ts makes it). */
     setGlobalsForRuntime: (globals: Record<string, unknown>) => Object.assign(globalThis, globals),
 
     /* The config-driven per-test resets (`resetModules`, `clearMocks`, …). */
@@ -83,12 +70,12 @@ export function makeRuntimeFacade(registry: MockRegistry, mocker: IMockerControl
     resetAllMocks: () => mocker.resetAllMocks(),
     restoreAllMocks: () => mocker.restoreAllMocks(),
 
-    /* Always false: fabr compiles tests to CommonJS, and an ESM-only dependency
-     * is reached through node's `require(esm)` rather than jest's ESM path. */
+    /* Always false: tests are compiled to CommonJS, and an ES module dependency
+     * loads through node's `require(esm)`. */
     unstable_shouldLoadAsEsm: () => false,
     unstable_importModule: (request: string) => import(request),
 
-    /* Bookkeeping only in the real Runtime. */
+    /* No-ops: in jest-runtime these only record the runtime's state. */
     enterTestCode: () => undefined,
     leaveTestCode: () => undefined,
   };

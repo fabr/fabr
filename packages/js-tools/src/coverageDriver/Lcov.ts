@@ -18,8 +18,8 @@
  */
 
 /**
- * The coverage driver's pure half: istanbul's file coverage as the converter
- * yields it, turned into lcov records named by source reference.
+ * Converting istanbul's per-file coverage, as `ast-v8-to-istanbul` yields it,
+ * into lcov records named by source reference, and rendering them.
  */
 
 /** A position in a source, as istanbul spells one (1-based line, 0-based column). */

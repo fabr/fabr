@@ -15,33 +15,32 @@
  */
 
 /**
- * Fabr's esbuild bundle driver: the runtime executed (standalone, under node)
- * inside a js_bundle build step. It reads the options document fabr staged
- * (see JSBundle.ts / IBundleOptions), invokes esbuild's JS API with one
- * fabr-owned resolver plugin, and writes the bundle to the output directory.
+ * Fabr's bundle driver (`fabr-bundle`), run in a js_bundle build step. It reads
+ * the options document fabr staged (see JSBundle.ts and IBundleOptions), runs
+ * esbuild's build with fabr's resolver plugin, and writes the bundle and its
+ * metafile to the output directory, naming each source by its reference where
+ * one is known: in the metafile and the outputs' module comments, and in the
+ * maps where the step staged a source-paths table. A failed build's messages
+ * are written to stderr, and the exit code set to 1.
  *
- * Usage: node bundle-driver.js --options=<path-to-options.json>
+ * Usage: fabr-bundle --options=<options.json> [--source-paths <file>]
  *
- * Like the test runner, this file runs in the *build* process, not in fabr:
- * it `require`s esbuild from its own staged node_modules and must not depend on
- * @fabr-build/core at runtime. esbuild is required lazily inside {@link main}
- * so the pure helpers stay importable (for the unit tests) without esbuild
- * installed.
+ * The resolver plugin:
+ *  - Externalizes a bare import of a declared dependency (its import is kept
+ *    as written). A code import that resolves nowhere and names no dependency
+ *    is left to esbuild, which decides whether it is fatal; a failure it
+ *    reports gets fabr's srcs/deps advice. An asset reference (a CSS `url()`)
+ *    that resolves nowhere is left as an external URL.
+ *  - Resolves each package to one file whatever the importer's kind, so a
+ *    package with both ESM and CommonJS entries is bundled once: a bare
+ *    specifier resolves under the bundle's own format's kind first, and the
+ *    answer is cached per importing directory (per package, under a PnP table)
+ *    and reused for every kind.
  *
- * The resolver plugin implements two fabr policies esbuild can't express in
- * config:
- *
- *  - **Membership.** A bare import that names a declared dep is externalized
- *    (its import survives verbatim). A code import that resolves nowhere and is
- *    no dep is left to esbuild, which decides whether it is fatal; a failure it
- *    reports gets fabr's srcs/deps guidance. An asset reference (a CSS
- *    `url()`) that resolves nowhere is left as an external runtime URL.
- *  - **Single variant.** Within one bundle a package resolves to exactly one
- *    variant regardless of importer kind, defeating Node's dual-package hazard
- *    (esbuild would otherwise inline both the ESM and CJS copies). Bare
- *    specifiers resolve with the kind normalized to the bundle's native format,
- *    cached per importing directory (per package under a manifest), and that
- *    answer is reused whatever the importer's kind.
+ * Runs in the step's own process: do not depend on @fabr-build/core at
+ * runtime. esbuild comes from the step's own installation and is required only
+ * inside {@link main}, so the other exports load without it (for the unit
+ * tests).
  */
 
 import * as fs from "node:fs";
@@ -53,9 +52,8 @@ import { getMapSource, referenceOfEntry, stagedReferences, withReferencedSources
 import { BUNDLE_METAFILE, type IBundleOptions } from "./BundleOptions";
 import { type IMetafile, renameMetafilePaths } from "./Metafile";
 
-/* Minimal structural typing for the slice of esbuild's API we use — esbuild is
- * fetched at build time rather than depended on, so its own types are not
- * available to compile this file; these mirror the documented shapes. */
+/* The parts of esbuild's API the driver uses, typed structurally from its
+ * documentation: it is no compile-time dependency of this package. */
 interface ILocation {
   file: string;
   namespace?: string;
@@ -118,7 +116,7 @@ interface IPlugin {
 interface IBuildResult {
   errors: IMessage[];
   warnings: IMessage[];
-  /** Present because every build asks for it (`metafile: true`). */
+  /** Present on every build here, which sets `metafile: true`. */
   metafile?: IMetafile;
 }
 interface IEsbuild {
@@ -126,23 +124,20 @@ interface IEsbuild {
   formatMessages(messages: IMessage[], options: { kind: "error" | "warning"; color?: boolean }): Promise<string[]>;
 }
 
-/* The extensions esbuild loads natively as code/text — everything else that
- * membership pulls into the bundle is emitted as a file asset (hashed, its
- * import rewritten to the URL). This is a denylist of code, NOT an allowlist of
- * assets: what goes into the bundle is decided by resolution into srcs, and a
- * file's *representation* is "code if it's a known code extension, else a file".
- * CSS/JSON are concatenated/parsed natively; JS/TS are compiled. */
+/** The extensions esbuild loads itself, as code or text. A bundled file with
+ * any other extension is emitted as a file asset (hashed, its import rewritten
+ * to the URL). */
 const CODE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".css", ".json", ".txt"]);
 
 /** The conditions the bundle gives esbuild beside its own (see {@link toEsbuildOptions}). */
 const EXTRA_CONDITIONS = ["module", "module-sync"];
 
-/** The importer kinds that reference an *asset* (a URL in a stylesheet) rather
- * than code: a miss on one of these is an external runtime URL, not an error. */
+/** The import kinds that reference an asset (a URL in a stylesheet) rather
+ * than code: one that resolves nowhere is left as an external URL. */
 const ASSET_KINDS = new Set(["url-token"]);
 
-/** The importer kinds written in a STYLESHEET rather than in JavaScript — the
- * ones whose specifier means a stylesheet and can never mean a JS module. */
+/** The import kinds written in a stylesheet rather than in JavaScript, whose
+ * specifier names a stylesheet, never a JS module. */
 const STYLESHEET_KINDS = new Set(["import-rule", "composes-from", "url-token"]);
 
 /** Get the package name a bare specifier belongs to (`lodash/fp` → `lodash`,
@@ -159,34 +154,25 @@ export function isBareSpecifier(specifier: string): boolean {
 }
 
 /**
- * Apply the css pipeline's resolve convention: map a styled-source import to
- * that source's driver output, which is the same name with the Sass extension
- * lowered to `.css` and — for a css-module — the `.module.` marker dropped,
- * scoping having consumed it. Plain `.css` is returned unchanged and left to
- * esbuild, so this stays a naming rule, not a CSS transform.
+ * @return the name the css steps give a Sass source's output: the Sass
+ * extension becomes `.css`, and a `.module.` marker is dropped
+ * (`x.module.scss` → `x.css`). Any other specifier is returned as it is.
  *
- * A **compiled** source never reaches here as `.scss` — the compile rewrote the
- * specifier onto the css step's output already. What this is still for is code
- * the compile did not touch: hand-written JavaScript in a bundle's own `srcs`
- * (which `transpileJs: false` passes through), and vendored code.
+ * Only code the compile did not touch imports a Sass source by its own name:
+ * hand-written JavaScript in a bundle's own `srcs`, and vendored code. The
+ * compile renames a compiled source's imports itself.
  */
 export function rewriteStyledImport(specifier: string): string {
   return specifier.replace(/\.module\.(scss|sass)$/i, ".css").replace(/\.(scss|sass)$/i, ".css");
 }
 
 /**
- * Find the JS shim beside a stylesheet, if fabr's css step wrote one — which is
- * how a value import of a scoped stylesheet finds its class-name map.
+ * @return the shim (`<stylesheet>.js`) the css step wrote beside a scoped
+ * stylesheet, holding its class-name map, or undefined where there is none.
  *
- * Not a marker in the CSS and not a naming convention the bundle has to be told
- * about: the shim IS the delivery's own statement that the stylesheet's class
- * names have been decided and exported, and it travels with the CSS through
- * every delivery (a package, a test install, a bundle's staged sources).
- *
- * Nothing here has to stop esbuild re-scoping fabr's output, because fabr's
- * output is not marked as a css-module — `x.module.scss` lowers to `x.css`, so
- * the `local-css` loader never selects it. A dependency shipping raw
- * `.module.css` has no shim and is scoped by esbuild's `local-css` loader.
+ * fabr's scoped output is named `x.css`, so esbuild's `local-css` loader never
+ * scopes it again; a dependency's own `.module.css` has no shim, and that
+ * loader scopes it.
  */
 function scopedShimFor(cssPath: string): string | undefined {
   const shim = `${cssPath}.js`;
@@ -194,49 +180,34 @@ function scopedShimFor(cssPath: string): string | undefined {
 }
 
 /**
- * Make the fabr resolver plugin — membership + single-variant (see file
- * header). The bundle's native kind is the resolution kind bare specifiers are
- * normalized to.
- * `unresolved` collects the bare specifiers this plugin could not answer, for
- * the guidance {@link unresolvedHelp} adds to whichever of them esbuild goes on
- * to report.
+ * Make fabr's resolver plugin (see the file's doc). Bare specifiers resolve
+ * under the kind of the bundle's own format first (`require-call` for `cjs`,
+ * otherwise `import-statement`). Each bare specifier the plugin leaves to
+ * esbuild unresolved is added to `unresolved`, for {@link unresolvedHelp}.
  */
 function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): IPlugin {
   const external = new Set(options.external);
   const nativeKind = options.format === "cjs" ? "require-call" : "import-statement";
   const otherKind = nativeKind === "require-call" ? "import-statement" : "require-call";
-  /* One resolved answer per bare specifier, per the thing resolution is a
-   * function of, reused whatever the importer kind — the kind is what the cache
-   * exists to collapse.
-   *
-   * What that thing is differs by mode. Resolving through node's own search, the
-   * importing DIRECTORY is not interchangeable: the walk up from it decides, so
-   * two importers under nested installs legitimately reach different copies.
-   * Resolving through a manifest there is no walk — a bare specifier is answered
-   * from the importer's PACKAGE — so every directory within one pooled tree
-   * shares an answer, and keying by directory only splits it into as many
-   * entries as the package has directories. */
+  /* One answer per bare specifier, whatever the importer's kind, keyed by
+   * what resolution depends on: the importing directory under node's own
+   * search (two importers under nested installs may reach different copies),
+   * or the importing package's tree under a PnP table, which answers a bare
+   * specifier by package. */
   const byPackage = usesManifest();
   const variantCache = new Map<string, IOnResolveResult>();
-  /* Only the manifest's own view of who-sees-what is wanted here, never a
-   * resolution: the conditions are irrelevant to {@link PnpResolver.locationOf}. */
+  /* Read for which package directory each importer sees, and for
+   * variantFromTable; {@link PnpResolver.locationOf} takes no conditions. */
   const manifest = byPackage ? PnpResolver.load(process.cwd(), []) : undefined;
   const kindMatters = new Map<string, boolean>();
 
   /**
-   * @return true if the importer's kind can change which file this package
-   * answers with — i.e. if it is worth spending a resolve to pin it — otherwise
-   * false.
-   *
-   * A package publishing no `exports` cannot: without a map the choice falls to
-   * `mainFields`, which reads the same however the import was written. One whose
-   * map never mentions `import` or `require` cannot either. Anything else might,
-   * and gets pinned.
-   *
-   * Syntactic, and one-sided: a wrong `false` is invisible (the package simply
-   * arrives twice and the bundle grows), so every uncertainty (no manifest, no
-   * location, an unreadable package.json) answers `true`, which costs a resolve
-   * and nothing else.
+   * @return true if the importer's kind may change which file the package a
+   * specifier names answers with, otherwise false. It cannot where the package
+   * has no `exports` map (esbuild then reads `mainFields`, whatever the kind),
+   * or its map never mentions a kind's condition ({@link mentionsKind}). True
+   * wherever it cannot tell: no PnP table, no location for the package, or an
+   * unreadable `package.json`. Memoized per package location.
    */
   function kindCanMatter(specifier: string, importer: string): boolean {
     if (manifest === undefined) {
@@ -250,7 +221,6 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
     if (known !== undefined) {
       return known;
     }
-    /* Unreadable: assume it matters. */
     const json = readManifest(location);
     const matters = json === undefined || (json.exports !== undefined && json.exports !== null && mentionsKind(json.exports));
     kindMatters.set(location, matters);
@@ -261,14 +231,14 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
     name: "fabr-resolver",
     setup(build: IPluginBuild): void {
       build.onResolve({ filter: /.*/ }, async (args): Promise<IOnResolveResult | null> => {
-        /* build.resolve re-runs plugins; the marker lets our own re-entrant
-         * call fall through to esbuild's default resolution. */
+        /* build.resolve runs plugins again: leave this plugin's own calls,
+         * marked `fabr`, to esbuild's resolution. */
         if (args.pluginData && (args.pluginData as { fabr?: boolean }).fabr) {
           return null;
         }
 
-        /* Asset references (CSS url()) resolve on disk if vendored (esbuild's
-         * file loader then emits them) or become an external runtime URL. */
+        /* An asset reference (a CSS `url()`) that names a file is esbuild's to
+         * emit; any other is left as an external URL. */
         if (ASSET_KINDS.has(args.kind) && !isBareSpecifier(args.path)) {
           return assetOnDisk(args.path, args.resolveDir) ? null : { path: args.path, external: true };
         }
@@ -282,10 +252,8 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
           return probe.errors.length ? { path: args.path, external: true } : null;
         }
 
-        /* Relative/absolute imports are within-variant. A styled-source import
-         * (.scss/.sass) is redirected to its css pipeline output — the only CSS
-         * knowledge the driver has, a naming rule. Everything else esbuild
-         * resolves (a genuine miss there is a real error). */
+        /* A relative or absolute import is esbuild's to resolve, bar a Sass
+         * source's, which is redirected to the css steps' output. */
         if (!isBareSpecifier(args.path)) {
           const rewritten = rewriteStyledImport(args.path);
           if (rewritten === args.path) {
@@ -294,8 +262,8 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
           return redirectStyledImport(build, args, rewritten);
         }
 
-        /* In a browser bundle `node:<module>` is `<module>`, as it is to Node: the
-         * name a substitute for the built-in is bundled under answers both. */
+        /* In a browser bundle, resolve `node:<module>` as `<module>`, so a
+         * substitute for the built-in bundled under that name answers both. */
         if (options.platform === "browser" && args.path.startsWith("node:")) {
           const unprefixed = await build.resolve(args.path.slice("node:".length), {
             kind: args.kind,
@@ -303,21 +271,19 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
             resolveDir: args.resolveDir,
           });
           if (unprefixed.errors.length) {
-            /* esbuild reports the specifier as written, so that is the one noted. */
+            /* Note the specifier as written, which is how esbuild reports it. */
             unresolved.add(args.path);
             return null;
           }
           return { path: unprefixed.path, external: unprefixed.external, namespace: unprefixed.namespace };
         }
 
-        /* A declared dep is externalized by identity: its import survives. */
+        /* Externalize a declared dependency: its import is kept as written. */
         if (external.has(packageOf(args.path))) {
           return { path: args.path, external: true };
         }
 
-        /* A styled import is redirected to its lowered output whether it is
-         * written relatively or as a package subpath — CSS resolves by the same
-         * rules as JS, so where the specifier came from cannot change it. */
+        /* A Sass source named by a package subpath is redirected too. */
         const specifier = rewriteStyledImport(args.path);
         const variantKey = `${byPackage ? treeOf(args.resolveDir) : args.resolveDir}\0${specifier}`;
         const cached = variantCache.get(variantKey);
@@ -326,17 +292,16 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
         }
 
         if (specifier === args.path && !kindCanMatter(specifier, args.importer ?? args.resolveDir ?? "")) {
-          /* esbuild's own resolution answers this identically, and does it
-           * without a round trip back out to us. */
+          /* esbuild's own resolution gives the same answer. */
           return null;
         }
         const resolved =
           (manifest !== undefined && specifier === args.path
             ? variantFromTable(manifest, specifier, args.importer || `${args.resolveDir}/`, [nativeKind, otherKind], options.platform)
             : undefined) ?? (await resolveSingleVariant(build, { ...args, path: specifier }, nativeKind, otherKind));
-        /* An answer that is no file (a module a package's `browser` field maps to
-         * false comes back as its bare name) is esbuild's own to give: it alone
-         * knows to make it an empty module. */
+        /* Leave an answer that is no file to esbuild (a module a package's
+         * `browser` field maps to false comes back as its bare name): esbuild
+         * makes it an empty module. */
         if (
           resolved &&
           (!resolved.namespace || resolved.namespace === "file") &&
@@ -350,25 +315,18 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
           return resolved;
         }
 
-        /* A bare code import that is neither bundled nor a declared dep.
-         * DECLINE rather than report an error: whether an unresolvable import is
-         * fatal is esbuild's judgment, not ours. A `require` inside a try/catch
-         * is the ecosystem's optional-dependency idiom (framer-motion probing
-         * for @emotion/is-prop-valid, an optional peer nothing installs), and
-         * esbuild answers it by leaving the call to fail at runtime, where the
-         * catch is waiting — but onResolve args do not say whether the call site
-         * is one, so a plugin cannot make that call. A returned error is
-         * unconditional and would pre-empt it, failing builds esbuild completes.
-         * Noted instead, so a failure that DOES survive still carries the
-         * srcs/deps guidance esbuild has no way to give. */
+        /* A bare code import that resolves nowhere and names no declared
+         * dependency. Return no error: esbuild decides whether it is fatal (it
+         * leaves a `require` inside a try/catch to fail at runtime), and a
+         * plugin cannot tell which call sites those are. Note it, for the
+         * advice a failure esbuild does report gets. */
         unresolved.add(args.path);
         return null;
       });
 
-      /* Representation, not membership: a file membership already pulled in is
-       * loaded natively if it is a known code extension, else emitted as a file
-       * asset: anything that resolved into srcs and isn't code becomes an
-       * emitted, URL-rewritten file (fonts, images, …). */
+      /* Load a bundled file with an extension esbuild does not load itself
+       * (fonts, images, …) as a file asset: emitted, its import rewritten to the
+       * URL. */
       build.onLoad({ filter: /.*/ }, async (args): Promise<IOnLoadResult | null> => {
         /* A module with no file (one a `browser` field disables) is esbuild's to load, as empty. */
         if (CODE_EXTENSIONS.has(path.extname(args.path).toLowerCase()) || !path.isAbsolute(args.path)) {
@@ -381,13 +339,10 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
 }
 
 /**
- * Point a styled-source import at what the css step produced for it: the JS shim
- * where the stylesheet is a scoped css-module, else the stylesheet itself.
- *
- * The shim step matters because reaching a `.module.css` directly from JavaScript
- * gets the importer no class-name map — under `loader: "css"` (which is what
- * pre-scoped CSS must be read as) esbuild exports nothing. Compiled sources never
- * get here; this is the same correction for the code the compile did not touch.
+ * Resolve a Sass source's import to the css steps' output for it, `rewritten`:
+ * from JavaScript, to the shim beside a scoped stylesheet where there is one
+ * (the stylesheet itself exports no class-name map), otherwise to the
+ * stylesheet. Resolution errors are returned as the plugin's result.
  */
 async function redirectStyledImport(build: IPluginBuild, args: IOnResolveArgs, rewritten: string): Promise<IOnResolveResult | null> {
   const resolved = await build.resolve(rewritten, {
@@ -399,19 +354,17 @@ async function redirectStyledImport(build: IPluginBuild, args: IOnResolveArgs, r
   if (resolved.errors.length) {
     return { errors: resolved.errors };
   }
-  /* Only an import written in JAVASCRIPT wants the shim. A stylesheet's own
-   * `@import`/`composes`/`url()` names the stylesheet, and handing CSS a JS
-   * module in its place would be nonsense — the kinds say which side asked.
-   * A side-effect `import "./x.module.scss"` still goes to the shim, and gets
-   * the stylesheet through the shim's own import of it. */
+  /* A stylesheet's own `@import`, `composes` or `url()` gets the stylesheet.
+   * A side-effect `import "./x.module.scss"` gets the shim, which imports the
+   * stylesheet itself. */
   const shim = STYLESHEET_KINDS.has(args.kind) ? undefined : scopedShimFor(resolved.path);
   return { path: shim ?? resolved.path, external: resolved.external, namespace: resolved.namespace };
 }
 
 /**
- * Resolve a bare specifier to a single variant: try the bundle's native kind
- * first, then the other (a package that ships only one condition), so both an
- * ESM and a CJS importer land on the same file. Returns undefined if neither
+ * Resolve a bare specifier through esbuild under `nativeKind`, then under
+ * `otherKind` where that fails (a package with only one of the two entries),
+ * so every importer of it gets the same file. Undefined where neither
  * resolves.
  */
 async function resolveSingleVariant(
@@ -445,11 +398,11 @@ export function conditionsFor(kind: string, platform: IBundleOptions["platform"]
 }
 
 /**
- * Resolve a bare specifier through the staged table, under the first of
- * `kinds` that answers, to the file esbuild's own resolution of it under that
- * kind gives, for a package whose `exports` map decides the file. Undefined where the
- * table does not answer, or answers a file that is not there, for esbuild to
- * resolve (and report) itself.
+ * Resolve a bare specifier through the staged PnP table, under the first of
+ * `kinds` that answers, to the file esbuild's own resolution under that kind
+ * would give where the package's `exports` map decides it. Undefined where the
+ * table answers no file that exists, or the `exports` map is invalid, for
+ * esbuild to resolve (and report) itself.
  */
 function variantFromTable(
   resolver: PnpResolver,
@@ -463,7 +416,6 @@ function variantFromTable(
     try {
       file = resolver.resolveAll(specifier, issuer, conditionsFor(kind, platform))[0];
     } catch {
-      /* An invalid `exports` map: esbuild's own reading decides. */
       return undefined;
     }
     if (file !== undefined && fs.existsSync(resolveVirtual(file))) {
@@ -481,8 +433,7 @@ function assetOnDisk(specifier: string, resolveDir: string): boolean {
 }
 
 /** @return true if an `exports` map names `import`, `require` or `module-sync`
- * anywhere within it, otherwise false. A map that never mentions them answers
- * the same whichever way it is asked. */
+ * anywhere within it, otherwise false. */
 export function mentionsKind(exports: unknown): boolean {
   if (Array.isArray(exports)) {
     return exports.some(mentionsKind);
@@ -495,34 +446,30 @@ export function mentionsKind(exports: unknown): boolean {
   );
 }
 
-/** Get the pooled tree a staged path belongs to — `.fabr-tree/<hash>`, or its
- * virtual location `.fabr-tree/__virtual__/<variant>/<n>/<hash>`, which under a
- * manifest IS the importing package — or the path itself if it lies outside the
- * pool (the workspace's own sources, staged at the bundle root). */
+/** Get the tree in the tree pool a staged path lies in (`.fabr-tree/<hash>`, or
+ * a virtual location `.fabr-tree/__virtual__/<variant>/<n>/<hash>`), which
+ * under a PnP table is the importing package; or the path itself where it lies
+ * outside the pool (the workspace's own sources, staged at the bundle root). */
 export function treeOf(dir: string | undefined): string {
   const match = /^(.*\.fabr-tree\/(?:__virtual__\/[^/]+\/[^/]+\/)?[^/]+)/.exec(dir ?? "");
   return match ? match[1] : (dir ?? "");
 }
 
-/**
- * @return true if this bundle resolves through a PnP manifest, which esbuild
- * reads natively (the resolver plugin also consults it to pin variants),
- * otherwise false.
- */
+/** @return true if the step staged a PnP table, which esbuild reads itself,
+ * otherwise false. */
 function usesManifest(): boolean {
   return fs.existsSync(path.resolve(process.cwd(), PNP_DATA_FILE));
 }
 
+/** Make esbuild's build options for `options`, the resolver plugin adding to
+ * `unresolved`. */
 function toEsbuildOptions(options: IBundleOptions, unresolved: Set<string>): Record<string, unknown> {
   return {
     entryPoints: options.entries,
     entryNames: options.entryNames,
     outdir: options.outdir,
-    /* Stated rather than inherited: esbuild's service captures a working
-     * directory when it STARTS, which for a driver invoked as its own process
-     * is the same thing — but it is the step's cwd that the options manifest,
-     * the entry paths and the outdir are all relative to, so the build says so
-     * itself instead of depending on when the service happened to come up. */
+    /* The options' paths are relative to the step's working directory. State
+     * it: esbuild's service otherwise uses the directory it started in. */
     absWorkingDir: process.cwd(),
     bundle: true,
     write: true,
@@ -537,37 +484,26 @@ function toEsbuildOptions(options: IBundleOptions, unresolved: Set<string>): Rec
     sourcemap: options.sourcemap,
     logLevel: "silent",
     plugins: [fabrResolverPlugin(options, unresolved)],
-    /* css-modules: `.module.css` scopes its identifiers and exports the map to
-     * the importing JS; every other stylesheet keeps global names. */
+    /* A `.module.css` is scoped, its class-name map exported to the importing
+     * JavaScript; every other stylesheet keeps its names. */
     loader: { ".module.css": "local-css", ".css": "global-css" },
-    /* esbuild adds these to `default`, the platform's and the kind's. `module`
-     * is the bundler's ESM entry, which esbuild uses only while no conditions
-     * are set, so it is listed. `module-sync` marks an ESM entry that may be
-     * loaded synchronously — what node 22 and later require() — and fabr's
-     * compiler resolves it, so the bundler must too; esbuild consumes ESM
-     * whatever format it is emitting. */
+    /* Added to `default`, the platform's and the kind's: `module`, which
+     * esbuild applies by default only while no conditions are set, and
+     * `module-sync`, which fabr's compiler resolves too. */
     conditions: EXTRA_CONDITIONS,
     ...(options.define ? { define: options.define } : {}),
     ...(options.inject ? { inject: options.inject } : {}),
-    /* Load-bearing under a manifest, and only there: esbuild finds the manifest
-     * by walking UP from the importing file, and fabr's packages live in the
-     * shared build cache — outside this workspace — reached through one symlink.
-     * Resolving that link away (the default) would leave a package's own
-     * imports walking up through the cache, where there is no manifest to find,
-     * and every transitive dependency would fail to resolve. Keeping the link
-     * spelling means the walk reaches this workspace's table instead. The table
-     * gives each package ONE location, so preserving symlinks cannot fork one
-     * package into two. */
+    /* Under a PnP table, keep the tree pool's link in each package's path:
+     * esbuild finds the table by walking up from the importing file, and from
+     * the pool's real location, outside the workspace, it would find none. */
     ...(usesManifest() ? { preserveSymlinks: true } : {}),
   };
 }
 
 /**
- * Add fabr's srcs/deps guidance to an esbuild failure, for each specifier the
- * resolver plugin declined AND esbuild went on to name — the ones it tolerated
- * (a probe inside a try/catch) are deliberately absent from its report, so they
- * get no advice either. esbuild reports the specifier quoted, which is what a
- * named one is matched by; the message is returned unchanged when none are.
+ * @return an esbuild failure's message with fabr's srcs/deps advice added for
+ * each of `unresolved` the message names (quoted, as esbuild reports a
+ * specifier); the message unchanged where it names none.
  */
 export function unresolvedHelp(message: string, unresolved: Iterable<string>): string {
   const named = [...unresolved].filter(specifier => message.includes(`"${specifier}"`));
@@ -583,6 +519,7 @@ export function unresolvedHelp(message: string, unresolved: Iterable<string>): s
   ].join("\n");
 }
 
+/** @return the path `--options=` names. Throws where there is none. */
 function parseOptionsPath(argv: string[]): string {
   const flag = argv.find(arg => arg.startsWith("--options="));
   if (!flag) {
@@ -591,15 +528,15 @@ function parseOptionsPath(argv: string[]): string {
   return flag.substring("--options=".length);
 }
 
+/** Build the bundle the options document describes (see the file's doc). A
+ * build that fails writes its messages to stderr and sets the exit code to 1;
+ * rejects only where esbuild fails without messages. */
 export async function main(argv: string[]): Promise<void> {
-  // esbuild is fetched at build time and mounted in this step's node_modules,
-  // so it is required (not imported) — its types are not available to compile.
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const esbuild = require("esbuild") as IEsbuild;
 
   const options = JSON.parse(fs.readFileSync(parseOptionsPath(argv), "utf8")) as IBundleOptions;
-  /* What the resolver plugin declined; esbuild decides which of them are fatal
-   * (see the plugin's fallback), and only those get fabr's guidance. */
+  /* The bare specifiers the resolver plugin left unresolved. */
   const unresolved = new Set<string>();
   let errors: IMessage[];
   let metafile: IMetafile | undefined;
@@ -645,14 +582,10 @@ export async function main(argv: string[]): Promise<void> {
 }
 
 /**
- * Name the sources of every map the bundle wrote under `outdir` by the
- * references that resolve to them, `referenceOf` naming a path relative to
- * `root` (by the step's table): what esbuild carried through from an input's
- * own map (already a reference) stays as it is. A package's file is looked up
- * where it is stored, not at the virtual path it was reached by, and a source
- * inside a package that the package does not ship (its own map names a `src/`
- * it left out) by that package's reference. Any other source is one of the
- * bundle's own.
+ * Name the sources of every map the bundle wrote under `outdir` by their
+ * references (see withReferencedSources), `referenceOf` naming a path relative
+ * to `root` by the step's table. An entry esbuild carried through from an
+ * input's own map, already a reference, is kept.
  */
 function nameMapSources(root: string, outdir: string, referenceOf: (staged: string) => string | undefined): void {
   for (const file of mapFilesUnder(path.resolve(root, outdir))) {
@@ -661,11 +594,10 @@ function nameMapSources(root: string, outdir: string, referenceOf: (staged: stri
 }
 
 /**
- * Make the namer of the bundle's inputs, as esbuild spells them (relative to
- * `root`), each named as a map entry is (see {@link nameMapSources}): by the
- * reference its own map names first — the file a compile made it from, which
- * fabr's drivers list first — which esbuild carries into the bundle's map, else
- * by `referenceOf`. Each input is named once.
+ * Make the function naming each of the bundle's inputs, as esbuild spells them
+ * (relative to `root`), as the bundle's maps name it: by the reference its own
+ * map lists first (the file a compile made it from), else by `referenceOf`,
+ * else as esbuild spells it. Memoized per input.
  */
 function metafileInputNamer(
   root: string,
@@ -677,7 +609,8 @@ function metafileInputNamer(
   };
   const names = new Map<string, string>();
   /* esbuild writes an input outside its file namespace as `(<namespace>):<path>`
-   * (`(disabled):` for a module a `browser` field maps to false): the path is named, the prefix kept. */
+   * (`(disabled):` for a module a `browser` field maps to false): name the path
+   * and keep the prefix. */
   return staged => {
     let name = names.get(staged);
     if (name === undefined) {
@@ -696,14 +629,12 @@ function writeMetafile(outdir: string, metafile: IMetafile, inputName: (staged: 
 }
 
 /**
- * Name each module in the bundle's outputs as the metafile and the maps name it,
- * where esbuild would otherwise write the step's staging location: the comment
- * line heading a module (`// <path>` in JavaScript, `/* <path> *\/` in a
- * stylesheet), and the key a wrapped module is held under (`"<path>"(exports,
- * module) {`). Only a path that is one of the output's own inputs is renamed. A
- * comment line carries no mappings, so it takes the name as it is; a key is
- * padded with spaces before its `(` to the length it had, so no mapped column
- * moves and the output's map still holds, and keeps its path where the name is
+ * Rename each module in the bundle's outputs from its staged path to
+ * `inputName`'s name for it, in the comment line heading the module (`// <path>`
+ * in JavaScript, `/* <path> *\/` in a stylesheet) and the key a wrapped module
+ * is held under (`"<path>"(exports, module) {`). Only a path that is one of the
+ * output's own inputs is renamed. A key is padded with spaces to the length it
+ * had, so no mapped column moves, and is left as it is where the name is
  * longer.
  */
 function nameModules(metafile: IMetafile, inputName: (staged: string) => string): void {
@@ -737,11 +668,11 @@ function nameModules(metafile: IMetafile, inputName: (staged: string) => string)
   }
 }
 
-/** The outputs esbuild names modules in by their paths. */
+/** Matches the outputs esbuild names modules in by their paths. */
 const MODULE_PATH_OUTPUT = /\.(?:[cm]?js|css)$/;
-/** A line holding only a module's path comment: `// <path>` or `/* <path> *\/`. */
+/** Matches a line holding only a module's path comment: `// <path>` or `/* <path> *\/`. */
 const MODULE_COMMENT = /^([ \t]*)(?:\/\/ (.+)|\/\* (.+) \*\/)$/gm;
-/** A string a wrapped module's function is keyed by: `"<path>"` directly before its `(`. */
+/** Matches the string a wrapped module's function is keyed by: `"<path>"` directly before its `(`. */
 const MODULE_KEY = /"([^"\\\n]+)"(?=\()/g;
 
 /** List every `.map` file under `dir`. */
@@ -753,14 +684,12 @@ function mapFilesUnder(dir: string): string[] {
 }
 
 /**
- * Make every location in esbuild's messages readable: move it through the
- * file's own source map, where it carries one, to the line that was written
- * (esbuild's diagnostics name the file it parsed, though its output map
- * follows input maps), and name it by the package it lies in —
- * `ms@2.1.3/index.js` — rather than by its place in the tree pool. A location outside any stored
- * package (the bundle's own sources) keeps its workspace path. A note located
- * in the PnP data file is dropped: the table is fabr's own staging, and
- * {@link unresolvedHelp} says what it would, in the terms of the build file.
+ * @return esbuild's messages with each location in a file mapped through that
+ * file's own source map, where it has one, to the line that was written, and
+ * named by the package it lies in (`ms@2.1.3/index.js`); a location outside
+ * any package (the bundle's own sources) by its path relative to `cwd`. A note
+ * located in the PnP data file is dropped ({@link unresolvedHelp} gives the
+ * advice it would).
  */
 export function readableMessages(messages: IMessage[], cwd: string, resolver: PnpResolver | undefined): IMessage[] {
   const names = new PackageNames(resolver);
@@ -837,13 +766,15 @@ function originalLocation(file: string, location: ILocation): ILocation | undefi
   };
 }
 
-/** Display names for files, by the stored package each lies in: its name and
+/** Display names for files, by the package each lies in: its name and
  * version, then the path within it. */
 class PackageNames {
   private readonly versions = new Map<string, string>();
 
   constructor(private readonly resolver: PnpResolver | undefined) {}
 
+  /** Get `file`'s display name: `<name>@<version>/<path within>`, or its path
+   * relative to `cwd` where it lies in no package, or a linked one. */
   public display(file: string, cwd: string): string {
     const locator = this.resolver?.findPackageLocator(file);
     const info = locator && locator.name !== null ? this.resolver!.getPackageInformation(locator) : null;
@@ -851,9 +782,8 @@ class PackageNames {
       return path.relative(cwd, file);
     }
     const root = info.packageLocation;
-    /* A map may name its source above the package — fabr's compile names each
-     * one beside its output directory — so the climb is dropped, leaving the
-     * path the package's author wrote it under. */
+    /* A map may name its source above the package (fabr's compile names one
+     * beside its output directory): drop the `..` parts. */
     const within = path
       .relative(root, file)
       .split(path.sep)

@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-/** How a driver is told its options document: `--manifest=<path>`. */
+/** The argument prefix naming a driver's options document: `--manifest=<path>`. */
 export const MANIFEST_FLAG = "--manifest=";
 
 /** Read the `--manifest=<path>` argument naming the options document. */

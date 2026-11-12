@@ -18,21 +18,18 @@
  */
 
 /**
- * The css_postcss rule: run the postcss chain over a plain-CSS tree, a
- * self-contained target `{ srcs = FILES; deps = PACKAGES; package_name = STRING }`.
- * `srcs` are stylesheets (authored `.css`, or a sass_compile step's lowered
- * output with its maps beside it); `package_name` is the identity css-module
- * scoped names are derived from. css-modules is the chain's first plugin: a
- * `.module.css` input is scoped and published under its final name with the JS
- * shim carrying its class-name map; then every stylesheet is prefixed for the
- * browsers `BROWSER_TARGET` requires, resolved with the target's other
- * requirements.
+ * The css_postcss rule: run PostCSS over the stylesheets in `srcs` (`.css`
+ * files, or a `sass_compile`'s output with its source maps beside it). Each
+ * `x.module.css` is scoped by css-modules and produces `x.css`, its class
+ * names derived from `package_name` and the file's path, and a TypeScript
+ * module `x.css.ts` exporting them; other stylesheets keep their names. Every
+ * stylesheet is prefixed for the browsers the `BROWSER_TARGET` global names,
+ * resolved with the target's other requirements.
  *
- * `deps` are readable, never published: a cross-file `composes` resolves within
- * this step's own inputs, or — for a package-shaped specifier — under the
- * dependency's location in the PnP table the step stages beside the sources.
- * The tool is resolved apart as the POSTCSS_DRIVER runnable and mounted under a
- * tool dir.
+ * `deps` are read, never included in the output: a `composes` naming another
+ * file in `srcs` resolves among them, and one naming a package's stylesheet
+ * resolves through a PnP table the step writes beside the sources. The tool is
+ * the `POSTCSS_DRIVER` program, staged under its own directory.
  */
 
 import {
@@ -88,11 +85,9 @@ function buildCssPostcss(
       if (fileNames.length === 0) {
         return EMPTY_FILESET;
       }
-      /* The package identity scoped class names are derived from. A target with
-       * none (a bundle's own sources) scopes by path alone, which is still
-       * unique within the one delivery it can appear in. */
-      /* Only a PACKAGE is composable: its stylesheets have a name a specifier
-       * can spell. A loose content dep has no such name. */
+      /* A target with no `package_name` (a bundle's own sources) scopes class
+       * names by path alone. Only a package's stylesheets can be named by a
+       * `composes`: a loose file in `deps` has no package name to spell. */
       const packages = deps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
       const query = browserQueryOf(browsers.filter((browser): browser is PackageFileSet => browser instanceof PackageFileSet));
       const options = buildPostcssOptions(fileNames, packageNameProp?.toString() ?? "", query, emitsSourceMap(buildType), packages);
@@ -101,10 +96,10 @@ function buildCssPostcss(
         [CSS_TOOL_DIR]: compiler,
         "postcss-manifest.json": MemoryFile.from(JSON.stringify(options)),
       };
-      /* Its maps name each source by the reference resolving to it, from the
-       * table the step stages: the stylesheets and the packages they reach.
-       * Nothing is mounted: a dependency's stylesheet is located through the
-       * table the step generates beside the sources. */
+      /* Its maps name each source by its source path, from the table the step
+       * stages for the stylesheets and the packages they reach. The packages
+       * are not installed: a dependency's stylesheet is located through the PnP
+       * table the step writes beside the sources. */
       const argv = compiler.toCommandLine(
         [`${MANIFEST_FLAG}postcss-manifest.json`, SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE, DEPS_REPORT_FLAG, DEPS_REPORT_FILE],
         { base: CSS_TOOL_DIR }

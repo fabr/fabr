@@ -51,7 +51,8 @@ export interface SourceScan {
 }
 
 /** @return the package a bare `specifier` imports, or undefined where it imports
- * a file, a builtin or a scheme (`node:`, `virtual:`). */
+ * a file, a path alias (`#x`, `~/x`, `@/x`), a builtin or a scheme (`node:`,
+ * `virtual:`). */
 export function importedPackage(specifier: string): string | undefined {
   if (/^[./#~]/.test(specifier) || specifier.includes(":") || specifier.startsWith("@/")) {
     return undefined;

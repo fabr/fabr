@@ -18,50 +18,41 @@
  */
 
 /**
- * **The file formats.** How fabr writes build data down and reads it back: the
- * row a file is named by, the documents framed over rows, and the record of
- * what a run read — both directions for each, so a format never has its writer
- * and its reader in different files.
+ * The text formats fabr writes build data in and reads it back from: the row
+ * one file is written as, the documents made of rows (the recorded base, the
+ * source index), and the record of what a run read. Each format's writer and
+ * reader are kept together here.
  *
- * The BOTTOM of the layering: text and rows, nothing that needs a FileSet. That
- * is what lets FileSet write its own manifest through the one row writer.
- * Whatever has to READ a FileSet to produce this text is built on it from
- * above, next to the thing it serialises — an action's key material in
- * BuildAction, the narrowing of discoverable inputs in BuildCache.
+ * This module deals in text and rows only and imports no FileSet, so FileSet
+ * can write its own manifest with {@link manifestLine}. Code that reads a
+ * FileSet to produce this text lives beside what it renders (an action's key
+ * in BuildAction, the narrowing of discoverable inputs in BuildCache).
  */
 
 /**
- * A file that a run looked for in its discoverable inputs (successfully or not)
- *
- * This is either a simple filename or a package resolution path (where each
- * element of the array is a package on the resolution path) ending in a filename.
+ * A file a run looked for in its discoverable inputs, found or not: the names
+ * of the packages along the dependency path the lookup took (none for a loose
+ * member), then the file's name.
  */
 export type DepsPath = ReadonlyArray<string>;
 
 /**
- * All paths that the runner tried to resolve from each of its discoverable inputs.
- *
- * Note: the empty list is interpreted as 'did not try to resolve anything', while the
- * missing key case means that discovery data was not recorded (and the system will
- * assume that all inputs may have been used).
- *
- * A Map, not a Record: the keys come back from a record file
- * ({@link parseDiscoveredDeps}), and a dictionary populated by a parser must
- * not be a plain object.
+ * The paths a run looked for in each of its discoverable inputs, by input
+ * name. An empty list means the run looked for nothing in that input; a
+ * missing input means nothing was recorded for it, and it is treated as wholly
+ * read.
  */
 export type DiscoveredDeps = Map<string, ReadonlyArray<DepsPath>>;
 
 /**
- * The FLAT spelling of a {@link DepsPath}: its parts, each
- * {@link encodeName}-encoded, joined with single spaces. Every conversion
- * between the two spellings goes through this pair — a raw `join`/`split`
- * would make a space inside a part (legal in a file's name) indistinguishable
- * from the separator, and a read recorded through one narrows to a path that
- * resolves to nothing: a permanent absence, silently dropping the file from
- * the key.
+ * Make the flat spelling of a {@link DepsPath}: its parts, each
+ * {@link encodeName}-encoded, joined with single spaces. Convert between the
+ * two spellings only with this and {@link splitDepsPath}: a raw `join` or
+ * `split` mistakes a space inside a name for the separator, and the path then
+ * finds nothing.
  *
- * Mirrored in @fabr-build/js-tools's pnp/ReadSet.ts for the driver side, which must
- * not depend on core at runtime — keep the two in sync.
+ * Mirrored in @fabr-build/js-tools's pnp/ReadSet.ts, which must not depend on
+ * core at runtime: keep the two in step.
  */
 export function joinDepsPath(path: DepsPath): string {
   return path.map(part => encodeName(part)).join(" ");
@@ -73,47 +64,41 @@ export function splitDepsPath(name: string): string[] {
 }
 
 /* ── Names and rows ───────────────────────────────────────────
- * How one file is written down: `hash octalmode name[ extra]`. Every document
- * over these — the cache's entry manifest, a build-state record, an action's
- * key material — frames rows without respelling them, and what a document adds
- * around one (a header, a symlink's own line, the mime a persisted entry
- * carries) is that document's own.
+ * One file is written as the row `hash octalmode name[ extra]`. A document made
+ * of rows (the cache's entry manifest, a build-state record, an action's key)
+ * uses them as they are, and adds its own lines around them (a header, a
+ * symlink's line).
  */
 
 /**
- * Encode a file name as a manifest row carries it. `encodeURI` escapes the space (the
- * field separator) and the newline while leaving a path's `/` and a
- * specifier's `:@&` legible.
+ * Encode a file name as a row carries it, with `encodeURI`: the space (the
+ * field separator), the newline and `%` are escaped, and a path's `/` and a
+ * specifier's `:@&` are kept.
  */
 export function encodeName(name: string): string {
   return URI_UNESCAPED.test(name) ? name : encodeURI(name);
 }
 
 /** The characters `encodeURI` leaves as they are: a name made only of them
- * encodes to itself, and almost every name is one. */
+ * encodes to itself. */
 const URI_UNESCAPED = /^[A-Za-z0-9\-_.!~*'();/?:@&=+$,#]*$/;
 
-/** Decode a name field. `encodeURI` only ever introduces `%` escapes, so a
- * field without one decodes to itself — and almost none have one, which makes
- * the check worth making before the call. */
+/** Decode a name field. A field without `%` decodes to itself. */
 export function decodeName(field: string): string {
   return field.indexOf("%") < 0 ? field : decodeURI(field);
 }
 
 /**
- * One file as a row. `extra` is the trailing field a document may carry after
- * the name — the persisted entry's mime; a row that is only ever hashed omits
- * it, a file's mime being a function of its content and never key material.
- *
- * Mode participates (octal): a consumer's cache key must turn over when an
- * input's permission bits change, not just its content.
+ * Write one file as a row. `extra` is a trailing field after the name (a
+ * stored entry's mime); leave it out of a row that is key material. The mode
+ * is written in octal, so a change to a file's permission bits changes the
+ * row.
  */
 export function manifestLine(name: string, hash: string, mode: number, extra?: string): string {
   return `${hash} ${mode.toString(8)} ${encodeName(name)}${extra === undefined ? "" : " " + extra}`;
 }
 
-/** One row read back. Rows alone, never files: what backs a name is the
- * reader's business. */
+/** A row read back by {@link parseManifestLine}. */
 export interface IManifestRow {
   readonly name: string;
   readonly hash: string;
@@ -125,9 +110,9 @@ export interface IManifestRow {
 const ZERO = "0".charCodeAt(0);
 
 /**
- * Read a row back. Undefined for a line that is not one — the mode is
- * validated, not merely parsed, so a document's own line kinds (a header, a
- * symlink, an absence) cannot be mistaken for a row.
+ * Read a row back, or return undefined for a line that is not one: one with
+ * fewer than three fields, or whose second field is not an octal number, as a
+ * document's own lines (a header, a symlink, an absence) are not.
  */
 export function parseManifestLine(line: string): IManifestRow | undefined {
   const afterHash = line.indexOf(" ");
@@ -157,27 +142,21 @@ export function parseManifestLine(line: string): IManifestRow | undefined {
 }
 
 /* ── The recorded base ────────────────────────────────────────
- * What a build was made from, as ONE list of every file it used. Which bag a
- * file came from is fabr's bookkeeping and no fact about the file, so nothing
- * here says. Written from key material (BuildAction), read back here.
+ * What a build was made from: one list of every file it used, with no word of
+ * which input each came from, and the paths that found nothing. Written from
+ * the key text BuildAction renders, read back here.
  */
 
-/** How a path that found nothing is written. Self-marking, one per line: these
- * are read back as well as hashed, and a bare name under a header would be
- * indistinguishable from framing. */
+/** The start of the line recording a path that found nothing, one per line. */
 export const ABSENT_PREFIX = "# absent ";
 
 /** The seal a stored base ends with: `# end <n>`, `n` the rows and absences
- * above it. The dialect is lenient about what a LINE is (framing is skipped),
- * so leniency alone cannot tell a whole document from a truncated one — and a
- * base short a line can lose a DELETION, a wrong build rather than a slow one.
- * The count is what refuses that, exactly as the entry manifest's own count
- * does. */
+ * above it. Framing lines are skipped on reading, so only the count tells a
+ * whole base from a truncated one, which could be missing a deletion. */
 const BASE_SEAL_PREFIX = "# end ";
 
-/** Seal a recorded base as the record stores it: the text verbatim, then the seal. Applied
- * where the record is written, not where the key material is built — the seal
- * frames the FILE against damage and is no fact about the build. */
+/** Seal a recorded base for storing: the text as it is, then the seal. Seal
+ * where the record is written, not into the key text. */
 export function sealRecordedBase(text: string): string {
   const { rows, absent } = scanBase(text);
   return `${text}\n${BASE_SEAL_PREFIX}${rows.length + absent.length}\n`;
@@ -185,11 +164,9 @@ export function sealRecordedBase(text: string): string {
 
 /**
  * Read a recorded base back: every row it holds, and every path that found
- * nothing. Framing is skipped; what refuses damage is the seal — undefined for
- * a document whose last line is not one, or whose count does not match what
- * was read, which covers a truncated copy, a torn one, and a document written
- * by an older fabr. Undefined means no base — a cold build, never a shorter
- * set.
+ * nothing, skipping framing lines. Returns undefined, meaning no base, where
+ * the last non-empty line is not a seal or its count does not match what was
+ * read (a truncated or torn copy, or one an older fabr wrote).
  */
 export function parseRecordedBase(text: string): { rows: IManifestRow[]; absent: string[] } | undefined {
   const lines = text.split("\n");
@@ -205,8 +182,8 @@ export function parseRecordedBase(text: string): { rows: IManifestRow[]; absent:
   return rows.length + absent.length === claimed ? { rows, absent } : undefined;
 }
 
-/** Scan the meaningful lines of a base's text — one scanner behind the seal's count
- * and the read-back, so the two can never disagree about what counts. */
+/** Scan a base's text for its rows and absences, skipping every other line.
+ * Both the seal's count and the read-back use it, so they count alike. */
 function scanBase(text: string): { rows: IManifestRow[]; absent: string[] } {
   const rows: IManifestRow[] = [];
   const absent: string[] = [];
@@ -224,21 +201,17 @@ function scanBase(text: string): { rows: IManifestRow[]; absent: string[] } {
 }
 
 /* ── The source index ─────────────────────────────────────────
- * A project's stat cache: one row per used source file pairing the file's
- * content hash (and mime) with the stat it was captured under, so a run whose
- * stat matches can trust the hash and skip reading the file. Trust is earned
- * by AGREEMENT, not judged at capture: a row is `verified` once a second
- * capture reproduced it (see SourceFileSource.recordIndexRow), and only a
- * verified row is served on a stat match — an unverified one re-hashes.
+ * A project's stat cache: one row per source file used, holding the file's
+ * content hash and mime with the size and mtime it was hashed at, so a run
+ * whose stat matches can skip reading the file. Only a `verified` row (one a
+ * second hashing reproduced; see SourceFileSource.recordIndexRow) is used on
+ * a stat match; an unverified one is hashed again.
  */
 
-/** One source file's row: the pairing of content identity with the stat it was
- * captured under. `mtimeMs` keeps `fs.Stats.mtimeMs`'s full float precision —
- * equality at read-back is exact, against the same field. `verified` is the
- * trust mark: only a row two captures have agreed on may be served on a stat
- * match, so a write landing in the same filesystem-timestamp tick as the
- * hashed one — invisible to the stat — is caught by the next capture, with no
- * clock in the argument. An unverified row's stat match still re-hashes. */
+/** One source file's row in the source index. `mtimeMs` keeps
+ * `fs.Stats.mtimeMs`'s full precision and is compared exactly. `verified` is
+ * true where two hashings at this stat agreed; only such a row is used on a
+ * stat match. */
 export interface ISourceIndexRow {
   readonly name: string;
   readonly hash: string;
@@ -248,25 +221,22 @@ export interface ISourceIndexRow {
   readonly verified: boolean;
 }
 
-/** The document's header facts. `root` is the real path of the source tree the
- * rows describe (also the record's human/GC-facing identity — the directory it
- * lives under is only an address); `algorithm` names the hash the rows carry;
- * `writtenAt` is informational and deliberately no part of the trust
- * protocol. */
+/** The source index's header. `root` is the real path of the source tree the
+ * rows describe; `algorithm` names the hash the rows carry; `writtenAt` is when
+ * it was written, for information only. */
 export interface ISourceIndexMeta {
   readonly root: string;
   readonly algorithm: string;
   readonly writtenAt: number;
 }
 
-/** The source-index magic. Bump on any grammar or meaning change: an older
- * record then reads as absent, costing one re-hash per file. */
+/** The source-index magic. Bump it on any change of grammar or meaning: an
+ * older record then reads as absent. */
 const SOURCE_INDEX_MAGIC = "!source-index 2 ";
 
-/** Serialize a source index: the magic + header, then one
- * `hash size mtimeMs <trust> name mime` row per file in canonical (code-unit)
- * name order — `=` a verified row, `?` an unverified one — count sealed in
- * the header like every manifest. */
+/** Serialize a source index: the magic and the header (with the row count),
+ * then one `hash size mtimeMs <trust> name mime` row per file in code-unit
+ * name order, `<trust>` `=` for a verified row and `?` for an unverified one. */
 export function serializeSourceIndex(meta: ISourceIndexMeta, rows: ReadonlyMap<string, ISourceIndexRow>): string {
   const lines = [...rows.values()]
     .sort((a, b) => (a.name < b.name ? -1 : 1))
@@ -276,10 +246,9 @@ export function serializeSourceIndex(meta: ISourceIndexMeta, rows: ReadonlyMap<s
 }
 
 /**
- * Read a source index back, or undefined for anything that is not exactly one
- * — wrong magic, torn (the header's count catches a truncation that parses
- * clean), or any malformed row. The record is advisory: damage means re-hashing,
- * never an error, so leniency is one undefined, not a partial read.
+ * Read a source index back, or return undefined for anything that is not
+ * exactly one: a wrong magic or header, any malformed row, or a row count
+ * that differs from the header's (a truncated copy). Never a partial read.
  */
 export function parseSourceIndex(text: string): { meta: ISourceIndexMeta; rows: Map<string, ISourceIndexRow> } | undefined {
   if (!text.startsWith(SOURCE_INDEX_MAGIC)) {
@@ -310,11 +279,9 @@ export function parseSourceIndex(text: string): { meta: ISourceIndexMeta; rows: 
   return rows.size === header.rows ? { meta: { root, algorithm, writtenAt }, rows } : undefined;
 }
 
-/** Read one row back, or undefined for a line that is not one — every field must be
- * non-empty (`Number("")` is 0, so an empty numeric field would otherwise read
- * as a value), and the trust mark must be exactly `=` or `?`. The mime is the
- * rest-of-line after the name, so a mime with a space cannot corrupt the
- * read. */
+/** Read one source-index row back, or return undefined for a line that is
+ * not one. Every field must be non-empty (`Number("")` is 0), and the trust
+ * mark exactly `=` or `?`. The mime is the rest of the line after the name. */
 function parseSourceIndexRow(line: string): ISourceIndexRow | undefined {
   const afterHash = line.indexOf(" ");
   const afterSize = line.indexOf(" ", afterHash + 1);
@@ -348,20 +315,17 @@ function parseSourceIndexRow(line: string): ISourceIndexRow | undefined {
 }
 
 /* ── The discovered-deps record ───────────────────────────────
- * A {@link DiscoveredDeps} written out as a section per discoverable input,
- * headed by the input's name, then one INDENTED line per path holding its names
- * space-separated. `encodeName` escapes any space in a name, so the indent tells
- * a path from a section head and the split into names is exact.
+ * A {@link DiscoveredDeps} written as a section per discoverable input: a line
+ * with the input's name, then one line per path, indented by a space, in its
+ * flat spelling ({@link joinDepsPath}).
  */
 
-/** The discovered-deps document's magic. Bump it whenever a record's grammar OR
- * its meaning changes: an older record then fails the check and is simply
- * unread, costing one cold build per anchor. */
+/** The discovered-deps record's magic. Bump it on any change of grammar or
+ * meaning: an older record then reads as absent. */
 const DISCOVERED_DEPS_MAGIC = "!discovered-deps 4";
 
-/** Serialize a selection as the discovered-deps record's bytes: sections and paths both
- * in canonical order, so one selection has one spelling (and so one
- * content-addressed record file). */
+/** Serialize a selection as a discovered-deps record, sections and paths each
+ * sorted, so one selection always has one text. */
 export function serializeDiscoveredDeps(selection: DiscoveredDeps): string {
   const sections = [...selection.keys()].sort().flatMap(input => [
     encodeName(input),
@@ -373,9 +337,8 @@ export function serializeDiscoveredDeps(selection: DiscoveredDeps): string {
   return [DISCOVERED_DEPS_MAGIC, ...sections, ""].join("\n");
 }
 
-/** Read a discovered-deps record back, or undefined for anything that is not
- * exactly one — the record is advisory, so damage means fewer probes, never an
- * error. */
+/** Read a discovered-deps record back, or return undefined for anything that
+ * is not exactly one. */
 export function parseDiscoveredDeps(text: string): DiscoveredDeps | undefined {
   const lines = text.split("\n");
   if (lines[0] !== DISCOVERED_DEPS_MAGIC) {

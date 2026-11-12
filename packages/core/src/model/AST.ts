@@ -40,8 +40,8 @@ export enum DeclKind {
 interface IBaseDecl {
   source: IBuildFile;
   offset: number;
-  /** End offset (exclusive) of the declaration's name/value where recorded,
-   * so diagnostics can underline the extent rather than a single caret */
+  /** The end offset (exclusive) of the declaration's name or value, where
+   * recorded: the extent a diagnostic underlines. */
   endOffset?: number;
 }
 
@@ -57,9 +57,8 @@ export interface ITargetDecl extends IBaseDecl {
    * a rule's block, splices of the rule's parameter (`pkg;`). For each property,
    * the last item that supplies it is what the target has. */
   properties: IMapItemDecl[];
-  /** The doc-comment prose written above this target, marker-stripped, or
-   * undefined if none. Runtime-only documentation metadata (read for docs of
-   * config targets like the `flag` instances `ts/no_strict`). */
+  /** The doc comment written above this target, its markers stripped, or
+   * undefined if none. */
   docComment?: string;
 }
 
@@ -81,15 +80,13 @@ export interface IPropertySchema {
   type: PropertyType;
   /**
    * The value written after `default` in the targetdef, held as a property decl
-   * of the same name so it resolves through the ordinary property machinery —
-   * with the full value grammar (references, globs, `${...}`, MAP blocks) and
-   * relative paths rooted at the file declaring the targetdef, not the file
-   * using it. Supplies the property wherever the target — or a sub-target of
-   * this type — writes none of its own; mutually exclusive with `required`.
+   * of the same name and resolved as one, its relative paths rooted at the file
+   * declaring the targetdef. It supplies the property wherever a target, or a
+   * sub-target, of this type writes none of its own. Never set with `required`.
    */
   default?: IPropertyDecl;
-  /** The doc-comment prose written above this property in the targetdef, marker-
-   * stripped, or undefined if none. Runtime-only documentation metadata. */
+  /** The doc comment written above this property in the targetdef, its markers
+   * stripped, or undefined if none. */
   docComment?: string;
 }
 
@@ -100,16 +97,15 @@ export interface ITargetDefDecl extends IBaseDecl {
    * with where its name is written; undefined if it extends none. A targetdef
    * has every property of the one it extends, and its rules after its own. */
   extends?: { name: string; offset: number };
-  /** The declared property schema, keyed by property name (plus `*` for the
-   * wildcard) */
+  /** The declared property schema, by property name (`*` for the wildcard). */
   properties: Map<string, IPropertySchema>;
-  /** The doc-comment prose written above this targetdef, marker-stripped, or
-   * undefined if none. Runtime-only documentation metadata. */
+  /** The doc comment written above this targetdef, its markers stripped, or
+   * undefined if none. */
   docComment?: string;
 }
 
 interface IBaseValue extends IBaseDecl {
-  /** End offset (exclusive) of the written value, for span underlines */
+  /** The end offset (exclusive) of the written value. */
   endOffset: number;
 }
 
@@ -120,12 +116,12 @@ export interface INameValue extends IBaseValue {
 }
 
 /**
- * A `{ key = value; ... }` map block value — a value kind (so an entry can hold a
- * list of blocks: an array of maps). Each item is an ordinary property decl (its
- * `name` the possibly-dotted foreign map key, values names or nested blocks) or a
- * `NAME;` splice ({@link ISpliceDecl}). Parsing is schema-blind (a `{` in value
- * position always parses as a block); Validate enforces where blocks may appear
- * (MAP properties only, no mixing with names in one value list).
+ * A `{ key = value; ... }` map block value; a value list of several blocks is
+ * an array of maps. Each item is a property decl (its `name` the map key,
+ * possibly dotted; its values names or nested blocks) or a `NAME;` splice
+ * ({@link ISpliceDecl}). The parser reads every `{` in value position as a
+ * block; Validate checks where blocks may appear (MAP properties only, not
+ * mixed with names in one value list).
  */
 export interface IMapValue extends IBaseValue {
   kind: DeclKind.MapValue;
@@ -147,16 +143,13 @@ export function isCommandValue(value: IValue): value is ICommandValue {
 }
 
 /**
- * One stage of a command pipeline ({@link ICommandValue}): a command reference,
- * its args, and the destinations of its streams. `command`/`args`/`stdin` are fabr
- * references (the command a runnable, args literal-or-glob, `< stdin` a single-file
- * source); `stdout`/`stderr` are the output names their captured streams (`>`/`2>`)
- * become content under. Each is an {@link INameValue} — the `Name` plus its source
- * span — so the rule can position a resolution error (an unresolvable command, a
- * failed glob) at the exact token in the `run = …` line.
- *
- * This is the *flattened* result of applying the stage's redirects left to right
- * (see the parser's `StageFds`).
+ * One stage of a command pipeline ({@link ICommandValue}), its redirections
+ * applied left to right. `command`, `args` and `stdin` are references: the
+ * command a runnable, each arg a literal or glob, `< stdin` a single file.
+ * `stdout` and `stderr` are the output names their captured streams (`>`,
+ * `2>`) are kept under. `mergedTo` is the stream both streams go to where they
+ * are merged (`2>&1`, `1>&2`, `&>`). Each is an {@link INameValue}, whose span
+ * locates an error at its token.
  */
 export interface ICommandStage {
   command: INameValue;
@@ -167,8 +160,7 @@ export interface ICommandStage {
   mergedTo?: StreamName;
 }
 
-/** One of the two output streams a stage has, as a destination — fabr's process
- * model has no other fds, which is what bounds `N>&M` to these two. */
+/** One of the two output streams of a stage, the only ones `N>&M` may name. */
 export type StreamName = "out" | "err";
 
 /** A parsed command pipeline: an ordered list of {@link ICommandStage}s (the
@@ -176,11 +168,9 @@ export type StreamName = "out" | "err";
 export type CommandPipeline = ICommandStage[];
 
 /**
- * A parsed command pipeline as a value — `run = a --x | b > out`. Built at parse
- * time, where the operators (`|`, `<`, `>`, `2>`, `&>`) drive the structure and
- * well-formedness is a parse error; the rule then resolves each stage's command to
- * a runnable and wires the streams. A command is always the sole value of its
- * property (there is no syntax to mix it with other values).
+ * A command pipeline as a value (`run = a --x | b > out`), its stages made by
+ * the parser from the operators (`|`, `<`, `>`, `2>`, `&>`), a malformed one
+ * being a parse error. A command is always the sole value of its property.
  */
 export interface ICommandValue extends IBaseValue {
   kind: DeclKind.CommandValue;
@@ -194,9 +184,8 @@ export interface IPropertyDecl extends IBaseDecl {
   /** Whether it is written `private`: seen only by references written in its
    *  file, where it takes precedence over a public declaration of its name. */
   private?: boolean;
-  /** The doc-comment prose written above this property, marker-stripped, or
-   * undefined if none. Runtime-only documentation metadata (read for docs of
-   * global config properties like `BUILD_TYPE`, `JS_TARGET`). */
+  /** The doc comment written above this property, its markers stripped, or
+   * undefined if none. */
   docComment?: string;
 }
 
@@ -206,7 +195,7 @@ export interface IPropertyDecl extends IBaseDecl {
 export interface ISpliceDecl extends IBaseDecl {
   kind: DeclKind.Splice;
   ref: Name;
-  /** End offset (exclusive) of the written reference, for span underlines */
+  /** The end offset (exclusive) of the written reference. */
   endOffset: number;
 }
 
@@ -245,10 +234,9 @@ export function optionalLibOf(name: Name): { plugin: string; path: Name } | unde
 }
 
 /**
- * `plugin <name>;` — loads the named installed package as a rule plugin before
- * the requested targets are resolved. The name is resolved by module resolution
- * from the fabr installation (never built from source), and the package must
- * export a no-arg `activate()` returning its contribution (see Plugin.ts).
+ * A `plugin <name>;` declaration: the project uses the plugin `name` names,
+ * resolved as a reference in the model as loaded so far, and reads its `.fabr`
+ * files.
  */
 export interface IPluginDecl extends IBaseDecl {
   kind: DeclKind.Plugin;
@@ -327,16 +315,14 @@ export interface IBuildFile {
 }
 
 /**
- * A value decl for a reference that no parser produced — one given by the
- * invoker (a name on fabr's own command line), so that it resolves as the
- * written reference it is rather than through a path of its own.
+ * Make a value decl for a reference no parser read: one the invoker gives (a
+ * name on fabr's command line), which then resolves as a written reference.
  *
- * `source` is the virtual file it counts as written in, and carries the two
- * things a real one would: bare paths within the reference root at the file's
- * directory (see `Name.relativeTo`), so the caller names it for where those
- * paths should resolve from; and diagnostics name it and excerpt its reader at
- * `offset`, so the caller may give the whole text the reference was read from
- * (a command line) and span the part that is this value.
+ * `source` is the virtual file it counts as written in. Bare paths in the
+ * reference are rooted at that file's directory (see `Name.relativeTo`), and
+ * diagnostics name the file and excerpt its reader from `offset` to
+ * `endOffset`, so `source` may hold the whole text the reference was read from
+ * (a command line), with the offsets spanning this value.
  */
 export function syntheticValue(value: Name, source: IBuildFile, offset: number, endOffset: number): INameValue {
   return { kind: DeclKind.NameValue, value, source, offset, endOffset };
@@ -356,27 +342,21 @@ export interface IBuildFileContents {
 export type IDecl = ITargetDecl | IPropertyDecl | IIncludeDecl | IPluginDecl | IValue;
 
 /**
- * A declaration that a reference **resolves to** — hence one a configuration can
- * vary. Both consequences follow from that and from nothing else: it may be
- * written `default` (used only where no ordinary declaration of the name
- * applies), and its `name` is a {@link Name} whose constraint facet guards it.
- *
- * The complement ({@link IPlainNamedDecl}) is structure and vocabulary, which
- * neither varies nor is referred to by value.
+ * A declaration a reference resolves to, which a configuration can vary: it
+ * may be written `default` (used only where no ordinary declaration of the name
+ * applies), and its `name` is a {@link Name} whose constraints guard it.
  */
 export type IResolvableDecl = IPropertyDecl | ITargetDecl;
 
-/** A declaration named by a plain identifier path: it introduces a type rather
- * than something built, so there is no configuration for a name of its to vary
- * with. */
+/** A declaration named by a plain identifier path, which introduces a type:
+ * it is never guarded and never written `default`. */
 export type IPlainNamedDecl = ITargetDefDecl;
 
 export type INamedDecl = IResolvableDecl | IPlainNamedDecl;
 
-/** Get a declaration's name as a plain string, whichever kind it is — for the
- * namespace machinery, which indexes all four alike. A resolvable decl's facets
- * are left off ({@link Name.toBaseString}): they qualify the declaration, not
- * the name it goes under. */
+/** Get a declaration's name as a plain string, whichever kind it is, as the
+ * namespace indexes it: a resolvable decl's guard and rename are left off
+ * ({@link Name.toBaseString}). */
 export function declName(decl: INamedDecl): string {
   return typeof decl.name === "string" ? decl.name : decl.name.toBaseString();
 }
@@ -443,9 +423,8 @@ export function mergedDecls(applicable: IPropertyDecl[]): IPropertyDecl | undefi
   if (applicable.length <= 1) {
     return applicable[0];
   }
-  /* The merged decl carries no guard and takes the first contributor's
-   * position, so an error about the property points there. A per-value error
-   * carries its own value span. */
+  /* The merged decl has no guard and the first declaration's position; each
+   * value keeps its own span. */
   return {
     ...applicable[0],
     name: applicable[0].name.withConstraints([]),

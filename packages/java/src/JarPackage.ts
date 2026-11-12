@@ -88,9 +88,9 @@ export function javaRelease(jvmTarget: string, deps: readonly FileSet[]): number
 }
 
 /**
- * @return `packages` and every package they reach, each once, nearest first:
- * through every edge, or with `throughProvided` false, through every edge but
- * the provided ones.
+ * @return `packages` and every package they reach through their dependencies,
+ * each once, nearest first; with `throughProvided` false, not through provided
+ * dependencies.
  */
 function closureOf(packages: readonly PackageFileSet[], throughProvided = true): PackageFileSet[] {
   const seen = new Set<PackageFileSet>();
@@ -111,9 +111,9 @@ function closureOf(packages: readonly PackageFileSet[], throughProvided = true):
 /**
  * Get the classpath `deps` make: the jars of every package they hold or
  * reach, nearest first, then any loose jars among them. Each is named where
- * it is laid out, `<package name>/<file>` (a loose jar by its own name), so
- * two packages' jars never collide. A described package holds a description,
- * not jars: it adds none, but what it requires does.
+ * it is laid out, `<package name>/<file>` (a loose jar by its own name). A
+ * described package holds a description, not jars: it adds none, but what it
+ * requires does.
  */
 export function classpathOf(deps: readonly FileSet[]): Array<[string, IFile]> {
   const packages = closureOf(deps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet)).filter(
@@ -127,10 +127,10 @@ export function classpathOf(deps: readonly FileSet[]): Array<[string, IFile]> {
 
 /**
  * Lay out the installation `deps` make: the jars of every package they hold
- * or reach by an edge that is not a provided one, each named by its own file
- * name, and the loose files among them as they are, leaving out the packages
- * `provided` hold and every package those reach. Two different files of one
- * name are a conflict. Throws where `provided` holds files that are no
+ * or reach through dependencies that are not provided ones, each named by its
+ * own file name, and the loose files among them as they are, leaving out the
+ * packages `provided` hold and every package those reach. Two different files
+ * of one name are a conflict. Throws where `provided` holds files that are no
  * package.
  */
 export function installationOf(deps: readonly FileSet[], provided: readonly FileSet[] = []): FileSet {
@@ -154,10 +154,10 @@ export function installationOf(deps: readonly FileSet[], provided: readonly File
 }
 
 /**
- * Materialize the target's annotation processors (`processors`). They are a
- * tool of the compile, so they are read when it is evaluated, not as a
- * requirement, under `build` whatever the target's operation, and resolved as
- * a collection of their own, permissively, for `run`: they run in the compiler.
+ * Materialize the target's annotation processors (`processors`), read when
+ * the rule is evaluated, not among its requirements: under `build` whatever
+ * the target's operation, and resolved as a collection of their own,
+ * permissively, for `run`, since they run in the compiler.
  */
 export function processorsOf(context: TargetContext): Computable<FileSet[]> {
   return context
@@ -266,7 +266,7 @@ export function classFileOf(className: string): string {
 
 /**
  * Check that `mainClass` is a class the jar holds (`classes`) or one of the
- * jars it runs with (`deps`) does, reporting it as `name`'s otherwise.
+ * jars it runs with (`deps`) does; rejects, naming `name`, where none does.
  */
 export function checkMainClass(name: string, mainClass: string, classes: FileSet, deps: readonly FileSet[]): Computable<void> {
   const classFile = classFileOf(mainClass);
@@ -372,8 +372,9 @@ interface Placement {
  * Make a program runnable on `JAVA`, starting `mainClass`, with `deps` and
  * everything they require, after any `classes` of its own. The install holds
  * each jar under `lib/` and a launcher jar whose manifest names the class and,
- * relative to itself, the classpath, so `java -jar` starts it from whatever
- * directory. A program whose own code is a module (its classes, or else its
+ * relative to itself, the classpath, which `java -jar` starts from any
+ * directory. Each of `agents` has its own jar given the JVM as a
+ * `-javaagent`, and joins the classpath with what it requires. A program whose own code is a module (its classes, or else its
  * own jar, hold a module descriptor) runs as one: it and the jars that are
  * modules go on the module path, the rest on the launcher's classpath.
  */
@@ -466,6 +467,7 @@ function runJar(action: BuildAction, ctx: ActionContext, report: ITaskReport): C
     .then(jar => ({ result: new FileSet(new Map([[name, jar]])) }));
 }
 
+/** The step that writes a jar. */
 export const JAR_ACTION: IBuildActionDefinition = { id: "java:jar", version: 5, run: runJar };
 
 /** Make the action writing `files` as the jar `name`. */

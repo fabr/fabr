@@ -46,17 +46,17 @@ import { readJsonFile } from "./support/Json";
 
 const DIAG_WATCH_WARNING = Diagnostic.Warn<{ message: string }>("{message}");
 
-/** Quiet window (ms) collapsing a burst of filesystem events into one watch
- *  rebuild — long enough to coalesce an editor's save, short enough to feel
- *  live. */
+/** The time, in milliseconds, a watched tree must be free of filesystem
+ *  events before a rebuild starts; each event restarts it. */
 export const WATCH_QUIET_MS = 100;
 
+/** The options a {@link Fabr} run is made with. */
 export interface IFabrOptions {
   /** Root of the project source tree (the directory holding PROJECT.fabr). */
   sourceRoot: string;
   /** The build cache directory. */
   cacheRoot: string;
-  /** The run's diagnostic log (written by the engine, rendered by the driver). */
+  /** The run's diagnostic log, which the driver renders. */
   log: Log;
   /** Watch the source tree: filesystem changes become build cycles. */
   watch?: boolean;
@@ -71,19 +71,30 @@ export interface IFabrOptions {
 }
 
 /**
- * One fabr run — the central interface between a driver (the CLI, an IDE, an
- * embedder) and the engine. Construction assembles the run's surroundings
- * (cache, build cycle, watch controller, source tree) around an
- * {@link ExecutionContext}; the driver subscribes to build events
- * ({@link ExecutionContext.onBuildEvent}), evaluates operations against the
- * loaded model ({@link evaluate}), and composes its rendering onto their
- * results. Process policy — exit codes, signals, the terminal — stays the
- * driver's.
+ * Make one fabr run: the interface a driver (the CLI, an IDE, an embedder)
+ * runs the engine through. Construction opens the build cache at
+ * `cacheRoot`, reads the project tree at `sourceRoot` and, with `watch`,
+ * starts watching it, and makes the {@link ExecutionContext} every
+ * configuration of the run shares.
+ *
+ * A driver then:
+ * - subscribes to build events through `execution.onBuildEvent`, which carry
+ *   all progress, the end of each build cycle included;
+ * - calls {@link evaluate} with an operation (such as
+ *   {@link buildOperation} or {@link testOperation}) over the loaded model,
+ *   and renders its result and failures itself;
+ * - when watching, shuts down by awaiting `controller.close()`, and otherwise
+ *   awaits {@link maybeCollectGarbage} before it exits.
+ *
+ * At the end of each build cycle the run saves the source index (and, when
+ * watching, then runs {@link maybeCollectGarbage}). Exit codes, signals and
+ * the terminal are the driver's.
  */
 export class Fabr {
+  /** The context the run's configurations share: the cache, the log and the build-event stream. */
   public readonly execution: ExecutionContext;
-  /** The project source tree, concretely — the write-back face the driver's
-   *  invocation site needs (the execution holds it as a plain FileSource). */
+  /** The project source tree, through which the driver writes files back into
+   *  it (the execution holds it as a plain FileSource). */
   public readonly sourceFileSource: SourceFileSource;
   /** The host's files read in place, whose index this run keeps (see {@link ExecutionContext.hostFileSource}). */
   private readonly hostFileSource: IndexedFileSource;
@@ -91,22 +102,20 @@ export class Fabr {
   private readonly host: Constraints;
   /** How the project is read. */
   private readonly loadOptions: ILoadOptions;
-  /** Present when watching; the driver drives shutdown through {@link WatchController.close}. */
+  /** The watch controller, present when watching; the driver shuts the run down through {@link WatchController.close}. */
   public readonly controller?: WatchController;
-  /** The run's cycle counter — what {@link maybeCollectGarbage}'s preemption
-   *  watches. */
+  /** The run's build-cycle counter, which {@link maybeCollectGarbage} watches to stop early. */
   private readonly cycle: BuildCycle;
 
   constructor(options: IFabrOptions) {
     this.host = options.host ?? Constraints.of({});
     this.loadOptions = { includeOptionalLibs: options.includeOptionalLibs };
     const cache = new BuildCache(options.cacheRoot, options.log, undefined, options.refresh);
-    /* Shared: the controller advances it per applied batch; the execution
-     * reads it and emits the cycle boundaries. */
+    /* The controller advances it per batch of changes applied; the execution
+     * reads it to emit the cycle boundaries. */
     const cycle = new BuildCycle();
     this.cycle = cycle;
-    /* Watcher errors take the one error-reporting path; notices are
-     * infrastructure diagnostics, logged like BuildCache's own. */
+    /* Watcher errors are reported as failures; its notices are logged as warnings. */
     this.controller = options.watch
       ? new WatchController(
           WATCH_QUIET_MS,
@@ -126,13 +135,11 @@ export class Fabr {
       cycle,
       this.hostFileSource
     );
-    /* The source index persists per settled cycle — cycle-end fires even when
-     * every recomputed value was identical (a touch without an edit), which is
-     * exactly when rows changed but no result did — and drains ungated when
-     * the watch controller closes (the driver awaits close before exit).
-     * Under watch, the daily cache trim rides the same settled moment, after
-     * the record lands; a one-shot run's trim is instead the driver's, which
-     * alone can hold the process exit for it. */
+    /* Save the source and host indexes at each cycle-end, which comes even
+     * where no result changed (a file touched but not edited changes the
+     * index's rows), and once more, unconditionally, when the watch controller
+     * closes. Under watch, run the daily cache trim once the source index is
+     * saved; a one-shot run's driver runs the trim itself. */
     this.execution.onBuildEvent(event => {
       if (event.kind === "cycle-end") {
         this.hostFileSource.persistIndex();
@@ -154,9 +161,13 @@ export class Fabr {
   }
 
   /**
-   * Load the project and evaluate `operation` against its model, as the run's
-   * evaluation: each settlement ends the current build cycle (see
-   * {@link ExecutionContext.observeEvaluation}).
+   * Load the project and evaluate `operation` over its model, as the run's
+   * evaluation: each time the result settles (again, under watch) the current
+   * build cycle ends, with a cycle-end build event saying whether it failed.
+   *
+   * The result is `operation`'s; it rejects where loading the project fails
+   * or `operation`'s result does. Once it settles, the source and host
+   * indexes are saved.
    */
   public evaluate<T>(operation: (model: BuildModel) => Computable<T>): Computable<T> {
     const evaluation = loadProject(this.execution, PROJECT_FILENAME, coreContribution(), this.host, this.loadOptions).then(operation);
@@ -167,12 +178,12 @@ export class Fabr {
   }
 
   /**
-   * Run the cache's daily trim if it is due (see
-   * {@link BuildCache.maybeCollectGarbage}) — cheap when it is not, and
-   * preempted outright by any new build cycle. The watch-mode trigger is the
-   * facade's own (cycle-end, above); a one-shot driver calls this at the end
-   * of the run — for a takeover verb, after the interactive child exits — and
-   * awaits it, since only the driver can hold the process exit for it.
+   * Trim the cache if its daily trim is due (see
+   * {@link BuildCache.maybeCollectGarbage}); otherwise do nothing. The trim
+   * stops early where a new build cycle starts. Under watch the run calls this
+   * itself at each cycle-end; a one-shot driver calls it at the end of the run
+   * (after the program exits, for `run` and `shell`) and awaits it before
+   * exiting.
    */
   public maybeCollectGarbage(): Computable<void> {
     const startedAt = this.cycle.current;
@@ -196,10 +207,11 @@ export function requireWhole(ref: INameValue, resolved: ReadonlyArray<Resolved>)
 }
 
 /**
- * Build what each of `refs` names under `config`'s operation: resolve it, then
- * materialize it. Each must be a name the project declares (a target, a
- * global, a repository), with any `<k=v>` on it. A path, a pattern or a
- * selection of a target's files is refused, and refusing any one builds none.
+ * Build what each of `refs` names under `config`'s operation, by materializing
+ * it. Each must be a name the project declares (a target, a global, a
+ * repository), with any `<k=v>` on it. Each result rejects where any name is
+ * a path, a pattern or a selection of a target's files, or not declared
+ * (and then none is built), or where what it names is a namespace.
  */
 function build(config: BuildContext, refs: INameValue[]): Computable<SourceRef[]>[] {
   const declared = Computable.forAll(
@@ -217,7 +229,7 @@ function requireDeclared(config: BuildContext, ref: INameValue): Computable<void
     }
     /* Resolving it rejects a name that names nothing, with suggestions;
      * anything else is refused here, as a selection of a target's files or as
-     * no declared name. */
+     * not declared. */
     return config.resolve(ref).then((resolved): void => {
       requireWhole(ref, resolved.denoted);
       throw new FabrError(`'${ref.value.toString()}' is not a name the project declares`).withHelp(
@@ -227,16 +239,28 @@ function requireDeclared(config: BuildContext, ref: INameValue): Computable<void
   });
 }
 
-/** Build what each reference names, realising any release namespaces, and
- *  yield the results. */
+/**
+ * Build what each of `refs` names under `config`'s operation (the `build`
+ * verb), and yield what each built, in order. Each must be a name the project
+ * declares, with any `<k=v>` on it; a path, a pattern, a selection of a
+ * target's files or an undeclared name is refused, and refusing any one
+ * builds none. A `sync` target's build also packages every member it
+ * publishes, publishing nothing. Rejects where any name is refused or any
+ * build fails.
+ */
 export function buildOperation(config: BuildContext, refs: INameValue[]): Computable<SourceRef[][]> {
   return Computable.forAll(build(config, refs), (...results: SourceRef[][]) =>
     Computable.forAll(results.map(realiseNamespaces), () => results)
   );
 }
 
-/** Build and run the tests of what each reference names, yielding the results
- *  (the test reports ride them as artifacts). */
+/**
+ * Build what each of `refs` names under `config`'s operation (the `test`
+ * verb, which runs the tests), and yield what each built, in order, its test
+ * report among it (`getTestReport` reads it). Names are refused as for
+ * {@link buildOperation}. Rejects where any name is refused or any build
+ * fails, a test run with failing tests included.
+ */
 export function testOperation(config: BuildContext, refs: INameValue[]): Computable<SourceRef[][]> {
   return Computable.forAll(build(config, refs), (...results: SourceRef[][]) => results);
 }
@@ -524,11 +548,16 @@ export interface IDescribing {
 }
 
 /**
- * Describe every target of `model`'s project, as each operation it is
- * described under would build it (`configOf` makes that operation's
- * configuration, `refFor` the reference naming a target), putting each
- * description in the cache's tree pool. Each target's description settles on
- * its own, and settles again whenever it changes.
+ * Describe every target the project's own files declare, under each of
+ * `DESCRIBED_OPERATIONS` its type has a rule for, as that operation would
+ * build it, and put each description in the cache's tree pool. `configOf`
+ * makes an operation's configuration and `refFor` the reference naming a
+ * target.
+ *
+ * Each target's `described` settles on its own, and again whenever its
+ * description changes; it is undefined where the target's rule describes
+ * nothing, and rejects where describing it fails. `settled` settles once
+ * every target's has, whether or not it failed.
  */
 export function describeOperation(
   model: BuildModel,
@@ -558,7 +587,7 @@ export function describeOperation(
         })
       )
     );
-  /* Settled once each target is described or has failed: a failure is the target's, not the operation's. */
+  /* A target's failure is its own: `settled` waits for it and does not reject. */
   const settled = Computable.forAll(
     targets.map(({ described }) =>
       described.then(
@@ -572,10 +601,10 @@ export function describeOperation(
 }
 
 /**
- * Mark `names`' targets to rebuild rather than serve from cache (the driver's
- * `-f` — see {@link ExecutionContext.forceTarget}). The model says which target
- * each written name references; a name with no declared target behind it
- * (`@npm:esbuild`) marks nothing — there is no build of its own to force.
+ * Mark the target each of `names` references to be rebuilt rather than
+ * served from the cache (the driver's `-f`; see
+ * {@link ExecutionContext.forceTarget}). A name that references no declared
+ * target (`@npm:esbuild`) marks nothing.
  */
 export function forceTargets(model: BuildModel, execution: ExecutionContext, names: string[]): void {
   for (const name of names) {
@@ -587,10 +616,9 @@ export function forceTargets(model: BuildModel, execution: ExecutionContext, nam
 }
 
 /**
- * Force what a target's own build promises but produces on demand: a release
- * namespace packages a member when something names one, so building the target
- * itself — which asks for its outputs, not for a reference into them — must
- * realise every member. That is the sync dry-run.
+ * Package every member of each `sync` result among `sources`, which packages a
+ * member only when something names it, so that building a `sync` target
+ * packages everything it would publish, without publishing it.
  */
 function realiseNamespaces(sources: SourceRef[]): Computable<unknown> {
   return Computable.forAll(

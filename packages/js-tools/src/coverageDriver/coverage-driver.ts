@@ -30,8 +30,8 @@
  *
  * Usage: node coverage-driver.js --manifest=<options document>
  *
- * Runs in the build process. Its libraries come from its own install and are
- * loaded lazily in {@link main}, so the helpers stay importable without them.
+ * Its libraries come from its own install and are loaded in {@link main}, so
+ * the exported helpers can be imported without them.
  */
 
 import * as fs from "node:fs";
@@ -119,7 +119,9 @@ function uncountableBranch(node: INode, type: string): boolean {
 }
 
 /** Read the source map a compiled file names in its `sourceMappingURL`
- * comment, or none. */
+ * comment (inline as a `data:` URL, or a file beside it), with the directory
+ * its entries are relative to; undefined where it names none or the file is
+ * missing. */
 function sourceMapOf(file: string, code: string): { map: unknown; dir: string } | undefined {
   const comment = /\/\/[#@] sourceMappingURL=(\S+)\s*$/.exec(code);
   if (comment === null) {
@@ -134,6 +136,7 @@ function sourceMapOf(file: string, code: string): { map: unknown; dir: string } 
   return fs.existsSync(mapFile) ? { map: JSON.parse(fs.readFileSync(mapFile, "utf8")), dir: path.dirname(mapFile) } : undefined;
 }
 
+/** Parse `code` as a script, or as a module where that fails. */
 function parse(acorn: IAcorn, code: string): INode {
   const options = { ecmaVersion: "latest", locations: true, allowHashBang: true };
   try {
@@ -143,6 +146,12 @@ function parse(acorn: IAcorn, code: string): INode {
   }
 }
 
+/**
+ * Convert the raw coverage the options document names (`--manifest=<path>`)
+ * into one lcov document, written to its `output`. A measured file with no
+ * source map is left out, and so, with `loaded`, is one no process loaded. The
+ * records of one source from several compiled files are summed.
+ */
 export async function main(argv: string[]): Promise<void> {
   /* eslint-disable @typescript-eslint/no-var-requires */
   const acorn = require("acorn") as IAcorn;
@@ -158,9 +167,9 @@ export async function main(argv: string[]): Promise<void> {
         .filter(name => name.endsWith(".json"))
         .map(name => JSON.parse(fs.readFileSync(path.join(rawDir, name), "utf8")) as { result: IScriptCoverage[] })
     : [];
-  /* A script loaded by several processes counts once per run of it: the raw
-   * data merges before anything is converted. Scripts are matched by their
-   * real path, as node names what it loads. */
+  /* Sum the counts of a script several processes loaded before converting
+   * anything. A measured file is matched by its real path, which is how node
+   * names what it loads. */
   const merged = mergeProcessCovs(processes.map(({ result }) => ({ result })));
   const byFile = new Map(
     merged.result.filter(script => script.url.startsWith("file:")).map(script => [fileURLToPath(script.url), script])

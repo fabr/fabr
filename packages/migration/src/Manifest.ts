@@ -40,7 +40,7 @@ export interface Manifest {
   readonly json: Record<string, unknown>;
 }
 
-/** @return the string entries of `value` where it is an object, otherwise none. */
+/** @return the string-valued entries of `value` where it is an object, otherwise an empty map. */
 export function stringEntries(value: unknown): Map<string, string> {
   const entries = new Map<string, string>();
   if (isJsonObject(value)) {
@@ -75,7 +75,7 @@ export function readManifest(root: string, dir: string): Manifest {
 }
 
 /** @return every dependency `manifest` declares, name -> spec, each as the first
- * block declaring it writes it (peers last). */
+ * of {@link DEPENDENCY_BLOCKS} declaring it writes it (peers last). */
 export function declaredDependencies(manifest: Manifest): Map<string, string> {
   const all = new Map<string, string>();
   for (const block of DEPENDENCY_BLOCKS) {

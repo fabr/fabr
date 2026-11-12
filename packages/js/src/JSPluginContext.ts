@@ -21,19 +21,18 @@ import { Computable, ExecutionContext, PluginKey } from "@fabr-build/core";
 import { NPMAuth } from "./NPMAuth";
 
 /**
- * The js plugin's per-run state, held on the ExecutionContext under {@link JS_PLUGIN_KEY}
- * and shared across every NPMRepository instance of the run (which are interned
- * per BuildContext, so `@npm` under `{build}` and `{run}` are distinct instances
- * that must not each re-parse `.npmrc`). Currently just the run's {@link NPMAuth}
- * (whose one-instance-per-run sharing is what makes its second-factor sessions
- * run-wide); a home for future run-wide js state.
+ * The js plugin's per-run state, held on the ExecutionContext under
+ * {@link JS_PLUGIN_KEY} and shared by every NPMRepository instance of the run:
+ * the run's one {@link NPMAuth}. Keep it one per run, not one per repository
+ * instance: `@npm` under `{build}` and under `{run}` are distinct instances, and
+ * a second-factor session must last the whole run.
  */
 export class JSPluginContext {
   private npmAuthMemo?: Computable<NPMAuth>;
 
   constructor(private readonly execution: ExecutionContext) {}
 
-  /** Get the run's registry-auth authority, loading it (`.npmrc` parse) once per run. */
+  /** Get the run's {@link NPMAuth}, loading it (parsing `.npmrc`) once per run. */
   public npmAuth(): Computable<NPMAuth> {
     if (!this.npmAuthMemo) {
       this.npmAuthMemo = NPMAuth.load(this.execution);
