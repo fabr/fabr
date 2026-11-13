@@ -225,7 +225,9 @@ let tempCounter = 0;
  * leave the rest. Each write goes to a temp sibling renamed into place, so a
  * reader (the running program, a watcher) never sees a half-written file and a
  * hardlink into the cache is replaced, never written into. Directories the
- * removals empty are removed once every write and removal has finished.
+ * removals empty are removed once every write and removal has finished. A
+ * name may change between a file (or symlink) and a directory: what is in the
+ * write's way is removed first.
  *
  * Resolves to the number of files written and removed. A {@link SymlinkFile}
  * whose target resolves outside `targetDir` is skipped and not counted
@@ -240,8 +242,21 @@ export function syncFileSet(targetDir: string, before: FileSet, after: FileSet):
     .filter(([name, file]) => before.getFile(name)?.hash !== file.hash)
     .map(([name, file]) => contained(root, name, file));
   const gone = [...before].filter(([name]) => after.getFile(name) === undefined).map(([name, file]) => contained(root, name, file));
-  /* Create the parents of everything to be written, together, first. */
-  return mapComputable(new Set(changed.map(entry => entry.dirname)), dir => mkdir(dir)).then(() => applySync());
+  /* A removal is in the way where a write needs its name as a directory (a
+   * file or symlink becoming a directory) or lies under a name written as a
+   * file (a directory becoming one): remove those, and the directories they
+   * empty, before anything else. */
+  const writtenNames = new Set(changed.map(entry => entry.targetName));
+  const writtenDirs = new Set(changed.flatMap(entry => ancestorsWithin(root, entry.targetName)));
+  const inTheWay = gone.filter(
+    entry => writtenDirs.has(entry.targetName) || ancestorsWithin(root, entry.targetName).some(dir => writtenNames.has(dir))
+  );
+  const removedLater = gone.filter(entry => !inTheWay.includes(entry));
+  /* Then create the parents of everything to be written, together. */
+  return mapComputable(inTheWay, ({ targetName }) => asExecutionError(deleteFile(targetName)))
+    .then(() => pruneEmptyDirs(root, new Set(inTheWay.map(entry => entry.dirname))))
+    .then(() => mapComputable(new Set(changed.map(entry => entry.dirname)), dir => mkdir(dir)))
+    .then(() => applySync());
 
   /* Run once the directories exist: the symlink check reads a parent's real
    * path. */
@@ -281,9 +296,9 @@ export function syncFileSet(targetDir: string, before: FileSet, after: FileSet):
     /* Remove the gone files alongside the writes (their names are disjoint).
      * Prune their parents only after both finish: a removal can empty a
      * directory a write is still renaming a file into. */
-    const removals = mapComputable(gone, ({ targetName }) => asExecutionError(deleteFile(targetName)));
+    const removals = mapComputable(removedLater, ({ targetName }) => asExecutionError(deleteFile(targetName)));
     return Computable.forAll([writes, removals], () => undefined)
-      .then(() => pruneEmptyDirs(root, new Set(gone.map(entry => entry.dirname))))
+      .then(() => pruneEmptyDirs(root, new Set(removedLater.map(entry => entry.dirname))))
       .then(() => ({ written: written.length, removed: gone.length }));
   }
 }
@@ -311,6 +326,16 @@ export function stageWrite(temp: string, targetName: string, create: Computable<
  * empty, up to but not including `root`. The walk stops at the first
  * directory that cannot be removed. Run only once no write into the tree is in
  * progress. */
+/** @return the directories strictly between `root` and `targetName`, nearest
+ * first. */
+function ancestorsWithin(root: string, targetName: string): string[] {
+  const dirs: string[] = [];
+  for (let dir = path.dirname(targetName); dir !== root && dir.startsWith(root + path.sep); dir = path.dirname(dir)) {
+    dirs.push(dir);
+  }
+  return dirs;
+}
+
 function pruneEmptyDirs(root: string, candidates: Set<string>): void {
   for (const start of candidates) {
     for (let dir = start; dir !== root && dir.startsWith(root + path.sep); dir = path.dirname(dir)) {

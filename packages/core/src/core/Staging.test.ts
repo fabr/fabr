@@ -22,9 +22,10 @@ import * as os from "os";
 import * as path from "path";
 import { Computable } from "./Computable";
 import { ConflictError } from "./Errors";
-import { CANONICAL, FileSet } from "./FileSet";
+import { CANONICAL, FileSet, IFile } from "./FileSet";
 import { MemoryFile } from "./MemoryFS";
 import { SecretFile } from "./SecretFile";
+import { SymlinkFile } from "./SymlinkFile";
 import { Name, NameBuilder } from "./Name";
 import { getResultFileSet, syncFileSet, writeFileSet } from "./Staging";
 import { expect } from "chai";
@@ -286,6 +287,38 @@ describe("syncFileSet", () => {
     expect(fs.readFileSync(path.join(work, "idx", "new_c.dat"), "utf8")).to.equal("z");
     /* No temp siblings left behind. */
     expect(fs.readdirSync(path.join(work, "idx")).some(n => n.includes(".fabr-sync-"))).to.equal(false);
+  });
+
+  it("replaces a symlink to a directory with a directory of that name", async () => {
+    /* A package linked into node_modules (pnpm's layout) becomes plain files
+     * at the link's name: the writes must not land through the old link. */
+    const before = new FileSet(
+      new Map<string, IFile>([
+        ["node_modules/pkg", new SymlinkFile(".fabr/pkg/node_modules/pkg")],
+        ["node_modules/.fabr/pkg/node_modules/pkg/index.js", MemoryFile.from("v1")],
+      ])
+    );
+    await toPromise(writeFileSet(work, before));
+
+    const after = fileset({ "node_modules/pkg/index.js": "v2", "node_modules/pkg/index.js.map": "map" });
+    const delta = await toPromise(syncFileSet(work, before, after));
+
+    expect(delta).to.deep.equal({ written: 2, removed: 2 });
+    expect(fs.lstatSync(path.join(work, "node_modules", "pkg")).isDirectory()).to.equal(true);
+    expect(fs.readFileSync(path.join(work, "node_modules", "pkg", "index.js"), "utf8")).to.equal("v2");
+    expect(fs.existsSync(path.join(work, "node_modules", ".fabr"))).to.equal(false);
+  });
+
+  it("replaces a file with a directory of that name, and a directory with a file", async () => {
+    const before = fileset({ a: "file", "b/one.txt": "1", "b/deep/two.txt": "2" });
+    await toPromise(writeFileSet(work, before));
+
+    const after = fileset({ "a/inside.txt": "now a directory", b: "now a file" });
+    const delta = await toPromise(syncFileSet(work, before, after));
+
+    expect(delta).to.deep.equal({ written: 2, removed: 3 });
+    expect(fs.readFileSync(path.join(work, "a", "inside.txt"), "utf8")).to.equal("now a directory");
+    expect(fs.readFileSync(path.join(work, "b"), "utf8")).to.equal("now a file");
   });
 
   it("runs cleanly a second time in the same process (no temp-name collision)", async () => {
