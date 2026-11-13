@@ -194,7 +194,7 @@ Nothing is downloaded or built to list them, and `-l` makes no difference.
 |---|---|
 | An npm or Maven package (`@npm:esbuild`, `@mvn:com.google.guava:guava`) | Its published versions, newest first. |
 | A container image (`@docker:alpine`) | Its tags, in name order. |
-| A JDK distribution (`@jdk`) | The releases published for the target platform, newest first. |
+| A Node.js or JDK distribution (`@node`, `@jdk`) | The releases published for the target platform, newest first. |
 | A catalog (`@pkg`) | Its members. |
 | A `repository_group`'s package | Its versions, as the repository it is routed to lists them. |
 | A scope of `@fabr-home` (`@fabr-home:@fabr-build`) | The packages installed in it. |

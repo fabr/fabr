@@ -132,6 +132,7 @@ export { Conflicts, NO_CONFLICTS } from "./resolver/StrictCollection";
 export * from "./rules/BuildSync";
 export * from "./rules/CatalogRepository";
 export * from "./rules/ContentPackage";
+export * from "./rules/Distribution";
 export * from "./rules/ExecAction";
 export * from "./rules/RepositoryGroup";
 export * from "./rules/Types";

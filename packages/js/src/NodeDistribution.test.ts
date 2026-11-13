@@ -38,14 +38,18 @@ import {
   Name,
   PackageFileSet,
   packToTarball,
+  parseName,
+  PartialRepositoryRef,
+  RepositoryRef,
+  ResolvedNode,
+  RunnableFileSet,
   SymlinkFile,
   TARGET,
   TargetContext,
   VersionNotFoundError,
-  parseVersion,
   toArgv,
 } from "@fabr-build/core";
-import { NODE_FORMAT, NodeDistribution } from "./NodeDistribution";
+import { NodeDistribution } from "./NodeDistribution";
 
 const DIST = "https://dist.test";
 const UNOFFICIAL = "https://unofficial.test";
@@ -64,7 +68,7 @@ function rejection(computable: Computable<unknown>): Promise<Error> {
 }
 
 /** A release archive as nodejs.org lays one out: everything under one top directory. */
-function release(version: string, platform: string): Promise<Buffer> {
+function archive(version: string, platform: string): Promise<Buffer> {
   const top = `node-v${version}-${platform}`;
   const files = new FileSet(
     new Map<string, IFile>([
@@ -84,10 +88,10 @@ function sha256(data: Buffer): string {
  * A TargetContext whose fetches are answered from `served` (url → bytes, absent
  * → a 404), each run through the request's own `process` into a real store.
  */
-function servingContext(served: Map<string, Buffer>, cache: BuildCache, target: string): TargetContext {
+function servingContext(served: Map<string, Buffer>, cache: BuildCache, target: string, operation: string): TargetContext {
   return {
     name: "@node",
-    operation: "build",
+    operation,
     getGlobalString: (name: string) =>
       name === TARGET ? Computable.resolve(target) : Computable.reject(new Error(`unexpected property: ${name}`)),
     fetch: (_key: string, _tag: string, request: () => Computable<IFetchRequest>) =>
@@ -117,24 +121,34 @@ describe("NodeDistribution", () => {
     const lines: string[] = [];
     for (const platform of platforms) {
       const file = `node-v${version}-${platform}.tar.gz`;
-      const archive = await release(version, platform);
-      served.set(`${base}/v${version}/${file}`, archive);
-      lines.push(`${sha256(archive)}  ${file}`);
+      const bytes = await archive(version, platform);
+      served.set(`${base}/v${version}/${file}`, bytes);
+      lines.push(`${sha256(bytes)}  ${file}`);
     }
     served.set(`${base}/v${version}/SHASUMS256.txt`, Buffer.from(lines.join("\n") + "\n"));
   }
 
-  function distribution(served: Map<string, Buffer>, target = "arm64-apple-darwin24.0.0"): NodeDistribution {
-    return new NodeDistribution(servingContext(served, cache, target), DIST, UNOFFICIAL);
+  function distribution(served: Map<string, Buffer>, target = "arm64-apple-darwin24.0.0", operation = "build"): NodeDistribution {
+    return new NodeDistribution(servingContext(served, cache, target, operation), DIST, UNOFFICIAL);
+  }
+
+  /** Resolve `written` (after `@node:`) in `dist` to the node it names. */
+  function resolve(dist: NodeDistribution, written: string): Computable<ResolvedNode> {
+    return dist.resolve(dist.getRepositoryRef(Name.fromLiteral(written)) as RepositoryRef);
+  }
+
+  /** Fetch the files of the release `written` names. */
+  function release(dist: NodeDistribution, written: string): Computable<FileSet> {
+    return resolve(dist, written).then(node => node.content.files() as Computable<FileSet>);
   }
 
   it("delivers the release for the target platform, its top directory stripped", async () => {
     const served = new Map<string, Buffer>();
     await publish(served, DIST, "24.22.1", ["darwin-arm64", "linux-x64"]);
-    const pkg = await toPromise(distribution(served).fetch("node", parseVersion("24.22.1")));
+    const pkg = await toPromise(release(distribution(served), "24.22.1"));
     expect(pkg).to.be.instanceOf(PackageFileSet);
-    expect(pkg.packageName).to.equal("node");
-    expect(pkg.version).to.equal("24.22.1");
+    expect((pkg as PackageFileSet).packageName).to.equal("node");
+    expect((pkg as PackageFileSet).version).to.equal("24.22.1");
     const files = new Map(pkg);
     expect(await toPromise(pkg.readFile("bin/node"))).to.equal("node 24.22.1 darwin-arm64");
     expect(files.get("bin/node")!.mode & 0o111).to.not.equal(0);
@@ -144,59 +158,79 @@ describe("NodeDistribution", () => {
   it("refuses an archive that does not match its SHASUMS256.txt", async () => {
     const served = new Map<string, Buffer>();
     await publish(served, DIST, "24.22.1", ["darwin-arm64"]);
-    served.set(`${DIST}/v24.22.1/node-v24.22.1-darwin-arm64.tar.gz`, await release("24.22.1", "linux-x64"));
-    const err = await rejection(distribution(served).fetch("node", parseVersion("24.22.1")));
+    served.set(`${DIST}/v24.22.1/node-v24.22.1-darwin-arm64.tar.gz`, await archive("24.22.1", "linux-x64"));
+    const err = await rejection(release(distribution(served), "24.22.1"));
     expect(err).to.be.instanceOf(IntegrityError);
   });
 
-  it("reports a version with no SHASUMS256.txt as unpublished", async () => {
-    const dist = distribution(new Map());
-    expect(await rejection(dist.getRequirements("node", parseVersion("24.99.0")))).to.be.instanceOf(VersionNotFoundError);
-    expect((await rejection(dist.fetch("node", parseVersion("24.99.0")))).message).to.contain("Node.js 24.99.0 is not published");
+  it("reports a version with no SHASUMS256.txt as unpublished, as it is resolved", async () => {
+    const err = await rejection(resolve(distribution(new Map()), "24.99.0"));
+    expect(err).to.be.instanceOf(VersionNotFoundError);
+    expect(err.message).to.contain("Node.js 24.99.0 is not published");
   });
 
-  it("requires nothing of a published version", async () => {
+  it("resolves an exact version without reading the version list", async () => {
     const served = new Map<string, Buffer>();
     await publish(served, DIST, "24.22.1", ["darwin-arm64"]);
-    expect(await toPromise(distribution(served).getRequirements("node", parseVersion("24.22.1")))).to.deep.equal([]);
+    const node = await toPromise(resolve(distribution(served), "24.22.1"));
+    expect(node.packageName).to.equal("node");
+    expect(node.version).to.equal("24.22.1");
+    expect(node.dependencies).to.deep.equal([]);
   });
 
   it("falls back to unofficial builds for a platform nodejs.org does not publish", async () => {
     const served = new Map<string, Buffer>();
     await publish(served, DIST, "24.15.0", ["linux-x64"]);
     await publish(served, UNOFFICIAL, "24.15.0", ["linux-x64-musl"]);
-    const pkg = await toPromise(distribution(served, "x86_64-unknown-linux-musl").fetch("node", parseVersion("24.15.0")));
+    const pkg = await toPromise(release(distribution(served, "x86_64-unknown-linux-musl"), "24.15.0"));
     expect(await toPromise(pkg.readFile("bin/node"))).to.equal("node 24.15.0 linux-x64-musl");
   });
 
   it("refuses a platform with no release, naming the remedy", async () => {
-    const err = await rejection(distribution(new Map(), "x86_64-pc-windows-msvc").fetch("node", parseVersion("24.22.1")));
+    const err = await rejection(resolve(distribution(new Map(), "x86_64-pc-windows-msvc"), "24.22.1"));
     expect(err.message).to.contain("not available for 'x86_64-pc-windows-msvc'");
   });
 
-  it("raises an unpublished floor to the lowest published version index.json lists", async () => {
+  it("selects the lowest published version a range admits, from index.json", async () => {
     const served = new Map<string, Buffer>([
       [`${DIST}/index.json`, Buffer.from(JSON.stringify([{ version: "v24.22.1" }, { version: "v24.20.0" }, { version: "v22.23.3" }]))],
     ]);
-    const lowest = await toPromise(distribution(served).lowestAvailable("node", "^24.19.0"));
-    expect(lowest && lowest.toString()).to.equal(parseVersion("24.20.0").toString());
+    await publish(served, DIST, "24.20.0", ["darwin-arm64"]);
+    await publish(served, DIST, "22.23.3", ["darwin-arm64"]);
+    expect((await toPromise(resolve(distribution(served), "^24.19.0"))).version).to.equal("24.20.0");
+    expect((await toPromise(resolve(distribution(served), "22"))).version).to.equal("22.23.3");
+    expect((await rejection(resolve(distribution(served), "23"))).message).to.contain(
+      "No Node.js release for arm64-apple-darwin24.0.0 satisfies '23'"
+    );
   });
 
-  it("reads a reference as a version of node and a projection into it", () => {
-    const { projection, ...requirement } = NODE_FORMAT.splitReference(Name.fromLiteral("24.22.1:bin/node"));
-    expect(requirement).to.deep.equal({ name: "node", versionConstraint: "24.22.1" });
-    expect(projection?.pattern.toString()).to.equal("bin/node");
-    expect(() => NODE_FORMAT.validateRequirement({ name: "node", versionConstraint: undefined })).to.throw(/Missing version/);
+  it("lists the versions index.json lists, newest first", async () => {
+    const served = new Map<string, Buffer>([
+      [`${DIST}/index.json`, Buffer.from(JSON.stringify([{ version: "v22.23.3" }, { version: "v24.22.1" }]))],
+    ]);
+    const children = await toPromise(distribution(served).children());
+    expect([...children.keys()]).to.deep.equal(["24.22.1", "22.23.3"]);
   });
 
-  it("runs the file a projection selects, keeping the release's own symlinks out of the entries", async () => {
+  it("reads a reference as a version of node and a projection into it, and refuses a marker", () => {
+    const dist = distribution(new Map());
+    const ref = dist.getRepositoryRef(Name.fromLiteral("24.22.1:bin/node")) as RepositoryRef;
+    expect([ref.name, ref.versionConstraint]).to.deep.equal(["node", "24.22.1"]);
+    expect(ref.projections.map(projection => projection.pattern.toString())).to.deep.equal(["bin/node"]);
+    expect(dist.getRepositoryRef(Name.fromLiteral(""))).to.be.instanceOf(PartialRepositoryRef);
+    expect(() => dist.getRepositoryRef(parseName("24.22.1!"))).to.throw(/override marker means nothing/);
+  });
+
+  it("runs the file a projection selects or the command it names, keeping the release's own symlinks out of the entries", async () => {
     const served = new Map<string, Buffer>();
     await publish(served, DIST, "24.22.1", ["darwin-arm64"]);
-    const pkg = await toPromise(distribution(served).fetch("node", parseVersion("24.22.1")));
-    const runnable = await toPromise(NODE_FORMAT.makeRunnable(pkg, undefined as never));
-    const node = runnable.selectEntry([{ pattern: Name.fromLiteral("bin/node"), prefix: "" }]);
-    expect(node && toArgv(node.toCommandLine(["--version"]))).to.deep.equal(["bin/node", "--version"]);
+    const runnable = (await toPromise(release(distribution(served, undefined, "run"), "24.22.1"))) as RunnableFileSet;
+    for (const entry of ["bin/node", "node"]) {
+      const node = runnable.selectEntry([{ pattern: Name.fromLiteral(entry), prefix: "" }]);
+      expect(node && toArgv(node.toCommandLine(["--version"]))).to.deep.equal(["bin/node", "--version"]);
+    }
     expect(new Map(runnable.surface).has("bin/npm")).to.equal(false);
+    expect(runnable.selectEntry([{ pattern: Name.fromLiteral("npm"), prefix: "" }])).to.equal(undefined);
     expect(new Map(runnable).get("bin/npm")).to.be.instanceOf(SymlinkFile);
   });
 });

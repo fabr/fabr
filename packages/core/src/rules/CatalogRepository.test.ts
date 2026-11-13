@@ -26,7 +26,7 @@ import { RunnableFileSet } from "../core/RunnableFileSet";
 import { HostLink } from "../core/SymlinkFile";
 import { CatalogRepository, catalogRepositoryRegistration } from "./CatalogRepository";
 import patched from "./BuildPatched";
-import { Repository, RepositoryRef } from "../core/Repository";
+import { Repository, RepositoryLookup, RepositoryRef } from "../core/Repository";
 import { PartialRepositoryRef } from "../core/PartialRepositoryRef";
 import { Requirement } from "../resolver/Types";
 import { ConflictError, CycleError, FabrError, RequirementResolutionError } from "../core/Errors";
@@ -251,6 +251,50 @@ describe("CatalogRepository (through the model)", () => {
     public fetchFor(pkg: string, version: SemverVersion, operation: string): Computable<FileSet> {
       this.fetched.push(`${pkg}@${versionToString(version)} ${operation}`);
       return Computable.resolve(new FileSet(new Map([[`${pkg}/${operation}.html`, MemoryFile.from(`${operation} of ${pkg}`)]])));
+    }
+  }
+
+  /** Every package a lookup fetched, and every one it made runnable. */
+  const lookedUp: string[] = [];
+  /**
+   * A lookup in the test ecosystem: `@look:<name>:<version>` is the package
+   * `name` at `version` (none where the version is empty), resolved to a node
+   * whose files are fetched when wanted, and made runnable by the lookup
+   * itself.
+   */
+  class LookupRepo implements Repository, RepositoryLookup {
+    public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
+      const [pkg, version] = name.toBaseString().split(":");
+      return new RepositoryRef(this, { name: pkg, versionConstraint: version });
+    }
+
+    public getRepositoryPublishRef(name: Name): never {
+      throw new Error(`lookup_repo is not a publish destination ('${name.toString()}')`);
+    }
+
+    public resolve(reference: RepositoryRef): Computable<ResolvedNode> {
+      const { name, versionConstraint } = reference;
+      const version = versionConstraint === "" ? undefined : versionConstraint;
+      return Computable.resolve(
+        new ResolvedNode(
+          {
+            key: `lookup ${name}@${version ?? ""}`,
+            files: () => {
+              lookedUp.push(`fetched ${name}`);
+              return Computable.resolve(new PackageFileSet(new Map([[`${name}/data.txt`, contentOf(name)]]), name, version));
+            },
+          },
+          name,
+          version
+        )
+      );
+    }
+
+    public makeRunnable(pkg: PackageFileSet): Computable<RunnableFileSet> {
+      lookedUp.push(`ran ${pkg.packageName}`);
+      return Computable.resolve(
+        RunnableFileSet.forEntry(pkg, `${pkg.packageName}/data.txt`, [], new HostLink("node", process.execPath))
+      );
     }
   }
 
@@ -583,6 +627,7 @@ describe("CatalogRepository (through the model)", () => {
       ],
       repositories: [
         { type: "package_repo", provider: (context: TargetContext) => Computable.resolve(backing(context.name)) },
+        { type: "lookup_repo", provider: () => Computable.resolve(new LookupRepo()) },
         catalogRepositoryRegistration,
       ],
     },
@@ -601,6 +646,7 @@ describe("CatalogRepository (through the model)", () => {
     "default BUILD_OPERATION = build;\n" +
     "targetdef catalog { deps = PACKAGES; }\n" +
     "targetdef package_repo { }\n" +
+    "targetdef lookup_repo { }\n" +
     "targetdef test_deps { deps = PACKAGES; also = PACKAGES; }\n" +
     "targetdef test_run { tool = PACKAGES; }\n" +
     "targetdef test_usetool { tool = PACKAGES; }\n" +
@@ -629,6 +675,7 @@ describe("CatalogRepository (through the model)", () => {
     patchTexts.clear();
     scriptTexts.clear();
     ran.length = 0;
+    lookedUp.length = 0;
     statedBuilt.length = 0;
     statedFailing.clear();
     lastDeps = undefined;
@@ -3048,6 +3095,49 @@ describe("CatalogRepository (through the model)", () => {
     expect(repo.requested).to.deep.equal(["tool"]);
     expect(repo.materialized).to.deep.equal(["tool"]);
     expect(ran).to.deep.equal(["tool"]);
+  });
+
+  describe("a member from a lookup", () => {
+    it("is held where it has a version, and fetched only when a target uses it", async () => {
+      const model = build(
+        "lookup_repo @look { }\n" +
+          "catalog @cat { deps = @look:tool:1.2.0 @look:other:2.0.0; }\n" +
+          "test_deps a { deps = @cat:tool; }\n"
+      );
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
+      expect((lastDepSets[0] as PackageFileSet).version).to.equal("1.2.0");
+      expect(await lastDeps!.readFile("tool/data.txt")).to.equal("tool");
+      expect(lookedUp).to.deep.equal(["fetched tool"]);
+    });
+
+    it("is answered by its files alone under the files operation", async () => {
+      const model = build("lookup_repo @look { }\n" + "catalog @cat { deps = @look:tool:1.2.0; }\n");
+      const [files] = await model
+        .getConfig(Constraints.of({}), execution)
+        .materialize(writtenOnCommandLine("@cat:tool<BUILD_OPERATION=files>"));
+      expect([...(files as FileSet)].map(([name]) => name)).to.deep.equal(["tool/data.txt"]);
+    });
+
+    it("is made runnable by its lookup under run", async () => {
+      const model = build(
+        "lookup_repo @look { }\n" + "catalog @cat { deps = @look:tool:1.2.0; }\n" + "test_run a { tool = @cat:tool; }\n"
+      );
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
+      expect(lastTool).to.be.instanceOf(RunnableFileSet);
+      expect(lookedUp).to.deep.equal(["fetched tool", "ran tool"]);
+    });
+
+    it("is refused where its package has no version", async () => {
+      const model = build(
+        "lookup_repo @look { }\n" + "catalog @cat { deps = @look:tool:; }\n" + "test_deps a { deps = @cat:tool; }\n"
+      );
+      try {
+        await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
+        expect.fail("expected the unversioned entry to be refused");
+      } catch (err) {
+        expect((rootCauseOf(err) as Error).message).to.equal("Catalog entry 'tool:' is a package with no version");
+      }
+    });
   });
 
   it("attributes an unpinned member to the written reference (a plain resolution failure)", async () => {

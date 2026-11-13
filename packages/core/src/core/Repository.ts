@@ -29,6 +29,7 @@ import { Dependency, isPackage, Package, PackageFileSet, ResolvedNode } from "./
 import { chainSteps } from "./Provenance";
 import { Name } from "./Name";
 import type { PublishableFileSet } from "./PublishableFileSet";
+import type { RunnableFileSet } from "./RunnableFileSet";
 import type { ITaskReport } from "../support/Execute";
 import type { Requirement, RequirementSource, ResolvedMember, Selected } from "../resolver/Types";
 import type { PackageFormat } from "../resolver/PackageFormat";
@@ -117,6 +118,14 @@ export interface RepositoryLookup {
    * answer is used.
    */
   resolveFiles?(reference: RepositoryRef): Computable<FileSet>;
+
+  /**
+   * Make a package this repository resolved runnable, as {@link resolve}
+   * answers a reference under `run`: what a catalog holding the package hands
+   * a consumer under `run`. Absent, the package cannot be run through a
+   * catalog.
+   */
+  makeRunnable?(pkg: PackageFileSet): Computable<RunnableFileSet>;
 
   /**
    * Get the requirement `ref` declares, for a generated manifest: the package

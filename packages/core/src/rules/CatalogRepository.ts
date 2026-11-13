@@ -21,14 +21,7 @@ import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { contentOf, isPackage, Package, UsedFor } from "../core/PackageFileSet";
 import { TargetRef } from "../core/TargetRef";
-import {
-  RepositoryCollection,
-  isRepositoryReader,
-  Repository,
-  RepositoryPublishRef,
-  RepositoryRef,
-  SourceRef,
-} from "../core/Repository";
+import { RepositoryCollection, Repository, RepositoryPublishRef, RepositoryRef, SourceRef } from "../core/Repository";
 import { ResolvedCollection, ResolvedMember } from "../resolver/Types";
 import { FileSetRef } from "../core/FileSetRef";
 import { Requirement } from "../resolver/Types";
@@ -205,8 +198,8 @@ function catalogRequirements(context: TargetContext): ResolutionSpec {
 
 /**
  * Throw for an entry the catalog cannot hold, as written: one projecting into a
- * package, a reference to a repository that does not resolve versions or to
- * another catalog's member, and one naming no package (a fetch table).
+ * package, a reference to another catalog's member, and one naming no package
+ * (a fetch table).
  */
 function checkEntries(context: TargetContext, sources: ReadonlyArray<SourceRef>): void {
   /* An entry projecting into a package (`@npm:pkg:1.0.0:lib/*`,
@@ -226,21 +219,14 @@ function checkEntries(context: TargetContext, sources: ReadonlyArray<SourceRef>)
   if (pendingLocal) {
     throw projectsInto(isPackage(pendingLocal.source) ? `'${pendingLocal.source.packageName}'` : "of a local target");
   }
-  /* A registry reference must be to a repository that resolves versions; a
-   * member of another catalog is refused. */
   const references = sources.filter((source): source is RepositoryRef => source instanceof RepositoryRef);
-  const unresolvable = references.find(reference => !isRepositoryReader(reference.source));
-  if (unresolvable) {
-    const entry = unresolvable.toString();
+  const member = references.find(reference => reference.source instanceof CatalogRepository);
+  if (member) {
     throw new RequirementResolutionError(
-      references.filter(reference => reference.source === unresolvable.source),
-      unresolvable.source instanceof CatalogRepository
-        ? new FabrError(`Catalog entry '${entry}' is a member of another catalog`).withHelp(
-            "a catalog cannot pin another catalog's members — pin the package directly here, or reference the other catalog's member at the point of use"
-          )
-        : new FabrError(`Catalog entry '${entry}' comes from a repository that does not resolve package versions`).withHelp(
-            "a catalog pins versions of registry packages; reference the repository's content directly instead"
-          )
+      references.filter(reference => reference.source === member.source),
+      new FabrError(`Catalog entry '${member.toString()}' is a member of another catalog`).withHelp(
+        "a catalog cannot pin another catalog's members — pin the package directly here, or reference the other catalog's member at the point of use"
+      )
     );
   }
   /* Anything neither a requirement, a target nor a package (a fetch table)
@@ -261,7 +247,8 @@ function checkEntries(context: TargetContext, sources: ReadonlyArray<SourceRef>)
  * gives it. An entry is the reference written, or for a package built in the
  * project, the package as the collection holds it, unbuilt. An alternate
  * (`?`) is no entry, and one build written twice is one entry. Throws for an
- * entry that resolved to something other than a package.
+ * entry that resolved to something other than a package, and for a
+ * repository's package with no version (a registry's always has one).
  */
 function catalogOf(catalogName: string, requirements: ResolvedRequirements, requirement: string): ResolvedCatalog {
   const collection = requirements.collectionOf(requirement);
@@ -273,6 +260,14 @@ function catalogOf(catalogName: string, requirements: ResolvedRequirements, requ
       const from = source instanceof FileSet ? describeProvenance(source.origin) : undefined;
       throw new FabrError(`Catalog ${catalogName} has an entry with no name to address it by${from ? ` (${from})` : ""}`).withHelp(
         "a catalog entry is a package requirement (`@npm:pkg:1.2.3`) or a target, addressed by its name"
+      );
+    }
+    if (reference instanceof RepositoryRef && source.version === undefined) {
+      throw new RequirementResolutionError(
+        [reference],
+        new FabrError(`Catalog entry '${reference.toString()}' is a package with no version`).withHelp(
+          "a catalog holds versions of packages; reference this one directly at the point of use"
+        )
       );
     }
     entries.set(

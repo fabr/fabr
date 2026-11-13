@@ -27,6 +27,7 @@ import {
   MemoryCache,
   Name,
   onlyTo,
+  PackageFileSet,
   PartialRepositoryRef,
   Property,
   registerProvenanceDescriber,
@@ -240,12 +241,7 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
           this.images.getOrCreate(key, () => this.image(request, manifest, reference.name, origin));
         /* Under `run`, the image is a program the container engine runs. */
         const files = (): Computable<FileSet> =>
-          this.context.operation === "run"
-            ? Computable.forAll(
-                [image(), this.context.getGlobalRunnable("CONTAINER_ENGINE")] as const,
-                (pulled: ImageFileSet, engine: RunnableFileSet) => imageRunnable(pulled, reference.name, engine, this.context)
-              )
-            : image();
+          this.context.operation === "run" ? image().then(pulled => this.makeRunnable(pulled)) : image();
         return new ResolvedNode(
           { key: this.context.operation === "run" ? `runnable ${key}` : key, files },
           reference.name,
@@ -255,6 +251,16 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
         );
       });
     });
+  }
+
+  /** Make an image this registry resolved a program the container engine runs (see {@link imageRunnable}). */
+  public makeRunnable(pkg: PackageFileSet): Computable<RunnableFileSet> {
+    if (!(pkg instanceof ImageFileSet)) {
+      return Computable.reject(new FabrError(`internal: '${pkg.packageName}' is no image`));
+    }
+    return this.context
+      .getGlobalRunnable("CONTAINER_ENGINE")
+      .then(engine => imageRunnable(pkg, pkg.packageName, engine, this.context));
   }
 
   /** Find the manifest of the image `request` asks for: the one `version` names, or, where that is an index, the one in it for the platform. */

@@ -19,49 +19,30 @@
 
 /**
  * The `node_distribution` repository: Node.js itself, as nodejs.org publishes
- * it (`@node:24.22.1`). Each version is a package named `node` with no
- * requirements, whose files are the release for the target platform with its
- * top directory stripped (`bin/node`, `lib/`, `include/`). A version is
- * published where its `SHASUMS256.txt` is, and the archive is checked against
- * that file as it streams.
+ * it (`@node:24.22.1`, or `@node:22` for the lowest 22 release). Each version
+ * is a package named `node` with no requirements, whose files are the release
+ * for the target platform with its top directory stripped (`bin/node`, `lib/`,
+ * `include/`). A version is published where its `SHASUMS256.txt` is, and the
+ * archive is checked against that file as it streams.
  */
 
 import {
   Computable,
+  Distribution,
   FabrError,
-  fetchArchive,
   fetchDocument,
-  FileSet,
-  IProjection,
-  lowestSatisfying,
-  markerOnProjection,
-  Name,
-  PackageFileSet,
-  PackageFormat,
-  parseJson,
-  parseVersion,
-  Repository,
-  RepositoryPublishRef,
-  RepositoryReader,
-  RepositoryRef,
-  Requirement,
-  resolveBarePackage,
+  IDownloadSource,
   MemoryCache,
-  RunnableFileSet,
+  parseJson,
+  Repository,
+  RepositoryImplementation,
   SEMVER,
   SemverConstraint,
   SemverVersion,
-  SymlinkFile,
-  TARGET,
   TargetContext,
   toJsonObject,
   tripleToNpm,
-  vendPackageRef,
   VersionNotFoundError,
-  versionToString,
-  PartialRepositoryRef,
-  stripArchiveRoot,
-  RepositoryImplementation,
 } from "@fabr-build/core";
 
 /** Where the Node.js project publishes builds nodejs.org/dist does not carry
@@ -108,186 +89,54 @@ function toNodeVersions(json: unknown): string[] {
 }
 
 /**
- * Split `<version>[:<projection>]` (the reference after `@node:`): the version
- * runs to the first `:` or `/`, and the package is always `node`.
+ * The repository a `node_distribution` declaration builds: nodejs.org's
+ * release tree, falling back to unofficial-builds for a platform nodejs.org
+ * does not publish.
  */
-function splitNodeReference(name: Name): Requirement & { projection?: IProjection } {
-  const written = name.toBaseString();
-  const colon = written.indexOf(":");
-  const slash = written.indexOf("/");
-  const boundary = colon === -1 ? slash : slash === -1 ? colon : Math.min(colon, slash);
-  if (boundary === -1) {
-    return { name: NODE_PACKAGE, versionConstraint: written === "" ? undefined : written };
-  }
-  const version = written.substring(0, boundary);
-  if (version.endsWith("?") || version.endsWith("!")) {
-    throw markerOnProjection(name);
-  }
-  const prefix = written[boundary] === "/" ? version + "/" : "";
-  return { name: NODE_PACKAGE, versionConstraint: version, projection: { pattern: name.substring(boundary + 1), prefix } };
-}
-
-/** Check a node reference: it states a version or range, and an override marker an exact version. */
-function validateNodeRequirement({ versionConstraint, override }: Requirement): void {
-  if (versionConstraint === undefined) {
-    throw new FabrError("Missing version in Node.js reference (expected '@node:<version-or-range>')");
-  }
-  if (override !== undefined && SEMVER.exactVersion?.(versionConstraint) === undefined) {
-    throw new FabrError(`'${versionConstraint}' is not a valid override for Node.js: a marker needs an exact version`);
-  }
-  try {
-    SEMVER.parseConstraint(versionConstraint);
-  } catch {
-    throw new FabrError(`'${versionConstraint}' is not a valid Node.js version or range`);
-  }
-}
-
-/**
- * Make a node release runnable: the release is the install, launched
- * directly, its entry selected by path (`@node:24.22.1:bin/node`). The
- * release's symlinks (`bin/npm`) stay in the install but are left off the
- * surface: a symlink there is read as a bin targeting an install path, and
- * these target paths relative to the link.
- */
-
-function makeNodeRunnable(pkg: PackageFileSet): Computable<RunnableFileSet> {
-  const surface = new FileSet(new Map([...pkg].filter(([, file]) => !(file instanceof SymlinkFile))));
-  return Computable.resolve(new RunnableFileSet(pkg, [], undefined, "", surface));
-}
-
-/** The format of a node distribution: semver versions of the one package `node`. */
-export const NODE_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
-  ...SEMVER,
-  name: "node",
-  resolutionTag: "node:resolve:2",
-  splitReference: splitNodeReference,
-  validateRequirement: validateNodeRequirement,
-  parsePublishCoordinate: () => {
-    throw new FabrError("Node.js releases cannot be published to");
-  },
-  readContentPackage: () => Computable.reject(new FabrError("content cannot be read as a Node.js release")),
-  makeRunnable: makeNodeRunnable,
-};
-
-/**
- * The repository a `node_distribution` declaration builds: a
- * {@link RepositoryReader} over nodejs.org's release tree, falling back to
- * unofficial-builds for a platform nodejs.org does not publish.
- */
-export class NodeDistribution implements Repository, RepositoryReader<SemverVersion, SemverConstraint> {
-  public readonly format = NODE_FORMAT;
+export class NodeDistribution extends Distribution<SemverVersion, SemverConstraint> {
+  protected readonly packageName = NODE_PACKAGE;
+  protected readonly title = "Node.js";
+  protected readonly domain = SEMVER;
+  protected readonly archiveTag = "node:release:1";
+  protected readonly unavailableHelp = "set NODE to a node binary for this platform";
+  protected readonly binDirectories = ["bin/"];
   /** Each release's SHASUMS256.txt from each source, as read this run. */
   private readonly shasums = new MemoryCache<string, Map<string, string> | undefined>();
-  /** The published versions, as read this run. */
-  private readonly versions = new MemoryCache<string, SemverVersion[]>();
-  /** The published versions, as re-read this run for a version the held list lacked. */
-  private readonly revalidatedVersions = new MemoryCache<string, SemverVersion[]>();
 
   constructor(
-    private readonly context: TargetContext,
-    private readonly url: string,
+    context: TargetContext,
+    url: string,
     private readonly unofficialUrl = NODE_UNOFFICIAL_URL
-  ) {}
-
-  public get identity(): string {
-    return this.url;
+  ) {
+    super(context, url);
   }
 
-  public get name(): string {
-    return this.context.name;
+  /** List the published versions, from nodejs.org's `index.json`, which lists every platform's. */
+  protected listVersions(_target: string, revalidate: boolean): Computable<string[]> {
+    const url = `${this.url}/${INDEX_FILE}`;
+    return fetchDocument(this.context, {
+      url,
+      file: INDEX_FILE,
+      tag: "node:versions:1",
+      report: { resource: "version list", role: "index" },
+      convert: text => parseJson(text, `release list from ${this.url}`, toNodeVersions),
+      options: { immutable: false, forceRevalidate: revalidate },
+    }).then(listed => listed ?? []);
   }
 
-  public get operation(): string {
-    return this.context.operation;
-  }
-
-  public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
-    return vendPackageRef(this, this.format, name);
-  }
-
-  public getRepositoryPublishRef(): RepositoryPublishRef {
-    throw new FabrError(`${this.name} cannot be published to`);
-  }
-
-  /** Name the target platform, which decides the archive a version is fetched as. */
-  public environmentKey(): Computable<string> {
-    return this.platform();
-  }
-
-  /** Get the requirements of a release, which are none, once its SHASUMS256.txt
-   *  shows it is published. */
-  public getRequirements(_pkg: string, version: SemverVersion): Computable<Requirement[]> {
-    const exact = versionToString(version);
-    return this.releaseShasums(this.url, exact).then(sums => {
-      if (sums === undefined) {
-        throw new VersionNotFoundError(NODE_PACKAGE, exact, `Node.js ${exact} is not published at ${this.url}`);
-      }
-      return [];
-    });
-  }
-
-  public lowestAvailable(_pkg: string, constraint: string): Computable<SemverVersion | undefined> {
-    let parsed: SemverConstraint;
-    try {
-      parsed = SEMVER.parseConstraint(constraint);
-    } catch {
-      return Computable.resolve(undefined);
+  /** Find a release's archive for `target`: from nodejs.org where its
+   *  SHASUMS256.txt lists one, else from unofficial-builds. */
+  protected findArchive(version: string, target: string): Computable<IDownloadSource> {
+    const platform = this.platformOf(target);
+    if (platform === undefined) {
+      return Computable.reject(this.unavailable(target));
     }
-    return this.publishedVersions(false).then(versions => {
-      const found = lowestSatisfying(versions, parsed);
-      return found
-        ? Computable.resolve<SemverVersion | undefined>(found)
-        : this.publishedVersions(true).then(revalidated => lowestSatisfying(revalidated, parsed));
-    });
-  }
-
-  public availableVersions(): Computable<SemverVersion[] | undefined> {
-    return this.publishedVersions(false);
-  }
-
-  public fetchFiles(reference: RepositoryRef): Computable<FileSet> {
-    return Computable.resolve(undefined).then(() => resolveBarePackage(this, reference));
-  }
-
-  /** Fetch a release for the target platform, verified against its SHASUMS256.txt. */
-  public fetch(_pkg: string, version: SemverVersion): Computable<PackageFileSet> {
-    const exact = versionToString(version);
-    return this.platform()
-      .then(platform => this.artifact(exact, platform))
-      .then(({ url, sha256 }) =>
-        fetchArchive(this.context, {
-          key: url,
-          tag: "node:release:1",
-          report: { resource: "Node.js", role: "content" },
-          source: () => Computable.resolve({ url, expected: { algorithm: "sha256", encoding: "hex", value: sha256 } }),
-          keep: stripArchiveRoot,
-        })
-      )
-      .then(files => new PackageFileSet(files, NODE_PACKAGE, exact));
-  }
-
-  /** Name the target platform as node's release archives do: `darwin-arm64`, `linux-x64-musl`. */
-  private platform(): Computable<string> {
-    return this.context.getGlobalString(TARGET).then(triple => {
-      const { os, cpu, libc } = tripleToNpm(triple);
-      if ((os !== "darwin" && os !== "linux") || (cpu !== "x64" && cpu !== "arm64")) {
-        throw new FabrError(`Node.js releases are not available for '${triple}'`).withHelp(
-          "set NODE to a node binary for this platform"
-        );
-      }
-      return libc === "musl" ? `${os}-${cpu}-musl` : `${os}-${cpu}`;
-    });
-  }
-
-  /** Find a release's archive for `platform`: from nodejs.org where it lists
-   *  one, else from unofficial-builds. */
-  private artifact(version: string, platform: string): Computable<{ url: string; sha256: string }> {
-    const find = (sums: Map<string, string> | undefined, base: string): { url: string; sha256: string } | undefined => {
+    const find = (sums: Map<string, string> | undefined, base: string): IDownloadSource | undefined => {
       for (const suffix of ARCHIVE_SUFFIXES) {
         const file = `node-v${version}-${platform}${suffix}`;
         const sha256 = sums?.get(file);
         if (sha256 !== undefined) {
-          return { url: `${base}/v${version}/${file}`, sha256 };
+          return { url: `${base}/v${version}/${file}`, expected: { algorithm: "sha256", encoding: "hex", value: sha256 } };
         }
       }
       return undefined;
@@ -301,7 +150,7 @@ export class NodeDistribution implements Repository, RepositoryReader<SemverVers
         this.releaseShasums(this.unofficialUrl, version).then(unofficial => {
           const found = find(unofficial, this.unofficialUrl);
           if (found === undefined) {
-            throw new FabrError(`Node.js ${version} is not published for ${platform}`).withHelp(
+            throw new FabrError(`Node.js ${version} is not published for ${target}`).withHelp(
               "choose another version, or set NODE to a node binary for this platform"
             );
           }
@@ -309,6 +158,15 @@ export class NodeDistribution implements Repository, RepositoryReader<SemverVers
         })
       );
     });
+  }
+
+  /** @return the target platform as node's release archives name it (`darwin-arm64`, `linux-x64-musl`), or undefined where nodejs.org publishes none for it. */
+  private platformOf(target: string): string | undefined {
+    const { os, cpu, libc } = tripleToNpm(target);
+    if ((os !== "darwin" && os !== "linux") || (cpu !== "x64" && cpu !== "arm64")) {
+      return undefined;
+    }
+    return libc === "musl" ? `${os}-${cpu}-musl` : `${os}-${cpu}`;
   }
 
   /** Read a release's SHASUMS256.txt from `base`, or undefined where it has none (a 404). */
@@ -322,31 +180,6 @@ export class NodeDistribution implements Repository, RepositoryReader<SemverVers
         report: { resource: "checksums", role: "index" },
         convert: text => parseShasums(text, url),
       })
-    );
-  }
-
-  /** List the published versions, from nodejs.org's `index.json`.
-   *  `forceRevalidate` re-reads a held list, for a caller asking about a
-   *  version it may lack. Read once per run either way. */
-  private publishedVersions(forceRevalidate: boolean): Computable<SemverVersion[]> {
-    const url = `${this.url}/${INDEX_FILE}`;
-    return (forceRevalidate ? this.revalidatedVersions : this.versions).getOrCreate(url, () =>
-      fetchDocument(this.context, {
-        url,
-        file: INDEX_FILE,
-        tag: "node:versions:1",
-        report: { resource: "version list", role: "index" },
-        convert: text => parseJson(text, `release list from ${this.url}`, toNodeVersions),
-        options: { immutable: false, forceRevalidate },
-      }).then(listed =>
-        (listed ?? []).flatMap(text => {
-          try {
-            return [parseVersion(text)];
-          } catch {
-            return [];
-          }
-        })
-      )
     );
   }
 }

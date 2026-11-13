@@ -18,8 +18,8 @@
  */
 
 import { expect } from "chai";
-import { FileSet, IFile, MemoryFile, parseName, toArgv } from "@fabr-build/core";
-import { makeJdkRunnable } from "./JdkDistribution";
+import { FileSet, IFile, MemoryFile, parseName, releaseRunnable, toArgv } from "@fabr-build/core";
+import { JDK_BIN_DIRECTORIES } from "./JdkDistribution";
 
 /** A release laid out as `names`, each executable where it is marked `*`. */
 function release(...names: string[]): FileSet {
@@ -34,11 +34,11 @@ function release(...names: string[]): FileSet {
 
 /** @return the install path `fabr run`'s `@jdk:<v>:<command>` would launch. */
 function entryOf(files: FileSet, command: string): string {
-  const selected = makeJdkRunnable(files).selectEntry([{ pattern: parseName(command), prefix: "" }]);
+  const selected = releaseRunnable(files, JDK_BIN_DIRECTORIES).selectEntry([{ pattern: parseName(command), prefix: "" }]);
   return toArgv(selected!.toCommandLine())[0];
 }
 
-describe("makeJdkRunnable", () => {
+describe("a JDK release run", () => {
   it("offers each command in the home's bin by name, wherever the home is", () => {
     const mac = release("Contents/Home/bin/javac*", "Contents/Home/bin/java*", "Contents/Home/lib/modules", "Contents/Info.plist");
     expect(entryOf(mac, "javac")).to.equal("Contents/Home/bin/javac");
@@ -49,6 +49,6 @@ describe("makeJdkRunnable", () => {
   it("offers a Windows command without its .exe, and no DLL beside it", () => {
     const windows = release("bin/javac.exe", "bin/java.exe", "bin/jli.dll", "lib/modules");
     expect(entryOf(windows, "javac")).to.equal("bin/javac.exe");
-    expect(makeJdkRunnable(windows).selectEntry([{ pattern: parseName("jli"), prefix: "" }])).to.equal(undefined);
+    expect(releaseRunnable(windows, JDK_BIN_DIRECTORIES).selectEntry([{ pattern: parseName("jli"), prefix: "" }])).to.equal(undefined);
   });
 });

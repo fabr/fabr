@@ -16,8 +16,8 @@ default MAVEN_REPOSITORY_URL = https://repo1.maven.org/maven2;
 default JVM_TARGET = jvm21;
 
 #
-# The JDK release the Java tools come from: `@jdk:21.0.12.1+1`, or any release
-# `fabr ls @jdk` lists.
+# The JDK release the Java tools come from: `@jdk:21.0.12.1+1`, any release
+# `fabr ls @jdk` lists, or the lowest release of a version (`@jdk:21`).
 #
 
 default JDK = @jdk:21.0.12.1+1;
@@ -397,8 +397,10 @@ targetdef maven_repository {
 # Eclipse Temurin JDK releases, from the Adoptium API: `@jdk:21.0.12.1+1` is
 # that release for the target platform, and `@jdk:21.0.12.1+1:javac` its
 # compiler. A release is named as Adoptium names it, less its `jdk-` prefix
-# (`@jdk:8u302-b08` for Java 8); `fabr ls @jdk` lists them. fabr declares
-# `@jdk` for you; declaring it yourself points it at a mirror of the API:
+# (`@jdk:8u302-b08` for Java 8); `fabr ls @jdk` lists them. Version numbers
+# alone name the lowest release starting with them (`@jdk:21`, `@jdk:8u302`).
+# fabr declares `@jdk` for you; declaring it yourself points it at a mirror of
+# the API:
 #
 #     jdk_distribution @jdk { url = "https://adoptium.example.com"; }
 #

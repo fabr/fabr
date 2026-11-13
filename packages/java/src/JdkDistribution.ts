@@ -21,10 +21,10 @@
  * The `jdk_distribution` repository: Eclipse Temurin JDKs, as the Adoptium
  * API publishes them. A reference names a release by the API's own name for
  * it, less its `jdk-` (or, for Java 8, `jdk`) prefix: `@jdk:17.0.12+7` is
- * `jdk-17.0.12+7`, `@jdk:8u302-b08` is `jdk8u302-b08`. It is looked up as
- * written: the release for the target platform, its top directory stripped,
- * checked against the digest the API states. Nothing is selected or
- * resolved; `@jdk` on its own lists the releases.
+ * `jdk-17.0.12+7`, `@jdk:8u302-b08` is `jdk8u302-b08`. A prefix of version
+ * numbers names the lowest release starting with them (`@jdk:21`,
+ * `@jdk:17.0.12`, `@jdk:8u302`). The release is the one for the target
+ * platform, checked against the digest the API states.
  *
  * Under `run`, a release offers each command in its home's `bin/` by name
  * (`@jdk:17.0.12+7:javac`), wherever the home is (`Contents/Home/` on macOS),
@@ -33,36 +33,18 @@
 
 import {
   Computable,
+  Distribution,
   FabrError,
-  fetchArchive,
   fetchDocument,
-  FileSet,
-  IFile,
-  markerOnProjection,
-  MemoryCache,
-  Name,
-  PartialRepositoryRef,
+  IDownloadSource,
   parseJson,
-  Reference,
   Repository,
-  RepositoryLookup,
-  RepositoryPublishRef,
-  RepositoryRef,
-  RunnableFileSet,
-  stripArchiveRoot,
-  SymlinkFile,
-  TARGET,
+  RepositoryImplementation,
   TargetContext,
   toJsonObject,
   tripleToNpm,
-  RepositoryImplementation,
 } from "@fabr-build/core";
-
-/** The one package a JDK distribution holds. */
-const JDK_PACKAGE = "jdk";
-
-/** What a reference may name a release with: no path or projection characters. */
-const RELEASE_PATTERN = /^[0-9][0-9A-Za-z.+_-]*$/;
+import { JDK_VERSIONS, JdkConstraint, JdkVersion } from "./JdkVersion";
 
 /** How many releases are asked for per page (the API may list fewer). */
 const PAGE_SIZE = 50;
@@ -72,13 +54,14 @@ const MAX_PAGES = 100;
 /** The query naming the JDK builds this repository serves, beside the platform. */
 const BUILD_QUERY = "image_type=jdk&jvm_impl=hotspot&heap_size=normal&vendor=eclipse&project=jdk&release_type=ga";
 
-/** Where a release's home is, in the order looked for, within its archive's top directory. */
-const HOMES = ["Contents/Home/", ""];
-/** The suffix a Windows command carries, which the surface leaves off its name. */
-const EXE = ".exe";
+/** Where a release keeps its commands, in the order looked for, within its archive's top directory. */
+export const JDK_BIN_DIRECTORIES = ["Contents/Home/bin/", "bin/"];
 
-interface Platform {
+/** A platform as the Adoptium API names it. */
+interface IJdkPlatform {
+  /** `mac`, `linux`, `alpine-linux` or `windows`. */
   readonly os: string;
+  /** `x64` or `aarch64`. */
   readonly architecture: string;
 }
 
@@ -118,141 +101,32 @@ function toArchive(json: unknown): { url: string; sha256: string } {
   return { url: link, sha256: checksum };
 }
 
-/**
- * Make a JDK runnable: the release is the install, and its surface offers
- * each command in its home's `bin/` by name (`javac`, for `javac.exe` too), as
- * well as every file by path. A command is an executable file there, or on
- * Windows, whose archives record no modes, an `.exe`.
- */
-export function makeJdkRunnable(release: FileSet): RunnableFileSet {
-  const bin = `${HOMES.find(prefix => release.getFile(`${prefix}bin/java`) !== undefined || release.getFile(`${prefix}bin/java${EXE}`) !== undefined) ?? ""}bin/`;
-  const files = [...release].filter(([, file]) => !(file instanceof SymlinkFile));
-  const commands = files
-    .filter(
-      ([name, file]) =>
-        name.startsWith(bin) && !name.substring(bin.length).includes("/") && (name.endsWith(EXE) || (file.mode & 0o111) !== 0)
-    )
-    .map(([name]): [string, IFile] => {
-      const command = name.substring(bin.length);
-      return [command.endsWith(EXE) ? command.slice(0, -EXE.length) : command, new SymlinkFile(name)];
-    });
-  return new RunnableFileSet(release, [], undefined, "", new FileSet(new Map([...files, ...commands])));
-}
-
 /** A `jdk_distribution` repository: the Temurin releases the Adoptium API at `url` publishes. */
-export class JdkDistribution implements Repository, RepositoryLookup {
-  private readonly releases = new MemoryCache<string, string[]>();
+export class JdkDistribution extends Distribution<JdkVersion, JdkConstraint> {
+  protected readonly packageName = "jdk";
+  protected readonly title = "JDK";
+  protected readonly domain = JDK_VERSIONS;
+  protected readonly archiveTag = "jdk:release:1";
+  protected readonly unavailableHelp = "set JAVA and JAVAC to a JDK for this platform";
+  protected readonly binDirectories = JDK_BIN_DIRECTORIES;
 
-  constructor(
-    private readonly context: TargetContext,
-    private readonly url: string
-  ) {}
-
-  private get name(): string {
-    return this.context.name;
+  constructor(context: TargetContext, url: string) {
+    super(context, url);
   }
 
-  /** Vend the reference to the release `name` names (`17.0.12+7`), with any
-   *  projection after it, or the namespace of every release. */
-  public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
-    if (name.getMarker() !== undefined) {
-      throw new FabrError(
-        `'${name.toString()}' names a JDK release, which is looked up, not resolved, so an override marker means nothing on it`
-      ).withHelp("write the reference without the marker");
-    }
-    const written = name.toBaseString();
-    if (written === "") {
-      return new PartialRepositoryRef(this, "");
-    }
-    const colon = written.indexOf(":");
-    const slash = written.indexOf("/");
-    const boundary = colon === -1 ? slash : slash === -1 ? colon : Math.min(colon, slash);
-    if (boundary === -1) {
-      return new RepositoryRef(this, { name: JDK_PACKAGE, versionConstraint: written });
-    }
-    const release = written.substring(0, boundary);
-    if (release.endsWith("?") || release.endsWith("!")) {
-      throw markerOnProjection(name);
-    }
-    const prefix = written[boundary] === "/" ? release + "/" : "";
-    return new RepositoryRef(this, { name: JDK_PACKAGE, versionConstraint: release }).find(name.substring(boundary + 1), prefix);
+  /** List the releases published for `target`, page by page. */
+  protected listVersions(target: string, revalidate: boolean): Computable<string[]> {
+    return Computable.resolve(undefined).then(() => this.releasePages(this.platformQuery(target), revalidate, 0, []));
   }
 
-  public getRepositoryPublishRef(): RepositoryPublishRef {
-    throw new FabrError(`${this.name} cannot be published to`);
+  /** Find a release's archive for `target`, by the API's name for it. */
+  protected findArchive(release: string, target: string): Computable<IDownloadSource> {
+    return Computable.resolve(undefined).then(() => this.assets(release, target));
   }
 
-  /** List the releases published for the target platform, newest first, as the API orders them. */
-  public children(): Computable<Map<string, Reference>> {
-    return this.publishedReleases().then(
-      releases =>
-        new Map(
-          releases.map((release): [string, Reference] => [
-            release,
-            new RepositoryRef(this, { name: JDK_PACKAGE, versionConstraint: release }),
-          ])
-        )
-    );
-  }
-
-  /** Fetch the release a reference names for the target platform: its runnable under `run`, else its files. */
-  public resolve(reference: RepositoryRef): Computable<FileSet> {
-    const release = reference.versionConstraint ?? "";
-    if (!RELEASE_PATTERN.test(release)) {
-      return Computable.reject(
-        new FabrError(`'${release}' does not name a JDK release`).withHelp(
-          "name one as `fabr ls @jdk` lists them, as in '@jdk:21.0.12.1+1'"
-        )
-      );
-    }
-    return this.platform()
-      .then(platform =>
-        fetchArchive(this.context, {
-          key: `${this.url} ${release} ${platform.os}-${platform.architecture}`,
-          tag: "jdk:release:1",
-          report: { resource: "JDK", role: "content" },
-          source: () =>
-            this.archive(release, platform).then(({ url, sha256 }) => ({
-              url,
-              expected: { algorithm: "sha256", encoding: "hex" as const, value: sha256 },
-            })),
-          keep: stripArchiveRoot,
-        })
-      )
-      .then(files => (this.context.operation === "run" ? makeJdkRunnable(files) : files));
-  }
-
-  /** Get the target platform as the Adoptium API names it: `mac`/`linux`/`alpine-linux`/`windows`, `x64`/`aarch64`. */
-  private platform(): Computable<Platform> {
-    return this.context.getGlobalString(TARGET).then(triple => {
-      const { os, cpu, libc } = tripleToNpm(triple);
-      const architecture = cpu === "x64" ? "x64" : cpu === "arm64" ? "aarch64" : undefined;
-      const adoptiumOs =
-        os === "darwin"
-          ? "mac"
-          : os === "linux"
-            ? libc === "musl"
-              ? "alpine-linux"
-              : "linux"
-            : os === "win32"
-              ? "windows"
-              : undefined;
-      if (architecture === undefined || adoptiumOs === undefined) {
-        throw new FabrError(`JDK releases are not available for '${triple}'`).withHelp(
-          "set JAVA and JAVAC to a JDK for this platform"
-        );
-      }
-      return { os: adoptiumOs, architecture };
-    });
-  }
-
-  private platformQuery({ os, architecture }: Platform): string {
-    return `os=${os}&architecture=${architecture}&${BUILD_QUERY}`;
-  }
-
-  /** Find a release's archive for `platform`, by the API's name for it. */
-  private archive(release: string, platform: Platform): Computable<{ url: string; sha256: string }> {
-    const url = `${this.url}/v3/assets/release_name/eclipse/${encodeURIComponent(releaseNameOf(release))}?${this.platformQuery(platform)}`;
+  /** Find a release's archive for `target` in the API's assets document for it. */
+  private assets(release: string, target: string): Computable<IDownloadSource> {
+    const url = `${this.url}/v3/assets/release_name/eclipse/${encodeURIComponent(releaseNameOf(release))}?${this.platformQuery(target)}`;
     return fetchDocument(this.context, {
       url,
       file: "assets.json",
@@ -261,24 +135,34 @@ export class JdkDistribution implements Repository, RepositoryLookup {
       convert: text => parseJson(text, `JDK ${release} release from ${this.url}`, toArchive),
     }).then(archive => {
       if (archive === undefined) {
-        throw new FabrError(`JDK ${release} is not published for ${platform.os}-${platform.architecture}`).withHelp(
+        throw new FabrError(`JDK ${release} is not published for ${target}`).withHelp(
           "`fabr ls @jdk` lists the releases published for the target platform"
         );
       }
-      return archive;
+      return { url: archive.url, expected: { algorithm: "sha256", encoding: "hex", value: archive.sha256 } };
     });
   }
 
-  /** List the releases published for the target platform, newest first, page by page, revalidated once per run. */
-  private publishedReleases(): Computable<string[]> {
-    return this.platform().then(platform => {
-      const query = this.platformQuery(platform);
-      return this.releases.getOrCreate(query, () => this.releasePages(query, 0, []));
-    });
+  /** Get the query naming `target` as the API does; throws {@link unavailable} where it publishes nothing for it. */
+  private platformQuery(target: string): string {
+    const platform = this.platformOf(target);
+    if (platform === undefined) {
+      throw this.unavailable(target);
+    }
+    return `os=${platform.os}&architecture=${platform.architecture}&${BUILD_QUERY}`;
+  }
+
+  /** @return the target platform as the Adoptium API names it (`mac`/`linux`/`alpine-linux`/`windows`, `x64`/`aarch64`), or undefined where it publishes none for it. */
+  private platformOf(target: string): IJdkPlatform | undefined {
+    const { os, cpu, libc } = tripleToNpm(target);
+    const architecture = cpu === "x64" ? "x64" : cpu === "arm64" ? "aarch64" : undefined;
+    const adoptiumOs =
+      os === "darwin" ? "mac" : os === "linux" ? (libc === "musl" ? "alpine-linux" : "linux") : os === "win32" ? "windows" : undefined;
+    return architecture === undefined || adoptiumOs === undefined ? undefined : { os: adoptiumOs, architecture };
   }
 
   /** List the releases from page `page` on, after `listed`; throws past {@link MAX_PAGES}. */
-  private releasePages(query: string, page: number, listed: string[]): Computable<string[]> {
+  private releasePages(query: string, revalidate: boolean, page: number, listed: string[]): Computable<string[]> {
     if (page >= MAX_PAGES) {
       throw new FabrError(`${this.url} lists more than ${MAX_PAGES * PAGE_SIZE} JDK releases`);
     }
@@ -289,10 +173,12 @@ export class JdkDistribution implements Repository, RepositoryLookup {
       tag: "jdk:releases:1",
       report: { resource: "version list", role: "index" },
       convert: text => parseJson(text, `JDK release list from ${this.url}`, toReleases),
-      options: { immutable: false, forceRevalidate: true },
+      options: { immutable: false, forceRevalidate: revalidate },
     }).then(releases => {
       /* End at a missing or empty page, not a short one: the API may list fewer than PAGE_SIZE on a page. */
-      return releases === undefined || releases.length === 0 ? listed : this.releasePages(query, page + 1, [...listed, ...releases]);
+      return releases === undefined || releases.length === 0
+        ? listed
+        : this.releasePages(query, revalidate, page + 1, [...listed, ...releases]);
     });
   }
 }

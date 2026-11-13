@@ -263,14 +263,18 @@ export function knownAs(requirement: Requirement, name: string | undefined): Req
 }
 
 /**
- * Make the resolved `pkg` runnable for `context`, by the format of `source`,
- * the registry it came from (for a catalog's member, the member's own
- * source). The closure `pkg` carries is kept as it is. Rejects where
- * `source` is not a registry.
+ * Make the resolved `pkg` runnable for `context`, as `source`, the repository
+ * it came from (for a catalog's member, the member's own source), makes its
+ * packages runnable: by a registry's format, or a lookup's own
+ * `makeRunnable`. The closure `pkg` carries is kept as it is. Rejects where
+ * `source` makes none runnable.
  */
 export function runnableFrom(context: ResolutionContext, source: RefSource, pkg: PackageFileSet): Computable<RunnableFileSet> {
   if (isRepositoryReader(source)) {
     return source.format.makeRunnable(pkg, context);
+  }
+  if ("makeRunnable" in source && source.makeRunnable !== undefined) {
+    return source.makeRunnable(pkg);
   }
   return Computable.reject(new FabrError(`'${pkg.packageName}' was delivered by a repository that cannot make it runnable`));
 }

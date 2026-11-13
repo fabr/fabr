@@ -476,7 +476,11 @@ function resolveMember(
       const alone = (): Computable<FileSet> =>
         local
           ? contentOf(entry).files().then(asOneSet)
-          : attributedTo(reference, () => pinnedFiles(collection, entry, member.operation));
+          : attributedTo(reference, () =>
+              isRepositoryReader(entry.source)
+                ? pinnedFiles(collection, entry, member.operation)
+                : lookedUpFiles(context, collection, entry)
+            );
       if (request.as === "files") {
         return alone().then(files => new FileSet(files, files.origin));
       }
@@ -538,6 +542,13 @@ function memberPackage(
     resolvedMembers.set(reference, held);
   }
   return held;
+}
+
+/** Fetch the files of the package `entry`, a lookup's reference, names, as `collection` resolved it. */
+function lookedUpFiles(context: ResolutionContext, collection: ResolvedCollection, entry: RepositoryRef): Computable<FileSet> {
+  return resolveSources(context, collection, [entry]).then(({ delivered: [answer] }) =>
+    isPackage(answer) ? contentOf(answer).files().then(asOneSet) : (answer as FileSet)
+  );
 }
 
 /** Fetch the package `entry` names, alone, at the version `collection` resolved it to, or what
