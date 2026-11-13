@@ -64,6 +64,7 @@ import {
   sourceStem,
 } from "./Planning";
 import { IWaveResult, runWave } from "./Wave";
+import { posixRelative, toPosix } from "../support/Paths";
 
 /* The compiler API's types, as this driver uses them: opaque where it only
  * passes a value along (diagnostics, source files), spelled out where it reads
@@ -840,7 +841,7 @@ export function installResolution(
     if (split === undefined || location === undefined) {
       return undefined;
     }
-    const relative = path.relative(path.dirname(issuer), path.join(location, split.subpath)).split(path.sep).join("/");
+    const relative = toPosix(path.relative(path.dirname(issuer), path.join(location, split.subpath)));
     const spelled = relative === "" ? "." : relative.startsWith("../") || relative === ".." ? relative : `./${relative}`;
     return split.subpath === "" || split.subpath.endsWith("/") ? `${spelled}/` : spelled;
   };
@@ -1505,7 +1506,7 @@ export function emittedPathOf(source: string, layout: IEmitLayout): string | und
  * relative, said explicitly (a bare `bar.js` would name a package), in forward
  * slashes. */
 export function emittedSpecifier(from: string, target: string): string {
-  const relative = path.relative(from, target).split(path.sep).join("/");
+  const relative = posixRelative(from, target);
   return relative.startsWith(".") ? relative : `./${relative}`;
 }
 
@@ -2789,7 +2790,7 @@ function emitDirectoryOf(options: CompilerOptions, root: string): string {
   if (typeof outDir !== "string") {
     return "";
   }
-  const relative = path.relative(root, path.resolve(root, outDir)).split(path.sep).join("/");
+  const relative = posixRelative(root, path.resolve(root, outDir));
   return relative === "" || relative.startsWith("..") ? "" : `${relative}/`;
 }
 
@@ -2804,7 +2805,7 @@ function nodeNamer(root: string, resolver: PnpResolver | undefined): (file: stri
     if (reached !== undefined) {
       return reached;
     }
-    const relative = path.relative(root, path.resolve(file)).split(path.sep).join("/");
+    const relative = posixRelative(root, path.resolve(file));
     return relative.startsWith("..") || path.isAbsolute(relative) ? undefined : relative;
   };
 }
@@ -2817,7 +2818,7 @@ function sourceRootOf(options: CompilerOptions, root: string): string | undefine
   if (typeof rootDir !== "string") {
     return undefined;
   }
-  const relative = path.relative(root, path.resolve(root, rootDir)).split(path.sep).join("/");
+  const relative = posixRelative(root, path.resolve(root, rootDir));
   return relative === "" || relative.startsWith("..") ? undefined : relative;
 }
 

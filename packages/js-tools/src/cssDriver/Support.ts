@@ -28,6 +28,8 @@ import { fileURLToPath } from "node:url";
 import { DEPS_REPORT_FLAG, IResolutionEdge, serializeRunReport } from "../pnp/ReadSet";
 import { resolveVirtual } from "../pnp/VirtualPath";
 import { toJsonObject } from "../support/Json";
+import { toPosix } from "../support/Paths";
+import { isAbsoluteEntry } from "../support/SourceMap";
 
 /** @return true if a name is a Sass source (one the driver compiles; a plain
  * `.css` passes through), otherwise false. */
@@ -91,10 +93,10 @@ export function sourceMapComment(mapName: string): string {
  * `<no source>` entry is left as it is.
  */
 export function relativeToMap(map: IRawSourceMap, mapName: string): IRawSourceMap {
-  const home = path.dirname(mapName);
+  const home = path.posix.dirname(mapName);
   return {
     ...map,
-    sources: map.sources.map(source => (source === "<no source>" ? source : path.relative(home, source) || source)),
+    sources: map.sources.map(source => (source === "<no source>" ? source : path.posix.relative(home, source) || source)),
   };
 }
 
@@ -216,7 +218,7 @@ export function sourceIdentity(entry: string, root: string, mapDir: string): str
   if (entry.startsWith("file://")) {
     return fileURLToPath(entry);
   }
-  return /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(entry) ? entry : path.resolve(root, mapDir, entry);
+  return isAbsoluteEntry(entry) ? entry : path.resolve(root, mapDir, entry);
 }
 
 /**
@@ -303,11 +305,6 @@ function encodeVlq(value: number): string {
   return text;
 }
 
-/** @return the path with POSIX separators. */
-function toPosix(name: string): string {
-  return name.split(path.sep).join("/");
-}
-
 /**
  * @return a source map with its `sources` renamed from where the files were
  * staged to what the target calls them: a file under the staged source root by
@@ -326,9 +323,10 @@ export function relocateCssSources(
   ownInput?: { path: string; rename: string }
 ): IRawSourceMap {
   const { root, srcRoot, mapDir } = where;
-  const staged = `${path.resolve(root, srcRoot)}/`;
-  const workingRoot = `${path.resolve(root)}/`;
-  const own = ownInput === undefined ? undefined : { path: path.resolve(root, srcRoot, ownInput.path), rename: ownInput.rename };
+  const staged = `${toPosix(path.resolve(root, srcRoot))}/`;
+  const workingRoot = `${toPosix(path.resolve(root))}/`;
+  const own =
+    ownInput === undefined ? undefined : { path: toPosix(path.resolve(root, srcRoot, ownInput.path)), rename: ownInput.rename };
   return {
     ...map,
     sources: map.sources.map(source => {
@@ -337,14 +335,14 @@ export function relocateCssSources(
       if (source === "<no source>") {
         return source;
       }
-      const absolute = source.startsWith("file://") ? fileURLToPath(source) : path.resolve(root, mapDir, source);
+      const absolute = toPosix(source.startsWith("file://") ? fileURLToPath(source) : path.resolve(root, mapDir, source));
       if (own !== undefined && absolute === own.path) {
         return own.rename;
       }
       if (absolute.startsWith(staged)) {
         return absolute.substring(staged.length);
       }
-      return absolute.startsWith(workingRoot) ? absolute.substring(workingRoot.length) : path.basename(absolute);
+      return absolute.startsWith(workingRoot) ? absolute.substring(workingRoot.length) : path.posix.basename(absolute);
     }),
   };
 }

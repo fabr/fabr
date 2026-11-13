@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { FileSource } from "../core/FileSet";
+import { FileSource, IFile } from "../core/FileSet";
 import { StringReader } from "./StringReader";
 import { getEastAsianWidth, isMark } from "unicode-properties";
 
@@ -26,6 +26,8 @@ export interface ISourcePosition {
   file: string;
   offset: number;
   reader: StringReader;
+  /** The file it was read from, where one was read ({@link IBuildFile.readFrom}). */
+  readFrom?: IFile;
 }
 
 /**

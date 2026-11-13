@@ -30,6 +30,7 @@ import { WatchController } from "./WatchController";
 import { IResolvedWriteBack, IWriteBackObserver, treeNameOf, writeBackFile } from "./WriteBack";
 import { mapComputable } from "../support/Functional";
 import { FabrError } from "./Errors";
+import { toPosix } from "../support/Paths";
 
 /** The prefix that makes a project file's path from the root its source path. */
 const SOURCE_PATH_PREFIX = "./";
@@ -207,7 +208,7 @@ function toSourceName(root: string, destination: string): string | undefined {
   if (path.isAbsolute(rel) || rel === ".." || rel.startsWith(".." + path.sep)) {
     return undefined;
   }
-  return rel.split(path.sep).join("/");
+  return toPosix(rel);
 }
 
 export function getSourceFileSource(root: string, cache: BuildCache, watchController?: WatchController): SourceFileSource {

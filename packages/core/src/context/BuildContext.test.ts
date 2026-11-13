@@ -66,7 +66,6 @@ import {
   RuleDefinition,
   RuleImplementation,
 } from "../rules/Types";
-import { FSFileSource } from "../core/FSFileSource";
 import script from "../rules/RunScript";
 import { BuildContext, InternalBuildContext } from "./BuildContext";
 import { ResolvedRequirements } from "./Collection";
@@ -1132,10 +1131,11 @@ describe("BuildContext", () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const input = "MODE = m;\ntargetdef test_carrier { deps = PACKAGES; }\ntest_carrier lib { }\ntest_carrier app { deps = lib; }\n";
-    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    /* The project's files are read through the run's source tree. */
+    const tree = new FileSet(new Map());
+    const run = new ExecutionContext(new BuildCache(cacheRoot, testLog), testLog, tree, new FileSet(new Map()));
+    const model = toBuildModel([parseBuildString(tree, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
-    /* A run whose absolute-path source is not the one the model's files were read through. */
-    const run = new ExecutionContext(new BuildCache(cacheRoot, testLog), testLog, new FileSet(new Map()), new FileSet(new Map()));
     const describing = describeOperation(
       model,
       operation => model.getConfig(Constraints.of({ [BUILD_OPERATION]: operation }), run),
@@ -1806,6 +1806,35 @@ describe("BuildContext", () => {
     }
     /* The `${valueOf}` property path is guarded the same way. */
     expect(() => internal(model.getConfig(Constraints.of({}), execution)).getProperty("valueOf")).to.throw(/Unknown property/);
+  });
+
+  it("refuses an absolute path as a target, on the command line and in a build file", async () => {
+    const input =
+      "targetdef test_good { deps = PACKAGES; }\n" +
+      "test_good a { deps = /etc/hosts; }\n" +
+      "test_good b { deps = C:/Windows/win.ini; }\n";
+    const logger = new LogFormatter(LogLevel.Info, () => undefined);
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    const config = model.getConfig(Constraints.of({}), execution);
+    const failureOf = async (name: string): Promise<Error> => {
+      try {
+        await config.materialize(writtenOnCommandLine(name));
+      } catch (err) {
+        return err instanceof DependencyFailedError ? err.cause : (err as Error);
+      }
+      return expect.fail(`expected '${name}' to fail`);
+    };
+    expect((await failureOf("/etc/hosts")).message).to.equal("'/etc/hosts' is an absolute path, which names no target");
+    expect((await failureOf("a")).message).to.equal("'/etc/hosts' is an absolute path, which names no target");
+    /* In a build file a drive's spelling is a projection out of `C`, on every host. */
+    expect((await failureOf("b")).message).to.not.contain("absolute path");
+    /* On the command line it is the host's path, refused, on Windows only. */
+    const onCommandLine = (await failureOf("C:/Windows/win.ini")).message;
+    if (process.platform === "win32") {
+      expect(onCommandLine).to.equal("'C:/Windows/win.ini' is an absolute path, which names no target");
+    } else {
+      expect(onCommandLine).to.not.contain("absolute path");
+    }
   });
 
   it("Fails a literal name that names no target and matches no file", async () => {
@@ -3736,47 +3765,41 @@ describe("unresolved-name diagnostics", () => {
   });
 });
 
-/* A decl written in an absolutely-pathed contributed lib file resolves a relative
- * FILES value against that file's own directory through its own FileSource
- * (the loader's absFileSource — no project-tree containment), and the result
- * is named by the written path's flattened tail (a leading `../` strips — the
- * general FileSet namespace rule). Also exercises an `@`-prefixed name on an
- * ordinary (non-repository) target decl. */
+/* A decl written in a plugin's lib file (`<package>:<path>`) resolves a
+ * relative FILES value against that file's own directory within its package,
+ * through the package's files, and the result is named by the written path's
+ * flattened tail (a leading `../` strips — the general FileSet namespace
+ * rule). Also exercises an `@`-prefixed name on an ordinary (non-repository)
+ * target decl. */
 describe("contributed-lib-relative FILES", () => {
-  it("resolves literal and glob references relative to an absolute lib file, named by their flattened tails", async () => {
-    const tmp = fs.mkdtempSync(nodePath.join(os.tmpdir(), "fabr-libentry-"));
-    try {
-      fs.mkdirSync(nodePath.join(tmp, "tool"));
-      fs.mkdirSync(nodePath.join(tmp, "lib"));
-      fs.writeFileSync(nodePath.join(tmp, "tool", "run.sh"), "#!/bin/sh\necho hi\n");
-      fs.writeFileSync(nodePath.join(tmp, "tool", "helper.js"), "// helper\n");
-      fs.writeFileSync(nodePath.join(tmp, "tool", "extra.js"), "// extra\n");
-      const errors: string[] = [];
-      const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-      /* The entry exercises the literal single-file path; the deps glob
-       * exercises the walk — an absolute query head (rebased into the source's
-       * namespace) whose remainder climbs out of the lib dir, matched in
-       * canonical path space and named relative to the dir alias. */
-      const input =
-        "targetdef script { deps = PACKAGES; entry = REQUIRED FILES; args = STRING; }\n" +
-        "targetdef host_searchpath { }\nhost_searchpath @host { }\nSHELL = @host:/bin/sh;\n" +
-        "script @plug/drv { entry = ../tool/run.sh; deps = ../tool/*.js; }\n";
-      const model = toBuildModel(
-        [parseBuildString(new FSFileSource("/"), nodePath.join(tmp, "lib", "LIB.fabr"), input, logger)],
-        logger,
-        [{ rules: [scriptRunRule], repositories: [{ type: "host_searchpath", provider: hostSearchPath.provider }] }]
-      );
-      expect(errors).to.deep.equal([]);
-      const sources = await model
-        .getConfig(Constraints.of({ [BUILD_OPERATION]: "run" }), execution)
-        .materialize(writtenOnCommandLine("@plug/drv"));
-      const runnable = sources.find((source): source is RunnableFileSet => source instanceof RunnableFileSet);
-      expect(runnable, "expected a RunnableFileSet").to.not.equal(undefined);
-      const names = [...(runnable as RunnableFileSet)].map(([name]) => name).sort();
-      expect(names).to.deep.equal(["tool/extra.js", "tool/helper.js", "tool/run.sh"]);
-    } finally {
-      fs.rmSync(tmp, { recursive: true, force: true });
-    }
+  it("resolves literal and glob references relative to a plugin's lib file, within its package, named by their flattened tails", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    /* The plugin's files, mounted at its name as the loader reads a plugin's
+     * lib files. The entry exercises the literal single-file path; the deps
+     * glob exercises the walk, its remainder climbing out of the lib dir. */
+    const pkg = new FileSet(
+      new Map([
+        ["tool/run.sh", MemoryFile.from("#!/bin/sh\necho hi\n")],
+        ["tool/helper.js", MemoryFile.from("// helper\n")],
+        ["tool/extra.js", MemoryFile.from("// extra\n")],
+      ])
+    ).mountedAt("@plug/pkg");
+    const input =
+      "targetdef script { deps = PACKAGES; entry = REQUIRED FILES; args = STRING; }\n" +
+      "targetdef host_searchpath { }\nhost_searchpath @host { }\nSHELL = @host:/bin/sh;\n" +
+      "script @plug/drv { entry = ../tool/run.sh; deps = ../tool/*.js; }\n";
+    const model = toBuildModel([parseBuildString(pkg, "@plug/pkg:lib/LIB.fabr", input, logger)], logger, [
+      { rules: [scriptRunRule], repositories: [{ type: "host_searchpath", provider: hostSearchPath.provider }] },
+    ]);
+    expect(errors).to.deep.equal([]);
+    const sources = await model
+      .getConfig(Constraints.of({ [BUILD_OPERATION]: "run" }), execution)
+      .materialize(writtenOnCommandLine("@plug/drv"));
+    const runnable = sources.find((source): source is RunnableFileSet => source instanceof RunnableFileSet);
+    expect(runnable, "expected a RunnableFileSet").to.not.equal(undefined);
+    const names = [...(runnable as RunnableFileSet)].map(([name]) => name).sort();
+    expect(names).to.deep.equal(["tool/extra.js", "tool/helper.js", "tool/run.sh"]);
   });
 
   /*

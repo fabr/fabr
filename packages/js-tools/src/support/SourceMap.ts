@@ -29,6 +29,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { posixRelative } from "./Paths";
 
 /** The file the step stages the table as. */
 export const SOURCE_PATHS_FILE = ".fabr-source-paths.json";
@@ -43,9 +44,9 @@ export const SOURCE_LOCATIONS_FILE = ".fabr-source-locations.json";
 const FABR_SCHEME = "fabr:";
 
 /** @return true if a map entry is an absolute URL (`fabr:…`, `webpack://…`),
- *  otherwise false. */
-function isAbsoluteEntry(entry: string): boolean {
-  return /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(entry);
+ *  otherwise false. On Windows a one-letter scheme is a drive (`C:\…`), a path. */
+export function isAbsoluteEntry(entry: string): boolean {
+  return (path.sep === "\\" ? /^[a-zA-Z][a-zA-Z0-9+.-]+:/ : /^[a-zA-Z][a-zA-Z0-9+.-]*:/).test(entry);
 }
 
 /** Read the table's rows: a staged file's name to its source path, or a staged
@@ -87,10 +88,7 @@ export function withReferencedSources(
     if (typeof entry !== "string" || isAbsoluteEntry(entry)) {
       return entry;
     }
-    const staged = path
-      .relative(root, path.resolve(path.dirname(mapFile), sourceRoot, entry))
-      .split(path.sep)
-      .join("/");
+    const staged = posixRelative(root, path.resolve(path.dirname(mapFile), sourceRoot, entry));
     const reference = referenceOf(staged);
     return reference === undefined ? entry : FABR_SCHEME + reference;
   });

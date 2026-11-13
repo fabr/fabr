@@ -35,11 +35,15 @@ import { runFabr, STUB_TSC, STUB_TSC_CONFIG } from "./harness";
  * deps, so the bare name type-checks under the fabr compile too. */
 jest.setTimeout(90000);
 
+/* The markers' directory, removed when the file's tests are done. */
+const MARKERS = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-e2e-marker-"));
+afterAll(() => fs.rmSync(MARKERS, { recursive: true, force: true }));
+
 /** Make a file outside the project for each test to record that it ran in,
  * which the runs share, and how to read it: the names recorded since the last
  * read, sorted. */
 function runMarker(): { marker: string; ran(): string[] } {
-  const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-e2e-marker-")), "ran");
+  const marker = path.join(fs.mkdtempSync(path.join(MARKERS, "run-")), "ran");
   return {
     marker,
     ran: () => {

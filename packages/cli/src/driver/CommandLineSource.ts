@@ -18,7 +18,7 @@
  */
 
 import {
-  FileSource,
+  COMMAND_LINE_FILE,
   INameValue,
   NAME_COMPONENT_SEPARATOR,
   parseName,
@@ -26,18 +26,17 @@ import {
   syntheticValue,
   WritableSourceTree,
 } from "@fabr-build/core";
+import * as path from "node:path";
 
 /**
  * Where the invocation was run, as a name given on its command line is resolved
- * there: the file sources it reads through and the directory its bare paths
+ * there: the source tree it reads through and the directory its bare paths
  * root at. Supply it once the project has been located.
  */
 export interface IInvocationSite {
   /** The project's source tree: what a relative name reads through, and what
    *  the driver writes refreshed test expectations and reports back into. */
   sourceFileSource: WritableSourceTree;
-  /** The file source an absolute name reads through. */
-  absFileSource: FileSource;
   /** The invocation's cwd within the source tree, `""` at its root. */
   invocationDir: string;
 }
@@ -45,10 +44,6 @@ export interface IInvocationSite {
 /** The program name the rendered command line starts with, whatever path
  * fabr was started by (`node …/build/index.js`, a `.bin` shim). */
 const PROGRAM = "fabr";
-
-/** The name of the virtual file a name given on the command line is written
- * in, as diagnostics show it. */
-const COMMAND_LINE_FILE = "<command-line>";
 
 /** Arguments a shell would not read back as one word, which are rendered
  * single-quoted. */
@@ -97,18 +92,19 @@ export class CommandLineSource {
    * Make the value `name`, an argument of this command line, is written as: its
    * span in this line, in a virtual file `<command-line>` in the invocation
    * directory, so its bare paths root at the cwd (`fabr ls ./packages` means
-   * what `./packages` written in a build file there means). An absolute name
-   * reads through `site.absFileSource` instead, in `<command-line>` at the
-   * root. A name the line does not contain spans the whole line.
+   * what `./packages` written in a build file there means); an absolute path
+   * names no target, and resolving it is refused. On Windows each `\` in a
+   * name outside its quotes is a path separator (`src\a.txt` is `src/a.txt`).
+   * A name the line does not contain spans the whole line.
    */
   public refFor(name: string, site: IInvocationSite): INameValue {
-    const absolute = name.startsWith(NAME_COMPONENT_SEPARATOR);
-    const dir = absolute ? "" : site.invocationDir;
+    const written = path.sep === "\\" ? separatorsOutsideQuotes(name) : name;
+    const dir = site.invocationDir;
     const [offset, endOffset] = this.spans.get(name) ?? [0, this.text.length];
     return syntheticValue(
-      parseName(name),
+      parseName(written),
       {
-        fs: absolute ? site.absFileSource : site.sourceFileSource,
+        fs: site.sourceFileSource,
         file: dir === "" ? COMMAND_LINE_FILE : `${dir}${NAME_COMPONENT_SEPARATOR}${COMMAND_LINE_FILE}`,
         reader: this.reader,
       },
@@ -116,4 +112,29 @@ export class CommandLineSource {
       endOffset
     );
   }
+}
+
+/**
+ * @return `name` with each `\` outside its quotes made a `/`: on Windows a
+ * `\` written on the command line is a path separator, and a character the
+ * name grammar gives a meaning is written literally by quoting it. Within
+ * `'…'` a `\` is literal and within `"…"` it escapes the next character, as
+ * the grammar reads them, so both are left as written.
+ */
+function separatorsOutsideQuotes(name: string): string {
+  let result = "";
+  let quote: string | undefined;
+  for (let at = 0; at < name.length; at++) {
+    const ch = name[at];
+    if (quote === undefined) {
+      quote = ch === "'" || ch === '"' ? ch : undefined;
+      result += ch === "\\" ? "/" : ch;
+    } else if (quote === '"' && ch === "\\" && at + 1 < name.length) {
+      result += ch + name[++at];
+    } else {
+      quote = ch === quote ? undefined : quote;
+      result += ch;
+    }
+  }
+  return result;
 }

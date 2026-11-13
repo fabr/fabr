@@ -18,8 +18,11 @@
  */
 
 import { expect } from "chai";
-import { EMPTY_FILESET, StringReader } from "@fabr-build/core";
-import { rangeOf } from "./ProtocolDiagnostics";
+import { EMPTY_FILESET, type IFile, type ISourceSpan, StringReader } from "@fabr-build/core";
+import * as os from "node:os";
+import * as path from "node:path";
+import { pathToFileURL } from "node:url";
+import { documentOf, rangeOf } from "./ProtocolDiagnostics";
 
 describe("rangeOf", () => {
   it("counts a range's characters in UTF-16 code units, as a client counts them", () => {
@@ -33,5 +36,24 @@ describe("rangeOf", () => {
       start: { line: 0, character: 7 },
       end: { line: 0, character: 8 },
     });
+  });
+});
+
+describe("documentOf", () => {
+  const reader = new StringReader("");
+  const at = (readFrom?: IFile): ISourceSpan => ({ fs: EMPTY_FILESET, file: "@acme/rules:lib/X.fabr", reader, offset: 0, readFrom });
+
+  it("names a build file by where the file it was read from lies", () => {
+    const installed = path.join(os.tmpdir(), "acme", "lib", "X.fabr");
+    const file = { getDisplayName: () => installed, getAbsPath: () => "/pool/blob" } as unknown as IFile;
+    expect(documentOf("/project", at(file))).to.equal(pathToFileURL(installed).href);
+  });
+
+  it("names one whose file has no path for a name by the file's own path, and one read from no file from the project's root", () => {
+    const built = { getDisplayName: () => "lib/X.fabr", getAbsPath: () => "/pool/blob" } as unknown as IFile;
+    expect(documentOf("/project", at(built))).to.equal(pathToFileURL("/pool/blob").href);
+    expect(documentOf("/project", { ...at(), file: "BUILD.fabr" })).to.equal(
+      pathToFileURL(path.resolve("/project", "BUILD.fabr")).href
+    );
   });
 });

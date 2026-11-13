@@ -20,7 +20,7 @@
 import * as fs from "fs";
 import * as path from "path";
 
-import { DeclKind, declName, declPosn, IBuildFileContents, IPluginDecl, ITargetDecl, syntheticValue } from "./AST";
+import { DeclKind, declName, declPosn, IBuildFileContents, IPluginDecl, ITargetDecl, libKey, syntheticValue } from "./AST";
 import type { BuildModel } from "./BuildModel";
 import type { ExecutionContext } from "./ExecutionContext";
 import { IPrefixMatch } from "./Namespace";
@@ -28,6 +28,7 @@ import { BUILD_OPERATION, Constraints } from "./Constraints";
 import { FileSet, IFile } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import { RunnableFileSet } from "../core/RunnableFileSet";
+import { SymlinkFile } from "../core/SymlinkFile";
 import { IProvenanceStep, registerProvenanceDescriber, registerProvenanceRenderer } from "../core/Provenance";
 import { Diagnostic, ISourcePosition, Log } from "../support/Log";
 import { CORE_PACKAGE } from "../core/Constants";
@@ -198,12 +199,13 @@ function checkCoreVersion(name: string, plugin: Record<string, unknown>): void {
 }
 
 /**
- * Read the plugin package `decl` uses, whose `package.json` is `manifest`,
- * running none of its code. Throws where the package is not marked a plugin,
- * has no name, declares a range for core excluding the host's version, or
- * lists a `.fabr` file that is not there.
+ * Read the plugin package `decl` uses, whose `package.json` is `manifest` and
+ * whose files, by their paths within it, are `files`, running none of its
+ * code. Throws where the package is not marked a plugin, has no name,
+ * declares a range for core excluding the host's version, or lists a `.fabr`
+ * file that is not there.
  */
-function packagedPlugin(decl: IPluginDecl, manifest: string): PluginPackage {
+function packagedPlugin(decl: IPluginDecl, manifest: string, files: FileSet): PluginPackage {
   const json = readManifest(manifest);
   if (json[PLUGIN_MANIFEST_FIELD] === undefined) {
     throw new FabrError(
@@ -220,15 +222,16 @@ function packagedPlugin(decl: IPluginDecl, manifest: string): PluginPackage {
   } catch (err) {
     throw new FabrError(`${manifest}: ${toError(err).message}`);
   }
-  const directory = path.dirname(manifest);
-  const missing = [...listed.libs, ...listed.optionalLibs].find(lib => !fs.existsSync(path.join(directory, lib)));
+  const missing = [...listed.libs, ...listed.optionalLibs].find(lib => files.getFile(path.posix.normalize(lib)) === undefined);
   if (missing !== undefined) {
-    throw new FabrError(`${manifest}: "${PLUGIN_MANIFEST_FIELD}" lists ${path.join(directory, missing)}, which is not there`);
+    throw new FabrError(`${manifest}: "${PLUGIN_MANIFEST_FIELD}" lists ${missing}, which is not there`);
   }
+  const name = json.name;
   return {
-    name: json.name,
-    files: listed.libs.map(lib => path.join(directory, lib)),
-    optionalLibs: listed.optionalLibs.map(lib => ({ name: path.posix.normalize(lib), file: path.join(directory, lib) })),
+    name,
+    files: listed.libs.map(lib => libKey(name, lib)),
+    optionalLibs: listed.optionalLibs.map(lib => ({ name: path.posix.normalize(lib), file: libKey(name, lib) })),
+    contents: files.mountedAt(name),
     code: () => Computable.resolve(manifest),
   };
 }
@@ -299,10 +302,15 @@ export const FABR_PLUGIN = "fabr_plugin";
 export interface PluginPackage {
   /** The package's own name: a `fabr_plugin` target's, or what its `package.json` says. */
   name: string;
-  /** The `.fabr` files it adds. */
+  /** The `.fabr` files it adds, by their keys in the load: a `fabr_plugin`'s
+   * are files of the project, an installed plugin's {@link libKey}s. */
   files: string[];
   /** The `.fabr` files it adds where a project includes them. */
   optionalLibs: OptionalLib[];
+  /** An installed plugin's files, mounted at its name (`<name>/<path>`): what
+   * its lib files are read from, and what a name written in one is resolved
+   * against. Absent for a `fabr_plugin`, whose lib files are the project's. */
+  contents?: FileSet;
   /** Get the `package.json` of its code, which `model` builds where it is a `fabr_plugin` target. */
   code: (model: BuildModel) => Computable<string>;
 }
@@ -311,7 +319,7 @@ export interface PluginPackage {
 export interface OptionalLib {
   /** Its path within the plugin's package, which an include names it by. */
   name: string;
-  /** The file to read: absolute for an installed plugin, relative to the project's root for one built in it. */
+  /** Its key in the load: a {@link libKey} for an installed plugin, relative to the project's root for one built in it. */
   file: string;
 }
 
@@ -384,30 +392,36 @@ export function resolvePlugin(
 ): Computable<PluginResolution> {
   const target = match.decl;
   if (target.kind === DeclKind.Target && target.type === FABR_PLUGIN && match.rest.isEmpty()) {
-    const directory = path.dirname(target.source.file);
+    const directory = path.posix.dirname(target.source.file);
     return Computable.forAll([libsOf(target, "libs"), libsOf(target, "optional_libs")], (libs, optional) => ({
       decl,
       resolved: {
         name: declName(target),
         files: libs.files,
-        optionalLibs: optional.files.map(file => ({ name: path.relative(directory, file).split(path.sep).join("/"), file })),
-        code: (built: BuildModel) => pluginManifest(built, decl, execution, host),
+        optionalLibs: optional.files.map(file => ({ name: path.posix.relative(directory, file), file })),
+        code: (built: BuildModel) => pluginManifest(built, decl, execution, host).then(({ manifest }) => manifest),
       },
       reported: libs.errors + optional.errors,
     }));
   }
   return pluginManifest(model, decl, execution, host).then(
-    (manifest): PluginResolution => ({ decl, resolved: packagedPlugin(decl, manifest), reported: 0 }),
+    ({ manifest, files }): PluginResolution => ({ decl, resolved: packagedPlugin(decl, manifest, files()), reported: 0 }),
     (err): PluginResolution => ({ decl, resolved: toError(err), reported: 0 })
   );
 }
 
 /**
- * Make `decl`'s plugin under `run` for `host`, in `model`, and @return the path
- * of its code's `package.json`: a program is written to the tree pool, and an
- * installed package is used where it is installed.
+ * Make `decl`'s plugin under `run` for `host`, in `model`. @return the path of
+ * its code's `package.json` (a program is written to the tree pool, and an
+ * installed package is used where it is installed), and the package's files,
+ * by their paths within it.
  */
-function pluginManifest(model: BuildModel, decl: IPluginDecl, execution: ExecutionContext, host: Constraints): Computable<string> {
+function pluginManifest(
+  model: BuildModel,
+  decl: IPluginDecl,
+  execution: ExecutionContext,
+  host: Constraints
+): Computable<{ manifest: string; files: () => FileSet }> {
   const reference = syntheticValue(decl.name, decl.source, decl.offset, decl.endOffset ?? decl.offset);
   return model
     .getConfig(host.with(Constraints.of({ [BUILD_OPERATION]: "run" })), execution)
@@ -418,15 +432,41 @@ function pluginManifest(model: BuildModel, decl: IPluginDecl, execution: Executi
       }
       const [source] = sources;
       if (source instanceof RunnableFileSet) {
-        return execution.buildCache.ensureTree(source).then(tree => path.join(tree, source.root, "package.json"));
+        return execution.buildCache
+          .ensureTree(source)
+          .then(tree => ({ manifest: path.join(tree, source.root, "package.json"), files: () => packageFilesOf(source) }));
       }
       const directory =
         source instanceof FileSet && source.getFile("package.json") !== undefined ? installedDirectoryOf(source) : undefined;
       if (directory === undefined) {
         throw new FabrError(`Plugin '${decl.name.toString()}' names no package`);
       }
-      return path.join(directory, "package.json");
+      return { manifest: path.join(directory, "package.json"), files: () => source as FileSet };
     });
+}
+
+/**
+ * @return the files of the package a program installs, by their paths within
+ * it: the install's files under the package's mount (`root`), reached through
+ * the links the install lays out (`node_modules/<name>` linking to the
+ * package's instance directory).
+ */
+function packageFilesOf(program: RunnableFileSet): FileSet {
+  let mount = program.root;
+  const seen = new Set<string>();
+  for (let link = program.getFile(mount); link instanceof SymlinkFile; link = program.getFile(mount)) {
+    if (seen.has(mount)) {
+      throw new FabrError(`The install's links at ${program.root} form a cycle`);
+    }
+    seen.add(mount);
+    const target = path.posix.normalize(path.posix.join(path.posix.dirname(mount), link.target));
+    if (path.posix.isAbsolute(link.target) || target === ".." || target.startsWith("../")) {
+      throw new FabrError(`The install's link at ${mount} leads to ${link.target}, outside the install`);
+    }
+    mount = target;
+  }
+  const within = mount === "" || mount === "." ? "" : `${mount}/`;
+  return program.remap(name => (name.startsWith(within) ? name.substring(within.length) : undefined));
 }
 
 /** @return the `.fabr` files a `fabr_plugin` lists, by their names in its package: `libs` and `optionalLibs`, each in canonical order. */

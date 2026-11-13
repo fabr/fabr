@@ -41,6 +41,7 @@ import {
   conditionsOf,
   installResolution,
 } from "../tscDriver/tsc-driver";
+import { toPosix } from "../support/Paths";
 
 /** A compilation unit, as the editor's TypeScript server is shown it. */
 export interface ITypeScriptUnit {
@@ -246,9 +247,7 @@ function resolveByImporter(ts: IServerTypeScript, info: IPluginCreateInfo, units
       }
       const { options, fileNames } = configs.get(unit)!;
       const { resolution, resolver } = unitResolution(ts, host, unit, table, options, layouts, links);
-      return [
-        { root: unit.root + path.sep, files: new Set(fileNames.map(file => path.resolve(file))), options, resolution, resolver },
-      ];
+      return [{ root: `${tsPathOf(unit.root)}/`, files: new Set(fileNames.map(tsPathOf)), options, resolution, resolver }];
     })
     .sort((a, b) => b.root.length - a.root.length);
   type Unit = (typeof byRoot)[number];
@@ -268,9 +267,10 @@ function resolveByImporter(ts: IServerTypeScript, info: IPluginCreateInfo, units
   for (const hook of ["resolveModuleNameLiterals", "resolveTypeReferenceDirectiveReferences"]) {
     const previous = hooks[hook];
     hooks[hook] = (items, from, redirected, options, ...rest) => {
+      const importer = tsPathOf(from);
       const owner =
-        byRoot.find(candidate => candidate.files.has(path.resolve(from))) ??
-        byRoot.find(candidate => from.startsWith(candidate.root)) ??
+        byRoot.find(candidate => candidate.files.has(importer)) ??
+        byRoot.find(candidate => importer.startsWith(candidate.root)) ??
         locatedBy(from);
       const own = owner && (owner.resolution as unknown as Record<string, Hook | undefined>)[hook];
       return own !== undefined
@@ -280,6 +280,16 @@ function resolveByImporter(ts: IServerTypeScript, info: IPluginCreateInfo, units
   }
   answerLinks(host, links);
   info.project.projectService.logger.info(`fabr: syntax server resolves by importer across ${units.length} units`);
+}
+
+/**
+ * @return `file`, a path as the host or TypeScript spells it, absolute and as
+ * this plugin holds and compares every path: `/`-separated, a Windows drive
+ * kept in lower case (`c:/x`), since VS Code and `path.resolve` disagree on
+ * its case.
+ */
+function tsPathOf(file: string): string {
+  return toPosix(path.resolve(file)).replace(/^[A-Z](?=:)/, drive => drive.toLowerCase());
 }
 
 /** How a unit that builds a package lays its outputs out, with the package's name. */
@@ -339,6 +349,7 @@ function unitResolution(
   links: Map<string, string>
 ): { resolution: IResolutionHost; installed: IInstalledResolution; resolver: PnpResolver } {
   const locals = layouts.map(layout => ({ ...layout, own: layout.package === unit.package }));
+  const unitRoot = `${tsPathOf(unit.root)}/`;
   const isLocalOutput = (file: string): boolean =>
     locals.some(layout =>
       layout.sourcesOf(file).some(source => TYPESCRIPT_EXTENSIONS.some(extension => host.fileExists(source + extension)))
@@ -396,20 +407,21 @@ function unitResolution(
         };
       }
       const split = splitSpecifier(literals[i].text);
-      const directory =
-        resolved && split && from.startsWith(unit.root + path.sep) ? packageDirectory(resolver, split.name, from) : undefined;
+      const unpacked =
+        resolved && split && tsPathOf(from).startsWith(unitRoot) ? packageDirectory(resolver, split.name, from) : undefined;
+      const directory = unpacked === undefined ? undefined : tsPathOf(unpacked);
       if (
         !resolved ||
         isJavaScript(resolved.extension) ||
         !split ||
         !directory ||
-        !resolved.resolvedFileName.startsWith(path.join(directory, path.sep))
+        !tsPathOf(resolved.resolvedFileName).startsWith(`${directory}/`)
       ) {
         return answer;
       }
-      const link = path.join(unit.root, "node_modules", split.name);
-      links.set(link, path.resolve(directory));
-      const originalPath = path.join(link, path.relative(directory, resolved.resolvedFileName));
+      const link = tsPathOf(path.join(unit.root, "node_modules", split.name));
+      links.set(link, directory);
+      const originalPath = path.posix.join(link, path.posix.relative(directory, tsPathOf(resolved.resolvedFileName)));
       return { ...answer, resolvedModule: { ...resolved, originalPath } };
     });
   /* Forget earlier lookups whenever the project version changes: a file
@@ -468,9 +480,11 @@ function packageDirectory(resolver: PnpResolver, name: string, from: string): st
  */
 function answerLinks(host: ILanguageServiceHost, links: ReadonlyMap<string, string>): void {
   const target = (file: string): string => {
+    /* A trailing separator (a directory) is kept, which tsPathOf drops. */
+    const named = tsPathOf(file) + (/[\\/]$/.test(file) ? "/" : "");
     for (const [link, real] of links) {
-      if (file === link || file.startsWith(link + path.sep)) {
-        return real + file.slice(link.length);
+      if (named === link || named.startsWith(`${link}/`)) {
+        return real + named.slice(link.length);
       }
     }
     return file;
@@ -505,16 +519,18 @@ interface IOutputLayout {
  */
 function outputLayout(options: CompilerOptions, unit: ITypeScriptUnit): IOutputLayout {
   const base = path.dirname(unit.config);
-  const outDir = path.resolve(base, typeof options.outDir === "string" ? options.outDir : ".");
+  const outDir = tsPathOf(path.resolve(base, typeof options.outDir === "string" ? options.outDir : "."));
   const rootDirs = (
     Array.isArray(options.rootDirs) && options.rootDirs.length > 0
       ? (options.rootDirs as string[])
       : [typeof options.rootDir === "string" ? options.rootDir : "."]
-  ).map(dir => path.resolve(base, dir));
-  const filesOf = (file: string): string[] =>
-    file.startsWith(outDir + path.sep)
-      ? rootDirs.filter(dir => !file.startsWith(dir + path.sep)).map(dir => path.join(dir, path.relative(outDir, file)))
+  ).map(dir => tsPathOf(path.resolve(base, dir)));
+  const filesOf = (written: string): string[] => {
+    const file = tsPathOf(written);
+    return file.startsWith(`${outDir}/`)
+      ? rootDirs.filter(dir => !file.startsWith(`${dir}/`)).map(dir => path.posix.join(dir, path.posix.relative(outDir, file)))
       : [];
+  };
   return {
     rootDirs: rootDirs.length,
     sourcesOf: file => {

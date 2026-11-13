@@ -21,6 +21,7 @@
  * renamed so that none names a place in the step's staging. */
 
 import * as path from "node:path";
+import { toPosix } from "../support/Paths";
 
 /** An import as esbuild's metafile records it. */
 interface IMetafileImport {
@@ -60,7 +61,7 @@ export interface IMetafile {
  * bytes from them are summed.
  */
 export function renameMetafilePaths(metafile: IMetafile, outdir: string, inputName: (staged: string) => string): IMetafile {
-  const outputName = (staged: string): string => path.posix.relative(outdir.split(path.sep).join("/"), staged);
+  const outputName = (staged: string): string => path.posix.relative(toPosix(outdir), staged);
   const importsNamed = (imports: IMetafileImport[] | undefined, name: (staged: string) => string): IMetafileImport[] | undefined =>
     imports?.map(imported => (imported.external === true ? imported : { ...imported, path: name(imported.path) }));
   const inputs: Record<string, IMetafileInput> = Object.create(null);

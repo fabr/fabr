@@ -51,6 +51,7 @@ import { resolveVirtual } from "../pnp/VirtualPath";
 import { getMapSource, referenceOfEntry, stagedReferences, withReferencedSources } from "../support/SourceMap";
 import { BUNDLE_METAFILE, type IBundleOptions } from "./BundleOptions";
 import { type IMetafile, renameMetafilePaths } from "./Metafile";
+import { posixRelative, toPosix } from "../support/Paths";
 
 /* The parts of esbuild's API the driver uses, typed structurally from its
  * documentation: it is no compile-time dependency of this package. */
@@ -285,7 +286,7 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
 
         /* A Sass source named by a package subpath is redirected too. */
         const specifier = rewriteStyledImport(args.path);
-        const variantKey = `${byPackage ? treeOf(args.resolveDir) : args.resolveDir}\0${specifier}`;
+        const variantKey = `${byPackage ? treeOf(args.resolveDir === undefined ? undefined : toPosix(args.resolveDir)) : args.resolveDir}\0${specifier}`;
         const cached = variantCache.get(variantKey);
         if (cached) {
           return cached;
@@ -446,7 +447,7 @@ export function mentionsKind(exports: unknown): boolean {
   );
 }
 
-/** Get the tree in the tree pool a staged path lies in (`.fabr-tree/<hash>`, or
+/** Get the tree in the tree pool a staged path (`/`-separated) lies in (`.fabr-tree/<hash>`, or
  * a virtual location `.fabr-tree/__virtual__/<variant>/<n>/<hash>`), which
  * under a PnP table is the importing package; or the path itself where it lies
  * outside the pool (the workspace's own sources, staged at the bundle root). */
@@ -557,13 +558,7 @@ export async function main(argv: string[]): Promise<void> {
     const referenceOf =
       named === undefined
         ? undefined
-        : (staged: string): string | undefined =>
-            named(
-              path
-                .relative(root, resolveVirtual(path.resolve(root, staged)))
-                .split(path.sep)
-                .join("/")
-            );
+        : (staged: string): string | undefined => named(posixRelative(root, resolveVirtual(path.resolve(root, staged))));
     if (referenceOf !== undefined) {
       nameMapSources(root, options.outdir, referenceOf);
     }
@@ -784,9 +779,8 @@ class PackageNames {
     const root = info.packageLocation;
     /* A map may name its source above the package (fabr's compile names one
      * beside its output directory): drop the `..` parts. */
-    const within = path
-      .relative(root, file)
-      .split(path.sep)
+    const within = toPosix(path.relative(root, file))
+      .split("/")
       .filter(part => part !== "..");
     return `${locator.name}@${this.versionOf(root)}/${within.join("/")}`;
   }

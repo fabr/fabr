@@ -38,6 +38,7 @@ import {
   restrictedTo,
 } from "./Provenance";
 import { PreparedUpdate, WatchController, WatchEntry } from "./WatchController";
+import { toPosix } from "../support/Paths";
 
 export interface FSFileStats {
   size: number;
@@ -58,31 +59,32 @@ export function fileModeOf(stat: FSFileStats): number {
 
 /** A file read from a directory on disk. */
 export class FSFile implements IFile {
-  private readonly root: string;
+  /** The host path the file was read from. */
+  private readonly hostPath: string;
   public stat: FSFileStats;
   public name: string;
   public hash: string;
   /**
-   * The absolute path the content is read from: the file's own path under
-   * `root`, or the copy in the blob pool of a file its source copied there
-   * (as {@link SourceFileSource} does), while `name` and `root`, and so
+   * The absolute path the content is read from: `hostPath`, or the copy in
+   * the blob pool of a file its source copied there (as
+   * {@link SourceFileSource} does), while `hostPath`, and so
    * {@link getDisplayName}, still name the file read.
    */
   private readonly contentPath: string;
 
   constructor(
-    root: string,
+    hostPath: string,
     name: string,
     stat: FSFileStats,
     hash: string,
     public readonly mime: string,
     contentPath?: string
   ) {
-    this.root = root;
+    this.hostPath = hostPath;
     this.name = name;
     this.stat = stat;
     this.hash = hash;
-    this.contentPath = contentPath ?? path.resolve(root, name);
+    this.contentPath = contentPath ?? hostPath;
   }
 
   public get mode(): number {
@@ -94,7 +96,7 @@ export class FSFile implements IFile {
   }
 
   public getDisplayName(): string {
-    return path.resolve(this.root, this.name);
+    return this.hostPath;
   }
 
   public isSameFile(file: IFile): boolean {
@@ -168,7 +170,6 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
 
   constructor(
     private readonly owner: FSFileSource,
-    private readonly root: string,
     private readonly name: Name,
     private readonly prefix: string,
     /* The enumeration run on each attach: by default the tree walk
@@ -202,7 +203,7 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
     /* A probe still in flight is dropped when it lands (see isCurrent);
      * clearing lets its path be probed again. */
     this.rescanning.clear();
-    const enumerator = this.enumerator ?? (() => enumerate(this.root, this.name, this.prefix));
+    const enumerator = this.enumerator ?? (() => enumerate(this.owner, this.name, this.prefix));
     enumerator().then(
       ({ names, project }) => {
         if (!this.isCurrent(generation)) {
@@ -291,7 +292,7 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
   private applyDelta(rel: string, removed: boolean): boolean {
     if (removed) {
       const dropped = this.dropSubtree(rel);
-      return fs.existsSync(path.resolve(this.root, rel)) ? this.applyCreate(rel) || dropped : dropped;
+      return fs.existsSync(this.owner.hostPathOf(rel)) ? this.applyCreate(rel) || dropped : dropped;
     }
     return this.applyCreate(rel);
   }
@@ -347,9 +348,9 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
     }
     this.rescanning.add(rel);
     const generation = this.attachGeneration;
-    const abs = path.resolve(this.root, rel);
+    const abs = this.owner.hostPathOf(rel);
     stat(abs)
-      .then(entry => (entry.isDirectory() ? walk(this.root, abs, this.project) : []))
+      .then(entry => (entry.isDirectory() ? walk(this.owner, abs, this.project) : []))
       .once(
         names => {
           this.rescanning.delete(rel);
@@ -516,10 +517,12 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
  * under a WatchController.
  */
 export class FSFileSource implements FileSource {
-  /** The directory this source serves, absolute. Names are relative to it,
-   * so a caller aligning a pattern with this source rebases against it
-   * (Name.rebase). */
+  /** The directory this source serves, as a host path. Names are relative to
+   * it, `/`-separated; a pattern aligned with this source is rebased against
+   * it ({@link rebase}). */
   public readonly root: string;
+  /** {@link root}, absolute and spelled with `/`, as a pattern names it. */
+  private readonly posixRoot: string;
   /**
    * Where present, queries are kept current through the source's
    * subscriptions ({@link subscriptions}), batched by the controller; absent,
@@ -550,8 +553,33 @@ export class FSFileSource implements FileSource {
 
   constructor(root: string, watchController?: WatchController, pool?: BuildCache) {
     this.root = root;
+    this.posixRoot = toPosix(path.resolve(root));
     this.watchController = watchController;
     this.pool = pool;
+  }
+
+  /** @return the host path of `name`, a path under this tree. */
+  public hostPathOf(name: string): string {
+    return path.resolve(this.root, name);
+  }
+
+  /** @return the name of `hostPath`, a host path under this tree. */
+  public nameOf(hostPath: string): string {
+    return toPosix(path.relative(this.root, hostPath));
+  }
+
+  /** @return `name` with this tree's root, where it starts with it (spelled
+   * with `/`, a Windows drive letter in either case), taken off, as the tree
+   * names its files. */
+  public rebase(name: Name): Name {
+    const root = this.posixRoot;
+    const rebased = name.rebase(root);
+    const drive = /^[A-Za-z](?=:)/.exec(root)?.[0];
+    if (rebased !== name || drive === undefined) {
+      return rebased;
+    }
+    const other = drive === drive.toUpperCase() ? drive.toLowerCase() : drive.toUpperCase();
+    return name.rebase(other + root.substring(1));
   }
 
   /** What a file's path under this tree is prefixed with to make its source
@@ -560,13 +588,10 @@ export class FSFileSource implements FileSource {
     return undefined;
   }
 
-  /** Get the query for the files `name` selects, each named by its
-   * projection with `prefix` ({@link Name.makeProjector}). */
+  /** Get the query for the files `name`, a name relative to the root, selects,
+   * each named by its projection with `prefix` ({@link Name.makeProjector}). */
   public find(name: Name, prefix = ""): ComputableSource<FileSet> {
-    /* Rebase onto the root first: results are named relative to it (see
-     * walk), so an absolute name must drop the root, as `get` does. */
-    const rebased = name.rebase(this.root);
-    return this.query(`find ${prefix}\0${rebased.toGlobString()}`, () => new TreeQuery(this, this.root, rebased, prefix));
+    return this.query(`find ${prefix}\0${name.toGlobString()}`, () => new TreeQuery(this, name, prefix));
   }
 
   /** Get the query held under `key`, made by `make` where none is held yet. */
@@ -660,15 +685,15 @@ export class FSFileSource implements FileSource {
     /* @parcel/watcher reports real paths, but the directory may be named
      * through a symlink (macOS /var -> /private/var): take each event relative
      * to the real path, then onto `dir`. */
-    const realDir = fs.realpathSync(path.resolve(this.root, dir));
+    const realDir = fs.realpathSync(this.hostPathOf(dir));
     const handler: parcelWatcher.SubscribeCallback = (err, events) => {
       if (err) {
         controller.reportError(err);
         return;
       }
       for (const event of events) {
-        const inner = path.relative(realDir, event.path);
-        const rel = toPosix(dir === "" ? inner : inner === "" ? dir : path.join(dir, inner));
+        const inner = toPosix(path.relative(realDir, event.path));
+        const rel = dir === "" ? inner : inner === "" ? dir : path.posix.join(dir, inner);
         /* A change fabr made itself is deferred (see notifyChanged's
          * `defer`). It is judged on the path here, the dispatch being
          * synchronous; its content is confirmed when ingest reads the file
@@ -706,17 +731,17 @@ export class FSFileSource implements FileSource {
    * no file is there: the path is gone or names a directory. Called by
    * {@link TreeQuery}; {@link SourceFileSource} overrides it. */
   public ingest(filename: string): Computable<FSFile | undefined> {
-    const filepath = path.resolve(this.root, filename);
+    const filepath = this.hostPathOf(filename);
     const pool = this.pool;
     const ingested =
       pool === undefined
-        ? hashFile(filepath).then(({ hash, mime }) => stat(filepath).then(stats => new FSFile(this.root, filename, stats, hash, mime)))
+        ? hashFile(filepath).then(({ hash, mime }) => stat(filepath).then(stats => new FSFile(filepath, filename, stats, hash, mime)))
         : readFileBuffer(filepath).then(bytes =>
             stat(filepath).then(stats => {
               const hash = hashString(bytes);
               return pool
                 .ensureBlob(hash, bytes, fileModeOf(stats))
-                .then(blobPath => new FSFile(this.root, filename, stats, hash, sniffMime(bytes), blobPath));
+                .then(blobPath => new FSFile(filepath, filename, stats, hash, sniffMime(bytes), blobPath));
             })
           );
     return ingested.catch(err => {
@@ -729,17 +754,16 @@ export class FSFileSource implements FileSource {
     });
   }
 
-  /** Get the file at `name`, relative to the root or absolute, or undefined
+  /** Get the file at `name`, relative to the root or an absolute host path, or undefined
    * where there is none: a query over the literal path ({@link enumerateFile}),
    * never expanding a directory there. Under watch it follows the path, so an
    * edit settles it again and a file created there later fills it. */
   public get(name: string): ComputableSource<IFile | undefined> {
-    const target = toPosix(path.relative(this.root, path.resolve(this.root, name)));
+    const target = this.nameOf(path.resolve(this.root, name));
     const literal = Name.fromLiteral(target);
-    return this.query(
-      `get ${target}`,
-      () => new TreeQuery(this, this.root, literal, "", () => enumerateFile(this.root, literal))
-    ).then(fileSet => fileSet.getSingleFile());
+    return this.query(`get ${target}`, () => new TreeQuery(this, literal, "", () => enumerateFile(this, literal))).then(fileSet =>
+      fileSet.getSingleFile()
+    );
   }
 }
 
@@ -854,12 +878,6 @@ function subscribeWithFallback(
   });
 }
 
-/** Normalise an OS path to forward slashes so glob matching and FileSet names
- * are platform-independent. */
-function toPosix(p: string): string {
-  return p.split(path.sep).join("/");
-}
-
 /**
  * @return the name's static leading path, its `:` read as a path separator:
  * the whole path for a literal name, the directory to walk for a glob.
@@ -886,9 +904,9 @@ export function staticPath(name: Name): string {
  * directory means every file beneath it (the name expands to `dir/**`). Only the
  * name's static base is walked, and node_modules/.git are skipped.
  */
-function enumerate(root: string, name: Name, prefix: string): Computable<{ names: string[]; project: Projector }> {
+function enumerate(tree: FSFileSource, name: Name, prefix: string): Computable<{ names: string[]; project: Projector }> {
   if (name.hasGlob()) {
-    return walkGlob(root, name, prefix);
+    return walkGlob(tree, name, prefix);
   }
   /* A non-glob name selects the path as a file or, where it is a directory,
    * every file under it; which holds can change, and the path may not exist
@@ -896,7 +914,7 @@ function enumerate(root: string, name: Name, prefix: string): Computable<{ names
    * now. A directory matched as the path itself reads as no file and drops
    * out (see FSFileSource.ingest). */
   const file = staticPath(name);
-  const abs = path.resolve(root, file);
+  const abs = tree.hostPathOf(file);
   /* Each case keeps a `-> tmpl` rename: `literal` renames the one file, and
    * `subtree` expands `dir -> out` to `dir/** -> out/**`, appending the
    * globstar to selector and template alike so the wildcard counts match. The
@@ -907,8 +925,7 @@ function enumerate(root: string, name: Name, prefix: string): Computable<{ names
   const subtree = subtreeName.makeProjector(prefix);
   const project: Projector = rel => literal(rel) ?? subtree(rel);
   return stat(abs).then(
-    fileStat =>
-      fileStat.isFile() ? { names: [toPosix(file)], project } : walk(root, abs, project).then(names => ({ names, project })),
+    fileStat => (fileStat.isFile() ? { names: [file], project } : walk(tree, abs, project).then(names => ({ names, project }))),
     /* Nothing there yet — an empty set a later create-event fills. */
     () => ({ names: [], project })
   );
@@ -920,24 +937,25 @@ function enumerate(root: string, name: Name, prefix: string): Computable<{ names
  * so under watch a file created there later fills the query, and a directory
  * there reads as no file.
  */
-function enumerateFile(root: string, name: Name): Computable<{ names: string[]; project: Projector }> {
+function enumerateFile(tree: FSFileSource, name: Name): Computable<{ names: string[]; project: Projector }> {
   const file = staticPath(name);
-  const abs = path.resolve(root, file);
+  const abs = tree.hostPathOf(file);
   const project = name.makeProjector();
   return stat(abs).then(
-    fileStat => ({ names: fileStat.isFile() ? [toPosix(file)] : [], project }),
+    fileStat => ({ names: fileStat.isFile() ? [file] : [], project }),
     /* Nothing there yet — an empty set a later create-event fills. */
     () => ({ names: [], project })
   );
 }
 
-function walkGlob(root: string, name: Name, prefix: string): Computable<{ names: string[]; project: Projector }> {
+function walkGlob(tree: FSFileSource, name: Name, prefix: string): Computable<{ names: string[]; project: Projector }> {
   const project = name.makeProjector(prefix);
-  const base = path.resolve(root, staticPath(name));
-  return walk(root, base, project).then(names => ({ names, project }));
+  const base = tree.hostPathOf(staticPath(name));
+  return walk(tree, base, project).then(names => ({ names, project }));
 }
 
-function walk(root: string, dir: string, project: Projector): Computable<string[]> {
+/** Walk the host directory `dir` of `tree`, @return the names of the files `project` admits. */
+function walk(tree: FSFileSource, dir: string, project: Projector): Computable<string[]> {
   const names: string[] = [];
   /* Symlinked entries, kept after the walk where they resolve to a file:
    * `readdir` reports a symlink as neither file nor directory, but `stat` and
@@ -950,7 +968,7 @@ function walk(root: string, dir: string, project: Projector): Computable<string[
       if (!entry.isFile() && !entry.isSymbolicLink()) {
         return;
       }
-      const rel = toPosix(path.relative(root, abs));
+      const rel = tree.nameOf(abs);
       if (project(rel) === undefined) {
         return;
       }
@@ -958,14 +976,14 @@ function walk(root: string, dir: string, project: Projector): Computable<string[
     },
     /* Source scanning ignores dependency and VCS trees entirely. */
     entry => entry.name === "node_modules" || entry.name === ".git"
-  ).then(() => (links.length === 0 ? names : resolveLinks(root, names, links)));
+  ).then(() => (links.length === 0 ? names : resolveLinks(tree, names, links)));
 }
 
 /** Add to `names` the `links` that resolve to regular files; a dangling link,
  * or one to a directory, drops out, as `ingest` judges it. */
-function resolveLinks(root: string, names: string[], links: string[]): Computable<string[]> {
+function resolveLinks(tree: FSFileSource, names: string[], links: string[]): Computable<string[]> {
   return mapComputable(links, rel =>
-    stat(path.resolve(root, rel)).then(
+    stat(tree.hostPathOf(rel)).then(
       fileStat => (fileStat.isFile() ? rel : undefined),
       () => undefined
     )

@@ -22,6 +22,7 @@ import { BuildCache } from "../core/BuildCache";
 import { Computable, ComputableHandle, ComputableSource, ComputableState } from "../core/Computable";
 import { toError } from "../core/Errors";
 import { FileSource } from "../core/FileSet";
+import { AbsolutePathSource } from "../core/AbsolutePathSource";
 import { FSFileSource } from "../core/FSFileSource";
 import { IndexedFileSource } from "../core/IndexedFileSource";
 import type { WatchController } from "../core/WatchController";
@@ -119,9 +120,8 @@ export class ExecutionContext {
    *  watch mode. */
   public readonly sourceFileSource: FileSource;
   /**
-   * A FileSource reading files by absolute path: the loader's plugin and core
-   * `.fabr` files, and configuration a repository reads (a user `~/.npmrc`).
-   * Not watched. Nothing read through it is copied into the cache, as it may
+   * A FileSource reading files by absolute host path: configuration a
+   * repository reads (a user `~/.npmrc`, `~/.m2/settings.xml`). Not watched. Nothing read through it is copied into the cache, as it may
    * read credentials.
    */
   public readonly absFileSource: FileSource;
@@ -201,7 +201,7 @@ export class ExecutionContext {
     /* Shared with the watch controller, which advances it. */
     cycle: BuildCycle = new BuildCycle(),
     hostFileSource: FileSource = hostFiles(buildCache),
-    installedFileSource: FileSource = new FSFileSource("/", undefined, buildCache)
+    installedFileSource: FileSource = new AbsolutePathSource(root => new FSFileSource(root, undefined, buildCache))
   ) {
     this.buildCache = buildCache;
     this.log = log;
@@ -339,8 +339,8 @@ export class ExecutionContext {
   }
 }
 
-/** Make the FileSource of the host's files: `/`, read in place and watched a
- *  directory at a time (see {@link ExecutionContext.hostFileSource}). */
-export function hostFiles(cache: BuildCache, watchController?: WatchController): IndexedFileSource {
-  return new IndexedFileSource("/", cache, { read: "in-place", watch: "queried" }, watchController);
+/** Make the FileSource of the host's files: by absolute path, read in place
+ *  and watched a directory at a time (see {@link ExecutionContext.hostFileSource}). */
+export function hostFiles(cache: BuildCache, watchController?: WatchController): AbsolutePathSource<IndexedFileSource> {
+  return new AbsolutePathSource(root => new IndexedFileSource(root, cache, { read: "in-place", watch: "queried" }, watchController));
 }

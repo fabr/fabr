@@ -17,9 +17,10 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import { posix } from "path";
 import { Name, NAME_LEVEL_SEPARATOR, NameConstraint } from "../core/Name";
 import { StringReader } from "../support/StringReader";
-import { FileSource } from "../core/FileSet";
+import { FileSource, IFile } from "../core/FileSet";
 import { ISourceSpan } from "../support/Log";
 import { FabrError } from "../core/Errors";
 
@@ -234,6 +235,43 @@ export function optionalLibOf(name: Name): { plugin: string; path: Name } | unde
 }
 
 /**
+ * @return the name a lib file of the package `name` is known by, at `lib`
+ * within it: `<package>:<path>` (`@fabr-build/js:lib/JS.fabr`), as an include
+ * of it is written. It is the file's key in a load, and the name it is
+ * reported by.
+ */
+export function libKey(name: string, lib: string): string {
+  return `${name}${NAME_LEVEL_SEPARATOR}${posix.normalize(lib)}`;
+}
+
+/**
+ * @return the key of the build file at `relative`, a `/`-separated path
+ * relative to the directory of the build file keyed `file`: a path from the
+ * project's root for a project file, and for a lib file ({@link libKey}) a key
+ * within its own package (a path leading out of the package keys nothing in
+ * it).
+ */
+export function relativeKey(file: string, relative: string): string {
+  const pkg = libPackageOf(file);
+  if (pkg === undefined) {
+    return posix.join(posix.dirname(file), relative);
+  }
+  return libKey(pkg, posix.join(posix.dirname(file.substring(pkg.length + 1)), relative));
+}
+
+/** @return the package the lib file `key` ({@link libKey}) is of, or undefined where `key` names a project file. */
+export function libPackageOf(key: string): string | undefined {
+  const colon = key.indexOf(NAME_LEVEL_SEPARATOR);
+  return colon < 0 ? undefined : key.substring(0, colon);
+}
+
+/** @return the path, in its package's `PluginPackage.contents`, of the lib file `key` names. */
+export function libPath(key: string): string {
+  const pkg = libPackageOf(key)!;
+  return `${pkg}/${key.substring(pkg.length + 1)}`;
+}
+
+/**
  * A `plugin <name>;` declaration: the project uses the plugin `name` names,
  * resolved as a reference in the model as loaded so far, and reads its `.fabr`
  * files.
@@ -322,6 +360,9 @@ export interface IBuildFile {
   fs: FileSource;
   file: string;
   reader: StringReader;
+  /** The file it was read from, where it was read from one: its display name,
+   * or failing that its own path, is where an editor finds it. */
+  readFrom?: IFile;
 }
 
 /**

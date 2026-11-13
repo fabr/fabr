@@ -26,6 +26,7 @@ import { Repository } from "../core/Repository";
 import type { Namespace } from "../core/NamespaceRef";
 import type { IPropertyDecl, IRuleBlock, IRuleDecl, ITargetDecl } from "../model/AST";
 import type { IPropertyEntry } from "../model/Namespace";
+import type { FileSet } from "../core/FileSet";
 import {
   CommandValue,
   MaterializedRequirements,
@@ -343,6 +344,9 @@ export interface RepositoryRegistration extends RepositoryImplementation {
 export interface PluginContribution {
   rules?: RuleDefinition[];
   repositories?: RepositoryRegistration[];
-  /** Absolute paths of `.fabr` files read with the project's, with no `include`. */
-  includes?: string[];
+  /** The `.fabr` files read with the project's, with no `include`: each named
+   * as it is known, `<package>:<path>` (its key in a load, and what it is
+   * reported as), with the files of its package by their paths within it, the
+   * file at `<path>` among them. */
+  includes?: ReadonlyArray<{ name: string; files: FileSet }>;
 }

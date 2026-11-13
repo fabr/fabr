@@ -33,6 +33,7 @@ import { fileURLToPath } from "node:url";
 import type { ITestResult, TestStatus } from "@fabr-build/core";
 import { reportPathOf, snapshotPathOf } from "../testRunner/Report";
 import { IRunnerOptions, TEST_TIMEOUT_MS } from "../testRunner/RunTests";
+import { posixRelative } from "../support/Paths";
 
 /** An error as vitest reports one. */
 export interface IReportedError {
@@ -79,7 +80,7 @@ export function vitestOptions(
     config: false,
     root,
     watch: false,
-    include: options.files.map(file => path.relative(root, path.resolve(root, file)).split(path.sep).join("/")),
+    include: options.files.map(file => posixRelative(root, path.resolve(root, file))),
     environment: options.env,
     setupFiles: [...preloads, ...options.setup.map(entry => (entry.startsWith("./") ? path.resolve(root, entry) : entry))],
     update: options.update ? "all" : "none",
@@ -167,8 +168,12 @@ function withFabrRemedy(message: string): string {
   return SNAPSHOT_MISMATCH.test(message) ? `${message}. Run 'fabr test -u' to record the new value.` : message;
 }
 
-/** One stack frame's location: `file:line:column`, bare or parenthesized. */
-const FRAME_LOCATION = /^\s*(at (?:.*? )?)\(?((?:file:\/\/)?\/[^():]+):(\d+):(\d+)\)?$/;
+/** One stack frame's location: `file:line:column`, bare or parenthesized; the
+ * file a path or a `file:` URL, with a Windows drive where it has one. */
+const FRAME_LOCATION = /^\s*(at (?:.*? )?)\(?((?:file:\/\/)?(?:\/?[A-Za-z]:)?[\\/][^():]+):(\d+):(\d+)\)?$/;
+
+/** A path through a `node_modules` directory, either separator. */
+const IN_NODE_MODULES = /[\\/]node_modules[\\/]/;
 
 /**
  * Filter a stack to its frames in the code under test — those inside a
@@ -179,7 +184,7 @@ const FRAME_LOCATION = /^\s*(at (?:.*? )?)\(?((?:file:\/\/)?\/[^():]+):(\d+):(\d
 export function framesOf(stack: string | undefined): string | undefined {
   const frames = (stack ?? "")
     .split("\n")
-    .filter(line => !line.includes("/node_modules/"))
+    .filter(line => !IN_NODE_MODULES.test(line))
     .flatMap(line => {
       const located = FRAME_LOCATION.exec(line);
       if (!located) {

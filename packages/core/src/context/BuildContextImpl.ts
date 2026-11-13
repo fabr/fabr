@@ -20,7 +20,6 @@
 import { ActionContext, ICreateOptions } from "../core/BuildCache";
 import { Computable, ComputableSource } from "../core/Computable";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
-import { FSFileSource } from "../core/FSFileSource";
 import {
   isRepository,
   isRepositoryReader,
@@ -101,7 +100,8 @@ import { ConflictError, FabrError, IConflictSide, IConflictSource, toError } fro
 import { hasTestFailures } from "../support/TestResult";
 import { createPipelineAction, stagePipeline } from "../core/PipelineAction";
 import { closestMatch } from "../support/Suggest";
-import { Name, NameConstraint, NamePart, NamePartKind } from "../core/Name";
+import { Name, NAME_COMPONENT_SEPARATOR, NameConstraint, NamePart, NamePartKind } from "../core/Name";
+import { COMMAND_LINE_FILE } from "../core/Constants";
 import { globMatcher } from "../support/Glob";
 import { applyPatternEdit } from "../support/PatternEdit";
 import { parseName } from "../model/Parser";
@@ -1283,8 +1283,9 @@ export class BuildContextImpl implements InternalBuildContext {
         return target.then(reached => project(reached, miss) as SourceRef[] | Computable<SourceRef[]>);
       }
     } else if (relativeTo) {
-      /* A path relative to the build file's directory, projected over the
-       * source filesystem now. `Name.relativeTo` adds the directory as a `:`
+      /* A path relative to the build file's directory, projected now over the
+       * source the file was read through: the project's tree, or for a
+       * plugin's lib file its package's files. `Name.relativeTo` adds the directory as a `:`
        * prefix, which `find` strips, so a result keeps the name as written:
        * `./astro.config.mjs` in `docs/BUILD.fabr` is the file
        * `astro.config.mjs`. A leading `../` is dropped by FileSet's name
@@ -1307,16 +1308,21 @@ export class BuildContextImpl implements InternalBuildContext {
               this.unknownNameHints(written, !frame)
             );
           };
-      /* Rebase the pattern onto the source's root before the walk: its
-       * directory probes use the source's names, and a reference in a build
-       * file outside the project (a plugin's lib file) would otherwise never
-       * descend. */
-      const fs = relativeTo.source.fs;
-      let pattern = substName.relativeTo(relativeTo.source.file);
-      if (fs instanceof FSFileSource) {
-        pattern = pattern.rebase(fs.root);
+      /* An absolute path names no target: written `/x` anywhere (on the Windows
+       * command line, `\\server\share` too, read as `//server/share`), or
+       * `C:\x` on the command line on Windows (read as `C:/x`). */
+      const onCommandLine = relativeTo.source.file.split(NAME_COMPONENT_SEPARATOR).at(-1) === COMMAND_LINE_FILE;
+      const windowsPath = onCommandLine && process.platform === "win32" && WINDOWS_ABSOLUTE.test(substName.toString());
+      if (isAbsoluteName(substName) || windowsPath) {
+        throw new NameResolutionError(
+          substName,
+          declPosn(useFrameOf(stack)?.value ?? relativeTo),
+          useSiteOf(stack),
+          `'${substName.toString()}' is an absolute path, which names no target`
+        );
       }
-      return this.applyProjection(new FileSourceRef(fs, [{ pattern, prefix: "" }], miss)).then(data => [data]);
+      const pattern = substName.relativeTo(relativeTo.source.file);
+      return this.applyProjection(new FileSourceRef(relativeTo.source.fs, [{ pattern, prefix: "" }], miss)).then(data => [data]);
     } else {
       /* A constraint's value (see resolveTarget), from `-D` or a `<k=v>`,
        * carries no declaration to root a path at: only a declared name
@@ -2161,6 +2167,15 @@ function builtBy(node: Unbuilt | undefined): Builds | undefined {
     return "files";
   }
   return declared === undefined ? undefined : { ...declared, version: declared.version ?? node.version };
+}
+
+/** A Windows absolute path as the command line reads one (`C:/x`). */
+const WINDOWS_ABSOLUTE = /^[A-Za-z]:\//;
+
+/** @return true if `name` is written as an absolute path, starting `/`,
+ * otherwise false. In a build file `C:/x` is a projection out of `C` on every host. */
+function isAbsoluteName(name: Name): boolean {
+  return name.toString().startsWith("/");
 }
 
 /** @return the sources of a requirement as read. */

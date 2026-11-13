@@ -20,6 +20,7 @@
 import { PROJECT_FILENAME } from "./core/Constants";
 import { BuildCache } from "./core/BuildCache";
 import { Computable } from "./core/Computable";
+import { AbsolutePathSource } from "./core/AbsolutePathSource";
 import { FSFileSource } from "./core/FSFileSource";
 import { IndexedFileSource } from "./core/IndexedFileSource";
 import { FabrError } from "./core/Errors";
@@ -97,7 +98,7 @@ export class Fabr {
    *  it (the execution holds it as a plain FileSource). */
   public readonly sourceFileSource: SourceFileSource;
   /** The host's files read in place, whose index this run keeps (see {@link ExecutionContext.hostFileSource}). */
-  private readonly hostFileSource: IndexedFileSource;
+  private readonly hostFileSource: AbsolutePathSource<IndexedFileSource>;
   /** The machine fabr runs on, as a configuration (see {@link IFabrOptions.host}). */
   private readonly host: Constraints;
   /** How the project is read. */
@@ -131,7 +132,7 @@ export class Fabr {
       cache,
       options.log,
       this.sourceFileSource,
-      new FSFileSource("/"),
+      new AbsolutePathSource(root => new FSFileSource(root)),
       cycle,
       this.hostFileSource
     );
@@ -142,7 +143,7 @@ export class Fabr {
      * saved; a one-shot run's driver runs the trim itself. */
     this.execution.onBuildEvent(event => {
       if (event.kind === "cycle-end") {
-        this.hostFileSource.persistIndex();
+        this.persistHostIndexes();
         const persisted = this.sourceFileSource.persistIndex();
         if (this.controller) {
           persisted.then(() => this.maybeCollectGarbage());
@@ -152,11 +153,19 @@ export class Fabr {
     this.controller?.track(
       () =>
         new Promise<void>(resolve =>
-          Computable.forAll([this.sourceFileSource.persistIndex(true), this.hostFileSource.persistIndex(true)], () => undefined).then(
+          Computable.forAll([this.sourceFileSource.persistIndex(true), this.persistHostIndexes(true)], () => undefined).then(
             () => resolve(),
             () => resolve()
           )
         )
+    );
+  }
+
+  /** Save the index of each filesystem root the host's files were read under; with `flush`, unconditionally. */
+  private persistHostIndexes(flush = false): Computable<void> {
+    return Computable.forAll(
+      this.hostFileSource.sources.map(source => source.persistIndex(flush)),
+      () => undefined
     );
   }
 
@@ -173,7 +182,7 @@ export class Fabr {
     const evaluation = loadProject(this.execution, PROJECT_FILENAME, coreContribution(), this.host, this.loadOptions).then(operation);
     this.execution.observeEvaluation(evaluation);
     return evaluation.finally(() =>
-      Computable.forAll([this.sourceFileSource.persistIndex(), this.hostFileSource.persistIndex()], () => undefined)
+      Computable.forAll([this.sourceFileSource.persistIndex(), this.persistHostIndexes()], () => undefined)
     );
   }
 
@@ -567,7 +576,7 @@ export function describeOperation(
 ): IDescribing {
   const targets = model
     .getTargets()
-    .filter(({ decl }) => decl.source.fs !== execution.absFileSource)
+    .filter(({ decl }) => decl.source.fs === execution.sourceFileSource)
     .flatMap(({ name, decl }) =>
       DESCRIBED_OPERATIONS.filter(operation => model.getOperations(decl.type).includes(operation)).map(
         (operation): IDescribingTarget => ({

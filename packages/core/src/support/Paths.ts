@@ -30,6 +30,32 @@ const BACKSLASH = "\\".charCodeAt(0);
 const DEL = 0x7f;
 
 /**
+ * Make `hostPath`, a path as the host spells it, `/`-separated, as a name or a
+ * pattern is: unchanged on POSIX, each `\` a `/` on Windows (`C:\Users\x` is
+ * `C:/Users/x`). Use it where a name or pattern is made from a host path: a
+ * path made relative to a source's root, or an absolute path a pattern over
+ * the absolute-path source starts from (an installed package's directory). An
+ * absolute path held as a path (a source's root, a file's own) stays as the
+ * host spells it.
+ *
+ * @param host the host's path functions; a test passes `path.win32`.
+ */
+export function toPosix(hostPath: string, host: path.PlatformPath = path): string {
+  return host.sep === "/" ? hostPath : hostPath.split(host.sep).join("/");
+}
+
+/**
+ * Make `posixPath`, a `/`-separated path, the host's spelling, for a reader
+ * other than Node's own `fs` (a tool's argument): the inverse of
+ * {@link toPosix}.
+ *
+ * @param host the host's path functions; a test passes `path.win32`.
+ */
+export function toHostPath(posixPath: string, host: path.PlatformPath = path): string {
+  return host.sep === "/" ? posixPath : posixPath.split("/").join(host.sep);
+}
+
+/**
  * Canonicalize a file name as a FileSet names files: a relative, `/`-separated
  * path with no empty, `.` or `..` segment and no trailing `/`. Interior `.` and
  * `..` segments are resolved, and a leading `/` or run of `../` is stripped

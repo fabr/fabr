@@ -2567,7 +2567,13 @@ describe("BuildCache.ensureTree (the tree pool)", () => {
     const cache = new BuildCache(root, NULL_LOG);
     const elsewhere = path.join(root, "mine.txt");
     fs.writeFileSync(elsewhere, "held by someone else");
-    const held = new FSFile(root, "mine.txt", fs.statSync(elsewhere), hashString("held by someone else"), "text/plain");
+    const held = new FSFile(
+      path.join(root, "mine.txt"),
+      "mine.txt",
+      fs.statSync(elsewhere),
+      hashString("held by someone else"),
+      "text/plain"
+    );
     /* Synchronously, at the call: this is a broken delivery contract rather
      * than a build failure, so it fails where the mistake is instead of riding
      * a chain. */

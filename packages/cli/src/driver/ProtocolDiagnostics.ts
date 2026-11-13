@@ -60,9 +60,16 @@ export function rangeOf(loc: ISourceSpan): IProtocolRange | undefined {
   };
 }
 
-/** @return the URI of the document `loc` lies in, its file named from `sourceRoot`. */
+/**
+ * @return the URI of the document `loc` lies in: where the file it was read
+ * from lies (its display name, where that is a path, else its own path), or
+ * its file named from `sourceRoot`.
+ */
 export function documentOf(sourceRoot: string, loc: ISourceSpan): string {
-  return pathToFileURL(path.resolve(sourceRoot, loc.file)).toString();
+  const display = loc.readFrom?.getDisplayName();
+  const file =
+    display !== undefined && path.isAbsolute(display) ? display : (loc.readFrom?.getAbsPath() ?? path.resolve(sourceRoot, loc.file));
+  return pathToFileURL(file).toString();
 }
 
 /**

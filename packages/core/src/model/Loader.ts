@@ -20,8 +20,13 @@
 import * as path from "node:path";
 
 import { Computable, ComputableSource } from "../core/Computable";
-import { FileSource } from "../core/FileSet";
-import { Name } from "../core/Name";
+import * as fs from "node:fs";
+import { FileSet, FileSource } from "../core/FileSet";
+import { FSFile } from "../core/FSFileSource";
+import { hashString } from "../core/FSWrapper";
+import { Name, NAME_LEVEL_SEPARATOR } from "../core/Name";
+import { CORE_PACKAGE } from "../core/Constants";
+import { sniffMime } from "../support/Mime";
 import { Diagnostic, ErrorTrackingLog, IDiagnosticNote, ISourceSpan, Log, LogLevel } from "../support/Log";
 import { StringReader } from "../support/StringReader";
 import { DIAG_FABR_PLACEMENT, parseBuildFile } from "./Parser";
@@ -32,15 +37,19 @@ import {
   IFabrDecl,
   IIncludeDecl,
   INameValue,
+  IPluginDecl,
   isPropertyDecl,
   ISpliceDecl,
   ITargetDecl,
+  libKey,
+  libPackageOf,
+  libPath,
   optionalLibOf,
 } from "./AST";
 import { BuildModel } from "./BuildModel";
 import { ModelBuilder } from "./ModelBuilder";
 import { ExecutionContext } from "./ExecutionContext";
-import { getCoreVersion, matchOptionalLibs, PluginResolution, resolvePlugin } from "./Plugin";
+import { getCoreVersion, matchOptionalLibs, PluginPackage, PluginResolution, resolvePlugin } from "./Plugin";
 import { PluginContribution } from "../rules/Types";
 import { computableWorkList } from "../core/WorkList";
 import { FabrError } from "../core/Errors";
@@ -84,11 +93,24 @@ const DIAG_PLUGIN_LIBS = new Diagnostic<{ loc: ISourceSpan }>(
 /**
  * @return core's own contribution to every load: STD.fabr, which declares
  * core's rules and repository types and is read with the project's files, with
- * no `include`.
+ * no `include`. Where it cannot be read, core's files hold none, and the load
+ * reports it as a file not found.
  */
 export function coreContribution(): PluginContribution {
   /* This module is in model/, beside core's entry point. */
-  return { includes: [getLibFile(path.dirname(__dirname), "STD.fabr")] };
+  const std = readLibFile(getLibFile(path.dirname(__dirname), "STD.fabr"), "lib/STD.fabr");
+  const files = new FileSet(new Map(std === undefined ? [] : [["lib/STD.fabr", std]]));
+  return { includes: [{ name: libKey(CORE_PACKAGE, "lib/STD.fabr"), files }] };
+}
+
+/** Read the file at `hostPath`, one of a package's lib files at `name` within it, as an {@link FSFile}; undefined where it cannot be read. */
+function readLibFile(hostPath: string, name: string): FSFile | undefined {
+  try {
+    const bytes = fs.readFileSync(hostPath);
+    return new FSFile(hostPath, name, fs.statSync(hostPath), hashString(bytes), sniffMime(bytes));
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -103,17 +125,18 @@ export function getLibFile(entryDir: string, file: string): string {
   return path.join(entryDir, "lib", file);
 }
 
-/* A work-list key is a file path: relative to the project source's root for a
- * project file, absolute for a core or plugin lib file ({@link getLibFile}). A
- * relative key is read from the project source, an absolute one from the
- * absolute-path source. */
+/* A work-list key names a file: a project file by its path from the project
+ * source's root, a lib file of core or an installed plugin by the name it is
+ * known by, `<package>:<path>` ({@link libKey}), read from its package's files. */
 
-/** @return true if `target`, a path an include in `file` resolved to, lies
- * outside the project tree, otherwise false. Only a project file's includes are
- * checked; a lib file's always return false. */
-function escapesTree(file: string, target: string): boolean {
-  return !path.isAbsolute(file) && (target === ".." || target.startsWith(".." + path.sep));
+/** @return true if `target`, a path an include in a project file resolved to,
+ * lies outside the project tree, otherwise false. */
+function escapesTree(target: string): boolean {
+  return target === ".." || target.startsWith("../");
 }
+
+/** What an include in a lib file leading out of its package resolves to: no file of the package. */
+const NAMES_NOTHING: ResolvedIncludeName = { pattern: Name.fromLiteral(""), exact: "" };
 
 /** An include's name resolved for matching against the source. */
 interface ResolvedIncludeName {
@@ -127,28 +150,40 @@ interface ResolvedIncludeName {
 
 /**
  * Resolve an include's name relative to the directory of `file`, the including
- * file. A plain path is joined whole. A pattern's literal head is joined and its
- * glob tail kept, so the directory its search starts from is checked as a plain
- * path is. Paths are joined, not resolved, so a project file's includes stay
- * relative to the source root. (The parser refuses an absolute include path.)
+ * file, within its package for a lib file. A plain path is joined whole. A pattern's literal
+ * head is joined and its glob tail kept, so the directory its search starts
+ * from is checked as a plain path is. Paths are joined, not resolved, so a
+ * project file's includes stay relative to the source root. (The parser
+ * refuses an absolute include path.)
  *
  * @return the name to match, or undefined where a project file's include
- * resolves outside the project tree; a lib file's includes are not checked.
+ * resolves outside the project tree; a lib file's include leading out of its
+ * package names nothing.
  */
-function resolveIncludeName(file: string, include: IIncludeDecl): ResolvedIncludeName | undefined {
-  const dir = path.dirname(file);
+function resolveIncludeName(file: string, include: IIncludeDecl, pkg: string | undefined): ResolvedIncludeName | undefined {
+  /* A lib file's key names a path within its package, `pkg`; a project file's is the path. */
+  const dir = path.posix.dirname(pkg === undefined ? file : file.substring(pkg.length + 1));
+  const keyOf = (within: string): string => (pkg === undefined ? within : libKey(pkg, within));
   const plain = include.name.getSimpleName();
   if (plain !== undefined) {
-    const target = path.join(dir, plain);
-    return escapesTree(file, target) ? undefined : { pattern: Name.fromLiteral(target), exact: target };
+    const target = path.posix.join(dir, plain);
+    if (escapesTree(target)) {
+      return pkg === undefined ? undefined : NAMES_NOTHING;
+    }
+    return { pattern: Name.fromLiteral(keyOf(target)), exact: keyOf(target) };
   }
   const head = include.name.getLiteralPathPrefix();
-  const base = path.join(dir, head);
-  if (escapesTree(file, base)) {
-    return undefined;
+  const base = path.posix.join(dir, head);
+  if (escapesTree(base)) {
+    return pkg === undefined ? undefined : NAMES_NOTHING;
   }
   const tail = include.name.substring(head.length);
-  return { pattern: base === "." ? tail : tail.withPrefix(base.endsWith("/") ? base : base + "/") };
+  if (base === ".") {
+    /* The directory itself: the project's root, or the package's. */
+    return { pattern: pkg === undefined ? tail : tail.withPrefix(`${pkg}${NAME_LEVEL_SEPARATOR}`) };
+  }
+  const prefix = keyOf(base);
+  return { pattern: tail.withPrefix(prefix.endsWith("/") ? prefix : prefix + "/") };
 }
 
 /** Make one "included from here" note per include in the chain that reached
@@ -174,7 +209,7 @@ interface IncludedFiles {
 
 /** One build file read: its parsed decls and the number of errors reported reading it. */
 interface LoadedFile {
-  /** The file's work-list key: relative to the project's root for a project file, absolute for a lib file. */
+  /** The file's work-list key: its path from the project's root for a project file, its {@link libKey} for a lib file. */
   file: string;
   decls: IBuildFileContents;
   /** The errors reported parsing it: where there are any, its declarations are not validated. */
@@ -222,8 +257,13 @@ class ProjectLoader {
    * an include named from one it did not, and supplies the chain of includes
    * reported with a failure. */
   private readonly includeSites = new Map<string, IIncludeDecl>();
+  /** The lib files whose include site is one made for a `plugin` declaration, which an include written for one replaces. */
+  private readonly pluginSited = new Set<string>();
   /** Each file's load. */
   private readonly steps = new Map<string, ComputableSource<{ value: LoadedFile; next: string[] }>>();
+  /** The files each package's lib files ({@link libKey}) are read from, by the
+   * package's name: its files, mounted at the name. */
+  private readonly libSources = new Map<string, FileSet>();
   /** Each `fabr_plugin` target's `libs` and `optional_libs`, resolved, by its declaration and the property. */
   private readonly libs = new Map<ITargetDecl, Map<string, ComputableSource<IncludedFiles>>>();
 
@@ -242,7 +282,12 @@ class ProjectLoader {
    * until a round resolves none.
    */
   public load(): Computable<BuildModel> {
-    return this.round([], [this.startFile, ...(this.core.includes ?? [])], false);
+    const includes = this.core.includes ?? [];
+    for (const { name, files } of includes) {
+      const pkg = libPackageOf(name)!;
+      this.setPackageFiles(pkg, files.mountedAt(pkg));
+    }
+    return this.round([], [this.startFile, ...includes.map(({ name }) => name)], false);
   }
 
   /**
@@ -274,6 +319,11 @@ class ProjectLoader {
         ),
         (...plugins: PluginResolution[]) => plugins
       ).then(plugins => {
+        for (const { decl, resolved } of plugins) {
+          if (!(resolved instanceof Error)) {
+            this.addPluginFiles(decl, resolved);
+          }
+        }
         const added = [
           ...plugins.flatMap(({ resolved }) =>
             resolved instanceof Error
@@ -285,6 +335,57 @@ class ProjectLoader {
         return this.round([...previous, { files, fromPlugin, plugins, optionalLibs }], [...new Set(added)], true);
       });
     });
+  }
+
+  /**
+   * Note that an installed `plugin`'s lib files are read from its package's
+   * files, and that each of its `libs` is included by the `plugin` declaration
+   * `decl`, as if it read `include <package>:<path>;`.
+   */
+  private addPluginFiles(decl: IPluginDecl, plugin: PluginPackage): void {
+    if (plugin.contents === undefined) {
+      /* A fabr_plugin's lib files are the project's, sited where its libs include them. */
+      return;
+    }
+    this.setPackageFiles(plugin.name, plugin.contents);
+    /* Sited at the declaration as it now reads, which under watch may have
+     * moved; an optional lib only where the load reads them all (one a
+     * project includes is sited at its include). */
+    const optional = this.options.includeOptionalLibs ? plugin.optionalLibs.map(lib => lib.file) : [];
+    for (const key of [...plugin.files, ...optional.filter(lib => !this.includeSites.has(lib) || this.pluginSited.has(lib))]) {
+      this.pluginSited.add(key);
+      this.includeSites.set(key, {
+        kind: DeclKind.Include,
+        source: decl.source,
+        offset: decl.offset,
+        endOffset: decl.endOffset,
+        name: Name.fromLiteral(key),
+      });
+    }
+  }
+
+  /**
+   * Note that the lib files of the package `pkg` are read from `contents`, its
+   * files mounted at its name. Where they have changed (a plugin resolved
+   * again under watch), forget the loads of its lib files, so each is read
+   * again from them.
+   */
+  private setPackageFiles(pkg: string, contents: FileSet): void {
+    const known = this.libSources.get(pkg);
+    if (known !== undefined && known.toManifestHash() !== contents.toManifestHash()) {
+      for (const key of this.steps.keys()) {
+        if (libPackageOf(key) === pkg) {
+          this.steps.delete(key);
+        }
+      }
+    }
+    this.libSources.set(pkg, contents);
+  }
+
+  /** @return the files the lib file `key` is read from, its package's, or undefined for a project file. */
+  private packageFilesOf(key: string): FileSet | undefined {
+    const pkg = libPackageOf(key);
+    return pkg === undefined ? undefined : this.libSources.get(pkg);
   }
 
   /**
@@ -309,8 +410,9 @@ class ProjectLoader {
         },
       ];
     }
+    /* The first include as written, ahead of the plugin declaration a load reading every optional lib sites it at. */
     for (const file of files) {
-      if (!this.includeSites.has(file)) {
+      if (!this.includeSites.has(file) || this.pluginSited.delete(file)) {
         this.includeSites.set(file, decl);
       }
     }
@@ -352,14 +454,16 @@ class ProjectLoader {
     if (known !== undefined) {
       return known;
     }
-    const fs = path.isAbsolute(file) ? this.execution.absFileSource : this.execution.sourceFileSource;
-    const step = fs.get(file).then(f => {
+    const contents = this.packageFilesOf(file);
+    const source: FileSource = contents ?? this.execution.sourceFileSource;
+    const step = source.get(contents === undefined ? file : libPath(file)).then(f => {
       if (!f) {
         /* An included file was matched by its include, so one missing here was
          * deleted since: it contributes nothing and reports nothing, and the
          * include's own match, re-run, reports it if it now names nothing. A
-         * file no include named (the project file, a lib file) is an error. */
-        if (!this.includeSites.has(file)) {
+         * file no include named (the project file), or a lib file (whose
+         * package lists it), is an error. */
+        if (!this.includeSites.has(file) || contents !== undefined) {
           throw new FabrError("File not found: " + file);
         }
         return { value: { file, decls: NO_DECLS, parseErrors: 0, includeErrors: 0 }, next: [] };
@@ -367,7 +471,7 @@ class ProjectLoader {
       return f.readString().then(content => {
         /* Parsing logs each error and recovers; count them through a wrapping log. */
         const parseLog = new ErrorTrackingLog(this.execution.log);
-        const decls = parseBuildFile({ fs, file, reader: new StringReader(content) }, parseLog);
+        const decls = parseBuildFile({ fs: source, file, reader: new StringReader(content), readFrom: f }, parseLog);
         if (decls.fabr !== undefined) {
           this.checkFabr(file, decls.fabr, parseLog);
         }
@@ -377,7 +481,7 @@ class ProjectLoader {
          * optional libs is resolved by the model's rounds instead. */
         const included = decls.includes
           .filter(include => optionalLibOf(include.name) === undefined)
-          .map(include => this.includedFiles(fs, file, include));
+          .map(include => this.includedFiles(source, file, include));
         return Computable.forAll(included, (...resolved) => ({
           value: {
             file,
@@ -417,22 +521,25 @@ class ProjectLoader {
    * matches nothing, and a project file's include outside the project tree are
    * each reported against the decl, resolving to no files and one error.
    *
-   * The match is a live query over `fs`, so under watch a file appearing or
+   * The match is a live query over `source`, so under watch a file appearing or
    * disappearing beneath a pattern re-runs the including file's load.
    */
-  private includedFiles(fs: FileSource, file: string, include: IIncludeDecl): ComputableSource<IncludedFiles> {
-    const resolved = resolveIncludeName(file, include);
+  private includedFiles(source: FileSource, file: string, include: IIncludeDecl): ComputableSource<IncludedFiles> {
+    const contents = this.packageFilesOf(file);
+    const pkg = contents === undefined ? undefined : libPackageOf(file);
+    const resolved = resolveIncludeName(file, include, pkg);
     if (resolved === undefined) {
       /* An include outside the project tree is reported like a missing one. */
       return Computable.resolve(this.includeFailed(DIAG_INCLUDE_OUTSIDE, include));
     }
-    /* Matches are named relative to the source's root, which is a project file's
-     * key. A lib file's key is absolute and a FileSet name never is, so put back
-     * the leading separator the absolute-path source leaves off. */
-    const absolute = path.isAbsolute(file);
-    return fs.find(resolved.pattern).then(matched => {
+    if (resolved === NAMES_NOTHING) {
+      return Computable.resolve(this.includeFailed(DIAG_INCLUDE_NOT_FOUND, include));
+    }
+    /* A match is named by its path in the source: a project file's key, or,
+     * within a lib file's package, the path its key gives after the package. */
+    return source.find(resolved.pattern).then(matched => {
       const files = [...matched]
-        .map(([name]) => (absolute ? path.sep + name : name))
+        .map(([name]) => (pkg === undefined ? name : libKey(pkg, name)))
         .filter(name => resolved.exact === undefined || name === resolved.exact)
         .sort();
       if (files.length === 0) {

@@ -18,11 +18,7 @@
  */
 
 import { expect } from "chai";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 import { BuildCache } from "../core/BuildCache";
-import { FSFileSource } from "../core/FSFileSource";
 import { Computable, ComputableSource, ComputableState } from "../core/Computable";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
@@ -33,10 +29,11 @@ import { BuildModel } from "./BuildModel";
 import { BuildFilesInvalidError } from "./Errors";
 import { ExecutionContext } from "./ExecutionContext";
 import { loadProject } from "./Loader";
+import type { PluginContribution } from "../rules/Types";
 import { getCoreVersion } from "./Plugin";
 
-/** A minimal ExecutionContext for the loader: the project tree as the source, an
- *  empty absolute source (these tests use NO_BASE, so no lib files are read). */
+/** A minimal ExecutionContext for the loader: the project tree as the source,
+ *  and an empty absolute-path source, which the loader does not read. */
 function exec(project: FileSource, log: LogFormatter): ExecutionContext {
   return new ExecutionContext(new BuildCache(".", log), log, project, EMPTY_FILESET);
 }
@@ -54,10 +51,10 @@ function files(entries: Record<string, string>): FileSet {
   return new FileSet(new Map(Object.entries(entries).map(([name, content]) => [name, MemoryFile.from(content)])));
 }
 
-async function load(project: FileSource, startFile: string): Promise<BuildModel> {
+async function load(project: FileSource, startFile: string, contribution: PluginContribution = NO_BASE): Promise<BuildModel> {
   const errors: string[] = [];
   const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-  const model = await loadProject(exec(project, logger), startFile, NO_BASE);
+  const model = await loadProject(exec(project, logger), startFile, contribution);
   expect(errors).to.deep.equal([]);
   return model;
 }
@@ -171,27 +168,38 @@ describe("Loader", () => {
     expect(propertyValue(model, "other")).to.equal("yes");
   });
 
-  it("expands a glob include written in an absolute (plugin lib) file", async () => {
-    /* A lib file's includes resolve within its installed package, read through the
-     * absolute source — whose keys keep the leading separator its root sheds. Real
-     * files, since no in-memory FileSet can hold an absolute name. */
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-loader-lib-"));
-    try {
-      fs.mkdirSync(path.join(root, "rules"));
-      fs.writeFileSync(path.join(root, "LIB.fabr"), "include rules/*.fabr;\nlib = yes;\n");
-      fs.writeFileSync(path.join(root, "rules", "one.fabr"), "one = yes;\n");
-      const logged: string[] = [];
-      const logger = new LogFormatter(LogLevel.Info, message => logged.push(message));
-      const project = files({ "PROJECT.fabr": "own = here;" });
-      const execution = new ExecutionContext(new BuildCache(".", logger), logger, project, new FSFileSource("/"));
-      const model = await loadProject(execution, "PROJECT.fabr", { includes: [path.join(root, "LIB.fabr")] });
-      expect(logged).to.deep.equal([]);
-      expect(propertyValue(model, "lib")).to.equal("yes");
-      expect(propertyValue(model, "one")).to.equal("yes");
-      expect(propertyValue(model, "own")).to.equal("here");
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
+  it("expands a glob include written in a plugin's lib file, within its package", async () => {
+    /* A lib file is known by `<package>:<path>`, and its includes resolve
+     * within its package's files. */
+    const logged: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, message => logged.push(message));
+    const project = files({ "PROJECT.fabr": "own = here;" });
+    const lib = files({ "lib/LIB.fabr": "include rules/*.fabr;\nlib = yes;\n", "lib/rules/one.fabr": "one = yes;\n" });
+    const model = await loadProject(exec(project, logger), "PROJECT.fabr", {
+      includes: [{ name: "@acme/rules:lib/LIB.fabr", files: lib }],
+    });
+    expect(logged).to.deep.equal([]);
+    expect(propertyValue(model, "lib")).to.equal("yes");
+    expect(propertyValue(model, "one")).to.equal("yes");
+    expect(propertyValue(model, "own")).to.equal("here");
+    const one = model.getDecl("one");
+    expect(one?.kind === DeclKind.Property ? one.decls[0].source.file : undefined).to.equal("@acme/rules:lib/rules/one.fabr");
+  });
+
+  it("resolves an include in a lib file at its package's root within the package, and none out of it", async () => {
+    const project = files({ "PROJECT.fabr": "own = here;" });
+    const lib = files({ "LIB.fabr": "include ./more.fabr;\nlib = yes;\n", "more.fabr": "more = yes;\n" });
+    const model = await load(project, "PROJECT.fabr", { includes: [{ name: "@acme/rules:LIB.fabr", files: lib }] });
+    expect(propertyValue(model, "more")).to.equal("yes");
+    const outside = files({ "LIB.fabr": "include ../other/x.fabr;\n" });
+    const { error, logged } = await loadErr(project, { includes: [{ name: "@acme/rules:LIB.fabr", files: outside }] });
+    expect(error).to.be.an.instanceOf(BuildFilesInvalidError);
+    expect(logged.join("\n")).to.contain("Included file not found: ../other/x.fabr");
+    /* A pattern climbing out matches nothing, not the package's own files. */
+    const climbing = files({ "LIB.fabr": "include ../**/*.fabr;\n", "more.fabr": "more = yes;\n" });
+    const climbed = await loadErr(project, { includes: [{ name: "@acme/rules:LIB.fabr", files: climbing }] });
+    expect(climbed.error).to.be.an.instanceOf(BuildFilesInvalidError);
+    expect(climbed.logged.join("\n")).to.contain("Included file not found: ../**/*.fabr");
   });
 
   it("tolerates a glob-matched file that has vanished before it is read", async () => {
@@ -266,12 +274,12 @@ describe("Loader", () => {
   /* Parse and sema/validation recover to report every error rather than throwing;
    * the load as a whole must still reject so no operation builds against an
    * unsound model. Each error is reported to the log; the rejection just stops. */
-  async function loadErr(project: FileSet): Promise<{ error?: Error; logged: string[] }> {
+  async function loadErr(project: FileSet, contribution: PluginContribution = NO_BASE): Promise<{ error?: Error; logged: string[] }> {
     const logged: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => logged.push(msg));
     let error: Error | undefined;
     try {
-      await loadProject(exec(project, logger), "PROJECT.fabr", NO_BASE);
+      await loadProject(exec(project, logger), "PROJECT.fabr", contribution);
     } catch (err) {
       error = err as Error;
     }

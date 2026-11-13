@@ -42,6 +42,7 @@ import {
   type INamed,
   symbolsOf,
   writtenAt,
+  toPosix,
 } from "@fabr-build/core";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -175,7 +176,7 @@ export class LanguageServer {
       this.typed.delete(uri);
     } else {
       const found = new Map<string, IProtocolDiagnostic[]>();
-      parseBuildString(EMPTY_FILESET, path.relative(this.sourceRoot, file), text, collectingLog(this.sourceRoot, SILENT, found));
+      parseBuildString(EMPTY_FILESET, this.fileNameOf(file), text, collectingLog(this.sourceRoot, SILENT, found));
       this.typed.set(uri, [...found.values()].flat());
     }
     this.publishDocument(uri);
@@ -281,14 +282,12 @@ export class LanguageServer {
         if (this.model === undefined) {
           return [];
         }
-        return completionsAt(this.model, text, offsetOf(text, position), path.relative(this.sourceRoot, fileURLToPath(uri))).map(
-          completion => ({
-            label: completion.label,
-            kind: COMPLETION_KINDS[completion.kind],
-            ...(completion.detail === undefined ? {} : { detail: completion.detail }),
-            ...(completion.comment === undefined ? {} : { documentation: { kind: "markdown", value: completion.comment } }),
-          })
-        );
+        return completionsAt(this.model, text, offsetOf(text, position), this.fileNameOf(fileURLToPath(uri))).map(completion => ({
+          label: completion.label,
+          kind: COMPLETION_KINDS[completion.kind],
+          ...(completion.detail === undefined ? {} : { detail: completion.detail }),
+          ...(completion.comment === undefined ? {} : { documentation: { kind: "markdown", value: completion.comment } }),
+        }));
       }
       default:
         throw new MethodNotFound(`${method} is not served`);
@@ -307,7 +306,12 @@ export class LanguageServer {
   private parse(uri: string): { contents: IBuildFileContents; text: string } {
     const file = fileURLToPath(uri);
     const text = this.documents.get(uri) ?? fs.readFileSync(file, "utf8");
-    return { contents: parseBuildString(EMPTY_FILESET, path.relative(this.sourceRoot, file), text, SILENT), text };
+    return { contents: parseBuildString(EMPTY_FILESET, this.fileNameOf(file), text, SILENT), text };
+  }
+
+  /** @return the name of the build file at host path `file`, as the project's source names it. */
+  private fileNameOf(file: string): string {
+    return toPosix(path.relative(this.sourceRoot, file));
   }
 }
 

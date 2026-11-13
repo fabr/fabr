@@ -48,6 +48,7 @@ import { Name } from "./Name";
 import { HostLink, SymlinkFile } from "./SymlinkFile";
 import { describeSystemError, killLiveChildren } from "../support/Execute";
 import { globMatcher } from "../support/Glob";
+import { toPosix } from "../support/Paths";
 
 /** Temp trees in use, so the exit hook can remove whatever is still live when
  * the process ends. */
@@ -395,7 +396,7 @@ export function getResultFileSets(targetDir: string, selections: ReadonlyArray<O
    * Only regular files are collected; a symlink is deleted as a link. */
   return walkTree(targetDir, (entry, abspath) => {
     if (!entry.isDirectory()) {
-      const rel = path.relative(targetDir, abspath);
+      const rel = toPosix(path.relative(targetDir, abspath));
       found.push({ abspath, rel, names: projectors.map(project => (entry.isFile() ? project(rel) : undefined)) });
     }
   })
@@ -407,7 +408,7 @@ export function getResultFileSets(targetDir: string, selections: ReadonlyArray<O
         return hashFile(abspath).then(({ hash, mime }) => {
           /* A file at its place in the work dir (storeContent later moves it
            * into the pool), keyed in the set by its projected name. */
-          const file = new FSFile(targetDir, rel, fs.statSync(abspath), hash, mime);
+          const file = new FSFile(abspath, rel, fs.statSync(abspath), hash, mime);
           names.forEach((name, i) => {
             if (name === undefined) {
               return;
@@ -454,7 +455,7 @@ function outputProjector(output: OutputSelection): (rel: string) => string | und
     return output.makeProjector();
   }
   const colon = output.indexOf(":");
-  const prefix = colon === -1 ? "" : output.substring(0, colon) + path.sep;
+  const prefix = colon === -1 ? "" : output.substring(0, colon) + "/";
   const matcher = globMatcher(colon === -1 ? output : output.substring(colon + 1));
   return rel => {
     if (prefix !== "" && !rel.startsWith(prefix)) {

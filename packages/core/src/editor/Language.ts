@@ -25,7 +25,6 @@
  * model.
  */
 
-import { posix } from "path";
 import type { Name, NameConstraint } from "../core/Name";
 import { StringReader } from "../support/StringReader";
 import type { ISourceSpan } from "../support/Log";
@@ -46,11 +45,15 @@ import {
   ITargetDecl,
   ITargetDefDecl,
   IValue,
+  libPackageOf,
+  libPath,
   parameterProperty,
   propertyTypeName,
+  relativeKey,
 } from "../model/AST";
 import { BuildModel } from "../model/BuildModel";
 import { IPropertyEntry } from "../model/Namespace";
+import { FileSet } from "../core/FileSet";
 
 /** A span of a build file. */
 export interface ISourceRange {
@@ -382,8 +385,18 @@ export function namedAt(model: BuildModel, written: Written, offset: number): IN
       if (/[*?[{]/.test(included) || included.includes(":")) {
         return { origin, declarations: [] };
       }
-      const file = posix.join(posix.dirname(written.include.source.file), included);
-      return { origin, declarations: [{ fs: written.include.source.fs, file, offset: 0, reader: new StringReader("") }] };
+      const { fs } = written.include.source;
+      const file = relativeKey(written.include.source.file, included);
+      /* A lib file's include names a file of its package, which says where it lies. */
+      const lib = libPackageOf(file) !== undefined;
+      const readFrom = lib && fs instanceof FileSet ? fs.getFile(libPath(file)) : undefined;
+      if (lib && readFrom === undefined) {
+        return { origin, declarations: [] };
+      }
+      return {
+        origin,
+        declarations: [{ fs, file, offset: 0, reader: new StringReader(""), ...(readFrom === undefined ? {} : { readFrom }) }],
+      };
     }
     default:
       return undefined;

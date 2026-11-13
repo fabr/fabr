@@ -17,7 +17,6 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import * as path from "path";
 import { BuildCache } from "./BuildCache";
 import { Computable } from "./Computable";
 import { fileModeOf, FSFile, FSFileSource, TreeQuery } from "./FSFileSource";
@@ -69,7 +68,7 @@ export class IndexedFileSource extends FSFileSource {
    * as a snapshot, copied into the pool, and its row refreshed.
    */
   public override ingest(filename: string): Computable<FSFile | undefined> {
-    const filepath = path.resolve(this.root, filename);
+    const filepath = this.hostPathOf(filename);
     return this.loadIndex()
       .then(rows =>
         stat(filepath).then(fileStat => {
@@ -88,7 +87,7 @@ export class IndexedFileSource extends FSFileSource {
                * hash must not decide whether a write fabr expects is checked. */
               this.confirmIngested(filename, held.hash);
               return Computable.resolve(
-                new FSFile(this.root, filename, fsStat, held.hash, held.mime, this.reading.read === "snapshot" ? blobPath : undefined)
+                new FSFile(filepath, filename, fsStat, held.hash, held.mime, this.reading.read === "snapshot" ? blobPath : undefined)
               );
             }
           }
@@ -96,7 +95,7 @@ export class IndexedFileSource extends FSFileSource {
             return hashFileStreamed(filepath).then(({ hash, mime }) => {
               this.confirmIngested(filename, hash);
               this.recordIndexRow(rows, filename, fileStat.size, fileStat.mtimeMs, hash, mime);
-              return new FSFile(this.root, filename, fsStat, hash, mime);
+              return new FSFile(filepath, filename, fsStat, hash, mime);
             });
           }
           return readFileBuffer(filepath).then(bytes => {
@@ -106,7 +105,7 @@ export class IndexedFileSource extends FSFileSource {
             this.recordIndexRow(rows, filename, fileStat.size, fileStat.mtimeMs, hash, mime);
             return this.cache
               .ensureBlob(hash, bytes, fileModeOf(fsStat))
-              .then(blobPath => new FSFile(this.root, filename, fsStat, hash, mime, blobPath));
+              .then(blobPath => new FSFile(filepath, filename, fsStat, hash, mime, blobPath));
           });
         })
       )

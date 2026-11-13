@@ -22,6 +22,8 @@
  * into lcov records named by source reference, and rendering them.
  */
 
+import { toPosix } from "../support/Paths";
+
 /** A position in a source, as istanbul spells one (1-based line, 0-based column). */
 interface IPosition {
   line: number;
@@ -62,11 +64,14 @@ const FABR_SCHEME = "fabr:";
 /**
  * Get the source a converted file's path names. A source-map entry is resolved
  * against the map's directory, so a `fabr:` reference comes back joined onto it
- * (`/install/build/fabr:./src/a.ts`); `mapDir` is that directory.
+ * (`/install/build/fabr:./src/a.ts`); `mapDir` is that directory. Both are host
+ * paths.
  */
 export function sourceOf(convertedPath: string, mapDir: string): string {
-  const prefix = mapDir.endsWith("/") ? mapDir : `${mapDir}/`;
-  const entry = convertedPath.startsWith(prefix) ? convertedPath.slice(prefix.length) : convertedPath;
+  const converted = toPosix(convertedPath);
+  const dir = toPosix(mapDir);
+  const prefix = dir.endsWith("/") ? dir : `${dir}/`;
+  const entry = converted.startsWith(prefix) ? converted.slice(prefix.length) : converted;
   return entry.startsWith(FABR_SCHEME) ? entry.slice(FABR_SCHEME.length) : entry;
 }
 

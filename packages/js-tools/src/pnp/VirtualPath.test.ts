@@ -18,7 +18,7 @@ import { expect } from "chai";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { realpathKeepingVirtual, resolveVirtual, virtualLocation } from "./VirtualPath";
+import { isVirtual, realpathKeepingVirtual, resolveVirtual, virtualLocation } from "./VirtualPath";
 
 describe("resolveVirtual", () => {
   it("maps the spec's example", () => {
@@ -45,6 +45,29 @@ describe("resolveVirtual", () => {
 
   it("resolves nested virtual segments in turn", () => {
     expect(resolveVirtual("/a/__virtual__/ff/0/b/__virtual__/ee/0/c")).to.equal("/a/b/c");
+  });
+
+  it("answers a Windows path in the spelling it was written in", () => {
+    const win = path.win32;
+    expect(resolveVirtual("C:\\w\\.fabr-tree\\__virtual__\\ff\\0\\abc\\lib\\x.js", win)).to.equal("C:\\w\\.fabr-tree\\abc\\lib\\x.js");
+    expect(resolveVirtual("C:/w/.fabr-tree/__virtual__/ff/0/abc/lib/x.js", win)).to.equal("C:/w/.fabr-tree/abc/lib/x.js");
+    expect(resolveVirtual("\\\\srv\\share\\w\\__virtual__\\ff\\1\\abc", win)).to.equal("\\\\srv\\share\\abc");
+    expect(isVirtual("c:/w/lib/x.js", win)).to.equal(false);
+    expect(virtualLocation("C:\\w\\.fabr-tree\\abc", "ff", win)).to.equal("C:\\w\\.fabr-tree\\__virtual__\\ff\\0\\abc");
+    expect(realpathKeepingVirtual("C:\\w\\link\\__virtual__\\ff\\0\\abc", base => `${base}-real`, win)).to.equal(
+      "C:\\w\\link-real\\__virtual__\\ff\\0\\abc"
+    );
+  });
+
+  it("resolves a drive's root, not its current directory, where the virtual segment follows it", () => {
+    const asked: string[] = [];
+    realpathKeepingVirtual("C:\\__virtual__\\ff\\0\\abc", base => (asked.push(base), base), path.win32);
+    expect(asked).to.deep.equal(["C:\\"]);
+  });
+
+  it("reads a backslash in a POSIX path as part of a file name", () => {
+    expect(resolveVirtual("/w/pkg/a\\b.js", path.posix)).to.equal("/w/pkg/a\\b.js");
+    expect(resolveVirtual("/w/__virtual__/ff/0/abc/a\\b.js", path.posix)).to.equal("/w/abc/a\\b.js");
   });
 
   it("inverts virtualLocation", () => {

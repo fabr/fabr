@@ -19,7 +19,8 @@
 
 import { expect } from "chai";
 import { FileSet } from "./FileSet";
-import { canonicalFileName, isCanonicalFileName } from "../support/Paths";
+import * as path from "path";
+import { canonicalFileName, isCanonicalFileName, toHostPath, toPosix } from "../support/Paths";
 import { MemoryFile } from "./MemoryFS";
 import { ConflictError } from "./Errors";
 import { registerProvenanceRenderer, renderProvenance } from "./Provenance";
@@ -147,6 +148,21 @@ describe("FileSet name canonicalization", () => {
     for (const name of corpus) {
       expect(isCanonicalFileName(name), `isCanonicalFileName(${JSON.stringify(name)})`).to.equal(fixedPoint(name));
     }
+  });
+});
+
+describe("host paths", () => {
+  it("spells a Windows path with `/`, and back", () => {
+    expect(toPosix("C:\\Users\\x\\lib\\STD.fabr", path.win32)).to.equal("C:/Users/x/lib/STD.fabr");
+    expect(toPosix("\\\\server\\share\\x", path.win32)).to.equal("//server/share/x");
+    expect(toPosix("src\\a.ts", path.win32)).to.equal("src/a.ts");
+    expect(toHostPath("src/a.ts", path.win32)).to.equal("src\\a.ts");
+    expect(toHostPath("C:/Users/x", path.win32)).to.equal("C:\\Users\\x");
+  });
+
+  it("leaves a POSIX host's paths as they are", () => {
+    expect(toPosix("/home/x/a.ts", path.posix)).to.equal("/home/x/a.ts");
+    expect(toHostPath("/home/x/a.ts", path.posix)).to.equal("/home/x/a.ts");
   });
 });
 

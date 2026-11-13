@@ -28,11 +28,22 @@ import {
   matchOptionalLibs,
   PluginPackage,
   resolvePackageFrom,
+  resolvePlugin,
   toPluginLibs,
 } from "./Plugin";
+import { BuildCache } from "../core/BuildCache";
+import { MemoryFile } from "../core/MemoryFS";
+import { Name } from "../core/Name";
+import { RunnableFileSet } from "../core/RunnableFileSet";
+import { SymlinkFile } from "../core/SymlinkFile";
+import { DeclKind, IPluginDecl } from "./AST";
+import type { BuildModel } from "./BuildModel";
+import { Constraints } from "./Constraints";
+import { ExecutionContext } from "./ExecutionContext";
+import { LogFormatter, LogLevel } from "../support/Log";
 import { INameValue, syntheticValue } from "./AST";
 import { parseName } from "./Parser";
-import { EMPTY_FILESET } from "../core/FileSet";
+import { EMPTY_FILESET, FileSet, IFile } from "../core/FileSet";
 import { StringReader } from "../support/StringReader";
 import { Computable } from "../core/Computable";
 
@@ -219,5 +230,58 @@ describe("a plugin's optional libs", () => {
 
   it("names nothing it does not list", () => {
     expect(match("lib/d.fabr")).to.deep.equal([]);
+  });
+});
+
+describe("a plugin made as a program", () => {
+  let root: string;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-plugin-program-"));
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("reads its .fabr files from the package the program installs, behind its link", async () => {
+    /* As a node_modules install lays a package out: its files in an
+     * instance directory, linked from `node_modules/<name>`. */
+    const manifest = JSON.stringify({ name: "@acme/greeter", "@fabr-build/plugin": { libs: ["lib/GREET.fabr"] } });
+    const lib = MemoryFile.from("default greeting = hi;\n");
+    const install = new FileSet(
+      new Map<string, IFile>([
+        ["node_modules/.fabr/greeter/package.json", MemoryFile.from(manifest)],
+        ["node_modules/.fabr/greeter/lib/GREET.fabr", lib],
+        ["node_modules/@acme/greeter", new SymlinkFile("../.fabr/greeter")],
+      ])
+    );
+    const surface = new FileSet(
+      new Map<string, IFile>([
+        ["package.json", MemoryFile.from(manifest)],
+        ["lib/GREET.fabr", lib],
+      ])
+    );
+    const program = new RunnableFileSet(install, [], undefined, "node_modules/@acme/greeter", surface);
+    const log = new LogFormatter(LogLevel.Info, () => undefined);
+    const execution = new ExecutionContext(new BuildCache(root, log), log, EMPTY_FILESET, EMPTY_FILESET);
+    const model = { getConfig: () => ({ materialize: () => Computable.resolve([program]) }) } as unknown as BuildModel;
+    const source = { fs: EMPTY_FILESET, file: "PROJECT.fabr", reader: new StringReader("plugin greeter;") };
+    const decl: IPluginDecl = { kind: DeclKind.Plugin, source, offset: 7, endOffset: 14, name: parseName("greeter") };
+    const match = {
+      decl: { kind: DeclKind.Property, decls: [], defaults: [] },
+      name: "greeter",
+      retainedPrefix: "",
+      rest: Name.fromLiteral(""),
+    };
+    const resolution = await new Promise<Awaited<ReturnType<typeof resolvePlugin>>>((resolve, reject) =>
+      resolvePlugin(model, decl, match as never, {
+        execution,
+        host: Constraints.of({}),
+        libsOf: () => Computable.reject(new Error("not a fabr_plugin")),
+      }).then(resolve, reject)
+    );
+    const plugin = resolution.resolved as PluginPackage;
+    expect(plugin, String(resolution.resolved)).to.not.be.instanceOf(Error);
+    expect(plugin.files).to.deep.equal(["@acme/greeter:lib/GREET.fabr"]);
+    expect(plugin.contents?.getFile("@acme/greeter/lib/GREET.fabr")).to.equal(lib);
   });
 });

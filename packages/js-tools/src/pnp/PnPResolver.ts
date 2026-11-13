@@ -53,6 +53,7 @@ import {
 } from "./PnPApi";
 import { IResolutionEdge, joinDepsPath } from "./ReadSet";
 import { realpathKeepingVirtual, resolveVirtual } from "./VirtualPath";
+import { toPosix } from "../support/Paths";
 
 /** The PnP table's file name (Yarn's), as fabr stages it and the drivers load it. */
 export const PNP_DATA_FILE = ".pnp.data.json";
@@ -194,7 +195,7 @@ export class PnpResolver implements IPnpApi {
       state.ignorePatternData === null || state.ignorePatternData === undefined ? undefined : new RegExp(state.ignorePatternData);
     this.conditions = new Set(conditions);
     this.validate = options.validateExports ?? true;
-    this.root = root;
+    this.root = canonicalPath(root);
     this.topLevelKey = locatorKey(null, null);
     this.dependencyTreeRoots = state.dependencyTreeRoots.map(({ name, reference }) => ({ name, reference }));
     this.topLevelFallback = state.enableTopLevelFallback;
@@ -209,14 +210,14 @@ export class PnpResolver implements IPnpApi {
       this.registry.set(name, store);
       for (const [reference, info] of references) {
         store.set(reference === null ? null : String(reference), {
-          packageLocation: path.join(root, info.packageLocation),
+          packageLocation: path.join(this.root, info.packageLocation),
           packageDependencies: new Map(info.packageDependencies),
           packagePeers: new Set(info.packagePeers ?? []),
           linkType: info.linkType,
           discardFromLookup: info.discardFromLookup ?? false,
         });
         const key = locatorKey(name, reference);
-        const location = path.resolve(root, info.packageLocation);
+        const location = path.resolve(this.root, info.packageLocation);
         this.rows.set(key, { location, dependencies: dependencyMap(info.packageDependencies) });
         if (info.linkType === "SOFT") {
           this.sources.add(key);
@@ -349,7 +350,7 @@ export class PnpResolver implements IPnpApi {
    * ({@link mergeSharedLocations}). Throws as {@link owning} does.
    */
   public locatorOf(file: string): LocatorKey {
-    const directory = path.dirname(path.resolve(file));
+    const directory = path.dirname(canonicalPath(file));
     const known = this.locatorByDirectory.get(directory);
     if (known !== undefined) {
       return known;
@@ -375,7 +376,7 @@ export class PnpResolver implements IPnpApi {
    * does, or where the `exports` map is invalid.
    */
   public packageOf(file: string): { name: string; subpath: string } | undefined {
-    const target = path.resolve(file);
+    const target = canonicalPath(file);
     /* Start at the path itself, so a package root matches its own location. */
     const innermost = this.owning(
       target,
@@ -386,7 +387,7 @@ export class PnpResolver implements IPnpApi {
     }
     /* The rows sharing a location are that directory's list in the index. */
     const sharing = (this.byDirectory.get(innermost.prefix.slice(0, -1)) ?? []).filter(entry => entry.name !== null);
-    const relative = path.relative(innermost.prefix, target).split(path.sep).join("/");
+    const relative = toPosix(path.relative(innermost.prefix, target));
     return {
       name: sharing.map(entry => entry.name!).sort()[0],
       /* Read through the row's location, not the matched prefix (which may be
@@ -529,7 +530,7 @@ export class PnpResolver implements IPnpApi {
    * {@link owning} does.
    */
   public instanceNameOf(file: string): string | undefined {
-    const target = path.resolve(file);
+    const target = canonicalPath(file);
     const known = this.instanceNames.get(target);
     if (known !== undefined || this.instanceNames.has(target)) {
       return known;
@@ -551,7 +552,7 @@ export class PnpResolver implements IPnpApi {
    * as {@link instanceNameOf}, or in a package no route reaches.
    */
   public pathNameOf(file: string): string | undefined {
-    const target = path.resolve(file);
+    const target = canonicalPath(file);
     const known = this.pathNames.get(target);
     if (known !== undefined || this.pathNames.has(target)) {
       return known;
@@ -561,7 +562,7 @@ export class PnpResolver implements IPnpApi {
       this.innermostAt(target, entry => entry.stored && entry.name !== null)
     );
     const route = innermost === undefined ? undefined : this.routes().get(innermost.locator);
-    const relative = innermost === undefined ? "" : path.relative(innermost.prefix, target).split(path.sep).join("/");
+    const relative = innermost === undefined ? "" : toPosix(path.relative(innermost.prefix, target));
     const name = route === undefined ? undefined : joinDepsPath([...route, ...(relative === "" ? [] : [relative])]);
     this.pathNames.set(target, name);
     return name;
@@ -713,8 +714,8 @@ export class PnpResolver implements IPnpApi {
    * directory, and its own `package.json` counts.
    */
   private scopeOf(file: string): string | undefined {
-    const root = path.resolve(this.root);
-    for (let dir = file.endsWith("/") ? path.resolve(file) : path.dirname(path.resolve(file)); ; dir = path.dirname(dir)) {
+    const root = this.root;
+    for (let dir = isDirectory(file) ? canonicalPath(file) : path.dirname(canonicalPath(file)); ; dir = path.dirname(dir)) {
       if (fs.existsSync(path.join(resolveVirtual(dir), "package.json"))) {
         return dir;
       }
@@ -765,8 +766,8 @@ export class PnpResolver implements IPnpApi {
    * its realpath), or null for a path the table's ignore pattern matches or no
    * row contains. */
   public findPackageLocator(location: string): PackageLocator | null {
-    const target = path.resolve(location);
-    if (this.ignored !== undefined && this.ignored.test(path.relative(this.root, target).split(path.sep).join("/"))) {
+    const target = canonicalPath(location);
+    if (this.ignored !== undefined && this.ignored.test(toPosix(path.relative(this.root, target)))) {
       return null;
     }
     const entry = this.owning(
@@ -803,7 +804,7 @@ export class PnpResolver implements IPnpApi {
         return path.normalize(request);
       }
       const from = requireIssuer(request, issuer);
-      return path.normalize(path.join(from.endsWith("/") ? path.resolve(from) : path.dirname(path.resolve(from)), request));
+      return path.normalize(path.join(isDirectory(from) ? canonicalPath(from) : path.dirname(canonicalPath(from)), request));
     }
     const from = requireIssuer(request, issuer);
     const [, dependencyName, subpath] = named;
@@ -907,7 +908,7 @@ export class PnpResolver implements IPnpApi {
    * EXPORTS_RESOLUTION_FAILED where the map is invalid or does not export the
    * subpath. */
   private applyExports(request: string, unqualified: string, conditions: ReadonlySet<string>): string {
-    if (STRICT_REQUEST.test(request)) {
+    if (STRICT_REQUEST.test(request) || path.isAbsolute(request)) {
       return unqualified;
     }
     const owner = this.findPackageLocator(path.join(unqualified, "internal.js"));
@@ -919,7 +920,7 @@ export class PnpResolver implements IPnpApi {
     if (exports === undefined || exports === null) {
       return unqualified;
     }
-    const relative = path.relative(location, unqualified).split(path.sep).join("/");
+    const relative = toPosix(path.relative(location, unqualified));
     const subpath = relative === "" ? "." : `./${relative}`;
     let target: string[];
     try {
@@ -980,6 +981,20 @@ const PACKAGE_REQUEST = /^(?![a-zA-Z]:[\\/]|\\\\|\.{0,2}(?:\/|$))((?:node:)?(?:@
 
 /** A request that is a path: rooted, or `.`/`..` relative. */
 const STRICT_REQUEST = /^(\/|\.{1,2}(\/|$))/;
+
+/**
+ * Resolve `file`, a path as the host or a tool spells it, as the resolver
+ * compares paths: absolute, with a Windows drive letter in upper case, since
+ * Windows reads `c:\x` and `C:\x` as one path and callers spell it either way.
+ */
+function canonicalPath(file: string): string {
+  return path.resolve(file).replace(/^[a-z](?=:)/, drive => drive.toUpperCase());
+}
+
+/** @return true if `file` names a directory, by ending in a separator, otherwise false. */
+function isDirectory(file: string): boolean {
+  return file.endsWith("/") || file.endsWith(path.sep);
+}
 
 /** @return the issuer a non-absolute request needs, throwing where there is
  * none. */
@@ -1125,7 +1140,7 @@ function instanceOfLocator(locator: LocatorKey): string {
 /** @return a file's instance name: its holding row's instance, then its path
  * within that row. */
 function instanceName(entry: ILocationEntry, target: string): string {
-  const relative = path.relative(entry.prefix, target).split(path.sep).join("/");
+  const relative = toPosix(path.relative(entry.prefix, target));
   const at = `${entry.name}#${entry.reference}`;
   return relative === "" ? at : `${at}/${relative}`;
 }

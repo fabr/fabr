@@ -34,6 +34,7 @@
 import { Module } from "node:module";
 import * as path from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
+import { toPosix } from "../support/Paths";
 
 /** The extensions of stylesheets, whose import yields {@link styleProxy}. */
 const STYLESHEET_EXTENSIONS = ["css", "scss", "sass", "less", "styl"];
@@ -110,7 +111,7 @@ export function installAssetHooks(): void {
   };
   for (const extension of [...STYLESHEET_EXTENSIONS, ...BINARY_EXTENSIONS]) {
     loader._extensions[`.${extension}`] = (module, filename) => {
-      module.exports = assetStubFor(filename);
+      module.exports = assetStubFor(toPosix(filename));
     };
   }
   /* Absent before node 22.15. */
@@ -127,7 +128,7 @@ export function installAssetHooks(): void {
         if (ASSET.test(url)) {
           /* A load hook returns module source, not a value: make the source
            * require this module and export assetStubFor's answer. */
-          const stub = `createRequire(${JSON.stringify(url)})(${JSON.stringify(__filename)}).assetStubFor(${JSON.stringify(fileURLToPath(url))})`;
+          const stub = `createRequire(${JSON.stringify(url)})(${JSON.stringify(__filename)}).assetStubFor(${JSON.stringify(toPosix(fileURLToPath(url)))})`;
           return {
             format: "module",
             source: `import { createRequire } from "node:module";\nexport default ${stub};\n`,

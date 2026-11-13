@@ -628,11 +628,13 @@ export class Name {
    * canonicalization. The Name "mylib/lib/*" and "src/lib/BUILD.fabr" give
    * "src/lib:mylib/lib/*", whose results are named "mylib/lib/…".
    *
+   * A lib file's key (`@acme/rules:X.fabr`) is a file within its package,
+   * the package's own root a directory like any other (`@acme/rules:name`).
    * Where `filename` has no directory, or is directly under `/`, the name is
    * returned as it is. Does not interpret "." or "..".
    */
   public relativeTo(filename: string): Name {
-    const idx = filename.lastIndexOf(NAME_COMPONENT_SEPARATOR);
+    const idx = Math.max(filename.lastIndexOf(NAME_COMPONENT_SEPARATOR), filename.lastIndexOf(NAME_LEVEL_SEPARATOR));
     if (idx === -1 || idx === 0) {
       return this;
     } else {
@@ -641,15 +643,16 @@ export class Name {
   }
 
   /**
-   * @return this name in the namespace of a source rooted at `root`, whose
-   * names are relative to it (as FSFileSource's are): an absolute literal head
-   * under `root` loses the root prefix. Any other name is returned as it is: a
-   * relative name is already in the namespace, and an absolute one outside
-   * `root` matches nothing. The facets and marker are kept.
+   * @return this name in the namespace of a source rooted at `root`, an
+   * absolute path spelled with `/` (`/x`, `C:/x`), whose names are relative to
+   * it (as FSFileSource's are): a literal head under `root` loses the root
+   * prefix. Any other name is returned as it is: a relative name is already in
+   * the namespace, and an absolute one outside `root` matches nothing. The
+   * facets and marker are kept.
    */
   public rebase(root: string): Name {
     const head = this.parts[0];
-    if (head.kind !== NamePartKind.Literal || !head.value.startsWith(NAME_COMPONENT_SEPARATOR)) {
+    if (head.kind !== NamePartKind.Literal) {
       return this;
     }
     const prefix = root.endsWith(NAME_COMPONENT_SEPARATOR) ? root : root + NAME_COMPONENT_SEPARATOR;

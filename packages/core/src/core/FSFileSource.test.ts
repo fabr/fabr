@@ -21,7 +21,9 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { Computable, ComputableSource, ComputableState } from "./Computable";
+import { AbsolutePathSource } from "./AbsolutePathSource";
 import { FSFile, FSFileSource, TreeQuery } from "./FSFileSource";
+import { toPosix } from "../support/Paths";
 import { FileSet } from "./FileSet";
 import { WatchController } from "./WatchController";
 import { Name, NamePartKind } from "./Name";
@@ -96,6 +98,27 @@ describe("FSFileSource.ingest", () => {
   });
 });
 
+describe("AbsolutePathSource", () => {
+  let root: string;
+  beforeEach(() => {
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-fs-abs-test-")));
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("reads by absolute path, naming each file from its filesystem root", async () => {
+    fs.mkdirSync(path.join(root, "lib"));
+    fs.writeFileSync(path.join(root, "lib", "A.fabr"), "a");
+    const source = new AbsolutePathSource(at => new FSFileSource(at));
+    const fsRoot = path.parse(root).root;
+    expect(await toPromise(source.get(path.join(root, "lib", "A.fabr")))).to.not.equal(undefined);
+    const found = await toPromise(source.find(Name.fromLiteral(`${toPosix(root)}/lib/A.fabr`)));
+    expect([...found].map(([name]) => name)).to.deep.equal([toPosix(path.relative(fsRoot, path.join(root, "lib", "A.fabr")))]);
+    expect(source.sources.map(one => one.root)).to.deep.equal([fsRoot]);
+  });
+});
+
 /* The enumeration window: a TreeQuery's subscription is live from the moment it
  * registers, but enumeration is async — events landing in that gap must be
  * buffered and replayed, not dropped. Driven deterministically with an injected
@@ -148,7 +171,7 @@ describe("FSFileSource enumeration window (TreeQuery)", () => {
         resolveEnum = resolve;
         resolvers.push(resolve);
       });
-    const query = new TreeQuery(src, root, Name.fromLiteral(name), "", enumerator);
+    const query = new TreeQuery(src, Name.fromLiteral(name), "", enumerator);
     /* Wrap, not capture: `resolveEnum` is only assigned once the query attaches
      * (in toPromise below), which is after this returns. */
     return { query, resolveEnum: (v: EnumResult) => resolveEnum(v), resolvers };
@@ -473,7 +496,7 @@ describe("FSFileSource reads under watch (TreeQuery)", () => {
     const src = new GatedSource(root);
     let resolveEnum!: (v: EnumResult) => void;
     const enumerator = (): Computable<EnumResult> => Computable.from<EnumResult>(resolve => (resolveEnum = resolve));
-    const query = new TreeQuery(src, root, Name.fromLiteral("src"), "", enumerator);
+    const query = new TreeQuery(src, Name.fromLiteral("src"), "", enumerator);
     const seen: string[][] = [];
     query.then(set => seen.push([...set].map(([name]) => name)));
 
@@ -651,7 +674,7 @@ describe("FSFileSource directory events (TreeQuery)", () => {
     fs.writeFileSync(path.join(root, "dir", "sub", "stale.ts"), "s");
     fs.writeFileSync(path.join(root, "dir", "fresh.ts"), "f");
     const resolvers: ((v: EnumResult) => void)[] = [];
-    const query = new TreeQuery(new FSFileSource(root), root, Name.fromLiteral("dir"), "", () =>
+    const query = new TreeQuery(new FSFileSource(root), Name.fromLiteral("dir"), "", () =>
       Computable.from<EnumResult>(resolve => resolvers.push(resolve))
     );
 

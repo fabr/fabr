@@ -53,6 +53,7 @@ import { Name, NameBuilder, NameConstraint } from "../core/Name";
 import { EMPTY_FILESET, FileSource } from "../core/FileSet";
 import { FabrError } from "../core/Errors";
 import { parseVersion, versionToString } from "../resolver/Semver";
+import { COMMAND_LINE_FILE } from "../core/Constants";
 
 /**
  * A token's type. A bare name token is one of three tiers, by the characters it
@@ -2767,7 +2768,7 @@ export function parseName(contents: string): Name {
     /* A lexical error in the first token (an unterminated quote, character
      * class or extglob group) is captured as the constructor reads it, and the
      * name parsed is then empty. */
-    const parser = new BuildParser({ fs: EMPTY_FILESET, file: "<command-line>", reader: new StringReader(contents) }, captureLog);
+    const parser = new BuildParser({ fs: EMPTY_FILESET, file: COMMAND_LINE_FILE, reader: new StringReader(contents) }, captureLog);
     const name = parser.parseName();
     if (messages.length === 0) {
       return name;

@@ -26,6 +26,7 @@ import { FileSet } from "../core/FileSet";
 import { Name } from "../core/Name";
 import { PartialRepositoryRef } from "../core/PartialRepositoryRef";
 import { PackageFileSet, reachablePackages } from "../core/PackageFileSet";
+import { AbsolutePathSource } from "../core/AbsolutePathSource";
 import { FSFileSource } from "../core/FSFileSource";
 import { RepositoryRef } from "../core/Repository";
 import { FabrHomeRepository } from "./FabrHome";
@@ -69,7 +70,7 @@ function toPromise<T>(computable: Computable<T>): Promise<T> {
   return new Promise((resolve, reject) => computable.then(resolve, reject));
 }
 
-const repository = (): FabrHomeRepository => new FabrHomeRepository(new FSFileSource("/"), host);
+const repository = (): FabrHomeRepository => new FabrHomeRepository(new AbsolutePathSource(root => new FSFileSource(root)), host);
 
 /** The reference `repo` vends for `name`, where that names a package. */
 function packageRef(repo: FabrHomeRepository, name: Name): RepositoryRef {
@@ -128,7 +129,9 @@ describe("FabrHomeRepository", () => {
   it("delivers copies held in the blob pool, the package itself found where it is installed", async () => {
     const cacheRoot = path.join(root, "cache");
     const repo = new FabrHomeRepository(
-      new FSFileSource("/", undefined, new BuildCache(cacheRoot, new LogFormatter(LogLevel.Info, () => undefined))),
+      new AbsolutePathSource(
+        root => new FSFileSource(root, undefined, new BuildCache(cacheRoot, new LogFormatter(LogLevel.Info, () => undefined)))
+      ),
       host
     );
     const delivered = (await toPromise(repo.resolve(packageRef(repo, Name.fromLiteral("@fabr-build/tool"))))) as PackageFileSet;

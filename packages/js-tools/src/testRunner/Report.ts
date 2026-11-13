@@ -30,6 +30,7 @@ import * as path from "node:path";
 import { takeCoverage } from "node:v8";
 import type { ITestReport, ITestResult, ITestSummary } from "@fabr-build/core";
 import { getMapSource, referenceOfEntry, SOURCE_LOCATIONS_FILE } from "../support/SourceMap";
+import { posixRelative, toPosix } from "../support/Paths";
 
 /** The directories a test installation mounts the compile's sources and output
  * under. Keep in sync with BuildJSCompile's COMPILE_SRC_DIR and COMPILE_OUT_DIR. */
@@ -57,7 +58,7 @@ export function reportPathOf(file: string): string {
     const entry = getMapSource(file);
     const reference = entry === undefined ? undefined : referenceOfEntry(entry);
     name =
-      reference !== undefined ? reference.replace(/^\.\//, "") : stripMount(path.relative(installRoot(), sourcePathOf(file) ?? file));
+      reference !== undefined ? reference.replace(/^\.\//, "") : stripMount(posixRelative(installRoot(), sourcePathOf(file) ?? file));
     reportPaths.set(file, name);
   }
   return name;
@@ -69,10 +70,10 @@ function installRoot(): string {
   return path.dirname(process.cwd());
 }
 
-/** @return `relative` without its leading install mount, where it has one. */
+/** @return `relative`, a `/`-separated path, without its leading install mount, where it has one. */
 function stripMount(relative: string): string {
-  const [first, ...rest] = relative.split(path.sep);
-  return rest.length > 0 && INSTALL_MOUNTS.includes(first) ? rest.join(path.sep) : relative;
+  const [first, ...rest] = relative.split("/");
+  return rest.length > 0 && INSTALL_MOUNTS.includes(first) ? rest.join("/") : relative;
 }
 
 /**
@@ -140,7 +141,7 @@ export function snapshotPathOf(testPath: string): string {
   const dir = path.join(path.dirname(testPath), SNAPSHOT_DIR);
   const source = getMapSource(testPath);
   if (source !== undefined) {
-    return path.join(dir, path.posix.basename(referenceOfEntry(source) ?? source.split(path.sep).join("/")) + SNAPSHOT_EXT);
+    return path.join(dir, path.posix.basename(referenceOfEntry(source) ?? toPosix(source)) + SNAPSHOT_EXT);
   }
   const stem = stemOf(path.basename(testPath));
   const existing = readdir(dir).find(name => name.endsWith(SNAPSHOT_EXT) && stemOf(name.slice(0, -SNAPSHOT_EXT.length)) === stem);

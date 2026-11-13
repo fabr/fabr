@@ -45,6 +45,7 @@ import { compareText } from "../support/Functional";
 import { isJsonObject, readJsonFile, toJsonObject } from "../support/Json";
 import type { TargetContext } from "../context/index";
 import { RepositoryImplementation, RepositoryRegistration } from "./Types";
+import { toPosix } from "../support/Paths";
 
 /** The directory lookups of the packages installed with fabr start from:
  *  fabr's own code, where the plugin loader starts too. */
@@ -116,9 +117,11 @@ function installedIn(scope: string, from: string): string[] {
 /** Read the package installed at `directory` through `files` (a source over
  *  absolute paths): its manifest, and its files less its `node_modules`. */
 function readInstalled(files: FileSource, directory: string): Computable<{ manifest: IInstalledManifest; files: FileSet }> {
-  const prefix = `${path.relative("/", directory)}/`;
+  /* `files` names a file by its path from its filesystem root (`/`, `C:\`). */
+  const posixDirectory = toPosix(directory);
+  const prefix = `${toPosix(path.relative(path.parse(directory).root, directory))}/`;
   const everything = new Name([
-    { kind: NamePartKind.Literal, value: `${directory}/` },
+    { kind: NamePartKind.Literal, value: `${posixDirectory}/` },
     { kind: NamePartKind.Glob, value: "**" },
   ]);
   return Computable.forAll(
@@ -213,8 +216,9 @@ function installedPackage(
  * to go on from.
  */
 export class FabrHomeRepository implements Repository, RepositoryLookup {
-  /** `files` is a source over absolute paths (the run's absolute-path source);
-   *  packages are looked up as node looks them up from `resolveFrom`. */
+  /** `files` is a source over absolute paths whose files are copied into the
+   *  blob pool (the run's `installedFileSource`); packages are looked up as
+   *  node looks them up from `resolveFrom`. */
   constructor(
     private readonly files: FileSource,
     private readonly resolveFrom: string = INSTALLED_FROM

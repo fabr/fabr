@@ -20,6 +20,7 @@
 import {
   BUILD_OPERATION,
   FabrError,
+  toPosix,
   globMatcher,
   isGlob,
   FILES_OPERATION,
@@ -465,7 +466,7 @@ function reportCoverage(execution: ExecutionContext, site: IInvocationSite, dir:
         if (located === undefined) {
           unplaced.push(record.source);
         } else {
-          placed.push({ ...record, source: path.relative(sources.root, located).split(path.sep).join("/") });
+          placed.push({ ...record, source: toPosix(path.relative(sources.root, located)) });
         }
       }
       if (unplaced.length > 0) {
@@ -526,7 +527,7 @@ function applyExpectationUpdates(execution: ExecutionContext, site: IInvocationS
       if (existing === undefined) {
         writes.set(destination, { file, destination });
       } else if (existing.file.hash !== file.hash) {
-        execution.log.log(DIAG_EXPECTATION_CONFLICT, { file: path.relative(site.sourceFileSource.root, destination) });
+        execution.log.log(DIAG_EXPECTATION_CONFLICT, { file: toPosix(path.relative(site.sourceFileSource.root, destination)) });
       }
     }
   }
@@ -538,7 +539,7 @@ function applyExpectationUpdates(execution: ExecutionContext, site: IInvocationS
    * rebuild the target that produced them. */
   return site.sourceFileSource.applyWriteBack([...writes.values()]).then((written: string[]) => {
     for (const destination of written) {
-      execution.log.log(DIAG_EXPECTATION_UPDATED, { file: path.relative(site.sourceFileSource.root, destination) });
+      execution.log.log(DIAG_EXPECTATION_UPDATED, { file: toPosix(path.relative(site.sourceFileSource.root, destination)) });
     }
   });
 }
@@ -786,8 +787,7 @@ async function runWith(options: Options, operation: Operation, watch = false, se
      * name written in a build file resolves them from that file's directory. */
     const site: IInvocationSite = {
       sourceFileSource: fabr.sourceFileSource,
-      absFileSource: execution.absFileSource,
-      invocationDir: path.relative(sourceRoot, process.cwd()).split(path.sep).join("/"),
+      invocationDir: toPosix(path.relative(sourceRoot, process.cwd())),
     };
     /* Build events become the log's start/completion lines, the pane, and the
      * prefixed step-output lines. Under -q the subscription asks for no output
@@ -1316,9 +1316,8 @@ function auditDependencies(
  * each with its `operations`, `origin` (`system` or `project`) and `location`.
  */
 function listDeclaredTargets(model: BuildModel, options: Options, execution: ExecutionContext): Computable<void> {
-  /* A system declaration is one read through absFileSource, from outside the
-   * project tree: core's or a plugin's file. */
-  const isSystem = (decl: ITargetDecl): boolean => decl.source.fs === execution.absFileSource;
+  /* A system declaration is one not read from the project's tree: core's or a plugin's file. */
+  const isSystem = (decl: ITargetDecl): boolean => decl.source.fs !== execution.sourceFileSource;
   const named = new Set(options.targets.filter(name => !isGlob(name)));
   const patterns = options.targets.filter(isGlob).map(globMatcher);
   const listed = (name: string, decl: ITargetDecl): boolean =>

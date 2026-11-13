@@ -71,6 +71,7 @@ import {
   writeOut,
 } from "./Support";
 import { parseManifestPath } from "../support/Main";
+import { toPosix } from "../support/Paths";
 
 /* The parts of postcss and postcss-modules the driver uses, typed structurally
  * from their documentation: they are no compile-time dependency of this
@@ -132,9 +133,9 @@ export function scopeFailure(rel: string, err: unknown, where?: { root: string; 
   const message = reported?.reason ?? reported?.message ?? String(err);
   const origin = reported?.input;
   if (where !== undefined && origin?.file !== undefined && origin.line !== undefined) {
-    const staged = `${path.resolve(where.root, where.srcRoot)}/`;
-    const resolved = path.resolve(origin.file);
-    const name = resolved.startsWith(staged) ? resolved.substring(staged.length) : path.basename(resolved);
+    const staged = `${toPosix(path.resolve(where.root, where.srcRoot))}/`;
+    const resolved = toPosix(path.resolve(origin.file));
+    const name = resolved.startsWith(staged) ? resolved.substring(staged.length) : path.posix.basename(resolved);
     return new Error(`${name}:${origin.line}:${origin.column ?? 1}: css-modules: ${message}`);
   }
   const at = reported?.line === undefined ? rel : `${rel}:${reported.line}:${reported.column ?? 1}`;
@@ -216,9 +217,9 @@ export function resolveComposePath(
 /** @return a file's display name: its path relative to the staged root where it
  * lies under it, otherwise its basename. */
 function displayName(filename: string, srcRoot: string): string {
-  const staged = `${path.resolve(srcRoot)}/`;
-  const resolved = path.resolve(filename);
-  return resolved.startsWith(staged) ? resolved.substring(staged.length) : path.basename(resolved);
+  const staged = `${toPosix(path.resolve(srcRoot))}/`;
+  const resolved = toPosix(path.resolve(filename));
+  return resolved.startsWith(staged) ? resolved.substring(staged.length) : path.posix.basename(resolved);
 }
 
 /** What processing a stylesheet uses, made once per run. */

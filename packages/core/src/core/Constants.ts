@@ -20,5 +20,9 @@
 /** The build file naming a project's root. */
 export const PROJECT_FILENAME = "PROJECT.fabr";
 
+/** The virtual build file a name given on fabr's command line is written in,
+ *  in the invocation's directory. */
+export const COMMAND_LINE_FILE = "<command-line>";
+
 /** Fabr's own engine package: the one every plugin must share with the host. */
 export const CORE_PACKAGE = "@fabr-build/core";
