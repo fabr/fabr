@@ -24,6 +24,7 @@ import {
   DeclKind,
   IBuildFile,
   IBuildFileContents,
+  IFabrDecl,
   IResolvableDecl,
   IIncludeDecl,
   IMapItemDecl,
@@ -51,6 +52,7 @@ import { Diagnostic, ISourcePosition, Log, LogLevel } from "../support/Log";
 import { Name, NameBuilder, NameConstraint } from "../core/Name";
 import { EMPTY_FILESET, FileSource } from "../core/FileSet";
 import { FabrError } from "../core/Errors";
+import { parseVersion, versionToString } from "../resolver/Semver";
 
 /**
  * A token's type. A bare name token is one of three tiers, by the characters it
@@ -384,6 +386,15 @@ function isSimpleName(text: string): boolean {
   return true;
 }
 
+/** @return true if `text` is an exact semver version in its canonical form, otherwise false. */
+function isCanonicalVersion(text: string): boolean {
+  try {
+    return versionToString(parseVersion(text)) === text;
+  } catch {
+    return false;
+  }
+}
+
 /** The deepest `{ ... }` blocks may nest; deeper is reported as an error. */
 const MAX_BLOCK_DEPTH = 100;
 
@@ -460,6 +471,15 @@ const DIAG_RULE_BLOCK_DECL = new Diagnostic<{ keyword: string; loc: ISourcePosit
 const DIAG_INVALID_PLUGIN = new Diagnostic<{ loc: ISourcePosition }>(
   LogLevel.Error,
   "A plugin is named by a reference, with no glob patterns, variables or rename"
+);
+const DIAG_INVALID_FABR = new Diagnostic<{ loc: ISourcePosition }>(
+  LogLevel.Error,
+  "The fabr release is declared as 'fabr <version>;', its exact version written as it is (such as 'fabr 0.4.0;')"
+);
+/** A `fabr <version>;` anywhere but the first statement of the project file. */
+export const DIAG_FABR_PLACEMENT = new Diagnostic<{ loc: ISourcePosition }>(
+  LogLevel.Error,
+  "The fabr release is declared only by the first statement of the project file"
 );
 const DIAG_DUP_SCHEMA_KEY = new Diagnostic<{ key: string; loc: ISourcePosition }>(
   LogLevel.Error,
@@ -598,6 +618,8 @@ export class BuildParser {
 
   private source: IBuildFile;
   private result: IBuildFileContents;
+  /** The statements parsed so far, those with errors included. */
+  private statements = 0;
 
   constructor(source: IBuildFile, log: Log) {
     this.reader = source.reader;
@@ -1271,6 +1293,32 @@ export class BuildParser {
     } else {
       this.unexpectedTokenError("Name");
     }
+  }
+
+  /**
+   * FabrDecl ::= 'fabr' VERSION ';'
+   *
+   * The version is an exact semver version written literally: unquoted,
+   * unescaped and in its canonical form, so that the text is the version.
+   * Valid only as the file's first statement: anywhere else it is reported
+   * and @return undefined.
+   */
+  private parseFabrDecl(start: number): IFabrDecl | undefined {
+    const token = this.token as NameToken;
+    const version = token.text.toString();
+    this.nextToken();
+    /* Quoting or escaping makes the written text longer than the version. */
+    if (this.prevTokenEnd - token.start !== version.length || !isCanonicalVersion(version) || this.token.type !== TokenType.SEMI) {
+      this.log.log(DIAG_INVALID_FABR, { loc: { ...this.source, offset: token.start } });
+      throw new ParseAbort();
+    }
+    const endOffset = this.prevTokenEnd;
+    this.nextToken();
+    if (this.statements > 0) {
+      this.log.log(DIAG_FABR_PLACEMENT, { loc: { ...this.source, offset: start } });
+      return undefined;
+    }
+    return { source: this.source, offset: start, endOffset, version };
   }
 
   /**
@@ -2621,7 +2669,12 @@ export class BuildParser {
       /* The doc comment is on the statement's first token. */
       const doc = token.docComment;
       const next = this.nextToken();
-      if (token.text === "include") {
+      if (token.text === "fabr" && next.type === TokenType.NAME) {
+        const fabr = this.parseFabrDecl(token.start);
+        if (fabr !== undefined) {
+          this.result.fabr = fabr;
+        }
+      } else if (token.text === "include") {
         this.result.includes.push(this.parseIncludeDecl());
       } else if (token.text === "plugin") {
         this.result.plugins.push(this.parsePluginDecl());
@@ -2690,6 +2743,7 @@ export class BuildParser {
           this.recoverFromError();
         }
       }
+      this.statements++;
     }
     return this.result;
   }

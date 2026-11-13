@@ -17,6 +17,9 @@
           "include": "#targetdef"
         },
         {
+          "include": "#fabr-declaration"
+        },
+        {
           "include": "#keyword-declaration"
         },
         {
@@ -57,6 +60,17 @@
         },
         "4": {
           "name": "entity.name.type.fabr"
+        }
+      }
+    },
+    "fabr-declaration": {
+      "match": "^\\s*(fabr)\\s+(\\d[^\\s;]*)",
+      "captures": {
+        "1": {
+          "name": "keyword.control.fabr"
+        },
+        "2": {
+          "name": "constant.numeric.version.fabr"
         }
       }
     },

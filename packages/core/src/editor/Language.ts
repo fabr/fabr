@@ -721,7 +721,7 @@ function parameterCompletions(model: BuildModel, rule: RuleScope): ICompletion[]
 }
 
 /** The words that open a declaration that is not a target's. */
-const KEYWORDS = ["targetdef", "rule", "repository", "plugin", "include", "default", "private"];
+const KEYWORDS = ["fabr", "targetdef", "rule", "repository", "plugin", "include", "default", "private"];
 
 /**
  * @return what may complete what is typed at `offset` in `text`, the build

@@ -33,6 +33,7 @@ import { BuildModel } from "./BuildModel";
 import { BuildFilesInvalidError } from "./Errors";
 import { ExecutionContext } from "./ExecutionContext";
 import { loadProject } from "./Loader";
+import { getCoreVersion } from "./Plugin";
 
 /** A minimal ExecutionContext for the loader: the project tree as the source, an
  *  empty absolute source (these tests use NO_BASE, so no lib files are read). */
@@ -276,6 +277,25 @@ describe("Loader", () => {
     }
     return { error, logged };
   }
+
+  it("refuses a fabr release declared by a file other than the project file", async () => {
+    const { error, logged } = await loadErr(files({ "PROJECT.fabr": "include other.fabr;", "other.fabr": "fabr 0.4.0;" }));
+    expect(error).to.be.an.instanceOf(BuildFilesInvalidError);
+    expect(logged.join("\n")).to.match(/declared only by the first statement of the project file[\s\S]*other\.fabr:1:1/);
+  });
+
+  it("warns where the project declares a fabr release other than the one running", async () => {
+    const running = getCoreVersion();
+    const { error, logged } = await loadErr(files({ "PROJECT.fabr": "fabr 0.0.1-other;" }));
+    expect(error).to.be.undefined;
+    if (running === undefined) {
+      /* A core built in the project states no version until it is published, so nothing differs from it. */
+      expect(logged).to.deep.equal([]);
+    } else {
+      expect(logged.join("\n")).to.contain(`This project declares fabr 0.0.1-other, but this is fabr ${running}`);
+      expect(await load(files({ "PROJECT.fabr": `fabr ${running};` }), "PROJECT.fabr")).to.not.be.undefined;
+    }
+  });
 
   it("reports a plugin naming nothing declared positioned at the declaration, then stops", async () => {
     const { error, logged } = await loadErr(files({ "PROJECT.fabr": "plugin @fabr/definitely-not-installed;" }));

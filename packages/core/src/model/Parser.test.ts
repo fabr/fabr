@@ -690,6 +690,33 @@ describe("Parser Tests", () => {
     );
   });
 
+  it("reads the fabr release the first statement declares", () => {
+    expect(parseValid("# The release.\n\nfabr 0.4.0;\nplugin simple;").fabr?.version).to.equal("0.4.0");
+    expect(parseValid("fabr 1.0.0-rc.1;").fabr?.version).to.equal("1.0.0-rc.1");
+    expect(parseValid("plugin simple;").fabr).to.be.undefined;
+    /* A target type named `fabr` is still one. */
+    expect(parseValid("fabr t { }").targets[0].type).to.equal("fabr");
+  });
+
+  it("refuses a fabr release not written as an exact version, or not the first statement", () => {
+    const invalid = "The fabr release is declared as 'fabr <version>;', its exact version written as it is (such as 'fabr 0.4.0;')";
+    for (const text of ["fabr '0.4.0';", "fabr 0.4;", "fabr 0.4.0", "fabr 0.4.0<K=v>;", "fabr ${V};", "fabr 1.0.0+build;"]) {
+      expect(parseInvalid(text).join("\n"), text).to.contain(invalid);
+    }
+    /* A name starting with a letter is a target's, of type `fabr`. */
+    expect(parseInvalid("fabr v0.4.0;")).to.have.length(1);
+    const errors: string[] = [];
+    const contents = parseBuildString(
+      EMPTY_FILESET,
+      "PROJECT.fabr",
+      "plugin x;\nfabr 0.4.0;\nplugin y;",
+      new LogFormatter(LogLevel.Info, msg => errors.push(msg))
+    );
+    expect(errors.join("\n")).to.contain("The fabr release is declared only by the first statement of the project file");
+    expect(contents.fabr).to.be.undefined;
+    expect(contents.plugins.map(plugin => plugin.name.toString())).to.deep.equal(["x", "y"]);
+  });
+
   it("allows '-' and '.' in plugin and target names (real npm package names), and a plugin named through a repository", () => {
     expect(summarize(parseValid("plugin my-plugin;\nplugin lodash.merge;\nplugin @scope/a-b.c;"))).to.deep.equal(
       summary({ plugins: ["my-plugin", "lodash.merge", "@scope/a-b.c"] })

@@ -22,13 +22,14 @@ import * as path from "node:path";
 import { Computable, ComputableSource } from "../core/Computable";
 import { FileSource } from "../core/FileSet";
 import { Name } from "../core/Name";
-import { Diagnostic, ErrorTrackingLog, IDiagnosticNote, ISourceSpan, LogLevel } from "../support/Log";
+import { Diagnostic, ErrorTrackingLog, IDiagnosticNote, ISourceSpan, Log, LogLevel } from "../support/Log";
 import { StringReader } from "../support/StringReader";
-import { parseBuildFile } from "./Parser";
+import { DIAG_FABR_PLACEMENT, parseBuildFile } from "./Parser";
 import {
   DeclKind,
   declPosn,
   IBuildFileContents,
+  IFabrDecl,
   IIncludeDecl,
   INameValue,
   isPropertyDecl,
@@ -39,7 +40,7 @@ import {
 import { BuildModel } from "./BuildModel";
 import { ModelBuilder } from "./ModelBuilder";
 import { ExecutionContext } from "./ExecutionContext";
-import { matchOptionalLibs, PluginResolution, resolvePlugin } from "./Plugin";
+import { getCoreVersion, matchOptionalLibs, PluginResolution, resolvePlugin } from "./Plugin";
 import { PluginContribution } from "../rules/Types";
 import { computableWorkList } from "../core/WorkList";
 import { FabrError } from "../core/Errors";
@@ -49,6 +50,12 @@ import { Constraints } from "./Constraints";
 const DIAG_INCLUDE_NOT_FOUND = new Diagnostic<{ filename: string; loc: ISourceSpan }>(
   LogLevel.Error,
   "Included file not found: {filename}"
+);
+
+/** A project declaring a fabr release other than the one running. */
+const DIAG_OTHER_FABR = new Diagnostic<{ declared: string; running: string; loc: ISourceSpan }>(
+  LogLevel.Warn,
+  "This project declares fabr {declared}, but this is fabr {running}"
 );
 
 /** An `include` pattern that matches no file. */
@@ -361,6 +368,9 @@ class ProjectLoader {
         /* Parsing logs each error and recovers; count them through a wrapping log. */
         const parseLog = new ErrorTrackingLog(this.execution.log);
         const decls = parseBuildFile({ fs, file, reader: new StringReader(content) }, parseLog);
+        if (decls.fabr !== undefined) {
+          this.checkFabr(file, decls.fabr, parseLog);
+        }
         /* Each include resolves to the files it names: one path for a plain
          * include, every current match for a pattern. The match is live, so this
          * file's load re-runs when the set changes. An include of a plugin's
@@ -381,6 +391,23 @@ class ProjectLoader {
     });
     this.steps.set(file, step);
     return step;
+  }
+
+  /**
+   * Report `decl`, the `fabr <version>;` of `file`, to `log`: as an error
+   * where `file` is not the project file (its parser saw only that it was the
+   * first statement), and as a warning where it declares a release other than
+   * the one running.
+   */
+  private checkFabr(file: string, decl: IFabrDecl, log: Log): void {
+    if (file !== this.startFile) {
+      log.log(DIAG_FABR_PLACEMENT, { loc: declPosn(decl) });
+      return;
+    }
+    const running = getCoreVersion();
+    if (running !== undefined && running !== decl.version) {
+      log.log(DIAG_OTHER_FABR, { declared: decl.version, running, loc: declPosn(decl) });
+    }
   }
 
   /**

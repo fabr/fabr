@@ -41,6 +41,23 @@ JS_TARGET = es2021-commonjs;   # so is this
 A comment directly above a property, target or target type is its documentation: `fabr
 list-targetdefs` and `fabr list-properties` show it.
 
+## The fabr release
+
+`fabr <version>;` declares the release of fabr the project builds with. It's optional, and when
+present it must be the first statement of `PROJECT.fabr`, with only comments and blank lines
+before it:
+
+```
+# Built with fabr 0.4.0.
+fabr 0.4.0;
+
+plugin @fabr-build/container;
+```
+
+The version is an exact release, written as it is: not quoted, not a range, and not a `${…}`
+substitution. When the fabr you run is a different release, it warns, naming both versions, and
+carries on building.
+
 ## Plugins and includes
 
 `plugin <name>;` loads a plugin. The name is a reference to the package that provides it, read as

@@ -111,7 +111,7 @@ describe("build file language", () => {
     expect(offered("holder x {\n  ")).to.deep.equal(["srcs"]);
     expect(offered("holder x { srcs = ")).to.include.members(["lib", "app", "LIBS"]);
     expect(offered("holder x { srcs = ${")).to.deep.equal(["LIBS"]);
-    expect(offered("")).to.include.members(["holder", "targetdef", "include"]);
+    expect(offered("")).to.include.members(["holder", "targetdef", "include", "fabr"]);
     expect(offered("# a comment ")).to.deep.equal([]);
     const srcs = completionsAt(model, "holder x { ", 11)[0];
     expect(srcs).to.deep.include({ label: "srcs", kind: "property", detail: "FILES", comment: "What it holds." });

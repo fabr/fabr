@@ -180,17 +180,18 @@ export function coreVersionError(name: string, range?: string, version?: string)
   );
 }
 
+/** @return the version of fabr's own core, which is fabr's version, or undefined where its `package.json` states none or cannot be found. */
+export function getCoreVersion(): string | undefined {
+  const file = nearestManifestFile(__dirname, manifest => manifest.name === CORE_PACKAGE);
+  const version = file === undefined ? undefined : readManifest(file).version;
+  return typeof version === "string" ? version : undefined;
+}
+
 /** Throw {@link coreVersionError}'s error for the plugin `name`, whose `package.json` reads `plugin`, against the host core's version. */
 function checkCoreVersion(name: string, plugin: Record<string, unknown>): void {
-  const hostFile = nearestManifestFile(__dirname, manifest => manifest.name === CORE_PACKAGE);
-  const host = hostFile === undefined ? undefined : readManifest(hostFile);
   const peers = plugin.peerDependencies;
   const range = typeof peers === "object" && peers !== null ? (peers as Record<string, unknown>)[CORE_PACKAGE] : undefined;
-  const err = coreVersionError(
-    name,
-    typeof range === "string" ? range : undefined,
-    typeof host?.version === "string" ? host.version : undefined
-  );
+  const err = coreVersionError(name, typeof range === "string" ? range : undefined, getCoreVersion());
   if (err !== undefined) {
     throw err;
   }

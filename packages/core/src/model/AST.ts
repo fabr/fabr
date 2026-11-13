@@ -245,6 +245,16 @@ export interface IPluginDecl extends IBaseDecl {
 }
 
 /**
+ * The fabr release a project builds with: `fabr <version>;`, the first
+ * statement of the project file. Its form is fixed (an exact version, written
+ * literally), so it can be read without parsing the file.
+ */
+export interface IFabrDecl extends IBaseDecl {
+  /** The release's exact version, as written. */
+  version: string;
+}
+
+/**
  * A rule's implementation written in `.fabr`: `= <result> { <declarations> }`.
  * The target the rule matches is what `result` names, looked up among the
  * block's own targets and properties before the file's. The short form
@@ -337,6 +347,8 @@ export interface IBuildFileContents {
   plugins: IPluginDecl[];
   rules: IRuleDecl[];
   repositories: IRepositoryDecl[];
+  /** The fabr release the file declares, where its first statement declares one. */
+  fabr?: IFabrDecl;
 }
 
 export type IDecl = ITargetDecl | IPropertyDecl | IIncludeDecl | IPluginDecl | IValue;
