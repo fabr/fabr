@@ -181,7 +181,10 @@ Two groups of fields can't be set, and are errors in `metadata`:
 If you are converting a package, you can instead list its existing `package.json` in `srcs`.
 Fields from it are carried into the generated one, except for those two groups, which are
 replaced or dropped; `metadata` overrides the rest. Its `dependencies` are not read: declare
-them in `deps`.
+them in `deps`. It is read only for the generated manifest, so it has no effect on how the sources
+compile. A `package.json` anywhere else among the sources is an error
+(`'legacy/package.json' is a package.json below the package's root`): a `js_package` builds one
+package.
 
 ## Publishing with sync
 

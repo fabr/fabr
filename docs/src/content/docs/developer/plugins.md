@@ -22,7 +22,9 @@ plugin @fabr-home:@example/text-lint;
 ```
 
 The declaration brings in the plugin's own `.fabr` files, so its target types can be used straight
-away, with no `include`. A plugin declared in several files is loaded once. Core's own library is
+away, with no `include`. Fabr's messages name each such file by the plugin's package name and the
+file's path within the package, `@fabr-build/js:lib/JS.fabr`, the form an `include` of a plugin's
+optional file is written in. A plugin declared in several files is loaded once. Core's own library is
 always present, so the `flag`, `script`, `generate`, `patched`, `zip`, `serve` and `sync` target
 types, and the `catalog`, `fetch`, `repository_group`, `fabr_home` and `host_searchpath` repository
 types, need no declaration.
@@ -31,13 +33,7 @@ A plugin's name is read like any other reference. Fabr's own plugins are named a
 published, `@fabr-build/js` and `@fabr-build/java`: names in the `@fabr-build` scope mean the
 packages installed alongside fabr. Any other plugin installed alongside fabr is named through
 `@fabr-home`, the set of packages installed with it, and found the way Node.js finds a module:
-from where fabr itself is installed. Install the plugin in the same place as `@fabr-build/cli`, in
-your project or globally:
-
-```sh
-npm install --save-dev @fabr-build/cli @example/text-lint
-npx fabr build
-```
+from where fabr itself is installed. Install the plugin beside `@fabr-build/cli`:
 
 ```sh
 npm install -g @fabr-build/cli @example/text-lint

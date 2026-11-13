@@ -24,7 +24,8 @@ fabr build web
 fabr run web            # starts it with Docker, port 80 published
 ```
 
-The target types come from the container plugin, so a project that builds images declares
+The target types come from the container plugin, a package of its own installed beside fabr
+(`npm install -g @fabr-build/cli @fabr-build/container`), so a project that builds images declares
 `plugin @fabr-build/container;`. Every property is listed in [Container targets and
 configuration](/reference/container/targets/).
 

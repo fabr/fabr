@@ -191,8 +191,12 @@ deps = @mvn:com.fasterxml.jackson:jackson-bom:2.17.1
 ```
 
 A BOM in `deps` gives versions to `test_deps` too, since the tests are compiled and run with both;
-one in `test_deps`, such as JUnit's, gives versions to the tests only. A Gradle `enforcedPlatform(…)` is the BOM written with `!` after its version. See
-[BOMs](/reference/java/dependencies/#boms).
+one in `test_deps`, such as JUnit's, gives versions to the tests only.
+
+A plain BOM sets minimums, as a Gradle `platform(…)` does: a dependency that requires a later
+version of a package it manages gets the later one. Maven instead holds every package a BOM
+manages at the BOM's version, and so does a Gradle `enforcedPlatform(…)`: for that, write the BOM
+with `!` after its version. See [BOMs](/reference/java/dependencies/#boms).
 
 ### The Java release and the JDK
 
@@ -249,8 +253,8 @@ catalog @lib {
 deps = @lib:com.google.guava/guava;
 ```
 
-A jar you publish can't take its dependencies from a catalog (see [Not supported](#not-supported));
-give those their versions through properties.
+A jar you publish can take its dependencies from a catalog: its POM records each one at the version
+the catalog states for it.
 
 ## Multi-module builds
 
@@ -489,12 +493,18 @@ Work through each converted module:
    everything it would upload, POMs included, without uploading. Compare the POMs with the ones
    you publish now; see [Publishing](/reference/java/publishing/).
 
+Maven or Gradle keeps working while you migrate: fabr writes nothing into the project and reads
+none of Maven's or Gradle's own files, so you can build with both until you switch.
+Nothing is kept in step between them: a dependency you add to a `pom.xml` or `build.gradle` reaches
+fabr only when you add it to the build file too, and the reverse.
+
 Then set up CI; see [Continuous integration](/guides/ci/).
 
 ### Why versions can differ
 
-For each package, fabr selects the highest version that anything in the build requires, the rule Go
-modules use (see [How versions are chosen](/reference/java/dependencies/#how-versions-are-chosen)).
+For each package, fabr selects the highest version that anything in the build requires, which is
+the lowest version that satisfies every requirement. It is the rule Go modules use (see
+[How versions are chosen](/reference/java/dependencies/#how-versions-are-chosen)).
 Compared with what you used before:
 
 - **Maven** uses the version declared nearest your project, even where a dependency deeper in the

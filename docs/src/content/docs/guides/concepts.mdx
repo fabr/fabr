@@ -3,14 +3,26 @@ title: Conceptual model
 description: The ideas behind a fabr build file — file sets, properties, configuration and packages — and how one target is built in several configurations.
 ---
 
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
 Almost everything in a fabr build file is one of two things: a **file set** or a **property**.
 File sets are what a build makes and consumes: your sources, the packages you depend on, and the
 output of every target. Properties are the named values that say how. This page explains both,
 and then the two ideas built on them: configuration and packages.
 
+:::note[One project, any mix of languages]
+The examples are shown for JavaScript and for Java, under a tab for each. These aren't modes of
+fabr: a project loads every plugin it declares, and its targets use each other whatever language
+built them. [A Spring Boot server with a React front end](/examples/spring-boot-react/) is one
+project holding both.
+:::
+
 ## File sets
 
 A file set is a set of named files. The simplest kind comes straight from your source tree:
+
+<Tabs syncKey="language">
+<TabItem label="JavaScript">
 
 | Reference | The files it names |
 |---|---|
@@ -19,12 +31,29 @@ A file set is a set of named files. The simplest kind comes straight from your s
 | `src/**/*.ts` | Every `.ts` file under `src`, at any depth. |
 | `./src/*.[jt]s` | The `.js` and `.ts` files directly in `src`. |
 
+</TabItem>
+<TabItem label="Java">
+
+| Reference | The files it names |
+|---|---|
+| `src/main/java/com/example/Greeter.java` | One file. |
+| `src/main/resources` | Every file under the `src/main/resources` directory. |
+| `src/main/java/**/*.java` | Every `.java` file under `src/main/java`, at any depth. |
+| `./src/main/resources/*.properties` | The `.properties` files directly in `src/main/resources`. |
+
+</TabItem>
+</Tabs>
+
 These are shell glob patterns, with `**` matching across directories. Paths are relative to the
 build file they are written in.
 
 ### A target is a file set
 
-A target declares what a result is made from:
+A target declares what a result is made from. What it builds is itself a file set, and you refer
+to it and to the files inside it as if it were a directory:
+
+<Tabs syncKey="language">
+<TabItem label="JavaScript">
 
 ```
 js_package hello {
@@ -32,17 +61,34 @@ js_package hello {
 }
 ```
 
-The built package is itself a file set, and you refer to it and to the files inside it as if it
-were a directory:
-
 | Reference | The files it names |
 |---|---|
 | `hello` | The whole package. |
 | `hello/package.json` | The package's `package.json`. |
 | `hello/**/*.js` | Every `.js` file in the package. |
 
-The same references work on the command line (`fabr ls hello`, `fabr cat hello/package.json`) and
-as another target's inputs. Using a target in a reference is what causes it to be built.
+</TabItem>
+<TabItem label="Java">
+
+```
+jar_package hello {
+  srcs = src/main/java:**/*.java;
+}
+```
+
+| Reference | The files it names |
+|---|---|
+| `hello` | Everything the target builds: here, `hello.jar`. |
+| `hello/hello.jar` | The jar. |
+| `hello/*.jar` | Every jar the target builds. |
+
+</TabItem>
+</Tabs>
+
+The same references work on the command line (`fabr ls hello`, `fabr cp 'hello/*.jar' out`) and
+as another target's inputs, whatever language each target is in: a `jar_package` with
+`resources = web:** -> static/**;` packs what the JavaScript bundle `web` built into its jar.
+Using a target in a reference is what causes it to be built.
 
 Target names are global to the project, whichever build file declares them, unless a target is
 declared [`private`](/reference/syntax/#private-declarations) to its own file. A target takes
@@ -51,20 +97,43 @@ unambiguous.
 
 ### So is a package from a registry
 
-Packages from a registry are referred to the same way. The JavaScript plugin provides `@npm`, the
-npm registry, which takes a package name and a version:
+Packages from a registry are referred to the same way.
+
+<Tabs syncKey="language">
+<TabItem label="JavaScript">
+
+The JavaScript plugin provides `@npm`, the npm registry, which takes a package name and a version:
 
 | Reference | The files it names |
 |---|---|
 | `@npm:picomatch:4.0.5` | The package. |
 | `@npm:picomatch:4.0.5:package.json` | One file from it. |
 
-The registry on its own, `@npm`, names no files, and using it as a reference is an error.
-
 The plugin also provides `@node`, the Node.js releases published at nodejs.org, which takes a
-version: `@node:24.22.1:node` is that release's `node` binary. Fabr runs JavaScript tools and
+version: `@node:24.22.1:node` is that release's `node` command. Fabr runs JavaScript tools and
 tests on the release the `NODE` setting names; see
 [The Node.js version](/reference/js/dependencies/#the-nodejs-version).
+
+</TabItem>
+<TabItem label="Java">
+
+The Java plugin provides `@mvn`, Maven Central, which takes a group, an artifact and a version:
+
+| Reference | The files it names |
+|---|---|
+| `@mvn:org.apache.commons:commons-text:1.11.0` | The package. |
+| `@mvn:org.apache.commons:commons-text:1.11.0:commons-text-1.11.0.jar` | One file from it. |
+
+The plugin also provides `@jdk`, the Eclipse Temurin releases, which takes a version:
+`@jdk:21.0.12.1+1:java` is that release's `java` command, so
+`fabr run '@jdk:21.0.12.1+1:java' -version` runs it. Fabr compiles, tests and runs Java with the
+release the `JDK` setting names; see [The JDK](/reference/java/compiling/#the-jdk).
+
+</TabItem>
+</Tabs>
+
+The registry on its own, `@npm` or `@mvn`, names no files, and using it as a reference is an
+error.
 
 ### Naming the files
 
@@ -74,14 +143,32 @@ the files came from. A reference decides the names as well as the files.
 Written with `/`, a reference keeps the path as written. Replacing a `/` with `:` drops everything
 before it:
 
+<Tabs syncKey="language">
+<TabItem label="JavaScript">
+
 | Reference | Names |
 |---|---|
 | `./src/*.ts` | `src/a.ts`, `src/b.ts` |
 | `./src:*.ts` | `a.ts`, `b.ts` |
 
 This is why sources are usually written `srcs = src:**/*.ts`: the package then contains
-`index.js`, not `src/index.js`. A leading `./` or `../` is never part of a name, so
-`../scripts/run.ts` is named `scripts/run.ts`.
+`index.js`, not `src/index.js`.
+
+</TabItem>
+<TabItem label="Java">
+
+| Reference | Names |
+|---|---|
+| `./src/main/java/**/*.java` | `src/main/java/com/example/Greeter.java` |
+| `./src/main/java:**/*.java` | `com/example/Greeter.java` |
+
+This is why sources are usually written `srcs = src/main/java:**/*.java`: the jar then contains
+`com/example/Greeter.class`, named by its package as the JVM expects.
+
+</TabItem>
+</Tabs>
+
+A leading `./` or `../` is never part of a name, so `../scripts/run.ts` is named `scripts/run.ts`.
 
 For anything else there is `->`, which renames by pattern. Each `*` or `**` on the right takes
 what the corresponding one on the left matched:
@@ -99,12 +186,29 @@ The [language reference](/reference/syntax/#projection-and-renaming) has the ful
 A property is a named value. Inside a target, a property is one of the target's inputs (`srcs`,
 `deps`). At the top level of a build file, it is a setting or a value you want to reuse:
 
+<Tabs syncKey="language">
+<TabItem label="JavaScript">
+
 ```
 VERSION = 4.0;
 DESCRIPTION = 'Starter example';
 TEST_DEPS = @npm:chai:4.3.6 @npm:@types/chai:4.3.1;
 GREETING = "hello v${VERSION}";
 ```
+
+</TabItem>
+<TabItem label="Java">
+
+```
+VERSION = 4.0;
+DESCRIPTION = 'Starter example';
+TEST_DEPS = @mvn:org.junit:junit-bom:5.11.4 @mvn:org.junit.jupiter:junit-jupiter
+            @mvn:org.junit.platform:junit-platform-launcher;
+GREETING = "hello v${VERSION}";
+```
+
+</TabItem>
+</Tabs>
 
 `${NAME}` substitutes another property's value as text. A property that holds references, like
 `TEST_DEPS` above, is used by its bare name: `test_deps = TEST_DEPS;`.
@@ -123,12 +227,26 @@ Properties share one namespace with targets. A property name may contain letters
 ## Configuration
 
 Some properties are settings that rules read to decide how to build: `BUILD_TYPE` (`debug`,
-`relwithdebinfo` or `release`), `JS_TARGET` (which JavaScript to emit), `TARGET` (the platform).
-Each has a default, and a build file sets its own value by declaring the property:
+`relwithdebinfo` or `release`), `JS_TARGET` (which JavaScript to emit), `JVM_TARGET` (the Java
+release to compile for), `TARGET` (the platform). Each has a default, and a build file sets its
+own value by declaring the property:
+
+<Tabs syncKey="language">
+<TabItem label="JavaScript">
 
 ```
 JS_TARGET = es2021-commonjs;
 ```
+
+</TabItem>
+<TabItem label="Java">
+
+```
+JVM_TARGET = jvm17;
+```
+
+</TabItem>
+</Tabs>
 
 A setting can also be changed for one build or for one reference, without editing any target.
 
@@ -137,6 +255,10 @@ A setting can also be changed for one build or for one reference, without editin
   built with this setting". This is a **constraint**.
 
 A constraint doesn't replace the target's ordinary build; it asks for another one alongside it.
+
+<Tabs syncKey="language">
+<TabItem label="JavaScript">
+
 In this project, `third` is a CommonJS package that also ships an ES-module build of `second`:
 
 ```
@@ -172,39 +294,97 @@ info:✓ Compiling third (549ms)
 info:Built third (2.9s)
 ```
 
+`base` is compiled twice: once as CommonJS because `third` depends on it, and once as ES modules
+because the ES-module `second` does.
+
+</TabItem>
+<TabItem label="Java">
+
+In this project, `third` is a jar for Java 21 that also carries a build of `second` for Java 11:
+
+```
+JVM_TARGET = jvm21;
+
+jar_package base {
+  srcs = ./base:**/*.java;
+}
+
+jar_package second {
+  srcs = ./second:**/*.java;
+  deps = base;
+}
+
+jar_package third {
+  srcs = ./third:**/*.java;
+  deps = base;
+  resources = second<JVM_TARGET=jvm11>:*.jar -> java11/*.jar;
+}
+```
+
+```
+$ fabr build third
+info:Compiling base [JVM_TARGET=jvm11] (required by second < third)
+info:Compiling base (required by third)
+info:✓ Compiling base (774ms)
+info:✓ Compiling base (777ms)
+info:Building base (required by third)
+info:Building base [JVM_TARGET=jvm11] (required by second < third)
+info:✓ Building base (8ms)
+info:✓ Building base (3ms)
+info:Compiling second [JVM_TARGET=jvm11] (required by third)
+info:✓ Compiling second (318ms)
+info:Building second [JVM_TARGET=jvm11] (required by third)
+info:✓ Building second (2ms)
+info:Compiling third
+info:✓ Compiling third (335ms)
+info:Building third
+info:✓ Building third (1ms)
+info:Built third (1.6s)
+```
+
+`base` is compiled twice: once for Java 21 because `third` depends on it, and once for Java 11
+because the Java 11 `second` does. `third.jar` holds the Java 11 `second.jar` as
+`java11/second.jar`.
+
+</TabItem>
+</Tabs>
+
 (This is the output with no terminal attached, as in CI. In a terminal, fabr shows the work in
 progress at the bottom of the screen instead of the lines that start it.)
 
-`base` is compiled twice: once as CommonJS because `third` depends on it, and once as ES modules
-because the ES-module `second` does. A constraint carries through to everything the constrained
-target depends on. Nothing in `base` or `second` mentions either format.
+A constraint carries through to everything the constrained target depends on. Nothing in `base`
+or `second` mentions either setting.
 
 A constraint and `-D` combine. `fabr build -DBUILD_TYPE=release third` builds all of the above as
-release builds, the ES-module ones included.
+release builds, the constrained ones included.
 
 ## Rules and operations
 
 A rule is what does the building. Each rule applies to one target type and one **operation**,
 such as `build`, `test` or `run`. The command you give chooses the operation, so `fabr test mylib`
 and `fabr build mylib` apply different rules to the same target. Plugins and your own rules can
-add operations, each a command of its own; `fabr list-operations` lists them.
+add operations, each a command of its own (the Java plugin adds `fabr doc` and `fabr sources`);
+`fabr list-operations` lists them.
 
 The standard rules ship with fabr's core and its plugins, written in TypeScript, and a project can
-write its own in its `.fabr` files (see [Writing your own rules](/guides/rules/)). When a target type has several rules for an operation, the one that matches the
-current settings and the target's own properties most specifically is used. That is how, for example, a `js_package` with
+write its own in its `.fabr` files (see [Writing your own rules](/guides/rules/)). When a target
+type has several rules for an operation, the one that matches the current settings and the
+target's own properties most specifically is used. That is how, for example, a `js_package` with
 `test_framework = jest` is tested differently from one with `vitest`.
 
 ## Packages
 
 A package is a file set that also has a name, a version and dependencies on other packages. A
-`js_package` produces one, and so does a reference to a registry such as `@npm:lodash:4.17.21`.
+`js_package` or a `jar_package` produces one, and so does a reference to a registry such as
+`@npm:lodash:4.17.21` or `@mvn:org.slf4j:slf4j-api:2.0.13`.
 
 The difference shows in how a package is used:
 
 - **Listed whole in a property that takes packages** (`deps = hello;`), it is made available to
-  imports under its own name, together with the packages it depends on.
-- **With files selected from it** (`hello:*.js`, `hello/package.json`), or listed in a property
-  that takes files (`resources = hello;`), you get its files and nothing more: no name, no
+  the target's code, together with the packages it depends on: importable by its name in
+  JavaScript, on the classpath in Java.
+- **With files selected from it** (`hello:*.js`, `hello/hello.jar`), or listed in a property that
+  takes files (`resources = hello;`), you get its files and nothing more: no name, no
   dependencies.
 
 Which properties take packages is part of each target type's definition; the
@@ -218,6 +398,9 @@ settled the same way; see
 targets can end up with different versions of the same package. A **catalog** chooses versions
 once for every target that uses it:
 
+<Tabs syncKey="language">
+<TabItem label="JavaScript">
+
 ```
 catalog @pkg {
   deps = @npm:esbuild:0.28.1 @npm:react:^19.1.0;
@@ -230,6 +413,26 @@ js_package ui {
 ```
 
 [Dependencies](/reference/js/dependencies/) covers how versions are chosen and what catalogs do.
+
+</TabItem>
+<TabItem label="Java">
+
+```
+catalog @lib {
+  deps = @mvn:com.google.guava:guava:33.2.1-jre @mvn:org.slf4j:slf4j-api:2.0.13;
+}
+
+jar_package service {
+  srcs = src/main/java:**/*.java;
+  deps = @lib:org.slf4j/slf4j-api;
+}
+```
+
+A member is named `<group>/<artifact>`. [Dependencies](/reference/java/dependencies/) covers how
+versions are chosen and what catalogs do.
+
+</TabItem>
+</Tabs>
 
 A target that both builds against its dependencies and installs or runs them resolves the two
 separately, as Gradle resolves a compile and a runtime classpath. An npm package declares the
@@ -254,6 +457,9 @@ and a target is built only when something being built needs it.
 `fabr deps` stops after the first step. It prints the tree a build would use, without downloading
 any package or building any target:
 
+<Tabs syncKey="language">
+<TabItem label="JavaScript">
+
 ```
 $ fabr deps app
 app
@@ -265,6 +471,23 @@ deps
     ├── ms:2.1.2
     └── supports-color:* (p) (n)
 ```
+
+</TabItem>
+<TabItem label="Java">
+
+```
+$ fabr deps app
+app
+deps
+├── hello
+│   └── org.apache.commons/commons-text:1.11.0
+│       └── org.apache.commons/commons-lang3:3.13.0
+└── org.slf4j/slf4j-simple:2.0.13
+    └── org.slf4j/slf4j-api:2.0.13
+```
+
+</TabItem>
+</Tabs>
 
 `hello` is a target in the project, shown by name: it has no version until it is built. The
 [`deps` command](/reference/command-line/#deps) explains the rest of the notation.

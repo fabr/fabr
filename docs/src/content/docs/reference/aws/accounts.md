@@ -9,7 +9,8 @@ signed with and where they are sent. Every name that reaches AWS starts with the
 the service: `@aws:s3:acme-models:v3/model.bin` is an object in the S3 bucket `acme-models`, read
 with the `@aws` account's credentials.
 
-The plugin is installed with fabr. A project uses it by declaring it:
+The plugin is a package of its own, installed beside fabr
+(`npm install -g @fabr-build/cli @fabr-build/aws`). A project uses it by declaring it:
 
 ```
 plugin @fabr-build/aws;

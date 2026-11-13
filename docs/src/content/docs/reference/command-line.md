@@ -61,7 +61,7 @@ fabr build -DBUILD_TYPE=release mylib app
 ```
 
 Each name must be one the project declares, such as a target, optionally with a
-[constraint](#naming-targets-and-files). A path or a pattern (`mylib:build/*.js`, `./src`) is an
+[constraint](#naming-targets-and-files). A path or a pattern (`mylib:*.js`, `./src`) is an
 error: to get at particular files, use `ls`, `cat` or `cp`. fabr checks every name before it starts,
 so if any of them is wrong, nothing is built.
 
@@ -233,8 +233,8 @@ Where the files land follows the rules of `cp -R`, applied to the reference as y
 ```sh
 fabr cp mylib out                # a whole target      -> out/mylib/…
 fabr cp 'mylib:index.js' out     # one file            -> out/index.js
-fabr cp 'mylib:build/*.js' out   # a pattern           -> the matching files, directly in out/
-fabr cp 'mylib:build/**' out     # everything under it -> out/…, keeping the structure below build/
+fabr cp 'mylib:util/*.js' out    # a pattern           -> the matching files, directly in out/
+fabr cp 'mylib:util/**' out      # everything under it -> out/…, keeping the structure below util/
 ```
 
 Writing the reference with `/` or `:` makes no difference to `cp`: `mylib/index.js` and
@@ -293,7 +293,7 @@ it" before you add it:
 
 ```sh
 fabr deps @npm:glob:10.0.0
-fabr deps @dep:chai          # a catalog member, at the versions the catalog pins
+fabr deps @pkg:chai          # a catalog member, at the versions the catalog pins
 ```
 
 A catalog named on its own is shown by what it pins: its `deps`, resolved together as the catalog
@@ -301,7 +301,7 @@ resolves them, with the versions that conflict among them marked. A project's co
 catalog are checked against those conflicts only where they use the versions together.
 
 ```sh
-fabr deps @dep
+fabr deps @pkg
 ```
 
 `deps` builds none of the targets it lists and downloads no packages from a registry: it reads
@@ -313,7 +313,7 @@ property too, with everything it requires beneath it, since its build becomes pa
 plain files (`srcs = src:**;`) are left out. So are the tools a target runs, such as the
 TypeScript compiler or a `generate` target's `run` command, which are installed apart from the
 target's own packages. A target with no packages prints `No dependencies`. A reference that selects
-files (`mylib:build/*.js`) is an error: name the target.
+files (`mylib:*.js`) is an error: name the target.
 
 Two things are still computed, because the dependencies cannot be known without them:
 
@@ -393,7 +393,7 @@ fabr sbom @npm:express:4.19.2
 ```
 
 A catalog named on its own is described by its name, the packages it pins being what it requires.
-`audit` checks those packages too, so `fabr audit @dep` checks every version a catalog pins.
+`audit` checks those packages too, so `fabr audit @pkg` checks every version a catalog pins.
 
 The packages are the ones `deps` prints, resolved the same way and with nothing built. Each package
 a registry publishes is named by its [package URL](https://github.com/package-url/purl-spec) and
@@ -456,10 +456,10 @@ compiles no package. It is what an editor runs; see [VS Code support](/guides/vs
 fabr build-server
 ```
 
-A target is identified as `fabr:<name>`, and its test run as `fabr:<name>?operation=test`; a
-package that declares no tests has no test run. `buildTarget/compile` and `buildTarget/test` build
-and test targets in the same process, and a build's errors are sent as
-`build/publishDiagnostics`.
+For an editor integration: a target is identified as `fabr:<name>`, and its test run as
+`fabr:<name>?operation=test`; a package that declares no tests has no test run.
+`buildTarget/compile` and `buildTarget/test` build and test targets in the same process, and a
+build's errors are sent as `build/publishDiagnostics`.
 
 The same connection also carries the [Language Server
 Protocol](https://microsoft.github.io/language-server-protocol/) (LSP) for the project's build
@@ -584,25 +584,27 @@ shell. The output says what failed.
 
 ## Tracing a run
 
-`--trace` records what the run did and when, in the trace-event format that
+`--trace=<file>` records what the run did and when, as a file that
 [Perfetto](https://ui.perfetto.dev) and Chrome's `chrome://tracing` open: drop the file onto either.
-The trace holds one span per unit of work fabr performed — a target's build step, a test run, a
-resolution, a download — from when it started to when it ended, on a track per concurrent task, so
-the timeline shows what ran alongside what and where the run waited on one chain. Within a task,
-`waiting` spans mark the stretches it queued for an execution slot; within a test run, each test
-file's run is an async span placed by the runner's own clock, with its outcomes. Cycle boundaries
-are instants, so a watch run's cycles read apart. A span's `args` carry the task's constraints and
-the chain of targets that required it, as the start line does.
-
-Work served from the cache runs no step and appears nowhere, which is the point: the trace is of
-what the run had to do. Each cycle's work is added to the file at the end of the cycle, and the file
-is finished when the run ends, however it ends, with any task then still running marked
-`unfinished`. A trace read before then lacks its closing `]`, which Perfetto and `chrome://tracing`
-accept.
 
 ```sh
-fabr test --trace=traces/full.json all
+fabr test --trace=traces/full.json mylib
 ```
+
+Each piece of work fabr did, such as building a target, running its tests, resolving its
+dependencies or a download, is a bar from when it started to when it ended. Work that ran at the
+same time is on separate rows, so you can see what ran in parallel and where the run waited for one
+step to finish. Within a bar:
+
+- `waiting` marks the time the work was queued for a free processor;
+- in a JavaScript test run, each test file's run is shown with its results;
+- selecting the bar shows the settings it was built with and the targets that required it, as the
+  line that starts it does in the log.
+
+Work fabr took from its cache isn't in the trace, since nothing ran. Under `-w`, each round is
+added to the file as it ends, marked so that rounds read apart. The file is complete when fabr
+exits, however it exits, with any work still running then marked `unfinished`; one read before
+then lacks its closing `]`, which both viewers accept.
 
 ## Naming targets and files
 
@@ -612,9 +614,12 @@ line:
 
 - **A target name** means the target: `mylib`.
 - **A path into a target** selects files from what it builds: `mylib/package.json`,
-  `'mylib:build/*.js'`. Quote a pattern so that your shell doesn't expand it.
+  `'mylib:*.js'`. Quote a pattern so that your shell doesn't expand it.
 - **A path in your project** names source files, relative to the current directory:
-  `fabr ls ./src`.
+  `fabr ls ./src`. It names files in your project only, so an absolute path is an error, as it is
+  in a build file. On Windows, `\` separates directories as `/` does: `src\a.ts` is `src/a.ts`,
+  and `C:\x` is an absolute path. Within quotes a `\` means what it does in a build file: taken as
+  it is in `'…'`, escaping the next character in `"…"`.
 - **A package reference** needs no declared target: `fabr ls @npm:esbuild:0.28.1`,
   `fabr run @npm:prettier:3.3.3 --check src`.
 - **A constraint** builds that one reference with a different setting:

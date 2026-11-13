@@ -106,7 +106,17 @@ runtime everything is run on (`fabr run`, tests, and Java tools in a build), and
 [javadoc](/reference/java/packaging/#javadoc-and-sources) generator. Set one to take it from another
 release, as in `JAVA = @jdk:17.0.13+11:java;` to run on Java 17 what a Java 21 compiler built.
 
-The JDK on your machine is never used, so `JAVA_HOME` makes no difference. To use a mirror of the
+Only Eclipse Temurin releases are downloaded. The JDK on your machine isn't used, so `JAVA_HOME`
+makes no difference, unless you name its tools yourself through
+[`@host`](/guides/tools/#programs-on-your-machine), as for another vendor's JDK:
+
+```
+JAVAC = @host:/Library/Java/JavaVirtualMachines/jdk-17.jdk/Contents/Home/bin/javac;
+JAVA = @host:/Library/Java/JavaVirtualMachines/jdk-17.jdk/Contents/Home/bin/java;
+```
+
+Fabr identifies each such program by its contents, so a different build of it rebuilds what used
+it. To use a mirror of the
 Adoptium API:
 
 ```

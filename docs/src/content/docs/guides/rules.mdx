@@ -3,6 +3,8 @@ title: Writing your own rules
 description: Write a rule in a .fabr file, out of targets you could declare yourself, to say how targets of a type are built under an operation.
 ---
 
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
 Every target has a **target type**, declared with
 [`targetdef`](/reference/syntax/#targetdef-declarations), and a **rule** says how targets of one
 type are built under one operation: how a `js_package` is built, or how it is tested. The standard
@@ -17,6 +19,9 @@ see [Writing a plugin](/developer/writing-a-plugin/).
 You don't call a rule: fabr applies it to every target of its type whose operation and guard it
 matches, as it does the standard rules, so each target gets its own copy of the rule's targets,
 built from that target's properties.
+
+The examples are shown for JavaScript and for Java, under a tab for each. A rule is written the
+same way whatever the type it builds, and one project can have rules for both.
 
 | To… | See |
 |---|---|
@@ -33,8 +38,11 @@ built from that target's properties.
 
 ## A rule of one step
 
-This rule says how a `version_module` is built: by generating a TypeScript module from the
-target's `version`.
+This rule says how a `version_module` is built: by generating a source file from the target's
+`version`.
+
+<Tabs syncKey="language">
+<TabItem label="JavaScript">
 
 ```
 script stamp { entry = tools:stamp.sh; }
@@ -53,6 +61,38 @@ version_module app_version { version = 1.4.0; }
 js_package app { srcs = src:**/*.ts app_version:version.ts; }
 ```
 
+`tools/stamp.sh` prints `export const VERSION = "$1";`, so `app` compiles a `version.ts` holding
+`1.4.0`.
+
+</TabItem>
+<TabItem label="Java">
+
+```
+script stamp { entry = tools:stamp.sh; }
+
+targetdef version_module {
+    # The version to record.
+    version = REQUIRED STRING;
+}
+
+rule version_module v<BUILD_OPERATION=build> = generate gen {
+    run = stamp ${v.version} > Version.java;
+}
+
+version_module app_version { version = 1.4.0; }
+
+jar_package app {
+    srcs = src/main/java:**/*.java app_version:Version.java -> com/example/Version.java;
+    main_class = com.example.Main;
+}
+```
+
+`tools/stamp.sh` prints a class `com.example.Version` whose `VERSION` is `"$1"`, so `app` compiles
+a `Version.java` holding `1.4.0`.
+
+</TabItem>
+</Tabs>
+
 - `rule version_module v<BUILD_OPERATION=build>` says the rule builds a `version_module` under the
   `build` operation, and calls the target it builds `v`.
 - `= generate gen { … }` says the target is built as the
@@ -60,14 +100,14 @@ js_package app { srcs = src:**/*.ts app_version:version.ts; }
   written as any target's are. `${v.version}` is the `version` of whichever `version_module` is
   being built.
 
-`tools/stamp.sh` prints `export const VERSION = "$1";`, so `app` compiles a `version.ts` holding
-`1.4.0`.
-
 ## A rule of several steps
 
 A rule can be made of several targets, declared in a block after the `=`, with the name of the one
-the target is written before it. This rule generates a TypeScript client from an API description
-and compiles it, with any hand-written sources, into a package:
+the target is written before it. This rule generates a client from an API description and
+compiles it, with any hand-written sources, into a package:
+
+<Tabs syncKey="language">
+<TabItem label="JavaScript">
 
 ```
 script gen_client { entry = tools:gen-client.sh; }
@@ -104,13 +144,56 @@ js_package app {
 }
 ```
 
+</TabItem>
+<TabItem label="Java">
+
+```
+script gen_client { entry = tools:gen-client.sh; }
+
+targetdef api_client {
+    # The API description the client is generated from.
+    spec = REQUIRED FILES;
+    # Hand-written sources compiled with the generated client.
+    srcs = FILES;
+    # Packages the client's code requires.
+    deps = PACKAGES;
+}
+
+rule api_client c<BUILD_OPERATION=build> = client {
+    generate code {
+        srcs = c.spec;
+        run = gen_client *.json > Client.java;
+    }
+    sources = code:Client.java -> com/example/api/Client.java c.srcs;
+    jar_package client {
+        srcs = sources;
+        deps = c.deps;
+    }
+}
+
+api_client weather {
+    spec = api:weather.json;
+    srcs = api:**/*.java;
+}
+
+jar_package app {
+    srcs = src/main/java:**/*.java;
+    deps = weather;
+}
+```
+
+</TabItem>
+</Tabs>
+
 - `code` runs the generator over the target's `spec`.
-- `sources` is a property of the block: the file `code` wrote, named as `code:index.ts` as any
-  reference names a file another target built, and the target's own `srcs`. A property of the
+- `sources` is a property of the block: the file `code` wrote, named as `code:index.ts` (or
+  `code:Client.java`) as any reference names a file another target built, and the target's own
+  `srcs`. A property of the
   block is written as a global is, and read the same way.
 - `client` compiles `sources` against the target's `deps`.
 - `= client` makes each `api_client` the package `client` builds. That package is named after the
-  `api_client` (`weather`), so `app`'s sources import it as `import { … } from "weather"`.
+  `api_client` (`weather`): in JavaScript, `app`'s sources import it as
+  `import { … } from "weather"`, and in Java it is `weather.jar` on `app`'s classpath.
 
 :::note[Packages are named after the target]
 Every target in a rule's block is built under the name of the target the rule is building, so a
@@ -134,8 +217,11 @@ The one-step rule above is the short form of this: `= generate gen { … }` mean
 
 ## A rule for another operation
 
-A rule can also give a target type an operation of its own. This one gives every `js_package` a
-`lint` operation that runs a checker over the package's sources:
+A rule can also give a target type an operation of its own. This one gives every target of a type
+a `lint` operation that runs a checker over the target's sources:
+
+<Tabs syncKey="language">
+<TabItem label="JavaScript">
 
 ```
 script checker { entry = tools:check.sh; }
@@ -150,6 +236,25 @@ rule js_package pkg<BUILD_OPERATION=lint> = report<BUILD_OPERATION=build> {
 js_package app { srcs = src:**/*.ts; }
 ```
 
+</TabItem>
+<TabItem label="Java">
+
+```
+script checker { entry = tools:check.sh; }
+
+rule jar_package pkg<BUILD_OPERATION=lint> = report<BUILD_OPERATION=build> {
+    generate report {
+        srcs = pkg.srcs;
+        run = checker **/*.java > lint.txt;
+    }
+}
+
+jar_package app { srcs = src/main/java:**/*.java; }
+```
+
+</TabItem>
+</Tabs>
+
 The targets in a block are built under the rule's own operation, `lint` here, and `generate` has a
 rule for `build` and none for `lint`. So `report<BUILD_OPERATION=build>` says the linted target is
 `report`, built under `build`; [Configuration](#configuration) has the details. This is also why
@@ -163,8 +268,8 @@ fabr lint app
 fabr cat 'app<BUILD_OPERATION=lint>:lint.txt'
 ```
 
-Every `js_package` now has its own report, built from its own sources, and
-`fabr list-targetdefs` lists `lint` among the operations of `js_package`.
+Every target of the type now has its own report, built from its own sources, and
+`fabr list-targetdefs` lists `lint` among the type's operations.
 
 ## Reading the target's properties
 
@@ -199,6 +304,9 @@ in its body, as a statement. The parameter stands for the target as a map of its
 [splicing a map](/reference/syntax/#splicing-a-map-into-a-target) into a target takes its entries
 as the target's properties:
 
+<Tabs syncKey="language">
+<TabItem label="JavaScript">
+
 ```
 rule js_package pkg<BUILD_OPERATION=release> = released<BUILD_OPERATION=build> {
   js_package released { pkg; version = 1.0.0; }
@@ -210,8 +318,26 @@ property as `app` has it, as though you had written `srcs = pkg.srcs; deps = pkg
 yourself. (`released` is built under `build`, by `js_package`'s own rule; under `release` it would
 be this rule again.)
 
-- The order matters, as in a map: `version = 1.0.0;` comes after `pkg;`, so it replaces `app`'s
-  `version`. Written before `pkg;`, it would be used only where `app` has no `version` of its own.
+</TabItem>
+<TabItem label="Java">
+
+```
+rule jar_package pkg<BUILD_OPERATION=release> = released<BUILD_OPERATION=build> {
+  jar_package released { pkg; manifest = { Implementation-Version = 1.0.0; }; }
+}
+```
+
+`fabr release app` then builds `app` as a `jar_package` whose manifest says
+`Implementation-Version: 1.0.0`: `released` has each property as `app` has it, as though you had
+written `srcs = pkg.srcs; deps = pkg.deps;` and so on yourself. (`released` is built under `build`,
+by `jar_package`'s own rule; under `release` it would be this rule again.)
+
+</TabItem>
+</Tabs>
+
+- The order matters, as in a map: the property written after `pkg;` (`version`, `manifest`)
+  replaces `app`'s. Written before `pkg;`, it would be used only where `app` has no value of its
+  own.
 - A property `app` has a value for is taken, whether `app` sets it or gets it from its type's
   default. One `app` has no value for at all is left to the block target's own default.
 - A property of `app` that the block target's type doesn't have is left out.
@@ -222,6 +348,9 @@ A new target type can [extend](/reference/syntax/#extending-a-type) an existing 
 of that type's properties, adds its own, and is built by that type's rules wherever it has no rule
 of its own. A rule for the new type then only needs to cover what is different, and it can splice
 the target into a target of the existing type to have that part built as before.
+
+<Tabs syncKey="language">
+<TabItem label="JavaScript">
 
 For example, a `documented_package` is a `js_package` that ships its documentation in its
 package, under `docs/`:
@@ -272,6 +401,60 @@ greeter: 1 test passed
 
 `fabr list-operations` lists `documented_package` under each operation it has a rule for, its own
 and `js_package`'s.
+
+</TabItem>
+<TabItem label="Java">
+
+For example, a `documented_jar` is a `jar_package` that ships its documentation in its jar,
+under `docs/`:
+
+```
+plugin @fabr-build/java;
+
+# A jar that ships its documentation beside its code.
+targetdef documented_jar extends jar_package {
+    # Documentation files, shipped under docs/ in the jar.
+    docs = FILES;
+}
+
+rule documented_jar pkg<BUILD_OPERATION=build> = code {
+    jar_package code {
+        pkg;
+        resources = pkg.resources pkg.docs:** -> docs/**;
+    }
+}
+
+documented_jar greeter {
+    srcs = src/main/java:**/*.java;
+    tests = src/test/java:**/*.java;
+    test_deps = @mvn:org.junit:junit-bom:5.11.4 @mvn:org.junit.jupiter:junit-jupiter
+                @mvn:org.junit.platform:junit-platform-launcher;
+    docs = docs:*.md;
+}
+```
+
+- `greeter` is written like any `jar_package`, with one more property, `docs`.
+- Its own rule is for `build` only. `code` is a `jar_package` with all of `greeter`'s properties,
+  except `resources`, which it sets to `greeter`'s resources plus its documentation, renamed under
+  `docs/`. `code` is the rule's result, so the jar it builds is `greeter.jar`, holding
+  `docs/guide.md` beside its classes.
+- For every other operation, `greeter` is a `jar_package`: `fabr test greeter` runs its tests with
+  `jar_package`'s test rule, and `fabr run`, `fabr doc` and `fabr deps` work as they do for any jar.
+
+```sh
+$ fabr ls greeter
+greeter.jar
+$ fabr test greeter
+✓ Testing greeter (225ms)
+greeter: 1 test passed
+```
+
+`fabr list-operations` lists `documented_jar` under each operation it has a rule for, its own
+and `jar_package`'s.
+
+</TabItem>
+</Tabs>
+
 
 ## What the target is
 

@@ -69,7 +69,7 @@ The extension also knows fabr's own build files (`PROJECT.fabr`, `BUILD.fabr` an
 - the Outline view and breadcrumbs list each file's targets, properties and target types;
 - **Go to Definition** on a reference opens the target or property it names, on a `${NAME}` the
   property it substitutes, on a target's type its `targetdef`, and on an `include` the file;
-- a reference into a catalog, such as `@dep:@sentry/cli`, is two names: `@dep` opens the
+- a reference into a catalog, such as `@pkg:@sentry/cli`, is two names: `@pkg` opens the
   catalog's declaration, and `@sentry/cli` the entry in its `deps` that provides it;
 - hovering a property shows its type and documentation from its target's `targetdef`, and
   hovering a reference shows the declaration it names;

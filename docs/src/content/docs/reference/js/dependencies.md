@@ -341,7 +341,7 @@ A patch is a unified diff with paths relative to the package root, as `git diff`
 - Patching `package.json` changes that file's contents, but not the package's version or the
   dependencies fabr resolves for it.
 - `srcs` names the package in its registry (`@npm:glob-promise:1.33.0`) or as a member of a
-  [catalog](#catalogs) (`@dep:glob-promise`). A catalog member is patched at the version the
+  [catalog](#catalogs) (`@pkg:glob-promise`). A catalog member is patched at the version the
   catalog selects, and keeps the dependencies the catalog resolved for it.
 - `fixes` lists the advisories the patches fix, by OSV id or alias (`fixes = GHSA-35jh-r3h4-6jhm;`).
   `fabr audit` checks a patched package at the original's version and reports those advisories as

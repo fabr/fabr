@@ -264,7 +264,9 @@ spring_boot_jar shop {
 
 `app = server` makes the executable jar from the `server` jar as it is, with everything it
 requires, so that what you deploy is exactly what you run in development. `loader` is Spring
-Boot's loader, of the same release as the application. See
+Boot's loader, of the same release as the application. `main_class` names the same class as
+`server`'s: the executable jar is a jar of its own, whose manifest starts Spring Boot's loader, and
+the loader needs to be told which class to start in turn. See
 [Spring Boot executable jars](/reference/java/packaging/#spring-boot-executable-jars) for the
 layout and how it differs from the one Spring Boot's own plugins write.
 

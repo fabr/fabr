@@ -5,6 +5,7 @@ description: Choose the quick start for your language — TypeScript/JavaScript 
 
 Each quick start takes you from an empty directory to a package that is built, tested and run
 with fabr. Both start by installing fabr with npm, so you need Node.js 22.19 or later either way.
+Fabr runs on any platform Node.js does, and is tested on macOS and Linux.
 
 - **[TypeScript or JavaScript](/quickstart-js/)**: a TypeScript package with an npm dependency,
   tests and a runnable program — no `package.json`, `tsconfig.json` or lockfile to write.

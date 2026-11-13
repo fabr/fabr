@@ -24,7 +24,9 @@ fabr ls web        # main.js, main.js.map, main.css, …
 
 A bundle is deliberately simple compared with webpack or Vite: there are no plugins and no
 configuration file, and several things those tools do aren't available. Check
-[Not supported](#not-supported) before converting an application.
+[Not supported](#not-supported) before converting an application. Where you need them, run the
+bundler itself, with its plugins, configuration and dev server; see
+[Vite, Next.js and other frameworks](/guides/tools/#vite-nextjs-and-other-frameworks).
 
 ## Coming from esbuild, webpack or Vite
 
@@ -274,7 +276,9 @@ In TypeScript, declare the name so that the compiler knows it: `declare const AP
 
 `process.env.NODE_ENV` is replaced without being listed: with `"production"` in a minified build
 and `"development"` otherwise. Set it in `defines` to choose yourself. No `.env` file is read, and
-no other environment variable reaches the code unless you define it.
+no other environment variable reaches the code unless you define it. (A bundler you run yourself,
+such as Vite, can read a `.env` file you list among its inputs; see
+[The command's directory and environment](/guides/tools/#the-commands-directory-and-environment).)
 
 ## Assets
 
@@ -375,6 +379,9 @@ Reload the page to see the change: nothing tells the browser. See
 [Watch mode & dev servers](/guides/watch/).
 
 ## Not supported
+
+These are limits of `js_bundle`. A bundler run as itself, such as Vite, has its own features, hot
+module reload among them; see [Vite, Next.js and other frameworks](/guides/tools/#vite-nextjs-and-other-frameworks).
 
 - **HTML.** There is no HTML entry point and nothing generates or rewrites an HTML page. Write the
   page by hand, as above.

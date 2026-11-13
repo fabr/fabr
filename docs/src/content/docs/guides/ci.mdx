@@ -3,9 +3,14 @@ title: Continuous integration
 description: How to run fabr in CI — installing it, what to cache, what its output and exit status look like, collecting test results, coverage, security advisories and traces, and what isn't available yet.
 ---
 
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
 Running fabr in CI needs little setup: install Node.js and fabr, run the same commands you run
 locally, and keep fabr's cache between runs. There is no dependency install step, because fabr
 fetches packages, and the Node.js release your tools and tests run on, as part of the build.
+
+<Tabs syncKey="language">
+<TabItem label="JavaScript">
 
 ```yaml
 # GitHub Actions
@@ -24,6 +29,32 @@ steps:
   - run: fabr build release
 ```
 
+</TabItem>
+<TabItem label="Java">
+
+```yaml
+# GitHub Actions
+steps:
+  - uses: actions/checkout@v4
+  - uses: actions/setup-node@v4
+    with:
+      node-version: 22
+  - run: npm install -g @fabr-build/cli@0.4.0 @fabr-build/java@0.4.0
+  - uses: actions/cache@v4
+    with:
+      path: ~/.cache/fabr
+      key: fabr-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+      restore-keys: fabr-${{ runner.os }}-${{ runner.arch }}-
+  - run: fabr test --report reports/tests.xml --format junit com.acme/core com.acme/app
+  - run: fabr build release
+```
+
+`setup-node` is for fabr itself, which runs on Node.js; the JDK your build uses is the one fabr
+downloads.
+
+</TabItem>
+</Tabs>
+
 ## Install
 
 Fabr needs Node.js 22.19 or later, and `node` on the `PATH`, to run itself. That is the only use
@@ -31,8 +62,14 @@ of the runner's Node.js: your tools and tests run on the release the
 [`NODE` setting](/reference/js/dependencies/#the-nodejs-version) names, which fabr downloads and
 keeps in its cache, so the version `actions/setup-node` installs doesn't affect what is built.
 
-Install a specific version of `@fabr-build/cli`, so that CI and your team use the same one; a
-build file has no way to require a fabr version. `fabr --version` prints what is installed.
+Install a specific version of `@fabr-build/cli`, so that CI and your team use the same one, and
+install each other plugin your project uses in the same command, at the same version: a Java
+project needs `npm install -g @fabr-build/cli@0.4.0 @fabr-build/java@0.4.0`. `fabr --version`
+prints what is installed.
+
+To record the release in the project itself, start `PROJECT.fabr` with
+[`fabr 0.4.0;`](/reference/syntax/#the-fabr-release). Fabr then warns, naming both versions,
+whenever the fabr that runs is a different release; it still builds.
 
 ## Choose what to run
 
@@ -41,7 +78,9 @@ tested; fabr builds everything those depend on. There is no "everything" form, a
 need to be: a package nothing you name depends on isn't needed for this commit's result.
 
 - **`fabr test` the targets whose tests should pass.** It builds what the tests need, so these
-  targets need no separate `fabr build` step. It runs only the named targets' tests, not those of
+  targets need no separate `fabr build` step. You don't need to work out which targets a change
+  affects: with the cache [kept between runs](#cache), a target whose inputs haven't
+  changed reports its cached result without running anything. It runs only the named targets' tests, not those of
   the packages they depend on, so name each package whose tests you want run.
 - **`fabr build` what you ship that has no tests**: the application you deploy, or the
   [`sync` target](/reference/js/publishing/#publishing-with-sync) that publishes your packages.
@@ -111,12 +150,12 @@ Fabr's cache holds downloaded packages and the result of every build step and te
 Keeping it between CI runs is what makes them fast: an unchanged project downloads and rebuilds
 nothing, and a change rebuilds only what depends on it.
 
-The cache is a directory on the machine: `~/.cache/fabr` on Linux and `~/Library/Caches/fabr` on
-macOS. To put it somewhere else, set `FABR_CACHE_DIR`, and keep it outside the project directory
-so that no source pattern can match its contents. Keep it on a local disk: like most build
-caches, it relies on renames being atomic, which network filesystems such as NFS don't reliably
-guarantee. There is no shared or remote cache for several machines to use at once, so in CI you
-save the directory at the end of a run and restore it at the start of the next.
+The cache is a directory on the machine: `~/.cache/fabr` on Linux, `~/Library/Caches/fabr` on macOS
+and `%LOCALAPPDATA%\fabr` on Windows. To put it somewhere else, set `FABR_CACHE_DIR`, and keep it
+outside the project directory so that no source pattern can match its contents. Keep it on a local
+disk: like most build caches, it relies on renames being atomic, which network filesystems such as
+NFS don't reliably guarantee. There is no shared or remote cache for several machines to use at
+once, so in CI you save the directory at the end of a run and restore it at the start of the next.
 
 ### Saving it
 
@@ -303,9 +342,15 @@ than the ones a target declares (`test_env`, or `env` on a `generate`), so a sec
 variable has to be passed deliberately. `fabr run` is the exception: the program it runs gets the
 whole environment.
 
-Fabr runs as many steps at once as the machine has processors, and each test file is one of those
-steps. There is no option to lower that number. On a runner with many processors and little
-memory, limit each test process instead, with `NODE_OPTIONS` in `test_env`.
+Fabr runs as many steps at once as the machine has processors. There is no option to lower that
+number. On a runner with many processors and little memory:
+
+- **JavaScript:** each test file is one of those steps. Limit each test process instead, with
+  `NODE_OPTIONS` in `test_env`.
+- **Java:** each target's tests are one step, run in one JVM, which takes the JVM's default
+  maximum heap, a quarter of the machine's memory, and can't be given another (see
+  [Testing](/reference/java/testing/#not-supported)). Several large test suites at once can
+  therefore exhaust a small runner's memory.
 
 ## Publishing from CI
 

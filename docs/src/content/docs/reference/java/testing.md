@@ -133,3 +133,6 @@ BOM.
 ## Not supported
 
 - All of a target's tests run in one JVM, which can't be given arguments of its own.
+- Environment variables for the tests. They run with none, and a `jar_package` has no equivalent
+  of a `js_package`'s `test_env`, so a test that needs one, such as a Testcontainers test told
+  where Docker is by `DOCKER_HOST`, can't be given it.

@@ -55,8 +55,9 @@ What `fabr audit` checks, and what it leaves out:
   which aren't part of the target's dependencies; and the Node.js release and the JDK.
 - **No fixing.** The report names the versions that fix each advisory; you choose one and edit
   the build file.
-- **No ignore list or severity threshold.** Every advisory found is reported, and any one of them
-  makes the command fail, except one a patched package declares it fixes.
+- **No severity threshold.** Every advisory found is reported, and any one of them makes the
+  command fail, except one a patched package declares it fixes or one you
+  [suppress](#suppressing-an-advisory-that-doesnt-apply) in an OpenVEX document.
 - **Advisories are read live.** Each run asks the database afresh and caches nothing, so the same
   commit can pass one day and fail the next, when a new advisory is published.
 

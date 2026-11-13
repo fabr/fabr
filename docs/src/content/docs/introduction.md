@@ -34,7 +34,8 @@ With fabr you declare each package's sources and dependencies, and the rest foll
 
 Fabr is under active development. It builds and tests real projects, itself among them, but it is
 young: check [Known limitations](/known-limitations/) before you commit a project to it, and see
-[Getting involved](/contributing/) if you'd like to help.
+[Getting involved](/contributing/) if you'd like to help. Fabr is free software, licensed under
+GPL-3.0-or-later. None of fabr's code becomes part of what it builds for you.
 
 ## What changes day to day
 
@@ -109,7 +110,9 @@ jar_package greeter {           # a target
 }
 ```
 
-The [Java quick start](/quickstart-java/) builds that one up.
+The [Java quick start](/quickstart-java/) builds that one up. The two aren't alternatives: one
+`PROJECT.fabr` can load both plugins and declare targets of both kinds, which use each other's
+results, as in [A Spring Boot server with a React front end](/examples/spring-boot-react/).
 
 ## The same result every time
 
@@ -123,9 +126,9 @@ produce the same output. Three things follow.
   so nothing can drift.
 - **The cache is never an input.** Fabr keeps what it has built and downloaded in a cache, and
   reuses a result whenever the inputs that produced it are unchanged. Deleting the cache changes
-  how long the next build takes and nothing else. It is at `~/Library/Caches/fabr` on macOS and
-  `~/.cache/fabr` on Linux, or wherever `FABR_CACHE_DIR` says; keep it on a local disk rather than
-  a network filesystem.
+  how long the next build takes and nothing else. It is at `~/Library/Caches/fabr` on macOS,
+  `~/.cache/fabr` on Linux and `%LOCALAPPDATA%\fabr` on Windows, or wherever `FABR_CACHE_DIR` says;
+  keep it on a local disk rather than a network filesystem.
 
   Results are found by what went into them, not by where the project is, so every checkout on
   your machine shares them. A new clone or `git worktree` starts with the dependency versions
@@ -152,8 +155,13 @@ of that guarantee. See
 | **target type** | What kind of thing a target is, and which properties it takes. Core and plugins define the types (`js_package`, `jar_package`, `generate`, `catalog`, …). The keyword that defines one is `targetdef`. |
 | **property** | A named value. Inside a target it is one of the target's inputs (`srcs`, `deps`); at the top of a build file it is a configuration setting (`JS_TARGET`). |
 | **rule** | How to carry out an operation on targets of one type. The most specific rule for the target's type and the current configuration is used. |
-| **operation** | What is being done with a target: `build`, `test` or `run`. |
+| **operation** | What is being done with a target: `build`, `test` or `run`, or one a plugin adds, such as the Java plugin's `doc`. Each is a command of its own (`fabr test`). Commands that only read what a build makes or chooses, such as `ls`, `cat` and `deps`, aren't operations. |
 | **file set** | A set of named files. Source patterns, built targets and downloaded packages are all file sets, and are referred to the same way. |
+| **flag** | A named switch that describes a target's sources rather than adding a dependency, turned on by listing it in the target's `deps`: `dom` (the code uses the browser DOM), `ts/no_strict_null_checks`, `java17` (the sources are written for Java 17). The plugin's rules decide what each one means. |
+| **repository** | Somewhere packages or files come from, named with a leading `@` by convention: a registry such as `@npm` (npm) or `@mvn` (Maven Central), a catalog, or one of the other kinds a plugin adds. `@npm:lodash:4.17.21` is a package in one. |
+| **catalog** | A repository you declare yourself, listing dependency versions that are chosen once for every target that uses it: `@pkg:react`. |
+| **constraint** | A setting changed for one reference, written after it: `mylib<BUILD_TYPE=release>` is `mylib` built for release. |
+| **guard** | The same `<NAME=pattern>` notation after a property's name where the property is declared: the declaration applies only in builds whose setting matches, as in `srcs<TARGET=*-linux-*> = …`. |
 | **plugin** | A package that adds target types and rules for an ecosystem or service, such as `@fabr-build/js`, `@fabr-build/java`, `@fabr-build/container` or `@fabr-build/aws`. |
 
 [The conceptual model](/guides/concepts/) explains how these fit together.

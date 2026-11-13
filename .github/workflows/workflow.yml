@@ -21,10 +21,6 @@ jobs:
       - uses: actions/setup-node@v3
         with:
           node-version: '22'
-      # The package.json scripts use POSIX commands (`rm -Rf`).
-      - name: Run yarn scripts with bash
-        if: runner.os == 'Windows'
-        run: yarn config set script-shell 'C:\Program Files\Git\bin\bash.exe'
       - run: yarn install
       - run: yarn bootstrap
       # Runs even where bootstrap's tests failed, so both results are shown.

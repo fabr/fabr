@@ -35,6 +35,7 @@ your build file:
 | `types`, `typeRoots` | Add the `@types` packages you need to the target's `deps`. |
 | `declaration`, `allowJs`, `skipLibCheck`, `resolveJsonModule`, `allowArbitraryExtensions` | Always on. JavaScript sources are compiled but not type-checked (`checkJs` is off). |
 | `rootDir`, `outDir`, `include` | Set by fabr from the target's `srcs`. |
+| `baseUrl`, `paths` (aliases such as `@/*` for your own sources) | No equivalent. Import your own files by the package's name instead: in a `js_package` named `@acme/web`, write `@acme/web/components/Button` where you wrote `@/components/Button`. Fabr writes such an import as a relative path in the output; see [Imports of your own package](#imports-of-your-own-package-are-written-as-relative-paths). |
 
 Flags go in a target's `deps` alongside its packages:
 

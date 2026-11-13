@@ -3,6 +3,8 @@ title: Watch mode & dev servers
 description: Rebuild, retest, restart and serve automatically as your sources change, with fabr's -w option.
 ---
 
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
 Add `-w` to `fabr build`, `fabr test` or `fabr run` and fabr keeps running: it watches the files
 your targets are built from and redoes the affected work when one changes, until you stop it with
 Ctrl-C.
@@ -31,10 +33,10 @@ summary again, so the terminal shows whether the tests pass as you edit. A chang
 nothing to redo, such as an edit to a file no target uses, prints nothing. A build error is
 reported once, and fabr goes on watching for the change that fixes it.
 
-`fabr test -w` reruns a target's tests only when something they depend on changes, and for
-JavaScript only the test files a change can reach run again; see
-[Running tests](/reference/js/testing/#running-tests). `--retry-failed`, which runs failed tests again without a change,
-can't be combined with `-w`.
+`fabr test -w` reruns a target's tests only when something they depend on changes. For
+JavaScript, only the test files a change can reach run again (see
+[Running tests](/reference/js/testing/#running-tests)); a Java target's tests all run again, in one
+JVM. `--retry-failed`, which runs failed tests again without a change, can't be combined with `-w`.
 
 `--trace` works under `-w` too: the trace file is rewritten at the end of each round, with each
 round marked; see [Tracing a run](/reference/command-line/#tracing-a-run).
@@ -43,9 +45,38 @@ Editing a build file takes effect in the same way as editing a source.
 
 ## Restart a program on change
 
+The program is any target `fabr run` can run, in any language the project uses:
+
+<Tabs syncKey="language">
+<TabItem label="JavaScript">
+
+```
+js_script mytool {
+  entry = src:main.ts;
+  deps = @npm:@types/node:22.10.0;
+}
+```
+
 ```sh
 fabr run -w mytool --flag arg
 ```
+
+</TabItem>
+<TabItem label="Java">
+
+```
+jar_package server {
+  srcs = src/main/java:**/*.java;
+  main_class = com.example.Server;
+}
+```
+
+```sh
+fabr run -w server --port=9090
+```
+
+</TabItem>
+</Tabs>
 
 When something the program is built from changes, fabr rebuilds it and restarts it with the same
 arguments:
@@ -68,7 +99,8 @@ again on the next change.
 ## Dev servers with `serve`
 
 A [`serve`](/reference/standard-rules/#serve) target describes a long-running server together
-with the files it serves. Any program fabr can run will do as the server:
+with the files it serves. Any program fabr can run will do as the server, a framework's own dev
+server included ([Vite, Next.js and other frameworks](/guides/tools/#vite-nextjs-and-other-frameworks)):
 
 ```
 serve site {
@@ -113,9 +145,15 @@ ones they have, beside each program's own `env`, which the target's is set over.
 ### An example
 
 Fabr's own documentation site is built and previewed this way. A `generate` target runs the site
-generator to produce the static site, and a `serve` target runs `http-server` over the result:
+generator, Astro with its Starlight theme, to produce the static site, and a `serve` target runs
+`http-server` over the result:
 
 ```
+js_script astro {
+  entry = @npm:astro:7.1.1;
+  deps = @npm:@astrojs/starlight:0.41.3;
+}
+
 generate docs_site {
   srcs = ./src/** ./public/** ./astro.config.mjs;
   run = astro build;

@@ -68,8 +68,9 @@ own yet. Lint errors fail it; the existing warnings are tolerated.
 Tests are `*.test.ts` files beside the code they test, written with `describe`/`it` and chai
 assertions so that the same files run under jest in `yarn dist` and under `fabr test`.
 
-The cache is at `~/Library/Caches/fabr` on macOS and `$XDG_CACHE_HOME/fabr` (`~/.cache/fabr` by
-default) on Linux, or wherever `FABR_CACHE_DIR` says. Deleting it is always safe.
+The cache is at `~/Library/Caches/fabr` on macOS, `$XDG_CACHE_HOME/fabr` (`~/.cache/fabr` by
+default) on Linux and `%LOCALAPPDATA%\fabr` on Windows, or wherever `FABR_CACHE_DIR` says. Deleting
+it is always safe.
 
 ## Conventions
 

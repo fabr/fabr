@@ -3,6 +3,8 @@ title: Running your own tools
 description: Declare the programs, code generators, checks, archives and dev servers that your package.json scripts, Makefile rules and Maven or Gradle plugins ran, as fabr targets.
 ---
 
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
 Compiling, bundling, testing and publishing are covered by the rules that come with fabr and its
 plugins. Everything else your project's build did — the code generator in a `prebuild` script, a
 Makefile rule that runs `sed` over a template, the Maven plugin that runs a Java tool, the
@@ -21,10 +23,11 @@ when its inputs change, and use its output as an input to your other targets.
 | `exec-maven-plugin`, `maven-antrun-plugin`, a Gradle `Exec` or `JavaExec` task | A [`generate`](#build-steps-and-code-generation) target, with a [`java_program`](/reference/java/running/#java-tools-in-a-build) as its command for a Java tool. |
 | `build-helper-maven-plugin`'s `add-source` | Name the `generate` target's output in the consuming target's `srcs`; see [Using the result in another target](#using-the-result-in-another-target). |
 | A recipe that runs `sed`, `protoc` or another program installed on the machine | A `generate` command naming the program through [`@host`](#programs-on-your-machine). |
-| `"lint": "eslint ."`, `prettier --check` | A `generate` target that [checks rather than produces](#a-step-that-checks). |
+| `"lint": "eslint ."`, `prettier --check` | A `generate` target that [checks rather than produces](#a-step-that-checks); see [ESLint](#eslint). |
 | `patch-package`, `pnpm patch` | A [`patched`](#patching-a-dependency) target. |
 | `zip -r dist.zip dist`, `maven-assembly-plugin` | A [`zip`](#archives) target. |
-| `"dev": "vite"`, `webpack serve` | A [`serve`](#dev-servers) target, run with `fabr run -w`. |
+| `"build": "vite build"`, `next build` | A [`generate`](#vite-nextjs-and-other-frameworks) target running the framework's own command. |
+| `"dev": "vite"`, `next dev`, `webpack serve` | A [`serve`](#vite-nextjs-and-other-frameworks) target, run with `fabr run -w`. |
 | `curl -o` in a script to download a file | A [`fetch`](/reference/standard-rules/#fetch) repository, with the file's hash. |
 
 Fabr runs nothing implicitly: there is no `prebuild` or `postinstall` hook. A step runs because
@@ -129,6 +132,22 @@ PRETTIER = @npm:prettier:3.3.3;
 fabr run PRETTIER --write src/
 ```
 
+### `java_program`
+
+A [`java_program`](/reference/java/running/#java_program) runs a Java program: its own `srcs`, or a
+tool published to a Maven repository, with what it requires on the classpath. A tool published as
+an executable jar needs nothing but its package:
+
+```
+java_program spotbugs {
+  deps = @mvn:com.github.spotbugs:spotbugs:4.8.6;
+  args = -textui;
+}
+```
+
+It runs on the JDK fabr downloads; see [Running programs](/reference/java/running/), which also
+covers `jvm_args`, agents and running a `jar_package` itself.
+
 ### Arguments, directory and environment
 
 When you start a program with `fabr run`:
@@ -150,6 +169,9 @@ program when what it is built from changes; see
 A `generate` target runs a command as a step of the build and keeps the files it produces. It is
 what you use for a code generator, a template expansion, or any other step no other target type
 covers.
+
+<Tabs syncKey="language">
+<TabItem label="JavaScript">
 
 ```
 script gen_routes { entry = tools/gen-routes.sh; }
@@ -177,10 +199,53 @@ export const ROUTES = [
 ] as const;
 ```
 
+</TabItem>
+<TabItem label="Java">
+
+```
+script gen_routes { entry = tools/gen-routes.sh; }
+
+generate routes {
+  srcs = api:*.txt;
+  run = gen_routes *.txt > Routes.java;
+}
+```
+
+```sh
+# tools/gen-routes.sh: print a Java class listing the routes in the files given.
+echo "package com.example;"
+echo ""
+echo "public final class Routes {"
+echo "    public static final String[] ROUTES = {"
+cat "$@" | while read r; do echo "        \"/$r\","; done
+echo "    };"
+echo "}"
+```
+
+```sh
+$ fabr build routes
+✓ Building routes (19ms)
+$ fabr cat routes:Routes.java
+package com.example;
+
+public final class Routes {
+    public static final String[] ROUTES = {
+        "/users",
+        "/orders",
+    };
+}
+```
+
+A Java tool runs the same way, with a [`java_program`](#java_program) as the command; see
+[Java tools in a build](/reference/java/running/#java-tools-in-a-build).
+
+</TabItem>
+</Tabs>
+
 - `srcs` are the command's input files. They are placed in the directory it runs in, named as
   their reference names them: `api:*.txt` puts `api/routes.txt` there as `routes.txt`.
-- `run` is the command. `> routes.ts` keeps its standard output as a file called `routes.ts`, and
-  that file is the target's result.
+- `run` is the command. `> routes.ts` keeps its standard output as a file called `routes.ts` (or
+  `Routes.java`), and that file is the target's result.
 
 The result stays in fabr's cache, not your source tree: look at it with `fabr ls` and `fabr cat`,
 copy it out with `fabr cp routes ./out`, or name it in another target.
@@ -242,6 +307,9 @@ too. `output` can rename what it keeps: `output = gen:*.java -> src/*.java;`.
 A `generate` target's result is files, which any target can name in its `srcs` like any other
 target's output:
 
+<Tabs syncKey="language">
+<TabItem label="JavaScript">
+
 ```
 js_package app {
   srcs = src:**/*.ts routes:routes.ts;
@@ -249,6 +317,22 @@ js_package app {
 ```
 
 `app` compiles `routes.ts` beside its own sources, so `src/index.ts` imports it as `./routes`.
+
+</TabItem>
+<TabItem label="Java">
+
+```
+jar_package app {
+  srcs = src/main/java:**/*.java routes:Routes.java -> com/example/Routes.java;
+}
+```
+
+`app` compiles `Routes.java` beside its own sources, renamed into the directory of its package,
+`com.example`.
+
+</TabItem>
+</Tabs>
+
 `fabr build app` runs `routes` first, and only when its result isn't already in the cache. Name
 the target alone (`srcs = routes;`) to take all of its files, or select some
 (`routes:**/*.ts`), as with any [reference](/reference/syntax/#references).
@@ -276,7 +360,22 @@ a value in as described under [Values from outside the build](#values-from-outsi
 
 A `generate` command runs in a directory of fabr's own, holding only `srcs` and the command's own
 files. It can't see the rest of your project, and anything it writes outside the result is
-discarded.
+discarded. So a file the tool finds for itself, such as its configuration file or a `.env` file it
+reads settings from, must be among `srcs` like any other input:
+
+```
+generate site {
+  srcs = ./src/** ./index.html ./vite.config.mts ./.env;
+  run = vite build;
+  output = dist:**;
+}
+```
+
+Here `vite` is a [`js_script`](#js_script) whose `entry` is the Vite package. Vite's dev server
+reads `.env` the same way when it is among a `serve` target's `files`;
+[Vite, Next.js and other frameworks](#vite-nextjs-and-other-frameworks) shows both together. A
+pattern matches dotfiles too, so `./**` would include `.env`; `./src/**` doesn't, since `.env`
+isn't under `src`.
 
 It also starts with **no environment variables** except those you give in `env`:
 
@@ -370,6 +469,41 @@ generate format_check {
 otherwise; like any step, it runs again only when a source changes. Add it to the targets your CI
 builds. To check every package the same way without a target for each, write a rule that gives
 them a `lint` operation; see [A rule for another operation](/guides/rules/#a-rule-for-another-operation).
+
+#### ESLint
+
+ESLint runs the same way, with its configuration file among the inputs, and the plugins and shared
+configurations it imports in the tool's `deps`:
+
+```
+js_script eslint {
+  entry = @npm:eslint:10.14.0;
+  deps = @npm:@eslint/js:10.0.1 @npm:typescript-eslint:8.72.2 @npm:typescript:5.9.3;
+}
+
+generate lint {
+  srcs = ./src/** ./eslint.config.mjs;
+  run = eslint .;
+}
+```
+
+ESLint writes its report to standard output, so leave that unredirected: `eslint . > lint.txt`
+would keep the report as the step's result, which a failed step doesn't show you. A step that keeps
+no files passes with an empty result.
+
+typescript-eslint's type-aware rules (`recommendedTypeChecked`, with `projectService: true`) need a
+`tsconfig.json`, which fabr doesn't write for you. Write one for the lint and add it to `srcs`:
+
+```json
+{
+  "compilerOptions": { "strict": true, "target": "es2022", "module": "esnext", "moduleResolution": "bundler", "noEmit": true },
+  "include": ["src"]
+}
+```
+
+The lint sees only the packages the tool's install holds, so add the packages your sources import
+to the `eslint` tool's `deps` too. Without them, an import resolves to no type, and the type-aware
+rules fail it (`Unsafe call of a type that could not be resolved`).
 
 ## Programs on your machine
 
@@ -470,6 +604,80 @@ serve preview {
 `fabr run -w preview` starts the server in a directory holding `files`, updates them there as you
 edit, and restarts the server when the server itself changes. See
 [Dev servers with `serve`](/guides/watch/#dev-servers-with-serve).
+
+## Vite, Next.js and other frameworks
+
+A bundler or framework that does its own build, such as Vite, webpack or Next.js, runs as itself,
+with its own configuration file: its command-line program is a `js_script`, its build a `generate`
+target, and its dev server a `serve` target.
+
+<Tabs>
+<TabItem label="Vite">
+
+```
+js_script vite {
+  entry = @npm:vite:8.3.8;
+  deps = @npm:@vitejs/plugin-react:6.3.0 @npm:react:19.3.1 @npm:react-dom:19.3.1;
+}
+
+APP_FILES = ./src/** ./index.html ./vite.config.mts ./.env;
+
+generate site {
+  srcs = APP_FILES;
+  run = vite build;
+  output = dist:**;
+}
+
+serve dev {
+  tool = vite;
+  files = APP_FILES;
+}
+```
+
+Name the configuration `vite.config.mts` (or `.mjs`). There is no `package.json` declaring
+`"type": "module"` beside it, so Vite warns that a `vite.config.ts` written with ES-module syntax is
+loaded as CommonJS.
+
+</TabItem>
+<TabItem label="Next.js">
+
+```
+js_script next {
+  entry = @npm:next:16.4.6;
+  deps = @npm:react:19.3.1 @npm:react-dom:19.3.1
+         @npm:typescript:5.9.3 @npm:@types/react:19.3.0 @npm:@types/node:22.10.0;
+}
+
+APP_FILES = ./app/** ./next.config.mjs;
+
+generate site {
+  srcs = APP_FILES;
+  run = next build;
+  output = .next:**;
+}
+
+serve dev {
+  tool = next;
+  files = APP_FILES;
+  args = dev;
+}
+```
+
+Next.js type-checks TypeScript sources with the `typescript` and `@types` packages in the tool's
+`deps`, and writes the `tsconfig.json` it wants into the directory the step runs in.
+
+</TabItem>
+</Tabs>
+
+- **The tool's `deps` hold everything the configuration and the app import**: the framework's
+  plugins and the app's own packages. The tool finds them in the `node_modules` fabr installs
+  beside the files, and resolves the app's imports itself.
+- **`fabr build site`** runs the framework's build, and the result is its output directory.
+- **`fabr run -w dev`** starts its dev server. As you edit, fabr updates the files in the
+  directory the server runs in, and the framework's own watcher sees the change, so Vite's hot
+  module reload and Next.js's fast refresh work as usual.
+- Any file the tool reads must be among the files: its configuration, `public/`, a `.env` file
+  (see [The command's directory and environment](#the-commands-directory-and-environment)).
 
 ## When to write a rule instead
 

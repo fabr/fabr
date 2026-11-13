@@ -27,12 +27,16 @@ fabr downloads one.
 
 ## Install
 
-Fabr needs Node.js 22.19 or later to run. Install the `fabr` command and the Java plugin together,
-globally:
+Fabr needs Node.js 22.19 or later to run, and runs on any platform Node.js does; it is tested on
+macOS and Linux. Your Java code never runs on that Node.js. Install the `fabr` command and the Java
+plugin together, globally:
 
 ```sh
 npm install -g @fabr-build/cli @fabr-build/java
 ```
+
+The Java plugin is a package of its own, unlike the JavaScript plugin, which comes with the CLI.
+Install any other plugin you use, such as `@fabr-build/container`, in the same command.
 
 The JDK isn't part of the install. On the first build fabr downloads an Eclipse Temurin JDK, 21
 unless you choose another, and compiles, runs and tests with it, so the Java on your machine

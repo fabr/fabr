@@ -3,6 +3,8 @@ title: Language syntax
 description: The syntax of PROJECT.fabr and the .fabr files it includes — references, properties, targets and target types.
 ---
 
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
 A fabr build file (`PROJECT.fabr`, and any files it includes) is written in a small declarative
 language made of these statements:
 
@@ -110,19 +112,41 @@ Every name starts with a letter, `_` or `@`, so `my-tool` and `@fabr-build` are 
 ## References
 
 A reference names files. It can be a path or a pattern in your source tree, a target, a package in
-a registry, or a selection of files from any of those:
+a registry, or a selection of files from any of those. The examples on this page are written for
+JavaScript or Java where it matters, under a tab for each; the syntax is the same for both, and one
+build file can declare targets of both.
+
+<Tabs syncKey="language">
+<TabItem label="JavaScript">
 
 ```
 srcs = src/index.ts;                  # a file
 srcs = src/**/*.ts;                   # a pattern
 deps = mylib;                         # a target
 deps = @npm:lodash:4.17.21;           # a package in a registry
-srcs = mylib:build/*.js;              # files selected from a target
+srcs = mylib:*.js;                    # files selected from a target
 ```
 
+</TabItem>
+<TabItem label="Java">
+
+```
+srcs = src/main/java/com/example/Main.java;     # a file
+srcs = src/main/java/**/*.java;                 # a pattern
+deps = mylib;                                   # a target
+deps = @mvn:com.google.guava:guava:33.2.1-jre;  # a package in a registry
+resources = mylib:*.jar;                        # files selected from a target
+```
+
+</TabItem>
+</Tabs>
+
 A path is relative to the build file it is written in. It can use `../` to reach files elsewhere
-in the project, but not outside it. A name that is both a target and a directory means the target;
-write `./name` for the directory.
+in the project, but not outside it, and it can't be absolute: `/usr/share/x` is the error
+`'/usr/share/x' is an absolute path, which names no target`, in a build file and on the command
+line alike. To use a program installed on your machine, name it through
+[`@host`](#programs-on-your-machine) instead. A name that is both a target and a directory means
+the target; write `./name` for the directory.
 
 A registry or catalog named on its own, as in `deps = @npm;`, names no package or files, and is an
 error (`'@npm' names a repository, not a package or files`). Name what you want from it:
@@ -326,11 +350,26 @@ stream (`2> log` silences stderr), and `2>&1` includes stderr in the value.
 
 `<NAME=value>` after a reference asks for that reference to be built with a setting changed:
 
+<Tabs syncKey="language">
+<TabItem label="JavaScript">
+
 ```
 deps = core<TARGET=arm64-apple-macosx15.0>;      # core, built for another platform
 srcs = mylib<JS_TARGET=es2022-esm>:*.js;         # mylib's .js files, built as ES modules
 deps = other<BUILD_TYPE=release, JS_TARGET=es2022-esm>;
 ```
+
+</TabItem>
+<TabItem label="Java">
+
+```
+deps = core<TARGET=arm64-apple-macosx15.0>;      # core, built for another platform
+resources = mylib<JVM_TARGET=jvm11>:*.jar;       # mylib's jar, built for Java 11
+deps = other<BUILD_TYPE=release, JVM_TARGET=jvm17>;
+```
+
+</TabItem>
+</Tabs>
 
 The `<` follows the name directly, before any `:` or `/` selection. The setting applies to the
 target and to everything it depends on, unless one of those references sets it again. The rest of
@@ -349,7 +388,7 @@ srcs = src/lib/index.ts;       # named src/lib/index.ts
 srcs = src:lib/index.ts;       # named lib/index.ts
 ```
 
-Selecting files from a target or a package works the same way: `mylib:build/*.js`,
+Selecting files from a target or a package works the same way: `mylib:*.js`,
 `@npm:esbuild:0.28.1:package.json`. What you get is those files only, not the package they came
 from.
 
@@ -524,14 +563,32 @@ a property or a target named `@fabr-build` yourself replaces the default, like a
 A string property is one or more words separated by whitespace. Each word is a reference or a
 quoted string:
 
+<Tabs syncKey="language">
+<TabItem label="JavaScript">
+
 ```
 version = 1.4.0;
 description = "A small example";
 deps = @npm:chai:4.3.6 @npm:@types/chai:4.3.1 @npm:picomatch:2.3.1;
 ```
 
+</TabItem>
+<TabItem label="Java">
+
+```
+version = 1.4.0;
+description = "A small example";
+deps = @mvn:org.slf4j:slf4j-api:2.0.13 @mvn:com.google.guava:guava:33.2.1-jre;
+```
+
+</TabItem>
+</Tabs>
+
 A property that lists references can be used by name where references are expected, which is how
 a list of dependencies is shared:
+
+<Tabs syncKey="language">
+<TabItem label="JavaScript">
 
 ```
 TEST_LIBS = @npm:chai:4.3.6 @npm:@types/chai:4.3.1;
@@ -541,6 +598,22 @@ js_package mylib {
   test_deps = TEST_LIBS;
 }
 ```
+
+</TabItem>
+<TabItem label="Java">
+
+```
+TEST_LIBS = @mvn:org.junit:junit-bom:5.11.4 @mvn:org.junit.jupiter:junit-jupiter
+            @mvn:org.junit.platform:junit-platform-launcher;
+
+jar_package mylib {
+  srcs = src/main/java:**/*.java;
+  test_deps = TEST_LIBS;
+}
+```
+
+</TabItem>
+</Tabs>
 
 ### Map properties
 
@@ -628,6 +701,9 @@ entry has the details.
 A property declaration can have a **guard**: `<NAME=pattern>` after the property's name. The
 declaration then applies only in builds where the setting matches.
 
+<Tabs syncKey="language">
+<TabItem label="JavaScript">
+
 ```
 js_package watcher {
   srcs = src:*.ts;
@@ -639,6 +715,23 @@ js_package watcher {
 
 A build for Linux gets the common sources and the Linux ones; a build for macOS gets the common
 sources, the macOS ones and `fsevents`.
+
+</TabItem>
+<TabItem label="Java">
+
+```
+jar_package watcher {
+  srcs = src/main/java:**/*.java;
+  deps<TARGET=x86_64-linux-*> = @mvn:io.netty:netty-transport-native-epoll/linux-x86_64:4.1.111.Final;
+  deps<TARGET=arm64-apple-*> = @mvn:io.netty:netty-transport-native-kqueue/osx-aarch_64:4.1.111.Final;
+}
+```
+
+A build for x86-64 Linux gets Netty's native epoll transport; a build for an Apple silicon Mac
+gets its kqueue transport; any other build gets neither.
+
+</TabItem>
+</Tabs>
 
 - **A guard's value is a pattern**, matched against the setting's value. Several settings in one
   guard must all match: `<TARGET=*-linux-*, BUILD_TYPE=release>`. A [`!(…)`](#globbing) group
@@ -658,6 +751,9 @@ name being declared it *tests* a setting, and takes a pattern.
 
 A guard can be written once around several declarations:
 
+<Tabs syncKey="language">
+<TabItem label="JavaScript">
+
 ```
 js_package watcher {
   srcs = src:*.ts;
@@ -667,6 +763,22 @@ js_package watcher {
   }
 }
 ```
+
+</TabItem>
+<TabItem label="Java">
+
+```
+jar_package watcher {
+  srcs = src/main/java:**/*.java;
+  <TARGET=arm64-apple-*> {
+    resources = src/macos/resources:**;
+    deps = @mvn:io.netty:netty-transport-native-kqueue/osx-aarch_64:4.1.111.Final;
+  }
+}
+```
+
+</TabItem>
+</Tabs>
 
 Global properties can be guarded in the same way. For those, a `default` declaration is what
 applies when no guarded declaration matches; a property declared only under guards, none of which
@@ -687,6 +799,9 @@ ordinary declaration of the setting replaces all of them.
 
 A target is declared as `<type> <name> { <properties> }`:
 
+<Tabs syncKey="language">
+<TabItem label="JavaScript">
+
 ```
 js_package mylib {
   srcs = src:**/*.ts;
@@ -695,10 +810,24 @@ js_package mylib {
 }
 ```
 
+</TabItem>
+<TabItem label="Java">
+
+```
+jar_package mylib {
+  srcs = src/main/java:**/*.java;
+  deps = @mvn:com.google.guava:guava:33.2.1-jre;
+  tests = src/test/java:**/*.java;
+}
+```
+
+</TabItem>
+</Tabs>
+
 The type is one that fabr's core or a loaded plugin defines, or one your own
 [`targetdef`](#targetdef-declarations) declares; the reference pages for
-[core](/reference/standard-rules/) and [JavaScript](/reference/js/targets/) list the standard ones
-with their properties. The name is how the target is referred to, in build files and on the command line.
+[core](/reference/standard-rules/), [JavaScript](/reference/js/targets/) and
+[Java](/reference/java/targets/) list the standard ones with their properties. The name is how the target is referred to, in build files and on the command line.
 
 A target can be declared `default`, like a property:
 

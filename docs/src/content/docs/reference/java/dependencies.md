@@ -157,12 +157,12 @@ jar_package app {
 }
 ```
 
-A BOM's versions are minimums that apply only to packages something else requires: it adds
-nothing to the build itself. A versionless reference with no BOM to give it a version is an error
+A BOM's versions are minimums that apply only to packages something else requires, as with
+Gradle's `platform`: it adds nothing to the build itself. A versionless reference with no BOM to give it a version is an error
 that says the package `is required ... without a version lower bound`.
 
 Written with `!`, a BOM's versions are the only ones its packages can have, as with Gradle's
-`enforcedPlatform`: each package it manages that something requires is that version, even where
+`enforcedPlatform` or a BOM imported into Maven's `<dependencyManagement>`: each package it manages that something requires is that version, even where
 something requires a later one. A package also forced with its own `!` keeps that version.
 
 ```
@@ -249,21 +249,28 @@ sources and javadoc jars are fetched only when
 
 Libraries published by Gradle often publish a `.module` file beside their POM, and say so in the
 POM with the comment `<!-- do_not_remove: published-with-gradle-metadata -->`. Where it does,
-fabr reads the package from the `.module` instead of the POM, as Gradle does. The `.module`
-describes a version as variants, such as Guava's `jre` and `android` flavours, each with its own
-dependencies and files. Like Gradle, fabr takes one variant for your compile classpath and one for
-your runtime classpath:
+fabr reads the package from the `.module` instead of the POM, as Gradle does, and you get what
+Gradle would give you:
+
+- a library's `compileOnlyApi` dependencies (such as JUnit's `apiguardian-api`) are on your
+  compile classpath and not installed, and its `implementation` dependencies are installed and not
+  compiled against;
+- a library that publishes a jar for each Java release gets the one for your
+  [`JVM_TARGET`](/reference/java/compiling/#the-java-release);
+- a Kotlin Multiplatform library's root module brings in its `-jvm` module.
+
+### How a variant is chosen
+
+The `.module` describes a version as variants, such as Guava's `jre` and `android` flavours, each
+with its own dependencies and files. Like Gradle, fabr takes one variant for your compile classpath
+and one for your runtime classpath:
 
 - a library variant of the usage the classpath asks for (`org.gradle.usage` `java-api` to compile
   against, `java-runtime` to run; to compile against a module that publishes no `java-api`
   variant, its `java-runtime` one), on the standard JVM, for a Java release no later than
-  [`JVM_TARGET`](/reference/java/compiling/#the-java-release)'s, the latest such release where
-  there are several; or, for a module that is a platform (a BOM), its platform variant;
+  `JVM_TARGET`'s, the latest such release where there are several; or, for a module that is a
+  platform (a BOM), its platform variant;
 - not a variant providing another capability, such as the module's test fixtures.
-
-So a library's `compileOnlyApi` dependencies (in its `java-api` variant only, such as JUnit's
-`apiguardian-api`) are on your compile classpath and not installed, and its `implementation`
-dependencies (in its `java-runtime` variant only) are installed and not compiled against.
 
 Of that variant:
 

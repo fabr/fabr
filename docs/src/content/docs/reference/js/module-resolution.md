@@ -69,6 +69,10 @@ sources, just as they would for a consumer of the published package. When fabr c
 it writes these imports as relative paths in the output; see
 [TypeScript compilation](/reference/js/typescript/#imports-of-your-own-package-are-written-as-relative-paths).
 
+Node.js's [subpath imports](https://nodejs.org/api/packages.html#subpath-imports), `#` names a
+package declares for its own files in an `imports` map, aren't supported. Import the files by the
+package's own name instead: `@acme/widgets/util/pad` where you wrote `#app/util/pad`.
+
 ### Aliases
 
 An npm alias in a dependency's `package.json`, such as `"string-width-cjs": "npm:string-width@^4"`,
@@ -117,8 +121,8 @@ the rest of the project uses, here by renaming a catalog entry:
 
 ```
 js_script typia_tool {
-  entry = @dep:typia;
-  deps = @dep:typescript-6 -> typescript;
+  entry = @pkg:typia;
+  deps = @pkg:typescript-6 -> typescript;
 }
 ```
 
@@ -150,8 +154,9 @@ Node.js uses for `require()`, whichever module format you're producing:
 2. **Otherwise, the package's files decide.** The bare name resolves through the `main` field (or
    `types`, when looking for type declarations), and a subpath such as `lodash/merge` names a file
    in the package. The extension may be left off, and a directory resolves to its `index` file.
-3. **`#` names** (`#internal/util`) resolve through the `imports` map of the package containing the
-   importing file, taken from its nearest `package.json`.
+3. **`#` names** (`#internal/util`) in a dependency's code resolve through the `imports` map of the
+   package containing the importing file, taken from its nearest `package.json`. (Your own
+   packages can't use them; see [Importing your own package by name](#importing-your-own-package-by-name).)
 
 ### Export conditions by tool
 

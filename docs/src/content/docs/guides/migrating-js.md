@@ -48,11 +48,13 @@ So how far it gets you depends on how your packages build:
   another becomes a dependency or a [rename](/reference/js/dependencies/#renaming-a-package).
 - **Bundled** with webpack, Vite, esbuild, Rollup or tsup. The `js_package` compiles the sources;
   write a [`js_bundle`](/reference/js/bundling/) target for the bundle, from your bundler's
-  configuration (its entry points, externals and aliases).
+  configuration (its entry points, externals and aliases), or keep running the bundler itself
+  with its configuration; see [Vite, Next.js and other frameworks](/guides/tools/#vite-nextjs-and-other-frameworks).
 - **Stylesheets** compiled with Sass or PostCSS. See [stylesheets](/reference/js/stylesheets/).
 - **Code generation, or any other script.** Write a [`generate`](/reference/standard-rules/#generate)
   target that runs the tool. A framework that owns its build (Next.js, Astro) is run the same way,
-  its CLI in a `generate` target, as [fabr's own documentation site](/guides/watch/#an-example) is.
+  its build in a `generate` target and its dev server in a `serve` target; see
+  [Vite, Next.js and other frameworks](/guides/tools/#vite-nextjs-and-other-frameworks).
 - **Published.** Check the `package.json` fabr generates against the one you publish now. See
   [publishing packages](/reference/js/publishing/).
 
@@ -112,9 +114,11 @@ every `@types` package it can see, so the package gets every root `@types` packa
 types of a package the root declares.
 
 An import of a path your `tsconfig.json` maps to your own files, through `baseUrl` or `paths`, is
-not treated as a package. Any other import that nothing declares is listed in the report, under
-**Imports nothing declares**: add the dependency to the package's `package.json`, or to its
-`BUILD.fabr`.
+not treated as a package. Fabr has no such mapping, so rewrite those imports to use the package's
+own name, as [TypeScript compilation](/reference/js/typescript/#coming-from-tsconfigjson)
+describes (`@/components/Button` becomes `@acme/web/components/Button`). Any other import that
+nothing declares is listed in the report, under **Imports nothing declares**: add the dependency
+to the package's `package.json`, or to its `BUILD.fabr`.
 
 ### Overrides
 
@@ -211,7 +215,7 @@ to act on:
 
 | Heading | What to do |
 |---|---|
-| Imports nothing declares | Declare the dependency. A name that is really one of your own directories means a module alias the tool didn't recognise: map it in your sources, or ignore the line. |
+| Imports nothing declares | Declare the dependency. A name that is really one of your own directories means a module alias the tool didn't recognise: rewrite those imports to use the package's own name, as for a [`tsconfig.json` alias](/reference/js/typescript/#coming-from-tsconfigjson). |
 | Majors the manifests disagree on | Choose one version for the project. Where a package needs the other major, add it to the catalog under another name with a [rename](/reference/js/dependencies/#renaming-a-package). |
 | Version conflicts the lockfile does not share | fabr would ship two versions of a package your lockfile installs once, usually because an override forced one. Raise the requirement that asks for the lower version, force a version with `!`, or allow both with `?`. |
 | Versions selected below what the lockfile installs, which a catalog entry cannot raise | A second version of a package is selected lower than the lockfile's. A catalog entry raises only the highest version, so add a `!` if one version must be used everywhere. |
@@ -229,6 +233,13 @@ fabr build @acme/core
 
 and work through what's left as [What it converts](#what-it-converts) describes for the way the
 package builds. For a library you publish, also move test-only dependencies to `test_deps`.
+
+Your package manager keeps working while you migrate: a fabr build reads nothing the package
+manager writes, and the package manager reads none of fabr's files, so you can build with both
+until you switch. Nothing is kept in step between
+them, though. A dependency you add to a `package.json` reaches fabr only when you add it to the
+package's `BUILD.fabr` or `CATALOG.fabr` too, and one you add to a build file reaches npm only
+through `package.json`.
 
 ## Not supported
 
