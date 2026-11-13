@@ -96,7 +96,9 @@ JDK = @jdk:17.0.13+11;
 
 A release is named as Adoptium names it, without its `jdk-` prefix: `@jdk:17.0.13+11`, or
 `@jdk:8u302-b08` for Java 8. `fabr ls @jdk` lists the releases published for your platform, newest
-first. Fabr fetches the build for macOS, Linux (glibc or musl) or Windows, on x64 or arm64, where
+first. Version numbers alone name the lowest release that starts with them: `@jdk:21` is `21+35`,
+the first Java 21 release, and `@jdk:17.0.12` is `17.0.12+7`. As with packages, fabr never picks
+the latest, so write the release you want. Fabr fetches the build for macOS, Linux (glibc or musl) or Windows, on x64 or arm64, where
 Adoptium publishes one, and checks the archive's SHA-256.
 
 Each tool is a setting of its own, taken from `JDK` by default: `JAVAC` is the compiler, `JAVA` the

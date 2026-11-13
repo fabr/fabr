@@ -309,14 +309,34 @@ memory, limit each test process instead, with `NODE_OPTIONS` in `test_env`.
 
 ## Publishing from CI
 
-`fabr sync` publishes packages; see [Publishing packages](/reference/js/publishing/). In CI:
+`fabr sync` publishes what a `sync` target lists: npm packages
+([Publishing packages](/reference/js/publishing/)), Maven artifacts
+([Publishing](/reference/java/publishing/)), container images
+([Pushing images](/reference/container/registries/#pushing-images)) and S3 objects
+([Publishing to S3](/reference/aws/s3/#publishing-to-s3)). In CI:
 
 - Make sure each `sync` entry requires a release build (`= @acme/core<BUILD_TYPE=release>;`), so
-  that the published packages don't depend on how the step is invoked.
-- Provide a token through `.npmrc` that can publish without a one-time password. With no terminal
-  fabr can't ask for one.
-- Running `fabr sync` again after a partial failure is safe: versions already published are
-  skipped.
+  that what is published doesn't depend on how the step is invoked.
+- Give the job the credentials each destination reads, as you would for that ecosystem's own
+  tool: `.npmrc` for npm, `settings.xml` for Maven, a `docker login` for a container registry, and
+  the AWS account's credentials for S3. With no terminal, fabr can't ask for a password or a
+  one-time code, so a credential must work without one.
+- Running `fabr sync` again after a partial failure is safe: an entry that is already published is
+  reported as already synced and skipped.
+
+### Publishing to npm
+
+npm supports two more things in CI, and fabr uses both as `npm publish` does:
+
+- **Trusted publishing**, which needs no stored token. Name the workflow or pipeline as each
+  package's trusted publisher on npm, then grant the GitHub workflow `id-token: write`, or give the
+  GitLab or CircleCI job an identity token for npm in `NPM_ID_TOKEN`. You still need an `.npmrc`
+  token for a package's first version, and on self-hosted runners, where npm doesn't accept trusted
+  publishing. See [Trusted publishing](/reference/js/publishing/#trusted-publishing).
+- **Provenance.** From GitHub Actions and GitLab, each package is published with a signed
+  provenance statement wherever npm accepts one. Such a package must name its repository in its
+  `metadata`, and a GitLab job also needs `SIGSTORE_ID_TOKEN`. See
+  [Provenance](/reference/js/publishing/#provenance).
 
 ## Not supported
 
