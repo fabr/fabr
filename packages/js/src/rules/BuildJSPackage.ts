@@ -76,6 +76,7 @@ import {
   ICompiledContents,
   parseJSTarget,
   stripPackageJson,
+  compileSourcesOf,
   withBinShebangs,
 } from "../JSPackage";
 import { NPM_FORMAT } from "../NPMProtocol";
@@ -299,7 +300,7 @@ export function packageCompileInputs(parts: {
    * compiled with the tests but neither run nor shipped). A Flag names no
    * files and is skipped. */
   const testOnlySources = parts.testOnly.filter((source): source is FileSet => !(source instanceof Flag));
-  const compileSources = sources.minus(tests).minus(FileSet.unionAll(...testOnlySources));
+  const compileSources = compileSourcesOf(sources.minus(tests).minus(FileSet.unionAll(...testOnlySources)));
   const compileDeps = parts.deps.filter((dep): dep is FileSet => dep instanceof FileSet);
   return { exported, sources, compileSources, compileDeps };
 }

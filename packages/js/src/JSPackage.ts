@@ -791,6 +791,23 @@ export function stripPackageJson(files: FileSet): FileSet {
 }
 
 /**
+ * @return the sources a target's compile is given: `sources` without the
+ * `package.json` at their root, which seeds the generated manifest and is no
+ * input of the compile. Throws where a `package.json` is below the root: a
+ * target builds one package, so no other manifest is read.
+ */
+export function compileSourcesOf(sources: FileSet): FileSet {
+  for (const [name] of sources) {
+    if (name !== "package.json" && posix.basename(name) === "package.json") {
+      throw new FabrError(`'${name}' is a package.json below the package's root`).withHelp(
+        "a target builds one package, and only a package.json at its root is read, to seed the one fabr generates: remove this one from its sources"
+      );
+    }
+  }
+  return stripPackageJson(sources);
+}
+
+/**
  * Get the package's bins by convention, command → path: each file directly
  * under `bin/` except declarations and source maps, named by its file name less
  * the last extension (`bin/fabr.js` → `fabr`). A generated package.json's `bin`

@@ -109,6 +109,7 @@ import {
   resourceFiles,
   stripExtension,
   stripPackageJson,
+  compileSourcesOf,
   usesDom,
 } from "./JSPackage";
 
@@ -340,7 +341,7 @@ export function compileAndRunTests(
    * runner's globals types among the sources (the runner testing itself) is
    * dropped: they come in through the `@types` mount. */
   const tested = testedSets.find((set): set is PackageFileSet => set instanceof PackageFileSet);
-  const sources = FileSet.unionAll(...srcs, tests).remap(name => (name === RUNNER_GLOBALS_TYPES ? undefined : name));
+  const sources = compileSourcesOf(FileSet.unionAll(...srcs, tests)).remap(name => (name === RUNNER_GLOBALS_TYPES ? undefined : name));
   const declarations =
     tested === undefined ? undefined : stripPackageJson(tested).remap(name => (DECLARATION_FILE.test(name) ? name : undefined));
   /* The declared test sources' stems (path minus extension): planTestRun picks
@@ -494,7 +495,7 @@ export function describeTests(
       if (tests.isEmpty()) {
         return Computable.resolve(EMPTY_FILESET);
       }
-      const sources = FileSet.unionAll(...srcs, tests).remap(name => (name === RUNNER_GLOBALS_TYPES ? undefined : name));
+      const sources = compileSourcesOf(FileSet.unionAll(...srcs, tests)).remap(name => (name === RUNNER_GLOBALS_TYPES ? undefined : name));
       /* The runner is wanted only for the globals typings it supplies. */
       return Computable.forAll(
         [

@@ -42,6 +42,7 @@ import {
   classifySourceByExt,
   classifySources,
   compileInputs,
+  compileSourcesOf,
   dualFormatOutputs,
   esLevelOrder,
   hasPackageExport,
@@ -214,6 +215,23 @@ describe("parseJSTarget", () => {
     expect(() => parseJSTarget("es2018-esm-nodejs")).to.throw(/environment must be/);
     expect(() => parseJSTarget("es2018-esm-node-extra")).to.throw(/expected/);
     expect(() => parseJSTarget("es20x8-esm")).to.throw(/ECMAScript version/);
+  });
+});
+
+describe("compileSourcesOf", () => {
+  const sources = (...names: string[]): FileSet => new FileSet(new Map(names.map(name => [name, MemoryFile.from("{}")])));
+
+  it("leaves out the package.json at the root, which only seeds the generated manifest", () => {
+    expect([...compileSourcesOf(sources("package.json", "index.ts", "util/pad.ts"))].map(([name]) => name).sort()).to.deep.equal([
+      "index.ts",
+      "util/pad.ts",
+    ]);
+  });
+
+  it("refuses a package.json below the root", () => {
+    expect(() => compileSourcesOf(sources("index.ts", "legacy/package.json"))).to.throw(
+      "'legacy/package.json' is a package.json below the package's root"
+    );
   });
 });
 
