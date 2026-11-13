@@ -10,7 +10,8 @@ see [Migrating an npm, Yarn or pnpm project](/guides/migrating-js/).
 
 ## Install
 
-Fabr needs Node.js 22.19 or later to run. Install the `fabr` command globally:
+Fabr runs on macOS and Linux, on x64 and arm64, and needs Node.js 22.19 or later to run. Install
+the `fabr` command globally:
 
 ```sh
 npm install -g @fabr-build/cli
@@ -18,17 +19,14 @@ npm install -g @fabr-build/cli
 
 That also installs `@fabr-build/js`, the plugin with the JavaScript and TypeScript rules, and
 `@fabr-build/js-tools`, the compiler driver, test runners and other programs the plugin runs.
+Fabr always uses the copy of `@fabr-build/js` installed with the CLI, so there is no need to
+install it yourself. Fabr's other plugins, such as `@fabr-build/container`, are separate packages:
+add them to the same command (`npm install -g @fabr-build/cli @fabr-build/container`).
 
 Those programs, your tests and your own scripts run on a Node.js release that fabr downloads on
 the first build, 24.22.1 unless you choose another, rather than on the Node.js you installed, so
 the version on your machine doesn't affect what is built; see
 [The Node.js version](/reference/js/dependencies/#the-nodejs-version).
-
-:::caution
-Install `@fabr-build/cli` only. Adding `@fabr-build/js` to the command makes npm install a second
-copy of fabr's core beneath it, which a plugin can't use; fabr reports this when it loads the
-plugin.
-:::
 
 ## A minimal project
 

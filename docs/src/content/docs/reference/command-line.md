@@ -159,7 +159,7 @@ command, runs on the Node.js release the
 [`NODE` setting](/reference/js/dependencies/#the-nodejs-version) names, not on the `node` on your
 `PATH`; `process.execPath` in the program is that binary. Because the program gets your
 environment, a `NODE_OPTIONS` you have set applies to it, and a release older than your own
-Node.js may reject an option in it. `fabr run @node:24.22.1:bin/node` runs a Node.js release
+Node.js may reject an option in it. `fabr run @node:24.22.1:node` runs a Node.js release
 itself.
 
 fabr installs the program, with everything it needs, into a directory in its cache, and keeps that

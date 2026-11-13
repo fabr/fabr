@@ -62,7 +62,7 @@ npm registry, which takes a package name and a version:
 The registry on its own, `@npm`, names no files, and using it as a reference is an error.
 
 The plugin also provides `@node`, the Node.js releases published at nodejs.org, which takes a
-version: `@node:24.22.1:bin/node` is that release's `node` binary. Fabr runs JavaScript tools and
+version: `@node:24.22.1:node` is that release's `node` binary. Fabr runs JavaScript tools and
 tests on the release the `NODE` setting names; see
 [The Node.js version](/reference/js/dependencies/#the-nodejs-version).
 

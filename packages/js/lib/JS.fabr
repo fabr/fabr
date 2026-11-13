@@ -459,19 +459,20 @@ targetdef npm_repository {
 }
 
 #
-# Node.js releases as nodejs.org publishes them, for the target platform
-# (macOS or Linux, x64 or arm64). `@node:24.22.1` is that release,
-# `@node:24.22.1:bin/node` its binary, and a range the lowest release it
-# admits (`@node:22` is 22.0.0). Each archive is checked against the
-# release's SHASUMS256.txt, and a build nodejs.org doesn't publish (musl) is
-# fetched from unofficial-builds.nodejs.org. fabr declares `@node` for you;
-# declaring it yourself points it at a mirror:
+# Node.js releases as nodejs.org publishes them, for the target platform.
+# `@node:24.22.1` is that release, `@node:24.22.1:node` its binary, and a
+# range the lowest release it admits (`@node:22` is 22.0.0). Each archive is
+# checked against the release's SHASUMS256.txt, and a build nodejs.org doesn't
+# publish (musl, riscv64) is fetched from the Node.js project's unofficial
+# builds. fabr declares `@node` for you; declaring it yourself points it at
+# mirrors:
 #
 #     node_distribution @node { url = "https://mirror.example.com/nodejs"; }
 #
 targetdef node_distribution {
-    # The URL releases are published under, laid out as nodejs.org/dist is
-    # (or a mirror).
+    # The URLs releases are published under, each laid out as nodejs.org/dist
+    # is: a release's build is fetched from the first that has one, and the
+    # first lists the versions.
     url = REQUIRED STRING;
 }
 
@@ -584,7 +585,8 @@ default npm_repository @npm {
 # Node.js releases, from nodejs.org.
 #
 default node_distribution @node {
-    url = "https://nodejs.org/dist";
+    url = "https://nodejs.org/dist"
+          "https://unofficial-builds.nodejs.org/download/release";
 }
 
 #
@@ -596,10 +598,11 @@ default browser_repository @browser {
 
 #
 # The node binary every JavaScript tool, test and `js_script` runs on: one
-# executable file, a release's `bin/node` (`NODE = @node:22.15.0:bin/node;`) or
-# a file in the project. Name an exact version; a range selects its lowest.
+# executable file, a release's `node` command (`NODE = @node:22.15.0:node;`,
+# `bin/node`, or `node.exe` on Windows) or a file in the project. Name an exact
+# version; a range selects its lowest.
 #
-default NODE = @node:24.22.1:bin/node;
+default NODE = @node:24.22.1:node;
 
 ##################### Driver tools ########################
 

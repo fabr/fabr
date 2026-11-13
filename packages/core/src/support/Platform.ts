@@ -40,6 +40,8 @@ export function tripleToNpm(triple: string): NpmPlatform {
     os = "linux";
   } else if (parts.some(p => p.startsWith("windows") || p === "win32" || p === "mingw32" || p === "msvc")) {
     os = "win32";
+  } else if (parts.some(p => p.startsWith("aix"))) {
+    os = "aix";
   }
   /* npm states a libc for linux alone (android's bionic is neither of its values). */
   const libc = os === "linux" ? (parts.some(p => p.includes("musl")) ? "musl" : "glibc") : undefined;
@@ -81,7 +83,7 @@ const ARCH_TO_NODE: Record<string, string> = {
 
 /** A platform as npm names one: `process.platform` and `process.arch` values, and a libc. */
 export interface NpmPlatform {
-  /** process.platform vocabulary: darwin, linux, win32, android (undefined if unrecognized). */
+  /** process.platform vocabulary: darwin, linux, win32, android, aix (undefined if unrecognized). */
   os?: string;
   /** process.arch vocabulary: x64, arm64, ia32, arm (undefined if unrecognized). */
   cpu?: string;

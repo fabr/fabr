@@ -43,6 +43,11 @@ describe("tripleToNpm", () => {
     expect(tripleToNpm("x86_64-pc-windows-msvc")).to.deep.equal({ os: "win32", cpu: "x64", libc: undefined });
   });
 
+  it("projects an AIX triple, and node's own `<arch>-aix` form", () => {
+    expect(tripleToNpm("powerpc64-ibm-aix7.2")).to.deep.equal({ os: "aix", cpu: "ppc64", libc: undefined });
+    expect(tripleToNpm("ppc64-aix")).to.deep.equal({ os: "aix", cpu: "ppc64", libc: undefined });
+  });
+
   it("is lenient about vendor presence (3- vs 4-part)", () => {
     expect(tripleToNpm("x86_64-linux-gnu")).to.deep.equal(tripleToNpm("x86_64-unknown-linux-gnu"));
   });

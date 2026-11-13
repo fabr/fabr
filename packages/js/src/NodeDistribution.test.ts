@@ -38,6 +38,7 @@ import {
   Name,
   PackageFileSet,
   packToTarball,
+  packToZip,
   parseName,
   PartialRepositoryRef,
   RepositoryRef,
@@ -78,6 +79,19 @@ function archive(version: string, platform: string): Promise<Buffer> {
     ])
   );
   return toPromise(packToTarball(files)).then(tar => zlib.gzipSync(tar));
+}
+
+/** A Windows release as nodejs.org lays one out: a zip whose top directory holds `node.exe`, with no modes recorded. */
+function windowsArchive(version: string, platform: string): Promise<Buffer> {
+  const top = `node-v${version}-${platform}`;
+  const files = new FileSet(
+    new Map<string, IFile>([
+      [`${top}/node.exe`, MemoryFile.from(`node ${version} ${platform}`)],
+      [`${top}/npm.cmd`, MemoryFile.from("@echo npm")],
+      [`${top}/README.md`, MemoryFile.from("# Node.js")],
+    ])
+  );
+  return toPromise(packToZip(files));
 }
 
 function sha256(data: Buffer): string {
@@ -129,7 +143,7 @@ describe("NodeDistribution", () => {
   }
 
   function distribution(served: Map<string, Buffer>, target = "arm64-apple-darwin24.0.0", operation = "build"): NodeDistribution {
-    return new NodeDistribution(servingContext(served, cache, target, operation), DIST, UNOFFICIAL);
+    return new NodeDistribution(servingContext(served, cache, target, operation), [DIST, UNOFFICIAL]);
   }
 
   /** Resolve `written` (after `@node:`) in `dist` to the node it names. */
@@ -186,9 +200,45 @@ describe("NodeDistribution", () => {
     expect(await toPromise(pkg.readFile("bin/node"))).to.equal("node 24.15.0 linux-x64-musl");
   });
 
+  it("runs a Windows release's node.exe as the node command", async () => {
+    const served = new Map<string, Buffer>();
+    const zip = await windowsArchive("24.22.1", "win-arm64");
+    served.set(`${DIST}/v24.22.1/node-v24.22.1-win-arm64.zip`, zip);
+    served.set(`${DIST}/v24.22.1/SHASUMS256.txt`, Buffer.from(`${sha256(zip)}  node-v24.22.1-win-arm64.zip\n`));
+    const runnable = (await toPromise(release(distribution(served, "aarch64-pc-windows-msvc", "run"), "24.22.1"))) as RunnableFileSet;
+    const node = runnable.selectEntry([{ pattern: Name.fromLiteral("node"), prefix: "" }]);
+    expect(node && toArgv(node.toCommandLine(["--version"]))).to.deep.equal(["./node.exe", "--version"]);
+    expect(runnable.selectEntry([{ pattern: Name.fromLiteral("npm"), prefix: "" }])).to.equal(undefined);
+    expect(await toPromise(runnable.readFile("node.exe"))).to.equal("node 24.22.1 win-arm64");
+  });
+
+  it("names a platform as node does, its SHASUMS256.txt deciding whether it is published", async () => {
+    const served = new Map<string, Buffer>();
+    await publish(served, DIST, "24.22.1", ["linux-ppc64le", "aix-ppc64", "linux-s390x"]);
+    for (const [target, platform] of [
+      ["powerpc64le-unknown-linux-gnu", "linux-ppc64le"],
+      ["powerpc64-ibm-aix7.2", "aix-ppc64"],
+      ["s390x-ibm-linux-gnu", "linux-s390x"],
+    ]) {
+      const pkg = await toPromise(release(distribution(served, target), "24.22.1"));
+      expect(await toPromise(pkg.readFile("bin/node"))).to.equal(`node 24.22.1 ${platform}`);
+    }
+    const err = await rejection(resolve(distribution(served, "powerpc64-unknown-linux-gnu"), "24.22.1"));
+    expect(err.message).to.equal("Node.js 24.22.1 is not published for powerpc64-unknown-linux-gnu");
+  });
+
+  it("looks in no tree but the ones declared", async () => {
+    const served = new Map<string, Buffer>();
+    await publish(served, DIST, "24.15.0", ["linux-x64"]);
+    await publish(served, UNOFFICIAL, "24.15.0", ["linux-x64-musl"]);
+    const alone = new NodeDistribution(servingContext(served, cache, "x86_64-unknown-linux-musl", "build"), [DIST]);
+    const err = await rejection(alone.resolve(alone.getRepositoryRef(Name.fromLiteral("24.15.0")) as RepositoryRef));
+    expect(err.message).to.equal("Node.js 24.15.0 is not published for x86_64-unknown-linux-musl");
+  });
+
   it("refuses a platform with no release, naming the remedy", async () => {
-    const err = await rejection(resolve(distribution(new Map(), "x86_64-pc-windows-msvc"), "24.22.1"));
-    expect(err.message).to.contain("not available for 'x86_64-pc-windows-msvc'");
+    const err = await rejection(resolve(distribution(new Map(), "x86_64-unknown-freebsd"), "24.22.1"));
+    expect(err.message).to.contain("not available for 'x86_64-unknown-freebsd'");
   });
 
   it("selects the lowest published version a range admits, from index.json", async () => {

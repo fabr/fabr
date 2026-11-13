@@ -484,7 +484,7 @@ downloaded. Each is a target with a setting's name — `TSC_DRIVER`, `JS_BUNDLER
 | `SASS` | `@npm:sass-embedded:1.100.0` | [Sass](/reference/js/stylesheets/) |
 | `POSTCSS`, `POSTCSS_MODULES` | `@npm:postcss:8.5.28`, `@npm:postcss-modules:9.0.1` | css-modules |
 | `JEST` | `@npm:jest:30.3.0` | The [`jest` test framework](/reference/js/testing/#jest) |
-| `NODE` | `@node:24.22.1:bin/node` | The Node.js binary every JavaScript program runs on; see [The Node.js version](#the-nodejs-version) |
+| `NODE` | `@node:24.22.1:node` | The Node.js binary every JavaScript program runs on; see [The Node.js version](#the-nodejs-version) |
 
 A setting can name a catalog member (`TYPESCRIPT = @pkg:typescript;`), so that the compiler and
 the `typescript` your code imports are the same version.
@@ -496,7 +496,7 @@ To run a package's command-line program directly, use `fabr run` with the same k
 ### The Node.js version
 
 Fabr downloads the Node.js release that JavaScript programs run on, rather than using the `node`
-on your `PATH`. The `NODE` setting names it, `@node:24.22.1:bin/node` by default, and every
+on your `PATH`. The `NODE` setting names it, `@node:24.22.1:node` by default, and every
 JavaScript program fabr starts runs on that binary:
 
 - the TypeScript compiler, the bundler, and the Sass and PostCSS steps;
@@ -512,12 +512,12 @@ machine's Node.js, with `nvm use` or an upgrade, changes nothing that fabr build
 To use another release, set `NODE` in your build file:
 
 ```
-NODE = @node:22.15.0:bin/node;
+NODE = @node:22.15.0:node;
 ```
 
 Changing `NODE` rebuilds and retests everything that ran on the previous binary, because the
 binary is part of each tool's installation. For a single run, set it on the command line instead:
-`fabr test -DNODE=@node:22.15.0:bin/node mylib`.
+`fabr test -DNODE=@node:22.15.0:node mylib`.
 
 A range is accepted, and as with packages, fabr selects the
 [lowest published version that satisfies it](#how-versions-are-chosen): `@node:^22.15.0` is
@@ -532,15 +532,17 @@ built for:
 | Reference | The files it names |
 |---|---|
 | `@node:24.22.1` | The whole release: `bin/node`, `bin/npm`, `lib/`, `include/` and the rest. |
-| `@node:24.22.1:bin/node` | The `node` binary. |
+| `@node:24.22.1:node` | The `node` command: `bin/node`, or `node.exe` on Windows. |
+| `@node:24.22.1:bin/node` | The `node` binary, by its path in the release (macOS and Linux). |
 
-The same references work on the command line, so `fabr run @node:24.22.1:bin/node --version`
+The same references work on the command line, so `fabr run @node:24.22.1:node --version`
 runs that release, and `fabr ls '@node:24.22.1:bin/*'` lists its programs.
 
-Releases are available for macOS and Linux, on x64 and arm64, including Linux with musl libc.
-Builds that nodejs.org doesn't publish, such as the musl ones, are downloaded from
-[unofficial-builds.nodejs.org](https://unofficial-builds.nodejs.org/). On any other platform the
-build fails with:
+Releases are downloaded for whichever platform you build for, wherever nodejs.org publishes one:
+macOS, Linux, Windows and AIX, on the processors each release supports. Builds that nodejs.org
+doesn't publish, such as Linux with musl libc or on RISC-V, are downloaded from
+[unofficial-builds.nodejs.org](https://unofficial-builds.nodejs.org/). Where neither has a build
+for your platform, the build fails:
 
 ```
 error: Failed to build mytool: Node.js releases are not available for 'x86_64-unknown-freebsd'
@@ -548,14 +550,18 @@ error: Failed to build mytool: Node.js releases are not available for 'x86_64-un
 help: set NODE to a node binary for this platform
 ```
 
+A release that exists but has no build for your platform fails with
+`Node.js 24.22.1 is not published for <platform>`, and suggests choosing another version.
+
 To download releases from a mirror, declare `@node` yourself with its URL, laid out as
-`https://nodejs.org/dist` is:
+`https://nodejs.org/dist` is. `url` can list several, and each build is downloaded from the first
+that has it, so list a mirror of unofficial-builds after the main one if you need those builds:
 
 ```
-node_distribution @node { url = "https://nodejs.example.com/dist"; }
+node_distribution @node {
+  url = "https://nodejs.example.com/dist" "https://nodejs.example.com/unofficial";
+}
 ```
-
-Builds that the mirror doesn't have are still downloaded from unofficial-builds.nodejs.org.
 
 #### Using a Node.js binary you already have
 

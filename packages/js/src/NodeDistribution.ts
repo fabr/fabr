@@ -22,7 +22,7 @@
  * it (`@node:24.22.1`, or `@node:22` for the lowest 22 release). Each version
  * is a package named `node` with no requirements, whose files are the release
  * for the target platform with its top directory stripped (`bin/node`, `lib/`,
- * `include/`). A version is published where its `SHASUMS256.txt` is, and the
+ * `include/`; on Windows `node.exe` at the root). A version is published where its `SHASUMS256.txt` is, and the
  * archive is checked against that file as it streams.
  */
 
@@ -45,18 +45,31 @@ import {
   VersionNotFoundError,
 } from "@fabr-build/core";
 
-/** Where the Node.js project publishes builds nodejs.org/dist does not carry
- *  (musl, before 22.23.3 / 24.20.0 / 26.8.0, and on arm64), in the same layout. */
-export const NODE_UNOFFICIAL_URL = "https://unofficial-builds.nodejs.org/download/release";
-
 /** The one package a node distribution holds. */
 const NODE_PACKAGE = "node";
 
 const SHASUMS_FILE = "SHASUMS256.txt";
 const INDEX_FILE = "index.json";
 
+/** The operating systems node publishes releases for, as its archives name them. */
+const RELEASE_OSES = new Set(["darwin", "linux", "win", "aix"]);
+
+/** Node's name in its archives for each npm cpu it publishes releases for. */
+const RELEASE_CPUS = new Map([
+  ["x64", "x64"],
+  ["arm64", "arm64"],
+  ["ia32", "x86"],
+  ["arm", "armv7l"],
+  ["ppc64", "ppc64"],
+  ["s390x", "s390x"],
+  ["riscv64", "riscv64"],
+  ["loong64", "loong64"],
+]);
+
 /** The archive kinds a release is fetched as, best first. */
 const ARCHIVE_SUFFIXES = [".tar.xz", ".tar.gz"];
+/** The archive kind a Windows release is fetched as. */
+const WINDOWS_ARCHIVE_SUFFIXES = [".zip"];
 
 /** Read a release's SHASUMS256.txt: each artifact's hex sha256, by name.
  *  Throws for a document listing none, such as an error page. */
@@ -89,9 +102,10 @@ function toNodeVersions(json: unknown): string[] {
 }
 
 /**
- * The repository a `node_distribution` declaration builds: nodejs.org's
- * release tree, falling back to unofficial-builds for a platform nodejs.org
- * does not publish.
+ * The repository a `node_distribution` declaration builds: release trees laid
+ * out as nodejs.org/dist is, each tried in order for a release's archive (the
+ * Node.js project's unofficial builds after nodejs.org), the first listing
+ * the versions.
  */
 export class NodeDistribution extends Distribution<SemverVersion, SemverConstraint> {
   protected readonly packageName = NODE_PACKAGE;
@@ -99,16 +113,17 @@ export class NodeDistribution extends Distribution<SemverVersion, SemverConstrai
   protected readonly domain = SEMVER;
   protected readonly archiveTag = "node:release:1";
   protected readonly unavailableHelp = "set NODE to a node binary for this platform";
-  protected readonly binDirectories = ["bin/"];
+  /** A Windows release keeps its commands at its root. */
+  protected readonly binDirectories = ["bin/", ""];
   /** Each release's SHASUMS256.txt from each source, as read this run. */
   private readonly shasums = new MemoryCache<string, Map<string, string> | undefined>();
 
   constructor(
     context: TargetContext,
-    url: string,
-    private readonly unofficialUrl = NODE_UNOFFICIAL_URL
+    /** The release trees, in the order a release's archive is looked for in them; the first lists the versions. */
+    private readonly urls: readonly [string, ...string[]]
   ) {
-    super(context, url);
+    super(context, urls[0]);
   }
 
   /** List the published versions, from nodejs.org's `index.json`, which lists every platform's. */
@@ -124,15 +139,16 @@ export class NodeDistribution extends Distribution<SemverVersion, SemverConstrai
     }).then(listed => listed ?? []);
   }
 
-  /** Find a release's archive for `target`: from nodejs.org where its
-   *  SHASUMS256.txt lists one, else from unofficial-builds. */
+  /** Find a release's archive for `target`: from the first release tree whose
+   *  SHASUMS256.txt lists one. */
   protected findArchive(version: string, target: string): Computable<IDownloadSource> {
     const platform = this.platformOf(target);
     if (platform === undefined) {
       return Computable.reject(this.unavailable(target));
     }
+    const suffixes = platform.startsWith("win-") ? WINDOWS_ARCHIVE_SUFFIXES : ARCHIVE_SUFFIXES;
     const find = (sums: Map<string, string> | undefined, base: string): IDownloadSource | undefined => {
-      for (const suffix of ARCHIVE_SUFFIXES) {
+      for (const suffix of suffixes) {
         const file = `node-v${version}-${platform}${suffix}`;
         const sha256 = sums?.get(file);
         if (sha256 !== undefined) {
@@ -141,32 +157,39 @@ export class NodeDistribution extends Distribution<SemverVersion, SemverConstrai
       }
       return undefined;
     };
-    return this.releaseShasums(this.url, version).then(sums => {
-      if (sums === undefined) {
-        throw new VersionNotFoundError(NODE_PACKAGE, version, `Node.js ${version} is not published at ${this.url}`);
+    /* Look in each tree from `at` on; `published` is whether one before it has the version at all. */
+    const search = (at: number, published: boolean): Computable<IDownloadSource> => {
+      if (at === this.urls.length) {
+        return Computable.reject(
+          published
+            ? new FabrError(`Node.js ${version} is not published for ${target}`).withHelp(
+                "choose another version, or set NODE to a node binary for this platform"
+              )
+            : new VersionNotFoundError(NODE_PACKAGE, version, `Node.js ${version} is not published at ${this.urls.join(" or ")}`)
+        );
       }
-      return (
-        find(sums, this.url) ??
-        this.releaseShasums(this.unofficialUrl, version).then(unofficial => {
-          const found = find(unofficial, this.unofficialUrl);
-          if (found === undefined) {
-            throw new FabrError(`Node.js ${version} is not published for ${target}`).withHelp(
-              "choose another version, or set NODE to a node binary for this platform"
-            );
-          }
-          return found;
-        })
-      );
-    });
+      const base = this.urls[at];
+      return this.releaseShasums(base, version).then(sums => find(sums, base) ?? search(at + 1, published || sums !== undefined));
+    };
+    return search(0, false);
   }
 
-  /** @return the target platform as node's release archives name it (`darwin-arm64`, `linux-x64-musl`), or undefined where nodejs.org publishes none for it. */
+  /**
+   * @return the target platform as node's release archives name it
+   * (`darwin-arm64`, `linux-x64-musl`, `linux-ppc64le`, `win-x64`, `aix-ppc64`),
+   * or undefined where node names no such platform. Whether a release is
+   * published for it is its SHASUMS256.txt's to say.
+   */
   private platformOf(target: string): string | undefined {
     const { os, cpu, libc } = tripleToNpm(target);
-    if ((os !== "darwin" && os !== "linux") || (cpu !== "x64" && cpu !== "arm64")) {
+    const releaseOs = os === "win32" ? "win" : os;
+    /* npm reads both byte orders of ppc64 as `ppc64`; node's archives tell them apart. */
+    const releaseCpu =
+      cpu === "ppc64" && /^(powerpc64le|ppc64le)$/.test(target.split("-")[0]) ? "ppc64le" : RELEASE_CPUS.get(cpu ?? "");
+    if (releaseOs === undefined || !RELEASE_OSES.has(releaseOs) || releaseCpu === undefined) {
       return undefined;
     }
-    return libc === "musl" ? `${os}-${cpu}-musl` : `${os}-${cpu}`;
+    return libc === "musl" ? `${releaseOs}-${releaseCpu}-musl` : `${releaseOs}-${releaseCpu}`;
   }
 
   /** Read a release's SHASUMS256.txt from `base`, or undefined where it has none (a 404). */
@@ -185,7 +208,13 @@ export class NodeDistribution extends Distribution<SemverVersion, SemverConstrai
 }
 
 function createRepository(context: TargetContext): Computable<Repository> {
-  return context.getRequiredString("url").then(url => new NodeDistribution(context, url.replace(/\/+$/, "")));
+  return context.getRequiredProperty("url").then(prop => {
+    const [first, ...rest] = prop.getValues().map(url => url.replace(/\/+$/, ""));
+    if (first === undefined) {
+      throw new FabrError("Missing required property url");
+    }
+    return new NodeDistribution(context, [first, ...rest]);
+  });
 }
 
 /** The implementation JS.fabr's `repository` declaration names. */
