@@ -2544,6 +2544,9 @@ const TRANSIENT_ERROR_CODES = new Set([
   "UND_ERR_CONNECT_TIMEOUT",
   "UND_ERR_HEADERS_TIMEOUT",
   "UND_ERR_BODY_TIMEOUT",
+  /* A body ending short of its content-length: undici's HTTP/2 client reports
+   * a stream reset mid-body as this rather than as the stream error. */
+  "UND_ERR_RES_CONTENT_LENGTH_MISMATCH",
   "ERR_HTTP2_STREAM_ERROR",
   "ERR_HTTP2_SESSION_ERROR",
 ]);

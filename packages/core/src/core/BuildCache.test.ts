@@ -1905,6 +1905,23 @@ describe("BuildCache non-immutable fetches", () => {
     expect(origin.requests).to.have.lengthOf(2);
   });
 
+  it("retries a fetch whose body ended short of its content-length", async () => {
+    origin.respond(serve(200, {}, "one"));
+    let calls = 0;
+    const truncatedOnce = (content: Readable): Computable<FileSet> =>
+      readStream(content).then(body => {
+        if (calls++ === 0) {
+          throw Object.assign(new Error("Response body length does not match content-length header"), {
+            code: "UND_ERR_RES_CONTENT_LENGTH_MISMATCH",
+          });
+        }
+        return new FileSet(new Map([["doc.txt", MemoryFile.from(body.toString())]]));
+      });
+    const files = await toPromise(cache.getOrFetch(origin.url, "test:1", requestOf(origin.url, truncatedOnce), () => UNTRACKED));
+    expect(await toPromise(files.readFile("doc.txt"))).to.equal("one");
+    expect(origin.requests).to.have.lengthOf(2);
+  });
+
   it("does not retry a fetch whose content failed", async () => {
     origin.respond(serve(200, {}, "one"));
     const reject = (content: Readable): Computable<FileSet> =>
