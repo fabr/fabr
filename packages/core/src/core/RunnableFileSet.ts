@@ -84,7 +84,8 @@ export function manifestArguments(args: readonly RunnableArgument[]): string {
  * location, an install file at its path (resolved against `anchor`, the
  * directory the command line is relative to, where one is given), and a
  * joined argument as its parts joined. An install file as the command is
- * given a `./` where it has no `/`, which would otherwise search PATH.
+ * given a `./` where it is relative and has no `/`, which would otherwise
+ * search PATH.
  */
 export function toArgv(args: readonly RunnableArgument[], anchor?: string): string[] {
   const text = (arg: RunnableArgument): string => {
@@ -102,7 +103,7 @@ export function toArgv(args: readonly RunnableArgument[], anchor?: string): stri
   return args.map((arg, index) => {
     const written = text(arg);
     const isInstallFile = index === 0 && typeof arg === "object" && !(arg instanceof HostLink) && "installFile" in arg;
-    return isInstallFile && !written.includes("/") ? `./${written}` : written;
+    return isInstallFile && !written.includes("/") && !path.isAbsolute(written) ? `./${written}` : written;
   });
 }
 

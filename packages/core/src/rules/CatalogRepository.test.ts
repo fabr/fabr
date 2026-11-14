@@ -55,6 +55,9 @@ import { RepositoryReader, Resolved, SourceRef } from "../core/Repository";
 import { expect } from "chai";
 import { madeFrom } from "../Fabr";
 
+/** A `test_node` script that prints the names in its working directory, one per line, sorted. */
+const LIST_DIRECTORY = 'process.stdout.write(require("fs").readdirSync(".").sort().map(name => name + "\\n").join(""));\n';
+
 /** Group what `resolved` requires by name: a target's requirements, and
  * anything else as itself under no name, the shape `fabr deps` prints. */
 function requirementsOf(resolved: ResolvedRequirements): Map<string, Resolved[]> {
@@ -454,18 +457,18 @@ describe("CatalogRepository (through the model)", () => {
     evaluate: (context: TargetContext) =>
       Computable.resolve(new FileSet(new Map([[`${context.name}.patch`, MemoryFile.from(patchTexts.get(context.name) ?? "")]]))),
   };
-  /* A shell script, as a runnable: its text is what the test set for its name. */
+  /* A script run by this test's node, as a runnable: its text is what the test set for its name. */
   const scriptTexts = new Map<string, string>();
-  const shRule: RuleDefinition = {
-    type: "test_sh",
+  const nodeRule: RuleDefinition = {
+    type: "test_node",
     properties: {},
     evaluate: (context: TargetContext) =>
       Computable.resolve(
         RunnableFileSet.forEntry(
-          new FileSet(new Map([[`${context.name}.sh`, MemoryFile.from(scriptTexts.get(context.name) ?? "")]])),
-          `${context.name}.sh`,
+          new FileSet(new Map([[`${context.name}.js`, MemoryFile.from(scriptTexts.get(context.name) ?? "")]])),
+          `${context.name}.js`,
           [],
-          new HostLink("sh", "/bin/sh")
+          new HostLink("node", process.execPath)
         )
       ),
   };
@@ -611,7 +614,7 @@ describe("CatalogRepository (through the model)", () => {
         sealedRule,
         packageRule,
         patchRule,
-        shRule,
+        nodeRule,
         modeRule,
         mixedRule,
         misreadRule,
@@ -654,7 +657,7 @@ describe("CatalogRepository (through the model)", () => {
     "targetdef test_sealed { deps = PACKAGES; }\n" +
     "targetdef test_pkg { deps = PACKAGES; provided = PACKAGES; optional = PACKAGES; }\n" +
     "targetdef test_patch { }\n" +
-    "targetdef test_sh { }\n" +
+    "targetdef test_node { }\n" +
     "targetdef test_mode { }\n" +
     "targetdef test_mixed { srcs = FILES; deps = PACKAGES; }\n" +
     "targetdef test_misread { deps = PACKAGES; }\n" +
@@ -2784,13 +2787,16 @@ describe("CatalogRepository (through the model)", () => {
     it("is the package it patches, with its files as a command leaves them", async () => {
       const model = build(
         "package_repo @backing { }\n" +
-          "test_sh edit { }\n" +
+          "test_node edit { }\n" +
           "patched foo { srcs = @backing:foo; run = edit > log.txt; }\n" +
           "test_deps a { deps = foo @backing:bar:1.2.0; }\n"
       );
       scriptTexts.set(
         "edit",
-        "read line < foo/data.txt\nprintf '%s, edited' \"$line\" > foo/new.txt\n/bin/rm foo/data.txt\n/bin/ls -A\n"
+        'const fs = require("fs");\n' +
+          'fs.writeFileSync("foo/new.txt", fs.readFileSync("foo/data.txt", "utf8").split("\\n")[0] + ", edited");\n' +
+          'fs.rmSync("foo/data.txt");\n' +
+          LIST_DIRECTORY
       );
       requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "^1.0.0" }]);
       await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
@@ -2808,12 +2814,16 @@ describe("CatalogRepository (through the model)", () => {
       const model = build(
         "package_repo @backing { }\n" +
           "test_patch fix { }\n" +
-          "test_sh edit { }\n" +
+          "test_node edit { }\n" +
           "patched foo { srcs = @backing:foo; patches = fix; run = edit; }\n" +
           "test_deps a { deps = foo; }\n"
       );
       patchTexts.set("fix", rewrite("foo", "foo, patched"));
-      scriptTexts.set("edit", "read line < foo/data.txt\nprintf '%s, then edited' \"$line\" > foo/data.txt\n");
+      scriptTexts.set(
+        "edit",
+        'const fs = require("fs");\n' +
+          'fs.writeFileSync("foo/data.txt", fs.readFileSync("foo/data.txt", "utf8").split("\\n")[0] + ", then edited");\n'
+      );
       await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       expect(await text(lastDepSets[0], "foo/data.txt")).to.equal("foo, patched, then edited");
     });
@@ -2821,11 +2831,11 @@ describe("CatalogRepository (through the model)", () => {
     it("refuses a capture named like a file it leaves, naming the redirect", async () => {
       const model = build(
         "package_repo @backing { }\n" +
-          "test_sh edit { }\n" +
+          "test_node edit { }\n" +
           "patched foo { srcs = @backing:foo; run = edit > foo/data.txt; }\n" +
           "test_deps a { deps = foo; }\n"
       );
-      scriptTexts.set("edit", "/bin/ls -A\n");
+      scriptTexts.set("edit", LIST_DIRECTORY);
       const err = await model
         .getConfig(Constraints.of({}), execution)
         .materialize(writtenOnCommandLine("a"))
@@ -2840,11 +2850,11 @@ describe("CatalogRepository (through the model)", () => {
       const model = build(
         "package_repo @backing { }\n" +
           "test_patch fix { }\n" +
-          "test_sh edit { }\n" +
+          "test_node edit { }\n" +
           "patched foo { srcs = @backing:foo; patches = fix; run = edit; }\n"
       );
       patchTexts.set("fix", rewrite("foo", "foo, patched"));
-      scriptTexts.set("edit", "/bin/ls -A\n");
+      scriptTexts.set("edit", LIST_DIRECTORY);
       const action = await model.getConfig(Constraints.of({}), execution).getAction(writtenOnCommandLine("foo"));
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-patched-stage-"));
       try {

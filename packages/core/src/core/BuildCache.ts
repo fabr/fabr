@@ -39,7 +39,6 @@ import {
   readFile,
   readFileBuffer,
   readOnlyPermissions,
-  realpath,
   rename,
   deleteTree,
   stat,
@@ -250,9 +249,12 @@ export interface ICreateOptions {
  * `inputs` is. */
 const STATE_INPUTS_FILE = "inputs";
 const STATE_DISCOVERED_FILE = "discovered";
-/** The symlink naming a build-state record's current generation directory. A
- * reader resolves it once; a writer replaces it atomically. */
-const STATE_CURRENT_LINK = "current";
+/** The file naming a build-state record's current generation directory, by its
+ * name within the record. A reader reads it once; a writer replaces it
+ * atomically. */
+const STATE_CURRENT_FILE = "current";
+/** The start of every build-state generation directory's name. */
+const STATE_GENERATION_PREFIX = "g-";
 const STATE_OUTPUTS_FILE = "outputs";
 const STATE_STATE_FILE = "state";
 
@@ -509,14 +511,16 @@ export class BuildCache {
     fs.mkdirSync(work, { recursive: true });
     const link = path.join(dir, TREE_LINK);
     const stat = fs.lstatSync(link, { throwIfNoEntry: false });
-    if (stat?.isSymbolicLink() && fs.readlinkSync(link) === this.treeRoot) {
+    if (stat?.isSymbolicLink() && path.resolve(fs.readlinkSync(link)) === path.resolve(this.treeRoot)) {
       return work;
     }
     /* A directory a cache at another path laid out links to that cache's pool. */
     if (stat !== undefined) {
       fs.rmSync(link, { recursive: true, force: true });
     }
-    fs.symlinkSync(this.treeRoot, link);
+    /* A junction on Windows, which needs the pool to exist and no privilege to make; elsewhere the type is ignored. */
+    fs.mkdirSync(this.treeRoot, { recursive: true });
+    fs.symlinkSync(this.treeRoot, link, "junction");
     return work;
   }
 
@@ -1412,15 +1416,15 @@ export class BuildCache {
    * One build-state record per target key, describing its last successful
    * build: the inputs it was made of, the entry it produced, and the files its
    * tool kept. The one mutable store. Each write makes a new generation
-   * directory and replaces the `current` symlink to name it, atomically; a
-   * reader resolves `current` once and reads every part from that generation,
+   * directory and replaces the `current` file to name it, atomically; a
+   * reader reads `current` once and reads every part from that generation,
    * so it never mixes two builds' parts. A generation is not changed once
    * named; the next write removes the old ones
    * ({@link sweepSupersededGenerations}).
    */
 
   /** Locate a target key's build-state record: a directory of generation
-   * directories and the `current` symlink. */
+   * directories and the `current` file. */
   private buildStatePath(targetKey: string): string {
     return path.resolve(this.incrementalRoot, targetKey);
   }
@@ -1438,9 +1442,8 @@ export class BuildCache {
    * {@link readManifest}).
    */
   public readBuildState(targetKey: string): Computable<IBuildState | undefined> {
-    return realpath(path.join(this.buildStatePath(targetKey), STATE_CURRENT_LINK)).then(
-      dir => this.readBuildStateParts(dir),
-      () => undefined
+    return currentGeneration(this.buildStatePath(targetKey)).then(dir =>
+      dir === undefined ? undefined : this.readBuildStateParts(dir)
     );
   }
 
@@ -1569,7 +1572,7 @@ export class BuildCache {
     let gen: string;
     try {
       fs.mkdirSync(dir, { recursive: true });
-      gen = fs.mkdtempSync(path.join(dir, "g-"));
+      gen = fs.mkdtempSync(path.join(dir, STATE_GENERATION_PREFIX));
     } catch {
       return Computable.resolve(undefined);
     }
@@ -1610,12 +1613,8 @@ export class BuildCache {
       )
         /* mkdtemp makes it 0700; open it before `current` names it. */
         .then(() => fs.chmodSync(gen, 0o755))
-        .then(() => {
-          /* Rename a new symlink over `current`, so a reader resolves either the
-           * old generation or the new one. */
-          const tmp = path.join(dir, `.${path.basename(gen)}`);
-          return symlink(path.basename(gen), tmp).then(() => rename(tmp, path.join(dir, STATE_CURRENT_LINK)));
-        })
+        /* Renamed over `current`, so a reader reads either the old generation or the new one. */
+        .then(() => writeFileAtomic(path.join(dir, STATE_CURRENT_FILE), path.basename(gen), path.join(dir, `.${path.basename(gen)}`)))
         .then(() => this.sweepSupersededGenerations(dir, path.basename(gen)))
         .catch(() => {
           /* A failed write costs the next build a cold start, and never fails
@@ -1628,18 +1627,18 @@ export class BuildCache {
 
   /**
    * Remove everything in the record `dir` but `current` and the generation
-   * `keep`. A symlink (a leftover rename temp) is removed at once; a file or
-   * directory only once past {@link GC_GRACE_MS}, since another process may
-   * still be writing that generation. Best-effort.
+   * `keep`. A leftover rename temp (named with a leading `.`) or a symlink is
+   * removed at once; anything else only once past {@link GC_GRACE_MS}, since
+   * another process may still be writing that generation. Best-effort.
    */
   private sweepSupersededGenerations(dir: string, keep: string): Computable<void> {
     return readdir(dir).then(
       entries =>
         mapComputable(
-          entries.filter(entry => entry.name !== STATE_CURRENT_LINK && entry.name !== keep),
+          entries.filter(entry => entry.name !== STATE_CURRENT_FILE && entry.name !== keep),
           entry => {
             const target = path.join(dir, entry.name);
-            if (entry.isSymbolicLink()) {
+            if (entry.isSymbolicLink() || entry.name.startsWith(".")) {
               return deleteFile(target).catch(() => undefined);
             }
             return stat(target).then(
@@ -2257,12 +2256,9 @@ export class BuildCache {
         return undefined;
       }
       const recordDir = path.resolve(this.incrementalRoot, record.name);
-      /* Resolve `current` once, as a reader does. A record without one keeps
+      /* Read `current` once, as a reader does. A record without one keeps
        * nothing and is left to expire. */
-      const gen = await realpath(path.join(recordDir, STATE_CURRENT_LINK)).then(
-        resolved => resolved,
-        () => undefined
-      );
+      const gen = await currentGeneration(recordDir);
       if (gen === undefined) {
         continue;
       }
@@ -2550,6 +2546,15 @@ const TRANSIENT_ERROR_CODES = new Set([
   "ERR_HTTP2_STREAM_ERROR",
   "ERR_HTTP2_SESSION_ERROR",
 ]);
+
+/** @return the generation directory the build-state record `dir` names as
+ * current, or undefined where it names none (or `current` is damaged). */
+function currentGeneration(dir: string): Computable<string | undefined> {
+  return readFile(path.join(dir, STATE_CURRENT_FILE)).then(
+    name => (name.startsWith(STATE_GENERATION_PREFIX) && name === path.basename(name) ? path.join(dir, name) : undefined),
+    () => undefined
+  );
+}
 
 /** Settle after `ms`. */
 function delay(ms: number): Computable<void> {

@@ -31,10 +31,10 @@ describe("e2e: source maps name their sources by reference", () => {
     "PROJECT.fabr":
       "plugin @fabr-build/js;\n\n" +
       STUB_TSC_CONFIG +
-      "\nscript gen_tool { entry = gen.sh; }\n" +
+      "\njs_script gen_tool { entry = gen.js; }\n" +
       "generate gen { run = gen_tool > made.ts; }\n" +
       "js_package lib { srcs = src:**/*.ts gen:made.ts; }\n",
-    "gen.sh": "echo 'export const made = 1;'\n",
+    "gen.js": 'console.log("export const made = 1;");\n',
     "src/index.ts": "export const x = 1;\n",
     "src/sub/deep.ts": "export const y = 2;\n",
   };

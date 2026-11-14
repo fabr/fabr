@@ -351,8 +351,8 @@ describe("BuildCache", () => {
      * behind (an atomic write, so no truncated manifest can ever be trusted). */
     expect(fs.existsSync(path.join(root, "entries", hashString("atomic") + ".manifest"))).to.equal(true);
     /* Nothing transient is left in the store: the temp behind that atomic write
-     * lives in the work tree, and only blobs and entries belong up here. */
-    expect(fs.readdirSync(root).filter(name => !["blob", "entries", "work"].includes(name))).to.deep.equal([]);
+     * lives in the work tree, and only the stores belong up here. */
+    expect(fs.readdirSync(root).filter(name => !["blob", "entries", "tree", "work"].includes(name))).to.deep.equal([]);
     /* A fresh cache reads the complete manifest back rather than rebuilding. */
     const files = await toPromise(
       cache.getOrCreate("atomic", () => {
@@ -1412,7 +1412,8 @@ describe("BuildCache build state", () => {
 
   const recordDir = (targetKey: string): string => path.join(root, "incremental", targetKey);
   /** The record's LIVE generation directory, resolved as a reader does. */
-  const genDir = (targetKey: string): string => fs.realpathSync(path.join(recordDir(targetKey), "current"));
+  const genDir = (targetKey: string): string =>
+    path.join(recordDir(targetKey), fs.readFileSync(path.join(recordDir(targetKey), "current"), "utf8"));
   const part = (targetKey: string, name: string): string => path.join(genDir(targetKey), name);
 
   /** An entry in the store as the cache's own machinery makes one, answering
@@ -1638,7 +1639,7 @@ describe("BuildCache build state", () => {
   });
 
   it("a resolved generation stays whole across a concurrent swap (no torn pairing)", async () => {
-    /* The reader's contract: resolve `current` once, and every part read from
+    /* The reader's contract: read `current` once, and every part read from
      * the resolved directory belongs to ONE build — a swap publishes a new
      * generation, it never mutates the old one. */
     const targetKey = "target-key-swap";

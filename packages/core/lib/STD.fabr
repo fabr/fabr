@@ -170,7 +170,7 @@ targetdef zip {
 targetdef script {
     # Other files the script needs, placed alongside it under their own names.
     deps = FILES;
-    # The script file, which is run with the host's `/bin/sh`.
+    # The script file, which is run with the shell `SHELL` names.
     entry = REQUIRED FILES;
     # Arguments passed to the script ahead of any given when it is run.
     args = STRING;
@@ -286,9 +286,13 @@ targetdef host_searchpath {
 host_searchpath @host { }
 
 #
-# The shell a `script` and other shell commands fabr writes run with.
+# The shell a `script` runs with: `/bin/sh`, or on Windows the `sh` found on
+# `PATH` (Git for Windows installs one).
 #
-default SHELL = @host:/bin/sh;
+default SHELL<HOST=!(*-windows-*)> = @host:/bin/sh;
+# Temporary: Windows has no shell of its own, so this relies on one being on
+# `PATH` until fabr provides one.
+default SHELL<HOST=*-windows-*> = @host:sh;
 
 #
 # A named switch. A target turns a flag on by listing it in its `deps`, and the

@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { runFabr, STUB_TSC, STUB_TSC_CONFIG } from "./harness";
+import { runFabr, STUB_TSC, STUB_TSC_CONFIG, withShell } from "./harness";
 
 /* `fabr shell <target>` stages a build step's sandbox and drops into a shell.
  * The harness spawns fabr with a closed stdin, so the inherited shell (/bin/sh —
@@ -35,7 +35,7 @@ describe("e2e: fabr shell", () => {
     "src/data.txt": "a\nb\n",
   };
 
-  it("stages the target's sandbox and prints the command the step would run", () => {
+  withShell("stages the target's sandbox and prints the command the step would run", () => {
     const result = runFabr(project, ["shell", "g"]);
     expect(result.status).to.equal(0);
     /* The intro names the target, the staged dir — a work dir in the cache's own
@@ -45,7 +45,7 @@ describe("e2e: fabr shell", () => {
     expect(result.stderr).to.contain("with WHO=target");
   });
 
-  it("stages a test run in its compiled tree, with the runner's command for each test file and its environment", () => {
+  withShell("stages a test run in its compiled tree, with the runner's command for each test file and its environment", () => {
     const tested = {
       ...STUB_TSC,
       "PROJECT.fabr":
@@ -62,7 +62,7 @@ describe("e2e: fabr shell", () => {
     expect(result.stderr).to.contain("with MARKER=here");
   });
 
-  it("errors on a target that yields content, not a build command", () => {
+  withShell("errors on a target that yields content, not a build command", () => {
     const result = runFabr(project, ["shell", "ff"]);
     expect(result.status).to.equal(1);
     expect(result.stderr).to.match(/no command sandbox to shell into/);

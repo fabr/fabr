@@ -41,10 +41,12 @@ describe("e2e: watch mode over a glob include", () => {
         /* The included files are where MESSAGE comes from, so gen's command
          * changes with the tree rather than with any edit. */
         "PROJECT.fabr":
+          "plugin @fabr-build/js;\n" +
           "include targets/*.fabr;\n" +
-          "script gen_prog { entry = src:gen.sh; args = ${MESSAGE}; }\n" +
+          "js_script gen_prog { entry = src:gen.js; args = ${MESSAGE}; }\n" +
           "generate gen { run = gen_prog; output = out:**; }\n",
-        "src/gen.sh": 'mkdir -p out\nprintf "%s\\n" "$1" > out/msg.txt\n',
+        "src/gen.js":
+          'const fs = require("fs");\nfs.mkdirSync("out", { recursive: true });\nfs.writeFileSync("out/msg.txt", `${process.argv[2]}\\n`);\n',
         "targets/base.fabr": "default MESSAGE = base;\n",
       },
       ["build", "-w", "gen"]

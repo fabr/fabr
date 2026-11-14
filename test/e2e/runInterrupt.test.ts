@@ -59,10 +59,11 @@ describe("e2e: interrupting a one-shot run", () => {
     const cache = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-e2e-runcache-"));
     const session = startFabrWatch(
       {
-        "PROJECT.fabr": "script forever { entry = src:forever.sh; }\n",
-        /* Records its own pid in the caller's cwd (the project dir — a script
-         * runnable launches there) and then never exits on its own. */
-        "src/forever.sh": "echo $$ > run.pid\necho started 1>&2\nwhile true; do sleep 0.2; done\n",
+        "PROJECT.fabr": "plugin @fabr-build/js;\njs_script forever { entry = src:forever.js; }\n",
+        /* Records its own pid in the caller's cwd (the project dir — a program
+         * launches there) and then never exits on its own. */
+        "src/forever.js":
+          'require("fs").writeFileSync("run.pid", String(process.pid));\nconsole.error("started");\nsetInterval(() => {}, 200);\n',
       },
       ["run", "forever"],
       { FABR_CACHE_DIR: cache }

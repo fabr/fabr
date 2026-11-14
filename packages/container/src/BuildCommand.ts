@@ -23,6 +23,7 @@ import {
   ActionContext,
   Computable,
   execute,
+  executePipeline,
   executeInternalCapture,
   FabrError,
   hostEnvironment,
@@ -33,7 +34,7 @@ import {
   normalizeEntryName,
   TarExtract,
   TarPack,
-  writeFileSet,
+  tarStream,
 } from "@fabr-build/core";
 import { ImageFileSet } from "./ImageFileSet";
 import { indexLayer, teeOutput } from "./LayerIndex";
@@ -166,7 +167,7 @@ export function runBuildCommand(
     });
 }
 
-/** Load `base` into the engine under `tag`, where the engine lacks it: its layout, staged, streamed into `load`. */
+/** Load `base` into the engine under `tag`, where the engine lacks it: its layout, streamed into `load` as a tar. */
 function loadBase(
   ctx: ActionContext,
   report: ITaskReport,
@@ -179,19 +180,17 @@ function loadBase(
     if (status === 0) {
       return Computable.resolve<void>(undefined);
     }
-    const layoutDir = path.join(ctx.workDir, "base-layout");
-    return imageLayout(base, tag)
-      .then(layout => writeFileSet(layoutDir, layout))
-      .then(() =>
-        execute(
-          ctx.processLimit,
-          "/bin/sh",
-          ["-c", `cd "$LAYOUT" && COPYFILE_DISABLE=1 tar --no-xattrs -cf - . | "$ENGINE" load -q >/dev/null`],
-          ctx.workDir,
-          { ...env, LAYOUT: layoutDir, ENGINE: engine },
-          { ...report, output: undefined }
-        )
-      );
+    return imageLayout(base, tag).then(layout =>
+      executePipeline(
+        ctx.processLimit,
+        [{ argv: [engine, "load", "-q"] }],
+        ctx.workDir,
+        () => ctx.createOutput(),
+        () => tarStream(layout, { directories: true }),
+        { ...report, output: undefined },
+        new Map(Object.entries(env))
+      ).then(() => undefined)
+    );
   });
 }
 
@@ -204,21 +203,20 @@ function copyOut(
   paths: readonly string[],
   env: Record<string, string>
 ): Computable<Array<{ path: string; archive: string }>> {
-  if (paths.length === 0) {
-    return Computable.resolve([]);
-  }
   const archives = paths.map((p, index) => ({ path: p, archive: path.join(ctx.workDir, `changed-${index}.tar`) }));
-  const script = archives
-    .map(({ path: p, archive }) => `"$ENGINE" cp ${shellQuote(`${container}:${p}`)} - > ${shellQuote(archive)}`)
-    .join(" && ");
-  return execute(
-    ctx.processLimit,
-    "/bin/sh",
-    ["-c", script],
-    ctx.workDir,
-    { ...env, ENGINE: engine },
-    { ...report, output: undefined }
-  ).then(() => archives);
+  const copy = (index: number): Computable<void> =>
+    index >= archives.length
+      ? Computable.resolve(undefined)
+      : executePipeline(
+          ctx.processLimit,
+          [{ argv: [engine, "cp", `${container}:${archives[index].path}`, "-"], stdoutFile: archives[index].archive }],
+          ctx.workDir,
+          () => ctx.createOutput(),
+          undefined,
+          { ...report, output: undefined },
+          new Map(Object.entries(env))
+        ).then(() => copy(index + 1));
+  return copy(0).then(() => archives);
 }
 
 /**
@@ -309,8 +307,4 @@ function entryName(absolute: string): string {
     throw new FabrError(`a build command's change '${absolute}' leaves the image's filesystem`);
   }
   return name;
-}
-
-function shellQuote(text: string): string {
-  return `'${text.replace(/'/g, `'\\''`)}'`;
 }

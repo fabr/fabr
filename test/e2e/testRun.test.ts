@@ -440,13 +440,13 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
         "plugin @fabr-build/js;\n\n" +
         STUB_TSC_CONFIG +
         "\njs_package thing { srcs = src:**/*.ts; tests = src:**/*.test.ts; }\n" +
-        "script fail { entry = ./fail.sh; }\ngenerate gen { run = fail > broken.ts; }\n" +
+        "js_script fail { entry = ./fail.js; }\ngenerate gen { run = fail > broken.ts; }\n" +
         "js_package broken { srcs = gen:*.ts; tests = t:*.test.ts; }\n" +
         "all = thing broken;\n" +
         "js_test standalone { tests = it:**/*.test.ts; }\n",
       "src/thing.test.ts":
         'const assert = require("node:assert");\ndescribe("thing", () => { it("fails on purpose", () => { assert.equal(1, 2); }); });\n',
-      "fail.sh": 'echo "generator broke" >&2\nexit 3\n',
+      "fail.js": 'console.error("generator broke");\nprocess.exit(3);\n',
       "t/broken.test.ts": 'describe("broken", () => { it("never runs", () => {}); });\n',
       "it/standalone.test.ts": 'describe("standalone", () => { it("holds", () => {}); });\n',
     };

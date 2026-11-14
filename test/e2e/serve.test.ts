@@ -17,7 +17,7 @@
 import { expect } from "chai";
 import { runFabr, startFabrWatch } from "./harness";
 
-/* Watch mode over a `serve` target: the server (a shell script polling its
+/* Watch mode over a `serve` target: the server (a program polling its
  * cwd-relative content file — which also proves the install-anchored launch
  * cwd, since the file only exists in the staged install) stays running across
  * content edits — the staged file is synced in place ("Updating ... content")
@@ -31,25 +31,25 @@ import { runFabr, startFabrWatch } from "./harness";
 jest.setTimeout(90000);
 
 /* The server announces itself, then polls `data.txt` in its cwd and announces
- * each distinct content it observes. `exec` is unavailable (the loop IS the
- * program); the short sleep bounds SIGTERM latency. */
+ * each distinct content it observes, less any trailing newlines. */
 const SERVER = (banner: string): string =>
-  `echo "${banner} up" >&2\n` +
-  'last=""\n' +
-  "while true; do\n" +
-  "  cur=$(cat data.txt 2>/dev/null)\n" +
-  '  if [ "$cur" != "$last" ]; then echo "CONTENT [$cur]" >&2; last="$cur"; fi\n' +
-  "  sleep 0.2\n" +
-  "done\n";
+  `console.error("${banner} up");\n` +
+  'let last = "";\n' +
+  "setInterval(() => {\n" +
+  '  let cur = "";\n' +
+  '  try { cur = require("fs").readFileSync("data.txt", "utf8").replace(/\\n+$/, ""); } catch {}\n' +
+  "  if (cur !== last) { console.error(`CONTENT [${cur}]`); last = cur; }\n" +
+  "}, 200);\n";
 
-const PROJECT = "script server { entry = src:server.sh; }\n" + "serve site { tool = server; files = content:**; }\n";
+const PROJECT =
+  "plugin @fabr-build/js;\n" + "js_script server { entry = src:server.js; }\n" + "serve site { tool = server; files = content:**; }\n";
 
 describe("e2e: serve target under fabr run -w", () => {
   it("syncs content in place without a restart, and restarts on a program change", async () => {
     const session = startFabrWatch(
       {
         "PROJECT.fabr": PROJECT,
-        "src/server.sh": SERVER("SERVER V1"),
+        "src/server.js": SERVER("SERVER V1"),
         "content/data.txt": "one",
       },
       ["run", "-w", "site"]
@@ -70,7 +70,7 @@ describe("e2e: serve target under fabr run -w", () => {
 
       /* A program edit still restarts — and the fresh install carries the
        * current content. */
-      session.write("src/server.sh", SERVER("SERVER V2"));
+      session.write("src/server.js", SERVER("SERVER V2"));
       await session.waitFor("Restarting site", { timeoutMs: 60000 });
       await session.waitFor("SERVER V2 up", { timeoutMs: 60000 });
       await session.waitFor("CONTENT [two]", { count: 2, timeoutMs: 60000 });
@@ -88,7 +88,7 @@ describe("e2e: serve target under fabr run -w", () => {
     const session = startFabrWatch(
       {
         "PROJECT.fabr": PROJECT,
-        "src/server.sh": SERVER("SERVER V1"),
+        "src/server.js": SERVER("SERVER V1"),
         "content/data.txt": "one",
         "other/data.txt": "three",
       },
@@ -113,11 +113,14 @@ describe("e2e: serve target under fabr run -w", () => {
   it("launches the server with its 'env' over the inherited environment, and restarts when 'env' changes", async () => {
     /* The server reports a declared variable and whether it still has the PATH
      * `fabr run` itself was started with. */
-    const server = 'echo "GREETING [$GREETING] PATH [${PATH:+inherited}]" >&2\n' + "while true; do sleep 0.2; done\n";
+    const server =
+      'console.error(`GREETING [${process.env.GREETING}] PATH [${process.env.PATH ? "inherited" : ""}]`);\n' +
+      "setInterval(() => {}, 1000);\n";
     const project = (greeting: string): string =>
-      "script server { entry = src:server.sh; }\n" +
+      "plugin @fabr-build/js;\n" +
+      "js_script server { entry = src:server.js; }\n" +
       `serve site { tool = server; files = content:**; env = { GREETING = ${greeting}; } }\n`;
-    const session = startFabrWatch({ "PROJECT.fabr": project("hello there"), "src/server.sh": server, "content/data.txt": "one" }, [
+    const session = startFabrWatch({ "PROJECT.fabr": project("hello there"), "src/server.js": server, "content/data.txt": "one" }, [
       "run",
       "-w",
       "site",
@@ -145,12 +148,15 @@ describe("e2e: serve target under fabr run -w", () => {
     const session = startFabrWatch(
       {
         "PROJECT.fabr":
-          "script gen { entry = src:gen.sh; }\n" +
+          "plugin @fabr-build/js;\n" +
+          "js_script gen { entry = src:gen.js; }\n" +
           "generate site { run = gen; srcs = content:**; output = out:**; }\n" +
-          "script server { entry = src:server.sh; }\n" +
+          "js_script server { entry = src:server.js; }\n" +
           "serve app { tool = server; files = site:**; }\n",
-        "src/gen.sh": "mkdir -p out\ntr 'a-z' 'A-Z' < data.txt > out/data.txt\n",
-        "src/server.sh": SERVER("SERVER"),
+        "src/gen.js":
+          'const fs = require("fs");\nfs.mkdirSync("out", { recursive: true });\n' +
+          'fs.writeFileSync("out/data.txt", fs.readFileSync("data.txt", "utf8").toUpperCase());\n',
+        "src/server.js": SERVER("SERVER"),
         "content/data.txt": "one",
       },
       ["run", "-w", "app"]
@@ -179,7 +185,7 @@ describe("e2e: serve target under fabr run -w", () => {
 describe("e2e: a serve target without fabr run", () => {
   const files = {
     "PROJECT.fabr": PROJECT,
-    "src/server.sh": 'echo "SERVER STARTED" >&2\n',
+    "src/server.js": 'console.error("SERVER STARTED");\n',
     "content/data.txt": "served\n",
   };
 
@@ -192,7 +198,7 @@ describe("e2e: a serve target without fabr run", () => {
   it("reads as its program's install under ls and cat", () => {
     const listed = runFabr(files, ["ls", "site"]);
     expect(listed.status, listed.stderr).to.equal(0);
-    expect(listed.stdout.split("\n")).to.include.members(["data.txt", "server.sh"]);
+    expect(listed.stdout.split("\n")).to.include.members(["data.txt", "server.js"]);
     const read = runFabr(files, ["cat", "site:data.txt"]);
     expect(read.stdout).to.equal("served\n");
     expect(read.stderr).not.to.contain("SERVER STARTED");

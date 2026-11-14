@@ -112,6 +112,17 @@ export function writeTar(files: FileSet, output: IOutputHandle, name: string, op
   );
 }
 
+/**
+ * Make a stream of `files` as an uncompressed tar archive, its entries as
+ * {@link writeTar} writes them, each file's content opened only when the
+ * archive reaches it. The stream fails with the first error reading a file.
+ */
+export function tarStream(files: FileSet, options: PackOptions = {}): Readable {
+  const pack = new TarPack();
+  writeEntries(pack, entriesOf(files, options), err => pack.destroy(err));
+  return pack;
+}
+
 /** @return the entries of the archive of `files`, in the order written. */
 function entriesOf(files: FileSet, options: PackOptions): PackEntry[] {
   const hardlinks = options.hardlinks ?? true;

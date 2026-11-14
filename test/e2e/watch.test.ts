@@ -47,17 +47,18 @@ describe("e2e: watch mode (fabr build -w)", () => {
     const session = startFabrWatch(
       {
         "PROJECT.fabr":
-          "script get_value { entry = src:value.sh; }\n" +
+          "plugin @fabr-build/js;\n" +
+          "js_script get_value { entry = src:value.js; }\n" +
           "CYCLE = `get_value`;\n" +
-          "script foo_prog { entry = src:foo.sh; }\n" +
+          "js_script foo_prog { entry = src:foo.js; }\n" +
           "generate foo {\n" +
           "  run = foo_prog > out.txt;\n" +
           "  srcs = in.txt;\n" +
           "  srcs<CYCLE=1> = foo:out.txt;\n" +
           "}\n" +
           "generate bar { run = foo_prog > bar.txt; srcs = in.txt; }\n",
-        "src/value.sh": 'printf "1"\n',
-        "src/foo.sh": "cat in.txt\n",
+        "src/value.js": 'process.stdout.write("1");\n',
+        "src/foo.js": 'process.stdout.write(require("fs").readFileSync("in.txt"));\n',
         "in.txt": "one\n",
       },
       ["build", "-w", "foo", "bar"]
@@ -72,7 +73,7 @@ describe("e2e: watch mode (fabr build -w)", () => {
       await session.waitFor("✓ Building bar", { count: 2, timeoutMs: 60000 });
       /* The healing batch: the marker names `foo` alone — the batch before it
        * ended, so `bar` was reported with it rather than carried over. */
-      session.write("src/value.sh", 'printf "0"\n');
+      session.write("src/value.js", 'process.stdout.write("0");\n');
       await session.waitFor("Watching for changes", { count: 2, timeoutMs: 60000 });
       expect(session.stderr).to.match(/info:Built foo \(/);
       expect(session.stderr).to.not.match(/Built .*bar/);
@@ -86,8 +87,11 @@ describe("e2e: watch mode (fabr build -w)", () => {
   it("rebuilds on a source change and exits cleanly on SIGINT", async () => {
     const session = startFabrWatch(
       {
-        "PROJECT.fabr": "script gen_prog { entry = src:gen.sh; }\n" + "generate gen { run = gen_prog; output = out:**; }\n",
-        "src/gen.sh": 'mkdir -p out\nprintf "V1\\n" > out/msg.txt\n',
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\njs_script gen_prog { entry = src:gen.js; }\n" +
+          "generate gen { run = gen_prog; output = out:**; }\n",
+        "src/gen.js":
+          'const fs = require("fs");\nfs.mkdirSync("out", { recursive: true });\nfs.writeFileSync("out/msg.txt", "V1\\n");\n',
       },
       ["build", "-w", "gen"]
     );
@@ -98,7 +102,10 @@ describe("e2e: watch mode (fabr build -w)", () => {
 
       /* Editing the source triggers exactly one more build cycle: the target
        * re-announces ("Building gen" again) and re-reports ("Built gen"). */
-      session.write("src/gen.sh", 'mkdir -p out\nprintf "V2\\n" > out/msg.txt\n');
+      session.write(
+        "src/gen.js",
+        'const fs = require("fs");\nfs.mkdirSync("out", { recursive: true });\nfs.writeFileSync("out/msg.txt", "V2\\n");\n'
+      );
       await session.waitFor(BUILDING_GEN, { count: 2, timeoutMs: 60000 });
       await session.waitFor("Built gen", { count: 2, timeoutMs: 60000 });
     } finally {

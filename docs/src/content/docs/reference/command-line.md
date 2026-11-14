@@ -413,8 +413,9 @@ two runs over the same sources write the same bytes.
 
 Sets up the directory that a target's build step runs in, with its inputs and tools in place,
 prints the command the step would run, and opens a shell there. Use it to reproduce a failing step
-by hand. The shell has the environment the step has (empty, apart from what the target sets, such
-as a test's `test_env`), and the directory is removed when you exit.
+by hand. The shell is the one your `SHELL` environment variable names, else `/bin/sh` (on Windows,
+the command interpreter `%ComSpec%` names). It has the environment the step has (empty, apart from
+what the target sets, such as a test's `test_env`), and the directory is removed when you exit.
 
 ```sh
 fabr shell docs_site

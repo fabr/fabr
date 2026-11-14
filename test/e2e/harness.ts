@@ -52,6 +52,16 @@ const FABR = require.resolve("@fabr-build/cli");
 const NODE = process.execPath;
 const CHILD_PATH = [path.dirname(NODE), "/usr/bin", "/bin", process.env.PATH].filter(Boolean).join(path.delimiter);
 
+/** `it`, or `it.skip` where this host has no POSIX shell (`/bin/sh`, or `sh` on
+ *  PATH): for a test of what runs one, the `script` rule or `fabr shell`. */
+export const withShell =
+  spawnSync(process.platform !== "win32" && fs.existsSync("/bin/sh") ? "/bin/sh" : "sh", ["-c", "exit 0"]).status === 0 ? it : it.skip;
+
+/** A reference to the node running this suite as a program of the host, for a
+ *  fixture's build file: quoted and with `/` separators, so a Windows path is
+ *  read as written. */
+export const HOST_NODE = `@host:'${NODE.split(path.sep).join("/")}'`;
+
 /* A fixture using the js plugin runs its tools on the node running this suite,
  * rather than downloading the release NODE names: NODE is pointed at a link to
  * it inside the project, since a build file names only files of its own tree. */

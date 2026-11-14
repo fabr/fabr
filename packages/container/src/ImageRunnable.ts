@@ -24,76 +24,23 @@ import {
   HostLink,
   hostEnvironment,
   IFile,
-  MemoryFile,
   RunnableArgument,
   RunnableFileSet,
   TargetContext,
 } from "@fabr-build/core";
+import * as path from "path";
 import { ownerHost, reapContainers } from "./Containers";
 import { ImageFileSet } from "./ImageFileSet";
 import { imageLayout, manifestOf } from "./OciLayout";
 
 /** Where the image's layout is in the install of a runnable image, and the other names there. */
 const LAYOUT_DIR = "layout";
-const LAUNCHER = "launch.sh";
+const LAUNCHER = "fabr-container-launch.js";
 const ENGINE_DIR = "engine";
 
-/** The global naming the shell the launcher and the teardown run with. */
-const SHELL_GLOBAL = "SHELL";
-
-/**
- * The launcher of a runnable image, a shell script taking the container engine
- * (Docker or podman) as `$1`, this host's owner part as `$2`, the image's tag
- * as `$3`, and a count `$4`: the next `$4` arguments are the engine's options
- * for the run (`-p 8080:8080/tcp`, `-e NAME=value`) and the rest the program's
- * own.
- *
- * - Where the engine does not hold the tag, it loads the layout beside the
- *   script, streamed as a tar with no extended attributes (macOS's tar adds its
- *   own otherwise, which Docker refuses), then removes the repository's other
- *   tags except the one tagged most recently, leaving any a container still uses.
- * - It runs the image with `--rm` and `--init` (a minimal init that passes
- *   signals on to the program: the kernel ignores signals sent to a PID 1 that
- *   does not handle them), stdin attached, and a terminal where stdin is one.
- * - The container is named `fabr-$FABR_LAUNCH` where fabr launched it, which
- *   the runnable's teardown removes; otherwise `fabr-<$2>-<pid>-run`, the pid
- *   the script's, which `exec` makes the engine client's. A container left by
- *   a killed run is removed by a later one (`reapContainers`).
- */
-export const LAUNCH_SCRIPT = `#!/bin/sh
-set -e
-here=$(cd "$(dirname "$0")" && pwd)
-engine="$1"
-name="fabr-\${FABR_LAUNCH:-$2-$$-run}"
-image="$3"
-options="$4"
-shift 4
-# Rotate the arguments, putting the image between the options and the rest.
-total=$#
-at=0
-while [ "$at" -lt "$total" ]; do
-  if [ "$at" -eq "$options" ]; then set -- "$@" "$image"; fi
-  set -- "$@" "$1"
-  shift
-  at=$((at + 1))
-done
-if [ "$options" -eq "$total" ]; then set -- "$@" "$image"; fi
-if ! "$engine" image inspect "$image" >/dev/null 2>&1; then
-  (cd "$here/${LAYOUT_DIR}" && COPYFILE_DISABLE=1 tar --no-xattrs -cf - .) | "$engine" load -q >/dev/null
-  "$engine" image ls "\${image%:*}" --format '{{.Repository}}:{{.Tag}}' | grep -vxF "$image" | while read -r old; do
-    echo "$("$engine" image inspect -f '{{.Metadata.LastTagTime}}' "$old" 2>/dev/null) $old"
-  done | sort -r | tail -n +2 | while read -r line; do
-    "$engine" rmi "\${line##* }" >/dev/null 2>&1 || true
-  done
-fi
-if [ -t 0 ]; then
-  exec "$engine" run --rm --init -i -t --name "$name" "$@"
-fi
-exec "$engine" run --rm --init -i --name "$name" "$@"
-`;
-
-/** The script of the runnable's teardown, run by the shell with the engine as `$0`: the command removing the launch's container, whether or not it is still running. */
-const TEARDOWN_SCRIPT = 'exec "$0" rm -f "fabr-$FABR_LAUNCH" >/dev/null 2>&1';
+/** The compiled launcher of a runnable image, beside this module: a program
+ * run by the node that runs fabr, with the arguments its description names. */
+const LAUNCHER_SOURCE = path.join(__dirname, "launcher", LAUNCHER);
 
 /** How a program runs its image: the engine's options for the run, and its arguments. */
 export interface IContainerRun {
@@ -118,11 +65,12 @@ const IMAGE_RUN: IContainerRun = { env: [], hosts: [], args: [] };
  * The install holds the image's OCI layout, tagged
  * `localhost/fabr/<name>:<config digest>` (its layers are the stored tars, so
  * they stage by hardlink), the engine's install where it is not a program of
- * the host, and {@link LAUNCH_SCRIPT}, run by the shell `SHELL` names. The
- * launch runs the image as `run` says, the caller's arguments after the
- * entrypoint's and `run.args`; the teardown removes the launch's container.
- * Before it is made, containers dead fabr runs left in a host engine are
- * removed. Throws where `engine` is not a single program.
+ * the host, and the launcher (`launcher/fabr-container-launch.ts`), run by the
+ * node that runs fabr. The launch runs the image as `run` says, the caller's
+ * arguments after the entrypoint's and `run.args`; the teardown is the
+ * launcher removing the launch's container. Before it is made, containers dead
+ * fabr runs left in a host engine are removed. Throws where `engine` is not a
+ * single program.
  */
 export function imageRunnable(
   image: ImageFileSet,
@@ -133,30 +81,48 @@ export function imageRunnable(
 ): Computable<RunnableFileSet> {
   const command = engineCommand(name, engine);
   return Computable.forAll(
-    [reapEngine(context, command), context.getGlobalRunnable(SHELL_GLOBAL)] as const,
-    (_reaped: void, shell: RunnableFileSet) => shell
-  ).then(shell =>
+    [reapEngine(context, command), launcherOf(context)] as const,
+    (_reaped: void, launcher: ILauncher) => launcher
+  ).then(({ node, file }) =>
     manifestOf(image).then(({ config }) => {
       const tag = `localhost/fabr/${imageName(name)}:${config.digest.substring("sha256:".length, "sha256:".length + 12)}`;
       return imageLayout(image, tag).then(layout => {
         const install = FileSet.unionAll(
           layout.mountedAt(LAYOUT_DIR),
           engine.mountedAt(ENGINE_DIR),
-          new FileSet(new Map<string, IFile>([[LAUNCHER, new MemoryFile(Buffer.from(LAUNCH_SCRIPT), 0o755)]]))
+          new FileSet(new Map<string, IFile>([[LAUNCHER, file]]))
         );
         const options = runOptions(image, run);
-        return RunnableFileSet.forEntry(install, LAUNCHER, [
-          command,
-          ownerHost(),
-          tag,
-          String(options.length),
-          ...options,
-          ...run.args,
-        ])
-          .withTeardown(shell.toCommandLine(["-c", TEARDOWN_SCRIPT, command]))
-          .launchedBy(shell, context.execution.buildCache);
+        return RunnableFileSet.forEntry(
+          install,
+          LAUNCHER,
+          ["run", command, ownerHost(), tag, { installFile: LAYOUT_DIR }, String(options.length), ...options, ...run.args],
+          node
+        ).withTeardown([node, { installFile: LAUNCHER }, "remove", command]);
       });
     })
+  );
+}
+
+/** The launcher of a runnable image: the node that runs fabr, as a program of this host, and the launcher's compiled file. */
+interface ILauncher {
+  readonly node: HostLink;
+  readonly file: IFile;
+}
+
+/** Read the launcher of a runnable image: the node that runs fabr from this host's files, and the launcher's file from fabr's installation, into the blob pool. */
+function launcherOf(context: TargetContext): Computable<ILauncher> {
+  const { execution } = context;
+  return Computable.forAll(
+    [execution.hostFileSource.get(process.execPath), execution.installedFileSource.get(LAUNCHER_SOURCE)] as const,
+    (node, file) => {
+      if (node === undefined || file === undefined) {
+        throw new FabrError(
+          `fabr's container launcher is not installed: ${node === undefined ? process.execPath : LAUNCHER_SOURCE} is missing`
+        );
+      }
+      return { node: new HostLink(node.hash, process.execPath), file };
+    }
   );
 }
 

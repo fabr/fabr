@@ -21,7 +21,7 @@ import { ChildProcess, spawn } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { Writable } from "stream";
+import { Readable, Writable } from "stream";
 import { StringDecoder } from "string_decoder";
 import { getSystemErrorMap } from "util";
 import { Computable } from "../core/Computable";
@@ -579,12 +579,19 @@ export interface StageStreams {
   mergedTo?: "out" | "err";
 }
 
+/** What the first stage of an {@link executePipeline} reads: bytes, or the stream a function makes. */
+export type PipelineInput = Uint8Array | (() => Readable);
+
 /** One stage of an {@link executePipeline}: the argv to run and its
  * redirections. */
 export interface StageSpec extends StageStreams {
   argv: string[];
   /** The variables its runnable is launched with, each `NAME=value`, under the pipeline's own. */
   env?: string[];
+  /** A file, relative to the pipeline's directory, the last stage's stdout is
+   *  written to as it is, neither captured nor shown; with no `stdout` or
+   *  `mergedTo` of its own. */
+  stdoutFile?: string;
 }
 
 /** Split a `NAME=value` variable at its first `=`; an entry with none is an error. */
@@ -610,7 +617,9 @@ interface Capture {
 /**
  * Run a pipeline of stages as concurrent processes in `cwd`, holding one slot
  * of `limit` for the whole pipeline. Each stage's stdout feeds the next
- * stage's stdin; the first stage reads `stdin`, or EOF where there is none.
+ * stage's stdin; the first stage reads `stdin`, or EOF where there is none:
+ * bytes, or a stream made once the slot is held, which is destroyed where the
+ * pipeline fails and whose own failure fails it.
  * Each capture is streamed into the content store through a handle from
  * `createOutput`. A stage's environment is its own `env` entries overlaid with
  * the pipeline's `env`, and nothing else (no {@link FORCE_COLOR_ENV}). Each
@@ -634,7 +643,7 @@ export function executePipeline(
   specs: StageSpec[],
   cwd: string,
   createOutput: () => IOutputHandle,
-  stdin: Uint8Array | undefined,
+  stdin: PipelineInput | undefined,
   report: ITaskReport,
   env: ReadonlyMap<string, string> = new Map()
 ): Computable<FileSet> {
@@ -645,7 +654,7 @@ function pipelineUnbounded(
   specs: StageSpec[],
   cwd: string,
   createOutput: () => IOutputHandle,
-  stdin: Uint8Array | undefined,
+  stdin: PipelineInput | undefined,
   sink: IOutputSink | undefined,
   env: ReadonlyMap<string, string>
 ): Computable<FileSet> {
@@ -670,6 +679,8 @@ function pipelineUnbounded(
     const exit: Array<number | string | undefined> = specs.map(() => undefined);
     let settled = false;
     let remaining = specs.length;
+    /* The first stage's input, where it is a stream. */
+    let input: Readable | undefined;
 
     /* On failure, TERM every stage's whole group, an exited stage's included
      * (its sweep may still be in its grace). */
@@ -685,6 +696,7 @@ function pipelineUnbounded(
       if (!settled) {
         settled = true;
         killAll();
+        input?.destroy();
         captures.forEach(c => c.handle.discard());
         afterSweeps(() => reject(err));
       }
@@ -710,13 +722,25 @@ function pipelineUnbounded(
          * the given variables, so that captured content is the tool's own
          * bytes whatever fabr was run under. */
         const stdinCfg = i === 0 ? (stdin ? "pipe" : "ignore") : "pipe";
-        const proc = spawn(argvs[i][0], argvs[i].slice(1), {
-          cwd,
-          env: { ...Object.fromEntries((specs[i].env ?? []).map(variableEntry)), ...Object.fromEntries(env) },
-          stdio: [stdinCfg, "pipe", "pipe"],
-          windowsHide: true,
-          ...DETACHED,
-        });
+        if (spec.stdoutFile !== undefined && (!isLast || spec.stdout !== undefined || spec.mergedTo !== undefined)) {
+          throw new FabrError(`Internal error: only the last stage's own stdout can be written to a file (${stageCommandLine(spec)})`);
+        }
+        const stdoutCfg = spec.stdoutFile === undefined ? "pipe" : fs.openSync(path.resolve(cwd, spec.stdoutFile), "w");
+        let proc: ChildProcess;
+        try {
+          proc = spawn(argvs[i][0], argvs[i].slice(1), {
+            cwd,
+            env: { ...Object.fromEntries((specs[i].env ?? []).map(variableEntry)), ...Object.fromEntries(env) },
+            stdio: [stdinCfg, stdoutCfg, "pipe"],
+            windowsHide: true,
+            ...DETACHED,
+          });
+        } finally {
+          /* The child holds its own copy of the descriptor. */
+          if (typeof stdoutCfg === "number") {
+            fs.closeSync(stdoutCfg);
+          }
+        }
         trackGroup(proc.pid);
         proc.on("exit", () => sweeps.push(sweepGroup(proc.pid)));
         procs.push(proc);
@@ -811,8 +835,14 @@ function pipelineUnbounded(
         }
       }
       if (stdin && procs[0].stdin) {
-        procs[0].stdin.write(stdin);
-        procs[0].stdin.end();
+        if (typeof stdin === "function") {
+          input = stdin();
+          input.on("error", err => fail(err));
+          input.pipe(procs[0].stdin);
+        } else {
+          procs[0].stdin.write(stdin);
+          procs[0].stdin.end();
+        }
       }
     } catch (e) {
       fail(e instanceof Error ? e : new ExecutionError(String(e)));

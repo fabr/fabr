@@ -15,13 +15,13 @@
  */
 
 import { expect } from "chai";
-import { runFabr } from "./harness";
+import { runFabr, withShell } from "./harness";
 
 /* The core `script` rule defines a runnable plain shell script (no plugin, no
  * toolchain); `fabr run` launches it and the generic `generate` target collects
  * its output. These cases exercise that pair through the real CLI. */
 describe("e2e: script (shell runnable) + run", () => {
-  it("runs a shell script and collects its output", () => {
+  withShell("runs a shell script and collects its output", () => {
     const result = runFabr(
       {
         "PROJECT.fabr": "script gen_prog { entry = src:gen.sh; }\n" + "generate gen { run = gen_prog; output = out:**; }\n",
@@ -33,7 +33,7 @@ describe("e2e: script (shell runnable) + run", () => {
     expect(result.stdout).to.equal("e2e ran\n");
   });
 
-  it("passes fixed and caller args through to the script", () => {
+  withShell("passes fixed and caller args through to the script", () => {
     const result = runFabr(
       {
         "PROJECT.fabr": "script hello { entry = src:hello.sh; args = Ada; }\n",
@@ -45,7 +45,7 @@ describe("e2e: script (shell runnable) + run", () => {
     expect(result.stdout).to.equal("hi Ada Lovelace");
   });
 
-  it("propagates the script's exit code", () => {
+  withShell("propagates the script's exit code", () => {
     const result = runFabr(
       {
         "PROJECT.fabr": "script boom { entry = src:boom.sh; }\n",

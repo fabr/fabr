@@ -27,8 +27,11 @@ import { runFabr } from "./harness";
  * the run command makes the applied constraint observable in the output. */
 const project = {
   "PROJECT.fabr":
-    "default MSG = hello;\n" + "script greet { entry = ./greet.sh; }\n" + "generate out {\n  run = greet ${MSG} > result.txt;\n}\n",
-  "greet.sh": 'echo "got:$1"\n',
+    "plugin @fabr-build/js;\n" +
+    "default MSG = hello;\n" +
+    "js_script greet { entry = ./greet.js; }\n" +
+    "generate out {\n  run = greet ${MSG} > result.txt;\n}\n",
+  "greet.js": 'console.log("got:" + process.argv[2]);\n',
 };
 
 describe("e2e: constrained references on the command line", () => {

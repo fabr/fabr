@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { runFabr } from "./harness";
+import { HOST_NODE, runFabr } from "./harness";
 
 /* `generate` as a command pipeline: commands are fabr runnables,
  * streams are wired with `|`, and `>`/`2>`/`&>` capture output as content. Two
@@ -44,15 +44,11 @@ describe("e2e: generate command pipelines", () => {
 
   it("runs a program of the host as a command", () => {
     const result = runFabr(
-      {
-        "PROJECT.fabr":
-          `generate g { run = @host:${process.execPath} -e "process.stdout.write(process.execPath)" > out.txt; }\n` +
-          'generate s { run = @host:/bin/sh -c "echo shell ran" > out.txt; }\n',
-      },
-      ["cat", "g:out.txt", "s:out.txt"]
+      { "PROJECT.fabr": `generate g { run = ${HOST_NODE} -e "process.stdout.write(process.execPath)" > out.txt; }\n` },
+      ["cat", "g:out.txt"]
     );
     expect(result.status, result.stderr).to.equal(0);
-    expect(result.stdout).to.equal(`${process.execPath}shell ran\n`);
+    expect(result.stdout).to.equal(process.execPath);
   });
 
   it("pipes one stage's stdout into the next, capturing the result", () => {
@@ -296,16 +292,18 @@ describe("e2e: generate command pipelines", () => {
      * is a fresh project over the shared cache, so the target's name is unique
      * to this test. */
     const keeper =
-      "mkdir -p .state\n" +
-      "if [ -f .fabr-changes ]; then cp .fabr-changes .state/seen; else printf 'cold\\n' > .state/seen; fi\n" +
-      "count=$(cat .state/count 2>/dev/null || echo 0)\n" +
-      "echo $((count + 1)) > .state/count\n" +
-      "cat .state/count .state/seen > out.txt\n";
+      'const fs = require("fs");\n' +
+      'fs.mkdirSync(".state", { recursive: true });\n' +
+      'fs.writeFileSync(".state/seen", fs.existsSync(".fabr-changes") ? fs.readFileSync(".fabr-changes") : "cold\\n");\n' +
+      'const count = fs.existsSync(".state/count") ? Number(fs.readFileSync(".state/count", "utf8")) : 0;\n' +
+      'fs.writeFileSync(".state/count", `${count + 1}\\n`);\n' +
+      'fs.writeFileSync("out.txt", fs.readFileSync(".state/count", "utf8") + fs.readFileSync(".state/seen", "utf8"));\n';
     const project = (data: Record<string, string>): Record<string, string> => ({
       "PROJECT.fabr":
-        "script keeper { entry = tool:keeper.sh; }\n" +
+        "plugin @fabr-build/js;\n" +
+        "js_script keeper { entry = tool:keeper.js; }\n" +
         "generate kept_state_probe { srcs = data:**; run = keeper; output = out.txt; incremental = .state/**; changes = .fabr-changes; }\n",
-      "tool/keeper.sh": keeper,
+      "tool/keeper.js": keeper,
       ...Object.fromEntries(Object.entries(data).map(([name, content]) => [`data/${name}`, content])),
     });
     const run = (data: Record<string, string>): string => {
@@ -325,9 +323,10 @@ describe("e2e: generate command pipelines", () => {
     /* Output feedback: the tool appends to what it delivered last time. */
     const project = (data: string): Record<string, string> => ({
       "PROJECT.fabr":
-        "script appender { entry = tool:append.sh; }\n" +
+        "plugin @fabr-build/js;\n" +
+        "js_script appender { entry = tool:append.js; }\n" +
         "generate kept_output_probe { srcs = data:**; run = appender; output = log.txt; incremental = log.txt; }\n",
-      "tool/append.sh": "cat data.txt >> log.txt\n",
+      "tool/append.js": 'const fs = require("fs");\nfs.appendFileSync("log.txt", fs.readFileSync("data.txt"));\n',
       "data/data.txt": data,
     });
     const run = (data: string): string => {
@@ -346,7 +345,7 @@ describe("e2e: a rule written in .fabr", () => {
    * sources, its report the target's result. */
   const PROJECT =
     "plugin @fabr-build/js;\n" +
-    "script lister { entry = tool:list.sh; }\n" +
+    "js_script lister { entry = tool:list.js; }\n" +
     "rule js_package pkg<BUILD_OPERATION=lint> = lint<BUILD_OPERATION=build> {\n" +
     "    generate lint {\n" +
     "        srcs = pkg.srcs;\n" +
@@ -357,7 +356,7 @@ describe("e2e: a rule written in .fabr", () => {
     "js_package lib { srcs = libsrc:**/*.ts; }\n";
   const FILES = {
     "PROJECT.fabr": PROJECT,
-    "tool/list.sh": 'for f in "$@"; do echo "checked $f"; done\n',
+    "tool/list.js": "for (const file of process.argv.slice(2)) console.log(`checked ${file}`);\n",
     "src/a.ts": "export const a = 1;\n",
     "src/b.ts": "export const b = 2;\n",
     "libsrc/c.ts": "export const c = 3;\n",
@@ -381,7 +380,7 @@ describe("e2e: a rule written in .fabr", () => {
 
   it("builds targets under the operation when its name is the command", () => {
     /* A checker that fails, so only the lint operation (not a build) fails. */
-    const failing = { ...FILES, "tool/list.sh": 'echo "bad $1" >&2; exit 1\n' };
+    const failing = { ...FILES, "tool/list.js": "console.error(`bad ${process.argv[2]}`);\nprocess.exit(1);\n" };
     const result = runFabr(failing, ["lint", "app"]);
     expect(result.status).to.not.equal(0);
     expect(result.stderr).to.contain("bad a.ts");

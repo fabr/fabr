@@ -97,6 +97,7 @@ import chai, { expect } from "chai";
 import chaiAsPromised from "chai-as-promised";
 import { BuildCache } from "../core/BuildCache";
 import { catalogRepositoryRegistration } from "../rules/CatalogRepository";
+import { toPosix } from "../support/Paths";
 
 /** The requirements of a repository whose type states none. */
 const NO_REQUIREMENTS = new ResolvedRequirements(new Map(), [], false);
@@ -3787,7 +3788,7 @@ describe("contributed-lib-relative FILES", () => {
     ).mountedAt("@plug/pkg");
     const input =
       "targetdef script { deps = PACKAGES; entry = REQUIRED FILES; args = STRING; }\n" +
-      "targetdef host_searchpath { }\nhost_searchpath @host { }\nSHELL = @host:/bin/sh;\n" +
+      `targetdef host_searchpath { }\nhost_searchpath @host { }\nSHELL = @host:'${toPosix(process.execPath)}';\n` +
       "script @plug/drv { entry = ../tool/run.sh; deps = ../tool/*.js; }\n";
     const model = toBuildModel([parseBuildString(pkg, "@plug/pkg:lib/LIB.fabr", input, logger)], logger, [
       { rules: [scriptRunRule], repositories: [{ type: "host_searchpath", provider: hostSearchPath.provider }] },

@@ -50,6 +50,7 @@ still reports non-zero exit code with failures.
 - Breaking: a `?` version marker also raises every requirement its version satisfies to that version.
 - Add secret files: never stored in the build cache, staged readable by their owner alone, refused by `sync`.
 - Add 'fabr <version>' declaration.
+- Windows support.
 
 @fabr-build/aws:
 - Add s3 download support.

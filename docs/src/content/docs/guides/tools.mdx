@@ -58,7 +58,8 @@ script hello {
 ```
 
 - `entry` is the script, run with the shell the `SHELL` setting names: by default your machine's
-  `/bin/sh` (`SHELL = @host:/bin/sh;`, see [Programs on your machine](#programs-on-your-machine)).
+  `/bin/sh` (`SHELL = @host:/bin/sh;`, see [Programs on your machine](#programs-on-your-machine)),
+  or on Windows the `sh` on your `PATH`, such as the one Git for Windows installs.
 - `deps` are other files the script needs, such as a file it sources. They are installed with the
   script under the names their references give them, so `tools/lib.sh` sits beside
   `tools/hello.sh` and the script finds it relative to itself, as `. "$(dirname "$0")/lib.sh"`.

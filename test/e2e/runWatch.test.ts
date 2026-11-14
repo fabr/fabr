@@ -21,39 +21,39 @@ import { spawnOrphanReaper, startFabrWatch } from "./harness";
  * announces itself on stderr then blocks) is supervised across source edits —
  * a changed build relaunches it, an identical rebuild leaves it alone, and
  * SIGINT tears down both fabr and the child. The child inherits fabr's stdio,
- * so its stderr flows through to the harness. `exec` so the sleep replaces the
- * shell and a single SIGTERM stops it (no orphaned sleep). */
+ * so its stderr flows through to the harness. */
 /* jest caps each test at `testTimeout` (30s); the fabr runner bounds tests
  * itself. Called as a BARE `jest`: under real jest the object is injected into
  * MODULE scope and is not on globalThis. `@types/jest` rides the e2e target's
  * deps, so the bare name type-checks under the fabr compile too. */
 jest.setTimeout(90000);
 
-/* A server that binds a Unix socket at a *stable* cwd-relative path (a `script`
- * runs in the caller's cwd, unchanged across restarts) and, on SIGTERM, holds it
- * for ~600ms — under the 2s restart grace, so it exits and unlinks cleanly — then
- * frees it. A replacement that binds before the old one exits fails with
- * EADDRINUSE (printed as "BIND FAILED"); the socket path models a listening port
- * without a flaky real port. `exec node` so node replaces the shell and takes the
- * SIGTERM directly. The node script uses only double quotes, so it nests safely
- * inside the single-quoted `-e`. */
+/** A server that writes `line` to stderr, then runs until it is stopped. */
+const IDLE_SERVER = (line: string): string => `console.error(${JSON.stringify(line)});\nsetInterval(() => {}, 1000);\n`;
+
+/* A server that binds a socket at a *stable* address (a program runs in the
+ * caller's cwd, unchanged across restarts: a path there, or on Windows a pipe
+ * named for it) and, on SIGTERM, holds it for ~600ms — under the 2s restart
+ * grace, so it exits and frees it cleanly. A replacement that binds before the
+ * old one exits fails with EADDRINUSE (printed as "BIND FAILED"); the socket
+ * models a listening port without a flaky real port. */
 const SOCKET_SERVER = (version: string): string =>
-  `echo "${version} starting" >&2\n` +
-  "exec node -e '" +
-  'const net=require("net"),fs=require("fs"),path=require("path");' +
-  'const sock=path.join(process.cwd(),"srv.sock");' +
-  "const s=net.createServer();" +
-  's.on("error",e=>{console.error("BIND FAILED "+e.code);process.exit(1);});' +
-  `s.listen(sock,()=>console.error("${version} up"));` +
-  'process.on("SIGTERM",()=>{setTimeout(()=>{try{s.close();fs.unlinkSync(sock);}catch(e){}process.exit(0);},600);});' +
-  "'\n";
+  `console.error("${version} starting");\n` +
+  'const net = require("net"), path = require("path"), crypto = require("crypto");\n' +
+  'const sock = process.platform === "win32"\n' +
+  '  ? "\\\\\\\\.\\\\pipe\\\\fabr-" + crypto.createHash("sha256").update(process.cwd()).digest("hex").slice(0, 16)\n' +
+  '  : path.join(process.cwd(), "srv.sock");\n' +
+  "const s = net.createServer();\n" +
+  's.on("error", e => { console.error("BIND FAILED " + e.code); process.exit(1); });\n' +
+  `s.listen(sock, () => console.error("${version} up"));\n` +
+  'process.on("SIGTERM", () => setTimeout(() => { s.close(); process.exit(0); }, 600));\n';
 
 describe("e2e: run watch mode (fabr run -w)", () => {
   it("waits for the old child to exit before binding the replacement (no port race)", async () => {
     const session = startFabrWatch(
       {
-        "PROJECT.fabr": "script server { entry = src:server.sh; }\n",
-        "src/server.sh": SOCKET_SERVER("SERVER V1"),
+        "PROJECT.fabr": "plugin @fabr-build/js;\njs_script server { entry = src:server.js; }\n",
+        "src/server.js": SOCKET_SERVER("SERVER V1"),
       },
       ["run", "-w", "server"]
     );
@@ -66,7 +66,7 @@ describe("e2e: run watch mode (fabr run -w)", () => {
        * would try to bind while the old one still holds the address and
        * fail (EADDRINUSE). It must instead wait for the old child to exit — then
        * the new one binds cleanly. */
-      session.write("src/server.sh", SOCKET_SERVER("SERVER V2"));
+      session.write("src/server.js", SOCKET_SERVER("SERVER V2"));
       await session.waitFor("Restarting server", { timeoutMs: 60000 });
       /* Settle on whichever the replacement did — bind, or fail to — so the race
        * (BIND FAILED) fails this test promptly rather than via a 60s timeout. */
@@ -82,8 +82,8 @@ describe("e2e: run watch mode (fabr run -w)", () => {
   it("relaunches the program on a source change and exits cleanly on SIGINT", async () => {
     const session = startFabrWatch(
       {
-        "PROJECT.fabr": "script server { entry = src:server.sh; }\n",
-        "src/server.sh": 'echo "SERVER V1 up" >&2\nexec sleep 300\n',
+        "PROJECT.fabr": "plugin @fabr-build/js;\njs_script server { entry = src:server.js; }\n",
+        "src/server.js": IDLE_SERVER("SERVER V1 up"),
       },
       ["run", "-w", "server"]
     );
@@ -94,7 +94,7 @@ describe("e2e: run watch mode (fabr run -w)", () => {
 
       /* A real change relaunches: the supervisor reports "Restarting" and the
        * new build announces itself. */
-      session.write("src/server.sh", 'echo "SERVER V2 up" >&2\nexec sleep 300\n');
+      session.write("src/server.js", IDLE_SERVER("SERVER V2 up"));
       await session.waitFor("Restarting server", { timeoutMs: 60000 });
       await session.waitFor("SERVER V2 up", { timeoutMs: 60000 });
     } finally {
@@ -110,8 +110,8 @@ describe("e2e: run watch mode (fabr run -w)", () => {
      * SIGINT, so fabr exits 0 and the child is cleaned up. */
     const session = startFabrWatch(
       {
-        "PROJECT.fabr": "script server { entry = src:server.sh; }\n",
-        "src/server.sh": 'echo "SERVER up" >&2\nexec sleep 300\n',
+        "PROJECT.fabr": "plugin @fabr-build/js;\njs_script server { entry = src:server.js; }\n",
+        "src/server.js": IDLE_SERVER("SERVER up"),
       },
       ["run", "-w", "server"]
     );
@@ -133,8 +133,8 @@ describe("e2e: run watch mode (fabr run -w)", () => {
      * to kill its own process. */
     const session = startFabrWatch(
       {
-        "PROJECT.fabr": "script server { entry = src:server.sh; }\n",
-        "src/server.sh": 'echo "SERVER up" >&2\nexec sleep 300\n',
+        "PROJECT.fabr": "plugin @fabr-build/js;\njs_script server { entry = src:server.js; }\n",
+        "src/server.js": IDLE_SERVER("SERVER up"),
       },
       ["run", "-w", "server"]
     );
@@ -167,13 +167,16 @@ describe("e2e: run watch mode (fabr run -w)", () => {
     /* Three versions: the third is staged into the install the first ran from,
      * by syncing what changed — so a data file the second removed must be gone
      * from it, and one the third added present. The server lists its install's
-     * data files; `$0` is the staged entry. */
+     * data files, beside its staged entry. */
     const server = (version: string): string =>
-      `echo "${version} up: $(ls "$(dirname "$0")/data" | tr "\\n" " ")" >&2\nexec sleep 300\n`;
+      'const fs = require("fs"), path = require("path");\n' +
+      'const names = fs.readdirSync(path.join(__dirname, "data")).sort();\n' +
+      `console.error("${version} up: " + names.map(name => name + " ").join(""));\n` +
+      "setInterval(() => {}, 1000);\n";
     const session = startFabrWatch(
       {
-        "PROJECT.fabr": "script server { entry = src:server.sh; deps = src:data/*; }\n",
-        "src/server.sh": server("V1"),
+        "PROJECT.fabr": "plugin @fabr-build/js;\njs_script server { entry = src:server.js; deps = src:data/*; }\n",
+        "src/server.js": server("V1"),
         "src/data/a.txt": "a",
         "src/data/b.txt": "b",
       },
@@ -183,10 +186,10 @@ describe("e2e: run watch mode (fabr run -w)", () => {
       await session.waitFor("V1 up: a.txt b.txt", { timeoutMs: 60000 });
       await session.waitFor("Watching for changes", { timeoutMs: 60000 });
       session.remove("src/data/b.txt");
-      session.write("src/server.sh", server("V2"));
+      session.write("src/server.js", server("V2"));
       await session.waitFor("V2 up: a.txt", { timeoutMs: 60000 });
       session.write("src/data/c.txt", "c");
-      session.write("src/server.sh", server("V3"));
+      session.write("src/server.js", server("V3"));
       await session.waitFor(/V3 up: .*/, { timeoutMs: 60000 });
       expect(session.stderr).to.match(/V3 up: a\.txt c\.txt \n/);
     } finally {
@@ -196,11 +199,11 @@ describe("e2e: run watch mode (fabr run -w)", () => {
   });
 
   it("does not relaunch when the rebuilt program is unchanged", async () => {
-    const server = 'echo "SERVER up" >&2\nexec sleep 300\n';
+    const server = IDLE_SERVER("SERVER up");
     const session = startFabrWatch(
       {
-        "PROJECT.fabr": "script server { entry = src:server.sh; }\n",
-        "src/server.sh": server,
+        "PROJECT.fabr": "plugin @fabr-build/js;\njs_script server { entry = src:server.js; }\n",
+        "src/server.js": server,
       },
       ["run", "-w", "server"]
     );
@@ -210,7 +213,7 @@ describe("e2e: run watch mode (fabr run -w)", () => {
 
       /* Rewrite the source with byte-identical content: no content change, so
        * nothing restarts (the install manifest is unchanged). */
-      session.write("src/server.sh", server);
+      session.write("src/server.js", server);
       await session.waitFor("Watching for changes", { timeoutMs: 60000 });
       /* Give any (erroneous) restart a chance to happen before asserting none. */
       await new Promise(resolve => setTimeout(resolve, 1000));

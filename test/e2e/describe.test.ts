@@ -120,14 +120,14 @@ describe("e2e: build-server", () => {
       "js_package app { srcs = ./app/src:**/*.ts; tests = ./app/src:**/*.test.ts; deps = lib; }\n" +
       "fabr_plugin greeter { srcs = ./plugin/src:**/*.ts; exports = ./plugin/src:index.ts; libs = ./plugin/GREET.fabr; }\n" +
       "js_package multi { srcs = ./multi/src:**/*.ts ./multi:extra.d.ts ./multi:README.md; exports = ./multi/src:index.ts; }\n" +
-      "script gen_tool { entry = ./gen.sh; }\n" +
+      "js_script gen_tool { entry = ./gen.js; }\n" +
       "generate gen { run = gen_tool > index.ts; }\n" +
       "js_package made { srcs = gen:index.ts; exports = gen:index.ts; }\n" +
       "js_package user { srcs = ./user/src:**/*.ts; deps = made; }\n" +
       "js_package alias { srcs = ./alias/src:**/*.ts; deps = lib -> lib2; }\n",
     "plugin/GREET.fabr": "targetdef greeting {\n  text = STRING;\n}\n",
     "plugin/src/index.ts": "export const greeterValue = 1;\n",
-    "gen.sh": "echo 'export const madeValue = 1;'\n",
+    "gen.js": 'console.log("export const madeValue = 1;");\n',
     "user/src/main.ts": 'import { madeValue } from "made";\nexport const used = madeValue;\n',
     "alias/src/main.ts": 'import { libValue } from "lib2";\nexport const aliased = libValue;\n',
   };
@@ -337,12 +337,12 @@ describe("e2e: build-server", () => {
 describe("e2e: build-server with a target that fails to describe", () => {
   const project = {
     ...STUB_TSC,
-    "gen.sh": "echo 'generator broke' >&2\nexit 3\n",
+    "gen.js": 'console.error("generator broke");\nprocess.exit(3);\n',
     "user/src/main.ts": 'import { made } from "made";\nexport const used = made;\n',
     "PROJECT.fabr":
       "plugin @fabr-build/js;\n\n" +
       STUB_TSC_CONFIG +
-      "\nscript gen_tool { entry = ./gen.sh; }\n" +
+      "\njs_script gen_tool { entry = ./gen.js; }\n" +
       "generate gen { run = gen_tool > index.ts; }\n" +
       "js_package made { srcs = gen:index.ts; exports = gen:index.ts; }\n" +
       "js_package user { srcs = ./user/src:**/*.ts; deps = made; }\n",
@@ -385,7 +385,7 @@ describe("e2e: build-server with a target that fails to describe", () => {
   });
 
   it("describes both once the failed target is fixed", async () => {
-    session.write("gen.sh", "echo 'export const made = 1;'\n");
+    session.write("gen.js", 'console.log("export const made = 1;");\n');
     expect(await client.notification("build/taskFinish")).to.deep.include({ status: 1, data: { failed: [] } });
     expect(await client.notification("build/publishDiagnostics")).to.deep.include({
       buildTarget: { uri: "fabr:made" },
@@ -401,12 +401,12 @@ describe("e2e: build-server with a target that fails to describe", () => {
 describe("e2e: build-server with a target that fails after the rest", () => {
   const project = {
     ...STUB_TSC,
-    "gen.sh": "sleep 1\necho 'generator broke' >&2\nexit 3\n",
+    "gen.js": 'setTimeout(() => {\n  console.error("generator broke");\n  process.exit(3);\n}, 1000);\n',
     "other/src/main.ts": "export const other = 1;\n",
     "PROJECT.fabr":
       "plugin @fabr-build/js;\n\n" +
       STUB_TSC_CONFIG +
-      "\nscript gen_tool { entry = ./gen.sh; }\n" +
+      "\njs_script gen_tool { entry = ./gen.js; }\n" +
       "generate gen { run = gen_tool > index.ts; }\n" +
       "js_package made { srcs = gen:index.ts; exports = gen:index.ts; }\n" +
       "js_package other { srcs = ./other/src:**/*.ts; }\n",

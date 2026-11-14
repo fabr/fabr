@@ -17,6 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   BuildAction,
@@ -44,8 +45,9 @@ const SHOWN_COMMANDS = 3;
 /**
  * Stage `action`'s inputs and tool mounts for `fabr shell`, as its build step
  * would see them, into a work dir in the cache's work tree, log the
- * commands the step would run, and open an interactive shell (`$SHELL`, else
- * `/bin/sh`) in the step's working directory with the step's environment.
+ * commands the step would run, and open an interactive shell
+ * ({@link interactiveShell}) in the step's working directory with the step's
+ * environment.
  * `action` itself is not run. The work dir is removed when the shell exits.
  * The step stages itself ({@link IBuildActionDefinition.stage}).
  *
@@ -68,7 +70,7 @@ export function shellInto(cache: BuildCache, name: string, action: BuildAction |
       log.log(DIAG_SHELL, { name, dir: cwd, commands: describeCommands(staged) });
       /* The shell gets the step's environment, not fabr's, and owns the
        * terminal until it exits. */
-      return withTerminalSuspended(() => executeInteractive(process.env.SHELL || "/bin/sh", [], cwd, Object.fromEntries(staged.env)));
+      return withTerminalSuspended(() => executeInteractive(interactiveShell(), [], cwd, Object.fromEntries(staged.env)));
     })
     .finally(() => cache.releaseWorkDir(sandbox));
 }
@@ -111,4 +113,18 @@ function commandText({ stages, stdin }: IStagedCommand, env: ReadonlyMap<string,
 /** Quote an argument minimally for the shell, so a printed command is copy-pasteable. */
 function quote(arg: string): string {
   return /[^\w./:@=-]/.test(arg) ? `'${arg.replaceAll("'", "'\\''")}'` : arg;
+}
+
+/**
+ * @return the shell `fabr shell` opens: `$SHELL`, else `/bin/sh`. On Windows
+ * `$SHELL` counts only where it is a path there that exists (Git Bash sets an
+ * MSYS one, `/usr/bin/bash`, which Windows cannot run), else the command
+ * interpreter `%ComSpec%` names.
+ */
+function interactiveShell(): string {
+  const shell = process.env.SHELL;
+  if (process.platform !== "win32") {
+    return shell || "/bin/sh";
+  }
+  return shell !== undefined && /^([A-Za-z]:[\\/]|\\\\)/.test(shell) && existsSync(shell) ? shell : process.env.ComSpec || "cmd.exe";
 }

@@ -21,7 +21,7 @@ import { expect } from "chai";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { PassThrough } from "stream";
+import { PassThrough, Readable } from "stream";
 import { Computable } from "../core/Computable";
 import { CommandFailedError, FabrError } from "../core/Errors";
 import { FileSet, IFile } from "../core/FileSet";
@@ -67,6 +67,11 @@ function memoryOutput(): IOutputHandle {
       return Computable.resolve(undefined);
     },
   };
+}
+
+/** Wait for `computable` to settle. */
+function toPromise<T>(computable: Computable<T>): Promise<T> {
+  return new Promise((resolve, reject) => computable.then(resolve, reject));
 }
 
 function runPipeline(stages: Parameters<typeof executePipeline>[1], stdin?: Uint8Array): Promise<FileSet> {
@@ -571,6 +576,66 @@ describe("executePipeline", () => {
     expect(outcomes).to.have.length(1);
     expect(outcomes[0].ok).to.equal(false);
     expect(outcomes[0].err?.message).to.include("exited with error code 4");
+  });
+
+  it("writes the last stage's stdout to a file in its directory, neither captured nor shown", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-pipeline-file-"));
+    try {
+      const shown: string[] = [];
+      const files = await toPromise(
+        executePipeline(
+          LIMIT,
+          [{ argv: [NODE, "-e", "process.stdout.write('to the file')"], stdoutFile: "out.bin" }],
+          dir,
+          memoryOutput,
+          undefined,
+          { ...SILENT_REPORT, output: { line: (_stream, text) => shown.push(text) } }
+        )
+      );
+      expect(fs.readFileSync(path.join(dir, "out.bin"), "utf8")).to.equal("to the file");
+      expect([...files]).to.deep.equal([]);
+      expect(shown).to.deep.equal([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("makes a stdin stream only once the pipeline holds its slot, and fails where the stream does", async () => {
+    const one = new Semaphore(1);
+    let made = false;
+    let release: () => void = () => undefined;
+    void one.run(() => Computable.from<void>(resolve => (release = resolve)));
+    const fed = executePipeline(
+      one,
+      [{ argv: [NODE, "-e", "process.stdin.pipe(process.stdout)"], stdout: "out" }],
+      CWD,
+      memoryOutput,
+      () => {
+        made = true;
+        return Readable.from([Buffer.from("streamed")]);
+      },
+      SILENT_REPORT
+    );
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(made, "not made while the slot is taken").to.equal(false);
+    release();
+    expect(await captured(await toPromise(fed), "out")).to.equal("streamed");
+    const failing = await collectSettlements(
+      executePipeline(
+        LIMIT,
+        [{ argv: [NODE, "-e", "process.stdin.resume()"] }],
+        CWD,
+        memoryOutput,
+        () =>
+          new Readable({
+            read() {
+              this.destroy(new Error("unreadable layout"));
+            },
+          }),
+        SILENT_REPORT
+      )
+    );
+    expect(failing[0].err?.message).to.equal("unreadable layout");
   });
 
   it("does not hang or double-settle when a downstream stage exits before draining (SIGPIPE)", async () => {
