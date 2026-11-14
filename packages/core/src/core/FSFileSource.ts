@@ -686,7 +686,12 @@ export class FSFileSource implements FileSource {
      * through a symlink (macOS /var -> /private/var): take each event relative
      * to the real path, then onto `dir`. */
     const realDir = fs.realpathSync(this.hostPathOf(dir));
+    /* False once the controller has closed: a subscription left open (Windows) delivers nothing more. */
+    let open = true;
     const handler: parcelWatcher.SubscribeCallback = (err, events) => {
+      if (!open) {
+        return;
+      }
       if (err) {
         controller.reportError(err);
         return;
@@ -694,6 +699,9 @@ export class FSFileSource implements FileSource {
       for (const event of events) {
         const inner = toPosix(path.relative(realDir, event.path));
         const rel = dir === "" ? inner : inner === "" ? dir : path.posix.join(dir, inner);
+        if (WATCHER_WINDOWS && isIgnoredChange(rel)) {
+          continue;
+        }
         /* A change fabr made itself is deferred (see notifyChanged's
          * `defer`). It is judged on the path here, the dispatch being
          * synchronous; its content is confirmed when ingest reads the file
@@ -717,6 +725,10 @@ export class FSFileSource implements FileSource {
     controller.track(() => {
       this.subscriptions.delete(dir);
       this.registrations.clear();
+      open = false;
+      if (WATCHER_WINDOWS) {
+        return Promise.resolve();
+      }
       /* Return the promise: close waits for the native unsubscribe, since an
        * exit while the kqueue watcher thread runs crashes (SIGABRT). */
       return subscription.then(
@@ -848,7 +860,22 @@ function buildFileSet(files: ReadonlyMap<string, FSFile>, project: Projector, so
   return new FileSet(content, origin);
 }
 
-const WATCH_OPTIONS: parcelWatcher.Options = { ignore: ["**/node_modules/**", "**/.git/**"] };
+/**
+ * True on Windows, where @parcel/watcher 2.6 crashes the process in two ways
+ * fabr steers clear of: matching an `ignore` glob against a long path
+ * overflows its thread's stack (parcel-bundler/watcher#250), so there the
+ * dependency and VCS trees are left out by {@link isIgnoredChange} instead;
+ * and `unsubscribe()` frees a subscription a pending read still completes into
+ * (#262), so there a subscription is left to the process's exit.
+ */
+const WATCHER_WINDOWS = process.platform === "win32";
+
+const WATCH_OPTIONS: parcelWatcher.Options = WATCHER_WINDOWS ? {} : { ignore: ["**/node_modules/**", "**/.git/**"] };
+
+/** @return true if the change at `rel`, a tree path, is within a dependency or VCS tree, otherwise false. */
+function isIgnoredChange(rel: string): boolean {
+  return rel.split("/").some(part => part === "node_modules" || part === ".git");
+}
 
 /**
  * The native watch backend tried where the platform default fails to start:

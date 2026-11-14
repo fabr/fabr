@@ -64,6 +64,7 @@ function reader(input: NodeJS.ReadableStream): () => Promise<Record<string, unkn
 /* A server reached through the extension's client, and a second client
  * connected to the relay. */
 describe("build server relay", () => {
+  let dir: string;
   let socket: string;
   let relay: net.Server;
   let toServer: () => Promise<Record<string, unknown>>;
@@ -72,7 +73,7 @@ describe("build server relay", () => {
   let fromRelay: () => Promise<Record<string, unknown>>;
 
   beforeEach(async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-relay-"));
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-relay-"));
     /* The address the importer names: a socket in a directory, or on Windows a named pipe. */
     socket = process.platform === "win32" ? `\\\\.\\pipe\\${path.basename(dir)}` : path.join(dir, "bsp.sock");
     const toServerStream = new PassThrough();
@@ -89,7 +90,7 @@ describe("build server relay", () => {
   afterEach(() => {
     connection.destroy();
     relay.close();
-    fs.rmSync(path.dirname(socket), { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   it("answers initialize with the server's own answer, without asking it", async () => {
