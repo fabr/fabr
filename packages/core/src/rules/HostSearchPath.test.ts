@@ -32,6 +32,7 @@ import { RepositoryRef } from "../core/Repository";
 import { manifestArguments, RunnableFileSet, toArgv } from "../core/RunnableFileSet";
 import { HostLink } from "../core/SymlinkFile";
 import { parseName } from "../model/Parser";
+import { toPosix } from "../support/Paths";
 import { HostSearchPathRepository } from "./HostSearchPath";
 
 function toPromise<T>(computable: ComputableSource<T>): Promise<T> {
@@ -76,7 +77,7 @@ describe("HostSearchPathRepository", () => {
   });
 
   it("resolves a program by its absolute path, named as its last part", async () => {
-    const resolved = (await toPromise(repository.resolve(referenceTo(path.join(dir, "tool"))))) as RunnableFileSet;
+    const resolved = (await toPromise(repository.resolve(referenceTo(toPosix(path.join(dir, "tool")))))) as RunnableFileSet;
     expect((resolved.surface.getFile("tool") as HostLink).location).to.equal(path.join(dir, "tool"));
     expect(toArgv(resolved.toCommandLine([]))).to.deep.equal([path.join(dir, "tool")]);
   });
@@ -86,7 +87,7 @@ describe("HostSearchPathRepository", () => {
     try {
       fs.symlinkSync(dir, path.join(other, "linked"));
       const here = (await toPromise(repository.resolve(referenceTo("tool")))) as RunnableFileSet;
-      const there = (await toPromise(repository.resolve(referenceTo(path.join(other, "linked", "tool"))))) as RunnableFileSet;
+      const there = (await toPromise(repository.resolve(referenceTo(toPosix(path.join(other, "linked", "tool")))))) as RunnableFileSet;
       expect(toArgv(there.toCommandLine())).to.deep.equal([path.join(other, "linked", "tool")]);
       expect(manifestArguments(there.toCommandLine(["-x"]))).to.equal(manifestArguments(here.toCommandLine(["-x"])));
       /* Run as a command, the program keys one action wherever it was found. */

@@ -18,17 +18,17 @@ import { expect } from "chai";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { installOverlay, type Links, linkedChildren, linkedTarget, notifyRelinked } from "./Overlay";
+import { toHostForm, installOverlay, type Links, linkedChildren, linkedTarget, notifyRelinked } from "./Overlay";
 
 describe("overlay links", () => {
   const links: Links = new Map([
-    ["/p/app/tsconfig.json", "/cache/app.json"],
-    ["/p/lib", "/cache/lib"],
+    [toHostForm("/p/app/tsconfig.json"), toHostForm("/cache/app.json")],
+    [toHostForm("/p/lib"), toHostForm("/cache/lib")],
   ]);
 
   it("answers a link and what lies beneath it from the target", () => {
-    expect(linkedTarget(links, "/p/app/tsconfig.json")).to.equal("/cache/app.json");
-    expect(linkedTarget(links, "/p/lib/a/b.ts")).to.equal("/cache/lib/a/b.ts");
+    expect(linkedTarget(links, "/p/app/tsconfig.json")).to.equal(toHostForm("/cache/app.json"));
+    expect(linkedTarget(links, "/p/lib/a/b.ts")).to.equal(toHostForm("/cache/lib/a/b.ts"));
     expect(linkedTarget(links, "/p/app/src/a.ts")).to.equal(undefined);
   });
 

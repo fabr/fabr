@@ -122,7 +122,8 @@ describe("getResultFileSet", () => {
     );
   });
 
-  it("preserves the permission bits of collected outputs", async () => {
+  /* NTFS has no exec bit to set or read back. */
+  (process.platform !== "win32" ? it : it.skip)("preserves the permission bits of collected outputs", async () => {
     fs.writeFileSync(path.join(work, "run.sh"), "#!/bin/sh\n", { mode: 0o755 });
     fs.writeFileSync(path.join(work, "data.txt"), "x", { mode: 0o644 });
 
@@ -142,7 +143,8 @@ describe("writeFileSet modes", () => {
     fs.rmSync(work, { recursive: true, force: true });
   });
 
-  it("applies an in-memory file's mode (a generated file lands executable)", async () => {
+  /* NTFS has no exec bit to set or read back. */
+  (process.platform !== "win32" ? it : it.skip)("applies an in-memory file's mode (a generated file lands executable)", async () => {
     const files = new FileSet(
       new Map<string, import("./FileSet").IFile>([
         ["bin/gen.sh", new MemoryFile(Buffer.from("#!/bin/sh\n"), 0o755)],
@@ -157,9 +159,15 @@ describe("writeFileSet modes", () => {
   it("stages a secret readable by its owner alone, and copies it out writable by its owner alone", async () => {
     const files = new FileSet(new Map([["ca.key", new SecretFile("@aws:ssm:/ca.key", "param:1", Buffer.from("key"))]]));
     await toPromise(writeFileSet(path.join(work, "staged"), files));
-    expect(fs.statSync(path.join(work, "staged/ca.key")).mode & 0o777).to.equal(0o400);
+    /* Windows keeps only a read-only flag, so there the owner's write bit is all that can be read back. */
+    const exact = process.platform !== "win32";
+    const staged = fs.statSync(path.join(work, "staged/ca.key")).mode;
+    expect(staged & 0o222).to.equal(0);
+    if (exact) expect(staged & 0o777).to.equal(0o400);
     await toPromise(writeFileSet(path.join(work, "copied"), files, { copy: true }));
-    expect(fs.statSync(path.join(work, "copied/ca.key")).mode & 0o777).to.equal(0o600);
+    const copied = fs.statSync(path.join(work, "copied/ca.key")).mode;
+    expect(copied & 0o200).to.equal(0o200);
+    if (exact) expect(copied & 0o777).to.equal(0o600);
     expect(fs.readFileSync(path.join(work, "copied/ca.key"), "utf8")).to.equal("key");
   });
 

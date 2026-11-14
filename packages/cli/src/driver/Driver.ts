@@ -853,6 +853,12 @@ async function runWith(options: Options, operation: Operation, watch = false, se
         }
       });
     }
+    /* No terminal delivers a disconnect to the program: it is always sent on. */
+    onParentDisconnect(() => {
+      if (!signalInteractiveChild("SIGTERM", false)) {
+        process.exit(143);
+      }
+    });
 
     return fabr
       .evaluate(model => operation(model, execution, site))
@@ -896,6 +902,21 @@ function showsMarkers(command: string, watch: boolean): boolean {
 }
 
 /**
+ * On Windows, call `stop` when the parent that started fabr with an IPC channel
+ * closes it, as it would a SIGTERM: the one way to stop fabr cleanly there,
+ * where a process can be sent no signal, only terminated outright. The channel
+ * does not keep fabr running. Does nothing elsewhere, or where there is no
+ * channel.
+ */
+function onParentDisconnect(stop: () => void): void {
+  if (process.platform !== "win32" || process.channel === undefined) {
+    return;
+  }
+  process.channel.unref();
+  process.on("disconnect", stop);
+}
+
+/**
  * Run `operation` under watch: evaluate it, then report each time the
  * evaluation settles again after a change. A new failure is rendered and the
  * run keeps watching; "Watching for changes" is logged at the start, after each
@@ -918,6 +939,7 @@ function runWatched(operation: Operation, fabr: Fabr, site: IInvocationSite, log
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
   process.on("SIGHUP", shutdown);
+  onParentDisconnect(shutdown);
 
   /* Observe the evaluation's settling, not its value: a rebuild that comes to
    * the same value, or the same failure, notifies no `then`, but a handle's

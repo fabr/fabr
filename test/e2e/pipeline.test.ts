@@ -188,14 +188,15 @@ describe("e2e: generate command pipelines", () => {
 
   it("runs the commands with the 'env' variables, and no others", () => {
     /* A build step's environment is what the target states: its own variables
-     * arrive, and nothing of the shell fabr was started from does. */
+     * arrive, and nothing of the shell fabr was started from does (on Windows
+     * an empty PATH, where it would otherwise be fabr's). */
     const result = runFabr(
       {
         "PROJECT.fabr":
           "plugin @fabr-build/js;\njs_script show { entry = src:show.js; }\n" +
           "generate g { run = show > out.txt; env = { GREETING = hello there; LEVEL = 3; } }\n",
         "src/show.js":
-          "process.stdout.write([process.env.GREETING, process.env.LEVEL, String(process.env.HOME), String(process.env.PATH)].join('|'));\n",
+          "process.stdout.write([process.env.GREETING, process.env.LEVEL, String(process.env.HOME), String(process.env.PATH || undefined)].join('|'));\n",
       },
       ["cat", "g:out.txt"]
     );

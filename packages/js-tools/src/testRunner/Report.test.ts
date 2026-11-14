@@ -108,7 +108,7 @@ describe("reportPathOf", () => {
     const file = stage("sub/b.test.js", "sub/b.test.ts");
     assert.equal(
       withInstallCwd(() => reportPathOf(file)),
-      path.join("sub", "b.test.ts")
+      "sub/b.test.ts"
     );
   });
 

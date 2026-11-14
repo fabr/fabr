@@ -164,12 +164,8 @@ describe("Pack", () => {
   it("rejects (rather than hanging) when the output it writes into fails", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-pack-cache-"));
     const cache = new BuildCache(dir, new LogFormatter(LogLevel.Info, () => undefined));
-    const work = path.join(dir, "work");
-    const own = path.join(
-      work,
-      fs.readdirSync(work).find(name => name.endsWith(`-${process.pid}`))!
-    );
-    fs.chmodSync(own, 0o500);
+    /* A directory where the spool is about to be opened makes the open fail, on every platform. */
+    fs.mkdirSync(path.join(cache["ownWorkRoot"], `stream-${cache["tempCounter"]}`));
     try {
       const files = new FileSet(new Map([["big.bin", new MemoryFile(Buffer.alloc(1024 * 1024, 7))]]));
       const failure = await new Promise<string>((resolve, reject) => {
@@ -182,9 +178,8 @@ describe("Pack", () => {
           }
         );
       });
-      expect(failure).to.equal("EACCES");
+      expect(failure).to.match(/^E[A-Z]+$/);
     } finally {
-      fs.chmodSync(own, 0o700);
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -219,31 +214,24 @@ describe("Pack", () => {
   });
 
   it("preserves the exec bit — an executable blob packs as 0o755", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-pack-"));
-    try {
-      fs.writeFileSync(path.join(dir, "cli.sh"), "#!/bin/sh\n", { mode: 0o755 });
-      fs.writeFileSync(path.join(dir, "readme.txt"), "hi\n");
-      const source = new FileSet(
-        new Map<string, IFile>([
-          ["bin/cli.sh", diskFile(path.join(dir, "cli.sh"))],
-          ["readme.txt", diskFile(path.join(dir, "readme.txt"))],
-        ])
-      );
+    const source = new FileSet(
+      new Map<string, IFile>([
+        ["bin/cli.sh", new MemoryFile(Buffer.from("#!/bin/sh\n"), 0o755)],
+        ["readme.txt", new MemoryFile(Buffer.from("hi\n"), 0o644)],
+      ])
+    );
 
-      const tarball = await packToTarball(source);
-      /* The exec bit rides the unpacked (blob-backed) IFile's mode, round-tripped
-       * through the tar entry's mode. */
-      const result = await unpackInTemp(tarball);
-      const cli = await result.get("bin/cli.sh");
-      const readme = await result.get("readme.txt");
-      if (!cli || !readme) {
-        throw new Error("expected both entries");
-      }
-      expect(cli.mode & 0o111, "exec bit lost").to.not.equal(0);
-      expect(readme.mode & 0o111, "stray exec bit").to.equal(0);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+    const tarball = await packToTarball(source);
+    /* The exec bit rides the unpacked (blob-backed) IFile's mode, round-tripped
+     * through the tar entry's mode. */
+    const result = await unpackInTemp(tarball);
+    const cli = await result.get("bin/cli.sh");
+    const readme = await result.get("readme.txt");
+    if (!cli || !readme) {
+      throw new Error("expected both entries");
     }
+    expect(cli.mode & 0o111, "exec bit lost").to.not.equal(0);
+    expect(readme.mode & 0o111, "stray exec bit").to.equal(0);
   });
 
   it("writes an uncompressed archive into the store, streaming each file's content", async () => {

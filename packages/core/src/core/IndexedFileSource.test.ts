@@ -27,6 +27,7 @@ import { IFile } from "./FileSet";
 import { hashString } from "./FSWrapper";
 import { IndexedFileSource } from "./IndexedFileSource";
 import { WatchController } from "./WatchController";
+import { toPosix } from "../support/Paths";
 
 function toPromise<T>(computable: ComputableSource<T>): Promise<T> {
   return new Promise((resolve, reject) => computable.then(resolve, reject));
@@ -111,7 +112,7 @@ describe("IndexedFileSource, read in place", () => {
     const source = inPlace(controller);
     try {
       await hashAt(source, path.join(dir, "tool"));
-      expect([...source["subscriptions"].keys()]).to.deep.equal([dir.substring(1)]);
+      expect([...source["subscriptions"].keys()]).to.deep.equal([toPosix(path.relative(path.parse(dir).root, dir))]);
     } finally {
       await controller.close();
     }

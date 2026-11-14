@@ -24,7 +24,7 @@
 import type { ITypeScriptUnit } from "@fabr-build/js-tools";
 import * as fs from "fs";
 import * as path from "path";
-import type { Links } from "./Overlay";
+import { toHostForm, type Links } from "./Overlay";
 
 /** The version of the registry and project documents this module reads. */
 export const DOCUMENT_VERSION = 1;
@@ -61,10 +61,11 @@ const CONFIG_NAMES = new Set(["tsconfig.json", "jsconfig.json"]);
  * serves, otherwise false. The files beneath a unit's root are the unit's.
  */
 export function isMaskedConfig(file: string): boolean {
-  if (!CONFIG_NAMES.has(path.basename(file)) || state.links.has(file)) {
+  const asked = toHostForm(file);
+  if (!CONFIG_NAMES.has(path.basename(asked)) || state.links.has(asked)) {
     return false;
   }
-  const dir = path.dirname(file);
+  const dir = path.dirname(asked);
   return state.roots.some(root => dir === root || dir.startsWith(root + path.sep));
 }
 
@@ -80,8 +81,12 @@ export function registeredProjects(): readonly IProjectDocument[] {
 
 /** @return the project whose root holds `file`, the innermost where roots nest, or undefined if none does. */
 export function projectOf(file: string): IProjectDocument | undefined {
+  const asked = toHostForm(file);
   return state.projects
-    .filter(project => file === project.root || file.startsWith(project.root + path.sep))
+    .filter(project => {
+      const root = toHostForm(project.root);
+      return asked === root || asked.startsWith(root + path.sep);
+    })
     .sort((a, b) => b.root.length - a.root.length)[0];
 }
 
@@ -109,8 +114,10 @@ export function readRegistry(file: string): string[] {
   }
   state = {
     projects,
-    links: new Map(projects.flatMap(project => [...project.links])),
-    roots: projects.flatMap(project => project.units.map(unit => unit.root)),
+    links: new Map(
+      projects.flatMap(project => [...project.links].map(([link, to]): [string, string] => [toHostForm(link), toHostForm(to)]))
+    ),
+    roots: projects.flatMap(project => project.units.map(unit => toHostForm(unit.root))),
   };
   return problems;
 }

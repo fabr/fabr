@@ -222,7 +222,7 @@ describe("FabrHomeRepository", () => {
       () => undefined,
       (err: Error) => err.message
     );
-    expect(failure).to.match(/Invalid .*node_modules\/helper\/package\.json: 'version' is not a string/);
+    expect(failure).to.match(/Invalid .*node_modules[\\/]helper[\\/]package\.json: 'version' is not a string/);
   });
 
   it("fails for a required dependency that is not installed", async () => {

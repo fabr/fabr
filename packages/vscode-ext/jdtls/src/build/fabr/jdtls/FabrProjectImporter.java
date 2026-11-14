@@ -93,12 +93,19 @@ public class FabrProjectImporter extends AbstractProjectImporter {
             return existing;
         }
         String rootUri = root.toURI().toString();
-        /* In the temporary directory, as a socket's path is short: named for the
-         * language server's process and the project. */
-        Path socket = Path.of(System.getProperty("java.io.tmpdir"),
-            "fabr-jdtls-" + ProcessHandle.current().pid() + "-" + Integer.toHexString(root.getPath().hashCode()) + ".sock");
-        java.nio.file.Files.deleteIfExists(socket);
-        JavaLanguageServerPlugin.getInstance().getClientConnection().sendNotification(CONNECT_COMMAND, rootUri, socket.toString());
+        /* Named for the language server's process and the project: a socket in the
+         * temporary directory, as a socket's path is short, or on Windows a named
+         * pipe, as the language server's own connection is there. */
+        String name = "fabr-jdtls-" + ProcessHandle.current().pid() + "-" + Integer.toHexString(root.getPath().hashCode());
+        String socket;
+        if (BuildServerConnection.WINDOWS) {
+            socket = "\\\\.\\pipe\\" + name;
+        } else {
+            Path file = Path.of(System.getProperty("java.io.tmpdir"), name + ".sock");
+            java.nio.file.Files.deleteIfExists(file);
+            socket = file.toString();
+        }
+        JavaLanguageServerPlugin.getInstance().getClientConnection().sendNotification(CONNECT_COMMAND, rootUri, socket);
         BuildServerConnection server = connectWhenShared(socket);
         JsonObject capabilities = new JsonObject();
         capabilities.add("languageIds", new com.google.gson.JsonArray());
@@ -121,11 +128,11 @@ public class FabrProjectImporter extends AbstractProjectImporter {
     }
 
     /** @return a connection to the server shared at `socket`, tried until the extension shares it. */
-    private static BuildServerConnection connectWhenShared(Path socket) throws Exception {
+    private static BuildServerConnection connectWhenShared(String socket) throws Exception {
         long deadline = System.nanoTime() + CONNECT_TIMEOUT.toNanos();
         for (;;) {
             try {
-                return BuildServerConnection.connect(socket.toString());
+                return BuildServerConnection.connect(socket);
             } catch (java.io.IOException e) {
                 if (System.nanoTime() > deadline) {
                     throw new java.io.IOException("the fabr extension did not share the build server at " + socket, e);

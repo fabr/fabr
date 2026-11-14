@@ -50,6 +50,8 @@ const FABR = require.resolve("@fabr-build/cli");
  * sh (the `script` rule) from the standard system dirs. Any inherited PATH (jest)
  * is appended so a non-standard toolchain still resolves. */
 const NODE = process.execPath;
+/** True on Windows, where a process can be sent no signal, only terminated. */
+const WINDOWS = process.platform === "win32";
 const CHILD_PATH = [path.dirname(NODE), "/usr/bin", "/bin", process.env.PATH].filter(Boolean).join(path.delimiter);
 
 /** `it`, or `it.skip` where this host has no POSIX shell (`/bin/sh`, or `sh` on
@@ -390,7 +392,8 @@ export interface WatchSession {
   /** Resolve once `pattern` has appeared at least `count` times on stderr (or reject on timeout). */
   waitFor(pattern: string | RegExp, opts?: { count?: number; timeoutMs?: number }): Promise<void>;
   /** Signal the process (SIGINT by default) and resolve with its exit code,
-   * cleaning up the dir. */
+   * cleaning up the dir. On Windows, which can send a process no signal, the
+   * session's IPC channel is closed instead, which fabr takes as SIGTERM. */
   stop(signal?: NodeJS.Signals): Promise<number>;
 }
 
@@ -441,6 +444,8 @@ export function startFabrWatch(files: Record<string, string>, args: string[], en
   const child: ChildProcess = spawn(NODE, [FABR, ...args], {
     cwd: dir,
     env: { PATH: CHILD_PATH, FABR_CACHE_DIR: cacheDir, ...env },
+    /* On Windows the channel is how stop() asks fabr to exit. */
+    stdio: ["pipe", "pipe", "pipe", ...(WINDOWS ? ["ipc" as const] : [])],
   });
   liveWatchers.add(child);
   /* SIGKILL-proof backstop: the daemon reaps this pid if the harness process
@@ -528,7 +533,11 @@ export function startFabrWatch(files: Record<string, string>, args: string[], en
           return;
         }
         child.on("exit", finish);
-        child.kill(signal);
+        if (WINDOWS) {
+          child.disconnect();
+        } else {
+          child.kill(signal);
+        }
       });
     },
   };

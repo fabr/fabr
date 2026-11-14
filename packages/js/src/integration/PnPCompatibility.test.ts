@@ -42,6 +42,7 @@ import {
   PnpResolver,
   type ResolveRequestOptions,
   resolveVirtual,
+  VIRTUAL_SEGMENT,
 } from "@fabr-build/js-tools";
 
 /** As much of `@yarnpkg/pnp` and `@yarnpkg/fslib` as the oracle uses, typed
@@ -147,7 +148,7 @@ const KNOWN_DIVERGENCES: IKnownDivergence[] = [
       "value" in fabr &&
       typeof yarn.value === "string" &&
       typeof fabr.value === "string" &&
-      fabr.value.includes("/__virtual__/") &&
+      fabr.value.split(path.sep).includes(VIRTUAL_SEGMENT) &&
       fs.realpathSync(resolveVirtual(yarn.value)) === fs.realpathSync(resolveVirtual(fabr.value)),
   },
 ];
@@ -156,7 +157,7 @@ const KNOWN_DIVERGENCES: IKnownDivergence[] = [
 function poolRealpath(both: IPair): string | undefined {
   const pool = path.join(both.root, TREE_MOUNT);
   const real = fs.existsSync(pool) ? fs.realpathSync(pool) : undefined;
-  return real === undefined || real === pool ? undefined : `${real}/`;
+  return real === undefined || real === pool ? undefined : real + path.sep;
 }
 
 /** Both runtimes over one staged manifest. */
@@ -263,7 +264,7 @@ function queriesFor(both: IPair): IQuery[] {
     `${name}/missing`,
     `${name}/package.json`,
   ]);
-  requests.push("fs", "node:fs", "./lib/a", "../x", "/abs/x", "#internal", "#dep", "#missing");
+  requests.push("fs", "node:fs", "./lib/a", "../x", path.resolve("/abs/x"), "#internal", "#dep", "#missing");
   const requestOptions: ResolveRequestOptions[] = [
     {},
     { considerBuiltins: false },
@@ -570,7 +571,7 @@ describe("PnpResolver conforms to Yarn's PnP runtime", () => {
       const resolver = new PnpResolver(state, root, []);
       const wiring = left.packages[0];
       const file = resolver.resolveRequest("shared/index.js", path.join(root, treeMountOf(left), "index.js"));
-      expect(file).to.equal(path.join(root, "store", "__virtual__", file!.split("/__virtual__/")[1]));
+      expect(file).to.equal(path.join(root, "store", "__virtual__", file!.split(`${path.sep}${VIRTUAL_SEGMENT}${path.sep}`)[1]));
       expect(resolver.findPackageLocator(file!)).to.deep.equal({
         name: "shared",
         reference: resolver.findPackageLocator(path.join(root, pnpManifestOf([left, right]).mountOf(wiring)))!.reference,

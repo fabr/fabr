@@ -261,7 +261,7 @@ describe("filesToRun", () => {
 describe("readsOf", () => {
   const x = new PackageFileSet(new Map(), "x", "1.0.0");
   const y = new PackageFileSet(new Map(), "y", "1.0.0", dependenciesOn(x));
-  const cwd = "/work/build";
+  const cwd = path.resolve("/work/build");
   const names = new Map<string, ReadName>([
     ["a.test.js", { file: "build/a.test.js" }],
     ["node_modules/y/index.js", { route: ["y"], path: "index.js", package: y }],
@@ -272,7 +272,7 @@ describe("readsOf", () => {
     files: EMPTY_FILESET,
     trees: new Map(),
     members: [y],
-    nameRead: read => names.get(path.relative(cwd, read)),
+    nameRead: read => names.get(path.relative(cwd, read).split(path.sep).join("/")),
   };
 
   it("takes a package's lookup of itself as answered by the package", () => {

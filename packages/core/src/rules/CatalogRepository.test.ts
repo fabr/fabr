@@ -3049,7 +3049,10 @@ describe("CatalogRepository (through the model)", () => {
       const both = lastDepSets[0];
       expect([...both].map(([name]) => name).sort()).to.deep.equal(["bin/run.sh", "foo/moved/data.txt"]);
       expect(await text(both, "foo/moved/data.txt")).to.equal("moved\n");
-      expect(both.getFile("bin/run.sh")!.mode).to.equal(0o755);
+      /* The patched files are collected from disk, and NTFS has no exec bit to read back. */
+      if (process.platform !== "win32") {
+        expect(both.getFile("bin/run.sh")!.mode).to.equal(0o755);
+      }
       expect(both.getFile("foo/moved/data.txt")!.mode).to.equal(0o644);
     });
 

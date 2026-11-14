@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { posix, relative, sep } from "path";
+import { dirname, join, posix, relative, sep } from "path";
 import {
   BuildAction,
   Computable,
@@ -109,7 +109,7 @@ export function layoutPackages(
     /* Each package's location on this machine: its tree in the pool, or its
      * virtual location over that tree, as the runtime names a module in it. */
     const located = (pkg: PackageFileSet, tree: string): string =>
-      posix.join(posix.dirname(tree), posix.relative(TREE_LINK, manifest.mountOf(pkg)));
+      join(dirname(tree), ...posix.relative(TREE_LINK, manifest.mountOf(pkg)).split("/"));
     return mapComputable(manifest.packages, pkg =>
       ensureTree(pkg).then((path): [string, PackageFileSet] => [located(pkg, path), pkg])
     ).then(locations => ({

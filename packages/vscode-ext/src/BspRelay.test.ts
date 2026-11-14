@@ -73,7 +73,8 @@ describe("build server relay", () => {
 
   beforeEach(async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-relay-"));
-    socket = path.join(dir, "bsp.sock");
+    /* The address the importer names: a socket in a directory, or on Windows a named pipe. */
+    socket = process.platform === "win32" ? `\\\\.\\pipe\\${path.basename(dir)}` : path.join(dir, "bsp.sock");
     const toServerStream = new PassThrough();
     fromServer = new PassThrough();
     toServer = reader(toServerStream);

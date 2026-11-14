@@ -18,6 +18,7 @@
  */
 
 import { expect } from "chai";
+import * as path from "node:path";
 import { runFabr, STUB_TSC, STUB_TSC_CONFIG } from "./harness";
 
 /*
@@ -98,7 +99,7 @@ fs.writeFileSync(options.output, out.join("\\n") + "\\n");
       ["src/thing.ts", ["1,1"]],
     ]);
     expect(result.stderr).to.contain("Coverage: lines 66.67% (2/3), functions n/a, branches n/a");
-    expect(result.stderr).to.contain(`Coverage report written to ${LCOV}`);
+    expect(result.stderr).to.contain(`Coverage report written to ${path.join(LCOV)}`);
   });
 
   it("measures nothing without --coverage", () => {

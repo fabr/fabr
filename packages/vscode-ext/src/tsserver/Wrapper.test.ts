@@ -98,6 +98,8 @@ describe("tsserver wrapper", () => {
   let root: string;
   let server: IServer | undefined;
   const file = (name: string): string => path.join(root, name);
+  /** @return `file(name)` as tsserver names it: `/`-separated on every host. */
+  const reported = (name: string): string => file(name).split(path.sep).join("/");
   const write = (name: string, text: string): void => {
     fs.mkdirSync(path.dirname(file(name)), { recursive: true });
     fs.writeFileSync(file(name), text);
@@ -168,14 +170,14 @@ describe("tsserver wrapper", () => {
   it("serves a registered project's config in place of the real one", async () => {
     expect(await diagnosticCodes("project/src/a.ts")).to.deep.equal([7006]);
     const info = await server!.request("projectInfo", { file: file("project/src/a.ts") });
-    expect((info.body as { configFileName: string }).configFileName).to.equal(file("project/tsconfig.json"));
+    expect((info.body as { configFileName: string }).configFileName).to.equal(reported("project/tsconfig.json"));
   });
 
   it("leaves a project under no registered root as it is", async () => {
     expect(await diagnosticCodes("outside/src/a.ts")).to.deep.equal([7006]);
     /* No fabr project's plugin is loaded for it. */
     const record = fs.existsSync(file("plugin/record.txt")) ? fs.readFileSync(file("plugin/record.txt"), "utf8") : "";
-    expect(record).to.not.contain(file("outside/tsconfig.json"));
+    expect(record).to.not.contain(reported("outside/tsconfig.json"));
     write("outside/tsconfig.json", JSON.stringify({ compilerOptions: { strict: false, types: [] }, include: ["src"] }));
     server!.send("reloadProjects", {});
     expect(await diagnosticCodes("outside/src/a.ts")).to.deep.equal([]);
@@ -184,7 +186,7 @@ describe("tsserver wrapper", () => {
   it("hands a registered project's units to its plugin implementation", async () => {
     await diagnosticCodes("project/src/a.ts");
     const record = fs.readFileSync(file("plugin/record.txt"), "utf8").trim().split("\n");
-    expect(record).to.include(`${file("project/tsconfig.json")} ${file("project/tsconfig.json")}`);
+    expect(record).to.include(`${reported("project/tsconfig.json")} ${file("project/tsconfig.json")}`);
   });
 
   it("follows a rewritten registry to a repointed link", async () => {

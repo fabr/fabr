@@ -67,14 +67,18 @@ describe("RegistryAuth", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it("asks the store for a registry no file names, by the server it is filed under", async () => {
-    const auth = new RegistryAuth([parseAuthFile(JSON.stringify({ credsStore: "fake" }), "config.json")], new Semaphore(1));
-    expect(await Promise.resolve(auth.credentialFor("https://index.docker.io/v1/"))).to.deep.equal({
-      username: "hub",
-      password: "tok",
-    });
-    expect(await Promise.resolve(auth.credentialFor("ghcr.io"))).to.equal(undefined);
-  });
+  /* The fake helper is a `#!` script, which Windows cannot execute. */
+  (process.platform !== "win32" ? it : it.skip)(
+    "asks the store for a registry no file names, by the server it is filed under",
+    async () => {
+      const auth = new RegistryAuth([parseAuthFile(JSON.stringify({ credsStore: "fake" }), "config.json")], new Semaphore(1));
+      expect(await Promise.resolve(auth.credentialFor("https://index.docker.io/v1/"))).to.deep.equal({
+        username: "hub",
+        password: "tok",
+      });
+      expect(await Promise.resolve(auth.credentialFor("ghcr.io"))).to.equal(undefined);
+    }
+  );
 
   it("takes a credential written in the first file that names its host over any helper", async () => {
     const auth = new RegistryAuth(

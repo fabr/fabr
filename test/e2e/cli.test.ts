@@ -146,8 +146,8 @@ describe("e2e: driver CLI", () => {
     expect(result.status).to.equal(1);
     expect(result.stdout).to.equal("");
     expect(result.stderr).to.match(/Conflicting files for dup\.txt/);
-    expect(result.stderr).to.match(/src\/a\/dup\.txt/);
-    expect(result.stderr).to.match(/src\/b\/dup\.txt/);
+    expect(result.stderr).to.match(/src[\\/]a[\\/]dup\.txt/);
+    expect(result.stderr).to.match(/src[\\/]b[\\/]dup\.txt/);
   });
 
   it("exits quietly (not a raw EPIPE crash) when the stdout consumer closes early", async () => {
@@ -204,14 +204,14 @@ describe("e2e: driver CLI", () => {
   it("cp of a quoted metacharacter filename names it as itself", () => {
     /* A quoted selector is a literal, so `hasGlob()` is false and cp takes its
      * single-named-file path, deriving the basename from the selector's literal
-     * text. */
+     * text. (`[...]` rather than `*`, which Windows refuses in a file name.) */
     const metachar = {
       "PROJECT.fabr": "files = src:**/*;\n",
-      "src/lit*.txt": "STAR\n",
+      "src/lit[1].txt": "BRACKET\n",
     };
-    const result = runFabr(metachar, ["cp", "files:'lit*.txt'", "out"], ["out/lit*.txt"]);
+    const result = runFabr(metachar, ["cp", "files:'lit[1].txt'", "out"], ["out/lit[1].txt"]);
     expect(result.status).to.equal(0);
-    expect(result.files?.["out/lit*.txt"]).to.equal("STAR\n");
+    expect(result.files?.["out/lit[1].txt"]).to.equal("BRACKET\n");
   });
 
   it("cp of a container name nests its files under a dir named for the reference", () => {

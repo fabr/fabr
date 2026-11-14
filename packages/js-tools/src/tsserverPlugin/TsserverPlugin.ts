@@ -157,8 +157,8 @@ export function createLanguageService(
  * none of `units`.
  */
 function unitOf(project: IProject, units: readonly ITypeScriptUnit[]): ITypeScriptUnit | undefined {
-  const name = project.getProjectName();
-  return units.find(unit => unit.config === name);
+  const name = tsPathOf(project.getProjectName());
+  return units.find(unit => tsPathOf(unit.config) === name);
 }
 
 /**

@@ -243,34 +243,40 @@ describe("MockRegistry", () => {
   });
 
   describe("the registry's modules", () => {
-    const runner = "/cache/trees/runner";
+    /** Spell a POSIX path as the host does, as node names a module's file. */
+    const at = (posix: string): string => path.normalize(posix);
+    const RUNNER = "/cache/trees/runner";
+    const runner = at(RUNNER);
 
     it("takes the runner's install to be the directory above the first node_modules on its path", () => {
-      expect(installRootOf(`${runner}/node_modules/.fabr/js-tools/node_modules/@fabr-build/js-tools/build`)).to.equal(runner);
-      expect(installRootOf("/src/js-tools/build")).to.equal("/src/js-tools/build");
+      expect(installRootOf(at(`${RUNNER}/node_modules/.fabr/js-tools/node_modules/@fabr-build/js-tools/build`))).to.equal(runner);
+      expect(installRootOf(at("/src/js-tools/build"))).to.equal(at("/src/js-tools/build"));
     });
 
     it("leaves out the runner's own machinery, jest's libraries among it", () => {
       expect(
-        isRegistryModule(`${runner}/node_modules/.fabr/js-tools/node_modules/@fabr-build/js-tools/build/jestRunner/child.js`, runner)
+        isRegistryModule(
+          at(`${RUNNER}/node_modules/.fabr/js-tools/node_modules/@fabr-build/js-tools/build/jestRunner/child.js`),
+          runner
+        )
       ).to.equal(false);
-      expect(isRegistryModule(`${runner}/node_modules/.fabr/jest-mock@30.0.0/node_modules/jest-mock/build/index.js`, runner)).to.equal(
-        false
-      );
+      expect(
+        isRegistryModule(at(`${RUNNER}/node_modules/.fabr/jest-mock@30.0.0/node_modules/jest-mock/build/index.js`), runner)
+      ).to.equal(false);
     });
 
     it("holds a package in a node_modules tree beside the tests", () => {
-      expect(isRegistryModule("/work/node_modules/.fabr/pkg@1.0.0/node_modules/pkg/index.js", runner)).to.equal(true);
-      expect(isRegistryModule("/work/build/thing.js", runner)).to.equal(true);
+      expect(isRegistryModule(at("/work/node_modules/.fabr/pkg@1.0.0/node_modules/pkg/index.js"), runner)).to.equal(true);
+      expect(isRegistryModule(at("/work/build/thing.js"), runner)).to.equal(true);
     });
 
     it("holds a package in the tree pool, outside the tests' install, as a PnP layout places it", () => {
-      expect(isRegistryModule("/cache/trees/1a2b3c/index.js", runner)).to.equal(true);
-      expect(isRegistryModule("/cache/trees/__virtual__/9f/0/1a2b3c/index.js", runner)).to.equal(true);
+      expect(isRegistryModule(at("/cache/trees/1a2b3c/index.js"), runner)).to.equal(true);
+      expect(isRegistryModule(at("/cache/trees/__virtual__/9f/0/1a2b3c/index.js"), runner)).to.equal(true);
     });
 
     it("leaves out a native addon", () => {
-      expect(isRegistryModule("/cache/trees/1a2b3c/build/addon.node", runner)).to.equal(false);
+      expect(isRegistryModule(at("/cache/trees/1a2b3c/build/addon.node"), runner)).to.equal(false);
     });
 
     (nodeLoads ? it : it.skip)("loads a pool package afresh on resetModules", () => {

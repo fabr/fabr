@@ -15,9 +15,14 @@
  */
 
 import { expect } from "chai";
+import * as path from "node:path";
 import { composeProject, type IServedTarget } from "./ProjectDocument";
 
-const POOL = "/cache/tree";
+/* Paths in the host's form, as the composition makes them. */
+const ROOT = path.resolve("/p");
+const POOL = path.resolve("/cache/tree");
+const STORAGE = path.resolve("/storage");
+const INSTALLATION = path.resolve("/fabr");
 const PLUGIN = "@fabr-build/js-tools/tsserverPlugin/TsserverPlugin";
 
 function table(rows: Array<[string | null, string | null, string]>): string {
@@ -31,10 +36,10 @@ function table(rows: Array<[string | null, string | null, string]>): string {
 
 /* `app` imports the local package `lib` and the pool package `dep`. */
 const FILES = new Map<string, string>([
-  [`${POOL}/app-d/units/build/unit.json`, JSON.stringify({ root: "./app/src/", package: "app", generated: ["x.css.d.ts"] })],
-  [`${POOL}/app-d/units/build/tsconfig.json`, JSON.stringify({ compilerOptions: { rootDir: "." }, files: ["main.ts"] })],
+  [path.join(POOL, "app-d/units/build/unit.json"), JSON.stringify({ root: "./app/src/", package: "app", generated: ["x.css.d.ts"] })],
+  [path.join(POOL, "app-d/units/build/tsconfig.json"), JSON.stringify({ compilerOptions: { rootDir: "." }, files: ["main.ts"] })],
   [
-    `${POOL}/app-d/units/build/.pnp.data.json`,
+    path.join(POOL, "app-d/units/build/.pnp.data.json"),
     table([
       [null, null, "./"],
       ["app", "self", "./"],
@@ -42,10 +47,10 @@ const FILES = new Map<string, string>([
       ["dep", "bbb", "./.fabr-tree/dep-tree/"],
     ]),
   ],
-  [`${POOL}/lib-d/units/build/unit.json`, JSON.stringify({ root: "./lib/src/", package: "lib", generated: [] })],
-  [`${POOL}/lib-d/units/build/tsconfig.json`, JSON.stringify({ compilerOptions: { rootDir: "." }, files: ["index.ts"] })],
+  [path.join(POOL, "lib-d/units/build/unit.json"), JSON.stringify({ root: "./lib/src/", package: "lib", generated: [] })],
+  [path.join(POOL, "lib-d/units/build/tsconfig.json"), JSON.stringify({ compilerOptions: { rootDir: "." }, files: ["index.ts"] })],
   [
-    `${POOL}/lib-d/units/build/.pnp.data.json`,
+    path.join(POOL, "lib-d/units/build/.pnp.data.json"),
     table([
       [null, null, "./"],
       ["lib", "self", "./"],
@@ -57,14 +62,14 @@ const target = (name: string): IServedTarget => ({
   id: { uri: `fabr:${name}` },
   dataKind: "typescript",
   data: { units: { build: "units/build" }, manifest: "package.json", plugin: PLUGIN },
-  fabr: { description: `${POOL}/${name}-d`, operation: "build" },
+  fabr: { description: path.join(POOL, `${name}-d`), operation: "build" },
 });
 
 describe("project document", () => {
   const composed = composeProject({
-    root: "/p",
-    installation: "/fabr",
-    storage: "/storage",
+    root: ROOT,
+    installation: INSTALLATION,
+    storage: STORAGE,
     targets: [target("app"), target("lib")],
     readFile: file => {
       const text = FILES.get(file);
@@ -82,41 +87,53 @@ describe("project document", () => {
 
   it("shows each unit's config at its root, a package's manifest beside it, and its generated sources", () => {
     expect(composed.document.links).to.deep.equal({
-      "/p/app/src/package.json": `${POOL}/app-d/package.json`,
-      "/p/app/src/tsconfig.json": "/storage/0/tsconfig.json",
-      "/p/app/src/x.css.d.ts": `${POOL}/app-d/units/build/generated/x.css.d.ts`,
-      "/p/lib/src/package.json": `${POOL}/lib-d/package.json`,
-      "/p/lib/src/tsconfig.json": "/storage/1/tsconfig.json",
+      [path.join(ROOT, "app/src/package.json")]: path.join(POOL, "app-d/package.json"),
+      [path.join(ROOT, "app/src/tsconfig.json")]: path.join(STORAGE, "0/tsconfig.json"),
+      [path.join(ROOT, "app/src/x.css.d.ts")]: path.join(POOL, "app-d/units/build/generated/x.css.d.ts"),
+      [path.join(ROOT, "lib/src/package.json")]: path.join(POOL, "lib-d/package.json"),
+      [path.join(ROOT, "lib/src/tsconfig.json")]: path.join(STORAGE, "1/tsconfig.json"),
     });
   });
 
   it("locates a pool package from the unit's root, and a local one at its own unit, which it references", () => {
-    const rows = new Map(JSON.parse(composed.files.get("/storage/0/.pnp.data.json")!).packageRegistryData);
+    const rows = new Map(JSON.parse(composed.files.get(path.join(STORAGE, "0/.pnp.data.json"))!).packageRegistryData);
     const location = (name: string): string => (rows.get(name) as Array<[string, { packageLocation: string }]>)[0][1].packageLocation;
     expect(location("lib")).to.equal("./../../lib/src/");
     expect(location("dep")).to.equal("./../../../cache/tree/dep-tree/");
     expect(location("app")).to.equal("./");
-    expect(JSON.parse(composed.files.get("/storage/0/tsconfig.json")!).references).to.deep.equal([{ path: "../../lib/src" }]);
+    expect(JSON.parse(composed.files.get(path.join(STORAGE, "0/tsconfig.json"))!).references).to.deep.equal([
+      { path: "../../lib/src" },
+    ]);
   });
 
   it("lists the units, and the plugin resolved from the installation", () => {
     expect(composed.document.units).to.deep.equal([
-      { config: "/p/app/src/tsconfig.json", root: "/p/app/src", table: "/storage/0/.pnp.data.json", package: "app" },
-      { config: "/p/lib/src/tsconfig.json", root: "/p/lib/src", table: "/storage/1/.pnp.data.json", package: "lib" },
+      {
+        config: path.join(ROOT, "app/src/tsconfig.json"),
+        root: path.join(ROOT, "app/src"),
+        table: path.join(STORAGE, "0/.pnp.data.json"),
+        package: "app",
+      },
+      {
+        config: path.join(ROOT, "lib/src/tsconfig.json"),
+        root: path.join(ROOT, "lib/src"),
+        table: path.join(STORAGE, "1/.pnp.data.json"),
+        package: "lib",
+      },
     ]);
-    expect(composed.document.plugin).to.equal(`/fabr/node_modules/${PLUGIN}.js`);
+    expect(composed.document.plugin).to.equal(`${INSTALLATION}/node_modules/${PLUGIN}.js`);
   });
 
   it("shows a unit whose sources come from two directories at the directory holding both, its generated sources where it places them", () => {
     const files = new Map(FILES);
     files.set(
-      `${POOL}/app-d/units/build/unit.json`,
+      path.join(POOL, "app-d/units/build/unit.json"),
       JSON.stringify({ root: "./app/", package: "app", generated: ["src/x.css.d.ts"] })
     );
     const multi = composeProject({
-      root: "/p",
-      installation: "/fabr",
-      storage: "/storage",
+      root: ROOT,
+      installation: INSTALLATION,
+      storage: STORAGE,
       targets: [target("app"), target("lib")],
       readFile: file =>
         files.get(file) ??
@@ -126,27 +143,27 @@ describe("project document", () => {
       resolve: (specifier, from) => `${from}/node_modules/${specifier}.js`,
     });
     const links = multi.document.links as Record<string, string>;
-    expect(links["/p/app/tsconfig.json"]).to.equal("/storage/0/tsconfig.json");
-    expect(links["/p/app/src/x.css.d.ts"]).to.equal(`${POOL}/app-d/units/build/generated/src/x.css.d.ts`);
+    expect(links[path.join(ROOT, "app/tsconfig.json")]).to.equal(path.join(STORAGE, "0/tsconfig.json"));
+    expect(links[path.join(ROOT, "app/src/x.css.d.ts")]).to.equal(path.join(POOL, "app-d/units/build/generated/src/x.css.d.ts"));
   });
 
   it("locates a package whose only unit is its tests' in the pool", () => {
     const files = new Map(FILES);
     files.set(
-      `${POOL}/app-d/units/build/.pnp.data.json`,
+      path.join(POOL, "app-d/units/build/.pnp.data.json"),
       table([
         [null, null, "./"],
         ["app", "self", "./"],
         ["lib", "aaa", "./.fabr-tree/lib-tree/"],
       ])
     );
-    files.set(`${POOL}/lib-t/units/test/unit.json`, JSON.stringify({ root: "./lib/src/", package: "lib", generated: [] }));
+    files.set(path.join(POOL, "lib-t/units/test/unit.json"), JSON.stringify({ root: "./lib/src/", package: "lib", generated: [] }));
     files.set(
-      `${POOL}/lib-t/units/test/tsconfig.json`,
+      path.join(POOL, "lib-t/units/test/tsconfig.json"),
       JSON.stringify({ compilerOptions: { rootDir: "." }, files: ["index.test.ts"] })
     );
     files.set(
-      `${POOL}/lib-t/units/test/.pnp.data.json`,
+      path.join(POOL, "lib-t/units/test/.pnp.data.json"),
       table([
         [null, null, "./"],
         ["lib", "self", "./"],
@@ -157,12 +174,12 @@ describe("project document", () => {
       id: { uri: "fabr:lib?operation=test" },
       dataKind: "typescript",
       data: { units: { build: "units/test" }, plugin: PLUGIN },
-      fabr: { description: `${POOL}/lib-t`, operation: "test" },
+      fabr: { description: path.join(POOL, "lib-t"), operation: "test" },
     };
     const composedTests = composeProject({
-      root: "/p",
-      installation: "/fabr",
-      storage: "/storage",
+      root: ROOT,
+      installation: INSTALLATION,
+      storage: STORAGE,
       targets: [target("app"), libTests],
       readFile: file =>
         files.get(file) ??
@@ -171,21 +188,21 @@ describe("project document", () => {
         })(),
       resolve: (specifier, from) => `${from}/node_modules/${specifier}.js`,
     });
-    const rows = new Map(JSON.parse(composedTests.files.get("/storage/0/.pnp.data.json")!).packageRegistryData);
+    const rows = new Map(JSON.parse(composedTests.files.get(path.join(STORAGE, "0/.pnp.data.json"))!).packageRegistryData);
     expect((rows.get("lib") as Array<[string, { packageLocation: string }]>)[0][1].packageLocation).to.equal(
       "./../../../cache/tree/lib-tree/"
     );
-    expect(JSON.parse(composedTests.files.get("/storage/0/tsconfig.json")!).references).to.equal(undefined);
+    expect(JSON.parse(composedTests.files.get(path.join(STORAGE, "0/tsconfig.json"))!).references).to.equal(undefined);
   });
 
   it("reports a target or a unit whose description is not one fabr writes, and composes the rest", () => {
     const damaged = new Map(FILES);
-    damaged.set(`${POOL}/lib-d/units/build/unit.json`, JSON.stringify({ root: "./lib/src/", package: "lib" }));
+    damaged.set(path.join(POOL, "lib-d/units/build/unit.json"), JSON.stringify({ root: "./lib/src/", package: "lib" }));
     const odd: IServedTarget = { ...target("odd"), data: { units: { build: 3 }, plugin: PLUGIN } };
     const result = composeProject({
-      root: "/p",
-      installation: "/fabr",
-      storage: "/storage",
+      root: ROOT,
+      installation: INSTALLATION,
+      storage: STORAGE,
       targets: [target("app"), target("lib"), odd],
       readFile: file =>
         damaged.get(file) ??
@@ -202,13 +219,13 @@ describe("project document", () => {
 
   it("shows two units at one root behind a solution config, the build unit first", () => {
     const tests = new Map(FILES);
-    tests.set(`${POOL}/app-t/units/test/unit.json`, JSON.stringify({ root: "./app/src/", package: "app", generated: [] }));
+    tests.set(path.join(POOL, "app-t/units/test/unit.json"), JSON.stringify({ root: "./app/src/", package: "app", generated: [] }));
     tests.set(
-      `${POOL}/app-t/units/test/tsconfig.json`,
+      path.join(POOL, "app-t/units/test/tsconfig.json"),
       JSON.stringify({ compilerOptions: { rootDir: "." }, files: ["main.ts", "main.test.ts"] })
     );
     tests.set(
-      `${POOL}/app-t/units/test/.pnp.data.json`,
+      path.join(POOL, "app-t/units/test/.pnp.data.json"),
       table([
         [null, null, "./"],
         ["app", "self", "./"],
@@ -218,12 +235,12 @@ describe("project document", () => {
       id: { uri: "fabr:app?operation=test" },
       dataKind: "typescript",
       data: { units: { test: "units/test" }, plugin: PLUGIN },
-      fabr: { description: `${POOL}/app-t`, operation: "test" },
+      fabr: { description: path.join(POOL, "app-t"), operation: "test" },
     };
     const both = composeProject({
-      root: "/p",
-      installation: "/fabr",
-      storage: "/storage",
+      root: ROOT,
+      installation: INSTALLATION,
+      storage: STORAGE,
       /* The test target first: the order of the units at a root is the composition's. */
       targets: [testTarget, target("app"), target("lib")],
       readFile: file =>
@@ -235,17 +252,20 @@ describe("project document", () => {
     });
     expect(both.problems).to.deep.equal([]);
     const links = both.document.links as Record<string, string>;
-    const solution = JSON.parse(both.files.get(links["/p/app/src/tsconfig.json"])!);
+    const solution = JSON.parse(both.files.get(links[path.join(ROOT, "app/src/tsconfig.json")])!);
     expect(solution).to.deep.equal({
       files: [],
       references: [{ path: "./tsconfig.fabr-0.json" }, { path: "./tsconfig.fabr-1.json" }],
     });
-    expect(JSON.parse(both.files.get(links["/p/app/src/tsconfig.fabr-0.json"])!).files).to.deep.equal(["main.ts"]);
-    expect(JSON.parse(both.files.get(links["/p/app/src/tsconfig.fabr-1.json"])!).files).to.deep.equal(["main.ts", "main.test.ts"]);
+    expect(JSON.parse(both.files.get(links[path.join(ROOT, "app/src/tsconfig.fabr-0.json")])!).files).to.deep.equal(["main.ts"]);
+    expect(JSON.parse(both.files.get(links[path.join(ROOT, "app/src/tsconfig.fabr-1.json")])!).files).to.deep.equal([
+      "main.ts",
+      "main.test.ts",
+    ]);
     expect((both.document.units as Array<{ config: string }>).map(unit => unit.config)).to.deep.equal([
-      "/p/app/src/tsconfig.fabr-0.json",
-      "/p/app/src/tsconfig.fabr-1.json",
-      "/p/lib/src/tsconfig.json",
+      path.join(ROOT, "app/src/tsconfig.fabr-0.json"),
+      path.join(ROOT, "app/src/tsconfig.fabr-1.json"),
+      path.join(ROOT, "lib/src/tsconfig.json"),
     ]);
   });
 });

@@ -31,7 +31,7 @@ describe("e2e: file reference naming from a subdir build file", () => {
       "const fs=require('fs'),p=require('path');" +
       "(function w(d){for(const e of fs.readdirSync(d,{withFileTypes:true})){" +
       "if(e.name==='node_modules'||e.name==='package.json')continue;" +
-      "const f=p.join(d,e.name);if(e.isDirectory())w(f);else console.log(p.relative('.',f));}})('.');",
+      "const f=p.join(d,e.name);if(e.isDirectory())w(f);else console.log(p.relative('.',f).split(p.sep).join('/'));}})('.');",
     "sub/BUILD.fabr": "generate g {\n  srcs = ./assets/** ./app.config.mjs;\n  run = lister > listing.txt;\n}\n",
     "sub/app.config.mjs": "export default {};\n",
     "sub/assets/page.txt": "hello\n",

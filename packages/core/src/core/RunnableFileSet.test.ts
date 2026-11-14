@@ -93,7 +93,7 @@ describe("RunnableFileSet.toCommandLine", () => {
       path.resolve("/staged/work", "run.js"),
       "fixed",
     ]);
-    expect(path.resolve("/staged/work", at)).to.equal(`/staged/.fabr-tree/${hash}`);
+    expect(path.resolve("/staged/work", at)).to.equal(path.resolve("/staged/.fabr-tree", hash));
   });
 
   it("runs through a program of the host where it lies, writing nothing to the tree pool", async () => {
@@ -173,7 +173,12 @@ describe("manifestArguments and toArgv", () => {
 
   it("writes each kind of argument as command-line text", () => {
     expect(toArgv(args)).to.deep.equal(["-c", "/usr/bin/cc", "lib/a.jar", "--path=x:/usr/bin/cc:y"]);
-    expect(toArgv(args, "/staged")).to.deep.equal(["-c", "/usr/bin/cc", "/staged/lib/a.jar", "--path=/staged/x:/usr/bin/cc:y"]);
+    expect(toArgv(args, "/staged")).to.deep.equal([
+      "-c",
+      "/usr/bin/cc",
+      path.resolve("/staged/lib/a.jar"),
+      `--path=${path.resolve("/staged/x")}:/usr/bin/cc:y`,
+    ]);
   });
 });
 

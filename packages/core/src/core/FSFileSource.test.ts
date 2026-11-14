@@ -69,23 +69,27 @@ describe("FSFileSource.ingest", () => {
     expect(file?.name).to.equal("a.txt");
   });
 
-  it("gives a file the mode git records: executable or not, whatever else is set", async () => {
-    const modes = new Map([
-      ["a.txt", 0o644],
-      ["b.txt", 0o664],
-      ["c.txt", 0o600],
-      ["d.sh", 0o755],
-      ["e.sh", 0o775],
-      ["f.sh", 0o700],
-    ]);
-    for (const [name, mode] of modes) {
-      fs.writeFileSync(path.join(root, name), "hi");
-      fs.chmodSync(path.join(root, name), mode);
+  /* NTFS has no exec bit for chmod to set. */
+  (process.platform !== "win32" ? it : it.skip)(
+    "gives a file the mode git records: executable or not, whatever else is set",
+    async () => {
+      const modes = new Map([
+        ["a.txt", 0o644],
+        ["b.txt", 0o664],
+        ["c.txt", 0o600],
+        ["d.sh", 0o755],
+        ["e.sh", 0o775],
+        ["f.sh", 0o700],
+      ]);
+      for (const [name, mode] of modes) {
+        fs.writeFileSync(path.join(root, name), "hi");
+        fs.chmodSync(path.join(root, name), mode);
+      }
+      const src = new FSFileSource(root);
+      const ingested = await Promise.all([...modes.keys()].map(name => toPromise(src.ingest(name))));
+      expect(ingested.map(file => file?.mode)).to.deep.equal([0o644, 0o644, 0o644, 0o755, 0o755, 0o755]);
     }
-    const src = new FSFileSource(root);
-    const ingested = await Promise.all([...modes.keys()].map(name => toPromise(src.ingest(name))));
-    expect(ingested.map(file => file?.mode)).to.deep.equal([0o644, 0o644, 0o644, 0o755, 0o755, 0o755]);
-  });
+  );
 
   it("treats a directory as absent, not an error", async () => {
     /* A not-yet-existing directory reference matches the path itself; when that

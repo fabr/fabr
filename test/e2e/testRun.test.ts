@@ -114,7 +114,7 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
       "PROJECT.fabr":
         "plugin @fabr-build/js;\n\n" +
         STUB_TSC_CONFIG +
-        `\njs_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  test_env = { MARKER = "${marker}"; }\n}\n`,
+        `\njs_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  test_env = { MARKER = '${marker}'; }\n}\n`,
       "src/red.test.ts":
         'const assert = require("node:assert");\nrequire("fs").appendFileSync(process.env.MARKER, "red\\n");\n' +
         `describe("red", () => { it("fails on purpose ${process.pid}-${Date.now()}", () => { assert.equal(1, 2); }); });\n`,
@@ -149,7 +149,7 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
       "PROJECT.fabr":
         "plugin @fabr-build/js;\n\n" +
         STUB_TSC_CONFIG +
-        `\njs_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  test_env = { MARKER = "${marker}"; }\n}\n`,
+        `\njs_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  test_env = { MARKER = '${marker}'; }\n}\n`,
       "src/a.ts": `exports.a = "${a}";\n`,
       "src/b.ts": `exports.b = "${unique}";\n`,
       "src/a.test.ts":
@@ -209,7 +209,7 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
         "plugin @fabr-build/js;\n\n" +
         STUB_TSC_CONFIG +
         "\njs_package lib { srcs = libsrc:**/*.ts; }\n" +
-        `js_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  deps = lib;\n  test_deps = layout/pnp;\n  test_env = { MARKER = "${marker}"; }\n}\n`,
+        `js_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  deps = lib;\n  test_deps = layout/pnp;\n  test_env = { MARKER = '${marker}'; }\n}\n`,
       "libsrc/index.ts": `exports.greeting = "${greeting}";\n`,
       "src/a.test.ts":
         'require("lib");\nrequire("fs").appendFileSync(process.env.MARKER, "a\\n");\ndescribe("a", () => { it("is", () => {}); });\n',
@@ -234,7 +234,7 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
           "plugin @fabr-build/js;\n\n" +
           STUB_TSC_CONFIG +
           "\njs_package lib { srcs = libsrc:**/*.ts; }\n" +
-          `js_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  deps = lib;\n  test_deps = layout/${layout};\n  test_env = { MARKER = "${marker}"; }\n}\n`,
+          `js_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  deps = lib;\n  test_deps = layout/${layout};\n  test_env = { MARKER = '${marker}'; }\n}\n`,
         "libsrc/index.ts": `exports.greeting = "${unique}";\n`,
         "libsrc/other.ts": `exports.other = "${other}";\n`,
         "src/a.test.ts":
@@ -262,7 +262,7 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
           STUB_TSC_CONFIG +
           "\njs_package lib { srcs = libsrc:**/*.ts; }\n" +
           (withOpt ? "js_package opt { srcs = optsrc:**/*.ts; }\n" : "") +
-          `js_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  deps = lib${withOpt ? " opt" : ""};\n  test_deps = layout/${layout};\n  test_env = { MARKER = "${marker}"; }\n}\n`,
+          `js_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  deps = lib${withOpt ? " opt" : ""};\n  test_deps = layout/${layout};\n  test_env = { MARKER = '${marker}'; }\n}\n`,
         "libsrc/index.ts": `exports.greeting = "${unique}";\n`,
         "optsrc/index.ts": 'exports.v = "opt";\n',
         "src/a.test.ts":
@@ -289,7 +289,7 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
         STUB_TSC_CONFIG +
         "\njs_package lib { srcs = libsrc:**/*.ts; }\n" +
         (withOpt ? "js_package opt { srcs = optsrc:**/*.ts; }\n" : "") +
-        `js_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  deps = lib${withOpt ? " opt" : ""};\n  test_env = { MARKER = "${marker}"; }\n}\n`,
+        `js_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  deps = lib${withOpt ? " opt" : ""};\n  test_env = { MARKER = '${marker}'; }\n}\n`,
       "libsrc/index.ts": `exports.greeting = "${unique}";\n`,
       "optsrc/index.ts": 'exports.v = "opt";\n',
       "src/a.test.ts":
@@ -321,7 +321,7 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
         "\njs_package other { srcs = othersrc:**/*.ts; }\n" +
         "js_package mid { srcs = midsrc:**/*.ts; deps = other; }\n" +
         "js_package lib { srcs = libsrc:**/*.ts; deps = mid; }\n" +
-        `js_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  deps = lib;\n  test_env = { MARKER = "${marker}"; }\n}\n`,
+        `js_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  deps = lib;\n  test_env = { MARKER = '${marker}'; }\n}\n`,
       "othersrc/index.ts": `exports.v = "${unique}";\n`,
       "othersrc/unread.ts": `exports.unread = "${unread}";\n`,
       "midsrc/index.ts": 'exports.v = require("other").v;\n',
@@ -348,7 +348,7 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
         "plugin @fabr-build/js;\n\n" +
         STUB_TSC_CONFIG +
         "\njs_package lib { srcs = libsrc:**/*.ts; }\n" +
-        `js_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  deps = lib;\n  test_deps = layout/pnp;\n  test_env = { MARKER = "${marker}"; }\n}\n`,
+        `js_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  deps = lib;\n  test_deps = layout/pnp;\n  test_env = { MARKER = '${marker}'; }\n}\n`,
       "libsrc/build/index.ts": `exports.lib = "${unique}";\n`,
       "src/index.ts": `exports.own = "${own}";\n`,
       "src/a.test.ts":
@@ -480,7 +480,7 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
       'describe("env", () => { it("sees its target\'s variables only", () => {\n' +
       `  assert.equal(process.env.GREETING, "${expected}");\n` +
       '  assert.equal(process.env.NODE_OPTIONS, "--max-old-space-size=512 --no-warnings");\n' +
-      "  assert.equal(process.env.PATH, undefined);\n" +
+      "  assert.equal(process.env.PATH || undefined, undefined);\n" +
       "}); });\n";
     const files = {
       ...STUB_TSC,
@@ -616,7 +616,7 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
      * never relied upon. The straggler's pid goes to a fixed temp path (the
      * runner gives tests a clean env and a staged cwd, so the project dir is
      * unreachable from inside). */
-    const pidPath = "/tmp/fabr-e2e-straggler.pid";
+    const pidPath = path.join(os.tmpdir(), "fabr-e2e-straggler.pid");
     fs.rmSync(pidPath, { force: true });
     const body =
       'describe("thing", () => { it("misbehaves after passing", () => {' +
@@ -631,19 +631,22 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
        * SIGKILL cap into status -1) — and green: the test itself passed. */
       expect(result.status).to.equal(0);
       expect(result.stderr).to.contain("1 test passed");
-      /* (2) the spawned straggler did not outlive the run. */
-      const pid = Number(fs.readFileSync(pidPath, "utf8"));
-      const deadline = Date.now() + 8000;
-      let alive = true;
-      while (alive && Date.now() < deadline) {
-        await new Promise(resolve => setTimeout(resolve, 200));
-        try {
-          process.kill(pid, 0);
-        } catch {
-          alive = false;
+      /* (2) the spawned straggler did not outlive the run — reaped by the
+       * group sweep, which needs POSIX process groups, so not on Windows. */
+      if (process.platform !== "win32") {
+        const pid = Number(fs.readFileSync(pidPath, "utf8"));
+        const deadline = Date.now() + 8000;
+        let alive = true;
+        while (alive && Date.now() < deadline) {
+          await new Promise(resolve => setTimeout(resolve, 200));
+          try {
+            process.kill(pid, 0);
+          } catch {
+            alive = false;
+          }
         }
+        expect(alive).to.equal(false);
       }
-      expect(alive).to.equal(false);
     } finally {
       fs.rmSync(pidPath, { force: true });
     }

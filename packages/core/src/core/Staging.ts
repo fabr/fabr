@@ -311,7 +311,7 @@ export function syncFileSet(targetDir: string, before: FileSet, after: FileSet):
 export function stageWrite(temp: string, targetName: string, create: Computable<void>): Computable<void> {
   return asExecutionError(
     create
-      .then(() => rename(temp, targetName))
+      .then(() => renameOver(temp, targetName))
       .catch(err => {
         try {
           fs.rmSync(temp, { force: true });
@@ -321,6 +321,25 @@ export function stageWrite(temp: string, targetName: string, create: Computable<
         throw err;
       })
   );
+}
+
+/**
+ * Rename `temp` over `targetName`. Windows refuses to replace a read-only
+ * file (a staged one, a hardlink into the blob pool whose attribute is the
+ * blob's), so there, where it does, the old file is first renamed aside and
+ * removed once the new one is in place: for that moment there is no file at
+ * `targetName`.
+ */
+function renameOver(temp: string, targetName: string): Computable<void> {
+  return rename(temp, targetName).catch((err: NodeJS.ErrnoException) => {
+    if (process.platform !== "win32" || (err.code !== "EPERM" && err.code !== "EACCES") || !fs.existsSync(targetName)) {
+      throw err;
+    }
+    const aside = `${temp}.replaced`;
+    return rename(targetName, aside)
+      .then(() => rename(temp, targetName))
+      .then(() => deleteFile(aside).catch(() => undefined));
+  });
 }
 
 /** Remove each candidate directory that is empty, and each parent it leaves

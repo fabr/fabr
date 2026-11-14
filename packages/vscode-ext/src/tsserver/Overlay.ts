@@ -25,18 +25,29 @@
 import type * as fs from "fs";
 import * as path from "path";
 
-/** The links laid over the filesystem: virtual path → real path, both absolute. */
+/** The links laid over the filesystem: virtual path → real path, both absolute, in the host's form ({@link toHostForm}). */
 export type Links = ReadonlyMap<string, string>;
+
+/**
+ * @return the absolute path `file` in the host's form, as the links are keyed:
+ * on Windows `\`-separated with an upper-case drive letter, whatever form
+ * tsserver asked in (it uses `/`).
+ */
+export function toHostForm(file: string): string {
+  const resolved = path.resolve(file);
+  return /^[a-z]:/.test(resolved) ? resolved[0].toUpperCase() + resolved.slice(1) : resolved;
+}
 
 /**
  * @return the real path `file` names through `links`, or undefined if it lies
  * under no link.
  */
 export function linkedTarget(links: Links, file: string): string | undefined {
-  for (let at = file; ; at = path.dirname(at)) {
+  const asked = toHostForm(file);
+  for (let at = asked; ; at = path.dirname(at)) {
     const target = links.get(at);
     if (target !== undefined) {
-      return at === file ? target : path.join(target, path.relative(at, file));
+      return at === asked ? target : path.join(target, path.relative(at, asked));
     }
     if (path.dirname(at) === at) {
       return undefined;
@@ -49,7 +60,8 @@ export function linkedTarget(links: Links, file: string): string | undefined {
  * link beneath it.
  */
 export function linkedChildren(links: Links, dir: string): string[] {
-  const prefix = dir.endsWith(path.sep) ? dir : dir + path.sep;
+  const asked = toHostForm(dir);
+  const prefix = asked.endsWith(path.sep) ? asked : asked + path.sep;
   const names = new Set<string>();
   for (const link of links.keys()) {
     if (link.startsWith(prefix)) {
@@ -198,7 +210,7 @@ const relinkedAt = new Map<string, number>();
  * target's own time.
  */
 function relinkedStats(file: string, stats: unknown): unknown {
-  const at = relinkedAt.get(file);
+  const at = relinkedAt.get(toHostForm(file));
   const real = stats as fs.Stats | undefined;
   if (at === undefined || real === undefined || real.mtimeMs >= at) {
     return stats;

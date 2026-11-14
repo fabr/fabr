@@ -37,7 +37,7 @@ import { type IPnpApi, type ISassImporter, sassPnpImporter } from "./SassPnpImpo
 interface ISass {
   compileString(
     source: string,
-    options: { url?: URL; importers?: ISassImporter[]; loadPaths?: string[]; syntax?: string }
+    options: { url?: URL; importers?: ISassImporter[]; loadPaths?: string[]; syntax?: string; silenceDeprecations?: string[] }
   ): { css: string; loadedUrls: URL[] };
 }
 
@@ -124,12 +124,16 @@ function yarnApi(root: string, state: Record<string, unknown>): IPnpApi {
   });
 }
 
+/** The deprecations the tests' sources use on purpose: `@import`, which the importer serves as long as Sass does. */
+const EXPECTED_DEPRECATIONS = ["import"];
+
 /** Compile `source` as the workspace's `src/entry.scss`, through the importer. */
 function compile(root: string, state: Record<string, unknown>, source: string): string {
   return sass
     .compileString(source, {
       url: pathToFileURL(path.join(root, "src", "entry.scss")),
       importers: [sassPnpImporter({ pnpApi: yarnApi(root, state) })],
+      silenceDeprecations: EXPECTED_DEPRECATIONS,
     })
     .css.trim();
 }
@@ -189,6 +193,7 @@ describe("sassPnpImporter, searching a package as Sass searches a load path", ()
               .compileString(source, {
                 url: pathToFileURL(path.join(root, "src", "entry.scss")),
                 loadPaths: [path.join(root, "pkgs")],
+                silenceDeprecations: EXPECTED_DEPRECATIONS,
               })
               .css.trim()
           );

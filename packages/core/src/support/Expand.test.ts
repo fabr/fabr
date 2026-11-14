@@ -30,6 +30,7 @@ import { Name, NameBuilder } from "../core/Name";
 import { packToTarball } from "./PackTar";
 import { packToZip } from "./PackZip";
 import { descentPrefixes, expandOnce, findWithDescent } from "./Expand";
+import { toPosix } from "./Paths";
 
 /** A file with a zip's magic and no zip after it: an archive by mime, but not one fabr can expand. */
 const zipFile = (): MemoryFile => new MemoryFile(Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(300)]));
@@ -276,8 +277,11 @@ describe("Expand", () => {
       const dir = fsNode.mkdtempSync(pathNode.join(os.tmpdir(), "fabr-expand-abs-"));
       try {
         fsNode.writeFileSync(pathNode.join(dir, "a.tgz"), await (await archive()).getBuffer());
-        const source = new FSFileSource("/");
-        const pattern = new NameBuilder().appendLiteralString(`${dir}:a.tgz:`).appendGlobMetachars("**").name().rebase("/");
+        /* Rooted at the filesystem root holding `dir` (a drive's, on Windows), named from there. */
+        const root = pathNode.parse(dir).root;
+        const source = new FSFileSource(root);
+        const rooted = `/${toPosix(pathNode.relative(root, dir))}`;
+        const pattern = new NameBuilder().appendLiteralString(`${rooted}:a.tgz:`).appendGlobMetachars("**").name().rebase("/");
         const found = await findWithDescent(source, pattern, "", expandOnce);
         expect(names(found)).to.deep.equal(["amperize-3f2dc4e/lib/x.js", "amperize-3f2dc4e/package.json"]);
       } finally {

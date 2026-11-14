@@ -1767,16 +1767,16 @@ describe("emittedPathOf", () => {
   const layout = { rootDir: "/work/src", outDir: "/work/build", preserveJsx: false, rewriteExtensions: true };
 
   it("re-roots a source into the output directory under its runtime extension", () => {
-    expect(emittedPathOf("/work/src/a/b.ts", layout)).to.equal("/work/build/a/b.js");
-    expect(emittedPathOf("/work/src/b.tsx", layout)).to.equal("/work/build/b.js");
-    expect(emittedPathOf("/work/src/b.mts", layout)).to.equal("/work/build/b.mjs");
-    expect(emittedPathOf("/work/src/b.cts", layout)).to.equal("/work/build/b.cjs");
+    expect(emittedPathOf("/work/src/a/b.ts", layout)).to.equal(path.join("/work/build", "a/b.js"));
+    expect(emittedPathOf("/work/src/b.tsx", layout)).to.equal(path.join("/work/build", "b.js"));
+    expect(emittedPathOf("/work/src/b.mts", layout)).to.equal(path.join("/work/build", "b.mjs"));
+    expect(emittedPathOf("/work/src/b.cts", layout)).to.equal(path.join("/work/build", "b.cjs"));
   });
 
   it("keeps a .tsx extension where the project preserves JSX", () => {
-    expect(emittedPathOf("/work/src/b.tsx", { ...layout, preserveJsx: true })).to.equal("/work/build/b.jsx");
+    expect(emittedPathOf("/work/src/b.tsx", { ...layout, preserveJsx: true })).to.equal(path.join("/work/build", "b.jsx"));
     /* Only the JSX extension is affected — a .ts still emits JavaScript. */
-    expect(emittedPathOf("/work/src/b.ts", { ...layout, preserveJsx: true })).to.equal("/work/build/b.js");
+    expect(emittedPathOf("/work/src/b.ts", { ...layout, preserveJsx: true })).to.equal(path.join("/work/build", "b.js"));
   });
 
   it("emits beside the source when the project has no outDir", () => {
@@ -1805,7 +1805,7 @@ describe("emittedPathOf", () => {
       /* A resource declaration emits nothing, and the rules are consulted by the
        * specifier transformer rather than here. */
       expect(emittedPathOf("/work/src/a/Card.d.css.ts", withRewrites)).to.equal(undefined);
-      expect(emittedPathOf("/work/src/a/b.ts", withRewrites)).to.equal("/work/build/a/b.js");
+      expect(emittedPathOf("/work/src/a/b.ts", withRewrites)).to.equal(path.join("/work/build", "a/b.js"));
       expect(emittedPathOf("/work/src/b.d.ts", withRewrites)).to.equal(undefined);
     });
   });

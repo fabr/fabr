@@ -21,6 +21,7 @@ import { expect } from "chai";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { pathToFileURL } from "url";
 import {
   coreVersionError,
   hostCoreResolver,
@@ -113,7 +114,7 @@ describe("the host's core, for plugins", () => {
     };
     const context = { conditions: [], importAttributes: {}, parentURL: undefined };
     expect(resolve("@fabr-build/core", context, next)).to.deep.equal({
-      url: "file://" + HOST,
+      url: pathToFileURL(HOST).href,
       format: "commonjs",
       shortCircuit: true,
     });

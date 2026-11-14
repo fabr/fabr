@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { runFabr, STUB_TSC, STUB_TSC_CONFIG } from "./harness";
+import { HOST_NODE, runFabr, STUB_TSC, STUB_TSC_CONFIG } from "./harness";
 
 /* A js_script defines a runnable; the generic `generate` target executes it and
  * collects output. These cases exercise that pair through the real CLI. */
@@ -57,7 +57,9 @@ describe("e2e: js_script (runnable) + generate", () => {
     expect(result.status, result.stderr).to.equal(0);
     const [version, execPath] = result.stdout.split(" ");
     expect(version).to.equal(process.version);
-    expect(execPath, "reached through the tree pool's link").to.match(/\/tree\/[0-9a-f]{64}\/\.fabr-host-node$/);
+    expect(execPath, "reached through the tree pool's link").to.match(
+      /[\\/](?:tree|\.fabr-tree)[\\/][0-9a-f]{64}[\\/]\.fabr-host-node$/
+    );
   });
 
   it("runs on a program of the host NODE names, where it lies rather than through a link", () => {
@@ -65,7 +67,7 @@ describe("e2e: js_script (runnable) + generate", () => {
       {
         "PROJECT.fabr":
           "plugin @fabr-build/js;\n\n" +
-          `NODE = @host:${process.execPath};\n` +
+          `NODE = ${HOST_NODE};\n` +
           "js_script gen_prog { entry = src:gen.js; }\n" +
           "generate gen { run = gen_prog; output = out:**; }\n",
         "src/gen.js":

@@ -129,8 +129,11 @@ describe("BuildCache", () => {
      * one does not — so a launched tool can't write through a staged hardlink. */
     const execBlob = (await toPromise(fresh.get("bin/tool")))!.getAbsPath()!;
     const plainBlob = (await toPromise(fresh.get("lib/plain.js")))!.getAbsPath()!;
-    expect(fs.statSync(execBlob).mode & 0o777).to.equal(0o555);
-    expect(fs.statSync(plainBlob).mode & 0o777).to.equal(0o444);
+    /* NTFS has no exec bit: Windows reports a read-only file as 0o444 whatever its mode. */
+    if (process.platform !== "win32") {
+      expect(fs.statSync(execBlob).mode & 0o777).to.equal(0o555);
+      expect(fs.statSync(plainBlob).mode & 0o777).to.equal(0o444);
+    }
 
     /* A fresh cache reads the original modes back from the manifest — not the
      * read-only blob's permission bits. */
@@ -619,19 +622,15 @@ describe("BuildCache", () => {
 
   it("fails the handed-out stream when its spool fails", async () => {
     const cache = new BuildCache(root, NULL_LOG);
-    const own = path.join(root, "work", `${hostPrefix()}-${process.pid}`);
-    fs.chmodSync(own, 0o500);
-    try {
-      const handle = cache.getTemporaryWriteStream();
-      const failure = await new Promise<NodeJS.ErrnoException>(resolve => handle.stream.on("error", resolve));
-      expect(failure.code).to.equal("EACCES");
-      await toPromise(handle.finalize("out.txt")).then(
-        () => expect.fail("finalize should have rejected"),
-        (err: NodeJS.ErrnoException) => expect(err.code).to.equal("EACCES")
-      );
-    } finally {
-      fs.chmodSync(own, 0o700);
-    }
+    /* A directory where the spool is about to be opened makes the open fail, on every platform. */
+    fs.mkdirSync(path.join(cache["ownWorkRoot"], `stream-${cache["tempCounter"]}`));
+    const handle = cache.getTemporaryWriteStream();
+    const failure = await new Promise<NodeJS.ErrnoException>(resolve => handle.stream.on("error", resolve));
+    expect(failure.code).to.match(/^E[A-Z]+$/);
+    await toPromise(handle.finalize("out.txt")).then(
+      () => expect.fail("finalize should have rejected"),
+      (err: NodeJS.ErrnoException) => expect(err.code).to.equal(failure.code)
+    );
   });
 
   it("leaves no spool behind when the output is discarded", async () => {
@@ -2182,9 +2181,12 @@ describe("BuildCache secrets store", () => {
   it("keeps a record for a day, readable by this user alone, then fetches it again", async () => {
     const cache = new BuildCache(root, NULL_LOG, () => clock);
     expect(await get(cache, answer("one"))).to.equal("param:1=one");
-    expect(fs.statSync(path.join(root, "secrets")).mode & 0o777).to.equal(0o700);
-    const [record] = fs.readdirSync(path.join(root, "secrets"));
-    expect(fs.statSync(path.join(root, "secrets", record)).mode & 0o777).to.equal(0o600);
+    /* Windows has no owner-only permission bits to read back. */
+    if (process.platform !== "win32") {
+      expect(fs.statSync(path.join(root, "secrets")).mode & 0o777).to.equal(0o700);
+      const [record] = fs.readdirSync(path.join(root, "secrets"));
+      expect(fs.statSync(path.join(root, "secrets", record)).mode & 0o777).to.equal(0o600);
+    }
     /* Nothing of it is in the shared pools. */
     expect(fs.existsSync(path.join(root, "blob"))).to.equal(false);
     const later = new BuildCache(root, NULL_LOG, () => clock + MINIMUM_FRESHNESS_MS - 1_000);
@@ -2492,7 +2494,11 @@ describe("BuildCache.ensureTree (the tree pool)", () => {
      * and read-only, so nothing staged from it can write through. */
     const file = path.join(entry, "bin/tool");
     expect(fs.statSync(file).ino).to.equal(fs.statSync(path.join(root, "blob", hashString("#!/bin/sh\n"))).ino);
-    expect(fs.statSync(file).mode & 0o777).to.equal(0o555);
+    expect(fs.statSync(file).mode & 0o222).to.equal(0);
+    /* NTFS has no exec bit to read back. */
+    if (process.platform !== "win32") {
+      expect(fs.statSync(file).mode & 0o777).to.equal(0o555);
+    }
 
     /* Generated content interns on its way through, so the tree is a hardlink
      * farm all the way down: an in-memory file gains its blob here, and the

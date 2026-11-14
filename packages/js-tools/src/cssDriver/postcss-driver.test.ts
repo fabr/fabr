@@ -24,6 +24,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 import postcss from "postcss";
 import type { IPostcssOptions, IPostcssSource } from "./Options";
 import { cssModuleShim, main, resolveComposePath, scopedNameOf, scopeFailure, scopeTableOf } from "./postcss-driver";
@@ -53,9 +54,12 @@ describe("cssModuleShim", () => {
 describe("withSourceFirst", () => {
   /* Three sources, the compiled one last: segments over several lines, one
    * with a name, one with no source at all. */
+  const file = (name: string): string => path.resolve("/w", name);
+  const url = (name: string): string => pathToFileURL(file(name)).href;
+  const root = path.resolve("/");
   const map = {
     version: 3,
-    sources: ["file:///w/_a.scss", "file:///w/_b.scss", "file:///w/card.scss"],
+    sources: [url("_a.scss"), url("_b.scss"), url("card.scss")],
     sourcesContent: ["a", "b", "card"],
     names: ["n"],
     mappings: "AAAA,KCCA;AACAA,EAAE;ACAA,G;ADEA",
@@ -82,22 +86,22 @@ describe("withSourceFirst", () => {
   };
 
   it("puts the compiled source first and keeps every position mapped where it was", () => {
-    const moved = withSourceFirst(map, "/w/card.scss", "/", "/");
-    assert.deepEqual(moved.sources, ["file:///w/card.scss", "file:///w/_a.scss", "file:///w/_b.scss"]);
+    const moved = withSourceFirst(map, file("card.scss"), root, root);
+    assert.deepEqual(moved.sources, [url("card.scss"), url("_a.scss"), url("_b.scss")]);
     assert.deepEqual(moved.sourcesContent, ["card", "a", "b"]);
     assert.deepEqual(positions(moved as typeof map), positions(map));
   });
 
   it("leaves a map that lists it first, or not at all, as it is", () => {
-    assert.equal(withSourceFirst(map, "/w/_a.scss", "/", "/"), map);
-    assert.equal(withSourceFirst(map, "/w/other.scss", "/", "/"), map);
+    assert.equal(withSourceFirst(map, file("_a.scss"), root, root), map);
+    assert.equal(withSourceFirst(map, file("other.scss"), root, root), map);
   });
 });
 
 describe("relocateCssSources", () => {
   /* As the driver calls it for `a/Card.css`: inputs staged under `src`, the map
    * written next to its stylesheet under `out`. */
-  const where = { root: "/work", srcRoot: "src", mapDir: "out/a" };
+  const where = { root: path.resolve("/work"), srcRoot: "src", mapDir: "out/a" };
   const map = (...sources: string[]): { sources: string[] } => ({ sources });
 
   it("names a chained source as the target names it", () => {
@@ -131,9 +135,9 @@ describe("relocateCssSources", () => {
      * content-addressed) path. */
     const out = relocateCssSources(map("../../.fabr-tree/abc123/vendor/_mixins.scss"), where);
     assert.deepEqual(out.sources, [".fabr-tree/abc123/vendor/_mixins.scss"]);
-    assert.equal(JSON.stringify(out).includes("/work"), false);
+    assert.equal(JSON.stringify(out).includes("work"), false);
     /* A file outside the working root altogether keeps only its basename. */
-    assert.deepEqual(relocateCssSources(map("file:///elsewhere/x.scss"), where).sources, ["x.scss"]);
+    assert.deepEqual(relocateCssSources(map(pathToFileURL(path.resolve("/elsewhere/x.scss")).href), where).sources, ["x.scss"]);
   });
 });
 
@@ -208,7 +212,7 @@ describe("the compose hooks", () => {
   it("reaches a package dependency's stylesheet, where the step located it", () => {
     /* `ds/base.css` is not relative, so it names a dependency's stylesheet
      * rather than a sibling. */
-    const packages = new Map([["ds/base.css", "/work/.fabr-tree/ds/base.css"]]);
+    const packages = new Map([["ds/base.css", path.resolve("/work/.fabr-tree/ds/base.css")]]);
     const withDep = scopeTableOf({ ...options, composable: [{ package: "ds", path: "base.css", scope: "sDS" }] }, packages);
     assert.equal(
       resolveComposePath(withDep, options.srcRoot, "ds/base.css", "/work/src/a/one.module.css", packages),

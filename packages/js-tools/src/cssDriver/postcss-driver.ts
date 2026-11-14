@@ -204,7 +204,8 @@ export function resolveComposePath(
   const lowered = sassLoweredName(file);
   /* A relative specifier names a sibling of the importer; anything else names
    * a dependency's stylesheet. */
-  const resolved = lowered.startsWith(".") ? path.resolve(path.dirname(path.resolve(importer)), lowered) : packages.get(lowered);
+  const located = lowered.startsWith(".") ? path.resolve(path.dirname(path.resolve(importer)), lowered) : packages.get(lowered);
+  const resolved = located === undefined ? undefined : path.resolve(located);
   if (resolved === undefined || !table.has(resolved)) {
     throw new Error(
       `composes: '${file}' (in '${displayName(importer, srcRoot)}') does not name a stylesheet this target can reach — ` +

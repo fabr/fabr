@@ -29,6 +29,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 import { FileSet, IFile, MemoryFile, PackageFileSet, dependenciesOn } from "@fabr-build/core";
 import type { ISassOptions } from "@fabr-build/js-tools";
 import {
@@ -78,8 +79,14 @@ describe("a lowered map's sources", () => {
     /* Sass reports absolute `file://` URLs. What this step writes is the name
      * the target uses, so its output is a deliverable tree in its own right
      * rather than a form only the next step can read. */
-    const map = { sources: ["file:///work/src/a/Card.module.scss", "file:///work/.fabr-tree/abc/vendor/_mixins.scss"] };
-    const out = relocateCssSources(map, { root: "/work", srcRoot: "src", mapDir: "out/a" });
+    const work = path.resolve("/work");
+    const map = {
+      sources: [
+        pathToFileURL(path.join(work, "src/a/Card.module.scss")).href,
+        pathToFileURL(path.join(work, ".fabr-tree/abc/vendor/_mixins.scss")).href,
+      ],
+    };
+    const out = relocateCssSources(map, { root: work, srcRoot: "src", mapDir: "out/a" });
     assert.deepEqual(out.sources, ["a/Card.module.scss", ".fabr-tree/abc/vendor/_mixins.scss"]);
   });
 });
@@ -95,7 +102,7 @@ describe("the Sass driver, resolving package loads through fabr's table", () => 
 
   beforeEach(() => {
     /* A step's working directory, in a directory of its own for the pool's link. */
-    root = path.join(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-sassdriver-"))), "work");
+    root = path.join(fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-sassdriver-"))), "work");
     fs.mkdirSync(root);
   });
 

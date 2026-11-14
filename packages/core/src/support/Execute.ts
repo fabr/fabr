@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { ChildProcess, spawn } from "child_process";
+import { ChildProcess, spawn, spawnSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -256,8 +256,10 @@ export function findExecutable(name: string, cwd = process.cwd(), platform: Node
 }
 
 /**
- * True where build steps run in process groups of their own (POSIX; Windows
- * keeps the plain spawn). Each step's process is spawned detached, leading its
+ * True where build steps run in process groups of their own (POSIX; on Windows
+ * a step's tree is killed while its process runs, with {@link killTree}, and
+ * what it leaves running once its process has exited lives on until fabr
+ * exits). Each step's process is spawned detached, leading its
  * own group, and when it exits the group is swept: SIGTERM at once, SIGKILL
  * after a grace, so nothing a step leaves running outlives it (a child that
  * starts its own session escapes the sweep). A detached step is not in the
@@ -276,14 +278,15 @@ const SWEEP_KILL_GRACE_MS = 5000;
 /** The interval at which a sweep checks whether the group has emptied. */
 const SWEEP_POLL_MS = 25;
 
-/** The group leaders of running steps and of sweeps still in their grace, for
- * the exit hook to kill. */
+/** The group leaders of running steps and of sweeps still in their grace (on
+ * Windows, the running steps' processes), for the exit hook to kill. */
 const liveGroups = new Set<number>();
 let exitSweepInstalled = false;
 
-/** Register a just-spawned step's group for the exit sweep. */
+/** Register a just-spawned step's group for the exit sweep (on Windows, its
+ * process, whose tree the exit hook kills). */
 function trackGroup(pid: number | undefined): void {
-  if (!GROUPS_SUPPORTED || pid === undefined) {
+  if (pid === undefined) {
     return;
   }
   if (!exitSweepInstalled) {
@@ -302,6 +305,10 @@ function trackGroup(pid: number | undefined): void {
  */
 export function killLiveChildren(): void {
   for (const gid of liveGroups) {
+    if (!GROUPS_SUPPORTED) {
+      killTree(gid);
+      continue;
+    }
     try {
       process.kill(-gid, "SIGKILL");
     } catch {
@@ -310,8 +317,32 @@ export function killLiveChildren(): void {
   }
   const child = interactiveChild;
   if (child?.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+    if (!GROUPS_SUPPORTED) {
+      killTree(child.pid);
+      return;
+    }
     try {
       process.kill(child.pid, "SIGKILL");
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
+/**
+ * Kill the process `pid` and every process descended from it that is still
+ * running, on Windows, which has no process groups: with `taskkill /T /F`,
+ * found where Windows keeps it (never by PATH), else the process alone. A
+ * descendant whose parent has already exited is out of reach. Synchronous;
+ * never throws.
+ */
+function killTree(pid: number): void {
+  const taskkill = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
+  const result = spawnSync(taskkill, ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true, timeout: 10_000 });
+  /* 128: no such process, so nothing is left to kill. */
+  if (result.error !== undefined || (result.status !== 0 && result.status !== 128)) {
+    try {
+      process.kill(pid, "SIGKILL");
     } catch {
       /* already gone */
     }
@@ -339,6 +370,10 @@ function groupAlive(pid: number): boolean {
  */
 function sweepGroup(pid: number | undefined): Computable<void> {
   if (!GROUPS_SUPPORTED || pid === undefined) {
+    /* On Windows what an exited step left running is out of reach (killTree). */
+    if (pid !== undefined) {
+      liveGroups.delete(pid);
+    }
     return Computable.resolve<void>(undefined);
   }
   try {
@@ -453,7 +488,13 @@ function executeUnbounded(
      * whether or not there is a sink. */
     const output: ICommandOutputLine[] = [];
     const stdio: Array<"ignore" | "pipe" | number> = ["ignore", "pipe", "pipe"];
-    const proc = spawn(cmd, args, { cwd, env: { ...FORCE_COLOR_ENV, ...env }, stdio, windowsHide: true, ...DETACHED });
+    const proc = spawn(cmd, args, {
+      cwd,
+      env: stepEnvironment({ ...FORCE_COLOR_ENV, ...env }),
+      stdio,
+      windowsHide: true,
+      ...DETACHED,
+    });
     trackGroup(proc.pid);
     /* Sweep on 'exit', not 'close': a leftover process holding the output
      * pipes open keeps 'close' from firing until the sweep kills it. 'close'
@@ -577,6 +618,17 @@ export interface StageStreams {
   stdout?: string;
   stderr?: string;
   mergedTo?: "out" | "err";
+}
+
+/**
+ * @return `env` as a build step is spawned with it. On Windows a child is
+ * given the variables Windows programs need to start (`SYSTEMROOT` and the
+ * like) from fabr's own environment wherever `env` lacks them, `PATH` among
+ * them; an empty `PATH` is given where `env` names none, so that a step finds
+ * nothing by searching there, as elsewhere.
+ */
+function stepEnvironment(env: Record<string, string>): Record<string, string> {
+  return process.platform === "win32" && !Object.keys(env).some(name => name.toUpperCase() === "PATH") ? { ...env, PATH: "" } : env;
 }
 
 /** What the first stage of an {@link executePipeline} reads: bytes, or the stream a function makes. */
@@ -730,7 +782,7 @@ function pipelineUnbounded(
         try {
           proc = spawn(argvs[i][0], argvs[i].slice(1), {
             cwd,
-            env: { ...Object.fromEntries((specs[i].env ?? []).map(variableEntry)), ...Object.fromEntries(env) },
+            env: stepEnvironment({ ...Object.fromEntries((specs[i].env ?? []).map(variableEntry)), ...Object.fromEntries(env) }),
             stdio: [stdinCfg, stdoutCfg, "pipe"],
             windowsHide: true,
             ...DETACHED,
@@ -884,6 +936,9 @@ function finalizeCaptures(captures: Capture[]): Computable<FileSet> {
 let interactiveChild: ChildProcess | undefined;
 /** True once the interactive child has been offered a termination signal. */
 let interactiveSignalled = false;
+/** The signal fabr ended the interactive child for, on Windows, where it is
+ * killed rather than signalled ({@link signalInteractiveChild}). */
+let interactiveKilledFor: NodeJS.Signals | undefined;
 let interactiveExitHookInstalled = false;
 
 /** Record `child` as the interactive child for the duration of its run. */
@@ -895,6 +950,10 @@ function trackInteractive(child: ChildProcess): void {
     process.on("exit", () => {
       const child = interactiveChild;
       if (child?.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+        if (!GROUPS_SUPPORTED) {
+          killTree(child.pid);
+          return;
+        }
         try {
           process.kill(child.pid, "SIGKILL");
         } catch {
@@ -905,6 +964,7 @@ function trackInteractive(child: ChildProcess): void {
   }
   interactiveChild = child;
   interactiveSignalled = false;
+  interactiveKilledFor = undefined;
 }
 
 /** Forget `child` once it has ended, so nothing later signals a reused pid. */
@@ -912,26 +972,34 @@ function releaseInteractive(child: ChildProcess): void {
   if (interactiveChild === child) {
     interactiveChild = undefined;
     interactiveSignalled = false;
+    interactiveKilledFor = undefined;
   }
 }
 
 /**
  * Offer a termination signal fabr received to the running interactive program.
- * The signal is sent to the program only where fabr has no terminal; with one,
- * the terminal has already delivered it to the program too.
+ * The signal is sent to the program only where `delivered` is false, as by
+ * default it is where fabr has no terminal: with one, the terminal has already
+ * delivered it to the program too. On Windows, where no signal can be sent,
+ * the program's tree is killed instead.
  * @return true if the program took it: the caller (the driver's signal
  * handler) should let the program end the run, its exit resolving
  * {@link executeInteractive} with 128+signal. false where there is no
  * interactive program or it has already been offered a signal: the caller
  * should exit at once, the exit hooks killing what is left.
  */
-export function signalInteractiveChild(signal: NodeJS.Signals): boolean {
+export function signalInteractiveChild(signal: NodeJS.Signals, delivered = hasTerminal()): boolean {
   const child = interactiveChild;
   if (!child || interactiveSignalled || child.pid === undefined || child.exitCode !== null || child.signalCode !== null) {
     return false;
   }
   interactiveSignalled = true;
-  if (!hasTerminal()) {
+  if (!delivered) {
+    if (!GROUPS_SUPPORTED) {
+      interactiveKilledFor = signal;
+      killTree(child.pid);
+      return true;
+    }
     try {
       process.kill(child.pid, signal);
     } catch {
@@ -955,7 +1023,8 @@ function hasTerminal(): boolean {
  * fabr's termination signals by {@link signalInteractiveChild}.
  *
  * Resolves with its exit status whatever it is, and with 128+signal where a
- * signal ended it, as a shell reports one. Rejects with an ExecutionError only
+ * signal ended it, as a shell reports one, or where fabr killed it for one (on
+ * Windows). Rejects with an ExecutionError only
  * where it cannot be spawned.
  */
 export function executeInteractive(cmd: string, args: string[], cwd?: string, env?: Record<string, string>): Computable<number> {
@@ -970,8 +1039,10 @@ export function executeInteractive(cmd: string, args: string[], cwd?: string, en
       reject(new ExecutionError(`${line}\nunable to execute: ${systemErrorText(e)}`));
     });
     proc.on("close", (code, signal) => {
+      /* A program fabr killed for a signal (on Windows) ended by that signal. */
+      const ended = signal ?? (interactiveChild === proc ? interactiveKilledFor : undefined);
       releaseInteractive(proc);
-      resolve(signal ? 128 + (os.constants.signals[signal] ?? 0) : (code ?? 0));
+      resolve(ended ? 128 + (os.constants.signals[ended] ?? 0) : (code ?? 0));
     });
   });
 }
@@ -981,12 +1052,13 @@ export function executeInteractive(cmd: string, args: string[], cwd?: string, en
  * manages its lifecycle (`fabr run -w`'s supervisor, which restarts it). `cwd`
  * and `env` are as for {@link executeInteractive}.
  *
- * The program leads a process group of its own, so {@link killProcessGroup}
- * ends it with any workers it forked. It does not receive the terminal's
+ * The program leads a process group of its own (on Windows, it is a process
+ * whose tree {@link killProcessGroup} kills), so {@link killProcessGroup} ends
+ * it with any workers it forked. It does not receive the terminal's
  * Ctrl-C; the caller must forward it. It is not tracked for the exit hook.
  */
 export function spawnInteractive(cmd: string, args: string[], cwd?: string, env?: Record<string, string>): ChildProcess {
-  return spawn(cmd, args, { stdio: "inherit", windowsHide: true, cwd, env, detached: true });
+  return spawn(cmd, args, { stdio: "inherit", windowsHide: true, cwd, env, ...DETACHED });
 }
 
 /**
@@ -997,6 +1069,13 @@ export function spawnInteractive(cmd: string, args: string[], cwd?: string, env?
  */
 export function killProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
   if (child.pid === undefined) {
+    return;
+  }
+  if (!GROUPS_SUPPORTED) {
+    /* No group to signal, and no signal but a kill: the child's tree, while it runs. */
+    if (child.exitCode === null && child.signalCode === null) {
+      killTree(child.pid);
+    }
     return;
   }
   try {

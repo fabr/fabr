@@ -18,7 +18,8 @@ with a workaround for each.
 - **A cache shared between machines.** Each machine, CI runner included, has its own cache; CI
   keeps it between runs as described in [Continuous integration](/guides/ci/#not-supported).
 - **Platforms other than macOS and Linux are untested.** Fabr runs wherever Node.js does, but it
-  is tested on macOS and Linux only.
+  is tested on macOS and Linux only. On Windows, see also
+  [the rough edges there](#on-windows-processes-file-modes-and-links-fall-short).
 
 **JavaScript and TypeScript**
 
@@ -55,6 +56,7 @@ with a workaround for each.
 | [Programs a shell script starts are not tracked](#programs-a-shell-script-starts-are-not-tracked) | A different version of a program a script runs can change results without fabr noticing. |
 | [Optional dependencies required as `*` are dropped](#optional-npm-dependencies-required-only-as--are-left-out-silently) | Such a dependency is missing, with no warning. |
 | [No lock between fabr processes](#concurrent-fabr-processes-duplicate-work-rather-than-sharing-it) | Two builds at once may each do the same work; deleting the cache under `fabr run` removes the running program. |
+| [On Windows, processes, file modes and links fall short](#on-windows-processes-file-modes-and-links-fall-short) | A step's leftover processes outlive it; executable modes are lost; incremental builds can need Developer Mode. |
 
 ### Programs a shell script starts are not tracked
 
@@ -95,3 +97,31 @@ different changes, or of one already built, share the cache as usual.
 Relatedly, `fabr run` installs the program it runs in the cache, and keeps the install there to
 reuse on the next run, so deleting the cache while `fabr run` or `fabr run -w` is running deletes
 the files of the program it is running. Stop the program first.
+
+### On Windows, processes, file modes and links fall short
+
+These will be fixed once fabr has native support for Windows.
+
+- **A process a build step leaves running outlives the step.** On macOS and Linux, fabr stops
+  everything a step started when the step ends. On Windows it can stop a step's processes only
+  while the step's own process is still running. Whatever is left after it exits keeps running
+  until fabr exits, and if fabr itself is ended outright (from Task Manager, say), only the
+  processes fabr started directly stop.
+- **`fabr build -w` and `fabr run -w` stop cleanly only through Ctrl-C** at the console they run
+  in, or when a program that started fabr with a Node.js IPC channel closes it. Windows can't
+  send a process any other request to stop, only end it outright, which skips fabr's clean-up:
+  for example, the container a `fabr run` of an image started is left running.
+- **Files have no executable mode.** A file fabr reads from disk on Windows, such as a build
+  step's output or a `bin/` script, has no executable bit, so a package or archive built there
+  doesn't mark it executable, and a [`patched`](/reference/standard-rules/#patched) target loses
+  the mode a patch gives a file.
+- **Incremental builds need the right to make symbolic links.** Fabr links each build's record to
+  its result. Without Developer Mode, or the right to create symbolic links granted another way,
+  that link can't be made, so every build of a step starts afresh.
+- **A [`script`](/reference/standard-rules/#script) needs a POSIX shell on `PATH`**, such as the
+  `sh` Git for Windows installs; Windows has none of its own. Set
+  `SHELL = @host:'C:/Program Files/Git/usr/bin/sh.exe';` to name one that isn't on `PATH`.
+
+**Workaround:** for the first two, stop leftover processes from Task Manager. For executable
+modes, build packages you publish on macOS or Linux. For incremental builds, turn on Developer
+Mode (**Settings › System › For developers**).

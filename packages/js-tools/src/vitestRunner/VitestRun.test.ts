@@ -23,7 +23,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { framesOf, IReportedError, IReportedModule, IReportedTest, toRunFailure, toTestResults, vitestOptions } from "./VitestRun";
 
-const ROOT = path.join(path.sep, "work", "build");
+const ROOT = path.resolve("/work/build");
 
 describe("vitestOptions", () => {
   const reporter = {};

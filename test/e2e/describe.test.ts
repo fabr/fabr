@@ -20,7 +20,7 @@
 import { expect } from "chai";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { startFabrWatch, STUB_TSC, STUB_TSC_CONFIG, type WatchSession } from "./harness";
 
 /** A BSP client over a session's stdio. */
@@ -481,7 +481,12 @@ describe("e2e: build-server across a reload", () => {
       items: Array<{ sources: Array<{ uri: string }> }>;
     };
     return (answer.items[0]?.sources ?? [])
-      .map(source => path.relative(fs.realpathSync(session.dir), new URL(source.uri).pathname))
+      .map(source =>
+        path
+          .relative(fs.realpathSync.native(session.dir), fs.realpathSync.native(fileURLToPath(source.uri)))
+          .split(path.sep)
+          .join("/")
+      )
       .sort();
   };
   const until = async (holds: (found: string[]) => boolean): Promise<string[]> => {

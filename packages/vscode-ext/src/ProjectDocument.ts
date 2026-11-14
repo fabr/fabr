@@ -228,7 +228,7 @@ export function composeProject(input: {
           key: `${target.id.uri}/${name}`,
           name,
           ...(target.fabr?.operation === undefined ? {} : { operation: target.fabr.operation }),
-          root: path.join(input.root, summary.root).replace(/\/$/, ""),
+          root: path.resolve(input.root, summary.root),
           ...(summary.package === undefined ? {} : { package: summary.package }),
           description: base,
           pool: path.dirname(description),
@@ -328,7 +328,7 @@ function composeUnit(
   links: Map<string, string>
 ): void {
   const relative = (to: string): string => {
-    const text = path.relative(unit.root, to).split(path.sep).join("/");
+    const text = posixRelative(unit.root, to);
     return text === "" ? "./" : `./${text}/`;
   };
   /* A package another unit builds at another root is left located there and
@@ -346,7 +346,7 @@ function composeUnit(
   }
   const composed = {
     ...unit.config,
-    ...(referenced.size === 0 ? {} : { references: [...referenced].sort().map(root => ({ path: path.relative(unit.root, root) })) }),
+    ...(referenced.size === 0 ? {} : { references: [...referenced].sort().map(root => ({ path: posixRelative(unit.root, root) })) }),
   };
   files.set(path.join(own, "tsconfig.json"), JSON.stringify(composed, null, 2) + "\n");
   files.set(path.join(own, ".pnp.data.json"), JSON.stringify(unit.table));
@@ -357,4 +357,9 @@ function composeUnit(
   for (const generated of unit.summary.generated) {
     links.set(path.join(unit.root, generated), path.join(unit.description, "generated", generated));
   }
+}
+
+/** @return the path from `from` to `to`, both host paths, `/`-separated. */
+function posixRelative(from: string, to: string): string {
+  return path.relative(from, to).split(path.sep).join("/");
 }

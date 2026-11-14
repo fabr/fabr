@@ -543,7 +543,7 @@ describe("PnpResolver over one package wired two ways", () => {
     const { left, manifest } = staged();
     const resolver = new PnpResolver(manifest.state, root, ["types", "require"]);
     const real = path.join(realpathKeepingVirtual(path.join(root, manifest.mountOf(left))), "index.js");
-    expect(real).to.include("/__virtual__/");
+    expect(real).to.include(`${path.sep}__virtual__${path.sep}`);
     expect(resolver.locationOf("dep", real)).to.equal(path.join(root, manifest.mountOf(left.packages[0])));
   });
 

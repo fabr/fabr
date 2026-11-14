@@ -60,28 +60,29 @@ describe("Unpack", () => {
    * test provides a CAS-output factory backed by a temp BuildCache. The returned
    * FileSet holds blob-backed files. */
   let cacheDir: string;
+  let cache: BuildCache;
   let createOutput: () => IOutputHandle;
   beforeEach(() => {
     cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-unpack-cache-"));
-    const cache = new BuildCache(cacheDir, new LogFormatter(LogLevel.Info, () => undefined));
+    cache = new BuildCache(cacheDir, new LogFormatter(LogLevel.Info, () => undefined));
     createOutput = () => cache.getTemporaryWriteStream();
   });
   afterEach(() => {
     fs.rmSync(cacheDir, { recursive: true, force: true });
   });
 
-  /** Run `body` with this process's work tree unwritable, so every spool the cache opens fails. */
+  /** Run `body` with every spool the cache opens failing: a directory is made
+   * where each is about to be opened, which fails the open on every platform. */
   async function withFailingSpool(body: () => Promise<void>): Promise<void> {
-    const work = path.join(cacheDir, "work");
-    const own = path.join(
-      work,
-      fs.readdirSync(work).find(name => name.endsWith(`-${process.pid}`))!
-    );
-    fs.chmodSync(own, 0o500);
+    const healthy = createOutput;
+    createOutput = () => {
+      fs.mkdirSync(path.join(cache["ownWorkRoot"], `stream-${cache["tempCounter"]}`));
+      return healthy();
+    };
     try {
       await body();
     } finally {
-      fs.chmodSync(own, 0o700);
+      createOutput = healthy;
     }
   }
 
@@ -94,7 +95,7 @@ describe("Unpack", () => {
         () => "",
         (err: NodeJS.ErrnoException) => err.code ?? err.message
       );
-      expect(failure).to.equal("EACCES");
+      expect(failure).to.match(/^E[A-Z]+$/);
     });
   });
 
@@ -497,7 +498,7 @@ describe("Unpack", () => {
           () => "",
           (err: NodeJS.ErrnoException) => err.code ?? err.message
         );
-        expect(failure).to.equal("EACCES");
+        expect(failure).to.match(/^E[A-Z]+$/);
       });
     });
 

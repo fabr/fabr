@@ -38,6 +38,10 @@ import { FileSet, IFile, MemoryFile, PackageFileSet, TREE_MOUNT, dependenciesOn 
 import { PNP_DATA_FILE, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "@fabr-build/js-tools";
 import { pnpManifestOf, treeMountOf } from "../PnPManifest";
 import { BundleDriver } from "@fabr-build/js-tools";
+/* esbuild's service process runs in the working directory esbuild was loaded
+ * in, so load it here, before a case changes into a directory it then removes:
+ * Windows refuses to remove a running process's working directory. */
+import "esbuild";
 
 const { isBareSpecifier, main, packageOf, rewriteStyledImport, treeOf, unresolvedHelp } = BundleDriver;
 

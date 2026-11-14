@@ -30,6 +30,7 @@ import { createLanguageService, type IPluginCreateInfo, type IServerTypeScript, 
 interface IFixture {
   root: string;
   units: ITypeScriptUnit[];
+  /** @return the file `name` names under the root, as TypeScript spells it (`/`-separated). */
   file(name: string): string;
 }
 
@@ -59,7 +60,7 @@ function table(rows: Array<[string | null, string | null, string, Array<[string,
 const OPTIONS = { strict: true, module: "commonjs", moduleResolution: "bundler", target: "es2021", types: [], typeRoots: [] };
 
 function makeFixture(): IFixture {
-  const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "fabr-tsserver-"));
+  const root = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "fabr-tsserver-"));
   write(root, {
     "package.json": JSON.stringify({ name: "outer", dependencies: { dep: "1.0.0", "outer-only": "1.0.0" } }),
     "node_modules/dep/package.json": JSON.stringify({ name: "dep", version: "9.9.9", types: "index.d.ts" }),
@@ -105,7 +106,7 @@ function makeFixture(): IFixture {
     table: path.join(root, name, ".pnp.data.json"),
     ...(pkg === undefined ? {} : { package: pkg }),
   });
-  return { root, units: [unit("app"), unit("lib", "lib")], file: name => path.join(root, name) };
+  return { root, units: [unit("app"), unit("lib", "lib")], file: name => path.join(root, name).split(path.sep).join("/") };
 }
 
 const LOGGER = {
@@ -304,9 +305,9 @@ describe("tsserver plugin", () => {
     const units = [
       ...fixture.units,
       {
-        config: fixture.file("multi/tsconfig.build.json"),
-        root: fixture.file("multi"),
-        table: fixture.file("multi/.pnp.data.json"),
+        config: path.join(fixture.root, "multi/tsconfig.build.json"),
+        root: path.join(fixture.root, "multi"),
+        table: path.join(fixture.root, "multi/.pnp.data.json"),
         package: "multi",
       },
     ];
@@ -322,9 +323,9 @@ describe("tsserver plugin", () => {
     /* The package imports itself by name, as its build does, and so do its
      * tests, a unit of their own. */
     const tests = {
-      config: fixture.file("multi/tsconfig.test.json"),
-      root: fixture.file("multi"),
-      table: fixture.file("multi/.pnp.data.json"),
+      config: path.join(fixture.root, "multi/tsconfig.test.json"),
+      root: path.join(fixture.root, "multi"),
+      table: path.join(fixture.root, "multi/.pnp.data.json"),
       package: "multi",
     };
     for (const file of [fixture.file("multi/types/self.ts"), fixture.file("multi/types/self.test.ts")]) {
@@ -410,9 +411,9 @@ describe("tsserver plugin", () => {
     const units = [
       ...fixture.units,
       {
-        config: fixture.file("wild/tsconfig.json"),
-        root: fixture.file("wild"),
-        table: fixture.file("wild/.pnp.data.json"),
+        config: path.join(fixture.root, "wild/tsconfig.json"),
+        root: path.join(fixture.root, "wild"),
+        table: path.join(fixture.root, "wild/.pnp.data.json"),
         package: "wild",
       },
     ];
@@ -517,9 +518,9 @@ describe("tsserver plugin", () => {
       ]),
     });
     const tests = {
-      config: fixture.file("app/tsconfig.test.json"),
-      root: fixture.file("app"),
-      table: fixture.file("app/.pnp.test.json"),
+      config: path.join(fixture.root, "app/tsconfig.test.json"),
+      root: path.join(fixture.root, "app"),
+      table: path.join(fixture.root, "app/.pnp.test.json"),
     };
     const test = fixture.file("app/src/main.test.ts");
     const service = open(projectService([...fixture.units, tests], ts.LanguageServiceMode.PartialSemantic), test);

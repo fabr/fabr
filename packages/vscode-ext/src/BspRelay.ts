@@ -16,7 +16,8 @@
 
 /**
  * The project's build server, shared with other clients in the window — the
- * Java language server's fabr importer — over a Unix socket: each connection
+ * Java language server's fabr importer — over a Unix socket, or on Windows a
+ * named pipe (`\\.\pipe\…`), as the language server's own connection is: each connection
  * is a BSP session of its own. `build/initialize` is answered with what the
  * server answered the extension, `build/shutdown` with null, and every other
  * request is forwarded to the server; `build/exit` ends the connection, and
@@ -29,7 +30,8 @@ import * as net from "net";
 import { type JsonRpcClient, readMessages, sendMessage } from "./JsonRpcClient";
 
 /**
- * Serve `client`'s server at the socket `socket`, replacing any file there,
+ * Serve `client`'s server at the socket `socket`, replacing any file there (a
+ * named pipe is no file),
  * `initialized` the result of its `build/initialize`. The relay stops passing
  * on notifications once it is closed.
  *
@@ -42,7 +44,9 @@ export function relayBuildServer(client: JsonRpcClient, initialized: unknown, so
       sendMessage(connection, { jsonrpc: "2.0", method, params });
     }
   });
-  fs.rmSync(socket, { force: true });
+  if (!isNamedPipe(socket)) {
+    fs.rmSync(socket, { force: true });
+  }
   const server = net.createServer(connection => {
     connections.add(connection);
     connection.on("close", () => connections.delete(connection));
@@ -83,4 +87,9 @@ export function relayBuildServer(client: JsonRpcClient, initialized: unknown, so
       resolve(server);
     });
   });
+}
+
+/** @return true if `socket` names a Windows named pipe (`\\.\pipe\…`), otherwise false. */
+function isNamedPipe(socket: string): boolean {
+  return /^[\\/]{2}[.?][\\/]pipe[\\/]/i.test(socket);
 }

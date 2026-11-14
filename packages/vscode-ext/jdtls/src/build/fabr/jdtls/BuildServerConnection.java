@@ -23,22 +23,30 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.UnixDomainSocketAddress;
+import java.nio.ByteBuffer;
+import java.nio.channels.AsynchronousFileChannel;
 import java.nio.channels.Channels;
 import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 
 /**
- * A Build Server Protocol connection: JSON-RPC over a Unix socket, framed as
- * LSP frames it. Requests are answered by future; every notification the
+ * A Build Server Protocol connection: JSON-RPC over a Unix socket, or on
+ * Windows a named pipe, framed as LSP frames it. Requests are answered by future; every notification the
  * server sends is passed to the listener.
  */
 final class BuildServerConnection {
     private static final Gson GSON = new Gson();
+
+    /** Whether this is Windows, where the server is reached through a named pipe. */
+    static final boolean WINDOWS = System.getProperty("os.name", "").toLowerCase().startsWith("windows");
 
     private final OutputStream output;
     private final AtomicInteger ids = new AtomicInteger();
@@ -52,10 +60,77 @@ final class BuildServerConnection {
         reader.start();
     }
 
-    /** Connect to the server at the Unix socket `socket`. */
+    /**
+     * Connect to the server at `socket`: a Unix socket, or on Windows a named
+     * pipe, opened for overlapped I/O (as the language server opens its own) so
+     * that a read waiting for the server does not hold up a write to it.
+     */
     static BuildServerConnection connect(String socket) throws IOException {
+        if (WINDOWS) {
+            AsynchronousFileChannel pipe = AsynchronousFileChannel.open(Path.of(socket), StandardOpenOption.READ, StandardOpenOption.WRITE);
+            return new BuildServerConnection(new PipeInputStream(pipe), new PipeOutputStream(pipe));
+        }
         SocketChannel channel = SocketChannel.open(UnixDomainSocketAddress.of(socket));
         return new BuildServerConnection(Channels.newInputStream(channel), Channels.newOutputStream(channel));
+    }
+
+    /** The bytes read from a named pipe, a read at a time. */
+    private static final class PipeInputStream extends InputStream {
+        private final AsynchronousFileChannel pipe;
+        private final ByteBuffer buffer = ByteBuffer.allocate(8192);
+
+        PipeInputStream(AsynchronousFileChannel pipe) {
+            this.pipe = pipe;
+            buffer.flip();
+        }
+
+        @Override
+        public int read() throws IOException {
+            if (!buffer.hasRemaining()) {
+                buffer.clear();
+                /* A pipe has no position: the offset is ignored. */
+                int read = await(pipe.read(buffer, 0));
+                buffer.flip();
+                if (read <= 0) {
+                    return -1;
+                }
+            }
+            return buffer.get() & 0xff;
+        }
+    }
+
+    /** The bytes written to a named pipe, each write whole before it returns. */
+    private static final class PipeOutputStream extends OutputStream {
+        private final AsynchronousFileChannel pipe;
+
+        PipeOutputStream(AsynchronousFileChannel pipe) {
+            this.pipe = pipe;
+        }
+
+        @Override
+        public void write(int b) throws IOException {
+            write(new byte[] { (byte) b }, 0, 1);
+        }
+
+        @Override
+        public void write(byte[] bytes, int offset, int length) throws IOException {
+            ByteBuffer data = ByteBuffer.wrap(bytes, offset, length);
+            while (data.hasRemaining()) {
+                await(pipe.write(data, 0));
+            }
+        }
+    }
+
+    /** @return what `operation` completes with, its failure an IOException. */
+    private static int await(java.util.concurrent.Future<Integer> operation) throws IOException {
+        try {
+            return operation.get();
+        } catch (ExecutionException e) {
+            throw e.getCause() instanceof IOException io ? io : new IOException(e.getCause());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException(e);
+        }
     }
 
     /** Send request `method`, answering with its result. */
