@@ -24,7 +24,7 @@ import { ConflictError, FabrError, IConflictSource, RequirementResolutionError, 
 import { FileSetRef } from "../core/FileSetRef";
 import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
-import { materializeTargets, TargetRef, Unbuilt } from "../core/TargetRef";
+import { materializeEachTarget, materializeTargets, TargetRef, Unbuilt } from "../core/TargetRef";
 import type { Reference } from "../core/Reference";
 import { isIncompleteRef, refuseNamespaces } from "../core/NamespaceRef";
 import {
@@ -1196,39 +1196,59 @@ export function materializeShallow(
   sources: SourceRef[],
   options?: ResolutionOptions
 ): Computable<Materialized[]> {
-  return materializeTargets(sources).then(built => {
-    const held = (built as Array<Exclude<SourceRef, TargetRef>>).map(source => {
-      if (isIncompleteRef(source)) {
-        throw source.refused();
-      }
-      return source;
-    });
-    const references = held.filter((source): source is RepositoryRef => source instanceof RepositoryRef);
-    /* Each source as resolved, beside the reference it was resolved for. */
-    interface IEntry {
-      resolved: Resolved;
-      reference: Reference | undefined;
+  return materializeTargets(sources).then(built => materializeBuilt(context, built, options));
+}
+
+/**
+ * Materialize `sources` as {@link materializeShallow} does, except that a
+ * target failing to build is left out: return what the rest materialized, with
+ * the error of each target that failed. Rejects as {@link materializeShallow}
+ * does for anything else.
+ */
+export function materializeShallowEach(
+  context: ResolutionContext,
+  sources: SourceRef[],
+  options?: ResolutionOptions
+): Computable<{ materialized: Materialized[]; failures: Error[] }> {
+  return materializeEachTarget(sources).then(({ sources: built, failures }) =>
+    materializeBuilt(context, built, options).then(materialized => ({ materialized, failures }))
+  );
+}
+
+/** Materialize `built`, the sources a name denotes with its targets built, for
+ * {@link materializeShallow}. */
+function materializeBuilt(context: ResolutionContext, built: SourceRef[], options?: ResolutionOptions): Computable<Materialized[]> {
+  const held = (built as Array<Exclude<SourceRef, TargetRef>>).map(source => {
+    if (isIncompleteRef(source)) {
+      throw source.refused();
     }
-    const finish = (finished: Map<RepositoryRef, Resolved | RepositoryRef>): IEntry[] =>
-      held.flatMap((source): IEntry[] =>
-        source instanceof RepositoryRef
-          ? resolvedAs(finished.get(source)!).map(resolved => ({ resolved, reference: source }))
-          : [{ resolved: source, reference: undefined }]
-      );
-    if (references.length === 0) {
-      return finish(new Map()).map(({ resolved }) => resolved) as Materialized[];
-    }
-    const collection = resolveCollection(context, references);
-    return resolveRequests(context, references.map(packageRequest), collection).then(finished =>
-      conflictsOf(context, collection, finished, [...finished.values()])
-        .then(conflicts => checked(conflicts, options?.resolutionMode === "permissive"))
-        .then(() => {
-          const entries = finish(finished);
-          return materializeLists([entries.map(({ resolved }) => resolved)], [entries.map(({ reference }) => reference)]);
-        })
-        .then(({ lists: [materialized] }) => materialized)
-    );
+    return source;
   });
+  const references = held.filter((source): source is RepositoryRef => source instanceof RepositoryRef);
+  /* Each source as resolved, beside the reference it was resolved for. */
+  interface IEntry {
+    resolved: Resolved;
+    reference: Reference | undefined;
+  }
+  const finish = (finished: Map<RepositoryRef, Resolved | RepositoryRef>): IEntry[] =>
+    held.flatMap((source): IEntry[] =>
+      source instanceof RepositoryRef
+        ? resolvedAs(finished.get(source)!).map(resolved => ({ resolved, reference: source }))
+        : [{ resolved: source, reference: undefined }]
+    );
+  if (references.length === 0) {
+    return Computable.resolve(finish(new Map()).map(({ resolved }) => resolved) as Materialized[]);
+  }
+  const collection = resolveCollection(context, references);
+  return resolveRequests(context, references.map(packageRequest), collection).then(finished =>
+    conflictsOf(context, collection, finished, [...finished.values()])
+      .then(conflicts => checked(conflicts, options?.resolutionMode === "permissive"))
+      .then(() => {
+        const entries = finish(finished);
+        return materializeLists([entries.map(({ resolved }) => resolved)], [entries.map(({ reference }) => reference)]);
+      })
+      .then(({ lists: [materialized] }) => materialized)
+  );
 }
 
 /** Reject where versions conflict in a collection, unless it is collected

@@ -433,6 +433,30 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
     expect(result.stderr).to.contain("1 test passed");
   });
 
+  it("reports the tests that ran where another target the name reaches fails to build", () => {
+    const files = {
+      ...STUB_TSC,
+      "PROJECT.fabr":
+        "plugin @fabr-build/js;\n\n" +
+        STUB_TSC_CONFIG +
+        "\njs_package thing { srcs = src:**/*.ts; tests = src:**/*.test.ts; }\n" +
+        "script fail { entry = ./fail.sh; }\ngenerate gen { run = fail > broken.ts; }\n" +
+        "js_package broken { srcs = gen:*.ts; tests = t:*.test.ts; }\n" +
+        "all = thing broken;\n" +
+        "js_test standalone { tests = it:**/*.test.ts; }\n",
+      "src/thing.test.ts":
+        'const assert = require("node:assert");\ndescribe("thing", () => { it("fails on purpose", () => { assert.equal(1, 2); }); });\n',
+      "fail.sh": 'echo "generator broke" >&2\nexit 3\n',
+      "t/broken.test.ts": 'describe("broken", () => { it("never runs", () => {}); });\n',
+      "it/standalone.test.ts": 'describe("standalone", () => { it("holds", () => {}); });\n',
+    };
+    const result = runFabr(files, ["-DJS_TARGET=es2020", "test", "all", "standalone"]);
+    expect(result.status).to.not.equal(0);
+    expect(result.stderr).to.contain("fails on purpose");
+    expect(result.stderr).to.contain("standalone: 1 test passed");
+    expect(result.stderr).to.contain("generator broke");
+  });
+
   it("runs only the tests whose full names match -t, and fails where none does", () => {
     /* The unmatched test would fail, so a green run shows it was not run; the
      * pattern spans the suite and test names, joined by a space. */

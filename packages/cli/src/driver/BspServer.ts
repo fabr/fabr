@@ -36,6 +36,8 @@ import {
   getTestReport,
   type IDescribing,
   type ITestReport,
+  type ITestedName,
+  MultiError,
   type SourceRef,
   type IBuildTarget,
   type IDescription,
@@ -84,7 +86,7 @@ const ANNOUNCE_DELAY_MS = 100;
 /** What the server builds or tests a target with, by its name, in the model it serves. */
 export interface IServedOperations {
   build(name: string): Computable<SourceRef[][]>;
-  test(name: string): Computable<SourceRef[][]>;
+  test(name: string): Computable<ITestedName[]>;
 }
 
 /** The languages of the targets the server builds and tests. */
@@ -314,23 +316,28 @@ export class BspServer {
       eventTime: Date.now(),
       message: `${operation === "build" ? "Building" : "Testing"} ${named.map(({ uri, name }) => name ?? uri).join(", ")}`,
     });
+    /* A target's errors and its test report, which a test run may have both of. */
+    interface IOutcome {
+      uri: string;
+      error: Error | undefined;
+      report: ITestReport | undefined;
+    }
+    const outcomeOf = (uri: string, name: string): Promise<IOutcome> =>
+      operation === "test"
+        ? settled(operations.test(name)).then(tested => {
+            const failures = tested.flatMap(({ failures }) => failures);
+            return settled(getTestReport(tested.flatMap(({ sources }) => sources))).then(report => ({
+              uri,
+              error: failures.length === 0 ? undefined : MultiError.of(failures),
+              report,
+            }));
+          })
+        : settled(operations.build(name)).then(() => ({ uri, error: undefined, report: undefined }));
     const outcomes = await Promise.all(
       named.map(({ uri, name }) =>
         name === undefined
-          ? Promise.resolve({
-              uri,
-              error: new Error(`${uri} is not served`) as Error | undefined,
-              report: undefined as ITestReport | undefined,
-            })
-          : settled(operations[operation](name)).then(
-              results =>
-                (operation === "test" ? settled(getTestReport(results.flat())) : Promise.resolve(undefined)).then(report => ({
-                  uri,
-                  error: undefined,
-                  report,
-                })),
-              (err: unknown) => ({ uri, error: toError(err) as Error | undefined, report: undefined as ITestReport | undefined })
-            )
+          ? Promise.resolve<IOutcome>({ uri, error: new Error(`${uri} is not served`), report: undefined })
+          : outcomeOf(uri, name).catch((err: unknown): IOutcome => ({ uri, error: toError(err), report: undefined }))
       )
     );
     let tests = 0;

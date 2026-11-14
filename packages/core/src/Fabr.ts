@@ -23,7 +23,7 @@ import { Computable } from "./core/Computable";
 import { AbsolutePathSource } from "./core/AbsolutePathSource";
 import { FSFileSource } from "./core/FSFileSource";
 import { IndexedFileSource } from "./core/IndexedFileSource";
-import { FabrError } from "./core/Errors";
+import { FabrError, toError } from "./core/Errors";
 import { refuseNamespaces } from "./core/NamespaceRef";
 import { Dependency, isPackage, Package, ResolvedNode } from "./core/PackageFileSet";
 import { Reference } from "./core/Reference";
@@ -223,11 +223,16 @@ export function requireWhole(ref: INameValue, resolved: ReadonlyArray<Resolved>)
  * (and then none is built), or where what it names is a namespace.
  */
 function build(config: BuildContext, refs: INameValue[]): Computable<SourceRef[]>[] {
-  const declared = Computable.forAll(
+  const declared = requireAllDeclared(config, refs);
+  return refs.map(ref => declared.then(() => config.materialize(ref)).then(sources => refuseNamespaces(sources)));
+}
+
+/** Refuse `refs` where any of them is not a name the project declares. */
+function requireAllDeclared(config: BuildContext, refs: INameValue[]): Computable<void> {
+  return Computable.forAll(
     refs.map(ref => requireDeclared(config, ref)),
     () => undefined
   );
-  return refs.map(ref => declared.then(() => config.materialize(ref)).then(sources => refuseNamespaces(sources)));
 }
 
 /** Refuse `ref` where it is not a name the project declares. */
@@ -263,15 +268,33 @@ export function buildOperation(config: BuildContext, refs: INameValue[]): Comput
   );
 }
 
+/** What {@link testOperation} built of one name: the sources built, its test
+ * report among them, and the error of each target among it that failed. */
+export interface ITestedName {
+  readonly sources: SourceRef[];
+  readonly failures: Error[];
+}
+
 /**
  * Build what each of `refs` names under `config`'s operation (the `test`
  * verb, which runs the tests), and yield what each built, in order, its test
- * report among it (`getTestReport` reads it). Names are refused as for
- * {@link buildOperation}. Rejects where any name is refused or any build
- * fails, a test run with failing tests included.
+ * report among it (`getTestReport` reads it). A target that fails to build is
+ * left out of its name's sources, and its error is among the name's failures;
+ * a name that fails as a whole has no sources and its error alone. Names are
+ * refused as for {@link buildOperation}: rejects where any name is refused.
  */
-export function testOperation(config: BuildContext, refs: INameValue[]): Computable<SourceRef[][]> {
-  return Computable.forAll(build(config, refs), (...results: SourceRef[][]) => results);
+export function testOperation(config: BuildContext, refs: INameValue[]): Computable<ITestedName[]> {
+  return requireAllDeclared(config, refs).then(() =>
+    Computable.forAll(
+      refs.map(ref =>
+        config
+          .materializeEach(ref)
+          .then(({ sources, failures }): ITestedName => ({ sources: refuseNamespaces(sources), failures }))
+          .catch((err): ITestedName => ({ sources: [], failures: [toError(err)] }))
+      ),
+      (...tested: ITestedName[]) => tested
+    )
+  );
 }
 
 /** A name as written, and what it resolved to. */

@@ -97,6 +97,7 @@ still reports non-zero exit code with failures.
 - Fix a `{virtual: true}` jest mock of a relative path not answering an `import()` of it.
 - Fix `enableAutomock` automocking `node:`-prefixed core modules.
 - Fix a test file reading a package that imports itself by name being run again on every change.
+- Breaking: a js_package's root package.json only seeds the generated manifest and is no longer compiled with its sources; a package.json elsewhere among the sources is an error.
 
 VS Code extension (fabr-build.fabr):
 - New VSCode extension.

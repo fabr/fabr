@@ -33,7 +33,7 @@ import {
 } from "../core/Repository";
 import { ResolutionContext } from "../resolver/Types";
 import { PERMISSIVE_RESOLUTION } from "./CollectionPoint";
-import { materializeShallow, resolveLists } from "./CollectionPoint";
+import { materializeShallow, materializeShallowEach, resolveLists } from "./CollectionPoint";
 import { FileSetRef, FileSourceRef } from "../core/FileSetRef";
 import { soleWholeTarget, TargetNode, TargetRef, TargetSource, Unbuilt } from "../core/TargetRef";
 import { ResolvedTarget } from "./ResolvedTarget";
@@ -1179,18 +1179,37 @@ export class BuildContextImpl implements InternalBuildContext {
   }
 
   public materialize(ref: INameValue, stack?: IDependencyStack): Computable<Array<FileSource | IncompleteRef>> {
+    return this.materializeWith(ref, stack, (context, sources, options) =>
+      materializeShallow(context, sources, options).then(materialized => ({ materialized, failures: [] }))
+    ).then(({ sources }) => sources);
+  }
+
+  public materializeEach(ref: INameValue): Computable<{ sources: Array<FileSource | IncompleteRef>; failures: Error[] }> {
+    return this.materializeWith(ref, undefined, materializeShallowEach);
+  }
+
+  /** Materialize what `ref` names with `shallow`, for {@link materialize} and
+   * {@link materializeEach}. */
+  private materializeWith(
+    ref: INameValue,
+    stack: IDependencyStack | undefined,
+    shallow: typeof materializeShallowEach
+  ): Computable<{ sources: Array<FileSource | IncompleteRef>; failures: Error[] }> {
     /* Under `run` the name is a program, whose closure is collected permissively. */
     const options = this.constraints.get(BUILD_OPERATION) === "run" ? PERMISSIVE_RESOLUTION : undefined;
     return this.lookupFileValue(ref.value, stack, { relativeTo: ref }).then(found => {
       const sources = found.map(versionsOf);
       const incomplete = sources.filter(isIncompleteRef);
-      return materializeShallow(
+      return shallow(
         this.resolutionContext(),
         sources.filter(source => !isIncompleteRef(source)),
         options
-      )
-        .then(delivered => this.applyProjections(delivered))
-        .then((content): Array<FileSource | IncompleteRef> => [...content, ...incomplete]);
+      ).then(({ materialized, failures }) =>
+        this.applyProjections(materialized).then(content => ({
+          sources: [...content, ...incomplete] as Array<FileSource | IncompleteRef>,
+          failures,
+        }))
+      );
     });
   }
 

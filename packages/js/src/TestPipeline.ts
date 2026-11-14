@@ -495,7 +495,9 @@ export function describeTests(
       if (tests.isEmpty()) {
         return Computable.resolve(EMPTY_FILESET);
       }
-      const sources = compileSourcesOf(FileSet.unionAll(...srcs, tests)).remap(name => (name === RUNNER_GLOBALS_TYPES ? undefined : name));
+      const sources = compileSourcesOf(FileSet.unionAll(...srcs, tests)).remap(name =>
+        name === RUNNER_GLOBALS_TYPES ? undefined : name
+      );
       /* The runner is wanted only for the globals typings it supplies. */
       return Computable.forAll(
         [

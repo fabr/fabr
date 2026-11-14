@@ -59,6 +59,7 @@ import {
   getTestReport,
   ITestReport,
   mergeTestReports,
+  MultiError,
   TestsFailedError,
   toJUnitXml,
   Name,
@@ -371,10 +372,11 @@ function runsOnly(model: BuildModel, name: string): boolean {
 }
 
 /** Run `fabr test <targets>` through core's {@link testOperation}, then, each
- * time a watch cycle changes the results: log each target's summary, write
- * `--report`'s file, write refreshed expectations back where no test failed,
- * and report coverage. Fails where any test failed, after the reports are
- * written, or where `-t` matched no test. */
+ * time a watch cycle changes the results: log the summary of each target whose
+ * tests ran, write `--report`'s file from those, write refreshed expectations
+ * back where no test failed and every target was built, and report coverage.
+ * Fails where any test failed or any target failed to build, after the reports
+ * are written, or where `-t` matched no test. */
 function runTest(
   model: BuildModel,
   options: Options,
@@ -385,26 +387,35 @@ function runTest(
   markForced(model, options, execution, names);
   execution.retryFailed = options.retryFailed;
   const refs = names.map(name => options.commandLine.refFor(name, site));
-  return testOperation(configFor(model, options, execution, "test"), refs).then(results =>
-    Computable.forAll(
+  return testOperation(configFor(model, options, execution, "test"), refs).then(tested => {
+    const results = tested.map(({ sources }) => sources);
+    const unbuilt = tested.flatMap(({ failures }) => failures);
+    return Computable.forAll(
       results.map(sources => getTestReport(sources)),
       (...reports: (ITestReport | undefined)[]) => reports
     ).then(reports => {
-      const failure = reportTestResults(execution.log, names, reports, options.properties.get(TEST_NAME_PATTERN) || undefined);
+      const failure = reportTestResults(
+        execution.log,
+        names,
+        reports,
+        tested.map(({ failures }) => failures.length > 0),
+        options.properties.get(TEST_NAME_PATTERN) || undefined
+      );
+      const failures = [...unbuilt, ...(failure === undefined ? [] : [failure])];
       return (
         options.reportFile === undefined
           ? Computable.resolve(undefined)
           : writeTestReport(execution, site, options.reportFile, options.format, reports)
       )
-        .then(() => (failure === undefined ? applyExpectationUpdates(execution, site, results) : undefined))
+        .then(() => (failures.length === 0 ? applyExpectationUpdates(execution, site, results) : undefined))
         .then(() => (options.coverageDir === undefined ? undefined : reportCoverage(execution, site, options.coverageDir, results)))
         .then(() => {
-          if (failure !== undefined) {
-            throw failure;
+          if (failures.length > 0) {
+            throw MultiError.of(failures);
           }
         });
-    })
-  );
+    });
+  });
 }
 
 /** Write the run's test results, every name's merged into one report, to `file`, as CTRF or (`junit`) JUnit XML. */
@@ -1628,13 +1639,16 @@ function renderListing(files: FileSet, longListing: boolean): Computable<string[
  * Log the test summary of each name a run tested, from its report (whether
  * freshly run or cached), and return the failure of the names whose tests
  * failed, or undefined where none did: their summaries and failed tests, which
- * the failure is reported as. A run given `-t` marks each summary filtered, and
- * fails where its pattern ran no test in any of the targets.
+ * the failure is reported as. A name with no report that `unbuilt` marks as
+ * having a target that failed to build logs nothing. A run given `-t` marks
+ * each summary filtered, and fails where its pattern ran no test in any of the
+ * targets and every target was built.
  */
 function reportTestResults(
   log: Log,
   names: string[],
   reports: (ITestReport | undefined)[],
+  unbuilt: boolean[],
   namePattern: string | undefined
 ): TestsFailedError | undefined {
   const filtered = namePattern === undefined ? "" : " (filtered)";
@@ -1648,7 +1662,7 @@ function reportTestResults(
       failures.push(summary, ...formatTestFailures(report).split("\n").slice(1), summary);
       failed += report.results.summary.failed;
       tests += report.results.summary.tests;
-    } else {
+    } else if (report !== undefined || !unbuilt[i]) {
       log.log(DIAG_TEST_RESULT, { name: names[i], summary: (report ? formatTestSummary(report) : "no tests") + filtered });
     }
   });
@@ -1656,7 +1670,7 @@ function reportTestResults(
     (count, report) => count + (report ? report.results.summary.passed + report.results.summary.failed : 0),
     0
   );
-  if (namePattern !== undefined && ran === 0) {
+  if (namePattern !== undefined && ran === 0 && !unbuilt.some(failed => failed)) {
     throw new FabrError(`No test's name matches the pattern '${namePattern}'`);
   }
   return failures.length === 0 ? undefined : new TestsFailedError(failures.join("\n"), failed, tests);

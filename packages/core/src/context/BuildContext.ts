@@ -90,6 +90,14 @@ export interface BuildContext {
   materialize(ref: INameValue): Computable<Array<FileSource | IncompleteRef>>;
 
   /**
+   * Materialize what `ref` names as {@link materialize} does, except that a
+   * target failing to build is left out: return the content of the rest, with
+   * the error of each target that failed. Rejects as {@link materialize} does
+   * for anything else.
+   */
+  materializeEach(ref: INameValue): Computable<{ sources: Array<FileSource | IncompleteRef>; failures: Error[] }>;
+
+  /**
    * @return true if `ref` is a name the project declares — a target, a global
    * or a repository — or one this configuration was given a value for, once its
    * `${NAME}` parts are substituted and any `<k=v>` on it set aside, otherwise

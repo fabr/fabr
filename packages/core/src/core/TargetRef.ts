@@ -18,6 +18,7 @@
  */
 
 import { Computable } from "./Computable";
+import { toError } from "./Errors";
 import { FileSet } from "./FileSet";
 import { ResolvedNode } from "./PackageFileSet";
 import { chainSteps, IProvenanceStep, referenceStep } from "./Provenance";
@@ -179,4 +180,27 @@ export function soleWholeTarget(sources: ReadonlyArray<SourceRef>): TargetRef | 
  * target's result. */
 export function materializeTargets(sources: ReadonlyArray<SourceRef>): Computable<SourceRef[]> {
   return opened(sources, ref => ref.materialize());
+}
+
+/** Build every target reference among `sources` as {@link materializeTargets}
+ * does, except that a target failing to build is left out: return what the
+ * others built, with the error of each that failed. */
+export function materializeEachTarget(sources: ReadonlyArray<SourceRef>): Computable<{ sources: SourceRef[]; failures: Error[] }> {
+  if (!sources.some(source => source instanceof TargetRef)) {
+    return Computable.resolve({ sources: [...sources], failures: [] });
+  }
+  return Computable.forAll(
+    sources.map(source =>
+      source instanceof TargetRef
+        ? source.materialize().then(
+            inner => materializeEachTarget(inner),
+            err => ({ sources: [], failures: [toError(err)] })
+          )
+        : Computable.resolve({ sources: [source], failures: [] })
+    ),
+    (...parts: { sources: SourceRef[]; failures: Error[] }[]) => ({
+      sources: parts.flatMap(part => part.sources),
+      failures: parts.flatMap(part => part.failures),
+    })
+  );
 }
